@@ -1,3 +1,5 @@
+import type { CompiledGoal } from "../goal/types.js";
+
 export const FLOW_WORKFLOW_API_VERSION = "flow.synapti.ai/v1alpha1" as const;
 
 export type AgentToolName = "read" | "ls";
@@ -7,6 +9,7 @@ export interface CompiledWorkflow {
   readonly apiVersion: typeof FLOW_WORKFLOW_API_VERSION;
   readonly id: string;
   readonly description?: string;
+  readonly goal?: CompiledGoal;
   readonly nodes: readonly CompiledNode[];
 }
 

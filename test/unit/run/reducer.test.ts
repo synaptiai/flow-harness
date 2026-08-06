@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 
-import { RunReplayError, reduceRunEvents, type RunEvent } from "../../../src/domain/run/events.js";
+import {
+  RunReplayError,
+  reduceRunEvents,
+  type RunEvent,
+  type RunStartedEvent,
+} from "../../../src/domain/run/events.js";
 
 describe("reduceRunEvents", () => {
   it("reconstructs a successful run from authoritative events", () => {
@@ -17,6 +22,141 @@ describe("reduceRunEvents", () => {
     expect(state.nodes.typecheck).toMatchObject({ status: "succeeded", attempt: 1 });
     expect(Object.isFrozen(state)).toBe(true);
     expect(Object.isFrozen(state.nodes)).toBe(true);
+  });
+
+  it("reconstructs accepted criterion decisions from deterministic verifier evidence", () => {
+    const state = reduceRunEvents(successfulEvents(runStartedWithGoal("typecheck")));
+
+    expect(state.goal).toMatchObject({
+      id: "verified-change",
+      status: "accepted",
+      criteria: {
+        "verification-passes": {
+          status: "accepted",
+          decision: {
+            runId: "run-1",
+            nodeId: "typecheck",
+            attempt: 1,
+            evidenceAvailable: true,
+          },
+        },
+      },
+    });
+    expect(Object.isFrozen(state.goal)).toBe(true);
+    expect(Object.isFrozen(state.goal?.criteria)).toBe(true);
+  });
+
+  it("classifies normal verifier failure as rejected and unexecuted criteria as missing", () => {
+    const state = reduceRunEvents([
+      runStartedWithGoal("node-version", {
+        id: "later-check",
+        description: "The later check passes.",
+        verifierNodeId: "typecheck",
+      }),
+      { ...base(2), type: "node_started", nodeId: "node-version", attempt: 1 },
+      {
+        ...base(3),
+        type: "node_failed",
+        nodeId: "node-version",
+        attempt: 1,
+        error: {
+          code: "command_failed",
+          message: "exit 1",
+          retryable: false,
+          sideEffectStatus: "none",
+        },
+        evidence: commandEvidence(1),
+      },
+      { ...base(4), type: "run_failed", failedNodeId: "node-version", reason: "exit 1" },
+    ]);
+
+    expect(state.goal).toMatchObject({
+      status: "not_accepted",
+      criteria: {
+        "verification-passes": { status: "rejected", decision: { evidenceAvailable: true } },
+        "later-check": { status: "missing", decision: null },
+      },
+    });
+  });
+
+  it("classifies a timed-out verifier as inconclusive", () => {
+    const timedOutEvidence = {
+      ...commandEvidence(1),
+      exitCode: null,
+      signal: "SIGTERM",
+      timedOut: true,
+    };
+    const state = reduceRunEvents([
+      runStartedWithGoal("node-version"),
+      { ...base(2), type: "node_started", nodeId: "node-version", attempt: 1 },
+      {
+        ...base(3),
+        type: "node_failed",
+        nodeId: "node-version",
+        attempt: 1,
+        error: {
+          code: "command_timeout",
+          message: "timed out",
+          retryable: false,
+          sideEffectStatus: "uncertain",
+        },
+        evidence: timedOutEvidence,
+      },
+      {
+        ...base(4),
+        type: "run_failed",
+        failedNodeId: "node-version",
+        reason: "timed out",
+      },
+    ]);
+
+    expect(state.goal?.criteria["verification-passes"]).toMatchObject({
+      status: "inconclusive",
+      decision: { evidenceAvailable: true },
+    });
+  });
+
+  it("does not allow successful agent prose to satisfy a deterministic criterion", () => {
+    const events: RunEvent[] = [
+      runStartedWithGoal("node-version"),
+      { ...base(2), type: "node_started", nodeId: "node-version", attempt: 1 },
+      {
+        ...base(3),
+        type: "node_succeeded",
+        nodeId: "node-version",
+        attempt: 1,
+        evidence: agentEvidence("Everything is complete."),
+      },
+      { ...base(4), type: "node_started", nodeId: "typecheck", attempt: 1 },
+      {
+        ...base(5),
+        type: "node_succeeded",
+        nodeId: "typecheck",
+        attempt: 1,
+        evidence: commandEvidence(0),
+      },
+      { ...base(6), type: "run_succeeded" },
+    ];
+
+    expect(() => reduceRunEvents(events)).toThrowError(/criteria are not accepted/i);
+  });
+
+  it("replays goal completion to the same immutable decision", () => {
+    const events = successfulEvents(runStartedWithGoal("typecheck"));
+
+    expect(reduceRunEvents(events)).toEqual(reduceRunEvents(events));
+  });
+
+  it("marks an unexecuted verifier missing when the run is cancelled", () => {
+    const state = reduceRunEvents([
+      runStartedWithGoal("typecheck"),
+      { ...base(2), type: "run_cancelled", reason: "operator cancelled" },
+    ]);
+
+    expect(state.goal).toMatchObject({
+      status: "not_accepted",
+      criteria: { "verification-passes": { status: "missing", decision: null } },
+    });
   });
 
   it("rejects sequence gaps", () => {
@@ -198,9 +338,9 @@ describe("reduceRunEvents", () => {
   });
 });
 
-function successfulEvents(): RunEvent[] {
+function successfulEvents(started: RunEvent = runStarted()): RunEvent[] {
   return [
-    runStarted(),
+    started,
     { ...base(2), type: "node_started", nodeId: "node-version", attempt: 1 },
     {
       ...base(3),
@@ -221,7 +361,33 @@ function successfulEvents(): RunEvent[] {
   ];
 }
 
-function runStarted(): RunEvent {
+function runStartedWithGoal(
+  verifierNodeId: string,
+  additionalCriterion?: {
+    readonly id: string;
+    readonly description: string;
+    readonly verifierNodeId: string;
+  },
+): RunStartedEvent {
+  return {
+    ...runStarted(),
+    goal: {
+      apiVersion: "flow.synapti.ai/v1alpha1",
+      id: "verified-change",
+      outcome: "The change is accepted.",
+      criteria: [
+        {
+          id: "verification-passes",
+          description: "Verification passes.",
+          verifierNodeId,
+        },
+        ...(additionalCriterion === undefined ? [] : [additionalCriterion]),
+      ],
+    },
+  };
+}
+
+function runStarted(): RunStartedEvent {
   return {
     ...base(1),
     type: "run_started",
@@ -256,5 +422,17 @@ function commandEvidence(exitCode: number) {
     stderrTruncated: false,
     timedOut: false,
     durationMs: 20,
+  };
+}
+
+function agentEvidence(text: string) {
+  return {
+    kind: "agent" as const,
+    provider: "test",
+    model: "deterministic",
+    text,
+    textHash: createHash("sha256").update(text).digest("hex"),
+    textTruncated: false,
+    durationMs: 1,
   };
 }

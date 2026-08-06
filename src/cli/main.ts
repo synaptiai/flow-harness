@@ -109,7 +109,9 @@ async function validateCommand(
   const workflowPath = resolve(dependencies.cwd, workflowArgument);
   const workflow = await compileWorkflowFile(workflowPath, dependencies.readTextFile);
 
-  io.stdout(`Workflow "${workflow.id}" is valid (${workflow.nodes.length} nodes).`);
+  io.stdout(
+    `Workflow "${workflow.id}" is valid (nodes: ${workflow.nodes.length}, criteria: ${workflow.goal?.criteria.length ?? 0}).`,
+  );
   return 0;
 }
 

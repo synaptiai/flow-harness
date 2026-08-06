@@ -19,10 +19,44 @@ kind: Workflow
 metadata:
   id: verify-change
   description: Optional human-readable purpose.
-nodes: []
+goal:
+  apiVersion: flow.synapti.ai/v1alpha1
+  kind: Goal
+  metadata:
+    id: verified-change
+  outcome: The change passes deterministic verification.
+  criteria:
+    - id: tests-pass
+      description: The automated tests pass.
+      verifier:
+        nodeId: verify
+nodes:
+  - id: verify
+    type: command
+    command:
+      executable: npm
+      args: [test]
 ```
 
-Identifiers begin with a lowercase letter and contain lowercase letters, digits, or hyphens. Unknown fields are rejected rather than ignored.
+Identifiers begin with a lowercase letter and contain lowercase letters, digits, or hyphens. Unknown fields are rejected rather than ignored. `goal` is optional for graph-only operational workflows; when present, it has its own versioned contract and fail-closed completion semantics.
+
+## Goal and criterion contract
+
+A goal contains a stable id, a human-readable outcome, and 1–64 uniquely identified criteria. Its complete serialized contract is capped at 256 KiB so every valid goal fits safely within the run-start event budget. Each criterion names one verifier node. The compiler rejects an unknown verifier, an agent verifier, or a verifier that is not terminal. This ensures a model response cannot be terminal proof and prevents a criterion from being accepted before later work nodes execute.
+
+Goal and criterion text explains intent to users, but it is not executable evidence. Only the linked terminal command node controls acceptance. Reusing one terminal verifier for multiple criteria is allowed when that command deterministically checks the combined contract.
+
+Criterion state is one of:
+
+- `pending` — the verifier has not completed and the run is still active.
+- `accepted` — the verifier completed successfully with integrity-checked command evidence.
+- `rejected` — the verifier completed normally with a non-zero exit code.
+- `inconclusive` — verification ended through timeout, signal, missing command evidence, or an unexpected evidence kind.
+- `missing` — the run terminated before the verifier produced a decision.
+
+Every non-missing decision records the run id, verifier node id, attempt, timestamp, and whether evidence is available. The evidence itself remains on that exact node attempt, retaining the existing size bounds and hashes. The overall goal becomes `accepted` only with a successful run and all criteria accepted; every other terminal run reports `not_accepted`.
+
+Criterion evaluation is a pure domain operation over the captured goal and durable node outcomes. It receives no model transcript, prompt, workspace handle, process executor, or tool. Verifier commands still execute under the trusted-workspace contract described below; criterion evaluation is not an operating-system sandbox.
 
 ## Graph rules
 
@@ -95,9 +129,9 @@ Each run is stored at:
 .flow/runs/<run-id>/events.jsonl
 ```
 
-Events have a version, contiguous sequence number, timestamp, run identity, workflow identity, workflow API version, and SHA-256 digest of the compiled workflow. A single serialized JSONL event is capped at 1 MiB, which accommodates the proven worst-case JSON escaping of every production-bounded evidence field. Creating the first event atomically claims a run identifier for one store instance. Node-start events are synced before an executor is invoked. Node-result events are synced before the scheduler advances. Owner appends validate one transition against cached reduced state instead of rereading history. Each append syncs the file, and every newly created run-directory ancestor is synced where the platform supports directory handles. A valid or invalid unterminated trailing JSONL fragment is treated as uncommitted and truncated before a later append; corruption in an earlier committed record fails closed.
+Events have a version, contiguous sequence number, timestamp, run identity, workflow identity, workflow API version, and SHA-256 digest of the compiled workflow. When declared, the compiled goal is captured in `run_started`, so replay and inspection never need the original workflow file. A single serialized JSONL event is capped at 1 MiB, which accommodates the proven worst-case JSON escaping of every production-bounded evidence field. Creating the first event atomically claims a run identifier for one store instance. Node-start events are synced before an executor is invoked. Node-result events are synced before the scheduler advances. Owner appends validate one transition against cached reduced state instead of rereading history. Each append syncs the file, and every newly created run-directory ancestor is synced where the platform supports directory handles. A valid or invalid unterminated trailing JSONL fragment is treated as uncommitted and truncated before a later append; corruption in an earlier committed record fails closed.
 
-The reducer accepts only legal state transitions and reconstructs `running`, `succeeded`, `failed`, or `cancelled` run state. Cancellation before a run claim creates no ledger. Cancellation during a node becomes a failed node attempt; cancellation between attempts appends `run_cancelled` without starting more work. Model transcripts are never consulted during replay.
+The reducer accepts only legal state transitions and reconstructs `running`, `succeeded`, `failed`, or `cancelled` run state together with immutable goal and criterion state. Cancellation before a run claim creates no ledger. Cancellation during a node becomes a failed node attempt; cancellation between attempts appends `run_cancelled` without starting more work. Model transcripts and implementation rationale are never consulted during replay.
 
 ## Current limitations
 
@@ -106,4 +140,5 @@ The reducer accepts only legal state transitions and reconstructs `running`, `su
 - No handoff of an active run between processes; a new process must use a new run identifier.
 - No environment allowlist or operating-system sandbox.
 - No write or shell tool is exposed to agent nodes.
+- No probabilistic or LLM evaluator; criteria currently bind only to deterministic terminal command nodes.
 - No schema migration path is promised while the format remains `v1alpha1`.

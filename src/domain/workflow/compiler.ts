@@ -1,5 +1,7 @@
 import { parseDocument } from "yaml";
 
+import type { GoalContractSource } from "../goal/schema.js";
+import type { CompiledGoal } from "../goal/types.js";
 import { workflowSourceSchema, type WorkflowSource } from "./schema.js";
 import type {
   CompiledAgentNode,
@@ -11,13 +13,17 @@ import type {
 export interface WorkflowDiagnostic {
   readonly code:
     | "cycle"
+    | "criterion_verifier_requires_command"
+    | "criterion_verifier_requires_terminal"
     | "duplicate_dependency"
+    | "duplicate_criterion"
     | "duplicate_node"
     | "entry_count"
     | "invalid_schema"
     | "invalid_yaml"
     | "self_dependency"
     | "terminal_requires_command"
+    | "unknown_criterion_verifier"
     | "unknown_dependency";
   readonly path: string;
   readonly message: string;
@@ -158,6 +164,46 @@ function validateGraph(workflow: WorkflowSource): WorkflowDiagnostic[] {
     }
   }
 
+  if (workflow.goal !== undefined) {
+    const seenCriteria = new Set<string>();
+    for (const [index, criterion] of workflow.goal.criteria.entries()) {
+      const idPath = `goal.criteria.${index}.id`;
+      const verifierPath = `goal.criteria.${index}.verifier.nodeId`;
+      if (seenCriteria.has(criterion.id)) {
+        diagnostics.push({
+          code: "duplicate_criterion",
+          path: idPath,
+          message: `criterion id "${criterion.id}" is declared more than once`,
+        });
+      }
+      seenCriteria.add(criterion.id);
+
+      const verifier = workflow.nodes.find((node) => node.id === criterion.verifier.nodeId);
+      if (verifier === undefined) {
+        diagnostics.push({
+          code: "unknown_criterion_verifier",
+          path: verifierPath,
+          message: `criterion "${criterion.id}" references unknown verifier node "${criterion.verifier.nodeId}"`,
+        });
+        continue;
+      }
+      if (verifier.type !== "command") {
+        diagnostics.push({
+          code: "criterion_verifier_requires_command",
+          path: verifierPath,
+          message: `criterion "${criterion.id}" verifier "${verifier.id}" must be a command node`,
+        });
+      }
+      if (dependedUpon.has(verifier.id)) {
+        diagnostics.push({
+          code: "criterion_verifier_requires_terminal",
+          path: verifierPath,
+          message: `criterion "${criterion.id}" verifier "${verifier.id}" must be terminal`,
+        });
+      }
+    }
+  }
+
   const cycle = findCycle(workflow.nodes);
   if (cycle !== undefined) {
     diagnostics.push({
@@ -221,9 +267,27 @@ function freezeWorkflow(source: WorkflowSource): CompiledWorkflow {
     ...(source.metadata.description === undefined
       ? {}
       : { description: source.metadata.description }),
+    ...(source.goal === undefined ? {} : { goal: freezeGoal(source.goal) }),
     nodes,
   };
   return Object.freeze(workflow);
+}
+
+function freezeGoal(source: GoalContractSource): CompiledGoal {
+  return Object.freeze({
+    apiVersion: source.apiVersion,
+    id: source.metadata.id,
+    outcome: source.outcome,
+    criteria: Object.freeze(
+      source.criteria.map((criterion) =>
+        Object.freeze({
+          id: criterion.id,
+          description: criterion.description,
+          verifierNodeId: criterion.verifier.nodeId,
+        }),
+      ),
+    ),
+  });
 }
 
 function freezeNode(source: WorkflowSource["nodes"][number]): CompiledNode {

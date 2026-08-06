@@ -14,7 +14,7 @@ It verifies formatting, lint rules, strict TypeScript contracts, all default tes
 
 | Layer | Purpose | External effects |
 | --- | --- | --- |
-| Domain unit | Workflow compilation and event replay invariants | None |
+| Domain unit | Workflow/goal compilation, pure criterion evaluation, and event replay invariants | None |
 | Application unit | Scheduler ordering, failure propagation, and executor authority | Test-only in-memory ports |
 | Infrastructure integration | Real JSONL persistence and real child processes | Temporary directories and local processes |
 | CLI integration | Validate, run, persist, and inspect through production composition | Temporary run ledgers and local processes |
@@ -36,7 +36,7 @@ node dist/cli/main.js run examples/verify-foundation.workflow.yaml --run-id smok
 node dist/cli/main.js inspect smoke
 ```
 
-The example uses the real argv-only command executor and requires no model credentials. `npm run test:runtime` additionally spawns the compiled entrypoint, delivers `SIGINT`, proves its POSIX command process group terminates, verifies the forced-exit guard for leaked provider handles, and races separate processes for one run identifier. The package supports Linux and macOS; Windows command nodes fail before spawn because descendant containment is not yet implemented.
+The example uses the real argv-only command executor, accepts a declared goal from terminal typecheck evidence, and requires no model credentials. `npm run test:runtime` additionally spawns the compiled entrypoint, delivers `SIGINT`, proves its POSIX command process group terminates, verifies the forced-exit guard for leaked provider handles, and races separate processes for one run identifier. The package supports Linux and macOS; Windows command nodes fail before spawn because descendant containment is not yet implemented.
 
 ## Live Pi test policy
 

@@ -27,6 +27,155 @@ describe("compileWorkflowText", () => {
     expect(workflow.nodes.every(Object.isFrozen)).toBe(true);
   });
 
+  it("compiles an immutable versioned goal with verifier-bound criteria", () => {
+    const workflow = compileWorkflowText(
+      workflowWithGoalAndNodes(
+        goalWithCriteria(`
+    - id: typecheck-passes
+      description: The project passes static type checking.
+      verifier: { nodeId: verify }
+`),
+        `
+  - id: prepare
+    type: command
+    command: { executable: node, args: [--version] }
+  - id: verify
+    type: command
+    dependsOn: [prepare]
+    command: { executable: npm, args: [run, typecheck] }
+`,
+      ),
+    );
+
+    expect(workflow.goal).toMatchObject({
+      apiVersion: "flow.synapti.ai/v1alpha1",
+      id: "verified-change",
+      outcome: "The change is accepted from deterministic evidence.",
+      criteria: [
+        {
+          id: "typecheck-passes",
+          verifierNodeId: "verify",
+        },
+      ],
+    });
+    expect(Object.isFrozen(workflow.goal)).toBe(true);
+    expect(Object.isFrozen(workflow.goal?.criteria)).toBe(true);
+    expect(workflow.goal?.criteria.every(Object.isFrozen)).toBe(true);
+  });
+
+  it("rejects duplicate criterion identifiers", () => {
+    const source = workflowWithGoalAndNodes(
+      goalWithCriteria(`
+    - id: tests-pass
+      description: Tests pass.
+      verifier: { nodeId: verify }
+    - id: tests-pass
+      description: Tests still pass.
+      verifier: { nodeId: verify }
+`),
+      singleVerifierNode(),
+    );
+
+    expectCompilationFailure(source, "duplicate_criterion", "goal.criteria.1.id");
+  });
+
+  it("rejects an unsupported goal contract version", () => {
+    const source = workflowWithGoalAndNodes(
+      goalWithCriteria(`
+    - id: tests-pass
+      description: Tests pass.
+      verifier: { nodeId: verify }
+`).replace("flow.synapti.ai/v1alpha1", "flow.synapti.ai/v9"),
+      singleVerifierNode(),
+    );
+
+    expectCompilationFailure(source, "invalid_schema", "goal.apiVersion");
+  });
+
+  it("rejects a goal whose aggregate serialized contract exceeds the ledger budget", () => {
+    const description = "x".repeat(4096);
+    const criteria = Array.from(
+      { length: 64 },
+      (_, index) => `
+    - id: criterion-${index}
+      description: ${JSON.stringify(description)}
+      verifier: { nodeId: verify }
+`,
+    ).join("");
+    const source = workflowWithGoalAndNodes(goalWithCriteria(criteria), singleVerifierNode());
+
+    expectCompilationFailure(source, "invalid_schema", "goal");
+  });
+
+  it("rejects a criterion that references an unknown verifier", () => {
+    const source = workflowWithGoalAndNodes(
+      goalWithCriteria(`
+    - id: tests-pass
+      description: Tests pass.
+      verifier: { nodeId: absent }
+`),
+      singleVerifierNode(),
+    );
+
+    expectCompilationFailure(
+      source,
+      "unknown_criterion_verifier",
+      "goal.criteria.0.verifier.nodeId",
+    );
+  });
+
+  it("rejects an agent node as a criterion verifier", () => {
+    const source = workflowWithGoalAndNodes(
+      goalWithCriteria(`
+    - id: analysis-complete
+      description: Analysis is complete.
+      verifier: { nodeId: analyze }
+`),
+      `
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Analyze the repository.
+      model: { provider: anthropic, id: claude-sonnet-4-5 }
+  - id: verify
+    type: command
+    dependsOn: [analyze]
+    command: { executable: npm, args: [test] }
+`,
+    );
+
+    expectCompilationFailure(
+      source,
+      "criterion_verifier_requires_command",
+      "goal.criteria.0.verifier.nodeId",
+    );
+  });
+
+  it("rejects a non-terminal command as a criterion verifier", () => {
+    const source = workflowWithGoalAndNodes(
+      goalWithCriteria(`
+    - id: early-check
+      description: The final state is verified.
+      verifier: { nodeId: prepare }
+`),
+      `
+  - id: prepare
+    type: command
+    command: { executable: node, args: [--version] }
+  - id: final
+    type: command
+    dependsOn: [prepare]
+    command: { executable: npm, args: [test] }
+`,
+    );
+
+    expectCompilationFailure(
+      source,
+      "criterion_verifier_requires_terminal",
+      "goal.criteria.0.verifier.nodeId",
+    );
+  });
+
   it("reports schema paths for malformed command definitions", () => {
     const source = `
 apiVersion: flow.synapti.ai/v1alpha1
@@ -193,6 +342,36 @@ metadata:
   id: compiler-test
 nodes:
 ${nodes}`;
+}
+
+function workflowWithGoalAndNodes(goal: string, nodes: string): string {
+  return `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata:
+  id: compiler-test
+${goal}
+nodes:
+${nodes}`;
+}
+
+function goalWithCriteria(criteria: string): string {
+  return `goal:
+  apiVersion: flow.synapti.ai/v1alpha1
+  kind: Goal
+  metadata:
+    id: verified-change
+  outcome: The change is accepted from deterministic evidence.
+  criteria:
+${criteria}`;
+}
+
+function singleVerifierNode(): string {
+  return `
+  - id: verify
+    type: command
+    command: { executable: npm, args: [test] }
+`;
 }
 
 function expectCompilationFailure(source: string, code: string, path: string): void {

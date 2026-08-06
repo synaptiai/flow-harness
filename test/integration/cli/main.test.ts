@@ -35,6 +35,39 @@ describe("flow CLI integration", () => {
     expect(capture.stdout.join("\n")).toContain('Workflow "verify-foundation" is valid');
   });
 
+  it("reports declared criterion count during validation", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "goal.workflow.yaml");
+    await writeFile(
+      workflowPath,
+      `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: goal-validation }
+goal:
+  apiVersion: flow.synapti.ai/v1alpha1
+  kind: Goal
+  metadata: { id: verified-change }
+  outcome: The change is accepted.
+  criteria:
+    - id: verification-passes
+      description: Verification passes.
+      verifier: { nodeId: verify }
+nodes:
+  - id: verify
+    type: command
+    command: { executable: node, args: [--version] }
+`,
+      "utf8",
+    );
+    const capture = createCapture();
+
+    const exitCode = await main(["validate", workflowPath], capture.io, { cwd: directory });
+
+    expect(exitCode).toBe(0);
+    expect(capture.stdout.join("\n")).toContain("nodes: 1, criteria: 1");
+  });
+
   it("rejects an invalid workflow before executor or run-store side effects", async () => {
     const directory = await createTemporaryDirectory();
     const workflowPath = join(directory, "invalid.workflow.yaml");
@@ -71,6 +104,15 @@ describe("flow CLI integration", () => {
 apiVersion: flow.synapti.ai/v1alpha1
 kind: Workflow
 metadata: { id: cli-command }
+goal:
+  apiVersion: flow.synapti.ai/v1alpha1
+  kind: Goal
+  metadata: { id: cli-verification }
+  outcome: The command workflow is verified.
+  criteria:
+    - id: command-passes
+      description: The verification command passes.
+      verifier: { nodeId: verify }
 nodes:
   - id: verify
     type: command
@@ -92,6 +134,15 @@ nodes:
     expect(JSON.parse(runCapture.stdout.join("\n"))).toMatchObject({
       runId: "cli-run",
       status: "succeeded",
+      goal: {
+        status: "accepted",
+        criteria: {
+          "command-passes": {
+            status: "accepted",
+            decision: { runId: "cli-run", nodeId: "verify", attempt: 1 },
+          },
+        },
+      },
     });
 
     const inspectCapture = createCapture();
@@ -110,6 +161,7 @@ nodes:
   it("persists failure and terminates the command group when execution is cancelled", async () => {
     const directory = await createTemporaryDirectory();
     const workflowPath = join(directory, "cancel.workflow.yaml");
+    const startedWrite = join(directory, "started.txt");
     const delayedWrite = join(directory, "orphaned.txt");
     const runsDirectory = join(directory, "runs");
     await writeFile(
@@ -125,7 +177,7 @@ nodes:
       executable: ${JSON.stringify(process.execPath)}
       args:
         - -e
-        - ${JSON.stringify(`const fs = require("node:fs"); setTimeout(() => fs.writeFileSync(${JSON.stringify(delayedWrite)}, "orphan"), 400); setInterval(() => {}, 1000);`)}
+        - ${JSON.stringify(`const fs = require("node:fs"); fs.writeFileSync(${JSON.stringify(startedWrite)}, "started"); setTimeout(() => fs.writeFileSync(${JSON.stringify(delayedWrite)}, "orphan"), 400); setInterval(() => {}, 1000);`)}
       timeoutMs: 10000
 `,
       "utf8",
@@ -138,7 +190,7 @@ nodes:
       capture.io,
       { cwd: directory, signal: controller.signal },
     );
-    await delay(50);
+    await waitForFile(startedWrite);
     controller.abort();
     const exitCode = await runPromise;
 
@@ -239,4 +291,20 @@ async function createTemporaryDirectory(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "flow-cli-"));
   temporaryDirectories.push(directory);
   return directory;
+}
+
+async function waitForFile(path: string, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      await stat(path);
+      return;
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
+        throw error;
+      }
+    }
+    await delay(10);
+  }
+  throw new Error(`Timed out waiting for child start marker: ${path}`);
 }

@@ -2,6 +2,8 @@
 
 The roadmap is organized around externally verifiable capability gates rather than dates.
 
+Gates 0–2 are implemented for local trusted-workspace execution. Later gates remain target capabilities.
+
 ## Gate 0: Repository foundation
 
 - Architecture, capability ownership, failure modes, and non-goals are documented.
