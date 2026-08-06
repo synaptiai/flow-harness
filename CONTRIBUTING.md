@@ -9,6 +9,8 @@ Requirements:
 - Node.js 22.19 or newer
 - npm with lockfile support
 - Git
+- Linux or macOS with the native sandbox prerequisites listed in the
+  [README](README.md#prerequisites)
 
 Install and verify:
 

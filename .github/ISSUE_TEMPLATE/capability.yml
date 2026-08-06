@@ -1,0 +1,60 @@
+name: Capability request
+description: Propose an observable harness outcome without prescribing an implementation.
+title: "capability: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe what users or operators must be able to accomplish and how the outcome can be verified. Implementation proposals are welcome as alternatives, not acceptance criteria.
+  - type: textarea
+    id: current_state
+    attributes:
+      label: Current state
+      description: What can users do today, and what observable limitation prevents the desired outcome?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe the user or operator outcome without naming internal files or functions.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Acceptance evidence
+      description: List runnable or observable evidence that would prove the outcome complete.
+      placeholder: |
+        - [ ] When ..., then ...
+        - [ ] A failing ... cannot become success
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and non-goals
+      description: Note approaches considered, relevant trade-offs, and what should remain out of scope.
+  - type: dropdown
+    id: security
+    attributes:
+      label: Security or authority impact
+      description: Does this outcome read, write, execute, use network, expose credentials, or change durable state?
+      options:
+        - No additional authority
+        - Narrows existing authority
+        - Expands or changes authority
+        - Unsure
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I searched open and closed issues for this outcome.
+          required: true
+        - label: The acceptance evidence describes behavior rather than implementation details.
+          required: true

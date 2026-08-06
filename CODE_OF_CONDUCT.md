@@ -16,6 +16,6 @@ Harassment, threats, discrimination, sexualized conduct, deliberate intimidation
 
 ## Enforcement
 
-Report conduct concerns privately to the maintainers through an appropriate private GitHub channel. Maintainers may edit or remove content, issue warnings, restrict participation, or ban contributors when necessary to protect the community. Reports will be handled as confidentially as practical and without retaliation.
+Report conduct concerns privately to [support@synapti.ai](mailto:support@synapti.ai) with `Flow conduct` in the subject. Do not use public issues or pull requests for conduct reports. Suspected vulnerabilities follow the separate private process in [SECURITY.md](SECURITY.md). Maintainers may edit or remove content, issue warnings, restrict participation, or ban contributors when necessary to protect the community. Reports will be handled as confidentially as practical and without retaliation.
 
 This policy applies to repository discussions, issues, pull requests, reviews, community events, and public representation of the project.
