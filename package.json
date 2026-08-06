@@ -1,12 +1,29 @@
 {
   "name": "@synaptiai/flow-harness",
   "version": "0.0.0",
-  "description": "Provider-neutral harness for evidence-driven software workflows",
+  "description": "Provider-neutral coding-agent harness with deterministic workflow graphs, durable evidence, and fail-closed sandboxed execution",
+  "keywords": [
+    "agent-harness",
+    "ai-agents",
+    "coding-agents",
+    "llm",
+    "sandbox",
+    "typescript",
+    "workflow-engine"
+  ],
+  "author": "Synapti AI",
   "type": "module",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/synaptiai/flow-harness.git"
+  },
+  "homepage": "https://github.com/synaptiai/flow-harness#readme",
+  "bugs": {
+    "url": "https://github.com/synaptiai/flow-harness/issues"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "engines": {
     "node": ">=22.19.0"
@@ -24,6 +41,8 @@
     "examples",
     "LICENSE",
     "README.md",
+    "SECURITY.md",
+    "SUPPORT.md",
     "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {

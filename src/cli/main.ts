@@ -17,10 +17,11 @@ import { CommandNodeExecutor } from "../infrastructure/process/command-node-exec
 import {
   ANTHROPIC_SANDBOX_RUNTIME_VERSION,
   anthropicSandboxRuntimeManager,
+  resolveAnthropicSandboxRuntimeSeccompPath,
 } from "../infrastructure/sandbox/anthropic-sandbox-runtime-manager.js";
 import { SrtCommandSandbox } from "../infrastructure/sandbox/srt-command-sandbox.js";
 
-const HELP = `Flow — Provider-neutral harness for evidence-driven software workflows
+const HELP = `Flow — Provider-neutral coding-agent harness
 
 Usage:
   flow validate <workflow.yaml>
@@ -200,6 +201,7 @@ async function compileWorkflowFile(
 }
 
 function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies {
+  const seccompApplyPath = resolveAnthropicSandboxRuntimeSeccompPath();
   return {
     cwd: overrides.cwd ?? process.cwd(),
     executor:
@@ -208,6 +210,7 @@ function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies 
         new CommandNodeExecutor({
           sandbox: new SrtCommandSandbox(anthropicSandboxRuntimeManager, {
             backendVersion: ANTHROPIC_SANDBOX_RUNTIME_VERSION,
+            ...(seccompApplyPath === undefined ? {} : { seccompApplyPath }),
           }),
         }),
         new PiAgentExecutor(),

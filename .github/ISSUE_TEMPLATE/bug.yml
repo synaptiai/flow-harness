@@ -1,0 +1,61 @@
+name: Bug report
+description: Report reproducible behavior that differs from Flow's documented contract.
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Flow. Remove credentials, private source, and sensitive run evidence before submitting.
+        Do not report vulnerabilities here; use a private security advisory from the issue chooser.
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Provide the smallest workflow and exact commands that reproduce the behavior.
+      placeholder: |
+        1. Run ...
+        2. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: State the documented or observable outcome that should occur.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and evidence
+      description: Include exit codes, bounded logs, or ledger output with sensitive values removed.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include OS, architecture, Node.js version, and Flow revision.
+    validations:
+      required: true
+  - type: dropdown
+    id: security
+    attributes:
+      label: Security impact
+      description: Potential vulnerabilities must be reported privately instead of submitting this form.
+      options:
+        - No known security impact
+        - Potential security impact — I will use a private advisory instead
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I searched open and closed issues for this behavior.
+          required: true
+        - label: I removed credentials, private source, and sensitive run evidence.
+          required: true

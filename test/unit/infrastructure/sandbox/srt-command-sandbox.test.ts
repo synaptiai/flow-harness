@@ -12,6 +12,7 @@ import {
 const workspace = "/Users/alice/project";
 const protectedRunStore = "/Users/alice/project/custom-runs";
 const privateTemp = "/private/tmp/flow-command-private";
+const seccompApplyPath = "/Users/alice/flow-runtime/vendor/seccomp/x64/apply-seccomp";
 
 describe("SrtCommandSandbox", () => {
   it("builds the fixed fail-closed profile and removes ambient credentials", async () => {
@@ -37,7 +38,7 @@ describe("SrtCommandSandbox", () => {
       },
       filesystem: {
         denyRead: ["/Users/alice"],
-        allowRead: [workspace, privateTemp],
+        allowRead: [workspace, privateTemp, seccompApplyPath],
         allowWrite: [workspace, privateTemp],
         denyWrite: [
           protectedRunStore,
@@ -54,6 +55,7 @@ describe("SrtCommandSandbox", () => {
       allowPty: false,
       enableWeakerNestedSandbox: false,
       enableWeakerNetworkIsolation: false,
+      seccomp: { applyPath: seccompApplyPath },
     });
     expect(manager.wrappedCommand).toBe(
       "'/usr/bin/node' '-e' 'process.exit(0)' '$(printf injected)'",
@@ -212,6 +214,23 @@ describe("SrtCommandSandbox", () => {
     await firstPrepared.release();
     await secondPrepared.release();
   });
+
+  it("avoids a redundant runtime bind when the helper is already inside the workspace", async () => {
+    const manager = new FakeSrtManager();
+    const nestedSeccompPath = join(workspace, "..runtime", "apply-seccomp");
+    const sandbox = createSandbox(manager, { seccompApplyPath: nestedSeccompPath });
+
+    const prepared = await sandbox.prepare({
+      executable: "node",
+      args: [],
+      cwd: workspace,
+      protectedPaths: [],
+    });
+
+    expect(manager.initializedConfig?.filesystem.allowRead).toEqual([workspace, privateTemp]);
+    expect(manager.initializedConfig?.seccomp).toEqual({ applyPath: nestedSeccompPath });
+    await prepared.release();
+  });
 });
 
 function createSandbox(
@@ -220,6 +239,7 @@ function createSandbox(
     readonly platform?: NodeJS.Platform;
     readonly homeDirectory?: string;
     readonly privateTemp?: string;
+    readonly seccompApplyPath?: string;
     readonly canonicalize?: (path: string) => Promise<string>;
     readonly removeTemporaryDirectory?: (path: string) => Promise<void>;
   } = {},
@@ -240,6 +260,7 @@ function createSandbox(
     homeDirectory: overrides.homeDirectory ?? "/Users/alice",
     canonicalize: overrides.canonicalize ?? (async (path) => path),
     createTemporaryDirectory: async () => selectedPrivateTemp,
+    seccompApplyPath: overrides.seccompApplyPath ?? seccompApplyPath,
     removeTemporaryDirectory: overrides.removeTemporaryDirectory ?? (async () => undefined),
     cleanupTimeoutMs: 100,
   });

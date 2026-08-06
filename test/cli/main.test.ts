@@ -17,7 +17,7 @@ describe("flow CLI", () => {
     });
 
     expect(exitCode).toBe(0);
-    expect(output.join("\n")).toContain("Provider-neutral harness");
+    expect(output.join("\n")).toContain("Provider-neutral coding-agent harness");
     expect(output.join("\n")).toContain("flow validate");
     expect(output.join("\n")).toContain("flow run");
     expect(output.join("\n")).toContain("flow inspect");

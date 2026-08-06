@@ -130,7 +130,7 @@ nodes:
       { cwd: directory },
     );
 
-    expect(runExitCode).toBe(0);
+    expect(runExitCode, [...runCapture.stderr, ...runCapture.stdout].join("\n")).toBe(0);
     expect(JSON.parse(runCapture.stdout.join("\n"))).toMatchObject({
       runId: "cli-run",
       status: "succeeded",

@@ -1,32 +1,132 @@
 # Flow
 
-Flow is an open-source, provider-neutral harness for long-running software work. The current implementation compiles workflow files and optional versioned goals into executable graphs, routes model filesystem reads through a Flow-owned policy broker, contains command process trees in a fail-closed OS sandbox, and persists authoritative execution, policy, sandbox, and criterion evidence outside model transcripts. Goal-bearing runs succeed only when deterministic command verifiers accept every declared criterion.
+Flow is a provider-neutral coding-agent harness with deterministic workflow graphs, durable
+evidence, and fail-closed sandboxed command execution.
 
-Flow is a standalone product. It does not depend on Claude Code and does not preserve compatibility with the earlier Flow plugin.
+> **Pre-alpha source preview:** Flow is under active development, its contracts may change, and
+> `@synaptiai/flow-harness` is not published to npm. Build and run it from a reviewed source
+> checkout. Do not use it as a security boundary for hostile or multi-tenant workloads.
 
-## Target product thesis
+Flow is a standalone product. It does not depend on Claude Code and does not preserve
+compatibility with the earlier Flow plugin. Pi supplies the initial model-facing agent loop;
+Flow owns scheduling, policy, containment, evidence, and completion.
 
-Modern coding models are capable, but a model is not a workflow engine, authorization boundary, evidence store, or recovery system. Flow's target architecture separates those responsibilities:
+## What works today
+
+| Capability | Status |
+| --- | --- |
+| Strict workflow and goal compilation | Implemented |
+| Sequential dependency-ordered execution | Implemented |
+| Durable JSONL run ledger and inspection | Implemented |
+| Deterministic criterion verification | Implemented |
+| Bounded Pi agent nodes with Flow-owned `read` and `ls` tools | Implemented |
+| Fail-closed sandboxed command process trees | Implemented on Linux and macOS |
+| Approvals, resume, graph loops, and broader model tools | Planned |
+| VM-grade isolation of the host-side agent runtime | Planned |
+
+The executable format is `flow.synapti.ai/v1alpha1`. There is no compatibility or migration
+promise before the first stable release.
+
+## Run the source preview
+
+### Prerequisites
+
+- Git
+- Node.js 22.19 or newer
+- npm with lockfile support
+- Linux or macOS
+
+On Ubuntu or Debian, install the native sandbox dependencies:
+
+```sh
+sudo apt-get update
+sudo apt-get install --yes bubblewrap socat ripgrep
+```
+
+Linux also requires unprivileged user namespaces, network namespaces, and seccomp support. macOS
+uses the built-in Seatbelt facility. Windows command nodes fail before process creation because
+descendant containment is not implemented there.
+
+Ubuntu 24.04 and newer restrict capability-bearing unprivileged user namespaces by default. On a
+dedicated development or ephemeral CI host, enable the capability required by SRT for the current
+boot:
+
+```sh
+sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+```
+
+This changes host-wide user-namespace hardening. On a shared host, keep the restriction and use a
+reviewed AppArmor profile that grants `userns` only to the required sandbox binaries instead. See
+SRT's [platform-specific dependency guidance](https://github.com/anthropic-experimental/sandbox-runtime#platform-specific-dependencies).
+
+### Build and verify
+
+```sh
+git clone https://github.com/synaptiai/flow-harness.git
+cd flow-harness
+npm ci --ignore-scripts
+npm run check
+npm run build
+```
+
+`npm ci --ignore-scripts` installs only the exact lockfile. Use `npm install` only when
+intentionally changing dependencies.
+
+### Execute the example
+
+```sh
+node dist/cli/main.js validate examples/verify-foundation.workflow.yaml
+node dist/cli/main.js run examples/verify-foundation.workflow.yaml --run-id first-run
+node dist/cli/main.js inspect first-run
+```
+
+The example needs no model credentials. Its terminal verifier runs inside the production command
+sandbox and the final command exits successfully only when the declared goal criterion is
+accepted. Authoritative events are written to:
+
+```text
+.flow/runs/first-run/events.jsonl
+```
+
+The inspected result identifies graph state, criterion decisions, bounded command output and
+hashes, plus the sandbox backend, exact version, profile, and semantic policy digest.
+
+## Security boundary
+
+Each command and descendant receives workspace write access, a private temporary directory, an
+explicit environment allowlist, and no network. The actual run store, `.flow`, `.git`, environment
+files, and key files are write-protected. If the sandbox is unavailable or reports degraded
+isolation, Flow does not spawn the command.
+
+On Linux, Flow explicitly re-exposes the canonical packaged SRT seccomp helper as a read-only
+runtime-support file when Flow is installed outside the selected workspace. The rest of the user
+home remains denied.
+
+Agent nodes are different: the host-side Pi runtime runs with the invoking user's operating-system
+permissions and currently receives only explicitly declared Flow-owned `read` and `ls` tools.
+Their filesystem operations are canonically resolved and authorized by the Flow policy broker.
+Pi's ambient tools, extensions, skills, templates, context discovery, and executable-downloading
+helpers are disabled.
+
+SRT is a beta native sandbox rather than a microVM. Use a reviewed container, microVM, Gondolin,
+OpenShell, or managed sandbox for hostile workloads. Read the [security policy](SECURITY.md) before
+running unattended work.
+
+## Product thesis
+
+A coding model is not a workflow engine, authorization boundary, evidence store, or recovery
+system. Flow separates those responsibilities:
 
 - Models solve bounded tasks inside workflow nodes.
 - A deterministic scheduler controls graph transitions.
-- A policy broker controls the initial read-only model tools and will expand to consequential operations.
+- A policy broker controls model-requested operations.
+- A sandbox contains command process trees.
 - An append-only event ledger records authoritative run state.
-- A mutation-free domain evaluator decides whether deterministic evidence accepts each criterion.
-- Provider-specific behavior remains behind an execution adapter.
+- Mutation-free evaluation decides whether deterministic evidence accepts each criterion.
+- Provider-specific behavior remains behind execution adapters.
 
-Pi is the initial agent runtime because its SDK offers a small, embeddable agent loop, multi-provider model support, session events, cancellation, tool selection, and custom resource loading. Flow owns everything that decides what may run, what happens next, and what constitutes completion.
-
-## Design principles
-
-1. The compiled workflow graph, not model prose, controls execution.
-2. Authoritative state lives outside the model transcript.
-3. Context and tools are scoped per node and loaded on demand.
-4. Deterministic verification overrides self-reported success.
-5. Approval is bound to an exact operation, not ambient permission.
-6. Provider and runtime types never enter Flow's public or persisted contracts.
-7. Non-idempotent operations are never retried while their effects are uncertain.
-8. Every loop has explicit iteration, cost, token, duration, and stagnation bounds.
+The compiled graph—not model prose—decides what runs next. A confident completion narrative cannot
+override missing or failing evidence.
 
 ## Documentation
 
@@ -36,29 +136,13 @@ Pi is the initial agent runtime because its SDK offers a small, embeddable agent
 - [Testing and evaluation](docs/testing-and-evaluation.md)
 - [Delivery roadmap](docs/roadmap.md)
 
-## Project status
+## Community
 
-The executable harness supports strict workflow and goal validation, sequential dependency-ordered execution, durable JSONL transitions, sandboxed command verification, criterion-level completion, run inspection, an embedded Pi executor boundary, and a fail-closed policy broker for model-requested `read` and `ls` operations. It does not yet include approvals, write/execute/network model tools, resume, probabilistic evaluators, graph loops, or a VM-grade boundary for the host-side agent runtime.
-
-## Try the vertical slice
-
-Flow requires Node.js 22.19 or newer on Linux or macOS. Linux command execution also requires bubblewrap, socat, ripgrep, user namespaces, network namespaces, and seccomp support. macOS uses the built-in Seatbelt facility. Flow rejects command nodes before process creation on Windows or whenever the sandbox reports an error or degraded-security warning.
-
-```sh
-npm install
-npm run check
-npm run build
-node dist/cli/main.js validate examples/verify-foundation.workflow.yaml
-node dist/cli/main.js run examples/verify-foundation.workflow.yaml --run-id first-run
-node dist/cli/main.js inspect first-run
-```
-
-The example uses the production command executor, declares a goal whose criterion is bound to the terminal typecheck verifier, and requires no model credentials. Each command runs with workspace write access, no network, a private temporary directory, an environment allowlist, and write protection for the actual run store, `.flow`, `.git`, environment files, and key files. Sandbox backend, exact version, profile, and policy digest are retained with command evidence.
-
-Agent nodes use provider credentials configured through Pi and currently receive only explicitly declared Flow-owned `read` and `ls` tools. Every filesystem operation those tools perform is canonically resolved and authorized by the Flow policy broker before file contents or directory entries are accessed. Ordered, attributable policy decisions are retained with agent evidence. Pi's ambient tools, extensions, skills, and executable-downloading search helpers are disabled.
-
-Pi itself has no built-in security boundary, and SRT is a beta native sandbox rather than a microVM. This release is appropriate for trusted local repositories and contained verification commands; use a reviewed container, microVM, Gondolin, or managed sandbox for hostile workloads.
+- [Contributing](CONTRIBUTING.md)
+- [Support](SUPPORT.md)
+- [Code of conduct](CODE_OF_CONDUCT.md)
+- [Security](SECURITY.md)
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE).
+Apache License 2.0. See [LICENSE](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES.md).
