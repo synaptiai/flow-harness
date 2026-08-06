@@ -34,6 +34,8 @@ describe("NodeExecutorRouter", () => {
             provider: node.agent.model.provider,
             model: node.agent.model.id,
             text: "done",
+            textHash: "a".repeat(64),
+            textTruncated: false,
             durationMs: 1,
           },
         };

@@ -153,7 +153,7 @@ nodes:
         provider: anthropic
         id: claude-sonnet-4-5
         thinking: medium
-      tools: [read, grep, find, ls]
+      tools: [read, ls]
   - id: verify
     type: command
     dependsOn: [analyze]
@@ -166,7 +166,7 @@ nodes:
       id: "analyze",
       type: "agent",
       agent: {
-        tools: ["read", "grep", "find", "ls"],
+        tools: ["read", "ls"],
         timeoutMs: 300000,
       },
     });

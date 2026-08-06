@@ -103,7 +103,7 @@ Pi intentionally has no built-in sandbox and normally runs with the invoking use
 Until an enforceable sandbox lands:
 
 - Agent nodes receive only Flow-provided tools; implicit project extensions and resource discovery are disabled.
-- The Pi adapter passes an exact read-only tool allowlist into each session. It does not yet intercept individual tool calls through a Flow policy broker.
+- The Pi adapter registers exact Flow-owned `read` and `ls` tool definitions, confines canonical paths to the execution workspace, and disables Pi's built-in tools. It does not yet route individual calls through the future general-purpose policy broker.
 - Verification commands use explicit argument arrays and never shell command strings.
 - Workflow validation can reject known-disallowed configuration, but it cannot contain a compromised process.
 - Untrusted or unattended workloads must run inside an operator-provided container or stronger isolation boundary.

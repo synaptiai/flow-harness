@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { isDirectEntry, main } from "../../src/cli/main.js";
+import { armForcedExit, isDirectEntry, main, resolveDirectExitCode } from "../../src/cli/main.js";
 
 describe("flow CLI", () => {
   it("prints help without requiring provider configuration", async () => {
@@ -46,6 +46,26 @@ describe("flow CLI", () => {
       expect(isDirectEntry(linkedBinary, pathToFileURL(target).href)).toBe(true);
     } finally {
       await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("lets a durably committed success win a late signal exit request", () => {
+    expect(resolveDirectExitCode(0, 130)).toBe(0);
+    expect(resolveDirectExitCode(1, 130)).toBe(130);
+    expect(resolveDirectExitCode(1, undefined)).toBe(1);
+  });
+
+  it("arms an unreferenced forced-exit guard for leaked provider handles", () => {
+    let code: number | undefined;
+    const timer = armForcedExit(7, 60_000, (exitCode) => {
+      code = exitCode;
+      throw new Error("not reached by this test");
+    });
+    try {
+      expect(timer.hasRef()).toBe(false);
+      expect(code).toBeUndefined();
+    } finally {
+      clearTimeout(timer);
     }
   });
 });

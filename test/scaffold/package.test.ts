@@ -8,6 +8,7 @@ interface PackageManifest {
   engines?: Record<string, string>;
   files?: string[];
   name?: string;
+  os?: string[];
   scripts?: Record<string, string>;
 }
 
@@ -19,6 +20,7 @@ describe("package contract", () => {
     expect(manifest.name).toBe("@synaptiai/flow-harness");
     expect(manifest.bin).toEqual({ flow: "dist/cli/main.js" });
     expect(manifest.engines?.node).toBe(">=22.19.0");
+    expect(manifest.os).toEqual(["darwin", "linux"]);
     expect(manifest.files).toContain("THIRD_PARTY_NOTICES.md");
     expect(manifest.dependencies?.["@earendil-works/pi-coding-agent"]).toBe("0.84.0");
     expect(manifest.scripts?.check).toContain("npm run typecheck");

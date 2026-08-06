@@ -97,6 +97,8 @@ describe("embedded Pi SDK integration", () => {
         provider: "flow-test",
         model: "deterministic",
         text: "FLOW_SDK_OK",
+        textHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        textTruncated: false,
       },
     });
   });

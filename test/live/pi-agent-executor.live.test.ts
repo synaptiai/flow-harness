@@ -31,9 +31,17 @@ describe("PiAgentExecutor live", () => {
       cwd: process.cwd(),
     });
 
-    expect(outcome.status).toBe("succeeded");
-    if (outcome.status === "succeeded" && outcome.evidence.kind === "agent") {
-      expect(outcome.evidence.text).toContain("FLOW_LIVE_OK");
+    expect(outcome).toMatchObject({
+      status: "succeeded",
+      evidence: {
+        kind: "agent",
+        provider,
+        model,
+        text: expect.stringContaining("FLOW_LIVE_OK"),
+      },
+    });
+    if (outcome.status !== "succeeded" || outcome.evidence.kind !== "agent") {
+      throw new Error(`expected successful agent evidence, received ${JSON.stringify(outcome)}`);
     }
   });
 });

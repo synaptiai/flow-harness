@@ -11,18 +11,25 @@ import type { CompiledCommandNode } from "../../domain/workflow/types.js";
 
 export interface CommandNodeExecutorOptions {
   readonly maxOutputBytes?: number;
+  readonly platform?: NodeJS.Platform;
   readonly terminationGraceMs?: number;
 }
 
 export class CommandNodeExecutor implements CommandExecutor {
   readonly #maxOutputBytes: number;
+  readonly #platform: NodeJS.Platform;
   readonly #terminationGraceMs: number;
 
   constructor(options: CommandNodeExecutorOptions = {}) {
-    this.#maxOutputBytes = options.maxOutputBytes ?? 1_048_576;
+    this.#maxOutputBytes = options.maxOutputBytes ?? 32_768;
+    this.#platform = options.platform ?? process.platform;
     this.#terminationGraceMs = options.terminationGraceMs ?? 2_000;
-    if (!Number.isSafeInteger(this.#maxOutputBytes) || this.#maxOutputBytes <= 0) {
-      throw new RangeError("maxOutputBytes must be a positive safe integer");
+    if (
+      !Number.isSafeInteger(this.#maxOutputBytes) ||
+      this.#maxOutputBytes <= 0 ||
+      this.#maxOutputBytes > 32_768
+    ) {
+      throw new RangeError("maxOutputBytes must be between 1 and 32768");
     }
     if (!Number.isSafeInteger(this.#terminationGraceMs) || this.#terminationGraceMs < 0) {
       throw new RangeError("terminationGraceMs must be a non-negative safe integer");
@@ -33,6 +40,10 @@ export class CommandNodeExecutor implements CommandExecutor {
     node: CompiledCommandNode,
     context: NodeExecutionContext,
   ): Promise<NodeExecutionOutcome> {
+    if (this.#platform === "win32") {
+      return platformFailure();
+    }
+
     const startedAt = process.hrtime.bigint();
     const stdout = new BoundedOutput(this.#maxOutputBytes);
     const stderr = new BoundedOutput(this.#maxOutputBytes);
@@ -43,7 +54,7 @@ export class CommandNodeExecutor implements CommandExecutor {
         cwd: context.cwd,
         env: process.env,
         shell: false,
-        detached: process.platform !== "win32",
+        detached: true,
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
       });
@@ -59,6 +70,7 @@ export class CommandNodeExecutor implements CommandExecutor {
       node.command.timeoutMs,
       this.#terminationGraceMs,
       context.signal,
+      this.#platform,
     );
     if (result.spawnError !== null) {
       return spawnFailure(result.spawnError);
@@ -114,11 +126,11 @@ function waitForExit(
   timeoutMs: number,
   terminationGraceMs: number,
   signal?: AbortSignal,
+  platform: NodeJS.Platform = process.platform,
 ): Promise<ExitResult> {
   return new Promise((resolve) => {
     let settled = false;
-    let timedOut = false;
-    let aborted = signal?.aborted ?? false;
+    let terminationCause: "abort" | "timeout" | null = null;
     let killTimer: NodeJS.Timeout | undefined;
 
     function finish(result: ExitResult): void {
@@ -135,16 +147,13 @@ function waitForExit(
     }
 
     function beginTermination(reason: "abort" | "timeout"): void {
-      if (settled) {
+      if (settled || terminationCause !== null) {
         return;
       }
-      if (reason === "timeout") {
-        timedOut = true;
-      } else {
-        aborted = true;
-      }
-      terminate(child, "SIGTERM");
-      killTimer = setTimeout(() => terminate(child, "SIGKILL"), terminationGraceMs);
+      terminationCause = reason;
+      clearTimeout(timeoutTimer);
+      terminate(child, "SIGTERM", platform);
+      killTimer = setTimeout(() => terminate(child, "SIGKILL", platform), terminationGraceMs);
       killTimer.unref();
     }
 
@@ -156,8 +165,8 @@ function waitForExit(
       finish({
         exitCode: null,
         signal: null,
-        timedOut,
-        aborted,
+        timedOut: terminationCause === "timeout",
+        aborted: terminationCause === "abort",
         spawnError: error,
       });
     });
@@ -165,26 +174,26 @@ function waitForExit(
       finish({
         exitCode,
         signal: exitSignal,
-        timedOut,
-        aborted,
+        timedOut: terminationCause === "timeout",
+        aborted: terminationCause === "abort",
         spawnError: null,
       });
     });
     signal?.addEventListener("abort", abortHandler, { once: true });
-    if (aborted) {
+    if (signal?.aborted === true) {
       beginTermination("abort");
     }
   });
 }
 
-function terminate(child: ChildProcess, signal: NodeJS.Signals): void {
+function terminate(child: ChildProcess, signal: NodeJS.Signals, platform: NodeJS.Platform): void {
   const pid = child.pid;
   if (pid === undefined) {
     return;
   }
 
   try {
-    if (process.platform === "win32") {
+    if (platform === "win32") {
       child.kill(signal);
     } else {
       process.kill(-pid, signal);
@@ -196,8 +205,24 @@ function terminate(child: ChildProcess, signal: NodeJS.Signals): void {
   }
 }
 
+function platformFailure(): NodeExecutionOutcome {
+  return {
+    status: "failed",
+    error: {
+      code: "command_platform_unsupported",
+      message:
+        "command nodes are not supported on Windows until descendant process containment is available",
+      retryable: false,
+      sideEffectStatus: "none",
+    },
+    evidence: null,
+  };
+}
+
 function spawnFailure(error: unknown): NodeExecutionOutcome {
-  const message = error instanceof Error ? error.message : String(error);
+  const rawMessage = error instanceof Error ? error.message : String(error);
+  const message =
+    rawMessage.length <= 16_384 ? rawMessage : `${rawMessage.slice(0, 16_350)}… [truncated]`;
   const failure: NodeFailure = {
     code: "command_spawn_failed",
     message,
@@ -246,13 +271,25 @@ class BoundedOutput {
   }
 
   text(): string {
-    return Buffer.concat(this.#chunks).toString("utf8");
+    return decodeBoundedUtf8(Buffer.concat(this.#chunks), this.maxBytes);
   }
 
   digest(): string {
     this.#digest ??= this.#hash.digest("hex");
     return this.#digest;
   }
+}
+
+function decodeBoundedUtf8(buffer: Buffer, maxBytes: number): string {
+  let end = buffer.length;
+  while (end > 0) {
+    const text = buffer.subarray(0, end).toString("utf8");
+    if (Buffer.byteLength(text, "utf8") <= maxBytes) {
+      return text;
+    }
+    end -= 1;
+  }
+  return "";
 }
 
 function isNoSuchProcess(error: unknown): boolean {

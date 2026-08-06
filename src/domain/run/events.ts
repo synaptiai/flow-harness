@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { createHash } from "node:crypto";
 
 export interface CommandEvidence {
   readonly kind: "command";
@@ -21,6 +22,8 @@ export interface AgentEvidence {
   readonly provider: string;
   readonly model: string;
   readonly text: string;
+  readonly textHash: string;
+  readonly textTruncated: boolean;
   readonly durationMs: number;
 }
 
@@ -136,6 +139,16 @@ const identifierSchema = z
   .max(128)
   .regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
 
+const commandOutputSchema = z
+  .string()
+  .refine((value) => Buffer.byteLength(value, "utf8") <= 32_768, {
+    message: "command output must not exceed 32768 UTF-8 bytes",
+  });
+
+const agentOutputSchema = z.string().refine((value) => Buffer.byteLength(value, "utf8") <= 65_536, {
+  message: "agent output must not exceed 65536 UTF-8 bytes",
+});
+
 const eventBaseShape = {
   version: z.literal(1),
   sequence: z.number().int().positive(),
@@ -147,12 +160,18 @@ const eventBaseShape = {
 const commandEvidenceSchema = z
   .object({
     kind: z.literal("command"),
-    executable: z.string().min(1),
-    args: z.array(z.string()),
+    executable: z.string().min(1).max(4096),
+    args: z
+      .array(z.string().max(4096))
+      .max(64)
+      .refine(
+        (args) => args.reduce((total, arg) => total + Buffer.byteLength(arg, "utf8"), 0) <= 65_536,
+        "command arguments must not exceed 65536 UTF-8 bytes in total",
+      ),
     exitCode: z.number().int().nullable(),
     signal: z.string().nullable(),
-    stdout: z.string(),
-    stderr: z.string(),
+    stdout: commandOutputSchema,
+    stderr: commandOutputSchema,
     stdoutHash: z.string().regex(/^[a-f0-9]{64}$/),
     stderrHash: z.string().regex(/^[a-f0-9]{64}$/),
     stdoutTruncated: z.boolean(),
@@ -167,7 +186,9 @@ const agentEvidenceSchema = z
     kind: z.literal("agent"),
     provider: z.string().min(1),
     model: z.string().min(1),
-    text: z.string(),
+    text: agentOutputSchema,
+    textHash: z.string().regex(/^[a-f0-9]{64}$/),
+    textTruncated: z.boolean(),
     durationMs: z.number().nonnegative(),
   })
   .strict();
@@ -180,7 +201,7 @@ const nodeEvidenceSchema = z.discriminatedUnion("kind", [
 const nodeFailureSchema = z
   .object({
     code: z.string().min(1),
-    message: z.string().min(1),
+    message: z.string().min(1).max(16_384),
     retryable: z.boolean(),
     sideEffectStatus: z.enum(["none", "committed", "uncertain"]),
   })
@@ -237,14 +258,14 @@ const runEventSchema = z.discriminatedUnion("type", [
       ...eventBaseShape,
       type: z.literal("run_failed"),
       failedNodeId: identifierSchema,
-      reason: z.string().min(1),
+      reason: z.string().min(1).max(16_384),
     })
     .strict(),
   z
     .object({
       ...eventBaseShape,
       type: z.literal("run_cancelled"),
-      reason: z.string().min(1),
+      reason: z.string().min(1).max(16_384),
     })
     .strict(),
 ]);
@@ -258,22 +279,81 @@ export function reduceRunEvents(inputEvents: readonly RunEvent[]): RunState {
     throw new RunReplayError(0, "the ledger is empty");
   }
 
-  const events = inputEvents.map((event, index) => {
-    try {
-      return parseRunEvent(event);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new RunReplayError(index, `event schema is invalid: ${message}`);
-    }
-  });
-  const first = events[0];
-  if (first?.type !== "run_started") {
-    throw new RunReplayError(0, "the first event must be run_started");
+  let state: RunState | undefined;
+  for (const [index, inputEvent] of inputEvents.entries()) {
+    state = appendRunEvent(state, inputEvent, index);
+  }
+  if (state === undefined) {
+    throw new RunReplayError(0, "the ledger is empty");
+  }
+  return state;
+}
+
+/**
+ * Validate and apply one event without replaying prior evidence. Stores use this
+ * transition function to keep append cost linear in the number of events.
+ */
+export function appendRunEvent(
+  currentState: RunState | undefined,
+  inputEvent: RunEvent,
+  eventIndex = currentState?.lastSequence ?? 0,
+): RunState {
+  let event: RunEvent;
+  try {
+    event = parseRunEvent(inputEvent);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new RunReplayError(eventIndex, `event schema is invalid: ${message}`);
   }
 
-  const nodes: Record<string, NodeRunState> = {};
-  for (const nodeId of first.nodeIds) {
-    nodes[nodeId] = pendingNodeState();
+  const expectedSequence = (currentState?.lastSequence ?? 0) + 1;
+  if (event.sequence !== expectedSequence) {
+    throw new RunReplayError(
+      eventIndex,
+      `expected sequence ${expectedSequence}, received ${event.sequence}`,
+    );
+  }
+
+  if (currentState === undefined) {
+    if (event.type !== "run_started") {
+      throw new RunReplayError(eventIndex, "the first event must be run_started");
+    }
+    const nodes: Record<string, NodeRunState> = {};
+    for (const nodeId of event.nodeIds) {
+      nodes[nodeId] = pendingNodeState();
+    }
+    return freezeRunState({
+      runId: event.runId,
+      workflowId: event.workflowId,
+      workflowApiVersion: event.workflowApiVersion,
+      workflowDigest: event.workflowDigest,
+      status: "running",
+      startedAt: event.at,
+      finishedAt: null,
+      lastSequence: event.sequence,
+      failedNodeId: null,
+      failureReason: null,
+      nodes,
+    });
+  }
+
+  if (event.runId !== currentState.runId || event.workflowId !== currentState.workflowId) {
+    throw new RunReplayError(eventIndex, "runId and workflowId must remain constant");
+  }
+  if (currentState.status !== "running") {
+    throw new RunReplayError(
+      eventIndex,
+      `event follows terminal run status "${currentState.status}"`,
+    );
+  }
+  if (event.type === "run_started") {
+    throw new RunReplayError(eventIndex, "run_started may occur only once");
+  }
+
+  const nodes: Record<string, NodeRunState> = { ...currentState.nodes };
+  const failedNodes = Object.entries(nodes).filter(([, node]) => node.status === "failed");
+  if (failedNodes.length > 0 && event.type !== "run_failed") {
+    throw new RunReplayError(eventIndex, "node_failed must be followed immediately by run_failed");
   }
 
   let status: RunStatus = "running";
@@ -281,111 +361,141 @@ export function reduceRunEvents(inputEvents: readonly RunEvent[]): RunState {
   let failedNodeId: string | null = null;
   let failureReason: string | null = null;
 
-  for (const [index, event] of events.entries()) {
-    const expectedSequence = index + 1;
-    if (event.sequence !== expectedSequence) {
-      throw new RunReplayError(
-        index,
-        `expected sequence ${expectedSequence}, received ${event.sequence}`,
-      );
+  switch (event.type) {
+    case "node_started": {
+      if (Object.values(nodes).some((node) => node.status === "running")) {
+        throw new RunReplayError(eventIndex, "only one node may be running at a time");
+      }
+      const current = requireNode(nodes, event.nodeId, eventIndex);
+      if (current.status !== "pending") {
+        throw new RunReplayError(eventIndex, `node "${event.nodeId}" must be pending before start`);
+      }
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        status: "running",
+        attempt: event.attempt,
+        startedAt: event.at,
+      });
+      break;
     }
-    if (event.runId !== first.runId || event.workflowId !== first.workflowId) {
-      throw new RunReplayError(index, "runId and workflowId must remain constant");
+    case "node_succeeded": {
+      validateEvidenceIntegrity(event.evidence, eventIndex);
+      validateSucceededEvidence(event.evidence, eventIndex);
+      const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        status: "succeeded",
+        finishedAt: event.at,
+        evidence: deepFreeze(structuredClone(event.evidence)),
+      });
+      break;
     }
-    if (index > 0 && status !== "running") {
-      throw new RunReplayError(index, `event follows terminal run status "${status}"`);
+    case "node_failed": {
+      if (event.evidence !== null) {
+        validateEvidenceIntegrity(event.evidence, eventIndex);
+      }
+      const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        status: "failed",
+        finishedAt: event.at,
+        evidence: event.evidence === null ? null : deepFreeze(structuredClone(event.evidence)),
+        error: deepFreeze(structuredClone(event.error)),
+      });
+      break;
     }
-
-    switch (event.type) {
-      case "run_started": {
-        if (index !== 0) {
-          throw new RunReplayError(index, "run_started may occur only once");
-        }
-        break;
+    case "run_succeeded": {
+      if (!Object.values(nodes).every((node) => node.status === "succeeded")) {
+        throw new RunReplayError(eventIndex, "run cannot succeed because not every node succeeded");
       }
-      case "node_started": {
-        const current = requireNode(nodes, event.nodeId, index);
-        if (current.status !== "pending") {
-          throw new RunReplayError(index, `node "${event.nodeId}" must be pending before start`);
-        }
-        nodes[event.nodeId] = Object.freeze({
-          ...current,
-          status: "running",
-          attempt: event.attempt,
-          startedAt: event.at,
-        });
-        break;
+      status = "succeeded";
+      finishedAt = event.at;
+      break;
+    }
+    case "run_failed": {
+      const failed = requireNode(nodes, event.failedNodeId, eventIndex);
+      if (
+        failed.status !== "failed" ||
+        failedNodes.length !== 1 ||
+        failedNodes[0]?.[0] !== event.failedNodeId ||
+        Object.values(nodes).some((node) => node.status === "running")
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          `failed node "${event.failedNodeId}" is not the sole failed node`,
+        );
       }
-      case "node_succeeded": {
-        const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, index);
-        nodes[event.nodeId] = Object.freeze({
-          ...current,
-          status: "succeeded",
-          finishedAt: event.at,
-          evidence: deepFreeze(structuredClone(event.evidence)),
-        });
-        break;
+      status = "failed";
+      finishedAt = event.at;
+      failedNodeId = event.failedNodeId;
+      failureReason = event.reason;
+      break;
+    }
+    case "run_cancelled": {
+      if (Object.values(nodes).some((node) => node.status === "running")) {
+        throw new RunReplayError(eventIndex, "run cannot cancel while a node remains running");
       }
-      case "node_failed": {
-        const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, index);
-        nodes[event.nodeId] = Object.freeze({
-          ...current,
-          status: "failed",
-          finishedAt: event.at,
-          evidence: event.evidence === null ? null : deepFreeze(structuredClone(event.evidence)),
-          error: deepFreeze(structuredClone(event.error)),
-        });
-        break;
-      }
-      case "run_succeeded": {
-        if (!Object.values(nodes).every((node) => node.status === "succeeded")) {
-          throw new RunReplayError(index, "run cannot succeed because not every node succeeded");
-        }
-        status = "succeeded";
-        finishedAt = event.at;
-        break;
-      }
-      case "run_failed": {
-        const failed = requireNode(nodes, event.failedNodeId, index);
-        if (failed.status !== "failed") {
-          throw new RunReplayError(index, `failed node "${event.failedNodeId}" is not failed`);
-        }
-        status = "failed";
-        finishedAt = event.at;
-        failedNodeId = event.failedNodeId;
-        failureReason = event.reason;
-        break;
-      }
-      case "run_cancelled": {
-        if (Object.values(nodes).some((node) => node.status === "running")) {
-          throw new RunReplayError(index, "run cannot cancel while a node remains running");
-        }
-        status = "cancelled";
-        finishedAt = event.at;
-        failureReason = event.reason;
-        break;
-      }
+      status = "cancelled";
+      finishedAt = event.at;
+      failureReason = event.reason;
+      break;
     }
   }
 
-  const last = events.at(-1);
-  if (last === undefined) {
-    throw new RunReplayError(0, "the ledger is empty");
-  }
-
-  return Object.freeze({
-    runId: first.runId,
-    workflowId: first.workflowId,
-    workflowApiVersion: first.workflowApiVersion,
-    workflowDigest: first.workflowDigest,
+  return freezeRunState({
+    runId: currentState.runId,
+    workflowId: currentState.workflowId,
+    workflowApiVersion: currentState.workflowApiVersion,
+    workflowDigest: currentState.workflowDigest,
     status,
-    startedAt: first.at,
+    startedAt: currentState.startedAt,
     finishedAt,
-    lastSequence: last.sequence,
+    lastSequence: event.sequence,
     failedNodeId,
     failureReason,
-    nodes: Object.freeze({ ...nodes }),
+    nodes,
   });
+}
+
+function freezeRunState(state: RunState): RunState {
+  return Object.freeze({ ...state, nodes: Object.freeze({ ...state.nodes }) });
+}
+
+function validateSucceededEvidence(evidence: NodeEvidence, eventIndex: number): void {
+  if (
+    evidence.kind === "command" &&
+    (evidence.exitCode !== 0 || evidence.signal !== null || evidence.timedOut)
+  ) {
+    throw new RunReplayError(
+      eventIndex,
+      "successful command evidence must have exit code 0, no signal, and no timeout",
+    );
+  }
+  if (evidence.kind === "agent" && evidence.textTruncated) {
+    throw new RunReplayError(eventIndex, "successful agent evidence must not be truncated");
+  }
+}
+
+function validateEvidenceIntegrity(evidence: NodeEvidence, eventIndex: number): void {
+  if (
+    evidence.kind === "agent" &&
+    !evidence.textTruncated &&
+    evidence.textHash !== sha256(evidence.text)
+  ) {
+    throw new RunReplayError(eventIndex, "agent evidence text hash is invalid");
+  }
+  if (evidence.kind === "command") {
+    if (!evidence.stdoutTruncated && evidence.stdoutHash !== sha256(evidence.stdout)) {
+      throw new RunReplayError(eventIndex, "command evidence stdout hash is invalid");
+    }
+    if (!evidence.stderrTruncated && evidence.stderrHash !== sha256(evidence.stderr)) {
+      throw new RunReplayError(eventIndex, "command evidence stderr hash is invalid");
+    }
+  }
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function pendingNodeState(): NodeRunState {

@@ -36,7 +36,7 @@ node dist/cli/main.js run examples/verify-foundation.workflow.yaml --run-id smok
 node dist/cli/main.js inspect smoke
 ```
 
-The example uses the real argv-only command executor and requires no model credentials. `npm run test:runtime` additionally spawns the compiled entrypoint, delivers `SIGINT`, proves its command process group terminates, and races separate processes for one run identifier.
+The example uses the real argv-only command executor and requires no model credentials. `npm run test:runtime` additionally spawns the compiled entrypoint, delivers `SIGINT`, proves its POSIX command process group terminates, verifies the forced-exit guard for leaked provider handles, and races separate processes for one run identifier. The package supports Linux and macOS; Windows command nodes fail before spawn because descendant containment is not yet implemented.
 
 ## Live Pi test policy
 

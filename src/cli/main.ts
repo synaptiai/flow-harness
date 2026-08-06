@@ -38,9 +38,21 @@ export interface CliDependencies {
 }
 
 const processIo: CliIo = {
-  stdout: (text) => process.stdout.write(`${text}\n`),
-  stderr: (text) => process.stderr.write(`${text}\n`),
+  stdout: (text) => writeProcessOutput(process.stdout, `${text}\n`),
+  stderr: (text) => writeProcessOutput(process.stderr, `${text}\n`),
 };
+let processWriteTail: Promise<void> = Promise.resolve();
+
+export function writeProcessOutput(stream: NodeJS.WriteStream, text: string): void {
+  const write = new Promise<void>((resolveWrite) => {
+    stream.write(text, () => resolveWrite());
+  });
+  processWriteTail = Promise.all([processWriteTail, write]).then(() => undefined);
+}
+
+export async function flushProcessOutput(): Promise<void> {
+  await processWriteTail;
+}
 
 export async function main(
   args: readonly string[],
@@ -215,6 +227,25 @@ export function isDirectEntry(entryPath: string | undefined, moduleUrl = import.
   }
 }
 
+export function resolveDirectExitCode(
+  mainExitCode: number,
+  requestedSignalExitCode: number | undefined,
+): number {
+  // A durably committed success wins a signal that arrived during the final
+  // append/fsync. For every non-success outcome, preserve shell signal semantics.
+  return mainExitCode === 0 ? 0 : (requestedSignalExitCode ?? mainExitCode);
+}
+
+export function armForcedExit(
+  exitCode: number,
+  graceMs = 1_000,
+  exit: (code: number) => never = process.exit,
+): NodeJS.Timeout {
+  const timer = setTimeout(() => exit(exitCode), graceMs);
+  timer.unref();
+  return timer;
+}
+
 if (isDirectEntry(process.argv[1])) {
   const controller = new AbortController();
   let requestedExitCode: number | undefined;
@@ -234,7 +265,12 @@ if (isDirectEntry(process.argv[1])) {
   process.once("SIGTERM", handleTermination);
   try {
     const exitCode = await main(process.argv.slice(2), processIo, { signal: controller.signal });
-    process.exitCode = requestedExitCode ?? exitCode;
+    await flushProcessOutput();
+    const resolvedExitCode = resolveDirectExitCode(exitCode, requestedExitCode);
+    process.exitCode = resolvedExitCode;
+    // Once durable state and user-visible output are complete, prevent any
+    // provider-owned socket or timer from keeping the standalone CLI alive.
+    armForcedExit(resolvedExitCode);
   } finally {
     process.removeListener("SIGINT", handleInterrupt);
     process.removeListener("SIGTERM", handleTermination);

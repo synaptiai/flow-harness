@@ -6,18 +6,20 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { createHash, type Hash } from "node:crypto";
 
 import type {
   AgentExecutor,
   NodeExecutionContext,
   NodeExecutionOutcome,
 } from "../../application/ports.js";
-import type { NodeFailure } from "../../domain/run/events.js";
+import type { AgentEvidence, NodeFailure } from "../../domain/run/events.js";
 import type {
   AgentToolName,
   CompiledAgentNode,
   ThinkingLevel,
 } from "../../domain/workflow/types.js";
+import { createWorkspaceReadTools } from "./workspace-read-tools.js";
 
 export interface PiAgentRunRequest {
   readonly cwd: string;
@@ -26,6 +28,7 @@ export interface PiAgentRunRequest {
   readonly model: string;
   readonly thinking: ThinkingLevel;
   readonly tools: readonly AgentToolName[];
+  readonly maxOutputBytes: number;
   readonly signal?: AbortSignal;
 }
 
@@ -33,6 +36,9 @@ export interface PiAgentRunResult {
   readonly text: string;
   readonly stopReason: PiTerminalStopReason;
   readonly errorMessage?: string;
+  readonly outputLimitExceeded?: boolean;
+  readonly textHash?: string;
+  readonly textTruncated?: boolean;
 }
 
 export type PiTerminalStopReason =
@@ -53,9 +59,13 @@ export class PiAgentExecutor implements AgentExecutor {
     readonly runner: PiAgentRunner = new EmbeddedPiAgentRunner(),
     readonly now: () => number = performance.now.bind(performance),
     readonly abortGraceMs = 5_000,
+    readonly maxOutputBytes = 65_536,
   ) {
     if (!Number.isSafeInteger(abortGraceMs) || abortGraceMs < 0) {
       throw new RangeError("abortGraceMs must be a non-negative safe integer");
+    }
+    if (!Number.isSafeInteger(maxOutputBytes) || maxOutputBytes <= 0 || maxOutputBytes > 65_536) {
+      throw new RangeError("maxOutputBytes must be between 1 and 65536");
     }
   }
 
@@ -84,6 +94,7 @@ export class PiAgentExecutor implements AgentExecutor {
         model: node.agent.model.id,
         thinking: node.agent.model.thinking,
         tools: node.agent.tools,
+        maxOutputBytes: this.maxOutputBytes,
         signal: combinedSignal,
       });
       const timeout = new Promise<"timeout">((resolve) => {
@@ -136,6 +147,24 @@ export class PiAgentExecutor implements AgentExecutor {
       if (isAborted(context.signal)) {
         return agentFailure("pi_agent_aborted", abortMessage(context.signal));
       }
+      const normalized = normalizeAgentResult(result, this.maxOutputBytes);
+      const evidence: AgentEvidence = {
+        kind: "agent",
+        provider: node.agent.model.provider,
+        model: node.agent.model.id,
+        text: normalized.text,
+        textHash: normalized.textHash,
+        textTruncated: normalized.textTruncated,
+        durationMs: Math.max(0, this.now() - startedAt),
+      };
+      if (normalized.outputLimitExceeded) {
+        return agentFailure(
+          "pi_agent_output_limit",
+          `agent output exceeded ${this.maxOutputBytes} UTF-8 bytes`,
+          "none",
+          evidence,
+        );
+      }
       if (result.stopReason !== "stop") {
         const code =
           result.stopReason === "aborted"
@@ -145,7 +174,9 @@ export class PiAgentExecutor implements AgentExecutor {
               : "pi_agent_incomplete";
         return agentFailure(
           code,
-          result.errorMessage ?? `Pi session ended with stop reason "${result.stopReason}"`,
+          boundedMessage(
+            result.errorMessage ?? `Pi session ended with stop reason "${result.stopReason}"`,
+          ),
         );
       }
 
@@ -155,7 +186,9 @@ export class PiAgentExecutor implements AgentExecutor {
           kind: "agent",
           provider: node.agent.model.provider,
           model: node.agent.model.id,
-          text: result.text,
+          text: normalized.text,
+          textHash: normalized.textHash,
+          textTruncated: normalized.textTruncated,
           durationMs: Math.max(0, this.now() - startedAt),
         },
       };
@@ -171,7 +204,7 @@ export class PiAgentExecutor implements AgentExecutor {
       }
       return agentFailure(
         "pi_agent_failed",
-        error instanceof Error ? error.message : String(error),
+        boundedMessage(error instanceof Error ? error.message : String(error)),
       );
     } finally {
       removeExternalAbortListener();
@@ -203,12 +236,16 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
     }
 
     const resourceLoader = createLockedResourceLoader();
+    const tools = await createWorkspaceReadTools(request.cwd, request.tools);
+    throwIfAborted(request.signal);
     const { session } = await this.createSession({
       cwd: request.cwd,
       modelRuntime,
       model,
       thinkingLevel: request.thinking,
-      tools: [...request.tools],
+      noTools: "all",
+      tools: [...tools.names],
+      customTools: [...tools.definitions],
       resourceLoader,
       sessionManager: SessionManager.inMemory(request.cwd),
       settingsManager: SettingsManager.inMemory(),
@@ -220,31 +257,44 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
       throw new PiAgentAbortError(abortMessage(request.signal));
     }
 
-    let text = "";
-    const unsubscribe = session.subscribe((event) => {
-      if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-        text += event.assistantMessageEvent.delta;
-      }
-    });
+    const output = new BoundedAgentOutput(request.maxOutputBytes);
     let abortPromise: Promise<void> | undefined;
-    const abortHandler = () => {
+    const abortSession = () => {
       abortPromise ??= session.abort().catch(() => undefined);
     };
+    const unsubscribe = session.subscribe((event) => {
+      if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+        output.add(event.assistantMessageEvent.delta);
+        if (output.truncated) {
+          abortSession();
+        }
+      }
+    });
+    const abortHandler = abortSession;
     request.signal?.addEventListener("abort", abortHandler, { once: true });
 
     try {
-      await session.prompt(request.prompt, { expandPromptTemplates: false });
+      try {
+        await session.prompt(request.prompt, { expandPromptTemplates: false });
+      } catch (error) {
+        if (!output.truncated) {
+          throw error;
+        }
+      }
       const finalMessage = session.state.messages.at(-1);
       if (finalMessage?.role !== "assistant") {
         return {
-          text,
-          stopReason: "error",
-          errorMessage: "Pi session ended without a terminal assistant message",
+          ...output.result(),
+          stopReason: output.truncated ? "aborted" : "error",
+          ...(output.truncated
+            ? { outputLimitExceeded: true }
+            : { errorMessage: "Pi session ended without a terminal assistant message" }),
         };
       }
       return {
-        text,
+        ...output.result(),
         stopReason: finalMessage.stopReason,
+        ...(output.truncated ? { outputLimitExceeded: true } : {}),
         ...(finalMessage.errorMessage === undefined
           ? {}
           : { errorMessage: finalMessage.errorMessage }),
@@ -266,14 +316,97 @@ function agentFailure(
   code: string,
   message: string,
   sideEffectStatus: NodeFailure["sideEffectStatus"] = "none",
+  evidence: AgentEvidence | null = null,
 ): NodeExecutionOutcome {
   const failure: NodeFailure = {
     code,
-    message,
+    message: boundedMessage(message),
     retryable: false,
     sideEffectStatus,
   };
-  return { status: "failed", error: failure, evidence: null };
+  return { status: "failed", error: failure, evidence };
+}
+
+interface NormalizedAgentResult {
+  readonly text: string;
+  readonly textHash: string;
+  readonly textTruncated: boolean;
+  readonly outputLimitExceeded: boolean;
+}
+
+function normalizeAgentResult(
+  result: PiAgentRunResult,
+  maxOutputBytes: number,
+): NormalizedAgentResult {
+  const output = new BoundedAgentOutput(maxOutputBytes);
+  output.add(result.text);
+  const bounded = output.result();
+  const textTruncated = result.textTruncated === true || bounded.textTruncated;
+  return {
+    text: bounded.text,
+    textHash:
+      result.textHash !== undefined && /^[a-f0-9]{64}$/.test(result.textHash)
+        ? result.textHash
+        : bounded.textHash,
+    textTruncated,
+    outputLimitExceeded: result.outputLimitExceeded === true || textTruncated,
+  };
+}
+
+class BoundedAgentOutput {
+  readonly #hash: Hash = createHash("sha256");
+  readonly #chunks: Buffer[] = [];
+  #capturedBytes = 0;
+  #totalBytes = 0;
+  #digest: string | undefined;
+
+  constructor(readonly maxBytes: number) {}
+
+  get truncated(): boolean {
+    return this.#totalBytes > this.maxBytes;
+  }
+
+  add(text: string): void {
+    const chunk = Buffer.from(text, "utf8");
+    this.#hash.update(chunk);
+    this.#totalBytes += chunk.length;
+    const remaining = this.maxBytes - this.#capturedBytes;
+    if (remaining <= 0) {
+      return;
+    }
+    const captured = chunk.subarray(0, remaining);
+    this.#chunks.push(captured);
+    this.#capturedBytes += captured.length;
+  }
+
+  result(): Pick<AgentEvidence, "text" | "textHash" | "textTruncated"> {
+    this.#digest ??= this.#hash.digest("hex");
+    return {
+      text: decodeBoundedUtf8(Buffer.concat(this.#chunks), this.maxBytes),
+      textHash: this.#digest,
+      textTruncated: this.truncated,
+    };
+  }
+}
+
+function decodeBoundedUtf8(buffer: Buffer, maxBytes: number): string {
+  let end = buffer.length;
+  while (end > 0) {
+    const text = buffer.subarray(0, end).toString("utf8");
+    if (Buffer.byteLength(text, "utf8") <= maxBytes) {
+      return text;
+    }
+    end -= 1;
+  }
+  return "";
+}
+
+function boundedMessage(message: string): string {
+  const bytes = Buffer.from(message, "utf8");
+  if (bytes.length <= 16_384) {
+    return message;
+  }
+  return `${bytes.subarray(0, 16_300).toString("utf8")}… [truncated]`;
 }
 
 function createLockedResourceLoader(): ResourceLoader {

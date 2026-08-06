@@ -23,7 +23,15 @@ const commandNodeSchema = z
     command: z
       .object({
         executable: z.string().trim().min(1).max(4096),
-        args: z.array(z.string().max(131_072)).max(256).default([]),
+        args: z
+          .array(z.string().max(4096))
+          .max(64)
+          .refine(
+            (args) =>
+              args.reduce((total, arg) => total + Buffer.byteLength(arg, "utf8"), 0) <= 65_536,
+            "command arguments must not exceed 65536 UTF-8 bytes in total",
+          )
+          .default([]),
         timeoutMs: z.number().int().positive().max(86_400_000).default(60_000),
       })
       .strict(),
@@ -47,8 +55,8 @@ const agentNodeSchema = z
           })
           .strict(),
         tools: z
-          .array(z.enum(["read", "grep", "find", "ls"]))
-          .max(4)
+          .array(z.enum(["read", "ls"]))
+          .max(2)
           .default([]),
         timeoutMs: z.number().int().positive().max(86_400_000).default(300_000),
       })
@@ -69,7 +77,7 @@ export const workflowSourceSchema = z
     nodes: z
       .array(z.discriminatedUnion("type", [commandNodeSchema, agentNodeSchema]))
       .min(1)
-      .max(512),
+      .max(64),
   })
   .strict();
 

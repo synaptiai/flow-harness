@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { createAgentSession } from "@earendil-works/pi-coding-agent";
+import { createHash } from "node:crypto";
 
 import type { NodeExecutionContext } from "../../../../src/application/ports.js";
 import type { CompiledAgentNode } from "../../../../src/domain/workflow/types.js";
@@ -36,7 +37,7 @@ describe("PiAgentExecutor", () => {
       provider: "anthropic",
       model: "claude-sonnet-4-5",
       thinking: "medium",
-      tools: ["read", "grep"],
+      tools: ["read", "ls"],
     });
     expect(request?.signal).toBeInstanceOf(AbortSignal);
     expect(outcome).toEqual({
@@ -46,6 +47,8 @@ describe("PiAgentExecutor", () => {
         provider: "anthropic",
         model: "claude-sonnet-4-5",
         text: "Analyzed the repository.",
+        textHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        textTruncated: false,
         durationMs: 0,
       },
     });
@@ -214,6 +217,66 @@ describe("PiAgentExecutor", () => {
     expect(() => new PiAgentExecutor(undefined, undefined, -1)).toThrowError(/abortGraceMs/i);
   });
 
+  it("bounds oversized provider output and preserves its complete hash", async () => {
+    const completeText = "x".repeat(8 * 1_048_576);
+    const runner: PiAgentRunner = {
+      async run() {
+        return { text: completeText, stopReason: "stop" };
+      },
+    };
+
+    const outcome = await new PiAgentExecutor(runner, () => 100, 5_000, 1_024).execute(
+      agentNode(),
+      context,
+    );
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: { code: "pi_agent_output_limit" },
+      evidence: {
+        kind: "agent",
+        text: "x".repeat(1_024),
+        textHash: createHash("sha256").update(completeText).digest("hex"),
+        textTruncated: true,
+      },
+    });
+  });
+
+  it("bounds provider-authored error messages before persistence", async () => {
+    const runner: PiAgentRunner = {
+      async run() {
+        return { text: "", stopReason: "error", errorMessage: "e".repeat(100_000) };
+      },
+    };
+
+    const outcome = await new PiAgentExecutor(runner).execute(agentNode(), context);
+
+    expect(outcome.status).toBe("failed");
+    if (outcome.status === "failed") {
+      expect(outcome.error.message.length).toBeLessThanOrEqual(16_384);
+      expect(outcome.error.message).toContain("[truncated]");
+    }
+  });
+
+  it("does not split a UTF-8 code point at the evidence boundary", async () => {
+    const runner: PiAgentRunner = {
+      async run() {
+        return { text: "é", stopReason: "stop" };
+      },
+    };
+
+    const outcome = await new PiAgentExecutor(runner, () => 100, 5_000, 1).execute(
+      agentNode(),
+      context,
+    );
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: { code: "pi_agent_output_limit" },
+      evidence: { kind: "agent", text: "", textTruncated: true },
+    });
+  });
+
   it("rejects success returned after external cancellation", async () => {
     const controller = new AbortController();
     const runner: PiAgentRunner = {
@@ -275,15 +338,20 @@ describe("EmbeddedPiAgentRunner", () => {
       provider: "anthropic",
       model: "claude-sonnet-4-5",
       thinking: "medium",
-      tools: ["read", "grep"],
+      tools: ["read", "ls"],
+      maxOutputBytes: 65_536,
     });
 
     expect(result).toEqual({
       text: "",
+      textHash: createHash("sha256").update("").digest("hex"),
+      textTruncated: false,
       stopReason: "error",
       errorMessage: "provider stream failed",
     });
-    expect(sessionOptions?.tools).toEqual(["read", "grep"]);
+    expect(sessionOptions?.noTools).toBe("all");
+    expect(sessionOptions?.tools).toEqual(["flow_read", "flow_ls"]);
+    expect(sessionOptions?.customTools?.map((tool) => tool.name)).toEqual(["flow_read", "flow_ls"]);
     expect(sessionOptions?.resourceLoader?.getExtensions().extensions).toEqual([]);
     expect(sessionOptions?.resourceLoader?.getSkills().skills).toEqual([]);
     expect(sessionOptions?.resourceLoader?.getAgentsFiles().agentsFiles).toEqual([]);
@@ -323,6 +391,7 @@ describe("EmbeddedPiAgentRunner", () => {
     let prompted = false;
     let aborted = false;
     let disposed = false;
+    let sessionSetupStarted = false;
     const fakeSession = {
       state: { messages: [] },
       subscribe: () => () => undefined,
@@ -337,6 +406,7 @@ describe("EmbeddedPiAgentRunner", () => {
       },
     };
     const createSession = (async () => {
+      sessionSetupStarted = true;
       await sessionReady;
       return { session: fakeSession };
     }) as unknown as typeof createAgentSession;
@@ -346,7 +416,9 @@ describe("EmbeddedPiAgentRunner", () => {
     );
 
     const run = runner.run(agentRequest(controller.signal));
-    await Promise.resolve();
+    while (!sessionSetupStarted) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
     controller.abort(new Error("cancelled during session setup"));
     releaseSession();
 
@@ -395,7 +467,7 @@ describe("EmbeddedPiAgentRunner", () => {
 
     const run = runner.run(agentRequest(controller.signal));
     while (!promptStarted) {
-      await Promise.resolve();
+      await new Promise<void>((resolve) => setImmediate(resolve));
     }
     controller.abort(new Error("operator cancelled"));
     const result = await run;
@@ -417,7 +489,7 @@ function agentNode(timeoutMs = 300_000): CompiledAgentNode {
         id: "claude-sonnet-4-5",
         thinking: "medium",
       },
-      tools: ["read", "grep"],
+      tools: ["read", "ls"],
       timeoutMs,
     },
   };
@@ -430,7 +502,8 @@ function agentRequest(signal?: AbortSignal): PiAgentRunRequest {
     provider: "anthropic",
     model: "claude-sonnet-4-5",
     thinking: "medium",
-    tools: ["read", "grep"],
+    tools: ["read", "ls"],
+    maxOutputBytes: 65_536,
     ...(signal === undefined ? {} : { signal }),
   };
 }

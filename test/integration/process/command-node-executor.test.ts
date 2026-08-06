@@ -108,6 +108,20 @@ describe("CommandNodeExecutor", () => {
     }
   });
 
+  it("does not split a UTF-8 code point at the command evidence boundary", async () => {
+    const executor = new CommandNodeExecutor({ maxOutputBytes: 1 });
+
+    const outcome = await executor.execute(
+      commandNode(process.execPath, ["-e", 'process.stdout.write("é")']),
+      context,
+    );
+
+    expect(outcome).toMatchObject({
+      status: "succeeded",
+      evidence: { stdout: "", stdoutTruncated: true },
+    });
+  });
+
   it("terminates a command that exceeds its declared timeout", async () => {
     const executor = new CommandNodeExecutor({ terminationGraceMs: 25 });
 
@@ -155,6 +169,49 @@ describe("CommandNodeExecutor", () => {
       status: "failed",
       error: { code: "command_aborted", sideEffectStatus: "uncertain" },
       evidence: { timedOut: false },
+    });
+  });
+
+  it("latches cancellation when the timeout expires during termination grace", async () => {
+    const executor = new CommandNodeExecutor({ terminationGraceMs: 150 });
+    const controller = new AbortController();
+    const execution = executor.execute(
+      commandNode(
+        process.execPath,
+        ["-e", 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)'],
+        150,
+      ),
+      { ...context, signal: controller.signal },
+    );
+    setTimeout(() => controller.abort(), 100).unref();
+
+    const outcome = await execution;
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: { code: "command_aborted" },
+      evidence: { timedOut: false },
+    });
+  });
+
+  it("fails closed on Windows until descendant containment is implemented", async () => {
+    const executor = new CommandNodeExecutor({ platform: "win32" });
+
+    const outcome = await executor.execute(
+      commandNode(process.execPath, ["-e", "process.exit(0)"]),
+      context,
+    );
+
+    expect(outcome).toEqual({
+      status: "failed",
+      error: {
+        code: "command_platform_unsupported",
+        message:
+          "command nodes are not supported on Windows until descendant process containment is available",
+        retryable: false,
+        sideEffectStatus: "none",
+      },
+      evidence: null,
     });
   });
 });

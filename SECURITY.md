@@ -14,9 +14,10 @@ Before the first stable release, security fixes target the latest revision on `m
 
 Flow and embedded Pi run with the invoking user's operating-system permissions. The current release has no built-in sandbox and is intended for local, trusted workspaces.
 
-- Agent sessions receive a Flow-owned system prompt and an exact read-only tool allowlist.
+- Agent sessions receive a Flow-owned system prompt and exact Flow-owned `read`/`ls` tools whose canonical paths are confined to the execution workspace. Pi built-in tools are disabled.
 - Pi project extensions, skills, templates, themes, and context discovery are disabled.
 - Command nodes use explicit argument arrays with shell parsing disabled.
+- Command nodes run only on Linux and macOS. Windows execution fails before spawn until full descendant-process containment is available.
 - Run events are synced before scheduler advancement and replay fails closed on committed-record corruption.
 
 These controls reduce accidental authority but do not contain a compromised process, malicious dependency, hostile workflow, or vulnerable tool. Use a container, microVM, or stronger operator-controlled boundary for untrusted or unattended work.

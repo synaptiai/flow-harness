@@ -252,6 +252,24 @@ nodes:
       "run_cancelled",
     ]);
   });
+
+  it("linearizes a signal arriving during the durable success commit as success", async () => {
+    const controller = new AbortController();
+    const store = new MemoryRunStore(undefined, (event) => {
+      if (event.type === "run_succeeded") {
+        controller.abort(new Error("late signal"));
+      }
+    });
+    const executor = executorFrom(async (node) => successfulOutcome(node.id));
+
+    const state = await runWorkflow(threeNodeWorkflow(), {
+      ...options(store, executor, "run-late-signal"),
+      signal: controller.signal,
+    });
+
+    expect(state.status).toBe("succeeded");
+    expect(store.events.at(-1)?.type).toBe("run_succeeded");
+  });
 });
 
 class MemoryRunStore implements RunEventStore {
@@ -327,8 +345,8 @@ function commandEvidence(nodeId: string, exitCode: number) {
     signal: null,
     stdout: nodeId,
     stderr: "",
-    stdoutHash: "a".repeat(64),
-    stderrHash: "b".repeat(64),
+    stdoutHash: createHash("sha256").update(nodeId).digest("hex"),
+    stderrHash: createHash("sha256").update("").digest("hex"),
     stdoutTruncated: false,
     stderrTruncated: false,
     timedOut: false,

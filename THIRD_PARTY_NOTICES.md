@@ -12,6 +12,22 @@ Flow is licensed under the Apache License 2.0. It depends on or studies the foll
 
 Pi's dependency packages retain their own license metadata in the installed dependency tree. A Flow distribution that bundles dependency source or binaries must preserve all applicable notices.
 
+## YAML
+
+- Project: [eemeli/yaml](https://github.com/eemeli/yaml)
+- Package: `yaml` 2.9.0
+- License: ISC
+- Use: direct runtime dependency for strict workflow parsing
+- Copied source: none
+
+## Zod
+
+- Project: [colinhacks/zod](https://github.com/colinhacks/zod)
+- Package: `zod` 4.4.3
+- License: MIT
+- Use: direct runtime dependency for workflow and event validation
+- Copied source: none
+
 ## OMP
 
 - Project: [can1357/oh-my-pi](https://github.com/can1357/oh-my-pi)

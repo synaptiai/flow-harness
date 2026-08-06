@@ -64,7 +64,7 @@ jobs:
           help_output="$("$package_dir/consumer/node_modules/.bin/flow" --help)"
           [[ "$help_output" == *"flow validate"* ]]
 
-  dependency-review:
+  dependency-audit:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -74,5 +74,14 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Review dependency changes
-        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.19.0
+          cache: npm
+
+      - name: Install exact dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Audit runtime dependencies
+        run: npm audit --omit=dev --audit-level=low

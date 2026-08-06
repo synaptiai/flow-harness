@@ -11,6 +11,10 @@
   "engines": {
     "node": ">=22.19.0"
   },
+  "os": [
+    "darwin",
+    "linux"
+  ],
   "bin": {
     "flow": "dist/cli/main.js"
   },

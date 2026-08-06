@@ -1,4 +1,5 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -33,6 +34,17 @@ describe("JsonlRunStore", () => {
     expect(contents.trim().split("\n")).toHaveLength(2);
   });
 
+  it("creates and uses an arbitrarily deep runs directory", async () => {
+    const temporaryRoot = await createTemporaryDirectory();
+    const root = join(temporaryRoot, "one", "two", "three", "four", "five", "runs");
+    const store = new JsonlRunStore(root);
+
+    await store.append(runStarted());
+    await store.append(nodeStarted());
+
+    await expect(store.read("run-1")).resolves.toEqual([runStarted(), nodeStarted()]);
+  });
+
   it("rejects an out-of-order append", async () => {
     const root = await createTemporaryDirectory();
     const store = new JsonlRunStore(root);
@@ -42,6 +54,48 @@ describe("JsonlRunStore", () => {
     await expect(store.append({ ...nodeStarted(), sequence: 3 })).rejects.toThrowError(
       /expected sequence 2/i,
     );
+  });
+
+  it("rejects oversized event records before claiming a run", async () => {
+    const root = await createTemporaryDirectory();
+    const store = new JsonlRunStore(root, 64);
+
+    await expect(store.append(runStarted())).rejects.toMatchObject({ code: "limit" });
+    await expect(store.read("run-1")).rejects.toMatchObject({ code: "not_found" });
+  });
+
+  it("persists worst-case JSON escaping within production evidence bounds", async () => {
+    const root = await createTemporaryDirectory();
+    const store = new JsonlRunStore(root);
+    const output = "\0".repeat(32_768);
+    const argument = "\0".repeat(4_096);
+    await store.append(runStarted());
+    await store.append(nodeStarted());
+    await store.append({
+      ...base(3),
+      type: "node_succeeded",
+      nodeId: "node-version",
+      attempt: 1,
+      evidence: {
+        kind: "command",
+        executable: "node",
+        args: Array.from({ length: 16 }, () => argument),
+        exitCode: 0,
+        signal: null,
+        stdout: output,
+        stderr: output,
+        stdoutHash: sha256(output),
+        stderrHash: sha256(output),
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        timedOut: false,
+        durationMs: 1,
+      },
+    });
+    await store.append({ ...base(4), type: "run_succeeded" });
+
+    const events = await store.read("run-1");
+    expect(events.at(-1)?.type).toBe("run_succeeded");
   });
 
   it("atomically grants a run id to only one store instance", async () => {
@@ -168,4 +222,8 @@ function base(sequence: number) {
     runId: "run-1",
     workflowId: "verify-foundation",
   };
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }

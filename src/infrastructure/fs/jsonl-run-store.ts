@@ -1,17 +1,20 @@
-import { type FileHandle, mkdir, open, readFile, truncate } from "node:fs/promises";
+import { access, type FileHandle, mkdir, open, readFile, truncate } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
 import {
+  appendRunEvent,
   parseRunEvent,
   reduceRunEvents,
   RunReplayError,
   type RunEvent,
+  type RunState,
 } from "../../domain/run/events.js";
 
 export type RunStoreErrorCode =
   | "corrupt"
   | "invalid_run_id"
   | "io"
+  | "limit"
   | "not_found"
   | "not_owner"
   | "run_exists"
@@ -35,11 +38,23 @@ interface LedgerRead {
   readonly hasTornTail: boolean;
 }
 
+interface OwnedRun {
+  readonly state: RunState;
+  readonly committedBytes: number;
+}
+
 export class JsonlRunStore {
   readonly #appendTailByRun = new Map<string, Promise<void>>();
-  readonly #ownedRuns = new Set<string>();
+  readonly #ownedRuns = new Map<string, OwnedRun>();
 
-  constructor(readonly rootDirectory: string) {}
+  constructor(
+    readonly rootDirectory: string,
+    readonly maxEventBytes = 1_048_576,
+  ) {
+    if (!Number.isSafeInteger(maxEventBytes) || maxEventBytes <= 0) {
+      throw new RangeError("maxEventBytes must be a positive safe integer");
+    }
+  }
 
   append(event: RunEvent): Promise<void> {
     const runId = validateRunId(event.runId);
@@ -73,14 +88,14 @@ export class JsonlRunStore {
 
   async #claimAndAppend(event: RunEvent): Promise<void> {
     const runId = event.runId;
-    validateCandidate(runId, [], event);
+    const nextState = validateCandidate(runId, undefined, event);
     const runDirectory = join(this.rootDirectory, runId);
     const path = this.#eventsPath(runId);
+    const line = `${JSON.stringify(event)}\n`;
+    validateEventSize(runId, line, this.maxEventBytes);
 
     try {
-      await mkdir(runDirectory, { recursive: true, mode: 0o700 });
-      await syncDirectoryChain(this.rootDirectory, 3);
-      await syncDirectory(runDirectory);
+      await createDurableDirectory(runDirectory);
 
       let handle: FileHandle;
       try {
@@ -94,14 +109,17 @@ export class JsonlRunStore {
         throw error;
       }
 
-      this.#ownedRuns.add(runId);
       try {
-        await handle.writeFile(`${JSON.stringify(event)}\n`, "utf8");
+        await handle.writeFile(line, "utf8");
         await handle.sync();
       } finally {
         await handle.close();
       }
       await syncDirectory(runDirectory);
+      this.#ownedRuns.set(runId, {
+        state: nextState,
+        committedBytes: Buffer.byteLength(line, "utf8"),
+      });
     } catch (error) {
       if (error instanceof RunStoreError) {
         throw error;
@@ -112,35 +130,41 @@ export class JsonlRunStore {
 
   async #appendOwned(event: RunEvent): Promise<void> {
     const runId = event.runId;
-    if (!this.#ownedRuns.has(runId)) {
+    const owned = this.#ownedRuns.get(runId);
+    if (owned === undefined) {
       throw new RunStoreError(
         "not_owner",
         `this store instance does not own run "${runId}"; resume is not supported`,
       );
     }
 
-    const ledger = await this.#readCommitted(runId);
-    const expectedSequence = (ledger.events.at(-1)?.sequence ?? 0) + 1;
+    const expectedSequence = owned.state.lastSequence + 1;
     if (event.sequence !== expectedSequence) {
       throw new RunStoreError(
         "sequence",
         `expected sequence ${expectedSequence} for run "${runId}", received ${event.sequence}`,
       );
     }
-    validateCandidate(runId, ledger.events, event);
+    const nextState = validateCandidate(runId, owned.state, event);
 
     const path = this.#eventsPath(runId);
+    const line = `${JSON.stringify(event)}\n`;
+    validateEventSize(runId, line, this.maxEventBytes);
     try {
-      if (ledger.hasTornTail) {
-        await truncate(path, ledger.committedBytes);
-      }
+      // Repair any partial write left by a prior failed append without rereading
+      // or replaying the entire ledger.
+      await truncate(path, owned.committedBytes);
       const handle = await open(path, "a", 0o600);
       try {
-        await handle.writeFile(`${JSON.stringify(event)}\n`, "utf8");
+        await handle.writeFile(line, "utf8");
         await handle.sync();
       } finally {
         await handle.close();
       }
+      this.#ownedRuns.set(runId, {
+        state: nextState,
+        committedBytes: owned.committedBytes + Buffer.byteLength(line, "utf8"),
+      });
     } catch (error) {
       throw new RunStoreError("io", `failed to append run "${runId}"`, { cause: error });
     }
@@ -187,9 +211,9 @@ export class JsonlRunStore {
   }
 }
 
-function validateCandidate(runId: string, events: readonly RunEvent[], event: RunEvent): void {
+function validateCandidate(runId: string, state: RunState | undefined, event: RunEvent): RunState {
   try {
-    reduceRunEvents([...events, event]);
+    return appendRunEvent(state, event);
   } catch (error) {
     if (error instanceof RunReplayError) {
       throw new RunStoreError(
@@ -215,15 +239,44 @@ function validateReplay(runId: string, events: readonly RunEvent[]): void {
   }
 }
 
-async function syncDirectoryChain(directory: string, depth: number): Promise<void> {
+function validateEventSize(runId: string, line: string, maxEventBytes: number): void {
+  const size = Buffer.byteLength(line, "utf8");
+  if (size > maxEventBytes) {
+    throw new RunStoreError(
+      "limit",
+      `event for run "${runId}" is ${size} bytes; maximum is ${maxEventBytes}`,
+    );
+  }
+}
+
+async function createDurableDirectory(directory: string): Promise<void> {
+  const missing: string[] = [];
   let current = resolve(directory);
-  for (let index = 0; index < depth; index += 1) {
-    await syncDirectory(current);
+  while (!(await pathExists(current))) {
+    missing.push(current);
     const parent = dirname(current);
     if (parent === current) {
-      return;
+      break;
     }
     current = parent;
+  }
+
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  for (const created of missing) {
+    await syncDirectory(created);
+    await syncDirectory(dirname(created));
+  }
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return false;
+    }
+    throw error;
   }
 }
 

@@ -26,7 +26,7 @@ Identifiers begin with a lowercase letter and contain lowercase letters, digits,
 
 ## Graph rules
 
-- A workflow contains 1–512 nodes with unique identifiers.
+- A workflow contains 1–64 nodes with unique identifiers. This first-slice bound also caps aggregate in-memory evidence retained by the sequential scheduler and store.
 - Exactly one node has no dependencies and is the entry node.
 - Every `dependsOn` reference names another node in the same workflow.
 - Self-dependencies, duplicate dependencies, and cycles are rejected.
@@ -51,7 +51,7 @@ Identifiers begin with a lowercase letter and contain lowercase letters, digits,
 
 `executable` and `args` are passed directly to the operating system with shell parsing disabled. Flow does not accept command strings. `timeoutMs` is a positive integer no greater than 24 hours and defaults to 60 seconds.
 
-A command succeeds only when it exits with code zero without timing out, cancellation, or a terminating signal. Standard output and error are bounded and SHA-256 hashed in the run evidence. A failed or timed-out command ends the workflow and leaves dependent nodes pending.
+A command succeeds only when it exits with code zero without timing out, cancellation, or a terminating signal. Standard output and error are each capped at 32 KiB and SHA-256 hashed in the run evidence. Command argument evidence is capped at 64 KiB in total. A failed or timed-out command ends the workflow and leaves dependent nodes pending.
 
 Command nodes currently inherit the Flow process environment and run in the selected workflow working directory. Workflows are therefore trusted operator configuration in the first release.
 
@@ -68,7 +68,7 @@ Command nodes currently inherit the Flow process environment and run in the sele
       thinking: medium
     tools:
       - read
-      - grep
+      - ls
     timeoutMs: 300000
 - id: verify
   type: command
@@ -79,7 +79,9 @@ Command nodes currently inherit the Flow process environment and run in the sele
     args: [test]
 ```
 
-The initial embedded Pi adapter permits only `read`, `grep`, `find`, and `ls`. The allowlist may be empty. Pi extensions, skills, prompt templates, themes, context files, and project discovery are disabled for the node session. `timeoutMs` is Flow-owned, defaults to five minutes, and is limited to 24 hours. Cancellation aborts the active Pi session; only Pi's terminal `stop` reason is accepted as node success. After timeout or operator cancellation, Flow permits a bounded adapter cleanup grace. A runner that still does not settle produces `pi_agent_timeout` or `pi_agent_aborted` with uncertain side-effect status rather than blocking the scheduler indefinitely.
+The initial embedded Pi adapter permits only Flow-owned `read` and `ls` tools. Their canonical paths must remain inside the execution workspace, including after symlink resolution. Pi's built-in tools are disabled, so the adapter does not inherit Pi's optional executable-download behavior. The allowlist may be empty. Pi extensions, skills, prompt templates, themes, context files, and project discovery are disabled for the node session. `timeoutMs` is Flow-owned, defaults to five minutes, and is limited to 24 hours. Agent output is capped at 64 KiB; the ledger retains the bounded text, the complete SHA-256 stream hash, and truncation status, and classifies overflow as `pi_agent_output_limit`. Cancellation aborts the active Pi session; only Pi's terminal `stop` reason is accepted as node success. After timeout or operator cancellation, Flow permits a bounded adapter cleanup grace. A runner that still does not settle produces `pi_agent_timeout` or `pi_agent_aborted` with uncertain side-effect status rather than blocking the scheduler indefinitely.
+
+Command nodes are supported on Linux and macOS. Flow rejects them before spawning on Windows until the command adapter can contain and terminate the full descendant process tree.
 
 An agent node succeeds when its bounded Pi session settles normally. Its text becomes diagnostic evidence. It cannot name the next node, mark acceptance criteria complete, or terminate the workflow successfully without a downstream command verifier.
 
@@ -93,7 +95,7 @@ Each run is stored at:
 .flow/runs/<run-id>/events.jsonl
 ```
 
-Events have a version, contiguous sequence number, timestamp, run identity, workflow identity, workflow API version, and SHA-256 digest of the compiled workflow. Creating the first event atomically claims a run identifier for one store instance. Node-start events are synced before an executor is invoked. Node-result events are synced before the scheduler advances. Each append syncs the file, and new run directories are synced where the platform supports directory handles. A valid or invalid unterminated trailing JSONL fragment is treated as uncommitted and truncated before a later append; corruption in an earlier committed record fails closed.
+Events have a version, contiguous sequence number, timestamp, run identity, workflow identity, workflow API version, and SHA-256 digest of the compiled workflow. A single serialized JSONL event is capped at 1 MiB, which accommodates the proven worst-case JSON escaping of every production-bounded evidence field. Creating the first event atomically claims a run identifier for one store instance. Node-start events are synced before an executor is invoked. Node-result events are synced before the scheduler advances. Owner appends validate one transition against cached reduced state instead of rereading history. Each append syncs the file, and every newly created run-directory ancestor is synced where the platform supports directory handles. A valid or invalid unterminated trailing JSONL fragment is treated as uncommitted and truncated before a later append; corruption in an earlier committed record fails closed.
 
 The reducer accepts only legal state transitions and reconstructs `running`, `succeeded`, `failed`, or `cancelled` run state. Cancellation before a run claim creates no ledger. Cancellation during a node becomes a failed node attempt; cancellation between attempts appends `run_cancelled` without starting more work. Model transcripts are never consulted during replay.
 

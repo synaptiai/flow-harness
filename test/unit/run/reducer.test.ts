@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 
 import { RunReplayError, reduceRunEvents, type RunEvent } from "../../../src/domain/run/events.js";
 
@@ -84,6 +85,117 @@ describe("reduceRunEvents", () => {
       ]),
     ).toThrowError(/node remains running/i);
   });
+
+  it("does not allow cancellation to mask a failed node", () => {
+    expect(() =>
+      reduceRunEvents([
+        runStarted(),
+        { ...base(2), type: "node_started", nodeId: "node-version", attempt: 1 },
+        {
+          ...base(3),
+          type: "node_failed",
+          nodeId: "node-version",
+          attempt: 1,
+          error: {
+            code: "command_failed",
+            message: "exit 1",
+            retryable: false,
+            sideEffectStatus: "uncertain",
+          },
+          evidence: commandEvidence(1),
+        },
+        { ...base(4), type: "run_cancelled", reason: "operator cancelled" },
+      ]),
+    ).toThrowError(/followed immediately by run_failed/i);
+  });
+
+  it("rejects overlapping node attempts in a sequential run", () => {
+    expect(() =>
+      reduceRunEvents([
+        runStarted(),
+        { ...base(2), type: "node_started", nodeId: "node-version", attempt: 1 },
+        { ...base(3), type: "node_started", nodeId: "typecheck", attempt: 1 },
+      ]),
+    ).toThrowError(/one node may be running/i);
+  });
+
+  it("rejects semantically impossible successful command evidence", () => {
+    expect(() =>
+      reduceRunEvents([
+        runStarted(),
+        { ...base(2), type: "node_started", nodeId: "node-version", attempt: 1 },
+        {
+          ...base(3),
+          type: "node_succeeded",
+          nodeId: "node-version",
+          attempt: 1,
+          evidence: commandEvidence(1),
+        },
+      ]),
+    ).toThrowError(/successful command evidence/i);
+  });
+
+  it("rejects successful evidence whose untruncated hash is false", () => {
+    expect(() =>
+      reduceRunEvents([
+        runStarted(),
+        { ...base(2), type: "node_started", nodeId: "node-version", attempt: 1 },
+        {
+          ...base(3),
+          type: "node_succeeded",
+          nodeId: "node-version",
+          attempt: 1,
+          evidence: { ...commandEvidence(0), stdoutHash: "f".repeat(64) },
+        },
+      ]),
+    ).toThrowError(/stdout hash is invalid/i);
+  });
+
+  it("rejects truncated agent evidence as success", () => {
+    expect(() =>
+      reduceRunEvents([
+        runStarted(),
+        { ...base(2), type: "node_started", nodeId: "node-version", attempt: 1 },
+        {
+          ...base(3),
+          type: "node_succeeded",
+          nodeId: "node-version",
+          attempt: 1,
+          evidence: {
+            kind: "agent",
+            provider: "test",
+            model: "deterministic",
+            text: "partial",
+            textHash: createHash("sha256").update("complete output").digest("hex"),
+            textTruncated: true,
+            durationMs: 1,
+          },
+        },
+      ]),
+    ).toThrowError(/agent evidence must not be truncated/i);
+  });
+
+  it("rejects false untruncated hashes on failed-node evidence", () => {
+    expect(() =>
+      reduceRunEvents([
+        runStarted(),
+        { ...base(2), type: "node_started", nodeId: "node-version", attempt: 1 },
+        {
+          ...base(3),
+          type: "node_failed",
+          nodeId: "node-version",
+          attempt: 1,
+          error: {
+            code: "command_failed",
+            message: "exit 1",
+            retryable: false,
+            sideEffectStatus: "uncertain",
+          },
+          evidence: { ...commandEvidence(1), stderrHash: "e".repeat(64) },
+        },
+      ]),
+    ).toThrowError(/stderr hash is invalid/i);
+  });
 });
 
 function successfulEvents(): RunEvent[] {
@@ -138,8 +250,8 @@ function commandEvidence(exitCode: number) {
     signal: null,
     stdout: "v22.19.0\n",
     stderr: "",
-    stdoutHash: "a".repeat(64),
-    stderrHash: "b".repeat(64),
+    stdoutHash: createHash("sha256").update("v22.19.0\n").digest("hex"),
+    stderrHash: createHash("sha256").update("").digest("hex"),
     stdoutTruncated: false,
     stderrTruncated: false,
     timedOut: false,

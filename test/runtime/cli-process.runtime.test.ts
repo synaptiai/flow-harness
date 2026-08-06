@@ -20,6 +20,26 @@ afterEach(async () => {
 });
 
 describe("compiled Flow process", () => {
+  it("forces termination when a provider leaves a referenced handle behind", async () => {
+    const moduleUrl = new URL("../../dist/cli/main.js", import.meta.url).href;
+    const script = `
+      import { armForcedExit, flushProcessOutput, writeProcessOutput } from ${JSON.stringify(moduleUrl)};
+      setInterval(() => {}, 1000);
+      writeProcessOutput(process.stdout, "x".repeat(1_000_000) + "END\\n");
+      await flushProcessOutput();
+      process.exitCode = 7;
+      armForcedExit(7, 25);
+    `;
+
+    const execution = spawnCaptured(process.execPath, ["--input-type=module", "-e", script], 100);
+    const result = await execution.completed;
+
+    expect(result.code).toBe(7);
+    expect(result.signal).toBeNull();
+    expect(result.stdout).toHaveLength(1_000_004);
+    expect(result.stdout.endsWith("END\n")).toBe(true);
+  });
+
   it("keeps the process alive until an uncooperative agent timeout is classified", async () => {
     const moduleUrl = new URL("../../dist/infrastructure/pi/pi-agent-executor.js", import.meta.url)
       .href;
@@ -158,6 +178,7 @@ function spawnFlow(args: readonly string[]): {
 function spawnCaptured(
   executable: string,
   args: readonly string[],
+  pauseStdoutMs = 0,
 ): {
   child: ChildProcess;
   completed: Promise<ProcessResult>;
@@ -173,6 +194,10 @@ function spawnCaptured(
   child.stdout?.on("data", (chunk: string) => {
     stdout += chunk;
   });
+  if (pauseStdoutMs > 0) {
+    child.stdout?.pause();
+    setTimeout(() => child.stdout?.resume(), pauseStdoutMs).unref();
+  }
   child.stderr?.on("data", (chunk: string) => {
     stderr += chunk;
   });

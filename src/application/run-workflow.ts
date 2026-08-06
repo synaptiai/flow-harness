@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 
 import {
-  reduceRunEvents,
+  appendRunEvent,
   type NodeFailure,
   type RunEvent,
   type RunCancelledEvent,
@@ -30,11 +30,22 @@ export async function runWorkflow(
   }
   const runId = options.runId ?? randomUUID();
   const now = options.now ?? (() => new Date());
-  const events: RunEvent[] = [];
+  let state: RunState | undefined;
 
   async function record(event: RunEvent): Promise<void> {
     await options.store.append(event);
-    events.push(event);
+    state = appendRunEvent(state, event);
+  }
+
+  function nextSequence(): number {
+    return (state?.lastSequence ?? 0) + 1;
+  }
+
+  function currentState(): RunState {
+    if (state === undefined) {
+      throw new Error("Run state is unavailable after a committed event");
+    }
+    return state;
   }
 
   function base(sequence: number) {
@@ -68,7 +79,7 @@ export async function runWorkflow(
 
     const attempt = 1;
     await record({
-      ...base(events.length + 1),
+      ...base(nextSequence()),
       type: "node_started",
       nodeId: node.id,
       attempt,
@@ -90,7 +101,7 @@ export async function runWorkflow(
 
     if (authoritativeOutcome.status === "failed") {
       await record({
-        ...base(events.length + 1),
+        ...base(nextSequence()),
         type: "node_failed",
         nodeId: node.id,
         attempt,
@@ -98,17 +109,17 @@ export async function runWorkflow(
         evidence: authoritativeOutcome.evidence,
       });
       const failed: RunFailedEvent = {
-        ...base(events.length + 1),
+        ...base(nextSequence()),
         type: "run_failed",
         failedNodeId: node.id,
         reason: authoritativeOutcome.error.message,
       };
       await record(failed);
-      return reduceRunEvents(events);
+      return currentState();
     }
 
     await record({
-      ...base(events.length + 1),
+      ...base(nextSequence()),
       type: "node_succeeded",
       nodeId: node.id,
       attempt,
@@ -122,19 +133,19 @@ export async function runWorkflow(
   }
 
   await record({
-    ...base(events.length + 1),
+    ...base(nextSequence()),
     type: "run_succeeded",
   });
-  return reduceRunEvents(events);
+  return currentState();
 
   async function cancelRun(): Promise<RunState> {
     const cancelled: RunCancelledEvent = {
-      ...base(events.length + 1),
+      ...base(nextSequence()),
       type: "run_cancelled",
       reason: abortReason(options.signal),
     };
     await record(cancelled);
-    return reduceRunEvents(events);
+    return currentState();
   }
 }
 
@@ -160,7 +171,7 @@ async function executeNode(
   try {
     return await executor.execute(node, context);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = boundedFailureMessage(error instanceof Error ? error.message : String(error));
     const failure: NodeFailure = {
       code: "executor_error",
       message,
@@ -187,12 +198,16 @@ function abortedOutcome(signal: AbortSignal | undefined): NodeExecutionOutcome {
 function abortReason(signal: AbortSignal | undefined): string {
   const reason = signal?.reason;
   if (reason instanceof Error && reason.message.length > 0) {
-    return reason.message;
+    return boundedFailureMessage(reason.message);
   }
   if (typeof reason === "string" && reason.length > 0) {
-    return reason;
+    return boundedFailureMessage(reason);
   }
   return "workflow execution was cancelled";
+}
+
+function boundedFailureMessage(message: string): string {
+  return message.length <= 16_384 ? message : `${message.slice(0, 16_350)}… [truncated]`;
 }
 
 function isAborted(signal: AbortSignal | undefined): boolean {
