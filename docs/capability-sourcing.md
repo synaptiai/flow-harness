@@ -35,8 +35,8 @@ Pi's experimental `AgentHarness` API is not a foundation for the first release. 
 | Streaming events | Subscribe and translate | Persist versioned Flow events, not raw Pi events |
 | Cancellation and idle settlement | Reuse mechanics | Map into Flow node lifecycle semantics |
 | Per-node model and thinking level | Reuse execution support | Selection remains Flow policy |
-| Exact tool allowlists | Defense in depth | Flow's broker remains the authorization boundary |
-| Basic coding tools | Wrap selectively | Tools cannot bypass policy, evidence, or timeout handling |
+| Exact tool allowlists | Current defense in depth | The initial adapter passes the exact allowlist to Pi; the Gate 3 broker will become the per-call authorization boundary |
+| Basic coding tools | Flow-owned workspace-confined `read` and `ls` definitions built on Pi's tool interfaces | Built-in Pi tools are disabled; no ambient path access or helper-binary download is inherited |
 | Custom tool API | Present Flow broker tools to the model | Tool schemas remain Flow-owned |
 | Context transformation and compaction | Reuse mechanics | Durable state remains outside context |
 | Session storage | Optional diagnostic artifact | Never authoritative run state |

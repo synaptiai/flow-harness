@@ -6,7 +6,9 @@ Flow turns a collection of useful software-development practices into an enforce
 
 The standalone harness reverses that relationship. Flow owns workflow execution and delegates only bounded node work to an embedded agent runtime.
 
-## Flows
+This document describes the target architecture unless a section is explicitly labeled as the initial executable slice. The delivery roadmap is the source of truth for implementation status. Gate 1 currently provides `validate`, sequential `run`, `inspect`, command and bounded Pi agent nodes, cancellation, and replayable local event ledgers. Initialization, the TUI/daemon, resume, approvals, evaluators, packages, loops, and the policy broker remain later gates.
+
+## Target flows
 
 Architecture is derived from these flows.
 
@@ -29,7 +31,7 @@ Architecture is derived from these flows.
 - Approve an exact consequential action with a target, arguments, scope, and expiry.
 - Benchmark model and routing profiles on held-out workflows.
 
-### System flow
+### Target system flow
 
 ```mermaid
 flowchart TD
@@ -101,14 +103,14 @@ Pi intentionally has no built-in sandbox and normally runs with the invoking use
 Until an enforceable sandbox lands:
 
 - Agent nodes receive only Flow-provided tools; implicit project extensions and resource discovery are disabled.
-- Model-requested tools pass through Flow policy before execution.
+- The Pi adapter registers exact Flow-owned `read` and `ls` tool definitions, confines canonical paths to the execution workspace, and disables Pi's built-in tools. It does not yet route individual calls through the future general-purpose policy broker.
 - Verification commands use explicit argument arrays and never shell command strings.
-- Policy can prevent known-disallowed operations, but it cannot contain a compromised process.
+- Workflow validation can reject known-disallowed configuration, but it cannot contain a compromised process.
 - Untrusted or unattended workloads must run inside an operator-provided container or stronger isolation boundary.
 
 The later sandbox gate must isolate filesystem, process, network, credentials, and child-process authority at the operating-system or virtualization layer. It cannot be satisfied by prompts, tool names, approval UI, or worktrees alone.
 
-## Core invariants
+## Target invariants
 
 1. Editing workflow YAML changes execution without editing a prompt manual.
 2. Only the compiled graph can select a ready node.

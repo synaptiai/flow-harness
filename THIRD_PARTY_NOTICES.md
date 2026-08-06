@@ -1,0 +1,47 @@
+# Third-party notices
+
+Flow is licensed under the Apache License 2.0. It depends on or studies the following separately licensed projects.
+
+## Pi
+
+- Project: [earendil-works/pi](https://github.com/earendil-works/pi)
+- Packages: `@earendil-works/pi-coding-agent` 0.84.0 and test-only `@earendil-works/pi-ai` 0.84.0
+- License: MIT
+- Use: direct runtime dependency behind Flow's agent-executor adapter
+- Copied source: none
+
+Pi's dependency packages retain their own license metadata in the installed dependency tree. A Flow distribution that bundles dependency source or binaries must preserve all applicable notices.
+
+## YAML
+
+- Project: [eemeli/yaml](https://github.com/eemeli/yaml)
+- Package: `yaml` 2.9.0
+- License: ISC
+- Use: direct runtime dependency for strict workflow parsing
+- Copied source: none
+
+## Zod
+
+- Project: [colinhacks/zod](https://github.com/colinhacks/zod)
+- Package: `zod` 4.4.3
+- License: MIT
+- Use: direct runtime dependency for workflow and event validation
+- Copied source: none
+
+## OMP
+
+- Project: [can1357/oh-my-pi](https://github.com/can1357/oh-my-pi)
+- License: MIT
+- Use: architecture and capability reference only
+- Copied source: none
+
+Any future source port must record its upstream commit and preserve the applicable Pi and OMP copyright and license notices.
+
+## Prime Agent
+
+- Project: [PrimeIntellect-ai/prime-agent](https://github.com/PrimeIntellect-ai/prime-agent)
+- License: MIT
+- Use: architecture and capability reference only
+- Copied source: none
+
+Any future source port must record its upstream commit and preserve the applicable Pi and Prime Agent copyright and license notices.
