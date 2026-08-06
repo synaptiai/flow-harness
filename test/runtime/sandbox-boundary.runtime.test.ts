@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -111,7 +112,7 @@ describe("compiled command sandbox boundary", () => {
 });
 
 async function createFixtureRoot(): Promise<string> {
-  const directory = await mkdtemp(join(projectRoot, ".flow-sandbox-runtime-"));
+  const directory = await mkdtemp(join(homedir(), ".flow-sandbox-runtime-"));
   temporaryDirectories.push(directory);
   return directory;
 }
