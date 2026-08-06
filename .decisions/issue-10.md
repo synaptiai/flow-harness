@@ -95,6 +95,12 @@ test timeouts or weakening the sandbox is correct. YAML changes are allowed only
 workflow defect. A pull request and the resulting default-branch update must each produce green
 quality and dependency-audit jobs before the criterion is accepted.
 
+The first hosted execution identified Ubuntu 24.04's AppArmor restriction on capability-bearing
+unprivileged user namespaces. The quality job configures the documented SRT prerequisite on its
+dedicated ephemeral runner; it does not enable SRT's weaker nested-sandbox mode. Public setup
+guidance warns that the equivalent sysctl is host-wide and directs shared hosts to a scoped
+AppArmor profile instead.
+
 ## Failure modes
 
 | Condition | Required behavior |

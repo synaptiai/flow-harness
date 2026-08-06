@@ -47,6 +47,18 @@ Linux also requires unprivileged user namespaces, network namespaces, and seccom
 uses the built-in Seatbelt facility. Windows command nodes fail before process creation because
 descendant containment is not implemented there.
 
+Ubuntu 24.04 and newer restrict capability-bearing unprivileged user namespaces by default. On a
+dedicated development or ephemeral CI host, enable the capability required by SRT for the current
+boot:
+
+```sh
+sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+```
+
+This changes host-wide user-namespace hardening. On a shared host, keep the restriction and use a
+reviewed AppArmor profile that grants `userns` only to the required sandbox binaries instead. See
+SRT's [platform-specific dependency guidance](https://github.com/anthropic-experimental/sandbox-runtime#platform-specific-dependencies).
+
 ### Build and verify
 
 ```sh

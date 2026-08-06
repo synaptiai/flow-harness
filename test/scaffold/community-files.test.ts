@@ -20,6 +20,17 @@ describe("public repository contracts", () => {
     expect(readme).toContain("[Security](SECURITY.md)");
   });
 
+  it("documents and configures the Ubuntu 24.04 sandbox prerequisite", async () => {
+    const [readme, workflow] = await Promise.all([
+      readText("README.md"),
+      readText(".github/workflows/ci.yml"),
+    ]);
+    const appArmorSetting = "kernel.apparmor_restrict_unprivileged_userns=0";
+
+    expect(readme).toContain(appArmorSetting);
+    expect(workflow).toContain(`sudo sysctl -w ${appArmorSetting}`);
+  });
+
   it("routes support, conduct, and vulnerability reports to distinct channels", async () => {
     const [support, conduct, security] = await Promise.all([
       readText("SUPPORT.md"),
