@@ -336,6 +336,7 @@ function executorFrom(
 function options(store: RunEventStore, executor: NodeExecutor, runId: string) {
   return {
     cwd: process.cwd(),
+    protectedPaths: [],
     runId,
     store,
     executor,

@@ -2,7 +2,7 @@
 
 The roadmap is organized around externally verifiable capability gates rather than dates.
 
-Gates 0–2 are implemented for local trusted-workspace execution. Gate 3 has its first model-tool policy-broker slice; approvals, broader effects, and OS-level isolation remain target capabilities.
+Gates 0–2 are implemented. Gate 3 now has a model-tool policy-broker slice and fail-closed native command containment; approvals, broader model tools, configurable policy, and stronger VM or managed backends remain target capabilities.
 
 ## Gate 0: Repository foundation
 
@@ -34,7 +34,10 @@ Gates 0–2 are implemented for local trusted-workspace execution. Gate 3 has it
 - Approval binds an exact operation and expires predictably.
 - Timeouts terminate process trees and record partial output.
 - Side-effect uncertainty blocks automatic retry.
-- An initial sandbox implementation enforces the declared boundary.
+- A Flow-owned sandbox port isolates command execution from the selected backend. *(Implemented for SRT.)*
+- The initial fixed profile denies network and ambient credentials, permits workspace work, protects durable state, and records provenance. *(Implemented.)*
+- Missing or degraded containment fails before command spawn. *(Implemented.)*
+- VM, container, and managed sandbox adapters can satisfy higher-isolation deployment profiles.
 
 ## Gate 4: Recovery and long-running work
 

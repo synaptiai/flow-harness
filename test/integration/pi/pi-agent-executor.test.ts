@@ -87,6 +87,7 @@ describe("embedded Pi SDK integration", () => {
       workflowId: "sdk-workflow",
       attempt: 1,
       cwd: process.cwd(),
+      protectedPaths: [],
     });
 
     expect(outcome.status, JSON.stringify(outcome)).toBe("succeeded");

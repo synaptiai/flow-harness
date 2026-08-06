@@ -14,6 +14,11 @@ import { compileWorkflowText, WorkflowCompilationError } from "../domain/workflo
 import { JsonlRunStore, RunStoreError } from "../infrastructure/fs/jsonl-run-store.js";
 import { PiAgentExecutor } from "../infrastructure/pi/pi-agent-executor.js";
 import { CommandNodeExecutor } from "../infrastructure/process/command-node-executor.js";
+import {
+  ANTHROPIC_SANDBOX_RUNTIME_VERSION,
+  anthropicSandboxRuntimeManager,
+} from "../infrastructure/sandbox/anthropic-sandbox-runtime-manager.js";
+import { SrtCommandSandbox } from "../infrastructure/sandbox/srt-command-sandbox.js";
 
 const HELP = `Flow — Provider-neutral harness for evidence-driven software workflows
 
@@ -135,6 +140,7 @@ async function runCommand(
   const executionCwd = resolve(dependencies.cwd, values.cwd ?? ".");
   const state = await runWorkflow(workflow, {
     cwd: executionCwd,
+    protectedPaths: [runsDirectory],
     store: dependencies.createStore(runsDirectory),
     executor: dependencies.executor,
     ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
@@ -198,7 +204,14 @@ function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies 
     cwd: overrides.cwd ?? process.cwd(),
     executor:
       overrides.executor ??
-      new NodeExecutorRouter(new CommandNodeExecutor(), new PiAgentExecutor()),
+      new NodeExecutorRouter(
+        new CommandNodeExecutor({
+          sandbox: new SrtCommandSandbox(anthropicSandboxRuntimeManager, {
+            backendVersion: ANTHROPIC_SANDBOX_RUNTIME_VERSION,
+          }),
+        }),
+        new PiAgentExecutor(),
+      ),
     createStore: overrides.createStore ?? ((rootDirectory) => new JsonlRunStore(rootDirectory)),
     readTextFile: overrides.readTextFile ?? ((path) => readFile(path, "utf8")),
     ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),

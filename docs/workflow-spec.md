@@ -56,7 +56,7 @@ Criterion state is one of:
 
 Every non-missing decision records the run id, verifier node id, attempt, timestamp, and whether evidence is available. The evidence itself remains on that exact node attempt, retaining the existing size bounds and hashes. The overall goal becomes `accepted` only with a successful run and all criteria accepted; every other terminal run reports `not_accepted`.
 
-Criterion evaluation is a pure domain operation over the captured goal and durable node outcomes. It receives no model transcript, prompt, workspace handle, process executor, or tool. Verifier commands still execute under the trusted-workspace contract described below; criterion evaluation is not an operating-system sandbox.
+Criterion evaluation is a pure domain operation over the captured goal and durable node outcomes. It receives no model transcript, prompt, workspace handle, process executor, or tool. Verifier commands execute under the command-sandbox contract described below, while criterion evaluation itself remains a mutation-free domain operation rather than an operating-system boundary.
 
 ## Graph rules
 
@@ -83,11 +83,13 @@ Criterion evaluation is a pure domain operation over the captured goal and durab
     timeoutMs: 120000
 ```
 
-`executable` and `args` are passed directly to the operating system with shell parsing disabled. Flow does not accept command strings. `timeoutMs` is a positive integer no greater than 24 hours and defaults to 60 seconds.
+`executable` and `args` are separate workflow values. Flow does not accept command strings, rejects NUL bytes during compilation, and preserves each argument through an audited POSIX encoder when invoking the sandbox backend. The final process launcher still uses shell parsing disabled. `timeoutMs` is a positive integer no greater than 24 hours and defaults to 60 seconds.
 
 A command succeeds only when it exits with code zero without timing out, cancellation, or a terminating signal. Standard output and error are each capped at 32 KiB and SHA-256 hashed in the run evidence. Command argument evidence is capped at 64 KiB in total. A failed or timed-out command ends the workflow and leaves dependent nodes pending.
 
-Command nodes currently inherit the Flow process environment and run in the selected workflow working directory. Workflows are therefore trusted operator configuration in the first release.
+Every command node and descendant runs through Flow's required SRT adapter. The fixed `workspace-write-network-deny-v1` profile allows the selected workflow directory and a private temporary directory, denies network and undeclared Unix sockets, omits ambient credentials and injection variables from the child environment, and denies writes to the actual run store, `.flow`, `.git`, environment files, and key files. If SRT is missing, unsupported, degraded, or cannot initialize, the node fails before spawn; Flow has no unsandboxed command fallback.
+
+New command evidence records `anthropic-sandbox-runtime`, its exact installed version, the named profile, and a SHA-256 digest of the semantic policy. The field is optional only when replaying ledgers created before sandbox evidence existed.
 
 ## Agent node
 
@@ -138,7 +140,8 @@ The reducer accepts only legal state transitions and reconstructs `running`, `su
 - No loop, retry, conditional, parallel, fork/join, approval, or child-run nodes.
 - No automatic resume of an interrupted node attempt.
 - No handoff of an active run between processes; a new process must use a new run identifier.
-- No environment allowlist or operating-system sandbox; the current broker is an application-level model-tool boundary.
+- The SRT profile is fixed; workflows cannot yet request network, credential injection, or a different sandbox backend.
+- The native sandbox contains command descendants but does not contain the host-side Pi runtime; hostile workloads require a stronger container, microVM, or managed boundary.
 - No write or shell tool is exposed to agent nodes.
 - No probabilistic or LLM evaluator; criteria currently bind only to deterministic terminal command nodes.
 - No schema migration path is promised while the format remains `v1alpha1`.

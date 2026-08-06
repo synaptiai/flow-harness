@@ -15,6 +15,7 @@ export interface NodeExecutionContext {
   readonly workflowId: string;
   readonly attempt: number;
   readonly cwd: string;
+  readonly protectedPaths: readonly string[];
   readonly signal?: AbortSignal;
 }
 

@@ -10,18 +10,20 @@ The maintainers will acknowledge a complete report, assess severity, coordinate 
 
 Before the first stable release, security fixes target the latest revision on `main`. There is no promise of backports to earlier commits or `0.x` package snapshots.
 
-## Current trust boundary
+## Current trust boundaries
 
-Flow and embedded Pi run with the invoking user's operating-system permissions. The current release has no built-in sandbox and is intended for local, trusted workspaces.
+The embedded Pi runtime runs with the invoking user's operating-system permissions. Command descendants run through a required native OS sandbox. These are different boundaries and should not be treated as equivalent.
 
 - Agent sessions receive a Flow-owned system prompt and exact Flow-owned `read`/`ls` tools whose canonical paths are confined to the execution workspace. Pi built-in tools are disabled.
 - Pi project extensions, skills, templates, themes, and context discovery are disabled.
-- Command nodes use explicit argument arrays with shell parsing disabled.
+- Command nodes preserve explicit argument arrays through an audited encoder and run inside the fixed SRT `workspace-write-network-deny-v1` profile.
+- The profile denies network, undeclared Unix sockets, home reads outside the workspace, ambient credentials, and writes to run state or sensitive project metadata. Ordinary workspace writes remain allowed by design.
+- Any dependency error or warning, initialization error, unsupported platform, or invalid sandbox launch descriptor fails before command spawn. There is no host-execution fallback.
 - Command nodes run only on Linux and macOS. Windows execution fails before spawn until full descendant-process containment is available.
 - Run events are synced before scheduler advancement and replay fails closed on committed-record corruption.
 
-These controls reduce accidental authority but do not contain a compromised process, malicious dependency, hostile workflow, or vulnerable tool. Use a container, microVM, or stronger operator-controlled boundary for untrusted or unattended work.
+SRT is a beta native sandbox based on Seatbelt on macOS and bubblewrap, namespaces, and seccomp on Linux. It reduces command authority but is not equivalent to a microVM and cannot defend against a kernel or sandbox-runtime vulnerability. It also does not contain the host-side Pi process. Use a reviewed container, microVM, Gondolin, OpenShell, or managed boundary for hostile or multi-tenant work.
 
-Workflow files and command nodes are trusted configuration. They can execute arbitrary programs with inherited environment variables. Review them before running and scope credentials outside the Flow process where possible.
+Workflow files remain trusted orchestration configuration: command nodes can execute arbitrary programs within the declared workspace-write boundary. Review workflows before running them and scope host credentials outside the Flow process where possible.
 
 Command output, agent text, executable arguments, and failure messages are persisted in the run ledger as evidence. They can contain secrets emitted by tools or providers. Keep `.flow/runs` private, apply repository ignore rules, and redact sensitive output at its source.

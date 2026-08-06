@@ -14,6 +14,7 @@ import type { NodeExecutionOutcome, NodeExecutor, RunEventStore } from "./ports.
 
 export interface RunWorkflowOptions {
   readonly cwd: string;
+  readonly protectedPaths: readonly string[];
   readonly store: RunEventStore;
   readonly executor: NodeExecutor;
   readonly runId?: string;
@@ -93,6 +94,7 @@ export async function runWorkflow(
           workflowId: workflow.id,
           attempt,
           cwd: options.cwd,
+          protectedPaths: options.protectedPaths,
           ...(options.signal === undefined ? {} : { signal: options.signal }),
         });
     const authoritativeOutcome =

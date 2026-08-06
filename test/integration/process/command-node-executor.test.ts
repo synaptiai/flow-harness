@@ -1,20 +1,25 @@
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 
+import type { CommandSandbox } from "../../../src/application/command-sandbox.js";
 import type { NodeExecutionContext } from "../../../src/application/ports.js";
 import type { CompiledCommandNode } from "../../../src/domain/workflow/types.js";
-import { CommandNodeExecutor } from "../../../src/infrastructure/process/command-node-executor.js";
+import {
+  CommandNodeExecutor,
+  type CommandNodeExecutorOptions,
+} from "../../../src/infrastructure/process/command-node-executor.js";
 
 const context: NodeExecutionContext = {
   runId: "run-command",
   workflowId: "command-workflow",
   attempt: 1,
   cwd: process.cwd(),
+  protectedPaths: [],
 };
 
 describe("CommandNodeExecutor", () => {
   it("returns success only for exit code zero", async () => {
-    const executor = new CommandNodeExecutor();
+    const executor = commandExecutor();
 
     const outcome = await executor.execute(
       commandNode(process.execPath, ["-e", 'process.stdout.write("verified")']),
@@ -33,7 +38,7 @@ describe("CommandNodeExecutor", () => {
   });
 
   it("records nonzero exit evidence as failure", async () => {
-    const executor = new CommandNodeExecutor();
+    const executor = commandExecutor();
 
     const outcome = await executor.execute(
       commandNode(process.execPath, [
@@ -51,7 +56,7 @@ describe("CommandNodeExecutor", () => {
   });
 
   it("reports a missing executable without evidence or side effects", async () => {
-    const executor = new CommandNodeExecutor();
+    const executor = commandExecutor();
 
     const outcome = await executor.execute(
       commandNode("flow-command-that-does-not-exist", []),
@@ -66,7 +71,7 @@ describe("CommandNodeExecutor", () => {
   });
 
   it("passes shell metacharacters as literal argv values", async () => {
-    const executor = new CommandNodeExecutor();
+    const executor = commandExecutor();
     const literal = "$(touch should-never-exist); echo unsafe";
 
     const outcome = await executor.execute(
@@ -81,7 +86,7 @@ describe("CommandNodeExecutor", () => {
   });
 
   it("bounds captured output while hashing the complete stream", async () => {
-    const executor = new CommandNodeExecutor({ maxOutputBytes: 16 });
+    const executor = commandExecutor({ maxOutputBytes: 16 });
 
     const outcome = await executor.execute(
       commandNode(process.execPath, [
@@ -109,7 +114,7 @@ describe("CommandNodeExecutor", () => {
   });
 
   it("does not split a UTF-8 code point at the command evidence boundary", async () => {
-    const executor = new CommandNodeExecutor({ maxOutputBytes: 1 });
+    const executor = commandExecutor({ maxOutputBytes: 1 });
 
     const outcome = await executor.execute(
       commandNode(process.execPath, ["-e", 'process.stdout.write("é")']),
@@ -123,7 +128,7 @@ describe("CommandNodeExecutor", () => {
   });
 
   it("terminates a command that exceeds its declared timeout", async () => {
-    const executor = new CommandNodeExecutor({ terminationGraceMs: 25 });
+    const executor = commandExecutor({ terminationGraceMs: 25 });
 
     const outcome = await executor.execute(
       commandNode(process.execPath, ["-e", "setInterval(() => {}, 1000)"], 50),
@@ -138,7 +143,7 @@ describe("CommandNodeExecutor", () => {
   });
 
   it("terminates immediately when execution starts with an aborted signal", async () => {
-    const executor = new CommandNodeExecutor({ terminationGraceMs: 25 });
+    const executor = commandExecutor({ terminationGraceMs: 25 });
     const controller = new AbortController();
     controller.abort();
 
@@ -155,7 +160,7 @@ describe("CommandNodeExecutor", () => {
   });
 
   it("terminates a running command when cancellation arrives", async () => {
-    const executor = new CommandNodeExecutor({ terminationGraceMs: 25 });
+    const executor = commandExecutor({ terminationGraceMs: 25 });
     const controller = new AbortController();
     const execution = executor.execute(
       commandNode(process.execPath, ["-e", "setInterval(() => {}, 1000)"]),
@@ -173,7 +178,7 @@ describe("CommandNodeExecutor", () => {
   });
 
   it("latches cancellation when the timeout expires during termination grace", async () => {
-    const executor = new CommandNodeExecutor({ terminationGraceMs: 150 });
+    const executor = commandExecutor({ terminationGraceMs: 150 });
     const controller = new AbortController();
     const execution = executor.execute(
       commandNode(
@@ -195,7 +200,7 @@ describe("CommandNodeExecutor", () => {
   });
 
   it("fails closed on Windows until descendant containment is implemented", async () => {
-    const executor = new CommandNodeExecutor({ platform: "win32" });
+    const executor = commandExecutor({ platform: "win32" });
 
     const outcome = await executor.execute(
       commandNode(process.execPath, ["-e", "process.exit(0)"]),
@@ -235,4 +240,34 @@ function commandNode(
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+const directTestSandbox: CommandSandbox = {
+  async prepare(request) {
+    const environment = Object.fromEntries(
+      Object.entries(process.env).filter(
+        (entry): entry is [string, string] => entry[1] !== undefined,
+      ),
+    );
+    return {
+      launch: {
+        executable: request.executable,
+        args: request.args,
+        env: environment,
+      },
+      evidence: {
+        backend: "anthropic-sandbox-runtime",
+        backendVersion: "test-double",
+        profile: "workspace-write-network-deny-v1",
+        policyDigest: "f".repeat(64),
+      },
+      release: async () => undefined,
+    };
+  },
+};
+
+function commandExecutor(
+  options: Omit<CommandNodeExecutorOptions, "sandbox"> = {},
+): CommandNodeExecutor {
+  return new CommandNodeExecutor({ ...options, sandbox: directTestSandbox });
 }

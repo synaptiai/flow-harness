@@ -26,6 +26,11 @@ jobs:
           node-version: 22.19.0
           cache: npm
 
+      - name: Install sandbox system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap socat ripgrep
+
       - name: Install exact dependencies
         run: npm ci --ignore-scripts
 

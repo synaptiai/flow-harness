@@ -6,10 +6,12 @@ import type {
   NodeExecutionContext,
   NodeExecutionOutcome,
 } from "../../application/ports.js";
+import type { CommandSandbox, PreparedCommand } from "../../application/command-sandbox.js";
 import type { CommandEvidence, NodeFailure } from "../../domain/run/events.js";
 import type { CompiledCommandNode } from "../../domain/workflow/types.js";
 
 export interface CommandNodeExecutorOptions {
+  readonly sandbox: CommandSandbox;
   readonly maxOutputBytes?: number;
   readonly platform?: NodeJS.Platform;
   readonly terminationGraceMs?: number;
@@ -18,11 +20,13 @@ export interface CommandNodeExecutorOptions {
 export class CommandNodeExecutor implements CommandExecutor {
   readonly #maxOutputBytes: number;
   readonly #platform: NodeJS.Platform;
+  readonly #sandbox: CommandSandbox;
   readonly #terminationGraceMs: number;
 
-  constructor(options: CommandNodeExecutorOptions = {}) {
+  constructor(options: CommandNodeExecutorOptions) {
     this.#maxOutputBytes = options.maxOutputBytes ?? 32_768;
     this.#platform = options.platform ?? process.platform;
+    this.#sandbox = options.sandbox;
     this.#terminationGraceMs = options.terminationGraceMs ?? 2_000;
     if (
       !Number.isSafeInteger(this.#maxOutputBytes) ||
@@ -44,21 +48,38 @@ export class CommandNodeExecutor implements CommandExecutor {
       return platformFailure();
     }
 
+    let prepared: PreparedCommand;
+    try {
+      prepared = await this.#sandbox.prepare({
+        executable: node.command.executable,
+        args: node.command.args,
+        cwd: context.cwd,
+        protectedPaths: context.protectedPaths,
+        ...(context.signal === undefined ? {} : { signal: context.signal }),
+      });
+    } catch (error) {
+      return sandboxFailure(error);
+    }
+
     const startedAt = process.hrtime.bigint();
     const stdout = new BoundedOutput(this.#maxOutputBytes);
     const stderr = new BoundedOutput(this.#maxOutputBytes);
     let child: ChildProcess;
 
     try {
-      child = spawn(node.command.executable, [...node.command.args], {
+      child = spawn(prepared.launch.executable, [...prepared.launch.args], {
         cwd: context.cwd,
-        env: process.env,
+        env: prepared.launch.env,
         shell: false,
         detached: true,
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
       });
     } catch (error) {
+      const cleanupError = await release(prepared);
+      if (cleanupError !== null) {
+        return sandboxCleanupFailure(cleanupError, null, "none");
+      }
       return spawnFailure(error);
     }
 
@@ -73,6 +94,10 @@ export class CommandNodeExecutor implements CommandExecutor {
       this.#platform,
     );
     if (result.spawnError !== null) {
+      const cleanupError = await release(prepared);
+      if (cleanupError !== null) {
+        return sandboxCleanupFailure(cleanupError, null, "none");
+      }
       return spawnFailure(result.spawnError);
     }
 
@@ -90,7 +115,13 @@ export class CommandNodeExecutor implements CommandExecutor {
       stderrTruncated: stderr.truncated,
       timedOut: result.timedOut,
       durationMs: Number(process.hrtime.bigint() - startedAt) / 1_000_000,
+      sandbox: prepared.evidence,
     };
+
+    const cleanupError = await release(prepared);
+    if (cleanupError !== null) {
+      return sandboxCleanupFailure(cleanupError, evidence, "uncertain");
+    }
 
     if (result.timedOut) {
       return failed(
@@ -110,6 +141,15 @@ export class CommandNodeExecutor implements CommandExecutor {
     }
 
     return { status: "succeeded", evidence };
+  }
+}
+
+async function release(prepared: PreparedCommand): Promise<unknown | null> {
+  try {
+    await prepared.release();
+    return null;
+  } catch (error) {
+    return error;
   }
 }
 
@@ -230,6 +270,41 @@ function spawnFailure(error: unknown): NodeExecutionOutcome {
     sideEffectStatus: "none",
   };
   return { status: "failed", error: failure, evidence: null };
+}
+
+function sandboxFailure(error: unknown): NodeExecutionOutcome {
+  return {
+    status: "failed",
+    error: {
+      code: "command_sandbox_unavailable",
+      message: boundedMessage(error),
+      retryable: false,
+      sideEffectStatus: "none",
+    },
+    evidence: null,
+  };
+}
+
+function sandboxCleanupFailure(
+  error: unknown,
+  evidence: CommandEvidence | null,
+  sideEffectStatus: NodeFailure["sideEffectStatus"],
+): NodeExecutionOutcome {
+  return {
+    status: "failed",
+    error: {
+      code: "command_sandbox_cleanup_failed",
+      message: boundedMessage(error),
+      retryable: false,
+      sideEffectStatus,
+    },
+    evidence,
+  };
+}
+
+function boundedMessage(error: unknown): string {
+  const rawMessage = error instanceof Error ? error.message : String(error);
+  return rawMessage.length <= 16_384 ? rawMessage : `${rawMessage.slice(0, 16_350)}… [truncated]`;
 }
 
 function failed(code: string, message: string, evidence: CommandEvidence): NodeExecutionOutcome {
