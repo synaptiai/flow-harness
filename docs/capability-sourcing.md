@@ -1,0 +1,109 @@
+# Capability sourcing
+
+## Decision
+
+Flow owns every semantic that determines whether work is allowed, complete, recoverable, or correct. Pi initially supplies the model-facing machinery. OMP and Prime Agent are reference implementations and possible sources for carefully isolated future capability packages.
+
+The first runtime will embed [`@earendil-works/pi-coding-agent`](https://pi.dev/docs/latest/sdk) behind a narrow Flow-owned executor. The package is pinned exactly and all events are translated before persistence.
+
+Pi's experimental `AgentHarness` API is not a foundation for the first release. Pi v0.84.0 describes unfinished paths that reject with `HarnessNotImplemented`; Flow will use the established `createAgentSession()` API instead. See the [Pi v0.84.0 release](https://github.com/earendil-works/pi/releases/tag/v0.84.0).
+
+## Native Flow capabilities
+
+| Capability | Why Flow owns it |
+| --- | --- |
+| Workflow schema and compiler | Workflow files must compile into executable graph state rather than advice to a model |
+| Scheduler and lifecycle | Readiness, conditions, loops, retries, joins, and terminal states are product semantics |
+| Typed node inputs and outputs | Transitions must not depend on parsing persuasive prose |
+| Goals, budgets, and loop termination | Exhausted resources never imply successful completion |
+| Evidence and evaluation | A worker cannot authoritatively grade its own work |
+| Policy, approvals, and tool broker | Pi and Prime processes normally run with the user's operating-system authority |
+| Context assembly and redaction | Context composition is a major cost, safety, and quality control |
+| Event ledger and recovery | Pi transcripts cannot determine graph position or side-effect certainty |
+| Model routing | Flow selects capability and cost profiles while Pi supplies models |
+| Skill and package trust | Installed content is untrusted and cannot broaden its own authority |
+| Public CLI, API, and persisted formats | Public contracts must survive provider and executor changes |
+| Benchmarks and accounting | One format is required to compare providers and future executors |
+
+## Imported from Pi
+
+| Capability | Initial use | Boundary |
+| --- | --- | --- |
+| Multi-provider inference | Import through Pi's model runtime | Persist only Flow model requirements and provider/model identifiers |
+| Authentication and model catalog | Reuse | Keep credentials and provider details outside workflow files |
+| Agent tool-call loop | `createAgentSession()` | One adapter owns every Pi import |
+| Streaming events | Subscribe and translate | Persist versioned Flow events, not raw Pi events |
+| Cancellation and idle settlement | Reuse mechanics | Map into Flow node lifecycle semantics |
+| Per-node model and thinking level | Reuse execution support | Selection remains Flow policy |
+| Exact tool allowlists | Defense in depth | Flow's broker remains the authorization boundary |
+| Basic coding tools | Wrap selectively | Tools cannot bypass policy, evidence, or timeout handling |
+| Custom tool API | Present Flow broker tools to the model | Tool schemas remain Flow-owned |
+| Context transformation and compaction | Reuse mechanics | Durable state remains outside context |
+| Session storage | Optional diagnostic artifact | Never authoritative run state |
+| TUI primitives | Optional presentation dependency | Flow owns navigation, language, and approvals |
+
+Pi is MIT-licensed. Its fast release cadence and breaking changes create meaningful update risk, so Flow pins exact versions and maintains adapter conformance tests. See the [Pi repository](https://github.com/earendil-works/pi) and [agent-core documentation](https://github.com/earendil-works/pi/blob/main/packages/agent/README.md).
+
+## Learned or selectively ported from OMP
+
+OMP is a Pi fork with a broad TypeScript, Bun, and Rust-native product surface. Importing it alongside upstream Pi would create two diverging copies of the same agent abstractions. Flow will not depend on OMP initially.
+
+| Capability | Treatment |
+| --- | --- |
+| Read/write/exec approval tiers | Reimplement fail-closed, with argument-dependent authority |
+| Hash-anchored edits | Benchmark and potentially port as a provenance-recorded Flow tool |
+| Diagnostics after writes | Add through an optional language-service capability |
+| LSP and debugger operations | Optional first-party packages, outside scheduler core |
+| Worktree-isolated subagents | Adopt the isolation pattern while Flow owns fan-out and joins |
+| Bounded tool-output summaries | Implement in Flow's artifact and evidence layer |
+| Model-specific tool and prompt tuning | Represent as benchmarked routing profiles |
+| Stream-triggered correction | Experimental only because retries can duplicate effects |
+| Native shell/search/coreutils | Do not port without profiling evidence |
+| Persistent code kernels | Optional sandboxed capability, never a default |
+| Advisor model | Represent explicitly as a review or evaluator node |
+
+See the [OMP repository](https://github.com/can1357/oh-my-pi), [SDK](https://github.com/can1357/oh-my-pi/blob/main/docs/sdk.md), and [approval model](https://github.com/can1357/oh-my-pi/blob/main/docs/approval-mode.md). OMP is MIT-licensed; copied code must retain the applicable Pi and OMP notices and per-file provenance.
+
+## Learned or selectively ported from Prime Agent
+
+Prime Agent proves that Pi can support a distinct long-running harness. Its product center is a persistent IPython Recursive Language Model and continual harness refinement, which is not Flow's product center.
+
+| Capability | Treatment |
+| --- | --- |
+| Supervisor and one worker per root run tree | Adopt after the in-process vertical slice is stable |
+| Detach, reattach, snapshots, and event replay | Use as a design reference for a future daemon protocol |
+| Recovery journal and bounded restart | Reimplement around Flow's authoritative run ledger |
+| Durable goals and autonomous continuation | Implement in Flow's scheduler |
+| Heartbeats and schedules | Later trigger package after concurrency policy exists |
+| Retained children and messaging | Represent as graph-owned child runs and mailbox events |
+| Persistent IPython | Optional capability only; never describe it as a sandbox |
+| Recursive subagents | Use narrow contexts but keep recursion and joins graph-owned |
+| Executable Python skills | Defer because installation expands the supply-chain boundary |
+| Continual harness refinement | Future candidate system requiring evaluation, approval, versioning, and rollback |
+| Immutable base plus supplemental state | Adopt as the boundary for any future learning system |
+
+See [Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent), its [architecture](https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/architecture.md), and its [RLM trust model](https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/rlm.md). Prime Agent is MIT-licensed; substantial copied portions require preservation of both Pi and Prime notices.
+
+## Portable skills
+
+Flow will support the open [Agent Skills specification](https://agentskills.io/specification), not Claude-specific discovery rules.
+
+Additional Flow rules:
+
+- Validate packages before indexing.
+- Load metadata during discovery and full instructions only for selected nodes.
+- Treat `allowed-tools` as a request, never authorization.
+- Record provenance, digest, version, license, dependencies, and trust state.
+- Execute skill code through the same policy and sandbox boundary as every other tool.
+- Prevent packages from directly changing transitions or evaluator definitions.
+
+## Coupling rules
+
+- No Pi, OMP, Prime Agent, or provider type appears in a persisted workflow or public Flow API.
+- No domain module imports an executor or infrastructure implementation.
+- No tool implementation advances a workflow.
+- No model session writes authoritative run state.
+- No package increases its own authority.
+- No executor declares its output accepted.
+- No retry repeats an unresolved consequential side effect.
+- Only composition and bootstrap code may import the Pi runtime adapter.
