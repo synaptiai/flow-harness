@@ -78,6 +78,10 @@ export interface RunStartedEvent extends RunEventBase {
   readonly goal?: CompiledGoal;
 }
 
+export interface RunResumedEvent extends RunEventBase {
+  readonly type: "run_resumed";
+}
+
 export interface NodeStartedEvent extends RunEventBase {
   readonly type: "node_started";
   readonly nodeId: string;
@@ -116,6 +120,7 @@ export interface RunCancelledEvent extends RunEventBase {
 
 export type RunEvent =
   | RunStartedEvent
+  | RunResumedEvent
   | NodeStartedEvent
   | NodeSucceededEvent
   | NodeFailedEvent
@@ -273,6 +278,12 @@ const runEventSchema = z.discriminatedUnion("type", [
   z
     .object({
       ...eventBaseShape,
+      type: z.literal("run_resumed"),
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBaseShape,
       type: z.literal("node_started"),
       nodeId: identifierSchema,
       attempt: z.number().int().positive(),
@@ -408,8 +419,11 @@ export function appendRunEvent(
 
   const nodes: Record<string, NodeRunState> = { ...currentState.nodes };
   const failedNodes = Object.entries(nodes).filter(([, node]) => node.status === "failed");
-  if (failedNodes.length > 0 && event.type !== "run_failed") {
-    throw new RunReplayError(eventIndex, "node_failed must be followed immediately by run_failed");
+  if (failedNodes.length > 0 && event.type !== "run_failed" && event.type !== "run_resumed") {
+    throw new RunReplayError(
+      eventIndex,
+      "node_failed must be followed immediately by run_failed unless a recovery marker records the restart",
+    );
   }
 
   let status: RunStatus = "running";
@@ -419,6 +433,17 @@ export function appendRunEvent(
   let goal = currentState.goal;
 
   switch (event.type) {
+    case "run_resumed": {
+      const openAttempt = Object.entries(nodes).find(([, node]) => node.status === "running");
+      if (openAttempt !== undefined) {
+        const [nodeId, node] = openAttempt;
+        throw new RunReplayError(
+          eventIndex,
+          `run cannot resume while node "${nodeId}" attempt ${node.attempt} remains running`,
+        );
+      }
+      break;
+    }
     case "node_started": {
       if (Object.values(nodes).some((node) => node.status === "running")) {
         throw new RunReplayError(eventIndex, "only one node may be running at a time");

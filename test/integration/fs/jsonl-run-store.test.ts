@@ -1,4 +1,6 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { once } from "node:events";
+import { spawn } from "node:child_process";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -126,7 +128,104 @@ describe("JsonlRunStore", () => {
 
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(results.find((result) => result.status === "rejected")).toMatchObject({
+      reason: { code: "run_exists" },
+    });
     await expect(new JsonlRunStore(root).read("run-1")).resolves.toEqual([runStarted()]);
+  });
+
+  it("claims an existing run before appending from a new store instance", async () => {
+    const root = await createTemporaryDirectory();
+    const original = new JsonlRunStore(root);
+    await original.append(runStarted());
+    await original.release("run-1");
+
+    const recovered = new JsonlRunStore(root);
+    await expect(recovered.claim("run-1")).resolves.toEqual([runStarted()]);
+    await recovered.append(nodeStarted());
+
+    await expect(recovered.read("run-1")).resolves.toEqual([runStarted(), nodeStarted()]);
+  });
+
+  it("refuses to claim a run owned by a live process", async () => {
+    const root = await createTemporaryDirectory();
+    const owner = new JsonlRunStore(root);
+    await owner.append(runStarted());
+
+    await expect(new JsonlRunStore(root).claim("run-1")).rejects.toMatchObject({
+      code: "not_owner",
+    });
+    await expect(new JsonlRunStore(root).claim("run-1")).rejects.toThrowError(
+      new RegExp(`process ${process.pid}`),
+    );
+  });
+
+  it("atomically grants recovery ownership to only one claimant", async () => {
+    const root = await createTemporaryDirectory();
+    const original = new JsonlRunStore(root);
+    await original.append(runStarted());
+    await original.release("run-1");
+    const first = new JsonlRunStore(root);
+    const second = new JsonlRunStore(root);
+
+    const results = await Promise.allSettled([first.claim("run-1"), second.claim("run-1")]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+  });
+
+  it("reclaims recovery ownership left by an exited process", async () => {
+    const root = await createTemporaryDirectory();
+    const original = new JsonlRunStore(root);
+    await original.append(runStarted());
+    await original.release("run-1");
+    const exitedProcess = spawn(process.execPath, ["-e", "process.exit(0)"]);
+    const exitedPid = exitedProcess.pid;
+    if (exitedPid === undefined) {
+      throw new Error("test child process did not receive a process id");
+    }
+    await once(exitedProcess, "exit");
+    await writeOwner(root, exitedPid);
+
+    const recovered = new JsonlRunStore(root);
+    await expect(recovered.claim("run-1")).resolves.toEqual([runStarted()]);
+  });
+
+  it("fails closed when ownership metadata is corrupt", async () => {
+    const root = await createTemporaryDirectory();
+    const original = new JsonlRunStore(root);
+    await original.append(runStarted());
+    await original.release("run-1");
+    const ownerPath = join(root, "run-1", ".owner", "owner.json");
+    await mkdir(join(root, "run-1", ".owner"));
+    await writeFile(ownerPath, "not-json\n", { mode: 0o600 });
+
+    await expect(new JsonlRunStore(root).claim("run-1")).rejects.toMatchObject({
+      code: "corrupt",
+    });
+    await expect(readFile(ownerPath, "utf8")).resolves.toBe("not-json\n");
+  });
+
+  it("fails closed when an ownership directory has no metadata", async () => {
+    const root = await createTemporaryDirectory();
+    const original = new JsonlRunStore(root);
+    await original.append(runStarted());
+    await original.release("run-1");
+    await mkdir(join(root, "run-1", ".owner"));
+
+    await expect(new JsonlRunStore(root).claim("run-1")).rejects.toMatchObject({
+      code: "corrupt",
+    });
+    await expect(access(join(root, "run-1", ".owner"))).resolves.toBeUndefined();
+  });
+
+  it("refuses a missing run without creating recovery state", async () => {
+    const root = await createTemporaryDirectory();
+
+    await expect(new JsonlRunStore(root).claim("missing-run")).rejects.toMatchObject({
+      code: "not_found",
+    });
+    await expect(access(join(root, "missing-run"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("ignores only an invalid torn trailing record", async () => {
@@ -170,6 +269,24 @@ describe("JsonlRunStore", () => {
     await expect(store.read("run-1")).resolves.toEqual([runStarted(), nodeStarted()]);
   });
 
+  it("repairs a torn tail before a recovered claimant appends", async () => {
+    const root = await createTemporaryDirectory();
+    const runDirectory = join(root, "run-1");
+    const original = new JsonlRunStore(root);
+    await original.append(runStarted());
+    await original.release("run-1");
+    await writeFile(
+      join(runDirectory, "events.jsonl"),
+      `${JSON.stringify(runStarted())}\n${JSON.stringify(nodeStarted())}`,
+    );
+
+    const recovered = new JsonlRunStore(root);
+    await expect(recovered.claim("run-1")).resolves.toEqual([runStarted()]);
+    await recovered.append(nodeStarted());
+
+    await expect(recovered.read("run-1")).resolves.toEqual([runStarted(), nodeStarted()]);
+  });
+
   it("fails closed on corruption before the trailing record", async () => {
     const root = await createTemporaryDirectory();
     const runDirectory = join(root, "run-1");
@@ -181,6 +298,20 @@ describe("JsonlRunStore", () => {
     );
 
     await expect(store.read("run-1")).rejects.toBeInstanceOf(RunStoreError);
+  });
+
+  it("rejects a ledger whose durable run id does not match its directory", async () => {
+    const root = await createTemporaryDirectory();
+    const runDirectory = join(root, "run-1");
+    const store = new JsonlRunStore(root);
+    await store.append(runStarted());
+    await store.release("run-1");
+    await writeFile(
+      join(runDirectory, "events.jsonl"),
+      `${JSON.stringify({ ...runStarted(), runId: "different-run" })}\n`,
+    );
+
+    await expect(store.read("run-1")).rejects.toMatchObject({ code: "corrupt" });
   });
 
   it("rejects unsafe run identifiers before path resolution", async () => {
@@ -209,6 +340,21 @@ async function createTemporaryDirectory(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "flow-run-store-"));
   temporaryDirectories.push(directory);
   return directory;
+}
+
+async function writeOwner(root: string, pid: number): Promise<void> {
+  const ownerDirectory = join(root, "run-1", ".owner");
+  await mkdir(ownerDirectory);
+  await writeFile(
+    join(ownerDirectory, "owner.json"),
+    `${JSON.stringify({
+      version: 1,
+      pid,
+      token: "00000000-0000-4000-8000-000000000000",
+      acquiredAt: "2026-08-06T15:00:00.000Z",
+    })}\n`,
+    { mode: 0o600 },
+  );
 }
 
 function runStarted(): RunEvent {

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +8,9 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { NodeExecutor } from "../../../src/application/ports.js";
 import { main, type CliIo } from "../../../src/cli/main.js";
+import type { RunEvent } from "../../../src/domain/run/events.js";
+import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
+import { JsonlRunStore } from "../../../src/infrastructure/fs/jsonl-run-store.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -158,6 +162,133 @@ nodes:
     );
   });
 
+  it("resumes pending work without re-executing a successful node", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "resume.workflow.yaml");
+    const forbiddenWrite = join(directory, "successful-node-reran.txt");
+    const resumedWrite = join(directory, "pending-node-ran.txt");
+    const runsDirectory = join(directory, "runs");
+    const source = `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: resumable-command }
+nodes:
+  - id: completed
+    type: command
+    command:
+      executable: ${JSON.stringify(process.execPath)}
+      args: [-e, ${JSON.stringify(`require("node:fs").writeFileSync(${JSON.stringify(forbiddenWrite)}, "reran")`)}]
+  - id: pending
+    type: command
+    dependsOn: [completed]
+    command:
+      executable: ${JSON.stringify(process.execPath)}
+      args: [-e, ${JSON.stringify(`require("node:fs").writeFileSync(${JSON.stringify(resumedWrite)}, "ran")`)}]
+`;
+    await writeFile(workflowPath, source, "utf8");
+    const workflow = compileWorkflowText(source, workflowPath);
+    const store = new JsonlRunStore(runsDirectory);
+    for (const event of interruptedAfterFirstSuccess(workflow, "cli-resume")) {
+      await store.append(event);
+    }
+    await store.release("cli-resume");
+    const capture = createCapture();
+    const executor: NodeExecutor = {
+      async execute(node) {
+        if (node.id === "completed") {
+          await writeFile(forbiddenWrite, "reran", "utf8");
+        }
+        if (node.id === "pending") {
+          await writeFile(resumedWrite, "ran", "utf8");
+        }
+        return { status: "succeeded", evidence: commandEvidence(node.id) };
+      },
+    };
+
+    const exitCode = await main(
+      ["resume", workflowPath, "--run-id", "cli-resume", "--runs-dir", runsDirectory],
+      capture.io,
+      { cwd: directory, executor },
+    );
+
+    expect(exitCode, [...capture.stderr, ...capture.stdout].join("\n")).toBe(0);
+    expect(JSON.parse(capture.stdout.join("\n"))).toMatchObject({
+      runId: "cli-resume",
+      status: "succeeded",
+      nodes: { completed: { status: "succeeded" }, pending: { status: "succeeded" } },
+    });
+    await expect(stat(forbiddenWrite)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(resumedWrite, "utf8")).resolves.toBe("ran");
+    const ledger = await readFile(join(runsDirectory, "cli-resume", "events.jsonl"), "utf8");
+    expect(ledgerTypes(ledger)).toEqual([
+      "run_started",
+      "node_started",
+      "node_succeeded",
+      "run_resumed",
+      "node_started",
+      "node_succeeded",
+      "run_succeeded",
+    ]);
+
+    const terminalCapture = createCapture();
+    const terminalExitCode = await main(
+      ["resume", workflowPath, "--run-id", "cli-resume", "--runs-dir", runsDirectory],
+      terminalCapture.io,
+      { cwd: directory, executor },
+    );
+    expect(terminalExitCode).toBe(1);
+    expect(terminalCapture.stderr.join("\n")).toContain("terminal_run");
+    await expect(readFile(join(runsDirectory, "cli-resume", "events.jsonl"), "utf8")).resolves.toBe(
+      ledger,
+    );
+  });
+
+  it("resume reports an uncertain open attempt without appending or executing", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "uncertain.workflow.yaml");
+    const forbiddenWrite = join(directory, "uncertain-node-reran.txt");
+    const runsDirectory = join(directory, "runs");
+    const source = `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: uncertain-command }
+nodes:
+  - id: uncertain
+    type: command
+    command:
+      executable: ${JSON.stringify(process.execPath)}
+      args: [-e, ${JSON.stringify(`require("node:fs").writeFileSync(${JSON.stringify(forbiddenWrite)}, "reran")`)}]
+`;
+    await writeFile(workflowPath, source, "utf8");
+    const workflow = compileWorkflowText(source, workflowPath);
+    const store = new JsonlRunStore(runsDirectory);
+    const started = runStartedEvent(workflow, "cli-uncertain");
+    await store.append(started);
+    await store.append({
+      ...eventBase("cli-uncertain", workflow.id, 2),
+      type: "node_started",
+      nodeId: "uncertain",
+      attempt: 1,
+    });
+    await store.release("cli-uncertain");
+    const before = await readFile(join(runsDirectory, "cli-uncertain", "events.jsonl"), "utf8");
+    const capture = createCapture();
+
+    const exitCode = await main(
+      ["resume", workflowPath, "--run-id", "cli-uncertain", "--runs-dir", runsDirectory],
+      capture.io,
+      { cwd: directory },
+    );
+
+    expect(exitCode).toBe(1);
+    expect(capture.stderr.join("\n")).toContain("uncertain_operation");
+    expect(capture.stderr.join("\n")).toContain('node "uncertain" attempt 1');
+    await expect(stat(forbiddenWrite)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      readFile(join(runsDirectory, "cli-uncertain", "events.jsonl"), "utf8"),
+    ).resolves.toBe(before);
+  });
+
   it("persists failure and terminates the command group when execution is cancelled", async () => {
     const directory = await createTemporaryDirectory();
     const workflowPath = join(directory, "cancel.workflow.yaml");
@@ -285,6 +416,77 @@ function createCapture(): { io: CliIo; stdout: string[]; stderr: string[] } {
       stderr: (text) => stderr.push(text),
     },
   };
+}
+
+function interruptedAfterFirstSuccess(
+  workflow: ReturnType<typeof compileWorkflowText>,
+  runId: string,
+): RunEvent[] {
+  return [
+    runStartedEvent(workflow, runId),
+    {
+      ...eventBase(runId, workflow.id, 2),
+      type: "node_started",
+      nodeId: "completed",
+      attempt: 1,
+    },
+    {
+      ...eventBase(runId, workflow.id, 3),
+      type: "node_succeeded",
+      nodeId: "completed",
+      attempt: 1,
+      evidence: commandEvidence(),
+    },
+  ];
+}
+
+function runStartedEvent(
+  workflow: ReturnType<typeof compileWorkflowText>,
+  runId: string,
+): RunEvent {
+  return {
+    ...eventBase(runId, workflow.id, 1),
+    type: "run_started",
+    nodeIds: workflow.nodes.map((node) => node.id),
+    workflowApiVersion: workflow.apiVersion,
+    workflowDigest: createHash("sha256").update(JSON.stringify(workflow)).digest("hex"),
+    ...(workflow.goal === undefined ? {} : { goal: workflow.goal }),
+  };
+}
+
+function eventBase(runId: string, workflowId: string, sequence: number) {
+  return {
+    version: 1 as const,
+    sequence,
+    at: `2026-08-06T15:00:0${sequence}.000Z`,
+    runId,
+    workflowId,
+  };
+}
+
+function commandEvidence(nodeId = "completed") {
+  return {
+    kind: "command" as const,
+    executable: process.execPath,
+    args: ["-e", nodeId],
+    exitCode: 0,
+    signal: null,
+    stdout: "",
+    stderr: "",
+    stdoutHash: createHash("sha256").update("").digest("hex"),
+    stderrHash: createHash("sha256").update("").digest("hex"),
+    stdoutTruncated: false,
+    stderrTruncated: false,
+    timedOut: false,
+    durationMs: 1,
+  };
+}
+
+function ledgerTypes(ledger: string): string[] {
+  return ledger
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line).type as string);
 }
 
 async function createTemporaryDirectory(): Promise<string> {

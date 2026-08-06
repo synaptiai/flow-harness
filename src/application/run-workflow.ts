@@ -2,15 +2,22 @@ import { createHash, randomUUID } from "node:crypto";
 
 import {
   appendRunEvent,
+  reduceRunEvents,
   type NodeFailure,
   type RunEvent,
   type RunCancelledEvent,
   type RunFailedEvent,
+  type RunResumedEvent,
   type RunStartedEvent,
   type RunState,
 } from "../domain/run/events.js";
 import type { CompiledNode, CompiledWorkflow } from "../domain/workflow/types.js";
-import type { NodeExecutionOutcome, NodeExecutor, RunEventStore } from "./ports.js";
+import type {
+  NodeExecutionOutcome,
+  NodeExecutor,
+  RecoverableRunEventStore,
+  RunEventStore,
+} from "./ports.js";
 
 export interface RunWorkflowOptions {
   readonly cwd: string;
@@ -22,6 +29,11 @@ export interface RunWorkflowOptions {
   readonly signal?: AbortSignal;
 }
 
+export interface ResumeWorkflowOptions extends Omit<RunWorkflowOptions, "runId" | "store"> {
+  readonly runId: string;
+  readonly store: RecoverableRunEventStore;
+}
+
 export async function runWorkflow(
   workflow: CompiledWorkflow,
   options: RunWorkflowOptions,
@@ -31,7 +43,57 @@ export async function runWorkflow(
   }
   const runId = options.runId ?? randomUUID();
   const now = options.now ?? (() => new Date());
-  let state: RunState | undefined;
+  return await releaseAfter(options.store, runId, async () => {
+    const started: RunStartedEvent = {
+      ...eventBase(workflow, runId, 1, now),
+      type: "run_started",
+      nodeIds: workflow.nodes.map((node) => node.id),
+      workflowApiVersion: workflow.apiVersion,
+      workflowDigest: calculateWorkflowDigest(workflow),
+      ...(workflow.goal === undefined ? {} : { goal: workflow.goal }),
+    };
+    await options.store.append(started);
+    return await continueWorkflow(
+      workflow,
+      options,
+      runId,
+      appendRunEvent(undefined, started),
+      now,
+    );
+  });
+}
+
+export async function resumeWorkflow(
+  workflow: CompiledWorkflow,
+  options: ResumeWorkflowOptions,
+): Promise<RunState> {
+  if (isAborted(options.signal)) {
+    throw new RunWorkflowAbortedError(abortReason(options.signal));
+  }
+
+  const events = await options.store.claim(options.runId);
+  return await releaseAfter(options.store, options.runId, async () => {
+    let state = reduceRunEvents(events);
+    validateRecovery(workflow, options.runId, state, events);
+    const now = options.now ?? (() => new Date());
+    const resumed: RunResumedEvent = {
+      ...eventBase(workflow, options.runId, state.lastSequence + 1, now),
+      type: "run_resumed",
+    };
+    await options.store.append(resumed);
+    state = appendRunEvent(state, resumed);
+    return await continueWorkflow(workflow, options, options.runId, state, now);
+  });
+}
+
+async function continueWorkflow(
+  workflow: CompiledWorkflow,
+  options: Omit<RunWorkflowOptions, "runId">,
+  runId: string,
+  initialState: RunState,
+  now: () => Date,
+): Promise<RunState> {
+  let state = initialState;
 
   async function record(event: RunEvent): Promise<void> {
     await options.store.append(event);
@@ -39,37 +101,33 @@ export async function runWorkflow(
   }
 
   function nextSequence(): number {
-    return (state?.lastSequence ?? 0) + 1;
-  }
-
-  function currentState(): RunState {
-    if (state === undefined) {
-      throw new Error("Run state is unavailable after a committed event");
-    }
-    return state;
+    return state.lastSequence + 1;
   }
 
   function base(sequence: number) {
-    return {
-      version: 1 as const,
-      sequence,
-      at: now().toISOString(),
-      runId,
-      workflowId: workflow.id,
-    };
+    return eventBase(workflow, runId, sequence, now);
   }
 
-  const started: RunStartedEvent = {
-    ...base(1),
-    type: "run_started",
-    nodeIds: workflow.nodes.map((node) => node.id),
-    workflowApiVersion: workflow.apiVersion,
-    workflowDigest: createHash("sha256").update(JSON.stringify(workflow)).digest("hex"),
-    ...(workflow.goal === undefined ? {} : { goal: workflow.goal }),
-  };
-  await record(started);
+  const completed = new Set(
+    Object.entries(state.nodes)
+      .filter(([, node]) => node.status === "succeeded")
+      .map(([nodeId]) => nodeId),
+  );
+  const failed = Object.entries(state.nodes).find(([, node]) => node.status === "failed");
+  if (failed !== undefined) {
+    const [failedNodeId, failedNode] = failed;
+    if (failedNode.error === null) {
+      throw new Error(`Failed node "${failedNodeId}" has no committed error`);
+    }
+    await record({
+      ...base(nextSequence()),
+      type: "run_failed",
+      failedNodeId,
+      reason: failedNode.error.message,
+    });
+    return state;
+  }
 
-  const completed = new Set<string>();
   while (completed.size < workflow.nodes.length) {
     if (isAborted(options.signal)) {
       return await cancelRun();
@@ -118,7 +176,7 @@ export async function runWorkflow(
         reason: authoritativeOutcome.error.message,
       };
       await record(failed);
-      return currentState();
+      return state;
     }
 
     await record({
@@ -139,7 +197,7 @@ export async function runWorkflow(
     ...base(nextSequence()),
     type: "run_succeeded",
   });
-  return currentState();
+  return state;
 
   async function cancelRun(): Promise<RunState> {
     const cancelled: RunCancelledEvent = {
@@ -148,12 +206,155 @@ export async function runWorkflow(
       reason: abortReason(options.signal),
     };
     await record(cancelled);
-    return currentState();
+    return state;
+  }
+}
+
+export type RunRecoveryErrorCode = "terminal_run" | "uncertain_operation" | "workflow_mismatch";
+
+export class RunRecoveryError extends Error {
+  override readonly name = "RunRecoveryError";
+
+  constructor(
+    readonly code: RunRecoveryErrorCode,
+    message: string,
+  ) {
+    super(message);
   }
 }
 
 export class RunWorkflowAbortedError extends Error {
   override readonly name = "RunWorkflowAbortedError";
+}
+
+function validateRecovery(
+  workflow: CompiledWorkflow,
+  runId: string,
+  state: RunState,
+  events: readonly RunEvent[],
+): void {
+  if (state.status !== "running") {
+    throw new RunRecoveryError(
+      "terminal_run",
+      `run "${runId}" is already terminal with status "${state.status}"`,
+    );
+  }
+
+  const expectedNodeIds = workflow.nodes.map((node) => node.id);
+  const recoveredNodeIds = Object.keys(state.nodes);
+  if (
+    state.runId !== runId ||
+    state.workflowId !== workflow.id ||
+    state.workflowApiVersion !== workflow.apiVersion ||
+    state.workflowDigest !== calculateWorkflowDigest(workflow) ||
+    !sameStrings(recoveredNodeIds, expectedNodeIds)
+  ) {
+    throw new RunRecoveryError(
+      "workflow_mismatch",
+      `run "${runId}" was not started from this exact compiled workflow`,
+    );
+  }
+
+  const openAttempt = Object.entries(state.nodes).find(([, node]) => node.status === "running");
+  if (openAttempt !== undefined) {
+    const [nodeId, node] = openAttempt;
+    throw new RunRecoveryError(
+      "uncertain_operation",
+      `run "${runId}" cannot resume because node "${nodeId}" attempt ${node.attempt} has no committed outcome`,
+    );
+  }
+
+  validateRecoveredHistory(workflow, runId, events);
+}
+
+function validateRecoveredHistory(
+  workflow: CompiledWorkflow,
+  runId: string,
+  events: readonly RunEvent[],
+): void {
+  const nodeById = new Map(workflow.nodes.map((node) => [node.id, node]));
+  const completed = new Set<string>();
+
+  for (const event of events) {
+    if (event.type === "node_started") {
+      const node = nodeById.get(event.nodeId);
+      if (
+        node === undefined ||
+        event.attempt !== 1 ||
+        !node.dependsOn.every((dependency) => completed.has(dependency))
+      ) {
+        throw new RunRecoveryError(
+          "workflow_mismatch",
+          `run "${runId}" contains node history that violates the compiled workflow graph`,
+        );
+      }
+    } else if (event.type === "node_succeeded") {
+      completed.add(event.nodeId);
+    }
+  }
+}
+
+function eventBase(workflow: CompiledWorkflow, runId: string, sequence: number, now: () => Date) {
+  return {
+    version: 1 as const,
+    sequence,
+    at: now().toISOString(),
+    runId,
+    workflowId: workflow.id,
+  };
+}
+
+function calculateWorkflowDigest(workflow: CompiledWorkflow): string {
+  return createHash("sha256").update(JSON.stringify(workflow)).digest("hex");
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+async function releaseAfter<T>(
+  store: RunEventStore,
+  runId: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  let operationCompleted = false;
+  let result: T | undefined;
+  let operationError: unknown;
+  try {
+    result = await operation();
+    operationCompleted = true;
+  } catch (error) {
+    operationError = error;
+  }
+
+  let releaseError: unknown;
+  if (hasRelease(store)) {
+    try {
+      await store.release(runId);
+    } catch (error) {
+      releaseError = error;
+    }
+  }
+
+  if (!operationCompleted) {
+    if (releaseError !== undefined) {
+      throw new AggregateError(
+        [operationError, releaseError],
+        `run "${runId}" failed and its ownership could not be released`,
+      );
+    }
+    throw operationError;
+  }
+  if (releaseError !== undefined) {
+    throw releaseError;
+  }
+  return result as T;
+}
+
+function hasRelease(
+  store: RunEventStore,
+): store is RunEventStore & Pick<RecoverableRunEventStore, "release"> {
+  return "release" in store && typeof store.release === "function";
 }
 
 function selectReadyNode(

@@ -18,10 +18,11 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Strict workflow and goal compilation | Implemented |
 | Sequential dependency-ordered execution | Implemented |
 | Durable JSONL run ledger and inspection | Implemented |
+| Safe-boundary recovery with exclusive local ownership | Implemented |
 | Deterministic criterion verification | Implemented |
 | Bounded Pi agent nodes with Flow-owned `read` and `ls` tools | Implemented |
 | Fail-closed sandboxed command process trees | Implemented on Linux and macOS |
-| Approvals, resume, graph loops, and broader model tools | Planned |
+| Approvals, graph loops, and broader model tools | Planned |
 | VM-grade isolation of the host-side agent runtime | Planned |
 
 The executable format is `flow.synapti.ai/v1alpha1`. There is no compatibility or migration
@@ -91,6 +92,21 @@ accepted. Authoritative events are written to:
 The inspected result identifies graph state, criterion decisions, bounded command output and
 hashes, plus the sandbox backend, exact version, profile, and semantic policy digest.
 
+### Recover interrupted work
+
+Inspect the durable state first, then resume with the exact workflow that started the run:
+
+```sh
+node dist/cli/main.js inspect interrupted-run
+node dist/cli/main.js resume examples/verify-foundation.workflow.yaml --run-id interrupted-run
+```
+
+Flow continues only from a committed node boundary. It skips nodes whose success is durable and
+records `run_resumed` before starting new work. A durable `node_started` without a matching outcome
+is uncertain: Flow names the node and attempt, appends nothing, and executes nothing. Terminal,
+mismatched, corrupt, missing, or actively owned runs are also refused without changing committed
+events. See [Recovery and interruption safety](docs/recovery.md) for the complete contract.
+
 ## Security boundary
 
 Each command and descendant receives workspace write access, a private temporary directory, an
@@ -133,6 +149,7 @@ override missing or failing evidence.
 - [Architecture](docs/architecture.md)
 - [Capability sourcing](docs/capability-sourcing.md)
 - [Workflow specification](docs/workflow-spec.md)
+- [Recovery and interruption safety](docs/recovery.md)
 - [Testing and evaluation](docs/testing-and-evaluation.md)
 - [Delivery roadmap](docs/roadmap.md)
 

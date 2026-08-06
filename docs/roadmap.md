@@ -2,7 +2,7 @@
 
 The roadmap is organized around externally verifiable capability gates rather than dates.
 
-Gates 0–2 are implemented. Gate 3 now has a model-tool policy-broker slice and fail-closed native command containment; approvals, broader model tools, configurable policy, and stronger VM or managed backends remain target capabilities.
+Gates 0–2 are implemented. Gate 3 has a model-tool policy-broker slice and fail-closed native command containment. Gate 4 has a committed-boundary recovery slice with exclusive same-host ownership. Approvals, broader model tools, configurable policy, open-operation reconciliation, supervision, and stronger VM or managed backends remain target capabilities.
 
 ## Gate 0: Repository foundation
 
@@ -41,8 +41,9 @@ Gates 0–2 are implemented. Gate 3 now has a model-tool policy-broker slice and
 
 ## Gate 4: Recovery and long-running work
 
-- Runs resume from authoritative events after process interruption.
-- Open operations are reconciled before retry.
+- Runs resume from authoritative events after process interruption. *(Implemented at committed node boundaries.)*
+- Only one same-host process owns append and execution for a run; exited ownership is recoverable. *(Implemented.)*
+- Open operations are reconciled before retry. *(The current slice refuses them without retry.)*
 - A supervisor owns detached workers, health, cancellation, and event replay.
 - Budgets cover attempts, tokens, cost, duration, concurrency, and artifacts.
 - Human wait states survive client detachment.

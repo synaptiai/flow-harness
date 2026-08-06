@@ -1,6 +1,18 @@
-import { access, type FileHandle, mkdir, open, readFile, truncate } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import {
+  access,
+  type FileHandle,
+  mkdir,
+  open,
+  readFile,
+  rename,
+  rm,
+  truncate,
+} from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { z } from "zod";
 
+import type { RecoverableRunEventStore } from "../../application/ports.js";
 import {
   appendRunEvent,
   parseRunEvent,
@@ -41,9 +53,26 @@ interface LedgerRead {
 interface OwnedRun {
   readonly state: RunState;
   readonly committedBytes: number;
+  readonly ownerToken: string;
 }
 
-export class JsonlRunStore {
+interface OwnerRecord {
+  readonly version: 1;
+  readonly pid: number;
+  readonly token: string;
+  readonly acquiredAt: string;
+}
+
+const ownerRecordSchema = z
+  .object({
+    version: z.literal(1),
+    pid: z.number().int().positive().safe(),
+    token: z.string().regex(/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/),
+    acquiredAt: z.iso.datetime({ offset: true }),
+  })
+  .strict();
+
+export class JsonlRunStore implements RecoverableRunEventStore {
   readonly #appendTailByRun = new Map<string, Promise<void>>();
   readonly #ownedRuns = new Map<string, OwnedRun>();
 
@@ -74,8 +103,53 @@ export class JsonlRunStore {
     return Object.freeze([...ledger.events]);
   }
 
+  async claim(runIdInput: string): Promise<readonly RunEvent[]> {
+    const runId = validateRunId(runIdInput);
+    await this.#assertLedgerExists(runId);
+
+    const alreadyOwned = this.#ownedRuns.get(runId);
+    if (alreadyOwned !== undefined) {
+      const ledger = await this.#readCommitted(runId);
+      this.#ownedRuns.set(runId, {
+        state: validateReplay(runId, ledger.events),
+        committedBytes: ledger.committedBytes,
+        ownerToken: alreadyOwned.ownerToken,
+      });
+      return Object.freeze([...ledger.events]);
+    }
+
+    const ownerToken = await this.#acquireOwnership(runId, "recovery");
+    try {
+      const ledger = await this.#readCommitted(runId);
+      this.#ownedRuns.set(runId, {
+        state: validateReplay(runId, ledger.events),
+        committedBytes: ledger.committedBytes,
+        ownerToken,
+      });
+      return Object.freeze([...ledger.events]);
+    } catch (error) {
+      await this.#releaseOwnership(runId, ownerToken).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  async release(runIdInput: string): Promise<void> {
+    const runId = validateRunId(runIdInput);
+    await (this.#appendTailByRun.get(runId) ?? Promise.resolve());
+    const owned = this.#ownedRuns.get(runId);
+    if (owned === undefined) {
+      return;
+    }
+    await this.#releaseOwnership(runId, owned.ownerToken);
+    this.#ownedRuns.delete(runId);
+  }
+
   #eventsPath(runId: string): string {
     return join(this.rootDirectory, runId, "events.jsonl");
+  }
+
+  #ownerDirectory(runId: string): string {
+    return join(this.rootDirectory, runId, ".owner");
   }
 
   async #appendNow(event: RunEvent): Promise<void> {
@@ -94,8 +168,10 @@ export class JsonlRunStore {
     const line = `${JSON.stringify(event)}\n`;
     validateEventSize(runId, line, this.maxEventBytes);
 
+    let ownerToken: string | undefined;
     try {
       await createDurableDirectory(runDirectory);
+      ownerToken = await this.#acquireOwnership(runId, "fresh");
 
       let handle: FileHandle;
       try {
@@ -119,8 +195,12 @@ export class JsonlRunStore {
       this.#ownedRuns.set(runId, {
         state: nextState,
         committedBytes: Buffer.byteLength(line, "utf8"),
+        ownerToken,
       });
     } catch (error) {
+      if (ownerToken !== undefined) {
+        await this.#releaseOwnership(runId, ownerToken).catch(() => undefined);
+      }
       if (error instanceof RunStoreError) {
         throw error;
       }
@@ -134,7 +214,7 @@ export class JsonlRunStore {
     if (owned === undefined) {
       throw new RunStoreError(
         "not_owner",
-        `this store instance does not own run "${runId}"; resume is not supported`,
+        `this store instance does not own run "${runId}"; claim it before appending`,
       );
     }
 
@@ -164,6 +244,7 @@ export class JsonlRunStore {
       this.#ownedRuns.set(runId, {
         state: nextState,
         committedBytes: owned.committedBytes + Buffer.byteLength(line, "utf8"),
+        ownerToken: owned.ownerToken,
       });
     } catch (error) {
       throw new RunStoreError("io", `failed to append run "${runId}"`, { cause: error });
@@ -209,6 +290,182 @@ export class JsonlRunStore {
 
     return { events: Object.freeze(events), committedBytes, hasTornTail };
   }
+
+  async #assertLedgerExists(runId: string): Promise<void> {
+    try {
+      await access(this.#eventsPath(runId));
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        throw new RunStoreError("not_found", `run "${runId}" does not exist`, { cause: error });
+      }
+      throw new RunStoreError("io", `failed to access run "${runId}"`, { cause: error });
+    }
+  }
+
+  async #acquireOwnership(runId: string, intent: "fresh" | "recovery"): Promise<string> {
+    const runDirectory = join(this.rootDirectory, runId);
+    const ownerDirectory = this.#ownerDirectory(runId);
+    const token = randomUUID();
+    const candidateDirectory = join(runDirectory, `.owner-${token}.pending`);
+    const record: OwnerRecord = {
+      version: 1,
+      pid: process.pid,
+      token,
+      acquiredAt: new Date().toISOString(),
+    };
+    let published = false;
+
+    try {
+      await mkdir(candidateDirectory, { mode: 0o700 });
+      await writeDurableFile(join(candidateDirectory, "owner.json"), `${JSON.stringify(record)}\n`);
+      await syncDirectory(candidateDirectory);
+
+      const ownerBeforePublish = await this.#readOwnerRecord(runId);
+      if (ownerBeforePublish !== undefined) {
+        if (isProcessAlive(ownerBeforePublish.pid)) {
+          throw ownershipConflict(runId, ownerBeforePublish.pid, intent);
+        }
+        await this.#retireOwner(runId, runDirectory, ownerDirectory);
+      }
+
+      for (let attempt = 0; attempt < 16; attempt += 1) {
+        try {
+          await rename(candidateDirectory, ownerDirectory);
+          published = true;
+          await syncDirectory(runDirectory);
+          return token;
+        } catch (error) {
+          if (!isRenameCollision(error)) {
+            throw error;
+          }
+        }
+
+        const currentOwner = await this.#readOwnerRecord(runId);
+        if (currentOwner === undefined) {
+          continue;
+        }
+        if (isProcessAlive(currentOwner.pid)) {
+          throw ownershipConflict(runId, currentOwner.pid, intent);
+        }
+
+        await this.#retireOwner(runId, runDirectory, ownerDirectory);
+      }
+
+      throw new RunStoreError(
+        "not_owner",
+        `run "${runId}" ownership changed repeatedly; recovery was refused`,
+      );
+    } catch (error) {
+      if (error instanceof RunStoreError) {
+        throw error;
+      }
+      throw new RunStoreError("io", `failed to acquire ownership of run "${runId}"`, {
+        cause: error,
+      });
+    } finally {
+      if (!published) {
+        await rm(candidateDirectory, { recursive: true, force: true }).catch(() => undefined);
+      }
+    }
+  }
+
+  async #releaseOwnership(runId: string, token: string): Promise<void> {
+    const runDirectory = join(this.rootDirectory, runId);
+    const ownerDirectory = this.#ownerDirectory(runId);
+    const currentOwner = await this.#readOwnerRecord(runId);
+    if (currentOwner === undefined) {
+      return;
+    }
+    if (currentOwner.token !== token) {
+      throw new RunStoreError(
+        "not_owner",
+        `run "${runId}" ownership no longer belongs to this store instance`,
+      );
+    }
+
+    const retiredDirectory = join(runDirectory, `.owner-${randomUUID()}.released`);
+    try {
+      await rename(ownerDirectory, retiredDirectory);
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        return;
+      }
+      throw new RunStoreError("io", `failed to release ownership of run "${runId}"`, {
+        cause: error,
+      });
+    }
+    try {
+      await syncDirectory(runDirectory);
+      await rm(retiredDirectory, { recursive: true, force: true });
+      await syncDirectory(runDirectory);
+    } catch (error) {
+      throw new RunStoreError("io", `failed to finalize ownership release for run "${runId}"`, {
+        cause: error,
+      });
+    }
+  }
+
+  async #readOwnerRecord(runId: string): Promise<OwnerRecord | undefined> {
+    const ownerDirectory = this.#ownerDirectory(runId);
+    const path = join(ownerDirectory, "owner.json");
+    let input: string | undefined;
+    let missingMetadataError: NodeJS.ErrnoException | undefined;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        input = await readFile(path, "utf8");
+        break;
+      } catch (error) {
+        if (!(isNodeError(error) && error.code === "ENOENT")) {
+          throw new RunStoreError("io", `failed to read ownership for run "${runId}"`, {
+            cause: error,
+          });
+        }
+        missingMetadataError = error;
+        try {
+          await access(ownerDirectory);
+        } catch (ownerError) {
+          if (isNodeError(ownerError) && ownerError.code === "ENOENT") {
+            return undefined;
+          }
+          throw new RunStoreError("io", `failed to inspect ownership for run "${runId}"`, {
+            cause: ownerError,
+          });
+        }
+      }
+    }
+    if (input === undefined) {
+      throw new RunStoreError(
+        "corrupt",
+        `run "${runId}" has an ownership directory without metadata`,
+        { cause: missingMetadataError },
+      );
+    }
+
+    try {
+      return ownerRecordSchema.parse(JSON.parse(input));
+    } catch (error) {
+      throw new RunStoreError("corrupt", `run "${runId}" has corrupt ownership metadata`, {
+        cause: error,
+      });
+    }
+  }
+
+  async #retireOwner(runId: string, runDirectory: string, ownerDirectory: string): Promise<void> {
+    const retiredDirectory = join(runDirectory, `.owner-${randomUUID()}.stale`);
+    try {
+      await rename(ownerDirectory, retiredDirectory);
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        return;
+      }
+      throw new RunStoreError("io", `failed to retire stale ownership for run "${runId}"`, {
+        cause: error,
+      });
+    }
+    await syncDirectory(runDirectory);
+    await rm(retiredDirectory, { recursive: true, force: true });
+    await syncDirectory(runDirectory);
+  }
 }
 
 function validateCandidate(runId: string, state: RunState | undefined, event: RunEvent): RunState {
@@ -226,9 +483,16 @@ function validateCandidate(runId: string, state: RunState | undefined, event: Ru
   }
 }
 
-function validateReplay(runId: string, events: readonly RunEvent[]): void {
+function validateReplay(runId: string, events: readonly RunEvent[]): RunState {
   try {
-    reduceRunEvents(events);
+    const state = reduceRunEvents(events);
+    if (state.runId !== runId) {
+      throw new RunReplayError(
+        0,
+        `ledger run id "${state.runId}" does not match directory run id "${runId}"`,
+      );
+    }
+    return state;
   } catch (error) {
     if (error instanceof RunReplayError) {
       throw new RunStoreError("corrupt", `run "${runId}" cannot be replayed: ${error.message}`, {
@@ -290,6 +554,42 @@ async function syncDirectory(directory: string): Promise<void> {
   } finally {
     await handle.close();
   }
+}
+
+async function writeDurableFile(path: string, contents: string): Promise<void> {
+  const handle = await open(path, "wx", 0o600);
+  try {
+    await handle.writeFile(contents, "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ESRCH") {
+      return false;
+    }
+    return true;
+  }
+}
+
+function isRenameCollision(error: unknown): boolean {
+  return isNodeError(error) && (error.code === "EEXIST" || error.code === "ENOTEMPTY");
+}
+
+function ownershipConflict(
+  runId: string,
+  pid: number,
+  intent: "fresh" | "recovery",
+): RunStoreError {
+  return intent === "fresh"
+    ? new RunStoreError("run_exists", `run "${runId}" already exists or is being created`)
+    : new RunStoreError("not_owner", `run "${runId}" is owned by live process ${pid}`);
 }
 
 function validateRunId(runId: string): string {

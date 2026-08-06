@@ -10,6 +10,11 @@ export interface RunEventStore {
   read(runId: string): Promise<readonly RunEvent[]>;
 }
 
+export interface RecoverableRunEventStore extends RunEventStore {
+  claim(runId: string): Promise<readonly RunEvent[]>;
+  release(runId: string): Promise<void>;
+}
+
 export interface NodeExecutionContext {
   readonly runId: string;
   readonly workflowId: string;

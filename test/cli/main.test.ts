@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { armForcedExit, isDirectEntry, main, resolveDirectExitCode } from "../../src/cli/main.js";
 
 describe("flow CLI", () => {
-  it("prints help without requiring provider configuration", async () => {
+  it("prints resume help without requiring provider configuration", async () => {
     const output: string[] = [];
 
     const exitCode = await main(["--help"], {
@@ -20,7 +20,28 @@ describe("flow CLI", () => {
     expect(output.join("\n")).toContain("Provider-neutral coding-agent harness");
     expect(output.join("\n")).toContain("flow validate");
     expect(output.join("\n")).toContain("flow run");
+    expect(output.join("\n")).toContain("flow resume");
     expect(output.join("\n")).toContain("flow inspect");
+  });
+
+  it("requires an explicit run id for resume", async () => {
+    const output: string[] = [];
+
+    const exitCode = await main(
+      ["resume", "workflow.yaml"],
+      {
+        stdout: (text) => output.push(text),
+        stderr: (text) => output.push(text),
+      },
+      {
+        readTextFile: async () => {
+          throw new Error("workflow must not be read before usage is valid");
+        },
+      },
+    );
+
+    expect(exitCode).toBe(2);
+    expect(output.join("\n")).toContain("resume requires --run-id <id>");
   });
 
   it("rejects unknown commands with a usage error", async () => {

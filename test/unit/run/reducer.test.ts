@@ -353,6 +353,35 @@ describe("reduceRunEvents", () => {
     });
   });
 
+  it("records a recovery boundary without changing committed node outcomes", () => {
+    const state = reduceRunEvents([
+      runStarted(),
+      { ...base(2), type: "node_started", nodeId: "node-version", attempt: 1 },
+      {
+        ...base(3),
+        type: "node_succeeded",
+        nodeId: "node-version",
+        attempt: 1,
+        evidence: commandEvidence(0),
+      },
+      { ...base(4), type: "run_resumed" },
+    ]);
+
+    expect(state).toMatchObject({ status: "running", lastSequence: 4 });
+    expect(state.nodes["node-version"]).toMatchObject({ status: "succeeded", attempt: 1 });
+    expect(state.nodes.typecheck).toMatchObject({ status: "pending", attempt: 0 });
+  });
+
+  it("rejects recovery while a node attempt remains open", () => {
+    expect(() =>
+      reduceRunEvents([
+        runStarted(),
+        { ...base(2), type: "node_started", nodeId: "node-version", attempt: 1 },
+        { ...base(3), type: "run_resumed" },
+      ]),
+    ).toThrowError(/node "node-version" attempt 1 remains running/i);
+  });
+
   it("rejects cancellation while a node remains running", () => {
     expect(() =>
       reduceRunEvents([
