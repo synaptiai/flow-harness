@@ -3,14 +3,12 @@ name: CI
 on:
   pull_request:
   push:
-    branches:
-      - main
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.head.sha || github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -65,7 +63,6 @@ jobs:
           [[ "$help_output" == *"flow validate"* ]]
 
   dependency-audit:
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
