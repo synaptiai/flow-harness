@@ -29,6 +29,7 @@ describe("PiAgentExecutor live", () => {
       workflowId: "live-pi-workflow",
       attempt: 1,
       cwd: process.cwd(),
+      protectedPaths: [],
     });
 
     expect(outcome).toMatchObject({

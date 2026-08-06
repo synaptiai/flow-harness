@@ -191,6 +191,19 @@ nodes:
     expectCompilationFailure(source, "invalid_schema", "nodes.0.command");
   });
 
+  it.each([
+    ["executable", 'command: { executable: "node\\0shim", args: [] }'],
+    ["argument", 'command: { executable: node, args: ["value\\0suffix"] }'],
+  ])("rejects a NUL byte in a command %s", (_field, command) => {
+    const source = workflowWithNodes(`
+  - id: verify
+    type: command
+    ${command}
+`);
+
+    expectCompilationFailure(source, "invalid_schema", "nodes.0.command");
+  });
+
   it("reports YAML syntax errors separately from schema errors", () => {
     expectCompilationFailure("nodes: [", "invalid_yaml", "$");
   });

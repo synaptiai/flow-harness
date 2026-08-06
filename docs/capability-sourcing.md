@@ -2,7 +2,7 @@
 
 ## Decision
 
-Flow owns every semantic that determines whether work is allowed, complete, recoverable, or correct. Pi initially supplies the model-facing machinery. OMP and Prime Agent are reference implementations and possible sources for carefully isolated future capability packages.
+Flow owns every semantic that determines whether work is allowed, contained, complete, recoverable, or correct. Pi initially supplies the model-facing machinery. Anthropic Sandbox Runtime (SRT) supplies the first command-containment primitive behind a Flow-owned port. OMP and Prime Agent are reference implementations and possible sources for carefully isolated future capability packages.
 
 The first runtime will embed [`@earendil-works/pi-coding-agent`](https://pi.dev/docs/latest/sdk) behind a narrow Flow-owned executor. The package is pinned exactly and all events are translated before persistence.
 
@@ -17,7 +17,7 @@ Pi's experimental `AgentHarness` API is not a foundation for the first release. 
 | Typed node inputs and outputs | Transitions must not depend on parsing persuasive prose |
 | Goals, budgets, and loop termination | Exhausted resources never imply successful completion |
 | Evidence and evaluation | A worker cannot authoritatively grade its own work |
-| Policy, approvals, and tool broker | Pi and Prime processes normally run with the user's operating-system authority |
+| Policy, approvals, tool broker, and sandbox profile | Authorization and containment are Flow product semantics even when enforcement is delegated |
 | Context assembly and redaction | Context composition is a major cost, safety, and quality control |
 | Event ledger and recovery | Pi transcripts cannot determine graph position or side-effect certainty |
 | Model routing | Flow selects capability and cost profiles while Pi supplies models |
@@ -35,7 +35,7 @@ Pi's experimental `AgentHarness` API is not a foundation for the first release. 
 | Streaming events | Subscribe and translate | Persist versioned Flow events, not raw Pi events |
 | Cancellation and idle settlement | Reuse mechanics | Map into Flow node lifecycle semantics |
 | Per-node model and thinking level | Reuse execution support | Selection remains Flow policy |
-| Exact tool allowlists | Current defense in depth | The initial adapter passes the exact allowlist to Pi; the Gate 3 broker will become the per-call authorization boundary |
+| Exact tool allowlists | Current defense in depth | The adapter passes the exact allowlist to Pi; Flow's broker remains the per-call authorization boundary |
 | Basic coding tools | Flow-owned workspace-confined `read` and `ls` definitions built on Pi's tool interfaces | Built-in Pi tools are disabled; no ambient path access or helper-binary download is inherited |
 | Custom tool API | Present Flow broker tools to the model | Tool schemas remain Flow-owned |
 | Context transformation and compaction | Reuse mechanics | Durable state remains outside context |
@@ -44,13 +44,29 @@ Pi's experimental `AgentHarness` API is not a foundation for the first release. 
 
 Pi is MIT-licensed. Its fast release cadence and breaking changes create meaningful update risk, so Flow pins exact versions and maintains adapter conformance tests. See the [Pi repository](https://github.com/earendil-works/pi) and [agent-core documentation](https://github.com/earendil-works/pi/blob/main/packages/agent/README.md).
 
+## Imported containment primitive
+
+Pi's official containment documentation demonstrates three useful deployment shapes: an SRT extension for lightweight native isolation, a Gondolin extension that routes tools into a Linux microVM, and container or managed sandbox deployment. Flow adopts the proven adapter seam, not Pi's extension policy.
+
+The first adapter pins [`@anthropic-ai/sandbox-runtime`](https://github.com/anthropic-experimental/sandbox-runtime) exactly. SRT provides Seatbelt enforcement on macOS and bubblewrap, network namespaces, and seccomp enforcement on Linux. Flow adds the security semantics required by its harness contract:
+
+- no unsandboxed fallback;
+- no default network allowlist;
+- no inherited environment or provider credentials;
+- protection for the actual run store and sensitive project state;
+- fatal handling of dependency warnings that indicate degraded isolation;
+- required teardown before success; and
+- durable backend, version, profile, and policy-digest evidence.
+
+SRT is a beta native sandbox, so it is not the final answer for hostile multi-tenant work. The `CommandSandbox` port preserves a path to [Gondolin](https://github.com/earendil-works/gondolin), OpenShell, containers, or remote sandboxes when a VM-grade or centrally managed boundary is required.
+
 ## Learned or selectively ported from OMP
 
 OMP is a Pi fork with a broad TypeScript, Bun, and Rust-native product surface. Importing it alongside upstream Pi would create two diverging copies of the same agent abstractions. Flow will not depend on OMP initially.
 
 | Capability | Treatment |
 | --- | --- |
-| Read/write/exec approval tiers | Reimplement fail-closed, with argument-dependent authority |
+| Read/write/exec approval tiers | Reimplement fail-closed, with argument-dependent authority; do not confuse approval with containment |
 | Hash-anchored edits | Benchmark and potentially port as a provenance-recorded Flow tool |
 | Diagnostics after writes | Add through an optional language-service capability |
 | LSP and debugger operations | Optional first-party packages, outside scheduler core |
@@ -106,4 +122,4 @@ Additional Flow rules:
 - No package increases its own authority.
 - No executor declares its output accepted.
 - No retry repeats an unresolved consequential side effect.
-- Only composition and bootstrap code may import the Pi runtime adapter.
+- Only infrastructure adapters and composition code may import Pi or sandbox-runtime packages.

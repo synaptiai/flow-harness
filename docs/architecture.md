@@ -6,7 +6,7 @@ Flow turns a collection of useful software-development practices into an enforce
 
 The standalone harness reverses that relationship. Flow owns workflow execution and delegates only bounded node work to an embedded agent runtime.
 
-This document describes the target architecture unless a section is explicitly labeled as the current executable slice. The delivery roadmap is the source of truth for implementation status. Gates 1 and 2 currently provide `validate`, sequential `run`, `inspect`, optional versioned goal contracts, command-bound criterion evaluation, command and bounded Pi agent nodes, cancellation, and replayable local event ledgers. The first Gate 3 slice routes model-requested workspace reads through a runtime-neutral policy broker and retains its decisions as evidence. Initialization, the TUI/daemon, resume, approvals, write/execute/network model tools, OS-level sandboxing, probabilistic evaluators, packages, and loops remain later work.
+This document describes the target architecture unless a section is explicitly labeled as the current executable slice. The delivery roadmap is the source of truth for implementation status. Gates 1 and 2 currently provide `validate`, sequential `run`, `inspect`, optional versioned goal contracts, command-bound criterion evaluation, command and bounded Pi agent nodes, cancellation, and replayable local event ledgers. Gate 3 now includes a runtime-neutral policy broker for model-requested reads and a fail-closed native sandbox for every command node. Initialization, the TUI/daemon, resume, approvals, write/execute/network model tools, probabilistic evaluators, packages, graph loops, and stronger VM or managed sandbox backends remain later work.
 
 ## Target flows
 
@@ -86,7 +86,13 @@ Implements one Flow-owned `AgentExecutor` port. It creates node-scoped sessions,
 
 ### Tool broker
 
-The current broker normalizes and canonically resolves every model-requested `read` and `ls` filesystem operation, derives its authority class, authorizes only declared operations inside the workspace, and emits bounded decisions tied to the exact run/node attempt. The domain contract already distinguishes read, write, execute, network, credential, and destructive authority without importing runtime types. Exact approval grants, broader tools, and OS-level sandbox controls remain subsequent Gate 3 slices. Tool implementations cannot mutate scheduler state.
+The current broker normalizes and canonically resolves every model-requested `read` and `ls` filesystem operation, derives its authority class, authorizes only declared operations inside the workspace, and emits bounded decisions tied to the exact run/node attempt. The domain contract already distinguishes read, write, execute, network, credential, and destructive authority without importing runtime types. Exact approval grants and broader model tools remain subsequent Gate 3 slices. Tool implementations cannot mutate scheduler state.
+
+### Command sandbox
+
+Every command executor depends on a Flow-owned `CommandSandbox` port. The production composition uses Anthropic Sandbox Runtime (SRT) with a fixed, versioned profile: workspace and private-temp writes are allowed; network, home-directory reads, ambient credentials, run-store writes, and writes to sensitive project state are denied. Sandbox dependency errors and degraded-security warnings fail before spawn. Cleanup must complete before a node can succeed.
+
+The port isolates Flow from the backend. Pi's official SRT and Gondolin examples validate this tool-routing seam; Flow imports SRT as a containment primitive but owns policy, lifecycle, evidence, and failure semantics. A future Gondolin, OpenShell, or container adapter can implement the same port without changing workflow or ledger contracts.
 
 ### Event and evidence store
 
@@ -96,21 +102,20 @@ Persists transitions before the scheduler advances. Model transcripts are option
 
 The current goal evaluator is a pure domain transition: it receives only a compiled criterion-to-verifier binding and authoritative node outcome metadata. It receives no prompt, transcript, filesystem handle, executor, or tool, and therefore cannot mutate the workspace or infer acceptance from implementation rationale. Successful command evidence accepts a criterion; normal non-zero evidence rejects it; timeouts, signals, missing evidence, and unexpected evidence kinds are inconclusive. An LLM evaluator, when later unavoidable, must receive evidence rather than the implementation transcript and have no workspace mutation tools.
 
-## Initial trust boundary
+## Current trust boundaries
 
-Pi intentionally has no built-in sandbox and normally runs with the invoking user's operating-system permissions. Flow's first executable slice is therefore a local, trusted-workspace harness—not a security boundary.
+Pi intentionally has no built-in security boundary and the host-side agent runtime still runs with the invoking user's operating-system permissions. Flow therefore distinguishes the agent-tool authorization boundary from the command containment boundary.
 
-Until an enforceable sandbox lands:
+- Agent nodes receive only Flow-provided `read` and `ls` tools; implicit project extensions and resource discovery are disabled. The Flow policy broker denies ordinary traversal and canonical symlink escapes before reading.
+- Every command node and descendant executes inside SRT on Linux or macOS. Flow preserves argv boundaries through an audited POSIX encoder, passes an explicit environment allowlist, denies network and undeclared Unix sockets, and protects the actual run-store path.
+- Missing dependencies, seccomp degradation, unsupported platforms, initialization errors, and invalid launch descriptors fail closed with no command spawn. There is no unsandboxed fallback.
+- Each new command result records the backend, exact backend version, named profile, and semantic policy digest. Backend and profile values use bounded machine identifiers rather than an SRT-only persisted union, preserving the event shape for future adapters. Older ledgers remain readable because the added evidence field is optional during replay.
 
-- Agent nodes receive only Flow-provided tools; implicit project extensions and resource discovery are disabled.
-- The Pi adapter registers exact Flow-owned `read` and `ls` tool definitions, disables Pi's built-in tools, and routes their filesystem operations through an attempt-scoped Flow policy broker. Relative traversal and canonical symlink escapes are denied before file contents or directory entries are accessed.
-- Verification commands use explicit argument arrays and never shell command strings.
-- Workflow validation can reject known-disallowed configuration, but it cannot contain a compromised process.
-- Untrusted or unattended workloads must run inside an operator-provided container or stronger isolation boundary.
+Native sandboxing is not equivalent to a microVM. SRT is a beta dependency built on Seatbelt on macOS and bubblewrap, namespaces, and seccomp on Linux. Kernel or sandbox-runtime vulnerabilities remain outside Flow's enforcement model, and the host-side Pi process is not contained by this command adapter. Hostile workloads still require a reviewed container, microVM, Gondolin, OpenShell, or managed isolation boundary.
 
-The application-level workspace broker prevents ordinary traversal and symlink escapes, but pathname authorization and use are not atomic against a concurrently hostile process. This trusted-workspace slice does not claim to close that operating-system race.
+The application-level workspace broker prevents ordinary traversal and symlink escapes, but pathname authorization and use are not atomic against a concurrently hostile process. The command sandbox reduces the authority of command descendants; it does not turn the whole harness into a complete host security boundary.
 
-The later sandbox gate must isolate filesystem, process, network, credentials, and child-process authority at the operating-system or virtualization layer. It cannot be satisfied by prompts, tool names, approval UI, or worktrees alone.
+Approval remains a separate concern. OMP-style allow/prompt/deny rules can decide whether an exact operation is authorized, but authorization cannot replace containment of that operation's transitive effects.
 
 ## Target invariants
 
@@ -134,6 +139,8 @@ The later sandbox gate must isolate filesystem, process, network, credentials, a
 | Provider outage or rate limit | Record the attempt and apply only the declared bounded retry or fallback policy |
 | Malformed model output | Schema-reject, retry within the node budget, then block with evidence |
 | Unauthorized tool request | Deny before execution and record a policy event |
+| Sandbox unavailable or degraded | Fail before command spawn; never fall back to host execution |
+| Sandbox cleanup failure after spawn | Fail with uncertain side-effect status; never report command success |
 | Tool timeout or crash | Terminate the process tree where possible and classify side-effect uncertainty |
 | Partial external mutation | Reconcile authoritative external state; compensate only when explicitly supported |
 | Verification failure | Record failing or inconclusive evidence and never coerce success |

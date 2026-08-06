@@ -101,6 +101,28 @@ describe("reduceRunEvents", () => {
     ).toEqual([]);
   });
 
+  it("preserves backend-neutral sandbox evidence for future adapters", () => {
+    const parsed = parseRunEvent({
+      ...base(3),
+      type: "node_succeeded",
+      nodeId: "node-version",
+      attempt: 1,
+      evidence: {
+        ...commandEvidence(0),
+        sandbox: {
+          backend: "gondolin",
+          backendVersion: "1.2.3",
+          profile: "workspace-write-network-deny-v1",
+          policyDigest: "d".repeat(64),
+        },
+      },
+    });
+
+    expect(parsed.type === "node_succeeded" ? parsed.evidence : undefined).toMatchObject({
+      sandbox: { backend: "gondolin", backendVersion: "1.2.3" },
+    });
+  });
+
   it("rejects a tampered policy request digest during replay", () => {
     const policy = new PolicyBroker(
       {

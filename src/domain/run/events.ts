@@ -32,6 +32,14 @@ export interface CommandEvidence {
   readonly stderrTruncated: boolean;
   readonly timedOut: boolean;
   readonly durationMs: number;
+  readonly sandbox?: SandboxEvidence;
+}
+
+export interface SandboxEvidence {
+  readonly backend: string;
+  readonly backendVersion: string;
+  readonly profile: string;
+  readonly policyDigest: string;
 }
 
 export interface AgentEvidence {
@@ -169,6 +177,25 @@ const agentOutputSchema = z.string().refine((value) => Buffer.byteLength(value, 
   message: "agent output must not exceed 65536 UTF-8 bytes",
 });
 
+const sandboxIdentifierSchema = z
+  .string()
+  .min(1)
+  .max(96)
+  .regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/);
+
+const sandboxEvidenceSchema = z
+  .object({
+    backend: sandboxIdentifierSchema,
+    backendVersion: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^[A-Za-z0-9][A-Za-z0-9._+-]*$/),
+    profile: sandboxIdentifierSchema,
+    policyDigest: z.string().regex(/^[a-f0-9]{64}$/),
+  })
+  .strict();
+
 const eventBaseShape = {
   version: z.literal(1),
   sequence: z.number().int().positive(),
@@ -198,6 +225,7 @@ const commandEvidenceSchema = z
     stderrTruncated: z.boolean(),
     timedOut: z.boolean(),
     durationMs: z.number().nonnegative(),
+    sandbox: sandboxEvidenceSchema.optional(),
   })
   .strict();
 

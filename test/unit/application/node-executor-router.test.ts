@@ -13,6 +13,7 @@ const context: NodeExecutionContext = {
   workflowId: "router-workflow",
   attempt: 1,
   cwd: process.cwd(),
+  protectedPaths: [],
 };
 
 describe("NodeExecutorRouter", () => {

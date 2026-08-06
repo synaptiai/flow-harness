@@ -40,6 +40,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "0.0.70",
     "@earendil-works/pi-coding-agent": "0.84.0",
     "yaml": "2.9.0",
     "zod": "4.4.3"

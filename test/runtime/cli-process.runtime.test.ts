@@ -93,6 +93,8 @@ describe("compiled Flow process", () => {
       "signal-run",
       "--runs-dir",
       runsDirectory,
+      "--cwd",
+      directory,
     ]);
     await waitForFile(grandchildStarted);
     execution.child.kill("SIGINT");
@@ -124,7 +126,16 @@ describe("compiled Flow process", () => {
       commandWorkflow("collision-workflow", "setTimeout(() => {}, 250);"),
       "utf8",
     );
-    const args = ["run", workflowPath, "--run-id", "shared-run", "--runs-dir", runsDirectory];
+    const args = [
+      "run",
+      workflowPath,
+      "--run-id",
+      "shared-run",
+      "--runs-dir",
+      runsDirectory,
+      "--cwd",
+      directory,
+    ];
 
     const first = spawnFlow(args);
     const second = spawnFlow(args);

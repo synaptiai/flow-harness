@@ -12,6 +12,16 @@ Flow is licensed under the Apache License 2.0. It depends on or studies the foll
 
 Pi's dependency packages retain their own license metadata in the installed dependency tree. A Flow distribution that bundles dependency source or binaries must preserve all applicable notices.
 
+## Anthropic Sandbox Runtime
+
+- Project: [anthropic-experimental/sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime)
+- Package: `@anthropic-ai/sandbox-runtime` 0.0.70
+- License: Apache-2.0
+- Use: direct runtime dependency behind Flow's command-sandbox adapter
+- Copied source: none
+
+Sandbox Runtime and its dependency packages retain their own license metadata in the installed dependency tree. Flow's profile and adapter are independently implemented; Pi's example extension was used as an architecture reference only.
+
 ## YAML
 
 - Project: [eemeli/yaml](https://github.com/eemeli/yaml)

@@ -17,6 +17,7 @@ const context: NodeExecutionContext = {
   workflowId: "agent-workflow",
   attempt: 1,
   cwd: process.cwd(),
+  protectedPaths: [],
 };
 
 describe("PiAgentExecutor", () => {

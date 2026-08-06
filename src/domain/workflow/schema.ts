@@ -35,7 +35,12 @@ const commandNodeSchema = z
           .default([]),
         timeoutMs: z.number().int().positive().max(86_400_000).default(60_000),
       })
-      .strict(),
+      .strict()
+      .refine(
+        (command) =>
+          !command.executable.includes("\0") && command.args.every((arg) => !arg.includes("\0")),
+        "command values must not contain NUL bytes",
+      ),
   })
   .strict();
 

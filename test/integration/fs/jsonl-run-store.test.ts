@@ -90,12 +90,28 @@ describe("JsonlRunStore", () => {
         stderrTruncated: false,
         timedOut: false,
         durationMs: 1,
+        sandbox: {
+          backend: "anthropic-sandbox-runtime",
+          backendVersion: "0.0.70",
+          profile: "workspace-write-network-deny-v1",
+          policyDigest: "d".repeat(64),
+        },
       },
     });
     await store.append({ ...base(4), type: "run_succeeded" });
 
     const events = await store.read("run-1");
     expect(events.at(-1)?.type).toBe("run_succeeded");
+    expect(events[2]).toMatchObject({
+      evidence: {
+        sandbox: {
+          backend: "anthropic-sandbox-runtime",
+          backendVersion: "0.0.70",
+          profile: "workspace-write-network-deny-v1",
+          policyDigest: "d".repeat(64),
+        },
+      },
+    });
   });
 
   it("atomically grants a run id to only one store instance", async () => {

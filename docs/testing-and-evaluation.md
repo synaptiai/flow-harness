@@ -18,7 +18,7 @@ It verifies formatting, lint rules, strict TypeScript contracts, all default tes
 | Application unit | Scheduler ordering, failure propagation, and executor authority | Test-only in-memory ports |
 | Infrastructure integration | Real JSONL persistence and real child processes | Temporary directories and local processes |
 | CLI integration | Validate, run, persist, and inspect through production composition | Temporary run ledgers and local processes |
-| Compiled-process integration | Direct-entry signal handling, process-group termination, and cross-process run claiming | Built CLI, temporary run ledgers, and local process trees |
+| Compiled-process integration | Direct-entry signal handling, process-group termination, cross-process run claiming, and real sandbox boundaries | Built CLI, temporary run ledgers, local process trees, native sandbox primitives, and loopback networking |
 | Pi adapter contract | Exact model/tool request translation, policy-broker routing, setup races, timeout settlement, and error classification | Temporary workspace and test-only runner at the SDK seam |
 | Pi SDK integration | Real `ModelRuntime` and `createAgentSession` composition and streaming | Deterministic in-process provider; no network or credentials |
 | Live Pi | Provider authentication, streaming, cancellation, and model compatibility | Opt-in network and provider cost |
@@ -36,7 +36,9 @@ node dist/cli/main.js run examples/verify-foundation.workflow.yaml --run-id smok
 node dist/cli/main.js inspect smoke
 ```
 
-The example uses the real argv-only command executor, accepts a declared goal from terminal typecheck evidence, and requires no model credentials. `npm run test:runtime` additionally spawns the compiled entrypoint, delivers `SIGINT`, proves its POSIX command process group terminates, verifies the forced-exit guard for leaked provider handles, and races separate processes for one run identifier. The package supports Linux and macOS; Windows command nodes fail before spawn because descendant containment is not yet implemented.
+The example uses the real argv-only command executor through the production sandbox, accepts a declared goal from terminal typecheck evidence, and requires no model credentials. `npm run test:runtime` additionally spawns the compiled entrypoint, delivers `SIGINT`, proves its POSIX command process group terminates, verifies the forced-exit guard for leaked provider handles, races separate processes for one run identifier, and attacks the real filesystem, environment, run-store, and loopback-network boundary. The package supports Linux and macOS; Windows command nodes fail before spawn because descendant containment is not yet implemented.
+
+Runtime sandbox tests require the host capabilities listed in the README. A sandbox dependency warning is a test failure, not a skip. Running Flow's sandbox suite from inside another restrictive sandbox can prevent SRT from creating its internal Unix socket or namespace; run the suite directly on the host or in a CI runner configured for nested containment. This operational accommodation must not weaken the production profile.
 
 ## Live Pi test policy
 
