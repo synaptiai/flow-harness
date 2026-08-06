@@ -98,6 +98,10 @@ explicit environment allowlist, and no network. The actual run store, `.flow`, `
 files, and key files are write-protected. If the sandbox is unavailable or reports degraded
 isolation, Flow does not spawn the command.
 
+On Linux, Flow explicitly re-exposes the canonical packaged SRT seccomp helper as a read-only
+runtime-support file when Flow is installed outside the selected workspace. The rest of the user
+home remains denied.
+
 Agent nodes are different: the host-side Pi runtime runs with the invoking user's operating-system
 permissions and currently receives only explicitly declared Flow-owned `read` and `ls` tools.
 Their filesystem operations are canonically resolved and authorized by the Flow policy broker.

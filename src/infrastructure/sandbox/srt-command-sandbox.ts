@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 
 import type {
   CommandSandbox,
@@ -34,6 +34,7 @@ const SEMANTIC_POLICY = Object.freeze({
     home: "deny-read",
     workspace: "read-write",
     privateTemp: "read-write",
+    runtimeSupport: "read-only",
     runStore: "deny-write",
     flowState: "deny-write",
     gitState: "deny-write",
@@ -73,6 +74,7 @@ export interface SrtRuntimeConfig {
   readonly allowPty: boolean;
   readonly enableWeakerNestedSandbox: boolean;
   readonly enableWeakerNetworkIsolation: boolean;
+  readonly seccomp?: { readonly applyPath: string };
 }
 
 export interface SrtSandboxManager {
@@ -101,6 +103,7 @@ export interface SrtCommandSandboxOptions {
   readonly createTemporaryDirectory?: () => Promise<string>;
   readonly removeTemporaryDirectory?: (path: string) => Promise<void>;
   readonly cleanupTimeoutMs?: number;
+  readonly seccompApplyPath?: string;
 }
 
 export class SrtCommandSandbox implements CommandSandbox {
@@ -113,6 +116,7 @@ export class SrtCommandSandbox implements CommandSandbox {
   readonly #manager: SrtSandboxManager;
   readonly #platform: NodeJS.Platform;
   readonly #removeTemporaryDirectory: (path: string) => Promise<void>;
+  readonly #seccompApplyPath: string | undefined;
 
   constructor(manager: SrtSandboxManager, options: SrtCommandSandboxOptions) {
     if (options.backendVersion.length === 0) {
@@ -130,6 +134,7 @@ export class SrtCommandSandbox implements CommandSandbox {
       options.removeTemporaryDirectory ??
       ((path) => rm(path, { recursive: true, force: true, maxRetries: 2 }));
     this.#cleanupTimeoutMs = options.cleanupTimeoutMs ?? 5_000;
+    this.#seccompApplyPath = options.seccompApplyPath;
     if (!Number.isSafeInteger(this.#cleanupTimeoutMs) || this.#cleanupTimeoutMs <= 0) {
       throw new RangeError("cleanupTimeoutMs must be a positive safe integer");
     }
@@ -161,6 +166,10 @@ export class SrtCommandSandbox implements CommandSandbox {
       const canonicalProtectedPaths = await Promise.all(
         request.protectedPaths.map((path) => this.#canonicalize(path)),
       );
+      const canonicalSeccompApplyPath =
+        this.#seccompApplyPath === undefined
+          ? undefined
+          : await this.#canonicalize(this.#seccompApplyPath);
       privateTemporaryDirectory = await this.#createTemporaryDirectory();
 
       const dependencies = this.#manager.checkDependencies();
@@ -174,6 +183,7 @@ export class SrtCommandSandbox implements CommandSandbox {
         privateTemporaryDirectory,
         canonicalProtectedPaths,
         this.#homeDirectory,
+        canonicalSeccompApplyPath,
       );
       initializationAttempted = true;
       await this.#manager.initialize(config);
@@ -274,7 +284,16 @@ function createRuntimeConfig(
   privateTemporaryDirectory: string,
   protectedPaths: readonly string[],
   homeDirectory: string,
+  seccompApplyPath: string | undefined,
 ): SrtRuntimeConfig {
+  const allowRead = [workspace, privateTemporaryDirectory];
+  if (
+    seccompApplyPath !== undefined &&
+    !isAtOrWithin(seccompApplyPath, workspace) &&
+    !isAtOrWithin(seccompApplyPath, privateTemporaryDirectory)
+  ) {
+    allowRead.push(seccompApplyPath);
+  }
   return Object.freeze({
     network: Object.freeze({
       allowedDomains: Object.freeze([]),
@@ -286,7 +305,7 @@ function createRuntimeConfig(
     }),
     filesystem: Object.freeze({
       denyRead: Object.freeze([homeDirectory]),
-      allowRead: Object.freeze([workspace, privateTemporaryDirectory]),
+      allowRead: Object.freeze(allowRead),
       allowWrite: Object.freeze([workspace, privateTemporaryDirectory]),
       denyWrite: Object.freeze([
         ...new Set([
@@ -305,7 +324,20 @@ function createRuntimeConfig(
     allowPty: false,
     enableWeakerNestedSandbox: false,
     enableWeakerNetworkIsolation: false,
+    ...(seccompApplyPath === undefined
+      ? {}
+      : { seccomp: Object.freeze({ applyPath: seccompApplyPath }) }),
   });
+}
+
+function isAtOrWithin(path: string, directory: string): boolean {
+  const pathFromDirectory = relative(directory, path);
+  return (
+    pathFromDirectory === "" ||
+    (pathFromDirectory !== ".." &&
+      !pathFromDirectory.startsWith(`..${sep}`) &&
+      !isAbsolute(pathFromDirectory))
+  );
 }
 
 function buildSafeEnvironment(

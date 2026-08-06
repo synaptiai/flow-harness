@@ -101,6 +101,12 @@ dedicated ephemeral runner; it does not enable SRT's weaker nested-sandbox mode.
 guidance warns that the equivalent sysctl is host-wide and directs shared hosts to a scoped
 AppArmor profile instead.
 
+The next hosted run showed that a workflow outside Flow's installation workspace could not see
+SRT's packaged Linux seccomp helper after the home-directory read denial was applied. Flow now
+resolves the helper canonically, supplies it as SRT's explicit apply path, and re-exposes only that
+file read-only. The semantic policy digest and public boundary documentation include this runtime
+support exception; Unix-socket filtering and the remaining home denial stay enabled.
+
 ## Failure modes
 
 | Condition | Required behavior |
