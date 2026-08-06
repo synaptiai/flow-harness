@@ -1,0 +1,23 @@
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata:
+  id: verify-foundation
+  description: Verify the repository foundation without invoking a model.
+nodes:
+  - id: node-version
+    type: command
+    command:
+      executable: node
+      args:
+        - --version
+      timeoutMs: 10000
+  - id: typecheck
+    type: command
+    dependsOn:
+      - node-version
+    command:
+      executable: npm
+      args:
+        - run
+        - typecheck
+      timeoutMs: 120000

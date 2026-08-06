@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.19.0
+          cache: npm
+
+      - name: Install exact dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Check formatting
+        run: npm run format:check
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Test with coverage floors
+        run: npm run test:coverage
+
+      - name: Build
+        run: npm run build
+
+      - name: Test compiled process behavior
+        run: npm run test:runtime
+
+      - name: Smoke-test compiled CLI
+        run: |
+          node dist/cli/main.js --help
+          node dist/cli/main.js validate examples/verify-foundation.workflow.yaml
+          runs_dir="$(mktemp -d)"
+          node dist/cli/main.js run examples/verify-foundation.workflow.yaml --run-id ci-smoke --runs-dir "$runs_dir"
+          node dist/cli/main.js inspect ci-smoke --runs-dir "$runs_dir"
+
+      - name: Verify installable package
+        run: |
+          package_dir="$(mktemp -d)"
+          tarball="$(npm pack --pack-destination "$package_dir")"
+          npm install --ignore-scripts --prefix "$package_dir/consumer" "$package_dir/$tarball"
+          help_output="$("$package_dir/consumer/node_modules/.bin/flow" --help)"
+          [[ "$help_output" == *"flow validate"* ]]
+
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0

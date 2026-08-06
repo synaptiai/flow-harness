@@ -32,11 +32,30 @@ Pi is the initial agent runtime because its SDK offers a small, embeddable agent
 
 - [Architecture](docs/architecture.md)
 - [Capability sourcing](docs/capability-sourcing.md)
+- [Workflow specification](docs/workflow-spec.md)
+- [Testing and evaluation](docs/testing-and-evaluation.md)
 - [Delivery roadmap](docs/roadmap.md)
 
 ## Project status
 
-The repository is being bootstrapped around the first executable vertical slice: workflow validation, dependency-ordered execution, durable transitions, and an embedded Pi executor boundary.
+The first executable vertical slice supports strict workflow validation, sequential dependency-ordered execution, durable JSONL transitions, command verification, run inspection, and an embedded Pi executor boundary.
+
+## Try the vertical slice
+
+Flow requires Node.js 22.19 or newer.
+
+```sh
+npm install
+npm run check
+npm run build
+node dist/cli/main.js validate examples/verify-foundation.workflow.yaml
+node dist/cli/main.js run examples/verify-foundation.workflow.yaml --run-id first-run
+node dist/cli/main.js inspect first-run
+```
+
+The example uses the production command executor and requires no model credentials. Agent nodes use provider credentials configured through Pi and currently receive only explicitly declared read-only tools.
+
+Pi has no built-in sandbox. This release is intended for local, trusted workspaces; use an operator-provided container or stronger boundary for untrusted work.
 
 ## License
 
