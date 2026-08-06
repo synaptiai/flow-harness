@@ -1,13 +1,12 @@
-import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import {
-  createWorkspacePathGuard,
-  createWorkspaceReadTools,
-} from "../../../../src/infrastructure/pi/workspace-read-tools.js";
+import { PolicyBroker } from "../../../../src/domain/policy/broker.js";
+
+import { createWorkspaceReadTools } from "../../../../src/infrastructure/pi/workspace-read-tools.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -23,7 +22,7 @@ describe("workspace-confined Pi tools", () => {
   it("registers only Flow-owned tool names", async () => {
     const root = await createTemporaryDirectory();
 
-    const tools = await createWorkspaceReadTools(root, ["read", "ls"]);
+    const tools = await createWorkspaceReadTools(root, ["read", "ls"], policyBroker());
 
     expect(tools.names).toEqual(["flow_read", "flow_ls"]);
     expect(tools.definitions.map((tool) => tool.name)).toEqual(["flow_read", "flow_ls"]);
@@ -39,7 +38,8 @@ describe("workspace-confined Pi tools", () => {
     const outsideFile = join(outside, "secret.txt");
     await writeFile(insideFile, "inside", "utf8");
     await writeFile(outsideFile, "secret", "utf8");
-    const tools = await createWorkspaceReadTools(root, ["read"]);
+    const policy = policyBroker();
+    const tools = await createWorkspaceReadTools(root, ["read"], policy);
     const readTool = tools.definitions[0];
     if (readTool === undefined) {
       throw new Error("read tool was not registered");
@@ -56,48 +56,52 @@ describe("workspace-confined Pi tools", () => {
     await expect(
       readTool.execute("outside-call", { path: outsideFile }, undefined, undefined, {} as never),
     ).rejects.toThrowError(/outside/i);
+    expect(policy.snapshot().map((decision) => decision.sequence)).toEqual(
+      policy.snapshot().map((_, index) => index + 1),
+    );
+    expect(policy.snapshot().slice(0, -1)).toHaveLength(2);
+    expect(
+      policy
+        .snapshot()
+        .slice(0, -1)
+        .every(
+          (decision) => decision.action === "filesystem.read" && decision.outcome === "allowed",
+        ),
+    ).toBe(true);
+    expect(policy.snapshot().at(-1)).toMatchObject({
+      action: "filesystem.read",
+      outcome: "denied",
+      reason: "target_outside_workspace",
+    });
   });
 
-  it("rejects absolute paths and traversal outside the execution workspace", async () => {
+  it("routes directory listing operations through the policy broker", async () => {
     const root = await createTemporaryDirectory();
-    const outside = await createTemporaryDirectory();
-    const guard = createWorkspacePathGuard(await realpath(root));
-    const outsideFile = join(outside, "secret.txt");
-    await writeFile(outsideFile, "secret", "utf8");
+    await writeFile(join(root, "visible.txt"), "visible", "utf8");
+    const policy = policyBroker();
+    const tools = await createWorkspaceReadTools(root, ["ls"], policy);
+    const lsTool = tools.definitions[0];
+    if (lsTool === undefined) {
+      throw new Error("ls tool was not registered");
+    }
 
-    await expect(guard(outsideFile)).rejects.toThrowError(/outside/i);
-    await expect(guard("../secret.txt")).rejects.toThrowError(/outside/i);
-  });
+    const result = await lsTool.execute(
+      "ls-call",
+      { path: root },
+      undefined,
+      undefined,
+      {} as never,
+    );
 
-  it("rejects symlinks that resolve outside the execution workspace", async () => {
-    const root = await createTemporaryDirectory();
-    const outside = await createTemporaryDirectory();
-    const outsideFile = join(outside, "secret.txt");
-    await writeFile(outsideFile, "secret", "utf8");
-    await symlink(outsideFile, join(root, "linked-secret"));
-    const guard = createWorkspacePathGuard(await realpath(root));
-
-    await expect(guard(join(root, "linked-secret"))).rejects.toThrowError(/outside/i);
-  });
-
-  it("allows canonical files and directories within the workspace", async () => {
-    const root = await createTemporaryDirectory();
-    const nested = join(root, "nested");
-    await mkdir(nested);
-    const file = join(nested, "file.txt");
-    await writeFile(file, "ok", "utf8");
-    const guard = createWorkspacePathGuard(await realpath(root));
-
-    await expect(guard(file)).resolves.toBe(await realpath(file));
-  });
-
-  it("allows dotted names that merely begin with two periods", async () => {
-    const root = await createTemporaryDirectory();
-    const dottedFile = join(root, "..config");
-    await writeFile(dottedFile, "ok", "utf8");
-    const guard = createWorkspacePathGuard(await realpath(root));
-
-    await expect(guard("..config")).resolves.toBe(await realpath(dottedFile));
+    expect(result.content).toContainEqual({ type: "text", text: "visible.txt" });
+    expect(policy.snapshot().length).toBeGreaterThan(0);
+    expect(
+      policy
+        .snapshot()
+        .every(
+          (decision) => decision.action === "filesystem.list" && decision.outcome === "allowed",
+        ),
+    ).toBe(true);
   });
 });
 
@@ -105,4 +109,16 @@ async function createTemporaryDirectory(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "flow-workspace-tools-"));
   temporaryDirectories.push(directory);
   return directory;
+}
+
+function policyBroker(): PolicyBroker {
+  return new PolicyBroker(
+    {
+      runId: "run-tools",
+      workflowId: "tools-workflow",
+      nodeId: "analyze",
+      attempt: 1,
+    },
+    ["filesystem.read", "filesystem.list"],
+  );
 }

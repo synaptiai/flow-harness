@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 
 import type { NodeExecutionContext } from "../../../../src/application/ports.js";
 import type { CompiledAgentNode } from "../../../../src/domain/workflow/types.js";
+import { PolicyBroker } from "../../../../src/domain/policy/broker.js";
 import {
   EmbeddedPiAgentRunner,
   PiAgentExecutor,
@@ -24,6 +25,11 @@ describe("PiAgentExecutor", () => {
     const runner: PiAgentRunner = {
       async run(input) {
         request = input;
+        input.policyBroker.authorize({
+          action: "filesystem.read",
+          target: `${input.cwd}/package.json`,
+          boundary: "inside",
+        });
         return { text: "Analyzed the repository.", stopReason: "stop" };
       },
     };
@@ -39,6 +45,12 @@ describe("PiAgentExecutor", () => {
       thinking: "medium",
       tools: ["read", "ls"],
     });
+    expect(request?.policyBroker.attribution).toEqual({
+      runId: "run-agent",
+      workflowId: "agent-workflow",
+      nodeId: "analyze",
+      attempt: 1,
+    });
     expect(request?.signal).toBeInstanceOf(AbortSignal);
     expect(outcome).toEqual({
       status: "succeeded",
@@ -50,6 +62,17 @@ describe("PiAgentExecutor", () => {
         textHash: expect.stringMatching(/^[a-f0-9]{64}$/),
         textTruncated: false,
         durationMs: 0,
+        policyDecisions: [
+          expect.objectContaining({
+            sequence: 1,
+            runId: "run-agent",
+            workflowId: "agent-workflow",
+            nodeId: "analyze",
+            attempt: 1,
+            action: "filesystem.read",
+            outcome: "allowed",
+          }),
+        ],
       },
     });
   });
@@ -90,6 +113,38 @@ describe("PiAgentExecutor", () => {
         sideEffectStatus: "none",
       },
       evidence: null,
+    });
+  });
+
+  it("preserves policy decisions when the runtime fails after a tool operation", async () => {
+    const runner: PiAgentRunner = {
+      async run(input) {
+        input.policyBroker.authorize({
+          action: "filesystem.list",
+          target: input.cwd,
+          boundary: "inside",
+        });
+        throw new Error("provider failed after tool use");
+      },
+    };
+
+    const outcome = await new PiAgentExecutor(runner, () => 100).execute(agentNode(), context);
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: { code: "pi_agent_failed", message: "provider failed after tool use" },
+      evidence: {
+        kind: "agent",
+        text: "",
+        textTruncated: false,
+        policyDecisions: [
+          {
+            sequence: 1,
+            action: "filesystem.list",
+            outcome: "allowed",
+          },
+        ],
+      },
     });
   });
 
@@ -340,6 +395,7 @@ describe("EmbeddedPiAgentRunner", () => {
       thinking: "medium",
       tools: ["read", "ls"],
       maxOutputBytes: 65_536,
+      policyBroker: testPolicyBroker(),
     });
 
     expect(result).toEqual({
@@ -504,6 +560,19 @@ function agentRequest(signal?: AbortSignal): PiAgentRunRequest {
     thinking: "medium",
     tools: ["read", "ls"],
     maxOutputBytes: 65_536,
+    policyBroker: testPolicyBroker(),
     ...(signal === undefined ? {} : { signal }),
   };
+}
+
+function testPolicyBroker(): PolicyBroker {
+  return new PolicyBroker(
+    {
+      runId: "run-agent",
+      workflowId: "agent-workflow",
+      nodeId: "analyze",
+      attempt: 1,
+    },
+    ["filesystem.read", "filesystem.list"],
+  );
 }

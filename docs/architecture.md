@@ -6,7 +6,7 @@ Flow turns a collection of useful software-development practices into an enforce
 
 The standalone harness reverses that relationship. Flow owns workflow execution and delegates only bounded node work to an embedded agent runtime.
 
-This document describes the target architecture unless a section is explicitly labeled as the current executable slice. The delivery roadmap is the source of truth for implementation status. Gates 1 and 2 currently provide `validate`, sequential `run`, `inspect`, optional versioned goal contracts, command-bound criterion evaluation, command and bounded Pi agent nodes, cancellation, and replayable local event ledgers. Initialization, the TUI/daemon, resume, approvals, probabilistic evaluators, packages, loops, and the policy broker remain later gates.
+This document describes the target architecture unless a section is explicitly labeled as the current executable slice. The delivery roadmap is the source of truth for implementation status. Gates 1 and 2 currently provide `validate`, sequential `run`, `inspect`, optional versioned goal contracts, command-bound criterion evaluation, command and bounded Pi agent nodes, cancellation, and replayable local event ledgers. The first Gate 3 slice routes model-requested workspace reads through a runtime-neutral policy broker and retains its decisions as evidence. Initialization, the TUI/daemon, resume, approvals, write/execute/network model tools, OS-level sandboxing, probabilistic evaluators, packages, and loops remain later work.
 
 ## Target flows
 
@@ -82,11 +82,11 @@ Compiles workflows, selects ready nodes, assembles minimal context, calls domain
 
 ### Pi runtime
 
-Implements one Flow-owned `AgentExecutor` port. It creates node-scoped sessions, selects models and tools, streams events, supports cancellation, and translates all Pi values into Flow contracts.
+Implements one Flow-owned `AgentExecutor` port. It creates node-scoped sessions, selects models and tools, streams events, supports cancellation, supplies an attempt-scoped Flow policy broker, and translates all Pi values into Flow contracts.
 
 ### Tool broker
 
-Normalizes tool requests, classifies authority, obtains exact approvals, applies timeouts and sandbox controls, captures output, and records side-effect certainty. Tool implementations cannot mutate scheduler state.
+The current broker normalizes and canonically resolves every model-requested `read` and `ls` filesystem operation, derives its authority class, authorizes only declared operations inside the workspace, and emits bounded decisions tied to the exact run/node attempt. The domain contract already distinguishes read, write, execute, network, credential, and destructive authority without importing runtime types. Exact approval grants, broader tools, and OS-level sandbox controls remain subsequent Gate 3 slices. Tool implementations cannot mutate scheduler state.
 
 ### Event and evidence store
 
@@ -103,10 +103,12 @@ Pi intentionally has no built-in sandbox and normally runs with the invoking use
 Until an enforceable sandbox lands:
 
 - Agent nodes receive only Flow-provided tools; implicit project extensions and resource discovery are disabled.
-- The Pi adapter registers exact Flow-owned `read` and `ls` tool definitions, confines canonical paths to the execution workspace, and disables Pi's built-in tools. It does not yet route individual calls through the future general-purpose policy broker.
+- The Pi adapter registers exact Flow-owned `read` and `ls` tool definitions, disables Pi's built-in tools, and routes their filesystem operations through an attempt-scoped Flow policy broker. Relative traversal and canonical symlink escapes are denied before file contents or directory entries are accessed.
 - Verification commands use explicit argument arrays and never shell command strings.
 - Workflow validation can reject known-disallowed configuration, but it cannot contain a compromised process.
 - Untrusted or unattended workloads must run inside an operator-provided container or stronger isolation boundary.
+
+The application-level workspace broker prevents ordinary traversal and symlink escapes, but pathname authorization and use are not atomic against a concurrently hostile process. This trusted-workspace slice does not claim to close that operating-system race.
 
 The later sandbox gate must isolate filesystem, process, network, credentials, and child-process authority at the operating-system or virtualization layer. It cannot be satisfied by prompts, tool names, approval UI, or worktrees alone.
 

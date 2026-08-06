@@ -14,12 +14,12 @@ It verifies formatting, lint rules, strict TypeScript contracts, all default tes
 
 | Layer | Purpose | External effects |
 | --- | --- | --- |
-| Domain unit | Workflow/goal compilation, pure criterion evaluation, and event replay invariants | None |
+| Domain unit | Workflow/goal compilation, policy classification/decisions, pure criterion evaluation, and event replay invariants | None |
 | Application unit | Scheduler ordering, failure propagation, and executor authority | Test-only in-memory ports |
 | Infrastructure integration | Real JSONL persistence and real child processes | Temporary directories and local processes |
 | CLI integration | Validate, run, persist, and inspect through production composition | Temporary run ledgers and local processes |
 | Compiled-process integration | Direct-entry signal handling, process-group termination, and cross-process run claiming | Built CLI, temporary run ledgers, and local process trees |
-| Pi adapter contract | Exact model/tool request translation, setup races, timeout settlement, and error classification | Test-only runner at the SDK seam |
+| Pi adapter contract | Exact model/tool request translation, policy-broker routing, setup races, timeout settlement, and error classification | Temporary workspace and test-only runner at the SDK seam |
 | Pi SDK integration | Real `ModelRuntime` and `createAgentSession` composition and streaming | Deterministic in-process provider; no network or credentials |
 | Live Pi | Provider authentication, streaming, cancellation, and model compatibility | Opt-in network and provider cost |
 

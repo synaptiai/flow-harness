@@ -10,6 +10,13 @@ import {
 } from "../goal/evaluator.js";
 import { compiledGoalSchema } from "../goal/schema.js";
 import type { CompiledGoal, GoalRunState } from "../goal/types.js";
+import {
+  MAX_POLICY_DECISIONS,
+  calculatePolicyRequestDigest,
+  classifyPolicyAction,
+} from "../policy/broker.js";
+import { policyDecisionSchema } from "../policy/schema.js";
+import type { PolicyDecision } from "../policy/types.js";
 
 export interface CommandEvidence {
   readonly kind: "command";
@@ -35,6 +42,7 @@ export interface AgentEvidence {
   readonly textHash: string;
   readonly textTruncated: boolean;
   readonly durationMs: number;
+  readonly policyDecisions: readonly PolicyDecision[];
 }
 
 export type NodeEvidence = CommandEvidence | AgentEvidence;
@@ -196,12 +204,13 @@ const commandEvidenceSchema = z
 const agentEvidenceSchema = z
   .object({
     kind: z.literal("agent"),
-    provider: z.string().min(1),
-    model: z.string().min(1),
+    provider: z.string().min(1).max(96),
+    model: z.string().min(1).max(256),
     text: agentOutputSchema,
     textHash: z.string().regex(/^[a-f0-9]{64}$/),
     textTruncated: z.boolean(),
     durationMs: z.number().nonnegative(),
+    policyDecisions: z.array(policyDecisionSchema).max(MAX_POLICY_DECISIONS).default([]),
   })
   .strict();
 
@@ -399,7 +408,7 @@ export function appendRunEvent(
       break;
     }
     case "node_succeeded": {
-      validateEvidenceIntegrity(event.evidence, eventIndex);
+      validateEvidenceIntegrity(event.evidence, event, eventIndex);
       validateSucceededEvidence(event.evidence, eventIndex);
       const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
       nodes[event.nodeId] = Object.freeze({
@@ -424,7 +433,7 @@ export function appendRunEvent(
     }
     case "node_failed": {
       if (event.evidence !== null) {
-        validateEvidenceIntegrity(event.evidence, eventIndex);
+        validateEvidenceIntegrity(event.evidence, event, eventIndex);
       }
       const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
       nodes[event.nodeId] = Object.freeze({
@@ -568,13 +577,59 @@ function validateSucceededEvidence(evidence: NodeEvidence, eventIndex: number): 
   }
 }
 
-function validateEvidenceIntegrity(evidence: NodeEvidence, eventIndex: number): void {
+function validateEvidenceIntegrity(
+  evidence: NodeEvidence,
+  event: NodeSucceededEvent | NodeFailedEvent,
+  eventIndex: number,
+): void {
   if (
     evidence.kind === "agent" &&
     !evidence.textTruncated &&
     evidence.textHash !== sha256(evidence.text)
   ) {
     throw new RunReplayError(eventIndex, "agent evidence text hash is invalid");
+  }
+  if (evidence.kind === "agent") {
+    for (const [index, decision] of evidence.policyDecisions.entries()) {
+      const expectedSequence = index + 1;
+      if (decision.sequence !== expectedSequence) {
+        throw new RunReplayError(
+          eventIndex,
+          `policy decision sequence must be contiguous; expected ${expectedSequence}, received ${decision.sequence}`,
+        );
+      }
+      if (
+        decision.runId !== event.runId ||
+        decision.workflowId !== event.workflowId ||
+        decision.nodeId !== event.nodeId ||
+        decision.attempt !== event.attempt
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          "policy decision attribution does not match its node event",
+        );
+      }
+      if (decision.authority !== classifyPolicyAction(decision.action)) {
+        throw new RunReplayError(eventIndex, "policy decision authority does not match its action");
+      }
+      const expectedOutcome = decision.reason === "operation_declared" ? "allowed" : "denied";
+      if (decision.outcome !== expectedOutcome) {
+        throw new RunReplayError(eventIndex, "policy decision outcome does not match its reason");
+      }
+      const expectedDigest = calculatePolicyRequestDigest({
+        version: decision.version,
+        runId: decision.runId,
+        workflowId: decision.workflowId,
+        nodeId: decision.nodeId,
+        attempt: decision.attempt,
+        authority: decision.authority,
+        action: decision.action,
+        target: decision.target,
+      });
+      if (decision.requestDigest !== expectedDigest) {
+        throw new RunReplayError(eventIndex, "policy decision request digest is invalid");
+      }
+    }
   }
   if (evidence.kind === "command") {
     if (!evidence.stdoutTruncated && evidence.stdoutHash !== sha256(evidence.stdout)) {
