@@ -2,11 +2,16 @@ import { createHash } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
-import { RunWorkflowAbortedError, runWorkflow } from "../../../src/application/run-workflow.js";
+import {
+  RunWorkflowAbortedError,
+  resumeWorkflow,
+  runWorkflow,
+} from "../../../src/application/run-workflow.js";
 import type {
   NodeExecutionContext,
   NodeExecutionOutcome,
   NodeExecutor,
+  RecoverableRunEventStore,
   RunEventStore,
 } from "../../../src/application/ports.js";
 import type { RunEvent } from "../../../src/domain/run/events.js";
@@ -168,6 +173,15 @@ nodes:
     expect(new Set(calls).size).toBe(4);
   });
 
+  it("releases fresh execution ownership after reaching a terminal state", async () => {
+    const store = new MemoryRecoverableRunStore([]);
+    const executor = executorFrom(async (node) => successfulOutcome(node.id));
+
+    await runWorkflow(threeNodeWorkflow(), options(store, executor, "run-owned"));
+
+    expect(store.releaseCalls).toEqual(["run-owned"]);
+  });
+
   it("fails the run and never executes dependents after a node failure", async () => {
     const calls: string[] = [];
     const store = new MemoryRunStore();
@@ -304,15 +318,243 @@ nodes:
     expect(state.status).toBe("succeeded");
     expect(store.events.at(-1)?.type).toBe("run_succeeded");
   });
+
+  it("resumes a safe boundary to the same terminal node outcomes", async () => {
+    const workflow = threeNodeWorkflow();
+    const store = new MemoryRecoverableRunStore(eventsThroughFirstSuccess(workflow));
+    const calls: string[] = [];
+    const executor = executorFrom(async (node) => {
+      calls.push(node.id);
+      return successfulOutcome(node.id);
+    });
+
+    const state = await resumeWorkflow(workflow, resumeOptions(store, executor, "run-resume"));
+
+    expect(calls).toEqual(["second", "third"]);
+    expect(state).toMatchObject({
+      status: "succeeded",
+      nodes: {
+        first: { status: "succeeded", attempt: 1 },
+        second: { status: "succeeded", attempt: 1 },
+        third: { status: "succeeded", attempt: 1 },
+      },
+    });
+    expect(store.events.map((event) => event.type)).toEqual([
+      "run_started",
+      "node_started",
+      "node_succeeded",
+      "run_resumed",
+      "node_started",
+      "node_succeeded",
+      "node_started",
+      "node_succeeded",
+      "run_succeeded",
+    ]);
+    expect(store.releaseCalls).toEqual(["run-resume"]);
+  });
+
+  it("does not re-execute successful nodes when only terminalization remains", async () => {
+    const workflow = threeNodeWorkflow();
+    const initial = await successfulLedger(workflow, "run-terminalization");
+    initial.pop();
+    const store = new MemoryRecoverableRunStore(initial);
+    const calls: string[] = [];
+    const executor = executorFrom(async (node) => {
+      calls.push(node.id);
+      return successfulOutcome(node.id);
+    });
+
+    const state = await resumeWorkflow(
+      workflow,
+      resumeOptions(store, executor, "run-terminalization"),
+    );
+
+    expect(calls).toEqual([]);
+    expect(state.status).toBe("succeeded");
+    expect(store.events.slice(-2).map((event) => event.type)).toEqual([
+      "run_resumed",
+      "run_succeeded",
+    ]);
+  });
+
+  it("refuses an uncertain open attempt without appending or executing", async () => {
+    const workflow = threeNodeWorkflow();
+    const initial = eventsThroughFirstSuccess(workflow);
+    initial.push({
+      ...eventBase("run-resume", workflow.id, 4),
+      type: "node_started",
+      nodeId: "second",
+      attempt: 1,
+    });
+    const store = new MemoryRecoverableRunStore(initial);
+    const calls: string[] = [];
+    const executor = executorFrom(async (node) => {
+      calls.push(node.id);
+      return successfulOutcome(node.id);
+    });
+
+    await expect(
+      resumeWorkflow(workflow, resumeOptions(store, executor, "run-resume")),
+    ).rejects.toMatchObject({ code: "uncertain_operation" });
+    await expect(
+      resumeWorkflow(workflow, resumeOptions(store, executor, "run-resume")),
+    ).rejects.toThrowError(/node "second" attempt 1/i);
+    expect(calls).toEqual([]);
+    expect(store.events).toEqual(initial);
+    expect(store.releaseCalls).toEqual(["run-resume", "run-resume"]);
+  });
+
+  it("refuses a terminal run without mutating its ledger", async () => {
+    const workflow = threeNodeWorkflow();
+    const initial = await successfulLedger(workflow, "run-terminal");
+    const store = new MemoryRecoverableRunStore(initial);
+    const executor = executorFrom(async (node) => successfulOutcome(node.id));
+
+    await expect(
+      resumeWorkflow(workflow, resumeOptions(store, executor, "run-terminal")),
+    ).rejects.toMatchObject({ code: "terminal_run" });
+    expect(store.events).toEqual(initial);
+    expect(store.releaseCalls).toEqual(["run-terminal"]);
+  });
+
+  it("refuses a workflow mismatch without mutating its ledger", async () => {
+    const original = threeNodeWorkflow();
+    const changed = compileWorkflowText(`
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: ordered-workflow }
+nodes:
+  - id: first
+    type: command
+    command: { executable: node, args: [--help] }
+  - id: second
+    type: command
+    dependsOn: [first]
+    command: { executable: node, args: [--version] }
+  - id: third
+    type: command
+    dependsOn: [second]
+    command: { executable: node, args: [--version] }
+`);
+    const initial = eventsThroughFirstSuccess(original);
+    const store = new MemoryRecoverableRunStore(initial);
+    const executor = executorFrom(async (node) => successfulOutcome(node.id));
+
+    await expect(
+      resumeWorkflow(changed, resumeOptions(store, executor, "run-resume")),
+    ).rejects.toMatchObject({ code: "workflow_mismatch" });
+    expect(store.events).toEqual(initial);
+    expect(store.releaseCalls).toEqual(["run-resume"]);
+  });
+
+  it("refuses recovered history that violated graph dependency order", async () => {
+    const workflow = threeNodeWorkflow();
+    const initial: RunEvent[] = [
+      {
+        ...eventBase("run-resume", workflow.id, 1),
+        type: "run_started",
+        nodeIds: workflow.nodes.map((node) => node.id),
+        workflowApiVersion: workflow.apiVersion,
+        workflowDigest: workflowDigest(workflow),
+      },
+      {
+        ...eventBase("run-resume", workflow.id, 2),
+        type: "node_started",
+        nodeId: "second",
+        attempt: 1,
+      },
+      {
+        ...eventBase("run-resume", workflow.id, 3),
+        type: "node_succeeded",
+        nodeId: "second",
+        attempt: 1,
+        evidence: commandEvidence("second", 0),
+      },
+    ];
+    const store = new MemoryRecoverableRunStore(initial);
+    const calls: string[] = [];
+    const executor = executorFrom(async (node) => {
+      calls.push(node.id);
+      return successfulOutcome(node.id);
+    });
+
+    await expect(
+      resumeWorkflow(workflow, resumeOptions(store, executor, "run-resume")),
+    ).rejects.toMatchObject({ code: "workflow_mismatch" });
+    expect(calls).toEqual([]);
+    expect(store.events).toEqual(initial);
+    expect(store.releaseCalls).toEqual(["run-resume"]);
+  });
+
+  it("finalizes a committed node failure without re-executing it", async () => {
+    const workflow = threeNodeWorkflow();
+    const initial = eventsThroughFirstSuccess(workflow);
+    initial.push(
+      {
+        ...eventBase("run-resume", workflow.id, 4),
+        type: "node_started",
+        nodeId: "second",
+        attempt: 1,
+      },
+      {
+        ...eventBase("run-resume", workflow.id, 5),
+        type: "node_failed",
+        nodeId: "second",
+        attempt: 1,
+        error: {
+          code: "command_failed",
+          message: "verification failed",
+          retryable: false,
+          sideEffectStatus: "none",
+        },
+        evidence: commandEvidence("second", 1),
+      },
+    );
+    const store = new MemoryRecoverableRunStore(initial);
+    const calls: string[] = [];
+    const executor = executorFrom(async (node) => {
+      calls.push(node.id);
+      return successfulOutcome(node.id);
+    });
+
+    const state = await resumeWorkflow(workflow, resumeOptions(store, executor, "run-resume"));
+
+    expect(calls).toEqual([]);
+    expect(state).toMatchObject({ status: "failed", failedNodeId: "second" });
+    expect(store.events.slice(-2).map((event) => event.type)).toEqual([
+      "run_resumed",
+      "run_failed",
+    ]);
+  });
+
+  it("rejects pre-cancelled recovery before claiming the run", async () => {
+    const workflow = threeNodeWorkflow();
+    const store = new MemoryRecoverableRunStore(eventsThroughFirstSuccess(workflow));
+    const executor = executorFrom(async (node) => successfulOutcome(node.id));
+    const controller = new AbortController();
+    controller.abort("operator cancelled");
+
+    await expect(
+      resumeWorkflow(workflow, {
+        ...resumeOptions(store, executor, "run-resume"),
+        signal: controller.signal,
+      }),
+    ).rejects.toThrowError(RunWorkflowAbortedError);
+    expect(store.claimCalls).toEqual([]);
+    expect(store.releaseCalls).toEqual([]);
+  });
 });
 
 class MemoryRunStore implements RunEventStore {
-  readonly events: RunEvent[] = [];
+  readonly events: RunEvent[];
 
   constructor(
     private readonly failingType?: RunEvent["type"],
     private readonly onAppend?: (event: RunEvent) => void,
-  ) {}
+    initialEvents: readonly RunEvent[] = [],
+  ) {
+    this.events = structuredClone([...initialEvents]);
+  }
 
   async append(event: RunEvent): Promise<void> {
     if (event.type === this.failingType) {
@@ -324,6 +566,24 @@ class MemoryRunStore implements RunEventStore {
 
   async read(): Promise<readonly RunEvent[]> {
     return this.events;
+  }
+}
+
+class MemoryRecoverableRunStore extends MemoryRunStore implements RecoverableRunEventStore {
+  readonly claimCalls: string[] = [];
+  readonly releaseCalls: string[] = [];
+
+  constructor(initialEvents: readonly RunEvent[]) {
+    super(undefined, undefined, initialEvents);
+  }
+
+  async claim(runId: string): Promise<readonly RunEvent[]> {
+    this.claimCalls.push(runId);
+    return structuredClone(this.events);
+  }
+
+  async release(runId: string): Promise<void> {
+    this.releaseCalls.push(runId);
   }
 }
 
@@ -341,6 +601,66 @@ function options(store: RunEventStore, executor: NodeExecutor, runId: string) {
     store,
     executor,
     now: () => new Date("2026-08-06T15:00:00.000Z"),
+  };
+}
+
+function resumeOptions(store: RecoverableRunEventStore, executor: NodeExecutor, runId: string) {
+  return {
+    cwd: process.cwd(),
+    protectedPaths: [],
+    runId,
+    store,
+    executor,
+    now: () => new Date("2026-08-06T15:00:00.000Z"),
+  };
+}
+
+function eventsThroughFirstSuccess(workflow: ReturnType<typeof threeNodeWorkflow>): RunEvent[] {
+  return [
+    {
+      ...eventBase("run-resume", workflow.id, 1),
+      type: "run_started",
+      nodeIds: workflow.nodes.map((node) => node.id),
+      workflowApiVersion: workflow.apiVersion,
+      workflowDigest: workflowDigest(workflow),
+    },
+    {
+      ...eventBase("run-resume", workflow.id, 2),
+      type: "node_started",
+      nodeId: "first",
+      attempt: 1,
+    },
+    {
+      ...eventBase("run-resume", workflow.id, 3),
+      type: "node_succeeded",
+      nodeId: "first",
+      attempt: 1,
+      evidence: commandEvidence("first", 0),
+    },
+  ];
+}
+
+async function successfulLedger(
+  workflow: ReturnType<typeof threeNodeWorkflow>,
+  runId: string,
+): Promise<RunEvent[]> {
+  const store = new MemoryRunStore();
+  const executor = executorFrom(async (node) => successfulOutcome(node.id));
+  await runWorkflow(workflow, options(store, executor, runId));
+  return structuredClone(store.events);
+}
+
+function workflowDigest(workflow: ReturnType<typeof threeNodeWorkflow>): string {
+  return createHash("sha256").update(JSON.stringify(workflow)).digest("hex");
+}
+
+function eventBase(runId: string, workflowId: string, sequence: number) {
+  return {
+    version: 1 as const,
+    sequence,
+    at: "2026-08-06T15:00:00.000Z",
+    runId,
+    workflowId,
   };
 }
 

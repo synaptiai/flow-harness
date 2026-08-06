@@ -7,8 +7,8 @@ import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import { NodeExecutorRouter } from "../application/node-executor-router.js";
-import type { NodeExecutor, RunEventStore } from "../application/ports.js";
-import { runWorkflow } from "../application/run-workflow.js";
+import type { NodeExecutor, RecoverableRunEventStore } from "../application/ports.js";
+import { resumeWorkflow, RunRecoveryError, runWorkflow } from "../application/run-workflow.js";
 import { reduceRunEvents } from "../domain/run/events.js";
 import { compileWorkflowText, WorkflowCompilationError } from "../domain/workflow/compiler.js";
 import { JsonlRunStore, RunStoreError } from "../infrastructure/fs/jsonl-run-store.js";
@@ -26,6 +26,7 @@ const HELP = `Flow — Provider-neutral coding-agent harness
 Usage:
   flow validate <workflow.yaml>
   flow run <workflow.yaml> [--run-id <id>] [--runs-dir <path>] [--cwd <path>]
+  flow resume <workflow.yaml> --run-id <id> [--runs-dir <path>] [--cwd <path>]
   flow inspect <run-id> [--runs-dir <path>]
   flow --help
 `;
@@ -38,7 +39,7 @@ export interface CliIo {
 export interface CliDependencies {
   readonly cwd: string;
   readonly executor: NodeExecutor;
-  readonly createStore: (rootDirectory: string) => RunEventStore;
+  readonly createStore: (rootDirectory: string) => RecoverableRunEventStore;
   readonly readTextFile: (path: string) => Promise<string>;
   readonly signal?: AbortSignal;
 }
@@ -77,6 +78,8 @@ export async function main(
         return await validateCommand(args.slice(1), io, dependencyOverrides);
       case "run":
         return await runCommand(args.slice(1), io, dependencyOverrides);
+      case "resume":
+        return await resumeCommand(args.slice(1), io, dependencyOverrides);
       case "inspect":
         return await inspectCommand(args.slice(1), io, dependencyOverrides);
       default:
@@ -95,10 +98,49 @@ export async function main(
       io.stderr(`${error.code}: ${error.message}`);
       return 1;
     }
+    if (error instanceof RunRecoveryError) {
+      io.stderr(`${error.code}: ${error.message}`);
+      return 1;
+    }
 
     io.stderr(error instanceof Error ? error.message : String(error));
     return 1;
   }
+}
+
+async function resumeCommand(
+  args: readonly string[],
+  io: CliIo,
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  const { positionals, values } = parseCommandArgs(args, {
+    "run-id": { type: "string" },
+    "runs-dir": { type: "string" },
+    cwd: { type: "string" },
+  });
+  const workflowArgument = requireSinglePositional(
+    positionals,
+    "resume requires one workflow path",
+  );
+  const runId = requireStringOption(values["run-id"], "resume requires --run-id <id>");
+  const dependencies = dependenciesFrom(overrides);
+  const workflowPath = resolve(dependencies.cwd, workflowArgument);
+
+  // Compilation intentionally precedes store construction and ownership acquisition.
+  const workflow = await compileWorkflowFile(workflowPath, dependencies.readTextFile);
+  const runsDirectory = resolve(dependencies.cwd, values["runs-dir"] ?? ".flow/runs");
+  const executionCwd = resolve(dependencies.cwd, values.cwd ?? ".");
+  const state = await resumeWorkflow(workflow, {
+    cwd: executionCwd,
+    protectedPaths: [runsDirectory],
+    runId,
+    store: dependencies.createStore(runsDirectory),
+    executor: dependencies.executor,
+    ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
+  });
+
+  io.stdout(JSON.stringify(state, null, 2));
+  return state.status === "succeeded" ? 0 : 1;
 }
 
 async function validateCommand(
@@ -190,6 +232,13 @@ function requireSinglePositional(positionals: readonly string[], message: string
     throw new CliUsageError(message);
   }
   return positionals[0];
+}
+
+function requireStringOption(value: string | undefined, message: string): string {
+  if (value === undefined || value.length === 0) {
+    throw new CliUsageError(message);
+  }
+  return value;
 }
 
 async function compileWorkflowFile(
