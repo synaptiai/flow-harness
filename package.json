@@ -1,0 +1,46 @@
+{
+  "name": "@synaptiai/flow-harness",
+  "version": "0.0.0",
+  "description": "Provider-neutral harness for evidence-driven software workflows",
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/synaptiai/flow-harness.git"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "bin": {
+    "flow": "dist/cli/main.js"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "lint": "biome lint .",
+    "pack:check": "npm pack --dry-run",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:live": "vitest run --config vitest.live.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.0",
+    "yaml": "2.9.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.7",
+    "@types/node": "22.20.1",
+    "@vitest/coverage-v8": "4.1.10",
+    "typescript": "5.9.3",
+    "vitest": "4.1.10"
+  }
+}

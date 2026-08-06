@@ -1,0 +1,8 @@
+node_modules/
+.npm-cache/
+dist/
+coverage/
+.flow/
+*.tgz
+*.log
+.DS_Store
