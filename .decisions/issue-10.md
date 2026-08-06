@@ -107,6 +107,14 @@ resolves the helper canonically, supplies it as SRT's explicit apply path, and r
 file read-only. The semantic policy digest and public boundary documentation include this runtime
 support exception; Unix-socket filtering and the remaining home denial stay enabled.
 
+Hosted branch run
+[`31129022768`](https://github.com/synaptiai/flow-harness/actions/runs/31129022768) then passed
+both jobs at commit `6491c9e6aa1b00bf407fb13bc4b36cf27747e7d4`. Default-branch protection
+requires the observed `quality` and `dependency-audit` checks from the GitHub Actions application,
+uses strict up-to-date checking, and rejects force pushes and deletion. A branch-dispatch run is
+useful execution evidence but does not replace an event-linked pull-request run; PR and post-merge
+checks remain separate acceptance evidence.
+
 ## Failure modes
 
 | Condition | Required behavior |
