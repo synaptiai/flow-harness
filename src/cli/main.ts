@@ -20,7 +20,7 @@ import {
 } from "../infrastructure/sandbox/anthropic-sandbox-runtime-manager.js";
 import { SrtCommandSandbox } from "../infrastructure/sandbox/srt-command-sandbox.js";
 
-const HELP = `Flow — Provider-neutral harness for evidence-driven software workflows
+const HELP = `Flow — Provider-neutral coding-agent harness
 
 Usage:
   flow validate <workflow.yaml>
