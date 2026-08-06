@@ -3,10 +3,12 @@ import { createHash } from "node:crypto";
 
 import {
   RunReplayError,
+  parseRunEvent,
   reduceRunEvents,
   type RunEvent,
   type RunStartedEvent,
 } from "../../../src/domain/run/events.js";
+import { PolicyBroker } from "../../../src/domain/policy/broker.js";
 
 describe("reduceRunEvents", () => {
   it("reconstructs a successful run from authoritative events", () => {
@@ -22,6 +24,119 @@ describe("reduceRunEvents", () => {
     expect(state.nodes.typecheck).toMatchObject({ status: "succeeded", attempt: 1 });
     expect(Object.isFrozen(state)).toBe(true);
     expect(Object.isFrozen(state.nodes)).toBe(true);
+  });
+
+  it("preserves ordered policy decisions in replayed agent evidence", () => {
+    const policy = new PolicyBroker(
+      {
+        runId: "run-1",
+        workflowId: "verify-foundation",
+        nodeId: "node-version",
+        attempt: 1,
+      },
+      ["filesystem.read"],
+    );
+    policy.authorize({
+      action: "filesystem.read",
+      target: "/workspace/package.json",
+      boundary: "inside",
+    });
+    const events: RunEvent[] = [
+      runStarted(),
+      { ...base(2), type: "node_started", nodeId: "node-version", attempt: 1 },
+      {
+        ...base(3),
+        type: "node_succeeded",
+        nodeId: "node-version",
+        attempt: 1,
+        evidence: { ...agentEvidence("inspected"), policyDecisions: policy.close() },
+      },
+      { ...base(4), type: "node_started", nodeId: "typecheck", attempt: 1 },
+      {
+        ...base(5),
+        type: "node_succeeded",
+        nodeId: "typecheck",
+        attempt: 1,
+        evidence: commandEvidence(0),
+      },
+      { ...base(6), type: "run_succeeded" },
+    ];
+
+    const state = reduceRunEvents(structuredClone(events));
+
+    expect(state.nodes["node-version"]?.evidence).toMatchObject({
+      kind: "agent",
+      policyDecisions: [
+        {
+          sequence: 1,
+          action: "filesystem.read",
+          outcome: "allowed",
+          requestDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+        },
+      ],
+    });
+  });
+
+  it("defaults old agent evidence to an empty policy decision list", () => {
+    const parsed = parseRunEvent({
+      ...base(3),
+      type: "node_succeeded",
+      nodeId: "node-version",
+      attempt: 1,
+      evidence: {
+        kind: "agent",
+        provider: "test",
+        model: "deterministic",
+        text: "legacy",
+        textHash: createHash("sha256").update("legacy").digest("hex"),
+        textTruncated: false,
+        durationMs: 1,
+      },
+    });
+
+    expect(
+      parsed.type === "node_succeeded" && parsed.evidence.kind === "agent"
+        ? parsed.evidence.policyDecisions
+        : undefined,
+    ).toEqual([]);
+  });
+
+  it("rejects a tampered policy request digest during replay", () => {
+    const policy = new PolicyBroker(
+      {
+        runId: "run-1",
+        workflowId: "verify-foundation",
+        nodeId: "node-version",
+        attempt: 1,
+      },
+      ["filesystem.read"],
+    );
+    policy.authorize({
+      action: "filesystem.read",
+      target: "/workspace/package.json",
+      boundary: "inside",
+    });
+    const decision = policy.close()[0];
+    if (decision === undefined) {
+      throw new Error("policy decision was not recorded");
+    }
+
+    expect(() =>
+      reduceRunEvents([
+        runStarted(),
+        { ...base(2), type: "node_started", nodeId: "node-version", attempt: 1 },
+        {
+          ...base(3),
+          type: "node_succeeded",
+          nodeId: "node-version",
+          attempt: 1,
+          evidence: {
+            ...agentEvidence("inspected"),
+            policyDecisions: [{ ...decision, requestDigest: "f".repeat(64) }],
+          },
+        },
+      ]),
+    ).toThrowError(/policy decision request digest is invalid/i);
   });
 
   it("reconstructs accepted criterion decisions from deterministic verifier evidence", () => {
@@ -309,6 +424,7 @@ describe("reduceRunEvents", () => {
             textHash: createHash("sha256").update("complete output").digest("hex"),
             textTruncated: true,
             durationMs: 1,
+            policyDecisions: [],
           },
         },
       ]),
@@ -434,5 +550,6 @@ function agentEvidence(text: string) {
     textHash: createHash("sha256").update(text).digest("hex"),
     textTruncated: false,
     durationMs: 1,
+    policyDecisions: [],
   };
 }

@@ -6,9 +6,10 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { access, readFile, readdir, realpath, stat } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep } from "node:path";
 
 import type { AgentToolName } from "../../domain/workflow/types.js";
+import type { PolicyBroker } from "../../domain/policy/broker.js";
+import { createWorkspacePolicyBroker } from "../policy/workspace-policy-broker.js";
 
 export interface FlowAgentTools {
   readonly names: readonly string[];
@@ -19,17 +20,18 @@ export interface FlowAgentTools {
 export async function createWorkspaceReadTools(
   cwd: string,
   tools: readonly AgentToolName[],
+  policy: PolicyBroker,
 ): Promise<FlowAgentTools> {
   const root = await realpath(cwd);
-  const guard = createWorkspacePathGuard(root);
+  const broker = await createWorkspacePolicyBroker(root, policy);
   const readOperations: ReadOperations = {
-    access: async (path) => access(await guard(path)),
-    readFile: async (path) => readFile(await guard(path)),
+    access: async (path) => broker.execute("filesystem.read", path, access),
+    readFile: async (path) => broker.execute("filesystem.read", path, (target) => readFile(target)),
   };
   const lsOperations: LsOperations = {
     exists: async (path) => {
       try {
-        await access(await guard(path));
+        await broker.execute("filesystem.list", path, access);
         return true;
       } catch (error) {
         if (isNodeError(error) && error.code === "ENOENT") {
@@ -38,8 +40,8 @@ export async function createWorkspaceReadTools(
         throw error;
       }
     },
-    stat: async (path) => stat(await guard(path)),
-    readdir: async (path) => readdir(await guard(path)),
+    stat: async (path) => broker.execute("filesystem.list", path, stat),
+    readdir: async (path) => broker.execute("filesystem.list", path, (target) => readdir(target)),
   };
 
   const definitions: ToolDefinition[] = [];
@@ -69,32 +71,6 @@ export async function createWorkspaceReadTools(
     names: Object.freeze(names),
     definitions: Object.freeze(definitions),
   };
-}
-
-export function createWorkspacePathGuard(
-  canonicalRoot: string,
-): (inputPath: string) => Promise<string> {
-  const root = resolve(canonicalRoot);
-  return async (inputPath) => {
-    const lexicalPath = resolve(root, inputPath);
-    if (!isAbsolute(inputPath)) {
-      assertWithinRoot(root, lexicalPath);
-    }
-    const canonicalPath = await realpath(lexicalPath);
-    assertWithinRoot(root, canonicalPath);
-    return canonicalPath;
-  };
-}
-
-function assertWithinRoot(root: string, candidate: string): void {
-  const fromRoot = relative(root, candidate);
-  if (
-    fromRoot === "" ||
-    (fromRoot !== ".." && !fromRoot.startsWith(`..${sep}`) && !isAbsolute(fromRoot))
-  ) {
-    return;
-  }
-  throw new Error(`Path is outside the Flow execution workspace: ${candidate}`);
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {

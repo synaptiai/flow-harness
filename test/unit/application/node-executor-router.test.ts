@@ -37,6 +37,7 @@ describe("NodeExecutorRouter", () => {
             textHash: "a".repeat(64),
             textTruncated: false,
             durationMs: 1,
+            policyDecisions: [],
           },
         };
       },

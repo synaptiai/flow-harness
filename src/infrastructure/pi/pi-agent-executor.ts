@@ -14,6 +14,8 @@ import type {
   NodeExecutionOutcome,
 } from "../../application/ports.js";
 import type { AgentEvidence, NodeFailure } from "../../domain/run/events.js";
+import { PolicyBroker } from "../../domain/policy/broker.js";
+import type { PolicyAction, PolicyDecision } from "../../domain/policy/types.js";
 import type {
   AgentToolName,
   CompiledAgentNode,
@@ -29,6 +31,7 @@ export interface PiAgentRunRequest {
   readonly thinking: ThinkingLevel;
   readonly tools: readonly AgentToolName[];
   readonly maxOutputBytes: number;
+  readonly policyBroker: PolicyBroker;
   readonly signal?: AbortSignal;
 }
 
@@ -77,6 +80,32 @@ export class PiAgentExecutor implements AgentExecutor {
     if (isAborted(context.signal)) {
       return agentFailure("pi_agent_aborted", "agent execution was cancelled before start");
     }
+    const policyBroker = new PolicyBroker(
+      {
+        runId: context.runId,
+        workflowId: context.workflowId,
+        nodeId: node.id,
+        attempt: context.attempt,
+      },
+      policyActionsForTools(node.agent.tools),
+    );
+    let closedPolicyDecisions: readonly PolicyDecision[] | undefined;
+    const closePolicy = () => {
+      closedPolicyDecisions ??= policyBroker.close();
+      return closedPolicyDecisions;
+    };
+    const policyFailureEvidence = (): AgentEvidence | null => {
+      const policyDecisions = closePolicy();
+      if (policyDecisions.length === 0) {
+        return null;
+      }
+      return emptyAgentEvidence(
+        node.agent.model.provider,
+        node.agent.model.id,
+        Math.max(0, this.now() - startedAt),
+        policyDecisions,
+      );
+    };
 
     const timeoutController = new AbortController();
     const combinedSignal =
@@ -95,6 +124,7 @@ export class PiAgentExecutor implements AgentExecutor {
         thinking: node.agent.model.thinking,
         tools: node.agent.tools,
         maxOutputBytes: this.maxOutputBytes,
+        policyBroker,
         signal: combinedSignal,
       });
       const timeout = new Promise<"timeout">((resolve) => {
@@ -130,6 +160,7 @@ export class PiAgentExecutor implements AgentExecutor {
             ? `agent exceeded timeout of ${node.agent.timeoutMs}ms`
             : `agent exceeded timeout of ${node.agent.timeoutMs}ms and abort cleanup did not settle within ${this.abortGraceMs}ms`,
           cleanupSettled ? "none" : "uncertain",
+          policyFailureEvidence(),
         );
       }
       if (settled.kind === "external_abort") {
@@ -141,13 +172,20 @@ export class PiAgentExecutor implements AgentExecutor {
             ? message
             : `${message}; abort cleanup did not settle within ${this.abortGraceMs}ms`,
           cleanupSettled ? "none" : "uncertain",
+          policyFailureEvidence(),
         );
       }
       const result = settled.result;
       if (isAborted(context.signal)) {
-        return agentFailure("pi_agent_aborted", abortMessage(context.signal));
+        return agentFailure(
+          "pi_agent_aborted",
+          abortMessage(context.signal),
+          "none",
+          policyFailureEvidence(),
+        );
       }
       const normalized = normalizeAgentResult(result, this.maxOutputBytes);
+      const policyDecisions = closePolicy();
       const evidence: AgentEvidence = {
         kind: "agent",
         provider: node.agent.model.provider,
@@ -156,6 +194,7 @@ export class PiAgentExecutor implements AgentExecutor {
         textHash: normalized.textHash,
         textTruncated: normalized.textTruncated,
         durationMs: Math.max(0, this.now() - startedAt),
+        policyDecisions,
       };
       if (normalized.outputLimitExceeded) {
         return agentFailure(
@@ -177,6 +216,15 @@ export class PiAgentExecutor implements AgentExecutor {
           boundedMessage(
             result.errorMessage ?? `Pi session ended with stop reason "${result.stopReason}"`,
           ),
+          "none",
+          policyDecisions.length === 0
+            ? null
+            : emptyAgentEvidence(
+                node.agent.model.provider,
+                node.agent.model.id,
+                Math.max(0, this.now() - startedAt),
+                policyDecisions,
+              ),
         );
       }
 
@@ -190,6 +238,7 @@ export class PiAgentExecutor implements AgentExecutor {
           textHash: normalized.textHash,
           textTruncated: normalized.textTruncated,
           durationMs: Math.max(0, this.now() - startedAt),
+          policyDecisions,
         },
       };
     } catch (error) {
@@ -197,14 +246,23 @@ export class PiAgentExecutor implements AgentExecutor {
         return agentFailure(
           "pi_agent_timeout",
           `agent exceeded timeout of ${node.agent.timeoutMs}ms`,
+          "none",
+          policyFailureEvidence(),
         );
       }
       if (isAborted(context.signal)) {
-        return agentFailure("pi_agent_aborted", abortMessage(context.signal));
+        return agentFailure(
+          "pi_agent_aborted",
+          abortMessage(context.signal),
+          "none",
+          policyFailureEvidence(),
+        );
       }
       return agentFailure(
         "pi_agent_failed",
         boundedMessage(error instanceof Error ? error.message : String(error)),
+        "none",
+        policyFailureEvidence(),
       );
     } finally {
       removeExternalAbortListener();
@@ -236,7 +294,7 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
     }
 
     const resourceLoader = createLockedResourceLoader();
-    const tools = await createWorkspaceReadTools(request.cwd, request.tools);
+    const tools = await createWorkspaceReadTools(request.cwd, request.tools, request.policyBroker);
     throwIfAborted(request.signal);
     const { session } = await this.createSession({
       cwd: request.cwd,
@@ -325,6 +383,28 @@ function agentFailure(
     sideEffectStatus,
   };
   return { status: "failed", error: failure, evidence };
+}
+
+function policyActionsForTools(tools: readonly AgentToolName[]): readonly PolicyAction[] {
+  return tools.map((tool) => (tool === "read" ? "filesystem.read" : "filesystem.list"));
+}
+
+function emptyAgentEvidence(
+  provider: string,
+  model: string,
+  durationMs: number,
+  policyDecisions: readonly PolicyDecision[],
+): AgentEvidence {
+  return {
+    kind: "agent",
+    provider,
+    model,
+    text: "",
+    textHash: createHash("sha256").update("").digest("hex"),
+    textTruncated: false,
+    durationMs,
+    policyDecisions,
+  };
 }
 
 interface NormalizedAgentResult {
