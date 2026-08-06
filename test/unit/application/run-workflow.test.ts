@@ -99,6 +99,40 @@ nodes:
     expect(first.workflowDigest).not.toBe(second.workflowDigest);
   });
 
+  it("commits the compiled goal and returns accepted criterion state", async () => {
+    const store = new MemoryRunStore();
+    const executor = executorFrom(async (node) => successfulOutcome(node.id));
+
+    const state = await runWorkflow(
+      goalWorkflow(),
+      options(store, executor, "run-goal-acceptance"),
+    );
+
+    expect(store.events[0]).toMatchObject({
+      type: "run_started",
+      goal: {
+        id: "verified-change",
+        criteria: [{ id: "verification-passes", verifierNodeId: "verify" }],
+      },
+    });
+    expect(state).toMatchObject({
+      status: "succeeded",
+      goal: {
+        status: "accepted",
+        criteria: {
+          "verification-passes": {
+            status: "accepted",
+            decision: {
+              runId: "run-goal-acceptance",
+              nodeId: "verify",
+              attempt: 1,
+            },
+          },
+        },
+      },
+    });
+  });
+
   it("uses dependencies before declaration order and declaration order among ready nodes", async () => {
     const calls: string[] = [];
     const store = new MemoryRunStore();
@@ -326,6 +360,31 @@ nodes:
     type: command
     dependsOn: [second]
     command: { executable: node, args: [--version] }
+`);
+}
+
+function goalWorkflow() {
+  return compileWorkflowText(`
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: goal-workflow }
+goal:
+  apiVersion: flow.synapti.ai/v1alpha1
+  kind: Goal
+  metadata: { id: verified-change }
+  outcome: Deterministic verification accepts the change.
+  criteria:
+    - id: verification-passes
+      description: Verification passes.
+      verifier: { nodeId: verify }
+nodes:
+  - id: prepare
+    type: command
+    command: { executable: node, args: [--version] }
+  - id: verify
+    type: command
+    dependsOn: [prepare]
+    command: { executable: npm, args: [test] }
 `);
 }
 

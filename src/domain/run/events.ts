@@ -1,6 +1,16 @@
 import { z } from "zod";
 import { createHash } from "node:crypto";
 
+import {
+  GoalEvaluationError,
+  acceptGoal,
+  createGoalRunState,
+  recordCriterionDecision,
+  rejectIncompleteGoal,
+} from "../goal/evaluator.js";
+import { compiledGoalSchema } from "../goal/schema.js";
+import type { CompiledGoal, GoalRunState } from "../goal/types.js";
+
 export interface CommandEvidence {
   readonly kind: "command";
   readonly executable: string;
@@ -49,6 +59,7 @@ export interface RunStartedEvent extends RunEventBase {
   readonly nodeIds: readonly string[];
   readonly workflowApiVersion: "flow.synapti.ai/v1alpha1";
   readonly workflowDigest: string;
+  readonly goal?: CompiledGoal;
 }
 
 export interface NodeStartedEvent extends RunEventBase {
@@ -119,6 +130,7 @@ export interface RunState {
   readonly lastSequence: number;
   readonly failedNodeId: string | null;
   readonly failureReason: string | null;
+  readonly goal: GoalRunState | null;
   readonly nodes: Readonly<Record<string, NodeRunState>>;
 }
 
@@ -218,6 +230,7 @@ const runEventSchema = z.discriminatedUnion("type", [
         .refine((items) => new Set(items).size === items.length, "node ids must be unique"),
       workflowApiVersion: z.literal("flow.synapti.ai/v1alpha1"),
       workflowDigest: z.string().regex(/^[a-f0-9]{64}$/),
+      goal: compiledGoalSchema.optional(),
     })
     .strict(),
   z
@@ -322,6 +335,11 @@ export function appendRunEvent(
     for (const nodeId of event.nodeIds) {
       nodes[nodeId] = pendingNodeState();
     }
+    if (
+      event.goal?.criteria.some((criterion) => !event.nodeIds.includes(criterion.verifierNodeId))
+    ) {
+      throw new RunReplayError(eventIndex, "goal references a verifier outside the run node set");
+    }
     return freezeRunState({
       runId: event.runId,
       workflowId: event.workflowId,
@@ -333,6 +351,7 @@ export function appendRunEvent(
       lastSequence: event.sequence,
       failedNodeId: null,
       failureReason: null,
+      goal: event.goal === undefined ? null : createGoalRunState(event.goal),
       nodes,
     });
   }
@@ -360,6 +379,7 @@ export function appendRunEvent(
   let finishedAt: string | null = null;
   let failedNodeId: string | null = null;
   let failureReason: string | null = null;
+  let goal = currentState.goal;
 
   switch (event.type) {
     case "node_started": {
@@ -388,6 +408,18 @@ export function appendRunEvent(
         finishedAt: event.at,
         evidence: deepFreeze(structuredClone(event.evidence)),
       });
+      goal = applyCriterionDecision(
+        goal,
+        {
+          runId: event.runId,
+          nodeId: event.nodeId,
+          attempt: event.attempt,
+          at: event.at,
+          outcome: event.evidence.kind === "command" ? "accepted" : "inconclusive",
+          evidenceAvailable: true,
+        },
+        eventIndex,
+      );
       break;
     }
     case "node_failed": {
@@ -402,6 +434,18 @@ export function appendRunEvent(
         evidence: event.evidence === null ? null : deepFreeze(structuredClone(event.evidence)),
         error: deepFreeze(structuredClone(event.error)),
       });
+      goal = applyCriterionDecision(
+        goal,
+        {
+          runId: event.runId,
+          nodeId: event.nodeId,
+          attempt: event.attempt,
+          at: event.at,
+          outcome: isConclusiveVerifierRejection(event.evidence) ? "rejected" : "inconclusive",
+          evidenceAvailable: event.evidence !== null,
+        },
+        eventIndex,
+      );
       break;
     }
     case "run_succeeded": {
@@ -410,6 +454,7 @@ export function appendRunEvent(
       }
       status = "succeeded";
       finishedAt = event.at;
+      goal = applyGoalAcceptance(goal, eventIndex);
       break;
     }
     case "run_failed": {
@@ -429,6 +474,7 @@ export function appendRunEvent(
       finishedAt = event.at;
       failedNodeId = event.failedNodeId;
       failureReason = event.reason;
+      goal = goal === null ? null : rejectIncompleteGoal(goal);
       break;
     }
     case "run_cancelled": {
@@ -438,6 +484,7 @@ export function appendRunEvent(
       status = "cancelled";
       finishedAt = event.at;
       failureReason = event.reason;
+      goal = goal === null ? null : rejectIncompleteGoal(goal);
       break;
     }
   }
@@ -453,8 +500,53 @@ export function appendRunEvent(
     lastSequence: event.sequence,
     failedNodeId,
     failureReason,
+    goal,
     nodes,
   });
+}
+
+function applyCriterionDecision(
+  goal: GoalRunState | null,
+  input: Parameters<typeof recordCriterionDecision>[1],
+  eventIndex: number,
+): GoalRunState | null {
+  if (goal === null) {
+    return null;
+  }
+  try {
+    return recordCriterionDecision(goal, input);
+  } catch (error) {
+    throw goalReplayError(error, eventIndex);
+  }
+}
+
+function applyGoalAcceptance(goal: GoalRunState | null, eventIndex: number): GoalRunState | null {
+  if (goal === null) {
+    return null;
+  }
+  try {
+    return acceptGoal(goal);
+  } catch (error) {
+    throw goalReplayError(error, eventIndex);
+  }
+}
+
+function goalReplayError(error: unknown, eventIndex: number): RunReplayError {
+  const message = error instanceof Error ? error.message : String(error);
+  return new RunReplayError(
+    eventIndex,
+    error instanceof GoalEvaluationError ? message : `goal evaluation failed: ${message}`,
+  );
+}
+
+function isConclusiveVerifierRejection(evidence: NodeEvidence | null): boolean {
+  return (
+    evidence?.kind === "command" &&
+    evidence.exitCode !== null &&
+    evidence.exitCode !== 0 &&
+    evidence.signal === null &&
+    !evidence.timedOut
+  );
 }
 
 function freezeRunState(state: RunState): RunState {

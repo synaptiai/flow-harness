@@ -6,7 +6,7 @@ Flow turns a collection of useful software-development practices into an enforce
 
 The standalone harness reverses that relationship. Flow owns workflow execution and delegates only bounded node work to an embedded agent runtime.
 
-This document describes the target architecture unless a section is explicitly labeled as the initial executable slice. The delivery roadmap is the source of truth for implementation status. Gate 1 currently provides `validate`, sequential `run`, `inspect`, command and bounded Pi agent nodes, cancellation, and replayable local event ledgers. Initialization, the TUI/daemon, resume, approvals, evaluators, packages, loops, and the policy broker remain later gates.
+This document describes the target architecture unless a section is explicitly labeled as the current executable slice. The delivery roadmap is the source of truth for implementation status. Gates 1 and 2 currently provide `validate`, sequential `run`, `inspect`, optional versioned goal contracts, command-bound criterion evaluation, command and bounded Pi agent nodes, cancellation, and replayable local event ledgers. Initialization, the TUI/daemon, resume, approvals, probabilistic evaluators, packages, loops, and the policy broker remain later gates.
 
 ## Target flows
 
@@ -94,7 +94,7 @@ Persists transitions before the scheduler advances. Model transcripts are option
 
 ### Evaluators
 
-Run deterministic verification first. An LLM evaluator, when unavoidable, receives evidence rather than the implementation transcript and has no workspace mutation tools.
+The current goal evaluator is a pure domain transition: it receives only a compiled criterion-to-verifier binding and authoritative node outcome metadata. It receives no prompt, transcript, filesystem handle, executor, or tool, and therefore cannot mutate the workspace or infer acceptance from implementation rationale. Successful command evidence accepts a criterion; normal non-zero evidence rejects it; timeouts, signals, missing evidence, and unexpected evidence kinds are inconclusive. An LLM evaluator, when later unavoidable, must receive evidence rather than the implementation transcript and have no workspace mutation tools.
 
 ## Initial trust boundary
 

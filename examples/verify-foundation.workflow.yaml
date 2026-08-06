@@ -3,6 +3,17 @@ kind: Workflow
 metadata:
   id: verify-foundation
   description: Exercise Flow's command path against the repository foundation.
+goal:
+  apiVersion: flow.synapti.ai/v1alpha1
+  kind: Goal
+  metadata:
+    id: foundation-is-valid
+  outcome: The repository foundation passes deterministic verification.
+  criteria:
+    - id: typecheck-passes
+      description: The repository passes strict TypeScript checking.
+      verifier:
+        nodeId: typecheck
 nodes:
   - id: node-version
     type: command

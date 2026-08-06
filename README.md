@@ -1,6 +1,6 @@
 # Flow
 
-Flow is an open-source, provider-neutral harness for long-running software work. The current Gate 1 release compiles workflow files into executable graphs, scopes each agent node to declared read-only capabilities, and persists authoritative execution evidence outside model transcripts. Goal compilation and evaluator-gated completion are target capabilities, not current guarantees.
+Flow is an open-source, provider-neutral harness for long-running software work. The current Gate 2 implementation compiles workflow files and optional versioned goals into executable graphs, scopes each agent node to declared read-only capabilities, and persists authoritative execution and criterion evidence outside model transcripts. Goal-bearing runs succeed only when deterministic command verifiers accept every declared criterion.
 
 Flow is a standalone product. It does not depend on Claude Code and does not preserve compatibility with the earlier Flow plugin.
 
@@ -12,7 +12,7 @@ Modern coding models are capable, but a model is not a workflow engine, authoriz
 - A deterministic scheduler controls graph transitions.
 - A policy broker will control tools and consequential operations.
 - An append-only event ledger records authoritative run state.
-- Independent evaluators will decide whether acceptance criteria pass.
+- A mutation-free domain evaluator decides whether deterministic evidence accepts each criterion.
 - Provider-specific behavior remains behind an execution adapter.
 
 Pi is the initial agent runtime because its SDK offers a small, embeddable agent loop, multi-provider model support, session events, cancellation, tool selection, and custom resource loading. Flow owns everything that decides what may run, what happens next, and what constitutes completion.
@@ -38,7 +38,7 @@ Pi is the initial agent runtime because its SDK offers a small, embeddable agent
 
 ## Project status
 
-The first executable vertical slice supports strict workflow validation, sequential dependency-ordered execution, durable JSONL transitions, command verification, run inspection, and an embedded Pi executor boundary. It does not yet include goal compilation, a policy broker, approvals, resume, or independent completion evaluators.
+The executable harness supports strict workflow and goal validation, sequential dependency-ordered execution, durable JSONL transitions, command verification, criterion-level completion, run inspection, and an embedded Pi executor boundary. It does not yet include a policy broker, approvals, resume, probabilistic evaluators, or graph loops.
 
 ## Try the vertical slice
 
@@ -53,7 +53,7 @@ node dist/cli/main.js run examples/verify-foundation.workflow.yaml --run-id firs
 node dist/cli/main.js inspect first-run
 ```
 
-The example uses the production command executor and requires no model credentials. Agent nodes use provider credentials configured through Pi and currently receive only explicitly declared Flow-owned `read` and `ls` tools. Both resolve paths through the execution workspace boundary; Pi's ambient tools, extensions, skills, and executable-downloading search helpers are disabled.
+The example uses the production command executor, declares a goal whose criterion is bound to the terminal typecheck verifier, and requires no model credentials. Agent nodes use provider credentials configured through Pi and currently receive only explicitly declared Flow-owned `read` and `ls` tools. Both resolve paths through the execution workspace boundary; Pi's ambient tools, extensions, skills, and executable-downloading search helpers are disabled.
 
 Pi has no built-in sandbox. This release is intended for local, trusted workspaces; use an operator-provided container or stronger boundary for untrusted work.
 

@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { goalContractSchema } from "../goal/schema.js";
 import { FLOW_WORKFLOW_API_VERSION } from "./types.js";
 
 const identifierSchema = z
@@ -74,6 +75,7 @@ export const workflowSourceSchema = z
         description: z.string().trim().min(1).max(4096).optional(),
       })
       .strict(),
+    goal: goalContractSchema.optional(),
     nodes: z
       .array(z.discriminatedUnion("type", [commandNodeSchema, agentNodeSchema]))
       .min(1)

@@ -64,6 +64,7 @@ export async function runWorkflow(
     nodeIds: workflow.nodes.map((node) => node.id),
     workflowApiVersion: workflow.apiVersion,
     workflowDigest: createHash("sha256").update(JSON.stringify(workflow)).digest("hex"),
+    ...(workflow.goal === undefined ? {} : { goal: workflow.goal }),
   };
   await record(started);
 
