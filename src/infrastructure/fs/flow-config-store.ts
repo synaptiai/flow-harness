@@ -145,6 +145,7 @@ export async function initializeFlowProject(
       const handle = await open(pending, "wx", 0o644);
       await writeAndSync(handle, PROJECT_CONFIG_SOURCE);
       await link(pending, path);
+      await syncDirectory(flowDirectory);
       await rm(pending);
       await syncDirectory(flowDirectory);
     } catch (error) {
