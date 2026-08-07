@@ -28,8 +28,14 @@ import {
   commandApprovalRequestId,
   createCommandApprovalOperation,
 } from "../domain/approval/command-approval.js";
+import {
+  calculateWorkflowApprovalRequestDigest,
+  workflowApprovalEvidenceTruncationMessage,
+  workflowApprovalRequestId,
+} from "../domain/approval/workflow-approval.js";
 import type {
   CompiledAgentNode,
+  CompiledApprovalNode,
   CompiledCommandNode,
   CompiledConditionNode,
   CompiledJoinNode,
@@ -233,8 +239,17 @@ async function continueWorkflow(
         if (admitted.length > 0) {
           break;
         }
+        if (
+          transition.kind === "request_approval" &&
+          state.nodes[transition.node.id]?.workflowApproval?.status === "pending"
+        ) {
+          return state;
+        }
         const event = controlTransitionEvent(transition, state, base(nextSequence()));
         await record(event);
+        if (event.type === "workflow_approval_requested") {
+          return state;
+        }
         if (event.type === "node_control_failed") {
           const failed: RunFailedEvent = {
             ...base(nextSequence()),
@@ -717,6 +732,17 @@ function validateRecoveryCompatibility(
       );
     }
   }
+  for (const [nodeId, nodeState] of Object.entries(state.nodes)) {
+    if (nodeState.workflowApproval === null) {
+      continue;
+    }
+    if (workflowNodeById.get(nodeId)?.type !== "approval") {
+      throw new RunRecoveryError(
+        "workflow_mismatch",
+        `run "${runId}" has workflow approval state for non-approval node "${nodeId}"`,
+      );
+    }
+  }
 
   validateRecoveredHistory(workflow, runId, events);
 }
@@ -899,6 +925,18 @@ function validateRecoveredHistory(
         throw new RunRecoveryError(
           "workflow_mismatch",
           `run "${runId}" approval operation does not match command node "${event.nodeId}"`,
+        );
+      }
+    } else if (event.type === "workflow_approval_requested") {
+      const expectedTransition =
+        replayState === undefined ? undefined : selectNextTransition(workflow.nodes, replayState);
+      if (
+        expectedTransition?.kind !== "request_approval" ||
+        expectedTransition.node.id !== event.nodeId
+      ) {
+        throw new RunRecoveryError(
+          "workflow_mismatch",
+          `run "${runId}" contains workflow approval history that violates the compiled workflow graph`,
         );
       }
     } else if (event.type === "node_started") {
@@ -1111,10 +1149,15 @@ type ExecutableNode = CompiledAgentNode | CompiledCommandNode;
 
 type WorkflowTransition =
   | { readonly kind: "execute"; readonly node: ExecutableNode }
+  | { readonly kind: "request_approval"; readonly node: CompiledApprovalNode }
   | { readonly kind: "evaluate_condition"; readonly node: CompiledConditionNode }
   | {
       readonly kind: "omit_condition";
-      readonly node: CompiledAgentNode | CompiledCommandNode | CompiledConditionNode;
+      readonly node:
+        | CompiledAgentNode
+        | CompiledCommandNode
+        | CompiledApprovalNode
+        | CompiledConditionNode;
       readonly selectedCase: string;
     }
   | {
@@ -1124,7 +1167,11 @@ type WorkflowTransition =
     }
   | {
       readonly kind: "omit_loop";
-      readonly node: CompiledAgentNode | CompiledCommandNode | CompiledConditionNode;
+      readonly node:
+        | CompiledAgentNode
+        | CompiledCommandNode
+        | CompiledApprovalNode
+        | CompiledConditionNode;
     }
   | { readonly kind: "join"; readonly node: CompiledJoinNode }
   | { readonly kind: "evaluate_loop"; readonly node: CompiledLoopCheckNode }
@@ -1216,6 +1263,9 @@ function selectNextTransition(
     if (node.type === "condition") {
       return { kind: "evaluate_condition", node };
     }
+    if (node.type === "approval") {
+      return { kind: "request_approval", node };
+    }
     return { kind: "execute", node };
   }
   return undefined;
@@ -1231,13 +1281,17 @@ function controlEventMatchesTransition(
         | "node_loop_completed"
         | "node_omitted"
         | "node_joined"
-        | "node_control_failed";
+        | "node_control_failed"
+        | "workflow_approval_requested";
     }
   >,
   transition: WorkflowTransition | undefined,
 ): boolean {
   if (event.type === "node_condition_evaluated") {
     return transition?.kind === "evaluate_condition" && transition.node.id === event.nodeId;
+  }
+  if (event.type === "workflow_approval_requested") {
+    return transition?.kind === "request_approval" && transition.node.id === event.nodeId;
   }
   if (event.type === "node_loop_checked") {
     return transition?.kind === "evaluate_loop" && transition.node.id === event.nodeId;
@@ -1248,6 +1302,7 @@ function controlEventMatchesTransition(
   if (event.type === "node_control_failed") {
     return (
       (transition?.kind === "evaluate_condition" ||
+        transition?.kind === "request_approval" ||
         transition?.kind === "evaluate_loop" ||
         transition?.kind === "complete_loop") &&
       transition.node.id === event.nodeId
@@ -1360,6 +1415,56 @@ function controlTransitionEvent(
       attempt: 1,
       completedIterations,
       terminatingCheckNodeId,
+    };
+  }
+
+  if (transition.kind === "request_approval") {
+    const observations = transition.node.approval.evidence.map((declaration) => {
+      const source = controlSource(transition.node.id, declaration, state);
+      return { declaration, source };
+    });
+    const truncated = observations.find(({ source }) => source.truncated);
+    if (truncated !== undefined) {
+      return {
+        ...base,
+        type: "node_control_failed",
+        nodeId: transition.node.id,
+        attempt: 1,
+        error: {
+          code: "workflow_approval_evidence_truncated",
+          message: workflowApprovalEvidenceTruncationMessage(
+            transition.node.id,
+            truncated.declaration.nodeId,
+            truncated.declaration.field,
+          ),
+          retryable: false,
+          sideEffectStatus: "none",
+        },
+      };
+    }
+    const request = {
+      version: 1 as const,
+      runId: state.runId,
+      workflowId: state.workflowId,
+      workflowDigest: state.workflowDigest,
+      nodeId: transition.node.id,
+      attempt: 1 as const,
+      prompt: transition.node.approval.prompt,
+      evidence: observations.map(({ declaration, source }) => ({
+        sourceNodeId: declaration.nodeId,
+        sourceAttempt: source.attempt,
+        sourceField: declaration.field,
+        sourceHash: source.hash,
+      })),
+    };
+    return {
+      ...base,
+      type: "workflow_approval_requested",
+      nodeId: transition.node.id,
+      attempt: 1,
+      requestId: workflowApprovalRequestId(base.sequence),
+      request,
+      requestDigest: calculateWorkflowApprovalRequestDigest(request),
     };
   }
 

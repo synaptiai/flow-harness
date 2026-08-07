@@ -8,6 +8,9 @@ import {
   type CommandApprovalRunState,
   type RunFailedEvent,
   type RunState,
+  type WorkflowApprovalApprovedEvent,
+  type WorkflowApprovalDeniedEvent,
+  type WorkflowApprovalRunState,
 } from "../domain/run/events.js";
 
 interface ApprovalDecisionOptionsBase {
@@ -42,14 +45,19 @@ export class ApprovalDecisionError extends Error {
   }
 }
 
-export async function decideCommandApproval(options: ApprovalDecisionOptions): Promise<RunState> {
+export async function decideApproval(options: ApprovalDecisionOptions): Promise<RunState> {
   const actor = normalizeActor(options.actor);
   const reason = options.decision === "deny" ? normalizeReason(options.reason) : undefined;
   const events = await options.store.claim(options.runId);
 
   return await releaseAfterDecision(options.store, options.runId, async () => {
     let state = reduceRunEvents(events);
-    if (state.status === "succeeded" || state.status === "failed" || state.status === "cancelled") {
+    if (
+      state.status === "succeeded" ||
+      state.status === "failed" ||
+      state.status === "cancelled" ||
+      state.status === "resource_exhausted"
+    ) {
       throw new ApprovalDecisionError(
         "terminal_run",
         `run "${options.runId}" is already terminal with status "${state.status}"`,
@@ -79,28 +87,51 @@ export async function decideCommandApproval(options: ApprovalDecisionOptions): P
       runId: state.runId,
       workflowId: state.workflowId,
       nodeId: pending.nodeId,
-      attempt: pending.approval.attempt,
       requestId: pending.approval.requestId,
-      operationDigest: pending.approval.operationDigest,
     };
 
     if (options.decision === "approve") {
-      const granted: CommandApprovalGrantedEvent = {
+      if (pending.kind === "command") {
+        const granted: CommandApprovalGrantedEvent = {
+          ...eventBase,
+          type: "command_approval_granted",
+          attempt: pending.approval.attempt,
+          operationDigest: pending.approval.operationDigest,
+          actor,
+          expiresAt: new Date(Date.parse(at) + pending.approval.grantTtlMs).toISOString(),
+        };
+        await options.store.append(granted);
+        return appendRunEvent(state, granted);
+      }
+      const approved: WorkflowApprovalApprovedEvent = {
         ...eventBase,
-        type: "command_approval_granted",
+        type: "workflow_approval_approved",
+        attempt: pending.approval.attempt,
+        requestDigest: pending.approval.requestDigest,
         actor,
-        expiresAt: new Date(Date.parse(at) + pending.approval.grantTtlMs).toISOString(),
       };
-      await options.store.append(granted);
-      return appendRunEvent(state, granted);
+      await options.store.append(approved);
+      return appendRunEvent(state, approved);
     }
 
-    const denied: CommandApprovalDeniedEvent = {
-      ...eventBase,
-      type: "command_approval_denied",
-      actor,
-      ...(reason === undefined ? {} : { reason }),
-    };
+    const denied: CommandApprovalDeniedEvent | WorkflowApprovalDeniedEvent =
+      pending.kind === "command"
+        ? {
+            ...eventBase,
+            type: "command_approval_denied",
+            attempt: pending.approval.attempt,
+            operationDigest: pending.approval.operationDigest,
+            actor,
+            ...(reason === undefined ? {} : { reason }),
+          }
+        : {
+            ...eventBase,
+            type: "workflow_approval_denied",
+            attempt: pending.approval.attempt,
+            requestDigest: pending.approval.requestDigest,
+            actor,
+            ...(reason === undefined ? {} : { reason }),
+          };
     await options.store.append(denied);
     state = appendRunEvent(state, denied);
     const failedNode = state.nodes[pending.nodeId];
@@ -122,12 +153,28 @@ export async function decideCommandApproval(options: ApprovalDecisionOptions): P
   });
 }
 
-function currentPendingApproval(
-  state: RunState,
-): { readonly nodeId: string; readonly approval: CommandApprovalRunState } | undefined {
+export async function decideCommandApproval(options: ApprovalDecisionOptions): Promise<RunState> {
+  return await decideApproval(options);
+}
+
+function currentPendingApproval(state: RunState):
+  | {
+      readonly kind: "command";
+      readonly nodeId: string;
+      readonly approval: CommandApprovalRunState;
+    }
+  | {
+      readonly kind: "workflow";
+      readonly nodeId: string;
+      readonly approval: WorkflowApprovalRunState;
+    }
+  | undefined {
   for (const [nodeId, node] of Object.entries(state.nodes)) {
     if (node.approval?.status === "pending") {
-      return { nodeId, approval: node.approval };
+      return { kind: "command", nodeId, approval: node.approval };
+    }
+    if (node.workflowApproval?.status === "pending") {
+      return { kind: "workflow", nodeId, approval: node.workflowApproval };
     }
   }
   return undefined;

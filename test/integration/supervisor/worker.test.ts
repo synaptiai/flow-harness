@@ -164,6 +164,78 @@ describe("detached run worker", () => {
     });
   });
 
+  it("releases a detached approval node wait with its exact durable request", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-worker-approval-node-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    const store = new LocalSupervisorStore(runsDirectory);
+    await store.initialize();
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "worker-approval-node",
+      mode: "run",
+      sourceName: join(directory, "workflow.yaml"),
+      workflowSource: approvalNodeWorkflowSource(),
+      cwd: directory,
+      token: "e".repeat(64),
+      createdAt: "2026-08-07T12:00:00.000Z",
+    });
+    await store.reserveSubmission(
+      job,
+      createActiveRunClaim({
+        runId: job.runId,
+        jobId: job.jobId,
+        workerId: job.workerId,
+        claimedAt: job.createdAt,
+      }),
+    );
+
+    const worker = executeWorkerJob(job.jobId, {
+      store,
+      executor: {
+        async execute(node) {
+          if (node.type === "approval") {
+            throw new Error("approval node reached detached executor");
+          }
+          return { status: "succeeded", evidence: successfulCommandEvidence(node.id) };
+        },
+      },
+      effectReconciler: createProductionNodeEffectReconciler(),
+      createRunStore: (root) => new JsonlRunStore(root),
+      pid: 4324,
+    });
+
+    const descriptor = await waitForDescriptor(store, job.workerId);
+    await expect(requestWorker(descriptor, { type: "identify" })).resolves.toMatchObject({
+      ok: true,
+      result: { status: "running", runId: job.runId },
+    });
+    await expect(worker).resolves.toBe(3);
+    const events = await new JsonlRunStore(runsDirectory).read(job.runId);
+    expect(events.map((event) => event.type)).toEqual([
+      "run_started",
+      "node_started",
+      "node_succeeded",
+      "workflow_approval_requested",
+    ]);
+    expect(events.at(-1)).toMatchObject({
+      type: "workflow_approval_requested",
+      nodeId: "review",
+      requestId: "approval-4",
+      request: {
+        prompt: "Approve the detached evidence.",
+        evidence: [{ sourceNodeId: "plan", sourceField: "command.stdout" }],
+      },
+    });
+    await expect(store.readActiveRunClaim(job.runId)).resolves.toBeNull();
+    await expect(store.readWorkerDescriptor(job.workerId)).resolves.toMatchObject({
+      status: "terminal",
+      runStatus: "waiting_for_approval",
+      exitCode: 3,
+    });
+  });
+
   it("preserves an uncertain resumed run after durably reconciling its open edit", async () => {
     const directory = await mkdtemp(join(tmpdir(), "flow-worker-reconcile-"));
     temporaryDirectories.push(directory);
@@ -426,6 +498,28 @@ nodes:
     type: command
     dependsOn: [implement]
     command: { executable: node, args: [--version] }
+`;
+}
+
+function approvalNodeWorkflowSource(): string {
+  return `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: worker-approval-node }
+nodes:
+  - id: plan
+    type: command
+    command: { executable: node, args: [plan] }
+  - id: review
+    type: approval
+    dependsOn: [plan]
+    approval:
+      prompt: Approve the detached evidence.
+      evidence: [{ nodeId: plan, field: command.stdout }]
+  - id: verify
+    type: command
+    dependsOn: [review]
+    command: { executable: node, args: [verify] }
 `;
 }
 

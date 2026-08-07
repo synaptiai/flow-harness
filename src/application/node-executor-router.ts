@@ -19,6 +19,7 @@ export class NodeExecutorRouter implements NodeExecutor {
         return this.commandExecutor.execute(node, context);
       case "agent":
         return this.agentExecutor.execute(node, context);
+      case "approval":
       case "condition":
       case "join":
       case "loop-check":

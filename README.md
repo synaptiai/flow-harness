@@ -22,6 +22,7 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Durable JSONL run ledger and inspection | Implemented |
 | Safe-boundary recovery with exclusive local ownership | Implemented |
 | Durable exact command approval with approve/deny CLI | Implemented |
+| Durable evidence-bound graph approval nodes with approve/deny CLI | Implemented |
 | Durable provider-neutral resource accounting and run budgets | Implemented for starts, model tokens, reported cost, and active execution time |
 | Strict project/operator configuration with inspectable monotonic limits | Implemented |
 | Bounded detached supervisor, durable FIFO queue, authenticated workers, cancellation, and event replay | Implemented on Linux and macOS |
@@ -134,7 +135,7 @@ The workflow opts in with `concurrency: { maxNodes: 2 }`; omission preserves the
 one. Flow admits ready executable nodes in declaration order, durably records every start before
 invocation, waits for the complete wave to quiesce, and commits outcomes in declaration order even
 when wall-clock completion reverses. A failure or cancellation starts no later wave, but every
-already-admitted node is settled first. Conditions, joins, and command approvals are barriers and
+already-admitted node is settled first. Conditions, joins, and both approval protocols are barriers and
 never overlap an executable wave. This is bounded concurrency inside one run; the supervisor's
 worker limit independently bounds detached runs.
 
@@ -220,6 +221,28 @@ node dist/cli/main.js deny approval-demo approval-2 --actor local:daniel --reaso
 The actor label is append-only attribution supplied by the caller, not authenticated identity.
 Anyone who can control the private run directory or invoke Flow with the same local permissions is
 inside this slice's administrative trust boundary.
+
+### Approve durable graph evidence
+
+An `approval` node pauses the graph after its declared command or agent evidence is complete:
+
+```sh
+node dist/cli/main.js run examples/evidence-approval.workflow.yaml --run-id review-demo
+node dist/cli/main.js inspect review-demo
+node dist/cli/main.js approve review-demo approval-4 --actor local:daniel
+node dist/cli/main.js resume examples/evidence-approval.workflow.yaml --run-id review-demo
+```
+
+The request binds the workflow digest, prompt, logical attempt, and ordered source node, attempt,
+field, and content hash. Sources must be direct dependencies and may select `command.stdout`,
+`command.stderr`, or `agent.text` from a compatible successful node. Truncated evidence fails the
+approval node without creating a request.
+
+Unlike command approval, approving graph evidence immediately succeeds a pure control node. It
+does not authorize a process, expand sandbox or tool policy, create a grant, or consume execution
+budget. Denial immediately fails the node without a `node_started` event or downstream execution.
+The same `approve` and `deny` commands inspect the pending request type and emit the matching durable
+event protocol. Resume is still explicit and requires the exact starting workflow.
 
 ### Bound a run
 

@@ -8,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 
-import { ApprovalDecisionError, decideCommandApproval } from "../application/command-approval.js";
+import { ApprovalDecisionError, decideApproval } from "../application/command-approval.js";
 import type {
   NodeEffectReconciler,
   NodeExecutor,
@@ -250,7 +250,7 @@ async function approvalDecisionCommand(
   const dependencies = controlDependenciesFrom(overrides);
   const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
   const runsDirectory = resolveRunsDirectory(dependencies.cwd, values["runs-dir"], config);
-  const state = await decideCommandApproval({
+  const state = await decideApproval({
     runId,
     requestId,
     actor,

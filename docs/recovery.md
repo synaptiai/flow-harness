@@ -61,7 +61,7 @@ before its admission event is inert; an exact retry can complete the missing tra
 same identity. Once execution may have crossed the authenticated worker boundary, uncertainty is
 reconciled only from that matching worker and never causes a second spawn.
 
-An approval-required command returns process exit code 3 and can be decided after the original
+A command or graph approval wait returns process exit code 3 and can be decided after the original
 client exits:
 
 ```sh
@@ -70,9 +70,10 @@ flow approve <run-id> <request-id> --actor <label> [--runs-dir <path>]
 flow deny <run-id> <request-id> --actor <label> [--reason <text>] [--runs-dir <path>]
 ```
 
-Approval and denial claim the run and append a decision, but approval does not execute. Resume the
-exact workflow separately to consume a still-valid grant. The actor label is caller-supplied audit
-attribution rather than authenticated identity.
+Approval and denial claim the run and append the event family required by the pending request.
+Command approval does not execute; resume separately consumes a still-valid grant. Graph approval
+immediately completes the pure control node, but downstream work still requires an explicit resume.
+The actor label is caller-supplied audit attribution rather than authenticated identity.
 
 ## Recovery boundaries
 
@@ -87,6 +88,9 @@ attribution rather than authenticated identity.
 | `command_approval_granted` is unexpired | Append `run_resumed`, consume the exact grant in `node_started`, and execute once |
 | `command_approval_granted` has expired unused | Append `run_resumed`, record expiry, create a fresh request, and execute nothing |
 | `command_approval_denied` is durable but `run_failed` is absent | Append `run_resumed`, append `run_failed`, and execute nothing |
+| `workflow_approval_requested` is pending | Append `run_resumed`, retain the exact request and `waiting_for_approval`, and execute nothing |
+| `workflow_approval_approved` is durable | Append `run_resumed` and apply only the next graph-declared transition |
+| `workflow_approval_denied` is durable but `run_failed` is absent | Append `run_resumed`, append `run_failed`, and execute nothing |
 | One or more opted-in agent `node_started` events are below their attempt caps, have accountable start capacity, and have no effects or only effects proven not applied | Reconcile every open typed edit and append each `node_attempt_interrupted` in declaration order; append one `run_resumed`, then admit fresh attempts under the persisted concurrency limit |
 | An opted-in agent `node_started` has an applied, committed, unknown, open, legacy writable, attempt-exhausted, or unaccountable budget state | Preserve any reconciliation prefix, refuse with `recovery_retry_ineligible`, and invoke no executor |
 | An unconfigured `node_started` has no matching outcome | Preserve any reconciliation prefix, refuse with `uncertain_operation`, and append no retry disposition or `run_resumed` |

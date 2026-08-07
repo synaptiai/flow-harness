@@ -340,6 +340,42 @@ identity, RBAC, or a signature, and the request id is not a bearer secret. This 
 deterministic command nodes. In-flight Pi tool-call approval requires persisted session continuation
 and is not implemented.
 
+## Approval node
+
+An approval node pauses graph advancement over exact completed evidence:
+
+```yaml
+- id: review-plan
+  type: approval
+  dependsOn: [plan, verify-plan]
+  approval:
+    prompt: Approve this verified implementation plan.
+    evidence:
+      - { nodeId: plan, field: agent.text }
+      - { nodeId: verify-plan, field: command.stdout }
+```
+
+`prompt` is trimmed, non-empty, and at most 4096 characters. `evidence` contains one through sixteen
+ordered unique `(nodeId, field)` declarations. Each source must be a direct dependency and have a
+compatible field: command nodes expose `command.stdout` and `command.stderr`; agent nodes expose
+`agent.text`. The node may be condition-guarded or appear in a bounded loop body under the same
+finite graph rules as other guarded control nodes.
+
+When ready, Flow requires every declared source to have complete successful durable evidence. It
+persists `workflow_approval_requested` with a versioned snapshot of the run, workflow digest, node,
+logical attempt one, prompt, and ordered source node, attempt, field, and hash. A dedicated SHA-256
+digest binds that snapshot. Any truncated source instead produces
+`workflow_approval_evidence_truncated`, a side-effect-free non-retryable control failure; no request
+is shown to an operator.
+
+The existing `flow approve` and `flow deny` commands route by the current pending request type.
+`workflow_approval_approved` immediately succeeds the pure control node and
+`workflow_approval_denied` immediately fails it. Neither emits `node_started`, invokes an executor,
+or consumes execution budget. Unlike command approval, there is no grant, TTL, expiry, or later
+consumption because the decision and graph transition are one committed event. The decision grants
+no command, model-tool, sandbox, credential, or policy authority. Resume remains a separate explicit
+operation using the exact workflow.
+
 Every command node and descendant runs through Flow's required SRT adapter. The fixed `workspace-write-network-deny-v1` profile allows the selected workflow directory and a private temporary directory, denies network and undeclared Unix sockets, omits ambient credentials and injection variables from the child environment, and denies writes to the actual run store, `.flow`, `.git`, environment files, and key files. Concurrent same-policy commands share one initialized SRT session but receive distinct temporary directories, environment values, and per-command filesystem configurations. Flow reference-counts wraps, rejects a different concurrent workspace or policy, and resets SRT only after the last command releases. On Linux, Flow resolves SRT's packaged seccomp helper canonically, passes it as the explicit SRT apply path, and re-exposes only that file read-only when the Flow installation lies outside the workflow directory. If SRT is missing, unsupported, degraded, or cannot initialize, the node fails before spawn; Flow has no unsandboxed command fallback.
 
 New command evidence records `anthropic-sandbox-runtime`, its exact installed version, the named profile, and a SHA-256 digest of the semantic policy. The field is optional only when replaying ledgers created before sandbox evidence existed.
@@ -458,8 +494,11 @@ guard, omission reason and dependencies, join coverage and selected terminal, ef
 order, settlement/reconciliation legality, retry eligibility,
 monotonic attempt numbering, decision and receipt order, attribution, classification, hashes,
 request digests, prepared-effect authorization, resource arithmetic, and exact exhaustion values.
-Approval replay separately verifies the declared requirement, budget-bounded exact operation
-digest, sequence-derived request identity, grant lifetime, actor, expiry, and single consumed start.
+Command approval replay separately verifies the declared requirement, budget-bounded exact
+operation digest, sequence-derived request identity, grant lifetime, actor, expiry, and single
+consumed start. Graph approval replay reconstructs the prompt and ordered evidence observations,
+verifies their attempts, fields, hashes, completeness, request identity and digest, then validates
+the exact attributable decision.
 A single serialized JSONL event is capped at 2 MiB. The ceiling includes worst-case JSON escaping
 at the documented decision, effect, receipt, target, output, and error bounds.
 
@@ -467,7 +506,7 @@ Fresh and recovered execution publish complete ownership metadata atomically bef
 
 Node-start events are synced before an executor is invoked. Node-result events are synced before the scheduler advances. Owner appends validate one transition against cached reduced state instead of rereading history. Each append syncs the file, and every newly created run-directory ancestor is synced where the platform supports directory handles. A valid or invalid unterminated trailing JSONL fragment is treated as uncommitted and truncated before a later append; corruption in an earlier committed record fails closed.
 
-The reducer accepts only legal state transitions and reconstructs `running`, `waiting_for_approval`, `succeeded`, `failed`, `cancelled`, or `resource_exhausted` run state together with immutable resources, budget, goal, criterion, and current command-approval state. Cancellation before a run claim creates no ledger. Cancellation during a node becomes a failed node attempt while retaining any settled evidence; cancellation between attempts appends `run_cancelled` without starting more work unless committed evidence already exhausted a settlement limit or a start limit already prevents pending work. In either exception, durable `resource_exhausted` state takes precedence. A safe-boundary recovery appends `run_resumed`, preserves committed node outcomes and approval state, skips successful nodes, and either continues the next ready pending node, returns to an operator wait, or finalizes a committed failure or exhausted settlement. Recovery of an open typed edit first appends its observation under target coordination. It then refuses the unfinished node unless the persisted opt-in and complete replay prove every effect not applied and all attempt and resource limits permit a separate `node_attempt_interrupted` disposition. Model transcripts and implementation rationale are never consulted during replay.
+The reducer accepts only legal state transitions and reconstructs `running`, `waiting_for_approval`, `succeeded`, `failed`, `cancelled`, or `resource_exhausted` run state together with immutable resources, budget, goal, criterion, and typed command or graph approval state. Cancellation before a run claim creates no ledger. Cancellation during a node becomes a failed node attempt while retaining any settled evidence; cancellation between attempts appends `run_cancelled` without starting more work unless committed evidence already exhausted a settlement limit or a start limit already prevents pending work. In either exception, durable `resource_exhausted` state takes precedence. A safe-boundary recovery appends `run_resumed`, preserves committed node outcomes and approval state, skips successful nodes, and either continues the next ready pending node, returns to an operator wait, or finalizes a committed failure or exhausted settlement. Recovery of an open typed edit first appends its observation under target coordination. It then refuses the unfinished node unless the persisted opt-in and complete replay prove every effect not applied and all attempt and resource limits permit a separate `node_attempt_interrupted` disposition. Model transcripts and implementation rationale are never consulted during replay.
 
 ## Foreground and detached execution
 
@@ -488,7 +527,7 @@ the id to the complete request and rejects reuse with changed input.
 
 ## Current limitations
 
-- No arbitrary cycles, nested/unbounded/optimization loops, dynamic fan-out, general multi-condition joins, general approval nodes, child runs, terminal-failure retry, or fallback semantics. Bounded loop bodies and static ready DAG nodes can execute concurrently, but iterations are sequential, share one workspace, and are not inferred to be conflict-free. Conditions and loop stops are limited to exact equality over complete durable command/agent text. Approval is currently available only as a deterministic command pre-start gate; recovery is limited to the proof-safe fresh mode above.
+- No arbitrary cycles, nested/unbounded/optimization loops, dynamic fan-out, general multi-condition joins, general verifier nodes, child runs, terminal-failure retry, or fallback semantics. Bounded loop bodies and static ready DAG nodes can execute concurrently, but iterations are sequential, share one workspace, and are not inferred to be conflict-free. Conditions and loop stops are limited to exact equality over complete durable command/agent text. Approval is available as deterministic command pre-start gates and pure evidence-bound graph nodes; dynamic in-session model-tool approval remains unavailable. Recovery is limited to the proof-safe fresh mode above.
 - No automatic terminalization or session continuation of an interrupted node attempt. Unconfigured or ineligible durable starts still block continuation.
 - Detached workers can be adopted by a replacement local supervisor, but they cannot move between
   hosts and do not survive host reboot.

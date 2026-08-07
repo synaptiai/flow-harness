@@ -40,6 +40,10 @@ The embedded Pi runtime runs with the invoking user's operating-system permissio
   working directory, timeout, digest, request identity, and grant lifetime before any node start or
   sandbox preparation. Approval is single-use, expires predictably, and does not weaken the command
   sandbox. Denial and expiry execute nothing.
+- Graph approval nodes persist a canonical prompt and ordered references to complete durable
+  command or agent evidence, including source attempts, fields, and hashes. Truncated evidence
+  fails before a request. Approval completes only the pure control node; it grants no command,
+  model-tool, sandbox, credential, or policy authority. Denial executes nothing.
 - Run budgets persist checked start, token, reported-cost, and active-time accounting and can reduce
   node timeouts before execution. They are scheduler controls, not provider-side billing
   reservations, account quotas, CPU/memory limits, or a substitute for containment. One in-flight
@@ -79,9 +83,10 @@ SRT is a beta native sandbox based on Seatbelt on macOS and bubblewrap, namespac
 
 Workflow files remain trusted orchestration configuration: command nodes can execute arbitrary programs within the declared workspace-write boundary. Review workflows before running them and scope host credentials outside the Flow process where possible.
 
-`flow approve` and `flow deny` record a caller-supplied actor label. The label is audit attribution,
-not authenticated identity, RBAC, or a signature. Request ids are locators rather than bearer
-secrets. The private run-directory permissions and authority of the invoking local account are the
-administrative boundary. Do not expose the run directory or approval CLI to untrusted users.
+`flow approve` and `flow deny` route the current typed command or graph request and record a
+caller-supplied actor label. The label is audit attribution, not authenticated identity, RBAC, or a
+signature. Request ids are locators rather than bearer secrets. The private run-directory
+permissions and authority of the invoking local account are the administrative boundary. Do not
+expose the run directory or approval CLI to untrusted users.
 
 Command output, agent text, executable arguments, and failure messages are persisted in the run ledger as evidence. They can contain secrets emitted by tools or providers. Keep `.flow/runs` private, apply repository ignore rules, and redact sensitive output at its source.
