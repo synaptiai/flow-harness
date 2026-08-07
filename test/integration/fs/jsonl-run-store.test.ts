@@ -7,7 +7,8 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { RunEvent } from "../../../src/domain/run/events.js";
+import { MAX_RUN_EVENT_BYTES, type RunEvent } from "../../../src/domain/run/events.js";
+import { PolicyBroker } from "../../../src/domain/policy/broker.js";
 import { JsonlRunStore, RunStoreError } from "../../../src/infrastructure/fs/jsonl-run-store.js";
 
 const temporaryDirectories: string[] = [];
@@ -114,6 +115,76 @@ describe("JsonlRunStore", () => {
         },
       },
     });
+  });
+
+  it("persists maximum escaped agent policy and effect evidence within the ledger ceiling", async () => {
+    const root = await createTemporaryDirectory();
+    const store = new JsonlRunStore(root);
+    const operationDigest = "a".repeat(64);
+    const target = "\0".repeat(1_024);
+    const policy = new PolicyBroker(
+      {
+        runId: "run-1",
+        workflowId: "verify-foundation",
+        nodeId: "node-version",
+        attempt: 1,
+      },
+      ["filesystem.write"],
+    );
+    for (let index = 0; index < 64; index += 1) {
+      policy.authorize({
+        action: "filesystem.write",
+        target,
+        boundary: "inside",
+        operationDigest,
+      });
+    }
+    const effectReceipts = Array.from({ length: 32 }, (_, index) => ({
+      version: 1 as const,
+      sequence: index + 1,
+      runId: "run-1",
+      workflowId: "verify-foundation",
+      nodeId: "node-version",
+      attempt: 1,
+      kind: "filesystem.edit" as const,
+      target,
+      operationDigest,
+      beforeSha256: "b".repeat(64),
+      afterSha256: "c".repeat(64),
+      outcome: "committed" as const,
+    }));
+    const event: RunEvent = {
+      ...base(3),
+      type: "node_failed",
+      nodeId: "node-version",
+      attempt: 1,
+      error: {
+        code: "pi_agent_failed",
+        message: "\0".repeat(16_384),
+        retryable: false,
+        sideEffectStatus: "committed",
+      },
+      evidence: {
+        kind: "agent",
+        provider: "test",
+        model: "test",
+        text: "\0".repeat(65_536),
+        textHash: sha256("\0".repeat(65_536)),
+        textTruncated: false,
+        durationMs: 1,
+        policyDecisions: policy.close(),
+        effectReceipts,
+      },
+    };
+    const serializedBytes = Buffer.byteLength(`${JSON.stringify(event)}\n`, "utf8");
+    expect(serializedBytes).toBeGreaterThan(1_048_576);
+    expect(serializedBytes).toBeLessThanOrEqual(MAX_RUN_EVENT_BYTES);
+
+    await store.append(runStarted());
+    await store.append(nodeStarted());
+    await store.append(event);
+
+    await expect(store.read("run-1")).resolves.toHaveLength(3);
   });
 
   it("atomically grants a run id to only one store instance", async () => {

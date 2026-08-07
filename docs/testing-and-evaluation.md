@@ -8,19 +8,19 @@ Run the complete local gate with:
 npm run check
 ```
 
-It verifies formatting, lint rules, strict TypeScript contracts, all default tests, the production build, and compiled-process tests. Packaging is checked separately with `npm run pack:check` so cache or registry settings do not affect the main code-quality result.
+It verifies formatting, lint rules, strict TypeScript contracts, all default tests, a clean production build, and compiled-process tests. The build removes the previous `dist/` tree first so deleted modules cannot survive into a release artifact. Packaging is checked separately with `npm run pack:check` so cache or registry settings do not affect the main code-quality result.
 
 ## Test layers
 
 | Layer | Purpose | External effects |
 | --- | --- | --- |
-| Domain unit | Workflow/goal compilation, policy classification/decisions, pure criterion evaluation, and event replay invariants | None |
+| Domain unit | Workflow/goal compilation, policy classification/operation digests, pure criterion evaluation, and decision/receipt replay invariants | None |
 | Application unit | Scheduler ordering, recovery compatibility, completed-node skipping, failure propagation, and executor authority | Test-only in-memory ports |
-| Infrastructure integration | Real JSONL persistence, process ownership, torn-tail repair, and real child processes | Temporary directories and local processes |
+| Infrastructure integration | Atomic hash-anchored edits, same-host edit-lock recovery, exact-byte versions, protected paths, real JSONL persistence, process ownership, torn-tail repair, and real child processes | Temporary directories and local processes |
 | CLI integration | Validate, run, resume, persist, and inspect through production composition | Temporary run ledgers and local processes |
 | Compiled-process integration | Direct-entry signal handling, process-group termination, cross-process run claiming, and real sandbox boundaries | Built CLI, temporary run ledgers, local process trees, native sandbox primitives, and loopback networking |
-| Pi adapter contract | Exact model/tool request translation, policy-broker routing, setup races, timeout settlement, and error classification | Temporary workspace and test-only runner at the SDK seam |
-| Pi SDK integration | Real `ModelRuntime` and `createAgentSession` composition and streaming | Deterministic in-process provider; no network or credentials |
+| Pi adapter contract | Exact model/tool request translation, versioned reads, edit receipts, policy-broker routing, setup races, timeout settlement, and committed/uncertain error classification | Temporary workspace and test-only runner at the SDK seam |
+| Pi SDK integration | Real `ModelRuntime` and `createAgentSession` composition, `flow_read`/`flow_edit` tool turns, and streaming | Deterministic in-process provider; no network or credentials |
 | Live Pi | Provider authentication, streaming, cancellation, and model compatibility | Opt-in network and provider cost |
 
 Test doubles are permitted only in tests at explicit ports. Production modules contain no mock executor, fake provider, fallback success, or sample result.

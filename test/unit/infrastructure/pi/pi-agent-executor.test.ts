@@ -11,6 +11,7 @@ import {
   type PiAgentRunRequest,
   type PiAgentRunner,
 } from "../../../../src/infrastructure/pi/pi-agent-executor.js";
+import { AgentEffectRecorder } from "../../../../src/infrastructure/pi/agent-effect-recorder.js";
 
 const context: NodeExecutionContext = {
   runId: "run-agent",
@@ -45,6 +46,7 @@ describe("PiAgentExecutor", () => {
       model: "claude-sonnet-4-5",
       thinking: "medium",
       tools: ["read", "ls"],
+      protectedPaths: [],
     });
     expect(request?.policyBroker.attribution).toEqual({
       runId: "run-agent",
@@ -53,6 +55,12 @@ describe("PiAgentExecutor", () => {
       attempt: 1,
     });
     expect(request?.signal).toBeInstanceOf(AbortSignal);
+    expect(request?.effectRecorder.attribution).toEqual({
+      runId: "run-agent",
+      workflowId: "agent-workflow",
+      nodeId: "analyze",
+      attempt: 1,
+    });
     expect(outcome).toEqual({
       status: "succeeded",
       evidence: {
@@ -74,6 +82,7 @@ describe("PiAgentExecutor", () => {
             outcome: "allowed",
           }),
         ],
+        effectReceipts: [],
       },
     });
   });
@@ -149,6 +158,63 @@ describe("PiAgentExecutor", () => {
     });
   });
 
+  it("preserves a committed edit receipt and side-effect status after provider failure", async () => {
+    const runner: PiAgentRunner = {
+      async run(input) {
+        recordEditEffect(input, "committed");
+        throw new Error("provider failed after edit");
+      },
+    };
+
+    const outcome = await new PiAgentExecutor(runner, () => 100).execute(
+      agentNode(300_000, ["edit"]),
+      context,
+    );
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "pi_agent_failed",
+        message: "provider failed after edit",
+        sideEffectStatus: "committed",
+      },
+      evidence: {
+        kind: "agent",
+        effectReceipts: [
+          {
+            sequence: 1,
+            kind: "filesystem.edit",
+            outcome: "committed",
+          },
+        ],
+      },
+    });
+  });
+
+  it("fails a terminal agent result when an edit receipt is uncertain", async () => {
+    const runner: PiAgentRunner = {
+      async run(input) {
+        recordEditEffect(input, "uncertain");
+        return { text: "The edit may have committed.", stopReason: "stop" };
+      },
+    };
+
+    const outcome = await new PiAgentExecutor(runner, () => 100).execute(
+      agentNode(300_000, ["edit"]),
+      context,
+    );
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: { code: "pi_agent_effect_uncertain", sideEffectStatus: "uncertain" },
+      evidence: {
+        kind: "agent",
+        text: "The edit may have committed.",
+        effectReceipts: [{ outcome: "uncertain" }],
+      },
+    });
+  });
+
   it("rejects Pi terminal error messages even when the session promise resolves", async () => {
     const runner: PiAgentRunner = {
       async run() {
@@ -213,6 +279,54 @@ describe("PiAgentExecutor", () => {
       evidence: null,
     });
     expect(cleanupFinished).toBe(true);
+  });
+
+  it("waits for an active edit reservation when timeout abort rejection wins the race", async () => {
+    const runner: PiAgentRunner = {
+      run(input) {
+        return new Promise((_resolve, reject) => {
+          input.signal?.addEventListener(
+            "abort",
+            () => {
+              const operationDigest = "d".repeat(64);
+              const target = "/workspace/source.ts";
+              input.policyBroker.authorize({
+                action: "filesystem.write",
+                target,
+                boundary: "inside",
+                operationDigest,
+              });
+              const reservation = input.effectRecorder.reserve({
+                kind: "filesystem.edit",
+                target,
+                operationDigest,
+              });
+              reject(new Error("session rejected during abort"));
+              setTimeout(() => {
+                reservation.commit({
+                  beforeSha256: "a".repeat(64),
+                  afterSha256: "b".repeat(64),
+                  outcome: "committed",
+                });
+              }, 20);
+            },
+            { once: true },
+          );
+        });
+      },
+    };
+
+    const outcome = await new PiAgentExecutor(
+      runner,
+      performance.now.bind(performance),
+      100,
+    ).execute(agentNode(5, ["edit"]), context);
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: { code: "pi_agent_timeout", sideEffectStatus: "committed" },
+      evidence: { effectReceipts: [{ outcome: "committed" }] },
+    });
   });
 
   it("bounds cleanup when a runner does not cooperate with abort", async () => {
@@ -394,9 +508,11 @@ describe("EmbeddedPiAgentRunner", () => {
       provider: "anthropic",
       model: "claude-sonnet-4-5",
       thinking: "medium",
-      tools: ["read", "ls"],
+      tools: ["read", "ls", "edit"],
       maxOutputBytes: 65_536,
       policyBroker: testPolicyBroker(),
+      protectedPaths: [],
+      effectRecorder: testEffectRecorder(),
     });
 
     expect(result).toEqual({
@@ -407,8 +523,12 @@ describe("EmbeddedPiAgentRunner", () => {
       errorMessage: "provider stream failed",
     });
     expect(sessionOptions?.noTools).toBe("all");
-    expect(sessionOptions?.tools).toEqual(["flow_read", "flow_ls"]);
-    expect(sessionOptions?.customTools?.map((tool) => tool.name)).toEqual(["flow_read", "flow_ls"]);
+    expect(sessionOptions?.tools).toEqual(["flow_read", "flow_ls", "flow_edit"]);
+    expect(sessionOptions?.customTools?.map((tool) => tool.name)).toEqual([
+      "flow_read",
+      "flow_ls",
+      "flow_edit",
+    ]);
     expect(sessionOptions?.resourceLoader?.getExtensions().extensions).toEqual([]);
     expect(sessionOptions?.resourceLoader?.getSkills().skills).toEqual([]);
     expect(sessionOptions?.resourceLoader?.getAgentsFiles().agentsFiles).toEqual([]);
@@ -534,7 +654,10 @@ describe("EmbeddedPiAgentRunner", () => {
   });
 });
 
-function agentNode(timeoutMs = 300_000): CompiledAgentNode {
+function agentNode(
+  timeoutMs = 300_000,
+  tools: CompiledAgentNode["agent"]["tools"] = ["read", "ls"],
+): CompiledAgentNode {
   return {
     id: "analyze",
     type: "agent",
@@ -546,7 +669,7 @@ function agentNode(timeoutMs = 300_000): CompiledAgentNode {
         id: "claude-sonnet-4-5",
         thinking: "medium",
       },
-      tools: ["read", "ls"],
+      tools,
       timeoutMs,
     },
   };
@@ -562,8 +685,35 @@ function agentRequest(signal?: AbortSignal): PiAgentRunRequest {
     tools: ["read", "ls"],
     maxOutputBytes: 65_536,
     policyBroker: testPolicyBroker(),
+    protectedPaths: [],
+    effectRecorder: testEffectRecorder(),
     ...(signal === undefined ? {} : { signal }),
   };
+}
+
+function testEffectRecorder() {
+  return new AgentEffectRecorder({
+    runId: "run-agent",
+    workflowId: "agent-workflow",
+    nodeId: "analyze",
+    attempt: 1,
+  });
+}
+
+function recordEditEffect(request: PiAgentRunRequest, outcome: "committed" | "uncertain"): void {
+  const target = `${request.cwd}/source.ts`;
+  const operationDigest = "d".repeat(64);
+  request.policyBroker.authorize({
+    action: "filesystem.write",
+    target,
+    boundary: "inside",
+    operationDigest,
+  });
+  request.effectRecorder.reserve({ kind: "filesystem.edit", target, operationDigest }).commit({
+    beforeSha256: "a".repeat(64),
+    afterSha256: "b".repeat(64),
+    outcome,
+  });
 }
 
 function testPolicyBroker(): PolicyBroker {

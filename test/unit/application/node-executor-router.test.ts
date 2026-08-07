@@ -39,6 +39,7 @@ describe("NodeExecutorRouter", () => {
             textTruncated: false,
             durationMs: 1,
             policyDecisions: [],
+            effectReceipts: [],
           },
         };
       },

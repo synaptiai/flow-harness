@@ -2,7 +2,7 @@
 
 The roadmap is organized around externally verifiable capability gates rather than dates.
 
-Gates 0–2 are implemented. Gate 3 has a model-tool policy-broker slice and fail-closed native command containment. Gate 4 has a committed-boundary recovery slice with exclusive same-host ownership. Approvals, broader model tools, configurable policy, open-operation reconciliation, supervision, and stronger VM or managed backends remain target capabilities.
+Gates 0–2 are implemented. Gate 3 has a model-tool policy broker, a full-SHA hash-anchored single-file edit, durable effect receipts, and fail-closed native command containment. Gate 4 has a committed-boundary recovery slice with exclusive same-host ownership. Approvals, execute/network model tools, configurable policy, open-operation reconciliation, supervision, and stronger VM or managed backends remain target capabilities.
 
 ## Gate 0: Repository foundation
 
@@ -34,6 +34,7 @@ Gates 0–2 are implemented. Gate 3 has a model-tool policy-broker slice and fai
 - Approval binds an exact operation and expires predictably.
 - Timeouts terminate process trees and record partial output.
 - Side-effect uncertainty blocks automatic retry.
+- Full-SHA hash-anchored edit of an existing UTF-8 file records before/after effect receipts, coordinates cooperating same-host Flow processes, and fails closed on stale content. *(Implemented.)*
 - A Flow-owned sandbox port isolates command execution from the selected backend. *(Implemented for SRT.)*
 - The initial fixed profile denies network and ambient credentials, permits workspace work, protects durable state, and records provenance. *(Implemented.)*
 - Missing or degraded containment fails before command spawn. *(Implemented.)*

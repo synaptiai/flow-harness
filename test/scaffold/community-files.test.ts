@@ -85,6 +85,38 @@ describe("public repository contracts", () => {
       expect(template).toContain(heading);
     }
   });
+
+  it("documents the implemented hash-anchored edit boundary and a valid declaration example", async () => {
+    const [readme, architecture, workflowSpec, sourcing, roadmap, exampleSource] =
+      await Promise.all([
+        readText("README.md"),
+        readText("docs/architecture.md"),
+        readText("docs/workflow-spec.md"),
+        readText("docs/capability-sourcing.md"),
+        readText("docs/roadmap.md"),
+        readText("examples/implement-and-verify.workflow.yaml"),
+      ]);
+
+    expect(readme).toMatch(/hash-anchored/i);
+    expect(readme).toContain("`read`, `ls`, and `edit`");
+    expect(architecture).toMatch(/effect receipt/i);
+    expect(workflowSpec).toContain("expectedSha256");
+    expect(workflowSpec).toMatch(/stale_version/);
+    expect(sourcing).toMatch(/Pi's built-in edit/i);
+    expect(roadmap).toMatch(/hash-anchored edit.*Implemented/i);
+
+    const example = parse(exampleSource) as {
+      readonly nodes: ReadonlyArray<{
+        readonly type: string;
+        readonly agent?: { readonly tools?: readonly string[] };
+      }>;
+    };
+    expect(example.nodes.find((node) => node.type === "agent")?.agent?.tools).toEqual([
+      "read",
+      "ls",
+      "edit",
+    ]);
+  });
 });
 
 async function readText(path: string): Promise<string> {

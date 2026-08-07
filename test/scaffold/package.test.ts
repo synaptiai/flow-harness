@@ -49,6 +49,9 @@ describe("package contract", () => {
     expect(manifest.files).toContain("SECURITY.md");
     expect(manifest.files).toContain("SUPPORT.md");
     expect(manifest.dependencies?.["@earendil-works/pi-coding-agent"]).toBe("0.84.0");
+    expect(manifest.dependencies?.typebox).toBe("1.3.7");
+    expect(manifest.scripts?.build).toContain("npm run clean");
+    expect(manifest.scripts?.clean).toContain("rmSync('dist'");
     expect(manifest.scripts?.check).toContain("npm run typecheck");
     expect(manifest.scripts?.check).toContain("npm run test");
     expect(manifest.scripts?.check).toContain("npm run build");

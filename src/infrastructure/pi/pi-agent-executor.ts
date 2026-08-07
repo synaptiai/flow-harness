@@ -13,7 +13,7 @@ import type {
   NodeExecutionContext,
   NodeExecutionOutcome,
 } from "../../application/ports.js";
-import type { AgentEvidence, NodeFailure } from "../../domain/run/events.js";
+import type { AgentEffectReceipt, AgentEvidence, NodeFailure } from "../../domain/run/events.js";
 import { PolicyBroker } from "../../domain/policy/broker.js";
 import type { PolicyAction, PolicyDecision } from "../../domain/policy/types.js";
 import type {
@@ -21,7 +21,8 @@ import type {
   CompiledAgentNode,
   ThinkingLevel,
 } from "../../domain/workflow/types.js";
-import { createWorkspaceReadTools } from "./workspace-read-tools.js";
+import { AgentEffectRecorder } from "./agent-effect-recorder.js";
+import { createWorkspaceAgentTools } from "./workspace-agent-tools.js";
 
 export interface PiAgentRunRequest {
   readonly cwd: string;
@@ -32,6 +33,8 @@ export interface PiAgentRunRequest {
   readonly tools: readonly AgentToolName[];
   readonly maxOutputBytes: number;
   readonly policyBroker: PolicyBroker;
+  readonly protectedPaths: readonly string[];
+  readonly effectRecorder: AgentEffectRecorder;
   readonly signal?: AbortSignal;
 }
 
@@ -80,23 +83,28 @@ export class PiAgentExecutor implements AgentExecutor {
     if (isAborted(context.signal)) {
       return agentFailure("pi_agent_aborted", "agent execution was cancelled before start");
     }
-    const policyBroker = new PolicyBroker(
-      {
-        runId: context.runId,
-        workflowId: context.workflowId,
-        nodeId: node.id,
-        attempt: context.attempt,
-      },
-      policyActionsForTools(node.agent.tools),
-    );
+    const attribution = {
+      runId: context.runId,
+      workflowId: context.workflowId,
+      nodeId: node.id,
+      attempt: context.attempt,
+    } as const;
+    const policyBroker = new PolicyBroker(attribution, policyActionsForTools(node.agent.tools));
+    const effectRecorder = new AgentEffectRecorder(attribution);
     let closedPolicyDecisions: readonly PolicyDecision[] | undefined;
+    let closedEffectReceipts: readonly AgentEffectReceipt[] | undefined;
     const closePolicy = () => {
       closedPolicyDecisions ??= policyBroker.close();
       return closedPolicyDecisions;
     };
+    const closeEffects = () => {
+      closedEffectReceipts ??= effectRecorder.close();
+      return closedEffectReceipts;
+    };
     const policyFailureEvidence = (): AgentEvidence | null => {
       const policyDecisions = closePolicy();
-      if (policyDecisions.length === 0) {
+      const effectReceipts = closeEffects();
+      if (policyDecisions.length === 0 && effectReceipts.length === 0) {
         return null;
       }
       return emptyAgentEvidence(
@@ -104,8 +112,11 @@ export class PiAgentExecutor implements AgentExecutor {
         node.agent.model.id,
         Math.max(0, this.now() - startedAt),
         policyDecisions,
+        effectReceipts,
       );
     };
+    const currentSideEffectStatus = (forceUncertain = false) =>
+      sideEffectStatus(effectRecorder.snapshot(), forceUncertain);
 
     const timeoutController = new AbortController();
     const combinedSignal =
@@ -115,6 +126,7 @@ export class PiAgentExecutor implements AgentExecutor {
     let timedOut = false;
     let timeoutHandle: NodeJS.Timeout | undefined;
     let removeExternalAbortListener: () => void = () => undefined;
+    let activeRunPromise: Promise<PiAgentRunResult> | undefined;
     try {
       const runPromise = this.runner.run({
         cwd: context.cwd,
@@ -125,8 +137,11 @@ export class PiAgentExecutor implements AgentExecutor {
         tools: node.agent.tools,
         maxOutputBytes: this.maxOutputBytes,
         policyBroker,
+        protectedPaths: context.protectedPaths,
+        effectRecorder,
         signal: combinedSignal,
       });
+      activeRunPromise = runPromise;
       const timeout = new Promise<"timeout">((resolve) => {
         timeoutHandle = setTimeout(() => {
           timedOut = true;
@@ -153,39 +168,56 @@ export class PiAgentExecutor implements AgentExecutor {
       ]);
 
       if (settled.kind === "timeout") {
-        const cleanupSettled = await settlesWithin(runPromise, this.abortGraceMs);
+        const cleanupSettled = await settlesAgentCleanupWithin(
+          runPromise,
+          effectRecorder,
+          this.abortGraceMs,
+        );
         return agentFailure(
           "pi_agent_timeout",
           cleanupSettled
             ? `agent exceeded timeout of ${node.agent.timeoutMs}ms`
             : `agent exceeded timeout of ${node.agent.timeoutMs}ms and abort cleanup did not settle within ${this.abortGraceMs}ms`,
-          cleanupSettled ? "none" : "uncertain",
+          currentSideEffectStatus(!cleanupSettled),
           policyFailureEvidence(),
         );
       }
       if (settled.kind === "external_abort") {
-        const cleanupSettled = await settlesWithin(runPromise, this.abortGraceMs);
+        const cleanupSettled = await settlesAgentCleanupWithin(
+          runPromise,
+          effectRecorder,
+          this.abortGraceMs,
+        );
         const message = abortMessage(context.signal);
         return agentFailure(
           "pi_agent_aborted",
           cleanupSettled
             ? message
             : `${message}; abort cleanup did not settle within ${this.abortGraceMs}ms`,
-          cleanupSettled ? "none" : "uncertain",
+          currentSideEffectStatus(!cleanupSettled),
           policyFailureEvidence(),
         );
       }
       const result = settled.result;
       if (isAborted(context.signal)) {
+        const cleanupSettled = await settlesAgentCleanupWithin(
+          runPromise,
+          effectRecorder,
+          this.abortGraceMs,
+        );
+        const message = abortMessage(context.signal);
         return agentFailure(
           "pi_agent_aborted",
-          abortMessage(context.signal),
-          "none",
+          cleanupSettled
+            ? message
+            : `${message}; abort cleanup did not settle within ${this.abortGraceMs}ms`,
+          currentSideEffectStatus(!cleanupSettled),
           policyFailureEvidence(),
         );
       }
       const normalized = normalizeAgentResult(result, this.maxOutputBytes);
       const policyDecisions = closePolicy();
+      const effectReceipts = closeEffects();
       const evidence: AgentEvidence = {
         kind: "agent",
         provider: node.agent.model.provider,
@@ -195,12 +227,21 @@ export class PiAgentExecutor implements AgentExecutor {
         textTruncated: normalized.textTruncated,
         durationMs: Math.max(0, this.now() - startedAt),
         policyDecisions,
+        effectReceipts,
       };
+      if (effectReceipts.some((receipt) => receipt.outcome === "uncertain")) {
+        return agentFailure(
+          "pi_agent_effect_uncertain",
+          "an agent edit committed but its durability acknowledgement is uncertain",
+          "uncertain",
+          evidence,
+        );
+      }
       if (normalized.outputLimitExceeded) {
         return agentFailure(
           "pi_agent_output_limit",
           `agent output exceeded ${this.maxOutputBytes} UTF-8 bytes`,
-          "none",
+          currentSideEffectStatus(),
           evidence,
         );
       }
@@ -216,14 +257,15 @@ export class PiAgentExecutor implements AgentExecutor {
           boundedMessage(
             result.errorMessage ?? `Pi session ended with stop reason "${result.stopReason}"`,
           ),
-          "none",
-          policyDecisions.length === 0
+          sideEffectStatus(effectReceipts),
+          policyDecisions.length === 0 && effectReceipts.length === 0
             ? null
             : emptyAgentEvidence(
                 node.agent.model.provider,
                 node.agent.model.id,
                 Math.max(0, this.now() - startedAt),
                 policyDecisions,
+                effectReceipts,
               ),
         );
       }
@@ -239,29 +281,43 @@ export class PiAgentExecutor implements AgentExecutor {
           textTruncated: normalized.textTruncated,
           durationMs: Math.max(0, this.now() - startedAt),
           policyDecisions,
+          effectReceipts,
         },
       };
     } catch (error) {
       if (timedOut) {
+        const cleanupSettled =
+          activeRunPromise === undefined
+            ? true
+            : await settlesAgentCleanupWithin(activeRunPromise, effectRecorder, this.abortGraceMs);
         return agentFailure(
           "pi_agent_timeout",
-          `agent exceeded timeout of ${node.agent.timeoutMs}ms`,
-          "none",
+          cleanupSettled
+            ? `agent exceeded timeout of ${node.agent.timeoutMs}ms`
+            : `agent exceeded timeout of ${node.agent.timeoutMs}ms and abort cleanup did not settle within ${this.abortGraceMs}ms`,
+          currentSideEffectStatus(!cleanupSettled),
           policyFailureEvidence(),
         );
       }
       if (isAborted(context.signal)) {
+        const cleanupSettled =
+          activeRunPromise === undefined
+            ? true
+            : await settlesAgentCleanupWithin(activeRunPromise, effectRecorder, this.abortGraceMs);
+        const message = abortMessage(context.signal);
         return agentFailure(
           "pi_agent_aborted",
-          abortMessage(context.signal),
-          "none",
+          cleanupSettled
+            ? message
+            : `${message}; abort cleanup did not settle within ${this.abortGraceMs}ms`,
+          currentSideEffectStatus(!cleanupSettled),
           policyFailureEvidence(),
         );
       }
       return agentFailure(
         "pi_agent_failed",
         boundedMessage(error instanceof Error ? error.message : String(error)),
-        "none",
+        currentSideEffectStatus(),
         policyFailureEvidence(),
       );
     } finally {
@@ -271,6 +327,15 @@ export class PiAgentExecutor implements AgentExecutor {
       }
     }
   }
+}
+
+async function settlesAgentCleanupWithin(
+  runPromise: Promise<PiAgentRunResult>,
+  effectRecorder: AgentEffectRecorder,
+  timeoutMs: number,
+): Promise<boolean> {
+  const cleanup = Promise.allSettled([runPromise, effectRecorder.whenIdle()]).then(() => undefined);
+  return await settlesWithin(cleanup, timeoutMs);
 }
 
 export class EmbeddedPiAgentRunner implements PiAgentRunner {
@@ -294,7 +359,15 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
     }
 
     const resourceLoader = createLockedResourceLoader();
-    const tools = await createWorkspaceReadTools(request.cwd, request.tools, request.policyBroker);
+    const tools = await createWorkspaceAgentTools(
+      request.cwd,
+      request.tools,
+      request.policyBroker,
+      {
+        protectedPaths: request.protectedPaths,
+        effectRecorder: request.effectRecorder,
+      },
+    );
     throwIfAborted(request.signal);
     const { session } = await this.createSession({
       cwd: request.cwd,
@@ -386,7 +459,9 @@ function agentFailure(
 }
 
 function policyActionsForTools(tools: readonly AgentToolName[]): readonly PolicyAction[] {
-  return tools.map((tool) => (tool === "read" ? "filesystem.read" : "filesystem.list"));
+  return tools.map((tool) =>
+    tool === "read" ? "filesystem.read" : tool === "ls" ? "filesystem.list" : "filesystem.write",
+  );
 }
 
 function emptyAgentEvidence(
@@ -394,6 +469,7 @@ function emptyAgentEvidence(
   model: string,
   durationMs: number,
   policyDecisions: readonly PolicyDecision[],
+  effectReceipts: readonly AgentEffectReceipt[],
 ): AgentEvidence {
   return {
     kind: "agent",
@@ -404,7 +480,18 @@ function emptyAgentEvidence(
     textTruncated: false,
     durationMs,
     policyDecisions,
+    effectReceipts,
   };
+}
+
+function sideEffectStatus(
+  effectReceipts: readonly AgentEffectReceipt[],
+  forceUncertain = false,
+): NodeFailure["sideEffectStatus"] {
+  if (forceUncertain || effectReceipts.some((receipt) => receipt.outcome === "uncertain")) {
+    return "uncertain";
+  }
+  return effectReceipts.length > 0 ? "committed" : "none";
 }
 
 interface NormalizedAgentResult {

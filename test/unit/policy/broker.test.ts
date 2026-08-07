@@ -74,6 +74,7 @@ describe("PolicyBroker", () => {
         action: "filesystem.write",
         target: "/workspace/package.json",
         boundary: "inside",
+        operationDigest: "a".repeat(64),
       }),
     ).toThrowError(PolicyDeniedError);
     expect(broker.snapshot()).toEqual([
@@ -101,6 +102,71 @@ describe("PolicyBroker", () => {
       outcome: "denied",
       reason: "target_outside_workspace",
     });
+  });
+
+  it("binds a validated operation digest into a write authorization", () => {
+    const operationDigest = "a".repeat(64);
+    const broker = new PolicyBroker(attribution, ["filesystem.write"]);
+
+    const decision = broker.authorize({
+      action: "filesystem.write",
+      target: "/workspace/source.ts",
+      boundary: "inside",
+      operationDigest,
+    });
+    const changedRequest = new PolicyBroker(attribution, ["filesystem.write"]).authorize({
+      action: "filesystem.write",
+      target: "/workspace/source.ts",
+      boundary: "inside",
+      operationDigest: "b".repeat(64),
+    });
+
+    expect(decision).toMatchObject({ operationDigest, outcome: "allowed" });
+    expect(changedRequest.requestDigest).not.toBe(decision.requestDigest);
+  });
+
+  it("denies protected targets even when write authority is declared", () => {
+    const broker = new PolicyBroker(attribution, ["filesystem.write"]);
+
+    expect(() =>
+      broker.authorize({
+        action: "filesystem.write",
+        target: "/workspace/.flow/runs/run-1/events.jsonl",
+        boundary: "protected",
+        operationDigest: "a".repeat(64),
+      }),
+    ).toThrowError(PolicyDeniedError);
+    expect(broker.snapshot()[0]).toMatchObject({
+      outcome: "denied",
+      reason: "target_protected",
+    });
+  });
+
+  it("rejects malformed operation digests before recording a decision", () => {
+    const broker = new PolicyBroker(attribution, ["filesystem.write"]);
+
+    expect(() =>
+      broker.authorize({
+        action: "filesystem.write",
+        target: "/workspace/source.ts",
+        boundary: "inside",
+        operationDigest: "not-a-sha256",
+      }),
+    ).toThrowError(RangeError);
+    expect(broker.snapshot()).toEqual([]);
+  });
+
+  it("rejects a write without an exact operation digest before recording a decision", () => {
+    const broker = new PolicyBroker(attribution, ["filesystem.write"]);
+
+    expect(() =>
+      broker.authorize({
+        action: "filesystem.write",
+        target: "/workspace/source.ts",
+        boundary: "inside",
+      } as never),
+    ).toThrowError(/write.*operation digest/i);
+    expect(broker.snapshot()).toEqual([]);
   });
 
   it("fails closed once the bounded audit is full", () => {

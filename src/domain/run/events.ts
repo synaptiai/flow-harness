@@ -12,6 +12,7 @@ import { compiledGoalSchema } from "../goal/schema.js";
 import type { CompiledGoal, GoalRunState } from "../goal/types.js";
 import {
   MAX_POLICY_DECISIONS,
+  MAX_POLICY_TARGET_BYTES,
   calculatePolicyRequestDigest,
   classifyPolicyAction,
 } from "../policy/broker.js";
@@ -51,6 +52,25 @@ export interface AgentEvidence {
   readonly textTruncated: boolean;
   readonly durationMs: number;
   readonly policyDecisions: readonly PolicyDecision[];
+  readonly effectReceipts: readonly AgentEffectReceipt[];
+}
+
+export const MAX_AGENT_EFFECT_RECEIPTS = 32;
+export const MAX_RUN_EVENT_BYTES = 2_097_152;
+
+export interface AgentEffectReceipt {
+  readonly version: 1;
+  readonly sequence: number;
+  readonly runId: string;
+  readonly workflowId: string;
+  readonly nodeId: string;
+  readonly attempt: number;
+  readonly kind: "filesystem.edit";
+  readonly target: string;
+  readonly operationDigest: string;
+  readonly beforeSha256: string;
+  readonly afterSha256: string;
+  readonly outcome: "committed" | "uncertain";
 }
 
 export type NodeEvidence = CommandEvidence | AgentEvidence;
@@ -244,6 +264,30 @@ const agentEvidenceSchema = z
     textTruncated: z.boolean(),
     durationMs: z.number().nonnegative(),
     policyDecisions: z.array(policyDecisionSchema).max(MAX_POLICY_DECISIONS).default([]),
+    effectReceipts: z
+      .array(
+        z
+          .object({
+            version: z.literal(1),
+            sequence: z.number().int().positive().max(MAX_AGENT_EFFECT_RECEIPTS),
+            runId: identifierSchema,
+            workflowId: identifierSchema,
+            nodeId: identifierSchema,
+            attempt: z.number().int().positive(),
+            kind: z.literal("filesystem.edit"),
+            target: z
+              .string()
+              .min(1)
+              .refine((value) => Buffer.byteLength(value, "utf8") <= MAX_POLICY_TARGET_BYTES),
+            operationDigest: z.string().regex(/^[a-f0-9]{64}$/),
+            beforeSha256: z.string().regex(/^[a-f0-9]{64}$/),
+            afterSha256: z.string().regex(/^[a-f0-9]{64}$/),
+            outcome: z.enum(["committed", "uncertain"]),
+          })
+          .strict(),
+      )
+      .max(MAX_AGENT_EFFECT_RECEIPTS)
+      .default([]),
   })
   .strict();
 
@@ -628,6 +672,15 @@ function validateSucceededEvidence(evidence: NodeEvidence, eventIndex: number): 
   if (evidence.kind === "agent" && evidence.textTruncated) {
     throw new RunReplayError(eventIndex, "successful agent evidence must not be truncated");
   }
+  if (
+    evidence.kind === "agent" &&
+    evidence.effectReceipts.some((receipt) => receipt.outcome === "uncertain")
+  ) {
+    throw new RunReplayError(
+      eventIndex,
+      "successful agent evidence must not contain an uncertain effect receipt",
+    );
+  }
 }
 
 function validateEvidenceIntegrity(
@@ -678,9 +731,78 @@ function validateEvidenceIntegrity(
         authority: decision.authority,
         action: decision.action,
         target: decision.target,
+        ...(decision.operationDigest === undefined
+          ? {}
+          : { operationDigest: decision.operationDigest }),
       });
       if (decision.requestDigest !== expectedDigest) {
         throw new RunReplayError(eventIndex, "policy decision request digest is invalid");
+      }
+    }
+    const matchedPolicyDecisionIndexes = new Set<number>();
+    for (const [index, receipt] of evidence.effectReceipts.entries()) {
+      const expectedSequence = index + 1;
+      if (receipt.sequence !== expectedSequence) {
+        throw new RunReplayError(
+          eventIndex,
+          `effect receipt sequence must be contiguous; expected ${expectedSequence}, received ${receipt.sequence}`,
+        );
+      }
+      if (
+        receipt.runId !== event.runId ||
+        receipt.workflowId !== event.workflowId ||
+        receipt.nodeId !== event.nodeId ||
+        receipt.attempt !== event.attempt
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          "effect receipt attribution does not match its node event",
+        );
+      }
+      if (receipt.beforeSha256 === receipt.afterSha256) {
+        throw new RunReplayError(eventIndex, "edit effect receipt must describe changed content");
+      }
+      const matchingDecisionIndex = evidence.policyDecisions.findIndex(
+        (decision, decisionIndex) =>
+          !matchedPolicyDecisionIndexes.has(decisionIndex) &&
+          decision.action === "filesystem.write" &&
+          decision.target === receipt.target &&
+          decision.operationDigest === receipt.operationDigest &&
+          decision.outcome === "allowed",
+      );
+      if (matchingDecisionIndex === -1) {
+        throw new RunReplayError(
+          eventIndex,
+          "effect receipt does not match an unused allowed policy decision",
+        );
+      }
+      matchedPolicyDecisionIndexes.add(matchingDecisionIndex);
+    }
+    if (
+      event.type === "node_failed" &&
+      event.error.sideEffectStatus === "committed" &&
+      evidence.effectReceipts.length === 0
+    ) {
+      throw new RunReplayError(
+        eventIndex,
+        "committed side-effect status requires an effect receipt",
+      );
+    }
+    if (event.type === "node_failed" && evidence.effectReceipts.length > 0) {
+      const hasUncertain = evidence.effectReceipts.some(
+        (receipt) => receipt.outcome === "uncertain",
+      );
+      if (hasUncertain && event.error.sideEffectStatus !== "uncertain") {
+        throw new RunReplayError(
+          eventIndex,
+          "an uncertain effect receipt requires uncertain side-effect status",
+        );
+      }
+      if (!hasUncertain && event.error.sideEffectStatus === "none") {
+        throw new RunReplayError(
+          eventIndex,
+          "a committed effect receipt cannot have side-effect-free failure status",
+        );
       }
     }
   }

@@ -38,6 +38,7 @@ export class PolicyBroker {
       throw new PolicyAuditClosedError();
     }
     validateTarget(operation.target);
+    validateOperationDigest(operation.action, operation.operationDigest);
     if (this.#decisions.length >= MAX_POLICY_DECISIONS) {
       throw new PolicyAuditLimitError(MAX_POLICY_DECISIONS);
     }
@@ -46,11 +47,13 @@ export class PolicyBroker {
     const reason: PolicyDecisionReason =
       operation.boundary === "outside"
         ? "target_outside_workspace"
-        : operation.boundary === "unresolved"
-          ? "target_resolution_failed"
-          : this.#allowedActions.has(operation.action)
-            ? "operation_declared"
-            : "operation_not_declared";
+        : operation.boundary === "protected"
+          ? "target_protected"
+          : operation.boundary === "unresolved"
+            ? "target_resolution_failed"
+            : this.#allowedActions.has(operation.action)
+              ? "operation_declared"
+              : "operation_not_declared";
     const outcome = reason === "operation_declared" ? "allowed" : "denied";
     const request = Object.freeze({
       version: 1 as const,
@@ -58,6 +61,9 @@ export class PolicyBroker {
       authority,
       action: operation.action,
       target: operation.target,
+      ...(operation.operationDigest === undefined
+        ? {}
+        : { operationDigest: operation.operationDigest }),
     });
     const decision: PolicyDecision = Object.freeze({
       ...request,
@@ -97,8 +103,20 @@ export function calculatePolicyRequestDigest(request: {
   readonly authority: PolicyAuthority;
   readonly action: PolicyAction;
   readonly target: string;
+  readonly operationDigest?: string;
 }): string {
-  return createHash("sha256").update(JSON.stringify(request)).digest("hex");
+  const normalized = {
+    version: request.version,
+    runId: request.runId,
+    workflowId: request.workflowId,
+    nodeId: request.nodeId,
+    attempt: request.attempt,
+    authority: request.authority,
+    action: request.action,
+    target: request.target,
+    ...(request.operationDigest === undefined ? {} : { operationDigest: request.operationDigest }),
+  };
+  return createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
 }
 
 export class PolicyDeniedError extends Error {
@@ -131,5 +149,14 @@ function validateTarget(target: string): void {
     throw new RangeError(
       `policy target must contain between 1 and ${MAX_POLICY_TARGET_BYTES} UTF-8 bytes`,
     );
+  }
+}
+
+function validateOperationDigest(action: PolicyAction, operationDigest: string | undefined): void {
+  if (action === "filesystem.write" && operationDigest === undefined) {
+    throw new RangeError("filesystem write requires an exact operation digest");
+  }
+  if (operationDigest !== undefined && !/^[a-f0-9]{64}$/.test(operationDigest)) {
+    throw new RangeError("policy operation digest must be a lowercase SHA-256 hex value");
   }
 }

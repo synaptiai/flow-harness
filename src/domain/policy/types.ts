@@ -22,16 +22,26 @@ export interface PolicyAttribution {
   readonly attempt: number;
 }
 
-export interface PolicyOperation {
-  readonly action: PolicyAction;
+interface PolicyOperationBase {
   readonly target: string;
-  readonly boundary: "inside" | "outside" | "unresolved";
+  readonly boundary: "inside" | "outside" | "protected" | "unresolved";
 }
+
+export type PolicyOperation =
+  | (PolicyOperationBase & {
+      readonly action: "filesystem.write";
+      readonly operationDigest: string;
+    })
+  | (PolicyOperationBase & {
+      readonly action: Exclude<PolicyAction, "filesystem.write">;
+      readonly operationDigest?: string;
+    });
 
 export type PolicyDecisionReason =
   | "operation_declared"
   | "operation_not_declared"
   | "target_outside_workspace"
+  | "target_protected"
   | "target_resolution_failed";
 
 export interface PolicyDecision extends PolicyAttribution {
@@ -41,6 +51,7 @@ export interface PolicyDecision extends PolicyAttribution {
   readonly authority: PolicyAuthority;
   readonly action: PolicyAction;
   readonly target: string;
+  readonly operationDigest?: string;
   readonly outcome: "allowed" | "denied";
   readonly reason: PolicyDecisionReason;
 }

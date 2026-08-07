@@ -1,6 +1,6 @@
-import { mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -58,9 +58,9 @@ describe("WorkspacePolicyBroker", () => {
     const workspace = await createWorkspacePolicyBroker(root, policy);
     const effect = vi.fn(async () => undefined);
 
-    await expect(workspace.execute("filesystem.write", file, effect)).rejects.toThrowError(
-      PolicyDeniedError,
-    );
+    await expect(
+      workspace.execute("filesystem.write", file, effect, { operationDigest: "a".repeat(64) }),
+    ).rejects.toThrowError(PolicyDeniedError);
     expect(effect).not.toHaveBeenCalled();
     expect(policy.snapshot()[0]).toMatchObject({
       action: "filesystem.write",
@@ -142,6 +142,76 @@ describe("WorkspacePolicyBroker", () => {
       outcome: "denied",
       reason: "target_resolution_failed",
     });
+  });
+
+  it("denies caller-protected write targets before invoking the effect", async () => {
+    const root = await createTemporaryDirectory();
+    const runStore = join(root, "state", "runs");
+    const target = join(runStore, "run-1", "events.jsonl");
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, "authoritative", "utf8");
+    const policy = new PolicyBroker(attribution, ["filesystem.write"]);
+    const workspace = await createWorkspacePolicyBroker(root, policy, [runStore]);
+    const effect = vi.fn(async () => undefined);
+
+    await expect(
+      workspace.execute("filesystem.write", target, effect, {
+        operationDigest: "a".repeat(64),
+      }),
+    ).rejects.toThrowError(PolicyDeniedError);
+    expect(effect).not.toHaveBeenCalled();
+    expect(policy.snapshot()[0]).toMatchObject({
+      outcome: "denied",
+      reason: "target_protected",
+      operationDigest: "a".repeat(64),
+    });
+  });
+
+  it.each([
+    ".flow/state.json",
+    ".git/config",
+    "packages/example/.flow/state.json",
+    "packages/example/.git/config",
+    ".env",
+    ".env.local",
+    ".envrc",
+    "keys/signing.pem",
+    "keys/id_rsa",
+  ])("denies protected project write target %s", async (relativeTarget) => {
+    const root = await createTemporaryDirectory();
+    const target = join(root, relativeTarget);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, "protected", "utf8");
+    const policy = new PolicyBroker(attribution, ["filesystem.write"]);
+    const workspace = await createWorkspacePolicyBroker(root, policy);
+    const effect = vi.fn(async () => undefined);
+
+    await expect(
+      workspace.execute("filesystem.write", target, effect, {
+        operationDigest: "a".repeat(64),
+      }),
+    ).rejects.toThrowError(PolicyDeniedError);
+    expect(effect).not.toHaveBeenCalled();
+    expect(policy.snapshot()[0]).toMatchObject({ reason: "target_protected" });
+  });
+
+  it("denies a protected lexical write name that resolves to an ordinary workspace file", async () => {
+    const root = await createTemporaryDirectory();
+    const ordinaryTarget = join(root, "config.txt");
+    const protectedAlias = join(root, ".env");
+    await writeFile(ordinaryTarget, "secret", "utf8");
+    await symlink(ordinaryTarget, protectedAlias);
+    const policy = new PolicyBroker(attribution, ["filesystem.write"]);
+    const workspace = await createWorkspacePolicyBroker(root, policy);
+    const effect = vi.fn(async () => undefined);
+
+    await expect(
+      workspace.execute("filesystem.write", protectedAlias, effect, {
+        operationDigest: "a".repeat(64),
+      }),
+    ).rejects.toThrowError(PolicyDeniedError);
+    expect(effect).not.toHaveBeenCalled();
+    expect(policy.snapshot()[0]).toMatchObject({ reason: "target_protected" });
   });
 
   it("denies effects after the node audit has closed", async () => {

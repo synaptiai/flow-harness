@@ -27,6 +27,16 @@ describe("compileWorkflowText", () => {
     expect(workflow.nodes.every(Object.isFrozen)).toBe(true);
   });
 
+  it.each(["verify-foundation.workflow.yaml", "implement-and-verify.workflow.yaml"])(
+    "keeps published example %s compilable",
+    async (fileName) => {
+      const exampleUrl = new URL(`../../../examples/${fileName}`, import.meta.url);
+      const source = await readFile(exampleUrl, "utf8");
+
+      expect(() => compileWorkflowText(source, fileName)).not.toThrow();
+    },
+  );
+
   it("compiles an immutable versioned goal with verifier-bound criteria", () => {
     const workflow = compileWorkflowText(
       workflowWithGoalAndNodes(
@@ -288,7 +298,7 @@ nodes:
     expectCompilationFailure(source, "invalid_schema", "$");
   });
 
-  it("rejects agent tools outside the read-only allowlist", () => {
+  it("rejects agent tools outside the Flow-owned allowlist", () => {
     const source = workflowWithNodes(`
   - id: analyze
     type: agent
@@ -305,7 +315,7 @@ nodes:
     expectCompilationFailure(source, "invalid_schema", "nodes.0.agent.tools.0");
   });
 
-  it("accepts an agent node with an exact read-only tool allowlist", () => {
+  it("accepts an agent node with the hash-anchored edit tool explicitly declared", () => {
     const source = workflowWithNodes(`
   - id: analyze
     type: agent
@@ -315,7 +325,7 @@ nodes:
         provider: anthropic
         id: claude-sonnet-4-5
         thinking: medium
-      tools: [read, ls]
+      tools: [read, ls, edit]
   - id: verify
     type: command
     dependsOn: [analyze]
@@ -328,10 +338,27 @@ nodes:
       id: "analyze",
       type: "agent",
       agent: {
-        tools: ["read", "ls"],
+        tools: ["read", "ls", "edit"],
         timeoutMs: 300000,
       },
     });
+  });
+
+  it("rejects duplicate agent tool declarations", () => {
+    const source = workflowWithNodes(`
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Edit the repository.
+      model: { provider: anthropic, id: claude-sonnet-4-5 }
+      tools: [read, edit, edit]
+  - id: verify
+    type: command
+    dependsOn: [analyze]
+    command: { executable: npm, args: [test] }
+`);
+
+    expectCompilationFailure(source, "invalid_schema", "nodes.0.agent.tools");
   });
 
   it("rejects an agent as a terminal node", () => {
