@@ -13,7 +13,9 @@ import { compiledGoalSchema } from "../goal/schema.js";
 import type { CompiledGoal, GoalRunState } from "../goal/types.js";
 import {
   MAX_CONCURRENT_NODES,
+  MAX_COMPILED_WORKFLOW_NODES,
   MAX_CONTROL_GRAPH_SERIALIZED_BYTES,
+  MAX_LOOP_ITERATIONS,
   type CompiledRunBudget,
   type CompiledWorkflowConcurrency,
   type ConditionSourceField,
@@ -165,17 +167,32 @@ export interface ControlBranchGuard {
   readonly case: string;
 }
 
-export interface ControlGraphExecutableNode {
+export interface ControlLoopInstance {
+  readonly loopId: string;
+  readonly iteration: number;
+  readonly templateNodeId: string;
+}
+
+export interface ControlLoopGuard {
+  readonly loopId: string;
+  readonly iteration: number;
+  readonly checkNodeId: string;
+}
+
+interface ControlGraphNodeBase {
   readonly nodeId: string;
-  readonly type: "command" | "agent";
   readonly dependsOn: readonly string[];
+  readonly loopInstance?: ControlLoopInstance;
+  readonly loopGuard?: ControlLoopGuard;
+}
+
+export interface ControlGraphExecutableNode extends ControlGraphNodeBase {
+  readonly type: "command" | "agent";
   readonly when?: ControlBranchGuard;
 }
 
-export interface ControlGraphConditionNode {
-  readonly nodeId: string;
+export interface ControlGraphConditionNode extends ControlGraphNodeBase {
   readonly type: "condition";
-  readonly dependsOn: readonly string[];
   readonly when?: ControlBranchGuard;
   readonly condition: {
     readonly source: {
@@ -190,10 +207,8 @@ export interface ControlGraphConditionNode {
   };
 }
 
-export interface ControlGraphJoinNode {
-  readonly nodeId: string;
+export interface ControlGraphJoinNode extends ControlGraphNodeBase {
   readonly type: "join";
-  readonly dependsOn: readonly string[];
   readonly join: {
     readonly conditionId: string;
     readonly branches: readonly {
@@ -203,10 +218,33 @@ export interface ControlGraphJoinNode {
   };
 }
 
+export interface ControlGraphLoopCheckNode extends ControlGraphNodeBase {
+  readonly type: "loop-check";
+  readonly loopCheck: {
+    readonly loopId: string;
+    readonly iteration: number;
+    readonly source: {
+      readonly nodeId: string;
+      readonly field: ConditionSourceField;
+    };
+    readonly equals: string;
+  };
+}
+
+export interface ControlGraphLoopNode extends ControlGraphNodeBase {
+  readonly type: "loop";
+  readonly loop: {
+    readonly maxIterations: number;
+    readonly checkNodeIds: readonly string[];
+  };
+}
+
 export type ControlGraphNode =
   | ControlGraphExecutableNode
   | ControlGraphConditionNode
-  | ControlGraphJoinNode;
+  | ControlGraphJoinNode
+  | ControlGraphLoopCheckNode
+  | ControlGraphLoopNode;
 
 export interface ControlGraph {
   readonly nodes: readonly ControlGraphNode[];
@@ -239,6 +277,14 @@ export type NodeOmittedEvent = RunEventBase &
         readonly reason: "dependency_omitted";
         readonly omittedDependencies: readonly string[];
       }
+    | {
+        readonly type: "node_omitted";
+        readonly nodeId: string;
+        readonly reason: "loop_not_continued";
+        readonly loopId: string;
+        readonly iteration: number;
+        readonly checkNodeId: string;
+      }
   );
 
 export interface NodeJoinedEvent extends RunEventBase {
@@ -249,6 +295,27 @@ export interface NodeJoinedEvent extends RunEventBase {
   readonly selectedCase: string;
   readonly completedNodeId: string;
   readonly omittedNodeIds: readonly string[];
+}
+
+export interface NodeLoopCheckedEvent extends RunEventBase {
+  readonly type: "node_loop_checked";
+  readonly nodeId: string;
+  readonly attempt: 1;
+  readonly loopId: string;
+  readonly iteration: number;
+  readonly sourceNodeId: string;
+  readonly sourceAttempt: number;
+  readonly sourceField: ConditionSourceField;
+  readonly sourceHash: string;
+  readonly decision: "stop" | "continue";
+}
+
+export interface NodeLoopCompletedEvent extends RunEventBase {
+  readonly type: "node_loop_completed";
+  readonly nodeId: string;
+  readonly attempt: 1;
+  readonly completedIterations: number;
+  readonly terminatingCheckNodeId: string;
 }
 
 export interface NodeControlFailedEvent extends RunEventBase {
@@ -442,6 +509,8 @@ export type RunEvent =
   | NodeConditionEvaluatedEvent
   | NodeOmittedEvent
   | NodeJoinedEvent
+  | NodeLoopCheckedEvent
+  | NodeLoopCompletedEvent
   | NodeControlFailedEvent
   | NodeEffectPreparedEvent
   | NodeEffectSettledEvent
@@ -510,6 +579,21 @@ export type NodeControlRunState =
       readonly selectedCase: string;
       readonly completedNodeId: string;
       readonly omittedNodeIds: readonly string[];
+    }
+  | {
+      readonly kind: "loop-check";
+      readonly loopId: string;
+      readonly iteration: number;
+      readonly sourceNodeId: string;
+      readonly sourceAttempt: number;
+      readonly sourceField: ConditionSourceField;
+      readonly sourceHash: string;
+      readonly decision: "stop" | "continue";
+    }
+  | {
+      readonly kind: "loop";
+      readonly completedIterations: number;
+      readonly terminatingCheckNodeId: string;
     };
 
 export type NodeOmissionRunState =
@@ -522,6 +606,12 @@ export type NodeOmissionRunState =
   | {
       readonly reason: "dependency_omitted";
       readonly omittedDependencies: readonly string[];
+    }
+  | {
+      readonly reason: "loop_not_continued";
+      readonly loopId: string;
+      readonly iteration: number;
+      readonly checkNodeId: string;
     };
 
 export interface InterruptedNodeAttemptState {
@@ -577,6 +667,10 @@ export class RunReplayError extends Error {
   ) {
     super(`Cannot replay event ${eventIndex + 1}: ${message}`);
   }
+}
+
+export function loopLimitFailureMessage(loopId: string, maxIterations: number): string {
+  return `loop "${loopId}" reached maximum ${maxIterations} iterations without satisfying its stop condition`;
 }
 
 const identifierSchema = z
@@ -786,6 +880,31 @@ const controlBranchGuardSchema = z
 
 const controlDependencySchema = z.array(identifierSchema).max(128);
 
+const loopIterationSchema = z.number().int().min(1).max(MAX_LOOP_ITERATIONS);
+
+const controlLoopInstanceSchema = z
+  .object({
+    loopId: identifierSchema,
+    iteration: loopIterationSchema,
+    templateNodeId: identifierSchema,
+  })
+  .strict();
+
+const controlLoopGuardSchema = z
+  .object({
+    loopId: identifierSchema,
+    iteration: loopIterationSchema,
+    checkNodeId: identifierSchema,
+  })
+  .strict();
+
+const controlNodeBaseShape = {
+  nodeId: identifierSchema,
+  dependsOn: controlDependencySchema,
+  loopInstance: controlLoopInstanceSchema.optional(),
+  loopGuard: controlLoopGuardSchema.optional(),
+};
+
 const controlConditionSchema = z
   .object({
     source: z
@@ -847,34 +966,30 @@ const controlConditionSchema = z
 const controlGraphNodeSchema = z.discriminatedUnion("type", [
   z
     .object({
-      nodeId: identifierSchema,
+      ...controlNodeBaseShape,
       type: z.literal("command"),
-      dependsOn: controlDependencySchema,
       when: controlBranchGuardSchema.optional(),
     })
     .strict(),
   z
     .object({
-      nodeId: identifierSchema,
+      ...controlNodeBaseShape,
       type: z.literal("agent"),
-      dependsOn: controlDependencySchema,
       when: controlBranchGuardSchema.optional(),
     })
     .strict(),
   z
     .object({
-      nodeId: identifierSchema,
+      ...controlNodeBaseShape,
       type: z.literal("condition"),
-      dependsOn: controlDependencySchema,
       when: controlBranchGuardSchema.optional(),
       condition: controlConditionSchema,
     })
     .strict(),
   z
     .object({
-      nodeId: identifierSchema,
+      ...controlNodeBaseShape,
       type: z.literal("join"),
-      dependsOn: controlDependencySchema,
       join: z
         .object({
           conditionId: identifierSchema,
@@ -893,6 +1008,43 @@ const controlGraphNodeSchema = z.discriminatedUnion("type", [
         .strict(),
     })
     .strict(),
+  z
+    .object({
+      ...controlNodeBaseShape,
+      type: z.literal("loop-check"),
+      loopCheck: z
+        .object({
+          loopId: identifierSchema,
+          iteration: loopIterationSchema,
+          source: z
+            .object({
+              nodeId: identifierSchema,
+              field: z.enum(["command.stdout", "command.stderr", "agent.text"]),
+            })
+            .strict(),
+          equals: agentOutputSchema,
+        })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ...controlNodeBaseShape,
+      type: z.literal("loop"),
+      loop: z
+        .object({
+          maxIterations: loopIterationSchema,
+          checkNodeIds: z
+            .array(identifierSchema)
+            .min(1)
+            .max(MAX_LOOP_ITERATIONS)
+            .refine((items) => new Set(items).size === items.length, {
+              message: "loop check node ids must be unique",
+            }),
+        })
+        .strict(),
+    })
+    .strict(),
 ]);
 
 const controlGraphSchema = z
@@ -900,7 +1052,7 @@ const controlGraphSchema = z
     nodes: z
       .array(controlGraphNodeSchema)
       .min(1)
-      .max(64)
+      .max(MAX_COMPILED_WORKFLOW_NODES)
       .refine(
         (nodes) => new Set(nodes.map((node) => node.nodeId)).size === nodes.length,
         "control graph node ids must be unique",
@@ -933,7 +1085,7 @@ export const runEventSchema = z.discriminatedUnion("type", [
       executionCwd: absolutePathSchema.optional(),
       approvalRequirements: z
         .array(z.object({ nodeId: identifierSchema, grantTtlMs: grantTtlSchema }).strict())
-        .max(64)
+        .max(MAX_COMPILED_WORKFLOW_NODES)
         .optional(),
       recoveryRequirements: z
         .array(
@@ -946,7 +1098,7 @@ export const runEventSchema = z.discriminatedUnion("type", [
             })
             .strict(),
         )
-        .max(64)
+        .max(MAX_COMPILED_WORKFLOW_NODES)
         .optional(),
       controlGraph: controlGraphSchema.optional(),
     })
@@ -1042,31 +1194,62 @@ export const runEventSchema = z.discriminatedUnion("type", [
       ...eventBaseShape,
       type: z.literal("node_omitted"),
       nodeId: identifierSchema,
-      reason: z.enum(["condition_not_selected", "dependency_omitted"]),
+      reason: z.enum(["condition_not_selected", "dependency_omitted", "loop_not_continued"]),
       conditionId: identifierSchema.optional(),
       selectedCase: identifierSchema.optional(),
       expectedCase: identifierSchema.optional(),
       omittedDependencies: z.array(identifierSchema).min(1).max(128).optional(),
+      loopId: identifierSchema.optional(),
+      iteration: loopIterationSchema.optional(),
+      checkNodeId: identifierSchema.optional(),
     })
     .strict()
     .superRefine((event, context) => {
-      const conditionFields =
+      const hasAllConditionFields =
         event.conditionId !== undefined &&
         event.selectedCase !== undefined &&
         event.expectedCase !== undefined;
-      const dependencyFields = event.omittedDependencies !== undefined;
-      if (event.reason === "condition_not_selected" && (!conditionFields || dependencyFields)) {
+      const hasAnyConditionField =
+        event.conditionId !== undefined ||
+        event.selectedCase !== undefined ||
+        event.expectedCase !== undefined;
+      const hasDependencyFields = event.omittedDependencies !== undefined;
+      const hasAllLoopFields =
+        event.loopId !== undefined &&
+        event.iteration !== undefined &&
+        event.checkNodeId !== undefined;
+      const hasAnyLoopField =
+        event.loopId !== undefined ||
+        event.iteration !== undefined ||
+        event.checkNodeId !== undefined;
+      if (
+        event.reason === "condition_not_selected" &&
+        (!hasAllConditionFields || hasDependencyFields || hasAnyLoopField)
+      ) {
         context.addIssue({
           code: "custom",
           path: ["reason"],
           message: "condition omission requires only condition decision fields",
         });
       }
-      if (event.reason === "dependency_omitted" && (!dependencyFields || conditionFields)) {
+      if (
+        event.reason === "dependency_omitted" &&
+        (!hasDependencyFields || hasAnyConditionField || hasAnyLoopField)
+      ) {
         context.addIssue({
           code: "custom",
           path: ["reason"],
           message: "dependency omission requires only omitted dependencies",
+        });
+      }
+      if (
+        event.reason === "loop_not_continued" &&
+        (!hasAllLoopFields || hasAnyConditionField || hasDependencyFields)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["reason"],
+          message: "loop omission requires only loop guard fields",
         });
       }
     }),
@@ -1080,6 +1263,31 @@ export const runEventSchema = z.discriminatedUnion("type", [
       selectedCase: identifierSchema,
       completedNodeId: identifierSchema,
       omittedNodeIds: z.array(identifierSchema).min(1).max(32),
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("node_loop_checked"),
+      nodeId: identifierSchema,
+      attempt: z.literal(1),
+      loopId: identifierSchema,
+      iteration: loopIterationSchema,
+      sourceNodeId: identifierSchema,
+      sourceAttempt: z.number().int().positive(),
+      sourceField: z.enum(["command.stdout", "command.stderr", "agent.text"]),
+      sourceHash: sha256Schema,
+      decision: z.enum(["stop", "continue"]),
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("node_loop_completed"),
+      nodeId: identifierSchema,
+      attempt: z.literal(1),
+      completedIterations: loopIterationSchema,
+      terminatingCheckNodeId: identifierSchema,
     })
     .strict(),
   z
@@ -1649,7 +1857,12 @@ export function appendRunEvent(
       }
       if (currentState.controlGraph !== null) {
         const controlNode = requireControlGraphNode(currentState, event.nodeId, eventIndex);
-        if (controlNode.type === "condition" || controlNode.type === "join") {
+        if (
+          controlNode.type === "condition" ||
+          controlNode.type === "join" ||
+          controlNode.type === "loop-check" ||
+          controlNode.type === "loop"
+        ) {
           throw new RunReplayError(
             eventIndex,
             `control node "${event.nodeId}" cannot start through an executor`,
@@ -1817,6 +2030,127 @@ export function appendRunEvent(
       });
       break;
     }
+    case "node_loop_checked": {
+      requireRunningControlTransition(currentState, nodes, eventIndex);
+      const requirement = requireControlGraphNode(currentState, event.nodeId, eventIndex);
+      if (requirement.type !== "loop-check") {
+        throw new RunReplayError(eventIndex, `node "${event.nodeId}" is not a loop check`);
+      }
+      const current = requirePendingControlState(nodes, event.nodeId, event.attempt, eventIndex);
+      requireTerminalDependencies(requirement, nodes, eventIndex);
+      const source = loopSourceObservation(requirement, nodes, eventIndex);
+      if (source.truncated) {
+        throw new RunReplayError(
+          eventIndex,
+          `loop check "${event.nodeId}" source evidence is truncated`,
+        );
+      }
+      if (
+        event.loopId !== requirement.loopCheck.loopId ||
+        event.iteration !== requirement.loopCheck.iteration
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          "loop check identity does not match its control graph",
+        );
+      }
+      if (event.sourceNodeId !== requirement.loopCheck.source.nodeId) {
+        throw new RunReplayError(
+          eventIndex,
+          "loop check source node does not match its control graph",
+        );
+      }
+      if (event.sourceAttempt !== source.attempt) {
+        throw new RunReplayError(
+          eventIndex,
+          "loop check source attempt does not match durable evidence",
+        );
+      }
+      if (event.sourceField !== requirement.loopCheck.source.field) {
+        throw new RunReplayError(
+          eventIndex,
+          "loop check source field does not match its control graph",
+        );
+      }
+      if (event.sourceHash !== source.hash) {
+        throw new RunReplayError(
+          eventIndex,
+          "loop check source hash does not match durable evidence",
+        );
+      }
+      const decision = source.value === requirement.loopCheck.equals ? "stop" : "continue";
+      if (event.decision !== decision) {
+        throw new RunReplayError(
+          eventIndex,
+          `loop check decision "${event.decision}" does not match durable source evidence`,
+        );
+      }
+      const control: NodeControlRunState = deepFreeze({
+        kind: "loop-check",
+        loopId: event.loopId,
+        iteration: event.iteration,
+        sourceNodeId: event.sourceNodeId,
+        sourceAttempt: event.sourceAttempt,
+        sourceField: event.sourceField,
+        sourceHash: event.sourceHash,
+        decision: event.decision,
+      });
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        status: "succeeded",
+        attempt: event.attempt,
+        startedAt: event.at,
+        finishedAt: event.at,
+        control,
+      });
+      break;
+    }
+    case "node_loop_completed": {
+      requireRunningControlTransition(currentState, nodes, eventIndex);
+      const requirement = requireControlGraphNode(currentState, event.nodeId, eventIndex);
+      if (requirement.type !== "loop") {
+        throw new RunReplayError(eventIndex, `node "${event.nodeId}" is not a loop controller`);
+      }
+      const current = requirePendingControlState(nodes, event.nodeId, event.attempt, eventIndex);
+      requireTerminalDependencies(requirement, nodes, eventIndex);
+      const terminating = requirement.loop.checkNodeIds.find((checkNodeId) => {
+        const control = nodes[checkNodeId]?.control;
+        return control?.kind === "loop-check" && control.decision === "stop";
+      });
+      if (terminating === undefined) {
+        throw new RunReplayError(
+          eventIndex,
+          `loop "${event.nodeId}" has no successful stop decision`,
+        );
+      }
+      const terminatingControl = nodes[terminating]?.control;
+      if (terminatingControl?.kind !== "loop-check") {
+        throw new RunReplayError(eventIndex, "loop terminating check has no durable decision");
+      }
+      if (
+        event.terminatingCheckNodeId !== terminating ||
+        event.completedIterations !== terminatingControl.iteration
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          "loop completion does not match its first durable stop decision",
+        );
+      }
+      const control: NodeControlRunState = deepFreeze({
+        kind: "loop",
+        completedIterations: event.completedIterations,
+        terminatingCheckNodeId: event.terminatingCheckNodeId,
+      });
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        status: "succeeded",
+        attempt: event.attempt,
+        startedAt: event.at,
+        finishedAt: event.at,
+        control,
+      });
+      break;
+    }
     case "node_omitted": {
       requireRunningControlTransition(currentState, nodes, eventIndex);
       const requirement = requireControlGraphNode(currentState, event.nodeId, eventIndex);
@@ -1831,7 +2165,12 @@ export function appendRunEvent(
 
       let omission: NodeOmissionRunState;
       if (event.reason === "condition_not_selected") {
-        if (requirement.type === "join" || requirement.when === undefined) {
+        if (
+          requirement.type === "join" ||
+          requirement.type === "loop-check" ||
+          requirement.type === "loop" ||
+          requirement.when === undefined
+        ) {
           throw new RunReplayError(
             eventIndex,
             `node "${event.nodeId}" has no condition guard to omit`,
@@ -1861,8 +2200,43 @@ export function appendRunEvent(
           selectedCase: event.selectedCase,
           expectedCase: event.expectedCase,
         });
+      } else if (event.reason === "loop_not_continued") {
+        const guard = requirement.loopGuard;
+        const instance = requirement.loopInstance;
+        if (
+          guard === undefined ||
+          instance === undefined ||
+          event.loopId !== guard.loopId ||
+          event.iteration !== guard.iteration ||
+          event.checkNodeId !== guard.checkNodeId ||
+          instance.loopId !== guard.loopId ||
+          instance.iteration !== guard.iteration
+        ) {
+          throw new RunReplayError(
+            eventIndex,
+            `node "${event.nodeId}" loop omission does not match its exact loop guard`,
+          );
+        }
+        const decision = requireLoopCheckDecision(nodes, guard.checkNodeId, eventIndex);
+        if (decision.decision !== "stop") {
+          throw new RunReplayError(
+            eventIndex,
+            `node "${event.nodeId}" prior loop check continued and cannot omit the iteration`,
+          );
+        }
+        omission = deepFreeze({
+          reason: event.reason,
+          loopId: event.loopId,
+          iteration: event.iteration,
+          checkNodeId: event.checkNodeId,
+        });
       } else {
-        if (requirement.type !== "join" && requirement.when !== undefined) {
+        if (
+          requirement.type !== "join" &&
+          requirement.type !== "loop-check" &&
+          requirement.type !== "loop" &&
+          requirement.when !== undefined
+        ) {
           const controllingCondition = requireNode(nodes, requirement.when.conditionId, eventIndex);
           if (controllingCondition.status !== "omitted") {
             const decision = requireConditionDecision(
@@ -1980,30 +2354,74 @@ export function appendRunEvent(
     case "node_control_failed": {
       requireRunningControlTransition(currentState, nodes, eventIndex);
       const requirement = requireControlGraphNode(currentState, event.nodeId, eventIndex);
-      if (requirement.type !== "condition") {
-        throw new RunReplayError(
-          eventIndex,
-          `node "${event.nodeId}" is not a condition control node`,
-        );
-      }
       const current = requirePendingControlState(nodes, event.nodeId, event.attempt, eventIndex);
-      requireSucceededDependencies(requirement, nodes, eventIndex);
-      requireSelectedGuard(requirement, nodes, eventIndex);
-      const source = conditionSourceObservation(requirement, nodes, eventIndex);
-      if (!source.truncated) {
+      if (requirement.type === "condition") {
+        requireSucceededDependencies(requirement, nodes, eventIndex);
+        requireSelectedGuard(requirement, nodes, eventIndex);
+        const source = conditionSourceObservation(requirement, nodes, eventIndex);
+        if (!source.truncated) {
+          throw new RunReplayError(
+            eventIndex,
+            `condition "${event.nodeId}" source evidence is complete and cannot fail as truncated`,
+          );
+        }
+        if (
+          event.error.code !== "condition_source_truncated" ||
+          event.error.retryable ||
+          event.error.sideEffectStatus !== "none"
+        ) {
+          throw new RunReplayError(
+            eventIndex,
+            "condition source truncation requires a side-effect-free non-retryable control failure",
+          );
+        }
+      } else if (requirement.type === "loop-check") {
+        requireTerminalDependencies(requirement, nodes, eventIndex);
+        const source = loopSourceObservation(requirement, nodes, eventIndex);
+        if (!source.truncated) {
+          throw new RunReplayError(
+            eventIndex,
+            `loop check "${event.nodeId}" source evidence is complete and cannot fail as truncated`,
+          );
+        }
+        if (
+          event.error.code !== "loop_source_truncated" ||
+          event.error.retryable ||
+          event.error.sideEffectStatus !== "none"
+        ) {
+          throw new RunReplayError(
+            eventIndex,
+            "loop source truncation requires a side-effect-free non-retryable control failure",
+          );
+        }
+      } else if (requirement.type === "loop") {
+        requireTerminalDependencies(requirement, nodes, eventIndex);
+        const allContinued = requirement.loop.checkNodeIds.every((checkNodeId) => {
+          const control = nodes[checkNodeId]?.control;
+          return control?.kind === "loop-check" && control.decision === "continue";
+        });
+        if (!allContinued) {
+          throw new RunReplayError(
+            eventIndex,
+            `loop "${event.nodeId}" cannot exhaust before every check durably continues`,
+          );
+        }
+        if (
+          event.error.code !== "loop_limit_reached" ||
+          event.error.message !==
+            loopLimitFailureMessage(event.nodeId, requirement.loop.maxIterations) ||
+          event.error.retryable ||
+          event.error.sideEffectStatus !== "none"
+        ) {
+          throw new RunReplayError(
+            eventIndex,
+            "loop limit requires the exact side-effect-free non-retryable control failure",
+          );
+        }
+      } else {
         throw new RunReplayError(
           eventIndex,
-          `condition "${event.nodeId}" source evidence is complete and cannot fail as truncated`,
-        );
-      }
-      if (
-        event.error.code !== "condition_source_truncated" ||
-        event.error.retryable ||
-        event.error.sideEffectStatus !== "none"
-      ) {
-        throw new RunReplayError(
-          eventIndex,
-          "condition source truncation requires a side-effect-free non-retryable control failure",
+          `node "${event.nodeId}" cannot record a control failure`,
         );
       }
       nodes[event.nodeId] = Object.freeze({
@@ -2516,7 +2934,12 @@ function validateControlGraph(
         );
       }
     }
-    if (node.type !== "join" && node.when !== undefined) {
+    if (
+      node.type !== "join" &&
+      node.type !== "loop-check" &&
+      node.type !== "loop" &&
+      node.when !== undefined
+    ) {
       const condition = nodeById.get(node.when.conditionId);
       if (
         condition?.type !== "condition" ||
@@ -2569,6 +2992,95 @@ function validateControlGraph(
         );
       }
     }
+    if (node.loopInstance !== undefined) {
+      const loop = nodeById.get(node.loopInstance.loopId);
+      if (loop?.type !== "loop" || node.type === "loop" || node.type === "loop-check") {
+        throw new RunReplayError(
+          eventIndex,
+          `control graph node "${node.nodeId}" has invalid loop instance metadata`,
+        );
+      }
+      if (node.loopInstance.iteration > loop.loop.maxIterations) {
+        throw new RunReplayError(
+          eventIndex,
+          `control graph node "${node.nodeId}" loop iteration is outside its controller bound`,
+        );
+      }
+    }
+    if (node.loopGuard !== undefined) {
+      const check = nodeById.get(node.loopGuard.checkNodeId);
+      if (
+        node.loopInstance === undefined ||
+        node.loopGuard.loopId !== node.loopInstance.loopId ||
+        node.loopGuard.iteration !== node.loopInstance.iteration ||
+        node.loopGuard.iteration <= 1 ||
+        !node.dependsOn.includes(node.loopGuard.checkNodeId) ||
+        check?.type !== "loop-check" ||
+        check.loopCheck.loopId !== node.loopGuard.loopId ||
+        check.loopCheck.iteration !== node.loopGuard.iteration - 1
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          `control graph node "${node.nodeId}" has an invalid loop guard`,
+        );
+      }
+    }
+    if (node.type === "loop-check") {
+      const source = nodeById.get(node.loopCheck.source.nodeId);
+      const loop = nodeById.get(node.loopCheck.loopId);
+      const compatible =
+        (node.loopCheck.source.field.startsWith("command.") && source?.type === "command") ||
+        (node.loopCheck.source.field === "agent.text" && source?.type === "agent");
+      if (
+        loop?.type !== "loop" ||
+        !node.dependsOn.includes(node.loopCheck.source.nodeId) ||
+        !compatible
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          `control graph loop check "${node.nodeId}" has an invalid source or controller`,
+        );
+      }
+      if (loop.loop.checkNodeIds[node.loopCheck.iteration - 1] !== node.nodeId) {
+        throw new RunReplayError(
+          eventIndex,
+          `control graph loop check "${node.nodeId}" is not registered by its controller`,
+        );
+      }
+      if (
+        source.loopInstance?.loopId !== node.loopCheck.loopId ||
+        source.loopInstance.iteration !== node.loopCheck.iteration
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          `control graph loop check "${node.nodeId}" source must belong to the same loop iteration`,
+        );
+      }
+    }
+    if (node.type === "loop") {
+      if (
+        node.loop.maxIterations !== node.loop.checkNodeIds.length ||
+        !sameStrings(node.dependsOn, node.loop.checkNodeIds)
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          `control graph loop "${node.nodeId}" does not match its ordered checks`,
+        );
+      }
+      for (const [index, checkNodeId] of node.loop.checkNodeIds.entries()) {
+        const check = nodeById.get(checkNodeId);
+        if (
+          check?.type !== "loop-check" ||
+          check.loopCheck.loopId !== node.nodeId ||
+          check.loopCheck.iteration !== index + 1
+        ) {
+          throw new RunReplayError(
+            eventIndex,
+            `control graph loop "${node.nodeId}" has an invalid check sequence`,
+          );
+        }
+      }
+    }
   }
 
   const entryCount = graph.nodes.filter((node) => node.dependsOn.length === 0).length;
@@ -2581,6 +3093,7 @@ function validateControlGraph(
   if (controlGraphHasCycle(graph.nodes)) {
     throw new RunReplayError(eventIndex, "control graph contains a dependency cycle");
   }
+  validateControlGraphLoopInstances(graph.nodes, nodeById, eventIndex);
   const dependedUpon = new Set(graph.nodes.flatMap((node) => node.dependsOn));
   const invalidTerminal = graph.nodes.find(
     (node) => !dependedUpon.has(node.nodeId) && node.type !== "command",
@@ -2607,6 +3120,203 @@ function validateControlGraph(
     validateControlGraphBranches(graph.nodes, condition, joins[0], eventIndex);
   }
   return deepFreeze(graph);
+}
+
+function validateControlGraphLoopInstances(
+  nodes: readonly ControlGraphNode[],
+  nodeById: ReadonlyMap<string, ControlGraphNode>,
+  eventIndex: number,
+): void {
+  for (const loop of nodes.filter((node): node is ControlGraphLoopNode => node.type === "loop")) {
+    let expectedTemplates: readonly string[] | undefined;
+    let expectedTemplateStructures: readonly string[] | undefined;
+    let expectedStopContract: string | undefined;
+    for (let iteration = 1; iteration <= loop.loop.maxIterations; iteration += 1) {
+      const instances = nodes.filter(
+        (node) =>
+          node.loopInstance?.loopId === loop.nodeId && node.loopInstance.iteration === iteration,
+      );
+      const templates = instances.map((node) => node.loopInstance?.templateNodeId ?? "");
+      if (instances.length === 0 || new Set(templates).size !== templates.length) {
+        throw new RunReplayError(
+          eventIndex,
+          `control graph loop "${loop.nodeId}" iteration ${iteration} has invalid template instances`,
+        );
+      }
+      if (expectedTemplates === undefined) {
+        expectedTemplates = templates;
+      } else if (!sameStrings(templates, expectedTemplates)) {
+        throw new RunReplayError(
+          eventIndex,
+          `control graph loop "${loop.nodeId}" iteration ${iteration} does not clone the same templates`,
+        );
+      }
+      const templateIdByNodeId = new Map(
+        instances.map((node) => [node.nodeId, node.loopInstance?.templateNodeId ?? ""]),
+      );
+      const templateStructures = instances.map((node) =>
+        serializeLoopTemplateStructure(node, templateIdByNodeId),
+      );
+      if (expectedTemplateStructures === undefined) {
+        expectedTemplateStructures = templateStructures;
+      } else if (!sameStrings(templateStructures, expectedTemplateStructures)) {
+        throw new RunReplayError(
+          eventIndex,
+          `control graph loop "${loop.nodeId}" iteration ${iteration} does not clone the same template structure`,
+        );
+      }
+
+      const instanceIds = new Set(instances.map((node) => node.nodeId));
+      const entries = instances.filter(
+        (node) => !node.dependsOn.some((dependency) => instanceIds.has(dependency)),
+      );
+      if (entries.length !== 1) {
+        throw new RunReplayError(
+          eventIndex,
+          `control graph loop "${loop.nodeId}" iteration ${iteration} must have exactly one entry`,
+        );
+      }
+      const entry = entries[0];
+      if (entry === undefined) {
+        throw new RunReplayError(eventIndex, "loop entry validation invariant failed");
+      }
+
+      if (iteration === 1) {
+        if (instances.some((node) => node.loopGuard !== undefined)) {
+          throw new RunReplayError(
+            eventIndex,
+            `control graph loop "${loop.nodeId}" first iteration cannot have a prior-check guard`,
+          );
+        }
+      } else {
+        const priorCheckNodeId = loop.loop.checkNodeIds[iteration - 2];
+        const guarded = instances.filter((node) => node.loopGuard !== undefined);
+        if (
+          priorCheckNodeId === undefined ||
+          guarded.length !== 1 ||
+          guarded[0]?.nodeId !== entry.nodeId ||
+          entry.loopGuard?.checkNodeId !== priorCheckNodeId ||
+          !sameStrings(entry.dependsOn, [priorCheckNodeId])
+        ) {
+          throw new RunReplayError(
+            eventIndex,
+            `control graph loop "${loop.nodeId}" iteration ${iteration} must have exactly one prior-check-guarded entry`,
+          );
+        }
+      }
+
+      const nonEntryWithExternalDependency = instances.find(
+        (node) =>
+          node.nodeId !== entry.nodeId &&
+          node.dependsOn.some((dependency) => !instanceIds.has(dependency)),
+      );
+      if (nonEntryWithExternalDependency !== undefined) {
+        throw new RunReplayError(
+          eventIndex,
+          `control graph loop instance "${nonEntryWithExternalDependency.nodeId}" has a cross-iteration dependency`,
+        );
+      }
+
+      const checkNodeId = loop.loop.checkNodeIds[iteration - 1];
+      const check = checkNodeId === undefined ? undefined : nodeById.get(checkNodeId);
+      if (check?.type !== "loop-check") {
+        throw new RunReplayError(
+          eventIndex,
+          `control graph loop "${loop.nodeId}" iteration ${iteration} has no matching check`,
+        );
+      }
+      const checkSource = nodeById.get(check.loopCheck.source.nodeId);
+      const stopContract = JSON.stringify({
+        sourceTemplateNodeId:
+          checkSource?.loopInstance?.templateNodeId ?? check.loopCheck.source.nodeId,
+        field: check.loopCheck.source.field,
+        equals: check.loopCheck.equals,
+      });
+      if (expectedStopContract === undefined) {
+        expectedStopContract = stopContract;
+      } else if (stopContract !== expectedStopContract) {
+        throw new RunReplayError(
+          eventIndex,
+          `control graph loop "${loop.nodeId}" iteration ${iteration} changes its stop contract`,
+        );
+      }
+      const terminalIds = instances
+        .filter((candidate) => !instances.some((node) => node.dependsOn.includes(candidate.nodeId)))
+        .map((node) => node.nodeId);
+      const expectedCheckDependencies = terminalIds.includes(check.loopCheck.source.nodeId)
+        ? terminalIds
+        : [...terminalIds, check.loopCheck.source.nodeId];
+      if (!sameStrings(check.dependsOn, expectedCheckDependencies)) {
+        throw new RunReplayError(
+          eventIndex,
+          `control graph loop check "${check.nodeId}" must wait for every iteration terminal and its source`,
+        );
+      }
+    }
+  }
+}
+
+function serializeLoopTemplateStructure(
+  node: ControlGraphNode,
+  templateIdByNodeId: ReadonlyMap<string, string>,
+): string {
+  const templateNodeId = (nodeId: string): string => templateIdByNodeId.get(nodeId) ?? nodeId;
+  const internalDependencies = node.dependsOn.flatMap((nodeId) => {
+    const templateId = templateIdByNodeId.get(nodeId);
+    return templateId === undefined ? [] : [templateId];
+  });
+  const common = {
+    templateNodeId: node.loopInstance?.templateNodeId,
+    type: node.type,
+    dependsOn: internalDependencies,
+  };
+  if (node.type === "command" || node.type === "agent") {
+    return JSON.stringify({
+      ...common,
+      ...(node.when === undefined
+        ? {}
+        : {
+            when: {
+              conditionId: templateNodeId(node.when.conditionId),
+              case: node.when.case,
+            },
+          }),
+    });
+  }
+  if (node.type === "condition") {
+    return JSON.stringify({
+      ...common,
+      ...(node.when === undefined
+        ? {}
+        : {
+            when: {
+              conditionId: templateNodeId(node.when.conditionId),
+              case: node.when.case,
+            },
+          }),
+      condition: {
+        source: {
+          nodeId: templateNodeId(node.condition.source.nodeId),
+          field: node.condition.source.field,
+        },
+        cases: node.condition.cases,
+        default: node.condition.default,
+      },
+    });
+  }
+  if (node.type === "join") {
+    return JSON.stringify({
+      ...common,
+      join: {
+        conditionId: templateNodeId(node.join.conditionId),
+        branches: node.join.branches.map((branch) => ({
+          case: branch.case,
+          nodeId: templateNodeId(branch.nodeId),
+        })),
+      },
+    });
+  }
+  return JSON.stringify(common);
 }
 
 function controlConditionCases(condition: ControlGraphConditionNode): readonly string[] {
@@ -2650,6 +3360,8 @@ function validateControlGraphBranches(
     const hasBranch = nodes.some(
       (node) =>
         node.type !== "join" &&
+        node.type !== "loop-check" &&
+        node.type !== "loop" &&
         node.when?.conditionId === condition.nodeId &&
         node.when.case === caseId,
     );
@@ -2726,7 +3438,10 @@ function controlGraphBranchMembership(
     visiting.delete(nodeId);
 
     let result: string | "cross" | undefined;
-    const directGuard = node.type === "join" ? undefined : node.when;
+    const directGuard =
+      node.type === "join" || node.type === "loop-check" || node.type === "loop"
+        ? undefined
+        : node.when;
     if (directGuard?.conditionId === conditionId) {
       result = dependencyMemberships.some(
         (value) => value === "cross" || value !== directGuard.case,
@@ -2859,12 +3574,38 @@ function requireConditionDecision(
   return condition.control;
 }
 
+function requireLoopCheckDecision(
+  nodes: Readonly<Record<string, NodeRunState>>,
+  checkNodeId: string,
+  eventIndex: number,
+): Extract<NodeControlRunState, { readonly kind: "loop-check" }> {
+  const check = requireNode(nodes, checkNodeId, eventIndex);
+  if (check.status !== "succeeded" || check.control?.kind !== "loop-check") {
+    throw new RunReplayError(eventIndex, `loop check "${checkNodeId}" has no durable decision`);
+  }
+  return check.control;
+}
+
 function requireSelectedGuard(
   requirement: ControlGraphNode,
   nodes: Readonly<Record<string, NodeRunState>>,
   eventIndex: number,
 ): void {
-  if (requirement.type === "join" || requirement.when === undefined) {
+  if (requirement.loopGuard !== undefined) {
+    const decision = requireLoopCheckDecision(nodes, requirement.loopGuard.checkNodeId, eventIndex);
+    if (decision.decision !== "continue") {
+      throw new RunReplayError(
+        eventIndex,
+        `node "${requirement.nodeId}" prior loop check did not continue iteration ${requirement.loopGuard.iteration}`,
+      );
+    }
+  }
+  if (
+    requirement.type === "join" ||
+    requirement.type === "loop-check" ||
+    requirement.type === "loop" ||
+    requirement.when === undefined
+  ) {
     return;
   }
   const decision = requireConditionDecision(nodes, requirement.when.conditionId, eventIndex);
@@ -2880,20 +3621,47 @@ function conditionSourceObservation(
   requirement: ControlGraphConditionNode,
   nodes: Readonly<Record<string, NodeRunState>>,
   eventIndex: number,
+): ReturnType<typeof controlSourceObservation> {
+  return controlSourceObservation(
+    requirement.nodeId,
+    requirement.condition.source,
+    nodes,
+    eventIndex,
+  );
+}
+
+function loopSourceObservation(
+  requirement: ControlGraphLoopCheckNode,
+  nodes: Readonly<Record<string, NodeRunState>>,
+  eventIndex: number,
+): ReturnType<typeof controlSourceObservation> {
+  return controlSourceObservation(
+    requirement.nodeId,
+    requirement.loopCheck.source,
+    nodes,
+    eventIndex,
+  );
+}
+
+function controlSourceObservation(
+  controlNodeId: string,
+  declaration: { readonly nodeId: string; readonly field: ConditionSourceField },
+  nodes: Readonly<Record<string, NodeRunState>>,
+  eventIndex: number,
 ): {
   readonly attempt: number;
   readonly value: string;
   readonly hash: string;
   readonly truncated: boolean;
 } {
-  const source = requireNode(nodes, requirement.condition.source.nodeId, eventIndex);
+  const source = requireNode(nodes, declaration.nodeId, eventIndex);
   if (source.status !== "succeeded" || source.evidence === null) {
     throw new RunReplayError(
       eventIndex,
-      `condition "${requirement.nodeId}" source has no successful durable evidence`,
+      `control node "${controlNodeId}" source has no successful durable evidence`,
     );
   }
-  switch (requirement.condition.source.field) {
+  switch (declaration.field) {
     case "command.stdout":
       if (source.evidence.kind !== "command") {
         break;
@@ -2927,7 +3695,7 @@ function conditionSourceObservation(
   }
   throw new RunReplayError(
     eventIndex,
-    `condition "${requirement.nodeId}" source field is incompatible with durable evidence`,
+    `control node "${controlNodeId}" source field is incompatible with durable evidence`,
   );
 }
 

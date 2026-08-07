@@ -98,11 +98,16 @@ A started attempt is uncertain because its command, model, or external tool may 
 effect before the process stopped. Flow does not infer failure, success, or idempotency from the
 absence of a result. Command nodes never receive an automatic recovery policy.
 
-Condition decisions, omissions, and joins are safe committed boundaries because they do not invoke
-an executor. Recovery replays their persisted control graph and validates each source attempt,
-field, hash, selected case, omission reason, and join mapping. It never reevaluates a condition from
-the current workspace or a changed workflow file. If a crash occurs after one of these events is
-synced, resume continues from the following transition without repeating the condition source node.
+Condition decisions, loop checks and completions, omissions, and joins are safe committed
+boundaries because they do not invoke an executor. Recovery replays their persisted control graph
+and validates each source attempt, field, hash, selected case or loop decision, omission reason,
+loop iteration/guard, controller result, and join mapping against the scheduler's canonical next
+transition. Persisted loop topology additionally requires registered ordered checks, structurally
+isomorphic body clones, and the same exact stop contract in every iteration. It never reevaluates a
+condition or committed loop check from the current workspace or a changed workflow file. If a
+crash occurs after one of these events is synced, resume continues
+from the following transition without repeating its source node. A retry of an interrupted
+iteration-qualified agent increments that instance's attempt; it does not advance the loop.
 
 Writable agent attempts add more precise, but non-terminal, evidence. `node_started` declares
 `flow.effects/v1`. Before an atomic edit rename, Flow syncs `node_effect_prepared` with a stable

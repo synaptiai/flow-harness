@@ -2,7 +2,7 @@
 
 The roadmap is organized around externally verifiable capability gates rather than dates.
 
-Gates 0–2 are implemented. Gate 3 has a model-tool policy broker, a full-SHA hash-anchored single-file edit, durable effect receipts, fail-closed native command containment, and exact expiring approval for deterministic command nodes. Gate 4 has committed-boundary recovery, exclusive same-host ownership, write-ahead durable edit evidence, typed reconciliation of open hash-anchored edits, opt-in proof-safe fresh recovery of interrupted agent attempts, client-detachable command approval waits, durable limits for node starts, model tokens, reported model cost, and active execution time, project/operator capacity configuration, plus a bounded local supervisor with authenticated detached workers, durable FIFO admission, queued and active cancellation, bounded event replay, policy-safe restart, and worker adoption. Gate 5 has replay-safe exact-output conditions, guarded branches, first-class omission, explicit joins, and deterministic bounded concurrency for static DAG forks. Dynamic agent-tool approval, loops, general verifier/approval nodes, child runs, execute/network model tools, broader configurable policy, opaque session continuation, general failure/fallback retries, artifact budgets, and stronger VM or managed backends remain target capabilities.
+Gates 0–2 are implemented. Gate 3 has a model-tool policy broker, a full-SHA hash-anchored single-file edit, durable effect receipts, fail-closed native command containment, and exact expiring approval for deterministic command nodes. Gate 4 has committed-boundary recovery, exclusive same-host ownership, write-ahead durable edit evidence, typed reconciliation of open hash-anchored edits, opt-in proof-safe fresh recovery of interrupted agent attempts, client-detachable command approval waits, durable limits for node starts, model tokens, reported model cost, and active execution time, project/operator capacity configuration, plus a bounded local supervisor with authenticated detached workers, durable FIFO admission, queued and active cancellation, bounded event replay, policy-safe restart, and worker adoption. Gate 5 has replay-safe exact-output conditions, guarded branches, first-class omission, explicit joins, deterministic bounded concurrency for static DAG forks, and finite replay-safe bounded loops. Dynamic agent-tool approval, optimization-loop rollback, general verifier/approval nodes, child runs, execute/network model tools, broader configurable policy, opaque session continuation, general failure/fallback retries, artifact budgets, and stronger VM or managed backends remain target capabilities.
 
 ## Gate 0: Repository foundation
 
@@ -54,8 +54,8 @@ Gates 0–2 are implemented. Gate 3 has a model-tool policy broker, a full-SHA h
 ## Gate 5: Graph and loop completeness
 
 - Exact-output conditions, guarded branches, omission propagation, and explicit joins are executable and replay-safe. *(Implemented; arbitrary expressions are not.)*
-- Concurrent static DAG fork/join is executable with a strict per-run node limit and deterministic quiescent waves. *(Implemented; dynamic fan-out, loops, and isolated child runs are not.)*
-- Bounded loops, general approval nodes, and general verifier nodes are executable.
+- Concurrent static DAG fork/join is executable with a strict per-run node limit and deterministic quiescent waves. *(Implemented; dynamic fan-out and isolated child runs are not.)*
+- Bounded loops, general approval nodes, and general verifier nodes are executable. *(Bounded loops are implemented through finite acyclic expansion; general approval and verifier nodes remain.)*
 - Optimization loops declare a metric, baseline, direction, invariants, budget, stagnation rule, and rollback strategy.
 - Child runs use isolated workspaces and typed results.
 - Packages cannot bypass graph dependencies or joins.

@@ -140,6 +140,62 @@ node-start budget, and never reach a command or agent executor. They are schedul
 executable wave quiesces before the next condition or join transition. Conditions do not provide
 arbitrary expression evaluation.
 
+## Replay-safe bounded loops
+
+A top-level `loop` contains a local command/agent DAG and an exact stop contract:
+
+```yaml
+- id: repair
+  type: loop
+  dependsOn: [prepare]
+  loop:
+    maxIterations: 4
+    until:
+      source: { nodeId: check, field: command.stdout }
+      equals: pass
+    body:
+      nodes:
+        - id: fix
+          type: agent
+          agent:
+            prompt: Repair the failing implementation.
+            model: { provider: anthropic, id: claude-sonnet-4-6 }
+            tools: [read, ls, edit]
+        - id: check
+          type: command
+          dependsOn: [fix]
+          command: { executable: npm, args: [test, --, --run] }
+```
+
+`maxIterations` is an integer from 1 through 32. The body has 1–16 non-loop nodes, exactly one
+local entry, local dependencies, and the same condition/branch/join rules as a top-level graph.
+Nested loops, cross-scope references, body cycles, and a stop source that is conditional or not
+awaited on every successful body path fail compilation. The source is complete durable
+`command.stdout`, `command.stderr`, or `agent.text`; comparison is exact and does not normalize
+whitespace. Truncated evidence fails with `loop_source_truncated`.
+
+Compilation creates one qualified body instance and one pure check for every possible iteration,
+then retains the author-facing id as a pure controller. For example,
+`repair--i3--node--fix` identifies template `fix` in iteration 3. The expanded plan remains acyclic,
+contains at most 256 total nodes, uses durable ids no longer than 128 characters, and persists a
+control-graph projection no larger than 512 KiB. A check records source node, attempt, field, hash,
+and `continue` or `stop`. Iteration 2 and later require the prior check's durable `continue` and
+never overlap an earlier iteration; ordinary `concurrency.maxNodes` still applies inside the active
+body.
+
+The first `stop` durably omits every unused instance and succeeds the controller. If the final
+check continues, the controller fails with `loop_limit_reached`, and downstream work never starts.
+If an enclosing condition branch is not selected, omitted body checks propagate dependency
+omission through the controller; branch omission is never misclassified as bound exhaustion.
+Checks, omissions, and controller completion consume no start/token/cost/active-time budget.
+Executable instances retain existing approval, budget, cancellation, effect, and fresh-recovery
+contracts. Loop iteration and retry attempt are separate: attempt 2 of an interrupted
+`repair--i3--node--fix` remains iteration 3.
+
+This contract does not provide arbitrary graph cycles, nested or unbounded loops, dynamic maps,
+numeric optimization direction, stagnation detection, workspace snapshots, accept-best behavior,
+or rollback. Those require later child-run and optimization contracts.
+
 ## Bounded node concurrency
 
 `concurrency` is an optional strict per-run contract:
@@ -170,8 +226,9 @@ terminalizes as `resource_exhausted`, and schedules no later node. A node-start 
 before each admission.
 
 Concurrency does not isolate one branch's workspace from another. Authors must encode causal
-dependencies for operations that cannot safely overlap. Dynamic fan-out, loop iterations,
-worktree-isolated child runs, and per-target conflict inference are not part of this contract.
+dependencies for operations that cannot safely overlap. It applies inside one active bounded-loop
+body, but iterations remain sequential. Dynamic fan-out, worktree-isolated child runs, and
+per-target conflict inference are not part of this contract.
 
 ## Run budget
 
@@ -431,7 +488,7 @@ the id to the complete request and rejects reuse with changed input.
 
 ## Current limitations
 
-- No loops, dynamic fan-out, general multi-condition joins, general approval nodes, child runs, terminal-failure retry, or fallback semantics. Static ready DAG nodes can execute concurrently, but they share one workspace and are not inferred to be conflict-free. Conditions are limited to exact equality over complete durable command/agent text. Approval is currently available only as a deterministic command pre-start gate; recovery is limited to the proof-safe fresh mode above.
+- No arbitrary cycles, nested/unbounded/optimization loops, dynamic fan-out, general multi-condition joins, general approval nodes, child runs, terminal-failure retry, or fallback semantics. Bounded loop bodies and static ready DAG nodes can execute concurrently, but iterations are sequential, share one workspace, and are not inferred to be conflict-free. Conditions and loop stops are limited to exact equality over complete durable command/agent text. Approval is currently available only as a deterministic command pre-start gate; recovery is limited to the proof-safe fresh mode above.
 - No automatic terminalization or session continuation of an interrupted node attempt. Unconfigured or ineligible durable starts still block continuation.
 - Detached workers can be adopted by a replacement local supervisor, but they cannot move between
   hosts and do not survive host reboot.

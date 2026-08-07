@@ -5,12 +5,12 @@ import {
   DURABLE_EFFECT_PROTOCOL,
   RunReplayError,
   appendRunEvent,
+  loopLimitFailureMessage,
   nodeEffectId,
   reduceRunEvents,
   type AgentEffectReceipt,
   type AgentRecoveryRequirement,
   type ControlGraph,
-  type ControlGraphNode,
   type FilesystemEditEffectDescriptor,
   type NodeEffectSettlementInput,
   type NodeEffectReconciledEvent,
@@ -33,9 +33,15 @@ import type {
   CompiledCommandNode,
   CompiledConditionNode,
   CompiledJoinNode,
+  CompiledLoopCheckNode,
+  CompiledLoopNode,
   CompiledNode,
   CompiledWorkflow,
 } from "../domain/workflow/types.js";
+import {
+  projectCompiledControlGraph,
+  workflowRequiresControlGraph,
+} from "../domain/workflow/control-graph.js";
 import type {
   NodeEffectJournal,
   NodeEffectReconciler,
@@ -931,6 +937,8 @@ function validateRecoveredHistory(
       interruptionRequiresResume = true;
     } else if (
       event.type === "node_condition_evaluated" ||
+      event.type === "node_loop_checked" ||
+      event.type === "node_loop_completed" ||
       event.type === "node_omitted" ||
       event.type === "node_joined" ||
       event.type === "node_control_failed"
@@ -994,38 +1002,10 @@ function agentRecoveryRequirements(
 }
 
 function workflowControlGraph(workflow: CompiledWorkflow): ControlGraph | undefined {
-  if (
-    (workflow.concurrency?.maxNodes ?? 1) === 1 &&
-    !workflow.nodes.some((node) => node.type === "condition" || node.type === "join")
-  ) {
+  if (!workflowRequiresControlGraph(workflow)) {
     return undefined;
   }
-  const nodes: ControlGraphNode[] = workflow.nodes.map((node) => {
-    if (node.type === "condition") {
-      return {
-        nodeId: node.id,
-        type: node.type,
-        dependsOn: node.dependsOn,
-        ...(node.when === undefined ? {} : { when: node.when }),
-        condition: node.condition,
-      };
-    }
-    if (node.type === "join") {
-      return {
-        nodeId: node.id,
-        type: node.type,
-        dependsOn: node.dependsOn,
-        join: node.join,
-      };
-    }
-    return {
-      nodeId: node.id,
-      type: node.type,
-      dependsOn: node.dependsOn,
-      ...(node.when === undefined ? {} : { when: node.when }),
-    };
-  });
-  return Object.freeze({ nodes: Object.freeze(nodes) });
+  return projectCompiledControlGraph(workflow);
 }
 
 function sameControlGraph(left: ControlGraph | null, right: ControlGraph | undefined): boolean {
@@ -1142,7 +1122,13 @@ type WorkflowTransition =
       readonly node: CompiledNode;
       readonly omittedDependencies: readonly string[];
     }
-  | { readonly kind: "join"; readonly node: CompiledJoinNode };
+  | {
+      readonly kind: "omit_loop";
+      readonly node: CompiledAgentNode | CompiledCommandNode | CompiledConditionNode;
+    }
+  | { readonly kind: "join"; readonly node: CompiledJoinNode }
+  | { readonly kind: "evaluate_loop"; readonly node: CompiledLoopCheckNode }
+  | { readonly kind: "complete_loop"; readonly node: CompiledLoopNode };
 
 function selectNextTransition(
   nodes: readonly CompiledNode[],
@@ -1177,6 +1163,40 @@ function selectNextTransition(
       }
       continue;
     }
+    if (node.type === "loop-check") {
+      const omittedDependencies = node.dependsOn.filter(
+        (dependency) => state.nodes[dependency]?.status === "omitted",
+      );
+      return omittedDependencies.length > 0
+        ? { kind: "omit_dependency", node, omittedDependencies }
+        : { kind: "evaluate_loop", node };
+    }
+    if (node.type === "loop") {
+      if (
+        node.loop.checkNodeIds.some(
+          (checkNodeId) => loopCheckDecision(state, checkNodeId) === "stop",
+        )
+      ) {
+        return { kind: "complete_loop", node };
+      }
+      const omittedDependencies = node.dependsOn.filter(
+        (dependency) => state.nodes[dependency]?.status === "omitted",
+      );
+      return omittedDependencies.length > 0
+        ? { kind: "omit_dependency", node, omittedDependencies }
+        : { kind: "complete_loop", node };
+    }
+    if (node.loopGuard !== undefined) {
+      const decision = loopCheckDecision(state, node.loopGuard.checkNodeId);
+      if (decision === "stop") {
+        return { kind: "omit_loop", node };
+      }
+      if (decision === undefined) {
+        if (state.nodes[node.loopGuard.checkNodeId]?.status !== "omitted") {
+          continue;
+        }
+      }
+    }
     if (node.when !== undefined) {
       const decision = conditionDecision(state, node.when.conditionId);
       if (decision === undefined) {
@@ -1207,6 +1227,8 @@ function controlEventMatchesTransition(
     {
       readonly type:
         | "node_condition_evaluated"
+        | "node_loop_checked"
+        | "node_loop_completed"
         | "node_omitted"
         | "node_joined"
         | "node_control_failed";
@@ -1214,14 +1236,30 @@ function controlEventMatchesTransition(
   >,
   transition: WorkflowTransition | undefined,
 ): boolean {
-  if (event.type === "node_condition_evaluated" || event.type === "node_control_failed") {
+  if (event.type === "node_condition_evaluated") {
     return transition?.kind === "evaluate_condition" && transition.node.id === event.nodeId;
+  }
+  if (event.type === "node_loop_checked") {
+    return transition?.kind === "evaluate_loop" && transition.node.id === event.nodeId;
+  }
+  if (event.type === "node_loop_completed") {
+    return transition?.kind === "complete_loop" && transition.node.id === event.nodeId;
+  }
+  if (event.type === "node_control_failed") {
+    return (
+      (transition?.kind === "evaluate_condition" ||
+        transition?.kind === "evaluate_loop" ||
+        transition?.kind === "complete_loop") &&
+      transition.node.id === event.nodeId
+    );
   }
   if (event.type === "node_joined") {
     return transition?.kind === "join" && transition.node.id === event.nodeId;
   }
   return (
-    (transition?.kind === "omit_condition" || transition?.kind === "omit_dependency") &&
+    (transition?.kind === "omit_condition" ||
+      transition?.kind === "omit_dependency" ||
+      transition?.kind === "omit_loop") &&
     transition.node.id === event.nodeId
   );
 }
@@ -1231,6 +1269,21 @@ function controlTransitionEvent(
   state: RunState,
   base: ReturnType<typeof eventBase>,
 ): RunEvent {
+  if (transition.kind === "omit_loop") {
+    const guard = transition.node.loopGuard;
+    if (guard === undefined) {
+      throw new Error(`loop omission for node "${transition.node.id}" has no loop guard`);
+    }
+    return {
+      ...base,
+      type: "node_omitted",
+      nodeId: transition.node.id,
+      reason: "loop_not_continued",
+      loopId: guard.loopId,
+      iteration: guard.iteration,
+      checkNodeId: guard.checkNodeId,
+    };
+  }
   if (transition.kind === "omit_condition") {
     const guard = transition.node.when;
     if (guard === undefined) {
@@ -1280,6 +1333,67 @@ function controlTransitionEvent(
     };
   }
 
+  if (transition.kind === "complete_loop") {
+    const terminatingCheckNodeId = transition.node.loop.checkNodeIds.find(
+      (checkNodeId) => loopCheckDecision(state, checkNodeId) === "stop",
+    );
+    if (terminatingCheckNodeId === undefined) {
+      return {
+        ...base,
+        type: "node_control_failed",
+        nodeId: transition.node.id,
+        attempt: 1,
+        error: {
+          code: "loop_limit_reached",
+          message: loopLimitFailureMessage(transition.node.id, transition.node.loop.maxIterations),
+          retryable: false,
+          sideEffectStatus: "none",
+        },
+      };
+    }
+    const completedIterations =
+      transition.node.loop.checkNodeIds.indexOf(terminatingCheckNodeId) + 1;
+    return {
+      ...base,
+      type: "node_loop_completed",
+      nodeId: transition.node.id,
+      attempt: 1,
+      completedIterations,
+      terminatingCheckNodeId,
+    };
+  }
+
+  if (transition.kind === "evaluate_loop") {
+    const source = loopCheckSource(transition.node, state);
+    if (source.truncated) {
+      return {
+        ...base,
+        type: "node_control_failed",
+        nodeId: transition.node.id,
+        attempt: 1,
+        error: {
+          code: "loop_source_truncated",
+          message: `loop check "${transition.node.id}" source ${transition.node.loopCheck.source.field} is truncated`,
+          retryable: false,
+          sideEffectStatus: "none",
+        },
+      };
+    }
+    return {
+      ...base,
+      type: "node_loop_checked",
+      nodeId: transition.node.id,
+      attempt: 1,
+      loopId: transition.node.loopCheck.loopId,
+      iteration: transition.node.loopCheck.iteration,
+      sourceNodeId: transition.node.loopCheck.source.nodeId,
+      sourceAttempt: source.attempt,
+      sourceField: transition.node.loopCheck.source.field,
+      sourceHash: source.hash,
+      decision: source.value === transition.node.loopCheck.equals ? "stop" : "continue",
+    };
+  }
+
   const source = conditionSource(transition.node, state);
   if (source.truncated) {
     return {
@@ -1321,8 +1435,31 @@ function conditionDecision(
   return control?.kind === "condition" ? control : undefined;
 }
 
+function loopCheckDecision(state: RunState, checkNodeId: string): "stop" | "continue" | undefined {
+  const control = state.nodes[checkNodeId]?.control;
+  return control?.kind === "loop-check" ? control.decision : undefined;
+}
+
 function conditionSource(
   node: CompiledConditionNode,
+  state: RunState,
+): ReturnType<typeof controlSource> {
+  return controlSource(node.id, node.condition.source, state);
+}
+
+function loopCheckSource(
+  node: CompiledLoopCheckNode,
+  state: RunState,
+): ReturnType<typeof controlSource> {
+  return controlSource(node.id, node.loopCheck.source, state);
+}
+
+function controlSource(
+  controlNodeId: string,
+  declaration: {
+    readonly nodeId: string;
+    readonly field: "command.stdout" | "command.stderr" | "agent.text";
+  },
   state: RunState,
 ): {
   readonly attempt: number;
@@ -1330,11 +1467,11 @@ function conditionSource(
   readonly hash: string;
   readonly truncated: boolean;
 } {
-  const source = state.nodes[node.condition.source.nodeId];
+  const source = state.nodes[declaration.nodeId];
   if (source?.status !== "succeeded" || source.evidence === null) {
-    throw new Error(`condition "${node.id}" source has no successful evidence`);
+    throw new Error(`control node "${controlNodeId}" source has no successful evidence`);
   }
-  switch (node.condition.source.field) {
+  switch (declaration.field) {
     case "command.stdout":
       if (source.evidence.kind === "command") {
         return {
@@ -1366,7 +1503,7 @@ function conditionSource(
       }
       break;
   }
-  throw new Error(`condition "${node.id}" source field is incompatible with its evidence`);
+  throw new Error(`control node "${controlNodeId}" source field is incompatible with its evidence`);
 }
 
 function workflowIsTerminal(state: RunState): boolean {

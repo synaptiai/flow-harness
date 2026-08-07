@@ -252,6 +252,67 @@ nodes:
     ]);
   });
 
+  it("runs and inspects the credential-free bounded loop example", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(process.cwd(), "examples", "bounded-loop.workflow.yaml");
+    const runsDirectory = join(directory, "runs");
+    const statePath = join(directory, "flow-bounded-loop-example.state");
+    const runCapture = createCapture();
+
+    const runExitCode = await main(
+      ["run", workflowPath, "--run-id", "cli-bounded-loop", "--runs-dir", runsDirectory],
+      runCapture.io,
+      { cwd: directory },
+    );
+
+    expect(runExitCode, [...runCapture.stderr, ...runCapture.stdout].join("\n")).toBe(0);
+    const output = JSON.parse(runCapture.stdout.join("\n"));
+    expect(output).toMatchObject({
+      status: "succeeded",
+      nodes: {
+        "converge--i1--check": {
+          control: { kind: "loop-check", iteration: 1, decision: "continue" },
+        },
+        "converge--i2--check": {
+          control: { kind: "loop-check", iteration: 2, decision: "stop" },
+        },
+        "converge--i3--node--advance": { status: "omitted" },
+        converge: {
+          status: "succeeded",
+          control: { kind: "loop", completedIterations: 2 },
+        },
+        verify: { status: "succeeded" },
+      },
+    });
+    await expect(stat(statePath)).rejects.toMatchObject({ code: "ENOENT" });
+
+    const inspectCapture = createCapture();
+    const inspectExitCode = await main(
+      ["inspect", "cli-bounded-loop", "--runs-dir", runsDirectory],
+      inspectCapture.io,
+      { cwd: directory },
+    );
+    expect(inspectExitCode).toBe(0);
+    expect(JSON.parse(inspectCapture.stdout.join("\n"))).toEqual(output);
+
+    const ledger = await readFile(join(runsDirectory, "cli-bounded-loop", "events.jsonl"), "utf8");
+    expect(ledgerTypes(ledger)).toEqual([
+      "run_started",
+      "node_started",
+      "node_succeeded",
+      "node_loop_checked",
+      "node_started",
+      "node_succeeded",
+      "node_loop_checked",
+      "node_omitted",
+      "node_omitted",
+      "node_loop_completed",
+      "node_started",
+      "node_succeeded",
+      "run_succeeded",
+    ]);
+  });
+
   it("waits durably, records approval, and resumes the exact command", async () => {
     const directory = await createTemporaryDirectory();
     const workflowPath = join(directory, "approval.workflow.yaml");

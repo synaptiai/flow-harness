@@ -2,13 +2,17 @@ import { parseDocument } from "yaml";
 
 import type { GoalContractSource } from "../goal/schema.js";
 import type { CompiledGoal } from "../goal/types.js";
+import { projectCompiledControlGraph, workflowRequiresControlGraph } from "./control-graph.js";
 import { workflowSourceSchema, type WorkflowSource } from "./schema.js";
 import {
   MAX_CONTROL_GRAPH_SERIALIZED_BYTES,
+  MAX_COMPILED_WORKFLOW_NODES,
   type CompiledAgentNode,
   type CompiledCommandNode,
   type CompiledConditionNode,
   type CompiledJoinNode,
+  type CompiledLoopCheckNode,
+  type CompiledLoopNode,
   type CompiledNode,
   type CompiledRunBudget,
   type CompiledWorkflow,
@@ -41,6 +45,13 @@ export interface WorkflowDiagnostic {
     | "join_branch_unknown_node"
     | "join_case_coverage"
     | "join_unknown_condition"
+    | "loop_body_entry_count"
+    | "loop_expansion_too_large"
+    | "loop_instance_id_collision"
+    | "loop_instance_id_too_long"
+    | "loop_source_field_mismatch"
+    | "loop_source_not_unconditional"
+    | "loop_source_unknown"
     | "self_dependency"
     | "terminal_requires_command"
     | "unknown_criterion_verifier"
@@ -80,7 +91,24 @@ export function compileWorkflowText(source: string, sourceName = "workflow"): Co
     throw new WorkflowCompilationError(sourceName, Object.freeze(diagnostics));
   }
 
-  return freezeWorkflow(result.data);
+  const workflow = freezeWorkflow(result.data);
+  if (
+    workflowRequiresControlGraph(workflow) &&
+    Buffer.byteLength(JSON.stringify(projectCompiledControlGraph(workflow)), "utf8") >
+      MAX_CONTROL_GRAPH_SERIALIZED_BYTES
+  ) {
+    throw new WorkflowCompilationError(
+      sourceName,
+      Object.freeze([
+        {
+          code: "control_graph_too_large",
+          path: "nodes",
+          message: `serialized control graph must not exceed ${MAX_CONTROL_GRAPH_SERIALIZED_BYTES} UTF-8 bytes`,
+        },
+      ]),
+    );
+  }
+  return workflow;
 }
 
 function parseYaml(source: string, sourceName: string): unknown {
@@ -225,6 +253,7 @@ function validateGraph(workflow: WorkflowSource): WorkflowDiagnostic[] {
   }
 
   validateControlFlow(workflow, diagnostics);
+  validateLoops(workflow, diagnostics);
 
   const cycle = findCycle(workflow.nodes);
   if (cycle !== undefined) {
@@ -239,6 +268,8 @@ function validateGraph(workflow: WorkflowSource): WorkflowDiagnostic[] {
 }
 
 type SourceNode = WorkflowSource["nodes"][number];
+type SourceLoopNode = Extract<SourceNode, { readonly type: "loop" }>;
+type SourceBodyNode = SourceLoopNode["loop"]["body"]["nodes"][number];
 
 function sourceDependencies(node: SourceNode): readonly string[] {
   return node.type === "join" ? node.join.branches.map((branch) => branch.nodeId) : node.dependsOn;
@@ -250,25 +281,226 @@ function dependencyPath(node: SourceNode, nodeIndex: number, dependencyIndex: nu
     : `nodes.${nodeIndex}.dependsOn.${dependencyIndex}`;
 }
 
-function validateControlFlow(workflow: WorkflowSource, diagnostics: WorkflowDiagnostic[]): void {
-  const nodeById = new Map(workflow.nodes.map((node) => [node.id, node]));
-  const indexById = new Map(workflow.nodes.map((node, index) => [node.id, index]));
-  const conditions = workflow.nodes.filter(
-    (node): node is Extract<SourceNode, { readonly type: "condition" }> =>
+function validateLoops(workflow: WorkflowSource, diagnostics: WorkflowDiagnostic[]): void {
+  const topLevelIds = new Set(workflow.nodes.map((node) => node.id));
+  const compiledIds = new Set(topLevelIds);
+  let compiledNodeCount = workflow.nodes.length;
+
+  for (const [loopIndex, node] of workflow.nodes.entries()) {
+    if (node.type !== "loop") {
+      continue;
+    }
+
+    const prefix = `nodes.${loopIndex}.loop.body.nodes`;
+    const bodyNodes = node.loop.body.nodes;
+    validateLoopBodyGraph(bodyNodes, prefix, diagnostics);
+    validateLoopSource(node, loopIndex, diagnostics);
+
+    compiledNodeCount += node.loop.maxIterations * (bodyNodes.length + 1);
+    for (let iteration = 1; iteration <= node.loop.maxIterations; iteration += 1) {
+      const generatedIds = [
+        ...bodyNodes.map((bodyNode) => loopBodyNodeId(node.id, iteration, bodyNode.id)),
+        loopCheckNodeId(node.id, iteration),
+      ];
+      for (const generatedId of generatedIds) {
+        if (generatedId.length > 128) {
+          diagnostics.push({
+            code: "loop_instance_id_too_long",
+            path: `nodes.${loopIndex}.id`,
+            message: `loop "${node.id}" generates durable node id "${generatedId}" longer than 128 characters`,
+          });
+        }
+        if (compiledIds.has(generatedId)) {
+          diagnostics.push({
+            code: "loop_instance_id_collision",
+            path: `nodes.${loopIndex}.id`,
+            message: `loop "${node.id}" generates duplicate durable node id "${generatedId}"`,
+          });
+        }
+        compiledIds.add(generatedId);
+      }
+    }
+  }
+
+  if (compiledNodeCount > MAX_COMPILED_WORKFLOW_NODES) {
+    diagnostics.push({
+      code: "loop_expansion_too_large",
+      path: "nodes",
+      message: `compiled workflow must not exceed ${MAX_COMPILED_WORKFLOW_NODES} nodes; loop expansion produces ${compiledNodeCount}`,
+    });
+  }
+}
+
+function validateLoopBodyGraph(
+  nodes: readonly SourceBodyNode[],
+  prefix: string,
+  diagnostics: WorkflowDiagnostic[],
+): void {
+  const firstIndexById = new Map<string, number>();
+  for (const [index, node] of nodes.entries()) {
+    const previousIndex = firstIndexById.get(node.id);
+    if (previousIndex === undefined) {
+      firstIndexById.set(node.id, index);
+    } else {
+      diagnostics.push({
+        code: "duplicate_node",
+        path: `${prefix}.${index}.id`,
+        message: `node id "${node.id}" duplicates ${prefix}.${previousIndex}.id`,
+      });
+    }
+  }
+
+  for (const [nodeIndex, node] of nodes.entries()) {
+    const seenDependencies = new Set<string>();
+    for (const [dependencyIndex, dependency] of sourceDependencies(node).entries()) {
+      const path = dependencyPathAt(node, prefix, nodeIndex, dependencyIndex);
+      if (dependency === node.id) {
+        diagnostics.push({
+          code: "self_dependency",
+          path,
+          message: `node "${node.id}" cannot depend on itself`,
+        });
+      }
+      if (seenDependencies.has(dependency)) {
+        diagnostics.push({
+          code: "duplicate_dependency",
+          path,
+          message: `node "${node.id}" declares dependency "${dependency}" more than once`,
+        });
+      }
+      if (!firstIndexById.has(dependency)) {
+        diagnostics.push({
+          code: "unknown_dependency",
+          path,
+          message: `node "${node.id}" depends on unknown local node "${dependency}"`,
+        });
+      }
+      seenDependencies.add(dependency);
+    }
+  }
+
+  const entries = nodes.filter((node) => sourceDependencies(node).length === 0);
+  if (entries.length !== 1) {
+    diagnostics.push({
+      code: "loop_body_entry_count",
+      path: prefix,
+      message: `loop body must contain exactly one entry node; found ${entries.length}`,
+    });
+  }
+
+  validateControlFlowNodes(nodes, diagnostics, prefix);
+  const cycle = findCycle(nodes);
+  if (cycle !== undefined) {
+    diagnostics.push({
+      code: "cycle",
+      path: prefix,
+      message: `loop body contains a dependency cycle: ${cycle.join(" -> ")}`,
+    });
+  }
+}
+
+function validateLoopSource(
+  loop: SourceLoopNode,
+  loopIndex: number,
+  diagnostics: WorkflowDiagnostic[],
+): void {
+  const bodyNodes = loop.loop.body.nodes;
+  const sourcePath = `nodes.${loopIndex}.loop.until.source`;
+  const source = bodyNodes.find((node) => node.id === loop.loop.until.source.nodeId);
+  if (source === undefined) {
+    diagnostics.push({
+      code: "loop_source_unknown",
+      path: `${sourcePath}.nodeId`,
+      message: `loop "${loop.id}" references unknown local source node "${loop.loop.until.source.nodeId}"`,
+    });
+    return;
+  }
+
+  const field = loop.loop.until.source.field;
+  const compatible =
+    (field.startsWith("command.") && source.type === "command") ||
+    (field === "agent.text" && source.type === "agent");
+  if (!compatible) {
+    diagnostics.push({
+      code: "loop_source_field_mismatch",
+      path: `${sourcePath}.field`,
+      message: `loop "${loop.id}" source field "${field}" is incompatible with local node "${source.id}" of type "${source.type}"`,
+    });
+  }
+
+  const conditions = bodyNodes.filter(
+    (node): node is Extract<SourceBodyNode, { readonly type: "condition" }> =>
       node.type === "condition",
   );
-  const joins = workflow.nodes.filter(
-    (node): node is Extract<SourceNode, { readonly type: "join" }> => node.type === "join",
+  const insideConditionalBranch = conditions.some(
+    (condition) => branchMembership(bodyNodes, condition.id).get(source.id) !== undefined,
+  );
+  const dependedUpon = new Set(bodyNodes.flatMap(sourceDependencies));
+  const terminals = bodyNodes.filter((node) => !dependedUpon.has(node.id));
+  const notAwaitedByEveryTerminal = terminals.some(
+    (terminal) =>
+      terminal.id !== source.id && !isAncestor(source.id, terminal.id, nodeMap(bodyNodes)),
+  );
+  if (insideConditionalBranch || notAwaitedByEveryTerminal) {
+    diagnostics.push({
+      code: "loop_source_not_unconditional",
+      path: `${sourcePath}.nodeId`,
+      message: `loop "${loop.id}" source "${source.id}" must execute and be awaited on every successful body path`,
+    });
+  }
+}
+
+function dependencyPathAt(
+  node: SourceBodyNode,
+  prefix: string,
+  nodeIndex: number,
+  dependencyIndex: number,
+): string {
+  return node.type === "join"
+    ? `${prefix}.${nodeIndex}.join.branches.${dependencyIndex}.nodeId`
+    : `${prefix}.${nodeIndex}.dependsOn.${dependencyIndex}`;
+}
+
+function nodeMap<T extends SourceNode | SourceBodyNode>(
+  nodes: readonly T[],
+): ReadonlyMap<string, T> {
+  return new Map(nodes.map((node) => [node.id, node]));
+}
+
+function loopBodyNodeId(loopId: string, iteration: number, nodeId: string): string {
+  return `${loopId}--i${iteration}--node--${nodeId}`;
+}
+
+function loopCheckNodeId(loopId: string, iteration: number): string {
+  return `${loopId}--i${iteration}--check`;
+}
+
+function validateControlFlow(workflow: WorkflowSource, diagnostics: WorkflowDiagnostic[]): void {
+  validateControlFlowNodes(workflow.nodes, diagnostics, "nodes");
+}
+
+function validateControlFlowNodes<T extends SourceNode | SourceBodyNode>(
+  nodes: readonly T[],
+  diagnostics: WorkflowDiagnostic[],
+  prefix: string,
+): void {
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const indexById = new Map(nodes.map((node, index) => [node.id, index]));
+  const conditions = nodes.filter(
+    (node): node is Extract<T, { readonly type: "condition" }> => node.type === "condition",
+  );
+  const joins = nodes.filter(
+    (node): node is Extract<T, { readonly type: "join" }> => node.type === "join",
   );
 
   if (
     conditions.length > 0 &&
-    Buffer.byteLength(JSON.stringify(sourceControlGraph(workflow.nodes)), "utf8") >
+    Buffer.byteLength(JSON.stringify(sourceControlGraph(nodes)), "utf8") >
       MAX_CONTROL_GRAPH_SERIALIZED_BYTES
   ) {
     diagnostics.push({
       code: "control_graph_too_large",
-      path: "nodes",
+      path: prefix,
       message: `serialized control graph must not exceed ${MAX_CONTROL_GRAPH_SERIALIZED_BYTES} UTF-8 bytes`,
     });
   }
@@ -279,14 +511,14 @@ function validateControlFlow(workflow: WorkflowSource, diagnostics: WorkflowDiag
     if (source === undefined) {
       diagnostics.push({
         code: "condition_source_unknown",
-        path: `nodes.${index}.condition.source.nodeId`,
+        path: `${prefix}.${index}.condition.source.nodeId`,
         message: `condition "${condition.id}" references unknown source node "${condition.condition.source.nodeId}"`,
       });
     } else {
       if (!condition.dependsOn.includes(source.id)) {
         diagnostics.push({
           code: "condition_source_requires_dependency",
-          path: `nodes.${index}.condition.source.nodeId`,
+          path: `${prefix}.${index}.condition.source.nodeId`,
           message: `condition "${condition.id}" source "${source.id}" must be a direct dependency`,
         });
       }
@@ -296,22 +528,22 @@ function validateControlFlow(workflow: WorkflowSource, diagnostics: WorkflowDiag
       if (!fieldMatches) {
         diagnostics.push({
           code: "condition_source_field_mismatch",
-          path: `nodes.${index}.condition.source.field`,
+          path: `${prefix}.${index}.condition.source.field`,
           message: `condition "${condition.id}" source field "${condition.condition.source.field}" is incompatible with node "${source.id}" of type "${source.type}"`,
         });
       }
     }
   }
 
-  for (const [index, node] of workflow.nodes.entries()) {
-    if (node.type === "join" || node.when === undefined) {
+  for (const [index, node] of nodes.entries()) {
+    if (node.type === "join" || node.type === "loop" || node.when === undefined) {
       continue;
     }
     const condition = nodeById.get(node.when.conditionId);
     if (condition?.type !== "condition") {
       diagnostics.push({
         code: "branch_guard_requires_condition",
-        path: `nodes.${index}.when.conditionId`,
+        path: `${prefix}.${index}.when.conditionId`,
         message: `node "${node.id}" guard must reference a condition node`,
       });
       continue;
@@ -319,14 +551,14 @@ function validateControlFlow(workflow: WorkflowSource, diagnostics: WorkflowDiag
     if (!node.dependsOn.includes(condition.id)) {
       diagnostics.push({
         code: "branch_guard_requires_dependency",
-        path: `nodes.${index}.when.conditionId`,
+        path: `${prefix}.${index}.when.conditionId`,
         message: `node "${node.id}" must directly depend on guarded condition "${condition.id}"`,
       });
     }
     if (!conditionCases(condition).includes(node.when.case)) {
       diagnostics.push({
         code: "branch_guard_unknown_case",
-        path: `nodes.${index}.when.case`,
+        path: `${prefix}.${index}.when.case`,
         message: `node "${node.id}" guard references unknown case "${node.when.case}"`,
       });
     }
@@ -337,7 +569,7 @@ function validateControlFlow(workflow: WorkflowSource, diagnostics: WorkflowDiag
     if (condition?.type !== "condition") {
       diagnostics.push({
         code: "join_unknown_condition",
-        path: `nodes.${index}.join.conditionId`,
+        path: `${prefix}.${index}.join.conditionId`,
         message: `join "${join.id}" must reference a condition node`,
       });
       continue;
@@ -351,7 +583,7 @@ function validateControlFlow(workflow: WorkflowSource, diagnostics: WorkflowDiag
     ) {
       diagnostics.push({
         code: "join_case_coverage",
-        path: `nodes.${index}.join.branches`,
+        path: `${prefix}.${index}.join.branches`,
         message: `join "${join.id}" must map every case of condition "${condition.id}" exactly once`,
       });
     }
@@ -359,7 +591,7 @@ function validateControlFlow(workflow: WorkflowSource, diagnostics: WorkflowDiag
       if (!nodeById.has(branch.nodeId)) {
         diagnostics.push({
           code: "join_branch_unknown_node",
-          path: `nodes.${index}.join.branches.${branchIndex}.nodeId`,
+          path: `${prefix}.${index}.join.branches.${branchIndex}.nodeId`,
           message: `join "${join.id}" references unknown branch terminal "${branch.nodeId}"`,
         });
       }
@@ -370,9 +602,10 @@ function validateControlFlow(workflow: WorkflowSource, diagnostics: WorkflowDiag
     const conditionIndex = indexById.get(condition.id) ?? 0;
     const possibleCases = conditionCases(condition);
     for (const [caseIndex, caseId] of possibleCases.entries()) {
-      const roots = workflow.nodes.filter(
+      const roots = nodes.filter(
         (node) =>
           node.type !== "join" &&
+          node.type !== "loop" &&
           node.when?.conditionId === condition.id &&
           node.when.case === caseId,
       );
@@ -381,8 +614,8 @@ function validateControlFlow(workflow: WorkflowSource, diagnostics: WorkflowDiag
           code: "condition_case_requires_branch",
           path:
             caseIndex < condition.condition.cases.length
-              ? `nodes.${conditionIndex}.condition.cases.${caseIndex}.id`
-              : `nodes.${conditionIndex}.condition.default`,
+              ? `${prefix}.${conditionIndex}.condition.cases.${caseIndex}.id`
+              : `${prefix}.${conditionIndex}.condition.default`,
           message: `condition "${condition.id}" case "${caseId}" has no guarded branch`,
         });
       }
@@ -392,13 +625,13 @@ function validateControlFlow(workflow: WorkflowSource, diagnostics: WorkflowDiag
     if (matchingJoins.length !== 1) {
       diagnostics.push({
         code: "condition_join_count",
-        path: `nodes.${conditionIndex}.condition`,
+        path: `${prefix}.${conditionIndex}.condition`,
         message: `condition "${condition.id}" must have exactly one join; found ${matchingJoins.length}`,
       });
       continue;
     }
 
-    const membership = branchMembership(workflow.nodes, condition.id);
+    const membership = branchMembership(nodes, condition.id);
     for (const [nodeId, value] of membership.entries()) {
       if (value !== "cross") {
         continue;
@@ -409,8 +642,8 @@ function validateControlFlow(workflow: WorkflowSource, diagnostics: WorkflowDiag
         code: "branch_cross_dependency",
         path:
           node?.type === "join"
-            ? `nodes.${nodeIndex}.join.branches`
-            : `nodes.${nodeIndex}.dependsOn`,
+            ? `${prefix}.${nodeIndex}.join.branches`
+            : `${prefix}.${nodeIndex}.dependsOn`,
         message: `node "${nodeId}" depends across cases of condition "${condition.id}" without its explicit join`,
       });
     }
@@ -425,7 +658,7 @@ function validateControlFlow(workflow: WorkflowSource, diagnostics: WorkflowDiag
       if (branchMembershipValue !== branch.case) {
         diagnostics.push({
           code: "join_branch_membership",
-          path: `nodes.${joinIndex}.join.branches.${branchIndex}.nodeId`,
+          path: `${prefix}.${joinIndex}.join.branches.${branchIndex}.nodeId`,
           message: `join "${join.id}" terminal "${branch.nodeId}" does not belong exclusively to case "${branch.case}"`,
         });
         continue;
@@ -439,7 +672,7 @@ function validateControlFlow(workflow: WorkflowSource, diagnostics: WorkflowDiag
       if (incomplete) {
         diagnostics.push({
           code: "join_branch_incomplete",
-          path: `nodes.${joinIndex}.join.branches.${branchIndex}.nodeId`,
+          path: `${prefix}.${joinIndex}.join.branches.${branchIndex}.nodeId`,
           message: `join "${join.id}" terminal "${branch.nodeId}" does not wait for every node in case "${branch.case}"`,
         });
       }
@@ -447,7 +680,7 @@ function validateControlFlow(workflow: WorkflowSource, diagnostics: WorkflowDiag
   }
 }
 
-function sourceControlGraph(nodes: readonly SourceNode[]): object {
+function sourceControlGraph<T extends SourceNode | SourceBodyNode>(nodes: readonly T[]): object {
   return {
     nodes: nodes.map((node) => {
       if (node.type === "condition") {
@@ -467,6 +700,13 @@ function sourceControlGraph(nodes: readonly SourceNode[]): object {
           join: node.join,
         };
       }
+      if (node.type === "loop") {
+        return {
+          nodeId: node.id,
+          type: node.type,
+          dependsOn: node.dependsOn,
+        };
+      }
       return {
         nodeId: node.id,
         type: node.type,
@@ -478,13 +718,13 @@ function sourceControlGraph(nodes: readonly SourceNode[]): object {
 }
 
 function conditionCases(
-  condition: Extract<SourceNode, { readonly type: "condition" }>,
+  condition: Extract<SourceNode | SourceBodyNode, { readonly type: "condition" }>,
 ): readonly string[] {
   return [...condition.condition.cases.map((item) => item.id), condition.condition.default];
 }
 
 function branchMembership(
-  nodes: readonly SourceNode[],
+  nodes: readonly (SourceNode | SourceBodyNode)[],
   conditionId: string,
 ): ReadonlyMap<string, string | "cross" | undefined> {
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
@@ -514,7 +754,7 @@ function branchMembership(
     visiting.delete(nodeId);
 
     let result: string | "cross" | undefined;
-    const directGuard = node.type === "join" ? undefined : node.when;
+    const directGuard = node.type === "join" || node.type === "loop" ? undefined : node.when;
     if (directGuard?.conditionId === conditionId) {
       result = dependencyMemberships.some(
         (value) => value === "cross" || value !== directGuard.case,
@@ -540,7 +780,7 @@ function branchMembership(
 function isAncestor(
   ancestorId: string,
   nodeId: string,
-  nodeById: ReadonlyMap<string, SourceNode>,
+  nodeById: ReadonlyMap<string, SourceNode | SourceBodyNode>,
   visited = new Set<string>(),
 ): boolean {
   if (visited.has(nodeId)) {
@@ -557,7 +797,7 @@ function isAncestor(
   );
 }
 
-function findCycle(nodes: WorkflowSource["nodes"]): readonly string[] | undefined {
+function findCycle(nodes: readonly (SourceNode | SourceBodyNode)[]): readonly string[] | undefined {
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
   const visited = new Set<string>();
   const visiting = new Set<string>();
@@ -601,7 +841,9 @@ function findCycle(nodes: WorkflowSource["nodes"]): readonly string[] | undefine
 }
 
 function freezeWorkflow(source: WorkflowSource): CompiledWorkflow {
-  const nodes = Object.freeze(source.nodes.map(freezeNode));
+  const nodes = Object.freeze(
+    source.nodes.flatMap((node) => (node.type === "loop" ? freezeLoop(node) : [freezeNode(node)])),
+  );
   const workflow: CompiledWorkflow = {
     apiVersion: source.apiVersion,
     id: source.metadata.id,
@@ -652,7 +894,7 @@ function freezeGoal(source: GoalContractSource): CompiledGoal {
   });
 }
 
-function freezeNode(source: WorkflowSource["nodes"][number]): CompiledNode {
+function freezeNode(source: Exclude<SourceNode, SourceLoopNode> | SourceBodyNode): CompiledNode {
   const dependsOn = Object.freeze([...sourceDependencies(source)]);
   if (source.type === "command") {
     const node: CompiledCommandNode = {
@@ -714,6 +956,209 @@ function freezeNode(source: WorkflowSource["nodes"][number]): CompiledNode {
     }),
   };
   return Object.freeze(node);
+}
+
+function freezeLoop(source: SourceLoopNode): readonly CompiledNode[] {
+  const bodyNodes = source.loop.body.nodes;
+  const entry = bodyNodes.find((node) => sourceDependencies(node).length === 0);
+  if (entry === undefined) {
+    throw new Error(`validated loop "${source.id}" has no body entry`);
+  }
+  const dependedUpon = new Set(bodyNodes.flatMap(sourceDependencies));
+  const terminals = bodyNodes.filter((node) => !dependedUpon.has(node.id));
+  const expanded: CompiledNode[] = [];
+  const checkNodeIds: string[] = [];
+
+  for (let iteration = 1; iteration <= source.loop.maxIterations; iteration += 1) {
+    const idByTemplate = new Map(
+      bodyNodes.map((node) => [node.id, loopBodyNodeId(source.id, iteration, node.id)]),
+    );
+    const priorCheckNodeId =
+      iteration === 1 ? undefined : loopCheckNodeId(source.id, iteration - 1);
+    for (const bodyNode of bodyNodes) {
+      expanded.push(
+        freezeLoopBodyNode(source, bodyNode, entry.id, iteration, idByTemplate, priorCheckNodeId),
+      );
+    }
+
+    const checkNodeId = loopCheckNodeId(source.id, iteration);
+    const sourceNodeId = requireMappedLoopNode(
+      idByTemplate,
+      source.loop.until.source.nodeId,
+      source.id,
+    );
+    const terminalIds = terminals.map((node) =>
+      requireMappedLoopNode(idByTemplate, node.id, source.id),
+    );
+    const checkDependsOn = Object.freeze(
+      terminalIds.includes(sourceNodeId) ? terminalIds : [...terminalIds, sourceNodeId],
+    );
+    const check: CompiledLoopCheckNode = {
+      id: checkNodeId,
+      type: "loop-check",
+      dependsOn: checkDependsOn,
+      loopCheck: Object.freeze({
+        loopId: source.id,
+        iteration,
+        source: Object.freeze({
+          nodeId: sourceNodeId,
+          field: source.loop.until.source.field,
+        }),
+        equals: source.loop.until.equals,
+      }),
+    };
+    expanded.push(Object.freeze(check));
+    checkNodeIds.push(checkNodeId);
+  }
+
+  const controller: CompiledLoopNode = {
+    id: source.id,
+    type: "loop",
+    dependsOn: Object.freeze([...checkNodeIds]),
+    loop: Object.freeze({
+      maxIterations: source.loop.maxIterations,
+      checkNodeIds: Object.freeze([...checkNodeIds]),
+    }),
+  };
+  expanded.push(Object.freeze(controller));
+  return expanded;
+}
+
+function freezeLoopBodyNode(
+  loop: SourceLoopNode,
+  source: SourceBodyNode,
+  entryNodeId: string,
+  iteration: number,
+  idByTemplate: ReadonlyMap<string, string>,
+  priorCheckNodeId: string | undefined,
+): CompiledNode {
+  const id = requireMappedLoopNode(idByTemplate, source.id, loop.id);
+  const isEntry = source.id === entryNodeId;
+  const dependsOn = Object.freeze(
+    isEntry
+      ? iteration === 1
+        ? [...loop.dependsOn]
+        : [requirePriorLoopCheck(priorCheckNodeId, loop.id, iteration)]
+      : sourceDependencies(source).map((dependency) =>
+          requireMappedLoopNode(idByTemplate, dependency, loop.id),
+        ),
+  );
+  const loopInstance = Object.freeze({
+    loopId: loop.id,
+    iteration,
+    templateNodeId: source.id,
+  });
+  const loopGuard =
+    isEntry && iteration > 1
+      ? Object.freeze({
+          loopId: loop.id,
+          iteration,
+          checkNodeId: requirePriorLoopCheck(priorCheckNodeId, loop.id, iteration),
+        })
+      : undefined;
+  const when =
+    source.type !== "join" && source.when !== undefined
+      ? Object.freeze({
+          conditionId: requireMappedLoopNode(idByTemplate, source.when.conditionId, loop.id),
+          case: source.when.case,
+        })
+      : undefined;
+  const common = {
+    id,
+    dependsOn,
+    loopInstance,
+    ...(loopGuard === undefined ? {} : { loopGuard }),
+  };
+
+  if (source.type === "command") {
+    const node: CompiledCommandNode = {
+      ...common,
+      type: "command",
+      ...(when === undefined ? {} : { when }),
+      ...(source.approval === undefined ? {} : { approval: Object.freeze({ ...source.approval }) }),
+      command: Object.freeze({
+        executable: source.command.executable,
+        args: Object.freeze([...source.command.args]),
+        timeoutMs: source.command.timeoutMs,
+      }),
+    };
+    return Object.freeze(node);
+  }
+
+  if (source.type === "agent") {
+    const node: CompiledAgentNode = {
+      ...common,
+      type: "agent",
+      ...(when === undefined ? {} : { when }),
+      agent: Object.freeze({
+        prompt: source.agent.prompt,
+        model: Object.freeze({ ...source.agent.model }),
+        tools: Object.freeze([...source.agent.tools]),
+        ...(source.agent.recovery === undefined
+          ? {}
+          : { recovery: Object.freeze({ ...source.agent.recovery }) }),
+        timeoutMs: source.agent.timeoutMs,
+      }),
+    };
+    return Object.freeze(node);
+  }
+
+  if (source.type === "condition") {
+    const node: CompiledConditionNode = {
+      ...common,
+      type: "condition",
+      ...(when === undefined ? {} : { when }),
+      condition: Object.freeze({
+        source: Object.freeze({
+          nodeId: requireMappedLoopNode(idByTemplate, source.condition.source.nodeId, loop.id),
+          field: source.condition.source.field,
+        }),
+        cases: Object.freeze(source.condition.cases.map((item) => Object.freeze({ ...item }))),
+        default: source.condition.default,
+      }),
+    };
+    return Object.freeze(node);
+  }
+
+  const node: CompiledJoinNode = {
+    ...common,
+    type: "join",
+    join: Object.freeze({
+      conditionId: requireMappedLoopNode(idByTemplate, source.join.conditionId, loop.id),
+      branches: Object.freeze(
+        source.join.branches.map((branch) =>
+          Object.freeze({
+            case: branch.case,
+            nodeId: requireMappedLoopNode(idByTemplate, branch.nodeId, loop.id),
+          }),
+        ),
+      ),
+    }),
+  };
+  return Object.freeze(node);
+}
+
+function requireMappedLoopNode(
+  idByTemplate: ReadonlyMap<string, string>,
+  templateNodeId: string,
+  loopId: string,
+): string {
+  const nodeId = idByTemplate.get(templateNodeId);
+  if (nodeId === undefined) {
+    throw new Error(`validated loop "${loopId}" references unknown body node "${templateNodeId}"`);
+  }
+  return nodeId;
+}
+
+function requirePriorLoopCheck(
+  priorCheckNodeId: string | undefined,
+  loopId: string,
+  iteration: number,
+): string {
+  if (priorCheckNodeId === undefined) {
+    throw new Error(`validated loop "${loopId}" iteration ${iteration} has no prior check`);
+  }
+  return priorCheckNodeId;
 }
 
 function formatPath(path: readonly PropertyKey[]): string {

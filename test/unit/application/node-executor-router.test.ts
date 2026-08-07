@@ -6,7 +6,11 @@ import type {
   NodeExecutionContext,
 } from "../../../src/application/ports.js";
 import { NodeExecutorRouter } from "../../../src/application/node-executor-router.js";
-import type { CompiledAgentNode, CompiledCommandNode } from "../../../src/domain/workflow/types.js";
+import type {
+  CompiledAgentNode,
+  CompiledCommandNode,
+  CompiledNode,
+} from "../../../src/domain/workflow/types.js";
 
 const context: NodeExecutionContext = {
   runId: "run-router",
@@ -51,7 +55,63 @@ describe("NodeExecutorRouter", () => {
 
     expect(calls).toEqual(["command:verify", "agent:analyze"]);
   });
+
+  it.each(controlNodes())("rejects $type control nodes before executor dispatch", async (node) => {
+    const command: CommandExecutor = {
+      async execute() {
+        throw new Error("command executor must not receive a control node");
+      },
+    };
+    const agent: AgentExecutor = {
+      async execute() {
+        throw new Error("agent executor must not receive a control node");
+      },
+    };
+    const router = new NodeExecutorRouter(command, agent);
+
+    expect(() => router.execute(node, context)).toThrow(
+      /control node.*must be resolved by the workflow scheduler/i,
+    );
+  });
 });
+
+function controlNodes(): CompiledNode[] {
+  return [
+    {
+      id: "route",
+      type: "condition",
+      dependsOn: ["verify"],
+      condition: {
+        source: { nodeId: "verify", field: "command.stdout" },
+        cases: [{ id: "pass", equals: "pass" }],
+        default: "retry",
+      },
+    },
+    {
+      id: "converge",
+      type: "join",
+      dependsOn: ["verify"],
+      join: { conditionId: "route", branches: [{ case: "pass", nodeId: "verify" }] },
+    },
+    {
+      id: "repair--i1--check",
+      type: "loop-check",
+      dependsOn: ["verify"],
+      loopCheck: {
+        loopId: "repair",
+        iteration: 1,
+        source: { nodeId: "verify", field: "command.stdout" },
+        equals: "pass",
+      },
+    },
+    {
+      id: "repair",
+      type: "loop",
+      dependsOn: ["repair--i1--check"],
+      loop: { maxIterations: 1, checkNodeIds: ["repair--i1--check"] },
+    },
+  ];
+}
 
 function commandNode(): CompiledCommandNode {
   return {

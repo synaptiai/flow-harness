@@ -3,6 +3,9 @@ import type { CompiledGoal } from "../goal/types.js";
 export const FLOW_WORKFLOW_API_VERSION = "flow.synapti.ai/v1alpha1" as const;
 export const MAX_CONTROL_GRAPH_SERIALIZED_BYTES = 524_288;
 export const MAX_CONCURRENT_NODES = 32;
+export const MAX_COMPILED_WORKFLOW_NODES = 256;
+export const MAX_LOOP_BODY_NODES = 16;
+export const MAX_LOOP_ITERATIONS = 32;
 
 export type AgentToolName = "read" | "ls" | "edit";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
@@ -32,6 +35,20 @@ export interface CompiledWorkflow {
 export interface CompiledNodeBase {
   readonly id: string;
   readonly dependsOn: readonly string[];
+  readonly loopInstance?: CompiledLoopInstance;
+  readonly loopGuard?: CompiledLoopGuard;
+}
+
+export interface CompiledLoopInstance {
+  readonly loopId: string;
+  readonly iteration: number;
+  readonly templateNodeId: string;
+}
+
+export interface CompiledLoopGuard {
+  readonly loopId: string;
+  readonly iteration: number;
+  readonly checkNodeId: string;
 }
 
 export interface CompiledBranchGuard {
@@ -100,8 +117,31 @@ export interface CompiledJoinNode extends CompiledNodeBase {
   };
 }
 
+export interface CompiledLoopCheckNode extends CompiledGuardedNodeBase {
+  readonly type: "loop-check";
+  readonly loopCheck: {
+    readonly loopId: string;
+    readonly iteration: number;
+    readonly source: {
+      readonly nodeId: string;
+      readonly field: ConditionSourceField;
+    };
+    readonly equals: string;
+  };
+}
+
+export interface CompiledLoopNode extends CompiledGuardedNodeBase {
+  readonly type: "loop";
+  readonly loop: {
+    readonly maxIterations: number;
+    readonly checkNodeIds: readonly string[];
+  };
+}
+
 export type CompiledNode =
   | CompiledCommandNode
   | CompiledAgentNode
   | CompiledConditionNode
-  | CompiledJoinNode;
+  | CompiledJoinNode
+  | CompiledLoopCheckNode
+  | CompiledLoopNode;

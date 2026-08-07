@@ -18,6 +18,7 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Strict workflow and goal compilation | Implemented |
 | Deterministic dependency-ordered execution with bounded static DAG forks | Implemented; omitted concurrency remains sequential |
 | Durable exact-output conditions, guarded branches, omission propagation, and explicit joins | Implemented with bounded selected-branch concurrency |
+| Replay-safe bounded loops over local command/agent DAGs | Implemented through finite acyclic expansion, exact stop evidence, and hard failure at the declared bound |
 | Durable JSONL run ledger and inspection | Implemented |
 | Safe-boundary recovery with exclusive local ownership | Implemented |
 | Durable exact command approval with approve/deny CLI | Implemented |
@@ -28,7 +29,7 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Bounded Pi agent nodes with Flow-owned `read`, `ls`, and hash-anchored `edit` tools | Implemented |
 | Proof-safe fresh recovery of interrupted agent attempts | Implemented as explicit opt-in for read-only attempts and edit attempts proven not applied |
 | Fail-closed sandboxed command process trees | Implemented on Linux and macOS |
-| Dynamic agent-tool approval, graph loops, child runs, and broader model tools | Planned |
+| Dynamic agent-tool approval, optimization rollback, child runs, and broader model tools | Planned |
 | VM-grade isolation of the host-side agent runtime | Planned |
 
 The executable format is `flow.synapti.ai/v1alpha1`. There is no compatibility or migration
@@ -136,6 +137,20 @@ when wall-clock completion reverses. A failure or cancellation starts no later w
 already-admitted node is settled first. Conditions, joins, and command approvals are barriers and
 never overlap an executable wave. This is bounded concurrency inside one run; the supervisor's
 worker limit independently bounds detached runs.
+
+To exercise a replay-safe bounded loop without model credentials:
+
+```sh
+node dist/cli/main.js validate examples/bounded-loop.workflow.yaml
+node dist/cli/main.js run examples/bounded-loop.workflow.yaml --run-id loop-demo
+node dist/cli/main.js inspect loop-demo
+```
+
+The example advances a small workspace state file, records `continue` after iteration one and
+`stop` after iteration two, durably omits the unused third iteration, and verifies and removes the
+state file. Loop bodies remain ordinary local DAGs, so approvals, budgets, effects, fresh recovery,
+and bounded node concurrency apply to each iteration-qualified instance. Reaching the declared
+bound without an exact match fails with `loop_limit_reached`; it never implies success.
 
 ### Run in the background
 
