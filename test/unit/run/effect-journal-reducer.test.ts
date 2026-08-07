@@ -189,6 +189,23 @@ describe("durable node effect replay", () => {
     });
   });
 
+  it("rejects a retryable terminal failure after an unknown settlement", () => {
+    expect(() =>
+      reduceRunEvents([
+        ...preparedEvents(),
+        settledEvent("unknown", "post_commit_failure"),
+        parseRunEvent({
+          ...base(5),
+          type: "node_failed",
+          nodeId: "implement",
+          attempt: 1,
+          error: { ...failure("uncertain"), retryable: true },
+          evidence: agentEvidence("uncertain"),
+        }),
+      ]),
+    ).toThrow(/unknown durable effect.*retryable/i);
+  });
+
   it("accepts a not-applied settlement without a terminal receipt", () => {
     const state = reduceRunEvents([
       ...preparedEvents(),

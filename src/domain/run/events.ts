@@ -1604,6 +1604,12 @@ function validateDurableEffectProjection(
     const hasCommittedEffect = node.effects.some(
       (effect) => effect.settlement?.outcome === "committed",
     );
+    if (hasUnknownEffect && event.error.retryable) {
+      throw new RunReplayError(
+        eventIndex,
+        "failure after an unknown durable effect cannot be retryable",
+      );
+    }
     const contradictsDurableEffects = hasUnknownEffect
       ? event.error.sideEffectStatus !== "uncertain"
       : hasCommittedEffect

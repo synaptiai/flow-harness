@@ -250,6 +250,45 @@ describe("runWorkflow durable effect journal", () => {
     });
   });
 
+  it("makes an unknown durable effect non-retryable despite executor optimism", async () => {
+    const store = new MemoryRunStore();
+    const executor = executorFrom(async (node, context) => {
+      if (node.type === "command") {
+        return successfulCommandOutcome();
+      }
+      if (context.effectJournal === undefined) {
+        throw new Error("missing durable effect journal");
+      }
+      const effect = await context.effectJournal.prepare(descriptor("/workspace/source.ts", "b"));
+      const receipt = await effect.settle({
+        outcome: "unknown",
+        reason: "post_commit_failure",
+      });
+      const outcome = uncertainAgentOutcome(receipt === null ? [] : [receipt]);
+      if (outcome.status !== "failed") {
+        throw new Error("uncertain test outcome must fail");
+      }
+      return {
+        ...outcome,
+        error: { ...outcome.error, retryable: true },
+      };
+    });
+
+    const state = await runWorkflow(editWorkflow(), {
+      cwd: process.cwd(),
+      protectedPaths: [],
+      runId: "effect-run",
+      store,
+      executor,
+      now: incrementingClock(),
+    });
+
+    expect(state.nodes.implement?.error).toMatchObject({
+      retryable: false,
+      sideEffectStatus: "uncertain",
+    });
+  });
+
   it("records a side-effect-free cancellation when abort arrives after writable node start", async () => {
     const controller = new AbortController();
     const store = new AbortOnNodeStartStore(controller);

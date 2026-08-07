@@ -304,10 +304,14 @@ async function continueWorkflow(
     const interruptedOutcome = abortAfterSuccessfulExecution
       ? abortedOutcome(options.signal, outcome.evidence)
       : outcome;
+    const retrySafeOutcome =
+      effectJournal === undefined
+        ? interruptedOutcome
+        : normalizeUnknownEffectRetryability(node.id, interruptedOutcome);
     const authoritativeOutcome =
       effectJournal === undefined || (!abortedBeforeExecution && !abortAfterSuccessfulExecution)
-        ? interruptedOutcome
-        : normalizeWorkflowAbortEffectStatus(node.id, interruptedOutcome);
+        ? retrySafeOutcome
+        : normalizeWorkflowAbortEffectStatus(node.id, retrySafeOutcome);
 
     if (authoritativeOutcome.status === "failed") {
       await record({
@@ -435,6 +439,23 @@ async function continueWorkflow(
     return Object.freeze({
       ...outcome,
       error: Object.freeze({ ...outcome.error, sideEffectStatus }),
+    });
+  }
+
+  function normalizeUnknownEffectRetryability(
+    nodeId: string,
+    outcome: NodeExecutionOutcome,
+  ): NodeExecutionOutcome {
+    if (
+      outcome.status === "succeeded" ||
+      !outcome.error.retryable ||
+      !state.nodes[nodeId]?.effects.some((effect) => effect.settlement?.outcome === "unknown")
+    ) {
+      return outcome;
+    }
+    return Object.freeze({
+      ...outcome,
+      error: Object.freeze({ ...outcome.error, retryable: false }),
     });
   }
 
