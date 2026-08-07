@@ -238,8 +238,8 @@ timeout, and later execution remain identical across detachment and recovery.
 ## Verification results
 
 - `npm run check`: 340 tests, production build, and 7 compiled-runtime tests passed.
-- `npm run test:coverage`: 88.19% statements, 81.67% branches, 93.15% functions, and
-  88.37% lines; every configured threshold passed.
+- `npm run test:coverage`: 88.20% statements, 81.73% branches, 93.15% functions, and
+  88.38% lines; every configured threshold passed.
 - `NPM_CONFIG_CACHE=/tmp/flow-harness-npm-cache npm run pack:check`: the release artifact contains
   the compiled budget domain, CLI, documentation, and credential-free example.
 - A clean temporary consumer installed the packed tarball, validated the published budget example,
