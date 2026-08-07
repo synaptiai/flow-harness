@@ -6,7 +6,7 @@ Flow turns a collection of useful software-development practices into an enforce
 
 The standalone harness reverses that relationship. Flow owns workflow execution and delegates only bounded node work to an embedded agent runtime.
 
-This document describes the target architecture unless a section is explicitly labeled as the current executable slice. The delivery roadmap is the source of truth for implementation status. Gates 1 and 2 currently provide `validate`, sequential `run`, `inspect`, optional versioned goal contracts, command-bound criterion evaluation, command and bounded Pi agent nodes, cancellation, and replayable local event ledgers. Gate 3 now includes a runtime-neutral policy broker for model-requested reads, lists, and hash-anchored single-file edits, a fail-closed native sandbox for every command node, and exact expiring pre-start approval for deterministic commands. Gate 4 adds `resume` at committed node boundaries, exclusive same-host process ownership, write-ahead durable evidence and typed recovery observation for each workspace edit, opt-in proof-safe fresh recovery for interrupted agent attempts, command approval waits that survive client detachment, durable resource accounting with run-wide start, model-token, reported-cost, and active-execution limits, project initialization and monotonic capacity configuration, plus a bounded local supervisor with authenticated detached workers, durable FIFO admission, status, event replay, cancellation, and restart adoption. A TUI, opaque Pi session continuation, general failure/fallback retries, broader configurable policy, dynamic agent-tool approval, execute/network model tools, probabilistic evaluators, packages, graph loops, and stronger VM or managed sandbox backends remain later work.
+This document describes the target architecture unless a section is explicitly labeled as the current executable slice. The delivery roadmap is the source of truth for implementation status. Gates 1 and 2 currently provide `validate`, sequential `run`, `inspect`, optional versioned goal contracts, command-bound criterion evaluation, command and bounded Pi agent nodes, cancellation, and replayable local event ledgers. Gate 3 now includes a runtime-neutral policy broker for model-requested reads, lists, and hash-anchored single-file edits, a fail-closed native sandbox for every command node, and exact expiring pre-start approval for deterministic commands. Gate 4 adds `resume` at committed node boundaries, exclusive same-host process ownership, write-ahead durable evidence and typed recovery observation for each workspace edit, opt-in proof-safe fresh recovery for interrupted agent attempts, command approval waits that survive client detachment, durable resource accounting with run-wide start, model-token, reported-cost, and active-execution limits, project initialization and monotonic capacity configuration, plus a bounded local supervisor with authenticated detached workers, durable FIFO admission, status, event replay, cancellation, and restart adoption. The first Gate 5 slice adds replay-safe exact-output conditions, guarded branches, first-class omission, and explicit sequential joins. A TUI, concurrent forks, loops, opaque Pi session continuation, general failure/fallback retries, broader configurable policy, dynamic agent-tool approval, execute/network model tools, probabilistic evaluators, packages, and stronger VM or managed sandbox backends remain later work.
 
 ## Target flows
 
@@ -77,11 +77,11 @@ runtime-pi             store-local / tools-* / adapters-*
 
 ### Flow domain
 
-Owns workflow and goal contracts, graph rules, lifecycle state machines, evidence contracts, policy decisions, approvals, budgets, and failure classifications. It imports no Pi, OMP, Prime Agent, provider, UI, filesystem, or database types.
+Owns workflow and goal contracts, graph rules, lifecycle state machines, exact condition and join contracts, omission state, evidence contracts, policy decisions, approvals, budgets, and failure classifications. It imports no Pi, OMP, Prime Agent, provider, UI, filesystem, or database types.
 
 ### Flow application
 
-Compiles workflows, selects ready nodes, assembles minimal context, calls domain ports, evaluates results, and records transitions. It never executes tools directly.
+Compiles workflows, selects the next legal executable or control transition, assembles minimal context, calls domain ports, evaluates results, and records transitions. The same state-based selector checks recovered history. It never executes tools directly, and condition/join nodes never enter an executor port.
 
 ### Pi runtime
 
@@ -99,7 +99,7 @@ The port isolates Flow from the backend. Pi's official SRT and Gondolin examples
 
 ### Event and evidence store
 
-Persists transitions before the scheduler advances. Model transcripts are optional diagnostic artifacts; they are never authoritative for graph position or completion. Policy decisions prove authorization. `node_effect_prepared` proves Flow reached a specific edit boundary before rename; `node_effect_settled` records an executor's committed, not-applied, or post-commit-unknown state; `node_effect_reconciled` records what recovery later observed for a still-open edit; terminal receipts project only executor-settled effects. None is substituted for another. The effect journal constrains failure classification as a lower bound: an unknown settlement requires uncertainty and a committed settlement forbids a side-effect-free failure, while provider or cleanup uncertainty may conservatively remain uncertain even when every recorded edit is committed or not applied. A recovery observation never terminalizes its open attempt. Only a separate `node_attempt_interrupted` event—validated against the persisted opt-in, attempt cap, effect proof, and resource limits—archives the attempt and permits the scheduler to start the exact next fresh attempt.
+Persists transitions before the scheduler advances. Model transcripts are optional diagnostic artifacts; they are never authoritative for graph position or completion. `run_started` persists a bounded control-graph projection whenever conditions exist. `node_condition_evaluated`, `node_omitted`, and `node_joined` record resource-neutral control transitions; replay recomputes their source identity, selected case, guard, dependency propagation, and join result before accepting them. Truncated source evidence produces a typed control failure. Policy decisions prove authorization. `node_effect_prepared` proves Flow reached a specific edit boundary before rename; `node_effect_settled` records an executor's committed, not-applied, or post-commit-unknown state; `node_effect_reconciled` records what recovery later observed for a still-open edit; terminal receipts project only executor-settled effects. None is substituted for another. The effect journal constrains failure classification as a lower bound: an unknown settlement requires uncertainty and a committed settlement forbids a side-effect-free failure, while provider or cleanup uncertainty may conservatively remain uncertain even when every recorded edit is committed or not applied. A recovery observation never terminalizes its open attempt. Only a separate `node_attempt_interrupted` event—validated against the persisted opt-in, attempt cap, effect proof, and resource limits—archives the attempt and permits the scheduler to start the exact next fresh attempt.
 
 Fresh and recovered execution publish an atomic per-run ownership record containing a process ID and random token before appending. A live owner blocks competitors; an exited owner can be displaced atomically. Recovery replays the committed JSONL prefix and verifies the exact compiled workflow digest, node set, budget, approvals, and recovery requirements. For an eligible open attempt it reconciles effects, appends `node_attempt_interrupted`, then appends `run_resumed`; other safe boundaries append only `run_resumed`. A crash between the two markers is replay-safe because the archived attempt is already pending with its counter retained. A final unterminated record is uncommitted and is truncated before the recovered owner appends. Ownership is local-host coordination, not a distributed lease or security boundary.
 
@@ -267,12 +267,16 @@ Approval remains separate from containment. OMP-style allow/prompt/deny rules ca
     unresolved or while its terminal receipts differ from the settled effect journal.
 15. A fresh attempt cannot start until the prior attempt's interruption disposition is durable and
     every recorded effect is proven not applied.
+16. An unselected branch is represented by durable omission, and only its declared join may
+    reconcile omitted alternatives with the selected successful terminal.
 
 ## Failure modes
 
 | Failure | Required behavior |
 | --- | --- |
 | Invalid workflow or configuration | Reject with path-specific diagnostics before creating side effects |
+| Condition source is truncated or incompatible | Record a typed control failure and never select a branch from partial or mismatched evidence |
+| Branch or join event is forged, premature, or inconsistent | Reject replay before advancing or executing another node |
 | Missing credentials | Fail startup or enter a durable operator-wait state |
 | Provider outage or rate limit | Record the attempt and apply only the declared bounded retry or fallback policy |
 | Malformed model output | Schema-reject, retry within the node budget, then block with evidence |

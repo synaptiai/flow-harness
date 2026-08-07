@@ -1,0 +1,40 @@
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata:
+  id: conditional-branch
+  description: Select one exact-output branch and reconcile it at a durable join.
+nodes:
+  - id: classify
+    type: command
+    command:
+      executable: node
+      args: [-e, 'process.stdout.write("needs-work\n")']
+  - id: route
+    type: condition
+    dependsOn: [classify]
+    condition:
+      source: { nodeId: classify, field: command.stdout }
+      cases:
+        - { id: needs-work, equals: "needs-work\n" }
+      default: already-clean
+  - id: verify-change
+    type: command
+    dependsOn: [route]
+    when: { conditionId: route, case: needs-work }
+    command: { executable: node, args: [--version] }
+  - id: inspect-clean
+    type: command
+    dependsOn: [route]
+    when: { conditionId: route, case: already-clean }
+    command: { executable: node, args: [--version] }
+  - id: converge
+    type: join
+    join:
+      conditionId: route
+      branches:
+        - { case: needs-work, nodeId: verify-change }
+        - { case: already-clean, nodeId: inspect-clean }
+  - id: verify-final
+    type: command
+    dependsOn: [converge]
+    command: { executable: node, args: [--version] }

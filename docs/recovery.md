@@ -71,8 +71,8 @@ attribution rather than authenticated identity.
 
 | Last committed state | Recovery behavior |
 | --- | --- |
-| `run_started` or a completed `node_succeeded` | Append `run_resumed` and execute the next ready pending node |
-| All nodes succeeded but `run_succeeded` is absent | Append `run_resumed`, append `run_succeeded`, and execute no node |
+| `run_started` or a completed executable/control transition | Append `run_resumed` and apply the next declaration-ordered legal transition |
+| All nodes succeeded or were omitted but `run_succeeded` is absent | Append `run_resumed`, append `run_succeeded`, and execute no node |
 | `node_failed` is durable, no limit is exhausted, and `run_failed` is absent | Append `run_resumed`, append `run_failed`, and do not retry the failed node |
 | A completed node outcome reaches a model-token, reported-cost, or active-time limit but `run_budget_exhausted` is absent | Append `run_resumed`, append `run_budget_exhausted`, and execute no node |
 | A start limit is exhausted and pending work remains | Append `run_resumed`, append `run_budget_exhausted`, and execute no node |
@@ -84,12 +84,18 @@ attribution rather than authenticated identity.
 | An opted-in agent `node_started` has an applied, committed, unknown, open, legacy writable, attempt-exhausted, or unaccountable budget state | Preserve any reconciliation prefix, refuse with `recovery_retry_ineligible`, and invoke no executor |
 | An unconfigured `node_started` has no matching outcome | Preserve any reconciliation prefix, refuse with `uncertain_operation`, and append no retry disposition or `run_resumed` |
 | Run is `succeeded`, `failed`, `cancelled`, or `resource_exhausted` | Refuse with `terminal_run` |
-| Workflow identity, version, digest, budget, node set, or committed dependency order differs | Refuse with `workflow_mismatch` |
+| Workflow identity, version, digest, budget, node set, persisted control graph, or committed transition order differs | Refuse with `workflow_mismatch` |
 | A new run is resumed with a different normalized execution directory | Refuse with `execution_context_mismatch` |
 
 A started attempt is uncertain because its command, model, or external tool may have performed an
 effect before the process stopped. Flow does not infer failure, success, or idempotency from the
 absence of a result. Command nodes never receive an automatic recovery policy.
+
+Condition decisions, omissions, and joins are safe committed boundaries because they do not invoke
+an executor. Recovery replays their persisted control graph and validates each source attempt,
+field, hash, selected case, omission reason, and join mapping. It never reevaluates a condition from
+the current workspace or a changed workflow file. If a crash occurs after one of these events is
+synced, resume continues from the following transition without repeating the condition source node.
 
 Writable agent attempts add more precise, but non-terminal, evidence. `node_started` declares
 `flow.effects/v1`. Before an atomic edit rename, Flow syncs `node_effect_prepared` with a stable

@@ -19,6 +19,9 @@ export class NodeExecutorRouter implements NodeExecutor {
         return this.commandExecutor.execute(node, context);
       case "agent":
         return this.agentExecutor.execute(node, context);
+      case "condition":
+      case "join":
+        throw new Error(`Control node "${node.id}" must be resolved by the workflow scheduler`);
     }
   }
 }

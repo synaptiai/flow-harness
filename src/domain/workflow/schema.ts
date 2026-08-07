@@ -17,6 +17,18 @@ const commonNodeShape = {
   dependsOn: z.array(identifierSchema).max(128).default([]),
 };
 
+const branchGuardSchema = z
+  .object({
+    conditionId: identifierSchema,
+    case: identifierSchema,
+  })
+  .strict();
+
+const guardedNodeShape = {
+  ...commonNodeShape,
+  when: branchGuardSchema.optional(),
+};
+
 const commandApprovalSchema = z
   .object({
     mode: z.literal("required"),
@@ -56,7 +68,7 @@ const runBudgetSchema = z
 
 const commandNodeSchema = z
   .object({
-    ...commonNodeShape,
+    ...guardedNodeShape,
     type: z.literal("command"),
     approval: commandApprovalSchema.optional(),
     command: z
@@ -84,7 +96,7 @@ const commandNodeSchema = z
 
 const agentNodeSchema = z
   .object({
-    ...commonNodeShape,
+    ...guardedNodeShape,
     type: z.literal("agent"),
     agent: z
       .object({
@@ -110,6 +122,95 @@ const agentNodeSchema = z
   })
   .strict();
 
+const conditionCaseSchema = z
+  .object({
+    id: identifierSchema,
+    equals: z.string().max(65_536),
+  })
+  .strict();
+
+const conditionNodeSchema = z
+  .object({
+    ...guardedNodeShape,
+    type: z.literal("condition"),
+    condition: z
+      .object({
+        source: z
+          .object({
+            nodeId: identifierSchema,
+            field: z.enum(["command.stdout", "command.stderr", "agent.text"]),
+          })
+          .strict(),
+        cases: z.array(conditionCaseSchema).min(1).max(32),
+        default: identifierSchema,
+      })
+      .strict()
+      .superRefine((condition, context) => {
+        const ids = new Set<string>();
+        const values = new Set<string>();
+        for (const item of condition.cases) {
+          if (ids.has(item.id)) {
+            context.addIssue({
+              code: "custom",
+              path: ["cases"],
+              message: "condition case identifiers must be unique",
+            });
+          }
+          if (values.has(item.equals)) {
+            context.addIssue({
+              code: "custom",
+              path: ["cases"],
+              message: "condition case values must be unique",
+            });
+          }
+          ids.add(item.id);
+          values.add(item.equals);
+        }
+        if (ids.has(condition.default)) {
+          context.addIssue({
+            code: "custom",
+            path: ["default"],
+            message: "condition default must be distinct from exact case identifiers",
+          });
+        }
+        const totalBytes = condition.cases.reduce(
+          (total, item) => total + Buffer.byteLength(item.equals, "utf8"),
+          0,
+        );
+        if (totalBytes > 65_536) {
+          context.addIssue({
+            code: "custom",
+            path: ["cases"],
+            message: "condition case values must not exceed 65536 UTF-8 bytes in total",
+          });
+        }
+      }),
+  })
+  .strict();
+
+const joinNodeSchema = z
+  .object({
+    id: identifierSchema,
+    type: z.literal("join"),
+    join: z
+      .object({
+        conditionId: identifierSchema,
+        branches: z
+          .array(
+            z
+              .object({
+                case: identifierSchema,
+                nodeId: identifierSchema,
+              })
+              .strict(),
+          )
+          .min(1)
+          .max(33),
+      })
+      .strict(),
+  })
+  .strict();
+
 export const workflowSourceSchema = z
   .object({
     apiVersion: z.literal(FLOW_WORKFLOW_API_VERSION),
@@ -123,7 +224,14 @@ export const workflowSourceSchema = z
     goal: goalContractSchema.optional(),
     budget: runBudgetSchema.optional(),
     nodes: z
-      .array(z.discriminatedUnion("type", [commandNodeSchema, agentNodeSchema]))
+      .array(
+        z.discriminatedUnion("type", [
+          commandNodeSchema,
+          agentNodeSchema,
+          conditionNodeSchema,
+          joinNodeSchema,
+        ]),
+      )
       .min(1)
       .max(64),
   })

@@ -17,6 +17,7 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | --- | --- |
 | Strict workflow and goal compilation | Implemented |
 | Sequential dependency-ordered execution | Implemented |
+| Durable exact-output conditions, guarded branches, omission propagation, and explicit joins | Implemented sequentially |
 | Durable JSONL run ledger and inspection | Implemented |
 | Safe-boundary recovery with exclusive local ownership | Implemented |
 | Durable exact command approval with approve/deny CLI | Implemented |
@@ -107,6 +108,18 @@ accepted. Authoritative events are written to:
 
 The inspected result identifies graph state, criterion decisions, bounded command output and
 hashes, plus the sandbox backend, exact version, profile, and semantic policy digest.
+
+To exercise durable conditional routing without model credentials:
+
+```sh
+node dist/cli/main.js validate examples/conditional-branch.workflow.yaml
+node dist/cli/main.js run examples/conditional-branch.workflow.yaml --run-id conditional-demo
+node dist/cli/main.js inspect conditional-demo
+```
+
+The classifier's complete `command.stdout` selects one declared case by exact equality. Flow
+records the decision, marks the other branch omitted, and reconciles both alternatives through an
+explicit join before the final verifier. Truncated source evidence fails closed instead of routing.
 
 ### Run in the background
 

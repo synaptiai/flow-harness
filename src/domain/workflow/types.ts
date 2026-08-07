@@ -1,9 +1,11 @@
 import type { CompiledGoal } from "../goal/types.js";
 
 export const FLOW_WORKFLOW_API_VERSION = "flow.synapti.ai/v1alpha1" as const;
+export const MAX_CONTROL_GRAPH_SERIALIZED_BYTES = 524_288;
 
 export type AgentToolName = "read" | "ls" | "edit";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+export type ConditionSourceField = "command.stdout" | "command.stderr" | "agent.text";
 
 export interface CompiledRunBudget {
   readonly maxNodeStarts?: number;
@@ -26,7 +28,16 @@ export interface CompiledNodeBase {
   readonly dependsOn: readonly string[];
 }
 
-export interface CompiledCommandNode extends CompiledNodeBase {
+export interface CompiledBranchGuard {
+  readonly conditionId: string;
+  readonly case: string;
+}
+
+export interface CompiledGuardedNodeBase extends CompiledNodeBase {
+  readonly when?: CompiledBranchGuard;
+}
+
+export interface CompiledCommandNode extends CompiledGuardedNodeBase {
   readonly type: "command";
   readonly approval?: {
     readonly mode: "required";
@@ -39,7 +50,7 @@ export interface CompiledCommandNode extends CompiledNodeBase {
   };
 }
 
-export interface CompiledAgentNode extends CompiledNodeBase {
+export interface CompiledAgentNode extends CompiledGuardedNodeBase {
   readonly type: "agent";
   readonly agent: {
     readonly prompt: string;
@@ -57,4 +68,34 @@ export interface CompiledAgentNode extends CompiledNodeBase {
   };
 }
 
-export type CompiledNode = CompiledCommandNode | CompiledAgentNode;
+export interface CompiledConditionNode extends CompiledGuardedNodeBase {
+  readonly type: "condition";
+  readonly condition: {
+    readonly source: {
+      readonly nodeId: string;
+      readonly field: ConditionSourceField;
+    };
+    readonly cases: readonly {
+      readonly id: string;
+      readonly equals: string;
+    }[];
+    readonly default: string;
+  };
+}
+
+export interface CompiledJoinNode extends CompiledNodeBase {
+  readonly type: "join";
+  readonly join: {
+    readonly conditionId: string;
+    readonly branches: readonly {
+      readonly case: string;
+      readonly nodeId: string;
+    }[];
+  };
+}
+
+export type CompiledNode =
+  | CompiledCommandNode
+  | CompiledAgentNode
+  | CompiledConditionNode
+  | CompiledJoinNode;

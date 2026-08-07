@@ -350,6 +350,9 @@ nodes:
     const store = new MemoryRecoverableRunStore();
     const executor: NodeExecutor = {
       async execute(node): Promise<NodeExecutionOutcome> {
+        if (node.type !== "command" && node.type !== "agent") {
+          throw new Error(`unexpected control node ${node.id}`);
+        }
         const timeoutMs = node.type === "command" ? node.command.timeoutMs : node.agent.timeoutMs;
         calls.push({ nodeId: node.id, timeoutMs });
         return commandSuccess(node.id, node.id === "prepare" ? 4 : 1);
