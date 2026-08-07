@@ -45,6 +45,11 @@ The embedded Pi runtime runs with the invoking user's operating-system permissio
   reservations, account quotas, CPU/memory limits, or a substitute for containment. One in-flight
   model response may settle above its remaining allowance; Flow records it and starts no further
   work.
+- Bounded loops are finite compiler constructs rather than model-controlled recursion. Each loop
+  has at most 32 iterations and 16 body nodes; the complete expansion is limited to 256 nodes and
+  its persisted graph to 512 KiB. Checks use exact, non-truncated durable evidence, later
+  iterations require the immediately prior durable `continue`, and exhausting the bound fails
+  closed. Arbitrary cycles, nested loops, and unbounded continuation are rejected.
 - Detached control metadata is stored below the selected run root in owner-only directories and
   files. Local Unix sockets use an owner-validated, non-symlink short temporary directory; worker
   control requires a random token plus matching worker, run, PID, and job-digest identity.

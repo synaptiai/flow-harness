@@ -214,6 +214,63 @@ describe("public repository contracts", () => {
     expect(example.nodes).toHaveLength(4);
   });
 
+  it("documents replay-safe bounded loops with a valid credential-free example", async () => {
+    const [
+      readme,
+      architecture,
+      workflowSpec,
+      recovery,
+      sourcing,
+      roadmap,
+      security,
+      testing,
+      source,
+    ] = await Promise.all([
+      readText("README.md"),
+      readText("docs/architecture.md"),
+      readText("docs/workflow-spec.md"),
+      readText("docs/recovery.md"),
+      readText("docs/capability-sourcing.md"),
+      readText("docs/roadmap.md"),
+      readText("SECURITY.md"),
+      readText("docs/testing-and-evaluation.md"),
+      readText("examples/bounded-loop.workflow.yaml"),
+    ]);
+
+    expect(readme).toMatch(/Replay-safe bounded loops.*Implemented/is);
+    expect(readme).toContain("loop_limit_reached");
+    expect(architecture).toContain("`node_loop_checked`");
+    expect(workflowSpec).toMatch(/maxIterations.*1 through 32/is);
+    expect(workflowSpec).toMatch(/at most 256 total nodes/is);
+    expect(recovery).toMatch(/loop checks and completions.*safe committed/is);
+    expect(sourcing).toMatch(/bounded loop checks/i);
+    expect(roadmap).toMatch(/Bounded loops.*implemented/is);
+    expect(security).toMatch(/finite compiler constructs.*at most 32 iterations/is);
+    expect(testing).toContain("examples/bounded-loop.workflow.yaml");
+
+    const example = parse(source) as {
+      readonly nodes: ReadonlyArray<{
+        readonly type: string;
+        readonly loop?: {
+          readonly maxIterations?: number;
+          readonly until?: {
+            readonly source?: { readonly nodeId?: string };
+            readonly equals?: string;
+          };
+          readonly body?: { readonly nodes?: readonly unknown[] };
+        };
+      }>;
+    };
+    expect(example.nodes[0]).toMatchObject({
+      type: "loop",
+      loop: {
+        maxIterations: 3,
+        until: { source: { nodeId: "advance" }, equals: "pass" },
+        body: { nodes: [expect.objectContaining({ id: "advance", type: "command" })] },
+      },
+    });
+  });
+
   it("documents detached supervision without overstating its trust boundary", async () => {
     const [readme, architecture, workflowSpec, recovery, sourcing, roadmap, security] =
       await Promise.all([

@@ -13,7 +13,7 @@ Pi's experimental `AgentHarness` API is not a foundation for the first release. 
 | Capability | Why Flow owns it |
 | --- | --- |
 | Workflow schema and compiler | Workflow files must compile into executable graph state rather than advice to a model |
-| Scheduler and lifecycle | Readiness, conditions, proof-safe fresh attempts, future loops/retries, joins, and terminal states are product semantics |
+| Scheduler and lifecycle | Readiness, conditions, bounded loop checks, proof-safe fresh attempts, future retries, joins, and terminal states are product semantics |
 | Typed node inputs and outputs | Transitions must not depend on parsing persuasive prose |
 | Goals, budgets, and loop termination | Flow now durably owns start, token, reported-cost, and active-time boundaries; exhausted resources never imply successful completion |
 | Evidence and evaluation | A worker cannot authoritatively grade its own work |

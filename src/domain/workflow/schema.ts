@@ -1,7 +1,12 @@
 import { z } from "zod";
 
 import { goalContractSchema } from "../goal/schema.js";
-import { FLOW_WORKFLOW_API_VERSION, MAX_CONCURRENT_NODES } from "./types.js";
+import {
+  FLOW_WORKFLOW_API_VERSION,
+  MAX_CONCURRENT_NODES,
+  MAX_LOOP_BODY_NODES,
+  MAX_LOOP_ITERATIONS,
+} from "./types.js";
 
 const identifierSchema = z
   .string()
@@ -217,6 +222,41 @@ const joinNodeSchema = z
   })
   .strict();
 
+const loopBodyNodeSchema = z.discriminatedUnion("type", [
+  commandNodeSchema,
+  agentNodeSchema,
+  conditionNodeSchema,
+  joinNodeSchema,
+]);
+
+const loopNodeSchema = z
+  .object({
+    ...commonNodeShape,
+    type: z.literal("loop"),
+    loop: z
+      .object({
+        maxIterations: z.number().int().min(1).max(MAX_LOOP_ITERATIONS),
+        until: z
+          .object({
+            source: z
+              .object({
+                nodeId: identifierSchema,
+                field: z.enum(["command.stdout", "command.stderr", "agent.text"]),
+              })
+              .strict(),
+            equals: z.string().max(65_536),
+          })
+          .strict(),
+        body: z
+          .object({
+            nodes: z.array(loopBodyNodeSchema).min(1).max(MAX_LOOP_BODY_NODES),
+          })
+          .strict(),
+      })
+      .strict(),
+  })
+  .strict();
+
 export const workflowSourceSchema = z
   .object({
     apiVersion: z.literal(FLOW_WORKFLOW_API_VERSION),
@@ -237,6 +277,7 @@ export const workflowSourceSchema = z
           agentNodeSchema,
           conditionNodeSchema,
           joinNodeSchema,
+          loopNodeSchema,
         ]),
       )
       .min(1)

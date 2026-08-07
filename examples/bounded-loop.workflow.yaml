@@ -1,0 +1,48 @@
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata:
+  id: bounded-loop
+  description: Converge from workspace state, then verify and clean up the example artifact.
+nodes:
+  - id: converge
+    type: loop
+    loop:
+      maxIterations: 3
+      until:
+        source:
+          nodeId: advance
+          field: command.stdout
+        equals: pass
+      body:
+        nodes:
+          - id: advance
+            type: command
+            command:
+              executable: node
+              args:
+                - -e
+                - |
+                  const fs = require("node:fs");
+                  const path = "flow-bounded-loop-example.state";
+                  const previous = fs.existsSync(path) ? Number(fs.readFileSync(path, "utf8")) : 0;
+                  const next = previous + 1;
+                  fs.writeFileSync(path, String(next));
+                  process.stdout.write(next >= 2 ? "pass" : "again");
+  - id: verify
+    type: command
+    dependsOn: [converge]
+    command:
+      executable: node
+      args:
+        - -e
+        - |
+          const fs = require("node:fs");
+          const path = "flow-bounded-loop-example.state";
+          let value;
+          try {
+            value = fs.readFileSync(path, "utf8");
+          } finally {
+            fs.rmSync(path, { force: true });
+          }
+          if (value !== "2") throw new Error(`expected iteration state 2, received ${value}`);
+          process.stdout.write("verified");
