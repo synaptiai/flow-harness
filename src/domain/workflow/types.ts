@@ -20,6 +20,10 @@ export interface CompiledNodeBase {
 
 export interface CompiledCommandNode extends CompiledNodeBase {
   readonly type: "command";
+  readonly approval?: {
+    readonly mode: "required";
+    readonly grantTtlMs: number;
+  };
   readonly command: {
     readonly executable: string;
     readonly args: readonly string[];

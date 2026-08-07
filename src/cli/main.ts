@@ -7,9 +7,10 @@ import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import { NodeExecutorRouter } from "../application/node-executor-router.js";
+import { ApprovalDecisionError, decideCommandApproval } from "../application/command-approval.js";
 import type { NodeExecutor, RecoverableRunEventStore } from "../application/ports.js";
 import { resumeWorkflow, RunRecoveryError, runWorkflow } from "../application/run-workflow.js";
-import { reduceRunEvents } from "../domain/run/events.js";
+import { reduceRunEvents, type RunStatus } from "../domain/run/events.js";
 import { compileWorkflowText, WorkflowCompilationError } from "../domain/workflow/compiler.js";
 import { JsonlRunStore, RunStoreError } from "../infrastructure/fs/jsonl-run-store.js";
 import { PiAgentExecutor } from "../infrastructure/pi/pi-agent-executor.js";
@@ -27,6 +28,8 @@ Usage:
   flow validate <workflow.yaml>
   flow run <workflow.yaml> [--run-id <id>] [--runs-dir <path>] [--cwd <path>]
   flow resume <workflow.yaml> --run-id <id> [--runs-dir <path>] [--cwd <path>]
+  flow approve <run-id> <request-id> --actor <label> [--runs-dir <path>]
+  flow deny <run-id> <request-id> --actor <label> [--reason <text>] [--runs-dir <path>]
   flow inspect <run-id> [--runs-dir <path>]
   flow --help
 `;
@@ -80,6 +83,10 @@ export async function main(
         return await runCommand(args.slice(1), io, dependencyOverrides);
       case "resume":
         return await resumeCommand(args.slice(1), io, dependencyOverrides);
+      case "approve":
+        return await approvalDecisionCommand("approve", args.slice(1), io, dependencyOverrides);
+      case "deny":
+        return await approvalDecisionCommand("deny", args.slice(1), io, dependencyOverrides);
       case "inspect":
         return await inspectCommand(args.slice(1), io, dependencyOverrides);
       default:
@@ -102,10 +109,49 @@ export async function main(
       io.stderr(`${error.code}: ${error.message}`);
       return 1;
     }
+    if (error instanceof ApprovalDecisionError) {
+      io.stderr(`${error.code}: ${error.message}`);
+      return 1;
+    }
 
     io.stderr(error instanceof Error ? error.message : String(error));
     return 1;
   }
+}
+
+async function approvalDecisionCommand(
+  decision: "approve" | "deny",
+  args: readonly string[],
+  io: CliIo,
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  const { positionals, values } = parseCommandArgs(args, {
+    actor: { type: "string" },
+    "runs-dir": { type: "string" },
+    ...(decision === "deny" ? { reason: { type: "string" as const } } : {}),
+  });
+  const [runId, requestId] = requireTwoPositionals(
+    positionals,
+    `${decision} requires one run id and one request id`,
+  );
+  const actor = requireStringOption(values.actor, `${decision} requires --actor <label>`);
+  const dependencies = storageDependenciesFrom(overrides);
+  const runsDirectory = resolve(dependencies.cwd, values["runs-dir"] ?? ".flow/runs");
+  const state = await decideCommandApproval({
+    runId,
+    requestId,
+    actor,
+    store: dependencies.createStore(runsDirectory),
+    ...(decision === "approve"
+      ? { decision }
+      : {
+          decision,
+          ...(values.reason === undefined ? {} : { reason: values.reason }),
+        }),
+  });
+
+  io.stdout(JSON.stringify(state, null, 2));
+  return 0;
 }
 
 async function resumeCommand(
@@ -140,7 +186,7 @@ async function resumeCommand(
   });
 
   io.stdout(JSON.stringify(state, null, 2));
-  return state.status === "succeeded" ? 0 : 1;
+  return runStateExitCode(state.status);
 }
 
 async function validateCommand(
@@ -191,7 +237,7 @@ async function runCommand(
   });
 
   io.stdout(JSON.stringify(state, null, 2));
-  return state.status === "succeeded" ? 0 : 1;
+  return runStateExitCode(state.status);
 }
 
 async function inspectCommand(
@@ -203,7 +249,7 @@ async function inspectCommand(
     "runs-dir": { type: "string" },
   });
   const runId = requireSinglePositional(positionals, "inspect requires one run id");
-  const dependencies = dependenciesFrom(overrides);
+  const dependencies = storageDependenciesFrom(overrides);
   const runsDirectory = resolve(dependencies.cwd, values["runs-dir"] ?? ".flow/runs");
   const events = await dependencies.createStore(runsDirectory).read(runId);
   const state = reduceRunEvents(events);
@@ -234,6 +280,25 @@ function requireSinglePositional(positionals: readonly string[], message: string
   return positionals[0];
 }
 
+function requireTwoPositionals(
+  positionals: readonly string[],
+  message: string,
+): readonly [string, string] {
+  const first = positionals[0];
+  const second = positionals[1];
+  if (positionals.length !== 2 || first === undefined || second === undefined) {
+    throw new CliUsageError(message);
+  }
+  return [first, second];
+}
+
+function runStateExitCode(status: RunStatus): number {
+  if (status === "succeeded") {
+    return 0;
+  }
+  return status === "waiting_for_approval" ? 3 : 1;
+}
+
 function requireStringOption(value: string | undefined, message: string): string {
   if (value === undefined || value.length === 0) {
     throw new CliUsageError(message);
@@ -250,9 +315,10 @@ async function compileWorkflowFile(
 }
 
 function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies {
+  const storageDependencies = storageDependenciesFrom(overrides);
   const seccompApplyPath = resolveAnthropicSandboxRuntimeSeccompPath();
   return {
-    cwd: overrides.cwd ?? process.cwd(),
+    ...storageDependencies,
     executor:
       overrides.executor ??
       new NodeExecutorRouter(
@@ -264,9 +330,17 @@ function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies 
         }),
         new PiAgentExecutor(),
       ),
-    createStore: overrides.createStore ?? ((rootDirectory) => new JsonlRunStore(rootDirectory)),
     readTextFile: overrides.readTextFile ?? ((path) => readFile(path, "utf8")),
     ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
+  };
+}
+
+function storageDependenciesFrom(
+  overrides: Partial<CliDependencies>,
+): Pick<CliDependencies, "cwd" | "createStore"> {
+  return {
+    cwd: overrides.cwd ?? process.cwd(),
+    createStore: overrides.createStore ?? ((rootDirectory) => new JsonlRunStore(rootDirectory)),
   };
 }
 

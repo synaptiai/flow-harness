@@ -19,10 +19,11 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Sequential dependency-ordered execution | Implemented |
 | Durable JSONL run ledger and inspection | Implemented |
 | Safe-boundary recovery with exclusive local ownership | Implemented |
+| Durable exact command approval with approve/deny CLI | Implemented |
 | Deterministic criterion verification | Implemented |
 | Bounded Pi agent nodes with Flow-owned `read`, `ls`, and hash-anchored `edit` tools | Implemented |
 | Fail-closed sandboxed command process trees | Implemented on Linux and macOS |
-| Approvals, graph loops, and broader model tools | Planned |
+| Dynamic agent-tool approval, graph loops, and broader model tools | Planned |
 | VM-grade isolation of the host-side agent runtime | Planned |
 
 The executable format is `flow.synapti.ai/v1alpha1`. There is no compatibility or migration
@@ -92,6 +93,36 @@ accepted. Authoritative events are written to:
 The inspected result identifies graph state, criterion decisions, bounded command output and
 hashes, plus the sandbox backend, exact version, profile, and semantic policy digest.
 
+### Approve an exact command
+
+The approval example stops before sandbox preparation or process spawn and exits with code 3:
+
+```sh
+node dist/cli/main.js run examples/approval-gated-command.workflow.yaml --run-id approval-demo
+node dist/cli/main.js inspect approval-demo
+```
+
+Inspect the pending executable, ordered arguments, working directory, timeout, operation digest,
+request id, and grant lifetime. Record a decision with an explicit local actor label:
+
+```sh
+node dist/cli/main.js approve approval-demo approval-2 --actor local:daniel
+node dist/cli/main.js resume examples/approval-gated-command.workflow.yaml --run-id approval-demo
+```
+
+Approval records consent but does not execute. `resume` must compile the exact starting workflow and
+use the same execution directory. The grant is single-use and defaults to five minutes; if it
+expires before the node starts, Flow records expiry and returns to a new durable request. A pending
+request itself does not time out or imply consent. To reject it instead:
+
+```sh
+node dist/cli/main.js deny approval-demo approval-2 --actor local:daniel --reason "not authorized"
+```
+
+The actor label is append-only attribution supplied by the caller, not authenticated identity.
+Anyone who can control the private run directory or invoke Flow with the same local permissions is
+inside this slice's administrative trust boundary.
+
 To inspect the coding-agent shape without contacting a provider, validate the implementation
 template:
 
@@ -117,7 +148,10 @@ Flow continues only from a committed node boundary. It skips nodes whose success
 records `run_resumed` before starting new work. A durable `node_started` without a matching outcome
 is uncertain: Flow names the node and attempt, appends nothing, and executes nothing. Terminal,
 mismatched, corrupt, missing, or actively owned runs are also refused without changing committed
-events. See [Recovery and interruption safety](docs/recovery.md) for the complete contract.
+events. New runs also bind the normalized execution directory. Approval waits are safe committed
+boundaries: an undecided request remains waiting, a valid grant starts once, and an unused expired
+grant returns to a fresh request. See [Recovery and interruption safety](docs/recovery.md) for the
+complete contract.
 
 ## Security boundary
 

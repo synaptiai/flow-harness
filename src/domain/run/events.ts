@@ -11,6 +11,12 @@ import {
 import { compiledGoalSchema } from "../goal/schema.js";
 import type { CompiledGoal, GoalRunState } from "../goal/types.js";
 import {
+  calculateCommandApprovalOperationDigest,
+  commandApprovalRequestId,
+  isValidApprovalActor,
+  type CommandApprovalOperation,
+} from "../approval/command-approval.js";
+import {
   MAX_POLICY_DECISIONS,
   MAX_POLICY_TARGET_BYTES,
   calculatePolicyRequestDigest,
@@ -96,6 +102,8 @@ export interface RunStartedEvent extends RunEventBase {
   readonly workflowApiVersion: "flow.synapti.ai/v1alpha1";
   readonly workflowDigest: string;
   readonly goal?: CompiledGoal;
+  readonly executionCwd?: string;
+  readonly approvalRequirements?: readonly CommandApprovalRequirement[];
 }
 
 export interface RunResumedEvent extends RunEventBase {
@@ -106,6 +114,53 @@ export interface NodeStartedEvent extends RunEventBase {
   readonly type: "node_started";
   readonly nodeId: string;
   readonly attempt: number;
+  readonly approval?: {
+    readonly requestId: string;
+    readonly operationDigest: string;
+  };
+}
+
+export interface CommandApprovalRequirement {
+  readonly nodeId: string;
+  readonly grantTtlMs: number;
+}
+
+export interface CommandApprovalRequestedEvent extends RunEventBase {
+  readonly type: "command_approval_requested";
+  readonly nodeId: string;
+  readonly attempt: number;
+  readonly requestId: string;
+  readonly grantTtlMs: number;
+  readonly operation: CommandApprovalOperation;
+  readonly operationDigest: string;
+}
+
+export interface CommandApprovalGrantedEvent extends RunEventBase {
+  readonly type: "command_approval_granted";
+  readonly nodeId: string;
+  readonly attempt: number;
+  readonly requestId: string;
+  readonly operationDigest: string;
+  readonly actor: string;
+  readonly expiresAt: string;
+}
+
+export interface CommandApprovalDeniedEvent extends RunEventBase {
+  readonly type: "command_approval_denied";
+  readonly nodeId: string;
+  readonly attempt: number;
+  readonly requestId: string;
+  readonly operationDigest: string;
+  readonly actor: string;
+  readonly reason?: string;
+}
+
+export interface CommandApprovalExpiredEvent extends RunEventBase {
+  readonly type: "command_approval_expired";
+  readonly nodeId: string;
+  readonly attempt: number;
+  readonly requestId: string;
+  readonly operationDigest: string;
 }
 
 export interface NodeSucceededEvent extends RunEventBase {
@@ -141,6 +196,10 @@ export interface RunCancelledEvent extends RunEventBase {
 export type RunEvent =
   | RunStartedEvent
   | RunResumedEvent
+  | CommandApprovalRequestedEvent
+  | CommandApprovalGrantedEvent
+  | CommandApprovalDeniedEvent
+  | CommandApprovalExpiredEvent
   | NodeStartedEvent
   | NodeSucceededEvent
   | NodeFailedEvent
@@ -148,8 +207,26 @@ export type RunEvent =
   | RunFailedEvent
   | RunCancelledEvent;
 
-export type RunStatus = "running" | "succeeded" | "failed" | "cancelled";
+export type RunStatus = "running" | "waiting_for_approval" | "succeeded" | "failed" | "cancelled";
 export type NodeRunStatus = "pending" | "running" | "succeeded" | "failed";
+
+export type CommandApprovalStatus = "pending" | "granted" | "denied" | "expired" | "consumed";
+
+export interface CommandApprovalRunState {
+  readonly status: CommandApprovalStatus;
+  readonly requestId: string;
+  readonly attempt: number;
+  readonly requestedAt: string;
+  readonly grantTtlMs: number;
+  readonly operation: CommandApprovalOperation;
+  readonly operationDigest: string;
+  readonly decidedAt: string | null;
+  readonly actor: string | null;
+  readonly reason: string | null;
+  readonly expiresAt: string | null;
+  readonly expiredAt: string | null;
+  readonly consumedAt: string | null;
+}
 
 export interface NodeRunState {
   readonly status: NodeRunStatus;
@@ -158,6 +235,7 @@ export interface NodeRunState {
   readonly finishedAt: string | null;
   readonly evidence: NodeEvidence | null;
   readonly error: NodeFailure | null;
+  readonly approval: CommandApprovalRunState | null;
 }
 
 export interface RunState {
@@ -165,6 +243,10 @@ export interface RunState {
   readonly workflowId: string;
   readonly workflowApiVersion: "flow.synapti.ai/v1alpha1";
   readonly workflowDigest: string;
+  readonly executionCwd: string | null;
+  readonly approvalRequirements: Readonly<
+    Record<string, Omit<CommandApprovalRequirement, "nodeId">>
+  >;
   readonly status: RunStatus;
   readonly startedAt: string;
   readonly finishedAt: string | null;
@@ -191,6 +273,58 @@ const identifierSchema = z
   .min(1)
   .max(128)
   .regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
+
+const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
+
+const absolutePathSchema = z
+  .string()
+  .min(1)
+  .max(4096)
+  .refine((value) => value.startsWith("/") && !value.includes("\0"), {
+    message: "must be an absolute NUL-free path",
+  });
+
+const grantTtlSchema = z.number().int().positive().max(86_400_000);
+
+const actorSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(128)
+  .refine(isValidApprovalActor, "actor must not contain control characters");
+
+const approvalOperationSchema = z
+  .object({
+    version: z.literal(1),
+    action: z.literal("process.execute"),
+    cwd: absolutePathSchema,
+    executable: z
+      .string()
+      .min(1)
+      .max(4096)
+      .refine((value) => !value.includes("\0")),
+    args: z
+      .array(
+        z
+          .string()
+          .max(4096)
+          .refine((value) => !value.includes("\0")),
+      )
+      .max(64)
+      .refine(
+        (args) => args.reduce((total, arg) => total + Buffer.byteLength(arg, "utf8"), 0) <= 65_536,
+        "command arguments must not exceed 65536 UTF-8 bytes in total",
+      ),
+    timeoutMs: z.number().int().positive().max(86_400_000),
+  })
+  .strict();
+
+const approvalReferenceSchema = z
+  .object({
+    requestId: identifierSchema,
+    operationDigest: sha256Schema,
+  })
+  .strict();
 
 const commandOutputSchema = z
   .string()
@@ -315,8 +449,13 @@ const runEventSchema = z.discriminatedUnion("type", [
         .min(1)
         .refine((items) => new Set(items).size === items.length, "node ids must be unique"),
       workflowApiVersion: z.literal("flow.synapti.ai/v1alpha1"),
-      workflowDigest: z.string().regex(/^[a-f0-9]{64}$/),
+      workflowDigest: sha256Schema,
       goal: compiledGoalSchema.optional(),
+      executionCwd: absolutePathSchema.optional(),
+      approvalRequirements: z
+        .array(z.object({ nodeId: identifierSchema, grantTtlMs: grantTtlSchema }).strict())
+        .max(64)
+        .optional(),
     })
     .strict(),
   z
@@ -328,9 +467,56 @@ const runEventSchema = z.discriminatedUnion("type", [
   z
     .object({
       ...eventBaseShape,
+      type: z.literal("command_approval_requested"),
+      nodeId: identifierSchema,
+      attempt: z.number().int().positive(),
+      requestId: identifierSchema,
+      grantTtlMs: grantTtlSchema,
+      operation: approvalOperationSchema,
+      operationDigest: sha256Schema,
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("command_approval_granted"),
+      nodeId: identifierSchema,
+      attempt: z.number().int().positive(),
+      requestId: identifierSchema,
+      operationDigest: sha256Schema,
+      actor: actorSchema,
+      expiresAt: z.iso.datetime({ offset: true }),
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("command_approval_denied"),
+      nodeId: identifierSchema,
+      attempt: z.number().int().positive(),
+      requestId: identifierSchema,
+      operationDigest: sha256Schema,
+      actor: actorSchema,
+      reason: z.string().trim().min(1).max(4096).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("command_approval_expired"),
+      nodeId: identifierSchema,
+      attempt: z.number().int().positive(),
+      requestId: identifierSchema,
+      operationDigest: sha256Schema,
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBaseShape,
       type: z.literal("node_started"),
       nodeId: identifierSchema,
       attempt: z.number().int().positive(),
+      approval: approvalReferenceSchema.optional(),
     })
     .strict(),
   z
@@ -432,11 +618,37 @@ export function appendRunEvent(
     ) {
       throw new RunReplayError(eventIndex, "goal references a verifier outside the run node set");
     }
+    const requirements = event.approvalRequirements ?? [];
+    if (
+      new Set(requirements.map((requirement) => requirement.nodeId)).size !== requirements.length
+    ) {
+      throw new RunReplayError(eventIndex, "approval requirements must have unique node ids");
+    }
+    if (requirements.some((requirement) => !event.nodeIds.includes(requirement.nodeId))) {
+      throw new RunReplayError(
+        eventIndex,
+        "approval requirement references a node outside the run node set",
+      );
+    }
+    if (requirements.length > 0 && event.executionCwd === undefined) {
+      throw new RunReplayError(
+        eventIndex,
+        "approval requirements require a persisted execution working directory",
+      );
+    }
+    const approvalRequirements = Object.fromEntries(
+      requirements.map((requirement) => [
+        requirement.nodeId,
+        Object.freeze({ grantTtlMs: requirement.grantTtlMs }),
+      ]),
+    );
     return freezeRunState({
       runId: event.runId,
       workflowId: event.workflowId,
       workflowApiVersion: event.workflowApiVersion,
       workflowDigest: event.workflowDigest,
+      executionCwd: event.executionCwd ?? null,
+      approvalRequirements: Object.freeze(approvalRequirements),
       status: "running",
       startedAt: event.at,
       finishedAt: null,
@@ -451,7 +663,7 @@ export function appendRunEvent(
   if (event.runId !== currentState.runId || event.workflowId !== currentState.workflowId) {
     throw new RunReplayError(eventIndex, "runId and workflowId must remain constant");
   }
-  if (currentState.status !== "running") {
+  if (isTerminalRunStatus(currentState.status)) {
     throw new RunReplayError(
       eventIndex,
       `event follows terminal run status "${currentState.status}"`,
@@ -470,10 +682,10 @@ export function appendRunEvent(
     );
   }
 
-  let status: RunStatus = "running";
-  let finishedAt: string | null = null;
-  let failedNodeId: string | null = null;
-  let failureReason: string | null = null;
+  let status: RunStatus = currentState.status;
+  let finishedAt: string | null = currentState.finishedAt;
+  let failedNodeId: string | null = currentState.failedNodeId;
+  let failureReason: string | null = currentState.failureReason;
   let goal = currentState.goal;
 
   switch (event.type) {
@@ -488,7 +700,172 @@ export function appendRunEvent(
       }
       break;
     }
+    case "command_approval_requested": {
+      if (currentState.status !== "running") {
+        throw new RunReplayError(eventIndex, "a new approval request requires a running run");
+      }
+      const unconsumedApproval = Object.entries(nodes).find(
+        ([nodeId, node]) =>
+          nodeId !== event.nodeId &&
+          node.approval !== null &&
+          (node.approval.status === "pending" || node.approval.status === "granted"),
+      );
+      if (unconsumedApproval !== undefined) {
+        throw new RunReplayError(
+          eventIndex,
+          `another approval grant remains unconsumed for node "${unconsumedApproval[0]}"`,
+        );
+      }
+      if (Object.values(nodes).some((node) => node.status === "running")) {
+        throw new RunReplayError(
+          eventIndex,
+          "approval cannot be requested while a node is running",
+        );
+      }
+      const current = requireNode(nodes, event.nodeId, eventIndex);
+      if (current.status !== "pending") {
+        throw new RunReplayError(
+          eventIndex,
+          `node "${event.nodeId}" must be pending before requesting approval`,
+        );
+      }
+      const requirement = currentState.approvalRequirements[event.nodeId];
+      if (requirement === undefined) {
+        throw new RunReplayError(eventIndex, `node "${event.nodeId}" does not require approval`);
+      }
+      if (current.approval !== null && current.approval.status !== "expired") {
+        throw new RunReplayError(
+          eventIndex,
+          `node "${event.nodeId}" already has a current approval request`,
+        );
+      }
+      if (event.attempt !== current.attempt + 1) {
+        throw new RunReplayError(
+          eventIndex,
+          `approval attempt ${event.attempt} does not match next node attempt ${current.attempt + 1}`,
+        );
+      }
+      if (event.requestId !== commandApprovalRequestId(event.sequence)) {
+        throw new RunReplayError(
+          eventIndex,
+          "approval request id does not match its event sequence",
+        );
+      }
+      if (event.grantTtlMs !== requirement.grantTtlMs) {
+        throw new RunReplayError(
+          eventIndex,
+          "approval request grant lifetime does not match the run requirement",
+        );
+      }
+      if (currentState.executionCwd === null || event.operation.cwd !== currentState.executionCwd) {
+        throw new RunReplayError(
+          eventIndex,
+          "approval operation working directory does not match the run execution context",
+        );
+      }
+      if (event.operationDigest !== calculateCommandApprovalOperationDigest(event.operation)) {
+        throw new RunReplayError(eventIndex, "approval operation digest is invalid");
+      }
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        approval: approvalStateFromRequest(event),
+      });
+      status = "waiting_for_approval";
+      break;
+    }
+    case "command_approval_granted": {
+      if (currentState.status !== "waiting_for_approval") {
+        throw new RunReplayError(eventIndex, "approval grant requires a waiting run");
+      }
+      const current = requireNode(nodes, event.nodeId, eventIndex);
+      const approval = requirePendingApproval(current, event, eventIndex);
+      const expectedExpiry = new Date(Date.parse(event.at) + approval.grantTtlMs).toISOString();
+      if (event.expiresAt !== expectedExpiry) {
+        throw new RunReplayError(
+          eventIndex,
+          "approval expiry does not match the declared grant lifetime",
+        );
+      }
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        approval: deepFreeze({
+          ...approval,
+          status: "granted" as const,
+          decidedAt: event.at,
+          actor: event.actor,
+          expiresAt: event.expiresAt,
+        }),
+      });
+      status = "running";
+      break;
+    }
+    case "command_approval_denied": {
+      if (currentState.status !== "waiting_for_approval") {
+        throw new RunReplayError(eventIndex, "approval denial requires a waiting run");
+      }
+      const current = requireNode(nodes, event.nodeId, eventIndex);
+      const approval = requirePendingApproval(current, event, eventIndex);
+      const message = approvalDenialMessage(event.actor, event.reason);
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        status: "failed",
+        attempt: event.attempt,
+        finishedAt: event.at,
+        error: Object.freeze({
+          code: "command_approval_denied",
+          message,
+          retryable: false,
+          sideEffectStatus: "none",
+        }),
+        approval: deepFreeze({
+          ...approval,
+          status: "denied" as const,
+          decidedAt: event.at,
+          actor: event.actor,
+          reason: event.reason ?? null,
+        }),
+      });
+      goal = applyCriterionDecision(
+        goal,
+        {
+          runId: event.runId,
+          nodeId: event.nodeId,
+          attempt: event.attempt,
+          at: event.at,
+          outcome: "inconclusive",
+          evidenceAvailable: false,
+        },
+        eventIndex,
+      );
+      status = "running";
+      break;
+    }
+    case "command_approval_expired": {
+      if (currentState.status !== "running") {
+        throw new RunReplayError(eventIndex, "approval expiry requires an active granted run");
+      }
+      const current = requireNode(nodes, event.nodeId, eventIndex);
+      const approval = requireGrantedApproval(current, event, eventIndex);
+      if (approval.expiresAt === null || Date.parse(event.at) < Date.parse(approval.expiresAt)) {
+        throw new RunReplayError(eventIndex, "approval grant has not expired");
+      }
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        approval: deepFreeze({
+          ...approval,
+          status: "expired" as const,
+          expiredAt: event.at,
+        }),
+      });
+      break;
+    }
     case "node_started": {
+      if (currentState.status !== "running") {
+        throw new RunReplayError(
+          eventIndex,
+          `node "${event.nodeId}" cannot start while the run is waiting for approval`,
+        );
+      }
       if (Object.values(nodes).some((node) => node.status === "running")) {
         throw new RunReplayError(eventIndex, "only one node may be running at a time");
       }
@@ -496,11 +873,55 @@ export function appendRunEvent(
       if (current.status !== "pending") {
         throw new RunReplayError(eventIndex, `node "${event.nodeId}" must be pending before start`);
       }
+      const requirement = currentState.approvalRequirements[event.nodeId];
+      let approval = current.approval;
+      if (requirement === undefined) {
+        if (event.approval !== undefined) {
+          throw new RunReplayError(eventIndex, `node "${event.nodeId}" does not require approval`);
+        }
+      } else {
+        if (approval === null) {
+          throw new RunReplayError(
+            eventIndex,
+            `node "${event.nodeId}" requires an approved request before start`,
+          );
+        }
+        if (approval.status !== "granted" || event.approval === undefined) {
+          throw new RunReplayError(
+            eventIndex,
+            `node "${event.nodeId}" requires an unexpired grant before start`,
+          );
+        }
+        if (event.attempt !== approval.attempt) {
+          throw new RunReplayError(
+            eventIndex,
+            `node start attempt ${event.attempt} does not match approval grant attempt ${approval.attempt}`,
+          );
+        }
+        if (
+          event.approval.requestId !== approval.requestId ||
+          event.approval.operationDigest !== approval.operationDigest
+        ) {
+          throw new RunReplayError(
+            eventIndex,
+            "node start approval does not match its exact grant",
+          );
+        }
+        if (approval.expiresAt === null || Date.parse(event.at) >= Date.parse(approval.expiresAt)) {
+          throw new RunReplayError(eventIndex, "command approval grant expired before node start");
+        }
+        approval = deepFreeze({
+          ...approval,
+          status: "consumed" as const,
+          consumedAt: event.at,
+        });
+      }
       nodes[event.nodeId] = Object.freeze({
         ...current,
         status: "running",
         attempt: event.attempt,
         startedAt: event.at,
+        approval,
       });
       break;
     }
@@ -600,6 +1021,8 @@ export function appendRunEvent(
     workflowId: currentState.workflowId,
     workflowApiVersion: currentState.workflowApiVersion,
     workflowDigest: currentState.workflowDigest,
+    executionCwd: currentState.executionCwd,
+    approvalRequirements: currentState.approvalRequirements,
     status,
     startedAt: currentState.startedAt,
     finishedAt,
@@ -653,6 +1076,81 @@ function isConclusiveVerifierRejection(evidence: NodeEvidence | null): boolean {
     evidence.signal === null &&
     !evidence.timedOut
   );
+}
+
+function isTerminalRunStatus(status: RunStatus): boolean {
+  return status === "succeeded" || status === "failed" || status === "cancelled";
+}
+
+function approvalStateFromRequest(event: CommandApprovalRequestedEvent): CommandApprovalRunState {
+  return deepFreeze({
+    status: "pending",
+    requestId: event.requestId,
+    attempt: event.attempt,
+    requestedAt: event.at,
+    grantTtlMs: event.grantTtlMs,
+    operation: structuredClone(event.operation),
+    operationDigest: event.operationDigest,
+    decidedAt: null,
+    actor: null,
+    reason: null,
+    expiresAt: null,
+    expiredAt: null,
+    consumedAt: null,
+  });
+}
+
+type ApprovalIdentityEvent =
+  | CommandApprovalGrantedEvent
+  | CommandApprovalDeniedEvent
+  | CommandApprovalExpiredEvent;
+
+function requirePendingApproval(
+  node: NodeRunState,
+  event: ApprovalIdentityEvent,
+  eventIndex: number,
+): CommandApprovalRunState {
+  if (node.status !== "pending" || node.approval?.status !== "pending") {
+    throw new RunReplayError(
+      eventIndex,
+      "command approval request must be pending before decision",
+    );
+  }
+  validateApprovalIdentity(node.approval, event, eventIndex);
+  return node.approval;
+}
+
+function requireGrantedApproval(
+  node: NodeRunState,
+  event: ApprovalIdentityEvent,
+  eventIndex: number,
+): CommandApprovalRunState {
+  if (node.status !== "pending" || node.approval?.status !== "granted") {
+    throw new RunReplayError(eventIndex, "command approval request must be granted before expiry");
+  }
+  validateApprovalIdentity(node.approval, event, eventIndex);
+  return node.approval;
+}
+
+function validateApprovalIdentity(
+  approval: CommandApprovalRunState,
+  event: ApprovalIdentityEvent,
+  eventIndex: number,
+): void {
+  if (
+    event.requestId !== approval.requestId ||
+    event.attempt !== approval.attempt ||
+    event.operationDigest !== approval.operationDigest
+  ) {
+    throw new RunReplayError(
+      eventIndex,
+      "approval decision does not match the current exact request",
+    );
+  }
+}
+
+function approvalDenialMessage(actor: string, reason: string | undefined): string {
+  return `command approval denied by ${actor}${reason === undefined ? "" : `: ${reason}`}`;
 }
 
 function freezeRunState(state: RunState): RunState {
@@ -828,6 +1326,7 @@ function pendingNodeState(): NodeRunState {
     finishedAt: null,
     evidence: null,
     error: null,
+    approval: null,
   });
 }
 

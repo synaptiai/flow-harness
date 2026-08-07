@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { resolve } from "node:path";
 
 import {
   appendRunEvent,
@@ -11,6 +12,11 @@ import {
   type RunStartedEvent,
   type RunState,
 } from "../domain/run/events.js";
+import {
+  calculateCommandApprovalOperationDigest,
+  commandApprovalRequestId,
+  createCommandApprovalOperation,
+} from "../domain/approval/command-approval.js";
 import type { CompiledNode, CompiledWorkflow } from "../domain/workflow/types.js";
 import type {
   NodeExecutionOutcome,
@@ -43,19 +49,23 @@ export async function runWorkflow(
   }
   const runId = options.runId ?? randomUUID();
   const now = options.now ?? (() => new Date());
+  const executionCwd = resolve(options.cwd);
   return await releaseAfter(options.store, runId, async () => {
+    const approvalRequirements = commandApprovalRequirements(workflow);
     const started: RunStartedEvent = {
       ...eventBase(workflow, runId, 1, now),
       type: "run_started",
       nodeIds: workflow.nodes.map((node) => node.id),
       workflowApiVersion: workflow.apiVersion,
       workflowDigest: calculateWorkflowDigest(workflow),
+      executionCwd,
+      ...(approvalRequirements.length === 0 ? {} : { approvalRequirements }),
       ...(workflow.goal === undefined ? {} : { goal: workflow.goal }),
     };
     await options.store.append(started);
     return await continueWorkflow(
       workflow,
-      options,
+      { ...options, cwd: executionCwd },
       runId,
       appendRunEvent(undefined, started),
       now,
@@ -74,7 +84,8 @@ export async function resumeWorkflow(
   const events = await options.store.claim(options.runId);
   return await releaseAfter(options.store, options.runId, async () => {
     let state = reduceRunEvents(events);
-    validateRecovery(workflow, options.runId, state, events);
+    const executionCwd = resolve(options.cwd);
+    validateRecovery(workflow, options.runId, executionCwd, state, events);
     const now = options.now ?? (() => new Date());
     const resumed: RunResumedEvent = {
       ...eventBase(workflow, options.runId, state.lastSequence + 1, now),
@@ -82,7 +93,13 @@ export async function resumeWorkflow(
     };
     await options.store.append(resumed);
     state = appendRunEvent(state, resumed);
-    return await continueWorkflow(workflow, options, options.runId, state, now);
+    return await continueWorkflow(
+      workflow,
+      { ...options, cwd: executionCwd },
+      options.runId,
+      state,
+      now,
+    );
   });
 }
 
@@ -104,8 +121,8 @@ async function continueWorkflow(
     return state.lastSequence + 1;
   }
 
-  function base(sequence: number) {
-    return eventBase(workflow, runId, sequence, now);
+  function base(sequence: number, at?: Date) {
+    return eventBase(workflow, runId, sequence, now, at);
   }
 
   const completed = new Set(
@@ -138,12 +155,78 @@ async function continueWorkflow(
     }
 
     const attempt = 1;
-    await record({
-      ...base(nextSequence()),
-      type: "node_started",
-      nodeId: node.id,
-      attempt,
-    });
+    let approval: { readonly requestId: string; readonly operationDigest: string } | undefined;
+    if (node.type === "command" && node.approval !== undefined) {
+      const operation = createCommandApprovalOperation(node, options.cwd);
+      const operationDigest = calculateCommandApprovalOperationDigest(operation);
+      const currentApproval = state.nodes[node.id]?.approval ?? null;
+
+      if (currentApproval === null || currentApproval.status === "expired") {
+        const sequence = nextSequence();
+        await record({
+          ...base(sequence),
+          type: "command_approval_requested",
+          nodeId: node.id,
+          attempt,
+          requestId: commandApprovalRequestId(sequence),
+          grantTtlMs: node.approval.grantTtlMs,
+          operation,
+          operationDigest,
+        });
+        return state;
+      }
+      if (
+        currentApproval.operationDigest !== operationDigest ||
+        calculateCommandApprovalOperationDigest(currentApproval.operation) !== operationDigest
+      ) {
+        throw new RunRecoveryError(
+          "workflow_mismatch",
+          `run "${runId}" approval operation no longer matches command node "${node.id}"`,
+        );
+      }
+      if (currentApproval.status === "pending") {
+        return state;
+      }
+      if (currentApproval.status !== "granted") {
+        throw new Error(
+          `approval invariant was violated for node "${node.id}" with status "${currentApproval.status}"`,
+        );
+      }
+
+      const startTime = now();
+      if (
+        currentApproval.expiresAt === null ||
+        startTime.getTime() >= Date.parse(currentApproval.expiresAt)
+      ) {
+        await record({
+          ...base(nextSequence(), startTime),
+          type: "command_approval_expired",
+          nodeId: node.id,
+          attempt,
+          requestId: currentApproval.requestId,
+          operationDigest,
+        });
+        continue;
+      }
+      approval = {
+        requestId: currentApproval.requestId,
+        operationDigest,
+      };
+      await record({
+        ...base(nextSequence(), startTime),
+        type: "node_started",
+        nodeId: node.id,
+        attempt,
+        approval,
+      });
+    } else {
+      await record({
+        ...base(nextSequence()),
+        type: "node_started",
+        nodeId: node.id,
+        attempt,
+      });
+    }
 
     const outcome = isAborted(options.signal)
       ? abortedOutcome(options.signal)
@@ -210,7 +293,11 @@ async function continueWorkflow(
   }
 }
 
-export type RunRecoveryErrorCode = "terminal_run" | "uncertain_operation" | "workflow_mismatch";
+export type RunRecoveryErrorCode =
+  | "execution_context_mismatch"
+  | "terminal_run"
+  | "uncertain_operation"
+  | "workflow_mismatch";
 
 export class RunRecoveryError extends Error {
   override readonly name = "RunRecoveryError";
@@ -230,13 +317,21 @@ export class RunWorkflowAbortedError extends Error {
 function validateRecovery(
   workflow: CompiledWorkflow,
   runId: string,
+  executionCwd: string,
   state: RunState,
   events: readonly RunEvent[],
 ): void {
-  if (state.status !== "running") {
+  if (state.status !== "running" && state.status !== "waiting_for_approval") {
     throw new RunRecoveryError(
       "terminal_run",
       `run "${runId}" is already terminal with status "${state.status}"`,
+    );
+  }
+
+  if (state.executionCwd !== null && state.executionCwd !== executionCwd) {
+    throw new RunRecoveryError(
+      "execution_context_mismatch",
+      `run "${runId}" was started in "${state.executionCwd}" and cannot resume in "${executionCwd}"`,
     );
   }
 
@@ -253,6 +348,42 @@ function validateRecovery(
       "workflow_mismatch",
       `run "${runId}" was not started from this exact compiled workflow`,
     );
+  }
+
+  const expectedApprovalRequirements = commandApprovalRequirements(workflow);
+  const recoveredApprovalRequirements = Object.entries(state.approvalRequirements).map(
+    ([nodeId, requirement]) => ({ nodeId, grantTtlMs: requirement.grantTtlMs }),
+  );
+  if (!sameApprovalRequirements(recoveredApprovalRequirements, expectedApprovalRequirements)) {
+    throw new RunRecoveryError(
+      "workflow_mismatch",
+      `run "${runId}" approval requirements do not match the compiled workflow`,
+    );
+  }
+
+  const workflowNodeById = new Map(workflow.nodes.map((node) => [node.id, node]));
+  for (const [nodeId, nodeState] of Object.entries(state.nodes)) {
+    if (nodeState.approval === null) {
+      continue;
+    }
+    const node = workflowNodeById.get(nodeId);
+    if (node?.type !== "command" || node.approval === undefined) {
+      throw new RunRecoveryError(
+        "workflow_mismatch",
+        `run "${runId}" has approval state for non-approved node "${nodeId}"`,
+      );
+    }
+    const expectedOperation = createCommandApprovalOperation(node, executionCwd);
+    const expectedDigest = calculateCommandApprovalOperationDigest(expectedOperation);
+    if (
+      nodeState.approval.operationDigest !== expectedDigest ||
+      calculateCommandApprovalOperationDigest(nodeState.approval.operation) !== expectedDigest
+    ) {
+      throw new RunRecoveryError(
+        "workflow_mismatch",
+        `run "${runId}" approval operation does not match command node "${nodeId}"`,
+      );
+    }
   }
 
   const openAttempt = Object.entries(state.nodes).find(([, node]) => node.status === "running");
@@ -276,7 +407,20 @@ function validateRecoveredHistory(
   const completed = new Set<string>();
 
   for (const event of events) {
-    if (event.type === "node_started") {
+    if (event.type === "command_approval_requested") {
+      const node = nodeById.get(event.nodeId);
+      if (
+        node?.type !== "command" ||
+        node.approval === undefined ||
+        event.attempt !== 1 ||
+        !node.dependsOn.every((dependency) => completed.has(dependency))
+      ) {
+        throw new RunRecoveryError(
+          "workflow_mismatch",
+          `run "${runId}" contains approval history that violates the compiled workflow graph`,
+        );
+      }
+    } else if (event.type === "node_started") {
       const node = nodeById.get(event.nodeId);
       if (
         node === undefined ||
@@ -294,14 +438,44 @@ function validateRecoveredHistory(
   }
 }
 
-function eventBase(workflow: CompiledWorkflow, runId: string, sequence: number, now: () => Date) {
+function eventBase(
+  workflow: CompiledWorkflow,
+  runId: string,
+  sequence: number,
+  now: () => Date,
+  at = now(),
+) {
   return {
     version: 1 as const,
     sequence,
-    at: now().toISOString(),
+    at: at.toISOString(),
     runId,
     workflowId: workflow.id,
   };
+}
+
+function commandApprovalRequirements(workflow: CompiledWorkflow) {
+  return Object.freeze(
+    workflow.nodes.flatMap((node) =>
+      node.type === "command" && node.approval !== undefined
+        ? [Object.freeze({ nodeId: node.id, grantTtlMs: node.approval.grantTtlMs })]
+        : [],
+    ),
+  );
+}
+
+function sameApprovalRequirements(
+  left: readonly { readonly nodeId: string; readonly grantTtlMs: number }[],
+  right: readonly { readonly nodeId: string; readonly grantTtlMs: number }[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every(
+      (requirement, index) =>
+        requirement.nodeId === right[index]?.nodeId &&
+        requirement.grantTtlMs === right[index]?.grantTtlMs,
+    )
+  );
 }
 
 function calculateWorkflowDigest(workflow: CompiledWorkflow): string {

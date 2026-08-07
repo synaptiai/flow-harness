@@ -17,10 +17,18 @@ const commonNodeShape = {
   dependsOn: z.array(identifierSchema).max(128).default([]),
 };
 
+const commandApprovalSchema = z
+  .object({
+    mode: z.literal("required"),
+    grantTtlMs: z.number().int().positive().max(86_400_000).default(300_000),
+  })
+  .strict();
+
 const commandNodeSchema = z
   .object({
     ...commonNodeShape,
     type: z.literal("command"),
+    approval: commandApprovalSchema.optional(),
     command: z
       .object({
         executable: z.string().trim().min(1).max(4096),

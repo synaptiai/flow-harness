@@ -87,6 +87,55 @@ Criterion evaluation is a pure domain operation over the captured goal and durab
 
 A command succeeds only when it exits with code zero without timing out, cancellation, or a terminating signal. Standard output and error are each capped at 32 KiB and SHA-256 hashed in the run evidence. Command argument evidence is capped at 64 KiB in total. A failed or timed-out command ends the workflow and leaves dependent nodes pending.
 
+### Exact operator approval
+
+A command may opt into a durable pre-execution approval gate:
+
+```yaml
+- id: deploy-preview
+  type: command
+  approval:
+    mode: required
+    grantTtlMs: 300000
+  command:
+    executable: npm
+    args: [run, deploy:preview]
+    timeoutMs: 120000
+```
+
+`mode` currently accepts only `required`. `grantTtlMs` is a positive integer no greater than 24
+hours and defaults to five minutes. When the node becomes ready, Flow persists
+`command_approval_requested` and returns `waiting_for_approval` before `node_started`, sandbox
+preparation, process spawn, or dependent execution. The request records the run, workflow, node,
+attempt, request id, grant lifetime, and exact `process.execute` operation: normalized absolute
+working directory, executable, ordered arguments, and command timeout. SHA-256 binds that operation.
+
+Inspect and decide from a later client:
+
+```sh
+flow inspect <run-id>
+flow approve <run-id> <request-id> --actor <label>
+flow resume <workflow.yaml> --run-id <run-id>
+```
+
+Approval records an append-only `command_approval_granted` event but never starts the node. The
+exact starting workflow and execution directory are required at resume. `node_started` names the
+request and digest that it consumes. The grant is single-use and valid only before its exclusive
+`expiresAt` timestamp. An unused expired grant records `command_approval_expired`, executes nothing,
+and produces a fresh request. The pending human request itself has no timeout and never implies
+consent.
+
+Denial uses `flow deny <run-id> <request-id> --actor <label> [--reason <text>]`. It records
+`command_approval_denied`, fails the node with `command_approval_denied` and no evidence or side
+effect, and terminates the run without a `node_started` event. Unknown, stale, duplicate,
+conflicting, mismatched, or tampered decisions fail closed. Run ownership serializes competing
+local clients.
+
+The actor label is bounded explicit attribution supplied by the caller. It is not authenticated
+identity, RBAC, or a signature, and the request id is not a bearer secret. This slice approves only
+deterministic command nodes. In-flight Pi tool-call approval requires persisted session continuation
+and is not implemented.
+
 Every command node and descendant runs through Flow's required SRT adapter. The fixed `workspace-write-network-deny-v1` profile allows the selected workflow directory and a private temporary directory, denies network and undeclared Unix sockets, omits ambient credentials and injection variables from the child environment, and denies writes to the actual run store, `.flow`, `.git`, environment files, and key files. On Linux, Flow resolves SRT's packaged seccomp helper canonically, passes it as the explicit SRT apply path, and re-exposes only that file read-only when the Flow installation lies outside the workflow directory. If SRT is missing, unsupported, degraded, or cannot initialize, the node fails before spawn; Flow has no unsandboxed command fallback.
 
 New command evidence records `anthropic-sandbox-runtime`, its exact installed version, the named profile, and a SHA-256 digest of the semantic policy. The field is optional only when replaying ledgers created before sandbox evidence existed.
@@ -138,21 +187,22 @@ Each run is stored at:
 .flow/runs/<run-id>/events.jsonl
 ```
 
-Events have a version, contiguous sequence number, timestamp, run identity, workflow identity, workflow API version, and SHA-256 digest of the compiled workflow. When declared, the compiled goal is captured in `run_started`, so replay and inspection never need the original workflow file. Agent evidence retains at most 64 policy decisions. Each decision has a contiguous attempt-local sequence, exact run/workflow/node/attempt attribution, derived authority, semantic action, canonical target of at most 1024 UTF-8 bytes, allow/deny reason, and SHA-256 request digest. Write decisions also retain the exact operation digest. Agent evidence retains at most 32 edit effect receipts with the same attribution, canonical target, operation digest, before/after SHA-256 values, and committed or uncertain outcome. Replay verifies decision and receipt order, attribution, classification, outcome consistency, hashes, request digests, and one-to-one matching between receipts and allowed write decisions. Older ledgers without either field replay with empty lists. A single serialized JSONL event is capped at 2 MiB. The ceiling includes worst-case JSON escaping at the documented decision, receipt, target, output, and error bounds.
+Events have a version, contiguous sequence number, timestamp, run identity, workflow identity, workflow API version, and SHA-256 digest of the compiled workflow. New `run_started` events also capture the normalized execution directory and every command approval requirement. When declared, the compiled goal is captured in `run_started`, so replay and inspection never need the original workflow file. Agent evidence retains at most 64 policy decisions. Each decision has a contiguous attempt-local sequence, exact run/workflow/node/attempt attribution, derived authority, semantic action, canonical target of at most 1024 UTF-8 bytes, allow/deny reason, and SHA-256 request digest. Write decisions also retain the exact operation digest. Agent evidence retains at most 32 edit effect receipts with the same attribution, canonical target, operation digest, before/after SHA-256 values, and committed or uncertain outcome. Replay verifies decision and receipt order, attribution, classification, outcome consistency, hashes, request digests, and one-to-one matching between receipts and allowed write decisions. Approval replay separately verifies the declared requirement, exact operation digest, sequence-derived request identity, grant lifetime, actor, expiry, and single consumed start. Older ledgers without approval or execution-directory fields replay under their historical contract. A single serialized JSONL event is capped at 2 MiB. The ceiling includes worst-case JSON escaping at the documented decision, receipt, target, output, and error bounds.
 
 Fresh and recovered execution publish complete ownership metadata atomically before appending. The metadata contains a process ID and random token. A live process blocks another claimant; an exited owner can be moved aside atomically; corrupt or incomplete ownership metadata fails closed. This provides exclusive same-host execution, not a distributed lease. Creating `events.jsonl` still atomically grants a fresh run identifier. The ledger's run ID must match its directory name.
 
 Node-start events are synced before an executor is invoked. Node-result events are synced before the scheduler advances. Owner appends validate one transition against cached reduced state instead of rereading history. Each append syncs the file, and every newly created run-directory ancestor is synced where the platform supports directory handles. A valid or invalid unterminated trailing JSONL fragment is treated as uncommitted and truncated before a later append; corruption in an earlier committed record fails closed.
 
-The reducer accepts only legal state transitions and reconstructs `running`, `succeeded`, `failed`, or `cancelled` run state together with immutable goal and criterion state. Cancellation before a run claim creates no ledger. Cancellation during a node becomes a failed node attempt; cancellation between attempts appends `run_cancelled` without starting more work. A valid recovery appends `run_resumed`, preserves committed node outcomes, skips successful nodes, and either continues the next ready pending node or finalizes a committed failure. Model transcripts and implementation rationale are never consulted during replay.
+The reducer accepts only legal state transitions and reconstructs `running`, `waiting_for_approval`, `succeeded`, `failed`, or `cancelled` run state together with immutable goal, criterion, and current command-approval state. Cancellation before a run claim creates no ledger. Cancellation during a node becomes a failed node attempt; cancellation between attempts appends `run_cancelled` without starting more work. A valid recovery appends `run_resumed`, preserves committed node outcomes and approval state, skips successful nodes, and either continues the next ready pending node, returns to an operator wait, or finalizes a committed failure. Model transcripts and implementation rationale are never consulted during replay.
 
 ## Current limitations
 
-- No loop, retry, conditional, parallel, fork/join, approval, or child-run nodes.
+- No loop, retry, conditional, parallel, fork/join, general approval-node, or child-run semantics. Approval is currently available only as a deterministic command pre-start gate.
 - No automatic retry or reconciliation of an interrupted node attempt; a durable start without an outcome blocks recovery.
 - No handoff from a live process, detached supervisor, or multi-host ownership protocol.
 - The SRT profile is fixed; workflows cannot yet request network, credential injection, or a different sandbox backend.
 - The native sandbox contains command descendants but does not contain the host-side Pi runtime; hostile workloads require a stronger container, microVM, or managed boundary.
 - The only agent mutation is exact single-file edit of an existing UTF-8 file; no create, delete, rename, shell, network, fuzzy patch, or multi-file transaction is exposed.
+- No in-flight Pi tool-call approval or opaque session continuation; restarting a model node is not a safe substitute.
 - No probabilistic or LLM evaluator; criteria currently bind only to deterministic terminal command nodes.
 - No schema migration path is promised while the format remains `v1alpha1`.

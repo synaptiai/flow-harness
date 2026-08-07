@@ -14,10 +14,10 @@ It verifies formatting, lint rules, strict TypeScript contracts, all default tes
 
 | Layer | Purpose | External effects |
 | --- | --- | --- |
-| Domain unit | Workflow/goal compilation, policy classification/operation digests, pure criterion evaluation, and decision/receipt replay invariants | None |
-| Application unit | Scheduler ordering, recovery compatibility, completed-node skipping, failure propagation, and executor authority | Test-only in-memory ports |
-| Infrastructure integration | Atomic hash-anchored edits, same-host edit-lock recovery, exact-byte versions, protected paths, real JSONL persistence, process ownership, torn-tail repair, and real child processes | Temporary directories and local processes |
-| CLI integration | Validate, run, resume, persist, and inspect through production composition | Temporary run ledgers and local processes |
+| Domain unit | Workflow/goal compilation, policy and approval operation digests, pure criterion evaluation, and decision/receipt/approval replay invariants | None |
+| Application unit | Scheduler ordering, recovery compatibility, approval waits and expiry, completed-node skipping, failure propagation, and executor authority | Test-only in-memory ports |
+| Infrastructure integration | Atomic hash-anchored edits, same-host edit-lock recovery, exact-byte versions, protected paths, real JSONL persistence, process and approval-decision ownership, torn-tail repair, and real child processes | Temporary directories and local processes |
+| CLI integration | Validate, run, wait, approve/deny, resume, persist, and inspect through production composition | Temporary run ledgers and local processes |
 | Compiled-process integration | Direct-entry signal handling, process-group termination, cross-process run claiming, and real sandbox boundaries | Built CLI, temporary run ledgers, local process trees, native sandbox primitives, and loopback networking |
 | Pi adapter contract | Exact model/tool request translation, versioned reads, edit receipts, policy-broker routing, setup races, timeout settlement, and committed/uncertain error classification | Temporary workspace and test-only runner at the SDK seam |
 | Pi SDK integration | Real `ModelRuntime` and `createAgentSession` composition, `flow_read`/`flow_edit` tool turns, and streaming | Deterministic in-process provider; no network or credentials |
@@ -34,6 +34,9 @@ node dist/cli/main.js --help
 node dist/cli/main.js validate examples/verify-foundation.workflow.yaml
 node dist/cli/main.js run examples/verify-foundation.workflow.yaml --run-id smoke
 node dist/cli/main.js inspect smoke
+node dist/cli/main.js run examples/approval-gated-command.workflow.yaml --run-id approval-smoke
+node dist/cli/main.js approve approval-smoke approval-2 --actor local:smoke
+node dist/cli/main.js resume examples/approval-gated-command.workflow.yaml --run-id approval-smoke
 ```
 
 The example uses the real argv-only command executor through the production sandbox, accepts a declared goal from terminal typecheck evidence, and requires no model credentials. `npm run test:runtime` additionally spawns the compiled entrypoint, delivers `SIGINT`, proves its POSIX command process group terminates, verifies the forced-exit guard for leaked provider handles, races separate processes for one run identifier, and attacks the real filesystem, environment, run-store, and loopback-network boundary. The package supports Linux and macOS; Windows command nodes fail before spawn because descendant containment is not yet implemented.

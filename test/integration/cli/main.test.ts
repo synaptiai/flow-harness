@@ -162,6 +162,204 @@ nodes:
     );
   });
 
+  it("waits durably, records approval, and resumes the exact command", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "approval.workflow.yaml");
+    const runsDirectory = join(directory, "runs");
+    await writeFile(workflowPath, approvalWorkflow("cli-approval"), "utf8");
+    const executorCalls: string[] = [];
+    const executor = successfulRecordingExecutor(executorCalls);
+    const runCapture = createCapture();
+
+    const runExitCode = await main(
+      ["run", workflowPath, "--run-id", "cli-approval", "--runs-dir", runsDirectory],
+      runCapture.io,
+      { cwd: directory, executor },
+    );
+
+    expect(runExitCode).toBe(3);
+    expect(executorCalls).toEqual([]);
+    expect(JSON.parse(runCapture.stdout.join("\n"))).toMatchObject({
+      status: "waiting_for_approval",
+      nodes: {
+        verify: {
+          status: "pending",
+          approval: {
+            status: "pending",
+            requestId: "approval-2",
+            operation: { cwd: directory, executable: "node", args: ["--version"] },
+          },
+        },
+      },
+    });
+
+    const inspectCapture = createCapture();
+    expect(
+      await main(["inspect", "cli-approval", "--runs-dir", runsDirectory], inspectCapture.io, {
+        cwd: directory,
+        executor,
+      }),
+    ).toBe(0);
+    expect(JSON.parse(inspectCapture.stdout.join("\n"))).toEqual(
+      JSON.parse(runCapture.stdout.join("\n")),
+    );
+
+    const approveCapture = createCapture();
+    const approveExitCode = await main(
+      [
+        "approve",
+        "cli-approval",
+        "approval-2",
+        "--actor",
+        "operator:test",
+        "--runs-dir",
+        runsDirectory,
+      ],
+      approveCapture.io,
+      {
+        cwd: directory,
+        createStore: (rootDirectory) => new JsonlRunStore(rootDirectory),
+        get executor(): NodeExecutor {
+          throw new Error("approval must not initialize the execution plane");
+        },
+      },
+    );
+
+    expect(approveExitCode).toBe(0);
+    expect(executorCalls).toEqual([]);
+    expect(JSON.parse(approveCapture.stdout.join("\n"))).toMatchObject({
+      status: "running",
+      nodes: {
+        verify: { approval: { status: "granted", actor: "operator:test" } },
+      },
+    });
+
+    const resumeCapture = createCapture();
+    const resumeExitCode = await main(
+      ["resume", workflowPath, "--run-id", "cli-approval", "--runs-dir", runsDirectory],
+      resumeCapture.io,
+      { cwd: directory, executor },
+    );
+
+    expect(resumeExitCode).toBe(0);
+    expect(executorCalls).toEqual(["verify"]);
+    expect(JSON.parse(resumeCapture.stdout.join("\n"))).toMatchObject({
+      status: "succeeded",
+      nodes: {
+        verify: { status: "succeeded", approval: { status: "consumed" } },
+      },
+    });
+    const ledger = await readFile(join(runsDirectory, "cli-approval", "events.jsonl"), "utf8");
+    expect(ledgerTypes(ledger)).toEqual([
+      "run_started",
+      "command_approval_requested",
+      "command_approval_granted",
+      "run_resumed",
+      "node_started",
+      "node_succeeded",
+      "run_succeeded",
+    ]);
+  });
+
+  it("denies a durable approval without executing the command", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "denial.workflow.yaml");
+    const runsDirectory = join(directory, "runs");
+    await writeFile(workflowPath, approvalWorkflow("cli-denial"), "utf8");
+    const executorCalls: string[] = [];
+    const executor = successfulRecordingExecutor(executorCalls);
+
+    expect(
+      await main(
+        ["run", workflowPath, "--run-id", "cli-denial", "--runs-dir", runsDirectory],
+        createCapture().io,
+        { cwd: directory, executor },
+      ),
+    ).toBe(3);
+
+    const denyCapture = createCapture();
+    const denyExitCode = await main(
+      [
+        "deny",
+        "cli-denial",
+        "approval-2",
+        "--actor",
+        "operator:test",
+        "--reason",
+        "not authorized",
+        "--runs-dir",
+        runsDirectory,
+      ],
+      denyCapture.io,
+      { cwd: directory, executor },
+    );
+
+    expect(denyExitCode).toBe(0);
+    expect(executorCalls).toEqual([]);
+    expect(JSON.parse(denyCapture.stdout.join("\n"))).toMatchObject({
+      status: "failed",
+      failedNodeId: "verify",
+      nodes: {
+        verify: {
+          status: "failed",
+          error: { code: "command_approval_denied" },
+          approval: { status: "denied", actor: "operator:test", reason: "not authorized" },
+        },
+      },
+    });
+    const ledger = await readFile(join(runsDirectory, "cli-denial", "events.jsonl"), "utf8");
+    expect(ledgerTypes(ledger)).toEqual([
+      "run_started",
+      "command_approval_requested",
+      "command_approval_denied",
+      "run_failed",
+    ]);
+  });
+
+  it("rejects malformed or stale approval commands without changing the ledger", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "stale-approval.workflow.yaml");
+    const runsDirectory = join(directory, "runs");
+    await writeFile(workflowPath, approvalWorkflow("cli-stale-approval"), "utf8");
+    const executor = successfulRecordingExecutor([]);
+    await main(
+      ["run", workflowPath, "--run-id", "cli-stale-approval", "--runs-dir", runsDirectory],
+      createCapture().io,
+      { cwd: directory, executor },
+    );
+    const ledgerPath = join(runsDirectory, "cli-stale-approval", "events.jsonl");
+    const before = await readFile(ledgerPath, "utf8");
+
+    const missingActor = createCapture();
+    expect(
+      await main(
+        ["approve", "cli-stale-approval", "approval-2", "--runs-dir", runsDirectory],
+        missingActor.io,
+        { cwd: directory, executor },
+      ),
+    ).toBe(2);
+    expect(missingActor.stderr.join("\n")).toContain("requires --actor");
+
+    const stale = createCapture();
+    expect(
+      await main(
+        [
+          "approve",
+          "cli-stale-approval",
+          "approval-99",
+          "--actor",
+          "operator:test",
+          "--runs-dir",
+          runsDirectory,
+        ],
+        stale.io,
+        { cwd: directory, executor },
+      ),
+    ).toBe(1);
+    expect(stale.stderr.join("\n")).toContain("request_mismatch");
+    await expect(readFile(ledgerPath, "utf8")).resolves.toBe(before);
+  });
+
   it("resumes pending work without re-executing a successful node", async () => {
     const directory = await createTemporaryDirectory();
     const workflowPath = join(directory, "resume.workflow.yaml");
@@ -479,6 +677,28 @@ function commandEvidence(nodeId = "completed") {
     stderrTruncated: false,
     timedOut: false,
     durationMs: 1,
+  };
+}
+
+function approvalWorkflow(id: string): string {
+  return `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: ${id} }
+nodes:
+  - id: verify
+    type: command
+    approval: { mode: required, grantTtlMs: 60000 }
+    command: { executable: node, args: [--version], timeoutMs: 10000 }
+`;
+}
+
+function successfulRecordingExecutor(calls: string[]): NodeExecutor {
+  return {
+    async execute(node) {
+      calls.push(node.id);
+      return { status: "succeeded", evidence: commandEvidence(node.id) };
+    },
   };
 }
 

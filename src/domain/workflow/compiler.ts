@@ -297,6 +297,7 @@ function freezeNode(source: WorkflowSource["nodes"][number]): CompiledNode {
       id: source.id,
       type: "command",
       dependsOn,
+      ...(source.approval === undefined ? {} : { approval: Object.freeze({ ...source.approval }) }),
       command: Object.freeze({
         executable: source.command.executable,
         args: Object.freeze([...source.command.args]),
