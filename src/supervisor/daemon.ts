@@ -421,6 +421,7 @@ export async function startSupervisorServer(
   let closePromise: Promise<void> | undefined;
   let fatalError: Error | undefined;
   let reconciling = false;
+  let reconciliationCompletion: Promise<void> = Promise.resolve();
   const server = createServer((socket) => {
     socket.on("error", () => socket.destroy());
     void handleConnection(socket, service, () => {
@@ -433,7 +434,7 @@ export async function startSupervisorServer(
       return;
     }
     reconciling = true;
-    void service.reconcile().then(
+    reconciliationCompletion = service.reconcile().then(
       () => {
         reconciling = false;
       },
@@ -471,6 +472,7 @@ export async function startSupervisorServer(
       clearInterval(reconciliationTimer);
       void rm(socketPath, { force: true })
         .then(async () => {
+          await reconciliationCompletion;
           await service.close();
           if (fatalError !== undefined) {
             throw fatalError;
@@ -483,10 +485,11 @@ export async function startSupervisorServer(
   return {
     descriptor,
     completed,
-    close() {
+    async close() {
       clearInterval(reconciliationTimer);
       closePromise ??= closeSupervisorServer(server, socketPath);
-      return closePromise;
+      await closePromise;
+      await completed;
     },
   };
 }

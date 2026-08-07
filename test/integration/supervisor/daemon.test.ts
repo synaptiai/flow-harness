@@ -106,6 +106,27 @@ describe("local supervisor daemon", () => {
     expect(store.transferredToken).toBe(startupOwnerToken);
   });
 
+  it("waits for in-flight reconciliation before close resolves", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-daemon-reconcile-close-"));
+    const shortTemporaryRoot = process.platform === "darwin" ? "/private/tmp" : tmpdir();
+    const socketDirectory = await mkdtemp(
+      join(shortTemporaryRoot, "flow-daemon-reconcile-close-sockets-"),
+    );
+    temporaryDirectories.push(directory, socketDirectory);
+    const store = new DelayedReconciliationStore(join(directory, "runs"), { socketDirectory });
+    const running = await startSupervisorServer({ store, launcher: unavailableLauncher });
+    await store.reconciliationStarted.promise;
+
+    const closing = running.close();
+    await expect(Promise.race([closing.then(() => "closed"), delay(25, "pending")])).resolves.toBe(
+      "pending",
+    );
+    store.reconciliationGate.resolve();
+
+    await expect(closing).resolves.toBeUndefined();
+    await expect(running.completed).resolves.toBeUndefined();
+  });
+
   it("refuses protocol shutdown while an active claim exists", async () => {
     const { directory, store } = await createStore();
     const launcher = new HoldingLauncher(store);
@@ -304,6 +325,21 @@ class OwnershipCheckingSupervisorStore extends LocalSupervisorStore {
   }
 }
 
+class DelayedReconciliationStore extends LocalSupervisorStore {
+  readonly reconciliationStarted = deferred();
+  readonly reconciliationGate = deferred();
+  #activeClaimReads = 0;
+
+  override async listActiveRunClaims() {
+    this.#activeClaimReads += 1;
+    if (this.#activeClaimReads === 2) {
+      this.reconciliationStarted.resolve();
+      await this.reconciliationGate.promise;
+    }
+    return await super.listActiveRunClaims();
+  }
+}
+
 async function createStore() {
   const directory = await mkdtemp(join(tmpdir(), "flow-daemon-"));
   const shortTemporaryRoot = process.platform === "darwin" ? "/private/tmp" : tmpdir();
@@ -312,6 +348,19 @@ async function createStore() {
   const store = new LocalSupervisorStore(join(directory, "runs"), { socketDirectory });
   await store.initialize();
   return { directory, store };
+}
+
+function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {
+  let resolvePromise: (() => void) | undefined;
+  const promise = new Promise<void>((resolvePromiseArgument) => {
+    resolvePromise = resolvePromiseArgument;
+  });
+  return {
+    promise,
+    resolve() {
+      resolvePromise?.();
+    },
+  };
 }
 
 async function waitForProcessExit(pid: number, timeoutMs: number): Promise<void> {
