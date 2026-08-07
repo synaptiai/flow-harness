@@ -15,6 +15,7 @@ import { JsonlAdmissionStore } from "../../../src/infrastructure/fs/jsonl-admiss
 import {
   ensureSupervisor,
   requestSupervisor,
+  runSupervisorDaemon,
   startSupervisorServer,
   SupervisorStartupTimeoutError,
 } from "../../../src/supervisor/daemon.js";
@@ -71,6 +72,35 @@ describe("local supervisor daemon", () => {
       stat(join(store.runsDirectory, ".supervisor", "admission.jsonl")),
     ).rejects.toMatchObject({ code: "ENOENT" });
     await expect(running.completed).resolves.toBeUndefined();
+  });
+
+  it("claims startup ownership in the daemon before publishing readiness", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-daemon-owner-"));
+    const shortTemporaryRoot = process.platform === "darwin" ? "/private/tmp" : tmpdir();
+    const socketDirectory = await mkdtemp(join(shortTemporaryRoot, "flow-daemon-owner-sockets-"));
+    temporaryDirectories.push(directory, socketDirectory);
+    const store = new OwnershipCheckingSupervisorStore(join(directory, "runs"), {
+      socketDirectory,
+    });
+    const startupToken = randomUUID();
+    await store.reserveSupervisorStart({
+      version: 1,
+      pid: 1234,
+      token: startupToken,
+      acquiredAt: "2026-08-07T12:00:00.000Z",
+    });
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      runSupervisorDaemon({
+        store,
+        cliPath: "/unused/flow-cli.js",
+        startupToken,
+        signal: controller.signal,
+      }),
+    ).resolves.toBeUndefined();
+    expect(store.transferredPid).toBe(process.pid);
   });
 
   it("refuses protocol shutdown while an active claim exists", async () => {
@@ -247,6 +277,25 @@ class HoldingLauncher implements WorkerLauncher {
         runStatus: descriptor.runStatus,
       },
     };
+  }
+}
+
+class OwnershipCheckingSupervisorStore extends LocalSupervisorStore {
+  transferredPid: number | undefined;
+
+  override async transferSupervisorStart(token: string, pid: number) {
+    const transferred = await super.transferSupervisorStart(token, pid);
+    this.transferredPid = pid;
+    return transferred;
+  }
+
+  override async writeSupervisorDescriptor(
+    descriptor: Parameters<LocalSupervisorStore["writeSupervisorDescriptor"]>[0],
+  ): Promise<void> {
+    if (this.transferredPid === undefined) {
+      throw new Error("supervisor readiness was published before startup ownership transferred");
+    }
+    await super.writeSupervisorDescriptor(descriptor);
   }
 }
 

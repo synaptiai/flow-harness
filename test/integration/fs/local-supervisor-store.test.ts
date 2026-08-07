@@ -300,6 +300,31 @@ describe("LocalSupervisorStore", () => {
     });
   });
 
+  it("converges concurrent stale startup-lock releases without I/O failures", async () => {
+    const { store } = await createStore();
+    const lock = createSupervisorStartLock({
+      pid: 1234,
+      token: randomUUID(),
+      acquiredAt: "2026-08-07T12:00:00.000Z",
+    });
+    await store.reserveSupervisorStart(lock);
+
+    const releases = await Promise.allSettled(
+      Array.from({ length: 32 }, async () => await store.releaseSupervisorStart(lock.token)),
+    );
+
+    expect(releases.filter((release) => release.status === "fulfilled")).toHaveLength(1);
+    expect(
+      releases
+        .filter((release): release is PromiseRejectedResult => release.status === "rejected")
+        .every(
+          (release) =>
+            release.reason instanceof LocalSupervisorStoreError &&
+            release.reason.code === "not_found",
+        ),
+    ).toBe(true);
+  });
+
   it("releases only the matching active claim", async () => {
     const { store } = await createStore();
     const job = jobRecord();

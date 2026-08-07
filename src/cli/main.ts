@@ -585,6 +585,7 @@ async function internalSupervisorCommand(
     "max-queued-jobs": { type: "string" },
     "policy-digest": { type: "string" },
     "runs-dir": { type: "string" },
+    "startup-token": { type: "string" },
   });
   if (positionals.length !== 0) {
     throw new CliUsageError("internal supervisor accepts no positional arguments");
@@ -619,9 +620,14 @@ async function internalSupervisorCommand(
   if (calculateFlowPolicyDigest(supervisor) !== policyDigest) {
     throw new CliUsageError("--policy-digest does not match the supplied supervisor limits");
   }
+  const startupToken = requireStringOption(
+    values["startup-token"],
+    "internal supervisor requires --startup-token",
+  );
   await runSupervisorDaemon({
     store: new LocalSupervisorStore(runsDirectory),
     cliPath: fileURLToPath(import.meta.url),
+    startupToken,
     policy: { policyDigest, supervisor },
     ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
   });

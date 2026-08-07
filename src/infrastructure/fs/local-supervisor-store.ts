@@ -310,6 +310,13 @@ export class LocalSupervisorStore {
       await rm(retired);
       await syncDirectory(this.controlDirectory);
     } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        throw new LocalSupervisorStoreError(
+          "not_found",
+          "supervisor startup lock no longer exists",
+          { cause: error },
+        );
+      }
       throw storeIoError("failed to release supervisor startup", error);
     }
   }

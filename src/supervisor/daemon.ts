@@ -77,6 +77,7 @@ export interface RunningSupervisor {
 export interface RunSupervisorDaemonOptions {
   readonly store: LocalSupervisorStore;
   readonly cliPath: string;
+  readonly startupToken?: string;
   readonly signal?: AbortSignal;
   readonly policy?: SupervisorPolicy;
 }
@@ -151,6 +152,9 @@ export class DetachedWorkerLauncher implements WorkerLauncher {
 }
 
 export async function runSupervisorDaemon(options: RunSupervisorDaemonOptions): Promise<void> {
+  if (options.startupToken !== undefined) {
+    await options.store.transferSupervisorStart(options.startupToken, process.pid);
+  }
   const running = await startSupervisorServer({
     store: options.store,
     launcher: new DetachedWorkerLauncher(options.store, options.cliPath),
@@ -269,6 +273,8 @@ async function launchSupervisor(
       "__supervisor",
       "--runs-dir",
       store.runsDirectory,
+      "--startup-token",
+      startupToken,
       "--policy-digest",
       policy.policyDigest,
       "--max-active-workers",
@@ -288,7 +294,6 @@ async function launchSupervisor(
     if (child.pid === undefined) {
       throw new Error("supervisor process has no process id");
     }
-    await store.transferSupervisorStart(startupToken, child.pid);
     while (Date.now() < deadline) {
       if (spawnError !== undefined) {
         throw spawnError;
