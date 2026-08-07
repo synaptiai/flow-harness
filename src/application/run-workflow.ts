@@ -9,6 +9,7 @@ import {
   type AgentEffectReceipt,
   type FilesystemEditEffectDescriptor,
   type NodeEffectSettlementInput,
+  type NodeEffectReconciledEvent,
   type NodeFailure,
   type RunEvent,
   type RunBudgetExhaustedEvent,
@@ -31,6 +32,7 @@ import type {
 } from "../domain/workflow/types.js";
 import type {
   NodeEffectJournal,
+  NodeEffectReconciler,
   NodeExecutionOutcome,
   NodeExecutor,
   RecoverableRunEventStore,
@@ -50,6 +52,7 @@ export interface RunWorkflowOptions {
 export interface ResumeWorkflowOptions extends Omit<RunWorkflowOptions, "runId" | "store"> {
   readonly runId: string;
   readonly store: RecoverableRunEventStore;
+  readonly effectReconciler?: NodeEffectReconciler;
 }
 
 export async function runWorkflow(
@@ -98,8 +101,10 @@ export async function resumeWorkflow(
   return await releaseAfter(options.store, options.runId, async () => {
     let state = reduceRunEvents(events);
     const executionCwd = resolve(options.cwd);
-    validateRecovery(workflow, options.runId, executionCwd, state, events);
     const now = options.now ?? (() => new Date());
+    validateRecoveryCompatibility(workflow, options.runId, executionCwd, state, events);
+    state = await reconcileOpenEffects(workflow, options, state, now);
+    rejectOpenAttempt(options.runId, state);
     const resumed: RunResumedEvent = {
       ...eventBase(workflow, options.runId, state.lastSequence + 1, now),
       type: "run_resumed",
@@ -491,11 +496,16 @@ function supportsDurableEffects(node: CompiledNode): node is CompiledAgentNode {
   return node.type === "agent" && node.agent.tools.includes("edit");
 }
 
-export type RunRecoveryErrorCode =
-  | "execution_context_mismatch"
-  | "terminal_run"
-  | "uncertain_operation"
-  | "workflow_mismatch";
+export const RUN_RECOVERY_ERROR_CODES = [
+  "execution_context_mismatch",
+  "reconciliation_incomplete",
+  "reconciliation_unavailable",
+  "terminal_run",
+  "uncertain_operation",
+  "workflow_mismatch",
+] as const;
+
+export type RunRecoveryErrorCode = (typeof RUN_RECOVERY_ERROR_CODES)[number];
 
 export class RunRecoveryError extends Error {
   override readonly name = "RunRecoveryError";
@@ -532,7 +542,7 @@ export class RunCancellation extends Error {
   }
 }
 
-function validateRecovery(
+function validateRecoveryCompatibility(
   workflow: CompiledWorkflow,
   runId: string,
   executionCwd: string,
@@ -601,15 +611,82 @@ function validateRecovery(
   }
 
   validateRecoveredHistory(workflow, runId, events);
+}
 
+async function reconcileOpenEffects(
+  workflow: CompiledWorkflow,
+  options: ResumeWorkflowOptions,
+  initialState: RunState,
+  now: () => Date,
+): Promise<RunState> {
+  let state = initialState;
   const openAttempt = Object.entries(state.nodes).find(([, node]) => node.status === "running");
-  if (openAttempt !== undefined) {
-    const [nodeId, node] = openAttempt;
+  if (openAttempt === undefined) {
+    return state;
+  }
+  const [nodeId, node] = openAttempt;
+  const openEffects = node.effects.filter(
+    (effect) => effect.settlement === null && effect.reconciliation === null,
+  );
+  if (openEffects.length === 0) {
+    return state;
+  }
+  const reconciler = options.effectReconciler;
+  if (reconciler === undefined) {
     throw new RunRecoveryError(
-      "uncertain_operation",
-      `run "${runId}" cannot resume because node "${nodeId}" attempt ${node.attempt} has no committed outcome`,
+      "reconciliation_unavailable",
+      `run "${options.runId}" cannot inspect open durable effects because no effect reconciler is configured`,
     );
   }
+
+  for (const effect of openEffects) {
+    let publicationStarted = false;
+    let published = false;
+    await reconciler.reconcile(
+      effect.descriptor,
+      async (observation) => {
+        if (publicationStarted) {
+          throw new RunRecoveryError(
+            "reconciliation_incomplete",
+            `effect reconciler published more than one observation for "${effect.effectId}"`,
+          );
+        }
+        publicationStarted = true;
+        const event: NodeEffectReconciledEvent = {
+          ...eventBase(workflow, options.runId, state.lastSequence + 1, now),
+          type: "node_effect_reconciled",
+          nodeId,
+          attempt: node.attempt,
+          effectId: effect.effectId,
+          ...observation,
+        };
+        const nextState = appendRunEvent(state, event);
+        await options.store.append(event);
+        state = nextState;
+        published = true;
+      },
+      options.signal,
+    );
+    if (!published) {
+      throw new RunRecoveryError(
+        "reconciliation_incomplete",
+        `effect reconciler returned without publishing an observation for "${effect.effectId}"`,
+      );
+    }
+  }
+  return state;
+}
+
+function rejectOpenAttempt(runId: string, state: RunState): void {
+  const openAttempt = Object.entries(state.nodes).find(([, node]) => node.status === "running");
+  if (openAttempt === undefined) {
+    return;
+  }
+  const [nodeId, node] = openAttempt;
+  throw new RunRecoveryError(
+    "uncertain_operation",
+    `run "${runId}" cannot resume because node "${nodeId}" attempt ${node.attempt} has no committed outcome`,
+  );
 }
 
 function validateRecoveredHistory(

@@ -1,6 +1,7 @@
 import type {
   AgentEffectReceipt,
   FilesystemEditEffectDescriptor,
+  NodeEffectReconciliationInput,
   NodeEffectSettlementInput,
   NodeEvidence,
   NodeFailure,
@@ -40,6 +41,14 @@ export interface PreparedNodeEffect {
   readonly effectId: string;
   readonly effectSequence: number;
   settle(settlement: NodeEffectSettlementInput): Promise<AgentEffectReceipt | null>;
+}
+
+export interface NodeEffectReconciler {
+  reconcile(
+    descriptor: FilesystemEditEffectDescriptor,
+    publish: (observation: NodeEffectReconciliationInput) => Promise<void>,
+    signal?: AbortSignal,
+  ): Promise<void>;
 }
 
 export interface NodeExecutionSuccess {

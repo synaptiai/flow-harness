@@ -95,6 +95,40 @@ describe("supervisor durable records", () => {
     expect(() => parseWorkerDescriptor({ ...descriptor, token: "short" })).toThrow(/token/i);
   });
 
+  it("binds a terminal recovery refusal to its replayed running run", () => {
+    const workerId = randomUUID();
+    const input = {
+      version: 1 as const,
+      workerId,
+      jobId: randomUUID(),
+      runId: "run-1",
+      pid: 1234,
+      token: "d".repeat(64),
+      jobDigest: createHash("sha256").update("job").digest("hex"),
+      socketPath: `/tmp/flow-harness-501/w-${workerId}.sock`,
+      status: "terminal" as const,
+      runStatus: "running" as const,
+      recoveryErrorCode: "uncertain_operation" as const,
+      failure: "node attempt has no committed outcome",
+      exitCode: 1,
+      startedAt: "2026-08-07T12:00:00.000Z",
+      updatedAt: "2026-08-07T12:00:01.000Z",
+    };
+
+    expect(parseWorkerDescriptor(input)).toMatchObject({
+      status: "terminal",
+      runStatus: "running",
+      recoveryErrorCode: "uncertain_operation",
+    });
+    expect(() => parseWorkerDescriptor({ ...input, recoveryErrorCode: undefined })).toThrow(
+      /recovery error code/i,
+    );
+    expect(() => parseWorkerDescriptor({ ...input, failure: undefined })).toThrow(/failure/i);
+    expect(() => parseWorkerDescriptor({ ...input, status: "failed" })).toThrow(
+      /recovery error code/i,
+    );
+  });
+
   it("derives short deterministic sockets independent of run-directory depth", () => {
     const runsDirectory = `/${"deep/".repeat(80)}runs`;
     const first = supervisorSocketPath(runsDirectory, 501);

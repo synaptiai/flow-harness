@@ -125,12 +125,15 @@ describe("public repository contracts", () => {
     expect(workflowSpec).toContain("expectedSha256");
     expect(workflowSpec).toMatch(/stale_version/);
     expect(workflowSpec).toContain("flow.effects/v1");
-    expect(recovery).toMatch(/automatic hash-based reconciliation|typed reconciliation/i);
+    expect(recovery).toContain("`node_effect_reconciled`");
+    expect(recovery).toMatch(/same target queue.*cross-process lock/is);
     expect(sourcing).toMatch(/Pi's built-in edit/i);
     expect(roadmap).toMatch(
       /workspace edits persist typed prepare\/settle evidence.*Implemented/is,
     );
+    expect(roadmap).toMatch(/Supported open edits are reconciled.*Implemented/is);
     expect(security).toMatch(/replay rejects terminalization while an effect remains\s+unresolved/);
+    expect(security).toMatch(/opens without following symlinks.*8 MiB/is);
     expect(testing).toMatch(/edit crashes before rename.*settlement rejection/is);
 
     const example = parse(exampleSource) as {

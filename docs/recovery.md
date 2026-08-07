@@ -19,10 +19,12 @@ flow resume <workflow.yaml> --run-id <run-id> [--runs-dir <path>] [--cwd <path>]
 ```
 
 Flow compiles the workflow before claiming the run. It then acquires exclusive local ownership,
-replays committed events, checks compatibility, and appends `run_resumed`. Successful nodes remain
-successful and are not executed again. Pending nodes retain their normal dependency order and
-use the lesser of their declared timeout and remaining active-execution budget. The command prints
-the same JSON `RunState` shape as `flow run`.
+replays committed events, and checks compatibility before observing any target. At a safe boundary
+it appends `run_resumed`; successful nodes remain successful and are not executed again. An open
+typed edit is instead reconciled as described below and the unfinished node remains refused.
+Pending nodes retain their normal dependency order and use the lesser of their declared timeout
+and remaining active-execution budget. The command prints the same JSON `RunState` shape as
+`flow run` when recovery can continue.
 
 To submit either operation to the local supervisor, add `--detach`:
 
@@ -76,7 +78,8 @@ attribution rather than authenticated identity.
 | `command_approval_granted` is unexpired | Append `run_resumed`, consume the exact grant in `node_started`, and execute once |
 | `command_approval_granted` has expired unused | Append `run_resumed`, record expiry, create a fresh request, and execute nothing |
 | `command_approval_denied` is durable but `run_failed` is absent | Append `run_resumed`, append `run_failed`, and execute nothing |
-| `node_started` has no matching outcome, with or without effect events | Expose the attempt's immutable effect journal, refuse with `uncertain_operation`, and append or execute nothing |
+| `node_started` has an unsettled prepared edit | Validate history, append one typed observation per supported open edit, refuse with `uncertain_operation`, and do not append `run_resumed` or execute |
+| `node_started` has no matching outcome but no open supported edit | Expose the immutable attempt evidence, refuse with `uncertain_operation`, and append or execute nothing |
 | Run is `succeeded`, `failed`, `cancelled`, or `resource_exhausted` | Refuse with `terminal_run` |
 | Workflow identity, version, digest, budget, node set, or committed dependency order differs | Refuse with `workflow_mismatch` |
 | A new run is resumed with a different normalized execution directory | Refuse with `execution_context_mismatch` |
@@ -90,9 +93,28 @@ Writable agent attempts add more precise, but non-terminal, evidence. `node_star
 effect identity, target, request digest, before/after hashes, and mode. It later syncs exactly one
 settlement: `committed/directory_synced`, `not_applied/commit_not_entered`, or
 `unknown/post_commit_failure`. A process death can therefore leave an unresolved prepared effect,
-or a settled effect without a node outcome. Inspection preserves that distinction. The current
-recovery command still refuses the entire open attempt; it does not yet compare live hashes and
-append a typed reconciliation decision.
+or a settled effect without a node outcome. Inspection preserves that distinction.
+
+For each unresolved prepared edit, recovery enters the same target queue and cross-process lock as
+normal edits, rejects non-regular targets before opening them, opens without following symlinks,
+hashes the initially observed size in fixed chunks totaling no more than 8 MiB, and compares the
+regular-file SHA-256 and POSIX mode. It appends `node_effect_reconciled` while the target lock is
+still held. If the target's parent has disappeared so the sibling lock cannot exist, recovery
+rechecks the path and may publish only `target_missing` under the in-process target queue; if any
+target is observable, it publishes nothing. An exact after-state becomes
+`applied/target_matches_after`; an exact before-state
+becomes `not_applied/target_matches_before`; missing, non-regular, unreadable, oversized, divergent,
+wrong-mode, or raced targets become `unknown` with a bounded reason. The event retains a digest and
+mode only for a stable regular-file observation. It stores no file bytes or raw operating-system
+error message and never changes the target.
+
+Recovery provenance is separate from execution settlement. Observing the after-state does not
+prove that the original directory sync, provider response, usage report, or whole node completed.
+After all eligible effects are observed, recovery still returns `uncertain_operation`, appends no
+`run_resumed`, and invokes no executor. Repeated recovery skips already settled or reconciled
+effects. If observation or event publication fails partway through multiple effects, the durable
+prefix remains and only later open effects are eligible next time. A live or malformed target lock
+leaves the effect open rather than publishing stale evidence.
 
 ## Ownership and crash handling
 
@@ -113,6 +135,9 @@ FIFO dispatch, queued cancellation, uncertainty, and release; it is synced befor
 acknowledged and periodically compacted to a replay-equivalent snapshot. A worker starts in an
 adoption gate and does not schedule until it has published `running`, the supervisor authenticates
 its worker id, run id, PID, random token, and job digest, and the identity response has flushed.
+If a resume worker records recovery evidence and then receives a typed recovery refusal, it persists
+that code together with the replayed run status. Its process and capacity slot become terminal while
+an uncertain authoritative run remains `running`, never mislabeled as failed.
 Duplicate exact submissions converge on the recorded result; conflicting submissions remain
 rejected even after the original active claim disappears. Concurrent clients also serialize daemon
 auto-start through an owner-only startup record, so only one caller can remove a stale socket and
@@ -156,7 +181,9 @@ run directory, or corrupt owner record fails closed and is preserved for diagnos
 
 | Code | Meaning | Operator action |
 | --- | --- | --- |
-| `uncertain_operation` | A node attempt started without a durable outcome | Inspect the node, its effect journal, and the workspace; wait for typed reconciliation rather than editing the ledger |
+| `uncertain_operation` | A node attempt started without a durable outcome, even if its edits were reconciled | Inspect the node and its settlement/reconciliation provenance; start a new reviewed run rather than editing the ledger |
+| `reconciliation_unavailable` | An open typed effect was found but this embedding did not supply a reconciler | Use the production CLI/worker composition or configure a reviewed reconciler; do not retry the node |
+| `reconciliation_incomplete` | A reconciler returned no observation or attempted multiple publications | Preserve the ledger and diagnose the adapter contract before trying recovery again |
 | `terminal_run` | The run already has a terminal event | Use `flow inspect`; start a new run for new work |
 | `workflow_mismatch` | The supplied workflow is not byte-equivalent after compilation | Locate the exact workflow revision used to start the run |
 | `execution_context_mismatch` | The requested working directory differs from the one persisted by a new run | Resume from the exact original execution directory |
@@ -174,7 +201,8 @@ Flow guarantees that committed successful nodes are not scheduled again during a
 that one local process owns append/execution/approval decisions, that a required command cannot
 start without a matching unexpired single-use grant, that committed resource use produces the same
 remaining allowances and exhausted decision after replay, and that unsafe refusal paths do not add
-run-ledger events or invoke an executor. Detached admission additionally guarantees that every
+`run_resumed` or invoke an executor. A supported open edit may add only its typed reconciliation
+event before refusal. Detached admission additionally guarantees that every
 worker consumes a prior durable slot, queued work is FIFO by stable ticket, queue-full work creates
 no worker, and an exact command retry reproduces its prior admission result. Historical approval
 requests are revalidated against the budget remaining at their exact event boundary, not against
@@ -182,12 +210,16 @@ final run consumption.
 
 For Flow-owned workspace edits, Flow additionally guarantees that rename is never entered before
 the prepared event is acknowledged, committed settlement follows directory sync, terminal receipts
-exactly match settled effects, and crash-window evidence remains replayable. These guarantees do
-not by themselves authorize automatic retry of the surrounding agent attempt.
+exactly match settled effects, crash-window evidence remains replayable, and a recovery observation
+is published under the same target lock without mutating the file. The only exception is a missing
+target whose parent is also absent: because cooperating Flow edits cannot acquire that sibling lock
+or create the target, recovery may publish only a rechecked missing result under the target queue.
+Any observable target remains unresolved. These guarantees do not by themselves authorize
+automatic retry of the surrounding agent attempt.
 
 Flow does not guarantee exactly-once effects in arbitrary external systems, authenticated approval
 or cancellation identity, trusted time, mid-node restoration of Pi sessions, automatic retry of
 uncertain work, host-reboot continuation, multi-host recovery, or a billing-authoritative
 zero-overshoot model-cost cap.
 It also does not perform offline admission-policy retirement. Those capabilities require explicit
-reconciliation, identity, provider reservation, and supervisor designs beyond this recovery slice.
+retry, identity, provider reservation, and supervisor designs beyond this recovery slice.

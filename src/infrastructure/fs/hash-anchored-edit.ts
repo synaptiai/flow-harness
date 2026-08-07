@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { constants, type BigIntStats } from "node:fs";
 import {
   lstat,
   open,
@@ -10,9 +11,15 @@ import {
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 
+import type {
+  FilesystemEditEffectDescriptor,
+  NodeEffectReconciliationInput,
+} from "../../domain/run/events.js";
+
 export const MAX_EDIT_REPLACEMENTS = 32;
 export const MAX_EDIT_INPUT_BYTES = 262_144;
 export const MAX_EDIT_FILE_BYTES = 8 * 1024 * 1024;
+const RECONCILIATION_READ_CHUNK_BYTES = 64 * 1024;
 
 export interface ExactTextEdit {
   readonly oldText: string;
@@ -49,6 +56,12 @@ export interface HashAnchoredEditOptions {
   readonly removeTemporary?: (path: string) => Promise<void>;
   readonly rename?: (temporaryPath: string, targetPath: string) => Promise<void>;
   readonly syncDirectory?: (directory: string) => Promise<void>;
+}
+
+export interface HashAnchoredEditReconciliationOptions {
+  readonly signal?: AbortSignal;
+  readonly openTarget?: (target: string, flags: number) => Promise<FileHandle>;
+  readonly beforeIdentityRecheck?: () => Promise<void>;
 }
 
 export type HashAnchoredEditErrorCode =
@@ -105,6 +118,54 @@ export async function editHashAnchoredTextFile(
   return await withMutationQueue(target, async () => {
     throwIfAborted(options.signal);
     return await editInQueue(target, request, options);
+  });
+}
+
+export async function reconcileHashAnchoredEditEffect(
+  descriptor: FilesystemEditEffectDescriptor,
+  publish: (observation: NodeEffectReconciliationInput) => Promise<void>,
+  options: HashAnchoredEditReconciliationOptions = {},
+): Promise<void> {
+  throwIfAborted(options.signal);
+  await withMutationQueue(descriptor.target, async () => {
+    throwIfAborted(options.signal);
+    let lock: CrossProcessEditLock;
+    try {
+      lock = await acquireCrossProcessEditLock(descriptor.target);
+    } catch (error) {
+      if (!causedByMissingPath(error)) {
+        throw error;
+      }
+      const observation = await observeEffectTarget(descriptor, options);
+      if (observation.reason !== "target_missing") {
+        throw error;
+      }
+      throwIfAborted(options.signal);
+      await publish(observation);
+      return;
+    }
+    let operationError: unknown;
+    try {
+      const observation = await observeEffectTarget(descriptor, options);
+      throwIfAborted(options.signal);
+      await publish(observation);
+    } catch (error) {
+      operationError = error;
+    }
+
+    try {
+      await lock.release();
+    } catch (releaseError) {
+      throw ioFailure(
+        operationError === undefined
+          ? "effect reconciliation was published but its target lock could not be released"
+          : `effect reconciliation failed and its target lock could not be released (${errorMessage(operationError)})`,
+        releaseError,
+      );
+    }
+    if (operationError !== undefined) {
+      throw operationError;
+    }
   });
 }
 
@@ -313,6 +374,198 @@ async function editWhileLocked(
     }
     throw new HashAnchoredEditUncertainError(result, cause);
   }
+}
+
+async function observeEffectTarget(
+  descriptor: FilesystemEditEffectDescriptor,
+  options: HashAnchoredEditReconciliationOptions,
+): Promise<NodeEffectReconciliationInput> {
+  let pathBefore: BigIntStats;
+  try {
+    pathBefore = await lstat(descriptor.target, { bigint: true });
+  } catch (error) {
+    return unavailableTargetObservation(error);
+  }
+  if (!pathBefore.isFile()) {
+    return { outcome: "unknown", reason: "target_not_regular" };
+  }
+  if (pathBefore.size > BigInt(MAX_EDIT_FILE_BYTES)) {
+    return { outcome: "unknown", reason: "target_too_large" };
+  }
+
+  let handle: FileHandle;
+  try {
+    handle = await (options.openTarget ?? open)(
+      descriptor.target,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+  } catch (error) {
+    if (error instanceof HashAnchoredEditError || !isNodeError(error)) {
+      throw error;
+    }
+    return error.code === "ENOENT" || error.code === "ELOOP" || error.code === "EISDIR"
+      ? { outcome: "unknown", reason: "target_changed_during_observation" }
+      : { outcome: "unknown", reason: "target_unreadable" };
+  }
+
+  let observation: NodeEffectReconciliationInput;
+  let operationError: unknown;
+  try {
+    const before = await handle.stat({ bigint: true });
+    if (!sameObservedIdentity(pathBefore, before)) {
+      observation = { outcome: "unknown", reason: "target_changed_during_observation" };
+    } else if (!before.isFile()) {
+      observation = { outcome: "unknown", reason: "target_changed_during_observation" };
+    } else if (before.size > BigInt(MAX_EDIT_FILE_BYTES)) {
+      observation = { outcome: "unknown", reason: "target_too_large" };
+    } else {
+      const expectedBytes = Number(before.size);
+      const content = await hashBoundedFileHandle(handle, expectedBytes, options.signal);
+      await options.beforeIdentityRecheck?.();
+      const after = await handle.stat({ bigint: true });
+      const current = await observeCurrentPath(descriptor.target);
+      if (current === "unreadable") {
+        observation = { outcome: "unknown", reason: "target_unreadable" };
+      } else if (
+        current === "changed" ||
+        content.bytesRead !== expectedBytes ||
+        !sameObservedIdentity(before, after) ||
+        !sameObservedIdentity(after, current)
+      ) {
+        observation = {
+          outcome: "unknown",
+          reason: "target_changed_during_observation",
+        };
+      } else {
+        observation = classifyRegularTarget(
+          descriptor,
+          content.sha256,
+          Number(after.mode & 0o777n),
+        );
+      }
+    }
+  } catch (error) {
+    operationError = error;
+    observation = { outcome: "unknown", reason: "target_unreadable" };
+  }
+
+  try {
+    await handle.close();
+  } catch (error) {
+    operationError ??= error;
+  }
+  if (operationError !== undefined) {
+    if (operationError instanceof HashAnchoredEditError) {
+      throw operationError;
+    }
+    if (isNodeError(operationError)) {
+      return { outcome: "unknown", reason: "target_unreadable" };
+    }
+    throw operationError;
+  }
+  return observation;
+}
+
+function unavailableTargetObservation(error: unknown): NodeEffectReconciliationInput {
+  if (isNodeError(error) && (error.code === "ENOENT" || error.code === "ENOTDIR")) {
+    return { outcome: "unknown", reason: "target_missing" };
+  }
+  if (isNodeError(error)) {
+    return { outcome: "unknown", reason: "target_unreadable" };
+  }
+  throw error;
+}
+
+async function hashBoundedFileHandle(
+  handle: FileHandle,
+  expectedBytes: number,
+  signal: AbortSignal | undefined,
+): Promise<{ readonly sha256: string; readonly bytesRead: number }> {
+  const digest = createHash("sha256");
+  const buffer = Buffer.allocUnsafe(
+    Math.max(1, Math.min(RECONCILIATION_READ_CHUNK_BYTES, expectedBytes)),
+  );
+  let position = 0;
+  while (position < expectedBytes) {
+    throwIfAborted(signal);
+    const requested = Math.min(buffer.length, expectedBytes - position);
+    const result = await handle.read(buffer, 0, requested, position);
+    if (result.bytesRead === 0) {
+      break;
+    }
+    digest.update(buffer.subarray(0, result.bytesRead));
+    position += result.bytesRead;
+  }
+  return { sha256: digest.digest("hex"), bytesRead: position };
+}
+
+async function observeCurrentPath(target: string): Promise<BigIntStats | "changed" | "unreadable"> {
+  try {
+    return await lstat(target, { bigint: true });
+  } catch (error) {
+    if (isNodeError(error) && (error.code === "ENOENT" || error.code === "ENOTDIR")) {
+      return "changed";
+    }
+    if (isNodeError(error)) {
+      return "unreadable";
+    }
+    throw error;
+  }
+}
+
+function sameObservedIdentity(left: BigIntStats, right: BigIntStats): boolean {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.size === right.size &&
+    left.mode === right.mode &&
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs
+  );
+}
+
+function classifyRegularTarget(
+  descriptor: FilesystemEditEffectDescriptor,
+  observedSha256: string,
+  observedMode: number,
+): NodeEffectReconciliationInput {
+  if (observedMode !== descriptor.mode) {
+    return observedSha256 === descriptor.beforeSha256 || observedSha256 === descriptor.afterSha256
+      ? {
+          outcome: "unknown",
+          reason: "target_mode_diverged",
+          observedSha256,
+          observedMode,
+        }
+      : {
+          outcome: "unknown",
+          reason: "target_content_diverged",
+          observedSha256,
+          observedMode,
+        };
+  }
+  if (observedSha256 === descriptor.afterSha256) {
+    return {
+      outcome: "applied",
+      reason: "target_matches_after",
+      observedSha256,
+      observedMode,
+    };
+  }
+  if (observedSha256 === descriptor.beforeSha256) {
+    return {
+      outcome: "not_applied",
+      reason: "target_matches_before",
+      observedSha256,
+      observedMode,
+    };
+  }
+  return {
+    outcome: "unknown",
+    reason: "target_content_diverged",
+    observedSha256,
+    observedMode,
+  };
 }
 
 function validateRequest(request: HashAnchoredEditRequest): void {
@@ -673,6 +926,17 @@ function errorMessage(error: unknown): string {
 
 function isMissingPath(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
+
+function causedByMissingPath(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < 4 && current !== undefined; depth += 1) {
+    if (isNodeError(current) && (current.code === "ENOENT" || current.code === "ENOTDIR")) {
+      return true;
+    }
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return false;
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {

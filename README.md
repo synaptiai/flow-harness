@@ -25,7 +25,7 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Bounded detached supervisor, durable FIFO queue, authenticated workers, cancellation, and event replay | Implemented on Linux and macOS |
 | Deterministic criterion verification | Implemented |
 | Bounded Pi agent nodes with Flow-owned `read`, `ls`, and hash-anchored `edit` tools | Implemented |
-| Write-ahead durable evidence for each workspace edit | Implemented; automatic open-effect reconciliation is planned |
+| Write-ahead durable evidence and typed recovery observation for each workspace edit | Implemented for hash-anchored edits; whole-node retry remains prohibited |
 | Fail-closed sandboxed command process trees | Implemented on Linux and macOS |
 | Dynamic agent-tool approval, graph loops, and broader model tools | Planned |
 | VM-grade isolation of the host-side agent runtime | Planned |
@@ -228,8 +228,12 @@ Flow continues only from a committed node boundary. It skips nodes whose success
 records `run_resumed` before starting new work. Writable agent attempts declare a versioned effect
 protocol; each edit is durably prepared before atomic rename and settled after the commit boundary.
 `inspect` can therefore distinguish no observed edit, not applied, committed, and post-commit
-unknown effects. A durable `node_started` without a matching node outcome is still uncertain: Flow
-names the node and attempt, exposes its effect journal, appends nothing, and executes nothing.
+unknown effects. If an interruption leaves a prepared edit open, `resume` coordinates with the same
+target lock used by edits, compares the current regular-file hash and mode, and appends one typed
+recovery observation: applied, not applied, or unknown with a bounded reason. A durable
+`node_started` without a matching node outcome is still uncertain: Flow names the node and attempt,
+exposes its effect journal and recovery provenance, refuses with `uncertain_operation`, and executes
+nothing. Repeating recovery does not duplicate an observation.
 Terminal,
 mismatched, corrupt, missing, or actively owned runs are also refused without changing committed
 events. New runs also bind the normalized execution directory. Approval waits are safe committed
@@ -264,7 +268,14 @@ event is synced before rename. While journal publication remains available, sett
 committed only after directory sync, as not applied before rename, or as unknown after a post-rename
 failure. A rejected settlement append poisons the attempt journal and leaves the prepared effect
 unresolved rather than inventing an outcome. Replay requires every prepared edit, including a
-not-applied edit, to retain its distinct allowed write decision. Directory
+not-applied edit, to retain its distinct allowed write decision. Recovery observations remain
+separate from executor settlements: matching the after-state later does not prove that the original
+directory sync or model turn completed and never authorizes automatic node retry. Reconciliation
+hashes only the bounded size observed before opening the no-follow handle, in fixed chunks totaling
+at most 8 MiB, while holding the shared target lock. If the target's parent has also disappeared and
+the sibling lock cannot exist, only a still-missing classification may be published; any observable
+target remains open. Recovery persists no file bytes or raw OS error text and never repairs the
+target. Directory
 listings consume one logical policy authorization rather than one decision per entry. Create,
 delete, rename, shell, and network
 tools are not exposed. Filesystem operations are canonically resolved and authorized by the Flow
