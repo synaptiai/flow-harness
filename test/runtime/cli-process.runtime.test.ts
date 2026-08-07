@@ -160,6 +160,78 @@ describe("compiled Flow process", () => {
       status: "succeeded",
     });
   });
+
+  it("persists approval across CLI processes and executes only after resume", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "approval.workflow.yaml");
+    const runsDirectory = join(directory, "runs");
+    const marker = join(directory, "approved-command-ran.txt");
+    await writeFile(
+      workflowPath,
+      approvalWorkflow(
+        "runtime-approval",
+        `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran")`,
+      ),
+      "utf8",
+    );
+
+    const run = await spawnFlow([
+      "run",
+      workflowPath,
+      "--run-id",
+      "runtime-approval",
+      "--runs-dir",
+      runsDirectory,
+      "--cwd",
+      directory,
+    ]).completed;
+    expect(run.code).toBe(3);
+    expect(JSON.parse(run.stdout)).toMatchObject({ status: "waiting_for_approval" });
+    await expect(stat(marker)).rejects.toMatchObject({ code: "ENOENT" });
+
+    const approved = await spawnFlow([
+      "approve",
+      "runtime-approval",
+      "approval-2",
+      "--actor",
+      "runtime:test",
+      "--runs-dir",
+      runsDirectory,
+    ]).completed;
+    expect(approved.code).toBe(0);
+    expect(JSON.parse(approved.stdout)).toMatchObject({
+      status: "running",
+      nodes: { execute: { approval: { status: "granted", actor: "runtime:test" } } },
+    });
+    await expect(stat(marker)).rejects.toMatchObject({ code: "ENOENT" });
+
+    const resumed = await spawnFlow([
+      "resume",
+      workflowPath,
+      "--run-id",
+      "runtime-approval",
+      "--runs-dir",
+      runsDirectory,
+      "--cwd",
+      directory,
+    ]).completed;
+    expect(resumed.code, resumed.stderr).toBe(0);
+    expect(JSON.parse(resumed.stdout)).toMatchObject({
+      status: "succeeded",
+      nodes: { execute: { approval: { status: "consumed" } } },
+    });
+    await expect(readFile(marker, "utf8")).resolves.toBe("ran");
+    const events = await readLedger(join(runsDirectory, "runtime-approval", "events.jsonl"));
+    expect(events.map((event) => event.type)).toEqual([
+      "run_started",
+      "command_approval_requested",
+      "command_approval_granted",
+      "run_resumed",
+      "node_started",
+      "node_succeeded",
+      "run_succeeded",
+    ]);
+  });
 });
 
 function commandWorkflow(id: string, script: string): string {
@@ -170,6 +242,24 @@ metadata: { id: ${id} }
 nodes:
   - id: execute
     type: command
+    command:
+      executable: ${JSON.stringify(process.execPath)}
+      args:
+        - -e
+        - ${JSON.stringify(script)}
+      timeoutMs: 10000
+`;
+}
+
+function approvalWorkflow(id: string, script: string): string {
+  return `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: ${id} }
+nodes:
+  - id: execute
+    type: command
+    approval: { mode: required, grantTtlMs: 300000 }
     command:
       executable: ${JSON.stringify(process.execPath)}
       args:

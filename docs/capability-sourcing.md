@@ -66,7 +66,7 @@ OMP is a Pi fork with a broad TypeScript, Bun, and Rust-native product surface. 
 
 | Capability | Treatment |
 | --- | --- |
-| Read/write/exec approval tiers | Reimplement fail-closed, with argument-dependent authority; do not confuse approval with containment |
+| Read/write/exec approval tiers | Exact expiring command pre-start approval is implemented independently; configurable tiers and dynamic model-tool prompting remain future work; approval never substitutes for containment |
 | Hash-anchored edits | The first single-file full-SHA exact-edit tool is independently implemented with provenance receipts; OMP's compact line protocol, snapshots, stale recovery, and multi-file patcher remain benchmark candidates rather than dependencies |
 | Diagnostics after writes | Add through an optional language-service capability |
 | LSP and debugger operations | Optional first-party packages, outside scheduler core |

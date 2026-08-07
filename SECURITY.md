@@ -21,9 +21,18 @@ The embedded Pi runtime runs with the invoking user's operating-system permissio
 - Any dependency error or warning, initialization error, unsupported platform, or invalid sandbox launch descriptor fails before command spawn. There is no host-execution fallback.
 - Command nodes run only on Linux and macOS. Windows execution fails before spawn until full descendant-process containment is available.
 - Run events are synced before scheduler advancement; edit authorization and before/after effect receipts are distinct replay-validated evidence; replay fails closed on committed-record corruption.
+- Approval-required command nodes persist the exact executable, ordered arguments, normalized
+  working directory, timeout, digest, request identity, and grant lifetime before any node start or
+  sandbox preparation. Approval is single-use, expires predictably, and does not weaken the command
+  sandbox. Denial and expiry execute nothing.
 
 SRT is a beta native sandbox based on Seatbelt on macOS and bubblewrap, namespaces, and seccomp on Linux. It reduces command authority but is not equivalent to a microVM and cannot defend against a kernel or sandbox-runtime vulnerability. It also does not contain the host-side Pi process or make host-side pathname authorization atomic against a concurrently hostile workspace process. Use a reviewed container, microVM, Gondolin, OpenShell, or managed boundary for hostile or multi-tenant work.
 
 Workflow files remain trusted orchestration configuration: command nodes can execute arbitrary programs within the declared workspace-write boundary. Review workflows before running them and scope host credentials outside the Flow process where possible.
+
+`flow approve` and `flow deny` record a caller-supplied actor label. The label is audit attribution,
+not authenticated identity, RBAC, or a signature. Request ids are locators rather than bearer
+secrets. The private run-directory permissions and authority of the invoking local account are the
+administrative boundary. Do not expose the run directory or approval CLI to untrusted users.
 
 Command output, agent text, executable arguments, and failure messages are persisted in the run ledger as evidence. They can contain secrets emitted by tools or providers. Keep `.flow/runs` private, apply repository ignore rules, and redact sensitive output at its source.

@@ -6,7 +6,7 @@ Flow turns a collection of useful software-development practices into an enforce
 
 The standalone harness reverses that relationship. Flow owns workflow execution and delegates only bounded node work to an embedded agent runtime.
 
-This document describes the target architecture unless a section is explicitly labeled as the current executable slice. The delivery roadmap is the source of truth for implementation status. Gates 1 and 2 currently provide `validate`, sequential `run`, `inspect`, optional versioned goal contracts, command-bound criterion evaluation, command and bounded Pi agent nodes, cancellation, and replayable local event ledgers. Gate 3 now includes a runtime-neutral policy broker for model-requested reads, lists, and hash-anchored single-file edits plus a fail-closed native sandbox for every command node. The first Gate 4 slice adds `resume` at committed node boundaries, exclusive same-host process ownership, and fail-closed refusal of uncertain open attempts. Initialization, the TUI/daemon, open-operation reconciliation, approvals, execute/network model tools, probabilistic evaluators, packages, graph loops, and stronger VM or managed sandbox backends remain later work.
+This document describes the target architecture unless a section is explicitly labeled as the current executable slice. The delivery roadmap is the source of truth for implementation status. Gates 1 and 2 currently provide `validate`, sequential `run`, `inspect`, optional versioned goal contracts, command-bound criterion evaluation, command and bounded Pi agent nodes, cancellation, and replayable local event ledgers. Gate 3 now includes a runtime-neutral policy broker for model-requested reads, lists, and hash-anchored single-file edits, a fail-closed native sandbox for every command node, and exact expiring pre-start approval for deterministic commands. The first Gate 4 slices add `resume` at committed node boundaries, exclusive same-host process ownership, fail-closed refusal of uncertain open attempts, and command approval waits that survive client detachment. Initialization, the TUI/daemon, open-operation reconciliation, dynamic agent-tool approval, execute/network model tools, probabilistic evaluators, packages, graph loops, and stronger VM or managed sandbox backends remain later work.
 
 ## Target flows
 
@@ -86,7 +86,7 @@ Implements one Flow-owned `AgentExecutor` port. It creates node-scoped sessions,
 
 ### Tool broker
 
-The current broker normalizes and canonically resolves every model-requested `read`, `ls`, and `edit` filesystem operation, derives its authority class, authorizes only declared operations inside the workspace, and emits bounded decisions tied to the exact run/node attempt. A directory listing is one logical authorization even when it returns many bounded entries. Edit authorization binds a digest of the complete model request. A separate bounded effect receipt records the canonical target, before/after SHA-256 values, and committed or uncertain outcome; replay verifies a one-to-one match between every receipt and an allowed write decision. The domain contract already distinguishes read, write, execute, network, credential, and destructive authority without importing runtime types. Exact approval grants and broader model tools remain subsequent Gate 3 slices. Tool implementations cannot mutate scheduler state.
+The current broker normalizes and canonically resolves every model-requested `read`, `ls`, and `edit` filesystem operation, derives its authority class, authorizes only declared operations inside the workspace, and emits bounded decisions tied to the exact run/node attempt. A directory listing is one logical authorization even when it returns many bounded entries. Edit authorization binds a digest of the complete model request. A separate bounded effect receipt records the canonical target, before/after SHA-256 values, and committed or uncertain outcome; replay verifies a one-to-one match between every receipt and an allowed write decision. The domain contract already distinguishes read, write, execute, network, credential, and destructive authority without importing runtime types. Dynamic model-tool approval, configurable profiles, and broader model tools remain subsequent Gate 3 slices. Tool implementations cannot mutate scheduler state.
 
 ### Command sandbox
 
@@ -100,6 +100,25 @@ Persists transitions before the scheduler advances. Model transcripts are option
 
 Fresh and recovered execution publish an atomic per-run ownership record containing a process ID and random token before appending. A live owner blocks competitors; an exited owner can be displaced atomically. Recovery replays the committed JSONL prefix, verifies the exact compiled workflow digest and node set, and appends `run_resumed` before continuing. A final unterminated record is uncommitted and is truncated before the recovered owner appends. Ownership is local-host coordination, not a distributed lease or security boundary.
 
+### Durable command approval
+
+The current approval slice is a scheduler pre-start gate for deterministic command nodes. Run start
+captures the approval declaration and normalized execution directory. When the node becomes ready,
+the scheduler derives an exact `process.execute` operation, persists its SHA-256-bound request, and
+returns `waiting_for_approval` before `node_started`, sandbox preparation, or process spawn.
+
+Approval and denial are separate application operations over the recoverable event-store port. They
+require no workflow file, executor, Pi session, or model credential. Approval records an attributable
+single-use grant with a bounded expiry but does not execute; resume with the exact workflow and
+working directory consumes it. An unused expired grant returns to a new durable wait. Denial creates
+a side-effect-free committed node failure and terminal run. The same owner record serializes
+decision-versus-decision and decision-versus-resume races.
+
+The actor label is asserted local audit metadata, not authenticated identity. Request ids are
+sequence-derived locators rather than bearer secrets. General approval nodes, remote callbacks, and
+dynamic Pi tool-call suspension remain separate capabilities. The latter requires persisted opaque
+session continuation so prior model effects are not replayed.
+
 ### Evaluators
 
 The current goal evaluator is a pure domain transition: it receives only a compiled criterion-to-verifier binding and authoritative node outcome metadata. It receives no prompt, transcript, filesystem handle, executor, or tool, and therefore cannot mutate the workspace or infer acceptance from implementation rationale. Successful command evidence accepts a criterion; normal non-zero evidence rejects it; timeouts, signals, missing evidence, and unexpected evidence kinds are inconclusive. An LLM evaluator, when later unavoidable, must receive evidence rather than the implementation transcript and have no workspace mutation tools.
@@ -112,12 +131,15 @@ Pi intentionally has no built-in security boundary and the host-side agent runti
 - Every command node and descendant executes inside SRT on Linux or macOS. Flow preserves argv boundaries through an audited POSIX encoder, passes an explicit environment allowlist, denies network and undeclared Unix sockets, and protects the actual run-store path. Linux execution canonically resolves and re-exposes only SRT's required seccomp helper read-only when the harness installation is outside the selected workspace.
 - Missing dependencies, seccomp degradation, unsupported platforms, initialization errors, and invalid launch descriptors fail closed with no command spawn. There is no unsandboxed fallback.
 - Each new command result records the backend, exact backend version, named profile, and semantic policy digest. Backend and profile values use bounded machine identifiers rather than an SRT-only persisted union, preserving the event shape for future adapters. Older ledgers remain readable because the added evidence field is optional during replay.
+- Approval-required commands persist the exact executable, argv, normalized working directory,
+  timeout, digest, request, and grant lifetime before a start. A grant authorizes only that scheduler
+  transition; it neither expands the sandbox profile nor predicts every transitive process effect.
 
 Native sandboxing is not equivalent to a microVM. SRT is a beta dependency built on Seatbelt on macOS and bubblewrap, namespaces, and seccomp on Linux. Kernel or sandbox-runtime vulnerabilities remain outside Flow's enforcement model, and the host-side Pi process is not contained by this command adapter. Hostile workloads still require a reviewed container, microVM, Gondolin, OpenShell, or managed isolation boundary.
 
 The application-level workspace broker prevents ordinary traversal and symlink escapes. A target-local lock prevents concurrent edits by cooperating Flow processes on the same host and recovers locks whose same-host owner has exited. It is not a distributed lease and does not make pathname authorization and use atomic against a concurrently hostile or non-cooperating process. The command sandbox reduces the authority of command descendants; it does not turn the whole harness into a complete host security boundary.
 
-Approval remains a separate concern. OMP-style allow/prompt/deny rules can decide whether an exact operation is authorized, but authorization cannot replace containment of that operation's transitive effects.
+Approval remains separate from containment. OMP-style allow/prompt/deny rules can decide whether an exact operation is authorized, but authorization cannot replace containment of that operation's transitive effects. Flow currently proves that separation for deterministic command nodes; dynamic agent tools still require resumable session state.
 
 ## Target invariants
 
@@ -152,7 +174,7 @@ Approval remains a separate concern. OMP-style allow/prompt/deny rules can decid
 | Crash during persistence | Recover to the last committed event and tolerate an incomplete trailing record |
 | Corrupt state or failed migration | Preserve original data, fail closed, and provide exportable diagnostics |
 | Resource exhaustion | Apply backpressure and terminate predictably without losing committed state |
-| Approval timeout | Remain in a durable wait state; never infer consent |
+| Approval grant expires unused | Execute nothing, record expiry, and return to a fresh durable request; never infer consent |
 | Incompatible package | Reject or quarantine it without changing active runs |
 
 ## Non-goals

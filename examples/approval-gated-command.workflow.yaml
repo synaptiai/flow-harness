@@ -1,0 +1,27 @@
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata:
+  id: approval-gated-command
+  description: Wait for an exact, expiring operator grant before running a command.
+goal:
+  apiVersion: flow.synapti.ai/v1alpha1
+  kind: Goal
+  metadata:
+    id: approved-command-is-verified
+  outcome: The explicitly approved command completes successfully.
+  criteria:
+    - id: version-command-passes
+      description: The approved Node.js version command exits successfully.
+      verifier:
+        nodeId: verify
+nodes:
+  - id: verify
+    type: command
+    approval:
+      mode: required
+      grantTtlMs: 300000
+    command:
+      executable: node
+      args:
+        - --version
+      timeoutMs: 10000

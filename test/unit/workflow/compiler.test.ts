@@ -27,15 +27,16 @@ describe("compileWorkflowText", () => {
     expect(workflow.nodes.every(Object.isFrozen)).toBe(true);
   });
 
-  it.each(["verify-foundation.workflow.yaml", "implement-and-verify.workflow.yaml"])(
-    "keeps published example %s compilable",
-    async (fileName) => {
-      const exampleUrl = new URL(`../../../examples/${fileName}`, import.meta.url);
-      const source = await readFile(exampleUrl, "utf8");
+  it.each([
+    "verify-foundation.workflow.yaml",
+    "implement-and-verify.workflow.yaml",
+    "approval-gated-command.workflow.yaml",
+  ])("keeps published example %s compilable", async (fileName) => {
+    const exampleUrl = new URL(`../../../examples/${fileName}`, import.meta.url);
+    const source = await readFile(exampleUrl, "utf8");
 
-      expect(() => compileWorkflowText(source, fileName)).not.toThrow();
-    },
-  );
+    expect(() => compileWorkflowText(source, fileName)).not.toThrow();
+  });
 
   it("compiles an immutable versioned goal with verifier-bound criteria", () => {
     const workflow = compileWorkflowText(
@@ -199,6 +200,85 @@ nodes:
 `;
 
     expectCompilationFailure(source, "invalid_schema", "nodes.0.command");
+  });
+
+  it("compiles a required command approval with a bounded default grant lifetime", () => {
+    const workflow = compileWorkflowText(
+      workflowWithNodes(`
+  - id: verify
+    type: command
+    approval: { mode: required }
+    command: { executable: node, args: [--version] }
+`),
+    );
+
+    expect(workflow.nodes[0]).toMatchObject({
+      id: "verify",
+      type: "command",
+      approval: { mode: "required", grantTtlMs: 300000 },
+    });
+    const node = workflow.nodes[0];
+    expect(node?.type).toBe("command");
+    expect(Object.isFrozen(node)).toBe(true);
+    expect(Object.isFrozen(node?.type === "command" ? node.approval : undefined)).toBe(true);
+  });
+
+  it("preserves an explicit command approval grant lifetime", () => {
+    const workflow = compileWorkflowText(
+      workflowWithNodes(`
+  - id: verify
+    type: command
+    approval:
+      mode: required
+      grantTtlMs: 60000
+    command: { executable: node, args: [--version] }
+`),
+    );
+
+    expect(workflow.nodes[0]).toMatchObject({
+      approval: { mode: "required", grantTtlMs: 60000 },
+    });
+  });
+
+  it.each([
+    ["unsupported mode", "approval: { mode: prompt }", "nodes.0.approval.mode"],
+    ["zero lifetime", "approval: { mode: required, grantTtlMs: 0 }", "nodes.0.approval.grantTtlMs"],
+    [
+      "oversized lifetime",
+      "approval: { mode: required, grantTtlMs: 86400001 }",
+      "nodes.0.approval.grantTtlMs",
+    ],
+    [
+      "unknown field",
+      "approval: { mode: required, grantTtlMs: 1000, bypass: true }",
+      "nodes.0.approval",
+    ],
+  ])("rejects command approval with an %s", (_case, approval, path) => {
+    const source = workflowWithNodes(`
+  - id: verify
+    type: command
+    ${approval}
+    command: { executable: node, args: [--version] }
+`);
+
+    expectCompilationFailure(source, "invalid_schema", path);
+  });
+
+  it("rejects approval declarations on agent nodes", () => {
+    const source = workflowWithNodes(`
+  - id: analyze
+    type: agent
+    approval: { mode: required }
+    agent:
+      prompt: Analyze the repository.
+      model: { provider: anthropic, id: claude-sonnet-4-5 }
+  - id: verify
+    type: command
+    dependsOn: [analyze]
+    command: { executable: npm, args: [test] }
+`);
+
+    expectCompilationFailure(source, "invalid_schema", "nodes.0");
   });
 
   it.each([

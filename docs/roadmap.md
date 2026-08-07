@@ -2,7 +2,7 @@
 
 The roadmap is organized around externally verifiable capability gates rather than dates.
 
-Gates 0–2 are implemented. Gate 3 has a model-tool policy broker, a full-SHA hash-anchored single-file edit, durable effect receipts, and fail-closed native command containment. Gate 4 has a committed-boundary recovery slice with exclusive same-host ownership. Approvals, execute/network model tools, configurable policy, open-operation reconciliation, supervision, and stronger VM or managed backends remain target capabilities.
+Gates 0–2 are implemented. Gate 3 has a model-tool policy broker, a full-SHA hash-anchored single-file edit, durable effect receipts, fail-closed native command containment, and exact expiring approval for deterministic command nodes. Gate 4 has committed-boundary recovery, exclusive same-host ownership, and client-detachable command approval waits. Dynamic agent-tool approval, execute/network model tools, configurable policy, open-operation reconciliation, supervision, and stronger VM or managed backends remain target capabilities.
 
 ## Gate 0: Repository foundation
 
@@ -31,7 +31,7 @@ Gates 0–2 are implemented. Gate 3 has a model-tool policy broker, a full-SHA h
 
 - All model-requested tools pass through a Flow-owned broker.
 - Policy classifies reads, writes, execution, network, credentials, and destructive operations.
-- Approval binds an exact operation and expires predictably.
+- Approval binds an exact operation and expires predictably. *(Implemented for deterministic command nodes.)*
 - Timeouts terminate process trees and record partial output.
 - Side-effect uncertainty blocks automatic retry.
 - Full-SHA hash-anchored edit of an existing UTF-8 file records before/after effect receipts, coordinates cooperating same-host Flow processes, and fails closed on stale content. *(Implemented.)*
@@ -47,11 +47,11 @@ Gates 0–2 are implemented. Gate 3 has a model-tool policy broker, a full-SHA h
 - Open operations are reconciled before retry. *(The current slice refuses them without retry.)*
 - A supervisor owns detached workers, health, cancellation, and event replay.
 - Budgets cover attempts, tokens, cost, duration, concurrency, and artifacts.
-- Human wait states survive client detachment.
+- Human wait states survive client detachment. *(Implemented for command approval waits.)*
 
 ## Gate 5: Graph and loop completeness
 
-- Conditions, fork/join, bounded loops, approval nodes, and verifier nodes are executable.
+- Conditions, fork/join, bounded loops, general approval nodes, and verifier nodes are executable.
 - Optimization loops declare a metric, baseline, direction, invariants, budget, stagnation rule, and rollback strategy.
 - Child runs use isolated workspaces and typed results.
 - Packages cannot bypass graph dependencies or joins.
