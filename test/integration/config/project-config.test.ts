@@ -156,6 +156,55 @@ describe("Flow project configuration", () => {
     ).rejects.toBeInstanceOf(FlowConfigError);
   });
 
+  it("fails closed for direct and dangling project configuration symlinks", async () => {
+    const project = await temporaryDirectory("flow-config-project-link-");
+    const flowDirectory = join(project, ".flow");
+    const target = join(project, "target.yaml");
+    const configPath = join(flowDirectory, "config.yaml");
+    await mkdir(flowDirectory);
+    await writeFile(target, projectConfigHeader(), "utf8");
+    await symlink(target, configPath);
+
+    await expect(
+      loadEffectiveFlowConfig({
+        cwd: project,
+        xdgConfigHome: join(project, "missing-xdg"),
+        homeDirectory: join(project, "missing-home"),
+      }),
+    ).rejects.toMatchObject({ code: "unsafe_target" });
+
+    await rm(configPath);
+    await symlink(join(project, "missing-target.yaml"), configPath);
+    await expect(
+      loadEffectiveFlowConfig({
+        cwd: project,
+        xdgConfigHome: join(project, "missing-xdg"),
+        homeDirectory: join(project, "missing-home"),
+      }),
+    ).rejects.toMatchObject({ code: "unsafe_target" });
+  });
+
+  it("fails closed for direct and dangling operator configuration symlinks", async () => {
+    const project = await temporaryDirectory("flow-config-operator-link-");
+    const xdg = await temporaryDirectory("flow-config-operator-link-xdg-");
+    const operatorDirectory = join(xdg, "flow");
+    const target = join(xdg, "target.yaml");
+    const configPath = join(operatorDirectory, "config.yaml");
+    await mkdir(operatorDirectory);
+    await writeFile(target, operatorConfigHeader(), "utf8");
+    await symlink(target, configPath);
+
+    await expect(
+      loadEffectiveFlowConfig({ cwd: project, xdgConfigHome: xdg, homeDirectory: project }),
+    ).rejects.toMatchObject({ code: "unsafe_target" });
+
+    await rm(configPath);
+    await symlink(join(xdg, "missing-target.yaml"), configPath);
+    await expect(
+      loadEffectiveFlowConfig({ cwd: project, xdgConfigHome: xdg, homeDirectory: project }),
+    ).rejects.toMatchObject({ code: "unsafe_target" });
+  });
+
   it("falls back from a relative XDG path and returns built-ins without config files", async () => {
     const project = await temporaryDirectory("flow-config-defaults-");
     const home = join(project, "home");

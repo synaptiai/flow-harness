@@ -1,16 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { Stats } from "node:fs";
-import {
-  type FileHandle,
-  lstat,
-  mkdir,
-  open,
-  readFile,
-  realpath,
-  rename,
-  rm,
-  stat,
-} from "node:fs/promises";
+import { constants, type Stats } from "node:fs";
+import { type FileHandle, lstat, mkdir, open, realpath, rename, rm, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 
@@ -183,10 +173,18 @@ async function discoverProjectConfig(
 ): Promise<{ readonly projectRoot: string; readonly path: string } | null> {
   let current = cwd;
   for (;;) {
-    const path = join(current, ".flow", "config.yaml");
-    const metadata = await optionalStat(path);
+    const flowDirectory = join(current, ".flow");
+    const flowMetadata = await optionalLstat(flowDirectory);
+    if (flowMetadata !== null && (flowMetadata.isSymbolicLink() || !flowMetadata.isDirectory())) {
+      throw new FlowConfigStoreError(
+        "unsafe_target",
+        `Flow project directory "${flowDirectory}" must be a real directory`,
+      );
+    }
+    const path = join(flowDirectory, "config.yaml");
+    const metadata = flowMetadata === null ? null : await optionalLstat(path);
     if (metadata !== null) {
-      if (!metadata.isFile()) {
+      if (metadata.isSymbolicLink() || !metadata.isFile()) {
         throw new FlowConfigStoreError(
           "unsafe_target",
           `Flow project configuration "${path}" is not a regular file`,
@@ -203,35 +201,52 @@ async function discoverProjectConfig(
 }
 
 async function readOptionalConfig(path: string): Promise<unknown | null> {
-  const metadata = await optionalStat(path);
+  const metadata = await optionalLstat(path);
   if (metadata === null) {
     return null;
   }
-  if (!metadata.isFile()) {
+  if (metadata.isSymbolicLink() || !metadata.isFile()) {
     throw new FlowConfigStoreError(
       "unsafe_target",
       `Flow configuration "${path}" is not a regular file`,
     );
   }
-  return await readRequiredConfig(path, metadata.size);
+  return await readRequiredConfig(path);
 }
 
-async function readRequiredConfig(path: string, knownSize?: number): Promise<unknown> {
+async function readRequiredConfig(path: string): Promise<unknown> {
+  let handle: FileHandle | undefined;
   try {
-    const size = knownSize ?? (await stat(path)).size;
-    if (size > MAX_CONFIG_BYTES) {
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const metadata = await handle.stat();
+    if (!metadata.isFile()) {
+      throw new FlowConfigStoreError(
+        "unsafe_target",
+        `Flow configuration "${path}" is not a regular file`,
+      );
+    }
+    if (metadata.size > MAX_CONFIG_BYTES) {
       throw new FlowConfigError(
         "invalid_config",
         `${path}: <root>: configuration exceeds ${MAX_CONFIG_BYTES} bytes`,
         { sourcePath: path, fieldPath: "<root>" },
       );
     }
-    return parseYaml(await readFile(path, "utf8"), path);
+    return parseYaml(await handle.readFile({ encoding: "utf8" }), path);
   } catch (error) {
     if (error instanceof FlowConfigError || error instanceof FlowConfigStoreError) {
       throw error;
     }
+    if (isNodeError(error) && error.code === "ELOOP") {
+      throw new FlowConfigStoreError(
+        "unsafe_target",
+        `Flow configuration "${path}" must not be a symbolic link`,
+        { cause: error },
+      );
+    }
     throw ioError(`failed to read Flow configuration "${path}"`, error);
+  } finally {
+    await handle?.close().catch(() => undefined);
   }
 }
 
@@ -306,17 +321,6 @@ async function canonicalDirectory(path: string, label: string): Promise<string> 
 async function optionalLstat(path: string): Promise<Stats | null> {
   try {
     return await lstat(path);
-  } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") {
-      return null;
-    }
-    throw ioError(`failed to inspect "${path}"`, error);
-  }
-}
-
-async function optionalStat(path: string): Promise<Stats | null> {
-  try {
-    return await stat(path);
   } catch (error) {
     if (isNodeError(error) && error.code === "ENOENT") {
       return null;
