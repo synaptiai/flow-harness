@@ -272,6 +272,34 @@ describe("LocalSupervisorStore", () => {
     ).toBe(true);
   });
 
+  it("transfers startup-lock ownership to the spawned daemon identity", async () => {
+    const { store } = await createStore();
+    const parent = createSupervisorStartLock({
+      pid: 1234,
+      token: randomUUID(),
+      acquiredAt: "2026-08-07T12:00:00.000Z",
+    });
+    const contender = createSupervisorStartLock({
+      pid: 9012,
+      token: randomUUID(),
+      acquiredAt: "2026-08-07T12:00:01.000Z",
+    });
+    await store.reserveSupervisorStart(parent);
+
+    await expect(store.transferSupervisorStart(parent.token, 5678)).resolves.toMatchObject({
+      token: parent.token,
+      pid: 5678,
+      acquiredAt: parent.acquiredAt,
+    });
+    await expect(store.reserveSupervisorStart(contender)).resolves.toMatchObject({
+      acquired: false,
+      record: { token: parent.token, pid: 5678 },
+    });
+    await expect(store.transferSupervisorStart(contender.token, 9999)).rejects.toMatchObject({
+      code: "identity_mismatch",
+    });
+  });
+
   it("releases only the matching active claim", async () => {
     const { store } = await createStore();
     const job = jobRecord();

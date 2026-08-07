@@ -305,6 +305,28 @@ export class LocalSupervisorStore {
     }
   }
 
+  async transferSupervisorStart(token: string, pid: number): Promise<SupervisorStartLock> {
+    validateUuid(token, "supervisor startup token");
+    const existing = await this.#readRequiredRecord(
+      this.#supervisorStartPath(),
+      parseSupervisorStartLock,
+      "supervisor startup lock",
+    );
+    if (existing.token !== token) {
+      throw new LocalSupervisorStoreError(
+        "identity_mismatch",
+        "supervisor startup lock belongs to another caller",
+      );
+    }
+    const transferred = parseSupervisorStartLock({ ...existing, pid });
+    try {
+      await writeAtomicRecord(this.#supervisorStartPath(), transferred);
+      return transferred;
+    } catch (error) {
+      throw storeIoError("failed to transfer supervisor startup ownership", error);
+    }
+  }
+
   async listActiveRunClaims(): Promise<readonly ActiveRunClaim[]> {
     return await this.#listRecords(this.claimsDirectory, parseActiveRunClaim, "active run claim");
   }

@@ -202,7 +202,15 @@ export async function ensureSupervisor(
       if (ready !== null) {
         return acceptExistingSupervisor(ready, policy, options);
       }
-      return await launchSupervisor(store, cliPath, deadline, startupTimeoutMs, policy, options);
+      return await launchSupervisor(
+        store,
+        cliPath,
+        deadline,
+        startupTimeoutMs,
+        requestedLock.token,
+        policy,
+        options,
+      );
     } finally {
       await store.releaseSupervisorStart(requestedLock.token);
     }
@@ -215,6 +223,7 @@ async function launchSupervisor(
   cliPath: string,
   deadline: number,
   startupTimeoutMs: number,
+  startupToken: string,
   policy: SupervisorPolicy,
   options: EnsureSupervisorOptions,
 ): Promise<Extract<SupervisorResponse, { readonly ok: true }>> {
@@ -276,6 +285,10 @@ async function launchSupervisor(
   });
 
   try {
+    if (child.pid === undefined) {
+      throw new Error("supervisor process has no process id");
+    }
+    await store.transferSupervisorStart(startupToken, child.pid);
     while (Date.now() < deadline) {
       if (spawnError !== undefined) {
         throw spawnError;
