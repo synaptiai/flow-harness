@@ -6,7 +6,7 @@ Flow turns a collection of useful software-development practices into an enforce
 
 The standalone harness reverses that relationship. Flow owns workflow execution and delegates only bounded node work to an embedded agent runtime.
 
-This document describes the target architecture unless a section is explicitly labeled as the current executable slice. The delivery roadmap is the source of truth for implementation status. Gates 1 and 2 currently provide `validate`, sequential `run`, `inspect`, optional versioned goal contracts, command-bound criterion evaluation, command and bounded Pi agent nodes, cancellation, and replayable local event ledgers. Gate 3 now includes a runtime-neutral policy broker for model-requested reads, lists, and hash-anchored single-file edits, a fail-closed native sandbox for every command node, and exact expiring pre-start approval for deterministic commands. Gate 4 adds `resume` at committed node boundaries, exclusive same-host process ownership, write-ahead durable evidence and typed recovery observation for each workspace edit, fail-closed refusal of uncertain open attempts, command approval waits that survive client detachment, durable resource accounting with run-wide start, model-token, reported-cost, and active-execution limits, project initialization and monotonic capacity configuration, plus a bounded local supervisor with authenticated detached workers, durable FIFO admission, status, event replay, cancellation, and restart adoption. A TUI, automatic retry or session continuation after open attempts, broader configurable policy, dynamic agent-tool approval, execute/network model tools, probabilistic evaluators, packages, graph loops, and stronger VM or managed sandbox backends remain later work.
+This document describes the target architecture unless a section is explicitly labeled as the current executable slice. The delivery roadmap is the source of truth for implementation status. Gates 1 and 2 currently provide `validate`, sequential `run`, `inspect`, optional versioned goal contracts, command-bound criterion evaluation, command and bounded Pi agent nodes, cancellation, and replayable local event ledgers. Gate 3 now includes a runtime-neutral policy broker for model-requested reads, lists, and hash-anchored single-file edits, a fail-closed native sandbox for every command node, and exact expiring pre-start approval for deterministic commands. Gate 4 adds `resume` at committed node boundaries, exclusive same-host process ownership, write-ahead durable evidence and typed recovery observation for each workspace edit, opt-in proof-safe fresh recovery for interrupted agent attempts, command approval waits that survive client detachment, durable resource accounting with run-wide start, model-token, reported-cost, and active-execution limits, project initialization and monotonic capacity configuration, plus a bounded local supervisor with authenticated detached workers, durable FIFO admission, status, event replay, cancellation, and restart adoption. A TUI, opaque Pi session continuation, general failure/fallback retries, broader configurable policy, dynamic agent-tool approval, execute/network model tools, probabilistic evaluators, packages, graph loops, and stronger VM or managed sandbox backends remain later work.
 
 ## Target flows
 
@@ -85,7 +85,7 @@ Compiles workflows, selects ready nodes, assembles minimal context, calls domain
 
 ### Pi runtime
 
-Implements one Flow-owned `AgentExecutor` port. It creates node-scoped sessions, selects models and tools, streams events, supports cancellation, supplies an attempt-scoped Flow policy broker, and translates all Pi values into Flow contracts.
+Implements one Flow-owned `AgentExecutor` port. It creates node-scoped in-memory sessions, selects models and tools, streams events, supports cancellation, supplies an attempt-scoped Flow policy broker, and translates all Pi values into Flow contracts. Flow explicitly disables Pi assistant-turn and provider retry layers; the adapter executes one Flow attempt, while durable Flow policy alone can authorize a later fresh attempt.
 
 ### Tool broker
 
@@ -99,9 +99,9 @@ The port isolates Flow from the backend. Pi's official SRT and Gondolin examples
 
 ### Event and evidence store
 
-Persists transitions before the scheduler advances. Model transcripts are optional diagnostic artifacts; they are never authoritative for graph position or completion. Policy decisions prove authorization. `node_effect_prepared` proves Flow reached a specific edit boundary before rename; `node_effect_settled` records an executor's committed, not-applied, or post-commit-unknown state; `node_effect_reconciled` records what recovery later observed for a still-open edit; terminal receipts project only executor-settled effects. None is substituted for another. The effect journal constrains failure classification as a lower bound: an unknown settlement requires uncertainty and a committed settlement forbids a side-effect-free failure, while provider or cleanup uncertainty may conservatively remain uncertain even when every recorded edit is committed or not applied. A recovery observation never terminalizes or retries its open attempt.
+Persists transitions before the scheduler advances. Model transcripts are optional diagnostic artifacts; they are never authoritative for graph position or completion. Policy decisions prove authorization. `node_effect_prepared` proves Flow reached a specific edit boundary before rename; `node_effect_settled` records an executor's committed, not-applied, or post-commit-unknown state; `node_effect_reconciled` records what recovery later observed for a still-open edit; terminal receipts project only executor-settled effects. None is substituted for another. The effect journal constrains failure classification as a lower bound: an unknown settlement requires uncertainty and a committed settlement forbids a side-effect-free failure, while provider or cleanup uncertainty may conservatively remain uncertain even when every recorded edit is committed or not applied. A recovery observation never terminalizes its open attempt. Only a separate `node_attempt_interrupted` event—validated against the persisted opt-in, attempt cap, effect proof, and resource limits—archives the attempt and permits the scheduler to start the exact next fresh attempt.
 
-Fresh and recovered execution publish an atomic per-run ownership record containing a process ID and random token before appending. A live owner blocks competitors; an exited owner can be displaced atomically. Recovery replays the committed JSONL prefix, verifies the exact compiled workflow digest and node set, and appends `run_resumed` before continuing. A final unterminated record is uncommitted and is truncated before the recovered owner appends. Ownership is local-host coordination, not a distributed lease or security boundary.
+Fresh and recovered execution publish an atomic per-run ownership record containing a process ID and random token before appending. A live owner blocks competitors; an exited owner can be displaced atomically. Recovery replays the committed JSONL prefix and verifies the exact compiled workflow digest, node set, budget, approvals, and recovery requirements. For an eligible open attempt it reconciles effects, appends `node_attempt_interrupted`, then appends `run_resumed`; other safe boundaries append only `run_resumed`. A crash between the two markers is replay-safe because the archived attempt is already pending with its counter retained. A final unterminated record is uncommitted and is truncated before the recovered owner appends. Ownership is local-host coordination, not a distributed lease or security boundary.
 
 ### Local detached supervision
 
@@ -150,8 +150,10 @@ cannot by themselves recover a response lost before the caller observes it.
 Workers are independent process groups. A supervisor crash therefore does not terminate them. A
 new generation scans durable claims and descriptors and adopts only workers that pass the same
 identity handshake. PID liveness alone never grants authority because PIDs can be reused. A dead
-worker with an open node attempt remains governed by the existing `uncertain_operation` recovery
-rule; the control plane does not invent an outcome or replay the work.
+worker with an open node attempt remains governed by the same persisted recovery policy and effect
+proof as foreground work. The control plane does not invent an outcome or independently replay the
+work; unconfigured attempts still report `uncertain_operation`, and ineligible opt-ins report
+`recovery_retry_ineligible`.
 
 The supervisor descriptor, every stateful request, and the admission ledger bind the canonical
 effective capacity digest and exact limits. Read-only status reports the live binding even when the
@@ -263,6 +265,8 @@ Approval remains separate from containment. OMP-style allow/prompt/deny rules ca
     never exceeds the effective policy.
 14. A writable node cannot publish a terminal outcome while a prepared workspace effect is
     unresolved or while its terminal receipts differ from the settled effect journal.
+15. A fresh attempt cannot start until the prior attempt's interruption disposition is durable and
+    every recorded effect is proven not applied.
 
 ## Failure modes
 
@@ -277,7 +281,7 @@ Approval remains separate from containment. OMP-style allow/prompt/deny rules ca
 | Edit is prepared but fails before rename | Settle it as not applied when publication remains available; record no terminal receipt |
 | Edit fails after atomic rename | Settle it as post-commit unknown when publication remains available, project an uncertain receipt, and fail the node with uncertain side-effect status |
 | Settlement append rejects | Poison later publication and retain the unresolved prepared effect; do not infer an outcome from target bytes |
-| Process dies between edit boundaries | Reconcile each open typed edit under its target lock, preserve the observation, and still refuse automatic node retry |
+| Process dies between edit boundaries | Reconcile each open typed edit under its target lock; retry only an opted-in attempt whose complete replay proves every effect not applied |
 | Sandbox unavailable or degraded | Fail before command spawn; never fall back to host execution |
 | Sandbox cleanup failure after spawn | Fail with uncertain side-effect status; never report command success |
 | Tool timeout or crash | Terminate the process tree where possible and classify side-effect uncertainty |
@@ -287,7 +291,7 @@ Approval remains separate from containment. OMP-style allow/prompt/deny rules ca
 | Crash during persistence | Recover to the last committed event and tolerate an incomplete trailing record |
 | Client exits after detached acceptance | The authenticated worker continues with independent standard streams and process group |
 | Supervisor exits while workers run | Workers continue; a replacement generation adopts only token-authenticated matching identities |
-| Worker exits with an open attempt | Preserve ledger truth and report uncertainty; never infer or retry the operation |
+| Worker exits with an open attempt | Preserve ledger truth; apply the same opt-in proof gate during a later resume and never infer or retry ambiguous work |
 | Duplicate detached submission | Reuse the durable immutable job/claim for the exact request or reject a conflicting request without a second worker |
 | Concurrent supervisor auto-start | One startup-lock holder launches; all other clients attach to the resulting generation |
 | Active capacity exhausted | Persist one FIFO queue ticket when queue capacity remains; otherwise return a durable `queue_full` rejection without retaining a workflow snapshot |

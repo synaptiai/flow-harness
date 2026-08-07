@@ -559,6 +559,66 @@ nodes:
     expect(store.releaseCalls).toEqual(["run-resume"]);
   });
 
+  it("refuses recovered history that skipped the scheduler-selected ready node", async () => {
+    const workflow = compileWorkflowText(`
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: deterministic-ready-order }
+nodes:
+  - id: root
+    type: command
+    command: { executable: node, args: [--version] }
+  - id: first-ready
+    type: command
+    dependsOn: [root]
+    command: { executable: node, args: [--version] }
+  - id: later-ready
+    type: command
+    dependsOn: [root]
+    command: { executable: node, args: [--help] }
+`);
+    const initial: RunEvent[] = [
+      {
+        ...eventBase("run-ready-order", workflow.id, 1),
+        type: "run_started",
+        nodeIds: workflow.nodes.map((node) => node.id),
+        workflowApiVersion: workflow.apiVersion,
+        workflowDigest: workflowDigest(workflow),
+      },
+      {
+        ...eventBase("run-ready-order", workflow.id, 2),
+        type: "node_started",
+        nodeId: "root",
+        attempt: 1,
+      },
+      {
+        ...eventBase("run-ready-order", workflow.id, 3),
+        type: "node_succeeded",
+        nodeId: "root",
+        attempt: 1,
+        evidence: commandEvidence("root", 0),
+      },
+      {
+        ...eventBase("run-ready-order", workflow.id, 4),
+        type: "node_started",
+        nodeId: "later-ready",
+        attempt: 1,
+      },
+    ];
+    const store = new MemoryRecoverableRunStore(initial);
+    const calls: string[] = [];
+    const executor = executorFrom(async (node) => {
+      calls.push(node.id);
+      return successfulOutcome(node.id);
+    });
+
+    await expect(
+      resumeWorkflow(workflow, resumeOptions(store, executor, "run-ready-order")),
+    ).rejects.toMatchObject({ code: "workflow_mismatch" });
+    expect(calls).toEqual([]);
+    expect(store.events).toEqual(initial);
+  });
+
   it("finalizes a committed node failure without re-executing it", async () => {
     const workflow = threeNodeWorkflow();
     const initial = eventsThroughFirstSuccess(workflow);

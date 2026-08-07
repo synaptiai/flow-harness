@@ -391,7 +391,13 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
       customTools: [...tools.definitions],
       resourceLoader,
       sessionManager: SessionManager.inMemory(request.cwd),
-      settingsManager: SettingsManager.inMemory(),
+      settingsManager: SettingsManager.inMemory({
+        retry: {
+          enabled: false,
+          maxRetries: 0,
+          provider: { maxRetries: 0 },
+        },
+      }),
     });
 
     if (isAborted(request.signal)) {

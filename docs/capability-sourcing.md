@@ -13,7 +13,7 @@ Pi's experimental `AgentHarness` API is not a foundation for the first release. 
 | Capability | Why Flow owns it |
 | --- | --- |
 | Workflow schema and compiler | Workflow files must compile into executable graph state rather than advice to a model |
-| Scheduler and lifecycle | Readiness, conditions, loops, retries, joins, and terminal states are product semantics |
+| Scheduler and lifecycle | Readiness, conditions, proof-safe fresh attempts, future loops/retries, joins, and terminal states are product semantics |
 | Typed node inputs and outputs | Transitions must not depend on parsing persuasive prose |
 | Goals, budgets, and loop termination | Flow now durably owns start, token, reported-cost, and active-time boundaries; exhausted resources never imply successful completion |
 | Evidence and evaluation | A worker cannot authoritatively grade its own work |
@@ -32,7 +32,7 @@ Pi's experimental `AgentHarness` API is not a foundation for the first release. 
 | --- | --- | --- |
 | Multi-provider inference | Import through Pi's model runtime | Persist only Flow model requirements and provider/model identifiers |
 | Authentication and model catalog | Reuse | Keep credentials and provider details outside workflow files |
-| Agent tool-call loop | `createAgentSession()` | One adapter owns every Pi import |
+| Agent tool-call loop | `createAgentSession()` | One adapter owns every Pi import; Pi assistant-turn and provider retries are explicitly disabled so Flow owns attempt count |
 | Streaming events | Subscribe and translate | Persist versioned Flow events, not raw Pi events |
 | Cancellation and idle settlement | Reuse mechanics | Map into Flow node lifecycle semantics |
 | Per-node model and thinking level | Reuse execution support | Selection remains Flow policy |
@@ -41,7 +41,7 @@ Pi's experimental `AgentHarness` API is not a foundation for the first release. 
 | Custom tool API | Present Flow broker tools to the model | Tool schemas remain Flow-owned |
 | Context transformation and compaction | Reuse mechanics | Durable state remains outside context |
 | Session usage statistics | Translate `getSessionStats()` after settlement | Persist only Flow token components and integer micro-USD; Pi totals and transcripts are not authoritative |
-| Session storage | Optional diagnostic artifact | Never authoritative run state |
+| Session storage | Optional diagnostic artifact | Never authoritative run state; fresh recovery deliberately creates a new in-memory session rather than reopening a Pi transcript |
 | TUI primitives | Optional presentation dependency | Flow owns navigation, language, and approvals |
 
 Pi is MIT-licensed. Its fast release cadence and breaking changes create meaningful update risk, so Flow pins exact versions and maintains adapter conformance tests. See the [Pi repository](https://github.com/earendil-works/pi) and [agent-core documentation](https://github.com/earendil-works/pi/blob/main/packages/agent/README.md).
@@ -91,7 +91,7 @@ Prime Agent proves that Pi can support a distinct long-running harness. Its prod
 | --- | --- |
 | Supervisor and one worker per root run tree | **Implemented independently** for one local worker per run/resume invocation; the worker owns the existing Flow scheduler |
 | Detach, reattach, snapshots, and event replay | **Implemented independently** with immutable source snapshots, authenticated adoption, and bounded exclusive sequence cursors |
-| Recovery journal and bounded restart | **Implemented for supervisor restart, idempotent cancellation, write-ahead Flow edit evidence, and typed hash/mode observation of open edits** around Flow's authoritative run ledger; Prime's fail-closed treatment of uncertain side effects is retained, so whole-node replay remains prohibited |
+| Recovery journal and bounded restart | **Implemented for supervisor restart, idempotent cancellation, write-ahead Flow edit evidence, typed hash/mode observation, and proof-safe fresh agent attempts** around Flow's authoritative run ledger; Prime's fail-closed treatment of uncertain side effects is retained, so only replay-proven not-applied attempts qualify |
 | Durable goals and autonomous continuation | Implement in Flow's scheduler |
 | Daemon workload limits | Prime leaves fixed caps outside its daemon layer; Flow independently adds strict operator/project ceilings, durable active reservations, a bounded FIFO queue, and deterministic overflow rejection. Per-run graph concurrency and artifact limits remain |
 | Heartbeats and schedules | Later trigger package now that bounded admission exists; triggers must not bypass the same queue |
@@ -109,6 +109,30 @@ Python RLM, graph state, protocol, or code. Pi remains embedded through its type
 inside each worker because Pi's RPC process would supervise only the inner model session, not Flow
 command nodes, approvals, budgets, evidence, or recovery. OMP's background jobs similarly inform
 cancellation mechanics but are not a reusable whole-harness daemon.
+
+## Retry and recovery ownership
+
+Flow uses one retry authority rather than stacking independent retry loops. The pinned Pi settings
+default to assistant-turn retry, and its provider settings can add a lower transport retry layer.
+The adapter explicitly sets both maxima to zero. A provider or terminal model error therefore
+settles the current Flow node outcome; it is not silently replayed beneath the ledger. This follows
+the general reliability rule to retry at one layer because nested retries multiply calls. See the
+[AWS retry-control guidance](https://docs.aws.amazon.com/wellarchitected/latest/framework/rel_mitigate_interaction_failure_limit_retries.html).
+
+Pi persistent sessions and OMP session logs can reconstruct conversational context, but neither is
+Flow's fsync boundary for graph state, resource accounting, or effect settlement. OMP also removes
+dangling tool calls when constructing safe context, which makes its transcript useful diagnostic
+input but not proof that a missing tool result had no effect. Flow consequently chose a new Pi
+session for each fresh attempt and archives the previous attempt only in Flow's event model. See
+[OMP session storage](https://github.com/can1357/oh-my-pi/blob/main/docs/session.md).
+
+Prime Agent's daemon journals mutating client commands before dispatch and does not replay an
+uncertain side effect merely because its durable result is missing. Flow applies the same principle
+inside the agent node: automatic fresh recovery is legal only for read-only attempts or durable
+edits whose every effect is positively proven `not_applied`. Applied, committed, open, and unknown
+states remain blocked. See [Prime Agent daemon
+semantics](https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/daemon.md)
+and [AWS idempotency guidance](https://docs.aws.amazon.com/durable-execution/patterns/best-practices/idempotency/).
 
 ## Portable skills
 

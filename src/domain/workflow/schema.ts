@@ -24,6 +24,13 @@ const commandApprovalSchema = z
   })
   .strict();
 
+const agentRecoverySchema = z
+  .object({
+    mode: z.literal("fresh"),
+    maxAttempts: z.number().int().min(2).max(16),
+  })
+  .strict();
+
 const positiveSafeIntegerSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 
 const runBudgetSchema = z
@@ -96,6 +103,7 @@ const agentNodeSchema = z
           .max(3)
           .refine((tools) => new Set(tools).size === tools.length, "agent tools must be unique")
           .default([]),
+        recovery: agentRecoverySchema.optional(),
         timeoutMs: z.number().int().positive().max(86_400_000).default(300_000),
       })
       .strict(),

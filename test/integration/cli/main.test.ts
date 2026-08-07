@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { NodeExecutor } from "../../../src/application/ports.js";
 import { main, type CliIo } from "../../../src/cli/main.js";
-import type { RunEvent } from "../../../src/domain/run/events.js";
+import type { RunEvent, RunStartedEvent } from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { JsonlRunStore } from "../../../src/infrastructure/fs/jsonl-run-store.js";
 
@@ -601,6 +601,110 @@ nodes:
     ).resolves.toBe(before);
   });
 
+  it("resumes an opted-in read-only agent as a fresh numbered attempt", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "retry.workflow.yaml");
+    const runsDirectory = join(directory, "runs");
+    const source = `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: cli-proof-safe-retry }
+nodes:
+  - id: implement
+    type: agent
+    agent:
+      prompt: Analyze the repository.
+      model: { provider: test, id: deterministic }
+      tools: [read]
+      recovery: { mode: fresh, maxAttempts: 2 }
+  - id: verify
+    type: command
+    dependsOn: [implement]
+    command: { executable: node, args: [--version] }
+`;
+    await writeFile(workflowPath, source, "utf8");
+    const workflow = compileWorkflowText(source, workflowPath);
+    const store = new JsonlRunStore(runsDirectory);
+    await store.append({
+      ...runStartedEvent(workflow, "cli-proof-safe-retry"),
+      executionCwd: directory,
+      recoveryRequirements: [
+        {
+          nodeId: "implement",
+          mode: "fresh",
+          maxAttempts: 2,
+          effectProtocol: "none",
+        },
+      ],
+    });
+    await store.append({
+      ...eventBase("cli-proof-safe-retry", workflow.id, 2),
+      type: "node_started",
+      nodeId: "implement",
+      attempt: 1,
+    });
+    await store.release("cli-proof-safe-retry");
+    const calls: Array<{ nodeId: string; attempt: number }> = [];
+    const executor: NodeExecutor = {
+      async execute(node, context) {
+        calls.push({ nodeId: node.id, attempt: context.attempt });
+        return node.type === "agent"
+          ? {
+              status: "succeeded",
+              evidence: {
+                kind: "agent",
+                provider: "test",
+                model: "deterministic",
+                text: "analysis",
+                textHash: createHash("sha256").update("analysis").digest("hex"),
+                textTruncated: false,
+                durationMs: 1,
+                policyDecisions: [],
+                effectReceipts: [],
+              },
+            }
+          : { status: "succeeded", evidence: commandEvidence(node.id) };
+      },
+    };
+    const capture = createCapture();
+
+    const exitCode = await main(
+      ["resume", workflowPath, "--run-id", "cli-proof-safe-retry", "--runs-dir", runsDirectory],
+      capture.io,
+      { cwd: directory, executor },
+    );
+
+    expect(exitCode, capture.stderr.join("\n")).toBe(0);
+    expect(calls).toEqual([
+      { nodeId: "implement", attempt: 2 },
+      { nodeId: "verify", attempt: 1 },
+    ]);
+    expect(JSON.parse(capture.stdout.join("\n"))).toMatchObject({
+      status: "succeeded",
+      nodes: {
+        implement: {
+          attempt: 2,
+          interruptedAttempts: [{ attempt: 1, disposition: "fresh_retry" }],
+        },
+      },
+    });
+    const ledger = await readFile(
+      join(runsDirectory, "cli-proof-safe-retry", "events.jsonl"),
+      "utf8",
+    );
+    expect(ledgerTypes(ledger)).toEqual([
+      "run_started",
+      "node_started",
+      "node_attempt_interrupted",
+      "run_resumed",
+      "node_started",
+      "node_succeeded",
+      "node_started",
+      "node_succeeded",
+      "run_succeeded",
+    ]);
+  });
+
   it("reconciles an open durable edit and still refuses the unfinished node", async () => {
     const directory = await createTemporaryDirectory();
     const workflowPath = join(directory, "uncertain-edit.workflow.yaml");
@@ -886,7 +990,7 @@ function interruptedAfterFirstSuccess(
 function runStartedEvent(
   workflow: ReturnType<typeof compileWorkflowText>,
   runId: string,
-): RunEvent {
+): RunStartedEvent {
   return {
     ...eventBase(runId, workflow.id, 1),
     type: "run_started",

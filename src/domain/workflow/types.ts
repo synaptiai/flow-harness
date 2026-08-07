@@ -49,6 +49,10 @@ export interface CompiledAgentNode extends CompiledNodeBase {
       readonly thinking: ThinkingLevel;
     };
     readonly tools: readonly AgentToolName[];
+    readonly recovery?: {
+      readonly mode: "fresh";
+      readonly maxAttempts: number;
+    };
     readonly timeoutMs: number;
   };
 }
