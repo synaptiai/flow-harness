@@ -35,6 +35,9 @@ import {
 import {
   createAdmissionInitializedEvent,
   createDispatchReservedEvent,
+  createJobEnqueuedEvent,
+  createJobReleasedEvent,
+  createQueueCancellationRecordedEvent,
 } from "../../../src/supervisor/admission.js";
 
 const temporaryDirectories: string[] = [];
@@ -507,6 +510,31 @@ describe("LocalSupervisorService", () => {
     await expect(harness.store.listActiveRunClaims()).resolves.toEqual([]);
   });
 
+  it("refuses shutdown while a recovered queued cancellation remains incomplete", async () => {
+    const harness = await createHarness(undefined, { maxActiveWorkers: 1, maxQueuedJobs: 1 });
+    const active = admissionIdentity(1, "active-run");
+    const cancelling = admissionIdentity(2, "cancelling-run");
+    await harness.admissionStore.append(
+      createDispatchReservedEvent(harness.admissionStore.state, active, at(1)),
+    );
+    await harness.admissionStore.append(
+      createJobEnqueuedEvent(harness.admissionStore.state, cancelling, at(2)),
+    );
+    await harness.admissionStore.append(
+      createQueueCancellationRecordedEvent(harness.admissionStore.state, cancelling.jobId, {
+        commandId: randomUUID(),
+        actor: "operator:test",
+        at: at(3),
+      }),
+    );
+    await harness.admissionStore.append(
+      createJobReleasedEvent(harness.admissionStore.state, active.jobId, "succeeded", at(4)),
+    );
+    expect(harness.admissionStore.state).toMatchObject({ activeCount: 0, queuedCount: 0 });
+
+    await expect(harness.service.prepareShutdown()).rejects.toMatchObject({ code: "conflict" });
+  });
+
   it("routes attributable cancellation only through the claimed worker", async () => {
     const harness = await createHarness();
     await harness.service.submit(submitCommand(randomUUID(), harness.directory));
@@ -953,6 +981,19 @@ async function createHarness(
     startedAt: "2026-08-07T12:00:00.000Z",
   });
   return { directory, store, admissionStore, launcher, generation, service };
+}
+
+function admissionIdentity(index: number, runId: string) {
+  return {
+    jobId: randomUUID(),
+    workerId: randomUUID(),
+    runId,
+    jobDigest: index.toString(16).repeat(64),
+  };
+}
+
+function at(second: number): string {
+  return `2026-08-07T12:00:${String(second).padStart(2, "0")}.000Z`;
 }
 
 function submitCommand(commandId: string, directory: string, runId = "service-run") {

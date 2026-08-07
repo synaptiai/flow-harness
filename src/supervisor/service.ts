@@ -1045,9 +1045,7 @@ export class LocalSupervisorService {
   }
 
   get isIdle(): boolean {
-    return (
-      this.#admissionStore.state.activeCount === 0 && this.#admissionStore.state.queuedCount === 0
-    );
+    return Object.keys(this.#admissionStore.state.jobs).length === 0;
   }
 
   async prepareShutdown(): Promise<void> {
