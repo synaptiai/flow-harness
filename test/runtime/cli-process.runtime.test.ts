@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const cliPath = join(projectRoot, "dist", "cli", "main.js");
@@ -20,6 +20,17 @@ afterEach(async () => {
 });
 
 describe("compiled Flow process", () => {
+  it("treats permission loss as exit of the original same-user process", async () => {
+    const lookup = vi.spyOn(process, "kill").mockImplementation(() => {
+      throw Object.assign(new Error("kill EPERM"), { code: "EPERM" });
+    });
+    try {
+      await expect(waitForProcessExit(12_345)).resolves.toBeUndefined();
+    } finally {
+      lookup.mockRestore();
+    }
+  });
+
   it("forces termination when a provider leaves a referenced handle behind", async () => {
     const moduleUrl = new URL("../../dist/cli/main.js", import.meta.url).href;
     const script = `
@@ -794,7 +805,11 @@ async function waitForProcessExit(pid: number): Promise<void> {
     try {
       process.kill(pid, 0);
     } catch (error) {
-      if (error instanceof Error && "code" in error && error.code === "ESRCH") {
+      if (
+        error instanceof Error &&
+        "code" in error &&
+        (error.code === "ESRCH" || error.code === "EPERM")
+      ) {
         return;
       }
       throw error;
