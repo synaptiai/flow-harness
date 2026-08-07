@@ -347,12 +347,13 @@ describe("compiled Flow process", () => {
     const workflowPath = join(directory, "detached-cancel.workflow.yaml");
     const runsDirectory = join(directory, "runs");
     const started = join(directory, "detached-started.txt");
+    const release = join(directory, "detached-release.txt");
     const orphaned = join(directory, "detached-orphaned.txt");
     await writeFile(
       workflowPath,
       commandWorkflow(
         "detached-cancel-workflow",
-        `const fs = require("node:fs"); fs.writeFileSync(${JSON.stringify(started)}, "started"); setTimeout(() => fs.writeFileSync(${JSON.stringify(orphaned)}, "orphan"), 800); setInterval(() => {}, 1000);`,
+        `const fs = require("node:fs"); fs.writeFileSync(${JSON.stringify(started)}, "started"); setInterval(() => { if (fs.existsSync(${JSON.stringify(release)})) fs.writeFileSync(${JSON.stringify(orphaned)}, "orphan"); }, 20);`,
       ),
       "utf8",
     );
@@ -400,7 +401,8 @@ describe("compiled Flow process", () => {
         requestId: cancellationCommandId,
         reason: "Stop the detached command.",
       });
-      await delay(950);
+      await writeFile(release, "release", "utf8");
+      await delay(250);
       await expect(stat(orphaned)).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await spawnFlow(["supervisor", "shutdown", "--runs-dir", runsDirectory]).completed.catch(
@@ -414,12 +416,13 @@ describe("compiled Flow process", () => {
     const workflowPath = join(directory, "supervisor-restart.workflow.yaml");
     const runsDirectory = join(directory, "runs");
     const started = join(directory, "restart-started.txt");
+    const release = join(directory, "restart-release.txt");
     const finished = join(directory, "restart-finished.txt");
     await writeFile(
       workflowPath,
       commandWorkflow(
         "supervisor-restart-workflow",
-        `const fs = require("node:fs"); fs.writeFileSync(${JSON.stringify(started)}, "started"); setTimeout(() => fs.writeFileSync(${JSON.stringify(finished)}, "finished"), 3000);`,
+        `const fs = require("node:fs"); fs.writeFileSync(${JSON.stringify(started)}, "started"); const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(release)})) { clearInterval(timer); fs.writeFileSync(${JSON.stringify(finished)}, "finished"); } }, 20);`,
       ),
       "utf8",
     );
@@ -465,6 +468,7 @@ describe("compiled Flow process", () => {
         expect.objectContaining({ runId: "supervisor-restart-run", status: "running" }),
       ]);
 
+      await writeFile(release, "release", "utf8");
       await waitForFile(finished);
       await waitForRunStatus(runsDirectory, "supervisor-restart-run", "succeeded");
       const events = await readLedger(
