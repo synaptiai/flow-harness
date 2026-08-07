@@ -6,7 +6,7 @@ Flow turns a collection of useful software-development practices into an enforce
 
 The standalone harness reverses that relationship. Flow owns workflow execution and delegates only bounded node work to an embedded agent runtime.
 
-This document describes the target architecture unless a section is explicitly labeled as the current executable slice. The delivery roadmap is the source of truth for implementation status. Gates 1 and 2 currently provide `validate`, sequential `run`, `inspect`, optional versioned goal contracts, command-bound criterion evaluation, command and bounded Pi agent nodes, cancellation, and replayable local event ledgers. Gate 3 now includes a runtime-neutral policy broker for model-requested reads, lists, and hash-anchored single-file edits, a fail-closed native sandbox for every command node, and exact expiring pre-start approval for deterministic commands. Gate 4 adds `resume` at committed node boundaries, exclusive same-host process ownership, fail-closed refusal of uncertain open attempts, command approval waits that survive client detachment, durable resource accounting with run-wide start, model-token, reported-cost, and active-execution limits, project initialization and monotonic capacity configuration, plus a bounded local supervisor with authenticated detached workers, durable FIFO admission, status, event replay, cancellation, and restart adoption. A TUI, open-operation reconciliation, broader configurable policy, dynamic agent-tool approval, execute/network model tools, probabilistic evaluators, packages, graph loops, and stronger VM or managed sandbox backends remain later work.
+This document describes the target architecture unless a section is explicitly labeled as the current executable slice. The delivery roadmap is the source of truth for implementation status. Gates 1 and 2 currently provide `validate`, sequential `run`, `inspect`, optional versioned goal contracts, command-bound criterion evaluation, command and bounded Pi agent nodes, cancellation, and replayable local event ledgers. Gate 3 now includes a runtime-neutral policy broker for model-requested reads, lists, and hash-anchored single-file edits, a fail-closed native sandbox for every command node, and exact expiring pre-start approval for deterministic commands. Gate 4 adds `resume` at committed node boundaries, exclusive same-host process ownership, write-ahead durable evidence for each workspace edit, fail-closed refusal of uncertain open attempts, command approval waits that survive client detachment, durable resource accounting with run-wide start, model-token, reported-cost, and active-execution limits, project initialization and monotonic capacity configuration, plus a bounded local supervisor with authenticated detached workers, durable FIFO admission, status, event replay, cancellation, and restart adoption. A TUI, automatic typed reconciliation of open effects, broader configurable policy, dynamic agent-tool approval, execute/network model tools, probabilistic evaluators, packages, graph loops, and stronger VM or managed sandbox backends remain later work.
 
 ## Target flows
 
@@ -89,7 +89,7 @@ Implements one Flow-owned `AgentExecutor` port. It creates node-scoped sessions,
 
 ### Tool broker
 
-The current broker normalizes and canonically resolves every model-requested `read`, `ls`, and `edit` filesystem operation, derives its authority class, authorizes only declared operations inside the workspace, and emits bounded decisions tied to the exact run/node attempt. A directory listing is one logical authorization even when it returns many bounded entries. Edit authorization binds a digest of the complete model request. A separate bounded effect receipt records the canonical target, before/after SHA-256 values, and committed or uncertain outcome; replay verifies a one-to-one match between every receipt and an allowed write decision. The domain contract already distinguishes read, write, execute, network, credential, and destructive authority without importing runtime types. Dynamic model-tool approval, configurable profiles, and broader model tools remain subsequent Gate 3 slices. Tool implementations cannot mutate scheduler state.
+The current broker normalizes and canonically resolves every model-requested `read`, `ls`, and `edit` filesystem operation, derives its authority class, authorizes only declared operations inside the workspace, and emits bounded decisions tied to the exact run/node attempt. A directory listing is one logical authorization even when it returns many bounded entries. Edit authorization binds a digest of the complete model request. For writable attempts, the application supplies a narrow provider-neutral effect journal. The editor durably records the canonical target, operation digest, before/after SHA-256 values, and permission mode before rename while holding the target lock, then durably settles the effect after the commit boundary while journal publication remains available. A rejected settlement append poisons the journal and leaves the prepared effect unresolved. Replay matches every prepared effect, including not-applied effects, to a distinct allowed write decision. Terminal receipts are exact projections of committed or unknown settlements and must agree with their effect events. The domain contract already distinguishes read, write, execute, network, credential, and destructive authority without importing runtime types. Dynamic model-tool approval, configurable profiles, and broader model tools remain subsequent Gate 3 slices. Tool implementations cannot select or advance graph nodes.
 
 ### Command sandbox
 
@@ -99,7 +99,7 @@ The port isolates Flow from the backend. Pi's official SRT and Gondolin examples
 
 ### Event and evidence store
 
-Persists transitions before the scheduler advances. Model transcripts are optional diagnostic artifacts; they are never authoritative for graph position or completion. Policy decisions prove authorization, while effect receipts prove committed or uncertain workspace mutation; neither is substituted for the other.
+Persists transitions before the scheduler advances. Model transcripts are optional diagnostic artifacts; they are never authoritative for graph position or completion. Policy decisions prove authorization. `node_effect_prepared` proves Flow reached a specific edit boundary before rename; `node_effect_settled` records committed, not-applied, or post-commit-unknown state; terminal receipts project the settled effects. None is substituted for another. The effect journal constrains failure classification as a lower bound: an unknown settlement requires uncertainty and a committed settlement forbids a side-effect-free failure, while provider or cleanup uncertainty may conservatively remain uncertain even when every recorded edit is committed or not applied.
 
 Fresh and recovered execution publish an atomic per-run ownership record containing a process ID and random token before appending. A live owner blocks competitors; an exited owner can be displaced atomically. Recovery replays the committed JSONL prefix, verifies the exact compiled workflow digest and node set, and appends `run_resumed` before continuing. A final unterminated record is uncommitted and is truncated before the recovered owner appends. Ownership is local-host coordination, not a distributed lease or security boundary.
 
@@ -258,6 +258,8 @@ Approval remains separate from containment. OMP-style allow/prompt/deny rules ca
 12. Supervisor health metadata cannot override, repair, or replace authoritative ledger state.
 13. Every detached worker has a prior durable active reservation, and active plus queued admission
     never exceeds the effective policy.
+14. A writable node cannot publish a terminal outcome while a prepared workspace effect is
+    unresolved or while its terminal receipts differ from the settled effect journal.
 
 ## Failure modes
 
@@ -268,8 +270,11 @@ Approval remains separate from containment. OMP-style allow/prompt/deny rules ca
 | Provider outage or rate limit | Record the attempt and apply only the declared bounded retry or fallback policy |
 | Malformed model output | Schema-reject, retry within the node budget, then block with evidence |
 | Unauthorized tool request | Deny before execution and record a policy event |
-| Stale or invalid edit | Reject the entire replacement before rename and record no committed effect receipt |
-| Edit fails after atomic rename | Record an uncertain effect receipt and fail the node with uncertain side-effect status |
+| Stale or invalid edit before preparation | Reject the entire replacement before rename and record no effect event or receipt |
+| Edit is prepared but fails before rename | Settle it as not applied when publication remains available; record no terminal receipt |
+| Edit fails after atomic rename | Settle it as post-commit unknown when publication remains available, project an uncertain receipt, and fail the node with uncertain side-effect status |
+| Settlement append rejects | Poison later publication and retain the unresolved prepared effect; do not infer an outcome from target bytes |
+| Process dies between edit boundaries | Preserve the prepared/settled prefix for inspection; refuse node retry until typed reconciliation is implemented |
 | Sandbox unavailable or degraded | Fail before command spawn; never fall back to host execution |
 | Sandbox cleanup failure after spawn | Fail with uncertain side-effect status; never report command success |
 | Tool timeout or crash | Terminate the process tree where possible and classify side-effect uncertainty |

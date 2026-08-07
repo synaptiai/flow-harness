@@ -91,7 +91,7 @@ Prime Agent proves that Pi can support a distinct long-running harness. Its prod
 | --- | --- |
 | Supervisor and one worker per root run tree | **Implemented independently** for one local worker per run/resume invocation; the worker owns the existing Flow scheduler |
 | Detach, reattach, snapshots, and event replay | **Implemented independently** with immutable source snapshots, authenticated adoption, and bounded exclusive sequence cursors |
-| Recovery journal and bounded restart | **Implemented for supervisor restart and idempotent cancellation** around Flow's authoritative run ledger; open operation replay remains prohibited |
+| Recovery journal and bounded restart | **Implemented for supervisor restart, idempotent cancellation, and write-ahead Flow edit evidence** around Flow's authoritative run ledger; automatic open-operation reconciliation remains prohibited until the typed hash reconciler lands |
 | Durable goals and autonomous continuation | Implement in Flow's scheduler |
 | Daemon workload limits | Prime leaves fixed caps outside its daemon layer; Flow independently adds strict operator/project ceilings, durable active reservations, a bounded FIFO queue, and deterministic overflow rejection. Per-run graph concurrency and artifact limits remain |
 | Heartbeats and schedules | Later trigger package now that bounded admission exists; triggers must not bypass the same queue |

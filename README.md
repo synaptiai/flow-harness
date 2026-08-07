@@ -25,6 +25,7 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Bounded detached supervisor, durable FIFO queue, authenticated workers, cancellation, and event replay | Implemented on Linux and macOS |
 | Deterministic criterion verification | Implemented |
 | Bounded Pi agent nodes with Flow-owned `read`, `ls`, and hash-anchored `edit` tools | Implemented |
+| Write-ahead durable evidence for each workspace edit | Implemented; automatic open-effect reconciliation is planned |
 | Fail-closed sandboxed command process trees | Implemented on Linux and macOS |
 | Dynamic agent-tool approval, graph loops, and broader model tools | Planned |
 | VM-grade isolation of the host-side agent runtime | Planned |
@@ -224,8 +225,12 @@ node dist/cli/main.js resume examples/verify-foundation.workflow.yaml --run-id i
 ```
 
 Flow continues only from a committed node boundary. It skips nodes whose success is durable and
-records `run_resumed` before starting new work. A durable `node_started` without a matching outcome
-is uncertain: Flow names the node and attempt, appends nothing, and executes nothing. Terminal,
+records `run_resumed` before starting new work. Writable agent attempts declare a versioned effect
+protocol; each edit is durably prepared before atomic rename and settled after the commit boundary.
+`inspect` can therefore distinguish no observed edit, not applied, committed, and post-commit
+unknown effects. A durable `node_started` without a matching node outcome is still uncertain: Flow
+names the node and attempt, exposes its effect journal, appends nothing, and executes nothing.
+Terminal,
 mismatched, corrupt, missing, or actively owned runs are also refused without changing committed
 events. New runs also bind the normalized execution directory. Approval waits are safe committed
 boundaries: an undecided request remains waiting, a valid grant starts once, and an unused expired
@@ -254,8 +259,14 @@ return a full-file SHA-256 version. An edit must name that version and exact uni
 one existing UTF-8 file; stale versions fail rather than merge. Flow preflights the complete edit,
 coordinates cooperating same-host Flow processes, atomically replaces the target, protects the run
 store, nested `.flow` and `.git` state, environment files, and key files, and records separate
-authorization decisions and before/after effect receipts. Directory listings consume one logical
-policy authorization rather than one decision per entry. Create, delete, rename, shell, and network
+authorization decisions, write-ahead effect events, and before/after terminal receipts. A prepare
+event is synced before rename. While journal publication remains available, settlement is synced as
+committed only after directory sync, as not applied before rename, or as unknown after a post-rename
+failure. A rejected settlement append poisons the attempt journal and leaves the prepared effect
+unresolved rather than inventing an outcome. Replay requires every prepared edit, including a
+not-applied edit, to retain its distinct allowed write decision. Directory
+listings consume one logical policy authorization rather than one decision per entry. Create,
+delete, rename, shell, and network
 tools are not exposed. Filesystem operations are canonically resolved and authorized by the Flow
 policy broker. Pi's ambient tools, extensions, skills, templates, context discovery, built-in edit
 semantics, and executable-downloading helpers are disabled.

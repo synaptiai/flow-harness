@@ -95,12 +95,13 @@ describe("public repository contracts", () => {
     }
   });
 
-  it("documents the implemented hash-anchored edit boundary and a valid declaration example", async () => {
-    const [readme, architecture, workflowSpec, sourcing, roadmap, exampleSource] =
+  it("documents the durable hash-anchored edit boundary and a valid declaration example", async () => {
+    const [readme, architecture, workflowSpec, recovery, sourcing, roadmap, exampleSource] =
       await Promise.all([
         readText("README.md"),
         readText("docs/architecture.md"),
         readText("docs/workflow-spec.md"),
+        readText("docs/recovery.md"),
         readText("docs/capability-sourcing.md"),
         readText("docs/roadmap.md"),
         readText("examples/implement-and-verify.workflow.yaml"),
@@ -108,11 +109,16 @@ describe("public repository contracts", () => {
 
     expect(readme).toMatch(/hash-anchored/i);
     expect(readme).toContain("`read`, `ls`, and `edit`");
-    expect(architecture).toMatch(/effect receipt/i);
+    expect(readme).toMatch(/write-ahead durable evidence/i);
+    expect(architecture).toContain("`node_effect_prepared`");
     expect(workflowSpec).toContain("expectedSha256");
     expect(workflowSpec).toMatch(/stale_version/);
+    expect(workflowSpec).toContain("flow.effects/v1");
+    expect(recovery).toMatch(/automatic hash-based reconciliation|typed reconciliation/i);
     expect(sourcing).toMatch(/Pi's built-in edit/i);
-    expect(roadmap).toMatch(/hash-anchored edit.*Implemented/i);
+    expect(roadmap).toMatch(
+      /workspace edits persist typed prepare\/settle evidence.*Implemented/is,
+    );
 
     const example = parse(exampleSource) as {
       readonly nodes: ReadonlyArray<{

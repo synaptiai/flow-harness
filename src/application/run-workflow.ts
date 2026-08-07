@@ -2,8 +2,13 @@ import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 
 import {
+  DURABLE_EFFECT_PROTOCOL,
   appendRunEvent,
+  nodeEffectId,
   reduceRunEvents,
+  type AgentEffectReceipt,
+  type FilesystemEditEffectDescriptor,
+  type NodeEffectSettlementInput,
   type NodeFailure,
   type RunEvent,
   type RunBudgetExhaustedEvent,
@@ -25,6 +30,7 @@ import type {
   CompiledWorkflow,
 } from "../domain/workflow/types.js";
 import type {
+  NodeEffectJournal,
   NodeExecutionOutcome,
   NodeExecutor,
   RecoverableRunEventStore,
@@ -118,10 +124,40 @@ async function continueWorkflow(
   now: () => Date,
 ): Promise<RunState> {
   let state = initialState;
+  let publicationTail = Promise.resolve();
+  let publicationPoisoned = false;
+  let publicationFailure: unknown;
 
   async function record(event: RunEvent): Promise<void> {
+    await publish(async () => {
+      await append(event);
+    });
+  }
+
+  async function append(event: RunEvent): Promise<void> {
+    const nextState = appendRunEvent(state, event);
     await options.store.append(event);
-    state = appendRunEvent(state, event);
+    state = nextState;
+  }
+
+  function publish<T>(operation: () => Promise<T>): Promise<T> {
+    const publication = publicationTail.then(async () => {
+      if (publicationPoisoned) {
+        throw publicationFailure;
+      }
+      try {
+        return await operation();
+      } catch (error) {
+        publicationPoisoned = true;
+        publicationFailure = error;
+        throw error;
+      }
+    });
+    publicationTail = publication.then(
+      () => undefined,
+      () => undefined,
+    );
+    return publication;
   }
 
   function nextSequence(): number {
@@ -242,10 +278,16 @@ async function continueWorkflow(
         type: "node_started",
         nodeId: node.id,
         attempt,
+        ...(supportsDurableEffects(node) ? { effectProtocol: DURABLE_EFFECT_PROTOCOL } : {}),
       });
     }
 
-    const outcome = isAborted(options.signal)
+    const effectJournal = supportsDurableEffects(node)
+      ? createEffectJournal(node.id, attempt)
+      : undefined;
+
+    const abortedBeforeExecution = isAborted(options.signal);
+    const outcome = abortedBeforeExecution
       ? abortedOutcome(options.signal)
       : await executeNode(executionNode, options.executor, {
           runId,
@@ -253,12 +295,19 @@ async function continueWorkflow(
           attempt,
           cwd: options.cwd,
           protectedPaths: options.protectedPaths,
+          ...(effectJournal === undefined ? {} : { effectJournal }),
           ...(options.signal === undefined ? {} : { signal: options.signal }),
         });
+    await publicationTail;
+    const abortAfterSuccessfulExecution =
+      isAborted(options.signal) && outcome.status === "succeeded";
+    const interruptedOutcome = abortAfterSuccessfulExecution
+      ? abortedOutcome(options.signal, outcome.evidence)
+      : outcome;
     const authoritativeOutcome =
-      isAborted(options.signal) && outcome.status === "succeeded"
-        ? abortedOutcome(options.signal, outcome.evidence)
-        : outcome;
+      effectJournal === undefined || (!abortedBeforeExecution && !abortAfterSuccessfulExecution)
+        ? interruptedOutcome
+        : normalizeWorkflowAbortEffectStatus(node.id, interruptedOutcome);
 
     if (authoritativeOutcome.status === "failed") {
       await record({
@@ -308,6 +357,87 @@ async function continueWorkflow(
   });
   return state;
 
+  function createEffectJournal(nodeId: string, attempt: number): NodeEffectJournal {
+    return Object.freeze({
+      prepare: async (descriptor: FilesystemEditEffectDescriptor) =>
+        await publish(async () => {
+          const preparedDescriptor = structuredClone(descriptor);
+          const sequence = nextSequence();
+          const effectId = nodeEffectId(sequence);
+          const effectSequence = (state.nodes[nodeId]?.effects.length ?? 0) + 1;
+          await append({
+            ...base(sequence),
+            type: "node_effect_prepared",
+            nodeId,
+            attempt,
+            effectId,
+            effectSequence,
+            descriptor: preparedDescriptor,
+          });
+          let settled = false;
+          return Object.freeze({
+            effectId,
+            effectSequence,
+            settle: async (settlement: NodeEffectSettlementInput) =>
+              await publish(async () => {
+                if (settled) {
+                  throw new Error(`effect "${effectId}" is already settled`);
+                }
+                await append({
+                  ...base(nextSequence()),
+                  type: "node_effect_settled",
+                  nodeId,
+                  attempt,
+                  effectId,
+                  ...settlement,
+                });
+                settled = true;
+                if (settlement.outcome === "not_applied") {
+                  return null;
+                }
+                const receipt: AgentEffectReceipt = Object.freeze({
+                  version: 1,
+                  sequence: effectSequence,
+                  runId,
+                  workflowId: workflow.id,
+                  nodeId,
+                  attempt,
+                  kind: preparedDescriptor.kind,
+                  target: preparedDescriptor.target,
+                  operationDigest: preparedDescriptor.operationDigest,
+                  beforeSha256: preparedDescriptor.beforeSha256,
+                  afterSha256: preparedDescriptor.afterSha256,
+                  outcome: settlement.outcome === "committed" ? "committed" : "uncertain",
+                });
+                return receipt;
+              }),
+          });
+        }),
+    });
+  }
+
+  function normalizeWorkflowAbortEffectStatus(
+    nodeId: string,
+    outcome: NodeExecutionOutcome,
+  ): NodeExecutionOutcome {
+    if (outcome.status === "succeeded") {
+      return outcome;
+    }
+    const effects = state.nodes[nodeId]?.effects ?? [];
+    if (effects.some((effect) => effect.settlement === null)) {
+      return outcome;
+    }
+    const sideEffectStatus = effects.some((effect) => effect.settlement?.outcome === "unknown")
+      ? "uncertain"
+      : effects.some((effect) => effect.settlement?.outcome === "committed")
+        ? "committed"
+        : "none";
+    return Object.freeze({
+      ...outcome,
+      error: Object.freeze({ ...outcome.error, sideEffectStatus }),
+    });
+  }
+
   async function cancelRun(cancelledNodeId?: string): Promise<RunState> {
     const attribution = cancellationAttribution(options.signal);
     const cancelled: RunCancelledEvent = {
@@ -334,6 +464,10 @@ async function continueWorkflow(
     await record(event);
     return state;
   }
+}
+
+function supportsDurableEffects(node: CompiledNode): node is CompiledAgentNode {
+  return node.type === "agent" && node.agent.tools.includes("edit");
 }
 
 export type RunRecoveryErrorCode =
@@ -445,6 +579,8 @@ function validateRecovery(
     }
   }
 
+  validateRecoveredHistory(workflow, runId, events);
+
   const openAttempt = Object.entries(state.nodes).find(([, node]) => node.status === "running");
   if (openAttempt !== undefined) {
     const [nodeId, node] = openAttempt;
@@ -453,8 +589,6 @@ function validateRecovery(
       `run "${runId}" cannot resume because node "${nodeId}" attempt ${node.attempt} has no committed outcome`,
     );
   }
-
-  validateRecoveredHistory(workflow, runId, events);
 }
 
 function validateRecoveredHistory(
@@ -512,6 +646,7 @@ function validateRecoveredHistory(
       if (
         node === undefined ||
         event.attempt !== 1 ||
+        (event.effectProtocol !== undefined && !supportsDurableEffects(node)) ||
         !node.dependsOn.every((dependency) => completed.has(dependency))
       ) {
         throw new RunRecoveryError(

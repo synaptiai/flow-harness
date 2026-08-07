@@ -601,6 +601,107 @@ nodes:
     ).resolves.toBe(before);
   });
 
+  it("inspects and refuses an open durable edit attempt without mutating its JSONL ledger", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "uncertain-edit.workflow.yaml");
+    const target = join(directory, "source.ts");
+    const runsDirectory = join(directory, "runs");
+    const source = `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: uncertain-edit }
+nodes:
+  - id: implement
+    type: agent
+    agent:
+      prompt: Update the source.
+      model: { provider: test, id: deterministic }
+      tools: [read, edit]
+  - id: verify
+    type: command
+    dependsOn: [implement]
+    command: { executable: node, args: [--version] }
+`;
+    await writeFile(workflowPath, source, "utf8");
+    await writeFile(target, "export const value = 2;\n", "utf8");
+    const workflow = compileWorkflowText(source, workflowPath);
+    const store = new JsonlRunStore(runsDirectory);
+    await store.append(runStartedEvent(workflow, "cli-uncertain-edit"));
+    await store.append({
+      ...eventBase("cli-uncertain-edit", workflow.id, 2),
+      type: "node_started",
+      nodeId: "implement",
+      attempt: 1,
+      effectProtocol: "flow.effects/v1",
+    });
+    await store.append({
+      ...eventBase("cli-uncertain-edit", workflow.id, 3),
+      type: "node_effect_prepared",
+      nodeId: "implement",
+      attempt: 1,
+      effectId: "effect-3",
+      effectSequence: 1,
+      descriptor: {
+        kind: "filesystem.edit",
+        target,
+        operationDigest: "b".repeat(64),
+        beforeSha256: createHash("sha256").update("export const value = 1;\n").digest("hex"),
+        afterSha256: createHash("sha256").update("export const value = 2;\n").digest("hex"),
+        mode: 0o644,
+      },
+    });
+    await store.release("cli-uncertain-edit");
+    const ledgerPath = join(runsDirectory, "cli-uncertain-edit", "events.jsonl");
+    const before = await readFile(ledgerPath, "utf8");
+
+    const inspectCapture = createCapture();
+    const inspectExitCode = await main(
+      ["inspect", "cli-uncertain-edit", "--runs-dir", runsDirectory],
+      inspectCapture.io,
+      { cwd: directory },
+    );
+
+    expect(inspectExitCode).toBe(0);
+    expect(JSON.parse(inspectCapture.stdout.join("\n"))).toMatchObject({
+      status: "running",
+      nodes: {
+        implement: {
+          status: "running",
+          effectProtocol: "flow.effects/v1",
+          effects: [
+            {
+              effectId: "effect-3",
+              effectSequence: 1,
+              descriptor: { target },
+              settlement: null,
+            },
+          ],
+        },
+      },
+    });
+
+    let executorCalls = 0;
+    const resumeCapture = createCapture();
+    const resumeExitCode = await main(
+      ["resume", workflowPath, "--run-id", "cli-uncertain-edit", "--runs-dir", runsDirectory],
+      resumeCapture.io,
+      {
+        cwd: directory,
+        executor: {
+          async execute() {
+            executorCalls += 1;
+            throw new Error("open edit attempt must not execute");
+          },
+        },
+      },
+    );
+
+    expect(resumeExitCode).toBe(1);
+    expect(resumeCapture.stderr.join("\n")).toContain("uncertain_operation");
+    expect(executorCalls).toBe(0);
+    await expect(readFile(ledgerPath, "utf8")).resolves.toBe(before);
+  });
+
   it("persists cancellation and terminates the command group", async () => {
     const directory = await createTemporaryDirectory();
     const workflowPath = join(directory, "cancel.workflow.yaml");

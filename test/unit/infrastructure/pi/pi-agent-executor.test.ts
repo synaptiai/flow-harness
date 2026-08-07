@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { createAgentSession } from "@earendil-works/pi-coding-agent";
 import { createHash } from "node:crypto";
 
-import type { NodeExecutionContext } from "../../../../src/application/ports.js";
+import type { NodeEffectJournal, NodeExecutionContext } from "../../../../src/application/ports.js";
 import type { CompiledAgentNode } from "../../../../src/domain/workflow/types.js";
 import { PolicyBroker } from "../../../../src/domain/policy/broker.js";
 import {
@@ -22,6 +22,33 @@ const context: NodeExecutionContext = {
 };
 
 describe("PiAgentExecutor", () => {
+  it("rejects a writable attempt without a durable effect journal before starting Pi", async () => {
+    let runnerCalls = 0;
+    const runner: PiAgentRunner = {
+      async run() {
+        runnerCalls += 1;
+        return { text: "should not run", stopReason: "stop" };
+      },
+    };
+
+    const outcome = await new PiAgentExecutor(runner).execute(
+      agentNode(300_000, ["edit"]),
+      context,
+    );
+
+    expect(runnerCalls).toBe(0);
+    expect(outcome).toEqual({
+      status: "failed",
+      error: {
+        code: "pi_effect_journal_unavailable",
+        message: "writable agent execution requires a durable effect journal",
+        retryable: false,
+        sideEffectStatus: "none",
+      },
+      evidence: null,
+    });
+  });
+
   it("passes the exact model and tool allowlist to the embedded runner", async () => {
     let request: PiAgentRunRequest | undefined;
     const runner: PiAgentRunner = {
@@ -214,14 +241,14 @@ describe("PiAgentExecutor", () => {
   it("preserves a committed edit receipt and side-effect status after provider failure", async () => {
     const runner: PiAgentRunner = {
       async run(input) {
-        recordEditEffect(input, "committed");
+        await recordEditEffect(input, "committed");
         throw new Error("provider failed after edit");
       },
     };
 
     const outcome = await new PiAgentExecutor(runner, () => 100).execute(
       agentNode(300_000, ["edit"]),
-      context,
+      contextWithEffectJournal(),
     );
 
     expect(outcome).toMatchObject({
@@ -247,14 +274,14 @@ describe("PiAgentExecutor", () => {
   it("fails a terminal agent result when an edit receipt is uncertain", async () => {
     const runner: PiAgentRunner = {
       async run(input) {
-        recordEditEffect(input, "uncertain");
+        await recordEditEffect(input, "uncertain");
         return { text: "The edit may have committed.", stopReason: "stop" };
       },
     };
 
     const outcome = await new PiAgentExecutor(runner, () => 100).execute(
       agentNode(300_000, ["edit"]),
-      context,
+      contextWithEffectJournal(),
     );
 
     expect(outcome).toMatchObject({
@@ -375,11 +402,17 @@ describe("PiAgentExecutor", () => {
               });
               reject(new Error("session rejected during abort"));
               setTimeout(() => {
-                reservation.commit({
-                  beforeSha256: "a".repeat(64),
-                  afterSha256: "b".repeat(64),
-                  outcome: "committed",
-                });
+                void (async () => {
+                  await reservation.prepare({
+                    beforeSha256: "a".repeat(64),
+                    afterSha256: "b".repeat(64),
+                    mode: 0o640,
+                  });
+                  await reservation.settle({
+                    outcome: "committed",
+                    reason: "directory_synced",
+                  });
+                })();
               }, 20);
             },
             { once: true },
@@ -392,7 +425,7 @@ describe("PiAgentExecutor", () => {
       runner,
       performance.now.bind(performance),
       100,
-    ).execute(agentNode(5, ["edit"]), context);
+    ).execute(agentNode(5, ["edit"]), contextWithEffectJournal());
 
     expect(outcome).toMatchObject({
       status: "failed",
@@ -852,15 +885,56 @@ function sessionStats() {
 }
 
 function testEffectRecorder() {
-  return new AgentEffectRecorder({
-    runId: "run-agent",
-    workflowId: "agent-workflow",
-    nodeId: "analyze",
-    attempt: 1,
-  });
+  return new AgentEffectRecorder(
+    {
+      runId: "run-agent",
+      workflowId: "agent-workflow",
+      nodeId: "analyze",
+      attempt: 1,
+    },
+    testNodeEffectJournal(),
+  );
 }
 
-function recordEditEffect(request: PiAgentRunRequest, outcome: "committed" | "uncertain"): void {
+function contextWithEffectJournal(): NodeExecutionContext {
+  return { ...context, effectJournal: testNodeEffectJournal() };
+}
+
+function testNodeEffectJournal(): NodeEffectJournal {
+  let effectSequence = 0;
+  return {
+    prepare: async (descriptor) => {
+      effectSequence += 1;
+      const sequence = effectSequence;
+      return {
+        effectId: `effect-${sequence + 2}`,
+        effectSequence: sequence,
+        settle: async (settlement) =>
+          settlement.outcome === "not_applied"
+            ? null
+            : {
+                version: 1,
+                sequence,
+                runId: "run-agent",
+                workflowId: "agent-workflow",
+                nodeId: "analyze",
+                attempt: 1,
+                kind: descriptor.kind,
+                target: descriptor.target,
+                operationDigest: descriptor.operationDigest,
+                beforeSha256: descriptor.beforeSha256,
+                afterSha256: descriptor.afterSha256,
+                outcome: settlement.outcome === "committed" ? "committed" : "uncertain",
+              },
+      };
+    },
+  };
+}
+
+async function recordEditEffect(
+  request: PiAgentRunRequest,
+  outcome: "committed" | "uncertain",
+): Promise<void> {
   const target = `${request.cwd}/source.ts`;
   const operationDigest = "d".repeat(64);
   request.policyBroker.authorize({
@@ -869,11 +943,21 @@ function recordEditEffect(request: PiAgentRunRequest, outcome: "committed" | "un
     boundary: "inside",
     operationDigest,
   });
-  request.effectRecorder.reserve({ kind: "filesystem.edit", target, operationDigest }).commit({
+  const reservation = request.effectRecorder.reserve({
+    kind: "filesystem.edit",
+    target,
+    operationDigest,
+  });
+  await reservation.prepare({
     beforeSha256: "a".repeat(64),
     afterSha256: "b".repeat(64),
-    outcome,
+    mode: 0o640,
   });
+  await reservation.settle(
+    outcome === "committed"
+      ? { outcome: "committed", reason: "directory_synced" }
+      : { outcome: "unknown", reason: "post_commit_failure" },
+  );
 }
 
 function testPolicyBroker(): PolicyBroker {

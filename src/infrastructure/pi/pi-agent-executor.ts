@@ -86,6 +86,12 @@ export class PiAgentExecutor implements AgentExecutor {
     if (isAborted(context.signal)) {
       return agentFailure("pi_agent_aborted", "agent execution was cancelled before start");
     }
+    if (node.agent.tools.includes("edit") && context.effectJournal === undefined) {
+      return agentFailure(
+        "pi_effect_journal_unavailable",
+        "writable agent execution requires a durable effect journal",
+      );
+    }
     const attribution = {
       runId: context.runId,
       workflowId: context.workflowId,
@@ -93,7 +99,7 @@ export class PiAgentExecutor implements AgentExecutor {
       attempt: context.attempt,
     } as const;
     const policyBroker = new PolicyBroker(attribution, policyActionsForTools(node.agent.tools));
-    const effectRecorder = new AgentEffectRecorder(attribution);
+    const effectRecorder = new AgentEffectRecorder(attribution, context.effectJournal);
     let observedUsage: AgentModelUsage | undefined;
     let closedPolicyDecisions: readonly PolicyDecision[] | undefined;
     let closedEffectReceipts: readonly AgentEffectReceipt[] | undefined;

@@ -29,8 +29,24 @@ export interface HashAnchoredEditResult {
   readonly afterSha256: string;
 }
 
+export interface HashAnchoredEditBoundary extends HashAnchoredEditResult {
+  readonly mode: number;
+}
+
+export type HashAnchoredEditBoundarySettlement =
+  | { readonly outcome: "committed"; readonly reason: "directory_synced" }
+  | { readonly outcome: "not_applied"; readonly reason: "commit_not_entered" }
+  | { readonly outcome: "unknown"; readonly reason: "post_commit_failure" };
+
+export interface HashAnchoredEditEffectLifecycle {
+  prepare(boundary: HashAnchoredEditBoundary): Promise<void>;
+  settle(settlement: HashAnchoredEditBoundarySettlement): Promise<void>;
+}
+
 export interface HashAnchoredEditOptions {
   readonly signal?: AbortSignal;
+  readonly effectLifecycle?: HashAnchoredEditEffectLifecycle;
+  readonly removeTemporary?: (path: string) => Promise<void>;
   readonly rename?: (temporaryPath: string, targetPath: string) => Promise<void>;
   readonly syncDirectory?: (directory: string) => Promise<void>;
 }
@@ -191,10 +207,13 @@ async function editWhileLocked(
   );
   let temporaryCreated = false;
   let renamed = false;
+  let prepared = false;
+  let settlementAttempted = false;
   try {
-    const handle = await openTemporaryFile(temporaryPath, metadata.mode & 0o777);
+    const expectedMode = metadata.mode & 0o777;
+    const handle = await openTemporaryFile(temporaryPath, expectedMode);
     temporaryCreated = true;
-    await writeAndSyncTemporary(handle, afterBytes, metadata.mode & 0o777);
+    await writeAndSyncTemporary(handle, afterBytes, expectedMode);
     throwIfAborted(options.signal);
 
     const currentMetadata = await readRegularFileMetadata(target);
@@ -214,30 +233,85 @@ async function editWhileLocked(
         "edit target changed while the replacement was being prepared",
       );
     }
+    if ((currentMetadata.mode & 0o777) !== expectedMode) {
+      throw new HashAnchoredEditError(
+        "stale_version",
+        "edit target mode changed while the replacement was being prepared",
+      );
+    }
+
+    if (options.effectLifecycle !== undefined) {
+      await options.effectLifecycle.prepare({ ...result, mode: expectedMode });
+      prepared = true;
+      throwIfAborted(options.signal);
+    }
 
     await (options.rename ?? renameFile)(temporaryPath, target);
     renamed = true;
     temporaryCreated = false;
   } catch (error) {
+    let failure = error;
     if (temporaryCreated) {
-      await removeTemporaryFile(temporaryPath, error);
+      try {
+        await removeTemporaryFile(temporaryPath, error, options.removeTemporary ?? unlink);
+      } catch (cleanupError) {
+        failure = cleanupError;
+      }
     }
-    if (error instanceof HashAnchoredEditError) {
-      throw error;
+    if (prepared && !renamed && options.effectLifecycle !== undefined) {
+      settlementAttempted = true;
+      try {
+        await options.effectLifecycle.settle({
+          outcome: "not_applied",
+          reason: "commit_not_entered",
+        });
+      } catch (settlementError) {
+        failure = ioFailure(
+          `edit failed before commit and its effect settlement also failed (${errorMessage(failure)})`,
+          new AggregateError(
+            [failure, settlementError],
+            "pre-commit edit failure and effect settlement both failed",
+          ),
+        );
+      }
     }
-    throw ioFailure("could not atomically replace edit target", error);
+    if (failure instanceof HashAnchoredEditError) {
+      throw failure;
+    }
+    throw ioFailure("could not atomically replace edit target", failure);
   }
 
   try {
     throwIfAborted(options.signal);
     await (options.syncDirectory ?? syncDirectory)(dirname(target));
-    throwIfAborted(options.signal);
+    if (options.effectLifecycle !== undefined) {
+      settlementAttempted = true;
+      await options.effectLifecycle.settle({
+        outcome: "committed",
+        reason: "directory_synced",
+      });
+    }
     return result;
   } catch (error) {
     if (!renamed) {
       throw error;
     }
-    throw new HashAnchoredEditUncertainError(result, error);
+    let cause = error;
+    if (prepared && !settlementAttempted && options.effectLifecycle !== undefined) {
+      settlementAttempted = true;
+      try {
+        await options.effectLifecycle.settle({
+          outcome: "unknown",
+          reason: "post_commit_failure",
+        });
+      } catch (settlementError) {
+        cause = new AggregateError(
+          [error, settlementError],
+          "post-commit operation and effect settlement both failed",
+        );
+      }
+    }
+    throw new HashAnchoredEditUncertainError(result, cause);
   }
 }
 
@@ -392,9 +466,13 @@ async function writeAndSyncTemporary(
   }
 }
 
-async function removeTemporaryFile(path: string, originalError: unknown): Promise<void> {
+async function removeTemporaryFile(
+  path: string,
+  originalError: unknown,
+  remove: (path: string) => Promise<void>,
+): Promise<void> {
   try {
-    await unlink(path);
+    await remove(path);
   } catch (cleanupError) {
     if (!isMissingPath(cleanupError)) {
       throw ioFailure(

@@ -20,7 +20,12 @@ The embedded Pi runtime runs with the invoking user's operating-system permissio
 - The profile denies network, undeclared Unix sockets, ambient credentials, writes to run state or sensitive project metadata, and home reads outside the workspace except for the exact canonical SRT seccomp helper required on Linux. That runtime-support file is re-exposed read-only when Flow is installed elsewhere. Ordinary workspace writes remain allowed by design.
 - Any dependency error or warning, initialization error, unsupported platform, or invalid sandbox launch descriptor fails before command spawn. There is no host-execution fallback.
 - Command nodes run only on Linux and macOS. Windows execution fails before spawn until full descendant-process containment is available.
-- Run events are synced before scheduler advancement; edit authorization and before/after effect receipts are distinct replay-validated evidence; replay fails closed on committed-record corruption.
+- Run events are synced before scheduler advancement. Writable agent attempts durably prepare each
+  edit before rename and, while journal publication remains available, settle it as committed, not
+  applied, or post-commit unknown. If settlement publication rejects, the attempt journal is
+  poisoned and the effect remains unresolved. Authorization, effect events, and terminal receipts
+  are distinct replay-validated evidence; replay rejects an unresolved effect, an invented or
+  omitted receipt, and committed-record corruption.
 - Approval-required command nodes persist the exact executable, ordered arguments, normalized
   working directory, timeout, digest, request identity, and grant lifetime before any node start or
   sandbox preparation. Approval is single-use, expires predictably, and does not weaken the command

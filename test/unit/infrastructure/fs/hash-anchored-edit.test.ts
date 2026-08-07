@@ -259,6 +259,184 @@ describe("editHashAnchoredTextFile", () => {
     expect(await readFile(target, "utf8")).toBe("after\n");
   });
 
+  it("acknowledges the effect boundary after revalidation and before rename", async () => {
+    const { target, content } = await textFile("before\n");
+    await chmod(target, 0o640);
+    const order: string[] = [];
+
+    const result = await editHashAnchoredTextFile(
+      target,
+      {
+        expectedSha256: sha256(content),
+        edits: [{ oldText: "before", newText: "after" }],
+      },
+      {
+        effectLifecycle: {
+          prepare: async (boundary) => {
+            order.push("prepare");
+            expect(await readFile(target, "utf8")).toBe(content);
+            expect(boundary).toEqual({
+              beforeSha256: sha256(content),
+              afterSha256: sha256("after\n"),
+              mode: 0o640,
+            });
+          },
+          settle: async (settlement) => {
+            order.push(`settle:${settlement.outcome}`);
+          },
+        },
+        rename: async (temporaryPath, targetPath) => {
+          order.push("rename");
+          await import("node:fs/promises").then(({ rename }) => rename(temporaryPath, targetPath));
+        },
+        syncDirectory: async () => {
+          order.push("sync");
+        },
+      },
+    );
+
+    expect(result).toEqual({
+      beforeSha256: sha256(content),
+      afterSha256: sha256("after\n"),
+    });
+    expect(order).toEqual(["prepare", "rename", "sync", "settle:committed"]);
+  });
+
+  it("does not rename when effect preparation rejects", async () => {
+    const { directory, target, content } = await textFile("before\n");
+    let renameCalled = false;
+    const settlements: string[] = [];
+
+    await expect(
+      editHashAnchoredTextFile(
+        target,
+        {
+          expectedSha256: sha256(content),
+          edits: [{ oldText: "before", newText: "after" }],
+        },
+        {
+          effectLifecycle: {
+            prepare: async () => {
+              throw new Error("injected journal failure");
+            },
+            settle: async (settlement) => {
+              settlements.push(settlement.outcome);
+            },
+          },
+          rename: async () => {
+            renameCalled = true;
+          },
+        },
+      ),
+    ).rejects.toThrow(/injected journal failure/i);
+
+    expect(renameCalled).toBe(false);
+    expect(settlements).toEqual([]);
+    expect(await readFile(target, "utf8")).toBe(content);
+    expect(await editTemporaryFiles(directory, target)).toEqual([]);
+  });
+
+  it("settles not-applied when cancellation follows preparation but precedes rename", async () => {
+    const { target, content } = await textFile("before\n");
+    const controller = new AbortController();
+    let renameCalled = false;
+    const settlements: unknown[] = [];
+
+    await expect(
+      editHashAnchoredTextFile(
+        target,
+        {
+          expectedSha256: sha256(content),
+          edits: [{ oldText: "before", newText: "after" }],
+        },
+        {
+          signal: controller.signal,
+          effectLifecycle: {
+            prepare: async () => {
+              controller.abort(new Error("cancel after durable preparation"));
+            },
+            settle: async (settlement) => {
+              settlements.push(settlement);
+            },
+          },
+          rename: async () => {
+            renameCalled = true;
+          },
+        },
+      ),
+    ).rejects.toMatchObject({ code: "aborted" });
+
+    expect(renameCalled).toBe(false);
+    expect(settlements).toEqual([{ outcome: "not_applied", reason: "commit_not_entered" }]);
+    expect(await readFile(target, "utf8")).toBe(content);
+  });
+
+  it("settles not-applied even when temporary cleanup also fails", async () => {
+    const { target, content } = await textFile("before\n");
+    const controller = new AbortController();
+    const settlements: unknown[] = [];
+    let cleanupCalled = false;
+    const options = {
+      signal: controller.signal,
+      effectLifecycle: {
+        prepare: async () => {
+          controller.abort(new Error("cancel after durable preparation"));
+        },
+        settle: async (settlement: unknown) => {
+          settlements.push(settlement);
+        },
+      },
+      removeTemporary: async () => {
+        cleanupCalled = true;
+        throw new Error("injected cleanup failure");
+      },
+    };
+
+    await expect(
+      editHashAnchoredTextFile(
+        target,
+        {
+          expectedSha256: sha256(content),
+          edits: [{ oldText: "before", newText: "after" }],
+        },
+        options,
+      ),
+    ).rejects.toMatchObject({ code: "io_failure" });
+
+    expect(cleanupCalled).toBe(true);
+    expect(settlements).toEqual([{ outcome: "not_applied", reason: "commit_not_entered" }]);
+    expect(await readFile(target, "utf8")).toBe(content);
+  });
+
+  it("settles unknown when directory sync fails after rename", async () => {
+    const { target, content } = await textFile("before\n");
+    const settlements: unknown[] = [];
+
+    await expect(
+      editHashAnchoredTextFile(
+        target,
+        {
+          expectedSha256: sha256(content),
+          edits: [{ oldText: "before", newText: "after" }],
+        },
+        {
+          effectLifecycle: {
+            prepare: async () => undefined,
+            settle: async (settlement) => {
+              settlements.push(settlement);
+            },
+          },
+          syncDirectory: async () => {
+            throw new Error("injected sync failure");
+          },
+        },
+      ),
+    ).rejects.toBeInstanceOf(HashAnchoredEditUncertainError);
+
+    expect(settlements).toEqual([{ outcome: "unknown", reason: "post_commit_failure" }]);
+    expect(await readFile(target, "utf8")).toBe("after\n");
+  });
+
   it("serializes concurrent edits and makes the stale follower fail", async () => {
     const { target, content } = await textFile("before\n");
     const request = {

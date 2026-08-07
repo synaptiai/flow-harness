@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import type { NodeEffectJournal } from "../../../../src/application/ports.js";
 import { PolicyBroker } from "../../../../src/domain/policy/broker.js";
 import { AgentEffectRecorder } from "../../../../src/infrastructure/pi/agent-effect-recorder.js";
 import { createWorkspaceAgentTools } from "../../../../src/infrastructure/pi/workspace-agent-tools.js";
@@ -231,6 +232,62 @@ describe("workspace-confined Pi tools", () => {
     ]);
   });
 
+  it("durably prepares and settles the real edit boundary", async () => {
+    const root = await createTemporaryDirectory();
+    const target = join(root, "source.ts");
+    const before = "const value = 1;\n";
+    const after = "const value = 2;\n";
+    await writeFile(target, before, "utf8");
+    const policy = policyBroker(["filesystem.write"]);
+    const journalEvents: unknown[] = [];
+    const journal = recordingJournal(journalEvents, async () => await readFile(target, "utf8"));
+    const effects = effectRecorder(journal);
+    const tools = await createWorkspaceAgentTools(root, ["edit"], policy, {
+      effectRecorder: effects,
+    });
+    const editTool = tools.definitions[0];
+    if (editTool === undefined) {
+      throw new Error("edit tool was not registered");
+    }
+
+    await editTool.execute(
+      "edit-call",
+      {
+        path: target,
+        expectedSha256: sha256(before),
+        edits: [{ oldText: "value = 1", newText: "value = 2" }],
+      },
+      undefined,
+      undefined,
+      {} as never,
+    );
+
+    expect(journalEvents).toEqual([
+      expect.objectContaining({
+        type: "prepared",
+        targetContent: before,
+        descriptor: expect.objectContaining({
+          target: await realpath(target),
+          beforeSha256: sha256(before),
+          afterSha256: sha256(after),
+        }),
+      }),
+      {
+        type: "settled",
+        settlement: { outcome: "committed", reason: "directory_synced" },
+      },
+    ]);
+    expect(await readFile(target, "utf8")).toBe(after);
+    expect(effects.snapshot()).toEqual([
+      expect.objectContaining({
+        target: await realpath(target),
+        beforeSha256: sha256(before),
+        afterSha256: sha256(after),
+        outcome: "committed",
+      }),
+    ]);
+  });
+
   it("rejects a stale edit without recording an effect", async () => {
     const root = await createTemporaryDirectory();
     const target = join(root, "source.ts");
@@ -286,13 +343,57 @@ function policyBroker(
   );
 }
 
-function effectRecorder(): AgentEffectRecorder {
-  return new AgentEffectRecorder({
-    runId: "run-tools",
-    workflowId: "tools-workflow",
-    nodeId: "analyze",
-    attempt: 1,
-  });
+function effectRecorder(
+  journal: NodeEffectJournal = recordingJournal([], async () => ""),
+): AgentEffectRecorder {
+  return new AgentEffectRecorder(
+    {
+      runId: "run-tools",
+      workflowId: "tools-workflow",
+      nodeId: "analyze",
+      attempt: 1,
+    },
+    journal,
+  );
+}
+
+function recordingJournal(
+  events: unknown[],
+  targetContent: () => Promise<string>,
+): NodeEffectJournal {
+  return {
+    prepare: async (descriptor) => {
+      events.push({
+        type: "prepared",
+        descriptor: structuredClone(descriptor),
+        targetContent: await targetContent(),
+      });
+      return {
+        effectId: "effect-3",
+        effectSequence: 1,
+        settle: async (settlement) => {
+          events.push({ type: "settled", settlement: structuredClone(settlement) });
+          if (settlement.outcome === "not_applied") {
+            return null;
+          }
+          return {
+            version: 1,
+            sequence: 1,
+            runId: "run-tools",
+            workflowId: "tools-workflow",
+            nodeId: "analyze",
+            attempt: 1,
+            kind: descriptor.kind,
+            target: descriptor.target,
+            operationDigest: descriptor.operationDigest,
+            beforeSha256: descriptor.beforeSha256,
+            afterSha256: descriptor.afterSha256,
+            outcome: settlement.outcome === "committed" ? "committed" : "uncertain",
+          };
+        },
+      };
+    },
+  };
 }
 
 function extractVersion(
