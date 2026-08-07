@@ -31,6 +31,15 @@ describe("public repository contracts", () => {
     expect(workflow).toContain(`sudo sysctl -w ${appArmorSetting}`);
   });
 
+  it("scopes CI to one validation path per pull request while retaining main and manual runs", async () => {
+    const workflow = parse(await readText(".github/workflows/ci.yml")) as WorkflowDefinition;
+
+    expect(workflow.on.pull_request).toBeDefined();
+    expect(workflow.on.push).toEqual({ branches: ["main"] });
+    expect(workflow.on.workflow_dispatch).toBeDefined();
+    expect(Object.keys(workflow.jobs).sort()).toEqual(["dependency-audit", "quality"]);
+  });
+
   it("routes support, conduct, and vulnerability reports to distinct channels", async () => {
     const [support, conduct, security] = await Promise.all([
       readText("SUPPORT.md"),
@@ -103,4 +112,13 @@ interface IssueForm {
 interface IssueConfig {
   readonly blank_issues_enabled?: boolean;
   readonly contact_links?: ReadonlyArray<{ readonly url?: string }>;
+}
+
+interface WorkflowDefinition {
+  readonly on: {
+    readonly pull_request?: unknown;
+    readonly push?: { readonly branches?: readonly string[] };
+    readonly workflow_dispatch?: unknown;
+  };
+  readonly jobs: Readonly<Record<string, unknown>>;
 }
