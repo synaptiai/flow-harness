@@ -678,6 +678,45 @@ describe("LocalSupervisorService", () => {
     expect(harness.launcher.jobs.map((job) => job.runId)).toEqual(["run-1"]);
   });
 
+  it("coalesces concurrent exact queued-cancellation callers", async () => {
+    const harness = await createHarness(
+      (runsDirectory, socketDirectory) =>
+        new DelayedQueuedCancellationStore(runsDirectory, { socketDirectory }),
+      { maxActiveWorkers: 1, maxQueuedJobs: 1 },
+    );
+    const store = harness.store as DelayedQueuedCancellationStore;
+    const active = submitCommand(randomUUID(), harness.directory, "active-run");
+    const queued = submitCommand(randomUUID(), harness.directory, "queued-run");
+    await harness.service.submit(active);
+    await harness.service.submit(queued);
+    const command = {
+      type: "cancel" as const,
+      policyDigest: POLICY_DIGEST,
+      commandId: randomUUID(),
+      runId: queued.runId,
+      actor: "operator:test",
+    };
+
+    const first = harness.service.cancel(command);
+    await store.submissionRejectionAttempted.promise;
+    const second = harness.service.cancel(command);
+    await store.secondCancellationRecorded.promise;
+    store.submissionRejectionGate.resolve();
+
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    expect(secondResult).toEqual(firstResult);
+    expect(firstResult).toMatchObject({
+      type: "cancelled",
+      runId: queued.runId,
+      phase: "queued",
+    });
+    await expect(harness.store.readCommand(command.commandId)).resolves.toMatchObject({
+      status: "completed",
+      result: { phase: "queued" },
+    });
+    expect(harness.launcher.jobs.map((job) => job.runId)).toEqual([active.runId]);
+  });
+
   it("does not recreate admission when an exact queued retry races cancellation", async () => {
     const harness = await createHarness(
       (runsDirectory, socketDirectory) =>
@@ -977,6 +1016,39 @@ class DelayedJobReadStore extends LocalSupervisorStore {
       await this.jobReadGate.promise;
     }
     return await super.readJob(jobId);
+  }
+}
+
+class DelayedQueuedCancellationStore extends LocalSupervisorStore {
+  readonly submissionRejectionAttempted = deferred();
+  readonly submissionRejectionGate = deferred();
+  readonly secondCancellationRecorded = deferred();
+  #cancellationRecords = 0;
+  #delaySubmissionRejection = true;
+
+  override async recordCommand(input: SupervisorCommandRecord): Promise<SupervisorCommandRecord> {
+    const recorded = await super.recordCommand(input);
+    if (input.type === "cancel") {
+      this.#cancellationRecords += 1;
+      if (this.#cancellationRecords === 2) {
+        this.secondCancellationRecorded.resolve();
+      }
+    }
+    return recorded;
+  }
+
+  override async updateCommand(input: SupervisorCommandRecord): Promise<void> {
+    if (
+      input.type === "submit" &&
+      input.status === "rejected" &&
+      input.reason === "cancelled" &&
+      this.#delaySubmissionRejection
+    ) {
+      this.#delaySubmissionRejection = false;
+      this.submissionRejectionAttempted.resolve();
+      await this.submissionRejectionGate.promise;
+    }
+    await super.updateCommand(input);
   }
 }
 

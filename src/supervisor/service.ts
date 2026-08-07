@@ -800,6 +800,38 @@ export class LocalSupervisorService {
       return queuedCancellation;
     }
 
+    // Another exact retry may have completed a queued cancellation while this
+    // caller waited for the admission lock. The durable command record, rather
+    // than the now-absent queue entry, determines the converged result.
+    const latestJournal = await this.#store.readCommand(command.commandId);
+    if (
+      latestJournal.type !== "cancel" ||
+      latestJournal.requestDigest !== journal.requestDigest
+    ) {
+      throw new SupervisorServiceError(
+        "conflict",
+        `command "${command.commandId}" was replaced with a different identity`,
+      );
+    }
+    journal = latestJournal;
+    if (journal.status === "completed") {
+      if (journal.result.phase === "queued") {
+        await this.#finalizeQueuedCancellation(command);
+      }
+      return cancellationResultFromJournal(journal);
+    }
+    if (journal.status === "uncertain") {
+      const reconciled = await this.#tryCompletedCancellation(command);
+      if (reconciled === null) {
+        throw new SupervisorServiceError(
+          "command_uncertain",
+          `cancellation command "${command.commandId}" has an uncertain prior dispatch`,
+        );
+      }
+      await this.#completeCancellationJournal(journal, reconciled);
+      return reconciled;
+    }
+
     const claim = await this.#store.readActiveRunClaim(command.runId);
     if (claim === null) {
       const admission = Object.values(this.#admissionStore.state.jobs).find(
