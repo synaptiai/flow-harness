@@ -76,6 +76,62 @@ describe("compiled Flow process", () => {
     });
   });
 
+  it("keeps the startup client alive until an uncooperative daemon is reaped", async () => {
+    const directory = await createTemporaryDirectory();
+    const fixturePath = join(directory, "uncooperative-supervisor.cjs");
+    const pidPath = join(directory, "uncooperative-supervisor.pid");
+    await writeFile(
+      fixturePath,
+      `const fs = require("node:fs"); fs.writeFileSync(${JSON.stringify(pidPath)}, String(process.pid)); process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);`,
+      "utf8",
+    );
+    const storeUrl = new URL(
+      "../../dist/infrastructure/fs/local-supervisor-store.js",
+      import.meta.url,
+    ).href;
+    const daemonUrl = new URL("../../dist/supervisor/daemon.js", import.meta.url).href;
+    const configUrl = new URL("../../dist/domain/config/resolver.js", import.meta.url).href;
+    const runsDirectory = join(directory, "runs");
+    const socketDirectory = join(directory, "sockets");
+    const script = `
+      import { LocalSupervisorStore } from ${JSON.stringify(storeUrl)};
+      import { ensureSupervisor } from ${JSON.stringify(daemonUrl)};
+      import { resolveFlowConfig } from ${JSON.stringify(configUrl)};
+      const store = new LocalSupervisorStore(${JSON.stringify(runsDirectory)}, {
+        socketDirectory: ${JSON.stringify(socketDirectory)}
+      });
+      try {
+        await ensureSupervisor(store, ${JSON.stringify(fixturePath)}, resolveFlowConfig({}), {
+          startupTimeoutMs: 100
+        });
+      } catch (error) {
+        process.stdout.write(JSON.stringify({ name: error.name, pid: error.pid }));
+      }
+    `;
+    let fixturePid: number | undefined;
+
+    try {
+      const result = await spawnCaptured(process.execPath, ["--input-type=module", "-e", script])
+        .completed;
+
+      expect(result.code, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        name: "SupervisorStartupTimeoutError",
+        pid: expect.any(Number),
+      });
+      fixturePid = Number(await readFile(pidPath, "utf8"));
+      await expect(waitForProcessExit(fixturePid)).resolves.toBeUndefined();
+    } finally {
+      if (fixturePid === undefined) {
+        await waitForFile(pidPath).catch(() => undefined);
+        fixturePid = Number(await readFile(pidPath, "utf8").catch(() => "NaN"));
+      }
+      if (Number.isSafeInteger(fixturePid)) {
+        killProcessGroupIfAlive(fixturePid);
+      }
+    }
+  });
+
   it("handles SIGINT, persists cancellation, exits 130, and terminates the command process group", async () => {
     const directory = await createTemporaryDirectory();
     const workflowPath = join(directory, "signal.workflow.yaml");
@@ -746,6 +802,16 @@ async function waitForProcessExit(pid: number): Promise<void> {
     await delay(20);
   }
   throw new Error(`timed out waiting for process ${pid} to exit`);
+}
+
+function killProcessGroupIfAlive(pid: number): void {
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) {
+      throw error;
+    }
+  }
 }
 
 async function createTemporaryDirectory(): Promise<string> {

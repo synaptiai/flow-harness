@@ -300,18 +300,25 @@ async function terminateDetachedChild(child: ChildProcess, graceMs = 1_000): Pro
   if (child.exitCode !== null || child.signalCode !== null) {
     return;
   }
-  const exited = new Promise<void>((resolvePromise) => child.once("exit", () => resolvePromise()));
-  signalDetachedChild(child, "SIGTERM");
-  if (await settlesWithin(exited, graceMs)) {
-    return;
-  }
-  signalDetachedChild(child, "SIGKILL");
-  if (
-    !(await settlesWithin(exited, graceMs)) &&
-    child.pid !== undefined &&
-    isProcessAlive(child.pid)
-  ) {
-    throw new Error(`timed out terminating supervisor process ${child.pid}`);
+  child.ref();
+  try {
+    const exited = new Promise<void>((resolvePromise) =>
+      child.once("exit", () => resolvePromise()),
+    );
+    signalDetachedChild(child, "SIGTERM");
+    if (await settlesWithin(exited, graceMs)) {
+      return;
+    }
+    signalDetachedChild(child, "SIGKILL");
+    if (
+      !(await settlesWithin(exited, graceMs)) &&
+      child.pid !== undefined &&
+      isProcessAlive(child.pid)
+    ) {
+      throw new Error(`timed out terminating supervisor process ${child.pid}`);
+    }
+  } finally {
+    child.unref();
   }
 }
 
