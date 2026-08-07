@@ -18,6 +18,7 @@ The embedded Pi runtime runs with the invoking user's operating-system permissio
 - Pi project extensions, skills, templates, themes, and context discovery are disabled.
 - Command nodes preserve explicit argument arrays through an audited encoder and run inside the fixed SRT `workspace-write-network-deny-v1` profile.
 - The profile denies network, undeclared Unix sockets, ambient credentials, writes to run state or sensitive project metadata, and home reads outside the workspace except for the exact canonical SRT seccomp helper required on Linux. That runtime-support file is re-exposed read-only when Flow is installed elsewhere. Ordinary workspace writes remain allowed by design.
+- Same-policy concurrent commands share SRT's process-global session but receive distinct temporary directories and per-command filesystem configurations. Flow rejects a different concurrent workspace or policy and resets the session only after every active wrap releases.
 - Any dependency error or warning, initialization error, unsupported platform, or invalid sandbox launch descriptor fails before command spawn. There is no host-execution fallback.
 - Command nodes run only on Linux and macOS. Windows execution fails before spawn until full descendant-process containment is available.
 - Run events are synced before scheduler advancement. Writable agent attempts durably prepare each

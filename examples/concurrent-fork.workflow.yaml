@@ -1,0 +1,27 @@
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata:
+  id: concurrent-fork
+  description: Run two independent static DAG branches in one bounded deterministic wave.
+concurrency:
+  maxNodes: 2
+nodes:
+  - id: root
+    type: command
+    command: { executable: node, args: [--version] }
+  - id: left
+    type: command
+    dependsOn: [root]
+    command:
+      executable: node
+      args: [-e, 'setTimeout(() => process.stdout.write("left\n"), 50)']
+  - id: right
+    type: command
+    dependsOn: [root]
+    command:
+      executable: node
+      args: [-e, 'setTimeout(() => process.stdout.write("right\n"), 50)']
+  - id: join
+    type: command
+    dependsOn: [left, right]
+    command: { executable: node, args: [--version] }

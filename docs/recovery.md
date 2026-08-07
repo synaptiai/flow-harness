@@ -28,6 +28,13 @@ Pending nodes retain their normal dependency order and use the lesser of their d
 and remaining active-execution budget. The command prints the same JSON `RunState` shape as
 `flow run` when recovery can continue.
 
+When a concurrent wave was interrupted, Flow processes every open attempt in workflow declaration
+order. It first reconciles every open typed effect in that order, then appends one
+`node_attempt_interrupted` disposition for every proof-safe attempt, and finally appends one
+`run_resumed`. A command attempt or any other unsafe sibling still blocks new execution; already
+committed reconciliation and safe dispositions remain valid evidence. Repeating resume continues
+from that prefix without duplicating events.
+
 To submit either operation to the local supervisor, add `--detach`:
 
 ```sh
@@ -80,7 +87,7 @@ attribution rather than authenticated identity.
 | `command_approval_granted` is unexpired | Append `run_resumed`, consume the exact grant in `node_started`, and execute once |
 | `command_approval_granted` has expired unused | Append `run_resumed`, record expiry, create a fresh request, and execute nothing |
 | `command_approval_denied` is durable but `run_failed` is absent | Append `run_resumed`, append `run_failed`, and execute nothing |
-| An opted-in agent `node_started` is below its attempt cap, has accountable start capacity, and has no effects or only effects proven not applied | Reconcile open typed edits first; append `node_attempt_interrupted`, append `run_resumed`, and start the exact next fresh attempt |
+| One or more opted-in agent `node_started` events are below their attempt caps, have accountable start capacity, and have no effects or only effects proven not applied | Reconcile every open typed edit and append each `node_attempt_interrupted` in declaration order; append one `run_resumed`, then admit fresh attempts under the persisted concurrency limit |
 | An opted-in agent `node_started` has an applied, committed, unknown, open, legacy writable, attempt-exhausted, or unaccountable budget state | Preserve any reconciliation prefix, refuse with `recovery_retry_ineligible`, and invoke no executor |
 | An unconfigured `node_started` has no matching outcome | Preserve any reconciliation prefix, refuse with `uncertain_operation`, and append no retry disposition or `run_resumed` |
 | Run is `succeeded`, `failed`, `cancelled`, or `resource_exhausted` | Refuse with `terminal_run` |

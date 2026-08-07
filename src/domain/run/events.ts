@@ -12,8 +12,10 @@ import {
 import { compiledGoalSchema } from "../goal/schema.js";
 import type { CompiledGoal, GoalRunState } from "../goal/types.js";
 import {
+  MAX_CONCURRENT_NODES,
   MAX_CONTROL_GRAPH_SERIALIZED_BYTES,
   type CompiledRunBudget,
+  type CompiledWorkflowConcurrency,
   type ConditionSourceField,
 } from "../workflow/types.js";
 import {
@@ -126,6 +128,7 @@ export interface RunStartedEvent extends RunEventBase {
   readonly workflowApiVersion: "flow.synapti.ai/v1alpha1";
   readonly workflowDigest: string;
   readonly budget?: CompiledRunBudget;
+  readonly concurrency?: CompiledWorkflowConcurrency;
   readonly goal?: CompiledGoal;
   readonly executionCwd?: string;
   readonly approvalRequirements?: readonly CommandApprovalRequirement[];
@@ -417,6 +420,7 @@ export interface RunCancelledEvent extends RunEventBase {
   readonly type: "run_cancelled";
   readonly reason: string;
   readonly cancelledNodeId?: string;
+  readonly cancelledNodeIds?: readonly string[];
   readonly actor?: string;
   readonly requestId?: string;
 }
@@ -551,6 +555,7 @@ export interface RunState {
   >;
   readonly recoveryRequirements: Readonly<Record<string, Omit<AgentRecoveryRequirement, "nodeId">>>;
   readonly controlGraph: ControlGraph | null;
+  readonly concurrency: CompiledWorkflowConcurrency;
   readonly resources: RunResourceConsumption;
   readonly budget: RunBudgetState | null;
   readonly status: RunStatus;
@@ -920,6 +925,10 @@ export const runEventSchema = z.discriminatedUnion("type", [
       workflowApiVersion: z.literal("flow.synapti.ai/v1alpha1"),
       workflowDigest: sha256Schema,
       budget: runBudgetLimitsSchema.optional(),
+      concurrency: z
+        .object({ maxNodes: z.number().int().min(1).max(MAX_CONCURRENT_NODES) })
+        .strict()
+        .optional(),
       goal: compiledGoalSchema.optional(),
       executionCwd: absolutePathSchema.optional(),
       approvalRequirements: z
@@ -1220,12 +1229,32 @@ export const runEventSchema = z.discriminatedUnion("type", [
       type: z.literal("run_cancelled"),
       reason: z.string().min(1).max(16_384),
       cancelledNodeId: identifierSchema.optional(),
+      cancelledNodeIds: z
+        .array(identifierSchema)
+        .min(1)
+        .max(MAX_CONCURRENT_NODES)
+        .refine((items) => new Set(items).size === items.length, {
+          message: "cancelled node ids must be unique",
+        })
+        .optional(),
       actor: actorSchema.optional(),
       requestId: z.uuid().optional(),
     })
     .strict()
-    .refine((event) => (event.actor === undefined) === (event.requestId === undefined), {
-      message: "cancellation actor and request id must be provided together",
+    .superRefine((event, context) => {
+      if ((event.actor === undefined) !== (event.requestId === undefined)) {
+        context.addIssue({
+          code: "custom",
+          message: "cancellation actor and request id must be provided together",
+        });
+      }
+      if (event.cancelledNodeId !== undefined && event.cancelledNodeIds !== undefined) {
+        context.addIssue({
+          code: "custom",
+          path: ["cancelledNodeIds"],
+          message: "cancellation must use either a single node id or an ordered node-id list",
+        });
+      }
     }),
   z
     .object({
@@ -1344,6 +1373,13 @@ export function appendRunEvent(
       event.controlGraph === undefined
         ? null
         : validateControlGraph(event.controlGraph, event.nodeIds, eventIndex);
+    const concurrency = Object.freeze({ maxNodes: event.concurrency?.maxNodes ?? 1 });
+    if (concurrency.maxNodes > 1 && controlGraph === null) {
+      throw new RunReplayError(
+        eventIndex,
+        "concurrent run metadata requires a persisted control graph",
+      );
+    }
     const resources = emptyRunResources();
     return freezeRunState({
       runId: event.runId,
@@ -1354,6 +1390,7 @@ export function appendRunEvent(
       approvalRequirements: Object.freeze(approvalRequirements),
       recoveryRequirements: Object.freeze(recoveryRequirementsByNode),
       controlGraph,
+      concurrency,
       resources,
       budget: calculateRunBudgetState(event.budget, resources),
       status: "running",
@@ -1387,11 +1424,14 @@ export function appendRunEvent(
     event.type !== "run_failed" &&
     event.type !== "run_cancelled" &&
     event.type !== "run_budget_exhausted" &&
-    event.type !== "run_resumed"
+    event.type !== "run_resumed" &&
+    event.type !== "node_effect_reconciled" &&
+    event.type !== "node_attempt_interrupted" &&
+    !isRunningNodeOutcome(event, nodes)
   ) {
     throw new RunReplayError(
       eventIndex,
-      "node_failed must be followed immediately by run_failed unless a recovery marker records the restart",
+      "node_failed closes admission and permits only sibling outcomes, typed recovery evidence, or run terminalization",
     );
   }
 
@@ -1586,8 +1626,14 @@ export function appendRunEvent(
           `node "${event.nodeId}" cannot start while the run is waiting for approval`,
         );
       }
-      if (Object.values(nodes).some((node) => node.status === "running")) {
-        throw new RunReplayError(eventIndex, "only one node may be running at a time");
+      const runningCount = Object.values(nodes).filter((node) => node.status === "running").length;
+      if (runningCount >= currentState.concurrency.maxNodes) {
+        throw new RunReplayError(
+          eventIndex,
+          currentState.concurrency.maxNodes === 1
+            ? "only one node may be running at a time"
+            : `node concurrency capacity ${currentState.concurrency.maxNodes} is already occupied`,
+        );
       }
       if ((currentState.budget?.exhausted.length ?? 0) > 0) {
         throw new RunReplayError(
@@ -2086,6 +2132,7 @@ export function appendRunEvent(
       break;
     }
     case "node_succeeded": {
+      requireNextRunningOutcome(nodes, event.nodeId, eventIndex);
       const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
       validateDurableEffectProjection(current, event.evidence, event, eventIndex);
       validateEvidenceIntegrity(event.evidence, event, eventIndex, current.effectProtocol === null);
@@ -2112,6 +2159,7 @@ export function appendRunEvent(
       break;
     }
     case "node_failed": {
+      requireNextRunningOutcome(nodes, event.nodeId, eventIndex);
       const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
       validateDurableEffectProjection(current, event.evidence, event, eventIndex);
       if (event.evidence !== null) {
@@ -2186,13 +2234,13 @@ export function appendRunEvent(
       const failed = requireNode(nodes, event.failedNodeId, eventIndex);
       if (
         failed.status !== "failed" ||
-        failedNodes.length !== 1 ||
+        failedNodes.length === 0 ||
         failedNodes[0]?.[0] !== event.failedNodeId ||
         Object.values(nodes).some((node) => node.status === "running")
       ) {
         throw new RunReplayError(
           eventIndex,
-          `failed node "${event.failedNodeId}" is not the sole failed node`,
+          `failed node "${event.failedNodeId}" is not the deterministic primary failed node of a quiescent run`,
         );
       }
       status = "failed";
@@ -2219,21 +2267,34 @@ export function appendRunEvent(
       if (Object.values(nodes).some((node) => node.status === "running")) {
         throw new RunReplayError(eventIndex, "run cannot cancel while a node remains running");
       }
-      if (failedNodes.length === 0 && event.cancelledNodeId !== undefined) {
+      const failedNodeIds = failedNodes.map(([nodeId]) => nodeId);
+      if (
+        failedNodeIds.length === 0 &&
+        (event.cancelledNodeId !== undefined || event.cancelledNodeIds !== undefined)
+      ) {
         throw new RunReplayError(
           eventIndex,
-          `cancelled node "${event.cancelledNodeId}" did not settle as failed`,
+          "cancellation names nodes even though no node settled as failed",
         );
       }
       if (
-        failedNodes.length === 1 &&
-        (event.cancelledNodeId === undefined || failedNodes[0]?.[0] !== event.cancelledNodeId)
+        failedNodeIds.length === 1 &&
+        !(
+          event.cancelledNodeId === failedNodeIds[0] ||
+          sameStrings(event.cancelledNodeIds ?? [], failedNodeIds)
+        )
       ) {
         throw new RunReplayError(eventIndex, "cancellation must identify its sole cancelled node");
       }
+      if (failedNodeIds.length > 1 && !sameStrings(event.cancelledNodeIds ?? [], failedNodeIds)) {
+        throw new RunReplayError(
+          eventIndex,
+          "cancellation failed-node projection does not match every failed node in declaration order",
+        );
+      }
       status = "cancelled";
       finishedAt = event.at;
-      failedNodeId = event.cancelledNodeId ?? null;
+      failedNodeId = failedNodeIds[0] ?? null;
       failureReason = event.reason;
       goal = goal === null ? null : rejectIncompleteGoal(goal);
       break;
@@ -2280,6 +2341,7 @@ export function appendRunEvent(
     approvalRequirements: currentState.approvalRequirements,
     recoveryRequirements: currentState.recoveryRequirements,
     controlGraph: currentState.controlGraph,
+    concurrency: currentState.concurrency,
     resources,
     budget,
     status,
@@ -3388,6 +3450,30 @@ function requireRunningAttempt(
     );
   }
   return node;
+}
+
+function isRunningNodeOutcome(
+  event: RunEvent,
+  nodes: Readonly<Record<string, NodeRunState>>,
+): event is NodeSucceededEvent | NodeFailedEvent {
+  return (
+    (event.type === "node_succeeded" || event.type === "node_failed") &&
+    nodes[event.nodeId]?.status === "running"
+  );
+}
+
+function requireNextRunningOutcome(
+  nodes: Readonly<Record<string, NodeRunState>>,
+  nodeId: string,
+  eventIndex: number,
+): void {
+  const next = Object.entries(nodes).find(([, node]) => node.status === "running");
+  if (next !== undefined && next[0] !== nodeId) {
+    throw new RunReplayError(
+      eventIndex,
+      `node outcome for "${nodeId}" violates declaration order; "${next[0]}" must settle first`,
+    );
+  }
 }
 
 function deepFreeze<T>(value: T): T {

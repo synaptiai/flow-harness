@@ -32,6 +32,7 @@ describe("compileWorkflowText", () => {
     "budgeted-foundation.workflow.yaml",
     "implement-and-verify.workflow.yaml",
     "approval-gated-command.workflow.yaml",
+    "concurrent-fork.workflow.yaml",
   ])("keeps published example %s compilable", async (fileName) => {
     const exampleUrl = new URL(`../../../examples/${fileName}`, import.meta.url);
     const source = await readFile(exampleUrl, "utf8");
@@ -245,6 +246,61 @@ kind: Workflow
 metadata:
   id: invalid-budget
 budget: ${budget}
+nodes:
+  - id: verify
+    type: command
+    command: { executable: npm, args: [test] }
+`;
+
+    expectCompilationFailure(source, "invalid_schema", path);
+  });
+
+  it("compiles an immutable bounded node-concurrency contract", () => {
+    const workflow = compileWorkflowText(`
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata:
+  id: concurrent-workflow
+concurrency:
+  maxNodes: 4
+nodes:
+  - id: verify
+    type: command
+    command: { executable: npm, args: [test] }
+`);
+
+    expect(workflow.concurrency).toEqual({ maxNodes: 4 });
+    expect(Object.isFrozen(workflow.concurrency)).toBe(true);
+  });
+
+  it("preserves the legacy compiled shape when concurrency is omitted", () => {
+    const workflow = compileWorkflowText(`
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata:
+  id: sequential-workflow
+nodes:
+  - id: verify
+    type: command
+    command: { executable: npm, args: [test] }
+`);
+
+    expect("concurrency" in workflow).toBe(false);
+  });
+
+  it.each([
+    ["empty declaration", "{}", "concurrency.maxNodes"],
+    ["unknown field", "{ maxNodes: 2, maxAgents: 1 }", "concurrency"],
+    ["zero", "{ maxNodes: 0 }", "concurrency.maxNodes"],
+    ["fractional", "{ maxNodes: 1.5 }", "concurrency.maxNodes"],
+    ["over the hard cap", "{ maxNodes: 33 }", "concurrency.maxNodes"],
+  ])("rejects node concurrency with %s", (_case, concurrency, path) => {
+    const source = `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata:
+  id: invalid-concurrency
+concurrency: ${concurrency}
 nodes:
   - id: verify
     type: command

@@ -35,6 +35,7 @@ Pi's experimental `AgentHarness` API is not a foundation for the first release. 
 | Agent tool-call loop | `createAgentSession()` | One adapter owns every Pi import; Pi assistant-turn and provider retries are explicitly disabled so Flow owns attempt count |
 | Streaming events | Subscribe and translate | Persist versioned Flow events, not raw Pi events |
 | Cancellation and idle settlement | Reuse mechanics | Map into Flow node lifecycle semantics |
+| Concurrent tool calls | Reference implementation only | Pi may run independent tool calls concurrently, but Flow owns graph admission, quiescent waves, durable ordering, failure, and recovery semantics |
 | Per-node model and thinking level | Reuse execution support | Selection remains Flow policy |
 | Exact tool allowlists | Current defense in depth | The adapter passes the exact allowlist to Pi; Flow's broker remains the per-call authorization boundary |
 | Basic coding tools | Flow-owned workspace-confined `read`, `ls`, and hash-anchored `edit` definitions built on Pi's custom-tool interface | Pi's built-in edit, fuzzy matching, direct writes, ambient path access, and helper-binary downloads are disabled; Flow owns policy, atomic replacement, and receipts |
@@ -93,7 +94,7 @@ Prime Agent proves that Pi can support a distinct long-running harness. Its prod
 | Detach, reattach, snapshots, and event replay | **Implemented independently** with immutable source snapshots, authenticated adoption, and bounded exclusive sequence cursors |
 | Recovery journal and bounded restart | **Implemented for supervisor restart, idempotent cancellation, write-ahead Flow edit evidence, typed hash/mode observation, and proof-safe fresh agent attempts** around Flow's authoritative run ledger; Prime's fail-closed treatment of uncertain side effects is retained, so only replay-proven not-applied attempts qualify |
 | Durable goals and autonomous continuation | Implement in Flow's scheduler |
-| Daemon workload limits | Prime leaves fixed caps outside its daemon layer; Flow independently adds strict operator/project ceilings, durable active reservations, a bounded FIFO queue, and deterministic overflow rejection. Per-run graph concurrency and artifact limits remain |
+| Daemon workload limits | Prime leaves fixed caps outside its daemon layer; Flow independently adds strict operator/project ceilings, durable active reservations, a bounded FIFO queue, deterministic overflow rejection, and per-run graph-node concurrency. Artifact limits remain |
 | Heartbeats and schedules | Later trigger package now that bounded admission exists; triggers must not bypass the same queue |
 | Retained children and messaging | Represent as graph-owned child runs and mailbox events |
 | Persistent IPython | Optional capability only; never describe it as a sandbox |
@@ -109,6 +110,13 @@ Python RLM, graph state, protocol, or code. Pi remains embedded through its type
 inside each worker because Pi's RPC process would supervise only the inner model session, not Flow
 command nodes, approvals, budgets, evidence, or recovery. OMP's background jobs similarly inform
 cancellation mechanics but are not a reusable whole-harness daemon.
+
+For graph concurrency, Flow also compared three proven shapes: Pi's fixed-worker concurrent tool
+dispatch, OMP's session semaphore and independently registered background jobs, and workflow-engine
+quiescence such as Argo DAG scheduling. Flow adopts bounded admission and wait-for-running-work
+quiescence, but not Pi/OMP completion-order persistence or background-job ownership: dependency
+release, failure selection, cancellation projection, and recovery stay ledger-owned and
+declaration-ordered.
 
 ## Retry and recovery ownership
 

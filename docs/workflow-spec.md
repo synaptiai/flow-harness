@@ -19,6 +19,8 @@ kind: Workflow
 metadata:
   id: verify-change
   description: Optional human-readable purpose.
+concurrency:
+  maxNodes: 2
 goal:
   apiVersion: flow.synapti.ai/v1alpha1
   kind: Goal
@@ -60,12 +62,12 @@ Criterion evaluation is a pure domain operation over the captured goal and durab
 
 ## Graph rules
 
-- A workflow contains 1–64 nodes with unique identifiers. This first-slice bound also caps aggregate in-memory evidence retained by the sequential scheduler and store.
+- A workflow contains 1–64 nodes with unique identifiers. This bound also caps aggregate in-memory evidence retained by the scheduler and store.
 - Exactly one node has no dependencies and is the entry node.
 - Every `dependsOn` reference names another node in the same workflow.
 - Self-dependencies, duplicate dependencies, and cycles are rejected.
 - The scheduler considers pending nodes in declaration order and applies the first legal transition whose dependencies are terminal. Ordinary work requires successful dependencies; omission propagates through ordinary descendants; an explicit join reconciles the selected success with omitted alternatives.
-- Execution is sequential in `v1alpha1`; concurrency is not implied by independent edges.
+- Independent ready executable nodes may overlap only when `concurrency.maxNodes` explicitly permits it; omission preserves the sequential maximum of one.
 - Every terminal node must be a command node. An agent response cannot be terminal proof.
 - Compilation finishes before Flow creates a run ledger or invokes an executor.
 
@@ -134,8 +136,42 @@ compilation and event parsing measure its actual JSON UTF-8 bytes. This leaves b
 The source field must be untruncated. Truncated output records a typed, non-retryable,
 side-effect-free control failure and terminates the run rather than making a partial-data decision.
 Condition and join transitions use logical attempt 1 but produce no `node_started` event, consume no
-node-start budget, and never reach a command or agent executor. Execution remains sequential; this
-feature does not provide concurrent forks or arbitrary expression evaluation.
+node-start budget, and never reach a command or agent executor. They are scheduling barriers: an
+executable wave quiesces before the next condition or join transition. Conditions do not provide
+arbitrary expression evaluation.
+
+## Bounded node concurrency
+
+`concurrency` is an optional strict per-run contract:
+
+```yaml
+concurrency:
+  maxNodes: 2
+```
+
+`maxNodes` is an integer from 1 through 32. Unknown fields, an empty object, zero, fractional
+values, and values above 32 fail compilation. Omitting the field preserves the legacy compiled
+shape and digest and gives the run an effective maximum of one. This limit controls executable
+command and agent nodes inside one workflow; it is independent of detached-supervisor worker
+capacity.
+
+Flow schedules deterministic quiescent waves. It scans legal transitions in workflow declaration
+order and durably appends starts until capacity is full or it reaches a condition, join, approval,
+budget, or terminal barrier. Only then are the admitted executors invoked concurrently. The
+scheduler awaits all admitted promises and pending effect-event publication, then appends node
+outcomes in admission/declaration order. Thus real completion and streamed effect events may
+interleave, while authoritative outcomes and downstream readiness remain stable across runs.
+
+After any admitted node fails, Flow admits no new work. Already-running siblings are allowed to
+settle, and the declaration-order first failed member becomes the run's primary failure. Operator
+cancellation likewise settles the complete wave and records the exact ordered cancelled-node set.
+A settlement resource ceiling may be crossed by the combined wave; Flow retains all observations,
+terminalizes as `resource_exhausted`, and schedules no later node. A node-start ceiling is checked
+before each admission.
+
+Concurrency does not isolate one branch's workspace from another. Authors must encode causal
+dependencies for operations that cannot safely overlap. Dynamic fan-out, loop iterations,
+worktree-isolated child runs, and per-target conflict inference are not part of this contract.
 
 ## Run budget
 
@@ -247,7 +283,7 @@ identity, RBAC, or a signature, and the request id is not a bearer secret. This 
 deterministic command nodes. In-flight Pi tool-call approval requires persisted session continuation
 and is not implemented.
 
-Every command node and descendant runs through Flow's required SRT adapter. The fixed `workspace-write-network-deny-v1` profile allows the selected workflow directory and a private temporary directory, denies network and undeclared Unix sockets, omits ambient credentials and injection variables from the child environment, and denies writes to the actual run store, `.flow`, `.git`, environment files, and key files. On Linux, Flow resolves SRT's packaged seccomp helper canonically, passes it as the explicit SRT apply path, and re-exposes only that file read-only when the Flow installation lies outside the workflow directory. If SRT is missing, unsupported, degraded, or cannot initialize, the node fails before spawn; Flow has no unsandboxed command fallback.
+Every command node and descendant runs through Flow's required SRT adapter. The fixed `workspace-write-network-deny-v1` profile allows the selected workflow directory and a private temporary directory, denies network and undeclared Unix sockets, omits ambient credentials and injection variables from the child environment, and denies writes to the actual run store, `.flow`, `.git`, environment files, and key files. Concurrent same-policy commands share one initialized SRT session but receive distinct temporary directories, environment values, and per-command filesystem configurations. Flow reference-counts wraps, rejects a different concurrent workspace or policy, and resets SRT only after the last command releases. On Linux, Flow resolves SRT's packaged seccomp helper canonically, passes it as the explicit SRT apply path, and re-exposes only that file read-only when the Flow installation lies outside the workflow directory. If SRT is missing, unsupported, degraded, or cannot initialize, the node fails before spawn; Flow has no unsandboxed command fallback.
 
 New command evidence records `anthropic-sandbox-runtime`, its exact installed version, the named profile, and a SHA-256 digest of the semantic policy. The field is optional only when replaying ledgers created before sandbox evidence existed.
 
@@ -329,8 +365,9 @@ Each run is stored at:
 Events have a version, contiguous sequence number, timestamp, run identity, workflow identity,
 workflow API version, and SHA-256 digest of the compiled workflow. New `run_started` events also
 capture the normalized execution directory, command approval requirements, agent recovery
-requirements, the bounded control-graph projection, and exact compiled budget when declared. The
-control graph persists dependency, guard, exact condition, and join mappings so replay does not
+requirements, declared concurrency, the bounded control-graph projection, and exact compiled budget
+when declared. Runs with an effective maximum above one must persist the graph even without control
+nodes. The control graph persists dependency, guard, exact condition, and join mappings so replay does not
 consult mutable workflow input to interpret branch history. A recovery requirement records the node,
 fresh mode, maximum attempts, and whether replay requires no effect protocol or
 `flow.effects/v1`. When declared, the compiled goal is also captured, so replay and inspection do
@@ -358,7 +395,8 @@ observations produce no receipt. Recovery reconciliation records applied, not-ap
 target state with a bounded reason and includes the observed digest/mode only for a stable regular
 file. Exact and divergent observations are cross-checked against the prepared descriptor.
 
-Replay verifies condition source kind, attempt, field, hash, truncation, selected case, exact branch
+Replay verifies concurrency capacity and dependency readiness, declaration-ordered concurrent
+outcomes and failure selection, condition source kind, attempt, field, hash, truncation, selected case, exact branch
 guard, omission reason and dependencies, join coverage and selected terminal, effect identity and
 order, settlement/reconciliation legality, retry eligibility,
 monotonic attempt numbering, decision and receipt order, attribution, classification, hashes,
@@ -393,7 +431,7 @@ the id to the complete request and rejects reuse with changed input.
 
 ## Current limitations
 
-- No loops, concurrent parallel forks, general multi-condition joins, general approval nodes, child runs, terminal-failure retry, or fallback semantics. Conditions are limited to exact equality over complete durable command/agent text, and joins reconcile one condition's declared alternatives sequentially. Approval is currently available only as a deterministic command pre-start gate; recovery is limited to the proof-safe fresh mode above.
+- No loops, dynamic fan-out, general multi-condition joins, general approval nodes, child runs, terminal-failure retry, or fallback semantics. Static ready DAG nodes can execute concurrently, but they share one workspace and are not inferred to be conflict-free. Conditions are limited to exact equality over complete durable command/agent text. Approval is currently available only as a deterministic command pre-start gate; recovery is limited to the proof-safe fresh mode above.
 - No automatic terminalization or session continuation of an interrupted node attempt. Unconfigured or ineligible durable starts still block continuation.
 - Detached workers can be adopted by a replacement local supervisor, but they cannot move between
   hosts and do not survive host reboot.
@@ -402,5 +440,5 @@ the id to the complete request and rejects reuse with changed input.
 - The only agent mutation is exact single-file edit of an existing UTF-8 file; no create, delete, rename, shell, network, fuzzy patch, or multi-file transaction is exposed.
 - No in-flight Pi tool-call approval or opaque session continuation. A fresh retry is a new attempt and is allowed only by the persisted proof gate; it is not a substitute for restoring a live session.
 - No probabilistic or LLM evaluator; criteria currently bind only to deterministic terminal command nodes.
-- No prepaid hard model-cost cap, provider invoice reconciliation, CPU/memory/disk quota, graph-node concurrency budget, or artifact-size budget. Detached worker count and queue depth are independently bounded by supervisor policy.
+- No prepaid hard model-cost cap, provider invoice reconciliation, CPU/memory/disk quota, or artifact-size budget. Per-run graph-node concurrency, detached worker count, and queue depth are separate bounded controls.
 - No schema migration path is promised while the format remains `v1alpha1`.
