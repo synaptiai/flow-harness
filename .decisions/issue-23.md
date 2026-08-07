@@ -366,9 +366,9 @@ workers—each able to create providers, sandboxes, and later child graphs—are
 
 - `npm run check`: passed on the final tree; 40 default test files / 467 tests, clean build, and 2
   compiled-process files / 14 runtime tests.
-- `npm run test:coverage`: passed with 82.66% statements, 73.21% branches, 90.78% functions, and
-  83.01% lines.
-- Package metadata inspection: 177 files, 217,995 bytes compressed, and 1,158,167 bytes unpacked.
+- `npm run test:coverage`: passed with 82.43% statements, 72.90% branches, 90.78% functions, and
+  82.77% lines.
+- Package metadata inspection: 177 files, 218,263 bytes compressed, and 1,159,464 bytes unpacked.
 - `npm run pack:check`: rebuilt and packed the final tree, installed the tarball in a clean temporary
   consumer with lifecycle scripts disabled, ran the installed `flow --help`, created
   `.flow/config.yaml`, and inspected the canonical default 1/32 policy and project root.
@@ -414,8 +414,9 @@ workers—each able to create providers, sandboxes, and later child graphs—are
 | Shutdown acknowledged success before the old admission policy was retired | P2 | Fixed: retirement completes in request dispatch before the success frame is built; the daemon test checks the binding is absent immediately after the response |
 | A reconciliation callback queued before shutdown could run after policy retirement and access a closed admission store | P1 | Fixed: the monotonic shutdown fence also prevents new timer reconciliation, while refused non-idle shutdown leaves reconciliation enabled; the full suite exposed and verifies the ordering |
 | A startup-lock contender could observe `EEXIST` and then fail when the owner released before the incumbent read | P2 | Fixed: only the typed `EEXIST`→`not_found` contention epoch retries exclusive reservation; four compiled six-client stress runs converge on one generation |
-| The parent, not the detached daemon, transferred startup-lock ownership, leaving a parent-death double-writer window | P1 | Fixed: the token is passed to the child, which compare-and-transfers ownership to its PID before admission replay, descriptor publication, or listening; a lifecycle-order regression enforces the boundary |
+| The parent, not the detached daemon, transferred startup-lock ownership, leaving a parent-death double-writer window | P1 | Fixed: source and new-owner tokens are passed to the child, which transfers ownership before admission replay, descriptor publication, or listening; a lifecycle-order regression enforces the boundary |
 | Concurrent stale-lock releasers wrapped losing rename races as unexpected I/O failures | P2 | Fixed: rename-time absence is typed `not_found` and treated as converged stale cleanup; 32 concurrent releasers produce one success and only typed absence outcomes |
+| Child-side ownership transfer preserved the parent token, so a stale parent observation could still delete the daemon lock | P1 | Fixed: transfer atomically rotates both PID and capability token; stale parent-token release fails identity validation, and the focused regression proves daemon ownership remains published |
 | FIFO, status, policy, and compatibility verification selectors silently skipped model/runtime or security evidence | P2 | Fixed: model and runtime configs run separately, broad claims execute complete focused files, status has explicit sensitive-field exclusions, and every documented selector passes with nonzero tests |
 | Final test, coverage, and package counts described an earlier commit as the final tree | P2 | Fixed: evidence was regenerated after the last code change and records 40/467 default tests, 2/14 runtime tests, current coverage, and current 177-file package sizes |
 
