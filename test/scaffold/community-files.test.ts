@@ -95,24 +95,43 @@ describe("public repository contracts", () => {
     }
   });
 
-  it("documents the implemented hash-anchored edit boundary and a valid declaration example", async () => {
-    const [readme, architecture, workflowSpec, sourcing, roadmap, exampleSource] =
-      await Promise.all([
-        readText("README.md"),
-        readText("docs/architecture.md"),
-        readText("docs/workflow-spec.md"),
-        readText("docs/capability-sourcing.md"),
-        readText("docs/roadmap.md"),
-        readText("examples/implement-and-verify.workflow.yaml"),
-      ]);
+  it("documents the durable hash-anchored edit boundary and a valid declaration example", async () => {
+    const [
+      readme,
+      architecture,
+      workflowSpec,
+      recovery,
+      sourcing,
+      roadmap,
+      security,
+      testing,
+      exampleSource,
+    ] = await Promise.all([
+      readText("README.md"),
+      readText("docs/architecture.md"),
+      readText("docs/workflow-spec.md"),
+      readText("docs/recovery.md"),
+      readText("docs/capability-sourcing.md"),
+      readText("docs/roadmap.md"),
+      readText("SECURITY.md"),
+      readText("docs/testing-and-evaluation.md"),
+      readText("examples/implement-and-verify.workflow.yaml"),
+    ]);
 
     expect(readme).toMatch(/hash-anchored/i);
     expect(readme).toContain("`read`, `ls`, and `edit`");
-    expect(architecture).toMatch(/effect receipt/i);
+    expect(readme).toMatch(/write-ahead durable evidence/i);
+    expect(architecture).toContain("`node_effect_prepared`");
     expect(workflowSpec).toContain("expectedSha256");
     expect(workflowSpec).toMatch(/stale_version/);
+    expect(workflowSpec).toContain("flow.effects/v1");
+    expect(recovery).toMatch(/automatic hash-based reconciliation|typed reconciliation/i);
     expect(sourcing).toMatch(/Pi's built-in edit/i);
-    expect(roadmap).toMatch(/hash-anchored edit.*Implemented/i);
+    expect(roadmap).toMatch(
+      /workspace edits persist typed prepare\/settle evidence.*Implemented/is,
+    );
+    expect(security).toMatch(/replay rejects terminalization while an effect remains\s+unresolved/);
+    expect(testing).toMatch(/edit crashes before rename.*settlement rejection/is);
 
     const example = parse(exampleSource) as {
       readonly nodes: ReadonlyArray<{

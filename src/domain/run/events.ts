@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { createHash } from "node:crypto";
+import { isAbsolute, normalize } from "node:path";
 
 import {
   GoalEvaluationError,
@@ -81,6 +82,7 @@ export interface AgentEvidence {
 
 export const MAX_AGENT_EFFECT_RECEIPTS = 32;
 export const MAX_RUN_EVENT_BYTES = 2_097_152;
+export const DURABLE_EFFECT_PROTOCOL = "flow.effects/v1" as const;
 
 export interface AgentEffectReceipt {
   readonly version: 1;
@@ -133,11 +135,55 @@ export interface NodeStartedEvent extends RunEventBase {
   readonly type: "node_started";
   readonly nodeId: string;
   readonly attempt: number;
+  readonly effectProtocol?: typeof DURABLE_EFFECT_PROTOCOL;
   readonly approval?: {
     readonly requestId: string;
     readonly operationDigest: string;
   };
 }
+
+export interface FilesystemEditEffectDescriptor {
+  readonly kind: "filesystem.edit";
+  readonly target: string;
+  readonly operationDigest: string;
+  readonly beforeSha256: string;
+  readonly afterSha256: string;
+  readonly mode: number;
+}
+
+export interface NodeEffectPreparedEvent extends RunEventBase {
+  readonly type: "node_effect_prepared";
+  readonly nodeId: string;
+  readonly attempt: number;
+  readonly effectId: string;
+  readonly effectSequence: number;
+  readonly descriptor: FilesystemEditEffectDescriptor;
+}
+
+export type NodeEffectSettlementInput =
+  | {
+      readonly outcome: "committed";
+      readonly reason: "directory_synced";
+    }
+  | {
+      readonly outcome: "not_applied";
+      readonly reason: "commit_not_entered";
+    }
+  | {
+      readonly outcome: "unknown";
+      readonly reason: "post_commit_failure";
+    };
+
+export type NodeEffectSettlement = NodeEffectSettlementInput & {
+  readonly settledAt: string;
+};
+
+export type NodeEffectSettledEvent = RunEventBase & {
+  readonly type: "node_effect_settled";
+  readonly nodeId: string;
+  readonly attempt: number;
+  readonly effectId: string;
+} & NodeEffectSettlementInput;
 
 export interface CommandApprovalRequirement {
   readonly nodeId: string;
@@ -228,6 +274,8 @@ export type RunEvent =
   | CommandApprovalDeniedEvent
   | CommandApprovalExpiredEvent
   | NodeStartedEvent
+  | NodeEffectPreparedEvent
+  | NodeEffectSettledEvent
   | NodeSucceededEvent
   | NodeFailedEvent
   | RunSucceededEvent
@@ -270,6 +318,16 @@ export interface NodeRunState {
   readonly evidence: NodeEvidence | null;
   readonly error: NodeFailure | null;
   readonly approval: CommandApprovalRunState | null;
+  readonly effectProtocol: typeof DURABLE_EFFECT_PROTOCOL | null;
+  readonly effects: readonly NodeEffectRunState[];
+}
+
+export interface NodeEffectRunState {
+  readonly effectId: string;
+  readonly effectSequence: number;
+  readonly descriptor: FilesystemEditEffectDescriptor;
+  readonly preparedAt: string;
+  readonly settlement: NodeEffectSettlement | null;
 }
 
 export interface RunState {
@@ -311,6 +369,12 @@ const identifierSchema = z
   .regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
+
+const effectIdSchema = z
+  .string()
+  .min(8)
+  .max(32)
+  .regex(/^effect-[1-9][0-9]*$/);
 
 const absolutePathSchema = z
   .string()
@@ -398,6 +462,26 @@ const eventBaseShape = {
   runId: identifierSchema,
   workflowId: identifierSchema,
 };
+
+const filesystemEditEffectDescriptorSchema = z
+  .object({
+    kind: z.literal("filesystem.edit"),
+    target: z
+      .string()
+      .min(1)
+      .refine((value) => Buffer.byteLength(value, "utf8") <= MAX_POLICY_TARGET_BYTES)
+      .refine((value) => isAbsolute(value) && !value.includes("\0") && normalize(value) === value, {
+        message: "effect target must be an absolute normalized NUL-free path",
+      }),
+    operationDigest: sha256Schema,
+    beforeSha256: sha256Schema,
+    afterSha256: sha256Schema,
+    mode: z.number().int().min(0).max(0o777),
+  })
+  .strict()
+  .refine((descriptor) => descriptor.beforeSha256 !== descriptor.afterSha256, {
+    message: "effect before and after digests must differ",
+  });
 
 const commandEvidenceSchema = z
   .object({
@@ -554,9 +638,47 @@ export const runEventSchema = z.discriminatedUnion("type", [
       type: z.literal("node_started"),
       nodeId: identifierSchema,
       attempt: z.number().int().positive(),
+      effectProtocol: z.literal(DURABLE_EFFECT_PROTOCOL).optional(),
       approval: approvalReferenceSchema.optional(),
     })
     .strict(),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("node_effect_prepared"),
+      nodeId: identifierSchema,
+      attempt: z.number().int().positive(),
+      effectId: effectIdSchema,
+      effectSequence: z.number().int().positive().max(MAX_AGENT_EFFECT_RECEIPTS),
+      descriptor: filesystemEditEffectDescriptorSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("node_effect_settled"),
+      nodeId: identifierSchema,
+      attempt: z.number().int().positive(),
+      effectId: effectIdSchema,
+      outcome: z.enum(["committed", "not_applied", "unknown"]),
+      reason: z.enum(["directory_synced", "commit_not_entered", "post_commit_failure"]),
+    })
+    .strict()
+    .superRefine((event, context) => {
+      const expectedReason =
+        event.outcome === "committed"
+          ? "directory_synced"
+          : event.outcome === "not_applied"
+            ? "commit_not_entered"
+            : "post_commit_failure";
+      if (event.reason !== expectedReason) {
+        context.addIssue({
+          code: "custom",
+          path: ["reason"],
+          message: `effect settlement outcome "${event.outcome}" requires reason "${expectedReason}"`,
+        });
+      }
+    }),
   z
     .object({
       ...eventBaseShape,
@@ -997,14 +1119,86 @@ export function appendRunEvent(
         attempt: event.attempt,
         startedAt: event.at,
         approval,
+        effectProtocol: event.effectProtocol ?? null,
+        effects: Object.freeze([]),
       });
       resources = addResourcesForStart(resources, eventIndex);
       break;
     }
-    case "node_succeeded": {
-      validateEvidenceIntegrity(event.evidence, event, eventIndex);
-      validateSucceededEvidence(event.evidence, eventIndex);
+    case "node_effect_prepared": {
       const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
+      if (current.effectProtocol !== DURABLE_EFFECT_PROTOCOL) {
+        throw new RunReplayError(
+          eventIndex,
+          `node "${event.nodeId}" attempt ${event.attempt} did not declare the durable effect protocol`,
+        );
+      }
+      if (event.effectId !== nodeEffectId(event.sequence)) {
+        throw new RunReplayError(eventIndex, "effect id does not match its prepare event sequence");
+      }
+      const expectedEffectSequence = current.effects.length + 1;
+      if (event.effectSequence !== expectedEffectSequence) {
+        throw new RunReplayError(
+          eventIndex,
+          `effect sequence ${event.effectSequence} does not match next effect sequence ${expectedEffectSequence}`,
+        );
+      }
+      if (current.effects.length >= MAX_AGENT_EFFECT_RECEIPTS) {
+        throw new RunReplayError(
+          eventIndex,
+          `node effect limit of ${MAX_AGENT_EFFECT_RECEIPTS} was exceeded`,
+        );
+      }
+      const effect: NodeEffectRunState = deepFreeze({
+        effectId: event.effectId,
+        effectSequence: event.effectSequence,
+        descriptor: structuredClone(event.descriptor),
+        preparedAt: event.at,
+        settlement: null,
+      });
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        effects: Object.freeze([...current.effects, effect]),
+      });
+      break;
+    }
+    case "node_effect_settled": {
+      const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
+      if (current.effectProtocol !== DURABLE_EFFECT_PROTOCOL) {
+        throw new RunReplayError(
+          eventIndex,
+          `node "${event.nodeId}" attempt ${event.attempt} did not declare the durable effect protocol`,
+        );
+      }
+      const effectIndex = current.effects.findIndex((effect) => effect.effectId === event.effectId);
+      const effect = current.effects[effectIndex];
+      if (effect === undefined) {
+        throw new RunReplayError(
+          eventIndex,
+          `effect settlement references unknown effect "${event.effectId}"`,
+        );
+      }
+      if (effect.settlement !== null) {
+        throw new RunReplayError(eventIndex, `effect "${event.effectId}" is already settled`);
+      }
+      const settlement: NodeEffectSettlement = deepFreeze({
+        outcome: event.outcome,
+        reason: event.reason,
+        settledAt: event.at,
+      } as NodeEffectSettlement);
+      const effects = [...current.effects];
+      effects[effectIndex] = Object.freeze({ ...effect, settlement });
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        effects: Object.freeze(effects),
+      });
+      break;
+    }
+    case "node_succeeded": {
+      const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
+      validateDurableEffectProjection(current, event.evidence, event, eventIndex);
+      validateEvidenceIntegrity(event.evidence, event, eventIndex, current.effectProtocol === null);
+      validateSucceededEvidence(event.evidence, eventIndex);
       resources = addResourcesForEvidence(resources, event.evidence, eventIndex);
       nodes[event.nodeId] = Object.freeze({
         ...current,
@@ -1027,10 +1221,16 @@ export function appendRunEvent(
       break;
     }
     case "node_failed": {
-      if (event.evidence !== null) {
-        validateEvidenceIntegrity(event.evidence, event, eventIndex);
-      }
       const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
+      validateDurableEffectProjection(current, event.evidence, event, eventIndex);
+      if (event.evidence !== null) {
+        validateEvidenceIntegrity(
+          event.evidence,
+          event,
+          eventIndex,
+          current.effectProtocol === null,
+        );
+      }
       if (event.evidence !== null) {
         resources = addResourcesForEvidence(resources, event.evidence, eventIndex);
       }
@@ -1381,10 +1581,146 @@ function validateSucceededEvidence(evidence: NodeEvidence, eventIndex: number): 
   }
 }
 
+function validateDurableEffectProjection(
+  node: NodeRunState,
+  evidence: NodeEvidence | null,
+  event: NodeSucceededEvent | NodeFailedEvent,
+  eventIndex: number,
+): void {
+  if (node.effectProtocol === null) {
+    return;
+  }
+  const unresolved = node.effects.find((effect) => effect.settlement === null);
+  if (unresolved !== undefined) {
+    throw new RunReplayError(
+      eventIndex,
+      `node cannot complete while unresolved effect "${unresolved.effectId}" remains prepared`,
+    );
+  }
+  if (event.type === "node_failed") {
+    const hasUnknownEffect = node.effects.some(
+      (effect) => effect.settlement?.outcome === "unknown",
+    );
+    const hasCommittedEffect = node.effects.some(
+      (effect) => effect.settlement?.outcome === "committed",
+    );
+    if (hasUnknownEffect && event.error.retryable) {
+      throw new RunReplayError(
+        eventIndex,
+        "failure after an unknown durable effect cannot be retryable",
+      );
+    }
+    const contradictsDurableEffects = hasUnknownEffect
+      ? event.error.sideEffectStatus !== "uncertain"
+      : hasCommittedEffect
+        ? event.error.sideEffectStatus === "none"
+        : event.error.sideEffectStatus === "committed";
+    if (contradictsDurableEffects) {
+      throw new RunReplayError(
+        eventIndex,
+        `failure side-effect status "${event.error.sideEffectStatus}" contradicts the durable effect journal`,
+      );
+    }
+  }
+  if (node.effects.length > 0) {
+    if (evidence?.kind !== "agent") {
+      throw new RunReplayError(
+        eventIndex,
+        "durable effect authorization evidence is missing from the terminal agent evidence",
+      );
+    }
+    const matchedDecisionIndexes = new Set<number>();
+    for (const effect of node.effects) {
+      const matchingDecisionIndex = evidence.policyDecisions.findIndex(
+        (decision, decisionIndex) =>
+          !matchedDecisionIndexes.has(decisionIndex) &&
+          decision.action === "filesystem.write" &&
+          decision.target === effect.descriptor.target &&
+          decision.operationDigest === effect.descriptor.operationDigest &&
+          decision.outcome === "allowed",
+      );
+      if (matchingDecisionIndex === -1) {
+        throw new RunReplayError(
+          eventIndex,
+          `durable effect "${effect.effectId}" has no matching write authorization evidence`,
+        );
+      }
+      matchedDecisionIndexes.add(matchingDecisionIndex);
+    }
+  }
+  const expectedReceipts: AgentEffectReceipt[] = node.effects.flatMap((effect) => {
+    const settlement = effect.settlement;
+    if (settlement === null || settlement.outcome === "not_applied") {
+      return [];
+    }
+    return [
+      {
+        version: 1,
+        sequence: effect.effectSequence,
+        runId: event.runId,
+        workflowId: event.workflowId,
+        nodeId: event.nodeId,
+        attempt: event.attempt,
+        kind: effect.descriptor.kind,
+        target: effect.descriptor.target,
+        operationDigest: effect.descriptor.operationDigest,
+        beforeSha256: effect.descriptor.beforeSha256,
+        afterSha256: effect.descriptor.afterSha256,
+        outcome: settlement.outcome === "committed" ? "committed" : "uncertain",
+      },
+    ];
+  });
+  if (evidence === null) {
+    if (expectedReceipts.length > 0) {
+      throw new RunReplayError(eventIndex, "terminal evidence is missing durable effect receipts");
+    }
+    return;
+  }
+  if (evidence.kind !== "agent") {
+    throw new RunReplayError(
+      eventIndex,
+      "a durable effect protocol attempt requires agent evidence",
+    );
+  }
+  if (evidence.effectReceipts.length !== expectedReceipts.length) {
+    throw new RunReplayError(
+      eventIndex,
+      "terminal durable effect receipts do not match settled effects",
+    );
+  }
+  for (const [index, expected] of expectedReceipts.entries()) {
+    const actual = evidence.effectReceipts[index];
+    if (actual === undefined || !sameEffectReceipt(actual, expected)) {
+      throw new RunReplayError(
+        eventIndex,
+        `terminal durable effect receipts do not match settled effect ${index + 1}`,
+      );
+    }
+  }
+}
+
+function sameEffectReceipt(left: AgentEffectReceipt, right: AgentEffectReceipt): boolean {
+  return (
+    left.version === right.version &&
+    left.sequence === right.sequence &&
+    left.runId === right.runId &&
+    left.workflowId === right.workflowId &&
+    left.nodeId === right.nodeId &&
+    left.attempt === right.attempt &&
+    left.kind === right.kind &&
+    left.target === right.target &&
+    left.operationDigest === right.operationDigest &&
+    left.beforeSha256 === right.beforeSha256 &&
+    left.afterSha256 === right.afterSha256 &&
+    left.outcome === right.outcome
+  );
+}
+
 function validateEvidenceIntegrity(
   evidence: NodeEvidence,
   event: NodeSucceededEvent | NodeFailedEvent,
   eventIndex: number,
+  requireContiguousReceiptSequence: boolean,
 ): void {
   if (
     evidence.kind === "agent" &&
@@ -1440,7 +1776,7 @@ function validateEvidenceIntegrity(
     const matchedPolicyDecisionIndexes = new Set<number>();
     for (const [index, receipt] of evidence.effectReceipts.entries()) {
       const expectedSequence = index + 1;
-      if (receipt.sequence !== expectedSequence) {
+      if (requireContiguousReceiptSequence && receipt.sequence !== expectedSequence) {
         throw new RunReplayError(
           eventIndex,
           `effect receipt sequence must be contiguous; expected ${expectedSequence}, received ${receipt.sequence}`,
@@ -1527,7 +1863,16 @@ function pendingNodeState(): NodeRunState {
     evidence: null,
     error: null,
     approval: null,
+    effectProtocol: null,
+    effects: Object.freeze([]),
   });
+}
+
+export function nodeEffectId(eventSequence: number): string {
+  if (!Number.isSafeInteger(eventSequence) || eventSequence <= 0) {
+    throw new RangeError("effect event sequence must be a positive safe integer");
+  }
+  return `effect-${eventSequence}`;
 }
 
 function requireNode(

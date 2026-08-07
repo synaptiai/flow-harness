@@ -417,6 +417,66 @@ nodes:
     expect(store.releaseCalls).toEqual(["run-resume", "run-resume"]);
   });
 
+  it("rejects a durable-effect marker on a node that does not declare edit", async () => {
+    const workflow = readOnlyAgentWorkflow();
+    const initialStore = new MemoryRunStore();
+    await runWorkflow(
+      workflow,
+      options(
+        initialStore,
+        executorFrom(async (node) =>
+          node.type === "agent" ? successfulAgentOutcome() : successfulOutcome(node.id),
+        ),
+        "run-forged-effects",
+      ),
+    );
+    const initial = structuredClone(initialStore.events);
+    initial.pop();
+    const startedIndex = initial.findIndex(
+      (event) => event.type === "node_started" && event.nodeId === "analyze",
+    );
+    const started = initial[startedIndex];
+    if (started?.type !== "node_started") {
+      throw new Error("read-only agent start was not recorded");
+    }
+    initial[startedIndex] = { ...started, effectProtocol: "flow.effects/v1" };
+    const store = new MemoryRecoverableRunStore(initial);
+    const executor = executorFrom(async (node) => successfulOutcome(node.id));
+
+    await expect(
+      resumeWorkflow(workflow, resumeOptions(store, executor, "run-forged-effects")),
+    ).rejects.toMatchObject({ code: "workflow_mismatch" });
+    expect(store.events).toEqual(initial);
+  });
+
+  it("classifies an open durable-effect marker on a read-only node as workflow mismatch", async () => {
+    const workflow = readOnlyAgentWorkflow();
+    const initialStore = new MemoryRunStore();
+    await runWorkflow(
+      workflow,
+      options(
+        initialStore,
+        executorFrom(async (node) =>
+          node.type === "agent" ? successfulAgentOutcome() : successfulOutcome(node.id),
+        ),
+        "run-open-forged-effects",
+      ),
+    );
+    const initial = structuredClone(initialStore.events.slice(0, 2));
+    const started = initial[1];
+    if (started?.type !== "node_started") {
+      throw new Error("read-only agent start was not recorded");
+    }
+    initial[1] = { ...started, effectProtocol: "flow.effects/v1" };
+    const store = new MemoryRecoverableRunStore(initial);
+    const executor = executorFrom(async (node) => successfulOutcome(node.id));
+
+    await expect(
+      resumeWorkflow(workflow, resumeOptions(store, executor, "run-open-forged-effects")),
+    ).rejects.toMatchObject({ code: "workflow_mismatch" });
+    expect(store.events).toEqual(initial);
+  });
+
   it("refuses a terminal run without mutating its ledger", async () => {
     const workflow = threeNodeWorkflow();
     const initial = await successfulLedger(workflow, "run-terminal");
@@ -722,10 +782,47 @@ nodes:
 `);
 }
 
+function readOnlyAgentWorkflow() {
+  return compileWorkflowText(`
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: read-only-agent-workflow }
+nodes:
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Inspect the workspace.
+      model: { provider: test, id: deterministic }
+      tools: [read]
+  - id: verify
+    type: command
+    dependsOn: [analyze]
+    command: { executable: node, args: [--version] }
+`);
+}
+
 function successfulOutcome(nodeId: string): NodeExecutionOutcome {
   return {
     status: "succeeded",
     evidence: commandEvidence(nodeId, 0),
+  };
+}
+
+function successfulAgentOutcome(): NodeExecutionOutcome {
+  const text = "analyzed";
+  return {
+    status: "succeeded",
+    evidence: {
+      kind: "agent",
+      provider: "test",
+      model: "deterministic",
+      text,
+      textHash: createHash("sha256").update(text).digest("hex"),
+      textTruncated: false,
+      durationMs: 1,
+      policyDecisions: [],
+      effectReceipts: [],
+    },
   };
 }
 

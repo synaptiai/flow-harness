@@ -14,7 +14,6 @@ import type { AgentToolName } from "../../domain/workflow/types.js";
 import {
   MAX_EDIT_INPUT_BYTES,
   MAX_EDIT_REPLACEMENTS,
-  HashAnchoredEditUncertainError,
   editHashAnchoredTextFile,
   type HashAnchoredEditRequest,
   type HashAnchoredEditResult,
@@ -277,16 +276,23 @@ function createEditDefinition(
             target,
             operationDigest,
           });
+          let prepared = false;
           try {
             const editResult = await editFile(target, request, {
               ...(signal === undefined ? {} : { signal }),
+              effectLifecycle: {
+                prepare: async (boundary) => {
+                  await reservation.prepare(boundary);
+                  prepared = true;
+                },
+                settle: async (settlement) => {
+                  await reservation.settle(settlement);
+                },
+              },
             });
-            reservation.commit({ ...editResult, outcome: "committed" });
             return editResult;
           } catch (error) {
-            if (error instanceof HashAnchoredEditUncertainError) {
-              reservation.commit({ ...error.result, outcome: "uncertain" });
-            } else {
+            if (!prepared) {
               reservation.cancel();
             }
             throw error;

@@ -10,11 +10,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
+import type { NodeEffectJournal } from "../../../src/application/ports.js";
+import type { CompiledAgentNode } from "../../../src/domain/workflow/types.js";
 import {
   EmbeddedPiAgentRunner,
   PiAgentExecutor,
 } from "../../../src/infrastructure/pi/pi-agent-executor.js";
-import type { CompiledAgentNode } from "../../../src/domain/workflow/types.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -139,6 +140,7 @@ describe("embedded Pi SDK integration", () => {
       attempt: 1,
       cwd,
       protectedPaths: [],
+      effectJournal: testEffectJournal(),
     });
 
     expect(outcome.status, JSON.stringify(outcome)).toBe("succeeded");
@@ -180,6 +182,37 @@ function agentNode(tools: CompiledAgentNode["agent"]["tools"] = []): CompiledAge
       model: { provider: "flow-test", id: "deterministic", thinking: "off" },
       tools,
       timeoutMs: 5_000,
+    },
+  };
+}
+
+function testEffectJournal(): NodeEffectJournal {
+  let effectSequence = 0;
+  return {
+    prepare: async (descriptor) => {
+      effectSequence += 1;
+      const sequence = effectSequence;
+      return {
+        effectId: `effect-${sequence + 2}`,
+        effectSequence: sequence,
+        settle: async (settlement) =>
+          settlement.outcome === "not_applied"
+            ? null
+            : {
+                version: 1,
+                sequence,
+                runId: "sdk-run",
+                workflowId: "sdk-workflow",
+                nodeId: "sdk-agent",
+                attempt: 1,
+                kind: descriptor.kind,
+                target: descriptor.target,
+                operationDigest: descriptor.operationDigest,
+                beforeSha256: descriptor.beforeSha256,
+                afterSha256: descriptor.afterSha256,
+                outcome: settlement.outcome === "committed" ? "committed" : "uncertain",
+              },
+      };
     },
   };
 }

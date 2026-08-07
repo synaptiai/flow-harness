@@ -1,4 +1,11 @@
-import type { NodeEvidence, NodeFailure, RunEvent } from "../domain/run/events.js";
+import type {
+  AgentEffectReceipt,
+  FilesystemEditEffectDescriptor,
+  NodeEffectSettlementInput,
+  NodeEvidence,
+  NodeFailure,
+  RunEvent,
+} from "../domain/run/events.js";
 import type {
   CompiledAgentNode,
   CompiledCommandNode,
@@ -21,7 +28,18 @@ export interface NodeExecutionContext {
   readonly attempt: number;
   readonly cwd: string;
   readonly protectedPaths: readonly string[];
+  readonly effectJournal?: NodeEffectJournal;
   readonly signal?: AbortSignal;
+}
+
+export interface NodeEffectJournal {
+  prepare(descriptor: FilesystemEditEffectDescriptor): Promise<PreparedNodeEffect>;
+}
+
+export interface PreparedNodeEffect {
+  readonly effectId: string;
+  readonly effectSequence: number;
+  settle(settlement: NodeEffectSettlementInput): Promise<AgentEffectReceipt | null>;
 }
 
 export interface NodeExecutionSuccess {

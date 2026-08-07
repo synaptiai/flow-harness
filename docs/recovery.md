@@ -76,7 +76,7 @@ attribution rather than authenticated identity.
 | `command_approval_granted` is unexpired | Append `run_resumed`, consume the exact grant in `node_started`, and execute once |
 | `command_approval_granted` has expired unused | Append `run_resumed`, record expiry, create a fresh request, and execute nothing |
 | `command_approval_denied` is durable but `run_failed` is absent | Append `run_resumed`, append `run_failed`, and execute nothing |
-| `node_started` has no matching outcome | Refuse with `uncertain_operation`; append and execute nothing |
+| `node_started` has no matching outcome, with or without effect events | Expose the attempt's immutable effect journal, refuse with `uncertain_operation`, and append or execute nothing |
 | Run is `succeeded`, `failed`, `cancelled`, or `resource_exhausted` | Refuse with `terminal_run` |
 | Workflow identity, version, digest, budget, node set, or committed dependency order differs | Refuse with `workflow_mismatch` |
 | A new run is resumed with a different normalized execution directory | Refuse with `execution_context_mismatch` |
@@ -84,6 +84,15 @@ attribution rather than authenticated identity.
 A started attempt is uncertain because its command, model, or external tool may have performed an
 effect before the process stopped. Flow does not infer failure, success, or idempotency from the
 absence of a result.
+
+Writable agent attempts add more precise, but non-terminal, evidence. `node_started` declares
+`flow.effects/v1`. Before an atomic edit rename, Flow syncs `node_effect_prepared` with a stable
+effect identity, target, request digest, before/after hashes, and mode. It later syncs exactly one
+settlement: `committed/directory_synced`, `not_applied/commit_not_entered`, or
+`unknown/post_commit_failure`. A process death can therefore leave an unresolved prepared effect,
+or a settled effect without a node outcome. Inspection preserves that distinction. The current
+recovery command still refuses the entire open attempt; it does not yet compare live hashes and
+append a typed reconciliation decision.
 
 ## Ownership and crash handling
 
@@ -147,7 +156,7 @@ run directory, or corrupt owner record fails closed and is preserved for diagnos
 
 | Code | Meaning | Operator action |
 | --- | --- | --- |
-| `uncertain_operation` | A node attempt started without a durable outcome | Inspect the node and external system; wait for a future reconciliation workflow rather than editing the ledger |
+| `uncertain_operation` | A node attempt started without a durable outcome | Inspect the node, its effect journal, and the workspace; wait for typed reconciliation rather than editing the ledger |
 | `terminal_run` | The run already has a terminal event | Use `flow inspect`; start a new run for new work |
 | `workflow_mismatch` | The supplied workflow is not byte-equivalent after compilation | Locate the exact workflow revision used to start the run |
 | `execution_context_mismatch` | The requested working directory differs from the one persisted by a new run | Resume from the exact original execution directory |
@@ -170,6 +179,11 @@ worker consumes a prior durable slot, queued work is FIFO by stable ticket, queu
 no worker, and an exact command retry reproduces its prior admission result. Historical approval
 requests are revalidated against the budget remaining at their exact event boundary, not against
 final run consumption.
+
+For Flow-owned workspace edits, Flow additionally guarantees that rename is never entered before
+the prepared event is acknowledged, committed settlement follows directory sync, terminal receipts
+exactly match settled effects, and crash-window evidence remains replayable. These guarantees do
+not by themselves authorize automatic retry of the surrounding agent attempt.
 
 Flow does not guarantee exactly-once effects in arbitrary external systems, authenticated approval
 or cancellation identity, trusted time, mid-node restoration of Pi sessions, automatic retry of

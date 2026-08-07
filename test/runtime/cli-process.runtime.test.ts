@@ -126,11 +126,12 @@ describe("compiled Flow process", () => {
         .completed;
 
       expect(result.code, result.stderr).toBe(0);
-      expect(JSON.parse(result.stdout)).toMatchObject({
+      const timeout = JSON.parse(result.stdout) as { readonly name: string; readonly pid: number };
+      expect(timeout).toMatchObject({
         name: "SupervisorStartupTimeoutError",
         pid: expect.any(Number),
       });
-      fixturePid = Number(await readFile(pidPath, "utf8"));
+      fixturePid = timeout.pid;
       await expect(waitForProcessExit(fixturePid)).resolves.toBeUndefined();
     } finally {
       if (fixturePid === undefined) {
