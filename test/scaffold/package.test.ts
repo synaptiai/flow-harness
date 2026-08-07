@@ -55,5 +55,6 @@ describe("package contract", () => {
     expect(manifest.scripts?.check).toContain("npm run typecheck");
     expect(manifest.scripts?.check).toContain("npm run test");
     expect(manifest.scripts?.check).toContain("npm run build");
+    expect(manifest.scripts?.["pack:check"]).toBe("node scripts/verify-package.mjs");
   });
 });

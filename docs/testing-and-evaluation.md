@@ -8,7 +8,7 @@ Run the complete local gate with:
 npm run check
 ```
 
-It verifies formatting, lint rules, strict TypeScript contracts, all default tests, a clean production build, and compiled-process tests. The build removes the previous `dist/` tree first so deleted modules cannot survive into a release artifact. Packaging is checked separately with `npm run pack:check` so cache or registry settings do not affect the main code-quality result.
+It verifies formatting, lint rules, strict TypeScript contracts, all default tests, a clean production build, and compiled-process tests. The build removes the previous `dist/` tree first so deleted modules cannot survive into a release artifact. Packaging is checked separately with `npm run pack:check`; that command rebuilds, packs the archive, installs it into a clean temporary consumer with lifecycle scripts disabled, runs the installed CLI, initializes a project, and inspects the effective default configuration.
 
 ## Test layers
 

@@ -66,12 +66,7 @@ jobs:
           node dist/cli/main.js inspect ci-smoke --runs-dir "$runs_dir"
 
       - name: Verify installable package
-        run: |
-          package_dir="$(mktemp -d)"
-          tarball="$(npm pack --pack-destination "$package_dir")"
-          npm install --ignore-scripts --prefix "$package_dir/consumer" "$package_dir/$tarball"
-          help_output="$("$package_dir/consumer/node_modules/.bin/flow" --help)"
-          [[ "$help_output" == *"flow validate"* ]]
+        run: npm run pack:check
 
   dependency-audit:
     runs-on: ubuntu-latest

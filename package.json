@@ -52,7 +52,7 @@
     "format": "biome format --write .",
     "format:check": "biome format .",
     "lint": "biome lint .",
-    "pack:check": "npm pack --dry-run",
+    "pack:check": "node scripts/verify-package.mjs",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:live": "vitest run --config vitest.live.config.ts",
