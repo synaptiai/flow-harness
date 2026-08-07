@@ -11,7 +11,11 @@ import {
 } from "../goal/evaluator.js";
 import { compiledGoalSchema } from "../goal/schema.js";
 import type { CompiledGoal, GoalRunState } from "../goal/types.js";
-import type { CompiledRunBudget } from "../workflow/types.js";
+import {
+  MAX_CONTROL_GRAPH_SERIALIZED_BYTES,
+  type CompiledRunBudget,
+  type ConditionSourceField,
+} from "../workflow/types.js";
 import {
   calculateCommandApprovalOperationDigest,
   commandApprovalRequestId,
@@ -126,6 +130,7 @@ export interface RunStartedEvent extends RunEventBase {
   readonly executionCwd?: string;
   readonly approvalRequirements?: readonly CommandApprovalRequirement[];
   readonly recoveryRequirements?: readonly AgentRecoveryRequirement[];
+  readonly controlGraph?: ControlGraph;
 }
 
 export interface RunResumedEvent extends RunEventBase {
@@ -150,6 +155,104 @@ export interface NodeAttemptInterruptedEvent extends RunEventBase {
   readonly reason: "process_interrupted";
   readonly disposition: "fresh_retry";
   readonly resourceAccounting: "incomplete";
+}
+
+export interface ControlBranchGuard {
+  readonly conditionId: string;
+  readonly case: string;
+}
+
+export interface ControlGraphExecutableNode {
+  readonly nodeId: string;
+  readonly type: "command" | "agent";
+  readonly dependsOn: readonly string[];
+  readonly when?: ControlBranchGuard;
+}
+
+export interface ControlGraphConditionNode {
+  readonly nodeId: string;
+  readonly type: "condition";
+  readonly dependsOn: readonly string[];
+  readonly when?: ControlBranchGuard;
+  readonly condition: {
+    readonly source: {
+      readonly nodeId: string;
+      readonly field: ConditionSourceField;
+    };
+    readonly cases: readonly {
+      readonly id: string;
+      readonly equals: string;
+    }[];
+    readonly default: string;
+  };
+}
+
+export interface ControlGraphJoinNode {
+  readonly nodeId: string;
+  readonly type: "join";
+  readonly dependsOn: readonly string[];
+  readonly join: {
+    readonly conditionId: string;
+    readonly branches: readonly {
+      readonly case: string;
+      readonly nodeId: string;
+    }[];
+  };
+}
+
+export type ControlGraphNode =
+  | ControlGraphExecutableNode
+  | ControlGraphConditionNode
+  | ControlGraphJoinNode;
+
+export interface ControlGraph {
+  readonly nodes: readonly ControlGraphNode[];
+}
+
+export interface NodeConditionEvaluatedEvent extends RunEventBase {
+  readonly type: "node_condition_evaluated";
+  readonly nodeId: string;
+  readonly attempt: 1;
+  readonly sourceNodeId: string;
+  readonly sourceAttempt: number;
+  readonly sourceField: ConditionSourceField;
+  readonly sourceHash: string;
+  readonly selectedCase: string;
+}
+
+export type NodeOmittedEvent = RunEventBase &
+  (
+    | {
+        readonly type: "node_omitted";
+        readonly nodeId: string;
+        readonly reason: "condition_not_selected";
+        readonly conditionId: string;
+        readonly selectedCase: string;
+        readonly expectedCase: string;
+      }
+    | {
+        readonly type: "node_omitted";
+        readonly nodeId: string;
+        readonly reason: "dependency_omitted";
+        readonly omittedDependencies: readonly string[];
+      }
+  );
+
+export interface NodeJoinedEvent extends RunEventBase {
+  readonly type: "node_joined";
+  readonly nodeId: string;
+  readonly attempt: 1;
+  readonly conditionId: string;
+  readonly selectedCase: string;
+  readonly completedNodeId: string;
+  readonly omittedNodeIds: readonly string[];
+}
+
+export interface NodeControlFailedEvent extends RunEventBase {
+  readonly type: "node_control_failed";
+  readonly nodeId: string;
+  readonly attempt: 1;
+  readonly error: NodeFailure;
 }
 
 export interface FilesystemEditEffectDescriptor {
@@ -332,6 +435,10 @@ export type RunEvent =
   | CommandApprovalExpiredEvent
   | NodeStartedEvent
   | NodeAttemptInterruptedEvent
+  | NodeConditionEvaluatedEvent
+  | NodeOmittedEvent
+  | NodeJoinedEvent
+  | NodeControlFailedEvent
   | NodeEffectPreparedEvent
   | NodeEffectSettledEvent
   | NodeEffectReconciledEvent
@@ -349,7 +456,7 @@ export type RunStatus =
   | "failed"
   | "cancelled"
   | "resource_exhausted";
-export type NodeRunStatus = "pending" | "running" | "succeeded" | "failed";
+export type NodeRunStatus = "pending" | "running" | "succeeded" | "failed" | "omitted";
 
 export type CommandApprovalStatus = "pending" | "granted" | "denied" | "expired" | "consumed";
 
@@ -380,7 +487,38 @@ export interface NodeRunState {
   readonly effectProtocol: typeof DURABLE_EFFECT_PROTOCOL | null;
   readonly effects: readonly NodeEffectRunState[];
   readonly interruptedAttempts: readonly InterruptedNodeAttemptState[];
+  readonly control: NodeControlRunState | null;
+  readonly omission: NodeOmissionRunState | null;
 }
+
+export type NodeControlRunState =
+  | {
+      readonly kind: "condition";
+      readonly sourceNodeId: string;
+      readonly sourceAttempt: number;
+      readonly sourceField: ConditionSourceField;
+      readonly sourceHash: string;
+      readonly selectedCase: string;
+    }
+  | {
+      readonly kind: "join";
+      readonly conditionId: string;
+      readonly selectedCase: string;
+      readonly completedNodeId: string;
+      readonly omittedNodeIds: readonly string[];
+    };
+
+export type NodeOmissionRunState =
+  | {
+      readonly reason: "condition_not_selected";
+      readonly conditionId: string;
+      readonly selectedCase: string;
+      readonly expectedCase: string;
+    }
+  | {
+      readonly reason: "dependency_omitted";
+      readonly omittedDependencies: readonly string[];
+    };
 
 export interface InterruptedNodeAttemptState {
   readonly attempt: number;
@@ -412,6 +550,7 @@ export interface RunState {
     Record<string, Omit<CommandApprovalRequirement, "nodeId">>
   >;
   readonly recoveryRequirements: Readonly<Record<string, Omit<AgentRecoveryRequirement, "nodeId">>>;
+  readonly controlGraph: ControlGraph | null;
   readonly resources: RunResourceConsumption;
   readonly budget: RunBudgetState | null;
   readonly status: RunStatus;
@@ -633,6 +772,142 @@ const nodeFailureSchema = z
   })
   .strict();
 
+const controlBranchGuardSchema = z
+  .object({
+    conditionId: identifierSchema,
+    case: identifierSchema,
+  })
+  .strict();
+
+const controlDependencySchema = z.array(identifierSchema).max(128);
+
+const controlConditionSchema = z
+  .object({
+    source: z
+      .object({
+        nodeId: identifierSchema,
+        field: z.enum(["command.stdout", "command.stderr", "agent.text"]),
+      })
+      .strict(),
+    cases: z
+      .array(
+        z
+          .object({
+            id: identifierSchema,
+            equals: agentOutputSchema,
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(32),
+    default: identifierSchema,
+  })
+  .strict()
+  .superRefine((condition, context) => {
+    const ids = condition.cases.map((item) => item.id);
+    const values = condition.cases.map((item) => item.equals);
+    if (new Set(ids).size !== ids.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["cases"],
+        message: "control condition case identifiers must be unique",
+      });
+    }
+    if (new Set(values).size !== values.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["cases"],
+        message: "control condition case values must be unique",
+      });
+    }
+    if (ids.includes(condition.default)) {
+      context.addIssue({
+        code: "custom",
+        path: ["default"],
+        message: "control condition default must be distinct from exact cases",
+      });
+    }
+    if (
+      condition.cases.reduce((total, item) => total + Buffer.byteLength(item.equals, "utf8"), 0) >
+      65_536
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["cases"],
+        message: "control condition values must not exceed 65536 UTF-8 bytes in total",
+      });
+    }
+  });
+
+const controlGraphNodeSchema = z.discriminatedUnion("type", [
+  z
+    .object({
+      nodeId: identifierSchema,
+      type: z.literal("command"),
+      dependsOn: controlDependencySchema,
+      when: controlBranchGuardSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      nodeId: identifierSchema,
+      type: z.literal("agent"),
+      dependsOn: controlDependencySchema,
+      when: controlBranchGuardSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      nodeId: identifierSchema,
+      type: z.literal("condition"),
+      dependsOn: controlDependencySchema,
+      when: controlBranchGuardSchema.optional(),
+      condition: controlConditionSchema,
+    })
+    .strict(),
+  z
+    .object({
+      nodeId: identifierSchema,
+      type: z.literal("join"),
+      dependsOn: controlDependencySchema,
+      join: z
+        .object({
+          conditionId: identifierSchema,
+          branches: z
+            .array(
+              z
+                .object({
+                  case: identifierSchema,
+                  nodeId: identifierSchema,
+                })
+                .strict(),
+            )
+            .min(2)
+            .max(33),
+        })
+        .strict(),
+    })
+    .strict(),
+]);
+
+const controlGraphSchema = z
+  .object({
+    nodes: z
+      .array(controlGraphNodeSchema)
+      .min(1)
+      .max(64)
+      .refine(
+        (nodes) => new Set(nodes.map((node) => node.nodeId)).size === nodes.length,
+        "control graph node ids must be unique",
+      ),
+  })
+  .strict()
+  .refine(
+    (graph) =>
+      Buffer.byteLength(JSON.stringify(graph), "utf8") <= MAX_CONTROL_GRAPH_SERIALIZED_BYTES,
+    `serialized control graph must not exceed ${MAX_CONTROL_GRAPH_SERIALIZED_BYTES} UTF-8 bytes`,
+  );
+
 export const runEventSchema = z.discriminatedUnion("type", [
   z
     .object({
@@ -664,6 +939,7 @@ export const runEventSchema = z.discriminatedUnion("type", [
         )
         .max(64)
         .optional(),
+      controlGraph: controlGraphSchema.optional(),
     })
     .strict(),
   z
@@ -737,6 +1013,73 @@ export const runEventSchema = z.discriminatedUnion("type", [
       reason: z.literal("process_interrupted"),
       disposition: z.literal("fresh_retry"),
       resourceAccounting: z.literal("incomplete"),
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("node_condition_evaluated"),
+      nodeId: identifierSchema,
+      attempt: z.literal(1),
+      sourceNodeId: identifierSchema,
+      sourceAttempt: z.number().int().positive(),
+      sourceField: z.enum(["command.stdout", "command.stderr", "agent.text"]),
+      sourceHash: sha256Schema,
+      selectedCase: identifierSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("node_omitted"),
+      nodeId: identifierSchema,
+      reason: z.enum(["condition_not_selected", "dependency_omitted"]),
+      conditionId: identifierSchema.optional(),
+      selectedCase: identifierSchema.optional(),
+      expectedCase: identifierSchema.optional(),
+      omittedDependencies: z.array(identifierSchema).min(1).max(128).optional(),
+    })
+    .strict()
+    .superRefine((event, context) => {
+      const conditionFields =
+        event.conditionId !== undefined &&
+        event.selectedCase !== undefined &&
+        event.expectedCase !== undefined;
+      const dependencyFields = event.omittedDependencies !== undefined;
+      if (event.reason === "condition_not_selected" && (!conditionFields || dependencyFields)) {
+        context.addIssue({
+          code: "custom",
+          path: ["reason"],
+          message: "condition omission requires only condition decision fields",
+        });
+      }
+      if (event.reason === "dependency_omitted" && (!dependencyFields || conditionFields)) {
+        context.addIssue({
+          code: "custom",
+          path: ["reason"],
+          message: "dependency omission requires only omitted dependencies",
+        });
+      }
+    }),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("node_joined"),
+      nodeId: identifierSchema,
+      attempt: z.literal(1),
+      conditionId: identifierSchema,
+      selectedCase: identifierSchema,
+      completedNodeId: identifierSchema,
+      omittedNodeIds: z.array(identifierSchema).min(1).max(32),
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("node_control_failed"),
+      nodeId: identifierSchema,
+      attempt: z.literal(1),
+      error: nodeFailureSchema,
     })
     .strict(),
   z
@@ -997,6 +1340,10 @@ export function appendRunEvent(
         }),
       ]),
     );
+    const controlGraph =
+      event.controlGraph === undefined
+        ? null
+        : validateControlGraph(event.controlGraph, event.nodeIds, eventIndex);
     const resources = emptyRunResources();
     return freezeRunState({
       runId: event.runId,
@@ -1006,6 +1353,7 @@ export function appendRunEvent(
       executionCwd: event.executionCwd ?? null,
       approvalRequirements: Object.freeze(approvalRequirements),
       recoveryRequirements: Object.freeze(recoveryRequirementsByNode),
+      controlGraph,
       resources,
       budget: calculateRunBudgetState(event.budget, resources),
       status: "running",
@@ -1253,6 +1601,17 @@ export function appendRunEvent(
       if (current.status !== "pending") {
         throw new RunReplayError(eventIndex, `node "${event.nodeId}" must be pending before start`);
       }
+      if (currentState.controlGraph !== null) {
+        const controlNode = requireControlGraphNode(currentState, event.nodeId, eventIndex);
+        if (controlNode.type === "condition" || controlNode.type === "join") {
+          throw new RunReplayError(
+            eventIndex,
+            `control node "${event.nodeId}" cannot start through an executor`,
+          );
+        }
+        requireSucceededDependencies(controlNode, nodes, eventIndex);
+        requireSelectedGuard(controlNode, nodes, eventIndex);
+      }
       const requirement = currentState.approvalRequirements[event.nodeId];
       let approval = current.approval;
       if (requirement === undefined) {
@@ -1339,6 +1698,275 @@ export function appendRunEvent(
         effectProtocol: null,
         effects: Object.freeze([]),
         interruptedAttempts: Object.freeze([...current.interruptedAttempts, interruptedAttempt]),
+      });
+      break;
+    }
+    case "node_condition_evaluated": {
+      requireRunningControlTransition(currentState, nodes, eventIndex);
+      const requirement = requireControlGraphNode(currentState, event.nodeId, eventIndex);
+      if (requirement.type !== "condition") {
+        throw new RunReplayError(
+          eventIndex,
+          `node "${event.nodeId}" is not a condition control node`,
+        );
+      }
+      const current = requirePendingControlState(nodes, event.nodeId, event.attempt, eventIndex);
+      requireSucceededDependencies(requirement, nodes, eventIndex);
+      requireSelectedGuard(requirement, nodes, eventIndex);
+      const source = conditionSourceObservation(requirement, nodes, eventIndex);
+      if (source.truncated) {
+        throw new RunReplayError(
+          eventIndex,
+          `condition "${event.nodeId}" source evidence is truncated`,
+        );
+      }
+      if (event.sourceNodeId !== requirement.condition.source.nodeId) {
+        throw new RunReplayError(
+          eventIndex,
+          "condition source node does not match its control graph",
+        );
+      }
+      if (event.sourceAttempt !== source.attempt) {
+        throw new RunReplayError(
+          eventIndex,
+          "condition source attempt does not match durable evidence",
+        );
+      }
+      if (event.sourceField !== requirement.condition.source.field) {
+        throw new RunReplayError(
+          eventIndex,
+          "condition source field does not match its control graph",
+        );
+      }
+      if (event.sourceHash !== source.hash) {
+        throw new RunReplayError(
+          eventIndex,
+          "condition source hash does not match durable evidence",
+        );
+      }
+      const selectedCase =
+        requirement.condition.cases.find((item) => item.equals === source.value)?.id ??
+        requirement.condition.default;
+      if (event.selectedCase !== selectedCase) {
+        throw new RunReplayError(
+          eventIndex,
+          `condition selected case "${event.selectedCase}" does not match durable source evidence`,
+        );
+      }
+      const control: NodeControlRunState = deepFreeze({
+        kind: "condition",
+        sourceNodeId: event.sourceNodeId,
+        sourceAttempt: event.sourceAttempt,
+        sourceField: event.sourceField,
+        sourceHash: event.sourceHash,
+        selectedCase: event.selectedCase,
+      });
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        status: "succeeded",
+        attempt: event.attempt,
+        startedAt: event.at,
+        finishedAt: event.at,
+        control,
+      });
+      break;
+    }
+    case "node_omitted": {
+      requireRunningControlTransition(currentState, nodes, eventIndex);
+      const requirement = requireControlGraphNode(currentState, event.nodeId, eventIndex);
+      const current = requireNode(nodes, event.nodeId, eventIndex);
+      if (current.status !== "pending") {
+        throw new RunReplayError(
+          eventIndex,
+          `node "${event.nodeId}" must be pending before omission`,
+        );
+      }
+      requireTerminalDependencies(requirement, nodes, eventIndex);
+
+      let omission: NodeOmissionRunState;
+      if (event.reason === "condition_not_selected") {
+        if (requirement.type === "join" || requirement.when === undefined) {
+          throw new RunReplayError(
+            eventIndex,
+            `node "${event.nodeId}" has no condition guard to omit`,
+          );
+        }
+        const guard = requirement.when;
+        const decision = requireConditionDecision(nodes, guard.conditionId, eventIndex);
+        if (
+          event.conditionId !== guard.conditionId ||
+          event.expectedCase !== guard.case ||
+          event.selectedCase !== decision.selectedCase
+        ) {
+          throw new RunReplayError(
+            eventIndex,
+            "condition omission does not match the exact guard decision",
+          );
+        }
+        if (decision.selectedCase === guard.case) {
+          throw new RunReplayError(
+            eventIndex,
+            `node "${event.nodeId}" guard selected case "${guard.case}" and cannot be omitted`,
+          );
+        }
+        omission = deepFreeze({
+          reason: event.reason,
+          conditionId: event.conditionId,
+          selectedCase: event.selectedCase,
+          expectedCase: event.expectedCase,
+        });
+      } else {
+        if (requirement.type !== "join" && requirement.when !== undefined) {
+          const controllingCondition = requireNode(nodes, requirement.when.conditionId, eventIndex);
+          if (controllingCondition.status !== "omitted") {
+            const decision = requireConditionDecision(
+              nodes,
+              requirement.when.conditionId,
+              eventIndex,
+            );
+            if (decision.selectedCase !== requirement.when.case) {
+              throw new RunReplayError(
+                eventIndex,
+                `node "${event.nodeId}" must record its unselected condition guard before dependency omission`,
+              );
+            }
+          }
+        }
+        const omittedDependencies = requirement.dependsOn.filter(
+          (dependency) => nodes[dependency]?.status === "omitted",
+        );
+        if (omittedDependencies.length === 0) {
+          throw new RunReplayError(
+            eventIndex,
+            `node "${event.nodeId}" has no omitted declared dependencies`,
+          );
+        }
+        if (!sameStrings(event.omittedDependencies, omittedDependencies)) {
+          throw new RunReplayError(
+            eventIndex,
+            `node "${event.nodeId}" omission does not name its exact omitted dependencies`,
+          );
+        }
+        omission = deepFreeze({
+          reason: event.reason,
+          omittedDependencies: Object.freeze([...event.omittedDependencies]),
+        });
+      }
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        status: "omitted",
+        finishedAt: event.at,
+        omission,
+      });
+      break;
+    }
+    case "node_joined": {
+      requireRunningControlTransition(currentState, nodes, eventIndex);
+      const requirement = requireControlGraphNode(currentState, event.nodeId, eventIndex);
+      if (requirement.type !== "join") {
+        throw new RunReplayError(eventIndex, `node "${event.nodeId}" is not a join control node`);
+      }
+      const current = requirePendingControlState(nodes, event.nodeId, event.attempt, eventIndex);
+      requireTerminalDependencies(requirement, nodes, eventIndex);
+      const decision = requireConditionDecision(nodes, requirement.join.conditionId, eventIndex);
+      if (event.conditionId !== requirement.join.conditionId) {
+        throw new RunReplayError(eventIndex, "join condition does not match its control graph");
+      }
+      if (event.selectedCase !== decision.selectedCase) {
+        throw new RunReplayError(
+          eventIndex,
+          "join selected case does not match its condition decision",
+        );
+      }
+      const selectedBranch = requirement.join.branches.find(
+        (branch) => branch.case === decision.selectedCase,
+      );
+      if (selectedBranch === undefined) {
+        throw new RunReplayError(
+          eventIndex,
+          "join condition selected a case without a branch mapping",
+        );
+      }
+      if (event.completedNodeId !== selectedBranch.nodeId) {
+        throw new RunReplayError(
+          eventIndex,
+          "join completed terminal does not match its selected case",
+        );
+      }
+      if (nodes[selectedBranch.nodeId]?.status !== "succeeded") {
+        throw new RunReplayError(
+          eventIndex,
+          `join selected branch terminal "${selectedBranch.nodeId}" has not succeeded`,
+        );
+      }
+      const omittedNodeIds = requirement.join.branches
+        .filter((branch) => branch.case !== decision.selectedCase)
+        .map((branch) => branch.nodeId);
+      if (!sameStrings(event.omittedNodeIds, omittedNodeIds)) {
+        throw new RunReplayError(
+          eventIndex,
+          "join omitted terminals do not match its unselected cases",
+        );
+      }
+      if (omittedNodeIds.some((nodeId) => nodes[nodeId]?.status !== "omitted")) {
+        throw new RunReplayError(
+          eventIndex,
+          "join cannot complete before every unselected terminal is omitted",
+        );
+      }
+      const control: NodeControlRunState = deepFreeze({
+        kind: "join",
+        conditionId: event.conditionId,
+        selectedCase: event.selectedCase,
+        completedNodeId: event.completedNodeId,
+        omittedNodeIds: Object.freeze([...event.omittedNodeIds]),
+      });
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        status: "succeeded",
+        attempt: event.attempt,
+        startedAt: event.at,
+        finishedAt: event.at,
+        control,
+      });
+      break;
+    }
+    case "node_control_failed": {
+      requireRunningControlTransition(currentState, nodes, eventIndex);
+      const requirement = requireControlGraphNode(currentState, event.nodeId, eventIndex);
+      if (requirement.type !== "condition") {
+        throw new RunReplayError(
+          eventIndex,
+          `node "${event.nodeId}" is not a condition control node`,
+        );
+      }
+      const current = requirePendingControlState(nodes, event.nodeId, event.attempt, eventIndex);
+      requireSucceededDependencies(requirement, nodes, eventIndex);
+      requireSelectedGuard(requirement, nodes, eventIndex);
+      const source = conditionSourceObservation(requirement, nodes, eventIndex);
+      if (!source.truncated) {
+        throw new RunReplayError(
+          eventIndex,
+          `condition "${event.nodeId}" source evidence is complete and cannot fail as truncated`,
+        );
+      }
+      if (
+        event.error.code !== "condition_source_truncated" ||
+        event.error.retryable ||
+        event.error.sideEffectStatus !== "none"
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          "condition source truncation requires a side-effect-free non-retryable control failure",
+        );
+      }
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        status: "failed",
+        attempt: event.attempt,
+        startedAt: event.at,
+        finishedAt: event.at,
+        error: deepFreeze(structuredClone(event.error)),
       });
       break;
     }
@@ -1519,8 +2147,15 @@ export function appendRunEvent(
       break;
     }
     case "run_succeeded": {
-      if (!Object.values(nodes).every((node) => node.status === "succeeded")) {
-        throw new RunReplayError(eventIndex, "run cannot succeed because not every node succeeded");
+      if (
+        !Object.values(nodes).every(
+          (node) => node.status === "succeeded" || node.status === "omitted",
+        )
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          "run cannot succeed because not every node succeeded or was omitted",
+        );
       }
       const blockingExhaustions =
         calculateRunBudgetState(currentState.budget?.limits, resources)?.exhausted.filter(
@@ -1644,6 +2279,7 @@ export function appendRunEvent(
     executionCwd: currentState.executionCwd,
     approvalRequirements: currentState.approvalRequirements,
     recoveryRequirements: currentState.recoveryRequirements,
+    controlGraph: currentState.controlGraph,
     resources,
     budget,
     status,
@@ -1783,6 +2419,458 @@ function approvalDenialMessage(actor: string, reason: string | undefined): strin
 
 function freezeRunState(state: RunState): RunState {
   return Object.freeze({ ...state, nodes: Object.freeze({ ...state.nodes }) });
+}
+
+function validateControlGraph(
+  input: ControlGraph,
+  nodeIds: readonly string[],
+  eventIndex: number,
+): ControlGraph {
+  const graph = structuredClone(input);
+  if (
+    !sameStrings(
+      graph.nodes.map((node) => node.nodeId),
+      nodeIds,
+    )
+  ) {
+    throw new RunReplayError(
+      eventIndex,
+      "control graph nodes must exactly match ordered run node ids",
+    );
+  }
+  const nodeById = new Map(graph.nodes.map((node) => [node.nodeId, node]));
+  for (const node of graph.nodes) {
+    if (new Set(node.dependsOn).size !== node.dependsOn.length) {
+      throw new RunReplayError(
+        eventIndex,
+        `control graph node "${node.nodeId}" has duplicate dependencies`,
+      );
+    }
+    for (const dependency of node.dependsOn) {
+      if (dependency === node.nodeId || !nodeById.has(dependency)) {
+        throw new RunReplayError(
+          eventIndex,
+          `control graph node "${node.nodeId}" has invalid dependency "${dependency}"`,
+        );
+      }
+    }
+    if (node.type !== "join" && node.when !== undefined) {
+      const condition = nodeById.get(node.when.conditionId);
+      if (
+        condition?.type !== "condition" ||
+        !node.dependsOn.includes(condition.nodeId) ||
+        !controlConditionCases(condition).includes(node.when.case)
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          `control graph node "${node.nodeId}" has an invalid condition guard`,
+        );
+      }
+    }
+    if (node.type === "condition") {
+      const source = nodeById.get(node.condition.source.nodeId);
+      const compatible =
+        (node.condition.source.field.startsWith("command.") && source?.type === "command") ||
+        (node.condition.source.field === "agent.text" && source?.type === "agent");
+      if (!node.dependsOn.includes(node.condition.source.nodeId) || !compatible) {
+        throw new RunReplayError(
+          eventIndex,
+          `control graph condition "${node.nodeId}" has an invalid source`,
+        );
+      }
+    }
+    if (node.type === "join") {
+      const condition = nodeById.get(node.join.conditionId);
+      if (condition?.type !== "condition") {
+        throw new RunReplayError(
+          eventIndex,
+          `control graph join "${node.nodeId}" has an invalid condition`,
+        );
+      }
+      const branchNodeIds = node.join.branches.map((branch) => branch.nodeId);
+      if (!sameStrings(node.dependsOn, branchNodeIds)) {
+        throw new RunReplayError(
+          eventIndex,
+          `control graph join "${node.nodeId}" dependencies do not match its branches`,
+        );
+      }
+      const expectedCases = controlConditionCases(condition);
+      const actualCases = node.join.branches.map((branch) => branch.case);
+      if (
+        actualCases.length !== expectedCases.length ||
+        new Set(actualCases).size !== actualCases.length ||
+        expectedCases.some((caseId) => !actualCases.includes(caseId))
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          `control graph join "${node.nodeId}" does not cover every condition case`,
+        );
+      }
+    }
+  }
+
+  const entryCount = graph.nodes.filter((node) => node.dependsOn.length === 0).length;
+  if (entryCount !== 1) {
+    throw new RunReplayError(
+      eventIndex,
+      `control graph must contain exactly one entry node; found ${entryCount}`,
+    );
+  }
+  if (controlGraphHasCycle(graph.nodes)) {
+    throw new RunReplayError(eventIndex, "control graph contains a dependency cycle");
+  }
+  const dependedUpon = new Set(graph.nodes.flatMap((node) => node.dependsOn));
+  const invalidTerminal = graph.nodes.find(
+    (node) => !dependedUpon.has(node.nodeId) && node.type !== "command",
+  );
+  if (invalidTerminal !== undefined) {
+    throw new RunReplayError(
+      eventIndex,
+      `control graph terminal "${invalidTerminal.nodeId}" must be a command node`,
+    );
+  }
+  for (const condition of graph.nodes.filter(
+    (node): node is ControlGraphConditionNode => node.type === "condition",
+  )) {
+    const joins = graph.nodes.filter(
+      (node): node is ControlGraphJoinNode =>
+        node.type === "join" && node.join.conditionId === condition.nodeId,
+    );
+    if (joins.length !== 1) {
+      throw new RunReplayError(
+        eventIndex,
+        `control graph condition "${condition.nodeId}" must have exactly one join`,
+      );
+    }
+    validateControlGraphBranches(graph.nodes, condition, joins[0], eventIndex);
+  }
+  return deepFreeze(graph);
+}
+
+function controlConditionCases(condition: ControlGraphConditionNode): readonly string[] {
+  return [...condition.condition.cases.map((item) => item.id), condition.condition.default];
+}
+
+function controlGraphHasCycle(nodes: readonly ControlGraphNode[]): boolean {
+  const nodeById = new Map(nodes.map((node) => [node.nodeId, node]));
+  const visited = new Set<string>();
+  const visiting = new Set<string>();
+
+  function visit(nodeId: string): boolean {
+    if (visiting.has(nodeId)) {
+      return true;
+    }
+    if (visited.has(nodeId)) {
+      return false;
+    }
+    const node = nodeById.get(nodeId);
+    if (node === undefined) {
+      return false;
+    }
+    visiting.add(nodeId);
+    const cyclic = node.dependsOn.some(visit);
+    visiting.delete(nodeId);
+    visited.add(nodeId);
+    return cyclic;
+  }
+
+  return nodes.some((node) => visit(node.nodeId));
+}
+
+function validateControlGraphBranches(
+  nodes: readonly ControlGraphNode[],
+  condition: ControlGraphConditionNode,
+  join: ControlGraphJoinNode | undefined,
+  eventIndex: number,
+): void {
+  const cases = controlConditionCases(condition);
+  for (const caseId of cases) {
+    const hasBranch = nodes.some(
+      (node) =>
+        node.type !== "join" &&
+        node.when?.conditionId === condition.nodeId &&
+        node.when.case === caseId,
+    );
+    if (!hasBranch) {
+      throw new RunReplayError(
+        eventIndex,
+        `control graph condition "${condition.nodeId}" case "${caseId}" has no guarded branch`,
+      );
+    }
+  }
+  if (join === undefined) {
+    return;
+  }
+
+  const membership = controlGraphBranchMembership(nodes, condition.nodeId);
+  const crossCaseNode = [...membership.entries()].find(([, value]) => value === "cross");
+  if (crossCaseNode !== undefined) {
+    throw new RunReplayError(
+      eventIndex,
+      `control graph node "${crossCaseNode[0]}" depends across cases of condition "${condition.nodeId}"`,
+    );
+  }
+  const nodeById = new Map(nodes.map((node) => [node.nodeId, node]));
+  for (const branch of join.join.branches) {
+    if (membership.get(branch.nodeId) !== branch.case) {
+      throw new RunReplayError(
+        eventIndex,
+        `control graph join "${join.nodeId}" branch "${branch.nodeId}" does not belong to case "${branch.case}"`,
+      );
+    }
+    const incomplete = [...membership.entries()].some(
+      ([nodeId, value]) =>
+        value === branch.case &&
+        nodeId !== branch.nodeId &&
+        !controlGraphIsAncestor(nodeId, branch.nodeId, nodeById),
+    );
+    if (incomplete) {
+      throw new RunReplayError(
+        eventIndex,
+        `control graph join "${join.nodeId}" terminal "${branch.nodeId}" does not wait for every node in case "${branch.case}"`,
+      );
+    }
+  }
+}
+
+function controlGraphBranchMembership(
+  nodes: readonly ControlGraphNode[],
+  conditionId: string,
+): ReadonlyMap<string, string | "cross" | undefined> {
+  const nodeById = new Map(nodes.map((node) => [node.nodeId, node]));
+  const memo = new Map<string, string | "cross" | undefined>();
+  const visiting = new Set<string>();
+
+  function visit(nodeId: string): string | "cross" | undefined {
+    if (memo.has(nodeId)) {
+      return memo.get(nodeId);
+    }
+    if (visiting.has(nodeId)) {
+      return "cross";
+    }
+    const node = nodeById.get(nodeId);
+    if (node === undefined || node.nodeId === conditionId) {
+      return undefined;
+    }
+    if (node.type === "join" && node.join.conditionId === conditionId) {
+      memo.set(nodeId, undefined);
+      return undefined;
+    }
+
+    visiting.add(nodeId);
+    const dependencyMemberships = node.dependsOn
+      .map(visit)
+      .filter((value): value is string => value !== undefined);
+    visiting.delete(nodeId);
+
+    let result: string | "cross" | undefined;
+    const directGuard = node.type === "join" ? undefined : node.when;
+    if (directGuard?.conditionId === conditionId) {
+      result = dependencyMemberships.some(
+        (value) => value === "cross" || value !== directGuard.case,
+      )
+        ? "cross"
+        : directGuard.case;
+    } else if (dependencyMemberships.includes("cross")) {
+      result = "cross";
+    } else {
+      const unique = new Set(dependencyMemberships);
+      result = unique.size > 1 ? "cross" : unique.values().next().value;
+    }
+    memo.set(nodeId, result);
+    return result;
+  }
+
+  for (const node of nodes) {
+    visit(node.nodeId);
+  }
+  return memo;
+}
+
+function controlGraphIsAncestor(
+  ancestorId: string,
+  nodeId: string,
+  nodeById: ReadonlyMap<string, ControlGraphNode>,
+  visited = new Set<string>(),
+): boolean {
+  if (visited.has(nodeId)) {
+    return false;
+  }
+  visited.add(nodeId);
+  const node = nodeById.get(nodeId);
+  if (node === undefined) {
+    return false;
+  }
+  return node.dependsOn.some(
+    (dependency) =>
+      dependency === ancestorId ||
+      controlGraphIsAncestor(ancestorId, dependency, nodeById, visited),
+  );
+}
+
+function requireRunningControlTransition(
+  state: RunState,
+  nodes: Readonly<Record<string, NodeRunState>>,
+  eventIndex: number,
+): void {
+  if (state.status !== "running") {
+    throw new RunReplayError(eventIndex, "control transition requires a running workflow");
+  }
+  if (Object.values(nodes).some((node) => node.status === "running")) {
+    throw new RunReplayError(eventIndex, "control transition cannot overlap a running node");
+  }
+}
+
+function requireControlGraphNode(
+  state: RunState,
+  nodeId: string,
+  eventIndex: number,
+): ControlGraphNode {
+  const node = state.controlGraph?.nodes.find((item) => item.nodeId === nodeId);
+  if (node === undefined) {
+    throw new RunReplayError(
+      eventIndex,
+      `node "${nodeId}" has no persisted control graph declaration`,
+    );
+  }
+  return node;
+}
+
+function requirePendingControlState(
+  nodes: Readonly<Record<string, NodeRunState>>,
+  nodeId: string,
+  attempt: number,
+  eventIndex: number,
+): NodeRunState {
+  const node = requireNode(nodes, nodeId, eventIndex);
+  if (node.status !== "pending") {
+    throw new RunReplayError(eventIndex, `control node "${nodeId}" must be pending`);
+  }
+  if (attempt !== node.attempt + 1 || attempt !== 1) {
+    throw new RunReplayError(eventIndex, `control node "${nodeId}" requires logical attempt 1`);
+  }
+  return node;
+}
+
+function requireTerminalDependencies(
+  requirement: ControlGraphNode,
+  nodes: Readonly<Record<string, NodeRunState>>,
+  eventIndex: number,
+): void {
+  const incomplete = requirement.dependsOn.find((dependency) => {
+    const status = nodes[dependency]?.status;
+    return status !== "succeeded" && status !== "omitted";
+  });
+  if (incomplete !== undefined) {
+    throw new RunReplayError(
+      eventIndex,
+      `control node "${requirement.nodeId}" dependency "${incomplete}" is not terminal`,
+    );
+  }
+}
+
+function requireSucceededDependencies(
+  requirement: ControlGraphNode,
+  nodes: Readonly<Record<string, NodeRunState>>,
+  eventIndex: number,
+): void {
+  const incomplete = requirement.dependsOn.find(
+    (dependency) => nodes[dependency]?.status !== "succeeded",
+  );
+  if (incomplete !== undefined) {
+    throw new RunReplayError(
+      eventIndex,
+      `node "${requirement.nodeId}" dependency "${incomplete}" has not succeeded`,
+    );
+  }
+}
+
+function requireConditionDecision(
+  nodes: Readonly<Record<string, NodeRunState>>,
+  conditionId: string,
+  eventIndex: number,
+): Extract<NodeControlRunState, { readonly kind: "condition" }> {
+  const condition = requireNode(nodes, conditionId, eventIndex);
+  if (condition.status !== "succeeded" || condition.control?.kind !== "condition") {
+    throw new RunReplayError(eventIndex, `condition "${conditionId}" has no durable decision`);
+  }
+  return condition.control;
+}
+
+function requireSelectedGuard(
+  requirement: ControlGraphNode,
+  nodes: Readonly<Record<string, NodeRunState>>,
+  eventIndex: number,
+): void {
+  if (requirement.type === "join" || requirement.when === undefined) {
+    return;
+  }
+  const decision = requireConditionDecision(nodes, requirement.when.conditionId, eventIndex);
+  if (decision.selectedCase !== requirement.when.case) {
+    throw new RunReplayError(
+      eventIndex,
+      `node "${requirement.nodeId}" condition guard did not select case "${requirement.when.case}"`,
+    );
+  }
+}
+
+function conditionSourceObservation(
+  requirement: ControlGraphConditionNode,
+  nodes: Readonly<Record<string, NodeRunState>>,
+  eventIndex: number,
+): {
+  readonly attempt: number;
+  readonly value: string;
+  readonly hash: string;
+  readonly truncated: boolean;
+} {
+  const source = requireNode(nodes, requirement.condition.source.nodeId, eventIndex);
+  if (source.status !== "succeeded" || source.evidence === null) {
+    throw new RunReplayError(
+      eventIndex,
+      `condition "${requirement.nodeId}" source has no successful durable evidence`,
+    );
+  }
+  switch (requirement.condition.source.field) {
+    case "command.stdout":
+      if (source.evidence.kind !== "command") {
+        break;
+      }
+      return {
+        attempt: source.attempt,
+        value: source.evidence.stdout,
+        hash: source.evidence.stdoutHash,
+        truncated: source.evidence.stdoutTruncated,
+      };
+    case "command.stderr":
+      if (source.evidence.kind !== "command") {
+        break;
+      }
+      return {
+        attempt: source.attempt,
+        value: source.evidence.stderr,
+        hash: source.evidence.stderrHash,
+        truncated: source.evidence.stderrTruncated,
+      };
+    case "agent.text":
+      if (source.evidence.kind !== "agent") {
+        break;
+      }
+      return {
+        attempt: source.attempt,
+        value: source.evidence.text,
+        hash: source.evidence.textHash,
+        truncated: source.evidence.textTruncated,
+      };
+  }
+  throw new RunReplayError(
+    eventIndex,
+    `condition "${requirement.nodeId}" source field is incompatible with durable evidence`,
+  );
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function addResourcesForStart(
@@ -2187,6 +3275,8 @@ function pendingNodeState(): NodeRunState {
     effectProtocol: null,
     effects: Object.freeze([]),
     interruptedAttempts: Object.freeze([]),
+    control: null,
+    omission: null,
   });
 }
 

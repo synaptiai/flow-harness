@@ -9,6 +9,8 @@ import {
   reduceRunEvents,
   type AgentEffectReceipt,
   type AgentRecoveryRequirement,
+  type ControlGraph,
+  type ControlGraphNode,
   type FilesystemEditEffectDescriptor,
   type NodeEffectSettlementInput,
   type NodeEffectReconciledEvent,
@@ -29,6 +31,8 @@ import {
 import type {
   CompiledAgentNode,
   CompiledCommandNode,
+  CompiledConditionNode,
+  CompiledJoinNode,
   CompiledNode,
   CompiledWorkflow,
 } from "../domain/workflow/types.js";
@@ -68,6 +72,7 @@ export async function runWorkflow(
   return await releaseAfter(options.store, runId, async () => {
     const approvalRequirements = commandApprovalRequirements(workflow);
     const recoveryRequirements = agentRecoveryRequirements(workflow);
+    const controlGraph = workflowControlGraph(workflow);
     const started: RunStartedEvent = {
       ...eventBase(workflow, runId, 1, now),
       type: "run_started",
@@ -78,6 +83,7 @@ export async function runWorkflow(
       ...(workflow.budget === undefined ? {} : { budget: workflow.budget }),
       ...(approvalRequirements.length === 0 ? {} : { approvalRequirements }),
       ...(recoveryRequirements.length === 0 ? {} : { recoveryRequirements }),
+      ...(controlGraph === undefined ? {} : { controlGraph }),
       ...(workflow.goal === undefined ? {} : { goal: workflow.goal }),
     };
     await options.store.append(started);
@@ -176,11 +182,6 @@ async function continueWorkflow(
     return eventBase(workflow, runId, sequence, now, at);
   }
 
-  const completed = new Set(
-    Object.entries(state.nodes)
-      .filter(([, node]) => node.status === "succeeded")
-      .map(([nodeId]) => nodeId),
-  );
   const failed = Object.entries(state.nodes).find(([, node]) => node.status === "failed");
   if (failed !== undefined) {
     const [failedNodeId, failedNode] = failed;
@@ -199,17 +200,34 @@ async function continueWorkflow(
     return state;
   }
 
-  while (completed.size < workflow.nodes.length) {
+  while (!workflowIsTerminal(state)) {
     if ((state.budget?.exhausted.length ?? 0) > 0) {
       return await exhaustRun();
     }
     if (isAborted(options.signal)) {
       return await cancelRun();
     }
-    const node = selectReadyNode(workflow.nodes, completed);
-    if (node === undefined) {
+    const transition = selectNextTransition(workflow.nodes, state);
+    if (transition === undefined) {
       throw new Error("Compiled workflow has no ready node; compiler invariant was violated");
     }
+    if (transition.kind !== "execute") {
+      const event = controlTransitionEvent(transition, state, base(nextSequence()));
+      await record(event);
+      if (event.type === "node_control_failed") {
+        const failed: RunFailedEvent = {
+          ...base(nextSequence()),
+          type: "run_failed",
+          failedNodeId: event.nodeId,
+          reason: event.error.message,
+        };
+        await record(failed);
+        return state;
+      }
+      continue;
+    }
+
+    const node = transition.node;
 
     const executionNode = boundNodeTimeout(node, state);
     const attempt = (state.nodes[node.id]?.attempt ?? 0) + 1;
@@ -353,7 +371,6 @@ async function continueWorkflow(
       attempt,
       evidence: authoritativeOutcome.evidence,
     });
-    completed.add(node.id);
   }
 
   if (state.budget?.exhausted.some((item) => item.dimension !== "nodeStarts") === true) {
@@ -611,6 +628,13 @@ function validateRecoveryCompatibility(
     );
   }
 
+  if (!sameControlGraph(state.controlGraph, workflowControlGraph(workflow))) {
+    throw new RunRecoveryError(
+      "workflow_mismatch",
+      `run "${runId}" control graph does not match the compiled workflow`,
+    );
+  }
+
   const workflowNodeById = new Map(workflow.nodes.map((node) => [node.id, node]));
   for (const [nodeId, nodeState] of Object.entries(state.nodes)) {
     if (nodeState.approval === null) {
@@ -750,7 +774,6 @@ function validateRecoveredHistory(
   events: readonly RunEvent[],
 ): void {
   const nodeById = new Map(workflow.nodes.map((node) => [node.id, node]));
-  const completed = new Set<string>();
   let replayState: RunState | undefined;
   let interruptionRequiresResume = false;
 
@@ -766,15 +789,16 @@ function validateRecoveredHistory(
     }
     if (event.type === "command_approval_requested") {
       const node = nodeById.get(event.nodeId);
-      const expectedReadyNode = selectReadyNode(workflow.nodes, completed);
+      const expectedTransition =
+        replayState === undefined ? undefined : selectNextTransition(workflow.nodes, replayState);
       const expectedAttempt = replayState?.nodes[event.nodeId]?.attempt;
       if (
         node?.type !== "command" ||
-        expectedReadyNode?.id !== event.nodeId ||
+        expectedTransition?.kind !== "execute" ||
+        expectedTransition.node.id !== event.nodeId ||
         node.approval === undefined ||
         expectedAttempt === undefined ||
-        event.attempt !== expectedAttempt + 1 ||
-        !node.dependsOn.every((dependency) => completed.has(dependency))
+        event.attempt !== expectedAttempt + 1
       ) {
         throw new RunRecoveryError(
           "workflow_mismatch",
@@ -810,15 +834,16 @@ function validateRecoveredHistory(
       }
     } else if (event.type === "node_started") {
       const node = nodeById.get(event.nodeId);
-      const expectedReadyNode = selectReadyNode(workflow.nodes, completed);
+      const expectedTransition =
+        replayState === undefined ? undefined : selectNextTransition(workflow.nodes, replayState);
       const expectedAttempt = replayState?.nodes[event.nodeId]?.attempt;
       if (
         node === undefined ||
-        expectedReadyNode?.id !== event.nodeId ||
+        expectedTransition?.kind !== "execute" ||
+        expectedTransition.node.id !== event.nodeId ||
         expectedAttempt === undefined ||
         event.attempt !== expectedAttempt + 1 ||
-        (event.effectProtocol !== undefined && !supportsDurableEffects(node)) ||
-        !node.dependsOn.every((dependency) => completed.has(dependency))
+        (event.effectProtocol !== undefined && !supportsDurableEffects(node))
       ) {
         throw new RunRecoveryError(
           "workflow_mismatch",
@@ -830,7 +855,10 @@ function validateRecoveredHistory(
       if (
         node?.type !== "agent" ||
         node.agent.recovery === undefined ||
-        !node.dependsOn.every((dependency) => completed.has(dependency))
+        replayState === undefined ||
+        !node.dependsOn.every(
+          (dependency) => replayState?.nodes[dependency]?.status === "succeeded",
+        )
       ) {
         throw new RunRecoveryError(
           "workflow_mismatch",
@@ -838,8 +866,20 @@ function validateRecoveredHistory(
         );
       }
       interruptionRequiresResume = true;
-    } else if (event.type === "node_succeeded") {
-      completed.add(event.nodeId);
+    } else if (
+      event.type === "node_condition_evaluated" ||
+      event.type === "node_omitted" ||
+      event.type === "node_joined" ||
+      event.type === "node_control_failed"
+    ) {
+      const expectedTransition =
+        replayState === undefined ? undefined : selectNextTransition(workflow.nodes, replayState);
+      if (!controlEventMatchesTransition(event, expectedTransition)) {
+        throw new RunRecoveryError(
+          "workflow_mismatch",
+          `run "${runId}" contains control history that violates the compiled workflow graph`,
+        );
+      }
     }
     replayState = appendRunEvent(replayState, event);
   }
@@ -888,6 +928,42 @@ function agentRecoveryRequirements(
       return [requirement];
     }),
   );
+}
+
+function workflowControlGraph(workflow: CompiledWorkflow): ControlGraph | undefined {
+  if (!workflow.nodes.some((node) => node.type === "condition" || node.type === "join")) {
+    return undefined;
+  }
+  const nodes: ControlGraphNode[] = workflow.nodes.map((node) => {
+    if (node.type === "condition") {
+      return {
+        nodeId: node.id,
+        type: node.type,
+        dependsOn: node.dependsOn,
+        ...(node.when === undefined ? {} : { when: node.when }),
+        condition: node.condition,
+      };
+    }
+    if (node.type === "join") {
+      return {
+        nodeId: node.id,
+        type: node.type,
+        dependsOn: node.dependsOn,
+        join: node.join,
+      };
+    }
+    return {
+      nodeId: node.id,
+      type: node.type,
+      dependsOn: node.dependsOn,
+      ...(node.when === undefined ? {} : { when: node.when }),
+    };
+  });
+  return Object.freeze({ nodes: Object.freeze(nodes) });
+}
+
+function sameControlGraph(left: ControlGraph | null, right: ControlGraph | undefined): boolean {
+  return JSON.stringify(left) === JSON.stringify(right ?? null);
 }
 
 function sameApprovalRequirements(
@@ -985,13 +1061,251 @@ function hasRelease(
   return "release" in store && typeof store.release === "function";
 }
 
-function selectReadyNode(
+type ExecutableNode = CompiledAgentNode | CompiledCommandNode;
+
+type WorkflowTransition =
+  | { readonly kind: "execute"; readonly node: ExecutableNode }
+  | { readonly kind: "evaluate_condition"; readonly node: CompiledConditionNode }
+  | {
+      readonly kind: "omit_condition";
+      readonly node: CompiledAgentNode | CompiledCommandNode | CompiledConditionNode;
+      readonly selectedCase: string;
+    }
+  | {
+      readonly kind: "omit_dependency";
+      readonly node: CompiledNode;
+      readonly omittedDependencies: readonly string[];
+    }
+  | { readonly kind: "join"; readonly node: CompiledJoinNode };
+
+function selectNextTransition(
   nodes: readonly CompiledNode[],
-  completed: ReadonlySet<string>,
-): CompiledNode | undefined {
-  return nodes.find(
-    (node) =>
-      !completed.has(node.id) && node.dependsOn.every((dependency) => completed.has(dependency)),
+  state: RunState,
+): WorkflowTransition | undefined {
+  for (const node of nodes) {
+    const nodeState = state.nodes[node.id];
+    if (nodeState?.status !== "pending") {
+      continue;
+    }
+    const dependencyStates = node.dependsOn.map((dependency) => state.nodes[dependency]);
+    if (
+      dependencyStates.some(
+        (dependency) => dependency?.status !== "succeeded" && dependency?.status !== "omitted",
+      )
+    ) {
+      continue;
+    }
+    if (node.type === "join") {
+      const decision = conditionDecision(state, node.join.conditionId);
+      if (decision !== undefined) {
+        return { kind: "join", node };
+      }
+      const omittedDependencies = node.dependsOn.filter(
+        (dependency) => state.nodes[dependency]?.status === "omitted",
+      );
+      if (
+        state.nodes[node.join.conditionId]?.status === "omitted" &&
+        omittedDependencies.length > 0
+      ) {
+        return { kind: "omit_dependency", node, omittedDependencies };
+      }
+      continue;
+    }
+    if (node.when !== undefined) {
+      const decision = conditionDecision(state, node.when.conditionId);
+      if (decision === undefined) {
+        if (state.nodes[node.when.conditionId]?.status !== "omitted") {
+          continue;
+        }
+      } else if (decision.selectedCase !== node.when.case) {
+        return { kind: "omit_condition", node, selectedCase: decision.selectedCase };
+      }
+    }
+    const omittedDependencies = node.dependsOn.filter(
+      (dependency) => state.nodes[dependency]?.status === "omitted",
+    );
+    if (omittedDependencies.length > 0) {
+      return { kind: "omit_dependency", node, omittedDependencies };
+    }
+    if (node.type === "condition") {
+      return { kind: "evaluate_condition", node };
+    }
+    return { kind: "execute", node };
+  }
+  return undefined;
+}
+
+function controlEventMatchesTransition(
+  event: Extract<
+    RunEvent,
+    {
+      readonly type:
+        | "node_condition_evaluated"
+        | "node_omitted"
+        | "node_joined"
+        | "node_control_failed";
+    }
+  >,
+  transition: WorkflowTransition | undefined,
+): boolean {
+  if (event.type === "node_condition_evaluated" || event.type === "node_control_failed") {
+    return transition?.kind === "evaluate_condition" && transition.node.id === event.nodeId;
+  }
+  if (event.type === "node_joined") {
+    return transition?.kind === "join" && transition.node.id === event.nodeId;
+  }
+  return (
+    (transition?.kind === "omit_condition" || transition?.kind === "omit_dependency") &&
+    transition.node.id === event.nodeId
+  );
+}
+
+function controlTransitionEvent(
+  transition: Exclude<WorkflowTransition, { readonly kind: "execute" }>,
+  state: RunState,
+  base: ReturnType<typeof eventBase>,
+): RunEvent {
+  if (transition.kind === "omit_condition") {
+    const guard = transition.node.when;
+    if (guard === undefined) {
+      throw new Error(`control omission for node "${transition.node.id}" has no guard`);
+    }
+    return {
+      ...base,
+      type: "node_omitted",
+      nodeId: transition.node.id,
+      reason: "condition_not_selected",
+      conditionId: guard.conditionId,
+      selectedCase: transition.selectedCase,
+      expectedCase: guard.case,
+    };
+  }
+  if (transition.kind === "omit_dependency") {
+    return {
+      ...base,
+      type: "node_omitted",
+      nodeId: transition.node.id,
+      reason: "dependency_omitted",
+      omittedDependencies: transition.omittedDependencies,
+    };
+  }
+  if (transition.kind === "join") {
+    const decision = conditionDecision(state, transition.node.join.conditionId);
+    if (decision === undefined) {
+      throw new Error(`join "${transition.node.id}" has no durable condition decision`);
+    }
+    const selectedBranch = transition.node.join.branches.find(
+      (branch) => branch.case === decision.selectedCase,
+    );
+    if (selectedBranch === undefined) {
+      throw new Error(`join "${transition.node.id}" has no selected branch mapping`);
+    }
+    return {
+      ...base,
+      type: "node_joined",
+      nodeId: transition.node.id,
+      attempt: 1,
+      conditionId: transition.node.join.conditionId,
+      selectedCase: decision.selectedCase,
+      completedNodeId: selectedBranch.nodeId,
+      omittedNodeIds: transition.node.join.branches
+        .filter((branch) => branch.case !== decision.selectedCase)
+        .map((branch) => branch.nodeId),
+    };
+  }
+
+  const source = conditionSource(transition.node, state);
+  if (source.truncated) {
+    return {
+      ...base,
+      type: "node_control_failed",
+      nodeId: transition.node.id,
+      attempt: 1,
+      error: {
+        code: "condition_source_truncated",
+        message: `condition "${transition.node.id}" source ${transition.node.condition.source.field} is truncated`,
+        retryable: false,
+        sideEffectStatus: "none",
+      },
+    };
+  }
+  const selectedCase =
+    transition.node.condition.cases.find((item) => item.equals === source.value)?.id ??
+    transition.node.condition.default;
+  return {
+    ...base,
+    type: "node_condition_evaluated",
+    nodeId: transition.node.id,
+    attempt: 1,
+    sourceNodeId: transition.node.condition.source.nodeId,
+    sourceAttempt: source.attempt,
+    sourceField: transition.node.condition.source.field,
+    sourceHash: source.hash,
+    selectedCase,
+  };
+}
+
+function conditionDecision(
+  state: RunState,
+  conditionId: string,
+):
+  | Extract<NonNullable<RunState["nodes"][string]["control"]>, { readonly kind: "condition" }>
+  | undefined {
+  const control = state.nodes[conditionId]?.control;
+  return control?.kind === "condition" ? control : undefined;
+}
+
+function conditionSource(
+  node: CompiledConditionNode,
+  state: RunState,
+): {
+  readonly attempt: number;
+  readonly value: string;
+  readonly hash: string;
+  readonly truncated: boolean;
+} {
+  const source = state.nodes[node.condition.source.nodeId];
+  if (source?.status !== "succeeded" || source.evidence === null) {
+    throw new Error(`condition "${node.id}" source has no successful evidence`);
+  }
+  switch (node.condition.source.field) {
+    case "command.stdout":
+      if (source.evidence.kind === "command") {
+        return {
+          attempt: source.attempt,
+          value: source.evidence.stdout,
+          hash: source.evidence.stdoutHash,
+          truncated: source.evidence.stdoutTruncated,
+        };
+      }
+      break;
+    case "command.stderr":
+      if (source.evidence.kind === "command") {
+        return {
+          attempt: source.attempt,
+          value: source.evidence.stderr,
+          hash: source.evidence.stderrHash,
+          truncated: source.evidence.stderrTruncated,
+        };
+      }
+      break;
+    case "agent.text":
+      if (source.evidence.kind === "agent") {
+        return {
+          attempt: source.attempt,
+          value: source.evidence.text,
+          hash: source.evidence.textHash,
+          truncated: source.evidence.textTruncated,
+        };
+      }
+      break;
+  }
+  throw new Error(`condition "${node.id}" source field is incompatible with its evidence`);
+}
+
+function workflowIsTerminal(state: RunState): boolean {
+  return Object.values(state.nodes).every(
+    (node) => node.status === "succeeded" || node.status === "omitted",
   );
 }
 
@@ -1018,6 +1332,9 @@ function boundNodeTimeout(node: CompiledNode, state: RunState): CompiledNode {
       ...node,
       command: Object.freeze({ ...node.command, timeoutMs: remaining }),
     });
+  }
+  if (node.type !== "agent") {
+    return node;
   }
   if (node.agent.timeoutMs <= remaining) {
     return node;

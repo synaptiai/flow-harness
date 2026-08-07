@@ -7,6 +7,7 @@ import {
 } from "../../../src/domain/approval/command-approval.js";
 import {
   reduceRunEvents,
+  type NodeStartedEvent,
   type RunEvent,
   type RunStartedEvent,
 } from "../../../src/domain/run/events.js";
@@ -371,7 +372,7 @@ function approvalExpired(sequence: number): RunEvent {
   };
 }
 
-function commandStarted(sequence: number): RunEvent {
+function commandStarted(sequence: number): NodeStartedEvent {
   return {
     ...base(sequence),
     type: "node_started",

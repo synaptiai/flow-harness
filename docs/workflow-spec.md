@@ -64,10 +64,78 @@ Criterion evaluation is a pure domain operation over the captured goal and durab
 - Exactly one node has no dependencies and is the entry node.
 - Every `dependsOn` reference names another node in the same workflow.
 - Self-dependencies, duplicate dependencies, and cycles are rejected.
-- The scheduler considers nodes in declaration order and runs the first node whose dependencies all succeeded.
+- The scheduler considers pending nodes in declaration order and applies the first legal transition whose dependencies are terminal. Ordinary work requires successful dependencies; omission propagates through ordinary descendants; an explicit join reconciles the selected success with omitted alternatives.
 - Execution is sequential in `v1alpha1`; concurrency is not implied by independent edges.
 - Every terminal node must be a command node. An agent response cannot be terminal proof.
 - Compilation finishes before Flow creates a run ledger or invokes an executor.
+
+## Exact conditions and explicit joins
+
+```yaml
+- id: classify
+  type: command
+  command: { executable: node, args: [scripts/classify.mjs] }
+- id: route
+  type: condition
+  dependsOn: [classify]
+  condition:
+    source: { nodeId: classify, field: command.stdout }
+    cases:
+      - { id: needs-work, equals: "needs-work\n" }
+    default: already-clean
+- id: implement
+  type: agent
+  dependsOn: [route]
+  when: { conditionId: route, case: needs-work }
+  agent:
+    prompt: Implement the requested change.
+    model: { provider: anthropic, id: claude-sonnet-4-5 }
+- id: verify-change
+  type: command
+  dependsOn: [implement]
+  command: { executable: npm, args: [test] }
+- id: inspect-clean
+  type: command
+  dependsOn: [route]
+  when: { conditionId: route, case: already-clean }
+  command: { executable: node, args: [--version] }
+- id: converge
+  type: join
+  join:
+    conditionId: route
+    branches:
+      - { case: needs-work, nodeId: verify-change }
+      - { case: already-clean, nodeId: inspect-clean }
+- id: verify-final
+  type: command
+  dependsOn: [converge]
+  command: { executable: npm, args: [test] }
+```
+
+A condition reads one complete durable evidence field from a direct dependency:
+`command.stdout`, `command.stderr`, or `agent.text`. Cases are checked in declaration order by exact
+string equality; `default` names the selected case when no exact value matches. Case identifiers and
+exact values are unique, every case has guarded work, and each condition has exactly one explicit
+join. Conditions do not execute JavaScript, JSONPath, regular expressions, clocks, random values,
+network calls, model callbacks, or mutable workspace reads.
+
+`when` is valid only on a non-join node, references a condition that is also a direct dependency,
+and names one of that condition's cases. When a different case is selected, the node becomes
+`omitted` without a start or executor call. Omission propagates through ordinary dependencies. A
+join maps every case to one terminal node in that case's branch; its compiled `dependsOn` list is
+derived from those mappings. It succeeds only after the selected terminal succeeded and every
+unselected terminal was omitted. Cross-case dependencies, incomplete branch terminals, ambiguous
+joins, and derived cycles fail compilation.
+
+The serialized persisted control-graph projection is capped at 512 KiB across the workflow; both
+compilation and event parsing measure its actual JSON UTF-8 bytes. This leaves bounded room in the
+2 MiB run-event envelope for goal, budget, approval, and recovery metadata.
+
+The source field must be untruncated. Truncated output records a typed, non-retryable,
+side-effect-free control failure and terminates the run rather than making a partial-data decision.
+Condition and join transitions use logical attempt 1 but produce no `node_started` event, consume no
+node-start budget, and never reach a command or agent executor. Execution remains sequential; this
+feature does not provide concurrent forks or arbitrary expression evaluation.
 
 ## Run budget
 
@@ -261,7 +329,9 @@ Each run is stored at:
 Events have a version, contiguous sequence number, timestamp, run identity, workflow identity,
 workflow API version, and SHA-256 digest of the compiled workflow. New `run_started` events also
 capture the normalized execution directory, command approval requirements, agent recovery
-requirements, and exact compiled budget when declared. A recovery requirement records the node,
+requirements, the bounded control-graph projection, and exact compiled budget when declared. The
+control graph persists dependency, guard, exact condition, and join mappings so replay does not
+consult mutable workflow input to interpret branch history. A recovery requirement records the node,
 fresh mode, maximum attempts, and whether replay requires no effect protocol or
 `flow.effects/v1`. When declared, the compiled goal is also captured, so replay and inspection do
 not need the original workflow file.
@@ -288,7 +358,9 @@ observations produce no receipt. Recovery reconciliation records applied, not-ap
 target state with a bounded reason and includes the observed digest/mode only for a stable regular
 file. Exact and divergent observations are cross-checked against the prepared descriptor.
 
-Replay verifies effect identity and order, settlement/reconciliation legality, retry eligibility,
+Replay verifies condition source kind, attempt, field, hash, truncation, selected case, exact branch
+guard, omission reason and dependencies, join coverage and selected terminal, effect identity and
+order, settlement/reconciliation legality, retry eligibility,
 monotonic attempt numbering, decision and receipt order, attribution, classification, hashes,
 request digests, prepared-effect authorization, resource arithmetic, and exact exhaustion values.
 Approval replay separately verifies the declared requirement, budget-bounded exact operation
@@ -321,7 +393,7 @@ the id to the complete request and rejects reuse with changed input.
 
 ## Current limitations
 
-- No loop, conditional, parallel, fork/join, general approval-node, child-run, failure-retry, or fallback semantics. Approval is currently available only as a deterministic command pre-start gate; recovery is limited to the proof-safe fresh mode above.
+- No loops, concurrent parallel forks, general multi-condition joins, general approval nodes, child runs, terminal-failure retry, or fallback semantics. Conditions are limited to exact equality over complete durable command/agent text, and joins reconcile one condition's declared alternatives sequentially. Approval is currently available only as a deterministic command pre-start gate; recovery is limited to the proof-safe fresh mode above.
 - No automatic terminalization or session continuation of an interrupted node attempt. Unconfigured or ineligible durable starts still block continuation.
 - Detached workers can be adopted by a replacement local supervisor, but they cannot move between
   hosts and do not survive host reboot.

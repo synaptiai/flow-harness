@@ -3,17 +3,30 @@ import { parseDocument } from "yaml";
 import type { GoalContractSource } from "../goal/schema.js";
 import type { CompiledGoal } from "../goal/types.js";
 import { workflowSourceSchema, type WorkflowSource } from "./schema.js";
-import type {
-  CompiledAgentNode,
-  CompiledCommandNode,
-  CompiledNode,
-  CompiledRunBudget,
-  CompiledWorkflow,
+import {
+  MAX_CONTROL_GRAPH_SERIALIZED_BYTES,
+  type CompiledAgentNode,
+  type CompiledCommandNode,
+  type CompiledConditionNode,
+  type CompiledJoinNode,
+  type CompiledNode,
+  type CompiledRunBudget,
+  type CompiledWorkflow,
 } from "./types.js";
 
 export interface WorkflowDiagnostic {
   readonly code:
     | "cycle"
+    | "branch_cross_dependency"
+    | "branch_guard_requires_condition"
+    | "branch_guard_requires_dependency"
+    | "branch_guard_unknown_case"
+    | "condition_case_requires_branch"
+    | "condition_join_count"
+    | "control_graph_too_large"
+    | "condition_source_field_mismatch"
+    | "condition_source_requires_dependency"
+    | "condition_source_unknown"
     | "criterion_verifier_requires_command"
     | "criterion_verifier_requires_terminal"
     | "duplicate_dependency"
@@ -22,6 +35,11 @@ export interface WorkflowDiagnostic {
     | "entry_count"
     | "invalid_schema"
     | "invalid_yaml"
+    | "join_branch_incomplete"
+    | "join_branch_membership"
+    | "join_branch_unknown_node"
+    | "join_case_coverage"
+    | "join_unknown_condition"
     | "self_dependency"
     | "terminal_requires_command"
     | "unknown_criterion_verifier"
@@ -118,8 +136,8 @@ function validateGraph(workflow: WorkflowSource): WorkflowDiagnostic[] {
 
   for (const [nodeIndex, node] of workflow.nodes.entries()) {
     const seenDependencies = new Set<string>();
-    for (const [dependencyIndex, dependency] of node.dependsOn.entries()) {
-      const path = `nodes.${nodeIndex}.dependsOn.${dependencyIndex}`;
+    for (const [dependencyIndex, dependency] of sourceDependencies(node).entries()) {
+      const path = dependencyPath(node, nodeIndex, dependencyIndex);
       if (dependency === node.id) {
         diagnostics.push({
           code: "self_dependency",
@@ -145,7 +163,7 @@ function validateGraph(workflow: WorkflowSource): WorkflowDiagnostic[] {
     }
   }
 
-  const entries = workflow.nodes.filter((node) => node.dependsOn.length === 0);
+  const entries = workflow.nodes.filter((node) => sourceDependencies(node).length === 0);
   if (entries.length !== 1) {
     diagnostics.push({
       code: "entry_count",
@@ -154,7 +172,7 @@ function validateGraph(workflow: WorkflowSource): WorkflowDiagnostic[] {
     });
   }
 
-  const dependedUpon = new Set(workflow.nodes.flatMap((node) => node.dependsOn));
+  const dependedUpon = new Set(workflow.nodes.flatMap(sourceDependencies));
   for (const [index, node] of workflow.nodes.entries()) {
     if (!dependedUpon.has(node.id) && node.type !== "command") {
       diagnostics.push({
@@ -205,6 +223,8 @@ function validateGraph(workflow: WorkflowSource): WorkflowDiagnostic[] {
     }
   }
 
+  validateControlFlow(workflow, diagnostics);
+
   const cycle = findCycle(workflow.nodes);
   if (cycle !== undefined) {
     diagnostics.push({
@@ -215,6 +235,325 @@ function validateGraph(workflow: WorkflowSource): WorkflowDiagnostic[] {
   }
 
   return diagnostics;
+}
+
+type SourceNode = WorkflowSource["nodes"][number];
+
+function sourceDependencies(node: SourceNode): readonly string[] {
+  return node.type === "join" ? node.join.branches.map((branch) => branch.nodeId) : node.dependsOn;
+}
+
+function dependencyPath(node: SourceNode, nodeIndex: number, dependencyIndex: number): string {
+  return node.type === "join"
+    ? `nodes.${nodeIndex}.join.branches.${dependencyIndex}.nodeId`
+    : `nodes.${nodeIndex}.dependsOn.${dependencyIndex}`;
+}
+
+function validateControlFlow(workflow: WorkflowSource, diagnostics: WorkflowDiagnostic[]): void {
+  const nodeById = new Map(workflow.nodes.map((node) => [node.id, node]));
+  const indexById = new Map(workflow.nodes.map((node, index) => [node.id, index]));
+  const conditions = workflow.nodes.filter(
+    (node): node is Extract<SourceNode, { readonly type: "condition" }> =>
+      node.type === "condition",
+  );
+  const joins = workflow.nodes.filter(
+    (node): node is Extract<SourceNode, { readonly type: "join" }> => node.type === "join",
+  );
+
+  if (
+    conditions.length > 0 &&
+    Buffer.byteLength(JSON.stringify(sourceControlGraph(workflow.nodes)), "utf8") >
+      MAX_CONTROL_GRAPH_SERIALIZED_BYTES
+  ) {
+    diagnostics.push({
+      code: "control_graph_too_large",
+      path: "nodes",
+      message: `serialized control graph must not exceed ${MAX_CONTROL_GRAPH_SERIALIZED_BYTES} UTF-8 bytes`,
+    });
+  }
+
+  for (const condition of conditions) {
+    const index = indexById.get(condition.id) ?? 0;
+    const source = nodeById.get(condition.condition.source.nodeId);
+    if (source === undefined) {
+      diagnostics.push({
+        code: "condition_source_unknown",
+        path: `nodes.${index}.condition.source.nodeId`,
+        message: `condition "${condition.id}" references unknown source node "${condition.condition.source.nodeId}"`,
+      });
+    } else {
+      if (!condition.dependsOn.includes(source.id)) {
+        diagnostics.push({
+          code: "condition_source_requires_dependency",
+          path: `nodes.${index}.condition.source.nodeId`,
+          message: `condition "${condition.id}" source "${source.id}" must be a direct dependency`,
+        });
+      }
+      const fieldMatches =
+        (condition.condition.source.field.startsWith("command.") && source.type === "command") ||
+        (condition.condition.source.field === "agent.text" && source.type === "agent");
+      if (!fieldMatches) {
+        diagnostics.push({
+          code: "condition_source_field_mismatch",
+          path: `nodes.${index}.condition.source.field`,
+          message: `condition "${condition.id}" source field "${condition.condition.source.field}" is incompatible with node "${source.id}" of type "${source.type}"`,
+        });
+      }
+    }
+  }
+
+  for (const [index, node] of workflow.nodes.entries()) {
+    if (node.type === "join" || node.when === undefined) {
+      continue;
+    }
+    const condition = nodeById.get(node.when.conditionId);
+    if (condition?.type !== "condition") {
+      diagnostics.push({
+        code: "branch_guard_requires_condition",
+        path: `nodes.${index}.when.conditionId`,
+        message: `node "${node.id}" guard must reference a condition node`,
+      });
+      continue;
+    }
+    if (!node.dependsOn.includes(condition.id)) {
+      diagnostics.push({
+        code: "branch_guard_requires_dependency",
+        path: `nodes.${index}.when.conditionId`,
+        message: `node "${node.id}" must directly depend on guarded condition "${condition.id}"`,
+      });
+    }
+    if (!conditionCases(condition).includes(node.when.case)) {
+      diagnostics.push({
+        code: "branch_guard_unknown_case",
+        path: `nodes.${index}.when.case`,
+        message: `node "${node.id}" guard references unknown case "${node.when.case}"`,
+      });
+    }
+  }
+
+  for (const [index, join] of joins.map((node) => [indexById.get(node.id) ?? 0, node] as const)) {
+    const condition = nodeById.get(join.join.conditionId);
+    if (condition?.type !== "condition") {
+      diagnostics.push({
+        code: "join_unknown_condition",
+        path: `nodes.${index}.join.conditionId`,
+        message: `join "${join.id}" must reference a condition node`,
+      });
+      continue;
+    }
+    const expectedCases = conditionCases(condition);
+    const actualCases = join.join.branches.map((branch) => branch.case);
+    if (
+      actualCases.length !== expectedCases.length ||
+      new Set(actualCases).size !== actualCases.length ||
+      expectedCases.some((caseId) => !actualCases.includes(caseId))
+    ) {
+      diagnostics.push({
+        code: "join_case_coverage",
+        path: `nodes.${index}.join.branches`,
+        message: `join "${join.id}" must map every case of condition "${condition.id}" exactly once`,
+      });
+    }
+    for (const [branchIndex, branch] of join.join.branches.entries()) {
+      if (!nodeById.has(branch.nodeId)) {
+        diagnostics.push({
+          code: "join_branch_unknown_node",
+          path: `nodes.${index}.join.branches.${branchIndex}.nodeId`,
+          message: `join "${join.id}" references unknown branch terminal "${branch.nodeId}"`,
+        });
+      }
+    }
+  }
+
+  for (const condition of conditions) {
+    const conditionIndex = indexById.get(condition.id) ?? 0;
+    const possibleCases = conditionCases(condition);
+    for (const [caseIndex, caseId] of possibleCases.entries()) {
+      const roots = workflow.nodes.filter(
+        (node) =>
+          node.type !== "join" &&
+          node.when?.conditionId === condition.id &&
+          node.when.case === caseId,
+      );
+      if (roots.length === 0) {
+        diagnostics.push({
+          code: "condition_case_requires_branch",
+          path:
+            caseIndex < condition.condition.cases.length
+              ? `nodes.${conditionIndex}.condition.cases.${caseIndex}.id`
+              : `nodes.${conditionIndex}.condition.default`,
+          message: `condition "${condition.id}" case "${caseId}" has no guarded branch`,
+        });
+      }
+    }
+
+    const matchingJoins = joins.filter((join) => join.join.conditionId === condition.id);
+    if (matchingJoins.length !== 1) {
+      diagnostics.push({
+        code: "condition_join_count",
+        path: `nodes.${conditionIndex}.condition`,
+        message: `condition "${condition.id}" must have exactly one join; found ${matchingJoins.length}`,
+      });
+      continue;
+    }
+
+    const membership = branchMembership(workflow.nodes, condition.id);
+    for (const [nodeId, value] of membership.entries()) {
+      if (value !== "cross") {
+        continue;
+      }
+      const nodeIndex = indexById.get(nodeId) ?? 0;
+      const node = nodeById.get(nodeId);
+      diagnostics.push({
+        code: "branch_cross_dependency",
+        path:
+          node?.type === "join"
+            ? `nodes.${nodeIndex}.join.branches`
+            : `nodes.${nodeIndex}.dependsOn`,
+        message: `node "${nodeId}" depends across cases of condition "${condition.id}" without its explicit join`,
+      });
+    }
+
+    const join = matchingJoins[0];
+    if (join === undefined) {
+      continue;
+    }
+    const joinIndex = indexById.get(join.id) ?? 0;
+    for (const [branchIndex, branch] of join.join.branches.entries()) {
+      const branchMembershipValue = membership.get(branch.nodeId);
+      if (branchMembershipValue !== branch.case) {
+        diagnostics.push({
+          code: "join_branch_membership",
+          path: `nodes.${joinIndex}.join.branches.${branchIndex}.nodeId`,
+          message: `join "${join.id}" terminal "${branch.nodeId}" does not belong exclusively to case "${branch.case}"`,
+        });
+        continue;
+      }
+      const incomplete = [...membership.entries()].some(
+        ([nodeId, value]) =>
+          value === branch.case &&
+          nodeId !== branch.nodeId &&
+          !isAncestor(nodeId, branch.nodeId, nodeById),
+      );
+      if (incomplete) {
+        diagnostics.push({
+          code: "join_branch_incomplete",
+          path: `nodes.${joinIndex}.join.branches.${branchIndex}.nodeId`,
+          message: `join "${join.id}" terminal "${branch.nodeId}" does not wait for every node in case "${branch.case}"`,
+        });
+      }
+    }
+  }
+}
+
+function sourceControlGraph(nodes: readonly SourceNode[]): object {
+  return {
+    nodes: nodes.map((node) => {
+      if (node.type === "condition") {
+        return {
+          nodeId: node.id,
+          type: node.type,
+          dependsOn: node.dependsOn,
+          ...(node.when === undefined ? {} : { when: node.when }),
+          condition: node.condition,
+        };
+      }
+      if (node.type === "join") {
+        return {
+          nodeId: node.id,
+          type: node.type,
+          dependsOn: sourceDependencies(node),
+          join: node.join,
+        };
+      }
+      return {
+        nodeId: node.id,
+        type: node.type,
+        dependsOn: node.dependsOn,
+        ...(node.when === undefined ? {} : { when: node.when }),
+      };
+    }),
+  };
+}
+
+function conditionCases(
+  condition: Extract<SourceNode, { readonly type: "condition" }>,
+): readonly string[] {
+  return [...condition.condition.cases.map((item) => item.id), condition.condition.default];
+}
+
+function branchMembership(
+  nodes: readonly SourceNode[],
+  conditionId: string,
+): ReadonlyMap<string, string | "cross" | undefined> {
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const memo = new Map<string, string | "cross" | undefined>();
+  const visiting = new Set<string>();
+
+  function visit(nodeId: string): string | "cross" | undefined {
+    if (memo.has(nodeId)) {
+      return memo.get(nodeId);
+    }
+    if (visiting.has(nodeId)) {
+      return "cross";
+    }
+    const node = nodeById.get(nodeId);
+    if (node === undefined || node.id === conditionId) {
+      return undefined;
+    }
+    if (node.type === "join" && node.join.conditionId === conditionId) {
+      memo.set(nodeId, undefined);
+      return undefined;
+    }
+
+    visiting.add(nodeId);
+    const dependencyMemberships = sourceDependencies(node)
+      .map(visit)
+      .filter((value): value is string => value !== undefined);
+    visiting.delete(nodeId);
+
+    let result: string | "cross" | undefined;
+    const directGuard = node.type === "join" ? undefined : node.when;
+    if (directGuard?.conditionId === conditionId) {
+      result = dependencyMemberships.some(
+        (value) => value === "cross" || value !== directGuard.case,
+      )
+        ? "cross"
+        : directGuard.case;
+    } else if (dependencyMemberships.includes("cross")) {
+      result = "cross";
+    } else {
+      const unique = new Set(dependencyMemberships);
+      result = unique.size > 1 ? "cross" : unique.values().next().value;
+    }
+    memo.set(nodeId, result);
+    return result;
+  }
+
+  for (const node of nodes) {
+    visit(node.id);
+  }
+  return memo;
+}
+
+function isAncestor(
+  ancestorId: string,
+  nodeId: string,
+  nodeById: ReadonlyMap<string, SourceNode>,
+  visited = new Set<string>(),
+): boolean {
+  if (visited.has(nodeId)) {
+    return false;
+  }
+  visited.add(nodeId);
+  const node = nodeById.get(nodeId);
+  if (node === undefined) {
+    return false;
+  }
+  return sourceDependencies(node).some(
+    (dependency) =>
+      dependency === ancestorId || isAncestor(ancestorId, dependency, nodeById, visited),
+  );
 }
 
 function findCycle(nodes: WorkflowSource["nodes"]): readonly string[] | undefined {
@@ -239,7 +578,7 @@ function findCycle(nodes: WorkflowSource["nodes"]): readonly string[] | undefine
 
     visiting.add(nodeId);
     stack.push(nodeId);
-    for (const dependency of node.dependsOn) {
+    for (const dependency of sourceDependencies(node)) {
       const cycle = visit(dependency);
       if (cycle !== undefined) {
         return cycle;
@@ -304,12 +643,13 @@ function freezeGoal(source: GoalContractSource): CompiledGoal {
 }
 
 function freezeNode(source: WorkflowSource["nodes"][number]): CompiledNode {
-  const dependsOn = Object.freeze([...source.dependsOn]);
+  const dependsOn = Object.freeze([...sourceDependencies(source)]);
   if (source.type === "command") {
     const node: CompiledCommandNode = {
       id: source.id,
       type: "command",
       dependsOn,
+      ...(source.when === undefined ? {} : { when: Object.freeze({ ...source.when }) }),
       ...(source.approval === undefined ? {} : { approval: Object.freeze({ ...source.approval }) }),
       command: Object.freeze({
         executable: source.command.executable,
@@ -320,18 +660,47 @@ function freezeNode(source: WorkflowSource["nodes"][number]): CompiledNode {
     return Object.freeze(node);
   }
 
-  const node: CompiledAgentNode = {
+  if (source.type === "agent") {
+    const node: CompiledAgentNode = {
+      id: source.id,
+      type: "agent",
+      dependsOn,
+      ...(source.when === undefined ? {} : { when: Object.freeze({ ...source.when }) }),
+      agent: Object.freeze({
+        prompt: source.agent.prompt,
+        model: Object.freeze({ ...source.agent.model }),
+        tools: Object.freeze([...source.agent.tools]),
+        ...(source.agent.recovery === undefined
+          ? {}
+          : { recovery: Object.freeze({ ...source.agent.recovery }) }),
+        timeoutMs: source.agent.timeoutMs,
+      }),
+    };
+    return Object.freeze(node);
+  }
+
+  if (source.type === "condition") {
+    const node: CompiledConditionNode = {
+      id: source.id,
+      type: "condition",
+      dependsOn,
+      ...(source.when === undefined ? {} : { when: Object.freeze({ ...source.when }) }),
+      condition: Object.freeze({
+        source: Object.freeze({ ...source.condition.source }),
+        cases: Object.freeze(source.condition.cases.map((item) => Object.freeze({ ...item }))),
+        default: source.condition.default,
+      }),
+    };
+    return Object.freeze(node);
+  }
+
+  const node: CompiledJoinNode = {
     id: source.id,
-    type: "agent",
+    type: "join",
     dependsOn,
-    agent: Object.freeze({
-      prompt: source.agent.prompt,
-      model: Object.freeze({ ...source.agent.model }),
-      tools: Object.freeze([...source.agent.tools]),
-      ...(source.agent.recovery === undefined
-        ? {}
-        : { recovery: Object.freeze({ ...source.agent.recovery }) }),
-      timeoutMs: source.agent.timeoutMs,
+    join: Object.freeze({
+      conditionId: source.join.conditionId,
+      branches: Object.freeze(source.join.branches.map((branch) => Object.freeze({ ...branch }))),
     }),
   };
   return Object.freeze(node);
