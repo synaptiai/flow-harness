@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -16,6 +16,7 @@ import {
   ensureSupervisor,
   requestSupervisor,
   startSupervisorServer,
+  SupervisorStartupTimeoutError,
 } from "../../../src/supervisor/daemon.js";
 import { createAdmissionInitializedEvent } from "../../../src/supervisor/admission.js";
 import { SUPERVISOR_PROTOCOL_VERSION } from "../../../src/supervisor/protocol.js";
@@ -171,18 +172,22 @@ describe("local supervisor daemon", () => {
   it("terminates and reaps a supervisor that misses its startup deadline", async () => {
     const { directory, store } = await createStore();
     const fixturePath = join(directory, "never-ready-supervisor.cjs");
-    const pidPath = join(directory, "never-ready-supervisor.pid");
-    await writeFile(
-      fixturePath,
-      `const fs = require("node:fs"); fs.writeFileSync(${JSON.stringify(pidPath)}, String(process.pid)); setInterval(() => {}, 1000);`,
-      "utf8",
-    );
+    await writeFile(fixturePath, "setInterval(() => {}, 1000);", "utf8");
     let pid: number | undefined;
 
     try {
-      const startup = ensureSupervisor(store, fixturePath, POLICY, { startupTimeoutMs: 100 });
-      await expect(startup).rejects.toThrow(/100ms/);
-      pid = Number(await readFile(pidPath, "utf8"));
+      const error: unknown = await ensureSupervisor(store, fixturePath, POLICY, {
+        startupTimeoutMs: 100,
+      }).then(
+        () => new Error("the never-ready supervisor unexpectedly started"),
+        (cause: unknown) => cause,
+      );
+      expect(error).toBeInstanceOf(SupervisorStartupTimeoutError);
+      if (!(error instanceof SupervisorStartupTimeoutError) || error.pid === null) {
+        throw error;
+      }
+      expect(error).toMatchObject({ timeoutMs: 100, pid: expect.any(Number) });
+      pid = error.pid;
 
       await expect(waitForProcessExit(pid, 1_000)).resolves.toBeUndefined();
     } finally {

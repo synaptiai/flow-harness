@@ -44,6 +44,21 @@ const RECONCILIATION_INTERVAL_MS = 100;
 
 export type SupervisorPolicy = Pick<EffectiveFlowConfig, "policyDigest" | "supervisor">;
 
+export class SupervisorStartupTimeoutError extends Error {
+  override readonly name = "SupervisorStartupTimeoutError";
+
+  constructor(
+    readonly pid: number | null,
+    readonly timeoutMs: number,
+  ) {
+    super(
+      pid === null
+        ? `supervisor did not become ready within ${timeoutMs}ms`
+        : `supervisor process ${pid} did not become ready within ${timeoutMs}ms`,
+    );
+  }
+}
+
 export interface StartSupervisorServerOptions {
   readonly store: LocalSupervisorStore;
   readonly launcher: WorkerLauncher;
@@ -274,7 +289,7 @@ async function launchSupervisor(
       }
       await delay(25);
     }
-    throw new Error(`supervisor did not become ready within ${startupTimeoutMs}ms`);
+    throw new SupervisorStartupTimeoutError(child.pid ?? null, startupTimeoutMs);
   } catch (error) {
     await terminateDetachedChild(child);
     throw error;
