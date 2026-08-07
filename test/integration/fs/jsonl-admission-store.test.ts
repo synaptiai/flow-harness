@@ -247,6 +247,7 @@ function stateForFactory() {
     activeCount: 0,
     queuedCount: 0,
     jobs: {},
+    rejections: {},
     events: [],
   } as const;
 }

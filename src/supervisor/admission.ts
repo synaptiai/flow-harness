@@ -77,6 +77,16 @@ const admissionJobStateSchema = z.discriminatedUnion("status", [
     .strict(),
 ]);
 
+const admissionRejectionStateSchema = z
+  .object({
+    jobId: uuidSchema,
+    runId: runIdSchema,
+    requestDigest: digestSchema,
+    reason: z.literal("queue_full"),
+    rejectedAt: timestampSchema,
+  })
+  .strict();
+
 const initializedEventSchema = z
   .object({
     version: z.literal(1),
@@ -97,6 +107,7 @@ const snapshotEventSchema = z
     limits: limitsSchema,
     lastQueueSequence: z.number().int().nonnegative().safe(),
     jobs: z.array(admissionJobStateSchema),
+    rejections: z.array(admissionRejectionStateSchema),
     at: timestampSchema,
   })
   .strict();
@@ -121,8 +132,19 @@ const rejectedEventSchema = z
   .object({
     ...eventBase,
     type: z.literal("job_rejected"),
-    ...jobIdentitySchema.shape,
+    jobId: uuidSchema,
+    runId: runIdSchema,
+    requestDigest: digestSchema,
     reason: z.literal("queue_full"),
+  })
+  .strict();
+
+const rejectionCommittedEventSchema = z
+  .object({
+    ...eventBase,
+    type: z.literal("job_rejection_committed"),
+    jobId: uuidSchema,
+    requestDigest: digestSchema,
   })
   .strict();
 
@@ -193,6 +215,7 @@ const admissionEventSchema = z.discriminatedUnion("type", [
   snapshotEventSchema,
   enqueuedEventSchema,
   rejectedEventSchema,
+  rejectionCommittedEventSchema,
   dispatchReservedEventSchema,
   workerAcceptedEventSchema,
   queueCancellationRecordedEventSchema,
@@ -203,6 +226,7 @@ const admissionEventSchema = z.discriminatedUnion("type", [
 
 export type AdmissionLimits = Readonly<z.infer<typeof limitsSchema>>;
 export type AdmissionJobIdentity = Readonly<z.infer<typeof jobIdentitySchema>>;
+export type AdmissionRejectionState = Readonly<z.infer<typeof admissionRejectionStateSchema>>;
 export type AdmissionEvent = Readonly<z.infer<typeof admissionEventSchema>>;
 type AdmissionTransitionEvent = Exclude<
   AdmissionEvent,
@@ -251,6 +275,7 @@ export interface AdmissionState {
   readonly activeCount: number;
   readonly queuedCount: number;
   readonly jobs: Readonly<Record<string, AdmissionJobState>>;
+  readonly rejections: Readonly<Record<string, AdmissionRejectionState>>;
   readonly events: readonly AdmissionTransitionEvent[];
 }
 
@@ -313,6 +338,9 @@ export function createAdmissionSnapshotEvent(
     limits: state.limits,
     lastQueueSequence: state.lastQueueSequence,
     jobs: Object.values(state.jobs).sort((left, right) => left.jobId.localeCompare(right.jobId)),
+    rejections: Object.values(state.rejections).sort((left, right) =>
+      left.jobId.localeCompare(right.jobId),
+    ),
     at,
   }) as Extract<AdmissionEvent, { readonly type: "admission_snapshot" }>;
 }
@@ -335,7 +363,11 @@ export function createJobEnqueuedEvent(
 
 export function createJobRejectedEvent(
   state: AdmissionState,
-  job: AdmissionJobIdentity,
+  input: {
+    readonly jobId: string;
+    readonly runId: string;
+    readonly requestDigest: string;
+  },
   reason: "queue_full",
   at: string,
 ): Extract<AdmissionEvent, { readonly type: "job_rejected" }> {
@@ -344,8 +376,25 @@ export function createJobRejectedEvent(
     sequence: state.lastSequence + 1,
     type: "job_rejected",
     policyDigest: state.policyDigest,
-    ...job,
+    ...input,
     reason,
+    at,
+  });
+}
+
+export function createJobRejectionCommittedEvent(
+  state: AdmissionState,
+  jobId: string,
+  requestDigest: string,
+  at: string,
+): Extract<AdmissionEvent, { readonly type: "job_rejection_committed" }> {
+  return validateNextEvent(state, {
+    version: 1,
+    sequence: state.lastSequence + 1,
+    type: "job_rejection_committed",
+    policyDigest: state.policyDigest,
+    jobId,
+    requestDigest,
     at,
   });
 }
@@ -531,6 +580,7 @@ function applyAdmissionEvent(
   }
 
   const jobs: Record<string, AdmissionJobState> = { ...state.jobs };
+  const rejections: Record<string, AdmissionRejectionState> = { ...state.rejections };
   let lastQueueSequence = state.lastQueueSequence;
   switch (event.type) {
     case "job_enqueued": {
@@ -556,10 +606,27 @@ function applyAdmissionEvent(
       break;
     }
     case "job_rejected": {
-      requireNewJob(state, event.jobId, event.runId, event.workerId);
+      if (state.jobs[event.jobId] !== undefined || state.rejections[event.jobId] !== undefined) {
+        throw invalidTransition(`admission command "${event.jobId}" already has a decision`);
+      }
       if (classifyNewAdmission(state) !== "reject") {
         throw invalidTransition(`admission queue is not full for job "${event.jobId}"`);
       }
+      rejections[event.jobId] = {
+        jobId: event.jobId,
+        runId: event.runId,
+        requestDigest: event.requestDigest,
+        reason: event.reason,
+        rejectedAt: event.at,
+      };
+      break;
+    }
+    case "job_rejection_committed": {
+      const rejection = state.rejections[event.jobId];
+      if (rejection === undefined || rejection.requestDigest !== event.requestDigest) {
+        throw invalidTransition(`admission command "${event.jobId}" has no matching rejection`);
+      }
+      delete rejections[event.jobId];
       break;
     }
     case "job_dispatch_reserved": {
@@ -669,6 +736,7 @@ function applyAdmissionEvent(
     lastSequence: event.sequence,
     lastQueueSequence,
     jobs,
+    rejections,
     events: [...state.events, event],
   });
 }
@@ -682,6 +750,7 @@ function emptyState(
     lastSequence: 1,
     lastQueueSequence: 0,
     jobs: {},
+    rejections: {},
     events: [],
   });
 }
@@ -696,6 +765,13 @@ function snapshotState(
     }
     jobs[job.jobId] = job;
   }
+  const rejections: Record<string, AdmissionRejectionState> = {};
+  for (const rejection of snapshot.rejections) {
+    if (rejections[rejection.jobId] !== undefined || jobs[rejection.jobId] !== undefined) {
+      throw invalidTransition(`snapshot contains duplicate command "${rejection.jobId}"`);
+    }
+    rejections[rejection.jobId] = rejection;
+  }
   const highestQueueSequence = Math.max(0, ...snapshot.jobs.map((job) => job.queueSequence ?? 0));
   if (highestQueueSequence > snapshot.lastQueueSequence) {
     throw invalidTransition(
@@ -708,6 +784,7 @@ function snapshotState(
     lastSequence: snapshot.sequence,
     lastQueueSequence: snapshot.lastQueueSequence,
     jobs,
+    rejections,
     events: [],
   });
 }
@@ -718,6 +795,7 @@ function finalizedState(input: {
   readonly lastSequence: number;
   readonly lastQueueSequence: number;
   readonly jobs: Readonly<Record<string, AdmissionJobState>>;
+  readonly rejections: Readonly<Record<string, AdmissionRejectionState>>;
   readonly events: readonly AdmissionTransitionEvent[];
 }): AdmissionState {
   const values = Object.values(input.jobs);
@@ -726,6 +804,9 @@ function finalizedState(input: {
   }
   if (new Set(values.map((job) => job.workerId)).size !== values.length) {
     throw invalidTransition("admission worker identities must be unique");
+  }
+  if (Object.keys(input.rejections).some((jobId) => input.jobs[jobId] !== undefined)) {
+    throw invalidTransition("admission jobs and rejections must have unique command identities");
   }
   const activeCount = values.filter((job) => isActive(job.status)).length;
   const queuedCount = values.filter((job) => job.status === "queued").length;
@@ -766,6 +847,9 @@ function requireNewJob(
 ): void {
   if (state.jobs[jobId] !== undefined) {
     throw invalidTransition(`admission job "${jobId}" already exists`);
+  }
+  if (state.rejections[jobId] !== undefined) {
+    throw invalidTransition(`admission command "${jobId}" has an uncommitted rejection`);
   }
   if (Object.values(state.jobs).some((job) => job.runId === runId)) {
     throw invalidTransition(`run "${runId}" already has a nonterminal admission job`);

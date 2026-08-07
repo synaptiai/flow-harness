@@ -6,6 +6,7 @@ import {
   createAdmissionSnapshotEvent,
   createDispatchReservedEvent,
   createJobEnqueuedEvent,
+  createJobRejectionCommittedEvent,
   createJobRejectedEvent,
   createJobReleasedEvent,
   createQueueCancellationCompletedEvent,
@@ -29,6 +30,7 @@ describe("supervisor admission reducer", () => {
       activeCount: 0,
       queuedCount: 0,
       jobs: {},
+      rejections: {},
     });
     expect(Object.isFrozen(state)).toBe(true);
     expect(Object.isFrozen(state.jobs)).toBe(true);
@@ -165,18 +167,35 @@ describe("supervisor admission reducer", () => {
     ).toThrow(/capacity/i);
   });
 
-  it("durably rejects queue overflow without retaining job state", () => {
+  it("preserves an uncommitted queue rejection through replay and compaction", () => {
     let state = initialState(1, 0);
     state = apply(state, createDispatchReservedEvent(state, job(1), at(2)));
 
-    const rejected = createJobRejectedEvent(state, job(2), "queue_full", at(3));
+    const rejectedIdentity = rejection(2);
+    const rejected = createJobRejectedEvent(state, rejectedIdentity, "queue_full", at(3));
     state = apply(state, rejected);
 
     expect(state).toMatchObject({ lastSequence: 3, activeCount: 1, queuedCount: 0 });
     expect(state.jobs[job(2).jobId]).toBeUndefined();
-    expect(() => createJobRejectedEvent(initialState(1, 0), job(2), "queue_full", at(2))).toThrow(
-      /not full/i,
+    expect(state.rejections[job(2).jobId]).toMatchObject({
+      runId: job(2).runId,
+      reason: "queue_full",
+    });
+    const snapshot = createAdmissionSnapshotEvent(state, at(4));
+    expect(reduceAdmissionEvents([snapshot]).rejections).toEqual(state.rejections);
+    state = apply(
+      state,
+      createJobRejectionCommittedEvent(
+        state,
+        rejectedIdentity.jobId,
+        rejectedIdentity.requestDigest,
+        at(5),
+      ),
     );
+    expect(state.rejections).toEqual({});
+    expect(() =>
+      createJobRejectedEvent(initialState(1, 0), rejectedIdentity, "queue_full", at(2)),
+    ).toThrow(/not full/i);
   });
 
   it("refuses a second nonterminal job for the same run", () => {
@@ -335,6 +354,19 @@ function job(index: number): AdmissionJobIdentity {
     workerId: commandId(index + 20),
     runId: `run-${index}`,
     jobDigest: index.toString(16).padStart(64, "0"),
+  };
+}
+
+function rejection(index: number): {
+  readonly jobId: string;
+  readonly runId: string;
+  readonly requestDigest: string;
+} {
+  const identity = job(index);
+  return {
+    jobId: identity.jobId,
+    runId: identity.runId,
+    requestDigest: identity.jobDigest,
   };
 }
 

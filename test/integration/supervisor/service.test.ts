@@ -107,6 +107,34 @@ describe("LocalSupervisorService", () => {
     });
   });
 
+  it("replays queue-full rejection after its command-journal commit initially fails", async () => {
+    const harness = await createHarness(
+      (runsDirectory, socketDirectory) =>
+        new FailingQueueRejectionStore(runsDirectory, { socketDirectory }),
+      { maxActiveWorkers: 1, maxQueuedJobs: 0 },
+    );
+    const active = submitCommand(randomUUID(), harness.directory, "active-run");
+    const rejected = submitCommand(randomUUID(), harness.directory, "rejected-run");
+    await harness.service.submit(active);
+
+    await expect(harness.service.submit(rejected)).rejects.toThrow(/simulated rejection commit/);
+    expect(harness.admissionStore.state.rejections[rejected.commandId]).toMatchObject({
+      runId: rejected.runId,
+      reason: "queue_full",
+    });
+    await expect(harness.service.prepareShutdown()).rejects.toMatchObject({ code: "conflict" });
+    await harness.launcher.complete(active.commandId);
+    await harness.service.reconcile();
+
+    await expect(harness.service.submit(rejected)).resolves.toMatchObject({
+      type: "rejected",
+      runId: rejected.runId,
+      reason: "queue_full",
+    });
+    expect(harness.admissionStore.state.rejections).toEqual({});
+    expect(harness.launcher.jobs.map((job) => job.runId)).toEqual([active.runId]);
+  });
+
   it("never oversubscribes concurrent submissions at active and queue boundaries", async () => {
     const harness = await createHarness(undefined, { maxActiveWorkers: 2, maxQueuedJobs: 3 });
     const commands = Array.from({ length: 12 }, (_, index) =>
@@ -898,6 +926,23 @@ class FailingSubmissionCompletionStore extends LocalSupervisorStore {
     if (input.type === "submit" && input.status === "completed" && this.#failCompletion) {
       this.#failCompletion = false;
       throw new LocalSupervisorStoreError("io", "simulated journal fsync failure");
+    }
+    await super.updateCommand(input);
+  }
+}
+
+class FailingQueueRejectionStore extends LocalSupervisorStore {
+  #failRejection = true;
+
+  override async updateCommand(input: SupervisorCommandRecord): Promise<void> {
+    if (
+      input.type === "submit" &&
+      input.status === "rejected" &&
+      input.reason === "queue_full" &&
+      this.#failRejection
+    ) {
+      this.#failRejection = false;
+      throw new LocalSupervisorStoreError("io", "simulated rejection commit failure");
     }
     await super.updateCommand(input);
   }

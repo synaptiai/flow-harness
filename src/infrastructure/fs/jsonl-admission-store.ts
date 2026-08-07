@@ -264,10 +264,13 @@ export class JsonlAdmissionStore {
 
   async #retireNow(): Promise<string> {
     const opened = this.#requireOpen();
-    if (Object.keys(opened.state.jobs).length !== 0) {
+    if (
+      Object.keys(opened.state.jobs).length !== 0 ||
+      Object.keys(opened.state.rejections).length !== 0
+    ) {
       throw new AdmissionStoreError(
         "not_idle",
-        "admission policy cannot be retired while jobs remain active, queued, or cancelling",
+        "admission policy cannot be retired while jobs or rejection commits remain pending",
       );
     }
     const retiredPath = join(

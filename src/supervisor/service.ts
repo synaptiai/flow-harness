@@ -44,6 +44,7 @@ import {
   classifyNewAdmission,
   createDispatchReservedEvent,
   createJobEnqueuedEvent,
+  createJobRejectionCommittedEvent,
   createJobRejectedEvent,
   createJobReleasedEvent,
   createJobUncertainEvent,
@@ -277,8 +278,17 @@ export class LocalSupervisorService {
 
   async #admitJob(job: JobRecord, journal: SubmissionCommandRecord): Promise<SubmissionResult> {
     let outcome:
-      | { readonly decision: "dispatch" | "reject"; readonly decidedAt: string }
-      | { readonly decision: "queue"; readonly decidedAt: string; readonly queuePosition: number }
+      | {
+          readonly decision: "dispatch" | "reject";
+          readonly decidedAt: string;
+          readonly journal: SubmissionCommandRecord;
+        }
+      | {
+          readonly decision: "queue";
+          readonly decidedAt: string;
+          readonly queuePosition: number;
+          readonly journal: SubmissionCommandRecord;
+        }
       | { readonly decision: "replay"; readonly result: SubmissionResult };
     try {
       outcome = await this.#serializeAdmission(async () => {
@@ -290,6 +300,40 @@ export class LocalSupervisorService {
           throw new SupervisorServiceError(
             "identity_mismatch",
             `job "${job.jobId}" does not match its durable submission command`,
+          );
+        }
+        const rejection = state.rejections[job.jobId];
+        if (
+          rejection !== undefined &&
+          (rejection.runId !== current.runId || rejection.requestDigest !== current.requestDigest)
+        ) {
+          throw new SupervisorServiceError(
+            "identity_mismatch",
+            `job "${job.jobId}" does not match its durable admission rejection`,
+          );
+        }
+        if (rejection !== undefined) {
+          if (current.status === "recorded") {
+            return {
+              decision: "reject",
+              decidedAt: rejection.rejectedAt,
+              journal: current,
+            };
+          }
+          if (current.status === "rejected" && current.reason === rejection.reason) {
+            await this.#admissionStore.append(
+              createJobRejectionCommittedEvent(
+                state,
+                rejection.jobId,
+                rejection.requestDigest,
+                this.#now().toISOString(),
+              ),
+            );
+            return { decision: "replay", result: rejectedResultFromJournal(current) };
+          }
+          throw new SupervisorServiceError(
+            "command_uncertain",
+            `submission command "${current.commandId}" conflicts with an uncommitted rejection`,
           );
         }
         if (current.status === "completed") {
@@ -329,22 +373,33 @@ export class LocalSupervisorService {
           const event = createDispatchReservedEvent(state, identity, decidedAt);
           await this.#store.reserveJob(job);
           await this.#admissionStore.append(event);
-          return { decision, decidedAt };
+          return { decision, decidedAt, journal: current };
         }
         if (decision === "queue") {
           const event = createJobEnqueuedEvent(state, identity, decidedAt);
           await this.#store.reserveJob(job);
           await this.#admissionStore.append(event);
-          return { decision, decidedAt, queuePosition: event.queueSequence };
+          return { decision, decidedAt, queuePosition: event.queueSequence, journal: current };
         }
         await this.#admissionStore.append(
-          createJobRejectedEvent(state, identity, "queue_full", decidedAt),
+          createJobRejectedEvent(
+            state,
+            {
+              jobId: job.jobId,
+              runId: job.runId,
+              requestDigest: current.requestDigest,
+            },
+            "queue_full",
+            decidedAt,
+          ),
         );
-        return { decision, decidedAt };
+        return { decision, decidedAt, journal: current };
       });
     } catch (error) {
+      if (error instanceof SupervisorServiceError) {
+        throw error;
+      }
       if (
-        error instanceof SupervisorServiceError ||
         (error instanceof AdmissionStateError &&
           (error.code === "invalid_transition" || error.code === "capacity_exceeded")) ||
         (error instanceof LocalSupervisorStoreError &&
@@ -365,7 +420,7 @@ export class LocalSupervisorService {
     }
     if (outcome.decision === "queue") {
       const queuedJournal = await this.#queueSubmissionJournal(
-        journal,
+        outcome.journal,
         outcome.queuePosition,
         outcome.decidedAt,
       );
@@ -373,20 +428,70 @@ export class LocalSupervisorService {
     }
     if (outcome.decision === "reject") {
       const rejected = rejectSubmissionCommand(
-        journal,
+        outcome.journal,
         "admission queue is full",
         outcome.decidedAt,
         "queue_full",
       );
       await this.#store.updateCommand(rejected);
+      await this.#serializeAdmission(async () => {
+        const rejection = this.#admissionStore.state.rejections[job.jobId];
+        if (rejection === undefined) {
+          return;
+        }
+        if (rejection.requestDigest !== rejected.requestDigest) {
+          throw new SupervisorServiceError(
+            "identity_mismatch",
+            `job "${job.jobId}" does not match its durable admission rejection`,
+          );
+        }
+        await this.#admissionStore.append(
+          createJobRejectionCommittedEvent(
+            this.#admissionStore.state,
+            rejection.jobId,
+            rejection.requestDigest,
+            this.#now().toISOString(),
+          ),
+        );
+      });
       return rejectedResultFromJournal(rejected);
     }
-    return await this.#launchJobOnce(job, journal);
+    return await this.#launchJobOnce(job, outcome.journal);
   }
 
   async reconcile(): Promise<void> {
     const actions = await this.#serializeAdmission(async () => {
       let state = this.#admissionStore.state;
+      for (const rejection of Object.values(state.rejections)) {
+        const command = await this.#store.readCommand(rejection.jobId);
+        if (
+          command.type !== "submit" ||
+          command.runId !== rejection.runId ||
+          command.requestDigest !== rejection.requestDigest
+        ) {
+          throw new SupervisorServiceError(
+            "identity_mismatch",
+            `job "${rejection.jobId}" does not match its durable admission rejection`,
+          );
+        }
+        if (command.status === "recorded") {
+          continue;
+        }
+        if (command.status !== "rejected" || command.reason !== rejection.reason) {
+          throw new SupervisorServiceError(
+            "command_uncertain",
+            `submission command "${command.commandId}" conflicts with an uncommitted rejection`,
+          );
+        }
+        state = await this.#admissionStore.append(
+          createJobRejectionCommittedEvent(
+            state,
+            rejection.jobId,
+            rejection.requestDigest,
+            this.#now().toISOString(),
+          ),
+        );
+      }
       const claims = await this.#store.listActiveRunClaims();
       const workerIds = new Set([
         ...claims.map((claim) => claim.workerId),
@@ -1045,7 +1150,8 @@ export class LocalSupervisorService {
   }
 
   get isIdle(): boolean {
-    return Object.keys(this.#admissionStore.state.jobs).length === 0;
+    const state = this.#admissionStore.state;
+    return Object.keys(state.jobs).length === 0 && Object.keys(state.rejections).length === 0;
   }
 
   async prepareShutdown(): Promise<void> {
