@@ -38,6 +38,13 @@ The embedded Pi runtime runs with the invoking user's operating-system permissio
 - Supervisor requests use strict versioned single-frame JSONL with byte, field, and event-page
   bounds. Workflow source and worker tokens are never returned by status. Mutating cancellation is
   durably journaled before dispatch and is attributable, digest-bound, and idempotent.
+- Detached admission is bound to a canonical effective policy digest. Active reservations and a
+  durable FIFO queue are hard-bounded; overflow rejection retains no workflow snapshot. A project
+  may narrow but cannot widen the operator capacity ceiling. This limits trusted same-user workload
+  growth but does not contain a worker or impose provider, CPU, memory, or billing quotas.
+- Admission records use owner-only no-follow files, append/fsync before acknowledgement, strict
+  transition replay, final-tail repair, and atomic replay-equivalent snapshot compaction. A policy
+  change requires an explicit idle supervisor shutdown; committed queues are never hot-rebound.
 
 Automation that depends on retry idempotency must generate and persist `--command-id` before the
 first request. A key generated internally but lost with the response cannot identify a later retry.

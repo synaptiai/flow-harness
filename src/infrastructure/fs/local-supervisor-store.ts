@@ -18,8 +18,9 @@ import {
   type SupervisorStartLock,
   type WorkerDescriptor,
 } from "../../supervisor/records.js";
+import { MAX_SUPERVISOR_FRAME_BYTES } from "../../supervisor/protocol.js";
 
-const MAX_RECORD_BYTES = 40 * 1024 * 1024;
+const MAX_RECORD_BYTES = MAX_SUPERVISOR_FRAME_BYTES + 64 * 1024;
 
 export type LocalSupervisorStoreErrorCode =
   | "corrupt"
@@ -102,6 +103,12 @@ export class LocalSupervisorStore {
         `active claim for run "${claim.runId}" does not match job "${job.jobId}"`,
       );
     }
+    await this.reserveJob(job);
+    await this.reserveActiveRunClaim(claim);
+  }
+
+  async reserveJob(jobInput: JobRecord): Promise<void> {
+    const job = parseJobRecord(jobInput);
     await this.initialize();
 
     const jobPath = this.#jobPath(job.jobId);
@@ -120,7 +127,18 @@ export class LocalSupervisorStore {
         );
       }
     }
+  }
 
+  async reserveActiveRunClaim(claimInput: ActiveRunClaim): Promise<void> {
+    const claim = parseActiveRunClaim(claimInput);
+    const job = await this.readJob(claim.jobId);
+    if (claim.runId !== job.runId || claim.workerId !== job.workerId) {
+      throw new LocalSupervisorStoreError(
+        "identity_mismatch",
+        `active claim for run "${claim.runId}" does not match job "${job.jobId}"`,
+      );
+    }
+    await this.initialize();
     const claimPath = this.#claimPath(claim.runId);
     try {
       await writeExclusiveRecord(claimPath, claim);
@@ -355,6 +373,10 @@ export class LocalSupervisorStore {
     const transitionAllowed =
       existing.type === command.type &&
       ((existing.status === "recorded" && command.status !== "recorded") ||
+        (existing.status === "queued" &&
+          (command.status === "completed" ||
+            command.status === "rejected" ||
+            command.status === "uncertain")) ||
         (existing.status === "uncertain" && command.status === "completed"));
     if (!transitionAllowed) {
       throw new LocalSupervisorStoreError(

@@ -10,14 +10,18 @@ import {
   LocalSupervisorStoreError,
 } from "../../../src/infrastructure/fs/local-supervisor-store.js";
 import {
+  completeSubmissionCommand,
   createActiveRunClaim,
   completeCancellationCommand,
   createCancellationCommandRecord,
   createJobRecord,
+  createSubmissionCommandRecord,
   createSupervisorStartLock,
   parseSupervisorDescriptor,
   parseWorkerDescriptor,
+  queueSubmissionCommand,
 } from "../../../src/supervisor/records.js";
+import { SUPERVISOR_PROTOCOL_VERSION } from "../../../src/supervisor/protocol.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -70,6 +74,24 @@ describe("LocalSupervisorStore", () => {
     expect((await lstat(join(store.claimsDirectory, `${job.runId}.json`))).mode & 0o777).toBe(
       0o600,
     );
+  });
+
+  it("persists an inert queued job before claiming it for later dispatch", async () => {
+    const { store } = await createStore();
+    const job = jobRecord();
+    const claim = createActiveRunClaim({
+      runId: job.runId,
+      jobId: job.jobId,
+      workerId: job.workerId,
+      claimedAt: job.createdAt,
+    });
+
+    await store.reserveJob(job);
+    await expect(store.readJob(job.jobId)).resolves.toEqual(job);
+    await expect(store.readActiveRunClaim(job.runId)).resolves.toBeNull();
+
+    await store.reserveActiveRunClaim(claim);
+    await expect(store.readActiveRunClaim(job.runId)).resolves.toEqual(claim);
   });
 
   it("rejects duplicate active claims without replacing the established job", async () => {
@@ -158,12 +180,14 @@ describe("LocalSupervisorStore", () => {
     await store.initialize();
     const supervisor = parseSupervisorDescriptor({
       version: 1,
-      protocolVersion: 1,
+      protocolVersion: SUPERVISOR_PROTOCOL_VERSION,
       generation: randomUUID(),
       pid: 2345,
       startedAt: job.createdAt,
       runsDirectory: store.runsDirectory,
       socketPath: join(store.socketDirectory, "supervisor.sock"),
+      policyDigest: "a".repeat(64),
+      limits: { maxActiveWorkers: 1, maxQueuedJobs: 32 },
     });
     const claim = createActiveRunClaim({
       runId: job.runId,
@@ -305,7 +329,7 @@ describe("LocalSupervisorStore", () => {
 
     const completed = completeCancellationCommand(
       recorded,
-      { runStatus: "cancelled", lastSequence: 4 },
+      { runStatus: "cancelled", phase: "active", lastSequence: 4 },
       "2026-08-07T12:00:01.000Z",
     );
     await store.updateCommand(completed);
@@ -316,6 +340,36 @@ describe("LocalSupervisorStore", () => {
     expect(
       (await lstat(join(store.commandsDirectory, `${recorded.commandId}.json`))).mode & 0o777,
     ).toBe(0o600);
+  });
+
+  it("permits a durable queued submission to advance to accepted exactly once", async () => {
+    const { store } = await createStore();
+    await store.initialize();
+    const recorded = createSubmissionCommandRecord({
+      commandId: randomUUID(),
+      policyDigest: "a".repeat(64),
+      runId: "run-1",
+      mode: "run",
+      sourceName: "/workspace/workflow.yaml",
+      workflowSource: "kind: Workflow\n",
+      cwd: "/workspace",
+      recordedAt: "2026-08-07T12:00:00.000Z",
+    });
+    const queued = queueSubmissionCommand(recorded, 1, "2026-08-07T12:00:01.000Z");
+    const completed = completeSubmissionCommand(
+      queued,
+      { workerId: randomUUID(), acceptedAt: "2026-08-07T12:00:02.000Z" },
+      "2026-08-07T12:00:02.000Z",
+    );
+
+    await store.recordCommand(recorded);
+    await store.updateCommand(queued);
+    await store.updateCommand(completed);
+
+    await expect(store.readCommand(recorded.commandId)).resolves.toEqual(completed);
+    await expect(store.updateCommand(queued)).rejects.toMatchObject({
+      code: "identity_mismatch",
+    });
   });
 });
 

@@ -5,6 +5,11 @@ import { createServer, type Server, type Socket } from "node:net";
 import { basename, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { resolveFlowConfig, type EffectiveFlowConfig } from "../domain/config/resolver.js";
+import {
+  AdmissionStoreError,
+  JsonlAdmissionStore,
+} from "../infrastructure/fs/jsonl-admission-store.js";
 import {
   LocalSupervisorStoreError,
   type LocalSupervisorStore,
@@ -14,6 +19,7 @@ import {
   parseSupervisorRequestFrame,
   parseSupervisorResponseFrame,
   SUPERVISOR_PROTOCOL_VERSION,
+  SupervisorProtocolError,
   type SupervisorErrorCode,
   type SupervisorRequest,
   type SupervisorResponse,
@@ -30,9 +36,13 @@ import {
 import { LocalSupervisorService, SupervisorServiceError, type WorkerLauncher } from "./service.js";
 import { closeServer, exchangeFrame, listen, readFrame } from "./socket-transport.js";
 import { requestWorker } from "./worker.js";
+import { createAdmissionInitializedEvent } from "./admission.js";
 
 const SUPERVISOR_REQUEST_TIMEOUT_MS = 15_000;
 const STARTUP_TIMEOUT_MS = 10_000;
+const RECONCILIATION_INTERVAL_MS = 100;
+
+export type SupervisorPolicy = Pick<EffectiveFlowConfig, "policyDigest" | "supervisor">;
 
 export interface StartSupervisorServerOptions {
   readonly store: LocalSupervisorStore;
@@ -40,6 +50,7 @@ export interface StartSupervisorServerOptions {
   readonly generation?: string;
   readonly pid?: number;
   readonly startedAt?: string;
+  readonly policy?: SupervisorPolicy;
 }
 
 export interface RunningSupervisor {
@@ -52,6 +63,11 @@ export interface RunSupervisorDaemonOptions {
   readonly store: LocalSupervisorStore;
   readonly cliPath: string;
   readonly signal?: AbortSignal;
+  readonly policy?: SupervisorPolicy;
+}
+
+export interface EnsureSupervisorOptions {
+  readonly requirePolicyMatch?: boolean;
 }
 
 export class DetachedWorkerLauncher implements WorkerLauncher {
@@ -122,6 +138,7 @@ export async function runSupervisorDaemon(options: RunSupervisorDaemonOptions): 
   const running = await startSupervisorServer({
     store: options.store,
     launcher: new DetachedWorkerLauncher(options.store, options.cliPath),
+    ...(options.policy === undefined ? {} : { policy: options.policy }),
   });
   if (options.signal?.aborted === true) {
     await running.close();
@@ -134,13 +151,15 @@ export async function runSupervisorDaemon(options: RunSupervisorDaemonOptions): 
 export async function ensureSupervisor(
   store: LocalSupervisorStore,
   cliPath: string,
+  policy: SupervisorPolicy = resolveFlowConfig({}),
+  options: EnsureSupervisorOptions = {},
 ): Promise<Extract<SupervisorResponse, { readonly ok: true }>> {
   await store.initialize();
   const deadline = Date.now() + STARTUP_TIMEOUT_MS;
   while (Date.now() < deadline) {
     const status = await trySupervisorStatus(store);
     if (status !== null) {
-      return status;
+      return acceptExistingSupervisor(status, policy, options);
     }
 
     const requestedLock = createSupervisorStartLock({
@@ -161,9 +180,9 @@ export async function ensureSupervisor(
     try {
       const ready = await trySupervisorStatus(store);
       if (ready !== null) {
-        return ready;
+        return acceptExistingSupervisor(ready, policy, options);
       }
-      return await launchSupervisor(store, cliPath, deadline);
+      return await launchSupervisor(store, cliPath, deadline, policy, options);
     } finally {
       await store.releaseSupervisorStart(requestedLock.token);
     }
@@ -175,6 +194,8 @@ async function launchSupervisor(
   store: LocalSupervisorStore,
   cliPath: string,
   deadline: number,
+  policy: SupervisorPolicy,
+  options: EnsureSupervisorOptions,
 ): Promise<Extract<SupervisorResponse, { readonly ok: true }>> {
   const descriptor = await store.readSupervisorDescriptor();
   if (descriptor !== null && isProcessAlive(descriptor.pid)) {
@@ -183,7 +204,7 @@ async function launchSupervisor(
       await delay(25);
       const retry = await trySupervisorStatus(store);
       if (retry !== null) {
-        return retry;
+        return acceptExistingSupervisor(retry, policy, options);
       }
     }
     if (isProcessAlive(descriptor.pid)) {
@@ -193,6 +214,19 @@ async function launchSupervisor(
     }
   }
 
+  const admissionStore = new JsonlAdmissionStore(store.runsDirectory);
+  try {
+    await admissionStore.open(
+      createAdmissionInitializedEvent({
+        policyDigest: policy.policyDigest,
+        limits: policy.supervisor,
+        at: new Date().toISOString(),
+      }),
+    );
+  } finally {
+    admissionStore.close();
+  }
+
   const socketPath = join(
     store.socketDirectory,
     basename(supervisorSocketPath(store.runsDirectory)),
@@ -200,7 +234,18 @@ async function launchSupervisor(
   await rm(socketPath, { force: true });
   const child = spawn(
     process.execPath,
-    [cliPath, "__supervisor", "--runs-dir", store.runsDirectory],
+    [
+      cliPath,
+      "__supervisor",
+      "--runs-dir",
+      store.runsDirectory,
+      "--policy-digest",
+      policy.policyDigest,
+      "--max-active-workers",
+      String(policy.supervisor.maxActiveWorkers),
+      "--max-queued-jobs",
+      String(policy.supervisor.maxQueuedJobs),
+    ],
     { detached: true, stdio: "ignore" },
   );
   child.unref();
@@ -215,7 +260,7 @@ async function launchSupervisor(
     }
     const status = await trySupervisorStatus(store);
     if (status !== null) {
-      return status;
+      return assertSupervisorPolicy(status, policy);
     }
     if (child.exitCode !== null) {
       throw new Error(`supervisor process exited with code ${child.exitCode}`);
@@ -247,6 +292,7 @@ export async function startSupervisorServer(
   options: StartSupervisorServerOptions,
 ): Promise<RunningSupervisor> {
   await options.store.initialize();
+  const policy = options.policy ?? resolveFlowConfig({});
   const generation = options.generation ?? randomUUID();
   const pid = options.pid ?? process.pid;
   const startedAt = options.startedAt ?? new Date().toISOString();
@@ -254,20 +300,52 @@ export async function startSupervisorServer(
     options.store.socketDirectory,
     basename(supervisorSocketPath(options.store.runsDirectory)),
   );
+  const admissionStore = new JsonlAdmissionStore(options.store.runsDirectory);
+  await admissionStore.open(
+    createAdmissionInitializedEvent({
+      policyDigest: policy.policyDigest,
+      limits: policy.supervisor,
+      at: startedAt,
+    }),
+  );
   const service = new LocalSupervisorService({
     store: options.store,
+    admissionStore,
     launcher: options.launcher,
     generation,
     pid,
     startedAt,
   });
+  await service.reconcile();
   let closePromise: Promise<void> | undefined;
+  let fatalError: Error | undefined;
+  let reconciling = false;
+  let retirePolicyOnClose = false;
   const server = createServer((socket) => {
     socket.on("error", () => socket.destroy());
-    void handleConnection(socket, service, options.store, () => {
+    void handleConnection(socket, service, () => {
+      retirePolicyOnClose = true;
+      clearInterval(reconciliationTimer);
       closePromise ??= closeSupervisorServer(server, socketPath);
     });
   });
+  const reconciliationTimer = setInterval(() => {
+    if (reconciling) {
+      return;
+    }
+    reconciling = true;
+    void service.reconcile().then(
+      () => {
+        reconciling = false;
+      },
+      (error: unknown) => {
+        reconciling = false;
+        fatalError = error instanceof Error ? error : new Error(String(error));
+        closePromise ??= closeSupervisorServer(server, socketPath);
+      },
+    );
+  }, RECONCILIATION_INTERVAL_MS);
+  reconciliationTimer.unref();
 
   await listen(server, socketPath);
   await chmod(socketPath, 0o600);
@@ -279,6 +357,8 @@ export async function startSupervisorServer(
     startedAt,
     runsDirectory: options.store.runsDirectory,
     socketPath,
+    policyDigest: policy.policyDigest,
+    limits: policy.supervisor,
   });
   try {
     await options.store.writeSupervisorDescriptor(descriptor);
@@ -289,7 +369,19 @@ export async function startSupervisorServer(
 
   const completed = new Promise<void>((resolvePromise, reject) => {
     server.once("close", () => {
-      rm(socketPath, { force: true }).then(() => resolvePromise(), reject);
+      clearInterval(reconciliationTimer);
+      void rm(socketPath, { force: true })
+        .then(async () => {
+          if (retirePolicyOnClose) {
+            await service.retirePolicy();
+          } else {
+            await service.close();
+          }
+          if (fatalError !== undefined) {
+            throw fatalError;
+          }
+        })
+        .then(resolvePromise, reject);
     });
     server.once("error", reject);
   });
@@ -297,6 +389,7 @@ export async function startSupervisorServer(
     descriptor,
     completed,
     close() {
+      clearInterval(reconciliationTimer);
       closePromise ??= closeSupervisorServer(server, socketPath);
       return closePromise;
     },
@@ -334,25 +427,23 @@ export async function requestSupervisor(
 async function handleConnection(
   socket: Socket,
   service: LocalSupervisorService,
-  store: LocalSupervisorStore,
   requestClose: () => void,
 ): Promise<void> {
   let requestId: string = randomUUID();
   try {
     const request = parseSupervisorRequestFrame(await readFrame(socket));
     requestId = request.requestId;
-    const dispatched = await dispatch(request.command, service, store);
+    const dispatched = await dispatch(request.command, service);
     const response: SupervisorResponse = {
       version: SUPERVISOR_PROTOCOL_VERSION,
       requestId,
       ok: true,
       result: dispatched.result,
     } as SupervisorResponse;
-    socket.end(encodeSupervisorMessage(response), () => {
-      if (dispatched.shutdown) {
-        requestClose();
-      }
-    });
+    if (dispatched.shutdown) {
+      requestClose();
+    }
+    socket.end(encodeSupervisorMessage(response));
   } catch (error) {
     socket.end(encodeSupervisorMessage(errorResponse(requestId, error)));
   }
@@ -361,8 +452,10 @@ async function handleConnection(
 async function dispatch(
   command: SupervisorRequest["command"],
   service: LocalSupervisorService,
-  store: LocalSupervisorStore,
 ): Promise<{ readonly result: SupervisorResult; readonly shutdown: boolean }> {
+  if (command.type !== "status") {
+    service.assertPolicy(command.policyDigest);
+  }
   switch (command.type) {
     case "status":
       return { result: await service.status(), shutdown: false };
@@ -373,11 +466,13 @@ async function dispatch(
     case "cancel":
       return { result: await service.cancel(command), shutdown: false };
     case "shutdown": {
-      if ((await store.listActiveRunClaims()).length > 0) {
-        throw new DaemonRequestError(
-          "active_workers",
-          "supervisor shutdown is refused while workers are active",
-        );
+      try {
+        await service.prepareShutdown();
+      } catch (error) {
+        if (error instanceof SupervisorServiceError && error.code === "conflict") {
+          throw new DaemonRequestError("active_workers", error.message);
+        }
+        throw error;
       }
       return { result: { type: "shutdown", stopped: true }, shutdown: true };
     }
@@ -410,6 +505,15 @@ function normalizeError(error: unknown): {
   if (error instanceof SupervisorServiceError || error instanceof DaemonRequestError) {
     return { code: error.code, message: boundedMessage(error.message) };
   }
+  if (error instanceof SupervisorProtocolError) {
+    return { code: "protocol_invalid", message: boundedMessage(error.message) };
+  }
+  if (error instanceof AdmissionStoreError) {
+    return {
+      code: error.code === "policy_mismatch" ? "policy_mismatch" : "internal",
+      message: boundedMessage(error.message),
+    };
+  }
   if (error instanceof LocalSupervisorStoreError) {
     if (error.code === "not_found") {
       return { code: "not_found", message: boundedMessage(error.message) };
@@ -417,9 +521,10 @@ function normalizeError(error: unknown): {
     if (error.code === "identity_mismatch") {
       return { code: "identity_mismatch", message: boundedMessage(error.message) };
     }
+    return { code: "internal", message: boundedMessage(error.message) };
   }
   return {
-    code: "protocol_invalid",
+    code: "internal",
     message: boundedMessage(error instanceof Error ? error.message : String(error)),
   };
 }
@@ -453,4 +558,30 @@ function isProcessAlive(pid: number): boolean {
   } catch (error) {
     return !(error instanceof Error && "code" in error && error.code === "ESRCH");
   }
+}
+
+function assertSupervisorPolicy(
+  response: Extract<SupervisorResponse, { readonly ok: true }>,
+  policy: SupervisorPolicy,
+): Extract<SupervisorResponse, { readonly ok: true }> {
+  if (
+    response.result.type !== "status" ||
+    response.result.policyDigest !== policy.policyDigest ||
+    response.result.limits.maxActiveWorkers !== policy.supervisor.maxActiveWorkers ||
+    response.result.limits.maxQueuedJobs !== policy.supervisor.maxQueuedJobs
+  ) {
+    throw new SupervisorServiceError(
+      "policy_mismatch",
+      `live supervisor policy does not match requested policy ${policy.policyDigest}; shut down the idle supervisor before applying configuration changes`,
+    );
+  }
+  return response;
+}
+
+function acceptExistingSupervisor(
+  response: Extract<SupervisorResponse, { readonly ok: true }>,
+  policy: SupervisorPolicy,
+  options: EnsureSupervisorOptions,
+): Extract<SupervisorResponse, { readonly ok: true }> {
+  return options.requirePolicyMatch === false ? response : assertSupervisorPolicy(response, policy);
 }

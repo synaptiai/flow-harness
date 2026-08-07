@@ -342,18 +342,122 @@ describe("compiled Flow process", () => {
     }
   });
 
+  it("enforces project capacity with durable queue, rejection, and worker-free cancellation", async () => {
+    const directory = await createTemporaryDirectory();
+    const runsDirectory = join(directory, ".flow", "runs");
+    const workflowPath = join(directory, "bounded.workflow.yaml");
+    const initialized = await spawnFlow(["init", directory], directory).completed;
+    expect(initialized.code, initialized.stderr).toBe(0);
+    await writeFile(
+      join(directory, ".flow", "config.yaml"),
+      projectConfig({ maxActiveWorkers: 1, maxQueuedJobs: 1 }),
+      "utf8",
+    );
+    await writeFile(
+      workflowPath,
+      commandWorkflow("bounded-workflow", "setInterval(() => {}, 1000);"),
+      "utf8",
+    );
+    const submit = async (runId: string) =>
+      await spawnFlow(
+        ["run", workflowPath, "--detach", "--run-id", runId, "--cwd", directory],
+        directory,
+      ).completed;
+
+    try {
+      const accepted = await submit("bounded-active");
+      const queued = await submit("bounded-queued");
+      const rejected = await submit("bounded-rejected");
+
+      expect(JSON.parse(accepted.stdout)).toMatchObject({ type: "accepted" });
+      expect(JSON.parse(queued.stdout)).toMatchObject({ type: "queued", queuePosition: 1 });
+      expect(JSON.parse(rejected.stdout)).toMatchObject({
+        type: "rejected",
+        reason: "queue_full",
+      });
+      const status = await spawnFlow(["supervisor", "status"], directory).completed;
+      expect(JSON.parse(status.stdout)).toMatchObject({
+        limits: { maxActiveWorkers: 1, maxQueuedJobs: 1 },
+        admission: { activeWorkers: 1, queuedJobs: 1 },
+      });
+
+      const queuedCancellation = await spawnFlow(
+        ["cancel", "bounded-queued", "--actor", "runtime:test"],
+        directory,
+      ).completed;
+      expect(JSON.parse(queuedCancellation.stdout)).toMatchObject({
+        type: "cancelled",
+        phase: "queued",
+        lastSequence: null,
+      });
+      await expect(
+        new Promise((resolvePromise, rejectPromise) => {
+          stat(join(runsDirectory, "bounded-queued", "events.jsonl")).then(
+            resolvePromise,
+            rejectPromise,
+          );
+        }),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+
+      const activeCancellation = await spawnFlow(
+        ["cancel", "bounded-active", "--actor", "runtime:test"],
+        directory,
+      ).completed;
+      expect(JSON.parse(activeCancellation.stdout)).toMatchObject({
+        type: "cancelled",
+        phase: "active",
+      });
+    } finally {
+      await spawnFlow(["supervisor", "shutdown"], directory).completed.catch(() => undefined);
+    }
+  });
+
+  it("requires explicit idle shutdown before rebinding changed project capacity", async () => {
+    const directory = await createTemporaryDirectory();
+    const initialized = await spawnFlow(["init", directory], directory).completed;
+    expect(initialized.code, initialized.stderr).toBe(0);
+
+    try {
+      const initialStatus = await spawnFlow(["supervisor", "status"], directory).completed;
+      expect(initialStatus.code, initialStatus.stderr).toBe(0);
+      const firstPolicy = JSON.parse(initialStatus.stdout) as { policyDigest: string };
+      await writeFile(
+        join(directory, ".flow", "config.yaml"),
+        projectConfig({ maxQueuedJobs: 1 }),
+        "utf8",
+      );
+
+      const mismatched = await spawnFlow(["supervisor", "status"], directory).completed;
+      expect(mismatched.code, mismatched.stderr).toBe(0);
+      expect(JSON.parse(mismatched.stdout)).toMatchObject({
+        policyDigest: firstPolicy.policyDigest,
+        limits: { maxActiveWorkers: 1, maxQueuedJobs: 32 },
+      });
+
+      const shutdown = await spawnFlow(["supervisor", "shutdown"], directory).completed;
+      expect(shutdown.code, shutdown.stderr).toBe(0);
+      const rebound = await spawnFlow(["supervisor", "status"], directory).completed;
+      expect(rebound.code, rebound.stderr).toBe(0);
+      expect(JSON.parse(rebound.stdout)).toMatchObject({
+        limits: { maxActiveWorkers: 1, maxQueuedJobs: 1 },
+      });
+      expect(JSON.parse(rebound.stdout).policyDigest).not.toBe(firstPolicy.policyDigest);
+    } finally {
+      await spawnFlow(["supervisor", "shutdown"], directory).completed.catch(() => undefined);
+    }
+  });
+
   it("cancels a detached process tree from a second CLI with attribution", async () => {
     const directory = await createTemporaryDirectory();
     const workflowPath = join(directory, "detached-cancel.workflow.yaml");
     const runsDirectory = join(directory, "runs");
-    const started = join(directory, "detached-started.txt");
-    const release = join(directory, "detached-release.txt");
-    const orphaned = join(directory, "detached-orphaned.txt");
+    const commandPidPath = join(directory, "detached-command.pid");
+    const descendantPidPath = join(directory, "detached-descendant.pid");
     await writeFile(
       workflowPath,
       commandWorkflow(
         "detached-cancel-workflow",
-        `const fs = require("node:fs"); fs.writeFileSync(${JSON.stringify(started)}, "started"); setInterval(() => { if (fs.existsSync(${JSON.stringify(release)})) fs.writeFileSync(${JSON.stringify(orphaned)}, "orphan"); }, 20);`,
+        `const fs = require("node:fs"); const { spawn } = require("node:child_process"); fs.writeFileSync(${JSON.stringify(commandPidPath)}, String(process.pid)); const descendant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); fs.writeFileSync(${JSON.stringify(descendantPidPath)}, String(descendant.pid)); setInterval(() => {}, 1000);`,
       ),
       "utf8",
     );
@@ -371,7 +475,11 @@ describe("compiled Flow process", () => {
         directory,
       ]).completed;
       expect(submitted.code, submitted.stderr).toBe(0);
-      await waitForFile(started);
+      await Promise.all([waitForFile(commandPidPath), waitForFile(descendantPidPath)]);
+      const commandPid = Number(await readFile(commandPidPath, "utf8"));
+      const descendantPid = Number(await readFile(descendantPidPath, "utf8"));
+      expect(Number.isSafeInteger(commandPid)).toBe(true);
+      expect(Number.isSafeInteger(descendantPid)).toBe(true);
 
       const cancellationCommandId = "019fd722-4144-7a72-9c86-6f9af022b2e8";
       const cancelled = await spawnFlow([
@@ -401,9 +509,7 @@ describe("compiled Flow process", () => {
         requestId: cancellationCommandId,
         reason: "Stop the detached command.",
       });
-      await writeFile(release, "release", "utf8");
-      await delay(250);
-      await expect(stat(orphaned)).rejects.toMatchObject({ code: "ENOENT" });
+      await Promise.all([waitForProcessExit(commandPid), waitForProcessExit(descendantPid)]);
     } finally {
       await spawnFlow(["supervisor", "shutdown", "--runs-dir", runsDirectory]).completed.catch(
         () => undefined,
@@ -488,6 +594,16 @@ describe("compiled Flow process", () => {
   });
 });
 
+function projectConfig(
+  supervisor: Partial<{ readonly maxActiveWorkers: number; readonly maxQueuedJobs: number }>,
+): string {
+  return `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: FlowProjectConfig
+supervisor:
+${supervisor.maxActiveWorkers === undefined ? "" : `  maxActiveWorkers: ${supervisor.maxActiveWorkers}\n`}${supervisor.maxQueuedJobs === undefined ? "" : `  maxQueuedJobs: ${supervisor.maxQueuedJobs}\n`}`;
+}
+
 function commandWorkflow(id: string, script: string): string {
   return `
 apiVersion: flow.synapti.ai/v1alpha1
@@ -523,23 +639,27 @@ nodes:
 `;
 }
 
-function spawnFlow(args: readonly string[]): {
+function spawnFlow(
+  args: readonly string[],
+  cwd = projectRoot,
+): {
   child: ChildProcess;
   completed: Promise<ProcessResult>;
 } {
-  return spawnCaptured(process.execPath, [cliPath, ...args]);
+  return spawnCaptured(process.execPath, [cliPath, ...args], 0, cwd);
 }
 
 function spawnCaptured(
   executable: string,
   args: readonly string[],
   pauseStdoutMs = 0,
+  cwd = projectRoot,
 ): {
   child: ChildProcess;
   completed: Promise<ProcessResult>;
 } {
   const child = spawn(executable, [...args], {
-    cwd: projectRoot,
+    cwd,
     stdio: ["ignore", "pipe", "pipe"],
   });
   let stdout = "";

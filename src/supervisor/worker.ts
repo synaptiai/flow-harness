@@ -322,6 +322,7 @@ async function handleWorkerConnection(
         commandId: request.command.commandId,
         runId: result.state.runId,
         runStatus: "cancelled",
+        phase: "active",
         lastSequence: result.state.lastSequence,
       },
     });

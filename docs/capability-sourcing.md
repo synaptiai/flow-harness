@@ -93,8 +93,8 @@ Prime Agent proves that Pi can support a distinct long-running harness. Its prod
 | Detach, reattach, snapshots, and event replay | **Implemented independently** with immutable source snapshots, authenticated adoption, and bounded exclusive sequence cursors |
 | Recovery journal and bounded restart | **Implemented for supervisor restart and idempotent cancellation** around Flow's authoritative run ledger; open operation replay remains prohibited |
 | Durable goals and autonomous continuation | Implement in Flow's scheduler |
-| Daemon workload limits | Prime leaves fixed caps outside its daemon layer; Flow persisted run budgets before adding detached supervision, while concurrency and artifact limits remain |
-| Heartbeats and schedules | Later trigger package after concurrency policy exists |
+| Daemon workload limits | Prime leaves fixed caps outside its daemon layer; Flow independently adds strict operator/project ceilings, durable active reservations, a bounded FIFO queue, and deterministic overflow rejection. Per-run graph concurrency and artifact limits remain |
+| Heartbeats and schedules | Later trigger package now that bounded admission exists; triggers must not bypass the same queue |
 | Retained children and messaging | Represent as graph-owned child runs and mailbox events |
 | Persistent IPython | Optional capability only; never describe it as a sandbox |
 | Recursive subagents | Use narrow contexts but keep recursion and joins graph-owned |

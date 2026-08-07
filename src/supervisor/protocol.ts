@@ -1,9 +1,10 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod";
 
+import { MAX_ACTIVE_WORKERS, MAX_QUEUED_JOBS } from "../domain/config/resolver.js";
 import { runEventSchema, type RunEvent, type RunStatus } from "../domain/run/events.js";
 
-export const SUPERVISOR_PROTOCOL_VERSION = 1 as const;
+export const SUPERVISOR_PROTOCOL_VERSION = 2 as const;
 export const MAX_SUPERVISOR_FRAME_BYTES = 40 * 1024 * 1024;
 export const MAX_SUPERVISOR_EVENT_PAGE = 256;
 export const MAX_WORKFLOW_SOURCE_CHARACTERS = 20_000_000;
@@ -29,11 +30,13 @@ const actorSchema = z
   );
 const reasonSchema = z.string().trim().min(1).max(4096);
 const tokenSchema = z.string().regex(/^[a-f0-9]{64}$/, "must be a 256-bit hexadecimal token");
+const digestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const sequenceSchema = z.number().int().nonnegative().safe();
 
 const submitCommandSchema = z
   .object({
     type: z.literal("submit"),
+    policyDigest: digestSchema,
     commandId: uuidSchema,
     mode: z.enum(["run", "resume"]),
     runId: runIdSchema,
@@ -46,6 +49,7 @@ const submitCommandSchema = z
 const cancelCommandSchema = z
   .object({
     type: z.literal("cancel"),
+    policyDigest: digestSchema,
     commandId: uuidSchema,
     runId: runIdSchema,
     actor: actorSchema,
@@ -56,6 +60,7 @@ const cancelCommandSchema = z
 const eventsCommandSchema = z
   .object({
     type: z.literal("events"),
+    policyDigest: digestSchema,
     runId: runIdSchema,
     afterSequence: sequenceSchema,
     limit: z.number().int().positive().max(MAX_SUPERVISOR_EVENT_PAGE),
@@ -75,6 +80,7 @@ const supervisorRequestSchema = z
         .object({
           type: z.literal("shutdown"),
           commandId: uuidSchema,
+          policyDigest: digestSchema,
         })
         .strict(),
     ]),
@@ -110,15 +116,45 @@ const acceptedResultSchema = z
   })
   .strict();
 
+const queuedResultSchema = z
+  .object({
+    type: z.literal("queued"),
+    commandId: uuidSchema,
+    runId: runIdSchema,
+    queuePosition: z.number().int().positive().safe(),
+    queuedAt: z.iso.datetime({ offset: true }),
+  })
+  .strict();
+
+const rejectedResultSchema = z
+  .object({
+    type: z.literal("rejected"),
+    commandId: uuidSchema,
+    runId: runIdSchema,
+    reason: z.enum(["queue_full", "cancelled"]),
+    rejectedAt: z.iso.datetime({ offset: true }),
+  })
+  .strict();
+
 const cancelledResultSchema = z
   .object({
     type: z.literal("cancelled"),
     commandId: uuidSchema,
     runId: runIdSchema,
     runStatus: z.literal("cancelled"),
-    lastSequence: z.number().int().positive().safe(),
+    phase: z.enum(["active", "queued"]),
+    lastSequence: z.number().int().positive().safe().nullable(),
   })
-  .strict();
+  .strict()
+  .superRefine((result, context) => {
+    if ((result.phase === "queued") !== (result.lastSequence === null)) {
+      context.addIssue({
+        code: "custom",
+        message: "queued cancellation requires a null run sequence",
+        path: ["lastSequence"],
+      });
+    }
+  });
 
 const eventsResultSchema = z
   .object({
@@ -138,10 +174,25 @@ const supervisorResultSchema = z.discriminatedUnion("type", [
       generation: uuidSchema,
       pid: z.number().int().positive().safe(),
       startedAt: z.iso.datetime({ offset: true }),
-      workers: z.array(workerSummarySchema).max(1024),
+      policyDigest: digestSchema,
+      limits: z
+        .object({
+          maxActiveWorkers: z.number().int().positive().safe().max(MAX_ACTIVE_WORKERS),
+          maxQueuedJobs: z.number().int().nonnegative().safe().max(MAX_QUEUED_JOBS),
+        })
+        .strict(),
+      admission: z
+        .object({
+          activeWorkers: z.number().int().nonnegative().safe().max(MAX_ACTIVE_WORKERS),
+          queuedJobs: z.number().int().nonnegative().safe().max(MAX_QUEUED_JOBS),
+        })
+        .strict(),
+      workers: z.array(workerSummarySchema).max(MAX_ACTIVE_WORKERS),
     })
     .strict(),
   acceptedResultSchema,
+  queuedResultSchema,
+  rejectedResultSchema,
   cancelledResultSchema,
   eventsResultSchema,
   z.object({ type: z.literal("shutdown"), stopped: z.literal(true) }).strict(),
@@ -154,6 +205,7 @@ export const supervisorErrorCodeSchema = z.enum([
   "identity_mismatch",
   "internal",
   "not_found",
+  "policy_mismatch",
   "protocol_invalid",
   "protocol_version",
   "worker_unavailable",
@@ -258,6 +310,9 @@ export type SubmitCommand = z.infer<typeof submitCommandSchema>;
 export type CancelCommand = z.infer<typeof cancelCommandSchema>;
 export type EventsCommand = z.infer<typeof eventsCommandSchema>;
 export type AcceptedResult = z.infer<typeof acceptedResultSchema>;
+export type QueuedResult = z.infer<typeof queuedResultSchema>;
+export type RejectedResult = z.infer<typeof rejectedResultSchema>;
+export type SubmissionResult = AcceptedResult | QueuedResult | RejectedResult;
 export type CancelledResult = z.infer<typeof cancelledResultSchema>;
 export type EventsResult = Omit<z.infer<typeof eventsResultSchema>, "events"> & {
   readonly events: readonly RunEvent[];

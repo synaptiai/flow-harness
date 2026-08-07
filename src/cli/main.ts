@@ -11,15 +11,35 @@ import { fileURLToPath } from "node:url";
 import { ApprovalDecisionError, decideCommandApproval } from "../application/command-approval.js";
 import type { NodeExecutor, RecoverableRunEventStore } from "../application/ports.js";
 import { resumeWorkflow, RunRecoveryError, runWorkflow } from "../application/run-workflow.js";
+import {
+  calculateFlowPolicyDigest,
+  FlowConfigError,
+  type EffectiveFlowConfig,
+} from "../domain/config/resolver.js";
 import { reduceRunEvents, type RunStatus } from "../domain/run/events.js";
 import { compileWorkflowText, WorkflowCompilationError } from "../domain/workflow/compiler.js";
+import {
+  FlowConfigStoreError,
+  initializeFlowProject,
+  type InitializeFlowProjectOptions,
+  type InitializedFlowProject,
+  loadEffectiveFlowConfig,
+  type FlowConfigLocationOptions,
+} from "../infrastructure/fs/flow-config-store.js";
+import { AdmissionStoreError } from "../infrastructure/fs/jsonl-admission-store.js";
 import { JsonlRunStore, RunStoreError } from "../infrastructure/fs/jsonl-run-store.js";
 import {
   LocalSupervisorStore,
   LocalSupervisorStoreError,
 } from "../infrastructure/fs/local-supervisor-store.js";
 import { createProductionNodeExecutor } from "../infrastructure/runtime/production-node-executor.js";
-import { ensureSupervisor, requestSupervisor, runSupervisorDaemon } from "../supervisor/daemon.js";
+import {
+  ensureSupervisor,
+  requestSupervisor,
+  runSupervisorDaemon,
+  type SupervisorPolicy,
+} from "../supervisor/daemon.js";
+import { SupervisorServiceError } from "../supervisor/service.js";
 import type {
   SubmitCommand,
   SupervisorErrorCode,
@@ -31,6 +51,8 @@ import { executeWorkerJob } from "../supervisor/worker.js";
 const HELP = `Flow — Provider-neutral coding-agent harness
 
 Usage:
+  flow init [directory] [--force]
+  flow config show
   flow validate <workflow.yaml>
   flow run <workflow.yaml> [--detach] [--command-id <uuid>] [--run-id <id>] [--runs-dir <path>] [--cwd <path>]
   flow resume <workflow.yaml> --run-id <id> [--detach] [--command-id <uuid>] [--runs-dir <path>] [--cwd <path>]
@@ -54,6 +76,11 @@ export interface CliDependencies {
   readonly executor: NodeExecutor;
   readonly createStore: (rootDirectory: string) => RecoverableRunEventStore;
   readonly readTextFile: (path: string) => Promise<string>;
+  readonly initializeProject: (
+    directory: string,
+    options?: InitializeFlowProjectOptions,
+  ) => Promise<InitializedFlowProject>;
+  readonly loadConfig: (options?: FlowConfigLocationOptions) => Promise<EffectiveFlowConfig>;
   readonly signal?: AbortSignal;
 }
 
@@ -87,6 +114,10 @@ export async function main(
   const command = args[0];
   try {
     switch (command) {
+      case "init":
+        return await initCommand(args.slice(1), io, dependencyOverrides);
+      case "config":
+        return await configCommand(args.slice(1), io, dependencyOverrides);
       case "validate":
         return await validateCommand(args.slice(1), io, dependencyOverrides);
       case "run":
@@ -121,11 +152,23 @@ export async function main(
       io.stderr(formatCompilationError(error));
       return 2;
     }
+    if (error instanceof FlowConfigError) {
+      io.stderr(`${error.code}: ${error.message}`);
+      return 2;
+    }
+    if (error instanceof FlowConfigStoreError) {
+      io.stderr(`${error.code}: ${error.message}`);
+      return 1;
+    }
     if (error instanceof RunStoreError) {
       io.stderr(`${error.code}: ${error.message}`);
       return 1;
     }
     if (error instanceof LocalSupervisorStoreError) {
+      io.stderr(`${error.code}: ${error.message}`);
+      return 1;
+    }
+    if (error instanceof AdmissionStoreError || error instanceof SupervisorServiceError) {
       io.stderr(`${error.code}: ${error.message}`);
       return 1;
     }
@@ -147,6 +190,41 @@ export async function main(
   }
 }
 
+async function initCommand(
+  args: readonly string[],
+  io: CliIo,
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  const force = extractBooleanFlag(args, "--force");
+  const { positionals } = parseCommandArgs(force.args, {});
+  if (positionals.length > 1) {
+    throw new CliUsageError("init accepts at most one directory");
+  }
+  const dependencies = configDependenciesFrom(overrides);
+  const directory = resolve(dependencies.cwd, positionals[0] ?? ".");
+  const result = await dependencies.initializeProject(
+    directory,
+    force.enabled ? { replace: true } : undefined,
+  );
+  io.stdout(JSON.stringify(result, null, 2));
+  return 0;
+}
+
+async function configCommand(
+  args: readonly string[],
+  io: CliIo,
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  const { positionals } = parseCommandArgs(args, {});
+  if (positionals.length !== 1 || positionals[0] !== "show") {
+    throw new CliUsageError("config requires the show subcommand");
+  }
+  const dependencies = configDependenciesFrom(overrides);
+  const result = await dependencies.loadConfig({ cwd: dependencies.cwd });
+  io.stdout(JSON.stringify(result, null, 2));
+  return 0;
+}
+
 async function approvalDecisionCommand(
   decision: "approve" | "deny",
   args: readonly string[],
@@ -163,8 +241,9 @@ async function approvalDecisionCommand(
     `${decision} requires one run id and one request id`,
   );
   const actor = requireStringOption(values.actor, `${decision} requires --actor <label>`);
-  const dependencies = storageDependenciesFrom(overrides);
-  const runsDirectory = resolve(dependencies.cwd, values["runs-dir"] ?? ".flow/runs");
+  const dependencies = controlDependenciesFrom(overrides);
+  const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
+  const runsDirectory = resolveRunsDirectory(dependencies.cwd, values["runs-dir"], config);
   const state = await decideCommandApproval({
     runId,
     requestId,
@@ -200,18 +279,20 @@ async function resumeCommand(
   );
   const runId = requireStringOption(values["run-id"], "resume requires --run-id <id>");
   const dependencies = dependenciesFrom(overrides);
+  const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
   const workflowPath = resolve(dependencies.cwd, workflowArgument);
 
   // Compilation intentionally precedes store construction and ownership acquisition.
   const workflowSource = await dependencies.readTextFile(workflowPath);
   const workflow = compileWorkflowText(workflowSource, workflowPath);
-  const runsDirectory = resolve(dependencies.cwd, values["runs-dir"] ?? ".flow/runs");
+  const runsDirectory = resolveRunsDirectory(dependencies.cwd, values["runs-dir"], config);
   const executionCwd = resolve(dependencies.cwd, values.cwd ?? ".");
   const commandId = detachedCommandId(values["command-id"], detached.enabled);
   if (detached.enabled) {
     return await submitDetached(
       {
         type: "submit",
+        policyDigest: config.policyDigest,
         commandId: commandId ?? randomUUID(),
         mode: "resume",
         runId,
@@ -220,6 +301,7 @@ async function resumeCommand(
         cwd: executionCwd,
       },
       runsDirectory,
+      config,
       io,
     );
   }
@@ -270,12 +352,13 @@ async function runCommand(
   });
   const workflowArgument = requireSinglePositional(positionals, "run requires one workflow path");
   const dependencies = dependenciesFrom(overrides);
+  const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
   const workflowPath = resolve(dependencies.cwd, workflowArgument);
 
   // Compilation intentionally precedes construction of the run store or invocation of an executor.
   const workflowSource = await dependencies.readTextFile(workflowPath);
   const workflow = compileWorkflowText(workflowSource, workflowPath);
-  const runsDirectory = resolve(dependencies.cwd, values["runs-dir"] ?? ".flow/runs");
+  const runsDirectory = resolveRunsDirectory(dependencies.cwd, values["runs-dir"], config);
   const executionCwd = resolve(dependencies.cwd, values.cwd ?? ".");
   const runId = values["run-id"] ?? randomUUID();
   const commandId = detachedCommandId(values["command-id"], detached.enabled);
@@ -283,6 +366,7 @@ async function runCommand(
     return await submitDetached(
       {
         type: "submit",
+        policyDigest: config.policyDigest,
         commandId: commandId ?? randomUUID(),
         mode: "run",
         runId,
@@ -291,6 +375,7 @@ async function runCommand(
         cwd: executionCwd,
       },
       runsDirectory,
+      config,
       io,
     );
   }
@@ -316,8 +401,9 @@ async function inspectCommand(
     "runs-dir": { type: "string" },
   });
   const runId = requireSinglePositional(positionals, "inspect requires one run id");
-  const dependencies = storageDependenciesFrom(overrides);
-  const runsDirectory = resolve(dependencies.cwd, values["runs-dir"] ?? ".flow/runs");
+  const dependencies = controlDependenciesFrom(overrides);
+  const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
+  const runsDirectory = resolveRunsDirectory(dependencies.cwd, values["runs-dir"], config);
   const events = await dependencies.createStore(runsDirectory).read(runId);
   const state = reduceRunEvents(events);
 
@@ -328,15 +414,16 @@ async function inspectCommand(
 async function submitDetached(
   command: SubmitCommand,
   runsDirectory: string,
+  policy: SupervisorPolicy,
   io: CliIo,
 ): Promise<number> {
   const store = new LocalSupervisorStore(runsDirectory);
-  await ensureSupervisor(store, fileURLToPath(import.meta.url));
+  await ensureSupervisor(store, fileURLToPath(import.meta.url), policy);
   const result = requireSupervisorSuccess(await requestSupervisor(store, command));
-  if (result.type !== "accepted") {
+  if (result.type !== "accepted" && result.type !== "queued" && result.type !== "rejected") {
     throw new SupervisorCommandError(
       "protocol_invalid",
-      "supervisor returned a non-acceptance result",
+      "supervisor returned a non-submission result",
     );
   }
   io.stdout(JSON.stringify(result, null, 2));
@@ -357,13 +444,15 @@ async function cancelCommand(
   const runId = requireSinglePositional(positionals, "cancel requires one run id");
   const actor = requireStringOption(values.actor, "cancel requires --actor <label>");
   const commandId = parseUuidOption(values["command-id"], "--command-id") ?? randomUUID();
-  const dependencies = storageDependenciesFrom(overrides);
-  const runsDirectory = resolve(dependencies.cwd, values["runs-dir"] ?? ".flow/runs");
+  const dependencies = controlDependenciesFrom(overrides);
+  const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
+  const runsDirectory = resolveRunsDirectory(dependencies.cwd, values["runs-dir"], config);
   const store = new LocalSupervisorStore(runsDirectory);
-  await ensureSupervisor(store, fileURLToPath(import.meta.url));
+  await ensureSupervisor(store, fileURLToPath(import.meta.url), config);
   const result = requireSupervisorSuccess(
     await requestSupervisor(store, {
       type: "cancel",
+      policyDigest: config.policyDigest,
       commandId,
       runId,
       actor,
@@ -397,15 +486,17 @@ async function eventsCommand(
   if (limit > 256) {
     throw new CliUsageError("--limit must not exceed 256");
   }
-  const dependencies = storageDependenciesFrom(overrides);
-  const runsDirectory = resolve(dependencies.cwd, values["runs-dir"] ?? ".flow/runs");
+  const dependencies = controlDependenciesFrom(overrides);
+  const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
+  const runsDirectory = resolveRunsDirectory(dependencies.cwd, values["runs-dir"], config);
   const store = new LocalSupervisorStore(runsDirectory);
-  await ensureSupervisor(store, fileURLToPath(import.meta.url));
+  await ensureSupervisor(store, fileURLToPath(import.meta.url), config);
 
   for (;;) {
     const result = requireSupervisorSuccess(
       await requestSupervisor(store, {
         type: "events",
+        policyDigest: config.policyDigest,
         runId,
         afterSequence: cursor,
         limit,
@@ -444,17 +535,42 @@ async function supervisorCommand(
   if (subcommand !== "status" && subcommand !== "shutdown") {
     throw new CliUsageError("supervisor requires status or shutdown");
   }
-  const dependencies = storageDependenciesFrom(overrides);
-  const runsDirectory = resolve(dependencies.cwd, values["runs-dir"] ?? ".flow/runs");
+  const dependencies = controlDependenciesFrom(overrides);
+  const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
+  const runsDirectory = resolveRunsDirectory(dependencies.cwd, values["runs-dir"], config);
   const store = new LocalSupervisorStore(runsDirectory);
   if (subcommand === "status") {
-    await ensureSupervisor(store, fileURLToPath(import.meta.url));
+    const observed = requireSupervisorSuccess(
+      await ensureSupervisor(store, fileURLToPath(import.meta.url), config, {
+        requirePolicyMatch: false,
+      }),
+    );
+    if (observed.type !== "status") {
+      throw new SupervisorCommandError(
+        "protocol_invalid",
+        "supervisor startup returned a non-status result",
+      );
+    }
+    io.stdout(JSON.stringify(observed, null, 2));
+    return 0;
+  }
+  let policyDigest = config.policyDigest;
+  if (subcommand === "shutdown") {
+    const live = requireSupervisorSuccess(await requestSupervisor(store, { type: "status" }));
+    if (live.type !== "status") {
+      throw new SupervisorCommandError(
+        "protocol_invalid",
+        "supervisor returned a non-status result before shutdown",
+      );
+    }
+    policyDigest = live.policyDigest;
   }
   const result = requireSupervisorSuccess(
-    await requestSupervisor(
-      store,
-      subcommand === "status" ? { type: "status" } : { type: "shutdown", commandId: randomUUID() },
-    ),
+    await requestSupervisor(store, {
+      type: "shutdown",
+      commandId: randomUUID(),
+      policyDigest,
+    }),
   );
   io.stdout(JSON.stringify(result, null, 2));
   return 0;
@@ -465,6 +581,9 @@ async function internalSupervisorCommand(
   overrides: Partial<CliDependencies>,
 ): Promise<number> {
   const { positionals, values } = parseCommandArgs(args, {
+    "max-active-workers": { type: "string" },
+    "max-queued-jobs": { type: "string" },
+    "policy-digest": { type: "string" },
     "runs-dir": { type: "string" },
   });
   if (positionals.length !== 0) {
@@ -472,9 +591,38 @@ async function internalSupervisorCommand(
   }
   const dependencies = storageDependenciesFrom(overrides);
   const runsDirectory = resolve(dependencies.cwd, values["runs-dir"] ?? ".flow/runs");
+  const supervisor = {
+    maxActiveWorkers: parsePositiveIntegerOption(
+      requireStringOption(
+        values["max-active-workers"],
+        "internal supervisor requires --max-active-workers",
+      ),
+      "--max-active-workers",
+      1,
+    ),
+    maxQueuedJobs: parseNonNegativeIntegerOption(
+      requireStringOption(
+        values["max-queued-jobs"],
+        "internal supervisor requires --max-queued-jobs",
+      ),
+      "--max-queued-jobs",
+      0,
+    ),
+  };
+  const policyDigest = requireStringOption(
+    values["policy-digest"],
+    "internal supervisor requires --policy-digest",
+  );
+  if (!/^[a-f0-9]{64}$/.test(policyDigest)) {
+    throw new CliUsageError("--policy-digest requires a SHA-256 hexadecimal digest");
+  }
+  if (calculateFlowPolicyDigest(supervisor) !== policyDigest) {
+    throw new CliUsageError("--policy-digest does not match the supplied supervisor limits");
+  }
   await runSupervisorDaemon({
     store: new LocalSupervisorStore(runsDirectory),
     cliPath: fileURLToPath(import.meta.url),
+    policy: { policyDigest, supervisor },
     ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
   });
   return 0;
@@ -621,8 +769,10 @@ async function compileWorkflowFile(
 
 function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies {
   const storageDependencies = storageDependenciesFrom(overrides);
+  const configDependencies = configDependenciesFrom(overrides);
   return {
     ...storageDependencies,
+    ...configDependencies,
     executor: overrides.executor ?? createProductionNodeExecutor(),
     readTextFile: overrides.readTextFile ?? ((path) => readFile(path, "utf8")),
     ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
@@ -636,6 +786,36 @@ function storageDependenciesFrom(
     cwd: overrides.cwd ?? process.cwd(),
     createStore: overrides.createStore ?? ((rootDirectory) => new JsonlRunStore(rootDirectory)),
   };
+}
+
+function configDependenciesFrom(
+  overrides: Partial<CliDependencies>,
+): Pick<CliDependencies, "cwd" | "initializeProject" | "loadConfig"> {
+  return {
+    cwd: overrides.cwd ?? process.cwd(),
+    initializeProject: overrides.initializeProject ?? initializeFlowProject,
+    loadConfig: overrides.loadConfig ?? loadEffectiveFlowConfig,
+  };
+}
+
+function controlDependenciesFrom(
+  overrides: Partial<CliDependencies>,
+): Pick<CliDependencies, "cwd" | "createStore" | "loadConfig"> {
+  return {
+    ...storageDependenciesFrom(overrides),
+    loadConfig: overrides.loadConfig ?? loadEffectiveFlowConfig,
+  };
+}
+
+function resolveRunsDirectory(
+  invocationDirectory: string,
+  explicitRunsDirectory: string | undefined,
+  config: EffectiveFlowConfig,
+): string {
+  if (explicitRunsDirectory !== undefined) {
+    return resolve(invocationDirectory, explicitRunsDirectory);
+  }
+  return resolve(config.projectRoot ?? invocationDirectory, ".flow/runs");
 }
 
 function formatCompilationError(error: WorkflowCompilationError): string {
