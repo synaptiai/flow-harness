@@ -422,12 +422,18 @@ export async function startSupervisorServer(
   let fatalError: Error | undefined;
   let reconciling = false;
   let reconciliationCompletion: Promise<void> = Promise.resolve();
+  const activeHandlers = new Set<Promise<void>>();
   const server = createServer((socket) => {
     socket.on("error", () => socket.destroy());
-    void handleConnection(socket, service, () => {
+    const handler = handleConnection(socket, service, () => {
       clearInterval(reconciliationTimer);
       closePromise ??= closeSupervisorServer(server, socketPath);
+    }).catch((error: unknown) => {
+      fatalError = error instanceof Error ? error : new Error(String(error));
+      closePromise ??= closeSupervisorServer(server, socketPath);
     });
+    activeHandlers.add(handler);
+    void handler.then(() => activeHandlers.delete(handler));
   });
   const reconciliationTimer = setInterval(() => {
     if (reconciling || service.isShuttingDown) {
@@ -472,6 +478,7 @@ export async function startSupervisorServer(
       clearInterval(reconciliationTimer);
       void rm(socketPath, { force: true })
         .then(async () => {
+          await Promise.all(activeHandlers);
           await reconciliationCompletion;
           await service.close();
           if (fatalError !== undefined) {

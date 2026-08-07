@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -20,7 +22,10 @@ import {
   SupervisorStartupTimeoutError,
 } from "../../../src/supervisor/daemon.js";
 import { createAdmissionInitializedEvent } from "../../../src/supervisor/admission.js";
-import { SUPERVISOR_PROTOCOL_VERSION } from "../../../src/supervisor/protocol.js";
+import {
+  encodeSupervisorMessage,
+  SUPERVISOR_PROTOCOL_VERSION,
+} from "../../../src/supervisor/protocol.js";
 import type { WorkerLauncher } from "../../../src/supervisor/service.js";
 
 const temporaryDirectories: string[] = [];
@@ -122,6 +127,42 @@ describe("local supervisor daemon", () => {
       "pending",
     );
     store.reconciliationGate.resolve();
+
+    await expect(closing).resolves.toBeUndefined();
+    await expect(running.completed).resolves.toBeUndefined();
+  });
+
+  it("waits for disconnected request handlers before close resolves", async () => {
+    const { directory, store } = await createStore();
+    const launcher = new DelayedLauncher(store);
+    const running = await startSupervisorServer({ store, launcher });
+    const socket = createConnection(running.descriptor.socketPath);
+    await once(socket, "connect");
+    socket.write(
+      encodeSupervisorMessage({
+        version: SUPERVISOR_PROTOCOL_VERSION,
+        requestId: randomUUID(),
+        command: {
+          type: "submit",
+          policyDigest: POLICY.policyDigest,
+          commandId: randomUUID(),
+          mode: "run",
+          runId: "disconnected-submit",
+          sourceName: "/workspace/workflow.yaml",
+          workflowSource: workflowSource(),
+          cwd: directory,
+        },
+      }),
+    );
+    await launcher.launchStarted.promise;
+    socket.destroy();
+    await once(socket, "close");
+
+    const closing = running.close();
+    await expect(Promise.race([closing.then(() => "closed"), delay(25, "pending")])).resolves.toBe(
+      "pending",
+    );
+    launcher.launchGate.resolve();
 
     await expect(closing).resolves.toBeUndefined();
     await expect(running.completed).resolves.toBeUndefined();
@@ -301,6 +342,17 @@ class HoldingLauncher implements WorkerLauncher {
         runStatus: descriptor.runStatus,
       },
     };
+  }
+}
+
+class DelayedLauncher extends HoldingLauncher {
+  readonly launchStarted = deferred();
+  readonly launchGate = deferred();
+
+  override async launch(job: Parameters<WorkerLauncher["launch"]>[0]) {
+    this.launchStarted.resolve();
+    await this.launchGate.promise;
+    return await super.launch(job);
   }
 }
 

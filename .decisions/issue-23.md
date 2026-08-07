@@ -364,12 +364,12 @@ workers—each able to create providers, sandboxes, and later child graphs—are
 
 ## Final verification evidence
 
-- `npm run check`: passed on the final tree; 41 default test files / 473 tests, clean build, and 2
+- `npm run check`: passed on the final tree; 41 default test files / 474 tests, clean build, and 2
   compiled-process files / 14 runtime tests.
 - `npm run test:coverage`: passed the configured 75% statement, 65% branch, 70% function, and 75%
-  line thresholds. Process-race coverage is timing-sensitive; the final recorded run reported 82.31%
-  statements, 72.81% branches, 90.86% functions, and 82.65% lines.
-- Package metadata inspection: 177 files, 219,490 bytes compressed, and 1,169,418 bytes unpacked.
+  line thresholds. Process-race coverage is timing-sensitive; the final recorded run reported 82.40%
+  statements, 72.87% branches, 90.77% functions, and 82.74% lines.
+- Package metadata inspection: 177 files, 219,619 bytes compressed, and 1,170,247 bytes unpacked.
 - `npm run pack:check`: rebuilt and packed the final tree, installed the tarball in a clean temporary
   consumer with lifecycle scripts disabled, ran the installed `flow --help`, created
   `.flow/config.yaml`, and inspected the canonical default 1/32 policy and project root.
@@ -419,12 +419,13 @@ workers—each able to create providers, sandboxes, and later child graphs—are
 | Concurrent stale-lock releasers wrapped losing rename races as unexpected I/O failures | P2 | Fixed: rename-time absence is typed `not_found` and treated as converged stale cleanup; 32 concurrent releasers produce one success and only typed absence outcomes |
 | Child-side ownership transfer preserved the parent token, so a stale parent observation could still delete the daemon lock | P1 | Fixed: transfer atomically rotates both PID and capability token; stale parent-token release fails identity validation, and the focused regression proves daemon ownership remains published |
 | FIFO, status, policy, and compatibility verification selectors silently skipped model/runtime or security evidence | P2 | Fixed: model and runtime configs run separately, broad claims execute complete focused files, status has explicit sensitive-field exclusions, and every documented selector passes with nonzero tests |
-| Final test, coverage, and package counts described an earlier commit as the final tree | P2 | Fixed: evidence was regenerated after the last code change and records 41/473 default tests, 2/14 runtime tests, enforced coverage thresholds with the latest observation, and current 177-file package sizes |
+| Final test, coverage, and package counts described an earlier commit as the final tree | P2 | Fixed: evidence was regenerated after the last code change and records 41/474 default tests, 2/14 runtime tests, enforced coverage thresholds with the latest observation, and current 177-file package sizes |
 | Rotated ownership could still be deleted because release validated the mutable path before renaming it | P1 | Fixed: release atomically renames the exact inode to a recoverable marker before identity validation; reservations and transfers settle markers, and deterministic ordering plus 64-round race tests prove a stale release cannot erase daemon ownership |
 | Timing-sensitive process branches made a single exact coverage percentage an unstable final-tree claim | P2 | Fixed: the journal records the configured enforced thresholds and labels the latest observed report rather than claiming one immutable percentage |
 | A crash after publishing a fresh reservation but before its marker check could leave a conflicting public lock and release marker forever | P2 | Fixed: exact restored identity reacquires idempotently; marker settlement retires only a conflicting dead-PID unpublished reservation through the atomic release path, then restores the authoritative marker; two deterministic recovery tests cover both states |
 | A crash during rollback could leave a dead release marker beside a different live public owner and block settlement forever | P2 | Fixed: conflict recovery is symmetric—dead public/live marker restores the marker, live public/dead marker removes only the marker, and live/live waits; the inverse-state regression constructs and resolves the durable crash state |
 | `RunningSupervisor.close()` resolved after transport shutdown but before reconciliation and service cleanup quiesced | P2 | Fixed: the daemon tracks and drains the concrete reconciliation promise, closes admission state afterward, and resolves `close()` only when `completed` settles; a paused-reconciliation regression proves callers can safely remove owned state after close |
+| `RunningSupervisor.close()` could resolve while a disconnected client's request handler was still mutating admission state | P2 | Fixed: the daemon owns and drains every admitted handler before reconciliation and service cleanup; the regression disconnects a submit client while its launcher is paused and proves close remains pending until the handler exits |
 
 ## Research references
 
