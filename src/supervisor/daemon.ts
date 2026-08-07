@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { chmod, rm } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
 import { basename, join } from "node:path";
@@ -68,6 +68,7 @@ export interface RunSupervisorDaemonOptions {
 
 export interface EnsureSupervisorOptions {
   readonly requirePolicyMatch?: boolean;
+  readonly startupTimeoutMs?: number;
 }
 
 export class DetachedWorkerLauncher implements WorkerLauncher {
@@ -155,7 +156,11 @@ export async function ensureSupervisor(
   options: EnsureSupervisorOptions = {},
 ): Promise<Extract<SupervisorResponse, { readonly ok: true }>> {
   await store.initialize();
-  const deadline = Date.now() + STARTUP_TIMEOUT_MS;
+  const startupTimeoutMs = options.startupTimeoutMs ?? STARTUP_TIMEOUT_MS;
+  if (!Number.isSafeInteger(startupTimeoutMs) || startupTimeoutMs <= 0) {
+    throw new RangeError("startupTimeoutMs must be a positive safe integer");
+  }
+  const deadline = Date.now() + startupTimeoutMs;
   while (Date.now() < deadline) {
     const status = await trySupervisorStatus(store);
     if (status !== null) {
@@ -182,18 +187,19 @@ export async function ensureSupervisor(
       if (ready !== null) {
         return acceptExistingSupervisor(ready, policy, options);
       }
-      return await launchSupervisor(store, cliPath, deadline, policy, options);
+      return await launchSupervisor(store, cliPath, deadline, startupTimeoutMs, policy, options);
     } finally {
       await store.releaseSupervisorStart(requestedLock.token);
     }
   }
-  throw new Error(`supervisor did not become ready within ${STARTUP_TIMEOUT_MS}ms`);
+  throw new Error(`supervisor did not become ready within ${startupTimeoutMs}ms`);
 }
 
 async function launchSupervisor(
   store: LocalSupervisorStore,
   cliPath: string,
   deadline: number,
+  startupTimeoutMs: number,
   policy: SupervisorPolicy,
   options: EnsureSupervisorOptions,
 ): Promise<Extract<SupervisorResponse, { readonly ok: true }>> {
@@ -254,20 +260,64 @@ async function launchSupervisor(
     spawnError = error;
   });
 
-  while (Date.now() < deadline) {
-    if (spawnError !== undefined) {
-      throw spawnError;
+  try {
+    while (Date.now() < deadline) {
+      if (spawnError !== undefined) {
+        throw spawnError;
+      }
+      const status = await trySupervisorStatus(store);
+      if (status !== null) {
+        return assertSupervisorPolicy(status, policy);
+      }
+      if (child.exitCode !== null) {
+        throw new Error(`supervisor process exited with code ${child.exitCode}`);
+      }
+      await delay(25);
     }
-    const status = await trySupervisorStatus(store);
-    if (status !== null) {
-      return assertSupervisorPolicy(status, policy);
-    }
-    if (child.exitCode !== null) {
-      throw new Error(`supervisor process exited with code ${child.exitCode}`);
-    }
-    await delay(25);
+    throw new Error(`supervisor did not become ready within ${startupTimeoutMs}ms`);
+  } catch (error) {
+    await terminateDetachedChild(child);
+    throw error;
   }
-  throw new Error(`supervisor did not become ready within ${STARTUP_TIMEOUT_MS}ms`);
+}
+
+async function terminateDetachedChild(child: ChildProcess, graceMs = 1_000): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return;
+  }
+  const exited = new Promise<void>((resolvePromise) => child.once("exit", () => resolvePromise()));
+  signalDetachedChild(child, "SIGTERM");
+  if (await settlesWithin(exited, graceMs)) {
+    return;
+  }
+  signalDetachedChild(child, "SIGKILL");
+  if (
+    !(await settlesWithin(exited, graceMs)) &&
+    child.pid !== undefined &&
+    isProcessAlive(child.pid)
+  ) {
+    throw new Error(`timed out terminating supervisor process ${child.pid}`);
+  }
+}
+
+function signalDetachedChild(child: ChildProcess, signal: NodeJS.Signals): void {
+  const pid = child.pid;
+  if (pid === undefined) {
+    return;
+  }
+  try {
+    process.kill(-pid, signal);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ESRCH") {
+      child.kill(signal);
+      return;
+    }
+    throw error;
+  }
+}
+
+async function settlesWithin(completion: Promise<void>, timeoutMs: number): Promise<boolean> {
+  return await Promise.race([completion.then(() => true), delay(timeoutMs, false, { ref: false })]);
 }
 
 async function releaseStaleSupervisorStart(

@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -166,6 +167,30 @@ describe("local supervisor daemon", () => {
       ensureSupervisor(store, "/definitely/missing/flow-cli.js", replacement),
     ).rejects.toMatchObject({ code: "policy_mismatch" });
   });
+
+  it("terminates and reaps a supervisor that misses its startup deadline", async () => {
+    const { directory, store } = await createStore();
+    const fixturePath = join(directory, "never-ready-supervisor.cjs");
+    const pidPath = join(directory, "never-ready-supervisor.pid");
+    await writeFile(
+      fixturePath,
+      `const fs = require("node:fs"); fs.writeFileSync(${JSON.stringify(pidPath)}, String(process.pid)); setInterval(() => {}, 1000);`,
+      "utf8",
+    );
+    let pid: number | undefined;
+
+    try {
+      const startup = ensureSupervisor(store, fixturePath, POLICY, { startupTimeoutMs: 100 });
+      await expect(startup).rejects.toThrow(/100ms/);
+      pid = Number(await readFile(pidPath, "utf8"));
+
+      await expect(waitForProcessExit(pid, 1_000)).resolves.toBeUndefined();
+    } finally {
+      if (pid !== undefined && isProcessAlive(pid)) {
+        process.kill(-pid, "SIGKILL");
+      }
+    }
+  }, 15_000);
 });
 
 const unavailableLauncher: WorkerLauncher = {
@@ -225,6 +250,26 @@ async function createStore() {
   const store = new LocalSupervisorStore(join(directory, "runs"), { socketDirectory });
   await store.initialize();
   return { directory, store };
+}
+
+async function waitForProcessExit(pid: number, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isProcessAlive(pid)) {
+      return;
+    }
+    await delay(20);
+  }
+  throw new Error(`timed out waiting for process ${pid} to exit`);
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return !(error instanceof Error && "code" in error && error.code === "ESRCH");
+  }
 }
 
 function workflowSource(): string {
