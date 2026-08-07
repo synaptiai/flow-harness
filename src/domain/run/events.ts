@@ -210,6 +210,9 @@ export interface RunFailedEvent extends RunEventBase {
 export interface RunCancelledEvent extends RunEventBase {
   readonly type: "run_cancelled";
   readonly reason: string;
+  readonly cancelledNodeId?: string;
+  readonly actor?: string;
+  readonly requestId?: string;
 }
 
 export interface RunBudgetExhaustedEvent extends RunEventBase {
@@ -473,7 +476,7 @@ const nodeFailureSchema = z
   })
   .strict();
 
-const runEventSchema = z.discriminatedUnion("type", [
+export const runEventSchema = z.discriminatedUnion("type", [
   z
     .object({
       ...eventBaseShape,
@@ -592,8 +595,14 @@ const runEventSchema = z.discriminatedUnion("type", [
       ...eventBaseShape,
       type: z.literal("run_cancelled"),
       reason: z.string().min(1).max(16_384),
+      cancelledNodeId: identifierSchema.optional(),
+      actor: actorSchema.optional(),
+      requestId: z.uuid().optional(),
     })
-    .strict(),
+    .strict()
+    .refine((event) => (event.actor === undefined) === (event.requestId === undefined), {
+      message: "cancellation actor and request id must be provided together",
+    }),
   z
     .object({
       ...eventBaseShape,
@@ -723,6 +732,7 @@ export function appendRunEvent(
   if (
     failedNodes.length > 0 &&
     event.type !== "run_failed" &&
+    event.type !== "run_cancelled" &&
     event.type !== "run_budget_exhausted" &&
     event.type !== "run_resumed"
   ) {
@@ -1100,6 +1110,7 @@ export function appendRunEvent(
       if (
         exhausted.some((item) => item.dimension !== "nodeStarts") ||
         (exhausted.some((item) => item.dimension === "nodeStarts") &&
+          failedNodes.length === 0 &&
           Object.values(nodes).some((node) => node.status === "pending"))
       ) {
         throw new RunReplayError(
@@ -1110,8 +1121,21 @@ export function appendRunEvent(
       if (Object.values(nodes).some((node) => node.status === "running")) {
         throw new RunReplayError(eventIndex, "run cannot cancel while a node remains running");
       }
+      if (failedNodes.length === 0 && event.cancelledNodeId !== undefined) {
+        throw new RunReplayError(
+          eventIndex,
+          `cancelled node "${event.cancelledNodeId}" did not settle as failed`,
+        );
+      }
+      if (
+        failedNodes.length === 1 &&
+        (event.cancelledNodeId === undefined || failedNodes[0]?.[0] !== event.cancelledNodeId)
+      ) {
+        throw new RunReplayError(eventIndex, "cancellation must identify its sole cancelled node");
+      }
       status = "cancelled";
       finishedAt = event.at;
+      failedNodeId = event.cancelledNodeId ?? null;
       failureReason = event.reason;
       goal = goal === null ? null : rejectIncompleteGoal(goal);
       break;

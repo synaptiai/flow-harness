@@ -2,7 +2,7 @@
 
 The roadmap is organized around externally verifiable capability gates rather than dates.
 
-Gates 0–2 are implemented. Gate 3 has a model-tool policy broker, a full-SHA hash-anchored single-file edit, durable effect receipts, fail-closed native command containment, and exact expiring approval for deterministic command nodes. Gate 4 has committed-boundary recovery, exclusive same-host ownership, client-detachable command approval waits, and durable limits for node starts, model tokens, reported model cost, and active execution time. Dynamic agent-tool approval, execute/network model tools, configurable policy, open-operation reconciliation, supervision, concurrency/artifact budgets, and stronger VM or managed backends remain target capabilities.
+Gates 0–2 are implemented. Gate 3 has a model-tool policy broker, a full-SHA hash-anchored single-file edit, durable effect receipts, fail-closed native command containment, and exact expiring approval for deterministic command nodes. Gate 4 has committed-boundary recovery, exclusive same-host ownership, client-detachable command approval waits, durable limits for node starts, model tokens, reported model cost, and active execution time, plus a local supervisor with authenticated detached workers, cancellation, bounded event replay, and restart adoption. Dynamic agent-tool approval, execute/network model tools, configurable policy, open-operation reconciliation, concurrency/artifact budgets, and stronger VM or managed backends remain target capabilities.
 
 ## Gate 0: Repository foundation
 
@@ -45,7 +45,7 @@ Gates 0–2 are implemented. Gate 3 has a model-tool policy broker, a full-SHA h
 - Runs resume from authoritative events after process interruption. *(Implemented at committed node boundaries.)*
 - Only one same-host process owns append and execution for a run; exited ownership is recoverable. *(Implemented.)*
 - Open operations are reconciled before retry. *(The current slice refuses them without retry.)*
-- A supervisor owns detached workers, health, cancellation, and event replay.
+- A supervisor owns detached workers, health, cancellation, and event replay. *(Implemented for one local worker per run/resume invocation, authenticated restart adoption, and bounded cursor replay.)*
 - Budgets cover attempts/node starts, model tokens, reported cost, and active execution time. *(Implemented for node starts, model tokens, reported cost, and active execution time; retry-attempt, concurrency, and artifact limits remain.)*
 - Human wait states survive client detachment. *(Implemented for command approval waits.)*
 

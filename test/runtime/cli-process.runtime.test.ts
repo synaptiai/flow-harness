@@ -76,7 +76,7 @@ describe("compiled Flow process", () => {
     });
   });
 
-  it("handles SIGINT, persists failure, exits 130, and terminates the command process group", async () => {
+  it("handles SIGINT, persists cancellation, exits 130, and terminates the command process group", async () => {
     const directory = await createTemporaryDirectory();
     const workflowPath = join(directory, "signal.workflow.yaml");
     const runsDirectory = join(directory, "runs");
@@ -103,7 +103,7 @@ describe("compiled Flow process", () => {
     expect(result.code).toBe(130);
     expect(result.signal).toBeNull();
     expect(JSON.parse(result.stdout)).toMatchObject({
-      status: "failed",
+      status: "cancelled",
       nodes: { execute: { error: { code: "command_aborted" } } },
     });
     const events = await readLedger(join(runsDirectory, "signal-run", "events.jsonl"));
@@ -111,7 +111,7 @@ describe("compiled Flow process", () => {
       "run_started",
       "node_started",
       "node_failed",
-      "run_failed",
+      "run_cancelled",
     ]);
     await delay(650);
     await expect(stat(delayedWrite)).rejects.toMatchObject({ code: "ENOENT" });
@@ -232,6 +232,260 @@ describe("compiled Flow process", () => {
       "run_succeeded",
     ]);
   });
+
+  it("runs detached work beyond the client and replays it from another CLI", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "detached.workflow.yaml");
+    const runsDirectory = join(directory, "runs");
+    const marker = join(directory, "detached-finished.txt");
+    await writeFile(
+      workflowPath,
+      commandWorkflow(
+        "detached-workflow",
+        `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, "done"), 500)`,
+      ),
+      "utf8",
+    );
+
+    try {
+      const submitted = await spawnFlow([
+        "run",
+        workflowPath,
+        "--detach",
+        "--run-id",
+        "detached-run",
+        "--runs-dir",
+        runsDirectory,
+        "--cwd",
+        directory,
+      ]).completed;
+      expect(submitted.code, submitted.stderr).toBe(0);
+      expect(JSON.parse(submitted.stdout)).toMatchObject({
+        type: "accepted",
+        runId: "detached-run",
+      });
+      await expect(stat(marker)).rejects.toMatchObject({ code: "ENOENT" });
+
+      const firstPage = await spawnFlow([
+        "events",
+        "detached-run",
+        "--after",
+        "0",
+        "--limit",
+        "2",
+        "--runs-dir",
+        runsDirectory,
+      ]).completed;
+      expect(firstPage.code, firstPage.stderr).toBe(0);
+      expect(JSON.parse(firstPage.stdout)).toMatchObject({
+        cursor: 2,
+        terminal: false,
+        events: [
+          { sequence: 1, type: "run_started" },
+          { sequence: 2, type: "node_started" },
+        ],
+      });
+
+      await waitForFile(marker);
+      await waitForRunStatus(runsDirectory, "detached-run", "succeeded");
+      const secondPage = await spawnFlow([
+        "events",
+        "detached-run",
+        "--after",
+        "2",
+        "--limit",
+        "2",
+        "--runs-dir",
+        runsDirectory,
+      ]).completed;
+      expect(secondPage.code, secondPage.stderr).toBe(0);
+      expect(JSON.parse(secondPage.stdout)).toMatchObject({
+        cursor: 4,
+        terminal: true,
+        events: [
+          { sequence: 3, type: "node_succeeded" },
+          { sequence: 4, type: "run_succeeded" },
+        ],
+      });
+
+      const status = await spawnFlow(["supervisor", "status", "--runs-dir", runsDirectory])
+        .completed;
+      expect(status.code, status.stderr).toBe(0);
+      expect(JSON.parse(status.stdout)).toMatchObject({ type: "status", workers: [] });
+    } finally {
+      await spawnFlow(["supervisor", "shutdown", "--runs-dir", runsDirectory]).completed.catch(
+        () => undefined,
+      );
+    }
+  });
+
+  it("coalesces concurrent supervisor auto-start into one generation", async () => {
+    const directory = await createTemporaryDirectory();
+    const runsDirectory = join(directory, "runs");
+
+    try {
+      const statuses = await Promise.all(
+        Array.from({ length: 6 }, async () => {
+          const result = await spawnFlow(["supervisor", "status", "--runs-dir", runsDirectory])
+            .completed;
+          expect(result.code, result.stderr).toBe(0);
+          return JSON.parse(result.stdout) as { generation: string; pid: number };
+        }),
+      );
+
+      expect(new Set(statuses.map((status) => status.generation)).size).toBe(1);
+      expect(new Set(statuses.map((status) => status.pid)).size).toBe(1);
+    } finally {
+      await spawnFlow(["supervisor", "shutdown", "--runs-dir", runsDirectory]).completed.catch(
+        () => undefined,
+      );
+    }
+  });
+
+  it("cancels a detached process tree from a second CLI with attribution", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "detached-cancel.workflow.yaml");
+    const runsDirectory = join(directory, "runs");
+    const started = join(directory, "detached-started.txt");
+    const release = join(directory, "detached-release.txt");
+    const orphaned = join(directory, "detached-orphaned.txt");
+    await writeFile(
+      workflowPath,
+      commandWorkflow(
+        "detached-cancel-workflow",
+        `const fs = require("node:fs"); fs.writeFileSync(${JSON.stringify(started)}, "started"); setInterval(() => { if (fs.existsSync(${JSON.stringify(release)})) fs.writeFileSync(${JSON.stringify(orphaned)}, "orphan"); }, 20);`,
+      ),
+      "utf8",
+    );
+
+    try {
+      const submitted = await spawnFlow([
+        "run",
+        workflowPath,
+        "--detach",
+        "--run-id",
+        "detached-cancel-run",
+        "--runs-dir",
+        runsDirectory,
+        "--cwd",
+        directory,
+      ]).completed;
+      expect(submitted.code, submitted.stderr).toBe(0);
+      await waitForFile(started);
+
+      const cancellationCommandId = "019fd722-4144-7a72-9c86-6f9af022b2e8";
+      const cancelled = await spawnFlow([
+        "cancel",
+        "detached-cancel-run",
+        "--actor",
+        "runtime:test",
+        "--reason",
+        "Stop the detached command.",
+        "--command-id",
+        cancellationCommandId,
+        "--runs-dir",
+        runsDirectory,
+      ]).completed;
+      expect(cancelled.code, cancelled.stderr).toBe(0);
+      expect(JSON.parse(cancelled.stdout)).toMatchObject({
+        type: "cancelled",
+        commandId: cancellationCommandId,
+        runId: "detached-cancel-run",
+        runStatus: "cancelled",
+      });
+
+      const events = await readLedger(join(runsDirectory, "detached-cancel-run", "events.jsonl"));
+      expect(events.at(-1)).toMatchObject({
+        type: "run_cancelled",
+        actor: "runtime:test",
+        requestId: cancellationCommandId,
+        reason: "Stop the detached command.",
+      });
+      await writeFile(release, "release", "utf8");
+      await delay(250);
+      await expect(stat(orphaned)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await spawnFlow(["supervisor", "shutdown", "--runs-dir", runsDirectory]).completed.catch(
+        () => undefined,
+      );
+    }
+  });
+
+  it("adopts a live worker after the supervisor process is replaced", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "supervisor-restart.workflow.yaml");
+    const runsDirectory = join(directory, "runs");
+    const started = join(directory, "restart-started.txt");
+    const release = join(directory, "restart-release.txt");
+    const finished = join(directory, "restart-finished.txt");
+    await writeFile(
+      workflowPath,
+      commandWorkflow(
+        "supervisor-restart-workflow",
+        `const fs = require("node:fs"); fs.writeFileSync(${JSON.stringify(started)}, "started"); const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(release)})) { clearInterval(timer); fs.writeFileSync(${JSON.stringify(finished)}, "finished"); } }, 20);`,
+      ),
+      "utf8",
+    );
+
+    try {
+      const submitted = await spawnFlow([
+        "run",
+        workflowPath,
+        "--detach",
+        "--run-id",
+        "supervisor-restart-run",
+        "--runs-dir",
+        runsDirectory,
+        "--cwd",
+        directory,
+      ]).completed;
+      expect(submitted.code, submitted.stderr).toBe(0);
+      await waitForFile(started);
+
+      const before = await spawnFlow(["supervisor", "status", "--runs-dir", runsDirectory])
+        .completed;
+      expect(before.code, before.stderr).toBe(0);
+      const firstStatus = JSON.parse(before.stdout) as {
+        generation: string;
+        pid: number;
+        workers: unknown[];
+      };
+      expect(firstStatus.workers).toHaveLength(1);
+      process.kill(firstStatus.pid, "SIGTERM");
+      await waitForProcessExit(firstStatus.pid);
+
+      const after = await spawnFlow(["supervisor", "status", "--runs-dir", runsDirectory])
+        .completed;
+      expect(after.code, after.stderr).toBe(0);
+      const replacement = JSON.parse(after.stdout) as {
+        generation: string;
+        pid: number;
+        workers: Array<{ status: string; runId: string }>;
+      };
+      expect(replacement.generation).not.toBe(firstStatus.generation);
+      expect(replacement.pid).not.toBe(firstStatus.pid);
+      expect(replacement.workers).toEqual([
+        expect.objectContaining({ runId: "supervisor-restart-run", status: "running" }),
+      ]);
+
+      await writeFile(release, "release", "utf8");
+      await waitForFile(finished);
+      await waitForRunStatus(runsDirectory, "supervisor-restart-run", "succeeded");
+      const events = await readLedger(
+        join(runsDirectory, "supervisor-restart-run", "events.jsonl"),
+      );
+      expect(events.map((event) => event.type)).toEqual([
+        "run_started",
+        "node_started",
+        "node_succeeded",
+        "run_succeeded",
+      ]);
+    } finally {
+      await spawnFlow(["supervisor", "shutdown", "--runs-dir", runsDirectory]).completed.catch(
+        () => undefined,
+      );
+    }
+  });
 });
 
 function commandWorkflow(id: string, script: string): string {
@@ -340,6 +594,38 @@ async function waitForFile(path: string): Promise<void> {
     await delay(20);
   }
   throw new Error(`timed out waiting for ${path}`);
+}
+
+async function waitForRunStatus(
+  runsDirectory: string,
+  runId: string,
+  expectedStatus: string,
+): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const inspected = await spawnFlow(["inspect", runId, "--runs-dir", runsDirectory]).completed;
+    if (inspected.code === 0 && JSON.parse(inspected.stdout).status === expectedStatus) {
+      return;
+    }
+    await delay(20);
+  }
+  throw new Error(`timed out waiting for run "${runId}" to reach "${expectedStatus}"`);
+}
+
+async function waitForProcessExit(pid: number): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ESRCH") {
+        return;
+      }
+      throw error;
+    }
+    await delay(20);
+  }
+  throw new Error(`timed out waiting for process ${pid} to exit`);
 }
 
 async function createTemporaryDirectory(): Promise<string> {

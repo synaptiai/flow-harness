@@ -584,7 +584,7 @@ nodes:
     ).resolves.toBe(before);
   });
 
-  it("persists failure and terminates the command group when execution is cancelled", async () => {
+  it("persists cancellation and terminates the command group", async () => {
     const directory = await createTemporaryDirectory();
     const workflowPath = join(directory, "cancel.workflow.yaml");
     const startedWrite = join(directory, "started.txt");
@@ -622,7 +622,7 @@ nodes:
 
     expect(exitCode).toBe(1);
     expect(JSON.parse(capture.stdout.join("\n"))).toMatchObject({
-      status: "failed",
+      status: "cancelled",
       failedNodeId: "long-command",
       nodes: {
         "long-command": {

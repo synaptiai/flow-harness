@@ -559,7 +559,41 @@ describe("reduceRunEvents", () => {
     ).toThrowError(/node remains running/i);
   });
 
-  it("does not allow cancellation to mask a failed node", () => {
+  it("reconstructs an attributable cancellation after the active node settles", () => {
+    const state = reduceRunEvents([
+      runStarted(),
+      { ...base(2), type: "node_started", nodeId: "node-version", attempt: 1 },
+      {
+        ...base(3),
+        type: "node_failed",
+        nodeId: "node-version",
+        attempt: 1,
+        error: {
+          code: "command_aborted",
+          message: "operator cancelled",
+          retryable: false,
+          sideEffectStatus: "uncertain",
+        },
+        evidence: commandEvidence(1),
+      },
+      {
+        ...base(4),
+        type: "run_cancelled",
+        reason: "operator cancelled",
+        cancelledNodeId: "node-version",
+        actor: "operator:test",
+        requestId: "a4f43869-0aca-4db0-851a-c1e6bca34c7e",
+      },
+    ]);
+
+    expect(state).toMatchObject({
+      status: "cancelled",
+      failedNodeId: "node-version",
+      failureReason: "operator cancelled",
+    });
+  });
+
+  it("rejects cancellation that does not identify its settled failed node", () => {
     expect(() =>
       reduceRunEvents([
         runStarted(),
@@ -570,8 +604,8 @@ describe("reduceRunEvents", () => {
           nodeId: "node-version",
           attempt: 1,
           error: {
-            code: "command_failed",
-            message: "exit 1",
+            code: "command_aborted",
+            message: "operator cancelled",
             retryable: false,
             sideEffectStatus: "uncertain",
           },
@@ -579,7 +613,7 @@ describe("reduceRunEvents", () => {
         },
         { ...base(4), type: "run_cancelled", reason: "operator cancelled" },
       ]),
-    ).toThrowError(/followed immediately by run_failed/i);
+    ).toThrowError(/cancelled node/i);
   });
 
   it("rejects overlapping node attempts in a sequential run", () => {

@@ -243,11 +243,25 @@ Node-start events are synced before an executor is invoked. Node-result events a
 
 The reducer accepts only legal state transitions and reconstructs `running`, `waiting_for_approval`, `succeeded`, `failed`, `cancelled`, or `resource_exhausted` run state together with immutable resources, budget, goal, criterion, and current command-approval state. Cancellation before a run claim creates no ledger. Cancellation during a node becomes a failed node attempt while retaining any settled evidence; cancellation between attempts appends `run_cancelled` without starting more work unless committed evidence already exhausted a settlement limit or a start limit already prevents pending work. In either exception, durable `resource_exhausted` state takes precedence. A valid recovery appends `run_resumed`, preserves committed node outcomes and approval state, skips successful nodes, and either continues the next ready pending node, returns to an operator wait, or finalizes a committed failure or exhausted settlement. Model transcripts and implementation rationale are never consulted during replay.
 
+## Foreground and detached execution
+
+Execution mode is not part of workflow semantics. The same compiled graph, scheduler, executor,
+ledger, approvals, budgets, and recovery rules apply whether `run` or `resume` stays attached to the
+CLI or uses `--detach`. Detached submission stores the exact workflow source and normalized
+execution directory in an immutable job record; it never defers compilation to a mutable file path.
+One authenticated worker then owns one normal application run. Supervisor health cannot advance the
+graph or override ledger state.
+
+`--command-id <uuid>` is an execution-control option, not workflow input. It lets an automation
+retry the exact detached submission or cancellation after losing a response. The supervisor binds
+the id to the complete request and rejects reuse with changed input.
+
 ## Current limitations
 
 - No loop, retry, conditional, parallel, fork/join, general approval-node, or child-run semantics. Approval is currently available only as a deterministic command pre-start gate.
 - No automatic retry or reconciliation of an interrupted node attempt; a durable start without an outcome blocks recovery.
-- No handoff from a live process, detached supervisor, or multi-host ownership protocol.
+- Detached workers can be adopted by a replacement local supervisor, but they cannot move between
+  hosts and do not survive host reboot.
 - The SRT profile is fixed; workflows cannot yet request network, credential injection, or a different sandbox backend.
 - The native sandbox contains command descendants but does not contain the host-side Pi runtime; hostile workloads require a stronger container, microVM, or managed boundary.
 - The only agent mutation is exact single-file edit of an existing UTF-8 file; no create, delete, rename, shell, network, fuzzy patch, or multi-file transaction is exposed.

@@ -24,6 +24,29 @@ successful and are not executed again. Pending nodes retain their normal depende
 use the lesser of their declared timeout and remaining active-execution budget. The command prints
 the same JSON `RunState` shape as `flow run`.
 
+To submit either operation to the local supervisor, add `--detach`:
+
+```sh
+flow run <workflow.yaml> --detach --run-id <run-id> [--command-id <uuid>]
+flow resume <workflow.yaml> --detach --run-id <run-id> [--command-id <uuid>]
+flow supervisor status
+flow events <run-id> --after 0 --follow
+```
+
+The client returns only after the exact source snapshot and active-run claim are durable and an
+authenticated worker has accepted ownership. That acceptance is a process-lifecycle guarantee, not
+a successful workflow result. A later client can page ledger events, follow to a terminal event, or
+cancel an active worker with
+`flow cancel <run-id> --actor <label> [--reason <text>] [--command-id <uuid>]`.
+
+Flow generates command ids when omitted. A caller that needs retry safety across a lost response
+must persist a UUID before the first request and reuse it with byte-equivalent input. A reused key
+with different input is rejected. Submission commands are journaled before job reservation: exact
+retries replay accepted or rejected outcomes, while uncertain launches are reconciled only from a
+matching authenticated worker and never cause a second spawn. A job snapshot with neither an
+active claim nor an authenticated descriptor is ambiguous rather than proof that launch is safe;
+Flow records uncertainty and refuses to spawn it.
+
 An approval-required command returns process exit code 3 and can be decided after the original
 client exits:
 
@@ -66,9 +89,39 @@ A second process refuses a run owned by a live local process. When the recorded 
 exists, one claimant can atomically replace its ownership; concurrent claimants still produce only
 one winner. Process-ID reuse may conservatively block recovery but cannot authorize two owners.
 
-This mechanism coordinates processes on one host and filesystem. It is not a distributed lease,
-daemon, authentication mechanism, or security sandbox. Do not share one run directory across
-independent hosts.
+For foreground execution, that owner is the CLI process. For detached execution, one worker owns
+one existing `runWorkflow` or `resumeWorkflow` call. The local supervisor never claims the run,
+appends graph events, constructs an executor, or contacts a model provider.
+
+The supervisor maintains an immutable submitted-source snapshot, an active-run claim, a private
+worker descriptor, and durable mutating-command records. A submission record binds the exact input
+digest before reservation and transitions monotonically to accepted, rejected, or uncertain. A
+worker starts in an adoption gate and does not schedule until it has published `running`, the
+supervisor authenticates its worker id, run id, PID, random token, and job digest, and the identity
+response has flushed. Duplicate exact submissions converge on the recorded result; conflicting
+submissions remain rejected even after the original active claim disappears. Concurrent clients
+also serialize daemon auto-start through an owner-only startup record, so only one caller can
+remove a stale socket and launch a generation.
+
+On supervisor restart, detached workers continue in their own process groups. A replacement
+generation scans claims and adopts only workers that answer the token-bound identity handshake.
+Stale or mismatched PID metadata is never signalled. If the worker itself disappears with an open
+node attempt, the ledger remains authoritative and normal recovery reports `uncertain_operation`.
+
+Cancellation is recorded durably before dispatch. A repeated exact command id returns its committed
+result; a different request using that id conflicts. If acknowledgement is lost after dispatch,
+Flow reconciles a terminal cancellation from the ledger and otherwise reports uncertainty instead
+of blindly repeating the abort. Cancellation during a node retains its available evidence and
+records the actor, request id, and cancelled node; committed resource exhaustion still takes
+precedence.
+
+Event replay is read-only and page-based. `--after` is an exclusive sequence cursor, `--limit` is
+bounded to 256, and follow mode advances only after validating the next contiguous page. A page is
+terminal only when it reaches a terminal ledger event.
+
+These mechanisms coordinate processes on one host and filesystem. They are not a distributed
+lease, remote service, authenticated user boundary, or security sandbox. Do not share one run
+directory across independent hosts.
 
 JSONL records are committed only when newline-terminated. Recovery ignores a final unterminated
 fragment and truncates it immediately before the next append. An invalid earlier record, mismatched
@@ -98,7 +151,8 @@ ledger events or invoke an executor. Historical approval requests are revalidate
 budget remaining at their exact event boundary, not against final run consumption.
 
 Flow does not guarantee exactly-once effects in arbitrary external systems, authenticated approval
-identity, trusted time, mid-node restoration of Pi sessions, automatic retry of uncertain work,
-detached execution, multi-host recovery, or a billing-authoritative zero-overshoot model-cost cap.
+or cancellation identity, trusted time, mid-node restoration of Pi sessions, automatic retry of
+uncertain work, host-reboot continuation, multi-host recovery, or a billing-authoritative
+zero-overshoot model-cost cap.
 Those capabilities require explicit reconciliation, identity, provider reservation, and supervisor
 designs beyond this recovery slice.
