@@ -2,6 +2,7 @@ import {
   lstat,
   mkdtemp,
   mkdir,
+  readdir,
   readFile,
   realpath,
   rm,
@@ -32,17 +33,35 @@ afterEach(async () => {
 describe("Flow project configuration", () => {
   it("initializes a minimal project atomically and refuses an implicit overwrite", async () => {
     const project = await temporaryDirectory("flow-config-project-");
-    const initialized = await initializeFlowProject(project);
+    const attempts = await Promise.allSettled([
+      initializeFlowProject(project),
+      initializeFlowProject(project),
+    ]);
+    const initialized = attempts.find(
+      (
+        attempt,
+      ): attempt is PromiseFulfilledResult<Awaited<ReturnType<typeof initializeFlowProject>>> =>
+        attempt.status === "fulfilled",
+    )?.value;
 
     expect(initialized).toEqual({
       created: true,
       projectRoot: project,
       path: join(project, ".flow", "config.yaml"),
     });
+    expect(attempts.filter((attempt) => attempt.status === "fulfilled")).toHaveLength(1);
+    expect(attempts.filter((attempt) => attempt.status === "rejected")).toHaveLength(1);
+    expect(initialized).toBeDefined();
+    if (initialized === undefined) {
+      throw new Error("one concurrent initializer must publish the project config");
+    }
     expect(await readFile(initialized.path, "utf8")).toBe(
       `apiVersion: ${FLOW_CONFIG_API_VERSION}\nkind: FlowProjectConfig\n`,
     );
     expect((await lstat(initialized.path)).isFile()).toBe(true);
+    expect(
+      (await readdir(join(project, ".flow"))).filter((name) => name.endsWith(".pending")),
+    ).toEqual([]);
 
     await expect(initializeFlowProject(project)).rejects.toMatchObject({
       name: "FlowConfigStoreError",

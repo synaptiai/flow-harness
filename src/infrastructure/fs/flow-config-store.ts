@@ -1,6 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { constants, type Stats } from "node:fs";
-import { type FileHandle, lstat, mkdir, open, realpath, rename, rm, stat } from "node:fs/promises";
+import {
+  type FileHandle,
+  link,
+  lstat,
+  mkdir,
+  open,
+  realpath,
+  rename,
+  rm,
+  stat,
+} from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 
@@ -130,9 +140,12 @@ export async function initializeFlowProject(
   }
 
   if (existing === null) {
+    const pending = join(flowDirectory, `.config.${randomUUID()}.pending`);
     try {
-      const handle = await open(path, "wx", 0o644);
+      const handle = await open(pending, "wx", 0o644);
       await writeAndSync(handle, PROJECT_CONFIG_SOURCE);
+      await link(pending, path);
+      await rm(pending);
       await syncDirectory(flowDirectory);
     } catch (error) {
       if (isNodeError(error) && error.code === "EEXIST") {
@@ -146,6 +159,8 @@ export async function initializeFlowProject(
         throw error;
       }
       throw ioError(`failed to initialize Flow project at "${path}"`, error);
+    } finally {
+      await rm(pending, { force: true }).catch(() => undefined);
     }
     return Object.freeze({ created: true, projectRoot, path });
   }
