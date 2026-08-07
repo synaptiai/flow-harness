@@ -1,0 +1,24 @@
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata:
+  id: typed-result
+  description: Publish bounded canonical JSON from durable command evidence.
+nodes:
+  - id: produce
+    type: command
+    command:
+      executable: node
+      args:
+        - -e
+        - 'process.stdout.write(JSON.stringify({ accepted: true, score: 1 }))'
+  - id: publish
+    type: result
+    dependsOn: [produce]
+    result:
+      source: { nodeId: produce, field: command.stdout }
+      schema:
+        type: object
+        properties:
+          accepted: { type: boolean }
+          score: { type: integer, minimum: 0, maximum: 10 }
+        required: [accepted, score]

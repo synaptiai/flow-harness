@@ -70,8 +70,60 @@ Criterion evaluation is a pure domain operation over the captured goal and durab
 - Self-dependencies, duplicate dependencies, and cycles are rejected.
 - The scheduler considers pending nodes in declaration order and applies the first legal transition whose dependencies are terminal. Ordinary work requires successful dependencies; omission propagates through ordinary descendants; an explicit join reconciles the selected success with omitted alternatives.
 - Independent ready executable nodes may overlap only when `concurrency.maxNodes` explicitly permits it; omission preserves the sequential maximum of one.
-- Every terminal node must be a command or verifier node. An ordinary agent response cannot be terminal proof.
+- Every terminal node must be a command, verifier, or result node. An ordinary agent response cannot be terminal proof. A terminal result completes an operational graph but cannot satisfy a goal criterion.
 - Compilation finishes before Flow creates a run ledger or invokes an executor.
+
+## Typed result node
+
+A `result` node converts one complete durable evidence field into provider-neutral typed data:
+
+```yaml
+- id: produce
+  type: command
+  command: { executable: node, args: [scripts/measure.mjs] }
+- id: publish
+  type: result
+  dependsOn: [produce]
+  result:
+    source: { nodeId: produce, field: command.stdout }
+    schema:
+      type: object
+      properties:
+        accepted: { type: boolean }
+        score: { type: integer, minimum: 0, maximum: 10 }
+      required: [accepted, score]
+```
+
+The source must be a direct dependency and its field must match the successful source node. Valid
+fields are `command.stdout`, `command.stderr`, `agent.text`, `verifier.verdict`,
+`verifier.reason`, and `result.value`. A truncated command or agent field fails with
+`result_source_truncated`; Flow never parses partial evidence.
+
+The result schema is a closed Flow-owned subset, not an open-ended JSON Schema dialect. It supports
+`null`, `boolean`, finite `number` with optional inclusive bounds, safe `integer` with optional
+inclusive bounds, `string` with required `maxLength`, `array` with required `items` and `maxItems`,
+and `object` with identifier-keyed `properties` plus an optional unique `required` subset. Objects
+reject undeclared properties. Schemas have at most 8 levels, 128 nodes, 128 properties per object,
+and 65,536 serialized UTF-8 bytes. `maxItems` is at most 16,383, string length is measured in Unicode
+code points and capped at 262,144, and integer bounds must remain within JavaScript's safe range.
+
+Source parsing is strict and fail-closed. Flow rejects trailing input, duplicate JSON object keys
+including escape-equivalent spellings, non-finite IEEE-754 values, unpaired Unicode surrogates, and
+schema mismatches. Values have at most 64 levels, 16,384 nodes, and 262,144 canonical UTF-8 bytes.
+After validation, Flow applies RFC 8785 JSON Canonicalization Scheme ordering and ECMAScript value
+serialization. The resulting canonical JSON is the exact `result.value` observed by downstream
+nodes.
+
+`node_result_published` durably binds the result node and attempt to the source node, source attempt,
+source field, source hash, normalized schema digest, canonical value, and value hash. Replay reads
+the original durable source, validates and canonicalizes it again, and rejects any changed identity,
+classification, bytes, or hash. The node is resource-neutral: it emits no `node_started`, invokes no
+executor, and consumes no start, model-token, reported-cost, or active-time budget.
+
+A typed result is not a verifier verdict. Goal criteria remain bound to terminal command or verifier
+nodes. Results instead provide a stable data boundary for exact conditions, evidence-bound
+approvals, model-verifier inputs, loop checks, inspection, detached execution, and future child-run
+composition.
 
 ## Exact conditions and explicit joins
 
@@ -116,9 +168,10 @@ Criterion evaluation is a pure domain operation over the captured goal and durab
   command: { executable: npm, args: [test] }
 ```
 
-A condition reads one complete durable evidence field from a direct dependency:
-`command.stdout`, `command.stderr`, or `agent.text`. Cases are checked in declaration order by exact
-string equality; `default` names the selected case when no exact value matches. Case identifiers and
+A condition reads one complete durable evidence field from a direct dependency, including
+`command.stdout`, `command.stderr`, `agent.text`, accepted verifier fields, or `result.value`. Cases
+are checked in declaration order by exact string equality; `default` names the selected case when
+no exact value matches. Case identifiers and
 exact values are unique, every case has guarded work, and each condition has exactly one explicit
 join. Conditions do not execute JavaScript, JSONPath, regular expressions, clocks, random values,
 network calls, model callbacks, or mutable workspace reads.
@@ -172,8 +225,8 @@ A top-level `loop` contains a local command/agent/verifier DAG and an exact stop
 `maxIterations` is an integer from 1 through 32. The body has 1–16 non-loop nodes, exactly one
 local entry, local dependencies, and the same condition/branch/join rules as a top-level graph.
 Nested loops, cross-scope references, body cycles, and a stop source that is conditional or not
-awaited on every successful body path fail compilation. The source is complete durable
-`command.stdout`, `command.stderr`, or `agent.text`; comparison is exact and does not normalize
+awaited on every successful body path fail compilation. The source is complete durable command,
+agent, accepted verifier, or `result.value` evidence; comparison is exact and does not normalize
 whitespace. Truncated evidence fails with `loop_source_truncated`.
 
 Compilation creates one qualified body instance and one pure check for every possible iteration,
@@ -360,8 +413,9 @@ An approval node pauses graph advancement over exact completed evidence:
 `prompt` is trimmed, non-empty, and at most 4096 characters. `evidence` contains one through sixteen
 ordered unique `(nodeId, field)` declarations. Each source must be a direct dependency and have a
 compatible field: command nodes expose `command.stdout` and `command.stderr`; agent nodes expose
-`agent.text`; accepted verifier nodes expose `verifier.verdict` and `verifier.reason`. Conditions,
-loop checks, and model verifiers use the same typed source compatibility. The node may be
+`agent.text`; accepted verifier nodes expose `verifier.verdict` and `verifier.reason`; result nodes
+expose `result.value`. Conditions, loop checks, and model verifiers use the same typed source
+compatibility. The node may be
 condition-guarded or appear in a bounded loop body under the same
 finite graph rules as other guarded control nodes.
 
@@ -495,7 +549,10 @@ remain possible and stay bounded by the node timeout.
 
 Command nodes are supported on Linux and macOS. Flow rejects them before spawning on Windows until the command adapter can contain and terminate the full descendant process tree.
 
-An agent node succeeds when its bounded Pi session settles normally. Its text becomes diagnostic evidence. It cannot name the next node, mark acceptance criteria complete, or terminate the workflow successfully without a downstream command or verifier node.
+An agent node succeeds when its bounded Pi session settles normally. Its text becomes diagnostic
+evidence. It cannot name the next node or mark acceptance criteria complete. A downstream command
+or verifier must supply goal authority; a downstream result may instead terminate a graph by
+publishing validated operational data.
 
 Provider credentials remain outside workflow files and use Pi's configured credential runtime. Provider and model identifiers are execution configuration; no Pi type appears in the compiled or persisted Flow contracts.
 
@@ -584,7 +641,7 @@ the id to the complete request and rejects reuse with changed input.
 
 ## Current limitations
 
-- No arbitrary cycles, nested/unbounded/optimization loops, dynamic fan-out, general multi-condition joins, child runs, terminal-failure retry, or fallback semantics. Bounded loop bodies and static ready DAG nodes can execute concurrently, but iterations are sequential, share one workspace, and are not inferred to be conflict-free. Conditions and loop stops are limited to exact equality over complete durable command, agent, or accepted verifier fields. Approval is available as deterministic command pre-start gates and pure evidence-bound graph nodes; command-verifier and dynamic in-session model-tool approval remain unavailable. Recovery is limited to proof-safe fresh agent attempts; interrupted verifier attempts are never retried automatically.
+- No arbitrary cycles, nested/unbounded/optimization loops, dynamic fan-out, general multi-condition joins, child runs, terminal-failure retry, or fallback semantics. Bounded loop bodies and static ready DAG nodes can execute concurrently, but iterations are sequential, share one workspace, and are not inferred to be conflict-free. Conditions and loop stops are limited to exact equality over complete durable command, agent, accepted verifier, or typed-result fields. Approval is available as deterministic command pre-start gates and pure evidence-bound graph nodes; command-verifier and dynamic in-session model-tool approval remain unavailable. Recovery is limited to proof-safe fresh agent attempts; interrupted verifier attempts are never retried automatically.
 - No automatic terminalization or session continuation of an interrupted node attempt. Unconfigured or ineligible durable starts still block continuation.
 - Detached workers can be adopted by a replacement local supervisor, but they cannot move between
   hosts and do not survive host reboot.

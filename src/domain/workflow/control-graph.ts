@@ -2,6 +2,7 @@ import type {
   CompiledBranchGuard,
   CompiledLoopGuard,
   CompiledLoopInstance,
+  CompiledResultSchema,
   CompiledVerifierConfig,
   CompiledWorkflow,
   ConditionSourceField,
@@ -34,6 +35,15 @@ type ProjectedControlGraphNode =
       readonly type: "verifier";
       readonly when?: CompiledBranchGuard;
       readonly verifier: CompiledVerifierConfig;
+    })
+  | (ProjectedNodeBase & {
+      readonly type: "result";
+      readonly when?: CompiledBranchGuard;
+      readonly result: {
+        readonly source: { readonly nodeId: string; readonly field: ConditionSourceField };
+        readonly schema: CompiledResultSchema;
+        readonly schemaDigest: string;
+      };
     })
   | (ProjectedNodeBase & {
       readonly type: "condition";
@@ -81,6 +91,7 @@ export function workflowRequiresControlGraph(workflow: CompiledWorkflow): boolea
         node.type === "join" ||
         node.type === "approval" ||
         node.type === "verifier" ||
+        node.type === "result" ||
         node.type === "loop-check" ||
         node.type === "loop",
     )
@@ -117,6 +128,14 @@ export function projectCompiledControlGraph(workflow: CompiledWorkflow): Project
         type: node.type,
         ...(node.when === undefined ? {} : { when: node.when }),
         verifier: node.verifier,
+      };
+    }
+    if (node.type === "result") {
+      return {
+        ...common,
+        type: node.type,
+        ...(node.when === undefined ? {} : { when: node.when }),
+        result: node.result,
       };
     }
     if (node.type === "join") {

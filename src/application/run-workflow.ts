@@ -33,6 +33,11 @@ import {
   workflowApprovalEvidenceTruncationMessage,
   workflowApprovalRequestId,
 } from "../domain/approval/workflow-approval.js";
+import {
+  TypedResultError,
+  evaluateTypedResult,
+  resultSourceTruncationMessage,
+} from "../domain/result/typed-result.js";
 import type {
   CompiledAgentNode,
   CompiledApprovalNode,
@@ -42,6 +47,7 @@ import type {
   CompiledLoopCheckNode,
   CompiledLoopNode,
   CompiledNode,
+  CompiledResultNode,
   CompiledVerifierNode,
   CompiledWorkflow,
   EvidenceSourceField,
@@ -982,6 +988,7 @@ function validateRecoveredHistory(
       interruptionRequiresResume = true;
     } else if (
       event.type === "node_condition_evaluated" ||
+      event.type === "node_result_published" ||
       event.type === "node_loop_checked" ||
       event.type === "node_loop_completed" ||
       event.type === "node_omitted" ||
@@ -1158,6 +1165,7 @@ type WorkflowTransition =
   | { readonly kind: "execute"; readonly node: ExecutableNode }
   | { readonly kind: "request_approval"; readonly node: CompiledApprovalNode }
   | { readonly kind: "evaluate_condition"; readonly node: CompiledConditionNode }
+  | { readonly kind: "publish_result"; readonly node: CompiledResultNode }
   | {
       readonly kind: "omit_condition";
       readonly node:
@@ -1165,6 +1173,7 @@ type WorkflowTransition =
         | CompiledCommandNode
         | CompiledVerifierNode
         | CompiledApprovalNode
+        | CompiledResultNode
         | CompiledConditionNode;
       readonly selectedCase: string;
     }
@@ -1180,6 +1189,7 @@ type WorkflowTransition =
         | CompiledCommandNode
         | CompiledVerifierNode
         | CompiledApprovalNode
+        | CompiledResultNode
         | CompiledConditionNode;
     }
   | { readonly kind: "join"; readonly node: CompiledJoinNode }
@@ -1275,6 +1285,9 @@ function selectNextTransition(
     if (node.type === "approval") {
       return { kind: "request_approval", node };
     }
+    if (node.type === "result") {
+      return { kind: "publish_result", node };
+    }
     return { kind: "execute", node };
   }
   return undefined;
@@ -1286,6 +1299,7 @@ function controlEventMatchesTransition(
     {
       readonly type:
         | "node_condition_evaluated"
+        | "node_result_published"
         | "node_loop_checked"
         | "node_loop_completed"
         | "node_omitted"
@@ -1298,6 +1312,9 @@ function controlEventMatchesTransition(
 ): boolean {
   if (event.type === "node_condition_evaluated") {
     return transition?.kind === "evaluate_condition" && transition.node.id === event.nodeId;
+  }
+  if (event.type === "node_result_published") {
+    return transition?.kind === "publish_result" && transition.node.id === event.nodeId;
   }
   if (event.type === "workflow_approval_requested") {
     return transition?.kind === "request_approval" && transition.node.id === event.nodeId;
@@ -1312,6 +1329,7 @@ function controlEventMatchesTransition(
     return (
       (transition?.kind === "evaluate_condition" ||
         transition?.kind === "request_approval" ||
+        transition?.kind === "publish_result" ||
         transition?.kind === "evaluate_loop" ||
         transition?.kind === "complete_loop") &&
       transition.node.id === event.nodeId
@@ -1477,6 +1495,60 @@ function controlTransitionEvent(
     };
   }
 
+  if (transition.kind === "publish_result") {
+    const source = controlSource(transition.node.id, transition.node.result.source, state);
+    if (source.truncated) {
+      return {
+        ...base,
+        type: "node_control_failed",
+        nodeId: transition.node.id,
+        attempt: 1,
+        error: {
+          code: "result_source_truncated",
+          message: resultSourceTruncationMessage(
+            transition.node.id,
+            transition.node.result.source.field,
+          ),
+          retryable: false,
+          sideEffectStatus: "none",
+        },
+      };
+    }
+    let evaluated: ReturnType<typeof evaluateTypedResult>;
+    try {
+      evaluated = evaluateTypedResult(source.value, transition.node.result.schema);
+    } catch (error) {
+      if (!(error instanceof TypedResultError)) {
+        throw error;
+      }
+      return {
+        ...base,
+        type: "node_control_failed",
+        nodeId: transition.node.id,
+        attempt: 1,
+        error: {
+          code: error.code,
+          message: error.message,
+          retryable: false,
+          sideEffectStatus: "none",
+        },
+      };
+    }
+    return {
+      ...base,
+      type: "node_result_published",
+      nodeId: transition.node.id,
+      attempt: 1,
+      sourceNodeId: transition.node.result.source.nodeId,
+      sourceAttempt: source.attempt,
+      sourceField: transition.node.result.source.field,
+      sourceHash: source.hash,
+      schemaDigest: transition.node.result.schemaDigest,
+      canonicalValue: evaluated.canonicalValue,
+      valueHash: evaluated.valueHash,
+    };
+  }
+
   if (transition.kind === "evaluate_loop") {
     const source = loopCheckSource(transition.node, state);
     if (source.truncated) {
@@ -1582,7 +1654,23 @@ function controlSource(
   readonly truncated: boolean;
 } {
   const source = state.nodes[declaration.nodeId];
-  if (source?.status !== "succeeded" || source.evidence === null) {
+  if (source?.status !== "succeeded") {
+    throw new Error(`control node "${controlNodeId}" source has no successful evidence`);
+  }
+  if (declaration.field === "result.value") {
+    if (source.control?.kind === "result") {
+      return {
+        attempt: source.attempt,
+        value: source.control.canonicalValue,
+        hash: source.control.valueHash,
+        truncated: false,
+      };
+    }
+    throw new Error(
+      `control node "${controlNodeId}" source field is incompatible with its evidence`,
+    );
+  }
+  if (source.evidence === null) {
     throw new Error(`control node "${controlNodeId}" source has no successful evidence`);
   }
   switch (declaration.field) {
@@ -1673,7 +1761,23 @@ function verifierSource(
   readonly truncated: boolean;
 } {
   const source = state.nodes[declaration.nodeId];
-  if (source?.status !== "succeeded" || source.evidence === null) {
+  if (source?.status !== "succeeded") {
+    throw new Error(`verifier node "${verifierNodeId}" source has no successful evidence`);
+  }
+  if (declaration.field === "result.value") {
+    if (source.control?.kind === "result") {
+      return {
+        attempt: source.attempt,
+        value: source.control.canonicalValue,
+        hash: source.control.valueHash,
+        truncated: false,
+      };
+    }
+    throw new Error(
+      `verifier node "${verifierNodeId}" source field is incompatible with its evidence`,
+    );
+  }
+  if (source.evidence === null) {
     throw new Error(`verifier node "${verifierNodeId}" source has no successful evidence`);
   }
   switch (declaration.field) {

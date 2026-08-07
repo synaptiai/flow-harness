@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
+import { compileWorkflowText } from "../../src/domain/workflow/compiler.js";
+
 const rootUrl = new URL("../../", import.meta.url);
 
 describe("public repository contracts", () => {
@@ -269,6 +271,50 @@ describe("public repository contracts", () => {
         body: { nodes: [expect.objectContaining({ id: "advance", type: "command" })] },
       },
     });
+  });
+
+  it("documents replay-safe typed results with a valid credential-free example", async () => {
+    const [readme, architecture, workflowSpec, recovery, roadmap, security, testing, source] =
+      await Promise.all([
+        readText("README.md"),
+        readText("docs/architecture.md"),
+        readText("docs/workflow-spec.md"),
+        readText("docs/recovery.md"),
+        readText("docs/roadmap.md"),
+        readText("SECURITY.md"),
+        readText("docs/testing-and-evaluation.md"),
+        readText("examples/typed-result.workflow.yaml"),
+      ]);
+
+    expect(readme).toMatch(/Typed result.*Implemented/is);
+    expect(readme).toContain("examples/typed-result.workflow.yaml");
+    expect(architecture).toContain("`node_result_published`");
+    expect(workflowSpec).toMatch(/RFC 8785.*canonical JSON/is);
+    expect(workflowSpec).toMatch(/result\.value/is);
+    expect(recovery).toMatch(/typed result publications.*safe committed/is);
+    expect(roadmap).toMatch(/typed results.*Implemented/is);
+    expect(security).toMatch(/duplicate JSON object keys.*fail/is);
+    expect(testing).toContain("examples/typed-result.workflow.yaml");
+
+    const example = parse(source) as {
+      readonly nodes: ReadonlyArray<{
+        readonly id?: string;
+        readonly type?: string;
+        readonly result?: {
+          readonly source?: { readonly nodeId?: string; readonly field?: string };
+          readonly schema?: { readonly type?: string; readonly required?: readonly string[] };
+        };
+      }>;
+    };
+    expect(example.nodes[1]).toMatchObject({
+      id: "publish",
+      type: "result",
+      result: {
+        source: { nodeId: "produce", field: "command.stdout" },
+        schema: { type: "object", required: ["accepted", "score"] },
+      },
+    });
+    expect(() => compileWorkflowText(source, "examples/typed-result.workflow.yaml")).not.toThrow();
   });
 
   it("documents detached supervision without overstating its trust boundary", async () => {

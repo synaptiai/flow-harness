@@ -2,6 +2,7 @@ import { parseDocument } from "yaml";
 
 import type { GoalContractSource } from "../goal/schema.js";
 import type { CompiledGoal } from "../goal/types.js";
+import { calculateResultSchemaDigest } from "../result/typed-result.js";
 import { projectCompiledControlGraph, workflowRequiresControlGraph } from "./control-graph.js";
 import { workflowSourceSchema, type WorkflowSource } from "./schema.js";
 import {
@@ -15,6 +16,8 @@ import {
   type CompiledLoopCheckNode,
   type CompiledLoopNode,
   type CompiledNode,
+  type CompiledResultNode,
+  type CompiledResultSchema,
   type CompiledRunBudget,
   type CompiledVerifierNode,
   type CompiledWorkflow,
@@ -58,6 +61,10 @@ export interface WorkflowDiagnostic {
     | "loop_source_field_mismatch"
     | "loop_source_not_unconditional"
     | "loop_source_unknown"
+    | "result_source_field_mismatch"
+    | "result_source_requires_dependency"
+    | "result_source_self"
+    | "result_source_unknown"
     | "self_dependency"
     | "terminal_requires_command"
     | "unknown_criterion_verifier"
@@ -213,11 +220,16 @@ function validateGraph(workflow: WorkflowSource): WorkflowDiagnostic[] {
 
   const dependedUpon = new Set(workflow.nodes.flatMap(sourceDependencies));
   for (const [index, node] of workflow.nodes.entries()) {
-    if (!dependedUpon.has(node.id) && node.type !== "command" && node.type !== "verifier") {
+    if (
+      !dependedUpon.has(node.id) &&
+      node.type !== "command" &&
+      node.type !== "verifier" &&
+      node.type !== "result"
+    ) {
       diagnostics.push({
         code: "terminal_requires_command",
         path: `nodes.${index}.type`,
-        message: `terminal node "${node.id}" must be a command or verifier node`,
+        message: `terminal node "${node.id}" must be a command, verifier, or result node`,
       });
     }
   }
@@ -622,6 +634,45 @@ function validateControlFlowNodes<T extends SourceNode | SourceBodyNode>(
     }
   }
 
+  for (const [index, result] of nodes.entries()) {
+    if (result.type !== "result") {
+      continue;
+    }
+    const declaration = result.result.source;
+    const path = `${prefix}.${index}.result.source`;
+    const source = nodeById.get(declaration.nodeId);
+    if (declaration.nodeId === result.id) {
+      diagnostics.push({
+        code: "result_source_self",
+        path: `${path}.nodeId`,
+        message: `result "${result.id}" cannot publish its own value`,
+      });
+      continue;
+    }
+    if (source === undefined) {
+      diagnostics.push({
+        code: "result_source_unknown",
+        path: `${path}.nodeId`,
+        message: `result "${result.id}" references unknown source node "${declaration.nodeId}"`,
+      });
+      continue;
+    }
+    if (!result.dependsOn.includes(source.id)) {
+      diagnostics.push({
+        code: "result_source_requires_dependency",
+        path: `${path}.nodeId`,
+        message: `result "${result.id}" source "${source.id}" must be a direct dependency`,
+      });
+    }
+    if (!evidenceFieldMatchesNode(declaration.field, source.type)) {
+      diagnostics.push({
+        code: "result_source_field_mismatch",
+        path: `${path}.field`,
+        message: `result "${result.id}" source field "${declaration.field}" is incompatible with node "${source.id}" of type "${source.type}"`,
+      });
+    }
+  }
+
   for (const [index, node] of nodes.entries()) {
     if (node.type === "join" || node.type === "loop" || node.when === undefined) {
       continue;
@@ -797,6 +848,15 @@ function sourceControlGraph<T extends SourceNode | SourceBodyNode>(nodes: readon
           verifier: node.verifier,
         };
       }
+      if (node.type === "result") {
+        return {
+          nodeId: node.id,
+          type: node.type,
+          dependsOn: node.dependsOn,
+          ...(node.when === undefined ? {} : { when: node.when }),
+          result: node.result,
+        };
+      }
       if (node.type === "join") {
         return {
           nodeId: node.id,
@@ -829,7 +889,8 @@ function evidenceFieldMatchesNode(
   return (
     (field.startsWith("command.") && nodeType === "command") ||
     (field === "agent.text" && nodeType === "agent") ||
-    (field.startsWith("verifier.") && nodeType === "verifier")
+    (field.startsWith("verifier.") && nodeType === "verifier") ||
+    (field === "result.value" && nodeType === "result")
   );
 }
 
@@ -1106,6 +1167,17 @@ function freezeNode(source: Exclude<SourceNode, SourceLoopNode> | SourceBodyNode
     return Object.freeze(node);
   }
 
+  if (source.type === "result") {
+    return freezeResultNode({
+      id: source.id,
+      dependsOn,
+      ...(source.when === undefined ? {} : { when: Object.freeze({ ...source.when }) }),
+      sourceNodeId: source.result.source.nodeId,
+      sourceField: source.result.source.field,
+      schema: source.result.schema,
+    });
+  }
+
   const node: CompiledJoinNode = {
     id: source.id,
     type: "join",
@@ -1334,6 +1406,16 @@ function freezeLoopBodyNode(
     return Object.freeze(node);
   }
 
+  if (source.type === "result") {
+    return freezeResultNode({
+      ...common,
+      ...(when === undefined ? {} : { when }),
+      sourceNodeId: requireMappedLoopNode(idByTemplate, source.result.source.nodeId, loop.id),
+      sourceField: source.result.source.field,
+      schema: source.result.schema,
+    });
+  }
+
   const node: CompiledJoinNode = {
     ...common,
     type: "join",
@@ -1350,6 +1432,66 @@ function freezeLoopBodyNode(
     }),
   };
   return Object.freeze(node);
+}
+
+function freezeResultNode(input: {
+  readonly id: string;
+  readonly dependsOn: readonly string[];
+  readonly loopInstance?: CompiledResultNode["loopInstance"];
+  readonly loopGuard?: CompiledResultNode["loopGuard"];
+  readonly when?: CompiledResultNode["when"];
+  readonly sourceNodeId: string;
+  readonly sourceField: CompiledResultNode["result"]["source"]["field"];
+  readonly schema: CompiledResultSchema;
+}): CompiledResultNode {
+  const schema = freezeResultSchema(input.schema);
+  const node: CompiledResultNode = {
+    id: input.id,
+    type: "result",
+    dependsOn: input.dependsOn,
+    ...(input.loopInstance === undefined ? {} : { loopInstance: input.loopInstance }),
+    ...(input.loopGuard === undefined ? {} : { loopGuard: input.loopGuard }),
+    ...(input.when === undefined ? {} : { when: input.when }),
+    result: Object.freeze({
+      source: Object.freeze({ nodeId: input.sourceNodeId, field: input.sourceField }),
+      schema,
+      schemaDigest: calculateResultSchemaDigest(schema),
+    }),
+  };
+  return Object.freeze(node);
+}
+
+function freezeResultSchema(schema: CompiledResultSchema): CompiledResultSchema {
+  if (schema.type === "array") {
+    return Object.freeze({
+      type: schema.type,
+      maxItems: schema.maxItems,
+      items: freezeResultSchema(schema.items),
+    });
+  }
+  if (schema.type === "object") {
+    const properties = Object.fromEntries(
+      Object.entries(schema.properties)
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+        .map(([key, value]) => [key, freezeResultSchema(value)]),
+    );
+    return Object.freeze({
+      type: schema.type,
+      properties: Object.freeze(properties),
+      required: Object.freeze([...schema.required].sort()),
+    });
+  }
+  if (schema.type === "number" || schema.type === "integer") {
+    return Object.freeze({
+      type: schema.type,
+      ...(schema.minimum === undefined ? {} : { minimum: schema.minimum }),
+      ...(schema.maximum === undefined ? {} : { maximum: schema.maximum }),
+    });
+  }
+  if (schema.type === "string") {
+    return Object.freeze({ type: schema.type, maxLength: schema.maxLength });
+  }
+  return Object.freeze({ type: schema.type });
 }
 
 function requireMappedLoopNode(

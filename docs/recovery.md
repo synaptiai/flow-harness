@@ -81,6 +81,8 @@ The actor label is caller-supplied audit attribution rather than authenticated i
 | Last committed state | Recovery behavior |
 | --- | --- |
 | `run_started` or a completed executable/control transition | Append `run_resumed` and apply the next declaration-ordered legal transition |
+| A result source succeeded but no result transition is durable | Append `run_resumed`, reparse the durable source with the persisted schema, and publish or fail the result without invoking an executor |
+| `node_result_published` is durable | Verify source, schema, canonical value, and hashes during replay; continue after the result without republishing it |
 | All nodes succeeded or were omitted but `run_succeeded` is absent | Append `run_resumed`, append `run_succeeded`, and execute no node |
 | `node_failed` is durable, no limit is exhausted, and `run_failed` is absent | Append `run_resumed`, append `run_failed`, and do not retry the failed node |
 | A completed node outcome reaches a model-token, reported-cost, or active-time limit but `run_budget_exhausted` is absent | Append `run_resumed`, append `run_budget_exhausted`, and execute no node |
@@ -104,14 +106,16 @@ A started attempt is uncertain because its command, model, or external tool may 
 effect before the process stopped. Flow does not infer failure, success, or idempotency from the
 absence of a result. Command nodes never receive an automatic recovery policy.
 
-Condition decisions, loop checks and completions, omissions, and joins are safe committed
-boundaries because they do not invoke an executor. Recovery replays their persisted control graph
-and validates each source attempt, field, hash, selected case or loop decision, omission reason,
-loop iteration/guard, controller result, and join mapping against the scheduler's canonical next
-transition. Persisted loop topology additionally requires registered ordered checks, structurally
-isomorphic body clones, and the same exact stop contract in every iteration. It never reevaluates a
-condition or committed loop check from the current workspace or a changed workflow file. If a
-crash occurs after one of these events is synced, resume continues
+Typed result publications, condition decisions, loop checks and completions, omissions, and joins
+are safe committed boundaries because they do not invoke an executor. Recovery replays their
+persisted control graph and validates each source attempt, field, and hash. A result additionally
+reparses the original durable source, reapplies the bounded schema, reproduces canonical JSON, and
+checks its schema and value hashes. Other controls validate the selected case or loop decision,
+omission reason, loop iteration/guard, controller result, and join mapping against the scheduler's
+canonical next transition. Persisted loop topology additionally requires registered ordered checks,
+structurally isomorphic body clones, and the same exact stop contract in every iteration. It never
+reevaluates a result, condition, or committed loop check from the current workspace or a changed
+workflow file. If a crash occurs after one of these events is synced, resume continues
 from the following transition without repeating its source node. A retry of an interrupted
 iteration-qualified agent increments that instance's attempt; it does not advance the loop.
 
