@@ -132,7 +132,8 @@ class HoldingLauncher implements WorkerLauncher {
 
 async function createStore() {
   const directory = await mkdtemp(join(tmpdir(), "flow-daemon-"));
-  const socketDirectory = await mkdtemp("/private/tmp/flow-daemon-sockets-");
+  const shortTemporaryRoot = process.platform === "darwin" ? "/private/tmp" : tmpdir();
+  const socketDirectory = await mkdtemp(join(shortTemporaryRoot, "flow-daemon-sockets-"));
   temporaryDirectories.push(directory, socketDirectory);
   const store = new LocalSupervisorStore(join(directory, "runs"), { socketDirectory });
   await store.initialize();
