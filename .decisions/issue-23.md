@@ -331,7 +331,7 @@ workers—each able to create providers, sandboxes, and later child graphs—are
 | Queued cancellation starts no worker | Race/runtime | `npx vitest run test/integration/supervisor/service.test.ts -t "queued work|cancellation retryable"` and `npx vitest run --config vitest.runtime.config.ts test/runtime/cli-process.runtime.test.ts -t "capacity"` | Cancellation/dispatch race has one winner; a queued winner leaves no claim, worker, or run ledger | Reversal after dispatch |
 | Bounded status and policy digest | API/security | `npx vitest run test/integration/supervisor/service.test.ts` | Active/queued summaries and digest are bounded; explicit negative assertions exclude source/token/reason fields; status performs identity checks without provider execution | Full historical queue export |
 | Policy mismatch requires safe restart | Lifecycle | `npx vitest run test/integration/supervisor/daemon.test.ts` and `npx vitest run --config vitest.runtime.config.ts test/runtime/cli-process.runtime.test.ts -t "requires explicit idle shutdown"` | Changed effective values fail before submit; shutdown refuses non-idle state; successful shutdown retires before acknowledgment; explicit idle restart rebinds | Hot reload |
-| Existing behavior compatibility | Regression | `npx vitest run test/integration/cli/main.test.ts test/runtime/cli-process.runtime.test.ts` | Foreground paths, ledgers, approvals, accepted work, cancellation, and event replay remain correct | Stable pre-1.0 syntax forever |
+| Existing behavior compatibility | Regression | `npx vitest run test/integration/cli/main.test.ts` and `npx vitest run --config vitest.runtime.config.ts test/runtime/cli-process.runtime.test.ts` | Foreground paths, ledgers, approvals, accepted work, cancellation, and event replay remain correct | Stable pre-1.0 syntax forever |
 | Public documentation accuracy | Documentation | `npx vitest run test/scaffold/community-files.test.ts -t "project configuration and bounded admission"` | README and architecture/config/recovery/security/roadmap describe limits, precedence, outcomes, recovery, and trust boundaries | Future capabilities |
 | Complete package remains releasable | Regression/package | `npm run check && npm run test:coverage && npm run pack:check && npm audit --omit=dev --audit-level=low` | Local CI, runtime, package contents, clean install, and audit pass | Live provider availability |
 
@@ -364,11 +364,11 @@ workers—each able to create providers, sandboxes, and later child graphs—are
 
 ## Final verification evidence
 
-- `npm run check`: passed on the final tree; 39 default test files / 461 tests, clean build, and 2
-  compiled-process files / 13 runtime tests.
-- `npm run test:coverage`: passed with 82.56% statements, 73.29% branches, 90.52% functions, and
-  82.91% lines.
-- Package metadata inspection: 177 files, 217,214 bytes compressed, and 1,151,871 bytes unpacked.
+- `npm run check`: passed on the final tree; 40 default test files / 467 tests, clean build, and 2
+  compiled-process files / 14 runtime tests.
+- `npm run test:coverage`: passed with 82.66% statements, 73.21% branches, 90.78% functions, and
+  83.01% lines.
+- Package metadata inspection: 177 files, 217,995 bytes compressed, and 1,158,167 bytes unpacked.
 - `npm run pack:check`: rebuilt and packed the final tree, installed the tarball in a clean temporary
   consumer with lifecycle scripts disabled, ran the installed `flow --help`, created
   `.flow/config.yaml`, and inspected the canonical default 1/32 policy and project root.
@@ -408,6 +408,16 @@ workers—each able to create providers, sandboxes, and later child graphs—are
 | `pack:check` inspected a dry-run file list but claimed a clean consumer install | P3 | Fixed: one local/CI script rebuilds, packs, clean-installs, and executes the installed CLI plus init/config smoke path |
 | Exclusive job, claim, command, and startup records were visible before serialization completed | P1 | Fixed: the shared exclusive writer now uses synced pending inodes and atomic no-replace publication; compiled startup contention and store regressions prove one complete winner |
 | The daemon-timeout regression depended on the child writing a PID file before its own deadline | P2 | Fixed: a typed timeout error carries the PID known immediately by the spawning parent and is emitted after process-group termination/reaping |
+| Timed-out detached-child cleanup used only unreferenced handles and could let the client exit before escalation/reaping | P1 | Fixed: cleanup temporarily references the child until termination completes, then restores detached ownership; compiled timeout regression proves the client remains alive through reaping |
+| Concurrent exact queued-cancellation callers could turn one durable cancellation into `not_found` for the retry | P2 | Fixed: a caller that loses the admission race re-reads the digest-bound command journal and returns the same completed queued result; a barrier test proves both callers converge without launching work |
+| Initial admission creation exposed the final ledger name before the initialization record was synced | P2 | Fixed: initialization now writes and syncs a private inode, publishes it with a no-replace hard link, and directory-syncs before cleanup; protocol and 16-opener tests prove complete publication |
+| Shutdown acknowledged success before the old admission policy was retired | P2 | Fixed: retirement completes in request dispatch before the success frame is built; the daemon test checks the binding is absent immediately after the response |
+| A reconciliation callback queued before shutdown could run after policy retirement and access a closed admission store | P1 | Fixed: the monotonic shutdown fence also prevents new timer reconciliation, while refused non-idle shutdown leaves reconciliation enabled; the full suite exposed and verifies the ordering |
+| A startup-lock contender could observe `EEXIST` and then fail when the owner released before the incumbent read | P2 | Fixed: only the typed `EEXIST`→`not_found` contention epoch retries exclusive reservation; four compiled six-client stress runs converge on one generation |
+| The parent, not the detached daemon, transferred startup-lock ownership, leaving a parent-death double-writer window | P1 | Fixed: the token is passed to the child, which compare-and-transfers ownership to its PID before admission replay, descriptor publication, or listening; a lifecycle-order regression enforces the boundary |
+| Concurrent stale-lock releasers wrapped losing rename races as unexpected I/O failures | P2 | Fixed: rename-time absence is typed `not_found` and treated as converged stale cleanup; 32 concurrent releasers produce one success and only typed absence outcomes |
+| FIFO, status, policy, and compatibility verification selectors silently skipped model/runtime or security evidence | P2 | Fixed: model and runtime configs run separately, broad claims execute complete focused files, status has explicit sensitive-field exclusions, and every documented selector passes with nonzero tests |
+| Final test, coverage, and package counts described an earlier commit as the final tree | P2 | Fixed: evidence was regenerated after the last code change and records 40/467 default tests, 2/14 runtime tests, current coverage, and current 177-file package sizes |
 
 ## Research references
 
