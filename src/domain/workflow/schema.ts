@@ -6,6 +6,11 @@ import {
   MAX_CONCURRENT_NODES,
   MAX_LOOP_BODY_NODES,
   MAX_LOOP_ITERATIONS,
+  MAX_RESULT_ARRAY_ITEMS,
+  MAX_RESULT_SCHEMA_DEPTH,
+  MAX_RESULT_SCHEMA_NODES,
+  MAX_RESULT_SCHEMA_SERIALIZED_BYTES,
+  type CompiledResultSchema,
 } from "./types.js";
 
 const identifierSchema = z
@@ -111,6 +116,7 @@ const evidenceSourceFieldSchema = z.enum([
   "agent.text",
   "verifier.verdict",
   "verifier.reason",
+  "result.value",
 ]);
 
 const evidenceSourceSchema = z
@@ -218,6 +224,122 @@ const verifierNodeSchema = z
   })
   .strict();
 
+export const compiledResultSchemaSchema: z.ZodType<CompiledResultSchema> = z.lazy(() =>
+  z.discriminatedUnion("type", [
+    z.object({ type: z.literal("null") }).strict(),
+    z.object({ type: z.literal("boolean") }).strict(),
+    z
+      .object({
+        type: z.literal("number"),
+        minimum: z.number().finite().optional(),
+        maximum: z.number().finite().optional(),
+      })
+      .strict()
+      .refine(
+        (schema) =>
+          schema.minimum === undefined ||
+          schema.maximum === undefined ||
+          schema.minimum <= schema.maximum,
+        "result number minimum must not exceed maximum",
+      ),
+    z
+      .object({
+        type: z.literal("integer"),
+        minimum: z.number().int().safe().optional(),
+        maximum: z.number().int().safe().optional(),
+      })
+      .strict()
+      .refine(
+        (schema) =>
+          schema.minimum === undefined ||
+          schema.maximum === undefined ||
+          schema.minimum <= schema.maximum,
+        "result integer minimum must not exceed maximum",
+      ),
+    z
+      .object({
+        type: z.literal("string"),
+        maxLength: z.number().int().min(0).max(262_144),
+      })
+      .strict(),
+    z
+      .object({
+        type: z.literal("array"),
+        items: compiledResultSchemaSchema,
+        maxItems: z.number().int().min(0).max(MAX_RESULT_ARRAY_ITEMS),
+      })
+      .strict(),
+    z
+      .object({
+        type: z.literal("object"),
+        properties: z.record(identifierSchema, compiledResultSchemaSchema),
+        required: z
+          .array(identifierSchema)
+          .max(128)
+          .refine((items) => new Set(items).size === items.length, {
+            message: "result object required properties must be unique",
+          })
+          .default([]),
+      })
+      .strict()
+      .superRefine((schema, context) => {
+        if (Object.keys(schema.properties).length > 128) {
+          context.addIssue({
+            code: "custom",
+            path: ["properties"],
+            message: "result object must not exceed 128 properties",
+          });
+        }
+        for (const [index, key] of schema.required.entries()) {
+          if (!Object.hasOwn(schema.properties, key)) {
+            context.addIssue({
+              code: "custom",
+              path: ["required", index],
+              message: `required result property "${key}" is not declared`,
+            });
+          }
+        }
+      }),
+  ]),
+);
+
+export const boundedCompiledResultSchemaSchema = compiledResultSchemaSchema.superRefine(
+  (schema, context) => {
+    const complexity = resultSchemaComplexity(schema);
+    if (complexity.depth > MAX_RESULT_SCHEMA_DEPTH) {
+      context.addIssue({
+        code: "custom",
+        message: `result schema depth must not exceed ${MAX_RESULT_SCHEMA_DEPTH}`,
+      });
+    }
+    if (complexity.nodes > MAX_RESULT_SCHEMA_NODES) {
+      context.addIssue({
+        code: "custom",
+        message: `result schema nodes must not exceed ${MAX_RESULT_SCHEMA_NODES}`,
+      });
+    }
+    if (Buffer.byteLength(JSON.stringify(schema), "utf8") > MAX_RESULT_SCHEMA_SERIALIZED_BYTES) {
+      context.addIssue({
+        code: "custom",
+        message: `serialized result schema must not exceed ${MAX_RESULT_SCHEMA_SERIALIZED_BYTES} UTF-8 bytes`,
+      });
+    }
+  },
+);
+
+const resultNodeSchema = z
+  .object({
+    ...guardedNodeShape,
+    type: z.literal("result"),
+    result: z
+      .object({
+        source: evidenceSourceSchema,
+        schema: boundedCompiledResultSchemaSchema,
+      })
+      .strict(),
+  })
+  .strict();
+
 const conditionNodeSchema = z
   .object({
     ...guardedNodeShape,
@@ -305,6 +427,7 @@ const loopBodyNodeSchema = z.discriminatedUnion("type", [
   agentNodeSchema,
   verifierNodeSchema,
   approvalNodeSchema,
+  resultNodeSchema,
   conditionNodeSchema,
   joinNodeSchema,
 ]);
@@ -357,6 +480,7 @@ export const workflowSourceSchema = z
           agentNodeSchema,
           verifierNodeSchema,
           approvalNodeSchema,
+          resultNodeSchema,
           conditionNodeSchema,
           joinNodeSchema,
           loopNodeSchema,
@@ -366,5 +490,26 @@ export const workflowSourceSchema = z
       .max(64),
   })
   .strict();
+
+function resultSchemaComplexity(schema: CompiledResultSchema): {
+  readonly depth: number;
+  readonly nodes: number;
+} {
+  if (schema.type === "array") {
+    const child = resultSchemaComplexity(schema.items);
+    return { depth: child.depth + 1, nodes: child.nodes + 1 };
+  }
+  if (schema.type === "object") {
+    let depth = 1;
+    let nodes = 1;
+    for (const property of Object.values(schema.properties)) {
+      const child = resultSchemaComplexity(property);
+      depth = Math.max(depth, child.depth + 1);
+      nodes += child.nodes;
+    }
+    return { depth, nodes };
+  }
+  return { depth: 1, nodes: 1 };
+}
 
 export type WorkflowSource = z.infer<typeof workflowSourceSchema>;

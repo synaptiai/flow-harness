@@ -13,11 +13,20 @@ import { compiledGoalSchema } from "../goal/schema.js";
 import type { CompiledGoal, GoalRunState } from "../goal/types.js";
 import { parseVerifierVerdictJson } from "../verification/verdict.js";
 import {
+  TypedResultError,
+  calculateResultSchemaDigest,
+  evaluateTypedResult,
+  resultSourceTruncationMessage,
+} from "../result/typed-result.js";
+import { boundedCompiledResultSchemaSchema } from "../workflow/schema.js";
+import {
   MAX_CONCURRENT_NODES,
   MAX_COMPILED_WORKFLOW_NODES,
   MAX_CONTROL_GRAPH_SERIALIZED_BYTES,
   MAX_LOOP_ITERATIONS,
+  MAX_RESULT_VALUE_BYTES,
   type CompiledRunBudget,
+  type CompiledResultSchema,
   type CompiledVerifierConfig,
   type CompiledWorkflowConcurrency,
   type ConditionSourceField,
@@ -256,6 +265,19 @@ export interface ControlGraphVerifierNode extends ControlGraphNodeBase {
   readonly verifier: CompiledVerifierConfig;
 }
 
+export interface ControlGraphResultNode extends ControlGraphNodeBase {
+  readonly type: "result";
+  readonly when?: ControlBranchGuard;
+  readonly result: {
+    readonly source: {
+      readonly nodeId: string;
+      readonly field: EvidenceSourceField;
+    };
+    readonly schema: CompiledResultSchema;
+    readonly schemaDigest: string;
+  };
+}
+
 export interface ControlGraphConditionNode extends ControlGraphNodeBase {
   readonly type: "condition";
   readonly when?: ControlBranchGuard;
@@ -308,6 +330,7 @@ export type ControlGraphNode =
   | ControlGraphExecutableNode
   | ControlGraphApprovalNode
   | ControlGraphVerifierNode
+  | ControlGraphResultNode
   | ControlGraphConditionNode
   | ControlGraphJoinNode
   | ControlGraphLoopCheckNode
@@ -326,6 +349,19 @@ export interface NodeConditionEvaluatedEvent extends RunEventBase {
   readonly sourceField: ConditionSourceField;
   readonly sourceHash: string;
   readonly selectedCase: string;
+}
+
+export interface NodeResultPublishedEvent extends RunEventBase {
+  readonly type: "node_result_published";
+  readonly nodeId: string;
+  readonly attempt: 1;
+  readonly sourceNodeId: string;
+  readonly sourceAttempt: number;
+  readonly sourceField: EvidenceSourceField;
+  readonly sourceHash: string;
+  readonly schemaDigest: string;
+  readonly canonicalValue: string;
+  readonly valueHash: string;
 }
 
 export type NodeOmittedEvent = RunEventBase &
@@ -605,6 +641,7 @@ export type RunEvent =
   | NodeStartedEvent
   | NodeAttemptInterruptedEvent
   | NodeConditionEvaluatedEvent
+  | NodeResultPublishedEvent
   | NodeOmittedEvent
   | NodeJoinedEvent
   | NodeLoopCheckedEvent
@@ -691,6 +728,16 @@ export type NodeControlRunState =
       readonly sourceField: ConditionSourceField;
       readonly sourceHash: string;
       readonly selectedCase: string;
+    }
+  | {
+      readonly kind: "result";
+      readonly sourceNodeId: string;
+      readonly sourceAttempt: number;
+      readonly sourceField: EvidenceSourceField;
+      readonly sourceHash: string;
+      readonly schemaDigest: string;
+      readonly canonicalValue: string;
+      readonly valueHash: string;
     }
   | {
       readonly kind: "join";
@@ -870,6 +917,7 @@ const evidenceSourceFieldSchema = z.enum([
   "agent.text",
   "verifier.verdict",
   "verifier.reason",
+  "result.value",
 ]);
 
 const workflowApprovalEvidenceObservationSchema = z
@@ -1312,6 +1360,25 @@ const controlGraphNodeSchema = z.discriminatedUnion("type", [
   z
     .object({
       ...controlNodeBaseShape,
+      type: z.literal("result"),
+      when: controlBranchGuardSchema.optional(),
+      result: z
+        .object({
+          source: z
+            .object({
+              nodeId: identifierSchema,
+              field: evidenceSourceFieldSchema,
+            })
+            .strict(),
+          schema: boundedCompiledResultSchemaSchema,
+          schemaDigest: sha256Schema,
+        })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ...controlNodeBaseShape,
       type: z.literal("condition"),
       when: controlBranchGuardSchema.optional(),
       condition: controlConditionSchema,
@@ -1552,6 +1619,25 @@ export const runEventSchema = z.discriminatedUnion("type", [
       sourceField: evidenceSourceFieldSchema,
       sourceHash: sha256Schema,
       selectedCase: identifierSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("node_result_published"),
+      nodeId: identifierSchema,
+      attempt: z.literal(1),
+      sourceNodeId: identifierSchema,
+      sourceAttempt: z.number().int().positive(),
+      sourceField: evidenceSourceFieldSchema,
+      sourceHash: sha256Schema,
+      schemaDigest: sha256Schema,
+      canonicalValue: z
+        .string()
+        .refine((value) => Buffer.byteLength(value, "utf8") <= MAX_RESULT_VALUE_BYTES, {
+          message: `canonical result must not exceed ${MAX_RESULT_VALUE_BYTES} UTF-8 bytes`,
+        }),
+      valueHash: sha256Schema,
     })
     .strict(),
   z
@@ -2368,6 +2454,7 @@ export function appendRunEvent(
         if (
           controlNode.type === "condition" ||
           controlNode.type === "approval" ||
+          controlNode.type === "result" ||
           controlNode.type === "join" ||
           controlNode.type === "loop-check" ||
           controlNode.type === "loop"
@@ -2529,6 +2616,91 @@ export function appendRunEvent(
         sourceField: event.sourceField,
         sourceHash: event.sourceHash,
         selectedCase: event.selectedCase,
+      });
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        status: "succeeded",
+        attempt: event.attempt,
+        startedAt: event.at,
+        finishedAt: event.at,
+        control,
+      });
+      break;
+    }
+    case "node_result_published": {
+      requireRunningControlTransition(currentState, nodes, eventIndex);
+      const requirement = requireControlGraphNode(currentState, event.nodeId, eventIndex);
+      if (requirement.type !== "result") {
+        throw new RunReplayError(eventIndex, `node "${event.nodeId}" is not a result control node`);
+      }
+      const current = requirePendingControlState(nodes, event.nodeId, event.attempt, eventIndex);
+      requireSucceededDependencies(requirement, nodes, eventIndex);
+      requireSelectedGuard(requirement, nodes, eventIndex);
+      const source = controlSourceObservation(
+        requirement.nodeId,
+        requirement.result.source,
+        nodes,
+        eventIndex,
+      );
+      if (source.truncated) {
+        throw new RunReplayError(
+          eventIndex,
+          `result "${event.nodeId}" source evidence is truncated`,
+        );
+      }
+      if (event.sourceNodeId !== requirement.result.source.nodeId) {
+        throw new RunReplayError(eventIndex, "result source node does not match its control graph");
+      }
+      if (event.sourceAttempt !== source.attempt) {
+        throw new RunReplayError(
+          eventIndex,
+          "result source attempt does not match durable evidence",
+        );
+      }
+      if (event.sourceField !== requirement.result.source.field) {
+        throw new RunReplayError(
+          eventIndex,
+          "result source field does not match its control graph",
+        );
+      }
+      if (event.sourceHash !== source.hash) {
+        throw new RunReplayError(eventIndex, "result source hash does not match durable evidence");
+      }
+      const expectedSchemaDigest = calculateResultSchemaDigest(requirement.result.schema);
+      if (
+        requirement.result.schemaDigest !== expectedSchemaDigest ||
+        event.schemaDigest !== expectedSchemaDigest
+      ) {
+        throw new RunReplayError(eventIndex, "result schema digest does not match its declaration");
+      }
+      let evaluated: ReturnType<typeof evaluateTypedResult>;
+      try {
+        evaluated = evaluateTypedResult(source.value, requirement.result.schema);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new RunReplayError(
+          eventIndex,
+          `result publication does not match durable source validation: ${message}`,
+        );
+      }
+      if (event.canonicalValue !== evaluated.canonicalValue) {
+        throw new RunReplayError(
+          eventIndex,
+          "result canonical value does not match durable source evidence",
+        );
+      }
+      if (event.valueHash !== evaluated.valueHash) {
+        throw new RunReplayError(eventIndex, "result value hash does not match canonical value");
+      }
+      const control: NodeControlRunState = deepFreeze({
+        kind: "result",
+        sourceNodeId: event.sourceNodeId,
+        sourceAttempt: event.sourceAttempt,
+        sourceField: event.sourceField,
+        sourceHash: event.sourceHash,
+        schemaDigest: event.schemaDigest,
+        canonicalValue: event.canonicalValue,
+        valueHash: event.valueHash,
       });
       nodes[event.nodeId] = Object.freeze({
         ...current,
@@ -2932,6 +3104,57 @@ export function appendRunEvent(
             eventIndex,
             "workflow approval evidence truncation requires the exact side-effect-free non-retryable control failure",
           );
+        }
+      } else if (requirement.type === "result") {
+        requireSucceededDependencies(requirement, nodes, eventIndex);
+        requireSelectedGuard(requirement, nodes, eventIndex);
+        const source = controlSourceObservation(
+          requirement.nodeId,
+          requirement.result.source,
+          nodes,
+          eventIndex,
+        );
+        if (source.truncated) {
+          if (
+            event.error.code !== "result_source_truncated" ||
+            event.error.message !==
+              resultSourceTruncationMessage(event.nodeId, requirement.result.source.field) ||
+            event.error.retryable ||
+            event.error.sideEffectStatus !== "none"
+          ) {
+            throw new RunReplayError(
+              eventIndex,
+              "result source truncation requires the exact side-effect-free non-retryable control failure",
+            );
+          }
+        } else {
+          let validationError: TypedResultError | undefined;
+          try {
+            evaluateTypedResult(source.value, requirement.result.schema);
+          } catch (error) {
+            if (error instanceof TypedResultError) {
+              validationError = error;
+            } else {
+              throw error;
+            }
+          }
+          if (validationError === undefined) {
+            throw new RunReplayError(
+              eventIndex,
+              `result "${event.nodeId}" source is valid and cannot record a control failure`,
+            );
+          }
+          if (
+            event.error.code !== validationError.code ||
+            event.error.message !== validationError.message ||
+            event.error.retryable ||
+            event.error.sideEffectStatus !== "none"
+          ) {
+            throw new RunReplayError(
+              eventIndex,
+              "result validation failure classification does not match durable source evidence",
+            );
+          }
         }
       } else if (requirement.type === "loop") {
         requireTerminalDependencies(requirement, nodes, eventIndex);
@@ -3591,6 +3814,24 @@ function validateControlGraph(
         }
       }
     }
+    if (node.type === "result") {
+      const source = nodeById.get(node.result.source.nodeId);
+      if (
+        !node.dependsOn.includes(node.result.source.nodeId) ||
+        !controlEvidenceFieldMatchesNode(node.result.source.field, source?.type)
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          `control graph result "${node.nodeId}" has an invalid source`,
+        );
+      }
+      if (node.result.schemaDigest !== calculateResultSchemaDigest(node.result.schema)) {
+        throw new RunReplayError(
+          eventIndex,
+          `control graph result "${node.nodeId}" has an invalid schema digest`,
+        );
+      }
+    }
     if (node.type === "join") {
       const condition = nodeById.get(node.join.conditionId);
       if (condition?.type !== "condition") {
@@ -3721,7 +3962,11 @@ function validateControlGraph(
   validateControlGraphLoopInstances(graph.nodes, nodeById, eventIndex);
   const dependedUpon = new Set(graph.nodes.flatMap((node) => node.dependsOn));
   const invalidTerminal = graph.nodes.find(
-    (node) => !dependedUpon.has(node.nodeId) && node.type !== "command" && node.type !== "verifier",
+    (node) =>
+      !dependedUpon.has(node.nodeId) &&
+      node.type !== "command" &&
+      node.type !== "verifier" &&
+      node.type !== "result",
   );
   if (invalidTerminal !== undefined) {
     throw new RunReplayError(
@@ -3952,6 +4197,27 @@ function serializeLoopTemplateStructure(
       },
     });
   }
+  if (node.type === "result") {
+    return JSON.stringify({
+      ...common,
+      ...(node.when === undefined
+        ? {}
+        : {
+            when: {
+              conditionId: templateNodeId(node.when.conditionId),
+              case: node.when.case,
+            },
+          }),
+      result: {
+        source: {
+          nodeId: templateNodeId(node.result.source.nodeId),
+          field: node.result.source.field,
+        },
+        schema: node.result.schema,
+        schemaDigest: node.result.schemaDigest,
+      },
+    });
+  }
   if (node.type === "condition") {
     return JSON.stringify({
       ...common,
@@ -3999,7 +4265,8 @@ function controlEvidenceFieldMatchesNode(
   return (
     (field.startsWith("command.") && nodeType === "command") ||
     (field === "agent.text" && nodeType === "agent") ||
-    (field.startsWith("verifier.") && nodeType === "verifier")
+    (field.startsWith("verifier.") && nodeType === "verifier") ||
+    (field === "result.value" && nodeType === "result")
   );
 }
 
@@ -4335,7 +4602,27 @@ function controlSourceObservation(
   readonly truncated: boolean;
 } {
   const source = requireNode(nodes, declaration.nodeId, eventIndex);
-  if (source.status !== "succeeded" || source.evidence === null) {
+  if (source.status !== "succeeded") {
+    throw new RunReplayError(
+      eventIndex,
+      `control node "${controlNodeId}" source has no successful durable evidence`,
+    );
+  }
+  if (declaration.field === "result.value") {
+    if (source.control?.kind === "result") {
+      return {
+        attempt: source.attempt,
+        value: source.control.canonicalValue,
+        hash: source.control.valueHash,
+        truncated: false,
+      };
+    }
+    throw new RunReplayError(
+      eventIndex,
+      `control node "${controlNodeId}" source field is incompatible with durable evidence`,
+    );
+  }
+  if (source.evidence === null) {
     throw new RunReplayError(
       eventIndex,
       `control node "${controlNodeId}" source has no successful durable evidence`,
@@ -4704,7 +4991,26 @@ function verifierSourceObservation(
   eventIndex: number,
 ): { readonly attempt: number; readonly hash: string; readonly truncated: boolean } {
   const source = requireNode(nodes, declaration.nodeId, eventIndex);
-  if (source.status !== "succeeded" || source.evidence === null) {
+  if (source.status !== "succeeded") {
+    throw new RunReplayError(
+      eventIndex,
+      `verifier node "${verifierNodeId}" source has no successful durable evidence`,
+    );
+  }
+  if (declaration.field === "result.value") {
+    if (source.control?.kind === "result") {
+      return {
+        attempt: source.attempt,
+        hash: source.control.valueHash,
+        truncated: false,
+      };
+    }
+    throw new RunReplayError(
+      eventIndex,
+      `verifier node "${verifierNodeId}" source field is incompatible with durable evidence`,
+    );
+  }
+  if (source.evidence === null) {
     throw new RunReplayError(
       eventIndex,
       `verifier node "${verifierNodeId}" source has no successful durable evidence`,

@@ -19,6 +19,7 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Deterministic dependency-ordered execution with bounded static DAG forks | Implemented; omitted concurrency remains sequential |
 | Durable exact-output conditions, guarded branches, omission propagation, and explicit joins | Implemented with bounded selected-branch concurrency |
 | Replay-safe bounded loops over local command/agent/verifier DAGs | Implemented through finite acyclic expansion, exact stop evidence, and hard failure at the declared bound |
+| Typed result publication from durable evidence | Implemented with strict bounded JSON, closed schemas, canonical values, hashes, and replay verification |
 | Durable JSONL run ledger and inspection | Implemented |
 | Safe-boundary recovery with exclusive local ownership | Implemented |
 | Durable exact command approval with approve/deny CLI | Implemented |
@@ -125,6 +126,21 @@ evidence fields in a separate Pi session with a dedicated system prompt, no tool
 discovery, a 256 KiB aggregate input ceiling, a 16 KiB response ceiling, and one strict JSON
 verdict object. Model verification is probabilistic and is not prompt-injection-proof; prefer the
 command driver for release claims and hidden deterministic checks.
+
+To publish provider-neutral typed data without model credentials:
+
+```sh
+node dist/cli/main.js validate examples/typed-result.workflow.yaml
+node dist/cli/main.js run examples/typed-result.workflow.yaml --run-id result-demo
+node dist/cli/main.js inspect result-demo
+```
+
+The `result` node reads one complete durable field from a direct dependency, validates it as strict
+JSON against a closed bounded schema, and records its RFC 8785 canonical JSON plus source, schema,
+and value hashes. It is a pure control transition: it invokes no executor and consumes no node-start,
+token, cost, or active-time budget. Downstream conditions, approvals, model verifiers, and bounded
+loop checks can read the canonical value as `result.value`. A typed result is data, not a goal
+verdict; it cannot satisfy a goal criterion by itself.
 
 To exercise durable conditional routing without model credentials:
 
@@ -239,7 +255,8 @@ inside this slice's administrative trust boundary.
 
 ### Approve durable graph evidence
 
-An `approval` node pauses the graph after its declared command, agent, or accepted verifier evidence is complete:
+An `approval` node pauses the graph after its declared command, agent, accepted verifier, or typed
+result evidence is complete:
 
 ```sh
 node dist/cli/main.js run examples/evidence-approval.workflow.yaml --run-id review-demo
@@ -250,8 +267,8 @@ node dist/cli/main.js resume examples/evidence-approval.workflow.yaml --run-id r
 
 The request binds the workflow digest, prompt, logical attempt, and ordered source node, attempt,
 field, and content hash. Sources must be direct dependencies and may select `command.stdout`,
-`command.stderr`, or `agent.text` from a compatible successful node. Truncated evidence fails the
-approval node without creating a request.
+`command.stderr`, `agent.text`, accepted verifier fields, or `result.value` from a compatible
+successful node. Truncated evidence fails the approval node without creating a request.
 
 Unlike command approval, approving graph evidence immediately succeeds a pure control node. It
 does not authorize a process, expand sandbox or tool policy, create a grant, or consume execution

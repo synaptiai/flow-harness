@@ -6,6 +6,12 @@ export const MAX_CONCURRENT_NODES = 32;
 export const MAX_COMPILED_WORKFLOW_NODES = 256;
 export const MAX_LOOP_BODY_NODES = 16;
 export const MAX_LOOP_ITERATIONS = 32;
+export const MAX_RESULT_SCHEMA_DEPTH = 8;
+export const MAX_RESULT_SCHEMA_NODES = 128;
+export const MAX_RESULT_SCHEMA_SERIALIZED_BYTES = 65_536;
+export const MAX_RESULT_VALUE_BYTES = 262_144;
+export const MAX_RESULT_VALUE_NODES = 16_384;
+export const MAX_RESULT_ARRAY_ITEMS = MAX_RESULT_VALUE_NODES - 1;
 
 export type AgentToolName = "read" | "ls" | "edit";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
@@ -14,7 +20,8 @@ export type EvidenceSourceField =
   | "command.stderr"
   | "agent.text"
   | "verifier.verdict"
-  | "verifier.reason";
+  | "verifier.reason"
+  | "result.value";
 export type ConditionSourceField = EvidenceSourceField;
 
 export interface CompiledRunBudget {
@@ -156,6 +163,46 @@ export interface CompiledApprovalNode extends CompiledGuardedNodeBase {
   };
 }
 
+export type CompiledResultSchema =
+  | { readonly type: "null" }
+  | { readonly type: "boolean" }
+  | {
+      readonly type: "number";
+      readonly minimum?: number | undefined;
+      readonly maximum?: number | undefined;
+    }
+  | {
+      readonly type: "integer";
+      readonly minimum?: number | undefined;
+      readonly maximum?: number | undefined;
+    }
+  | {
+      readonly type: "string";
+      readonly maxLength: number;
+    }
+  | {
+      readonly type: "array";
+      readonly maxItems: number;
+      readonly items: CompiledResultSchema;
+    }
+  | {
+      readonly type: "object";
+      readonly properties: Readonly<Record<string, CompiledResultSchema>>;
+      readonly required: readonly string[];
+    };
+
+export interface CompiledResultNode extends CompiledGuardedNodeBase {
+  readonly type: "result";
+  readonly result: {
+    readonly source: {
+      readonly nodeId: string;
+      readonly field: EvidenceSourceField;
+    };
+    readonly schema: CompiledResultSchema;
+    readonly schemaDigest: string;
+  };
+}
+
 export interface CompiledJoinNode extends CompiledNodeBase {
   readonly type: "join";
   readonly join: {
@@ -193,6 +240,7 @@ export type CompiledNode =
   | CompiledAgentNode
   | CompiledVerifierNode
   | CompiledApprovalNode
+  | CompiledResultNode
   | CompiledConditionNode
   | CompiledJoinNode
   | CompiledLoopCheckNode

@@ -179,6 +179,67 @@ nodes:
     );
   });
 
+  it("runs and inspects the same durable typed result through the attached CLI", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "typed-result.workflow.yaml");
+    const runsDirectory = join(directory, "runs");
+    await writeFile(workflowPath, typedResultWorkflow("cli-typed-result"), "utf8");
+    const source = '{ "accepted": true, "score": 1 }';
+    const executor: NodeExecutor = {
+      async execute(node) {
+        return {
+          status: "succeeded",
+          evidence: {
+            ...commandEvidence(node.id),
+            stdout: source,
+            stdoutHash: createHash("sha256").update(source).digest("hex"),
+          },
+        };
+      },
+    };
+    const runCapture = createCapture();
+
+    expect(
+      await main(
+        ["run", workflowPath, "--run-id", "cli-typed-result", "--runs-dir", runsDirectory],
+        runCapture.io,
+        { cwd: directory, executor },
+      ),
+    ).toBe(0);
+    const runState = JSON.parse(runCapture.stdout.join("\n"));
+    expect(runState).toMatchObject({
+      status: "succeeded",
+      resources: { nodeStarts: 1 },
+      nodes: {
+        publish: {
+          status: "succeeded",
+          control: {
+            kind: "result",
+            sourceNodeId: "produce",
+            sourceField: "command.stdout",
+            canonicalValue: '{"accepted":true,"score":1}',
+          },
+        },
+      },
+    });
+
+    const inspectCapture = createCapture();
+    expect(
+      await main(["inspect", "cli-typed-result", "--runs-dir", runsDirectory], inspectCapture.io, {
+        cwd: directory,
+      }),
+    ).toBe(0);
+    expect(JSON.parse(inspectCapture.stdout.join("\n"))).toEqual(runState);
+    const ledger = await readFile(join(runsDirectory, "cli-typed-result", "events.jsonl"), "utf8");
+    expect(ledgerTypes(ledger)).toEqual([
+      "run_started",
+      "node_started",
+      "node_succeeded",
+      "node_result_published",
+      "run_succeeded",
+    ]);
+  });
+
   it("runs and inspects a typed command verifier through the production path", async () => {
     const directory = await createTemporaryDirectory();
     const workflowPath = join(directory, "verifier.workflow.yaml");
@@ -1351,6 +1412,29 @@ nodes:
     type: command
     dependsOn: [review]
     command: { executable: node, args: [verify] }
+`;
+}
+
+function typedResultWorkflow(id: string): string {
+  return `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: ${id} }
+nodes:
+  - id: produce
+    type: command
+    command: { executable: node }
+  - id: publish
+    type: result
+    dependsOn: [produce]
+    result:
+      source: { nodeId: produce, field: command.stdout }
+      schema:
+        type: object
+        properties:
+          accepted: { type: boolean }
+          score: { type: integer, minimum: 0, maximum: 10 }
+        required: [accepted, score]
 `;
 }
 

@@ -14,6 +14,7 @@ import type {
 import { JsonlRunStore } from "../../../src/infrastructure/fs/jsonl-run-store.js";
 import { LocalSupervisorStore } from "../../../src/infrastructure/fs/local-supervisor-store.js";
 import { createProductionNodeEffectReconciler } from "../../../src/infrastructure/runtime/production-effect-reconciler.js";
+import { reduceRunEvents } from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { executeWorkerJob, requestWorker } from "../../../src/supervisor/worker.js";
 import { createActiveRunClaim, createJobRecord } from "../../../src/supervisor/records.js";
@@ -29,6 +30,102 @@ afterEach(async () => {
 });
 
 describe("detached run worker", () => {
+  it("publishes and replays a typed result through a detached worker", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-worker-result-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    const store = new LocalSupervisorStore(runsDirectory);
+    await store.initialize();
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "worker-result",
+      mode: "run",
+      sourceName: join(directory, "workflow.yaml"),
+      workflowSource: typedResultWorkflowSource(),
+      cwd: directory,
+      token: "e".repeat(64),
+      createdAt: "2026-08-08T12:00:00.000Z",
+    });
+    await store.reserveSubmission(
+      job,
+      createActiveRunClaim({
+        runId: job.runId,
+        jobId: job.jobId,
+        workerId: job.workerId,
+        claimedAt: job.createdAt,
+      }),
+    );
+    const source = '{ "accepted": true, "score": 1 }';
+    const commandExecutor: CommandExecutor = {
+      async execute(node) {
+        return {
+          status: "succeeded",
+          evidence: {
+            kind: "command",
+            executable: node.command.executable,
+            args: node.command.args,
+            exitCode: 0,
+            signal: null,
+            stdout: source,
+            stderr: "",
+            stdoutHash: sha256(source),
+            stderrHash: sha256(""),
+            stdoutTruncated: false,
+            stderrTruncated: false,
+            timedOut: false,
+            durationMs: 1,
+          },
+        };
+      },
+    };
+    const agentExecutor: AgentExecutor = {
+      async execute() {
+        throw new Error("detached typed result unexpectedly invoked a model");
+      },
+    };
+
+    const worker = executeWorkerJob(job.jobId, {
+      store,
+      executor: new NodeExecutorRouter(commandExecutor, agentExecutor),
+      effectReconciler: createProductionNodeEffectReconciler(),
+      createRunStore: (root) => new JsonlRunStore(root),
+      pid: 4326,
+    });
+    const descriptor = await waitForDescriptor(store, job.workerId);
+    await expect(requestWorker(descriptor, { type: "identify" })).resolves.toMatchObject({
+      ok: true,
+      result: { runId: job.runId, status: "running" },
+    });
+    await expect(worker).resolves.toBe(0);
+
+    const events = await new JsonlRunStore(runsDirectory).read(job.runId);
+    expect(events.map((event) => event.type)).toEqual([
+      "run_started",
+      "node_started",
+      "node_succeeded",
+      "node_result_published",
+      "run_succeeded",
+    ]);
+    expect(events[3]).toMatchObject({
+      type: "node_result_published",
+      sourceNodeId: "produce",
+      sourceField: "command.stdout",
+      canonicalValue: '{"accepted":true,"score":1}',
+      valueHash: sha256('{"accepted":true,"score":1}'),
+    });
+    expect(reduceRunEvents(events)).toMatchObject({
+      status: "succeeded",
+      resources: { nodeStarts: 1 },
+      nodes: {
+        publish: {
+          status: "succeeded",
+          control: { kind: "result", canonicalValue: '{"accepted":true,"score":1}' },
+        },
+      },
+    });
+  });
+
   it("persists typed verifier evidence through a detached worker", async () => {
     const directory = await mkdtemp(join(tmpdir(), "flow-worker-verifier-"));
     temporaryDirectories.push(directory);
@@ -585,6 +682,29 @@ nodes:
     verifier:
       kind: command
       command: { executable: node, args: [--version] }
+`;
+}
+
+function typedResultWorkflowSource(): string {
+  return `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: worker-result }
+nodes:
+  - id: produce
+    type: command
+    command: { executable: node }
+  - id: publish
+    type: result
+    dependsOn: [produce]
+    result:
+      source: { nodeId: produce, field: command.stdout }
+      schema:
+        type: object
+        properties:
+          accepted: { type: boolean }
+          score: { type: integer, minimum: 0, maximum: 10 }
+        required: [accepted, score]
 `;
 }
 

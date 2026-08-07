@@ -44,6 +44,12 @@ The embedded Pi runtime runs with the invoking user's operating-system permissio
   command, agent, or accepted verifier evidence, including source attempts, fields, and hashes. Truncated evidence
   fails before a request. Approval completes only the pure control node; it grants no command,
   model-tool, sandbox, credential, or policy authority. Denial executes nothing.
+- Typed result nodes parse only complete durable direct-dependency evidence through a closed,
+  depth-, node-, and byte-bounded schema. Duplicate JSON object keys, including escape-equivalent
+  names, fail closed; so do trailing input, non-finite numbers, unpaired surrogates, undeclared
+  object properties, truncated sources, and oversized values. Publication records canonical JSON
+  with source, schema, and value hashes, but replay trusts none of those claims until it reproduces
+  them from the original durable evidence. Result nodes invoke no executor and grant no authority.
 - Model verifier nodes receive only their author rubric and declared complete direct-dependency
   evidence in a separate Pi session with a dedicated system prompt, empty tool set, disabled
   extensions/skills/context discovery, and hard aggregate input and response bounds. Strict JSON
