@@ -647,6 +647,10 @@ export class LocalSupervisorStore {
             throw releaseError;
           }
         }
+      } else if (!isProcessAlive(captured.pid)) {
+        await rm(path, { force: true });
+        await syncDirectory(this.controlDirectory);
+        return true;
       }
       return false;
     }

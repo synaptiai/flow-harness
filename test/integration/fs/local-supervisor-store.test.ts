@@ -318,6 +318,36 @@ describe("LocalSupervisorStore", () => {
     });
   }, 2_000);
 
+  it("discards a dead release marker that conflicts with a live public owner", async () => {
+    const { store } = await createStore();
+    const live = createSupervisorStartLock({
+      pid: process.pid,
+      token: randomUUID(),
+      acquiredAt: "2026-08-07T12:00:00.000Z",
+    });
+    const deadMarker = createSupervisorStartLock({
+      pid: 2_000_000_000,
+      token: randomUUID(),
+      acquiredAt: "2026-08-07T12:00:01.000Z",
+    });
+    const contender = createSupervisorStartLock({
+      pid: process.pid,
+      token: randomUUID(),
+      acquiredAt: "2026-08-07T12:00:02.000Z",
+    });
+    await store.reserveSupervisorStart(live);
+    await writeFile(
+      join(store.controlDirectory, `.supervisor-start.${randomUUID()}.releasing`),
+      `${JSON.stringify(deadMarker)}\n`,
+      { mode: 0o600 },
+    );
+
+    await expect(store.reserveSupervisorStart(contender)).resolves.toEqual({
+      acquired: false,
+      record: live,
+    });
+  }, 2_000);
+
   it("transfers startup-lock ownership to the spawned daemon identity", async () => {
     const { store } = await createStore();
     const parent = createSupervisorStartLock({
