@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { chmod, lstat, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -271,6 +271,52 @@ describe("LocalSupervisorStore", () => {
       reservations.every((reservation) => reservation.record.token === winner?.record.token),
     ).toBe(true);
   });
+
+  it("reclaims an exact startup reservation restored from a release marker", async () => {
+    const { store } = await createStore();
+    const lock = createSupervisorStartLock({
+      pid: 1234,
+      token: randomUUID(),
+      acquiredAt: "2026-08-07T12:00:00.000Z",
+    });
+    await store.reserveSupervisorStart(lock);
+
+    await expect(store.reserveSupervisorStart(lock)).resolves.toEqual({
+      acquired: true,
+      record: lock,
+    });
+  });
+
+  it("recovers a release marker blocked by a crashed unpublished reservation", async () => {
+    const { store } = await createStore();
+    const original = createSupervisorStartLock({
+      pid: process.pid,
+      token: randomUUID(),
+      acquiredAt: "2026-08-07T12:00:00.000Z",
+    });
+    const abandoned = createSupervisorStartLock({
+      pid: 2_000_000_000,
+      token: randomUUID(),
+      acquiredAt: "2026-08-07T12:00:01.000Z",
+    });
+    const contender = createSupervisorStartLock({
+      pid: process.pid,
+      token: randomUUID(),
+      acquiredAt: "2026-08-07T12:00:02.000Z",
+    });
+    await store.reserveSupervisorStart(original);
+    const publicPath = join(store.controlDirectory, "supervisor-start.json");
+    await rename(
+      publicPath,
+      join(store.controlDirectory, `.supervisor-start.${randomUUID()}.releasing`),
+    );
+    await writeFile(publicPath, `${JSON.stringify(abandoned)}\n`, { mode: 0o600 });
+
+    await expect(store.reserveSupervisorStart(contender)).resolves.toEqual({
+      acquired: false,
+      record: original,
+    });
+  }, 2_000);
 
   it("transfers startup-lock ownership to the spawned daemon identity", async () => {
     const { store } = await createStore();

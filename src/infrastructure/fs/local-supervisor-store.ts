@@ -298,6 +298,15 @@ export class LocalSupervisorStore {
             parseSupervisorStartLock,
             "supervisor startup lock",
           );
+          if (existing.token === record.token) {
+            if (JSON.stringify(existing) !== JSON.stringify(record)) {
+              throw new LocalSupervisorStoreError(
+                "identity_mismatch",
+                "supervisor startup token was restored with different owner metadata",
+              );
+            }
+            return { acquired: true, record: existing };
+          }
           return { acquired: false, record: existing };
         } catch (readError) {
           if (readError instanceof LocalSupervisorStoreError && readError.code === "not_found") {
@@ -625,6 +634,20 @@ export class LocalSupervisorStore {
         await syncDirectory(this.controlDirectory);
         return true;
       }
+      if (current !== null && !isProcessAlive(current.pid)) {
+        try {
+          await this.releaseSupervisorStart(current.token);
+        } catch (releaseError) {
+          if (
+            !(
+              releaseError instanceof LocalSupervisorStoreError &&
+              (releaseError.code === "not_found" || releaseError.code === "identity_mismatch")
+            )
+          ) {
+            throw releaseError;
+          }
+        }
+      }
       return false;
     }
   }
@@ -787,6 +810,15 @@ function currentUid(): number {
     );
   }
   return uid;
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return !(error instanceof Error && "code" in error && error.code === "ESRCH");
+  }
 }
 
 function storeIoError(message: string, cause: unknown): LocalSupervisorStoreError {
