@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { chmod, type FileHandle, lstat, mkdir, open, rename, rm } from "node:fs/promises";
+import { chmod, type FileHandle, link, lstat, mkdir, open, rename, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
 import {
@@ -96,31 +96,37 @@ export class JsonlAdmissionStore {
     validateRecordSize(line, this.maxEventBytes);
 
     await ensurePrivateDirectory(this.controlDirectory, this.#expectedUid);
+    const pending = join(this.controlDirectory, `.admission.${randomUUID()}.pending`);
     let handle: FileHandle | undefined;
-    let created = false;
+    let published = false;
     try {
+      handle = await open(
+        pending,
+        constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
+        0o600,
+      );
+      await writeAndSync(handle, line);
+      handle = undefined;
       try {
-        handle = await open(
-          this.ledgerPath,
-          constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
-          0o600,
-        );
-        created = true;
+        await link(pending, this.ledgerPath);
+        published = true;
       } catch (error) {
         if (!isNodeError(error) || error.code !== "EEXIST") {
           throw error;
         }
       }
 
-      if (created && handle !== undefined) {
-        await writeAndSync(handle, line);
-        handle = undefined;
+      if (published) {
+        await syncDirectory(this.controlDirectory);
+        await rm(pending);
         await syncDirectory(this.controlDirectory);
         const state = replayLedger([parsed]);
         this.#opened = { state, committedBytes: Buffer.byteLength(line, "utf8") };
         return state;
       }
 
+      await rm(pending);
+      await syncDirectory(this.controlDirectory);
       const ledger = await this.#readCommitted();
       const state = replayLedger(ledger.events);
       assertMatchingPolicy(state, parsed);
@@ -133,10 +139,8 @@ export class JsonlAdmissionStore {
       if (handle !== undefined) {
         await handle.close().catch(() => undefined);
       }
-      if (created) {
-        await rm(this.ledgerPath, { force: true }).catch(() => undefined);
-        await syncDirectory(this.controlDirectory).catch(() => undefined);
-      }
+      await rm(pending, { force: true }).catch(() => undefined);
+      await syncDirectory(this.controlDirectory).catch(() => undefined);
       throw storeError("failed to open the admission ledger", error);
     }
   }

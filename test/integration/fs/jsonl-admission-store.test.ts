@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -43,6 +43,27 @@ describe("JsonlAdmissionStore", () => {
     expect(contents.trim().split("\n")).toHaveLength(3);
     expect((await stat(ledgerPath)).mode & 0o777).toBe(0o600);
     expect((await stat(join(runsDirectory, ".supervisor"))).mode & 0o777).toBe(0o700);
+  });
+
+  it("publishes one complete initialization ledger under concurrent open", async () => {
+    const runsDirectory = await createTemporaryDirectory();
+    const stores = Array.from({ length: 16 }, () => new JsonlAdmissionStore(runsDirectory));
+
+    const states = await Promise.all(stores.map(async (store) => await store.open(initialized())));
+
+    expect(states).toEqual(Array.from({ length: stores.length }, () => stateForFactory()));
+    const contents = await readFile(pathFor(runsDirectory), "utf8");
+    expect(contents.endsWith("\n")).toBe(true);
+    expect(contents.trim().split("\n")).toHaveLength(1);
+    expect(JSON.parse(contents)).toMatchObject({
+      type: "admission_initialized",
+      policyDigest: "a".repeat(64),
+    });
+    expect(
+      (await readdir(join(runsDirectory, ".supervisor"))).filter((name) =>
+        name.endsWith(".pending"),
+      ),
+    ).toEqual([]);
   });
 
   it("reopens an existing ledger under the identical policy and continues its sequence", async () => {
