@@ -1,12 +1,13 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import { PolicyBroker } from "../../../../src/domain/policy/broker.js";
-
-import { createWorkspaceReadTools } from "../../../../src/infrastructure/pi/workspace-read-tools.js";
+import { AgentEffectRecorder } from "../../../../src/infrastructure/pi/agent-effect-recorder.js";
+import { createWorkspaceAgentTools } from "../../../../src/infrastructure/pi/workspace-agent-tools.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -22,10 +23,16 @@ describe("workspace-confined Pi tools", () => {
   it("registers only Flow-owned tool names", async () => {
     const root = await createTemporaryDirectory();
 
-    const tools = await createWorkspaceReadTools(root, ["read", "ls"], policyBroker());
+    const tools = await createWorkspaceAgentTools(root, ["read", "ls", "edit"], policyBroker(), {
+      effectRecorder: effectRecorder(),
+    });
 
-    expect(tools.names).toEqual(["flow_read", "flow_ls"]);
-    expect(tools.definitions.map((tool) => tool.name)).toEqual(["flow_read", "flow_ls"]);
+    expect(tools.names).toEqual(["flow_read", "flow_ls", "flow_edit"]);
+    expect(tools.definitions.map((tool) => tool.name)).toEqual([
+      "flow_read",
+      "flow_ls",
+      "flow_edit",
+    ]);
     expect(tools.definitions[0]?.description).toContain("UTF-8 text");
     expect(tools.definitions[0]?.description).toContain("image decoding is not supported");
     expect(tools.definitions[0]?.description).not.toMatch(/bash/i);
@@ -39,7 +46,7 @@ describe("workspace-confined Pi tools", () => {
     await writeFile(insideFile, "inside", "utf8");
     await writeFile(outsideFile, "secret", "utf8");
     const policy = policyBroker();
-    const tools = await createWorkspaceReadTools(root, ["read"], policy);
+    const tools = await createWorkspaceAgentTools(root, ["read"], policy);
     const readTool = tools.definitions[0];
     if (readTool === undefined) {
       throw new Error("read tool was not registered");
@@ -53,6 +60,10 @@ describe("workspace-confined Pi tools", () => {
       {} as never,
     );
     expect(result.content).toContainEqual({ type: "text", text: "inside" });
+    expect(result.content).toContainEqual({
+      type: "text",
+      text: `[Flow file version: sha256:${sha256("inside")}]`,
+    });
     await expect(
       readTool.execute("outside-call", { path: outsideFile }, undefined, undefined, {} as never),
     ).rejects.toThrowError(/outside/i);
@@ -79,7 +90,7 @@ describe("workspace-confined Pi tools", () => {
     const root = await createTemporaryDirectory();
     await writeFile(join(root, "visible.txt"), "visible", "utf8");
     const policy = policyBroker();
-    const tools = await createWorkspaceReadTools(root, ["ls"], policy);
+    const tools = await createWorkspaceAgentTools(root, ["ls"], policy);
     const lsTool = tools.definitions[0];
     if (lsTool === undefined) {
       throw new Error("ls tool was not registered");
@@ -103,6 +114,153 @@ describe("workspace-confined Pi tools", () => {
         ),
     ).toBe(true);
   });
+
+  it("lists a populated directory through one logical policy authorization", async () => {
+    const root = await createTemporaryDirectory();
+    await Promise.all(
+      Array.from({ length: 100 }, (_, index) =>
+        writeFile(join(root, `file-${index.toString().padStart(3, "0")}.txt`), "visible", "utf8"),
+      ),
+    );
+    const policy = policyBroker();
+    const tools = await createWorkspaceAgentTools(root, ["ls"], policy);
+    const lsTool = tools.definitions[0];
+    if (lsTool === undefined) {
+      throw new Error("ls tool was not registered");
+    }
+
+    const result = await lsTool.execute(
+      "ls-call",
+      { path: root },
+      undefined,
+      undefined,
+      {} as never,
+    );
+
+    expect(result.content).toContainEqual({
+      type: "text",
+      text: expect.stringContaining("file-099.txt"),
+    });
+    expect(policy.snapshot()).toHaveLength(1);
+    expect(policy.snapshot()[0]).toMatchObject({
+      action: "filesystem.list",
+      outcome: "allowed",
+    });
+  });
+
+  it("versions the full exact file even when read output is paged", async () => {
+    const root = await createTemporaryDirectory();
+    const content = "first\nsecond\nthird\n";
+    const target = join(root, "paged.txt");
+    await writeFile(target, content, "utf8");
+    const tools = await createWorkspaceAgentTools(root, ["read"], policyBroker());
+    const readTool = tools.definitions[0];
+    if (readTool === undefined) {
+      throw new Error("read tool was not registered");
+    }
+
+    const result = await readTool.execute(
+      "paged-call",
+      { path: target, offset: 2, limit: 1 },
+      undefined,
+      undefined,
+      {} as never,
+    );
+
+    expect(result.content).toContainEqual({
+      type: "text",
+      text: `[Flow file version: sha256:${sha256(content)}]`,
+    });
+  });
+
+  it("uses the read version token to commit an attributable edit receipt", async () => {
+    const root = await createTemporaryDirectory();
+    const target = join(root, "source.ts");
+    await writeFile(target, "const value = 1;\n", "utf8");
+    const policy = policyBroker(["filesystem.read", "filesystem.write"]);
+    const effects = effectRecorder();
+    const tools = await createWorkspaceAgentTools(root, ["read", "edit"], policy, {
+      effectRecorder: effects,
+    });
+    const readTool = tools.definitions.find((tool) => tool.name === "flow_read");
+    const editTool = tools.definitions.find((tool) => tool.name === "flow_edit");
+    if (readTool === undefined || editTool === undefined) {
+      throw new Error("read and edit tools were not registered");
+    }
+    const readResult = await readTool.execute(
+      "read-call",
+      { path: target },
+      undefined,
+      undefined,
+      {} as never,
+    );
+    const version = extractVersion(readResult.content);
+
+    const editResult = await editTool.execute(
+      "edit-call",
+      {
+        path: target,
+        expectedSha256: version,
+        edits: [{ oldText: "value = 1", newText: "value = 2" }],
+      },
+      undefined,
+      undefined,
+      {} as never,
+    );
+
+    expect(await readFile(target, "utf8")).toBe("const value = 2;\n");
+    expect(editResult.content).toContainEqual({
+      type: "text",
+      text: expect.stringMatching(/Edit committed.*sha256:[a-f0-9]{64}/),
+    });
+    const writeDecision = policy
+      .snapshot()
+      .find((decision) => decision.action === "filesystem.write");
+    expect(writeDecision).toMatchObject({
+      outcome: "allowed",
+      operationDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(effects.snapshot()).toEqual([
+      expect.objectContaining({
+        target: await realpath(target),
+        operationDigest: writeDecision?.operationDigest,
+        beforeSha256: version,
+        afterSha256: sha256("const value = 2;\n"),
+        outcome: "committed",
+      }),
+    ]);
+  });
+
+  it("rejects a stale edit without recording an effect", async () => {
+    const root = await createTemporaryDirectory();
+    const target = join(root, "source.ts");
+    await writeFile(target, "before\n", "utf8");
+    const policy = policyBroker(["filesystem.write"]);
+    const effects = effectRecorder();
+    const tools = await createWorkspaceAgentTools(root, ["edit"], policy, {
+      effectRecorder: effects,
+    });
+    const editTool = tools.definitions[0];
+    if (editTool === undefined) {
+      throw new Error("edit tool was not registered");
+    }
+
+    await expect(
+      editTool.execute(
+        "edit-call",
+        {
+          path: target,
+          expectedSha256: sha256("older\n"),
+          edits: [{ oldText: "before", newText: "after" }],
+        },
+        undefined,
+        undefined,
+        {} as never,
+      ),
+    ).rejects.toMatchObject({ code: "stale_version" });
+    expect(await readFile(target, "utf8")).toBe("before\n");
+    expect(effects.snapshot()).toEqual([]);
+  });
 });
 
 async function createTemporaryDirectory(): Promise<string> {
@@ -111,7 +269,12 @@ async function createTemporaryDirectory(): Promise<string> {
   return directory;
 }
 
-function policyBroker(): PolicyBroker {
+function policyBroker(
+  actions: readonly ("filesystem.read" | "filesystem.list" | "filesystem.write")[] = [
+    "filesystem.read",
+    "filesystem.list",
+  ],
+): PolicyBroker {
   return new PolicyBroker(
     {
       runId: "run-tools",
@@ -119,6 +282,32 @@ function policyBroker(): PolicyBroker {
       nodeId: "analyze",
       attempt: 1,
     },
-    ["filesystem.read", "filesystem.list"],
+    actions,
   );
+}
+
+function effectRecorder(): AgentEffectRecorder {
+  return new AgentEffectRecorder({
+    runId: "run-tools",
+    workflowId: "tools-workflow",
+    nodeId: "analyze",
+    attempt: 1,
+  });
+}
+
+function extractVersion(
+  content: readonly { readonly type: string; readonly text?: string }[],
+): string {
+  const marker = content.find(
+    (item) => item.type === "text" && item.text?.startsWith("[Flow file version:"),
+  )?.text;
+  const match = marker?.match(/sha256:([a-f0-9]{64})/);
+  if (match?.[1] === undefined) {
+    throw new Error("read result did not contain a Flow file version");
+  }
+  return match[1];
+}
+
+function sha256(content: string): string {
+  return createHash("sha256").update(content).digest("hex");
 }

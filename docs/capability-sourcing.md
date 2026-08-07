@@ -36,7 +36,7 @@ Pi's experimental `AgentHarness` API is not a foundation for the first release. 
 | Cancellation and idle settlement | Reuse mechanics | Map into Flow node lifecycle semantics |
 | Per-node model and thinking level | Reuse execution support | Selection remains Flow policy |
 | Exact tool allowlists | Current defense in depth | The adapter passes the exact allowlist to Pi; Flow's broker remains the per-call authorization boundary |
-| Basic coding tools | Flow-owned workspace-confined `read` and `ls` definitions built on Pi's tool interfaces | Built-in Pi tools are disabled; no ambient path access or helper-binary download is inherited |
+| Basic coding tools | Flow-owned workspace-confined `read`, `ls`, and hash-anchored `edit` definitions built on Pi's custom-tool interface | Pi's built-in edit, fuzzy matching, direct writes, ambient path access, and helper-binary downloads are disabled; Flow owns policy, atomic replacement, and receipts |
 | Custom tool API | Present Flow broker tools to the model | Tool schemas remain Flow-owned |
 | Context transformation and compaction | Reuse mechanics | Durable state remains outside context |
 | Session storage | Optional diagnostic artifact | Never authoritative run state |
@@ -67,7 +67,7 @@ OMP is a Pi fork with a broad TypeScript, Bun, and Rust-native product surface. 
 | Capability | Treatment |
 | --- | --- |
 | Read/write/exec approval tiers | Reimplement fail-closed, with argument-dependent authority; do not confuse approval with containment |
-| Hash-anchored edits | Benchmark and potentially port as a provenance-recorded Flow tool |
+| Hash-anchored edits | The first single-file full-SHA exact-edit tool is independently implemented with provenance receipts; OMP's compact line protocol, snapshots, stale recovery, and multi-file patcher remain benchmark candidates rather than dependencies |
 | Diagnostics after writes | Add through an optional language-service capability |
 | LSP and debugger operations | Optional first-party packages, outside scheduler core |
 | Worktree-isolated subagents | Adopt the isolation pattern while Flow owns fan-out and joins |

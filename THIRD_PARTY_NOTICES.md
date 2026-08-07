@@ -38,6 +38,14 @@ Sandbox Runtime and its dependency packages retain their own license metadata in
 - Use: direct runtime dependency for workflow and event validation
 - Copied source: none
 
+## TypeBox
+
+- Project: [sinclairzx81/typebox](https://github.com/sinclairzx81/typebox)
+- Package: `typebox` 1.3.7
+- License: MIT
+- Use: direct runtime dependency for Flow-owned custom Pi tool schemas
+- Copied source: none
+
 ## OMP
 
 - Project: [can1357/oh-my-pi](https://github.com/can1357/oh-my-pi)

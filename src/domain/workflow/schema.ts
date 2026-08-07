@@ -61,8 +61,9 @@ const agentNodeSchema = z
           })
           .strict(),
         tools: z
-          .array(z.enum(["read", "ls"]))
-          .max(2)
+          .array(z.enum(["read", "ls", "edit"]))
+          .max(3)
+          .refine((tools) => new Set(tools).size === tools.length, "agent tools must be unique")
           .default([]),
         timeoutMs: z.number().int().positive().max(86_400_000).default(300_000),
       })

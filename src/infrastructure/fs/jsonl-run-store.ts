@@ -15,6 +15,7 @@ import { z } from "zod";
 import type { RecoverableRunEventStore } from "../../application/ports.js";
 import {
   appendRunEvent,
+  MAX_RUN_EVENT_BYTES,
   parseRunEvent,
   reduceRunEvents,
   RunReplayError,
@@ -78,7 +79,7 @@ export class JsonlRunStore implements RecoverableRunEventStore {
 
   constructor(
     readonly rootDirectory: string,
-    readonly maxEventBytes = 1_048_576,
+    readonly maxEventBytes = MAX_RUN_EVENT_BYTES,
   ) {
     if (!Number.isSafeInteger(maxEventBytes) || maxEventBytes <= 0) {
       throw new RangeError("maxEventBytes must be a positive safe integer");

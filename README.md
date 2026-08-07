@@ -20,7 +20,7 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Durable JSONL run ledger and inspection | Implemented |
 | Safe-boundary recovery with exclusive local ownership | Implemented |
 | Deterministic criterion verification | Implemented |
-| Bounded Pi agent nodes with Flow-owned `read` and `ls` tools | Implemented |
+| Bounded Pi agent nodes with Flow-owned `read`, `ls`, and hash-anchored `edit` tools | Implemented |
 | Fail-closed sandboxed command process trees | Implemented on Linux and macOS |
 | Approvals, graph loops, and broader model tools | Planned |
 | VM-grade isolation of the host-side agent runtime | Planned |
@@ -92,6 +92,18 @@ accepted. Authoritative events are written to:
 The inspected result identifies graph state, criterion decisions, bounded command output and
 hashes, plus the sandbox backend, exact version, profile, and semantic policy digest.
 
+To inspect the coding-agent shape without contacting a provider, validate the implementation
+template:
+
+```sh
+node dist/cli/main.js validate examples/implement-and-verify.workflow.yaml
+```
+
+The template declares `read`, `ls`, and `edit` for one agent node followed by a deterministic
+command verifier. Adapt its prompt, model, and verification command before running it; unlike the
+credential-free foundation example, execution requires a configured Pi provider and may change the
+selected workspace.
+
 ### Recover interrupted work
 
 Inspect the durable state first, then resume with the exact workflow that started the run:
@@ -119,10 +131,16 @@ runtime-support file when Flow is installed outside the selected workspace. The 
 home remains denied.
 
 Agent nodes are different: the host-side Pi runtime runs with the invoking user's operating-system
-permissions and currently receives only explicitly declared Flow-owned `read` and `ls` tools.
-Their filesystem operations are canonically resolved and authorized by the Flow policy broker.
-Pi's ambient tools, extensions, skills, templates, context discovery, and executable-downloading
-helpers are disabled.
+permissions and receives only explicitly declared Flow-owned `read`, `ls`, and `edit` tools. Reads
+return a full-file SHA-256 version. An edit must name that version and exact unique replacements for
+one existing UTF-8 file; stale versions fail rather than merge. Flow preflights the complete edit,
+coordinates cooperating same-host Flow processes, atomically replaces the target, protects the run
+store, nested `.flow` and `.git` state, environment files, and key files, and records separate
+authorization decisions and before/after effect receipts. Directory listings consume one logical
+policy authorization rather than one decision per entry. Create, delete, rename, shell, and network
+tools are not exposed. Filesystem operations are canonically resolved and authorized by the Flow
+policy broker. Pi's ambient tools, extensions, skills, templates, context discovery, built-in edit
+semantics, and executable-downloading helpers are disabled.
 
 SRT is a beta native sandbox rather than a microVM. Use a reviewed container, microVM, Gondolin,
 OpenShell, or managed sandbox for hostile workloads. Read the [security policy](SECURITY.md) before

@@ -1,0 +1,39 @@
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata:
+  id: implement-and-verify
+  description: Template for one bounded coding turn followed by deterministic verification.
+goal:
+  apiVersion: flow.synapti.ai/v1alpha1
+  kind: Goal
+  metadata:
+    id: requested-change-is-verified
+  outcome: The requested repository change passes deterministic verification.
+  criteria:
+    - id: tests-pass
+      description: The repository test suite passes after the implementation.
+      verifier:
+        nodeId: verify
+nodes:
+  - id: implement
+    type: agent
+    agent:
+      prompt: Implement the requested repository change. Read before editing, use exact hash-anchored edits, and do not claim completion without the downstream verifier.
+      model:
+        provider: anthropic
+        id: claude-sonnet-4-5
+        thinking: medium
+      tools:
+        - read
+        - ls
+        - edit
+      timeoutMs: 300000
+  - id: verify
+    type: command
+    dependsOn:
+      - implement
+    command:
+      executable: npm
+      args:
+        - test
+      timeoutMs: 120000

@@ -4,19 +4,50 @@ import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path
 import type { PolicyBroker } from "../../domain/policy/broker.js";
 import type { PolicyAction } from "../../domain/policy/types.js";
 
+const PRIVATE_KEY_FILE_NAMES = new Set(["id_dsa", "id_ecdsa", "id_ed25519", "id_rsa"]);
+
 export class WorkspacePolicyBroker {
   constructor(
     readonly canonicalRoot: string,
     readonly policy: PolicyBroker,
+    readonly protectedWritePaths: readonly string[] = [],
   ) {}
 
   async execute<T>(
     action: PolicyAction,
     inputPath: string,
     effect: (canonicalTarget: string) => Promise<T>,
+    options: { readonly operationDigest?: string } = {},
   ): Promise<T> {
     const resolved = await resolveWorkspaceTarget(this.canonicalRoot, inputPath);
-    this.policy.authorize({ action, target: resolved.target, boundary: resolved.boundary });
+    const boundary =
+      resolved.boundary === "inside" &&
+      isWriteAction(action) &&
+      (isProtectedWriteTarget(
+        this.canonicalRoot,
+        resolved.lexicalTarget,
+        this.protectedWritePaths,
+      ) ||
+        isProtectedWriteTarget(this.canonicalRoot, resolved.target, this.protectedWritePaths))
+        ? "protected"
+        : resolved.boundary;
+    if (action === "filesystem.write") {
+      this.policy.authorize({
+        action,
+        target: resolved.target,
+        boundary,
+        operationDigest: options.operationDigest ?? "",
+      });
+    } else {
+      this.policy.authorize({
+        action,
+        target: resolved.target,
+        boundary,
+        ...(options.operationDigest === undefined
+          ? {}
+          : { operationDigest: options.operationDigest }),
+      });
+    }
     return await effect(resolved.target);
   }
 }
@@ -24,11 +55,17 @@ export class WorkspacePolicyBroker {
 export async function createWorkspacePolicyBroker(
   cwd: string,
   policy: PolicyBroker,
+  protectedWritePaths: readonly string[] = [],
 ): Promise<WorkspacePolicyBroker> {
-  return new WorkspacePolicyBroker(await realpath(cwd), policy);
+  const canonicalRoot = await realpath(cwd);
+  const canonicalProtectedPaths = await Promise.all(
+    protectedWritePaths.map((path) => canonicalizeExistingAncestor(resolve(canonicalRoot, path))),
+  );
+  return new WorkspacePolicyBroker(canonicalRoot, policy, Object.freeze(canonicalProtectedPaths));
 }
 
 interface ResolvedWorkspaceTarget {
+  readonly lexicalTarget: string;
   readonly target: string;
   readonly boundary: "inside" | "outside" | "unresolved";
 }
@@ -40,17 +77,18 @@ async function resolveWorkspaceTarget(
   const root = resolve(canonicalRoot);
   const lexicalTarget = resolve(root, inputPath);
   if (!isAbsolute(inputPath) && !isWithinRoot(root, lexicalTarget)) {
-    return { target: lexicalTarget, boundary: "outside" };
+    return { lexicalTarget, target: lexicalTarget, boundary: "outside" };
   }
 
   try {
     const canonicalTarget = await canonicalizeExistingAncestor(lexicalTarget);
     return {
+      lexicalTarget,
       target: canonicalTarget,
       boundary: isWithinRoot(root, canonicalTarget) ? "inside" : "outside",
     };
   } catch {
-    return { target: lexicalTarget, boundary: "unresolved" };
+    return { lexicalTarget, target: lexicalTarget, boundary: "unresolved" };
   }
 }
 
@@ -81,6 +119,45 @@ function isWithinRoot(root: string, candidate: string): boolean {
   return (
     fromRoot === "" ||
     (fromRoot !== ".." && !fromRoot.startsWith(`..${sep}`) && !isAbsolute(fromRoot))
+  );
+}
+
+function isWriteAction(action: PolicyAction): boolean {
+  return action === "filesystem.write" || action === "filesystem.delete";
+}
+
+function isProtectedWriteTarget(
+  root: string,
+  target: string,
+  protectedWritePaths: readonly string[],
+): boolean {
+  if (protectedWritePaths.some((protectedPath) => isAtOrWithin(target, protectedPath))) {
+    return true;
+  }
+  const fromRoot = relative(root, target);
+  const segments = fromRoot.split(sep);
+  if (segments.includes(".flow") || segments.includes(".git")) {
+    return true;
+  }
+  const targetName = basename(target).toLowerCase();
+  return (
+    targetName === ".env" ||
+    targetName.startsWith(".env.") ||
+    targetName === ".envrc" ||
+    targetName.startsWith(".envrc.") ||
+    PRIVATE_KEY_FILE_NAMES.has(targetName) ||
+    targetName.endsWith(".pem") ||
+    targetName.endsWith(".key") ||
+    targetName.endsWith(".p12") ||
+    targetName.endsWith(".pfx")
+  );
+}
+
+function isAtOrWithin(path: string, directory: string): boolean {
+  const fromDirectory = relative(directory, path);
+  return (
+    fromDirectory === "" ||
+    (fromDirectory !== ".." && !fromDirectory.startsWith(`..${sep}`) && !isAbsolute(fromDirectory))
   );
 }
 

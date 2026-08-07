@@ -44,11 +44,16 @@ export const policyDecisionSchema = z
       .refine((value) => Buffer.byteLength(value, "utf8") <= MAX_POLICY_TARGET_BYTES, {
         message: `policy target must not exceed ${MAX_POLICY_TARGET_BYTES} UTF-8 bytes`,
       }),
+    operationDigest: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
     outcome: z.enum(["allowed", "denied"]),
     reason: z.enum([
       "operation_declared",
       "operation_not_declared",
       "target_outside_workspace",
+      "target_protected",
       "target_resolution_failed",
     ]),
   })

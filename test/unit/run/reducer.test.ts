@@ -96,9 +96,176 @@ describe("reduceRunEvents", () => {
 
     expect(
       parsed.type === "node_succeeded" && parsed.evidence.kind === "agent"
-        ? parsed.evidence.policyDecisions
+        ? {
+            policyDecisions: parsed.evidence.policyDecisions,
+            effectReceipts: parsed.evidence.effectReceipts,
+          }
         : undefined,
-    ).toEqual([]);
+    ).toEqual({ policyDecisions: [], effectReceipts: [] });
+  });
+
+  it("preserves a committed edit receipt bound to its allowed policy decision", () => {
+    const operationDigest = "a".repeat(64);
+    const policy = editPolicy(operationDigest);
+    const events: RunEvent[] = [
+      runStarted(),
+      { ...base(2), type: "node_started", nodeId: "node-version", attempt: 1 },
+      {
+        ...base(3),
+        type: "node_succeeded",
+        nodeId: "node-version",
+        attempt: 1,
+        evidence: {
+          ...agentEvidence("edited"),
+          policyDecisions: policy.close(),
+          effectReceipts: [editReceipt(operationDigest)],
+        },
+      },
+    ];
+
+    const state = reduceRunEvents(structuredClone(events));
+
+    expect(state.nodes["node-version"]?.evidence).toMatchObject({
+      kind: "agent",
+      effectReceipts: [
+        {
+          kind: "filesystem.edit",
+          operationDigest,
+          outcome: "committed",
+          beforeSha256: "b".repeat(64),
+          afterSha256: "c".repeat(64),
+        },
+      ],
+    });
+  });
+
+  it("rejects an edit receipt that is not bound to an allowed policy request", () => {
+    const operationDigest = "a".repeat(64);
+    const policy = editPolicy(operationDigest);
+
+    expect(() =>
+      reduceRunEvents([
+        runStarted(),
+        { ...base(2), type: "node_started", nodeId: "node-version", attempt: 1 },
+        {
+          ...base(3),
+          type: "node_succeeded",
+          nodeId: "node-version",
+          attempt: 1,
+          evidence: {
+            ...agentEvidence("edited"),
+            policyDecisions: policy.close(),
+            effectReceipts: [editReceipt("d".repeat(64))],
+          },
+        },
+      ]),
+    ).toThrowError(/effect receipt.*allowed policy decision/i);
+  });
+
+  it("rejects multiple edit receipts that reuse one allowed policy decision", () => {
+    const operationDigest = "a".repeat(64);
+    const policy = editPolicy(operationDigest);
+
+    expect(() =>
+      reduceRunEvents([
+        runStarted(),
+        { ...base(2), type: "node_started", nodeId: "node-version", attempt: 1 },
+        {
+          ...base(3),
+          type: "node_succeeded",
+          nodeId: "node-version",
+          attempt: 1,
+          evidence: {
+            ...agentEvidence("edited"),
+            policyDecisions: policy.close(),
+            effectReceipts: [
+              editReceipt(operationDigest),
+              { ...editReceipt(operationDigest), sequence: 2 },
+            ],
+          },
+        },
+      ]),
+    ).toThrowError(/effect receipt.*unused allowed policy decision/i);
+  });
+
+  it("rejects an uncertain edit receipt on a successful node", () => {
+    const operationDigest = "a".repeat(64);
+    const policy = editPolicy(operationDigest);
+
+    expect(() =>
+      reduceRunEvents([
+        runStarted(),
+        { ...base(2), type: "node_started", nodeId: "node-version", attempt: 1 },
+        {
+          ...base(3),
+          type: "node_succeeded",
+          nodeId: "node-version",
+          attempt: 1,
+          evidence: {
+            ...agentEvidence("edited"),
+            policyDecisions: policy.close(),
+            effectReceipts: [{ ...editReceipt(operationDigest), outcome: "uncertain" }],
+          },
+        },
+      ]),
+    ).toThrowError(/successful agent evidence.*uncertain/i);
+  });
+
+  it.each([
+    ["committed", "none", /committed effect receipt.*side-effect-free/i],
+    ["uncertain", "committed", /uncertain effect receipt requires uncertain/i],
+  ] as const)(
+    "rejects %s edit evidence with incompatible %s failure status",
+    (receiptOutcome, sideEffectStatus, expectedError) => {
+      const operationDigest = "a".repeat(64);
+      const policy = editPolicy(operationDigest);
+
+      expect(() =>
+        reduceRunEvents([
+          runStarted(),
+          { ...base(2), type: "node_started", nodeId: "node-version", attempt: 1 },
+          {
+            ...base(3),
+            type: "node_failed",
+            nodeId: "node-version",
+            attempt: 1,
+            error: {
+              code: "pi_agent_failed",
+              message: "provider failed",
+              retryable: false,
+              sideEffectStatus,
+            },
+            evidence: {
+              ...agentEvidence(""),
+              policyDecisions: policy.close(),
+              effectReceipts: [{ ...editReceipt(operationDigest), outcome: receiptOutcome }],
+            },
+          },
+        ]),
+      ).toThrowError(expectedError);
+    },
+  );
+
+  it("rejects a committed failure status without an effect receipt", () => {
+    expect(() =>
+      reduceRunEvents([
+        runStarted(),
+        { ...base(2), type: "node_started", nodeId: "node-version", attempt: 1 },
+        {
+          ...base(3),
+          type: "node_failed",
+          nodeId: "node-version",
+          attempt: 1,
+          error: {
+            code: "pi_agent_failed",
+            message: "provider failed",
+            retryable: false,
+            sideEffectStatus: "committed",
+          },
+          evidence: agentEvidence(""),
+        },
+      ]),
+    ).toThrowError(/committed side-effect status requires an effect receipt/i);
   });
 
   it("preserves backend-neutral sandbox evidence for future adapters", () => {
@@ -476,6 +643,7 @@ describe("reduceRunEvents", () => {
             textTruncated: true,
             durationMs: 1,
             policyDecisions: [],
+            effectReceipts: [],
           },
         },
       ]),
@@ -602,5 +770,42 @@ function agentEvidence(text: string) {
     textTruncated: false,
     durationMs: 1,
     policyDecisions: [],
+    effectReceipts: [],
+  };
+}
+
+function editPolicy(operationDigest: string): PolicyBroker {
+  const policy = new PolicyBroker(
+    {
+      runId: "run-1",
+      workflowId: "verify-foundation",
+      nodeId: "node-version",
+      attempt: 1,
+    },
+    ["filesystem.write"],
+  );
+  policy.authorize({
+    action: "filesystem.write",
+    target: "/workspace/source.ts",
+    boundary: "inside",
+    operationDigest,
+  });
+  return policy;
+}
+
+function editReceipt(operationDigest: string) {
+  return {
+    version: 1 as const,
+    sequence: 1,
+    runId: "run-1",
+    workflowId: "verify-foundation",
+    nodeId: "node-version",
+    attempt: 1,
+    kind: "filesystem.edit" as const,
+    target: "/workspace/source.ts",
+    operationDigest,
+    beforeSha256: "b".repeat(64),
+    afterSha256: "c".repeat(64),
+    outcome: "committed" as const,
   };
 }
