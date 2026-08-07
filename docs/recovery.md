@@ -3,7 +3,8 @@
 Flow can resume an interrupted run when its durable ledger proves that execution stopped between
 node attempts. An agent node may also opt into a bounded fresh attempt when replay proves the open
 attempt applied no effects. Recovery remains conservative: ambiguous work is reported to the
-operator and is never repeated automatically.
+operator and is never repeated automatically. Command and model verifier attempts never opt into
+fresh recovery; an open verifier start is refused as uncertain.
 
 ## Operator workflow
 
@@ -93,6 +94,7 @@ The actor label is caller-supplied audit attribution rather than authenticated i
 | `workflow_approval_denied` is durable but `run_failed` is absent | Append `run_resumed`, append `run_failed`, and execute nothing |
 | One or more opted-in agent `node_started` events are below their attempt caps, have accountable start capacity, and have no effects or only effects proven not applied | Reconcile every open typed edit and append each `node_attempt_interrupted` in declaration order; append one `run_resumed`, then admit fresh attempts under the persisted concurrency limit |
 | An opted-in agent `node_started` has an applied, committed, unknown, open, legacy writable, attempt-exhausted, or unaccountable budget state | Preserve any reconciliation prefix, refuse with `recovery_retry_ineligible`, and invoke no executor |
+| A verifier `node_started` has no matching outcome | Refuse with `uncertain_operation`; do not repeat its command or model invocation |
 | An unconfigured `node_started` has no matching outcome | Preserve any reconciliation prefix, refuse with `uncertain_operation`, and append no retry disposition or `run_resumed` |
 | Run is `succeeded`, `failed`, `cancelled`, or `resource_exhausted` | Refuse with `terminal_run` |
 | Workflow identity, version, digest, budget, node set, persisted control graph, or committed transition order differs | Refuse with `workflow_mismatch` |

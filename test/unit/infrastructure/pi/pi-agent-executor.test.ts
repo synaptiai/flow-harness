@@ -131,6 +131,28 @@ describe("PiAgentExecutor", () => {
     });
   });
 
+  it("honors verifier-owned system prompt and tighter output limit per execution", async () => {
+    let request: PiAgentRunRequest | undefined;
+    const runner: PiAgentRunner = {
+      async run(input) {
+        request = input;
+        return { text: "accepted", stopReason: "stop" };
+      },
+    };
+
+    const outcome = await new PiAgentExecutor(runner).execute(agentNode(), {
+      ...context,
+      agentSystemPrompt: "Verifier system contract.",
+      agentMaxOutputBytes: 16_384,
+    });
+
+    expect(request).toMatchObject({
+      systemPrompt: "Verifier system contract.",
+      maxOutputBytes: 16_384,
+    });
+    expect(outcome).toMatchObject({ status: "succeeded", evidence: { text: "accepted" } });
+  });
+
   it("passes cancellation through without adding authority", async () => {
     const controller = new AbortController();
     let receivedSignal: AbortSignal | undefined;

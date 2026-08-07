@@ -1,0 +1,24 @@
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata:
+  id: typed-command-verifier
+  description: Credential-free first-class verifier with durable typed evidence.
+goal:
+  apiVersion: flow.synapti.ai/v1alpha1
+  kind: Goal
+  metadata:
+    id: node-runtime-available
+  outcome: The configured Node.js runtime executes successfully.
+  criteria:
+    - id: version-command-passes
+      description: The Node.js version command exits normally with code zero.
+      verifier: { nodeId: verify-node }
+nodes:
+  - id: verify-node
+    type: verifier
+    verifier:
+      kind: command
+      command:
+        executable: node
+        args: [--version]
+        timeoutMs: 30000

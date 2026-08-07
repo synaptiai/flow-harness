@@ -42,7 +42,9 @@ import type {
   CompiledLoopCheckNode,
   CompiledLoopNode,
   CompiledNode,
+  CompiledVerifierNode,
   CompiledWorkflow,
+  EvidenceSourceField,
 } from "../domain/workflow/types.js";
 import {
   projectCompiledControlGraph,
@@ -55,6 +57,7 @@ import type {
   NodeExecutor,
   RecoverableRunEventStore,
   RunEventStore,
+  VerifierSourceInput,
 } from "./ports.js";
 
 export interface RunWorkflowOptions {
@@ -225,6 +228,7 @@ async function continueWorkflow(
       readonly executionNode: ExecutableNode;
       readonly attempt: number;
       readonly effectJournal?: NodeEffectJournal;
+      readonly verifierSources?: readonly VerifierSourceInput[];
     }> = [];
 
     while (admitted.length < state.concurrency.maxNodes) {
@@ -266,6 +270,7 @@ async function continueWorkflow(
       const node = transition.node;
       const executionNode = boundNodeTimeout(node, state);
       const attempt = (state.nodes[node.id]?.attempt ?? 0) + 1;
+      const verifierSources = verifierExecutionSources(executionNode, state);
       let approval: { readonly requestId: string; readonly operationDigest: string } | undefined;
       let startTime: Date | undefined;
       if (node.type === "command" && node.approval !== undefined) {
@@ -354,6 +359,7 @@ async function continueWorkflow(
         executionNode,
         attempt,
         ...(effectJournal === undefined ? {} : { effectJournal }),
+        ...(verifierSources === undefined ? {} : { verifierSources }),
       });
       if ((state.budget?.exhausted.length ?? 0) > 0) {
         break;
@@ -361,7 +367,7 @@ async function continueWorkflow(
     }
 
     const settlements = await Promise.all(
-      admitted.map(async ({ executionNode, attempt, effectJournal }) => {
+      admitted.map(async ({ executionNode, attempt, effectJournal, verifierSources }) => {
         const abortedBeforeExecution = isAborted(options.signal);
         const outcome = abortedBeforeExecution
           ? abortedOutcome(options.signal)
@@ -372,6 +378,7 @@ async function continueWorkflow(
               cwd: options.cwd,
               protectedPaths: options.protectedPaths,
               ...(effectJournal === undefined ? {} : { effectJournal }),
+              ...(verifierSources === undefined ? {} : { verifierSources }),
               ...(options.signal === undefined ? {} : { signal: options.signal }),
             });
         return { outcome, abortedBeforeExecution };
@@ -1145,7 +1152,7 @@ function hasRelease(
   return "release" in store && typeof store.release === "function";
 }
 
-type ExecutableNode = CompiledAgentNode | CompiledCommandNode;
+type ExecutableNode = CompiledAgentNode | CompiledCommandNode | CompiledVerifierNode;
 
 type WorkflowTransition =
   | { readonly kind: "execute"; readonly node: ExecutableNode }
@@ -1156,6 +1163,7 @@ type WorkflowTransition =
       readonly node:
         | CompiledAgentNode
         | CompiledCommandNode
+        | CompiledVerifierNode
         | CompiledApprovalNode
         | CompiledConditionNode;
       readonly selectedCase: string;
@@ -1170,6 +1178,7 @@ type WorkflowTransition =
       readonly node:
         | CompiledAgentNode
         | CompiledCommandNode
+        | CompiledVerifierNode
         | CompiledApprovalNode
         | CompiledConditionNode;
     }
@@ -1563,7 +1572,7 @@ function controlSource(
   controlNodeId: string,
   declaration: {
     readonly nodeId: string;
-    readonly field: "command.stdout" | "command.stderr" | "agent.text";
+    readonly field: EvidenceSourceField;
   },
   state: RunState,
 ): {
@@ -1607,8 +1616,121 @@ function controlSource(
         };
       }
       break;
+    case "verifier.verdict":
+      if (source.evidence.kind === "verifier") {
+        return {
+          attempt: source.attempt,
+          value: source.evidence.verdict,
+          hash: createHash("sha256").update(source.evidence.verdict).digest("hex"),
+          truncated: false,
+        };
+      }
+      break;
+    case "verifier.reason":
+      if (source.evidence.kind === "verifier") {
+        return {
+          attempt: source.attempt,
+          value: source.evidence.reason,
+          hash: source.evidence.reasonHash,
+          truncated: false,
+        };
+      }
+      break;
   }
   throw new Error(`control node "${controlNodeId}" source field is incompatible with its evidence`);
+}
+
+function verifierExecutionSources(
+  node: ExecutableNode,
+  state: RunState,
+): readonly VerifierSourceInput[] | undefined {
+  if (node.type !== "verifier" || node.verifier.kind !== "model") {
+    return undefined;
+  }
+  return Object.freeze(
+    node.verifier.evidence.map((declaration) => {
+      const source = verifierSource(node.id, declaration, state);
+      return Object.freeze({
+        sourceNodeId: declaration.nodeId,
+        sourceAttempt: source.attempt,
+        sourceField: declaration.field,
+        sourceHash: source.hash,
+        value: source.value,
+        truncated: source.truncated,
+      });
+    }),
+  );
+}
+
+function verifierSource(
+  verifierNodeId: string,
+  declaration: { readonly nodeId: string; readonly field: EvidenceSourceField },
+  state: RunState,
+): {
+  readonly attempt: number;
+  readonly value: string;
+  readonly hash: string;
+  readonly truncated: boolean;
+} {
+  const source = state.nodes[declaration.nodeId];
+  if (source?.status !== "succeeded" || source.evidence === null) {
+    throw new Error(`verifier node "${verifierNodeId}" source has no successful evidence`);
+  }
+  switch (declaration.field) {
+    case "command.stdout":
+      if (source.evidence.kind === "command") {
+        return {
+          attempt: source.attempt,
+          value: source.evidence.stdout,
+          hash: source.evidence.stdoutHash,
+          truncated: source.evidence.stdoutTruncated,
+        };
+      }
+      break;
+    case "command.stderr":
+      if (source.evidence.kind === "command") {
+        return {
+          attempt: source.attempt,
+          value: source.evidence.stderr,
+          hash: source.evidence.stderrHash,
+          truncated: source.evidence.stderrTruncated,
+        };
+      }
+      break;
+    case "agent.text":
+      if (source.evidence.kind === "agent") {
+        return {
+          attempt: source.attempt,
+          value: source.evidence.text,
+          hash: source.evidence.textHash,
+          truncated: source.evidence.textTruncated,
+        };
+      }
+      break;
+    case "verifier.verdict":
+      if (source.evidence.kind === "verifier") {
+        return {
+          attempt: source.attempt,
+          value: source.evidence.verdict,
+          hash: createHash("sha256").update(source.evidence.verdict).digest("hex"),
+          truncated: false,
+        };
+      }
+      break;
+    case "verifier.reason":
+      if (source.evidence.kind === "verifier") {
+        return {
+          attempt: source.attempt,
+          value: source.evidence.reason,
+          hash: source.evidence.reasonHash,
+          truncated: false,
+        };
+      }
+      break;
+  }
+  throw new Error(
+    `verifier node "${verifierNodeId}" source field is incompatible with its evidence`,
+  );
 }
 
 function workflowIsTerminal(state: RunState): boolean {
@@ -1631,6 +1753,7 @@ function hasPendingStartExhaustion(state: RunState): boolean {
 
 function boundNodeTimeout(node: CompiledCommandNode, state: RunState): CompiledCommandNode;
 function boundNodeTimeout(node: CompiledAgentNode, state: RunState): CompiledAgentNode;
+function boundNodeTimeout(node: CompiledVerifierNode, state: RunState): CompiledVerifierNode;
 function boundNodeTimeout(node: ExecutableNode, state: RunState): ExecutableNode;
 function boundNodeTimeout(node: CompiledNode, state: RunState): CompiledNode;
 function boundNodeTimeout(node: CompiledNode, state: RunState): CompiledNode {
@@ -1648,6 +1771,24 @@ function boundNodeTimeout(node: CompiledNode, state: RunState): CompiledNode {
     return Object.freeze({
       ...node,
       command: Object.freeze({ ...node.command, timeoutMs: remaining }),
+    });
+  }
+  if (node.type === "verifier") {
+    const timeoutMs =
+      node.verifier.kind === "command" ? node.verifier.command.timeoutMs : node.verifier.timeoutMs;
+    if (timeoutMs <= remaining) {
+      return node;
+    }
+    return Object.freeze({
+      ...node,
+      verifier: Object.freeze(
+        node.verifier.kind === "command"
+          ? {
+              ...node.verifier,
+              command: Object.freeze({ ...node.verifier.command, timeoutMs: remaining }),
+            }
+          : { ...node.verifier, timeoutMs: remaining },
+      ),
     });
   }
   if (node.type !== "agent") {
@@ -1672,7 +1813,7 @@ async function executeNode(
   } catch (error) {
     const message = boundedFailureMessage(error instanceof Error ? error.message : String(error));
     const failure: NodeFailure = {
-      code: "executor_error",
+      code: node.type === "verifier" ? "verifier_inconclusive" : "executor_error",
       message,
       retryable: false,
       sideEffectStatus: "uncertain",

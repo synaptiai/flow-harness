@@ -179,6 +179,72 @@ nodes:
     );
   });
 
+  it("runs and inspects a typed command verifier through the production path", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "verifier.workflow.yaml");
+    const runsDirectory = join(directory, "runs");
+    await writeFile(
+      workflowPath,
+      `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: cli-verifier }
+goal:
+  apiVersion: flow.synapti.ai/v1alpha1
+  kind: Goal
+  metadata: { id: typed-verification }
+  outcome: The typed verifier accepts the command result.
+  criteria:
+    - id: verifier-passes
+      description: The typed command verifier passes.
+      verifier: { nodeId: verify }
+nodes:
+  - id: verify
+    type: verifier
+    verifier:
+      kind: command
+      command:
+        executable: ${JSON.stringify(process.execPath)}
+        args: [--version]
+`,
+      "utf8",
+    );
+    const runCapture = createCapture();
+
+    const exitCode = await main(
+      ["run", workflowPath, "--run-id", "cli-verifier", "--runs-dir", runsDirectory],
+      runCapture.io,
+      { cwd: directory },
+    );
+
+    expect(exitCode, [...runCapture.stderr, ...runCapture.stdout].join("\n")).toBe(0);
+    const runState = JSON.parse(runCapture.stdout.join("\n"));
+    expect(runState).toMatchObject({
+      status: "succeeded",
+      goal: { status: "accepted", criteria: { "verifier-passes": { status: "accepted" } } },
+      nodes: {
+        verify: {
+          status: "succeeded",
+          evidence: {
+            kind: "verifier",
+            driver: "command",
+            result: "completed",
+            verdict: "accepted",
+            command: { executable: process.execPath, args: ["--version"], exitCode: 0 },
+          },
+        },
+      },
+    });
+
+    const inspectCapture = createCapture();
+    expect(
+      await main(["inspect", "cli-verifier", "--runs-dir", runsDirectory], inspectCapture.io, {
+        cwd: directory,
+      }),
+    ).toBe(0);
+    expect(JSON.parse(inspectCapture.stdout.join("\n"))).toEqual(runState);
+  });
+
   it("runs two mutually waiting command branches through one production SRT session", async () => {
     const directory = await createTemporaryDirectory();
     const workflowPath = join(directory, "concurrent.workflow.yaml");

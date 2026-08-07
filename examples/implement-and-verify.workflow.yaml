@@ -32,11 +32,13 @@ nodes:
         maxAttempts: 3
       timeoutMs: 300000
   - id: verify
-    type: command
+    type: verifier
     dependsOn:
       - implement
-    command:
-      executable: npm
-      args:
-        - test
-      timeoutMs: 120000
+    verifier:
+      kind: command
+      command:
+        executable: npm
+        args:
+          - test
+        timeoutMs: 120000

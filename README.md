@@ -18,7 +18,7 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Strict workflow and goal compilation | Implemented |
 | Deterministic dependency-ordered execution with bounded static DAG forks | Implemented; omitted concurrency remains sequential |
 | Durable exact-output conditions, guarded branches, omission propagation, and explicit joins | Implemented with bounded selected-branch concurrency |
-| Replay-safe bounded loops over local command/agent DAGs | Implemented through finite acyclic expansion, exact stop evidence, and hard failure at the declared bound |
+| Replay-safe bounded loops over local command/agent/verifier DAGs | Implemented through finite acyclic expansion, exact stop evidence, and hard failure at the declared bound |
 | Durable JSONL run ledger and inspection | Implemented |
 | Safe-boundary recovery with exclusive local ownership | Implemented |
 | Durable exact command approval with approve/deny CLI | Implemented |
@@ -26,7 +26,7 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Durable provider-neutral resource accounting and run budgets | Implemented for starts, model tokens, reported cost, and active execution time |
 | Strict project/operator configuration with inspectable monotonic limits | Implemented |
 | Bounded detached supervisor, durable FIFO queue, authenticated workers, cancellation, and event replay | Implemented on Linux and macOS |
-| Deterministic criterion verification | Implemented |
+| First-class typed verifier nodes | Implemented for sandboxed command and evidence-isolated zero-tool Pi model drivers |
 | Bounded Pi agent nodes with Flow-owned `read`, `ls`, and hash-anchored `edit` tools | Implemented |
 | Proof-safe fresh recovery of interrupted agent attempts | Implemented as explicit opt-in for read-only attempts and edit attempts proven not applied |
 | Fail-closed sandboxed command process trees | Implemented on Linux and macOS |
@@ -110,6 +110,21 @@ accepted. Authoritative events are written to:
 
 The inspected result identifies graph state, criterion decisions, bounded command output and
 hashes, plus the sandbox backend, exact version, profile, and semantic policy digest.
+
+To exercise the first-class verifier contract without model credentials:
+
+```sh
+node dist/cli/main.js validate examples/typed-command-verifier.workflow.yaml
+node dist/cli/main.js run examples/typed-command-verifier.workflow.yaml --run-id verifier-demo
+node dist/cli/main.js inspect verifier-demo
+```
+
+The command driver wraps the existing sandboxed command evidence in a typed `accepted`, `rejected`,
+or `inconclusive` verdict. A model driver instead evaluates only 1–16 declared direct-dependency
+evidence fields in a separate Pi session with a dedicated system prompt, no tools or project
+discovery, a 256 KiB aggregate input ceiling, a 16 KiB response ceiling, and one strict JSON
+verdict object. Model verification is probabilistic and is not prompt-injection-proof; prefer the
+command driver for release claims and hidden deterministic checks.
 
 To exercise durable conditional routing without model credentials:
 
@@ -224,7 +239,7 @@ inside this slice's administrative trust boundary.
 
 ### Approve durable graph evidence
 
-An `approval` node pauses the graph after its declared command or agent evidence is complete:
+An `approval` node pauses the graph after its declared command, agent, or accepted verifier evidence is complete:
 
 ```sh
 node dist/cli/main.js run examples/evidence-approval.workflow.yaml --run-id review-demo
@@ -278,7 +293,7 @@ node dist/cli/main.js validate examples/implement-and-verify.workflow.yaml
 ```
 
 The template declares `read`, `ls`, and `edit`, an opt-in bounded fresh-recovery policy, and a
-deterministic command verifier. Adapt its prompt, model, and verification command before running
+first-class deterministic command verifier. Adapt its prompt, model, and verification command before running
 it; unlike the credential-free foundation example, execution requires a configured Pi provider and
 may change the selected workspace.
 

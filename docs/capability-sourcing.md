@@ -20,7 +20,7 @@ Pi's experimental `AgentHarness` API is not a foundation for the first release. 
 | Policy, approvals, tool broker, and sandbox profile | Authorization and containment are Flow product semantics even when enforcement is delegated |
 | Context assembly and redaction | Context composition is a major cost, safety, and quality control |
 | Event ledger and recovery | Pi transcripts cannot determine graph position or side-effect certainty |
-| Local supervisor and worker protocol | Flow must supervise command and agent nodes, preserve ledger authority, and expose provider-neutral control |
+| Local supervisor and worker protocol | Flow must supervise command, agent, and verifier nodes, preserve ledger authority, and expose provider-neutral control |
 | Model routing | Flow selects capability and cost profiles while Pi supplies models |
 | Skill and package trust | Installed content is untrusted and cannot broaden its own authority |
 | Public CLI, API, and persisted formats | Public contracts must survive provider and executor changes |

@@ -11,14 +11,17 @@ import {
 } from "../goal/evaluator.js";
 import { compiledGoalSchema } from "../goal/schema.js";
 import type { CompiledGoal, GoalRunState } from "../goal/types.js";
+import { parseVerifierVerdictJson } from "../verification/verdict.js";
 import {
   MAX_CONCURRENT_NODES,
   MAX_COMPILED_WORKFLOW_NODES,
   MAX_CONTROL_GRAPH_SERIALIZED_BYTES,
   MAX_LOOP_ITERATIONS,
   type CompiledRunBudget,
+  type CompiledVerifierConfig,
   type CompiledWorkflowConcurrency,
   type ConditionSourceField,
+  type EvidenceSourceField,
 } from "../workflow/types.js";
 import {
   calculateCommandApprovalOperationDigest,
@@ -95,6 +98,43 @@ export interface AgentEvidence {
   readonly effectReceipts: readonly AgentEffectReceipt[];
 }
 
+export type VerifierVerdict = "accepted" | "rejected" | "inconclusive";
+
+export interface VerifierSourceObservation {
+  readonly sourceNodeId: string;
+  readonly sourceAttempt: number;
+  readonly sourceField: EvidenceSourceField;
+  readonly sourceHash: string;
+}
+
+interface VerifierEvidenceBase {
+  readonly kind: "verifier";
+  readonly verdict: VerifierVerdict;
+  readonly reason: string;
+  readonly reasonHash: string;
+  readonly durationMs: number;
+  readonly sources: readonly VerifierSourceObservation[];
+}
+
+export interface CommandVerifierEvidence extends VerifierEvidenceBase {
+  readonly driver: "command";
+  readonly result: "completed" | "execution_failed";
+  readonly command: CommandEvidence | null;
+}
+
+export interface ModelVerifierEvidence extends VerifierEvidenceBase {
+  readonly driver: "model";
+  readonly result: "parsed" | "invalid_output" | "execution_failed";
+  readonly provider: string;
+  readonly model: string;
+  readonly raw: string;
+  readonly rawHash: string;
+  readonly rawTruncated: boolean;
+  readonly usage?: AgentModelUsage;
+}
+
+export type VerifierEvidence = CommandVerifierEvidence | ModelVerifierEvidence;
+
 export const MAX_AGENT_EFFECT_RECEIPTS = 32;
 export const MAX_RUN_EVENT_BYTES = 2_097_152;
 export const DURABLE_EFFECT_PROTOCOL = "flow.effects/v1" as const;
@@ -114,7 +154,7 @@ export interface AgentEffectReceipt {
   readonly outcome: "committed" | "uncertain";
 }
 
-export type NodeEvidence = CommandEvidence | AgentEvidence;
+export type NodeEvidence = CommandEvidence | AgentEvidence | VerifierEvidence;
 
 export interface NodeFailure {
   readonly code: string;
@@ -210,6 +250,12 @@ export interface ControlGraphApprovalNode extends ControlGraphNodeBase {
   };
 }
 
+export interface ControlGraphVerifierNode extends ControlGraphNodeBase {
+  readonly type: "verifier";
+  readonly when?: ControlBranchGuard;
+  readonly verifier: CompiledVerifierConfig;
+}
+
 export interface ControlGraphConditionNode extends ControlGraphNodeBase {
   readonly type: "condition";
   readonly when?: ControlBranchGuard;
@@ -261,6 +307,7 @@ export interface ControlGraphLoopNode extends ControlGraphNodeBase {
 export type ControlGraphNode =
   | ControlGraphExecutableNode
   | ControlGraphApprovalNode
+  | ControlGraphVerifierNode
   | ControlGraphConditionNode
   | ControlGraphJoinNode
   | ControlGraphLoopCheckNode
@@ -817,11 +864,19 @@ const canonicalWorkflowApprovalPromptSchema = z
     message: "workflow approval prompt must not contain surrounding whitespace",
   });
 
+const evidenceSourceFieldSchema = z.enum([
+  "command.stdout",
+  "command.stderr",
+  "agent.text",
+  "verifier.verdict",
+  "verifier.reason",
+]);
+
 const workflowApprovalEvidenceObservationSchema = z
   .object({
     sourceNodeId: identifierSchema,
     sourceAttempt: z.number().int().positive(),
-    sourceField: z.enum(["command.stdout", "command.stderr", "agent.text"]),
+    sourceField: evidenceSourceFieldSchema,
     sourceHash: sha256Schema,
   })
   .strict();
@@ -968,9 +1023,70 @@ const agentEvidenceSchema = z
   })
   .strict();
 
-const nodeEvidenceSchema = z.discriminatedUnion("kind", [
+const verifierSourceObservationSchema = z
+  .object({
+    sourceNodeId: identifierSchema,
+    sourceAttempt: z.number().int().positive(),
+    sourceField: evidenceSourceFieldSchema,
+    sourceHash: sha256Schema,
+  })
+  .strict();
+
+const verifierEvidenceCommonShape = {
+  kind: z.literal("verifier"),
+  verdict: z.enum(["accepted", "rejected", "inconclusive"]),
+  reason: z
+    .string()
+    .min(1)
+    .max(4096)
+    .refine((value) => value === value.trim(), {
+      message: "verifier reason must not contain surrounding whitespace",
+    }),
+  reasonHash: sha256Schema,
+  durationMs: z.number().nonnegative().max(Number.MAX_SAFE_INTEGER),
+};
+
+const commandVerifierEvidenceSchema = z
+  .object({
+    ...verifierEvidenceCommonShape,
+    driver: z.literal("command"),
+    result: z.enum(["completed", "execution_failed"]),
+    sources: z.array(verifierSourceObservationSchema).length(0),
+    command: commandEvidenceSchema.nullable(),
+  })
+  .strict();
+
+const modelVerifierEvidenceSchema = z
+  .object({
+    ...verifierEvidenceCommonShape,
+    driver: z.literal("model"),
+    result: z.enum(["parsed", "invalid_output", "execution_failed"]),
+    provider: z.string().min(1).max(96),
+    model: z.string().min(1).max(256),
+    raw: z.string().refine((value) => Buffer.byteLength(value, "utf8") <= 16_384, {
+      message: "verifier raw output must not exceed 16384 UTF-8 bytes",
+    }),
+    rawHash: sha256Schema,
+    rawTruncated: z.boolean(),
+    usage: agentModelUsageSchema.optional(),
+    sources: z
+      .array(verifierSourceObservationSchema)
+      .min(1)
+      .max(16)
+      .refine(
+        (items) =>
+          new Set(items.map((item) => `${item.sourceNodeId}\0${item.sourceField}`)).size ===
+          items.length,
+        "verifier source observations must be unique",
+      ),
+  })
+  .strict();
+
+const nodeEvidenceSchema = z.union([
   commandEvidenceSchema,
   agentEvidenceSchema,
+  commandVerifierEvidenceSchema,
+  modelVerifierEvidenceSchema,
 ]);
 
 const nodeFailureSchema = z
@@ -1021,7 +1137,7 @@ const controlConditionSchema = z
     source: z
       .object({
         nodeId: identifierSchema,
-        field: z.enum(["command.stdout", "command.stderr", "agent.text"]),
+        field: evidenceSourceFieldSchema,
       })
       .strict(),
     cases: z
@@ -1074,6 +1190,74 @@ const controlConditionSchema = z
     }
   });
 
+const controlVerifierCommandSchema = z
+  .object({
+    executable: z
+      .string()
+      .min(1)
+      .max(4096)
+      .refine((value) => !value.includes("\0")),
+    args: z
+      .array(
+        z
+          .string()
+          .max(4096)
+          .refine((value) => !value.includes("\0")),
+      )
+      .max(64)
+      .refine(
+        (args) => args.reduce((total, arg) => total + Buffer.byteLength(arg, "utf8"), 0) <= 65_536,
+        "command arguments must not exceed 65536 UTF-8 bytes in total",
+      ),
+    timeoutMs: z.number().int().positive().max(86_400_000),
+  })
+  .strict();
+
+const controlVerifierSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("command"),
+      command: controlVerifierCommandSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("model"),
+      prompt: z
+        .string()
+        .min(1)
+        .max(16_384)
+        .refine((value) => value === value.trim(), {
+          message: "verifier prompt must not contain surrounding whitespace",
+        }),
+      evidence: z
+        .array(
+          z
+            .object({
+              nodeId: identifierSchema,
+              field: evidenceSourceFieldSchema,
+            })
+            .strict(),
+        )
+        .min(1)
+        .max(16)
+        .refine(
+          (items) =>
+            new Set(items.map((item) => `${item.nodeId}\0${item.field}`)).size === items.length,
+          "verifier evidence sources must be unique",
+        ),
+      model: z
+        .object({
+          provider: z.string().min(1).max(96),
+          id: z.string().min(1).max(256),
+          thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
+        })
+        .strict(),
+      timeoutMs: z.number().int().positive().max(86_400_000),
+    })
+    .strict(),
+]);
+
 const controlGraphNodeSchema = z.discriminatedUnion("type", [
   z
     .object({
@@ -1102,7 +1286,7 @@ const controlGraphNodeSchema = z.discriminatedUnion("type", [
               z
                 .object({
                   nodeId: identifierSchema,
-                  field: z.enum(["command.stdout", "command.stderr", "agent.text"]),
+                  field: evidenceSourceFieldSchema,
                 })
                 .strict(),
             )
@@ -1115,6 +1299,14 @@ const controlGraphNodeSchema = z.discriminatedUnion("type", [
             ),
         })
         .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ...controlNodeBaseShape,
+      type: z.literal("verifier"),
+      when: controlBranchGuardSchema.optional(),
+      verifier: controlVerifierSchema,
     })
     .strict(),
   z
@@ -1158,7 +1350,7 @@ const controlGraphNodeSchema = z.discriminatedUnion("type", [
           source: z
             .object({
               nodeId: identifierSchema,
-              field: z.enum(["command.stdout", "command.stderr", "agent.text"]),
+              field: evidenceSourceFieldSchema,
             })
             .strict(),
           equals: agentOutputSchema,
@@ -1357,7 +1549,7 @@ export const runEventSchema = z.discriminatedUnion("type", [
       attempt: z.literal(1),
       sourceNodeId: identifierSchema,
       sourceAttempt: z.number().int().positive(),
-      sourceField: z.enum(["command.stdout", "command.stderr", "agent.text"]),
+      sourceField: evidenceSourceFieldSchema,
       sourceHash: sha256Schema,
       selectedCase: identifierSchema,
     })
@@ -1448,7 +1640,7 @@ export const runEventSchema = z.discriminatedUnion("type", [
       iteration: loopIterationSchema,
       sourceNodeId: identifierSchema,
       sourceAttempt: z.number().int().positive(),
-      sourceField: z.enum(["command.stdout", "command.stderr", "agent.text"]),
+      sourceField: evidenceSourceFieldSchema,
       sourceHash: sha256Schema,
       decision: z.enum(["stop", "continue"]),
     })
@@ -2902,6 +3094,13 @@ export function appendRunEvent(
       validateDurableEffectProjection(current, event.evidence, event, eventIndex);
       validateEvidenceIntegrity(event.evidence, event, eventIndex, current.effectProtocol === null);
       validateSucceededEvidence(event.evidence, eventIndex);
+      validateVerifierEvidenceProjection(
+        currentState.controlGraph,
+        nodes,
+        event,
+        event.evidence,
+        eventIndex,
+      );
       resources = addResourcesForEvidence(resources, event.evidence, eventIndex);
       nodes[event.nodeId] = Object.freeze({
         ...current,
@@ -2916,7 +3115,12 @@ export function appendRunEvent(
           nodeId: event.nodeId,
           attempt: event.attempt,
           at: event.at,
-          outcome: event.evidence.kind === "command" ? "accepted" : "inconclusive",
+          outcome:
+            event.evidence.kind === "command"
+              ? "accepted"
+              : event.evidence.kind === "verifier"
+                ? event.evidence.verdict
+                : "inconclusive",
           evidenceAvailable: true,
         },
         eventIndex,
@@ -2935,6 +3139,13 @@ export function appendRunEvent(
           current.effectProtocol === null,
         );
       }
+      validateVerifierEvidenceProjection(
+        currentState.controlGraph,
+        nodes,
+        event,
+        event.evidence,
+        eventIndex,
+      );
       if (event.evidence !== null) {
         resources = addResourcesForEvidence(resources, event.evidence, eventIndex);
       }
@@ -3155,6 +3366,9 @@ function goalReplayError(error: unknown, eventIndex: number): RunReplayError {
 }
 
 function isConclusiveVerifierRejection(evidence: NodeEvidence | null): boolean {
+  if (evidence?.kind === "verifier") {
+    return evidence.verdict === "rejected";
+  }
   return (
     evidence?.kind === "command" &&
     evidence.exitCode !== null &&
@@ -3343,9 +3557,7 @@ function validateControlGraph(
     }
     if (node.type === "condition") {
       const source = nodeById.get(node.condition.source.nodeId);
-      const compatible =
-        (node.condition.source.field.startsWith("command.") && source?.type === "command") ||
-        (node.condition.source.field === "agent.text" && source?.type === "agent");
+      const compatible = controlEvidenceFieldMatchesNode(node.condition.source.field, source?.type);
       if (!node.dependsOn.includes(node.condition.source.nodeId) || !compatible) {
         throw new RunReplayError(
           eventIndex,
@@ -3356,13 +3568,25 @@ function validateControlGraph(
     if (node.type === "approval") {
       for (const evidence of node.approval.evidence) {
         const source = nodeById.get(evidence.nodeId);
-        const compatible =
-          (evidence.field.startsWith("command.") && source?.type === "command") ||
-          (evidence.field === "agent.text" && source?.type === "agent");
+        const compatible = controlEvidenceFieldMatchesNode(evidence.field, source?.type);
         if (!node.dependsOn.includes(evidence.nodeId) || !compatible) {
           throw new RunReplayError(
             eventIndex,
             `control graph approval "${node.nodeId}" has an invalid evidence source`,
+          );
+        }
+      }
+    }
+    if (node.type === "verifier" && node.verifier.kind === "model") {
+      for (const evidence of node.verifier.evidence) {
+        const source = nodeById.get(evidence.nodeId);
+        if (
+          !node.dependsOn.includes(evidence.nodeId) ||
+          !controlEvidenceFieldMatchesNode(evidence.field, source?.type)
+        ) {
+          throw new RunReplayError(
+            eventIndex,
+            `control graph verifier "${node.nodeId}" has an invalid evidence source`,
           );
         }
       }
@@ -3431,9 +3655,7 @@ function validateControlGraph(
     if (node.type === "loop-check") {
       const source = nodeById.get(node.loopCheck.source.nodeId);
       const loop = nodeById.get(node.loopCheck.loopId);
-      const compatible =
-        (node.loopCheck.source.field.startsWith("command.") && source?.type === "command") ||
-        (node.loopCheck.source.field === "agent.text" && source?.type === "agent");
+      const compatible = controlEvidenceFieldMatchesNode(node.loopCheck.source.field, source?.type);
       if (
         loop?.type !== "loop" ||
         !node.dependsOn.includes(node.loopCheck.source.nodeId) ||
@@ -3451,7 +3673,7 @@ function validateControlGraph(
         );
       }
       if (
-        source.loopInstance?.loopId !== node.loopCheck.loopId ||
+        source?.loopInstance?.loopId !== node.loopCheck.loopId ||
         source.loopInstance.iteration !== node.loopCheck.iteration
       ) {
         throw new RunReplayError(
@@ -3499,12 +3721,12 @@ function validateControlGraph(
   validateControlGraphLoopInstances(graph.nodes, nodeById, eventIndex);
   const dependedUpon = new Set(graph.nodes.flatMap((node) => node.dependsOn));
   const invalidTerminal = graph.nodes.find(
-    (node) => !dependedUpon.has(node.nodeId) && node.type !== "command",
+    (node) => !dependedUpon.has(node.nodeId) && node.type !== "command" && node.type !== "verifier",
   );
   if (invalidTerminal !== undefined) {
     throw new RunReplayError(
       eventIndex,
-      `control graph terminal "${invalidTerminal.nodeId}" must be a command node`,
+      `control graph terminal "${invalidTerminal.nodeId}" must be a command or verifier node`,
     );
   }
   for (const condition of graph.nodes.filter(
@@ -3686,6 +3908,30 @@ function serializeLoopTemplateStructure(
           }),
     });
   }
+  if (node.type === "verifier") {
+    const verifier =
+      node.verifier.kind === "command"
+        ? node.verifier
+        : {
+            ...node.verifier,
+            evidence: node.verifier.evidence.map((source) => ({
+              nodeId: templateNodeId(source.nodeId),
+              field: source.field,
+            })),
+          };
+    return JSON.stringify({
+      ...common,
+      ...(node.when === undefined
+        ? {}
+        : {
+            when: {
+              conditionId: templateNodeId(node.when.conditionId),
+              case: node.when.case,
+            },
+          }),
+      verifier,
+    });
+  }
   if (node.type === "approval") {
     return JSON.stringify({
       ...common,
@@ -3744,6 +3990,17 @@ function serializeLoopTemplateStructure(
 
 function controlConditionCases(condition: ControlGraphConditionNode): readonly string[] {
   return [...condition.condition.cases.map((item) => item.id), condition.condition.default];
+}
+
+function controlEvidenceFieldMatchesNode(
+  field: EvidenceSourceField,
+  nodeType: ControlGraphNode["type"] | undefined,
+): boolean {
+  return (
+    (field.startsWith("command.") && nodeType === "command") ||
+    (field === "agent.text" && nodeType === "agent") ||
+    (field.startsWith("verifier.") && nodeType === "verifier")
+  );
 }
 
 function controlGraphHasCycle(nodes: readonly ControlGraphNode[]): boolean {
@@ -4115,6 +4372,26 @@ function controlSourceObservation(
         hash: source.evidence.textHash,
         truncated: source.evidence.textTruncated,
       };
+    case "verifier.verdict":
+      if (source.evidence.kind !== "verifier") {
+        break;
+      }
+      return {
+        attempt: source.attempt,
+        value: source.evidence.verdict,
+        hash: sha256(source.evidence.verdict),
+        truncated: false,
+      };
+    case "verifier.reason":
+      if (source.evidence.kind !== "verifier") {
+        break;
+      }
+      return {
+        attempt: source.attempt,
+        value: source.evidence.reason,
+        hash: source.evidence.reasonHash,
+        truncated: false,
+      };
   }
   throw new RunReplayError(
     eventIndex,
@@ -4145,7 +4422,9 @@ function addResourcesForEvidence(
   try {
     return addRunResources(resources, {
       executionMs: committedDurationMs(evidence.durationMs),
-      ...(evidence.kind === "agent" && evidence.usage !== undefined
+      ...((evidence.kind === "agent" ||
+        (evidence.kind === "verifier" && evidence.driver === "model")) &&
+      evidence.usage !== undefined
         ? {
             modelTokens: totalModelTokens(evidence.usage),
             modelCostUsdMicros: evidence.usage.costUsdMicros,
@@ -4172,6 +4451,12 @@ function validateSucceededEvidence(evidence: NodeEvidence, eventIndex: number): 
       "successful command evidence must have exit code 0, no signal, and no timeout",
     );
   }
+  if (evidence.kind === "verifier" && evidence.verdict !== "accepted") {
+    throw new RunReplayError(
+      eventIndex,
+      "successful verifier evidence must have an accepted verdict",
+    );
+  }
   if (evidence.kind === "agent" && evidence.textTruncated) {
     throw new RunReplayError(eventIndex, "successful agent evidence must not be truncated");
   }
@@ -4184,6 +4469,294 @@ function validateSucceededEvidence(evidence: NodeEvidence, eventIndex: number): 
       "successful agent evidence must not contain an uncertain effect receipt",
     );
   }
+}
+
+function validateVerifierEvidenceProjection(
+  graph: ControlGraph | null,
+  nodes: Readonly<Record<string, NodeRunState>>,
+  event: NodeSucceededEvent | NodeFailedEvent,
+  evidence: NodeEvidence | null,
+  eventIndex: number,
+): void {
+  const requirement = graph?.nodes.find((node) => node.nodeId === event.nodeId);
+  if (requirement?.type !== "verifier") {
+    if (evidence?.kind === "verifier") {
+      throw new RunReplayError(eventIndex, "verifier evidence belongs to a non-verifier node");
+    }
+    return;
+  }
+  if (evidence === null) {
+    if (
+      event.type !== "node_failed" ||
+      (event.error.code !== "verifier_inconclusive" && event.error.code !== "workflow_aborted") ||
+      event.error.retryable ||
+      event.error.sideEffectStatus === "committed"
+    ) {
+      throw new RunReplayError(
+        eventIndex,
+        `verifier node "${event.nodeId}" has no valid inconclusive failure evidence`,
+      );
+    }
+    return;
+  }
+  if (evidence.kind !== "verifier") {
+    throw new RunReplayError(
+      eventIndex,
+      `verifier node "${event.nodeId}" has incompatible evidence`,
+    );
+  }
+  if (evidence.driver !== requirement.verifier.kind) {
+    throw new RunReplayError(
+      eventIndex,
+      "verifier evidence driver does not match the control graph",
+    );
+  }
+  if (event.type === "node_succeeded") {
+    if (evidence.verdict !== "accepted") {
+      throw new RunReplayError(eventIndex, "successful verifier evidence must be accepted");
+    }
+  } else {
+    const cancelledAfterVerdict = event.error.code === "workflow_aborted";
+    if (evidence.verdict === "accepted" && !cancelledAfterVerdict) {
+      throw new RunReplayError(eventIndex, "failed verifier evidence cannot be accepted");
+    }
+    const expectedCode =
+      evidence.verdict === "rejected" ? "verifier_rejected" : "verifier_inconclusive";
+    if (
+      (!cancelledAfterVerdict && event.error.code !== expectedCode) ||
+      (!cancelledAfterVerdict && event.error.message !== evidence.reason) ||
+      event.error.retryable
+    ) {
+      throw new RunReplayError(
+        eventIndex,
+        "failed verifier error does not match its durable verdict",
+      );
+    }
+  }
+
+  if (evidence.driver === "command") {
+    if (requirement.verifier.kind !== "command") {
+      throw new RunReplayError(eventIndex, "command verifier evidence has no command requirement");
+    }
+    const command = evidence.command;
+    if (evidence.result === "completed" && command === null) {
+      throw new RunReplayError(
+        eventIndex,
+        "completed command verifier evidence is missing command evidence",
+      );
+    }
+    if (evidence.result === "execution_failed" && evidence.verdict !== "inconclusive") {
+      throw new RunReplayError(eventIndex, "failed command execution must be inconclusive");
+    }
+    if (command !== null) {
+      if (
+        command.executable !== requirement.verifier.command.executable ||
+        !sameStrings(command.args, requirement.verifier.command.args) ||
+        command.durationMs !== evidence.durationMs
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          "command verifier evidence does not match its declaration",
+        );
+      }
+      const expectedVerdict =
+        evidence.result === "execution_failed" ? "inconclusive" : commandVerdict(command);
+      if (evidence.verdict !== expectedVerdict) {
+        throw new RunReplayError(
+          eventIndex,
+          "command verifier verdict contradicts command evidence",
+        );
+      }
+      const deterministicReason =
+        evidence.result === "completed" && expectedVerdict === "accepted"
+          ? "command exited with code 0"
+          : evidence.result === "completed" &&
+              expectedVerdict === "rejected" &&
+              command.exitCode !== null
+            ? `command exited with code ${command.exitCode}`
+            : null;
+      if (deterministicReason !== null && evidence.reason !== deterministicReason) {
+        throw new RunReplayError(
+          eventIndex,
+          "command verifier reason contradicts command evidence",
+        );
+      }
+      if (event.type === "node_failed" && event.error.sideEffectStatus === "none") {
+        throw new RunReplayError(
+          eventIndex,
+          "failed command verifier with command evidence must preserve possible side effects",
+        );
+      }
+    } else if (evidence.durationMs !== 0) {
+      throw new RunReplayError(
+        eventIndex,
+        "command verifier without command evidence cannot report execution duration",
+      );
+    }
+    return;
+  }
+
+  if (requirement.verifier.kind !== "model") {
+    throw new RunReplayError(eventIndex, "model verifier evidence has no model requirement");
+  }
+  if (
+    evidence.provider !== requirement.verifier.model.provider ||
+    evidence.model !== requirement.verifier.model.id
+  ) {
+    throw new RunReplayError(
+      eventIndex,
+      "model verifier provenance does not match its declaration",
+    );
+  }
+  if (evidence.sources.length !== requirement.verifier.evidence.length) {
+    throw new RunReplayError(
+      eventIndex,
+      "model verifier source observations do not match declaration",
+    );
+  }
+  for (const [index, declaration] of requirement.verifier.evidence.entries()) {
+    const observation = evidence.sources[index];
+    if (observation === undefined) {
+      throw new RunReplayError(eventIndex, "model verifier source observation is missing");
+    }
+    const actual = verifierSourceObservation(event.nodeId, declaration, nodes, eventIndex);
+    if (
+      actual.truncated &&
+      !(
+        event.type === "node_failed" &&
+        evidence.result === "execution_failed" &&
+        evidence.verdict === "inconclusive"
+      )
+    ) {
+      throw new RunReplayError(
+        eventIndex,
+        `model verifier source ${index + 1} is truncated in durable evidence`,
+      );
+    }
+    if (
+      observation.sourceNodeId !== declaration.nodeId ||
+      observation.sourceAttempt !== actual.attempt ||
+      observation.sourceField !== declaration.field ||
+      observation.sourceHash !== actual.hash
+    ) {
+      throw new RunReplayError(
+        eventIndex,
+        `model verifier source ${index + 1} does not match durable source attempt and hash`,
+      );
+    }
+  }
+  if (
+    event.type === "node_failed" &&
+    event.error.sideEffectStatus !== "none" &&
+    event.error.code !== "workflow_aborted"
+  ) {
+    throw new RunReplayError(
+      eventIndex,
+      "tool-free model verifier failure must be side-effect-free",
+    );
+  }
+  if (evidence.result === "parsed") {
+    if (evidence.rawTruncated) {
+      throw new RunReplayError(eventIndex, "parsed model verifier output cannot be truncated");
+    }
+    const parsed = parsePersistedVerifierResponse(evidence.raw, eventIndex);
+    if (parsed.verdict !== evidence.verdict || parsed.reason !== evidence.reason) {
+      throw new RunReplayError(eventIndex, "parsed model verifier output contradicts its verdict");
+    }
+  } else if (evidence.verdict !== "inconclusive") {
+    throw new RunReplayError(eventIndex, "unparsed model verifier output must be inconclusive");
+  }
+}
+
+function commandVerdict(command: CommandEvidence): VerifierVerdict {
+  if (command.exitCode === 0 && command.signal === null && !command.timedOut) {
+    return "accepted";
+  }
+  if (
+    command.exitCode !== null &&
+    command.exitCode !== 0 &&
+    command.signal === null &&
+    !command.timedOut
+  ) {
+    return "rejected";
+  }
+  return "inconclusive";
+}
+
+function parsePersistedVerifierResponse(
+  raw: string,
+  eventIndex: number,
+): { readonly verdict: VerifierVerdict; readonly reason: string } {
+  const parsed = parseVerifierVerdictJson(raw);
+  if (parsed === null) {
+    throw new RunReplayError(
+      eventIndex,
+      "parsed model verifier output violates the strict verdict contract",
+    );
+  }
+  return parsed;
+}
+
+function verifierSourceObservation(
+  verifierNodeId: string,
+  declaration: { readonly nodeId: string; readonly field: EvidenceSourceField },
+  nodes: Readonly<Record<string, NodeRunState>>,
+  eventIndex: number,
+): { readonly attempt: number; readonly hash: string; readonly truncated: boolean } {
+  const source = requireNode(nodes, declaration.nodeId, eventIndex);
+  if (source.status !== "succeeded" || source.evidence === null) {
+    throw new RunReplayError(
+      eventIndex,
+      `verifier node "${verifierNodeId}" source has no successful durable evidence`,
+    );
+  }
+  switch (declaration.field) {
+    case "command.stdout":
+      if (source.evidence.kind === "command") {
+        return {
+          attempt: source.attempt,
+          hash: source.evidence.stdoutHash,
+          truncated: source.evidence.stdoutTruncated,
+        };
+      }
+      break;
+    case "command.stderr":
+      if (source.evidence.kind === "command") {
+        return {
+          attempt: source.attempt,
+          hash: source.evidence.stderrHash,
+          truncated: source.evidence.stderrTruncated,
+        };
+      }
+      break;
+    case "agent.text":
+      if (source.evidence.kind === "agent") {
+        return {
+          attempt: source.attempt,
+          hash: source.evidence.textHash,
+          truncated: source.evidence.textTruncated,
+        };
+      }
+      break;
+    case "verifier.verdict":
+      if (source.evidence.kind === "verifier") {
+        return {
+          attempt: source.attempt,
+          hash: sha256(source.evidence.verdict),
+          truncated: false,
+        };
+      }
+      break;
+    case "verifier.reason":
+      if (source.evidence.kind === "verifier") {
+        return { attempt: source.attempt, hash: source.evidence.reasonHash, truncated: false };
+      }
+      break;
+  }
+  throw new RunReplayError(
+    eventIndex,
+    `verifier node "${verifierNodeId}" source field is incompatible with durable evidence`,
+  );
 }
 
 function validateEffectReconciliation(
@@ -4384,6 +4957,23 @@ function validateEvidenceIntegrity(
   eventIndex: number,
   requireContiguousReceiptSequence: boolean,
 ): void {
+  if (evidence.kind === "verifier") {
+    if (evidence.reasonHash !== sha256(evidence.reason)) {
+      throw new RunReplayError(eventIndex, "verifier evidence reason hash is invalid");
+    }
+    if (evidence.driver === "model") {
+      if (!evidence.rawTruncated && evidence.rawHash !== sha256(evidence.raw)) {
+        throw new RunReplayError(eventIndex, "verifier raw output hash is invalid");
+      }
+    } else if (evidence.command !== null) {
+      validateEvidenceIntegrity(
+        evidence.command,
+        event,
+        eventIndex,
+        requireContiguousReceiptSequence,
+      );
+    }
+  }
   if (
     evidence.kind === "agent" &&
     !evidence.textTruncated &&
