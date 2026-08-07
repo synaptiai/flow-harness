@@ -30,6 +30,23 @@ The embedded Pi runtime runs with the invoking user's operating-system permissio
   reservations, account quotas, CPU/memory limits, or a substitute for containment. One in-flight
   model response may settle above its remaining allowance; Flow records it and starts no further
   work.
+- Detached control metadata is stored below the selected run root in owner-only directories and
+  files. Local Unix sockets use an owner-validated, non-symlink short temporary directory; worker
+  control requires a random token plus matching worker, run, PID, and job-digest identity.
+- An owner-only startup record serializes socket cleanup and daemon launch. A live or PID-reused
+  holder blocks replacement rather than allowing two generations to race over one endpoint.
+- Supervisor requests use strict versioned single-frame JSONL with byte, field, and event-page
+  bounds. Workflow source and worker tokens are never returned by status. Mutating cancellation is
+  durably journaled before dispatch and is attributable, digest-bound, and idempotent.
+
+Automation that depends on retry idempotency must generate and persist `--command-id` before the
+first request. A key generated internally but lost with the response cannot identify a later retry.
+
+The supervisor boundary coordinates trusted processes belonging to the same operating-system user.
+It is not a sandbox against that same user or root, not a remote authentication service, and not a
+multi-host lease. A hostile process with the same account authority can read or replace that
+account's state despite file modes. Run Flow under a dedicated OS identity or stronger isolated
+environment when local peers are outside the trust boundary.
 
 SRT is a beta native sandbox based on Seatbelt on macOS and bubblewrap, namespaces, and seccomp on Linux. It reduces command authority but is not equivalent to a microVM and cannot defend against a kernel or sandbox-runtime vulnerability. It also does not contain the host-side Pi process or make host-side pathname authorization atomic against a concurrently hostile workspace process. Use a reviewed container, microVM, Gondolin, OpenShell, or managed boundary for hostile or multi-tenant work.
 

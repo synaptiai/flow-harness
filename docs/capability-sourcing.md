@@ -20,6 +20,7 @@ Pi's experimental `AgentHarness` API is not a foundation for the first release. 
 | Policy, approvals, tool broker, and sandbox profile | Authorization and containment are Flow product semantics even when enforcement is delegated |
 | Context assembly and redaction | Context composition is a major cost, safety, and quality control |
 | Event ledger and recovery | Pi transcripts cannot determine graph position or side-effect certainty |
+| Local supervisor and worker protocol | Flow must supervise command and agent nodes, preserve ledger authority, and expose provider-neutral control |
 | Model routing | Flow selects capability and cost profiles while Pi supplies models |
 | Skill and package trust | Installed content is untrusted and cannot broaden its own authority |
 | Public CLI, API, and persisted formats | Public contracts must survive provider and executor changes |
@@ -88,11 +89,11 @@ Prime Agent proves that Pi can support a distinct long-running harness. Its prod
 
 | Capability | Treatment |
 | --- | --- |
-| Supervisor and one worker per root run tree | Adopt after the in-process vertical slice is stable |
-| Detach, reattach, snapshots, and event replay | Use as a design reference for a future daemon protocol |
-| Recovery journal and bounded restart | Reimplement around Flow's authoritative run ledger |
+| Supervisor and one worker per root run tree | **Implemented independently** for one local worker per run/resume invocation; the worker owns the existing Flow scheduler |
+| Detach, reattach, snapshots, and event replay | **Implemented independently** with immutable source snapshots, authenticated adoption, and bounded exclusive sequence cursors |
+| Recovery journal and bounded restart | **Implemented for supervisor restart and idempotent cancellation** around Flow's authoritative run ledger; open operation replay remains prohibited |
 | Durable goals and autonomous continuation | Implement in Flow's scheduler |
-| Daemon workload limits | Prime leaves fixed caps outside its daemon layer; Flow persists run budgets before adopting detached supervision |
+| Daemon workload limits | Prime leaves fixed caps outside its daemon layer; Flow persisted run budgets before adding detached supervision, while concurrency and artifact limits remain |
 | Heartbeats and schedules | Later trigger package after concurrency policy exists |
 | Retained children and messaging | Represent as graph-owned child runs and mailbox events |
 | Persistent IPython | Optional capability only; never describe it as a sandbox |
@@ -102,6 +103,12 @@ Prime Agent proves that Pi can support a distinct long-running harness. Its prod
 | Immutable base plus supplemental state | Adopt as the boundary for any future learning system |
 
 See [Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent), its [architecture](https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/architecture.md), and its [RLM trust model](https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/rlm.md). Prime Agent is MIT-licensed; substantial copied portions require preservation of both Pi and Prime notices.
+
+Flow follows Prime Agent's proven client/supervisor/worker separation but does not import its
+Python RLM, graph state, protocol, or code. Pi remains embedded through its typed TypeScript SDK
+inside each worker because Pi's RPC process would supervise only the inner model session, not Flow
+command nodes, approvals, budgets, evidence, or recovery. OMP's background jobs similarly inform
+cancellation mechanics but are not a reusable whole-harness daemon.
 
 ## Portable skills
 

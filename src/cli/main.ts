@@ -1,36 +1,46 @@
 #!/usr/bin/env node
 
+import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 
-import { NodeExecutorRouter } from "../application/node-executor-router.js";
 import { ApprovalDecisionError, decideCommandApproval } from "../application/command-approval.js";
 import type { NodeExecutor, RecoverableRunEventStore } from "../application/ports.js";
 import { resumeWorkflow, RunRecoveryError, runWorkflow } from "../application/run-workflow.js";
 import { reduceRunEvents, type RunStatus } from "../domain/run/events.js";
 import { compileWorkflowText, WorkflowCompilationError } from "../domain/workflow/compiler.js";
 import { JsonlRunStore, RunStoreError } from "../infrastructure/fs/jsonl-run-store.js";
-import { PiAgentExecutor } from "../infrastructure/pi/pi-agent-executor.js";
-import { CommandNodeExecutor } from "../infrastructure/process/command-node-executor.js";
 import {
-  ANTHROPIC_SANDBOX_RUNTIME_VERSION,
-  anthropicSandboxRuntimeManager,
-  resolveAnthropicSandboxRuntimeSeccompPath,
-} from "../infrastructure/sandbox/anthropic-sandbox-runtime-manager.js";
-import { SrtCommandSandbox } from "../infrastructure/sandbox/srt-command-sandbox.js";
+  LocalSupervisorStore,
+  LocalSupervisorStoreError,
+} from "../infrastructure/fs/local-supervisor-store.js";
+import { createProductionNodeExecutor } from "../infrastructure/runtime/production-node-executor.js";
+import { ensureSupervisor, requestSupervisor, runSupervisorDaemon } from "../supervisor/daemon.js";
+import type {
+  SubmitCommand,
+  SupervisorErrorCode,
+  SupervisorResponse,
+  SupervisorResult,
+} from "../supervisor/protocol.js";
+import { executeWorkerJob } from "../supervisor/worker.js";
 
 const HELP = `Flow — Provider-neutral coding-agent harness
 
 Usage:
   flow validate <workflow.yaml>
-  flow run <workflow.yaml> [--run-id <id>] [--runs-dir <path>] [--cwd <path>]
-  flow resume <workflow.yaml> --run-id <id> [--runs-dir <path>] [--cwd <path>]
+  flow run <workflow.yaml> [--detach] [--command-id <uuid>] [--run-id <id>] [--runs-dir <path>] [--cwd <path>]
+  flow resume <workflow.yaml> --run-id <id> [--detach] [--command-id <uuid>] [--runs-dir <path>] [--cwd <path>]
   flow approve <run-id> <request-id> --actor <label> [--runs-dir <path>]
   flow deny <run-id> <request-id> --actor <label> [--reason <text>] [--runs-dir <path>]
+  flow cancel <run-id> --actor <label> [--reason <text>] [--command-id <uuid>] [--runs-dir <path>]
+  flow events <run-id> [--after <sequence>] [--limit <count>] [--follow] [--runs-dir <path>]
   flow inspect <run-id> [--runs-dir <path>]
+  flow supervisor status [--runs-dir <path>]
+  flow supervisor shutdown [--runs-dir <path>]
   flow --help
 `;
 
@@ -87,8 +97,18 @@ export async function main(
         return await approvalDecisionCommand("approve", args.slice(1), io, dependencyOverrides);
       case "deny":
         return await approvalDecisionCommand("deny", args.slice(1), io, dependencyOverrides);
+      case "cancel":
+        return await cancelCommand(args.slice(1), io, dependencyOverrides);
+      case "events":
+        return await eventsCommand(args.slice(1), io, dependencyOverrides);
       case "inspect":
         return await inspectCommand(args.slice(1), io, dependencyOverrides);
+      case "supervisor":
+        return await supervisorCommand(args.slice(1), io, dependencyOverrides);
+      case "__supervisor":
+        return await internalSupervisorCommand(args.slice(1), dependencyOverrides);
+      case "__worker":
+        return await internalWorkerCommand(args.slice(1), dependencyOverrides);
       default:
         throw new CliUsageError(`Unknown command "${command}"`);
     }
@@ -102,6 +122,14 @@ export async function main(
       return 2;
     }
     if (error instanceof RunStoreError) {
+      io.stderr(`${error.code}: ${error.message}`);
+      return 1;
+    }
+    if (error instanceof LocalSupervisorStoreError) {
+      io.stderr(`${error.code}: ${error.message}`);
+      return 1;
+    }
+    if (error instanceof SupervisorCommandError) {
       io.stderr(`${error.code}: ${error.message}`);
       return 1;
     }
@@ -159,7 +187,9 @@ async function resumeCommand(
   io: CliIo,
   overrides: Partial<CliDependencies>,
 ): Promise<number> {
-  const { positionals, values } = parseCommandArgs(args, {
+  const detached = extractBooleanFlag(args, "--detach");
+  const { positionals, values } = parseCommandArgs(detached.args, {
+    "command-id": { type: "string" },
     "run-id": { type: "string" },
     "runs-dir": { type: "string" },
     cwd: { type: "string" },
@@ -173,9 +203,26 @@ async function resumeCommand(
   const workflowPath = resolve(dependencies.cwd, workflowArgument);
 
   // Compilation intentionally precedes store construction and ownership acquisition.
-  const workflow = await compileWorkflowFile(workflowPath, dependencies.readTextFile);
+  const workflowSource = await dependencies.readTextFile(workflowPath);
+  const workflow = compileWorkflowText(workflowSource, workflowPath);
   const runsDirectory = resolve(dependencies.cwd, values["runs-dir"] ?? ".flow/runs");
   const executionCwd = resolve(dependencies.cwd, values.cwd ?? ".");
+  const commandId = detachedCommandId(values["command-id"], detached.enabled);
+  if (detached.enabled) {
+    return await submitDetached(
+      {
+        type: "submit",
+        commandId: commandId ?? randomUUID(),
+        mode: "resume",
+        runId,
+        sourceName: workflowPath,
+        workflowSource,
+        cwd: executionCwd,
+      },
+      runsDirectory,
+      io,
+    );
+  }
   const state = await resumeWorkflow(workflow, {
     cwd: executionCwd,
     protectedPaths: [runsDirectory],
@@ -214,7 +261,9 @@ async function runCommand(
   io: CliIo,
   overrides: Partial<CliDependencies>,
 ): Promise<number> {
-  const { positionals, values } = parseCommandArgs(args, {
+  const detached = extractBooleanFlag(args, "--detach");
+  const { positionals, values } = parseCommandArgs(detached.args, {
+    "command-id": { type: "string" },
     "run-id": { type: "string" },
     "runs-dir": { type: "string" },
     cwd: { type: "string" },
@@ -224,16 +273,34 @@ async function runCommand(
   const workflowPath = resolve(dependencies.cwd, workflowArgument);
 
   // Compilation intentionally precedes construction of the run store or invocation of an executor.
-  const workflow = await compileWorkflowFile(workflowPath, dependencies.readTextFile);
+  const workflowSource = await dependencies.readTextFile(workflowPath);
+  const workflow = compileWorkflowText(workflowSource, workflowPath);
   const runsDirectory = resolve(dependencies.cwd, values["runs-dir"] ?? ".flow/runs");
   const executionCwd = resolve(dependencies.cwd, values.cwd ?? ".");
+  const runId = values["run-id"] ?? randomUUID();
+  const commandId = detachedCommandId(values["command-id"], detached.enabled);
+  if (detached.enabled) {
+    return await submitDetached(
+      {
+        type: "submit",
+        commandId: commandId ?? randomUUID(),
+        mode: "run",
+        runId,
+        sourceName: workflowPath,
+        workflowSource,
+        cwd: executionCwd,
+      },
+      runsDirectory,
+      io,
+    );
+  }
   const state = await runWorkflow(workflow, {
     cwd: executionCwd,
     protectedPaths: [runsDirectory],
     store: dependencies.createStore(runsDirectory),
     executor: dependencies.executor,
     ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
-    ...(values["run-id"] === undefined ? {} : { runId: values["run-id"] }),
+    runId,
   });
 
   io.stdout(JSON.stringify(state, null, 2));
@@ -258,6 +325,179 @@ async function inspectCommand(
   return 0;
 }
 
+async function submitDetached(
+  command: SubmitCommand,
+  runsDirectory: string,
+  io: CliIo,
+): Promise<number> {
+  const store = new LocalSupervisorStore(runsDirectory);
+  await ensureSupervisor(store, fileURLToPath(import.meta.url));
+  const result = requireSupervisorSuccess(await requestSupervisor(store, command));
+  if (result.type !== "accepted") {
+    throw new SupervisorCommandError(
+      "protocol_invalid",
+      "supervisor returned a non-acceptance result",
+    );
+  }
+  io.stdout(JSON.stringify(result, null, 2));
+  return 0;
+}
+
+async function cancelCommand(
+  args: readonly string[],
+  io: CliIo,
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  const { positionals, values } = parseCommandArgs(args, {
+    actor: { type: "string" },
+    "command-id": { type: "string" },
+    reason: { type: "string" },
+    "runs-dir": { type: "string" },
+  });
+  const runId = requireSinglePositional(positionals, "cancel requires one run id");
+  const actor = requireStringOption(values.actor, "cancel requires --actor <label>");
+  const commandId = parseUuidOption(values["command-id"], "--command-id") ?? randomUUID();
+  const dependencies = storageDependenciesFrom(overrides);
+  const runsDirectory = resolve(dependencies.cwd, values["runs-dir"] ?? ".flow/runs");
+  const store = new LocalSupervisorStore(runsDirectory);
+  await ensureSupervisor(store, fileURLToPath(import.meta.url));
+  const result = requireSupervisorSuccess(
+    await requestSupervisor(store, {
+      type: "cancel",
+      commandId,
+      runId,
+      actor,
+      ...(values.reason === undefined ? {} : { reason: values.reason }),
+    }),
+  );
+  if (result.type !== "cancelled") {
+    throw new SupervisorCommandError(
+      "protocol_invalid",
+      "supervisor returned a non-cancellation result",
+    );
+  }
+  io.stdout(JSON.stringify(result, null, 2));
+  return 0;
+}
+
+async function eventsCommand(
+  args: readonly string[],
+  io: CliIo,
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  const follow = extractBooleanFlag(args, "--follow");
+  const { positionals, values } = parseCommandArgs(follow.args, {
+    after: { type: "string" },
+    limit: { type: "string" },
+    "runs-dir": { type: "string" },
+  });
+  const runId = requireSinglePositional(positionals, "events requires one run id");
+  let cursor = parseNonNegativeIntegerOption(values.after, "--after", 0);
+  const limit = parsePositiveIntegerOption(values.limit, "--limit", 256);
+  if (limit > 256) {
+    throw new CliUsageError("--limit must not exceed 256");
+  }
+  const dependencies = storageDependenciesFrom(overrides);
+  const runsDirectory = resolve(dependencies.cwd, values["runs-dir"] ?? ".flow/runs");
+  const store = new LocalSupervisorStore(runsDirectory);
+  await ensureSupervisor(store, fileURLToPath(import.meta.url));
+
+  for (;;) {
+    const result = requireSupervisorSuccess(
+      await requestSupervisor(store, {
+        type: "events",
+        runId,
+        afterSequence: cursor,
+        limit,
+      }),
+    );
+    if (result.type !== "events") {
+      throw new SupervisorCommandError(
+        "protocol_invalid",
+        "supervisor returned a non-event result",
+      );
+    }
+    if (!follow.enabled) {
+      io.stdout(JSON.stringify(result, null, 2));
+      return 0;
+    }
+    for (const event of result.events) {
+      io.stdout(JSON.stringify(event));
+    }
+    cursor = result.cursor;
+    if (result.terminal) {
+      return 0;
+    }
+    await delay(100);
+  }
+}
+
+async function supervisorCommand(
+  args: readonly string[],
+  io: CliIo,
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  const { positionals, values } = parseCommandArgs(args, {
+    "runs-dir": { type: "string" },
+  });
+  const subcommand = requireSinglePositional(positionals, "supervisor requires status or shutdown");
+  if (subcommand !== "status" && subcommand !== "shutdown") {
+    throw new CliUsageError("supervisor requires status or shutdown");
+  }
+  const dependencies = storageDependenciesFrom(overrides);
+  const runsDirectory = resolve(dependencies.cwd, values["runs-dir"] ?? ".flow/runs");
+  const store = new LocalSupervisorStore(runsDirectory);
+  if (subcommand === "status") {
+    await ensureSupervisor(store, fileURLToPath(import.meta.url));
+  }
+  const result = requireSupervisorSuccess(
+    await requestSupervisor(
+      store,
+      subcommand === "status" ? { type: "status" } : { type: "shutdown", commandId: randomUUID() },
+    ),
+  );
+  io.stdout(JSON.stringify(result, null, 2));
+  return 0;
+}
+
+async function internalSupervisorCommand(
+  args: readonly string[],
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  const { positionals, values } = parseCommandArgs(args, {
+    "runs-dir": { type: "string" },
+  });
+  if (positionals.length !== 0) {
+    throw new CliUsageError("internal supervisor accepts no positional arguments");
+  }
+  const dependencies = storageDependenciesFrom(overrides);
+  const runsDirectory = resolve(dependencies.cwd, values["runs-dir"] ?? ".flow/runs");
+  await runSupervisorDaemon({
+    store: new LocalSupervisorStore(runsDirectory),
+    cliPath: fileURLToPath(import.meta.url),
+    ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
+  });
+  return 0;
+}
+
+async function internalWorkerCommand(
+  args: readonly string[],
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  const { positionals, values } = parseCommandArgs(args, {
+    "runs-dir": { type: "string" },
+  });
+  const jobId = requireSinglePositional(positionals, "internal worker requires one job id");
+  const dependencies = dependenciesFrom(overrides);
+  const runsDirectory = resolve(dependencies.cwd, values["runs-dir"] ?? ".flow/runs");
+  return await executeWorkerJob(jobId, {
+    store: new LocalSupervisorStore(runsDirectory),
+    executor: dependencies.executor,
+    createRunStore: dependencies.createStore,
+    ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
+  });
+}
+
 function parseCommandArgs(
   args: readonly string[],
   options: Readonly<Record<string, { readonly type: "string" }>>,
@@ -271,6 +511,71 @@ function parseCommandArgs(
   } catch (error) {
     throw new CliUsageError(error instanceof Error ? error.message : String(error));
   }
+}
+
+function extractBooleanFlag(
+  args: readonly string[],
+  flag: string,
+): { readonly args: readonly string[]; readonly enabled: boolean } {
+  const occurrences = args.filter((argument) => argument === flag).length;
+  if (occurrences > 1) {
+    throw new CliUsageError(`${flag} may be specified only once`);
+  }
+  return {
+    args: args.filter((argument) => argument !== flag),
+    enabled: occurrences === 1,
+  };
+}
+
+function parseNonNegativeIntegerOption(
+  value: string | undefined,
+  option: string,
+  fallback: number,
+): number {
+  if (value === undefined) {
+    return fallback;
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0 || String(parsed) !== value) {
+    throw new CliUsageError(`${option} requires a non-negative integer`);
+  }
+  return parsed;
+}
+
+function parsePositiveIntegerOption(
+  value: string | undefined,
+  option: string,
+  fallback: number,
+): number {
+  const parsed = parseNonNegativeIntegerOption(value, option, fallback);
+  if (parsed <= 0) {
+    throw new CliUsageError(`${option} requires a positive integer`);
+  }
+  return parsed;
+}
+
+function detachedCommandId(value: string | undefined, detached: boolean): string | undefined {
+  if (value !== undefined && !detached) {
+    throw new CliUsageError("--command-id requires --detach for run and resume");
+  }
+  return detached ? (parseUuidOption(value, "--command-id") ?? randomUUID()) : undefined;
+}
+
+function parseUuidOption(value: string | undefined, option: string): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) {
+    throw new CliUsageError(`${option} requires a UUID`);
+  }
+  return value;
+}
+
+function requireSupervisorSuccess(response: SupervisorResponse): SupervisorResult {
+  if (!response.ok) {
+    throw new SupervisorCommandError(response.error.code, response.error.message);
+  }
+  return response.result;
 }
 
 function requireSinglePositional(positionals: readonly string[], message: string): string {
@@ -316,20 +621,9 @@ async function compileWorkflowFile(
 
 function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies {
   const storageDependencies = storageDependenciesFrom(overrides);
-  const seccompApplyPath = resolveAnthropicSandboxRuntimeSeccompPath();
   return {
     ...storageDependencies,
-    executor:
-      overrides.executor ??
-      new NodeExecutorRouter(
-        new CommandNodeExecutor({
-          sandbox: new SrtCommandSandbox(anthropicSandboxRuntimeManager, {
-            backendVersion: ANTHROPIC_SANDBOX_RUNTIME_VERSION,
-            ...(seccompApplyPath === undefined ? {} : { seccompApplyPath }),
-          }),
-        }),
-        new PiAgentExecutor(),
-      ),
+    executor: overrides.executor ?? createProductionNodeExecutor(),
     readTextFile: overrides.readTextFile ?? ((path) => readFile(path, "utf8")),
     ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
   };
@@ -355,6 +649,17 @@ function formatCompilationError(error: WorkflowCompilationError): string {
 
 class CliUsageError extends Error {
   override readonly name = "CliUsageError";
+}
+
+class SupervisorCommandError extends Error {
+  override readonly name = "SupervisorCommandError";
+
+  constructor(
+    readonly code: SupervisorErrorCode,
+    message: string,
+  ) {
+    super(message);
+  }
 }
 
 export function isDirectEntry(entryPath: string | undefined, moduleUrl = import.meta.url): boolean {

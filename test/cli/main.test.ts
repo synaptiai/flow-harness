@@ -22,6 +22,10 @@ describe("flow CLI", () => {
     expect(output.join("\n")).toContain("flow run");
     expect(output.join("\n")).toContain("flow resume");
     expect(output.join("\n")).toContain("flow inspect");
+    expect(output.join("\n")).toContain("flow cancel");
+    expect(output.join("\n")).toContain("flow events");
+    expect(output.join("\n")).toContain("flow supervisor status");
+    expect(output.join("\n")).not.toContain("__worker");
   });
 
   it("requires an explicit run id for resume", async () => {

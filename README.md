@@ -21,6 +21,7 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Safe-boundary recovery with exclusive local ownership | Implemented |
 | Durable exact command approval with approve/deny CLI | Implemented |
 | Durable provider-neutral resource accounting and run budgets | Implemented for starts, model tokens, reported cost, and active execution time |
+| Local detached supervisor, authenticated workers, cancellation, and event replay | Implemented on Linux and macOS |
 | Deterministic criterion verification | Implemented |
 | Bounded Pi agent nodes with Flow-owned `read`, `ls`, and hash-anchored `edit` tools | Implemented |
 | Fail-closed sandboxed command process trees | Implemented on Linux and macOS |
@@ -93,6 +94,43 @@ accepted. Authoritative events are written to:
 
 The inspected result identifies graph state, criterion decisions, bounded command output and
 hashes, plus the sandbox backend, exact version, profile, and semantic policy digest.
+
+### Run in the background
+
+Add `--detach` to `run` or `resume` when work must survive the submitting client:
+
+```sh
+node dist/cli/main.js run <workflow.yaml> --detach --run-id background-run \
+  --command-id 019fd722-4144-7a72-9c86-6f9af022b2e8
+node dist/cli/main.js supervisor status
+node dist/cli/main.js events background-run --after 0 --follow
+```
+
+The local supervisor journals the exact submission identity, stores the submitted workflow source,
+claims the run, starts one detached worker, and returns an `accepted` response only after that
+worker authenticates. Accepted therefore means the job is durable and its worker is ready; it does
+not mean the workflow has succeeded. `events` replays authoritative ledger records in bounded
+pages and `--follow` continues until a terminal event. To stop active work with attributable
+cancellation:
+
+```sh
+node dist/cli/main.js cancel background-run --actor local:daniel --reason "operator requested" \
+  --command-id 019fd722-4144-7a72-9c86-6f9af022b2e9
+node dist/cli/main.js supervisor shutdown
+```
+
+Cancellation uses a durable idempotent command record, terminates the active node process tree,
+preserves settled evidence, and records `cancelled`. Shutdown is intentionally refused while an
+authenticated worker is active. If the supervisor itself exits, workers continue; a replacement
+generation discovers and authenticates them before offering control. This is same-host execution,
+not a remote or multi-host service.
+
+`--command-id` is optional and must be a UUID. Flow generates one when omitted. Automation should
+generate and persist the ID before its first detached submission or cancellation, then reuse the
+same ID and exact input after an acknowledgement loss. Reusing an ID with different input is a
+conflict. Submission acceptance, deterministic rejection, and uncertain launch are durable; an
+uncertain submission is reconciled only from its authenticated worker, while an uncertain
+cancellation is reconciled from the ledger rather than dispatched again.
 
 ### Approve an exact command
 
@@ -181,6 +219,10 @@ grant returns to a fresh request. Budget limits, consumption, and exact approval
 revalidated; recovery terminalizes a committed exhausted settlement without rerunning its node. See
 [Recovery and interruption safety](docs/recovery.md) for the complete contract.
 
+Detached execution changes who owns the live process, not the recovery rules. A worker remains the
+exclusive scheduler and run-ledger owner. If it disappears after `node_started` but before an
+outcome, Flow still reports `uncertain_operation` and never silently repeats the work.
+
 ## Security boundary
 
 Each command and descendant receives workspace write access, a private temporary directory, an
@@ -204,6 +246,12 @@ tools are not exposed. Filesystem operations are canonically resolved and author
 policy broker. Pi's ambient tools, extensions, skills, templates, context discovery, built-in edit
 semantics, and executable-downloading helpers are disabled.
 
+Supervisor control state is stored in an owner-only directory under the selected run root. Its
+Unix-domain sockets use a short owner-only temporary path so valid deep project paths also work on
+macOS. Random worker tokens and identity handshakes prevent stale PID metadata from authorizing
+control. These controls coordinate trusted processes of one operating-system user; they are not a
+sandbox against that same user or root.
+
 SRT is a beta native sandbox rather than a microVM. Use a reviewed container, microVM, Gondolin,
 OpenShell, or managed sandbox for hostile workloads. Read the [security policy](SECURITY.md) before
 running unattended work.
@@ -218,6 +266,7 @@ system. Flow separates those responsibilities:
 - A policy broker controls model-requested operations.
 - A sandbox contains command process trees.
 - An append-only event ledger records authoritative run state.
+- A local supervisor owns detached process discovery and control without owning graph transitions.
 - Durable resource accounting and run budgets stop further work at replayable boundaries.
 - Mutation-free evaluation decides whether deterministic evidence accepts each criterion.
 - Provider-specific behavior remains behind execution adapters.

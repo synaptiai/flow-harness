@@ -153,6 +153,30 @@ describe("public repository contracts", () => {
     expect(example.budget).toEqual({ maxNodeStarts: 2, maxExecutionMs: 130000 });
     expect(example.nodes).toHaveLength(2);
   });
+
+  it("documents detached supervision without overstating its trust boundary", async () => {
+    const [readme, architecture, workflowSpec, recovery, sourcing, roadmap, security] =
+      await Promise.all([
+        readText("README.md"),
+        readText("docs/architecture.md"),
+        readText("docs/workflow-spec.md"),
+        readText("docs/recovery.md"),
+        readText("docs/capability-sourcing.md"),
+        readText("docs/roadmap.md"),
+        readText("SECURITY.md"),
+      ]);
+
+    expect(readme).toContain("run <workflow.yaml> --detach");
+    expect(readme).toContain("supervisor status");
+    expect(readme).toMatch(/accepted.*durable.*worker/is);
+    expect(architecture).toMatch(/authenticated worker.*adoption/is);
+    expect(workflowSpec).toMatch(/execution mode.*not.*workflow semantics/is);
+    expect(workflowSpec).not.toMatch(/No handoff from a live process, detached supervisor/);
+    expect(recovery).toMatch(/supervisor restart/i);
+    expect(sourcing).toMatch(/Supervisor and one worker per root run tree.*Implemented/is);
+    expect(roadmap).toMatch(/supervisor owns detached workers.*Implemented/is);
+    expect(security).toMatch(/same operating-system user.*not.*sandbox/is);
+  });
 });
 
 async function readText(path: string): Promise<string> {

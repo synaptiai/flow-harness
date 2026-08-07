@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import {
+  RunCancellation,
   RunWorkflowAbortedError,
   resumeWorkflow,
   runWorkflow,
@@ -239,13 +240,19 @@ nodes:
     expect(store.events).toEqual([]);
   });
 
-  it("overrides executor success when cancellation arrives during a node", async () => {
+  it("preserves node evidence and records attributable cancellation during a node", async () => {
     const calls: string[] = [];
     const store = new MemoryRunStore();
     const controller = new AbortController();
     const executor = executorFrom(async (node) => {
       calls.push(node.id);
-      controller.abort(new Error("operator cancelled"));
+      controller.abort(
+        new RunCancellation(
+          "operator cancelled",
+          "operator:test",
+          "a4f43869-0aca-4db0-851a-c1e6bca34c7e",
+        ),
+      );
       return successfulOutcome(node.id);
     });
 
@@ -256,7 +263,7 @@ nodes:
 
     expect(calls).toEqual(["first"]);
     expect(state).toMatchObject({
-      status: "failed",
+      status: "cancelled",
       failedNodeId: "first",
       failureReason: "operator cancelled",
       nodes: { first: { status: "failed", error: { code: "workflow_aborted" } } },
@@ -265,8 +272,14 @@ nodes:
       "run_started",
       "node_started",
       "node_failed",
-      "run_failed",
+      "run_cancelled",
     ]);
+    expect(store.events.at(-1)).toMatchObject({
+      type: "run_cancelled",
+      cancelledNodeId: "first",
+      actor: "operator:test",
+      requestId: "a4f43869-0aca-4db0-851a-c1e6bca34c7e",
+    });
   });
 
   it("records cancellation between nodes without starting another node", async () => {

@@ -272,6 +272,9 @@ async function continueWorkflow(
       if (hasSettlementExhaustion(state)) {
         return await exhaustRun();
       }
+      if (isAborted(options.signal)) {
+        return await cancelRun(node.id);
+      }
       const failed: RunFailedEvent = {
         ...base(nextSequence()),
         type: "run_failed",
@@ -305,11 +308,14 @@ async function continueWorkflow(
   });
   return state;
 
-  async function cancelRun(): Promise<RunState> {
+  async function cancelRun(cancelledNodeId?: string): Promise<RunState> {
+    const attribution = cancellationAttribution(options.signal);
     const cancelled: RunCancelledEvent = {
       ...base(nextSequence()),
       type: "run_cancelled",
       reason: abortReason(options.signal),
+      ...(cancelledNodeId === undefined ? {} : { cancelledNodeId }),
+      ...(attribution === undefined ? {} : attribution),
     };
     await record(cancelled);
     return state;
@@ -349,6 +355,26 @@ export class RunRecoveryError extends Error {
 
 export class RunWorkflowAbortedError extends Error {
   override readonly name = "RunWorkflowAbortedError";
+}
+
+export class RunCancellation extends Error {
+  override readonly name = "RunCancellation";
+
+  constructor(
+    message: string,
+    readonly actor: string,
+    readonly requestId: string,
+  ) {
+    super(boundedFailureMessage(message));
+    if (!isValidCancellationActor(actor)) {
+      throw new RangeError(
+        "cancellation actor must be 1-128 characters without control characters",
+      );
+    }
+    if (!UUID_PATTERN.test(requestId)) {
+      throw new RangeError("cancellation request id must be a UUID");
+    }
+  }
 }
 
 function validateRecovery(
@@ -700,4 +726,25 @@ function boundedFailureMessage(message: string): string {
 
 function isAborted(signal: AbortSignal | undefined): boolean {
   return signal?.aborted === true;
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function cancellationAttribution(
+  signal: AbortSignal | undefined,
+): { readonly actor: string; readonly requestId: string } | undefined {
+  return signal?.reason instanceof RunCancellation
+    ? { actor: signal.reason.actor, requestId: signal.reason.requestId }
+    : undefined;
+}
+
+function isValidCancellationActor(actor: string): boolean {
+  return (
+    actor.length > 0 &&
+    actor.length <= 128 &&
+    !Array.from(actor).some((character) => {
+      const codePoint = character.codePointAt(0);
+      return codePoint !== undefined && (codePoint <= 31 || codePoint === 127);
+    })
+  );
 }
