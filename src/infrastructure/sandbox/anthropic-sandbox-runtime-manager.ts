@@ -31,7 +31,13 @@ export const anthropicSandboxRuntimeManager: SrtSandboxManager = {
     await SandboxManager.initialize(SandboxRuntimeConfigSchema.parse(config));
   },
   wrapWithSandboxArgv: (command, binShell, customConfig, signal, cwd) =>
-    SandboxManager.wrapWithSandboxArgv(command, binShell, customConfig, signal, cwd),
+    SandboxManager.wrapWithSandboxArgv(
+      command,
+      binShell,
+      customConfig === undefined ? undefined : SandboxRuntimeConfigSchema.parse(customConfig),
+      signal,
+      cwd,
+    ),
   cleanupAfterCommand: () => SandboxManager.cleanupAfterCommand(),
   reset: () => SandboxManager.reset(),
 };

@@ -16,8 +16,8 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Capability | Status |
 | --- | --- |
 | Strict workflow and goal compilation | Implemented |
-| Sequential dependency-ordered execution | Implemented |
-| Durable exact-output conditions, guarded branches, omission propagation, and explicit joins | Implemented sequentially |
+| Deterministic dependency-ordered execution with bounded static DAG forks | Implemented; omitted concurrency remains sequential |
+| Durable exact-output conditions, guarded branches, omission propagation, and explicit joins | Implemented with bounded selected-branch concurrency |
 | Durable JSONL run ledger and inspection | Implemented |
 | Safe-boundary recovery with exclusive local ownership | Implemented |
 | Durable exact command approval with approve/deny CLI | Implemented |
@@ -28,7 +28,7 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Bounded Pi agent nodes with Flow-owned `read`, `ls`, and hash-anchored `edit` tools | Implemented |
 | Proof-safe fresh recovery of interrupted agent attempts | Implemented as explicit opt-in for read-only attempts and edit attempts proven not applied |
 | Fail-closed sandboxed command process trees | Implemented on Linux and macOS |
-| Dynamic agent-tool approval, graph loops, and broader model tools | Planned |
+| Dynamic agent-tool approval, graph loops, child runs, and broader model tools | Planned |
 | VM-grade isolation of the host-side agent runtime | Planned |
 
 The executable format is `flow.synapti.ai/v1alpha1`. There is no compatibility or migration
@@ -120,6 +120,22 @@ node dist/cli/main.js inspect conditional-demo
 The classifier's complete `command.stdout` selects one declared case by exact equality. Flow
 records the decision, marks the other branch omitted, and reconciles both alternatives through an
 explicit join before the final verifier. Truncated source evidence fails closed instead of routing.
+
+To exercise a bounded static DAG fork without model credentials:
+
+```sh
+node dist/cli/main.js validate examples/concurrent-fork.workflow.yaml
+node dist/cli/main.js run examples/concurrent-fork.workflow.yaml --run-id concurrent-demo
+node dist/cli/main.js inspect concurrent-demo
+```
+
+The workflow opts in with `concurrency: { maxNodes: 2 }`; omission preserves the legacy maximum of
+one. Flow admits ready executable nodes in declaration order, durably records every start before
+invocation, waits for the complete wave to quiesce, and commits outcomes in declaration order even
+when wall-clock completion reverses. A failure or cancellation starts no later wave, but every
+already-admitted node is settled first. Conditions, joins, and command approvals are barriers and
+never overlap an executable wave. This is bounded concurrency inside one run; the supervisor's
+worker limit independently bounds detached runs.
 
 ### Run in the background
 

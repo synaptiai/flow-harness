@@ -48,7 +48,9 @@ const SEMANTIC_POLICY = Object.freeze({
 });
 
 interface ManagerRuntimeState {
-  active: boolean;
+  activeCommands: number;
+  operationTail: Promise<void>;
+  sessionKey: string | undefined;
   poisonedReason?: string;
 }
 
@@ -86,7 +88,7 @@ export interface SrtSandboxManager {
   wrapWithSandboxArgv(
     command: string,
     binShell: string,
-    customConfig: undefined,
+    customConfig: SrtRuntimeConfig | undefined,
     signal: AbortSignal | undefined,
     cwd: string,
   ): Promise<{ readonly argv: readonly string[]; readonly env: NodeJS.ProcessEnv }>;
@@ -150,16 +152,12 @@ export class SrtCommandSandbox implements CommandSandbox {
         `command sandbox is unavailable after cleanup failure: ${runtimeState.poisonedReason}`,
       );
     }
-    if (runtimeState.active) {
-      throw new Error("command sandbox is already active");
-    }
     if (request.signal?.aborted === true) {
       throw new Error("command sandbox preparation was cancelled");
     }
 
-    runtimeState.active = true;
     let privateTemporaryDirectory: string | undefined;
-    let initializationAttempted = false;
+    let sessionAcquired = false;
     let wrapped = false;
     try {
       const canonicalWorkspace = await this.#canonicalize(request.cwd);
@@ -185,18 +183,25 @@ export class SrtCommandSandbox implements CommandSandbox {
         this.#homeDirectory,
         canonicalSeccompApplyPath,
       );
-      initializationAttempted = true;
-      await this.#manager.initialize(config);
+      const sessionKey = sandboxSessionKey(
+        this.#platform,
+        canonicalWorkspace,
+        canonicalProtectedPaths,
+        this.#homeDirectory,
+        canonicalSeccompApplyPath,
+      );
+      await this.#acquireSession(config, sessionKey);
+      sessionAcquired = true;
       const command = encodePosixCommand(request.executable, request.args);
       const descriptor = await this.#manager.wrapWithSandboxArgv(
         command,
         "/bin/bash",
-        undefined,
+        config,
         request.signal,
         canonicalWorkspace,
       );
-      validateDescriptor(descriptor.argv);
       wrapped = true;
+      validateDescriptor(descriptor.argv);
 
       const launch = Object.freeze({
         executable: descriptor.argv[0] as string,
@@ -213,14 +218,14 @@ export class SrtCommandSandbox implements CommandSandbox {
             return;
           }
           released = true;
-          await this.#release(privateTemporaryDirectory as string, wrapped, true);
+          await this.#release(privateTemporaryDirectory as string, wrapped, sessionAcquired);
         },
       });
     } catch (error) {
       const cleanupErrors = await this.#release(
         privateTemporaryDirectory,
-        false,
-        initializationAttempted,
+        wrapped,
+        sessionAcquired,
         false,
       );
       if (cleanupErrors.length === 0) {
@@ -230,39 +235,84 @@ export class SrtCommandSandbox implements CommandSandbox {
     }
   }
 
+  async #acquireSession(config: SrtRuntimeConfig, sessionKey: string): Promise<void> {
+    const runtimeState = managerRuntimeState(this.#manager);
+    await withManagerLock(runtimeState, async () => {
+      if (runtimeState.poisonedReason !== undefined) {
+        throw new Error(
+          `command sandbox is unavailable after cleanup failure: ${runtimeState.poisonedReason}`,
+        );
+      }
+      if (runtimeState.sessionKey !== undefined && runtimeState.sessionKey !== sessionKey) {
+        throw new Error(
+          "command sandbox cannot activate a different workspace or policy while another command is active",
+        );
+      }
+      if (runtimeState.sessionKey === undefined) {
+        try {
+          await this.#manager.initialize(config);
+        } catch (error) {
+          const cleanupErrors: unknown[] = [];
+          try {
+            await withTimeout(this.#manager.reset(), this.#cleanupTimeoutMs);
+          } catch (cleanupError) {
+            cleanupErrors.push(cleanupError);
+            runtimeState.poisonedReason = cleanupErrors.map(errorMessage).join("; ");
+          }
+          if (cleanupErrors.length > 0) {
+            throw combinedError(error, cleanupErrors);
+          }
+          throw error;
+        }
+        runtimeState.sessionKey = sessionKey;
+      }
+      runtimeState.activeCommands += 1;
+    });
+  }
+
   async #release(
     privateTemporaryDirectory: string | undefined,
     wrapped: boolean,
-    initialized: boolean,
+    sessionAcquired: boolean,
     throwOnFailure = true,
   ): Promise<readonly unknown[]> {
     const errors: unknown[] = [];
-    if (wrapped) {
-      try {
-        this.#manager.cleanupAfterCommand();
-      } catch (error) {
-        errors.push(error);
-      }
-    }
-    if (initialized) {
-      try {
-        await withTimeout(this.#manager.reset(), this.#cleanupTimeoutMs);
-      } catch (error) {
-        errors.push(error);
-      }
-    }
-    if (privateTemporaryDirectory !== undefined) {
-      try {
-        await this.#removeTemporaryDirectory(privateTemporaryDirectory);
-      } catch (error) {
-        errors.push(error);
-      }
-    }
     const runtimeState = managerRuntimeState(this.#manager);
-    runtimeState.active = false;
-    if (errors.length > 0) {
-      runtimeState.poisonedReason = errors.map(errorMessage).join("; ");
-    }
+    await withManagerLock(runtimeState, async () => {
+      if (wrapped) {
+        try {
+          this.#manager.cleanupAfterCommand();
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      if (sessionAcquired) {
+        if (runtimeState.activeCommands <= 0) {
+          errors.push(new Error("command sandbox session reference count underflowed"));
+        } else {
+          runtimeState.activeCommands -= 1;
+        }
+        if (runtimeState.activeCommands === 0 && runtimeState.sessionKey !== undefined) {
+          try {
+            await withTimeout(this.#manager.reset(), this.#cleanupTimeoutMs);
+          } catch (error) {
+            errors.push(error);
+          } finally {
+            runtimeState.sessionKey = undefined;
+          }
+        }
+      }
+      if (privateTemporaryDirectory !== undefined) {
+        try {
+          await this.#removeTemporaryDirectory(privateTemporaryDirectory);
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      if (errors.length > 0) {
+        runtimeState.poisonedReason = errors.map(errorMessage).join("; ");
+      }
+    });
     if (throwOnFailure && errors.length > 0) {
       throw combinedError("command sandbox cleanup failed", errors);
     }
@@ -273,10 +323,47 @@ export class SrtCommandSandbox implements CommandSandbox {
 function managerRuntimeState(manager: SrtSandboxManager): ManagerRuntimeState {
   let state = MANAGER_RUNTIME_STATES.get(manager);
   if (state === undefined) {
-    state = { active: false };
+    state = { activeCommands: 0, operationTail: Promise.resolve(), sessionKey: undefined };
     MANAGER_RUNTIME_STATES.set(manager, state);
   }
   return state;
+}
+
+async function withManagerLock<T>(
+  state: ManagerRuntimeState,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous = state.operationTail;
+  let unlock!: () => void;
+  state.operationTail = new Promise<void>((resolvePromise) => {
+    unlock = resolvePromise;
+  });
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    unlock();
+  }
+}
+
+function sandboxSessionKey(
+  platform: NodeJS.Platform,
+  workspace: string,
+  protectedPaths: readonly string[],
+  homeDirectory: string,
+  seccompApplyPath: string | undefined,
+): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        platform,
+        workspace,
+        protectedPaths,
+        homeDirectory,
+        seccompApplyPath: seccompApplyPath ?? null,
+      }),
+    )
+    .digest("hex");
 }
 
 function createRuntimeConfig(

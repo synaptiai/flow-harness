@@ -120,7 +120,7 @@ describe("SrtCommandSandbox", () => {
     expect(manager.initializeCalls).toBe(0);
   });
 
-  it("rejects concurrent preparation across adapters sharing a process-global backend", async () => {
+  it("shares one backend session across same-policy concurrent commands", async () => {
     const manager = new FakeSrtManager();
     const firstSandbox = createSandbox(manager);
     const secondSandbox = createSandbox(manager, { privateTemp: "/private/tmp/flow-command-two" });
@@ -131,18 +131,48 @@ describe("SrtCommandSandbox", () => {
       protectedPaths: [],
     });
 
-    await expect(
-      secondSandbox.prepare({ executable: "node", args: [], cwd: workspace, protectedPaths: [] }),
-    ).rejects.toThrow("already active");
-
-    await first.release();
     const second = await secondSandbox.prepare({
       executable: "node",
       args: [],
       cwd: workspace,
       protectedPaths: [],
     });
+
+    await first.release();
+    expect(manager.initializeCalls).toBe(1);
+    expect(manager.cleanupCalls).toBe(1);
+    expect(manager.resetCalls).toBe(0);
     await second.release();
+
+    expect(manager.cleanupCalls).toBe(2);
+    expect(manager.resetCalls).toBe(1);
+    expect(manager.customConfigs.map((config) => config?.filesystem.allowWrite)).toEqual([
+      [workspace, privateTemp],
+      [workspace, "/private/tmp/flow-command-two"],
+    ]);
+  });
+
+  it("rejects a different concurrent workspace on the shared backend", async () => {
+    const manager = new FakeSrtManager();
+    const first = await createSandbox(manager).prepare({
+      executable: "node",
+      args: [],
+      cwd: workspace,
+      protectedPaths: [],
+    });
+
+    await expect(
+      createSandbox(manager, {
+        privateTemp: "/private/tmp/flow-command-two",
+      }).prepare({
+        executable: "node",
+        args: [],
+        cwd: "/Users/alice/other-project",
+        protectedPaths: [],
+      }),
+    ).rejects.toThrow(/different.*policy|policy.*active|workspace/i);
+
+    await first.release();
   });
 
   it("cleans partial state when initialization or wrapping fails", async () => {
@@ -158,6 +188,29 @@ describe("SrtCommandSandbox", () => {
     expect(manager.cleanupCalls).toBe(0);
     expect(manager.resetCalls).toBe(1);
     expect(removeTemporaryDirectory).toHaveBeenCalledWith(privateTemp);
+  });
+
+  it("resets a partial initialization and permits a later clean session", async () => {
+    const manager = new FakeSrtManager();
+    manager.initializeError = new Error("initialization failed");
+    const sandbox = createSandbox(manager);
+
+    await expect(
+      sandbox.prepare({ executable: "node", args: [], cwd: workspace, protectedPaths: [] }),
+    ).rejects.toThrow("initialization failed");
+    expect(manager.resetCalls).toBe(1);
+
+    manager.initializeError = undefined;
+    const prepared = await sandbox.prepare({
+      executable: "node",
+      args: [],
+      cwd: workspace,
+      protectedPaths: [],
+    });
+    await prepared.release();
+
+    expect(manager.initializeCalls).toBe(2);
+    expect(manager.resetCalls).toBe(2);
   });
 
   it("attempts every cleanup step and reports release failure", async () => {
@@ -272,7 +325,9 @@ class FakeSrtManager implements SrtSandboxManager {
   wrappedCommand: string | undefined;
   wrapCwd: string | undefined;
   wrapError: Error | undefined;
+  initializeError: Error | undefined;
   cleanupError: Error | undefined;
+  readonly customConfigs: Array<SrtRuntimeConfig | undefined> = [];
   checkCalls = 0;
   initializeCalls = 0;
   wrapCalls = 0;
@@ -290,16 +345,20 @@ class FakeSrtManager implements SrtSandboxManager {
   async initialize(config: SrtRuntimeConfig): Promise<void> {
     this.initializeCalls += 1;
     this.initializedConfig = config;
+    if (this.initializeError !== undefined) {
+      throw this.initializeError;
+    }
   }
 
   async wrapWithSandboxArgv(
     command: string,
     _binShell: string,
-    _customConfig: undefined,
+    customConfig: SrtRuntimeConfig | undefined,
     _signal: AbortSignal | undefined,
     cwd: string,
   ): Promise<{ readonly argv: readonly string[]; readonly env: NodeJS.ProcessEnv }> {
     this.wrapCalls += 1;
+    this.customConfigs.push(customConfig);
     this.wrappedCommand = command;
     this.wrapCwd = cwd;
     if (this.wrapError !== undefined) {

@@ -179,6 +179,79 @@ nodes:
     );
   });
 
+  it("runs two mutually waiting command branches through one production SRT session", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "concurrent.workflow.yaml");
+    const runsDirectory = join(directory, "runs");
+    const leftMarker = join(directory, "left.started");
+    const rightMarker = join(directory, "right.started");
+    const waitForSibling = (ownMarker: string, siblingMarker: string) =>
+      `const fs=require("node:fs");fs.writeFileSync(${JSON.stringify(ownMarker)},"");` +
+      `const deadline=Date.now()+2000;while(!fs.existsSync(${JSON.stringify(siblingMarker)})&&Date.now()<deadline){}` +
+      `if(!fs.existsSync(${JSON.stringify(siblingMarker)}))process.exit(9);`;
+    await writeFile(
+      workflowPath,
+      `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: cli-concurrent-command }
+concurrency: { maxNodes: 2 }
+nodes:
+  - id: root
+    type: command
+    command: { executable: ${JSON.stringify(process.execPath)}, args: [--version] }
+  - id: left
+    type: command
+    dependsOn: [root]
+    command:
+      executable: ${JSON.stringify(process.execPath)}
+      args: [-e, ${JSON.stringify(waitForSibling(leftMarker, rightMarker))}]
+  - id: right
+    type: command
+    dependsOn: [root]
+    command:
+      executable: ${JSON.stringify(process.execPath)}
+      args: [-e, ${JSON.stringify(waitForSibling(rightMarker, leftMarker))}]
+  - id: join
+    type: command
+    dependsOn: [left, right]
+    command: { executable: ${JSON.stringify(process.execPath)}, args: [--version] }
+`,
+      "utf8",
+    );
+    const capture = createCapture();
+
+    const exitCode = await main(
+      ["run", workflowPath, "--run-id", "cli-concurrent", "--runs-dir", runsDirectory],
+      capture.io,
+      { cwd: directory },
+    );
+
+    expect(exitCode, [...capture.stderr, ...capture.stdout].join("\n")).toBe(0);
+    expect(JSON.parse(capture.stdout.join("\n"))).toMatchObject({
+      status: "succeeded",
+      concurrency: { maxNodes: 2 },
+      nodes: {
+        left: { status: "succeeded" },
+        right: { status: "succeeded" },
+        join: { status: "succeeded" },
+      },
+    });
+    const ledger = await readFile(join(runsDirectory, "cli-concurrent", "events.jsonl"), "utf8");
+    expect(ledgerTypes(ledger)).toEqual([
+      "run_started",
+      "node_started",
+      "node_succeeded",
+      "node_started",
+      "node_started",
+      "node_succeeded",
+      "node_succeeded",
+      "node_started",
+      "node_succeeded",
+      "run_succeeded",
+    ]);
+  });
+
   it("waits durably, records approval, and resumes the exact command", async () => {
     const directory = await createTemporaryDirectory();
     const workflowPath = join(directory, "approval.workflow.yaml");

@@ -176,6 +176,44 @@ describe("public repository contracts", () => {
     expect(example.nodes).toHaveLength(2);
   });
 
+  it("documents bounded deterministic concurrency with a valid credential-free example", async () => {
+    const [
+      readme,
+      architecture,
+      workflowSpec,
+      recovery,
+      sourcing,
+      roadmap,
+      testing,
+      exampleSource,
+    ] = await Promise.all([
+      readText("README.md"),
+      readText("docs/architecture.md"),
+      readText("docs/workflow-spec.md"),
+      readText("docs/recovery.md"),
+      readText("docs/capability-sourcing.md"),
+      readText("docs/roadmap.md"),
+      readText("docs/testing-and-evaluation.md"),
+      readText("examples/concurrent-fork.workflow.yaml"),
+    ]);
+
+    expect(readme).toMatch(/concurrency:\s*\{\s*maxNodes:\s*2\s*\}/);
+    expect(readme).toMatch(/declaration order.*quiesc/is);
+    expect(architecture).toMatch(/quiescent waves/i);
+    expect(workflowSpec).toMatch(/maxNodes.*1 through 32/is);
+    expect(recovery).toMatch(/every open attempt.*declaration order/is);
+    expect(sourcing).toMatch(/Pi.*concurren.*tool/is);
+    expect(roadmap).toMatch(/Concurrent static DAG fork\/join.*Implemented/is);
+    expect(testing).toMatch(/reverse completion.*declaration order/is);
+
+    const example = parse(exampleSource) as {
+      readonly concurrency?: { readonly maxNodes?: number };
+      readonly nodes: readonly unknown[];
+    };
+    expect(example.concurrency).toEqual({ maxNodes: 2 });
+    expect(example.nodes).toHaveLength(4);
+  });
+
   it("documents detached supervision without overstating its trust boundary", async () => {
     const [readme, architecture, workflowSpec, recovery, sourcing, roadmap, security] =
       await Promise.all([

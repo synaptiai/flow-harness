@@ -2,6 +2,7 @@ import type { CompiledGoal } from "../goal/types.js";
 
 export const FLOW_WORKFLOW_API_VERSION = "flow.synapti.ai/v1alpha1" as const;
 export const MAX_CONTROL_GRAPH_SERIALIZED_BYTES = 524_288;
+export const MAX_CONCURRENT_NODES = 32;
 
 export type AgentToolName = "read" | "ls" | "edit";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
@@ -14,12 +15,17 @@ export interface CompiledRunBudget {
   readonly maxExecutionMs?: number;
 }
 
+export interface CompiledWorkflowConcurrency {
+  readonly maxNodes: number;
+}
+
 export interface CompiledWorkflow {
   readonly apiVersion: typeof FLOW_WORKFLOW_API_VERSION;
   readonly id: string;
   readonly description?: string;
   readonly goal?: CompiledGoal;
   readonly budget?: CompiledRunBudget;
+  readonly concurrency?: CompiledWorkflowConcurrency;
   readonly nodes: readonly CompiledNode[];
 }
 

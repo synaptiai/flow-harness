@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { goalContractSchema } from "../goal/schema.js";
-import { FLOW_WORKFLOW_API_VERSION } from "./types.js";
+import { FLOW_WORKFLOW_API_VERSION, MAX_CONCURRENT_NODES } from "./types.js";
 
 const identifierSchema = z
   .string()
@@ -65,6 +65,12 @@ const runBudgetSchema = z
   .refine((budget) => Object.values(budget).some((value) => value !== undefined), {
     message: "must declare at least one limit",
   });
+
+const concurrencySchema = z
+  .object({
+    maxNodes: z.number().int().min(1).max(MAX_CONCURRENT_NODES),
+  })
+  .strict();
 
 const commandNodeSchema = z
   .object({
@@ -223,6 +229,7 @@ export const workflowSourceSchema = z
       .strict(),
     goal: goalContractSchema.optional(),
     budget: runBudgetSchema.optional(),
+    concurrency: concurrencySchema.optional(),
     nodes: z
       .array(
         z.discriminatedUnion("type", [

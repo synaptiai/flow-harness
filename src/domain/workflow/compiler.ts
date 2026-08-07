@@ -12,6 +12,7 @@ import {
   type CompiledNode,
   type CompiledRunBudget,
   type CompiledWorkflow,
+  type CompiledWorkflowConcurrency,
 } from "./types.js";
 
 export interface WorkflowDiagnostic {
@@ -609,9 +610,18 @@ function freezeWorkflow(source: WorkflowSource): CompiledWorkflow {
       : { description: source.metadata.description }),
     ...(source.goal === undefined ? {} : { goal: freezeGoal(source.goal) }),
     ...(source.budget === undefined ? {} : { budget: freezeBudget(source.budget) }),
+    ...(source.concurrency === undefined
+      ? {}
+      : { concurrency: freezeConcurrency(source.concurrency) }),
     nodes,
   };
   return Object.freeze(workflow);
+}
+
+function freezeConcurrency(
+  source: NonNullable<WorkflowSource["concurrency"]>,
+): CompiledWorkflowConcurrency {
+  return Object.freeze({ maxNodes: source.maxNodes });
 }
 
 function freezeBudget(source: NonNullable<WorkflowSource["budget"]>): CompiledRunBudget {

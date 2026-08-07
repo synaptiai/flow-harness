@@ -81,6 +81,7 @@ export async function runWorkflow(
       workflowDigest: calculateWorkflowDigest(workflow),
       executionCwd,
       ...(workflow.budget === undefined ? {} : { budget: workflow.budget }),
+      ...(workflow.concurrency === undefined ? {} : { concurrency: workflow.concurrency }),
       ...(approvalRequirements.length === 0 ? {} : { approvalRequirements }),
       ...(recoveryRequirements.length === 0 ? {} : { recoveryRequirements }),
       ...(controlGraph === undefined ? {} : { controlGraph }),
@@ -200,177 +201,227 @@ async function continueWorkflow(
     return state;
   }
 
-  while (!workflowIsTerminal(state)) {
+  workflowLoop: while (!workflowIsTerminal(state)) {
     if ((state.budget?.exhausted.length ?? 0) > 0) {
       return await exhaustRun();
     }
     if (isAborted(options.signal)) {
       return await cancelRun();
     }
-    const transition = selectNextTransition(workflow.nodes, state);
-    if (transition === undefined) {
-      throw new Error("Compiled workflow has no ready node; compiler invariant was violated");
-    }
-    if (transition.kind !== "execute") {
-      const event = controlTransitionEvent(transition, state, base(nextSequence()));
-      await record(event);
-      if (event.type === "node_control_failed") {
-        const failed: RunFailedEvent = {
-          ...base(nextSequence()),
-          type: "run_failed",
-          failedNodeId: event.nodeId,
-          reason: event.error.message,
-        };
-        await record(failed);
-        return state;
-      }
-      continue;
-    }
+    const admitted: Array<{
+      readonly node: ExecutableNode;
+      readonly executionNode: ExecutableNode;
+      readonly attempt: number;
+      readonly effectJournal?: NodeEffectJournal;
+    }> = [];
 
-    const node = transition.node;
-
-    const executionNode = boundNodeTimeout(node, state);
-    const attempt = (state.nodes[node.id]?.attempt ?? 0) + 1;
-    let approval: { readonly requestId: string; readonly operationDigest: string } | undefined;
-    if (node.type === "command" && node.approval !== undefined) {
-      if (executionNode.type !== "command") {
-        throw new Error("bounded command node changed type");
+    while (admitted.length < state.concurrency.maxNodes) {
+      const transition = selectNextTransition(workflow.nodes, state);
+      if (transition === undefined) {
+        if (admitted.length === 0) {
+          throw new Error("Compiled workflow has no ready node; compiler invariant was violated");
+        }
+        break;
       }
-      const operation = createCommandApprovalOperation(executionNode, options.cwd);
-      const operationDigest = calculateCommandApprovalOperationDigest(operation);
-      const currentApproval = state.nodes[node.id]?.approval ?? null;
-
-      if (currentApproval === null || currentApproval.status === "expired") {
-        const sequence = nextSequence();
-        await record({
-          ...base(sequence),
-          type: "command_approval_requested",
-          nodeId: node.id,
-          attempt,
-          requestId: commandApprovalRequestId(sequence),
-          grantTtlMs: node.approval.grantTtlMs,
-          operation,
-          operationDigest,
-        });
-        return state;
-      }
-      if (
-        currentApproval.operationDigest !== operationDigest ||
-        calculateCommandApprovalOperationDigest(currentApproval.operation) !== operationDigest
-      ) {
-        throw new RunRecoveryError(
-          "workflow_mismatch",
-          `run "${runId}" approval operation no longer matches command node "${node.id}"`,
-        );
-      }
-      if (currentApproval.status === "pending") {
-        return state;
-      }
-      if (currentApproval.status !== "granted") {
-        throw new Error(
-          `approval invariant was violated for node "${node.id}" with status "${currentApproval.status}"`,
-        );
+      if (transition.kind !== "execute") {
+        if (admitted.length > 0) {
+          break;
+        }
+        const event = controlTransitionEvent(transition, state, base(nextSequence()));
+        await record(event);
+        if (event.type === "node_control_failed") {
+          const failed: RunFailedEvent = {
+            ...base(nextSequence()),
+            type: "run_failed",
+            failedNodeId: event.nodeId,
+            reason: event.error.message,
+          };
+          await record(failed);
+          return state;
+        }
+        continue workflowLoop;
       }
 
-      const startTime = now();
-      if (
-        currentApproval.expiresAt === null ||
-        startTime.getTime() >= Date.parse(currentApproval.expiresAt)
-      ) {
-        await record({
-          ...base(nextSequence(), startTime),
-          type: "command_approval_expired",
-          nodeId: node.id,
-          attempt,
+      const node = transition.node;
+      const executionNode = boundNodeTimeout(node, state);
+      const attempt = (state.nodes[node.id]?.attempt ?? 0) + 1;
+      let approval: { readonly requestId: string; readonly operationDigest: string } | undefined;
+      let startTime: Date | undefined;
+      if (node.type === "command" && node.approval !== undefined) {
+        if (executionNode.type !== "command") {
+          throw new Error("bounded command node changed type");
+        }
+        const operation = createCommandApprovalOperation(executionNode, options.cwd);
+        const operationDigest = calculateCommandApprovalOperationDigest(operation);
+        const currentApproval = state.nodes[node.id]?.approval ?? null;
+
+        if (currentApproval === null || currentApproval.status === "expired") {
+          if (admitted.length > 0) {
+            break;
+          }
+          const sequence = nextSequence();
+          await record({
+            ...base(sequence),
+            type: "command_approval_requested",
+            nodeId: node.id,
+            attempt,
+            requestId: commandApprovalRequestId(sequence),
+            grantTtlMs: node.approval.grantTtlMs,
+            operation,
+            operationDigest,
+          });
+          return state;
+        }
+        if (
+          currentApproval.operationDigest !== operationDigest ||
+          calculateCommandApprovalOperationDigest(currentApproval.operation) !== operationDigest
+        ) {
+          throw new RunRecoveryError(
+            "workflow_mismatch",
+            `run "${runId}" approval operation no longer matches command node "${node.id}"`,
+          );
+        }
+        if (currentApproval.status === "pending") {
+          if (admitted.length > 0) {
+            break;
+          }
+          return state;
+        }
+        if (currentApproval.status !== "granted") {
+          throw new Error(
+            `approval invariant was violated for node "${node.id}" with status "${currentApproval.status}"`,
+          );
+        }
+
+        startTime = now();
+        if (
+          currentApproval.expiresAt === null ||
+          startTime.getTime() >= Date.parse(currentApproval.expiresAt)
+        ) {
+          if (admitted.length > 0) {
+            break;
+          }
+          await record({
+            ...base(nextSequence(), startTime),
+            type: "command_approval_expired",
+            nodeId: node.id,
+            attempt,
+            requestId: currentApproval.requestId,
+            operationDigest,
+          });
+          continue workflowLoop;
+        }
+        approval = {
           requestId: currentApproval.requestId,
           operationDigest,
-        });
-        continue;
+        };
       }
-      approval = {
-        requestId: currentApproval.requestId,
-        operationDigest,
-      };
+
       await record({
         ...base(nextSequence(), startTime),
         type: "node_started",
         nodeId: node.id,
         attempt,
-        approval,
-      });
-    } else {
-      await record({
-        ...base(nextSequence()),
-        type: "node_started",
-        nodeId: node.id,
-        attempt,
+        ...(approval === undefined ? {} : { approval }),
         ...(supportsDurableEffects(node) ? { effectProtocol: DURABLE_EFFECT_PROTOCOL } : {}),
       });
+      const effectJournal = supportsDurableEffects(node)
+        ? createEffectJournal(node.id, attempt)
+        : undefined;
+      admitted.push({
+        node,
+        executionNode,
+        attempt,
+        ...(effectJournal === undefined ? {} : { effectJournal }),
+      });
+      if ((state.budget?.exhausted.length ?? 0) > 0) {
+        break;
+      }
     }
 
-    const effectJournal = supportsDurableEffects(node)
-      ? createEffectJournal(node.id, attempt)
-      : undefined;
-
-    const abortedBeforeExecution = isAborted(options.signal);
-    const outcome = abortedBeforeExecution
-      ? abortedOutcome(options.signal)
-      : await executeNode(executionNode, options.executor, {
-          runId,
-          workflowId: workflow.id,
-          attempt,
-          cwd: options.cwd,
-          protectedPaths: options.protectedPaths,
-          ...(effectJournal === undefined ? {} : { effectJournal }),
-          ...(options.signal === undefined ? {} : { signal: options.signal }),
-        });
+    const settlements = await Promise.all(
+      admitted.map(async ({ executionNode, attempt, effectJournal }) => {
+        const abortedBeforeExecution = isAborted(options.signal);
+        const outcome = abortedBeforeExecution
+          ? abortedOutcome(options.signal)
+          : await executeNode(executionNode, options.executor, {
+              runId,
+              workflowId: workflow.id,
+              attempt,
+              cwd: options.cwd,
+              protectedPaths: options.protectedPaths,
+              ...(effectJournal === undefined ? {} : { effectJournal }),
+              ...(options.signal === undefined ? {} : { signal: options.signal }),
+            });
+        return { outcome, abortedBeforeExecution };
+      }),
+    );
     await publicationTail;
-    const abortAfterSuccessfulExecution =
-      isAborted(options.signal) && outcome.status === "succeeded";
-    const interruptedOutcome = abortAfterSuccessfulExecution
-      ? abortedOutcome(options.signal, outcome.evidence)
-      : outcome;
-    const retrySafeOutcome =
-      effectJournal === undefined
-        ? interruptedOutcome
-        : normalizeUnknownEffectRetryability(node.id, interruptedOutcome);
-    const authoritativeOutcome =
-      effectJournal === undefined || (!abortedBeforeExecution && !abortAfterSuccessfulExecution)
-        ? retrySafeOutcome
-        : normalizeWorkflowAbortEffectStatus(node.id, retrySafeOutcome);
 
-    if (authoritativeOutcome.status === "failed") {
+    for (const [index, admission] of admitted.entries()) {
+      const settlement = settlements[index];
+      if (settlement === undefined) {
+        throw new Error(`node "${admission.node.id}" has no executor settlement`);
+      }
+      const { outcome, abortedBeforeExecution } = settlement;
+      const abortAfterSuccessfulExecution =
+        isAborted(options.signal) && outcome.status === "succeeded";
+      const interruptedOutcome = abortAfterSuccessfulExecution
+        ? abortedOutcome(options.signal, outcome.evidence)
+        : outcome;
+      const retrySafeOutcome =
+        admission.effectJournal === undefined
+          ? interruptedOutcome
+          : normalizeUnknownEffectRetryability(admission.node.id, interruptedOutcome);
+      const authoritativeOutcome =
+        admission.effectJournal === undefined ||
+        (!abortedBeforeExecution && !abortAfterSuccessfulExecution)
+          ? retrySafeOutcome
+          : normalizeWorkflowAbortEffectStatus(admission.node.id, retrySafeOutcome);
+
+      if (authoritativeOutcome.status === "failed") {
+        await record({
+          ...base(nextSequence()),
+          type: "node_failed",
+          nodeId: admission.node.id,
+          attempt: admission.attempt,
+          error: authoritativeOutcome.error,
+          evidence: authoritativeOutcome.evidence,
+        });
+      } else {
+        await record({
+          ...base(nextSequence()),
+          type: "node_succeeded",
+          nodeId: admission.node.id,
+          attempt: admission.attempt,
+          evidence: authoritativeOutcome.evidence,
+        });
+      }
+    }
+
+    if (hasSettlementExhaustion(state) || hasPendingStartExhaustion(state)) {
+      return await exhaustRun();
+    }
+    const failedNodeIds = Object.entries(state.nodes)
+      .filter(([, node]) => node.status === "failed")
+      .map(([nodeId]) => nodeId);
+    if (isAborted(options.signal)) {
+      return await cancelRun(failedNodeIds);
+    }
+    const primaryFailure = failedNodeIds[0];
+    if (primaryFailure !== undefined) {
+      const error = state.nodes[primaryFailure]?.error;
+      if (error === null || error === undefined) {
+        throw new Error(`Failed node "${primaryFailure}" has no committed error`);
+      }
       await record({
         ...base(nextSequence()),
-        type: "node_failed",
-        nodeId: node.id,
-        attempt,
-        error: authoritativeOutcome.error,
-        evidence: authoritativeOutcome.evidence,
-      });
-      if (hasSettlementExhaustion(state)) {
-        return await exhaustRun();
-      }
-      if (isAborted(options.signal)) {
-        return await cancelRun(node.id);
-      }
-      const failed: RunFailedEvent = {
-        ...base(nextSequence()),
         type: "run_failed",
-        failedNodeId: node.id,
-        reason: authoritativeOutcome.error.message,
-      };
-      await record(failed);
+        failedNodeId: primaryFailure,
+        reason: error.message,
+      });
       return state;
     }
-
-    await record({
-      ...base(nextSequence()),
-      type: "node_succeeded",
-      nodeId: node.id,
-      attempt,
-      evidence: authoritativeOutcome.evidence,
-    });
   }
 
   if (state.budget?.exhausted.some((item) => item.dimension !== "nodeStarts") === true) {
@@ -484,13 +535,18 @@ async function continueWorkflow(
     });
   }
 
-  async function cancelRun(cancelledNodeId?: string): Promise<RunState> {
+  async function cancelRun(cancelledNodeIds: readonly string[] = []): Promise<RunState> {
     const attribution = cancellationAttribution(options.signal);
+    const cancelledNodeId = cancelledNodeIds.length === 1 ? cancelledNodeIds[0] : undefined;
     const cancelled: RunCancelledEvent = {
       ...base(nextSequence()),
       type: "run_cancelled",
       reason: abortReason(options.signal),
-      ...(cancelledNodeId === undefined ? {} : { cancelledNodeId }),
+      ...(cancelledNodeId !== undefined
+        ? { cancelledNodeId }
+        : cancelledNodeIds.length === 0
+          ? {}
+          : { cancelledNodeIds }),
       ...(attribution === undefined ? {} : attribution),
     };
     await record(cancelled);
@@ -628,6 +684,13 @@ function validateRecoveryCompatibility(
     );
   }
 
+  if (state.concurrency.maxNodes !== (workflow.concurrency?.maxNodes ?? 1)) {
+    throw new RunRecoveryError(
+      "workflow_mismatch",
+      `run "${runId}" concurrency does not match the compiled workflow`,
+    );
+  }
+
   if (!sameControlGraph(state.controlGraph, workflowControlGraph(workflow))) {
     throw new RunRecoveryError(
       "workflow_mismatch",
@@ -659,58 +722,56 @@ async function reconcileOpenEffects(
   now: () => Date,
 ): Promise<RunState> {
   let state = initialState;
-  const openAttempt = Object.entries(state.nodes).find(([, node]) => node.status === "running");
-  if (openAttempt === undefined) {
-    return state;
-  }
-  const [nodeId, node] = openAttempt;
-  const openEffects = node.effects.filter(
-    (effect) => effect.settlement === null && effect.reconciliation === null,
-  );
-  if (openEffects.length === 0) {
-    return state;
-  }
-  const reconciler = options.effectReconciler;
-  if (reconciler === undefined) {
-    throw new RunRecoveryError(
-      "reconciliation_unavailable",
-      `run "${options.runId}" cannot inspect open durable effects because no effect reconciler is configured`,
+  const openAttempts = Object.entries(state.nodes).filter(([, node]) => node.status === "running");
+  for (const [nodeId, node] of openAttempts) {
+    const openEffects = node.effects.filter(
+      (effect) => effect.settlement === null && effect.reconciliation === null,
     );
-  }
-
-  for (const effect of openEffects) {
-    let publicationStarted = false;
-    let published = false;
-    await reconciler.reconcile(
-      effect.descriptor,
-      async (observation) => {
-        if (publicationStarted) {
-          throw new RunRecoveryError(
-            "reconciliation_incomplete",
-            `effect reconciler published more than one observation for "${effect.effectId}"`,
-          );
-        }
-        publicationStarted = true;
-        const event: NodeEffectReconciledEvent = {
-          ...eventBase(workflow, options.runId, state.lastSequence + 1, now),
-          type: "node_effect_reconciled",
-          nodeId,
-          attempt: node.attempt,
-          effectId: effect.effectId,
-          ...observation,
-        };
-        const nextState = appendRunEvent(state, event);
-        await options.store.append(event);
-        state = nextState;
-        published = true;
-      },
-      options.signal,
-    );
-    if (!published) {
+    if (openEffects.length === 0) {
+      continue;
+    }
+    const reconciler = options.effectReconciler;
+    if (reconciler === undefined) {
       throw new RunRecoveryError(
-        "reconciliation_incomplete",
-        `effect reconciler returned without publishing an observation for "${effect.effectId}"`,
+        "reconciliation_unavailable",
+        `run "${options.runId}" cannot inspect open durable effects because no effect reconciler is configured`,
       );
+    }
+
+    for (const effect of openEffects) {
+      let publicationStarted = false;
+      let published = false;
+      await reconciler.reconcile(
+        effect.descriptor,
+        async (observation) => {
+          if (publicationStarted) {
+            throw new RunRecoveryError(
+              "reconciliation_incomplete",
+              `effect reconciler published more than one observation for "${effect.effectId}"`,
+            );
+          }
+          publicationStarted = true;
+          const event: NodeEffectReconciledEvent = {
+            ...eventBase(workflow, options.runId, state.lastSequence + 1, now),
+            type: "node_effect_reconciled",
+            nodeId,
+            attempt: node.attempt,
+            effectId: effect.effectId,
+            ...observation,
+          };
+          const nextState = appendRunEvent(state, event);
+          await options.store.append(event);
+          state = nextState;
+          published = true;
+        },
+        options.signal,
+      );
+      if (!published) {
+        throw new RunRecoveryError(
+          "reconciliation_incomplete",
+          `effect reconciler returned without publishing an observation for "${effect.effectId}"`,
+        );
+      }
     }
   }
   return state;
@@ -722,38 +783,36 @@ async function disposeProofSafeInterruptedAttempt(
   state: RunState,
   now: () => Date,
 ): Promise<RunState> {
-  const openAttempt = Object.entries(state.nodes).find(([, node]) => node.status === "running");
-  if (openAttempt === undefined) {
-    return state;
-  }
-  const [nodeId, node] = openAttempt;
-  if (state.recoveryRequirements[nodeId] === undefined) {
-    return state;
-  }
-
-  const event: RunEvent = {
-    ...eventBase(workflow, options.runId, state.lastSequence + 1, now),
-    type: "node_attempt_interrupted",
-    nodeId,
-    attempt: node.attempt,
-    reason: "process_interrupted",
-    disposition: "fresh_retry",
-    resourceAccounting: "incomplete",
-  };
-  let nextState: RunState;
-  try {
-    nextState = appendRunEvent(state, event);
-  } catch (error) {
-    if (!(error instanceof RunReplayError)) {
-      throw error;
+  for (const [nodeId, node] of Object.entries(state.nodes)) {
+    if (node.status !== "running" || state.recoveryRequirements[nodeId] === undefined) {
+      continue;
     }
-    throw new RunRecoveryError(
-      "recovery_retry_ineligible",
-      `run "${options.runId}" cannot fresh-retry node "${nodeId}" attempt ${node.attempt}: ${error.message}`,
-    );
+
+    const event: RunEvent = {
+      ...eventBase(workflow, options.runId, state.lastSequence + 1, now),
+      type: "node_attempt_interrupted",
+      nodeId,
+      attempt: node.attempt,
+      reason: "process_interrupted",
+      disposition: "fresh_retry",
+      resourceAccounting: "incomplete",
+    };
+    let nextState: RunState;
+    try {
+      nextState = appendRunEvent(state, event);
+    } catch (error) {
+      if (!(error instanceof RunReplayError)) {
+        throw error;
+      }
+      throw new RunRecoveryError(
+        "recovery_retry_ineligible",
+        `run "${options.runId}" cannot fresh-retry node "${nodeId}" attempt ${node.attempt}: ${error.message}`,
+      );
+    }
+    await options.store.append(event);
+    state = nextState;
   }
-  await options.store.append(event);
-  return nextState;
+  return state;
 }
 
 function rejectOpenAttempt(runId: string, state: RunState): void {
@@ -778,7 +837,11 @@ function validateRecoveredHistory(
   let interruptionRequiresResume = false;
 
   for (const event of events) {
-    if (interruptionRequiresResume && event.type !== "run_resumed") {
+    if (
+      interruptionRequiresResume &&
+      event.type !== "run_resumed" &&
+      event.type !== "node_attempt_interrupted"
+    ) {
       throw new RunRecoveryError(
         "workflow_mismatch",
         `run "${runId}" contains recovery history that skipped the required resume marker`,
@@ -931,7 +994,10 @@ function agentRecoveryRequirements(
 }
 
 function workflowControlGraph(workflow: CompiledWorkflow): ControlGraph | undefined {
-  if (!workflow.nodes.some((node) => node.type === "condition" || node.type === "join")) {
+  if (
+    (workflow.concurrency?.maxNodes ?? 1) === 1 &&
+    !workflow.nodes.some((node) => node.type === "condition" || node.type === "join")
+  ) {
     return undefined;
   }
   const nodes: ControlGraphNode[] = workflow.nodes.map((node) => {
@@ -1313,8 +1379,17 @@ function hasSettlementExhaustion(state: RunState): boolean {
   return state.budget?.exhausted.some((item) => item.dimension !== "nodeStarts") === true;
 }
 
+function hasPendingStartExhaustion(state: RunState): boolean {
+  return (
+    state.budget?.exhausted.some((item) => item.dimension === "nodeStarts") === true &&
+    Object.values(state.nodes).some((node) => node.status === "pending") &&
+    !Object.values(state.nodes).some((node) => node.status === "failed")
+  );
+}
+
 function boundNodeTimeout(node: CompiledCommandNode, state: RunState): CompiledCommandNode;
 function boundNodeTimeout(node: CompiledAgentNode, state: RunState): CompiledAgentNode;
+function boundNodeTimeout(node: ExecutableNode, state: RunState): ExecutableNode;
 function boundNodeTimeout(node: CompiledNode, state: RunState): CompiledNode;
 function boundNodeTimeout(node: CompiledNode, state: RunState): CompiledNode {
   const remaining = state.budget?.remaining.executionMs;
