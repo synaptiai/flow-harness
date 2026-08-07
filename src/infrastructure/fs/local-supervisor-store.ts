@@ -1,5 +1,15 @@
 import { constants, type Dirent } from "node:fs";
-import { chmod, type FileHandle, lstat, mkdir, open, readdir, rename, rm } from "node:fs/promises";
+import {
+  chmod,
+  type FileHandle,
+  link,
+  lstat,
+  mkdir,
+  open,
+  readdir,
+  rename,
+  rm,
+} from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -513,9 +523,18 @@ async function ensurePrivateDirectory(directory: string, expectedUid: number): P
 }
 
 async function writeExclusiveRecord(path: string, record: unknown): Promise<void> {
-  const handle = await open(path, "wx", 0o600);
-  await writeAndSync(handle, record);
-  await syncDirectory(resolve(path, ".."));
+  const directory = resolve(path, "..");
+  const pending = join(directory, `.${randomUUID()}.pending`);
+  try {
+    const handle = await open(pending, "wx", 0o600);
+    await writeAndSync(handle, record);
+    await link(pending, path);
+    await syncDirectory(directory);
+    await rm(pending);
+    await syncDirectory(directory);
+  } finally {
+    await rm(pending, { force: true }).catch(() => undefined);
+  }
 }
 
 async function writeAtomicRecord(path: string, record: unknown): Promise<void> {

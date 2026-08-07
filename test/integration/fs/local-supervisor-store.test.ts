@@ -250,6 +250,28 @@ describe("LocalSupervisorStore", () => {
     });
   });
 
+  it("publishes one complete startup lock under concurrent reservation", async () => {
+    const { store } = await createStore();
+    const locks = Array.from({ length: 32 }, (_, index) =>
+      createSupervisorStartLock({
+        pid: 10_000 + index,
+        token: randomUUID(),
+        acquiredAt: new Date(Date.UTC(2026, 7, 7, 12, 0, index)).toISOString(),
+      }),
+    );
+
+    const reservations = await Promise.all(
+      locks.map(async (lock) => await store.reserveSupervisorStart(lock)),
+    );
+    const winner = reservations.find((reservation) => reservation.acquired);
+
+    expect(winner).toBeDefined();
+    expect(reservations.filter((reservation) => reservation.acquired)).toHaveLength(1);
+    expect(
+      reservations.every((reservation) => reservation.record.token === winner?.record.token),
+    ).toBe(true);
+  });
+
   it("releases only the matching active claim", async () => {
     const { store } = await createStore();
     const job = jobRecord();
