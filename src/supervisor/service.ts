@@ -278,12 +278,51 @@ export class LocalSupervisorService {
   async #admitJob(job: JobRecord, journal: SubmissionCommandRecord): Promise<SubmissionResult> {
     let outcome:
       | { readonly decision: "dispatch" | "reject"; readonly decidedAt: string }
-      | { readonly decision: "queue"; readonly decidedAt: string; readonly queuePosition: number };
+      | { readonly decision: "queue"; readonly decidedAt: string; readonly queuePosition: number }
+      | { readonly decision: "replay"; readonly result: SubmissionResult };
     try {
       outcome = await this.#serializeAdmission(async () => {
         this.#assertAcceptingSubmissions();
         const identity = admissionIdentity(job);
         const state = this.#admissionStore.state;
+        const current = await this.#store.readCommand(job.jobId);
+        if (current.type !== "submit" || !journalMatchesJob(current, job)) {
+          throw new SupervisorServiceError(
+            "identity_mismatch",
+            `job "${job.jobId}" does not match its durable submission command`,
+          );
+        }
+        if (current.status === "completed") {
+          return { decision: "replay", result: acceptedResultFromJournal(current) };
+        }
+        if (current.status === "rejected") {
+          if (current.reason === "conflict") {
+            throw new SupervisorServiceError("conflict", current.failure);
+          }
+          return { decision: "replay", result: rejectedResultFromJournal(current) };
+        }
+        if (current.status === "uncertain") {
+          throw new SupervisorServiceError(
+            "command_uncertain",
+            `submission command "${current.commandId}" has an uncertain prior admission`,
+          );
+        }
+        if (current.status === "queued") {
+          const admission = state.jobs[job.jobId];
+          if (admission?.status === "queued") {
+            return { decision: "replay", result: queuedResultFromJournal(current) };
+          }
+          throw new SupervisorServiceError(
+            "command_uncertain",
+            `queued submission command "${current.commandId}" has no stable queue admission`,
+          );
+        }
+        if (state.jobs[job.jobId]?.status === "queue_cancelling") {
+          throw new SupervisorServiceError(
+            "command_uncertain",
+            `queued submission command "${current.commandId}" is being cancelled`,
+          );
+        }
         const decision = classifyNewAdmission(state);
         const decidedAt = this.#now().toISOString();
         if (decision === "dispatch") {
@@ -305,6 +344,7 @@ export class LocalSupervisorService {
       });
     } catch (error) {
       if (
+        error instanceof SupervisorServiceError ||
         (error instanceof AdmissionStateError &&
           (error.code === "invalid_transition" || error.code === "capacity_exceeded")) ||
         (error instanceof LocalSupervisorStoreError &&
@@ -320,6 +360,9 @@ export class LocalSupervisorService {
       );
     }
 
+    if (outcome.decision === "replay") {
+      return outcome.result;
+    }
     if (outcome.decision === "queue") {
       const queuedJournal = await this.#queueSubmissionJournal(
         journal,

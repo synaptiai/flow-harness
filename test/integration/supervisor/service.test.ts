@@ -564,6 +564,40 @@ describe("LocalSupervisorService", () => {
     expect(harness.launcher.jobs.map((job) => job.runId)).toEqual(["run-1"]);
   });
 
+  it("does not recreate admission when an exact queued retry races cancellation", async () => {
+    const harness = await createHarness(
+      (runsDirectory, socketDirectory) =>
+        new DelayedJobReadStore(runsDirectory, { socketDirectory }),
+      { maxActiveWorkers: 1, maxQueuedJobs: 1 },
+    );
+    const store = harness.store as DelayedJobReadStore;
+    const active = submitCommand(randomUUID(), harness.directory, "active-run");
+    const queued = submitCommand(randomUUID(), harness.directory, "queued-run");
+    await harness.service.submit(active);
+    await harness.service.submit(queued);
+    store.delayNextJobRead = true;
+
+    const retry = harness.service.submit(queued);
+    await store.jobReadStarted.promise;
+    const cancelled = await harness.service.cancel({
+      type: "cancel",
+      policyDigest: POLICY_DIGEST,
+      commandId: randomUUID(),
+      runId: queued.runId,
+      actor: "operator:test",
+    });
+    store.jobReadGate.resolve();
+
+    await expect(retry).resolves.toMatchObject({
+      type: "rejected",
+      runId: queued.runId,
+      reason: "cancelled",
+    });
+    expect(cancelled).toMatchObject({ type: "cancelled", phase: "queued" });
+    expect(harness.admissionStore.state.jobs[queued.commandId]).toBeUndefined();
+    expect(harness.launcher.jobs.map((job) => job.runId)).toEqual([active.runId]);
+  });
+
   it("journals a lost cancellation acknowledgement as uncertain and does not redispatch it", async () => {
     const harness = await createHarness();
     await harness.service.submit(submitCommand(randomUUID(), harness.directory));
@@ -793,6 +827,21 @@ class DelayedActiveClaimStore extends LocalSupervisorStore {
     this.claimAttempted.resolve();
     await this.claimGate.promise;
     await super.reserveActiveRunClaim(claim);
+  }
+}
+
+class DelayedJobReadStore extends LocalSupervisorStore {
+  readonly jobReadStarted = deferred();
+  readonly jobReadGate = deferred();
+  delayNextJobRead = false;
+
+  override async readJob(jobId: string): Promise<JobRecord> {
+    if (this.delayNextJobRead) {
+      this.delayNextJobRead = false;
+      this.jobReadStarted.resolve();
+      await this.jobReadGate.promise;
+    }
+    return await super.readJob(jobId);
   }
 }
 
