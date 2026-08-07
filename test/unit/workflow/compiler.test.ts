@@ -476,6 +476,72 @@ nodes:
     });
   });
 
+  it("compiles an immutable opt-in fresh recovery policy", () => {
+    const source = workflowWithNodes(`
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Analyze the repository and report the relevant files.
+      model: { provider: anthropic, id: claude-sonnet-4-5 }
+      recovery: { mode: fresh, maxAttempts: 3 }
+  - id: verify
+    type: command
+    dependsOn: [analyze]
+    command: { executable: npm, args: [test] }
+`);
+
+    const workflow = compileWorkflowText(source, "fresh-recovery.workflow.yaml");
+    const node = workflow.nodes[0];
+
+    expect(node).toMatchObject({
+      type: "agent",
+      agent: { recovery: { mode: "fresh", maxAttempts: 3 } },
+    });
+    expect(Object.isFrozen(node?.type === "agent" ? node.agent.recovery : undefined)).toBe(true);
+  });
+
+  it("keeps fresh recovery absent unless the workflow explicitly opts in", () => {
+    const source = workflowWithNodes(`
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Analyze the repository.
+      model: { provider: anthropic, id: claude-sonnet-4-5 }
+  - id: verify
+    type: command
+    dependsOn: [analyze]
+    command: { executable: npm, args: [test] }
+`);
+
+    const workflow = compileWorkflowText(source);
+    const node = workflow.nodes[0];
+
+    expect(node?.type).toBe("agent");
+    expect(node?.type === "agent" ? node.agent.recovery : undefined).toBeUndefined();
+  });
+
+  it.each([
+    ["unsupported mode", "{ mode: resume, maxAttempts: 2 }", "nodes.0.agent.recovery.mode"],
+    ["one attempt", "{ mode: fresh, maxAttempts: 1 }", "nodes.0.agent.recovery.maxAttempts"],
+    ["too many attempts", "{ mode: fresh, maxAttempts: 17 }", "nodes.0.agent.recovery.maxAttempts"],
+    ["unknown field", "{ mode: fresh, maxAttempts: 2, delayMs: 1000 }", "nodes.0.agent.recovery"],
+  ])("rejects fresh recovery with %s", (_case, recovery, path) => {
+    const source = workflowWithNodes(`
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Analyze the repository.
+      model: { provider: anthropic, id: claude-sonnet-4-5 }
+      recovery: ${recovery}
+  - id: verify
+    type: command
+    dependsOn: [analyze]
+    command: { executable: npm, args: [test] }
+`);
+
+    expectCompilationFailure(source, "invalid_schema", path);
+  });
+
   it("rejects duplicate agent tool declarations", () => {
     const source = workflowWithNodes(`
   - id: analyze

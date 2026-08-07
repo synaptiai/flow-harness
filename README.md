@@ -25,7 +25,7 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Bounded detached supervisor, durable FIFO queue, authenticated workers, cancellation, and event replay | Implemented on Linux and macOS |
 | Deterministic criterion verification | Implemented |
 | Bounded Pi agent nodes with Flow-owned `read`, `ls`, and hash-anchored `edit` tools | Implemented |
-| Write-ahead durable evidence and typed recovery observation for each workspace edit | Implemented for hash-anchored edits; whole-node retry remains prohibited |
+| Proof-safe fresh recovery of interrupted agent attempts | Implemented as explicit opt-in for read-only attempts and edit attempts proven not applied |
 | Fail-closed sandboxed command process trees | Implemented on Linux and macOS |
 | Dynamic agent-tool approval, graph loops, and broader model tools | Planned |
 | VM-grade isolation of the host-side agent runtime | Planned |
@@ -210,10 +210,10 @@ template:
 node dist/cli/main.js validate examples/implement-and-verify.workflow.yaml
 ```
 
-The template declares `read`, `ls`, and `edit` for one agent node followed by a deterministic
-command verifier. Adapt its prompt, model, and verification command before running it; unlike the
-credential-free foundation example, execution requires a configured Pi provider and may change the
-selected workspace.
+The template declares `read`, `ls`, and `edit`, an opt-in bounded fresh-recovery policy, and a
+deterministic command verifier. Adapt its prompt, model, and verification command before running
+it; unlike the credential-free foundation example, execution requires a configured Pi provider and
+may change the selected workspace.
 
 ### Recover interrupted work
 
@@ -224,16 +224,39 @@ node dist/cli/main.js inspect interrupted-run
 node dist/cli/main.js resume examples/verify-foundation.workflow.yaml --run-id interrupted-run
 ```
 
-Flow continues only from a committed node boundary. It skips nodes whose success is durable and
-records `run_resumed` before starting new work. Writable agent attempts declare a versioned effect
-protocol; each edit is durably prepared before atomic rename and settled after the commit boundary.
+Flow normally continues only from a committed node boundary. It skips nodes whose success is
+durable and records `run_resumed` before starting new work. An agent node may explicitly opt into
+bounded fresh recovery:
+
+```yaml
+recovery: { mode: fresh, maxAttempts: 3 }
+```
+
+`maxAttempts` includes the initial attempt and must be between 2 and 16. Omission preserves the
+default refusal behavior. A fresh attempt uses the original node prompt and current workspace in a
+new in-memory Pi session; it does not restore the interrupted transcript, continue a tool call, or
+repeat a provider request inside the old session.
+
+Writable agent attempts declare a versioned effect protocol; each edit is durably prepared before
+atomic rename and settled after the commit boundary.
 `inspect` can therefore distinguish no observed edit, not applied, committed, and post-commit
 unknown effects. If an interruption leaves a prepared edit open, `resume` coordinates with the same
 target lock used by edits, compares the current regular-file hash and mode, and appends one typed
 recovery observation: applied, not applied, or unknown with a bounded reason. A durable
-`node_started` without a matching node outcome is still uncertain: Flow names the node and attempt,
-exposes its effect journal and recovery provenance, refuses with `uncertain_operation`, and executes
-nothing. Repeating recovery does not duplicate an observation.
+`node_started` without a matching node outcome remains uncertain unless the exact compiled node
+opted into fresh recovery and replay proves that attempt applied no effects. Read-only attempts must
+have no effect protocol or effects. Edit-capable attempts must have declared `flow.effects/v1`, and
+every prepared edit must have settled or reconciled as `not_applied`. Flow then appends
+`node_attempt_interrupted`, archives the old attempt and its effect provenance, appends
+`run_resumed`, and starts the exact next attempt number. Applied, committed, unknown, open, legacy
+writable, exhausted, or unconfigured attempts execute nothing. Repeating recovery does not
+duplicate an observation or disposition.
+
+Because interrupted model usage, cost, and active duration are not authoritative, automatic fresh
+recovery is also blocked whenever the run declares `maxModelTokens`, `maxCostUsd`, or
+`maxExecutionMs`. A declared `maxNodeStarts` is supported only when it has capacity for the next
+start. `recovery_retry_ineligible` identifies an opted-in attempt that lacks sufficient proof or
+budget; `uncertain_operation` remains the result when recovery was omitted.
 Terminal,
 mismatched, corrupt, missing, or actively owned runs are also refused without changing committed
 events. New runs also bind the normalized execution directory. Approval waits are safe committed
@@ -244,7 +267,8 @@ revalidated; recovery terminalizes a committed exhausted settlement without reru
 
 Detached execution changes who owns the live process, not the recovery rules. A worker remains the
 exclusive scheduler and run-ledger owner. If it disappears after `node_started` but before an
-outcome, Flow still reports `uncertain_operation` and never silently repeats the work.
+outcome, a later resume applies the same opt-in proof gate; it never repeats unconfigured or
+ambiguous work.
 
 ## Security boundary
 
@@ -263,14 +287,16 @@ return a full-file SHA-256 version. An edit must name that version and exact uni
 one existing UTF-8 file; stale versions fail rather than merge. Flow preflights the complete edit,
 coordinates cooperating same-host Flow processes, atomically replaces the target, protects the run
 store, nested `.flow` and `.git` state, environment files, and key files, and records separate
-authorization decisions, write-ahead effect events, and before/after terminal receipts. A prepare
+authorization decisions, write-ahead durable evidence, and before/after terminal receipts. A prepare
 event is synced before rename. While journal publication remains available, settlement is synced as
 committed only after directory sync, as not applied before rename, or as unknown after a post-rename
 failure. A rejected settlement append poisons the attempt journal and leaves the prepared effect
 unresolved rather than inventing an outcome. Replay requires every prepared edit, including a
 not-applied edit, to retain its distinct allowed write decision. Recovery observations remain
 separate from executor settlements: matching the after-state later does not prove that the original
-directory sync or model turn completed and never authorizes automatic node retry. Reconciliation
+directory sync or model turn completed and blocks fresh recovery. Only an exact before-state
+observation (or executor-settled not-applied effect), together with the node's persisted opt-in
+policy and all other eligibility checks, can support a separate interruption disposition. Reconciliation
 hashes only the bounded size observed before opening the no-follow handle, in fixed chunks totaling
 at most 8 MiB, while holding the shared target lock. If the target's parent has also disappeared and
 the sibling lock cannot exist, only a still-missing classification may be published; any observable

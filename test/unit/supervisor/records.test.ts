@@ -120,6 +120,16 @@ describe("supervisor durable records", () => {
       runStatus: "running",
       recoveryErrorCode: "uncertain_operation",
     });
+    expect(
+      parseWorkerDescriptor({
+        ...input,
+        recoveryErrorCode: "recovery_retry_ineligible",
+      }),
+    ).toMatchObject({
+      status: "terminal",
+      runStatus: "running",
+      recoveryErrorCode: "recovery_retry_ineligible",
+    });
     expect(() => parseWorkerDescriptor({ ...input, recoveryErrorCode: undefined })).toThrow(
       /recovery error code/i,
     );

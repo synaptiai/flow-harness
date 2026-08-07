@@ -263,6 +263,121 @@ describe("detached run worker", () => {
     });
     await expect(store.readActiveRunClaim(runId)).resolves.toBeNull();
   });
+
+  it("completes an opted-in proof-safe retry as fresh attempt two", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-worker-retry-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    const store = new LocalSupervisorStore(runsDirectory);
+    await store.initialize();
+    const source = proofSafeRetryWorkflowSource();
+    const compiled = compileWorkflowText(source);
+    const runId = "worker-proof-safe-retry";
+    const runStore = new JsonlRunStore(runsDirectory);
+    await runStore.append({
+      ...runEventBase(compiled.id, runId, 1),
+      type: "run_started",
+      nodeIds: compiled.nodes.map((node) => node.id),
+      workflowApiVersion: compiled.apiVersion,
+      workflowDigest: createHash("sha256").update(JSON.stringify(compiled)).digest("hex"),
+      executionCwd: directory,
+      recoveryRequirements: [
+        {
+          nodeId: "implement",
+          mode: "fresh",
+          maxAttempts: 2,
+          effectProtocol: "none",
+        },
+      ],
+    });
+    await runStore.append({
+      ...runEventBase(compiled.id, runId, 2),
+      type: "node_started",
+      nodeId: "implement",
+      attempt: 1,
+    });
+    await runStore.release(runId);
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId,
+      mode: "resume",
+      sourceName: join(directory, "workflow.yaml"),
+      workflowSource: source,
+      cwd: directory,
+      token: "d".repeat(64),
+      createdAt: "2026-08-07T12:00:00.000Z",
+    });
+    await store.reserveSubmission(
+      job,
+      createActiveRunClaim({
+        runId: job.runId,
+        jobId: job.jobId,
+        workerId: job.workerId,
+        claimedAt: job.createdAt,
+      }),
+    );
+    const calls: Array<{ nodeId: string; attempt: number }> = [];
+    const worker = executeWorkerJob(job.jobId, {
+      store,
+      executor: {
+        async execute(node, context) {
+          calls.push({ nodeId: node.id, attempt: context.attempt });
+          return node.type === "agent"
+            ? {
+                status: "succeeded",
+                evidence: {
+                  kind: "agent",
+                  provider: "test",
+                  model: "deterministic",
+                  text: "analysis",
+                  textHash: sha256("analysis"),
+                  textTruncated: false,
+                  durationMs: 1,
+                  policyDecisions: [],
+                  effectReceipts: [],
+                },
+              }
+            : {
+                status: "succeeded",
+                evidence: successfulCommandEvidence(node.id),
+              };
+        },
+      },
+      effectReconciler: createProductionNodeEffectReconciler(),
+      createRunStore: (root) => new JsonlRunStore(root),
+      pid: 4323,
+    });
+    const descriptor = await waitForDescriptor(store, job.workerId);
+    await expect(requestWorker(descriptor, { type: "identify" })).resolves.toMatchObject({
+      ok: true,
+      result: { status: "running", runId },
+    });
+
+    await expect(worker).resolves.toBe(0);
+    expect(calls).toEqual([
+      { nodeId: "implement", attempt: 2 },
+      { nodeId: "verify", attempt: 1 },
+    ]);
+    const events = await new JsonlRunStore(runsDirectory).read(runId);
+    expect(events.map((event) => event.type)).toEqual([
+      "run_started",
+      "node_started",
+      "node_attempt_interrupted",
+      "run_resumed",
+      "node_started",
+      "node_succeeded",
+      "node_started",
+      "node_succeeded",
+      "run_succeeded",
+    ]);
+    await expect(store.readWorkerDescriptor(job.workerId)).resolves.toMatchObject({
+      status: "terminal",
+      runStatus: "succeeded",
+      exitCode: 0,
+    });
+    await expect(store.readActiveRunClaim(runId)).resolves.toBeNull();
+  });
 });
 
 async function waitForDescriptor(store: LocalSupervisorStore, workerId: string) {
@@ -312,6 +427,44 @@ nodes:
     dependsOn: [implement]
     command: { executable: node, args: [--version] }
 `;
+}
+
+function proofSafeRetryWorkflowSource(): string {
+  return `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: worker-proof-safe-retry }
+nodes:
+  - id: implement
+    type: agent
+    agent:
+      prompt: Analyze the repository.
+      model: { provider: test, id: deterministic }
+      tools: [read]
+      recovery: { mode: fresh, maxAttempts: 2 }
+  - id: verify
+    type: command
+    dependsOn: [implement]
+    command: { executable: node, args: [--version] }
+`;
+}
+
+function successfulCommandEvidence(nodeId: string) {
+  return {
+    kind: "command" as const,
+    executable: "node",
+    args: [nodeId],
+    exitCode: 0,
+    signal: null,
+    stdout: "ok",
+    stderr: "",
+    stdoutHash: sha256("ok"),
+    stderrHash: sha256(""),
+    stdoutTruncated: false,
+    stderrTruncated: false,
+    timedOut: false,
+    durationMs: 1,
+  };
 }
 
 function runEventBase(workflowId: string, runId: string, sequence: number) {

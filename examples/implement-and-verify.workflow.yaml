@@ -27,6 +27,9 @@ nodes:
         - read
         - ls
         - edit
+      recovery:
+        mode: fresh
+        maxAttempts: 3
       timeoutMs: 300000
   - id: verify
     type: command

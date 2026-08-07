@@ -3,10 +3,12 @@ import { resolve } from "node:path";
 
 import {
   DURABLE_EFFECT_PROTOCOL,
+  RunReplayError,
   appendRunEvent,
   nodeEffectId,
   reduceRunEvents,
   type AgentEffectReceipt,
+  type AgentRecoveryRequirement,
   type FilesystemEditEffectDescriptor,
   type NodeEffectSettlementInput,
   type NodeEffectReconciledEvent,
@@ -59,14 +61,13 @@ export async function runWorkflow(
   workflow: CompiledWorkflow,
   options: RunWorkflowOptions,
 ): Promise<RunState> {
-  if (isAborted(options.signal)) {
-    throw new RunWorkflowAbortedError(abortReason(options.signal));
-  }
+  assertNotAborted(options.signal);
   const runId = options.runId ?? randomUUID();
   const now = options.now ?? (() => new Date());
   const executionCwd = resolve(options.cwd);
   return await releaseAfter(options.store, runId, async () => {
     const approvalRequirements = commandApprovalRequirements(workflow);
+    const recoveryRequirements = agentRecoveryRequirements(workflow);
     const started: RunStartedEvent = {
       ...eventBase(workflow, runId, 1, now),
       type: "run_started",
@@ -76,6 +77,7 @@ export async function runWorkflow(
       executionCwd,
       ...(workflow.budget === undefined ? {} : { budget: workflow.budget }),
       ...(approvalRequirements.length === 0 ? {} : { approvalRequirements }),
+      ...(recoveryRequirements.length === 0 ? {} : { recoveryRequirements }),
       ...(workflow.goal === undefined ? {} : { goal: workflow.goal }),
     };
     await options.store.append(started);
@@ -93,17 +95,18 @@ export async function resumeWorkflow(
   workflow: CompiledWorkflow,
   options: ResumeWorkflowOptions,
 ): Promise<RunState> {
-  if (isAborted(options.signal)) {
-    throw new RunWorkflowAbortedError(abortReason(options.signal));
-  }
+  assertNotAborted(options.signal);
 
   const events = await options.store.claim(options.runId);
   return await releaseAfter(options.store, options.runId, async () => {
+    assertNotAborted(options.signal);
     let state = reduceRunEvents(events);
     const executionCwd = resolve(options.cwd);
     const now = options.now ?? (() => new Date());
     validateRecoveryCompatibility(workflow, options.runId, executionCwd, state, events);
     state = await reconcileOpenEffects(workflow, options, state, now);
+    assertNotAborted(options.signal);
+    state = await disposeProofSafeInterruptedAttempt(workflow, options, state, now);
     rejectOpenAttempt(options.runId, state);
     const resumed: RunResumedEvent = {
       ...eventBase(workflow, options.runId, state.lastSequence + 1, now),
@@ -209,7 +212,7 @@ async function continueWorkflow(
     }
 
     const executionNode = boundNodeTimeout(node, state);
-    const attempt = 1;
+    const attempt = (state.nodes[node.id]?.attempt ?? 0) + 1;
     let approval: { readonly requestId: string; readonly operationDigest: string } | undefined;
     if (node.type === "command" && node.approval !== undefined) {
       if (executionNode.type !== "command") {
@@ -500,6 +503,7 @@ export const RUN_RECOVERY_ERROR_CODES = [
   "execution_context_mismatch",
   "reconciliation_incomplete",
   "reconciliation_unavailable",
+  "recovery_retry_ineligible",
   "terminal_run",
   "uncertain_operation",
   "workflow_mismatch",
@@ -586,6 +590,17 @@ function validateRecoveryCompatibility(
     throw new RunRecoveryError(
       "workflow_mismatch",
       `run "${runId}" approval requirements do not match the compiled workflow`,
+    );
+  }
+
+  const expectedRecoveryRequirements = agentRecoveryRequirements(workflow);
+  const recoveredRecoveryRequirements = Object.entries(state.recoveryRequirements).map(
+    ([nodeId, requirement]) => ({ nodeId, ...requirement }),
+  );
+  if (!sameRecoveryRequirements(recoveredRecoveryRequirements, expectedRecoveryRequirements)) {
+    throw new RunRecoveryError(
+      "workflow_mismatch",
+      `run "${runId}" recovery requirements do not match the compiled workflow`,
     );
   }
 
@@ -677,6 +692,46 @@ async function reconcileOpenEffects(
   return state;
 }
 
+async function disposeProofSafeInterruptedAttempt(
+  workflow: CompiledWorkflow,
+  options: ResumeWorkflowOptions,
+  state: RunState,
+  now: () => Date,
+): Promise<RunState> {
+  const openAttempt = Object.entries(state.nodes).find(([, node]) => node.status === "running");
+  if (openAttempt === undefined) {
+    return state;
+  }
+  const [nodeId, node] = openAttempt;
+  if (state.recoveryRequirements[nodeId] === undefined) {
+    return state;
+  }
+
+  const event: RunEvent = {
+    ...eventBase(workflow, options.runId, state.lastSequence + 1, now),
+    type: "node_attempt_interrupted",
+    nodeId,
+    attempt: node.attempt,
+    reason: "process_interrupted",
+    disposition: "fresh_retry",
+    resourceAccounting: "incomplete",
+  };
+  let nextState: RunState;
+  try {
+    nextState = appendRunEvent(state, event);
+  } catch (error) {
+    if (!(error instanceof RunReplayError)) {
+      throw error;
+    }
+    throw new RunRecoveryError(
+      "recovery_retry_ineligible",
+      `run "${options.runId}" cannot fresh-retry node "${nodeId}" attempt ${node.attempt}: ${error.message}`,
+    );
+  }
+  await options.store.append(event);
+  return nextState;
+}
+
 function rejectOpenAttempt(runId: string, state: RunState): void {
   const openAttempt = Object.entries(state.nodes).find(([, node]) => node.status === "running");
   if (openAttempt === undefined) {
@@ -697,14 +752,28 @@ function validateRecoveredHistory(
   const nodeById = new Map(workflow.nodes.map((node) => [node.id, node]));
   const completed = new Set<string>();
   let replayState: RunState | undefined;
+  let interruptionRequiresResume = false;
 
   for (const event of events) {
+    if (interruptionRequiresResume && event.type !== "run_resumed") {
+      throw new RunRecoveryError(
+        "workflow_mismatch",
+        `run "${runId}" contains recovery history that skipped the required resume marker`,
+      );
+    }
+    if (event.type === "run_resumed") {
+      interruptionRequiresResume = false;
+    }
     if (event.type === "command_approval_requested") {
       const node = nodeById.get(event.nodeId);
+      const expectedReadyNode = selectReadyNode(workflow.nodes, completed);
+      const expectedAttempt = replayState?.nodes[event.nodeId]?.attempt;
       if (
         node?.type !== "command" ||
+        expectedReadyNode?.id !== event.nodeId ||
         node.approval === undefined ||
-        event.attempt !== 1 ||
+        expectedAttempt === undefined ||
+        event.attempt !== expectedAttempt + 1 ||
         !node.dependsOn.every((dependency) => completed.has(dependency))
       ) {
         throw new RunRecoveryError(
@@ -741,9 +810,13 @@ function validateRecoveredHistory(
       }
     } else if (event.type === "node_started") {
       const node = nodeById.get(event.nodeId);
+      const expectedReadyNode = selectReadyNode(workflow.nodes, completed);
+      const expectedAttempt = replayState?.nodes[event.nodeId]?.attempt;
       if (
         node === undefined ||
-        event.attempt !== 1 ||
+        expectedReadyNode?.id !== event.nodeId ||
+        expectedAttempt === undefined ||
+        event.attempt !== expectedAttempt + 1 ||
         (event.effectProtocol !== undefined && !supportsDurableEffects(node)) ||
         !node.dependsOn.every((dependency) => completed.has(dependency))
       ) {
@@ -752,6 +825,19 @@ function validateRecoveredHistory(
           `run "${runId}" contains node history that violates the compiled workflow graph`,
         );
       }
+    } else if (event.type === "node_attempt_interrupted") {
+      const node = nodeById.get(event.nodeId);
+      if (
+        node?.type !== "agent" ||
+        node.agent.recovery === undefined ||
+        !node.dependsOn.every((dependency) => completed.has(dependency))
+      ) {
+        throw new RunRecoveryError(
+          "workflow_mismatch",
+          `run "${runId}" contains recovery history that violates the compiled workflow graph`,
+        );
+      }
+      interruptionRequiresResume = true;
     } else if (event.type === "node_succeeded") {
       completed.add(event.nodeId);
     }
@@ -785,6 +871,25 @@ function commandApprovalRequirements(workflow: CompiledWorkflow) {
   );
 }
 
+function agentRecoveryRequirements(
+  workflow: CompiledWorkflow,
+): readonly AgentRecoveryRequirement[] {
+  return Object.freeze(
+    workflow.nodes.flatMap((node) => {
+      if (node.type !== "agent" || node.agent.recovery === undefined) {
+        return [];
+      }
+      const requirement: AgentRecoveryRequirement = Object.freeze({
+        nodeId: node.id,
+        mode: node.agent.recovery.mode,
+        maxAttempts: node.agent.recovery.maxAttempts,
+        effectProtocol: supportsDurableEffects(node) ? DURABLE_EFFECT_PROTOCOL : "none",
+      });
+      return [requirement];
+    }),
+  );
+}
+
 function sameApprovalRequirements(
   left: readonly { readonly nodeId: string; readonly grantTtlMs: number }[],
   right: readonly { readonly nodeId: string; readonly grantTtlMs: number }[],
@@ -795,6 +900,22 @@ function sameApprovalRequirements(
       (requirement, index) =>
         requirement.nodeId === right[index]?.nodeId &&
         requirement.grantTtlMs === right[index]?.grantTtlMs,
+    )
+  );
+}
+
+function sameRecoveryRequirements(
+  left: readonly AgentRecoveryRequirement[],
+  right: readonly AgentRecoveryRequirement[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every(
+      (requirement, index) =>
+        requirement.nodeId === right[index]?.nodeId &&
+        requirement.mode === right[index]?.mode &&
+        requirement.maxAttempts === right[index]?.maxAttempts &&
+        requirement.effectProtocol === right[index]?.effectProtocol,
     )
   );
 }
@@ -959,6 +1080,12 @@ function boundedFailureMessage(message: string): string {
 
 function isAborted(signal: AbortSignal | undefined): boolean {
   return signal?.aborted === true;
+}
+
+function assertNotAborted(signal: AbortSignal | undefined): void {
+  if (isAborted(signal)) {
+    throw new RunWorkflowAbortedError(abortReason(signal));
+  }
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;

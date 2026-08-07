@@ -198,6 +198,9 @@ New command evidence records `anthropic-sandbox-runtime`, its exact installed ve
       - read
       - ls
       - edit
+    recovery:
+      mode: fresh
+      maxAttempts: 3
     timeoutMs: 300000
 - id: verify
   type: command
@@ -215,6 +218,26 @@ The embedded Pi adapter permits only Flow-owned `read`, `ls`, and `edit` tools. 
 After policy authorization, Flow reserves bounded evidence capacity, acquires a target-local exclusive lock, re-reads and preflights the complete request, writes a same-directory exclusive temporary file, preserves permission bits, syncs it, and rechecks the live target bytes and mode. While still holding the lock and before rename, it syncs a `node_effect_prepared` event containing an event-derived identity, attempt-local sequence, canonical target, operation digest, before/after hashes, and mode. Only then may it atomically rename. After directory sync it settles committed; a post-prepare failure before rename settles not applied; a failure after rename settles unknown when publication remains available. The lock coordinates cooperating same-host Flow processes: a live owner produces `target_busy`, an exited same-host owner is recoverable, and corrupt or foreign-host ownership fails closed. The run store, `.flow` and `.git` segments at any path depth, environment files, private-key names and suffixes, outside paths, and canonical symlink escapes are protected. Pre-prepare failure leaves the target unchanged without an effect event. A later provider failure retains committed receipts and cannot be classified as side-effect-free.
 
 The lock is a cooperative local coordination mechanism, not a security boundary or distributed lease. This application-level check is not atomic against a concurrently hostile process changing path components after canonical authorization; the current release retains its trusted-workspace requirement until agent/tool process isolation lands. Pi's built-in tools are disabled, so Flow does not inherit Pi's fuzzy edit rules, direct-write semantics, or optional executable-download behavior. Pi extensions, skills, prompt templates, themes, context files, and project discovery are disabled for the node session. `timeoutMs` is Flow-owned, defaults to five minutes, and is limited to 24 hours. Agent output is capped at 64 KiB; the ledger retains the bounded text, the complete SHA-256 stream hash, truncation status, ordered policy decisions, and ordered effect receipts, and classifies overflow as `pi_agent_output_limit`. Cancellation aborts the active Pi session; only Pi's terminal `stop` reason is accepted as node success. After timeout or operator cancellation, Flow permits a bounded adapter cleanup grace and waits for both the provider runner and active effect reservations. A runner or effect that still does not settle produces `pi_agent_timeout` or `pi_agent_aborted` with uncertain side-effect status rather than blocking the scheduler indefinitely. Closed audits deny late authorization or receipt publication.
+
+`recovery` is optional and is accepted only on agent nodes. The only current mode is `fresh`.
+`maxAttempts` includes the initial attempt, is required when recovery is present, and must be an
+integer from 2 through 16. No default object is inserted: omission means an interrupted open attempt
+is never retried automatically.
+
+Fresh recovery is evaluated only when `resume` finds a durable `node_started` without a node
+outcome. Flow starts a new in-memory Pi session from the original prompt and current workspace; it
+does not reopen the interrupted transcript, continue a dangling tool call, or reuse provider stream
+state. Read-only attempts qualify only with no effect protocol and no effects. An edit-capable
+attempt qualifies only when it declared `flow.effects/v1` and every effect is proven not applied by
+executor settlement or recovery reconciliation. Any committed, applied, unknown, open, or legacy
+writable state blocks. The retry also requires an attempt below `maxAttempts` and capacity under
+`maxNodeStarts`. Declared model-token, reported-cost, or active-execution limits block automatic
+fresh recovery because interrupted consumption is incomplete. See [Recovery and interruption
+safety](recovery.md) for the event ordering and full refusal table.
+
+Flow disables both Pi assistant-turn retries and provider retries in the embedded session. This
+keeps retry ownership at the Flow attempt layer. Normal model/tool turns inside one live session
+remain possible and stay bounded by the node timeout.
 
 Command nodes are supported on Linux and macOS. Flow rejects them before spawning on Windows until the command adapter can contain and terminate the full descendant process tree.
 
@@ -235,13 +258,49 @@ Each run is stored at:
 .flow/runs/<run-id>/events.jsonl
 ```
 
-Events have a version, contiguous sequence number, timestamp, run identity, workflow identity, workflow API version, and SHA-256 digest of the compiled workflow. New `run_started` events also capture the normalized execution directory, every command approval requirement, and the exact compiled budget when declared. When declared, the compiled goal is captured in `run_started`, so replay and inspection never need the original workflow file. A writable `node_started` declares `flow.effects/v1`; its attempt may append at most 32 prepared effects and at most one mutually exclusive executor settlement or recovery reconciliation per effect. Agent evidence retains at most 64 policy decisions. Each decision has a contiguous attempt-local sequence, exact run/workflow/node/attempt attribution, derived authority, semantic action, canonical target of at most 1024 UTF-8 bytes, allow/deny reason, and SHA-256 request digest. Write decisions also retain the exact operation digest. Agent evidence retains at most 32 edit effect receipts with the same attribution, canonical target, operation digest, before/after SHA-256 values, and committed or uncertain outcome. Terminal events are illegal while an effect lacks an executor settlement; a recovery observation does not satisfy that boundary. Every prepared effect, including a not-applied effect, must match a distinct allowed write decision. Receipts must exactly project committed and unknown executor settlements; not-applied settlements and recovery observations produce no receipt. Recovery reconciliation records applied, not-applied, or unknown target state with a bounded reason and includes the observed digest/mode only for a stable regular-file observation. Exact and divergent observations are cross-checked against the prepared descriptor. The journal is a lower bound on terminal failure classification: an unknown settlement requires `uncertain`, a committed settlement forbids `none`, and provider or cleanup uncertainty may remain `uncertain` when the journal alone would permit `none` or `committed`. Replay verifies effect identity and order, settlement/reconciliation legality, decision and receipt order, attribution, classification, hashes, request digests, prepared-effect authorization, resource arithmetic, and exact exhaustion values. Older ledgers whose node starts do not declare the effect protocol retain their historical terminal-receipt contract. Approval replay separately verifies the declared requirement, budget-bounded exact operation digest, sequence-derived request identity, grant lifetime, actor, expiry, and single consumed start. A single serialized JSONL event is capped at 2 MiB. The ceiling includes worst-case JSON escaping at the documented decision, effect, receipt, target, output, and error bounds.
+Events have a version, contiguous sequence number, timestamp, run identity, workflow identity,
+workflow API version, and SHA-256 digest of the compiled workflow. New `run_started` events also
+capture the normalized execution directory, command approval requirements, agent recovery
+requirements, and exact compiled budget when declared. A recovery requirement records the node,
+fresh mode, maximum attempts, and whether replay requires no effect protocol or
+`flow.effects/v1`. When declared, the compiled goal is also captured, so replay and inspection do
+not need the original workflow file.
+
+A writable `node_started` declares `flow.effects/v1`; its attempt may append at most 32 prepared
+effects and at most one mutually exclusive executor settlement or recovery reconciliation per
+effect. `node_attempt_interrupted` can follow a running opted-in attempt only after replay validates
+the effect, attempt, and budget proof. It records fixed process-interruption, fresh-retry, and
+incomplete-resource-accounting dispositions. The reducer archives the attempt number, start and
+interruption timestamps, effect protocol, and immutable effects before returning the node to
+pending. The next `node_started` must use the prior attempt plus one. At most `A` starts and `A-1`
+interruption dispositions exist for `maxAttempts: A`.
+
+Agent evidence retains at most 64 policy decisions. Each decision has a contiguous attempt-local
+sequence, exact run/workflow/node/attempt attribution, derived authority, semantic action,
+canonical target of at most 1024 UTF-8 bytes, allow/deny reason, and SHA-256 request digest. Write
+decisions also retain the exact operation digest. Agent evidence retains at most 32 edit effect
+receipts with the same attribution, canonical target, operation digest, before/after SHA-256 values,
+and committed or uncertain outcome. Terminal events are illegal while an effect lacks an executor
+settlement; a recovery observation alone does not terminalize an attempt. Every prepared effect,
+including a not-applied effect, must match a distinct allowed write decision. Receipts exactly
+project committed and unknown executor settlements; not-applied settlements and recovery
+observations produce no receipt. Recovery reconciliation records applied, not-applied, or unknown
+target state with a bounded reason and includes the observed digest/mode only for a stable regular
+file. Exact and divergent observations are cross-checked against the prepared descriptor.
+
+Replay verifies effect identity and order, settlement/reconciliation legality, retry eligibility,
+monotonic attempt numbering, decision and receipt order, attribution, classification, hashes,
+request digests, prepared-effect authorization, resource arithmetic, and exact exhaustion values.
+Approval replay separately verifies the declared requirement, budget-bounded exact operation
+digest, sequence-derived request identity, grant lifetime, actor, expiry, and single consumed start.
+A single serialized JSONL event is capped at 2 MiB. The ceiling includes worst-case JSON escaping
+at the documented decision, effect, receipt, target, output, and error bounds.
 
 Fresh and recovered execution publish complete ownership metadata atomically before appending. The metadata contains a process ID and random token. A live process blocks another claimant; an exited owner can be moved aside atomically; corrupt or incomplete ownership metadata fails closed. This provides exclusive same-host execution, not a distributed lease. Creating `events.jsonl` still atomically grants a fresh run identifier. The ledger's run ID must match its directory name.
 
 Node-start events are synced before an executor is invoked. Node-result events are synced before the scheduler advances. Owner appends validate one transition against cached reduced state instead of rereading history. Each append syncs the file, and every newly created run-directory ancestor is synced where the platform supports directory handles. A valid or invalid unterminated trailing JSONL fragment is treated as uncommitted and truncated before a later append; corruption in an earlier committed record fails closed.
 
-The reducer accepts only legal state transitions and reconstructs `running`, `waiting_for_approval`, `succeeded`, `failed`, `cancelled`, or `resource_exhausted` run state together with immutable resources, budget, goal, criterion, and current command-approval state. Cancellation before a run claim creates no ledger. Cancellation during a node becomes a failed node attempt while retaining any settled evidence; cancellation between attempts appends `run_cancelled` without starting more work unless committed evidence already exhausted a settlement limit or a start limit already prevents pending work. In either exception, durable `resource_exhausted` state takes precedence. A safe-boundary recovery appends `run_resumed`, preserves committed node outcomes and approval state, skips successful nodes, and either continues the next ready pending node, returns to an operator wait, or finalizes a committed failure or exhausted settlement. Recovery of an open typed edit instead appends its observation under target coordination, refuses the unfinished node, and does not append `run_resumed`. Model transcripts and implementation rationale are never consulted during replay.
+The reducer accepts only legal state transitions and reconstructs `running`, `waiting_for_approval`, `succeeded`, `failed`, `cancelled`, or `resource_exhausted` run state together with immutable resources, budget, goal, criterion, and current command-approval state. Cancellation before a run claim creates no ledger. Cancellation during a node becomes a failed node attempt while retaining any settled evidence; cancellation between attempts appends `run_cancelled` without starting more work unless committed evidence already exhausted a settlement limit or a start limit already prevents pending work. In either exception, durable `resource_exhausted` state takes precedence. A safe-boundary recovery appends `run_resumed`, preserves committed node outcomes and approval state, skips successful nodes, and either continues the next ready pending node, returns to an operator wait, or finalizes a committed failure or exhausted settlement. Recovery of an open typed edit first appends its observation under target coordination. It then refuses the unfinished node unless the persisted opt-in and complete replay prove every effect not applied and all attempt and resource limits permit a separate `node_attempt_interrupted` disposition. Model transcripts and implementation rationale are never consulted during replay.
 
 ## Foreground and detached execution
 
@@ -262,14 +321,14 @@ the id to the complete request and rejects reuse with changed input.
 
 ## Current limitations
 
-- No loop, retry, conditional, parallel, fork/join, general approval-node, or child-run semantics. Approval is currently available only as a deterministic command pre-start gate.
-- No automatic retry, terminalization, or session continuation of an interrupted node attempt; typed edit reconciliation narrows filesystem state but a durable start without a node outcome still blocks continuation.
+- No loop, conditional, parallel, fork/join, general approval-node, child-run, failure-retry, or fallback semantics. Approval is currently available only as a deterministic command pre-start gate; recovery is limited to the proof-safe fresh mode above.
+- No automatic terminalization or session continuation of an interrupted node attempt. Unconfigured or ineligible durable starts still block continuation.
 - Detached workers can be adopted by a replacement local supervisor, but they cannot move between
   hosts and do not survive host reboot.
 - The SRT profile is fixed; workflows cannot yet request network, credential injection, or a different sandbox backend.
 - The native sandbox contains command descendants but does not contain the host-side Pi runtime; hostile workloads require a stronger container, microVM, or managed boundary.
 - The only agent mutation is exact single-file edit of an existing UTF-8 file; no create, delete, rename, shell, network, fuzzy patch, or multi-file transaction is exposed.
-- No in-flight Pi tool-call approval or opaque session continuation; restarting a model node is not a safe substitute.
+- No in-flight Pi tool-call approval or opaque session continuation. A fresh retry is a new attempt and is allowed only by the persisted proof gate; it is not a substitute for restoring a live session.
 - No probabilistic or LLM evaluator; criteria currently bind only to deterministic terminal command nodes.
 - No prepaid hard model-cost cap, provider invoice reconciliation, CPU/memory/disk quota, graph-node concurrency budget, or artifact-size budget. Detached worker count and queue depth are independently bounded by supervisor policy.
 - No schema migration path is promised while the format remains `v1alpha1`.

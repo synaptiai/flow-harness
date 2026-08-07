@@ -575,6 +575,37 @@ describe("PiAgentExecutor", () => {
 });
 
 describe("EmbeddedPiAgentRunner", () => {
+  it("keeps retry ownership in Flow by disabling Pi turn and provider retries", async () => {
+    let sessionOptions: Parameters<typeof createAgentSession>[0];
+    const fakeSession = {
+      state: { messages: [{ role: "assistant", stopReason: "stop" }] },
+      subscribe: () => () => undefined,
+      prompt: async () => undefined,
+      abort: async () => undefined,
+      getSessionStats: () => sessionStats(),
+      dispose: () => undefined,
+    };
+    const createSession = (async (options: Parameters<typeof createAgentSession>[0]) => {
+      sessionOptions = options;
+      return { session: fakeSession };
+    }) as unknown as typeof createAgentSession;
+    const runner = new EmbeddedPiAgentRunner(
+      async () => ({ getModel: () => ({}) }) as never,
+      createSession,
+    );
+
+    await runner.run(agentRequest());
+
+    expect(sessionOptions?.settingsManager?.getRetrySettings()).toEqual({
+      enabled: false,
+      maxRetries: 0,
+      baseDelayMs: 2000,
+    });
+    expect(sessionOptions?.settingsManager?.getProviderRetrySettings()).toMatchObject({
+      maxRetries: 0,
+    });
+  });
+
   it("reads the SDK terminal message and disables ambient Pi resources", async () => {
     let sessionOptions: Parameters<typeof createAgentSession>[0];
     let disposed = false;

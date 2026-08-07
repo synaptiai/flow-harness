@@ -328,6 +328,9 @@ function freezeNode(source: WorkflowSource["nodes"][number]): CompiledNode {
       prompt: source.agent.prompt,
       model: Object.freeze({ ...source.agent.model }),
       tools: Object.freeze([...source.agent.tools]),
+      ...(source.agent.recovery === undefined
+        ? {}
+        : { recovery: Object.freeze({ ...source.agent.recovery }) }),
       timeoutMs: source.agent.timeoutMs,
     }),
   };

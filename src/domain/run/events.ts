@@ -125,6 +125,7 @@ export interface RunStartedEvent extends RunEventBase {
   readonly goal?: CompiledGoal;
   readonly executionCwd?: string;
   readonly approvalRequirements?: readonly CommandApprovalRequirement[];
+  readonly recoveryRequirements?: readonly AgentRecoveryRequirement[];
 }
 
 export interface RunResumedEvent extends RunEventBase {
@@ -140,6 +141,15 @@ export interface NodeStartedEvent extends RunEventBase {
     readonly requestId: string;
     readonly operationDigest: string;
   };
+}
+
+export interface NodeAttemptInterruptedEvent extends RunEventBase {
+  readonly type: "node_attempt_interrupted";
+  readonly nodeId: string;
+  readonly attempt: number;
+  readonly reason: "process_interrupted";
+  readonly disposition: "fresh_retry";
+  readonly resourceAccounting: "incomplete";
 }
 
 export interface FilesystemEditEffectDescriptor {
@@ -230,6 +240,13 @@ export interface CommandApprovalRequirement {
   readonly grantTtlMs: number;
 }
 
+export interface AgentRecoveryRequirement {
+  readonly nodeId: string;
+  readonly mode: "fresh";
+  readonly maxAttempts: number;
+  readonly effectProtocol: "none" | typeof DURABLE_EFFECT_PROTOCOL;
+}
+
 export interface CommandApprovalRequestedEvent extends RunEventBase {
   readonly type: "command_approval_requested";
   readonly nodeId: string;
@@ -314,6 +331,7 @@ export type RunEvent =
   | CommandApprovalDeniedEvent
   | CommandApprovalExpiredEvent
   | NodeStartedEvent
+  | NodeAttemptInterruptedEvent
   | NodeEffectPreparedEvent
   | NodeEffectSettledEvent
   | NodeEffectReconciledEvent
@@ -361,6 +379,18 @@ export interface NodeRunState {
   readonly approval: CommandApprovalRunState | null;
   readonly effectProtocol: typeof DURABLE_EFFECT_PROTOCOL | null;
   readonly effects: readonly NodeEffectRunState[];
+  readonly interruptedAttempts: readonly InterruptedNodeAttemptState[];
+}
+
+export interface InterruptedNodeAttemptState {
+  readonly attempt: number;
+  readonly startedAt: string;
+  readonly interruptedAt: string;
+  readonly reason: "process_interrupted";
+  readonly disposition: "fresh_retry";
+  readonly resourceAccounting: "incomplete";
+  readonly effectProtocol: typeof DURABLE_EFFECT_PROTOCOL | null;
+  readonly effects: readonly NodeEffectRunState[];
 }
 
 export interface NodeEffectRunState {
@@ -381,6 +411,7 @@ export interface RunState {
   readonly approvalRequirements: Readonly<
     Record<string, Omit<CommandApprovalRequirement, "nodeId">>
   >;
+  readonly recoveryRequirements: Readonly<Record<string, Omit<AgentRecoveryRequirement, "nodeId">>>;
   readonly resources: RunResourceConsumption;
   readonly budget: RunBudgetState | null;
   readonly status: RunStatus;
@@ -620,6 +651,19 @@ export const runEventSchema = z.discriminatedUnion("type", [
         .array(z.object({ nodeId: identifierSchema, grantTtlMs: grantTtlSchema }).strict())
         .max(64)
         .optional(),
+      recoveryRequirements: z
+        .array(
+          z
+            .object({
+              nodeId: identifierSchema,
+              mode: z.literal("fresh"),
+              maxAttempts: z.number().int().min(2).max(16),
+              effectProtocol: z.enum(["none", DURABLE_EFFECT_PROTOCOL]),
+            })
+            .strict(),
+        )
+        .max(64)
+        .optional(),
     })
     .strict(),
   z
@@ -682,6 +726,17 @@ export const runEventSchema = z.discriminatedUnion("type", [
       attempt: z.number().int().positive(),
       effectProtocol: z.literal(DURABLE_EFFECT_PROTOCOL).optional(),
       approval: approvalReferenceSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("node_attempt_interrupted"),
+      nodeId: identifierSchema,
+      attempt: z.number().int().positive(),
+      reason: z.literal("process_interrupted"),
+      disposition: z.literal("fresh_retry"),
+      resourceAccounting: z.literal("incomplete"),
     })
     .strict(),
   z
@@ -919,6 +974,29 @@ export function appendRunEvent(
         Object.freeze({ grantTtlMs: requirement.grantTtlMs }),
       ]),
     );
+    const recoveryRequirements = event.recoveryRequirements ?? [];
+    if (
+      new Set(recoveryRequirements.map((requirement) => requirement.nodeId)).size !==
+      recoveryRequirements.length
+    ) {
+      throw new RunReplayError(eventIndex, "recovery requirements must have unique node ids");
+    }
+    if (recoveryRequirements.some((requirement) => !event.nodeIds.includes(requirement.nodeId))) {
+      throw new RunReplayError(
+        eventIndex,
+        "recovery requirement references a node outside the run node set",
+      );
+    }
+    const recoveryRequirementsByNode = Object.fromEntries(
+      recoveryRequirements.map((requirement) => [
+        requirement.nodeId,
+        Object.freeze({
+          mode: requirement.mode,
+          maxAttempts: requirement.maxAttempts,
+          effectProtocol: requirement.effectProtocol,
+        }),
+      ]),
+    );
     const resources = emptyRunResources();
     return freezeRunState({
       runId: event.runId,
@@ -927,6 +1005,7 @@ export function appendRunEvent(
       workflowDigest: event.workflowDigest,
       executionCwd: event.executionCwd ?? null,
       approvalRequirements: Object.freeze(approvalRequirements),
+      recoveryRequirements: Object.freeze(recoveryRequirementsByNode),
       resources,
       budget: calculateRunBudgetState(event.budget, resources),
       status: "running",
@@ -1217,6 +1296,12 @@ export function appendRunEvent(
           consumedAt: event.at,
         });
       }
+      if (event.attempt !== current.attempt + 1) {
+        throw new RunReplayError(
+          eventIndex,
+          `node start attempt ${event.attempt} does not match next node attempt ${current.attempt + 1}`,
+        );
+      }
       nodes[event.nodeId] = Object.freeze({
         ...current,
         status: "running",
@@ -1227,6 +1312,34 @@ export function appendRunEvent(
         effects: Object.freeze([]),
       });
       resources = addResourcesForStart(resources, eventIndex);
+      break;
+    }
+    case "node_attempt_interrupted": {
+      const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
+      const requirement = currentState.recoveryRequirements[event.nodeId];
+      validateInterruptedAttemptRecovery(currentState, current, requirement, eventIndex);
+      const interruptedAttempt: InterruptedNodeAttemptState = deepFreeze({
+        attempt: current.attempt,
+        startedAt: requireStartedAt(current, eventIndex),
+        interruptedAt: event.at,
+        reason: event.reason,
+        disposition: event.disposition,
+        resourceAccounting: event.resourceAccounting,
+        effectProtocol: current.effectProtocol,
+        effects: current.effects,
+      });
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        status: "pending",
+        startedAt: null,
+        finishedAt: null,
+        evidence: null,
+        error: null,
+        approval: null,
+        effectProtocol: null,
+        effects: Object.freeze([]),
+        interruptedAttempts: Object.freeze([...current.interruptedAttempts, interruptedAttempt]),
+      });
       break;
     }
     case "node_effect_prepared": {
@@ -1530,6 +1643,7 @@ export function appendRunEvent(
     workflowDigest: currentState.workflowDigest,
     executionCwd: currentState.executionCwd,
     approvalRequirements: currentState.approvalRequirements,
+    recoveryRequirements: currentState.recoveryRequirements,
     resources,
     budget,
     status,
@@ -2072,7 +2186,80 @@ function pendingNodeState(): NodeRunState {
     approval: null,
     effectProtocol: null,
     effects: Object.freeze([]),
+    interruptedAttempts: Object.freeze([]),
   });
+}
+
+function validateInterruptedAttemptRecovery(
+  state: RunState,
+  node: NodeRunState,
+  requirement: Omit<AgentRecoveryRequirement, "nodeId"> | undefined,
+  eventIndex: number,
+): void {
+  if (requirement === undefined) {
+    throw new RunReplayError(eventIndex, "fresh recovery is not configured for this node");
+  }
+  if (node.attempt >= requirement.maxAttempts) {
+    throw new RunReplayError(
+      eventIndex,
+      `fresh recovery attempts are exhausted at attempt ${node.attempt}`,
+    );
+  }
+
+  const limits = state.budget?.limits;
+  if (
+    limits?.maxModelTokens !== undefined ||
+    limits?.maxCostUsdMicros !== undefined ||
+    limits?.maxExecutionMs !== undefined
+  ) {
+    throw new RunReplayError(
+      eventIndex,
+      "fresh recovery cannot account for interrupted model, cost, or execution resources",
+    );
+  }
+  if (limits?.maxNodeStarts !== undefined && state.resources.nodeStarts >= limits.maxNodeStarts) {
+    throw new RunReplayError(
+      eventIndex,
+      "fresh recovery has no node-start budget capacity for the next attempt",
+    );
+  }
+
+  if (requirement.effectProtocol === "none") {
+    if (node.effectProtocol !== null || node.effects.length > 0) {
+      throw new RunReplayError(
+        eventIndex,
+        "read-only fresh recovery requires an attempt without an effect protocol or effects",
+      );
+    }
+    return;
+  }
+
+  if (node.effectProtocol !== DURABLE_EFFECT_PROTOCOL) {
+    throw new RunReplayError(
+      eventIndex,
+      `fresh recovery requires effect protocol "${DURABLE_EFFECT_PROTOCOL}"`,
+    );
+  }
+  const unsafeEffect = node.effects.find((effect) => !effectIsProvenNotApplied(effect));
+  if (unsafeEffect !== undefined) {
+    throw new RunReplayError(
+      eventIndex,
+      `fresh recovery requires effect "${unsafeEffect.effectId}" to be proven not applied`,
+    );
+  }
+}
+
+function effectIsProvenNotApplied(effect: NodeEffectRunState): boolean {
+  return (
+    effect.settlement?.outcome === "not_applied" || effect.reconciliation?.outcome === "not_applied"
+  );
+}
+
+function requireStartedAt(node: NodeRunState, eventIndex: number): string {
+  if (node.startedAt === null) {
+    throw new RunReplayError(eventIndex, "running node is missing its start timestamp");
+  }
+  return node.startedAt;
 }
 
 export function nodeEffectId(eventSequence: number): string {
