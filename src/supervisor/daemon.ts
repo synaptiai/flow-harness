@@ -413,7 +413,7 @@ export async function startSupervisorServer(
     });
   });
   const reconciliationTimer = setInterval(() => {
-    if (reconciling) {
+    if (reconciling || service.isShuttingDown) {
       return;
     }
     reconciling = true;

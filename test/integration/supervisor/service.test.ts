@@ -531,6 +531,7 @@ describe("LocalSupervisorService", () => {
     const harness = await createHarness();
 
     await expect(harness.service.prepareShutdown()).resolves.toBeUndefined();
+    expect(harness.service.isShuttingDown).toBe(true);
 
     await expect(
       harness.service.submit(submitCommand(randomUUID(), harness.directory, "too-late")),

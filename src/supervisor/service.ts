@@ -804,10 +804,7 @@ export class LocalSupervisorService {
     // caller waited for the admission lock. The durable command record, rather
     // than the now-absent queue entry, determines the converged result.
     const latestJournal = await this.#store.readCommand(command.commandId);
-    if (
-      latestJournal.type !== "cancel" ||
-      latestJournal.requestDigest !== journal.requestDigest
-    ) {
+    if (latestJournal.type !== "cancel" || latestJournal.requestDigest !== journal.requestDigest) {
       throw new SupervisorServiceError(
         "conflict",
         `command "${command.commandId}" was replaced with a different identity`,
@@ -1184,6 +1181,10 @@ export class LocalSupervisorService {
   get isIdle(): boolean {
     const state = this.#admissionStore.state;
     return Object.keys(state.jobs).length === 0 && Object.keys(state.rejections).length === 0;
+  }
+
+  get isShuttingDown(): boolean {
+    return !this.#acceptingSubmissions;
   }
 
   async prepareShutdown(): Promise<void> {
