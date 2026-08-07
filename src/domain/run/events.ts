@@ -10,6 +10,7 @@ import {
 } from "../goal/evaluator.js";
 import { compiledGoalSchema } from "../goal/schema.js";
 import type { CompiledGoal, GoalRunState } from "../goal/types.js";
+import type { CompiledRunBudget } from "../workflow/types.js";
 import {
   calculateCommandApprovalOperationDigest,
   commandApprovalRequestId,
@@ -24,6 +25,22 @@ import {
 } from "../policy/broker.js";
 import { policyDecisionSchema } from "../policy/schema.js";
 import type { PolicyDecision } from "../policy/types.js";
+import {
+  addRunResources,
+  agentModelUsageSchema,
+  budgetExhaustionReason,
+  calculateRunBudgetState,
+  committedDurationMs,
+  emptyRunResources,
+  runBudgetExhaustionSchema,
+  runBudgetLimitsSchema,
+  sameBudgetExhaustions,
+  totalModelTokens,
+  type AgentModelUsage,
+  type RunBudgetExhaustion,
+  type RunBudgetState,
+  type RunResourceConsumption,
+} from "./budget.js";
 
 export interface CommandEvidence {
   readonly kind: "command";
@@ -57,6 +74,7 @@ export interface AgentEvidence {
   readonly textHash: string;
   readonly textTruncated: boolean;
   readonly durationMs: number;
+  readonly usage?: AgentModelUsage;
   readonly policyDecisions: readonly PolicyDecision[];
   readonly effectReceipts: readonly AgentEffectReceipt[];
 }
@@ -101,6 +119,7 @@ export interface RunStartedEvent extends RunEventBase {
   readonly nodeIds: readonly string[];
   readonly workflowApiVersion: "flow.synapti.ai/v1alpha1";
   readonly workflowDigest: string;
+  readonly budget?: CompiledRunBudget;
   readonly goal?: CompiledGoal;
   readonly executionCwd?: string;
   readonly approvalRequirements?: readonly CommandApprovalRequirement[];
@@ -193,6 +212,11 @@ export interface RunCancelledEvent extends RunEventBase {
   readonly reason: string;
 }
 
+export interface RunBudgetExhaustedEvent extends RunEventBase {
+  readonly type: "run_budget_exhausted";
+  readonly exhausted: readonly RunBudgetExhaustion[];
+}
+
 export type RunEvent =
   | RunStartedEvent
   | RunResumedEvent
@@ -205,9 +229,16 @@ export type RunEvent =
   | NodeFailedEvent
   | RunSucceededEvent
   | RunFailedEvent
-  | RunCancelledEvent;
+  | RunCancelledEvent
+  | RunBudgetExhaustedEvent;
 
-export type RunStatus = "running" | "waiting_for_approval" | "succeeded" | "failed" | "cancelled";
+export type RunStatus =
+  | "running"
+  | "waiting_for_approval"
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "resource_exhausted";
 export type NodeRunStatus = "pending" | "running" | "succeeded" | "failed";
 
 export type CommandApprovalStatus = "pending" | "granted" | "denied" | "expired" | "consumed";
@@ -247,6 +278,8 @@ export interface RunState {
   readonly approvalRequirements: Readonly<
     Record<string, Omit<CommandApprovalRequirement, "nodeId">>
   >;
+  readonly resources: RunResourceConsumption;
+  readonly budget: RunBudgetState | null;
   readonly status: RunStatus;
   readonly startedAt: string;
   readonly finishedAt: string | null;
@@ -383,7 +416,7 @@ const commandEvidenceSchema = z
     stdoutTruncated: z.boolean(),
     stderrTruncated: z.boolean(),
     timedOut: z.boolean(),
-    durationMs: z.number().nonnegative(),
+    durationMs: z.number().nonnegative().max(Number.MAX_SAFE_INTEGER),
     sandbox: sandboxEvidenceSchema.optional(),
   })
   .strict();
@@ -396,7 +429,8 @@ const agentEvidenceSchema = z
     text: agentOutputSchema,
     textHash: z.string().regex(/^[a-f0-9]{64}$/),
     textTruncated: z.boolean(),
-    durationMs: z.number().nonnegative(),
+    durationMs: z.number().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    usage: agentModelUsageSchema.optional(),
     policyDecisions: z.array(policyDecisionSchema).max(MAX_POLICY_DECISIONS).default([]),
     effectReceipts: z
       .array(
@@ -450,6 +484,7 @@ const runEventSchema = z.discriminatedUnion("type", [
         .refine((items) => new Set(items).size === items.length, "node ids must be unique"),
       workflowApiVersion: z.literal("flow.synapti.ai/v1alpha1"),
       workflowDigest: sha256Schema,
+      budget: runBudgetLimitsSchema.optional(),
       goal: compiledGoalSchema.optional(),
       executionCwd: absolutePathSchema.optional(),
       approvalRequirements: z
@@ -559,6 +594,13 @@ const runEventSchema = z.discriminatedUnion("type", [
       reason: z.string().min(1).max(16_384),
     })
     .strict(),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("run_budget_exhausted"),
+      exhausted: z.array(runBudgetExhaustionSchema).min(1).max(4),
+    })
+    .strict(),
 ]);
 
 export function parseRunEvent(input: unknown): RunEvent {
@@ -642,6 +684,7 @@ export function appendRunEvent(
         Object.freeze({ grantTtlMs: requirement.grantTtlMs }),
       ]),
     );
+    const resources = emptyRunResources();
     return freezeRunState({
       runId: event.runId,
       workflowId: event.workflowId,
@@ -649,6 +692,8 @@ export function appendRunEvent(
       workflowDigest: event.workflowDigest,
       executionCwd: event.executionCwd ?? null,
       approvalRequirements: Object.freeze(approvalRequirements),
+      resources,
+      budget: calculateRunBudgetState(event.budget, resources),
       status: "running",
       startedAt: event.at,
       finishedAt: null,
@@ -675,7 +720,12 @@ export function appendRunEvent(
 
   const nodes: Record<string, NodeRunState> = { ...currentState.nodes };
   const failedNodes = Object.entries(nodes).filter(([, node]) => node.status === "failed");
-  if (failedNodes.length > 0 && event.type !== "run_failed" && event.type !== "run_resumed") {
+  if (
+    failedNodes.length > 0 &&
+    event.type !== "run_failed" &&
+    event.type !== "run_budget_exhausted" &&
+    event.type !== "run_resumed"
+  ) {
     throw new RunReplayError(
       eventIndex,
       "node_failed must be followed immediately by run_failed unless a recovery marker records the restart",
@@ -687,6 +737,7 @@ export function appendRunEvent(
   let failedNodeId: string | null = currentState.failedNodeId;
   let failureReason: string | null = currentState.failureReason;
   let goal = currentState.goal;
+  let resources = currentState.resources;
 
   switch (event.type) {
     case "run_resumed": {
@@ -703,6 +754,12 @@ export function appendRunEvent(
     case "command_approval_requested": {
       if (currentState.status !== "running") {
         throw new RunReplayError(eventIndex, "a new approval request requires a running run");
+      }
+      if ((currentState.budget?.exhausted.length ?? 0) > 0) {
+        throw new RunReplayError(
+          eventIndex,
+          "command approval cannot be requested after the run budget is exhausted",
+        );
       }
       const unconsumedApproval = Object.entries(nodes).find(
         ([nodeId, node]) =>
@@ -869,6 +926,14 @@ export function appendRunEvent(
       if (Object.values(nodes).some((node) => node.status === "running")) {
         throw new RunReplayError(eventIndex, "only one node may be running at a time");
       }
+      if ((currentState.budget?.exhausted.length ?? 0) > 0) {
+        throw new RunReplayError(
+          eventIndex,
+          `node cannot start because the run budget is exhausted for ${currentState.budget?.exhausted
+            .map((item) => item.dimension)
+            .join(", ")}`,
+        );
+      }
       const current = requireNode(nodes, event.nodeId, eventIndex);
       if (current.status !== "pending") {
         throw new RunReplayError(eventIndex, `node "${event.nodeId}" must be pending before start`);
@@ -923,12 +988,14 @@ export function appendRunEvent(
         startedAt: event.at,
         approval,
       });
+      resources = addResourcesForStart(resources, eventIndex);
       break;
     }
     case "node_succeeded": {
       validateEvidenceIntegrity(event.evidence, event, eventIndex);
       validateSucceededEvidence(event.evidence, eventIndex);
       const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
+      resources = addResourcesForEvidence(resources, event.evidence, eventIndex);
       nodes[event.nodeId] = Object.freeze({
         ...current,
         status: "succeeded",
@@ -954,6 +1021,9 @@ export function appendRunEvent(
         validateEvidenceIntegrity(event.evidence, event, eventIndex);
       }
       const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
+      if (event.evidence !== null) {
+        resources = addResourcesForEvidence(resources, event.evidence, eventIndex);
+      }
       nodes[event.nodeId] = Object.freeze({
         ...current,
         status: "failed",
@@ -979,12 +1049,32 @@ export function appendRunEvent(
       if (!Object.values(nodes).every((node) => node.status === "succeeded")) {
         throw new RunReplayError(eventIndex, "run cannot succeed because not every node succeeded");
       }
+      const blockingExhaustions =
+        calculateRunBudgetState(currentState.budget?.limits, resources)?.exhausted.filter(
+          (item) => item.dimension !== "nodeStarts",
+        ) ?? [];
+      if (blockingExhaustions.length > 0) {
+        throw new RunReplayError(
+          eventIndex,
+          "run cannot succeed because a settled resource budget is exhausted",
+        );
+      }
       status = "succeeded";
       finishedAt = event.at;
       goal = applyGoalAcceptance(goal, eventIndex);
       break;
     }
     case "run_failed": {
+      if (
+        calculateRunBudgetState(currentState.budget?.limits, resources)?.exhausted.some(
+          (item) => item.dimension !== "nodeStarts",
+        ) === true
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          "run must record resource exhaustion instead of generic failure after its budget is exhausted",
+        );
+      }
       const failed = requireNode(nodes, event.failedNodeId, eventIndex);
       if (
         failed.status !== "failed" ||
@@ -1005,6 +1095,18 @@ export function appendRunEvent(
       break;
     }
     case "run_cancelled": {
+      const exhausted =
+        calculateRunBudgetState(currentState.budget?.limits, resources)?.exhausted ?? [];
+      if (
+        exhausted.some((item) => item.dimension !== "nodeStarts") ||
+        (exhausted.some((item) => item.dimension === "nodeStarts") &&
+          Object.values(nodes).some((node) => node.status === "pending"))
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          "run must record resource exhaustion instead of cancellation after its budget is exhausted",
+        );
+      }
       if (Object.values(nodes).some((node) => node.status === "running")) {
         throw new RunReplayError(eventIndex, "run cannot cancel while a node remains running");
       }
@@ -1014,8 +1116,39 @@ export function appendRunEvent(
       goal = goal === null ? null : rejectIncompleteGoal(goal);
       break;
     }
+    case "run_budget_exhausted": {
+      if (Object.values(nodes).some((node) => node.status === "running")) {
+        throw new RunReplayError(eventIndex, "run budget cannot terminate while a node is running");
+      }
+      const budget = calculateRunBudgetState(currentState.budget?.limits, resources);
+      if (budget === null || budget.exhausted.length === 0) {
+        throw new RunReplayError(eventIndex, "run budget is not exhausted");
+      }
+      if (
+        budget.exhausted.every((item) => item.dimension === "nodeStarts") &&
+        (failedNodes.length > 0 ||
+          Object.values(nodes).every((node) => node.status === "succeeded"))
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          "node-start exhaustion cannot replace an already determined failed or successful outcome",
+        );
+      }
+      if (!sameBudgetExhaustions(event.exhausted, budget.exhausted)) {
+        throw new RunReplayError(
+          eventIndex,
+          "run budget exhaustion does not match durable limits and consumption",
+        );
+      }
+      status = "resource_exhausted";
+      finishedAt = event.at;
+      failureReason = budgetExhaustionReason(event.exhausted);
+      goal = goal === null ? null : rejectIncompleteGoal(goal);
+      break;
+    }
   }
 
+  const budget = calculateRunBudgetState(currentState.budget?.limits, resources);
   return freezeRunState({
     runId: currentState.runId,
     workflowId: currentState.workflowId,
@@ -1023,6 +1156,8 @@ export function appendRunEvent(
     workflowDigest: currentState.workflowDigest,
     executionCwd: currentState.executionCwd,
     approvalRequirements: currentState.approvalRequirements,
+    resources,
+    budget,
     status,
     startedAt: currentState.startedAt,
     finishedAt,
@@ -1079,7 +1214,12 @@ function isConclusiveVerifierRejection(evidence: NodeEvidence | null): boolean {
 }
 
 function isTerminalRunStatus(status: RunStatus): boolean {
-  return status === "succeeded" || status === "failed" || status === "cancelled";
+  return (
+    status === "succeeded" ||
+    status === "failed" ||
+    status === "cancelled" ||
+    status === "resource_exhausted"
+  );
 }
 
 function approvalStateFromRequest(event: CommandApprovalRequestedEvent): CommandApprovalRunState {
@@ -1155,6 +1295,42 @@ function approvalDenialMessage(actor: string, reason: string | undefined): strin
 
 function freezeRunState(state: RunState): RunState {
   return Object.freeze({ ...state, nodes: Object.freeze({ ...state.nodes }) });
+}
+
+function addResourcesForStart(
+  resources: RunResourceConsumption,
+  eventIndex: number,
+): RunResourceConsumption {
+  try {
+    return addRunResources(resources, { nodeStarts: 1 });
+  } catch (error) {
+    throw resourceReplayError(eventIndex, error);
+  }
+}
+
+function addResourcesForEvidence(
+  resources: RunResourceConsumption,
+  evidence: NodeEvidence,
+  eventIndex: number,
+): RunResourceConsumption {
+  try {
+    return addRunResources(resources, {
+      executionMs: committedDurationMs(evidence.durationMs),
+      ...(evidence.kind === "agent" && evidence.usage !== undefined
+        ? {
+            modelTokens: totalModelTokens(evidence.usage),
+            modelCostUsdMicros: evidence.usage.costUsdMicros,
+          }
+        : {}),
+    });
+  } catch (error) {
+    throw resourceReplayError(eventIndex, error);
+  }
+}
+
+function resourceReplayError(eventIndex: number, error: unknown): RunReplayError {
+  const message = error instanceof Error ? error.message : String(error);
+  return new RunReplayError(eventIndex, `resource accounting failed: ${message}`);
 }
 
 function validateSucceededEvidence(evidence: NodeEvidence, eventIndex: number): void {

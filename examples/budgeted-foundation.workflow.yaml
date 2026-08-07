@@ -1,0 +1,37 @@
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata:
+  id: budgeted-foundation
+  description: Exercise credential-free commands inside durable start and active-time boundaries.
+budget:
+  maxNodeStarts: 2
+  maxExecutionMs: 130000
+goal:
+  apiVersion: flow.synapti.ai/v1alpha1
+  kind: Goal
+  metadata:
+    id: budgeted-foundation-is-valid
+  outcome: The repository foundation is verified within the declared run budget.
+  criteria:
+    - id: typecheck-passes
+      description: The repository passes strict TypeScript checking within the run budget.
+      verifier:
+        nodeId: typecheck
+nodes:
+  - id: node-version
+    type: command
+    command:
+      executable: node
+      args:
+        - --version
+      timeoutMs: 10000
+  - id: typecheck
+    type: command
+    dependsOn:
+      - node-version
+    command:
+      executable: npm
+      args:
+        - run
+        - typecheck
+      timeoutMs: 120000

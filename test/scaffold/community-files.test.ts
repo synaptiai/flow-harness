@@ -126,6 +126,33 @@ describe("public repository contracts", () => {
       "edit",
     ]);
   });
+
+  it("documents durable run budgets with a valid credential-free example", async () => {
+    const [readme, architecture, workflowSpec, recovery, roadmap, exampleSource] =
+      await Promise.all([
+        readText("README.md"),
+        readText("docs/architecture.md"),
+        readText("docs/workflow-spec.md"),
+        readText("docs/recovery.md"),
+        readText("docs/roadmap.md"),
+        readText("examples/budgeted-foundation.workflow.yaml"),
+      ]);
+
+    expect(readme).toContain("resource_exhausted");
+    expect(readme).toMatch(/reported-cost.*hard billing cap/is);
+    expect(architecture).toMatch(/durable resource accounting/i);
+    expect(workflowSpec).toContain("maxCostUsd");
+    expect(workflowSpec).toMatch(/micro-USD/i);
+    expect(recovery).toContain("run_budget_exhausted");
+    expect(roadmap).toMatch(/model tokens.*reported cost.*active execution time.*Implemented/is);
+
+    const example = parse(exampleSource) as {
+      readonly budget?: { readonly maxNodeStarts?: number; readonly maxExecutionMs?: number };
+      readonly nodes: readonly unknown[];
+    };
+    expect(example.budget).toEqual({ maxNodeStarts: 2, maxExecutionMs: 130000 });
+    expect(example.nodes).toHaveLength(2);
+  });
 });
 
 async function readText(path: string): Promise<string> {

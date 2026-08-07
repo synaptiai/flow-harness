@@ -32,7 +32,17 @@ describe("PiAgentExecutor", () => {
           target: `${input.cwd}/package.json`,
           boundary: "inside",
         });
-        return { text: "Analyzed the repository.", stopReason: "stop" };
+        return {
+          text: "Analyzed the repository.",
+          stopReason: "stop",
+          usage: {
+            inputTokens: 10,
+            outputTokens: 4,
+            cacheReadTokens: 20,
+            cacheWriteTokens: 2,
+            costUsdMicros: 17,
+          },
+        };
       },
     };
     const executor = new PiAgentExecutor(runner, () => 100);
@@ -71,6 +81,13 @@ describe("PiAgentExecutor", () => {
         textHash: expect.stringMatching(/^[a-f0-9]{64}$/),
         textTruncated: false,
         durationMs: 0,
+        usage: {
+          inputTokens: 10,
+          outputTokens: 4,
+          cacheReadTokens: 20,
+          cacheWriteTokens: 2,
+          costUsdMicros: 17,
+        },
         policyDecisions: [
           expect.objectContaining({
             sequence: 1,
@@ -123,6 +140,42 @@ describe("PiAgentExecutor", () => {
         sideEffectStatus: "none",
       },
       evidence: null,
+    });
+  });
+
+  it("preserves settled usage when the model finishes with an error", async () => {
+    const runner: PiAgentRunner = {
+      async run() {
+        return {
+          text: "",
+          stopReason: "error",
+          errorMessage: "provider stream failed",
+          usage: {
+            inputTokens: 8,
+            outputTokens: 1,
+            cacheReadTokens: 3,
+            cacheWriteTokens: 0,
+            costUsdMicros: 9,
+          },
+        };
+      },
+    };
+
+    const outcome = await new PiAgentExecutor(runner, () => 100).execute(agentNode(), context);
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: { code: "pi_agent_error", message: "provider stream failed" },
+      evidence: {
+        kind: "agent",
+        usage: {
+          inputTokens: 8,
+          outputTokens: 1,
+          cacheReadTokens: 3,
+          cacheWriteTokens: 0,
+          costUsdMicros: 9,
+        },
+      },
     });
   });
 
@@ -262,7 +315,18 @@ describe("PiAgentExecutor", () => {
             () => {
               setTimeout(() => {
                 cleanupFinished = true;
-                resolve({ text: "", stopReason: "aborted", errorMessage: "aborted" });
+                resolve({
+                  text: "",
+                  stopReason: "aborted",
+                  errorMessage: "aborted",
+                  usage: {
+                    inputTokens: 2,
+                    outputTokens: 1,
+                    cacheReadTokens: 0,
+                    cacheWriteTokens: 0,
+                    costUsdMicros: 4,
+                  },
+                });
               }, 10);
             },
             { once: true },
@@ -276,7 +340,15 @@ describe("PiAgentExecutor", () => {
     expect(outcome).toMatchObject({
       status: "failed",
       error: { code: "pi_agent_timeout" },
-      evidence: null,
+      evidence: {
+        usage: {
+          inputTokens: 2,
+          outputTokens: 1,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          costUsdMicros: 4,
+        },
+      },
     });
     expect(cleanupFinished).toBe(true);
   });
@@ -486,6 +558,7 @@ describe("EmbeddedPiAgentRunner", () => {
       subscribe: () => () => undefined,
       prompt: async () => undefined,
       abort: async () => undefined,
+      getSessionStats: () => sessionStats(),
       dispose: () => {
         disposed = true;
       },
@@ -521,6 +594,13 @@ describe("EmbeddedPiAgentRunner", () => {
       textTruncated: false,
       stopReason: "error",
       errorMessage: "provider stream failed",
+      usage: {
+        inputTokens: 12,
+        outputTokens: 5,
+        cacheReadTokens: 30,
+        cacheWriteTokens: 2,
+        costUsdMicros: 1234567,
+      },
     });
     expect(sessionOptions?.noTools).toBe("all");
     expect(sessionOptions?.tools).toEqual(["flow_read", "flow_ls", "flow_edit"]);
@@ -533,6 +613,64 @@ describe("EmbeddedPiAgentRunner", () => {
     expect(sessionOptions?.resourceLoader?.getSkills().skills).toEqual([]);
     expect(sessionOptions?.resourceLoader?.getAgentsFiles().agentsFiles).toEqual([]);
     expect(disposed).toBe(true);
+  });
+
+  it("returns settled session usage when prompting throws", async () => {
+    let disposed = false;
+    const fakeSession = {
+      state: { messages: [] },
+      subscribe: () => () => undefined,
+      prompt: async () => {
+        throw new Error("provider request failed after billing");
+      },
+      abort: async () => undefined,
+      getSessionStats: () => sessionStats(),
+      dispose: () => {
+        disposed = true;
+      },
+    };
+    const createSession = (async () => ({
+      session: fakeSession,
+    })) as unknown as typeof createAgentSession;
+    const runner = new EmbeddedPiAgentRunner(
+      async () => ({ getModel: () => ({}) }) as never,
+      createSession,
+    );
+
+    const result = await runner.run(agentRequest());
+
+    expect(result).toMatchObject({
+      stopReason: "error",
+      errorMessage: "provider request failed after billing",
+      usage: {
+        inputTokens: 12,
+        outputTokens: 5,
+        cacheReadTokens: 30,
+        cacheWriteTokens: 2,
+        costUsdMicros: 1234567,
+      },
+    });
+    expect(disposed).toBe(true);
+  });
+
+  it("rejects invalid provider usage instead of persisting it", async () => {
+    const fakeSession = {
+      state: { messages: [{ role: "assistant", stopReason: "stop" }] },
+      subscribe: () => () => undefined,
+      prompt: async () => undefined,
+      abort: async () => undefined,
+      getSessionStats: () => ({ ...sessionStats(), cost: Number.NaN }),
+      dispose: () => undefined,
+    };
+    const createSession = (async () => ({
+      session: fakeSession,
+    })) as unknown as typeof createAgentSession;
+    const runner = new EmbeddedPiAgentRunner(
+      async () => ({ getModel: () => ({}) }) as never,
+      createSession,
+    );
+
+    await expect(runner.run(agentRequest())).rejects.toThrowError(/cost.*finite/i);
   });
 
   it("does not create a session when cancellation arrives during runtime setup", async () => {
@@ -578,6 +716,7 @@ describe("EmbeddedPiAgentRunner", () => {
       abort: async () => {
         aborted = true;
       },
+      getSessionStats: () => sessionStats(),
       dispose: () => {
         disposed = true;
       },
@@ -630,6 +769,7 @@ describe("EmbeddedPiAgentRunner", () => {
         messages.push({ role: "assistant", stopReason: "aborted" });
         finishPrompt();
       },
+      getSessionStats: () => sessionStats(),
       dispose: () => {
         disposedAfterAbort = abortFinished;
       },
@@ -688,6 +828,26 @@ function agentRequest(signal?: AbortSignal): PiAgentRunRequest {
     protectedPaths: [],
     effectRecorder: testEffectRecorder(),
     ...(signal === undefined ? {} : { signal }),
+  };
+}
+
+function sessionStats() {
+  return {
+    sessionFile: undefined,
+    sessionId: "session-test",
+    userMessages: 1,
+    assistantMessages: 1,
+    toolCalls: 0,
+    toolResults: 0,
+    totalMessages: 2,
+    tokens: {
+      input: 12,
+      output: 5,
+      cacheRead: 30,
+      cacheWrite: 2,
+      total: 49,
+    },
+    cost: 1.234567,
   };
 }
 

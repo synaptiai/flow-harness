@@ -14,12 +14,12 @@ It verifies formatting, lint rules, strict TypeScript contracts, all default tes
 
 | Layer | Purpose | External effects |
 | --- | --- | --- |
-| Domain unit | Workflow/goal compilation, policy and approval operation digests, pure criterion evaluation, and decision/receipt/approval replay invariants | None |
-| Application unit | Scheduler ordering, recovery compatibility, approval waits and expiry, completed-node skipping, failure propagation, and executor authority | Test-only in-memory ports |
+| Domain unit | Workflow/goal/budget compilation, checked resource aggregation, exhaustion, policy and approval operation digests, pure criterion evaluation, and decision/receipt/approval replay invariants | None |
+| Application unit | Scheduler ordering, recovery compatibility, budget stop boundaries and timeout clamping, approval waits and expiry, completed-node skipping, failure propagation, and executor authority | Test-only in-memory ports |
 | Infrastructure integration | Atomic hash-anchored edits, same-host edit-lock recovery, exact-byte versions, protected paths, real JSONL persistence, process and approval-decision ownership, torn-tail repair, and real child processes | Temporary directories and local processes |
-| CLI integration | Validate, run, wait, approve/deny, resume, persist, and inspect through production composition | Temporary run ledgers and local processes |
+| CLI integration | Validate, run, wait, approve/deny, exhaust, resume, persist, and inspect through production composition | Temporary run ledgers and local processes |
 | Compiled-process integration | Direct-entry signal handling, process-group termination, cross-process run claiming, and real sandbox boundaries | Built CLI, temporary run ledgers, local process trees, native sandbox primitives, and loopback networking |
-| Pi adapter contract | Exact model/tool request translation, versioned reads, edit receipts, policy-broker routing, setup races, timeout settlement, and committed/uncertain error classification | Temporary workspace and test-only runner at the SDK seam |
+| Pi adapter contract | Exact model/tool request translation, versioned reads, edit receipts, session-stat usage translation, policy-broker routing, setup races, timeout settlement, and committed/uncertain error classification | Temporary workspace and test-only runner at the SDK seam |
 | Pi SDK integration | Real `ModelRuntime` and `createAgentSession` composition, `flow_read`/`flow_edit` tool turns, and streaming | Deterministic in-process provider; no network or credentials |
 | Live Pi | Provider authentication, streaming, cancellation, and model compatibility | Opt-in network and provider cost |
 
@@ -34,18 +34,20 @@ node dist/cli/main.js --help
 node dist/cli/main.js validate examples/verify-foundation.workflow.yaml
 node dist/cli/main.js run examples/verify-foundation.workflow.yaml --run-id smoke
 node dist/cli/main.js inspect smoke
+node dist/cli/main.js run examples/budgeted-foundation.workflow.yaml --run-id budget-smoke
+node dist/cli/main.js inspect budget-smoke
 node dist/cli/main.js run examples/approval-gated-command.workflow.yaml --run-id approval-smoke
 node dist/cli/main.js approve approval-smoke approval-2 --actor local:smoke
 node dist/cli/main.js resume examples/approval-gated-command.workflow.yaml --run-id approval-smoke
 ```
 
-The example uses the real argv-only command executor through the production sandbox, accepts a declared goal from terminal typecheck evidence, and requires no model credentials. `npm run test:runtime` additionally spawns the compiled entrypoint, delivers `SIGINT`, proves its POSIX command process group terminates, verifies the forced-exit guard for leaked provider handles, races separate processes for one run identifier, and attacks the real filesystem, environment, run-store, and loopback-network boundary. The package supports Linux and macOS; Windows command nodes fail before spawn because descendant containment is not yet implemented.
+The examples use the real argv-only command executor through the production sandbox, accept a declared goal from terminal typecheck evidence, exercise durable resource inspection, and require no model credentials. `npm run test:runtime` additionally spawns the compiled entrypoint, delivers `SIGINT`, proves its POSIX command process group terminates, verifies the forced-exit guard for leaked provider handles, races separate processes for one run identifier, and attacks the real filesystem, environment, run-store, and loopback-network boundary. The package supports Linux and macOS; Windows command nodes fail before spawn because descendant containment is not yet implemented.
 
 Runtime sandbox tests require the host capabilities listed in the README. A sandbox dependency warning is a test failure, not a skip. Running Flow's sandbox suite from inside another restrictive sandbox can prevent SRT from creating its internal Unix socket or namespace; run the suite directly on the host or in a CI runner configured for nested containment. This operational accommodation must not weaken the production profile.
 
 ## Live Pi test policy
 
-Live tests are opt-in and excluded from `npm test`. Run them with both `FLOW_LIVE_PI_PROVIDER` and `FLOW_LIVE_PI_MODEL`; the live command fails rather than skips when either is absent. They incur no hidden fallback and fail clearly when provider configuration or credentials are invalid. Unit and integration tests never consume provider credentials.
+Live tests are opt-in and excluded from `npm test`. Run them with both `FLOW_LIVE_PI_PROVIDER` and `FLOW_LIVE_PI_MODEL`; the live command fails rather than skips when either is absent. They incur no hidden fallback and fail clearly when provider configuration or credentials are invalid. Unit and integration tests never consume provider credentials. Provider-cost assertions use deterministic session-stat fakes; no local test claims correspondence with an external invoice.
 
 ## Product evaluation
 

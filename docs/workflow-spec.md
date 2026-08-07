@@ -69,6 +69,49 @@ Criterion evaluation is a pure domain operation over the captured goal and durab
 - Every terminal node must be a command node. An agent response cannot be terminal proof.
 - Compilation finishes before Flow creates a run ledger or invokes an executor.
 
+## Run budget
+
+`budget` is an optional strict run-wide contract:
+
+```yaml
+budget:
+  maxNodeStarts: 8
+  maxModelTokens: 250000
+  maxCostUsd: 2.5
+  maxExecutionMs: 900000
+```
+
+At least one limit is required when `budget` is present. Every value must be finite and positive.
+Starts, tokens, and milliseconds are safe integers. `maxCostUsd` accepts at most six decimal places;
+the compiler converts it to integer micro-USD before workflow hashing, persistence, and comparison.
+Unknown fields, an empty object, zero, negative, fractional integer dimensions, unsafe integers,
+non-finite values, and finer cost precision fail compilation before a run or effect exists. Omitting
+`budget` retains unbounded scheduling behavior.
+
+Run state always exposes durable `resources`: node starts, total model tokens, provider-reported
+model cost in micro-USD, and active execution milliseconds. A start is counted by its committed
+`node_started` event. A node outcome contributes its evidence duration rounded up to a whole
+millisecond. Successful and failed agent evidence contributes available input, output, cache-read,
+and cache-write tokens plus reported cost. Totals use checked safe-integer arithmetic; invalid or
+overflowing evidence fails replay rather than wrapping or being ignored.
+
+Before new work or an approval request, Flow refuses scheduling when a configured dimension is
+already exhausted. Using the final permitted node start does not invalidate a graph that is already
+complete. Model-token, reported-cost, and active-time consumption is settled after each node
+outcome; equality or overshoot records `run_budget_exhausted`, produces terminal
+`resource_exhausted` state, rejects an incomplete goal, exits code 1, and starts no downstream work.
+The full observation is retained rather than clipped to the limit.
+
+An execution budget reduces a command or agent timeout to the remaining active milliseconds.
+Approval-required commands persist and display that reduced timeout in the exact operation, so a
+later resume cannot gain more execution authority. Approval wait, client detachment, and process
+downtime do not contribute because active time comes only from committed node evidence.
+
+Model usage and reported cost are known only when a provider response settles. One response may
+therefore exceed its remaining allowance. This contract is deterministic run admission control, not
+a prepaid or invoice-authoritative billing cap. Flow does not infer pricing, convert currencies, or
+reconcile provider invoices.
+
 ## Command node
 
 ```yaml
@@ -179,6 +222,11 @@ An agent node succeeds when its bounded Pi session settles normally. Its text be
 
 Provider credentials remain outside workflow files and use Pi's configured credential runtime. Provider and model identifiers are execution configuration; no Pi type appears in the compiled or persisted Flow contracts.
 
+The Pi adapter calls the pinned session's `getSessionStats()` after prompt settlement and translates
+the four token components and reported cost into the Flow-owned usage shape. It preserves available
+usage on successful, terminal-error, timeout, and cancellation outcomes. A failure before a session
+or provider observation records no invented usage. Invalid statistics fail before persistence.
+
 ## Run ledger
 
 Each run is stored at:
@@ -187,13 +235,13 @@ Each run is stored at:
 .flow/runs/<run-id>/events.jsonl
 ```
 
-Events have a version, contiguous sequence number, timestamp, run identity, workflow identity, workflow API version, and SHA-256 digest of the compiled workflow. New `run_started` events also capture the normalized execution directory and every command approval requirement. When declared, the compiled goal is captured in `run_started`, so replay and inspection never need the original workflow file. Agent evidence retains at most 64 policy decisions. Each decision has a contiguous attempt-local sequence, exact run/workflow/node/attempt attribution, derived authority, semantic action, canonical target of at most 1024 UTF-8 bytes, allow/deny reason, and SHA-256 request digest. Write decisions also retain the exact operation digest. Agent evidence retains at most 32 edit effect receipts with the same attribution, canonical target, operation digest, before/after SHA-256 values, and committed or uncertain outcome. Replay verifies decision and receipt order, attribution, classification, outcome consistency, hashes, request digests, and one-to-one matching between receipts and allowed write decisions. Approval replay separately verifies the declared requirement, exact operation digest, sequence-derived request identity, grant lifetime, actor, expiry, and single consumed start. Older ledgers without approval or execution-directory fields replay under their historical contract. A single serialized JSONL event is capped at 2 MiB. The ceiling includes worst-case JSON escaping at the documented decision, receipt, target, output, and error bounds.
+Events have a version, contiguous sequence number, timestamp, run identity, workflow identity, workflow API version, and SHA-256 digest of the compiled workflow. New `run_started` events also capture the normalized execution directory, every command approval requirement, and the exact compiled budget when declared. When declared, the compiled goal is captured in `run_started`, so replay and inspection never need the original workflow file. Agent evidence retains at most 64 policy decisions. Each decision has a contiguous attempt-local sequence, exact run/workflow/node/attempt attribution, derived authority, semantic action, canonical target of at most 1024 UTF-8 bytes, allow/deny reason, and SHA-256 request digest. Write decisions also retain the exact operation digest. Agent evidence retains at most 32 edit effect receipts with the same attribution, canonical target, operation digest, before/after SHA-256 values, and committed or uncertain outcome. Replay verifies decision and receipt order, attribution, classification, outcome consistency, hashes, request digests, one-to-one matching between receipts and allowed write decisions, resource arithmetic, and exact exhaustion values. Approval replay separately verifies the declared requirement, budget-bounded exact operation digest, sequence-derived request identity, grant lifetime, actor, expiry, and single consumed start. Older ledgers without budget, usage, approval, or execution-directory fields replay under their historical contract. A single serialized JSONL event is capped at 2 MiB. The ceiling includes worst-case JSON escaping at the documented decision, receipt, target, output, and error bounds.
 
 Fresh and recovered execution publish complete ownership metadata atomically before appending. The metadata contains a process ID and random token. A live process blocks another claimant; an exited owner can be moved aside atomically; corrupt or incomplete ownership metadata fails closed. This provides exclusive same-host execution, not a distributed lease. Creating `events.jsonl` still atomically grants a fresh run identifier. The ledger's run ID must match its directory name.
 
 Node-start events are synced before an executor is invoked. Node-result events are synced before the scheduler advances. Owner appends validate one transition against cached reduced state instead of rereading history. Each append syncs the file, and every newly created run-directory ancestor is synced where the platform supports directory handles. A valid or invalid unterminated trailing JSONL fragment is treated as uncommitted and truncated before a later append; corruption in an earlier committed record fails closed.
 
-The reducer accepts only legal state transitions and reconstructs `running`, `waiting_for_approval`, `succeeded`, `failed`, or `cancelled` run state together with immutable goal, criterion, and current command-approval state. Cancellation before a run claim creates no ledger. Cancellation during a node becomes a failed node attempt; cancellation between attempts appends `run_cancelled` without starting more work. A valid recovery appends `run_resumed`, preserves committed node outcomes and approval state, skips successful nodes, and either continues the next ready pending node, returns to an operator wait, or finalizes a committed failure. Model transcripts and implementation rationale are never consulted during replay.
+The reducer accepts only legal state transitions and reconstructs `running`, `waiting_for_approval`, `succeeded`, `failed`, `cancelled`, or `resource_exhausted` run state together with immutable resources, budget, goal, criterion, and current command-approval state. Cancellation before a run claim creates no ledger. Cancellation during a node becomes a failed node attempt while retaining any settled evidence; cancellation between attempts appends `run_cancelled` without starting more work unless committed evidence already exhausted a settlement limit or a start limit already prevents pending work. In either exception, durable `resource_exhausted` state takes precedence. A valid recovery appends `run_resumed`, preserves committed node outcomes and approval state, skips successful nodes, and either continues the next ready pending node, returns to an operator wait, or finalizes a committed failure or exhausted settlement. Model transcripts and implementation rationale are never consulted during replay.
 
 ## Current limitations
 
@@ -205,4 +253,5 @@ The reducer accepts only legal state transitions and reconstructs `running`, `wa
 - The only agent mutation is exact single-file edit of an existing UTF-8 file; no create, delete, rename, shell, network, fuzzy patch, or multi-file transaction is exposed.
 - No in-flight Pi tool-call approval or opaque session continuation; restarting a model node is not a safe substitute.
 - No probabilistic or LLM evaluator; criteria currently bind only to deterministic terminal command nodes.
+- No prepaid hard model-cost cap, provider invoice reconciliation, CPU/memory/disk quota, concurrency budget, or artifact-size budget.
 - No schema migration path is promised while the format remains `v1alpha1`.

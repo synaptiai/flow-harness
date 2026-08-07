@@ -29,6 +29,7 @@ describe("compileWorkflowText", () => {
 
   it.each([
     "verify-foundation.workflow.yaml",
+    "budgeted-foundation.workflow.yaml",
     "implement-and-verify.workflow.yaml",
     "approval-gated-command.workflow.yaml",
   ])("keeps published example %s compilable", async (fileName) => {
@@ -200,6 +201,57 @@ nodes:
 `;
 
     expectCompilationFailure(source, "invalid_schema", "nodes.0.command");
+  });
+
+  it("compiles an immutable provider-neutral run budget", () => {
+    const workflow = compileWorkflowText(`
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata:
+  id: budgeted-workflow
+budget:
+  maxNodeStarts: 4
+  maxModelTokens: 250000
+  maxCostUsd: 2.5
+  maxExecutionMs: 900000
+nodes:
+  - id: verify
+    type: command
+    command: { executable: npm, args: [test] }
+`);
+
+    expect(workflow.budget).toEqual({
+      maxNodeStarts: 4,
+      maxModelTokens: 250000,
+      maxCostUsdMicros: 2500000,
+      maxExecutionMs: 900000,
+    });
+    expect(Object.isFrozen(workflow.budget)).toBe(true);
+  });
+
+  it.each([
+    ["empty declaration", "{}", "budget"],
+    ["unknown field", "{ maxNodeStarts: 1, maxRequests: 2 }", "budget"],
+    ["zero node starts", "{ maxNodeStarts: 0 }", "budget.maxNodeStarts"],
+    ["fractional node starts", "{ maxNodeStarts: 1.5 }", "budget.maxNodeStarts"],
+    ["unsafe model token count", "{ maxModelTokens: 9007199254740992 }", "budget.maxModelTokens"],
+    ["negative active duration", "{ maxExecutionMs: -1 }", "budget.maxExecutionMs"],
+    ["imprecise cost", "{ maxCostUsd: 0.0000001 }", "budget.maxCostUsd"],
+    ["non-finite cost", "{ maxCostUsd: .inf }", "budget.maxCostUsd"],
+  ])("rejects a run budget with %s", (_case, budget, path) => {
+    const source = `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata:
+  id: invalid-budget
+budget: ${budget}
+nodes:
+  - id: verify
+    type: command
+    command: { executable: npm, args: [test] }
+`;
+
+    expectCompilationFailure(source, "invalid_schema", path);
   });
 
   it("compiles a required command approval with a bounded default grant lifetime", () => {

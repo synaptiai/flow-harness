@@ -5,11 +5,19 @@ export const FLOW_WORKFLOW_API_VERSION = "flow.synapti.ai/v1alpha1" as const;
 export type AgentToolName = "read" | "ls" | "edit";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
+export interface CompiledRunBudget {
+  readonly maxNodeStarts?: number;
+  readonly maxModelTokens?: number;
+  readonly maxCostUsdMicros?: number;
+  readonly maxExecutionMs?: number;
+}
+
 export interface CompiledWorkflow {
   readonly apiVersion: typeof FLOW_WORKFLOW_API_VERSION;
   readonly id: string;
   readonly description?: string;
   readonly goal?: CompiledGoal;
+  readonly budget?: CompiledRunBudget;
   readonly nodes: readonly CompiledNode[];
 }
 
