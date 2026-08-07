@@ -177,6 +177,26 @@ describe("public repository contracts", () => {
     expect(roadmap).toMatch(/supervisor owns detached workers.*Implemented/is);
     expect(security).toMatch(/same operating-system user.*not.*sandbox/is);
   });
+
+  it("documents strict project configuration and bounded admission", async () => {
+    const [readme, configuration, architecture, recovery, roadmap, security] = await Promise.all([
+      readText("README.md"),
+      readText("docs/configuration.md"),
+      readText("docs/architecture.md"),
+      readText("docs/recovery.md"),
+      readText("docs/roadmap.md"),
+      readText("SECURITY.md"),
+    ]);
+
+    expect(readme).toMatch(/one worker.*32 additional jobs.*durable FIFO queue/is);
+    expect(readme).toMatch(/accepted.*queued.*queue_full/is);
+    expect(configuration).toMatch(/project.*narrow.*operator ceiling/is);
+    expect(configuration).toMatch(/invalid\s+versions or kinds.*source and field diagnostics/is);
+    expect(architecture).toMatch(/active plus queued admission.*effective policy/is);
+    expect(recovery).toMatch(/queued cancellation.*no.*worker descriptor/is);
+    expect(roadmap).toMatch(/durable bounded FIFO admission/is);
+    expect(security).toMatch(/capacity ceiling.*does not contain a worker/is);
+  });
 });
 
 async function readText(path: string): Promise<string> {

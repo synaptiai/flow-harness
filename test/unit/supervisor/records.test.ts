@@ -15,11 +15,14 @@ import {
   parseActiveRunClaim,
   parseJobRecord,
   parseSupervisorCommandRecord,
+  parseSupervisorDescriptor,
   parseSupervisorStartLock,
   parseWorkerDescriptor,
+  queueSubmissionCommand,
   supervisorSocketPath,
   workerSocketPath,
 } from "../../../src/supervisor/records.js";
+import { SUPERVISOR_PROTOCOL_VERSION } from "../../../src/supervisor/protocol.js";
 
 describe("supervisor durable records", () => {
   it("creates an immutable job snapshot with a reproducible digest", () => {
@@ -115,14 +118,14 @@ describe("supervisor durable records", () => {
     });
     const completed = completeCancellationCommand(
       command,
-      { runStatus: "cancelled", lastSequence: 4 },
+      { runStatus: "cancelled", phase: "active", lastSequence: 4 },
       "2026-08-07T12:00:01.000Z",
     );
 
     expect(command).toMatchObject({ status: "recorded", requestDigest: expect.any(String) });
     expect(completed).toMatchObject({
       status: "completed",
-      result: { runStatus: "cancelled", lastSequence: 4 },
+      result: { runStatus: "cancelled", phase: "active", lastSequence: 4 },
     });
     expect(parseSupervisorCommandRecord(completed)).toEqual(completed);
     expect(() => parseSupervisorCommandRecord({ ...completed, actor: "other" })).toThrow(/digest/i);
@@ -131,6 +134,7 @@ describe("supervisor durable records", () => {
   it("binds submission journals to exact input and terminal acceptance or rejection", () => {
     const command = createSubmissionCommandRecord({
       commandId: randomUUID(),
+      policyDigest: "a".repeat(64),
       runId: "run-1",
       mode: "run",
       sourceName: "/workspace/workflow.yaml",
@@ -139,26 +143,59 @@ describe("supervisor durable records", () => {
       recordedAt: "2026-08-07T12:00:00.000Z",
     });
     const workerId = randomUUID();
+    const queued = queueSubmissionCommand(command, 7, "2026-08-07T12:00:00.500Z");
     const completed = completeSubmissionCommand(
-      command,
+      queued,
       { workerId, acceptedAt: "2026-08-07T12:00:01.000Z" },
       "2026-08-07T12:00:01.000Z",
     );
     const rejected = rejectSubmissionCommand(
       command,
-      "run is already active",
+      "admission queue is full",
       "2026-08-07T12:00:01.000Z",
+      "queue_full",
     );
 
     expect(command).toMatchObject({ type: "submit", status: "recorded" });
+    expect(queued).toMatchObject({
+      type: "submit",
+      status: "queued",
+      result: { queuePosition: 7 },
+    });
     expect(completed).toMatchObject({
       type: "submit",
       status: "completed",
       result: { workerId, acceptedAt: "2026-08-07T12:00:01.000Z" },
     });
-    expect(rejected).toMatchObject({ type: "submit", status: "rejected" });
+    expect(rejected).toMatchObject({
+      type: "submit",
+      status: "rejected",
+      reason: "queue_full",
+    });
     expect(parseSupervisorCommandRecord(completed)).toEqual(completed);
     expect(() => parseSupervisorCommandRecord({ ...completed, cwd: "/other" })).toThrow(/digest/i);
+  });
+
+  it("binds a supervisor descriptor to one effective admission policy", () => {
+    const descriptor = parseSupervisorDescriptor({
+      version: 1,
+      protocolVersion: SUPERVISOR_PROTOCOL_VERSION,
+      generation: randomUUID(),
+      pid: 1234,
+      startedAt: "2026-08-07T12:00:00.000Z",
+      runsDirectory: "/workspace/.flow/runs",
+      socketPath: "/tmp/flow-harness-501/s-test.sock",
+      policyDigest: "a".repeat(64),
+      limits: { maxActiveWorkers: 2, maxQueuedJobs: 8 },
+    });
+
+    expect(descriptor).toMatchObject({
+      policyDigest: "a".repeat(64),
+      limits: { maxActiveWorkers: 2, maxQueuedJobs: 8 },
+    });
+    expect(() => parseSupervisorDescriptor({ ...descriptor, policyDigest: "short" })).toThrow(
+      /policyDigest/i,
+    );
   });
 
   it("binds a supervisor startup lock to one process and random token", () => {

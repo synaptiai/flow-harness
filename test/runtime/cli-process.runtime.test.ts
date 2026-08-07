@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const cliPath = join(projectRoot, "dist", "cli", "main.js");
@@ -20,6 +20,17 @@ afterEach(async () => {
 });
 
 describe("compiled Flow process", () => {
+  it("treats permission loss as exit of the original same-user process", async () => {
+    const lookup = vi.spyOn(process, "kill").mockImplementation(() => {
+      throw Object.assign(new Error("kill EPERM"), { code: "EPERM" });
+    });
+    try {
+      await expect(waitForProcessExit(12_345)).resolves.toBeUndefined();
+    } finally {
+      lookup.mockRestore();
+    }
+  });
+
   it("forces termination when a provider leaves a referenced handle behind", async () => {
     const moduleUrl = new URL("../../dist/cli/main.js", import.meta.url).href;
     const script = `
@@ -74,6 +85,62 @@ describe("compiled Flow process", () => {
       status: "failed",
       error: { code: "pi_agent_timeout", sideEffectStatus: "uncertain" },
     });
+  });
+
+  it("keeps the startup client alive until an uncooperative daemon is reaped", async () => {
+    const directory = await createTemporaryDirectory();
+    const fixturePath = join(directory, "uncooperative-supervisor.cjs");
+    const pidPath = join(directory, "uncooperative-supervisor.pid");
+    await writeFile(
+      fixturePath,
+      `const fs = require("node:fs"); fs.writeFileSync(${JSON.stringify(pidPath)}, String(process.pid)); process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);`,
+      "utf8",
+    );
+    const storeUrl = new URL(
+      "../../dist/infrastructure/fs/local-supervisor-store.js",
+      import.meta.url,
+    ).href;
+    const daemonUrl = new URL("../../dist/supervisor/daemon.js", import.meta.url).href;
+    const configUrl = new URL("../../dist/domain/config/resolver.js", import.meta.url).href;
+    const runsDirectory = join(directory, "runs");
+    const socketDirectory = join(directory, "sockets");
+    const script = `
+      import { LocalSupervisorStore } from ${JSON.stringify(storeUrl)};
+      import { ensureSupervisor } from ${JSON.stringify(daemonUrl)};
+      import { resolveFlowConfig } from ${JSON.stringify(configUrl)};
+      const store = new LocalSupervisorStore(${JSON.stringify(runsDirectory)}, {
+        socketDirectory: ${JSON.stringify(socketDirectory)}
+      });
+      try {
+        await ensureSupervisor(store, ${JSON.stringify(fixturePath)}, resolveFlowConfig({}), {
+          startupTimeoutMs: 100
+        });
+      } catch (error) {
+        process.stdout.write(JSON.stringify({ name: error.name, pid: error.pid }));
+      }
+    `;
+    let fixturePid: number | undefined;
+
+    try {
+      const result = await spawnCaptured(process.execPath, ["--input-type=module", "-e", script])
+        .completed;
+
+      expect(result.code, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        name: "SupervisorStartupTimeoutError",
+        pid: expect.any(Number),
+      });
+      fixturePid = Number(await readFile(pidPath, "utf8"));
+      await expect(waitForProcessExit(fixturePid)).resolves.toBeUndefined();
+    } finally {
+      if (fixturePid === undefined) {
+        await waitForFile(pidPath).catch(() => undefined);
+        fixturePid = Number(await readFile(pidPath, "utf8").catch(() => "NaN"));
+      }
+      if (Number.isSafeInteger(fixturePid)) {
+        killProcessGroupIfAlive(fixturePid);
+      }
+    }
   });
 
   it("handles SIGINT, persists cancellation, exits 130, and terminates the command process group", async () => {
@@ -342,18 +409,122 @@ describe("compiled Flow process", () => {
     }
   });
 
+  it("enforces project capacity with durable queue, rejection, and worker-free cancellation", async () => {
+    const directory = await createTemporaryDirectory();
+    const runsDirectory = join(directory, ".flow", "runs");
+    const workflowPath = join(directory, "bounded.workflow.yaml");
+    const initialized = await spawnFlow(["init", directory], directory).completed;
+    expect(initialized.code, initialized.stderr).toBe(0);
+    await writeFile(
+      join(directory, ".flow", "config.yaml"),
+      projectConfig({ maxActiveWorkers: 1, maxQueuedJobs: 1 }),
+      "utf8",
+    );
+    await writeFile(
+      workflowPath,
+      commandWorkflow("bounded-workflow", "setInterval(() => {}, 1000);"),
+      "utf8",
+    );
+    const submit = async (runId: string) =>
+      await spawnFlow(
+        ["run", workflowPath, "--detach", "--run-id", runId, "--cwd", directory],
+        directory,
+      ).completed;
+
+    try {
+      const accepted = await submit("bounded-active");
+      const queued = await submit("bounded-queued");
+      const rejected = await submit("bounded-rejected");
+
+      expect(JSON.parse(accepted.stdout)).toMatchObject({ type: "accepted" });
+      expect(JSON.parse(queued.stdout)).toMatchObject({ type: "queued", queuePosition: 1 });
+      expect(JSON.parse(rejected.stdout)).toMatchObject({
+        type: "rejected",
+        reason: "queue_full",
+      });
+      const status = await spawnFlow(["supervisor", "status"], directory).completed;
+      expect(JSON.parse(status.stdout)).toMatchObject({
+        limits: { maxActiveWorkers: 1, maxQueuedJobs: 1 },
+        admission: { activeWorkers: 1, queuedJobs: 1 },
+      });
+
+      const queuedCancellation = await spawnFlow(
+        ["cancel", "bounded-queued", "--actor", "runtime:test"],
+        directory,
+      ).completed;
+      expect(JSON.parse(queuedCancellation.stdout)).toMatchObject({
+        type: "cancelled",
+        phase: "queued",
+        lastSequence: null,
+      });
+      await expect(
+        new Promise((resolvePromise, rejectPromise) => {
+          stat(join(runsDirectory, "bounded-queued", "events.jsonl")).then(
+            resolvePromise,
+            rejectPromise,
+          );
+        }),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+
+      const activeCancellation = await spawnFlow(
+        ["cancel", "bounded-active", "--actor", "runtime:test"],
+        directory,
+      ).completed;
+      expect(JSON.parse(activeCancellation.stdout)).toMatchObject({
+        type: "cancelled",
+        phase: "active",
+      });
+    } finally {
+      await spawnFlow(["supervisor", "shutdown"], directory).completed.catch(() => undefined);
+    }
+  });
+
+  it("requires explicit idle shutdown before rebinding changed project capacity", async () => {
+    const directory = await createTemporaryDirectory();
+    const initialized = await spawnFlow(["init", directory], directory).completed;
+    expect(initialized.code, initialized.stderr).toBe(0);
+
+    try {
+      const initialStatus = await spawnFlow(["supervisor", "status"], directory).completed;
+      expect(initialStatus.code, initialStatus.stderr).toBe(0);
+      const firstPolicy = JSON.parse(initialStatus.stdout) as { policyDigest: string };
+      await writeFile(
+        join(directory, ".flow", "config.yaml"),
+        projectConfig({ maxQueuedJobs: 1 }),
+        "utf8",
+      );
+
+      const mismatched = await spawnFlow(["supervisor", "status"], directory).completed;
+      expect(mismatched.code, mismatched.stderr).toBe(0);
+      expect(JSON.parse(mismatched.stdout)).toMatchObject({
+        policyDigest: firstPolicy.policyDigest,
+        limits: { maxActiveWorkers: 1, maxQueuedJobs: 32 },
+      });
+
+      const shutdown = await spawnFlow(["supervisor", "shutdown"], directory).completed;
+      expect(shutdown.code, shutdown.stderr).toBe(0);
+      const rebound = await spawnFlow(["supervisor", "status"], directory).completed;
+      expect(rebound.code, rebound.stderr).toBe(0);
+      expect(JSON.parse(rebound.stdout)).toMatchObject({
+        limits: { maxActiveWorkers: 1, maxQueuedJobs: 1 },
+      });
+      expect(JSON.parse(rebound.stdout).policyDigest).not.toBe(firstPolicy.policyDigest);
+    } finally {
+      await spawnFlow(["supervisor", "shutdown"], directory).completed.catch(() => undefined);
+    }
+  });
+
   it("cancels a detached process tree from a second CLI with attribution", async () => {
     const directory = await createTemporaryDirectory();
     const workflowPath = join(directory, "detached-cancel.workflow.yaml");
     const runsDirectory = join(directory, "runs");
-    const started = join(directory, "detached-started.txt");
-    const release = join(directory, "detached-release.txt");
-    const orphaned = join(directory, "detached-orphaned.txt");
+    const commandPidPath = join(directory, "detached-command.pid");
+    const descendantPidPath = join(directory, "detached-descendant.pid");
     await writeFile(
       workflowPath,
       commandWorkflow(
         "detached-cancel-workflow",
-        `const fs = require("node:fs"); fs.writeFileSync(${JSON.stringify(started)}, "started"); setInterval(() => { if (fs.existsSync(${JSON.stringify(release)})) fs.writeFileSync(${JSON.stringify(orphaned)}, "orphan"); }, 20);`,
+        `const fs = require("node:fs"); const { spawn } = require("node:child_process"); fs.writeFileSync(${JSON.stringify(commandPidPath)}, String(process.pid)); const descendant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); fs.writeFileSync(${JSON.stringify(descendantPidPath)}, String(descendant.pid)); setInterval(() => {}, 1000);`,
       ),
       "utf8",
     );
@@ -371,7 +542,11 @@ describe("compiled Flow process", () => {
         directory,
       ]).completed;
       expect(submitted.code, submitted.stderr).toBe(0);
-      await waitForFile(started);
+      await Promise.all([waitForFile(commandPidPath), waitForFile(descendantPidPath)]);
+      const commandPid = Number(await readFile(commandPidPath, "utf8"));
+      const descendantPid = Number(await readFile(descendantPidPath, "utf8"));
+      expect(Number.isSafeInteger(commandPid)).toBe(true);
+      expect(Number.isSafeInteger(descendantPid)).toBe(true);
 
       const cancellationCommandId = "019fd722-4144-7a72-9c86-6f9af022b2e8";
       const cancelled = await spawnFlow([
@@ -401,9 +576,7 @@ describe("compiled Flow process", () => {
         requestId: cancellationCommandId,
         reason: "Stop the detached command.",
       });
-      await writeFile(release, "release", "utf8");
-      await delay(250);
-      await expect(stat(orphaned)).rejects.toMatchObject({ code: "ENOENT" });
+      await Promise.all([waitForProcessExit(commandPid), waitForProcessExit(descendantPid)]);
     } finally {
       await spawnFlow(["supervisor", "shutdown", "--runs-dir", runsDirectory]).completed.catch(
         () => undefined,
@@ -488,6 +661,16 @@ describe("compiled Flow process", () => {
   });
 });
 
+function projectConfig(
+  supervisor: Partial<{ readonly maxActiveWorkers: number; readonly maxQueuedJobs: number }>,
+): string {
+  return `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: FlowProjectConfig
+supervisor:
+${supervisor.maxActiveWorkers === undefined ? "" : `  maxActiveWorkers: ${supervisor.maxActiveWorkers}\n`}${supervisor.maxQueuedJobs === undefined ? "" : `  maxQueuedJobs: ${supervisor.maxQueuedJobs}\n`}`;
+}
+
 function commandWorkflow(id: string, script: string): string {
   return `
 apiVersion: flow.synapti.ai/v1alpha1
@@ -523,23 +706,27 @@ nodes:
 `;
 }
 
-function spawnFlow(args: readonly string[]): {
+function spawnFlow(
+  args: readonly string[],
+  cwd = projectRoot,
+): {
   child: ChildProcess;
   completed: Promise<ProcessResult>;
 } {
-  return spawnCaptured(process.execPath, [cliPath, ...args]);
+  return spawnCaptured(process.execPath, [cliPath, ...args], 0, cwd);
 }
 
 function spawnCaptured(
   executable: string,
   args: readonly string[],
   pauseStdoutMs = 0,
+  cwd = projectRoot,
 ): {
   child: ChildProcess;
   completed: Promise<ProcessResult>;
 } {
   const child = spawn(executable, [...args], {
-    cwd: projectRoot,
+    cwd,
     stdio: ["ignore", "pipe", "pipe"],
   });
   let stdout = "";
@@ -618,7 +805,11 @@ async function waitForProcessExit(pid: number): Promise<void> {
     try {
       process.kill(pid, 0);
     } catch (error) {
-      if (error instanceof Error && "code" in error && error.code === "ESRCH") {
+      if (
+        error instanceof Error &&
+        "code" in error &&
+        (error.code === "ESRCH" || error.code === "EPERM")
+      ) {
         return;
       }
       throw error;
@@ -626,6 +817,16 @@ async function waitForProcessExit(pid: number): Promise<void> {
     await delay(20);
   }
   throw new Error(`timed out waiting for process ${pid} to exit`);
+}
+
+function killProcessGroupIfAlive(pid: number): void {
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) {
+      throw error;
+    }
+  }
 }
 
 async function createTemporaryDirectory(): Promise<string> {

@@ -33,19 +33,22 @@ flow supervisor status
 flow events <run-id> --after 0 --follow
 ```
 
-The client returns only after the exact source snapshot and active-run claim are durable and an
-authenticated worker has accepted ownership. That acceptance is a process-lifecycle guarantee, not
-a successful workflow result. A later client can page ledger events, follow to a terminal event, or
-cancel an active worker with
+The client returns one of three durable admission outcomes. `accepted` means the exact source,
+active reservation, and claim are durable and an authenticated worker has accepted ownership;
+`queued` means the exact source and FIFO ticket are durable but no claim or worker exists; and
+`rejected` with `queue_full` means the compact rejection is durable and no executable source
+snapshot was retained. Acceptance is a process-lifecycle guarantee, not a successful workflow
+result. A later client can page ledger events, follow to a terminal event, or cancel active or queued
+work with
 `flow cancel <run-id> --actor <label> [--reason <text>] [--command-id <uuid>]`.
 
 Flow generates command ids when omitted. A caller that needs retry safety across a lost response
 must persist a UUID before the first request and reuse it with byte-equivalent input. A reused key
-with different input is rejected. Submission commands are journaled before job reservation: exact
-retries replay accepted or rejected outcomes, while uncertain launches are reconciled only from a
-matching authenticated worker and never cause a second spawn. A job snapshot with neither an
-active claim nor an authenticated descriptor is ambiguous rather than proof that launch is safe;
-Flow records uncertainty and refuses to spawn it.
+with different input is rejected. Submission commands are journaled before admission: exact retries
+replay accepted, queued, or rejected outcomes and retain the original queue ticket. A snapshot left
+before its admission event is inert; an exact retry can complete the missing transition with the
+same identity. Once execution may have crossed the authenticated worker boundary, uncertainty is
+reconciled only from that matching worker and never causes a second spawn.
 
 An approval-required command returns process exit code 3 and can be decided after the original
 client exits:
@@ -93,27 +96,40 @@ For foreground execution, that owner is the CLI process. For detached execution,
 one existing `runWorkflow` or `resumeWorkflow` call. The local supervisor never claims the run,
 appends graph events, constructs an executor, or contacts a model provider.
 
-The supervisor maintains an immutable submitted-source snapshot, an active-run claim, a private
-worker descriptor, and durable mutating-command records. A submission record binds the exact input
-digest before reservation and transitions monotonically to accepted, rejected, or uncertain. A
-worker starts in an adoption gate and does not schedule until it has published `running`, the
-supervisor authenticates its worker id, run id, PID, random token, and job digest, and the identity
-response has flushed. Duplicate exact submissions converge on the recorded result; conflicting
-submissions remain rejected even after the original active claim disappears. Concurrent clients
-also serialize daemon auto-start through an owner-only startup record, so only one caller can
-remove a stale socket and launch a generation.
+The supervisor maintains immutable source snapshots for admitted jobs, a separate admission ledger,
+active-run claims, private worker descriptors, and durable mutating-command records. A submission
+record binds the exact input and policy digests before admission and transitions monotonically to
+queued, accepted, rejected, or uncertain. The admission ledger serializes capacity reservation,
+FIFO dispatch, queued cancellation, uncertainty, and release; it is synced before those facts are
+acknowledged and periodically compacted to a replay-equivalent snapshot. A worker starts in an
+adoption gate and does not schedule until it has published `running`, the supervisor authenticates
+its worker id, run id, PID, random token, and job digest, and the identity response has flushed.
+Duplicate exact submissions converge on the recorded result; conflicting submissions remain
+rejected even after the original active claim disappears. Concurrent clients also serialize daemon
+auto-start through an owner-only startup record, so only one caller can remove a stale socket and
+launch a generation.
 
-On supervisor restart, detached workers continue in their own process groups. A replacement
-generation scans claims and adopts only workers that answer the token-bound identity handshake.
-Stale or mismatched PID metadata is never signalled. If the worker itself disappears with an open
-node attempt, the ledger remains authoritative and normal recovery reports `uncertain_operation`.
+On supervisor restart, detached workers continue in their own process groups and queued jobs remain
+in the admission ledger. A replacement generation bound to the same policy reconciles only live
+claims and active admission identities, adopts workers that answer the token-bound handshake,
+releases proven terminal work, and dispatches the oldest queued ticket into each free slot. Stale or
+mismatched PID metadata is never signalled. If the worker itself disappears with an open node
+attempt, the ledger remains authoritative and normal recovery reports `uncertain_operation`; the
+uncertain admission conservatively continues to consume capacity.
 
 Cancellation is recorded durably before dispatch. A repeated exact command id returns its committed
 result; a different request using that id conflicts. If acknowledgement is lost after dispatch,
 Flow reconciles a terminal cancellation from the ledger and otherwise reports uncertainty instead
 of blindly repeating the abort. Cancellation during a node retains its available evidence and
 records the actor, request id, and cancelled node; committed resource exhaustion still takes
-precedence.
+precedence. Queued cancellation is a two-phase admission transition: once its durable record wins
+the dispatch race, Flow completes the command and removes the job without creating an active claim,
+worker descriptor, model session, command sandbox, or run ledger.
+
+A supervisor generation is bound to the exact effective capacity digest. Stateful requests carrying
+a different digest fail before mutation. Shutdown refuses while active or queued admission remains;
+an explicit idle shutdown archives that policy generation so a later process may bind changed
+values. Editing configuration never rewrites or reorders an existing queue.
 
 Event replay is read-only and page-based. `--after` is an exclusive sequence cursor, `--limit` is
 bounded to 256, and follow mode advances only after validating the next contiguous page. A page is
@@ -127,7 +143,7 @@ JSONL records are committed only when newline-terminated. Recovery ignores a fin
 fragment and truncates it immediately before the next append. An invalid earlier record, mismatched
 run directory, or corrupt owner record fails closed and is preserved for diagnosis.
 
-## Error codes
+## Error codes and outcomes
 
 | Code | Meaning | Operator action |
 | --- | --- | --- |
@@ -140,6 +156,8 @@ run directory, or corrupt owner record fails closed and is preserved for diagnos
 | `not_owner` | Another live process owns execution | Inspect without claiming, or wait for that process to exit |
 | `not_found` | No ledger exists for the run ID | Verify `--run-id` and `--runs-dir` |
 | `corrupt` | Committed ledger or ownership data is invalid or ambiguous | Preserve the run directory and diagnose it; do not hand-edit authoritative events |
+| `policy_mismatch` | The client and durable/live supervisor generation resolved different effective capacity policies | Inspect `flow config show` and `flow supervisor status`; let work become idle, then explicitly shut down the old generation. If it already exited, temporarily restore its prior values so it can restart and be shut down safely |
+| `queue_full` | Active and queued detached capacity are both exhausted | Retry later with the same persisted command id, or deliberately change operator capacity after an idle shutdown |
 
 ## Guarantees and non-guarantees
 
@@ -147,12 +165,15 @@ Flow guarantees that committed successful nodes are not scheduled again during a
 that one local process owns append/execution/approval decisions, that a required command cannot
 start without a matching unexpired single-use grant, that committed resource use produces the same
 remaining allowances and exhausted decision after replay, and that unsafe refusal paths do not add
-ledger events or invoke an executor. Historical approval requests are revalidated against the
-budget remaining at their exact event boundary, not against final run consumption.
+run-ledger events or invoke an executor. Detached admission additionally guarantees that every
+worker consumes a prior durable slot, queued work is FIFO by stable ticket, queue-full work creates
+no worker, and an exact command retry reproduces its prior admission result. Historical approval
+requests are revalidated against the budget remaining at their exact event boundary, not against
+final run consumption.
 
 Flow does not guarantee exactly-once effects in arbitrary external systems, authenticated approval
 or cancellation identity, trusted time, mid-node restoration of Pi sessions, automatic retry of
 uncertain work, host-reboot continuation, multi-host recovery, or a billing-authoritative
 zero-overshoot model-cost cap.
-Those capabilities require explicit reconciliation, identity, provider reservation, and supervisor
-designs beyond this recovery slice.
+It also does not perform offline admission-policy retirement. Those capabilities require explicit
+reconciliation, identity, provider reservation, and supervisor designs beyond this recovery slice.

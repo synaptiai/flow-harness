@@ -8,17 +8,17 @@ Run the complete local gate with:
 npm run check
 ```
 
-It verifies formatting, lint rules, strict TypeScript contracts, all default tests, a clean production build, and compiled-process tests. The build removes the previous `dist/` tree first so deleted modules cannot survive into a release artifact. Packaging is checked separately with `npm run pack:check` so cache or registry settings do not affect the main code-quality result.
+It verifies formatting, lint rules, strict TypeScript contracts, all default tests, a clean production build, and compiled-process tests. The build removes the previous `dist/` tree first so deleted modules cannot survive into a release artifact. Packaging is checked separately with `npm run pack:check`; that command rebuilds, packs the archive, installs it into a clean temporary consumer with lifecycle scripts disabled, runs the installed CLI, initializes a project, and inspects the effective default configuration.
 
 ## Test layers
 
 | Layer | Purpose | External effects |
 | --- | --- | --- |
-| Domain unit | Workflow/goal/budget compilation, checked resource aggregation, exhaustion, policy and approval operation digests, pure criterion evaluation, and decision/receipt/approval replay invariants | None |
+| Domain unit | Workflow/goal/budget/config compilation, monotonic capacity merge, admission state-machine exploration, checked resource aggregation, exhaustion, policy and approval operation digests, pure criterion evaluation, and decision/receipt/approval replay invariants | None |
 | Application unit | Scheduler ordering, recovery compatibility, budget stop boundaries and timeout clamping, approval waits and expiry, completed-node skipping, failure propagation, and executor authority | Test-only in-memory ports |
-| Infrastructure integration | Atomic hash-anchored edits, same-host edit-lock recovery, exact-byte versions, protected paths, real JSONL persistence, process and approval-decision ownership, owner-only supervisor records, atomic claims and command journals, torn-tail repair, and real child processes | Temporary directories and local processes |
-| CLI integration | Validate, run, detached submission, events, cancel, supervisor status/shutdown, wait, approve/deny, exhaust, resume, persist, and inspect through production composition | Temporary run ledgers, private local sockets, and local processes |
-| Compiled-process integration | Direct-entry signal handling, process-group termination, cross-process run claiming, detached client exit, cancellation of a real process tree, supervisor restart/adoption, and real sandbox boundaries | Built CLI, temporary run ledgers, local process trees, native sandbox primitives, Unix sockets, and loopback networking |
+| Infrastructure integration | Atomic hash-anchored edits, same-host edit-lock recovery, exact-byte versions, protected paths, real JSONL persistence, process and approval-decision ownership, strict project/operator config, owner-only supervisor records, atomic claims and command journals, admission replay/compaction, torn-tail repair, and real child processes | Temporary directories and local processes |
+| CLI integration | Init, config inspection, validate, run, detached accepted/queued/rejected submission, events, active/queued cancel, supervisor status/shutdown, wait, approve/deny, exhaust, resume, persist, and inspect through production composition | Temporary run ledgers, private local sockets, and local processes |
+| Compiled-process integration | Direct-entry signal handling, process-group termination, cross-process run claiming, detached client exit, bounded concurrent admission, queued cancellation without execution, policy mismatch/rebinding, cancellation of a real process tree, supervisor restart/adoption, and real sandbox boundaries | Built CLI, temporary run ledgers, local process trees, native sandbox primitives, Unix sockets, and loopback networking |
 | Pi adapter contract | Exact model/tool request translation, versioned reads, edit receipts, session-stat usage translation, policy-broker routing, setup races, timeout settlement, and committed/uncertain error classification | Temporary workspace and test-only runner at the SDK seam |
 | Pi SDK integration | Real `ModelRuntime` and `createAgentSession` composition, `flow_read`/`flow_edit` tool turns, and streaming | Deterministic in-process provider; no network or credentials |
 | Live Pi | Provider authentication, streaming, cancellation, and model compatibility | Opt-in network and provider cost |
@@ -31,6 +31,8 @@ After `npm run build`:
 
 ```sh
 node dist/cli/main.js --help
+node dist/cli/main.js init .
+node dist/cli/main.js config show
 node dist/cli/main.js validate examples/verify-foundation.workflow.yaml
 node dist/cli/main.js run examples/verify-foundation.workflow.yaml --run-id smoke
 node dist/cli/main.js inspect smoke
@@ -49,11 +51,14 @@ The examples use the real argv-only command executor through the production sand
 
 The compiled-process suite also proves that a detached worker outlives its client, that public
 cancellation terminates the real descendant process group and records attribution, and that a new
-supervisor generation authenticates and adopts a still-running worker exactly once. Six concurrent
-compiled clients are also required to converge on one auto-started supervisor generation. Protocol
-tests exercise bounded framing and strict schemas; store tests exercise owner-only permissions,
-no-follow reads, immutable snapshots, startup serialization, atomic claims, and durable cancellation
-records.
+supervisor generation authenticates and adopts a still-running worker exactly once. Concurrent
+compiled clients are required to converge on one auto-started generation and remain within active
+and queue bounds. The suite distinguishes accepted, queued, and queue-full responses, proves queued
+cancellation creates no run ledger, and exercises policy mismatch plus explicit idle rebinding.
+Protocol tests exercise v2 bounded framing and strict schemas; admission tests explore reachable
+states and FIFO invariants; store tests exercise owner-only permissions, no-follow reads, immutable
+snapshots, automatic replay-equivalent compaction, startup serialization, atomic claims, and durable
+cancellation records.
 
 Runtime sandbox tests require the host capabilities listed in the README. A sandbox dependency warning is a test failure, not a skip. Running Flow's sandbox suite from inside another restrictive sandbox can prevent SRT from creating its internal Unix socket or namespace; run the suite directly on the host or in a CI runner configured for nested containment. This operational accommodation must not weaken the production profile.
 

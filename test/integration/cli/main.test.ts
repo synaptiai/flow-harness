@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -96,6 +96,23 @@ nodes:
       code: "ENOENT",
     });
     expect(capture.stderr.join("\n")).toContain("invalid_schema");
+  });
+
+  it("rejects invalid project configuration before supervisor or run-store mutation", async () => {
+    const directory = await createTemporaryDirectory();
+    await mkdir(join(directory, ".flow"));
+    await writeFile(
+      join(directory, ".flow", "config.yaml"),
+      "apiVersion: flow.synapti.ai/v2\nkind: FlowProjectConfig\n",
+      "utf8",
+    );
+    const capture = createCapture();
+
+    const exitCode = await main(["supervisor", "status"], capture.io, { cwd: directory });
+
+    expect(exitCode).toBe(2);
+    expect(capture.stderr.join("\n")).toMatch(/invalid_config.*apiVersion/i);
+    await expect(stat(join(directory, ".flow", "runs"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("runs and inspects a command workflow through the production path", async () => {

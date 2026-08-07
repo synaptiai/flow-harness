@@ -3,6 +3,7 @@ import { isAbsolute, join, resolve } from "node:path";
 
 import { z } from "zod";
 
+import { MAX_ACTIVE_WORKERS, MAX_QUEUED_JOBS } from "../domain/config/resolver.js";
 import { SUPERVISOR_PROTOCOL_VERSION } from "./protocol.js";
 
 const uuidSchema = z.uuid();
@@ -49,6 +50,7 @@ export interface SubmissionCommandIdentity {
   readonly version: 1;
   readonly commandId: string;
   readonly type: "submit";
+  readonly policyDigest: string;
   readonly runId: string;
   readonly mode: "run" | "resume";
   readonly sourceName: string;
@@ -74,8 +76,17 @@ export interface CompletedSubmissionCommand extends SubmissionCommandBase {
   };
 }
 
+export interface QueuedSubmissionCommand extends SubmissionCommandBase {
+  readonly status: "queued";
+  readonly queuedAt: string;
+  readonly result: {
+    readonly queuePosition: number;
+  };
+}
+
 export interface RejectedSubmissionCommand extends SubmissionCommandBase {
   readonly status: "rejected";
+  readonly reason: "cancelled" | "conflict" | "queue_full";
   readonly rejectedAt: string;
   readonly failure: string;
 }
@@ -88,6 +99,7 @@ export interface UncertainSubmissionCommand extends SubmissionCommandBase {
 
 export type SubmissionCommandRecord =
   | RecordedSubmissionCommand
+  | QueuedSubmissionCommand
   | CompletedSubmissionCommand
   | RejectedSubmissionCommand
   | UncertainSubmissionCommand;
@@ -115,7 +127,8 @@ export interface CompletedCancellationCommand extends CancellationCommandBase {
   readonly completedAt: string;
   readonly result: {
     readonly runStatus: "cancelled";
-    readonly lastSequence: number;
+    readonly phase: "active" | "queued";
+    readonly lastSequence: number | null;
   };
 }
 
@@ -227,6 +240,13 @@ const supervisorDescriptorSchema = z
     startedAt: timestampSchema,
     runsDirectory: absolutePathSchema,
     socketPath: absolutePathSchema,
+    policyDigest: sha256Schema,
+    limits: z
+      .object({
+        maxActiveWorkers: z.number().int().positive().safe().max(MAX_ACTIVE_WORKERS),
+        maxQueuedJobs: z.number().int().nonnegative().safe().max(MAX_QUEUED_JOBS),
+      })
+      .strict(),
   })
   .strict();
 
@@ -261,9 +281,19 @@ const cancellationCommandRecordSchema: z.ZodType<CancellationCommandRecord> = z
         result: z
           .object({
             runStatus: z.literal("cancelled"),
-            lastSequence: z.number().int().positive().safe(),
+            phase: z.enum(["active", "queued"]),
+            lastSequence: z.number().int().positive().safe().nullable(),
           })
-          .strict(),
+          .strict()
+          .superRefine((result, context) => {
+            if ((result.phase === "queued") !== (result.lastSequence === null)) {
+              context.addIssue({
+                code: "custom",
+                message: "queued cancellation requires a null run sequence",
+                path: ["lastSequence"],
+              });
+            }
+          }),
       })
       .strict(),
     z
@@ -284,6 +314,7 @@ const submissionCommandBaseShape = {
   version: z.literal(1),
   commandId: uuidSchema,
   type: z.literal("submit"),
+  policyDigest: sha256Schema,
   runId: runIdSchema,
   mode: z.enum(["run", "resume"]),
   sourceName: absolutePathSchema,
@@ -296,6 +327,18 @@ const submissionCommandBaseShape = {
 const submissionCommandRecordSchema: z.ZodType<SubmissionCommandRecord> = z
   .discriminatedUnion("status", [
     z.object({ ...submissionCommandBaseShape, status: z.literal("recorded") }).strict(),
+    z
+      .object({
+        ...submissionCommandBaseShape,
+        status: z.literal("queued"),
+        queuedAt: timestampSchema,
+        result: z
+          .object({
+            queuePosition: z.number().int().positive().safe(),
+          })
+          .strict(),
+      })
+      .strict(),
     z
       .object({
         ...submissionCommandBaseShape,
@@ -313,6 +356,7 @@ const submissionCommandRecordSchema: z.ZodType<SubmissionCommandRecord> = z
       .object({
         ...submissionCommandBaseShape,
         status: z.literal("rejected"),
+        reason: z.enum(["cancelled", "conflict", "queue_full"]),
         rejectedAt: timestampSchema,
         failure: z.string().min(1).max(16_384),
       })
@@ -350,6 +394,7 @@ export type CreateCancellationCommandInput = Omit<
 >;
 export interface CreateSubmissionCommandInput {
   readonly commandId: string;
+  readonly policyDigest: string;
   readonly runId: string;
   readonly mode: "run" | "resume";
   readonly sourceName: string;
@@ -480,6 +525,7 @@ export function createSubmissionCommandRecord(
     version: 1 as const,
     commandId: input.commandId,
     type: "submit" as const,
+    policyDigest: input.policyDigest,
     runId: input.runId,
     mode: input.mode,
     sourceName: input.sourceName,
@@ -512,16 +558,34 @@ export function completeSubmissionCommand(
   ) as CompletedSubmissionCommand;
 }
 
+export function queueSubmissionCommand(
+  input: SubmissionCommandRecord,
+  queuePosition: number,
+  queuedAt: string,
+): QueuedSubmissionCommand {
+  const current = parseSubmissionCommandRecord(input);
+  return deepFreeze(
+    submissionCommandRecordSchema.parse({
+      ...submissionCommandBase(current),
+      status: "queued",
+      queuedAt,
+      result: { queuePosition },
+    }),
+  ) as QueuedSubmissionCommand;
+}
+
 export function rejectSubmissionCommand(
   input: SubmissionCommandRecord,
   failure: string,
   rejectedAt: string,
+  reason: RejectedSubmissionCommand["reason"] = "conflict",
 ): RejectedSubmissionCommand {
   const current = parseSubmissionCommandRecord(input);
   return Object.freeze(
     submissionCommandRecordSchema.parse({
       ...submissionCommandBase(current),
       status: "rejected",
+      reason,
       rejectedAt,
       failure,
     }),
@@ -569,6 +633,7 @@ export function calculateSubmissionCommandDigest(input: SubmissionCommandIdentit
     version: input.version,
     commandId: input.commandId,
     type: input.type,
+    policyDigest: input.policyDigest,
     runId: input.runId,
     mode: input.mode,
     sourceName: input.sourceName,
@@ -623,6 +688,7 @@ function submissionCommandBase(record: SubmissionCommandRecord): SubmissionComma
     version: record.version,
     commandId: record.commandId,
     type: record.type,
+    policyDigest: record.policyDigest,
     runId: record.runId,
     mode: record.mode,
     sourceName: record.sourceName,

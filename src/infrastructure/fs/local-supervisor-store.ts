@@ -1,7 +1,18 @@
 import { constants, type Dirent } from "node:fs";
-import { chmod, type FileHandle, lstat, mkdir, open, readdir, rename, rm } from "node:fs/promises";
+import {
+  chmod,
+  type FileHandle,
+  link,
+  lstat,
+  mkdir,
+  open,
+  readdir,
+  rename,
+  rm,
+} from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 
 import {
   parseActiveRunClaim,
@@ -18,8 +29,9 @@ import {
   type SupervisorStartLock,
   type WorkerDescriptor,
 } from "../../supervisor/records.js";
+import { MAX_SUPERVISOR_FRAME_BYTES } from "../../supervisor/protocol.js";
 
-const MAX_RECORD_BYTES = 40 * 1024 * 1024;
+const MAX_RECORD_BYTES = MAX_SUPERVISOR_FRAME_BYTES + 64 * 1024;
 
 export type LocalSupervisorStoreErrorCode =
   | "corrupt"
@@ -102,6 +114,12 @@ export class LocalSupervisorStore {
         `active claim for run "${claim.runId}" does not match job "${job.jobId}"`,
       );
     }
+    await this.reserveJob(job);
+    await this.reserveActiveRunClaim(claim);
+  }
+
+  async reserveJob(jobInput: JobRecord): Promise<void> {
+    const job = parseJobRecord(jobInput);
     await this.initialize();
 
     const jobPath = this.#jobPath(job.jobId);
@@ -120,7 +138,18 @@ export class LocalSupervisorStore {
         );
       }
     }
+  }
 
+  async reserveActiveRunClaim(claimInput: ActiveRunClaim): Promise<void> {
+    const claim = parseActiveRunClaim(claimInput);
+    const job = await this.readJob(claim.jobId);
+    if (claim.runId !== job.runId || claim.workerId !== job.workerId) {
+      throw new LocalSupervisorStoreError(
+        "identity_mismatch",
+        `active claim for run "${claim.runId}" does not match job "${job.jobId}"`,
+      );
+    }
+    await this.initialize();
     const claimPath = this.#claimPath(claim.runId);
     try {
       await writeExclusiveRecord(claimPath, claim);
@@ -237,24 +266,119 @@ export class LocalSupervisorStore {
   > {
     const record = parseSupervisorStartLock(input);
     await this.initialize();
-    try {
-      await writeExclusiveRecord(this.#supervisorStartPath(), record);
-      return { acquired: true, record };
-    } catch (error) {
-      if (!isNodeError(error) || error.code !== "EEXIST") {
-        throw storeIoError("failed to reserve supervisor startup", error);
+    for (;;) {
+      if (!(await this.#settleSupervisorStartReleases())) {
+        await delay(5);
+        continue;
       }
-      const existing = await this.#readRequiredRecord(
-        this.#supervisorStartPath(),
-        parseSupervisorStartLock,
-        "supervisor startup lock",
-      );
-      return { acquired: false, record: existing };
+      try {
+        await writeExclusiveRecord(this.#supervisorStartPath(), record);
+        if ((await this.#supervisorStartReleasePaths()).length !== 0) {
+          await this.releaseSupervisorStart(record.token).catch((error: unknown) => {
+            if (
+              !(
+                error instanceof LocalSupervisorStoreError &&
+                (error.code === "not_found" || error.code === "identity_mismatch")
+              )
+            ) {
+              throw error;
+            }
+          });
+          await delay(5);
+          continue;
+        }
+        return { acquired: true, record };
+      } catch (error) {
+        if (!isNodeError(error) || error.code !== "EEXIST") {
+          throw storeIoError("failed to reserve supervisor startup", error);
+        }
+        try {
+          const existing = await this.#readRequiredRecord(
+            this.#supervisorStartPath(),
+            parseSupervisorStartLock,
+            "supervisor startup lock",
+          );
+          if (existing.token === record.token) {
+            if (JSON.stringify(existing) !== JSON.stringify(record)) {
+              throw new LocalSupervisorStoreError(
+                "identity_mismatch",
+                "supervisor startup token was restored with different owner metadata",
+              );
+            }
+            return { acquired: true, record: existing };
+          }
+          return { acquired: false, record: existing };
+        } catch (readError) {
+          if (readError instanceof LocalSupervisorStoreError && readError.code === "not_found") {
+            continue;
+          }
+          throw readError;
+        }
+      }
     }
   }
 
   async releaseSupervisorStart(token: string): Promise<void> {
     validateUuid(token, "supervisor startup token");
+    const retired = join(this.controlDirectory, `.supervisor-start.${randomUUID()}.releasing`);
+    try {
+      await rename(this.#supervisorStartPath(), retired);
+      await syncDirectory(this.controlDirectory);
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        throw new LocalSupervisorStoreError(
+          "not_found",
+          "supervisor startup lock no longer exists",
+          { cause: error },
+        );
+      }
+      throw storeIoError("failed to release supervisor startup", error);
+    }
+    let captured: SupervisorStartLock;
+    try {
+      captured = await this.#readRequiredRecord(
+        retired,
+        parseSupervisorStartLock,
+        "claimed supervisor startup lock",
+      );
+    } catch (error) {
+      const current = await this.#readOptionalRecord(
+        this.#supervisorStartPath(),
+        parseSupervisorStartLock,
+        "supervisor startup lock",
+      );
+      if (current !== null && current.token !== token) {
+        throw new LocalSupervisorStoreError(
+          "identity_mismatch",
+          "supervisor startup lock belongs to another caller",
+          { cause: error },
+        );
+      }
+      throw error;
+    }
+    if (captured.token !== token) {
+      while (!(await this.#restoreSupervisorStartRelease(retired, captured))) {
+        await delay(5);
+      }
+      throw new LocalSupervisorStoreError(
+        "identity_mismatch",
+        "supervisor startup lock belongs to another caller",
+      );
+    }
+    await rm(retired, { force: true });
+    await syncDirectory(this.controlDirectory);
+  }
+
+  async transferSupervisorStart(
+    token: string,
+    pid: number,
+    ownerToken: string,
+  ): Promise<SupervisorStartLock> {
+    validateUuid(token, "supervisor startup token");
+    validateUuid(ownerToken, "supervisor startup owner token");
+    while (!(await this.#settleSupervisorStartReleases())) {
+      await delay(5);
+    }
     const existing = await this.#readRequiredRecord(
       this.#supervisorStartPath(),
       parseSupervisorStartLock,
@@ -266,14 +390,13 @@ export class LocalSupervisorStore {
         "supervisor startup lock belongs to another caller",
       );
     }
-    const retired = join(this.controlDirectory, `.supervisor-start.${randomUUID()}.released`);
+    const transferred = parseSupervisorStartLock({ ...existing, pid, token: ownerToken });
     try {
-      await rename(this.#supervisorStartPath(), retired);
-      await syncDirectory(this.controlDirectory);
-      await rm(retired);
-      await syncDirectory(this.controlDirectory);
+      await writeAtomicRecord(this.#supervisorStartPath(), transferred);
+      await this.#discardSupervisorStartReleases(token);
+      return transferred;
     } catch (error) {
-      throw storeIoError("failed to release supervisor startup", error);
+      throw storeIoError("failed to transfer supervisor startup ownership", error);
     }
   }
 
@@ -355,6 +478,10 @@ export class LocalSupervisorStore {
     const transitionAllowed =
       existing.type === command.type &&
       ((existing.status === "recorded" && command.status !== "recorded") ||
+        (existing.status === "queued" &&
+          (command.status === "completed" ||
+            command.status === "rejected" ||
+            command.status === "uncertain")) ||
         (existing.status === "uncertain" && command.status === "completed"));
     if (!transitionAllowed) {
       throw new LocalSupervisorStoreError(
@@ -455,6 +582,97 @@ export class LocalSupervisorStore {
   #supervisorStartPath(): string {
     return join(this.controlDirectory, "supervisor-start.json");
   }
+
+  async #supervisorStartReleasePaths(): Promise<readonly string[]> {
+    const entries = await readdir(this.controlDirectory, { withFileTypes: true, encoding: "utf8" });
+    return entries
+      .filter(
+        (entry) =>
+          entry.isFile() && /^\.supervisor-start\.[0-9a-f-]+\.releasing$/u.test(entry.name),
+      )
+      .map((entry) => join(this.controlDirectory, entry.name));
+  }
+
+  async #settleSupervisorStartReleases(): Promise<boolean> {
+    for (const path of await this.#supervisorStartReleasePaths()) {
+      const captured = await this.#readOptionalRecord(
+        path,
+        parseSupervisorStartLock,
+        "claimed supervisor startup lock",
+      );
+      if (captured !== null && !(await this.#restoreSupervisorStartRelease(path, captured))) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  async #restoreSupervisorStartRelease(
+    path: string,
+    captured: SupervisorStartLock,
+  ): Promise<boolean> {
+    try {
+      await link(path, this.#supervisorStartPath());
+      await syncDirectory(this.controlDirectory);
+      await rm(path, { force: true });
+      await syncDirectory(this.controlDirectory);
+      return true;
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        return true;
+      }
+      if (!isNodeError(error) || error.code !== "EEXIST") {
+        throw storeIoError("failed to restore supervisor startup ownership", error);
+      }
+      const current = await this.#readOptionalRecord(
+        this.#supervisorStartPath(),
+        parseSupervisorStartLock,
+        "supervisor startup lock",
+      );
+      if (current !== null && current.token === captured.token) {
+        await rm(path, { force: true });
+        await syncDirectory(this.controlDirectory);
+        return true;
+      }
+      if (current !== null && !isProcessAlive(current.pid)) {
+        try {
+          await this.releaseSupervisorStart(current.token);
+        } catch (releaseError) {
+          if (
+            !(
+              releaseError instanceof LocalSupervisorStoreError &&
+              (releaseError.code === "not_found" || releaseError.code === "identity_mismatch")
+            )
+          ) {
+            throw releaseError;
+          }
+        }
+      } else if (!isProcessAlive(captured.pid)) {
+        await rm(path, { force: true });
+        await syncDirectory(this.controlDirectory);
+        return true;
+      }
+      return false;
+    }
+  }
+
+  async #discardSupervisorStartReleases(token: string): Promise<void> {
+    let removed = false;
+    for (const path of await this.#supervisorStartReleasePaths()) {
+      const captured = await this.#readOptionalRecord(
+        path,
+        parseSupervisorStartLock,
+        "claimed supervisor startup lock",
+      );
+      if (captured?.token === token) {
+        await rm(path, { force: true });
+        removed = true;
+      }
+    }
+    if (removed) {
+      await syncDirectory(this.controlDirectory);
+    }
+  }
 }
 
 async function ensurePrivateDirectory(directory: string, expectedUid: number): Promise<void> {
@@ -491,9 +709,18 @@ async function ensurePrivateDirectory(directory: string, expectedUid: number): P
 }
 
 async function writeExclusiveRecord(path: string, record: unknown): Promise<void> {
-  const handle = await open(path, "wx", 0o600);
-  await writeAndSync(handle, record);
-  await syncDirectory(resolve(path, ".."));
+  const directory = resolve(path, "..");
+  const pending = join(directory, `.${randomUUID()}.pending`);
+  try {
+    const handle = await open(pending, "wx", 0o600);
+    await writeAndSync(handle, record);
+    await link(pending, path);
+    await syncDirectory(directory);
+    await rm(pending);
+    await syncDirectory(directory);
+  } finally {
+    await rm(pending, { force: true }).catch(() => undefined);
+  }
 }
 
 async function writeAtomicRecord(path: string, record: unknown): Promise<void> {
@@ -587,6 +814,15 @@ function currentUid(): number {
     );
   }
   return uid;
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return !(error instanceof Error && "code" in error && error.code === "ESRCH");
+  }
 }
 
 function storeIoError(message: string, cause: unknown): LocalSupervisorStoreError {

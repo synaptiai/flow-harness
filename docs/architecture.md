@@ -6,7 +6,7 @@ Flow turns a collection of useful software-development practices into an enforce
 
 The standalone harness reverses that relationship. Flow owns workflow execution and delegates only bounded node work to an embedded agent runtime.
 
-This document describes the target architecture unless a section is explicitly labeled as the current executable slice. The delivery roadmap is the source of truth for implementation status. Gates 1 and 2 currently provide `validate`, sequential `run`, `inspect`, optional versioned goal contracts, command-bound criterion evaluation, command and bounded Pi agent nodes, cancellation, and replayable local event ledgers. Gate 3 now includes a runtime-neutral policy broker for model-requested reads, lists, and hash-anchored single-file edits, a fail-closed native sandbox for every command node, and exact expiring pre-start approval for deterministic commands. Gate 4 adds `resume` at committed node boundaries, exclusive same-host process ownership, fail-closed refusal of uncertain open attempts, command approval waits that survive client detachment, durable resource accounting with run-wide start, model-token, reported-cost, and active-execution limits, and a local supervisor with authenticated detached workers, status, bounded event replay, cancellation, and restart adoption. Initialization, a TUI, open-operation reconciliation, dynamic agent-tool approval, execute/network model tools, probabilistic evaluators, packages, graph loops, and stronger VM or managed sandbox backends remain later work.
+This document describes the target architecture unless a section is explicitly labeled as the current executable slice. The delivery roadmap is the source of truth for implementation status. Gates 1 and 2 currently provide `validate`, sequential `run`, `inspect`, optional versioned goal contracts, command-bound criterion evaluation, command and bounded Pi agent nodes, cancellation, and replayable local event ledgers. Gate 3 now includes a runtime-neutral policy broker for model-requested reads, lists, and hash-anchored single-file edits, a fail-closed native sandbox for every command node, and exact expiring pre-start approval for deterministic commands. Gate 4 adds `resume` at committed node boundaries, exclusive same-host process ownership, fail-closed refusal of uncertain open attempts, command approval waits that survive client detachment, durable resource accounting with run-wide start, model-token, reported-cost, and active-execution limits, project initialization and monotonic capacity configuration, plus a bounded local supervisor with authenticated detached workers, durable FIFO admission, status, event replay, cancellation, and restart adoption. A TUI, open-operation reconciliation, broader configurable policy, dynamic agent-tool approval, execute/network model tools, probabilistic evaluators, packages, graph loops, and stronger VM or managed sandbox backends remain later work.
 
 ## Target flows
 
@@ -107,13 +107,21 @@ Fresh and recovered execution publish an atomic per-run ownership record contain
 
 The auto-started local supervisor is a control-plane router, not another scheduler. A detached
 submission contains the exact workflow source, normalized execution directory, run identity, and
-run/resume mode. The supervisor validates that input before mutation and first journals an exact
-request digest. It then writes an immutable job snapshot and an exclusive active-run claim, and
-launches one detached worker with non-inherited standard streams. Submission records transition
-monotonically to accepted, rejected, or uncertain; uncertain launch is reconciled from an existing
-authenticated worker and is never blindly repeated. An unclaimed snapshot without a matching
-worker is ambiguous and fails closed. The worker alone constructs the executor, claims the run
-store, and calls the existing application scheduler.
+run/resume mode plus the effective policy digest. The supervisor compiles that input before mutation
+and first journals an exact request digest. Under one serialized admission operation, it either
+reserves active capacity, assigns a durable FIFO queue ticket, or records deterministic queue-full
+rejection. Dispatch and queue decisions persist the immutable job snapshot before the admission
+event; queue-full rejection retains only compact command and admission facts. Active capacity is
+reserved before process launch. The worker alone constructs the executor, claims the run store, and
+calls the existing application scheduler.
+
+Admission is a separate owner-only append-only JSONL ledger under `<runs-dir>/.supervisor`. Its
+strict reducer enforces active and queued bounds, unique increasing queue tickets, FIFO dispatch,
+job identity, and legal cancellation/release transitions. Records are appended and synced before
+acknowledgement. Recovery repairs only an unterminated final fragment and fails closed on committed
+corruption. The store atomically compacts a committed prefix to a complete replayable snapshot after
+a bounded number of transitions or before its byte ceiling would be crossed. Run events remain the
+only graph authority; admission events prove only control-plane capacity and ordering.
 
 Concurrent clients serialize auto-start through an owner-only startup record. Only its holder may
 remove a stale socket and spawn a generation; other clients poll the advertised endpoint. A dead
@@ -141,6 +149,14 @@ new generation scans durable claims and descriptors and adopts only workers that
 identity handshake. PID liveness alone never grants authority because PIDs can be reused. A dead
 worker with an open node attempt remains governed by the existing `uncertain_operation` recovery
 rule; the control plane does not invent an outcome or replay the work.
+
+The supervisor descriptor, every stateful request, and the admission ledger bind the canonical
+effective capacity digest and exact limits. Read-only status reports the live binding even when the
+caller's newly resolved values differ; every stateful command fails before mutation on that
+mismatch. Shutdown refuses active or queued admission; explicit idle shutdown archives the old
+ledger so a later generation may bind changed effective values. Status work is proportional to live
+claims and admission state rather than lifetime worker history, and returns only bounded worker
+summaries plus active/queued counts.
 
 Durable control metadata lives under `<runs-dir>/.supervisor` with owner-only directories and files,
 no-follow reads, bounded schemas, atomic replacement, and sync-before-acknowledgement. Ephemeral Unix
@@ -192,7 +208,8 @@ no active duration because only committed evidence contributes.
 This is a settlement ceiling, not a prepaid billing control. Provider usage is authoritative only
 after a response, so one response can overshoot. Flow keeps the full observation and schedules no
 downstream work. External organization quotas, price catalogs, invoice reconciliation, distributed
-reservation, CPU/memory/disk limits, concurrency, and artifact budgets remain separate capabilities.
+reservation, CPU/memory/disk limits, graph-node concurrency, and artifact budgets remain separate
+capabilities. Supervisor-wide detached-worker admission is bounded independently.
 
 ### Evaluators
 
@@ -215,6 +232,9 @@ Pi intentionally has no built-in security boundary and the host-side agent runti
 - Supervisor metadata and random worker tokens coordinate processes belonging to one local account.
   They do not defend against that same operating-system user or root, and no TCP or remote control
   endpoint is exposed.
+- Operator/project capacity configuration can bound detached workers and queue depth, but it is not
+  process containment, a provider quota, or a run resource budget. Projects may narrow an operator
+  ceiling and cannot widen it.
 
 Native sandboxing is not equivalent to a microVM. SRT is a beta dependency built on Seatbelt on macOS and bubblewrap, namespaces, and seccomp on Linux. Kernel or sandbox-runtime vulnerabilities remain outside Flow's enforcement model, and the host-side Pi process is not contained by this command adapter. Hostile workloads still require a reviewed container, microVM, Gondolin, OpenShell, or managed isolation boundary.
 
@@ -236,6 +256,8 @@ Approval remains separate from containment. OMP-style allow/prompt/deny rules ca
 10. Cancellation propagates to the model stream, active tool process, children, and workspace cleanup.
 11. Resource consumption and exhaustion are reproducible from Flow events without a provider transcript.
 12. Supervisor health metadata cannot override, repair, or replace authoritative ledger state.
+13. Every detached worker has a prior durable active reservation, and active plus queued admission
+    never exceeds the effective policy.
 
 ## Failure modes
 
@@ -260,6 +282,10 @@ Approval remains separate from containment. OMP-style allow/prompt/deny rules ca
 | Worker exits with an open attempt | Preserve ledger truth and report uncertainty; never infer or retry the operation |
 | Duplicate detached submission | Reuse the durable immutable job/claim for the exact request or reject a conflicting request without a second worker |
 | Concurrent supervisor auto-start | One startup-lock holder launches; all other clients attach to the resulting generation |
+| Active capacity exhausted | Persist one FIFO queue ticket when queue capacity remains; otherwise return a durable `queue_full` rejection without retaining a workflow snapshot |
+| Queued cancellation races dispatch | Serialize both transitions; either remove the queued job without creating a worker/run ledger or continue through authenticated active cancellation |
+| Effective capacity changes | Reject a mismatched stateful request before mutation; require explicit shutdown after the old generation becomes idle |
+| Admission ledger grows | Atomically compact a committed prefix to a replay-equivalent snapshot before transition or byte bounds are exceeded |
 | Cancellation acknowledgement is lost | Reconcile the durable command record with ledger state; never blindly dispatch an uncertain mutation again |
 | Oversized, malformed, or incompatible IPC | Reject the bounded frame before a mutating handler runs |
 | Corrupt state or failed migration | Preserve original data, fail closed, and provide exportable diagnostics |

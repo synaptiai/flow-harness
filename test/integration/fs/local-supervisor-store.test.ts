@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { chmod, lstat, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -10,14 +10,18 @@ import {
   LocalSupervisorStoreError,
 } from "../../../src/infrastructure/fs/local-supervisor-store.js";
 import {
+  completeSubmissionCommand,
   createActiveRunClaim,
   completeCancellationCommand,
   createCancellationCommandRecord,
   createJobRecord,
+  createSubmissionCommandRecord,
   createSupervisorStartLock,
   parseSupervisorDescriptor,
   parseWorkerDescriptor,
+  queueSubmissionCommand,
 } from "../../../src/supervisor/records.js";
+import { SUPERVISOR_PROTOCOL_VERSION } from "../../../src/supervisor/protocol.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -70,6 +74,24 @@ describe("LocalSupervisorStore", () => {
     expect((await lstat(join(store.claimsDirectory, `${job.runId}.json`))).mode & 0o777).toBe(
       0o600,
     );
+  });
+
+  it("persists an inert queued job before claiming it for later dispatch", async () => {
+    const { store } = await createStore();
+    const job = jobRecord();
+    const claim = createActiveRunClaim({
+      runId: job.runId,
+      jobId: job.jobId,
+      workerId: job.workerId,
+      claimedAt: job.createdAt,
+    });
+
+    await store.reserveJob(job);
+    await expect(store.readJob(job.jobId)).resolves.toEqual(job);
+    await expect(store.readActiveRunClaim(job.runId)).resolves.toBeNull();
+
+    await store.reserveActiveRunClaim(claim);
+    await expect(store.readActiveRunClaim(job.runId)).resolves.toEqual(claim);
   });
 
   it("rejects duplicate active claims without replacing the established job", async () => {
@@ -158,12 +180,14 @@ describe("LocalSupervisorStore", () => {
     await store.initialize();
     const supervisor = parseSupervisorDescriptor({
       version: 1,
-      protocolVersion: 1,
+      protocolVersion: SUPERVISOR_PROTOCOL_VERSION,
       generation: randomUUID(),
       pid: 2345,
       startedAt: job.createdAt,
       runsDirectory: store.runsDirectory,
       socketPath: join(store.socketDirectory, "supervisor.sock"),
+      policyDigest: "a".repeat(64),
+      limits: { maxActiveWorkers: 1, maxQueuedJobs: 32 },
     });
     const claim = createActiveRunClaim({
       runId: job.runId,
@@ -225,6 +249,203 @@ describe("LocalSupervisorStore", () => {
       record: second,
     });
   });
+
+  it("publishes one complete startup lock under concurrent reservation", async () => {
+    const { store } = await createStore();
+    const locks = Array.from({ length: 32 }, (_, index) =>
+      createSupervisorStartLock({
+        pid: 10_000 + index,
+        token: randomUUID(),
+        acquiredAt: new Date(Date.UTC(2026, 7, 7, 12, 0, index)).toISOString(),
+      }),
+    );
+
+    const reservations = await Promise.all(
+      locks.map(async (lock) => await store.reserveSupervisorStart(lock)),
+    );
+    const winner = reservations.find((reservation) => reservation.acquired);
+
+    expect(winner).toBeDefined();
+    expect(reservations.filter((reservation) => reservation.acquired)).toHaveLength(1);
+    expect(
+      reservations.every((reservation) => reservation.record.token === winner?.record.token),
+    ).toBe(true);
+  });
+
+  it("reclaims an exact startup reservation restored from a release marker", async () => {
+    const { store } = await createStore();
+    const lock = createSupervisorStartLock({
+      pid: 1234,
+      token: randomUUID(),
+      acquiredAt: "2026-08-07T12:00:00.000Z",
+    });
+    await store.reserveSupervisorStart(lock);
+
+    await expect(store.reserveSupervisorStart(lock)).resolves.toEqual({
+      acquired: true,
+      record: lock,
+    });
+  });
+
+  it("recovers a release marker blocked by a crashed unpublished reservation", async () => {
+    const { store } = await createStore();
+    const original = createSupervisorStartLock({
+      pid: process.pid,
+      token: randomUUID(),
+      acquiredAt: "2026-08-07T12:00:00.000Z",
+    });
+    const abandoned = createSupervisorStartLock({
+      pid: 2_000_000_000,
+      token: randomUUID(),
+      acquiredAt: "2026-08-07T12:00:01.000Z",
+    });
+    const contender = createSupervisorStartLock({
+      pid: process.pid,
+      token: randomUUID(),
+      acquiredAt: "2026-08-07T12:00:02.000Z",
+    });
+    await store.reserveSupervisorStart(original);
+    const publicPath = join(store.controlDirectory, "supervisor-start.json");
+    await rename(
+      publicPath,
+      join(store.controlDirectory, `.supervisor-start.${randomUUID()}.releasing`),
+    );
+    await writeFile(publicPath, `${JSON.stringify(abandoned)}\n`, { mode: 0o600 });
+
+    await expect(store.reserveSupervisorStart(contender)).resolves.toEqual({
+      acquired: false,
+      record: original,
+    });
+  }, 2_000);
+
+  it("discards a dead release marker that conflicts with a live public owner", async () => {
+    const { store } = await createStore();
+    const live = createSupervisorStartLock({
+      pid: process.pid,
+      token: randomUUID(),
+      acquiredAt: "2026-08-07T12:00:00.000Z",
+    });
+    const deadMarker = createSupervisorStartLock({
+      pid: 2_000_000_000,
+      token: randomUUID(),
+      acquiredAt: "2026-08-07T12:00:01.000Z",
+    });
+    const contender = createSupervisorStartLock({
+      pid: process.pid,
+      token: randomUUID(),
+      acquiredAt: "2026-08-07T12:00:02.000Z",
+    });
+    await store.reserveSupervisorStart(live);
+    await writeFile(
+      join(store.controlDirectory, `.supervisor-start.${randomUUID()}.releasing`),
+      `${JSON.stringify(deadMarker)}\n`,
+      { mode: 0o600 },
+    );
+
+    await expect(store.reserveSupervisorStart(contender)).resolves.toEqual({
+      acquired: false,
+      record: live,
+    });
+  }, 2_000);
+
+  it("transfers startup-lock ownership to the spawned daemon identity", async () => {
+    const { store } = await createStore();
+    const parent = createSupervisorStartLock({
+      pid: 1234,
+      token: randomUUID(),
+      acquiredAt: "2026-08-07T12:00:00.000Z",
+    });
+    const contender = createSupervisorStartLock({
+      pid: 9012,
+      token: randomUUID(),
+      acquiredAt: "2026-08-07T12:00:01.000Z",
+    });
+    const daemonToken = randomUUID();
+    await store.reserveSupervisorStart(parent);
+
+    await expect(
+      store.transferSupervisorStart(parent.token, 5678, daemonToken),
+    ).resolves.toMatchObject({
+      token: daemonToken,
+      pid: 5678,
+      acquiredAt: parent.acquiredAt,
+    });
+    await expect(store.reserveSupervisorStart(contender)).resolves.toMatchObject({
+      acquired: false,
+      record: { token: daemonToken, pid: 5678 },
+    });
+    await expect(
+      store.transferSupervisorStart(contender.token, 9999, randomUUID()),
+    ).rejects.toMatchObject({ code: "identity_mismatch" });
+    await expect(store.releaseSupervisorStart(parent.token)).rejects.toMatchObject({
+      code: "identity_mismatch",
+    });
+    await expect(store.reserveSupervisorStart(contender)).resolves.toMatchObject({
+      acquired: false,
+      record: { token: daemonToken, pid: 5678 },
+    });
+  });
+
+  it("converges concurrent stale startup-lock releases without I/O failures", async () => {
+    const { store } = await createStore();
+    const lock = createSupervisorStartLock({
+      pid: 1234,
+      token: randomUUID(),
+      acquiredAt: "2026-08-07T12:00:00.000Z",
+    });
+    await store.reserveSupervisorStart(lock);
+
+    const releases = await Promise.allSettled(
+      Array.from({ length: 32 }, async () => await store.releaseSupervisorStart(lock.token)),
+    );
+
+    expect(releases.filter((release) => release.status === "fulfilled")).toHaveLength(1);
+    expect(
+      releases
+        .filter((release): release is PromiseRejectedResult => release.status === "rejected")
+        .every(
+          (release) =>
+            release.reason instanceof LocalSupervisorStoreError &&
+            release.reason.code === "not_found",
+        ),
+    ).toBe(true);
+  });
+
+  it("never removes rotated daemon ownership when release races transfer", async () => {
+    const { store } = await createStore();
+
+    for (let index = 0; index < 64; index += 1) {
+      const parent = createSupervisorStartLock({
+        pid: 1234,
+        token: randomUUID(),
+        acquiredAt: "2026-08-07T12:00:00.000Z",
+      });
+      const daemonToken = randomUUID();
+      const contender = createSupervisorStartLock({
+        pid: 9012,
+        token: randomUUID(),
+        acquiredAt: "2026-08-07T12:00:01.000Z",
+      });
+      await store.reserveSupervisorStart(parent);
+
+      const [release, transfer] = await Promise.allSettled([
+        store.releaseSupervisorStart(parent.token),
+        store.transferSupervisorStart(parent.token, 5678, daemonToken),
+      ]);
+      const probe = await store.reserveSupervisorStart(contender);
+
+      if (transfer.status === "fulfilled") {
+        expect(probe).toMatchObject({
+          acquired: false,
+          record: { token: daemonToken, pid: 5678 },
+        });
+      } else {
+        expect(release.status).toBe("fulfilled");
+        expect(probe).toMatchObject({ acquired: true, record: { token: contender.token } });
+      }
+      await store.releaseSupervisorStart(probe.record.token);
+    }
+  }, 15_000);
 
   it("releases only the matching active claim", async () => {
     const { store } = await createStore();
@@ -305,7 +526,7 @@ describe("LocalSupervisorStore", () => {
 
     const completed = completeCancellationCommand(
       recorded,
-      { runStatus: "cancelled", lastSequence: 4 },
+      { runStatus: "cancelled", phase: "active", lastSequence: 4 },
       "2026-08-07T12:00:01.000Z",
     );
     await store.updateCommand(completed);
@@ -316,6 +537,36 @@ describe("LocalSupervisorStore", () => {
     expect(
       (await lstat(join(store.commandsDirectory, `${recorded.commandId}.json`))).mode & 0o777,
     ).toBe(0o600);
+  });
+
+  it("permits a durable queued submission to advance to accepted exactly once", async () => {
+    const { store } = await createStore();
+    await store.initialize();
+    const recorded = createSubmissionCommandRecord({
+      commandId: randomUUID(),
+      policyDigest: "a".repeat(64),
+      runId: "run-1",
+      mode: "run",
+      sourceName: "/workspace/workflow.yaml",
+      workflowSource: "kind: Workflow\n",
+      cwd: "/workspace",
+      recordedAt: "2026-08-07T12:00:00.000Z",
+    });
+    const queued = queueSubmissionCommand(recorded, 1, "2026-08-07T12:00:01.000Z");
+    const completed = completeSubmissionCommand(
+      queued,
+      { workerId: randomUUID(), acceptedAt: "2026-08-07T12:00:02.000Z" },
+      "2026-08-07T12:00:02.000Z",
+    );
+
+    await store.recordCommand(recorded);
+    await store.updateCommand(queued);
+    await store.updateCommand(completed);
+
+    await expect(store.readCommand(recorded.commandId)).resolves.toEqual(completed);
+    await expect(store.updateCommand(queued)).rejects.toMatchObject({
+      code: "identity_mismatch",
+    });
   });
 });
 

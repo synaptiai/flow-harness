@@ -249,8 +249,10 @@ Execution mode is not part of workflow semantics. The same compiled graph, sched
 ledger, approvals, budgets, and recovery rules apply whether `run` or `resume` stays attached to the
 CLI or uses `--detach`. Detached submission stores the exact workflow source and normalized
 execution directory in an immutable job record; it never defers compilation to a mutable file path.
-One authenticated worker then owns one normal application run. Supervisor health cannot advance the
-graph or override ledger state.
+The supervisor first reserves bounded capacity or assigns a durable FIFO ticket. A queued job has no
+run owner or worker until it is dispatched; queue-full rejection retains no executable snapshot.
+One authenticated worker then owns one normal application run. Supervisor health and admission
+state cannot advance the graph or override ledger state.
 
 `--command-id <uuid>` is an execution-control option, not workflow input. It lets an automation
 retry the exact detached submission or cancellation after losing a response. The supervisor binds
@@ -267,5 +269,5 @@ the id to the complete request and rejects reuse with changed input.
 - The only agent mutation is exact single-file edit of an existing UTF-8 file; no create, delete, rename, shell, network, fuzzy patch, or multi-file transaction is exposed.
 - No in-flight Pi tool-call approval or opaque session continuation; restarting a model node is not a safe substitute.
 - No probabilistic or LLM evaluator; criteria currently bind only to deterministic terminal command nodes.
-- No prepaid hard model-cost cap, provider invoice reconciliation, CPU/memory/disk quota, concurrency budget, or artifact-size budget.
+- No prepaid hard model-cost cap, provider invoice reconciliation, CPU/memory/disk quota, graph-node concurrency budget, or artifact-size budget. Detached worker count and queue depth are independently bounded by supervisor policy.
 - No schema migration path is promised while the format remains `v1alpha1`.

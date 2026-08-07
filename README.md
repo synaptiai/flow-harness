@@ -21,7 +21,8 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Safe-boundary recovery with exclusive local ownership | Implemented |
 | Durable exact command approval with approve/deny CLI | Implemented |
 | Durable provider-neutral resource accounting and run budgets | Implemented for starts, model tokens, reported cost, and active execution time |
-| Local detached supervisor, authenticated workers, cancellation, and event replay | Implemented on Linux and macOS |
+| Strict project/operator configuration with inspectable monotonic limits | Implemented |
+| Bounded detached supervisor, durable FIFO queue, authenticated workers, cancellation, and event replay | Implemented on Linux and macOS |
 | Deterministic criterion verification | Implemented |
 | Bounded Pi agent nodes with Flow-owned `read`, `ls`, and hash-anchored `edit` tools | Implemented |
 | Fail-closed sandboxed command process trees | Implemented on Linux and macOS |
@@ -78,6 +79,17 @@ intentionally changing dependencies.
 
 ### Execute the example
 
+Initialize the checkout as a Flow project and inspect the effective operator/project policy:
+
+```sh
+node dist/cli/main.js init .
+node dist/cli/main.js config show
+```
+
+The project file is `.flow/config.yaml`. Flow discovers the nearest project from subdirectories and
+uses it as the default run-store root. See [Configuration](docs/configuration.md) for capacity
+limits, operator ceilings, and policy-change behavior.
+
 ```sh
 node dist/cli/main.js validate examples/verify-foundation.workflow.yaml
 node dist/cli/main.js run examples/verify-foundation.workflow.yaml --run-id first-run
@@ -106,12 +118,13 @@ node dist/cli/main.js supervisor status
 node dist/cli/main.js events background-run --after 0 --follow
 ```
 
-The local supervisor journals the exact submission identity, stores the submitted workflow source,
-claims the run, starts one detached worker, and returns an `accepted` response only after that
-worker authenticates. Accepted therefore means the job is durable and its worker is ready; it does
-not mean the workflow has succeeded. `events` replays authoritative ledger records in bounded
-pages and `--follow` continues until a terminal event. To stop active work with attributable
-cancellation:
+The local supervisor journals the exact submission identity and applies the effective capacity
+policy before launch. With the defaults, one worker may be active and 32 additional jobs wait in a
+durable FIFO queue. A submission returns `accepted` only after its worker authenticates, `queued`
+with its stable queue ticket when it is waiting, or `rejected` with `queue_full` when the configured
+queue is full. Accepted means the worker is ready; it does not mean the workflow has succeeded.
+`events` replays authoritative ledger records in bounded pages and `--follow` continues until a
+terminal event. To cancel active or queued work with attribution:
 
 ```sh
 node dist/cli/main.js cancel background-run --actor local:daniel --reason "operator requested" \
@@ -119,11 +132,12 @@ node dist/cli/main.js cancel background-run --actor local:daniel --reason "opera
 node dist/cli/main.js supervisor shutdown
 ```
 
-Cancellation uses a durable idempotent command record, terminates the active node process tree,
-preserves settled evidence, and records `cancelled`. Shutdown is intentionally refused while an
-authenticated worker is active. If the supervisor itself exits, workers continue; a replacement
-generation discovers and authenticates them before offering control. This is same-host execution,
-not a remote or multi-host service.
+Cancellation uses a durable idempotent command record. Active cancellation terminates the node
+process tree, preserves settled evidence, and records `cancelled`; queued cancellation creates no
+run ledger, active claim, or worker. Shutdown is intentionally refused while active or queued work
+exists. If the supervisor itself exits, workers continue and queued admission remains durable; a
+replacement generation reconciles both before accepting new work. This is same-host execution, not
+a remote or multi-host service.
 
 `--command-id` is optional and must be a UUID. Flow generates one when omitted. Automation should
 generate and persist the ID before its first detached submission or cancellation, then reuse the
@@ -278,6 +292,7 @@ override missing or failing evidence.
 
 - [Architecture](docs/architecture.md)
 - [Capability sourcing](docs/capability-sourcing.md)
+- [Configuration](docs/configuration.md)
 - [Workflow specification](docs/workflow-spec.md)
 - [Recovery and interruption safety](docs/recovery.md)
 - [Testing and evaluation](docs/testing-and-evaluation.md)
