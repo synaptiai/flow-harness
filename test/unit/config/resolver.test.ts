@@ -131,36 +131,69 @@ describe("Flow configuration resolution", () => {
     );
   });
 
-  it("rejects wrong kinds, unknown fields, and values outside hard bounds with paths", () => {
-    expect(() =>
-      parseOperatorConfig(
-        {
-          apiVersion: FLOW_CONFIG_API_VERSION,
-          kind: "FlowProjectConfig",
-        },
-        "/operator/config.yaml",
-      ),
-    ).toThrowError(
-      expect.objectContaining({
-        code: "invalid_config",
-        sourcePath: "/operator/config.yaml",
-        fieldPath: "kind",
-      }),
-    );
-
-    expect(() =>
-      parseProjectConfig(
-        {
-          apiVersion: FLOW_CONFIG_API_VERSION,
-          kind: "FlowProjectConfig",
-          supervisor: { maxActiveWorkers: 65, maxQueuedJobs: -1, secret: "not-allowed" },
-        },
-        "/workspace/.flow/config.yaml",
-      ),
-    ).toThrowError(
+  it.each([
+    [
+      "unsupported version",
+      { apiVersion: "flow.synapti.ai/v2", kind: "FlowProjectConfig" },
+      "apiVersion",
+    ],
+    ["wrong kind", { apiVersion: FLOW_CONFIG_API_VERSION, kind: "FlowOperatorConfig" }, "kind"],
+    [
+      "unknown top-level field",
+      { apiVersion: FLOW_CONFIG_API_VERSION, kind: "FlowProjectConfig", unknown: true },
+      "<root>",
+    ],
+    [
+      "zero active workers",
+      {
+        apiVersion: FLOW_CONFIG_API_VERSION,
+        kind: "FlowProjectConfig",
+        supervisor: { maxActiveWorkers: 0 },
+      },
+      "supervisor.maxActiveWorkers",
+    ],
+    [
+      "active worker hard cap",
+      {
+        apiVersion: FLOW_CONFIG_API_VERSION,
+        kind: "FlowProjectConfig",
+        supervisor: { maxActiveWorkers: 65 },
+      },
+      "supervisor.maxActiveWorkers",
+    ],
+    [
+      "negative queue depth",
+      {
+        apiVersion: FLOW_CONFIG_API_VERSION,
+        kind: "FlowProjectConfig",
+        supervisor: { maxQueuedJobs: -1 },
+      },
+      "supervisor.maxQueuedJobs",
+    ],
+    [
+      "queue hard cap",
+      {
+        apiVersion: FLOW_CONFIG_API_VERSION,
+        kind: "FlowProjectConfig",
+        supervisor: { maxQueuedJobs: 1025 },
+      },
+      "supervisor.maxQueuedJobs",
+    ],
+    [
+      "unknown supervisor field",
+      {
+        apiVersion: FLOW_CONFIG_API_VERSION,
+        kind: "FlowProjectConfig",
+        supervisor: { secret: "not-allowed" },
+      },
+      "supervisor",
+    ],
+  ])("rejects invalid configuration: %s", (_case, input, fieldPath) => {
+    expect(() => parseProjectConfig(input, "/workspace/.flow/config.yaml")).toThrowError(
       expect.objectContaining({
         code: "invalid_config",
         sourcePath: "/workspace/.flow/config.yaml",
+        fieldPath,
       }),
     );
   });
