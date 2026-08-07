@@ -6,7 +6,7 @@ Flow turns a collection of useful software-development practices into an enforce
 
 The standalone harness reverses that relationship. Flow owns workflow execution and delegates only bounded node work to an embedded agent runtime.
 
-This document describes the target architecture unless a section is explicitly labeled as the current executable slice. The delivery roadmap is the source of truth for implementation status. Gates 1 and 2 currently provide `validate`, sequential `run`, `inspect`, optional versioned goal contracts, command-bound criterion evaluation, command and bounded Pi agent nodes, cancellation, and replayable local event ledgers. Gate 3 now includes a runtime-neutral policy broker for model-requested reads, lists, and hash-anchored single-file edits, a fail-closed native sandbox for every command node, and exact expiring pre-start approval for deterministic commands. The first Gate 4 slices add `resume` at committed node boundaries, exclusive same-host process ownership, fail-closed refusal of uncertain open attempts, and command approval waits that survive client detachment. Initialization, the TUI/daemon, open-operation reconciliation, dynamic agent-tool approval, execute/network model tools, probabilistic evaluators, packages, graph loops, and stronger VM or managed sandbox backends remain later work.
+This document describes the target architecture unless a section is explicitly labeled as the current executable slice. The delivery roadmap is the source of truth for implementation status. Gates 1 and 2 currently provide `validate`, sequential `run`, `inspect`, optional versioned goal contracts, command-bound criterion evaluation, command and bounded Pi agent nodes, cancellation, and replayable local event ledgers. Gate 3 now includes a runtime-neutral policy broker for model-requested reads, lists, and hash-anchored single-file edits, a fail-closed native sandbox for every command node, and exact expiring pre-start approval for deterministic commands. The first Gate 4 slices add `resume` at committed node boundaries, exclusive same-host process ownership, fail-closed refusal of uncertain open attempts, command approval waits that survive client detachment, and durable resource accounting with run-wide start, model-token, reported-cost, and active-execution limits. Initialization, the TUI/daemon, open-operation reconciliation, dynamic agent-tool approval, execute/network model tools, probabilistic evaluators, packages, graph loops, and stronger VM or managed sandbox backends remain later work.
 
 ## Target flows
 
@@ -50,7 +50,7 @@ flowchart TD
     evidence --> verifier["Independent verifier"]
     verifier --> ledger["Append-only event ledger"]
     ledger --> scheduler
-    scheduler --> terminal["Succeeded, failed, blocked, cancelled, or waiting"]
+    scheduler --> terminal["Succeeded, failed, exhausted, blocked, cancelled, or waiting"]
 ```
 
 The system contains two loops:
@@ -119,6 +119,32 @@ sequence-derived locators rather than bearer secrets. General approval nodes, re
 dynamic Pi tool-call suspension remain separate capabilities. The latter requires persisted opaque
 session continuation so prior model effects are not replayed.
 
+### Durable resource accounting and budgets
+
+Every run reconstructs provider-neutral resource consumption from authoritative events: committed
+node starts, evidence duration rounded up to whole milliseconds, four model-token components, and
+provider-reported cost normalized to integer micro-USD. The Pi adapter obtains its observation from
+`getSessionStats()` and translates it before the application or domain sees it. A future executor
+must produce the same Flow evidence shape; provider transcripts and runtime-specific settings never
+become graph authority.
+
+An optional compiled budget limits starts, total model tokens, reported model cost, and active
+execution duration. The scheduler consults only reduced run state before work and after outcome
+settlement. It appends `run_budget_exhausted` and produces distinct terminal
+`resource_exhausted` state rather than treating exhaustion as success, cancellation, or an invented
+node failure. Recovery validates the exact persisted limits and reaches the same decision after a
+crash between the node outcome and terminal event.
+
+The active-time limit also narrows executor authority: a node receives the lesser of its declared
+timeout and remaining allowance. For approval-required commands, this effective timeout is part of
+the exact persisted operation before the client detaches. Human wait and process downtime consume
+no active duration because only committed evidence contributes.
+
+This is a settlement ceiling, not a prepaid billing control. Provider usage is authoritative only
+after a response, so one response can overshoot. Flow keeps the full observation and schedules no
+downstream work. External organization quotas, price catalogs, invoice reconciliation, distributed
+reservation, CPU/memory/disk limits, concurrency, and artifact budgets remain separate capabilities.
+
 ### Evaluators
 
 The current goal evaluator is a pure domain transition: it receives only a compiled criterion-to-verifier binding and authoritative node outcome metadata. It receives no prompt, transcript, filesystem handle, executor, or tool, and therefore cannot mutate the workspace or infer acceptance from implementation rationale. Successful command evidence accepts a criterion; normal non-zero evidence rejects it; timeouts, signals, missing evidence, and unexpected evidence kinds are inconclusive. An LLM evaluator, when later unavoidable, must receive evidence rather than the implementation transcript and have no workspace mutation tools.
@@ -134,6 +160,9 @@ Pi intentionally has no built-in security boundary and the host-side agent runti
 - Approval-required commands persist the exact executable, argv, normalized working directory,
   timeout, digest, request, and grant lifetime before a start. A grant authorizes only that scheduler
   transition; it neither expands the sandbox profile nor predicts every transitive process effect.
+- Run budgets constrain scheduler admission and effective timeouts, but they are not a sandbox,
+  provider-side reservation, account quota, or guarantee that one in-flight response cannot exceed
+  its remaining reported-cost allowance.
 
 Native sandboxing is not equivalent to a microVM. SRT is a beta dependency built on Seatbelt on macOS and bubblewrap, namespaces, and seccomp on Linux. Kernel or sandbox-runtime vulnerabilities remain outside Flow's enforcement model, and the host-side Pi process is not contained by this command adapter. Hostile workloads still require a reviewed container, microVM, Gondolin, OpenShell, or managed isolation boundary.
 
@@ -153,6 +182,7 @@ Approval remains separate from containment. OMP-style allow/prompt/deny rules ca
 8. Every side-effecting node declares idempotency and recovery behavior.
 9. Compaction and model changes cannot erase authoritative state.
 10. Cancellation propagates to the model stream, active tool process, children, and workspace cleanup.
+11. Resource consumption and exhaustion are reproducible from Flow events without a provider transcript.
 
 ## Failure modes
 
@@ -173,7 +203,7 @@ Approval remains separate from containment. OMP-style allow/prompt/deny rules ca
 | Concurrent workspace changes | Detect baseline drift and pause before absorbing the changes |
 | Crash during persistence | Recover to the last committed event and tolerate an incomplete trailing record |
 | Corrupt state or failed migration | Preserve original data, fail closed, and provide exportable diagnostics |
-| Resource exhaustion | Apply backpressure and terminate predictably without losing committed state |
+| Resource exhaustion | Preserve the full committed observation, append explicit exhaustion, start no downstream work, and never infer success |
 | Approval grant expires unused | Execute nothing, record expiry, and return to a fresh durable request; never infer consent |
 | Incompatible package | Reject or quarantine it without changing active runs |
 
@@ -186,6 +216,7 @@ Approval remains separate from containment. OMP-style allow/prompt/deny rules ca
 - Flow does not make Markdown an executable orchestration language.
 - Flow does not initially provide distributed or multi-host scheduling.
 - Flow does not guarantee exactly-once behavior for arbitrary external side effects.
+- Flow does not guarantee prepaid or invoice-authoritative model-cost caps, currency conversion, or distributed quota reservation.
 - Flow does not autonomously merge, release, deploy, or weaken its safety floor.
 - Flow does not permit live mutation of policy, evaluator definitions, or graph semantics.
 - Flow does not make a Python or JavaScript kernel a mandatory core primitive.

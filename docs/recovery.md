@@ -21,7 +21,8 @@ flow resume <workflow.yaml> --run-id <run-id> [--runs-dir <path>] [--cwd <path>]
 Flow compiles the workflow before claiming the run. It then acquires exclusive local ownership,
 replays committed events, checks compatibility, and appends `run_resumed`. Successful nodes remain
 successful and are not executed again. Pending nodes retain their normal dependency order and
-declared timeouts. The command prints the same JSON `RunState` shape as `flow run`.
+use the lesser of their declared timeout and remaining active-execution budget. The command prints
+the same JSON `RunState` shape as `flow run`.
 
 An approval-required command returns process exit code 3 and can be decided after the original
 client exits:
@@ -42,14 +43,16 @@ attribution rather than authenticated identity.
 | --- | --- |
 | `run_started` or a completed `node_succeeded` | Append `run_resumed` and execute the next ready pending node |
 | All nodes succeeded but `run_succeeded` is absent | Append `run_resumed`, append `run_succeeded`, and execute no node |
-| `node_failed` is durable but `run_failed` is absent | Append `run_resumed`, append `run_failed`, and do not retry the failed node |
+| `node_failed` is durable, no limit is exhausted, and `run_failed` is absent | Append `run_resumed`, append `run_failed`, and do not retry the failed node |
+| A completed node outcome reaches a model-token, reported-cost, or active-time limit but `run_budget_exhausted` is absent | Append `run_resumed`, append `run_budget_exhausted`, and execute no node |
+| A start limit is exhausted and pending work remains | Append `run_resumed`, append `run_budget_exhausted`, and execute no node |
 | `command_approval_requested` is pending | Append `run_resumed`, retain `waiting_for_approval`, and execute nothing |
 | `command_approval_granted` is unexpired | Append `run_resumed`, consume the exact grant in `node_started`, and execute once |
 | `command_approval_granted` has expired unused | Append `run_resumed`, record expiry, create a fresh request, and execute nothing |
 | `command_approval_denied` is durable but `run_failed` is absent | Append `run_resumed`, append `run_failed`, and execute nothing |
 | `node_started` has no matching outcome | Refuse with `uncertain_operation`; append and execute nothing |
-| Run is `succeeded`, `failed`, or `cancelled` | Refuse with `terminal_run` |
-| Workflow identity, version, digest, node set, or committed dependency order differs | Refuse with `workflow_mismatch` |
+| Run is `succeeded`, `failed`, `cancelled`, or `resource_exhausted` | Refuse with `terminal_run` |
+| Workflow identity, version, digest, budget, node set, or committed dependency order differs | Refuse with `workflow_mismatch` |
 | A new run is resumed with a different normalized execution directory | Refuse with `execution_context_mismatch` |
 
 A started attempt is uncertain because its command, model, or external tool may have performed an
@@ -89,10 +92,13 @@ run directory, or corrupt owner record fails closed and is preserved for diagnos
 
 Flow guarantees that committed successful nodes are not scheduled again during accepted recovery,
 that one local process owns append/execution/approval decisions, that a required command cannot
-start without a matching unexpired single-use grant, and that unsafe refusal paths do not add ledger
-events or invoke an executor.
+start without a matching unexpired single-use grant, that committed resource use produces the same
+remaining allowances and exhausted decision after replay, and that unsafe refusal paths do not add
+ledger events or invoke an executor. Historical approval requests are revalidated against the
+budget remaining at their exact event boundary, not against final run consumption.
 
 Flow does not guarantee exactly-once effects in arbitrary external systems, authenticated approval
 identity, trusted time, mid-node restoration of Pi sessions, automatic retry of uncertain work,
-detached execution, or multi-host recovery. Those capabilities require explicit reconciliation,
-identity, and supervisor designs beyond this recovery slice.
+detached execution, multi-host recovery, or a billing-authoritative zero-overshoot model-cost cap.
+Those capabilities require explicit reconciliation, identity, provider reservation, and supervisor
+designs beyond this recovery slice.

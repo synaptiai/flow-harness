@@ -441,6 +441,103 @@ nodes:
     );
   });
 
+  it("reports and inspects a resource-exhausted run with a non-zero exit", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "budget.workflow.yaml");
+    const runsDirectory = join(directory, "runs");
+    await writeFile(
+      workflowPath,
+      `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: cli-budget }
+budget:
+  maxModelTokens: 2
+nodes:
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Analyze the repository.
+      model: { provider: test-provider, id: test-model }
+  - id: verify
+    type: command
+    dependsOn: [analyze]
+    command: { executable: npm, args: [test] }
+`,
+      "utf8",
+    );
+    const calls: string[] = [];
+    const executor: NodeExecutor = {
+      async execute(node) {
+        calls.push(node.id);
+        return node.type === "agent"
+          ? {
+              status: "succeeded",
+              evidence: {
+                kind: "agent",
+                provider: "test-provider",
+                model: "test-model",
+                text: "analysis",
+                textHash: createHash("sha256").update("analysis").digest("hex"),
+                textTruncated: false,
+                durationMs: 1,
+                usage: {
+                  inputTokens: 1,
+                  outputTokens: 1,
+                  cacheReadTokens: 0,
+                  cacheWriteTokens: 0,
+                  costUsdMicros: 3,
+                },
+                policyDecisions: [],
+                effectReceipts: [],
+              },
+            }
+          : { status: "succeeded", evidence: commandEvidence(node.id) };
+      },
+    };
+    const runCapture = createCapture();
+
+    const runExitCode = await main(
+      ["run", workflowPath, "--run-id", "cli-budget", "--runs-dir", runsDirectory],
+      runCapture.io,
+      { cwd: directory, executor },
+    );
+
+    expect(runExitCode).toBe(1);
+    expect(calls).toEqual(["analyze"]);
+    const runState = JSON.parse(runCapture.stdout.join("\n"));
+    expect(runState).toMatchObject({
+      status: "resource_exhausted",
+      resources: {
+        nodeStarts: 1,
+        modelTokens: 2,
+        modelCostUsdMicros: 3,
+        executionMs: 1,
+      },
+      budget: {
+        limits: { maxModelTokens: 2 },
+        remaining: { modelTokens: 0 },
+        exhausted: [{ dimension: "modelTokens", limit: 2, consumed: 2 }],
+      },
+    });
+
+    const inspectCapture = createCapture();
+    const inspectExitCode = await main(
+      ["inspect", "cli-budget", "--runs-dir", runsDirectory],
+      inspectCapture.io,
+      { cwd: directory },
+    );
+    expect(inspectExitCode).toBe(0);
+    expect(JSON.parse(inspectCapture.stdout.join("\n"))).toEqual(runState);
+    const ledger = await readFile(join(runsDirectory, "cli-budget", "events.jsonl"), "utf8");
+    expect(ledgerTypes(ledger)).toEqual([
+      "run_started",
+      "node_started",
+      "node_succeeded",
+      "run_budget_exhausted",
+    ]);
+  });
+
   it("resume reports an uncertain open attempt without appending or executing", async () => {
     const directory = await createTemporaryDirectory();
     const workflowPath = join(directory, "uncertain.workflow.yaml");
@@ -648,6 +745,7 @@ function runStartedEvent(
     nodeIds: workflow.nodes.map((node) => node.id),
     workflowApiVersion: workflow.apiVersion,
     workflowDigest: createHash("sha256").update(JSON.stringify(workflow)).digest("hex"),
+    ...(workflow.budget === undefined ? {} : { budget: workflow.budget }),
     ...(workflow.goal === undefined ? {} : { goal: workflow.goal }),
   };
 }

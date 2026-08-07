@@ -15,7 +15,7 @@ Pi's experimental `AgentHarness` API is not a foundation for the first release. 
 | Workflow schema and compiler | Workflow files must compile into executable graph state rather than advice to a model |
 | Scheduler and lifecycle | Readiness, conditions, loops, retries, joins, and terminal states are product semantics |
 | Typed node inputs and outputs | Transitions must not depend on parsing persuasive prose |
-| Goals, budgets, and loop termination | Exhausted resources never imply successful completion |
+| Goals, budgets, and loop termination | Flow now durably owns start, token, reported-cost, and active-time boundaries; exhausted resources never imply successful completion |
 | Evidence and evaluation | A worker cannot authoritatively grade its own work |
 | Policy, approvals, tool broker, and sandbox profile | Authorization and containment are Flow product semantics even when enforcement is delegated |
 | Context assembly and redaction | Context composition is a major cost, safety, and quality control |
@@ -39,6 +39,7 @@ Pi's experimental `AgentHarness` API is not a foundation for the first release. 
 | Basic coding tools | Flow-owned workspace-confined `read`, `ls`, and hash-anchored `edit` definitions built on Pi's custom-tool interface | Pi's built-in edit, fuzzy matching, direct writes, ambient path access, and helper-binary downloads are disabled; Flow owns policy, atomic replacement, and receipts |
 | Custom tool API | Present Flow broker tools to the model | Tool schemas remain Flow-owned |
 | Context transformation and compaction | Reuse mechanics | Durable state remains outside context |
+| Session usage statistics | Translate `getSessionStats()` after settlement | Persist only Flow token components and integer micro-USD; Pi totals and transcripts are not authoritative |
 | Session storage | Optional diagnostic artifact | Never authoritative run state |
 | TUI primitives | Optional presentation dependency | Flow owns navigation, language, and approvals |
 
@@ -77,6 +78,7 @@ OMP is a Pi fork with a broad TypeScript, Bun, and Rust-native product surface. 
 | Native shell/search/coreutils | Do not port without profiling evidence |
 | Persistent code kernels | Optional sandboxed capability, never a default |
 | Advisor model | Represent explicitly as a review or evaluator node |
+| Thinking budgets and tool timeouts | Retain as lower-level runtime controls; Flow-owned run budgets remain the durable cross-node authority |
 
 See the [OMP repository](https://github.com/can1357/oh-my-pi), [SDK](https://github.com/can1357/oh-my-pi/blob/main/docs/sdk.md), and [approval model](https://github.com/can1357/oh-my-pi/blob/main/docs/approval-mode.md). OMP is MIT-licensed; copied code must retain the applicable Pi and OMP notices and per-file provenance.
 
@@ -90,6 +92,7 @@ Prime Agent proves that Pi can support a distinct long-running harness. Its prod
 | Detach, reattach, snapshots, and event replay | Use as a design reference for a future daemon protocol |
 | Recovery journal and bounded restart | Reimplement around Flow's authoritative run ledger |
 | Durable goals and autonomous continuation | Implement in Flow's scheduler |
+| Daemon workload limits | Prime leaves fixed caps outside its daemon layer; Flow persists run budgets before adopting detached supervision |
 | Heartbeats and schedules | Later trigger package after concurrency policy exists |
 | Retained children and messaging | Represent as graph-owned child runs and mailbox events |
 | Persistent IPython | Optional capability only; never describe it as a sandbox |

@@ -7,6 +7,7 @@ import type {
   CompiledAgentNode,
   CompiledCommandNode,
   CompiledNode,
+  CompiledRunBudget,
   CompiledWorkflow,
 } from "./types.js";
 
@@ -268,9 +269,21 @@ function freezeWorkflow(source: WorkflowSource): CompiledWorkflow {
       ? {}
       : { description: source.metadata.description }),
     ...(source.goal === undefined ? {} : { goal: freezeGoal(source.goal) }),
+    ...(source.budget === undefined ? {} : { budget: freezeBudget(source.budget) }),
     nodes,
   };
   return Object.freeze(workflow);
+}
+
+function freezeBudget(source: NonNullable<WorkflowSource["budget"]>): CompiledRunBudget {
+  return Object.freeze({
+    ...(source.maxNodeStarts === undefined ? {} : { maxNodeStarts: source.maxNodeStarts }),
+    ...(source.maxModelTokens === undefined ? {} : { maxModelTokens: source.maxModelTokens }),
+    ...(source.maxCostUsd === undefined
+      ? {}
+      : { maxCostUsdMicros: Math.round(source.maxCostUsd * 1_000_000) }),
+    ...(source.maxExecutionMs === undefined ? {} : { maxExecutionMs: source.maxExecutionMs }),
+  });
 }
 
 function freezeGoal(source: GoalContractSource): CompiledGoal {

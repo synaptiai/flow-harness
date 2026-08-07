@@ -20,6 +20,7 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Durable JSONL run ledger and inspection | Implemented |
 | Safe-boundary recovery with exclusive local ownership | Implemented |
 | Durable exact command approval with approve/deny CLI | Implemented |
+| Durable provider-neutral resource accounting and run budgets | Implemented for starts, model tokens, reported cost, and active execution time |
 | Deterministic criterion verification | Implemented |
 | Bounded Pi agent nodes with Flow-owned `read`, `ls`, and hash-anchored `edit` tools | Implemented |
 | Fail-closed sandboxed command process trees | Implemented on Linux and macOS |
@@ -123,6 +124,32 @@ The actor label is append-only attribution supplied by the caller, not authentic
 Anyone who can control the private run directory or invoke Flow with the same local permissions is
 inside this slice's administrative trust boundary.
 
+### Bound a run
+
+The budget example is credential-free and demonstrates run-wide start and active-execution limits:
+
+```sh
+node dist/cli/main.js validate examples/budgeted-foundation.workflow.yaml
+node dist/cli/main.js run examples/budgeted-foundation.workflow.yaml --run-id budget-demo
+node dist/cli/main.js inspect budget-demo
+```
+
+A workflow can declare any non-empty combination of `maxNodeStarts`, `maxModelTokens`,
+`maxCostUsd`, and `maxExecutionMs`. Missing `budget` means unbounded. Flow persists the compiled
+limits at run start and reconstructs `resources`, remaining allowance, and exhausted dimensions
+from the event ledger. Agent usage comes from Pi session statistics but is translated into
+Flow-owned token fields and integer micro-USD before persistence.
+
+Reaching a model-token, reported-cost, or active-execution ceiling records
+`resource_exhausted`, exits with code 1, and starts no downstream work. A node-start limit prevents
+the next start but does not invalidate a graph that completed with its final allowed start. Node
+timeouts are reduced to the remaining active-execution allowance; an approval request displays and
+binds that reduced timeout. Approval wait and client-detached wall time do not consume active time.
+
+Model usage and cost become authoritative only after the provider response settles, so one response
+can exceed its remaining allowance. Flow records the full observation and stops; it does not claim
+to enforce a prepaid hard billing cap, infer prices, or reconcile provider invoices.
+
 To inspect the coding-agent shape without contacting a provider, validate the implementation
 template:
 
@@ -150,8 +177,9 @@ is uncertain: Flow names the node and attempt, appends nothing, and executes not
 mismatched, corrupt, missing, or actively owned runs are also refused without changing committed
 events. New runs also bind the normalized execution directory. Approval waits are safe committed
 boundaries: an undecided request remains waiting, a valid grant starts once, and an unused expired
-grant returns to a fresh request. See [Recovery and interruption safety](docs/recovery.md) for the
-complete contract.
+grant returns to a fresh request. Budget limits, consumption, and exact approval timeouts are also
+revalidated; recovery terminalizes a committed exhausted settlement without rerunning its node. See
+[Recovery and interruption safety](docs/recovery.md) for the complete contract.
 
 ## Security boundary
 
@@ -190,6 +218,7 @@ system. Flow separates those responsibilities:
 - A policy broker controls model-requested operations.
 - A sandbox contains command process trees.
 - An append-only event ledger records authoritative run state.
+- Durable resource accounting and run budgets stop further work at replayable boundaries.
 - Mutation-free evaluation decides whether deterministic evidence accepts each criterion.
 - Provider-specific behavior remains behind execution adapters.
 

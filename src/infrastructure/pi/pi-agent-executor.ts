@@ -3,6 +3,7 @@ import {
   createExtensionRuntime,
   ModelRuntime,
   type ResourceLoader,
+  type SessionStats,
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
@@ -14,6 +15,7 @@ import type {
   NodeExecutionOutcome,
 } from "../../application/ports.js";
 import type { AgentEffectReceipt, AgentEvidence, NodeFailure } from "../../domain/run/events.js";
+import type { AgentModelUsage } from "../../domain/run/budget.js";
 import { PolicyBroker } from "../../domain/policy/broker.js";
 import type { PolicyAction, PolicyDecision } from "../../domain/policy/types.js";
 import type {
@@ -45,6 +47,7 @@ export interface PiAgentRunResult {
   readonly outputLimitExceeded?: boolean;
   readonly textHash?: string;
   readonly textTruncated?: boolean;
+  readonly usage?: AgentModelUsage;
 }
 
 export type PiTerminalStopReason =
@@ -91,6 +94,7 @@ export class PiAgentExecutor implements AgentExecutor {
     } as const;
     const policyBroker = new PolicyBroker(attribution, policyActionsForTools(node.agent.tools));
     const effectRecorder = new AgentEffectRecorder(attribution);
+    let observedUsage: AgentModelUsage | undefined;
     let closedPolicyDecisions: readonly PolicyDecision[] | undefined;
     let closedEffectReceipts: readonly AgentEffectReceipt[] | undefined;
     const closePolicy = () => {
@@ -104,7 +108,11 @@ export class PiAgentExecutor implements AgentExecutor {
     const policyFailureEvidence = (): AgentEvidence | null => {
       const policyDecisions = closePolicy();
       const effectReceipts = closeEffects();
-      if (policyDecisions.length === 0 && effectReceipts.length === 0) {
+      if (
+        policyDecisions.length === 0 &&
+        effectReceipts.length === 0 &&
+        observedUsage === undefined
+      ) {
         return null;
       }
       return emptyAgentEvidence(
@@ -113,6 +121,7 @@ export class PiAgentExecutor implements AgentExecutor {
         Math.max(0, this.now() - startedAt),
         policyDecisions,
         effectReceipts,
+        observedUsage,
       );
     };
     const currentSideEffectStatus = (forceUncertain = false) =>
@@ -128,19 +137,24 @@ export class PiAgentExecutor implements AgentExecutor {
     let removeExternalAbortListener: () => void = () => undefined;
     let activeRunPromise: Promise<PiAgentRunResult> | undefined;
     try {
-      const runPromise = this.runner.run({
-        cwd: context.cwd,
-        prompt: node.agent.prompt,
-        provider: node.agent.model.provider,
-        model: node.agent.model.id,
-        thinking: node.agent.model.thinking,
-        tools: node.agent.tools,
-        maxOutputBytes: this.maxOutputBytes,
-        policyBroker,
-        protectedPaths: context.protectedPaths,
-        effectRecorder,
-        signal: combinedSignal,
-      });
+      const runPromise = this.runner
+        .run({
+          cwd: context.cwd,
+          prompt: node.agent.prompt,
+          provider: node.agent.model.provider,
+          model: node.agent.model.id,
+          thinking: node.agent.model.thinking,
+          tools: node.agent.tools,
+          maxOutputBytes: this.maxOutputBytes,
+          policyBroker,
+          protectedPaths: context.protectedPaths,
+          effectRecorder,
+          signal: combinedSignal,
+        })
+        .then((result) => {
+          observedUsage = result.usage;
+          return result;
+        });
       activeRunPromise = runPromise;
       const timeout = new Promise<"timeout">((resolve) => {
         timeoutHandle = setTimeout(() => {
@@ -226,6 +240,7 @@ export class PiAgentExecutor implements AgentExecutor {
         textHash: normalized.textHash,
         textTruncated: normalized.textTruncated,
         durationMs: Math.max(0, this.now() - startedAt),
+        ...(result.usage === undefined ? {} : { usage: result.usage }),
         policyDecisions,
         effectReceipts,
       };
@@ -258,7 +273,7 @@ export class PiAgentExecutor implements AgentExecutor {
             result.errorMessage ?? `Pi session ended with stop reason "${result.stopReason}"`,
           ),
           sideEffectStatus(effectReceipts),
-          policyDecisions.length === 0 && effectReceipts.length === 0
+          policyDecisions.length === 0 && effectReceipts.length === 0 && result.usage === undefined
             ? null
             : emptyAgentEvidence(
                 node.agent.model.provider,
@@ -266,23 +281,14 @@ export class PiAgentExecutor implements AgentExecutor {
                 Math.max(0, this.now() - startedAt),
                 policyDecisions,
                 effectReceipts,
+                result.usage,
               ),
         );
       }
 
       return {
         status: "succeeded",
-        evidence: {
-          kind: "agent",
-          provider: node.agent.model.provider,
-          model: node.agent.model.id,
-          text: normalized.text,
-          textHash: normalized.textHash,
-          textTruncated: normalized.textTruncated,
-          durationMs: Math.max(0, this.now() - startedAt),
-          policyDecisions,
-          effectReceipts,
-        },
+        evidence,
       };
     } catch (error) {
       if (timedOut) {
@@ -405,17 +411,30 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
     request.signal?.addEventListener("abort", abortHandler, { once: true });
 
     try {
+      let promptError: unknown;
       try {
         await session.prompt(request.prompt, { expandPromptTemplates: false });
       } catch (error) {
         if (!output.truncated) {
-          throw error;
+          promptError = error;
         }
+      }
+      const usage = translatePiSessionStats(session.getSessionStats());
+      if (promptError !== undefined) {
+        return {
+          ...output.result(),
+          usage,
+          stopReason: isAborted(request.signal) ? "aborted" : "error",
+          errorMessage: boundedMessage(
+            promptError instanceof Error ? promptError.message : String(promptError),
+          ),
+        };
       }
       const finalMessage = session.state.messages.at(-1);
       if (finalMessage?.role !== "assistant") {
         return {
           ...output.result(),
+          usage,
           stopReason: output.truncated ? "aborted" : "error",
           ...(output.truncated
             ? { outputLimitExceeded: true }
@@ -424,6 +443,7 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
       }
       return {
         ...output.result(),
+        usage,
         stopReason: finalMessage.stopReason,
         ...(output.truncated ? { outputLimitExceeded: true } : {}),
         ...(finalMessage.errorMessage === undefined
@@ -470,6 +490,7 @@ function emptyAgentEvidence(
   durationMs: number,
   policyDecisions: readonly PolicyDecision[],
   effectReceipts: readonly AgentEffectReceipt[],
+  usage?: AgentModelUsage,
 ): AgentEvidence {
   return {
     kind: "agent",
@@ -479,9 +500,38 @@ function emptyAgentEvidence(
     textHash: createHash("sha256").update("").digest("hex"),
     textTruncated: false,
     durationMs,
+    ...(usage === undefined ? {} : { usage }),
     policyDecisions,
     effectReceipts,
   };
+}
+
+function translatePiSessionStats(stats: SessionStats): AgentModelUsage {
+  const tokenValues = [
+    stats.tokens.input,
+    stats.tokens.output,
+    stats.tokens.cacheRead,
+    stats.tokens.cacheWrite,
+  ];
+  if (tokenValues.some((value) => !Number.isSafeInteger(value) || value < 0)) {
+    throw new RangeError("Pi session token usage must contain non-negative safe integers");
+  }
+  if (!Number.isFinite(stats.cost) || stats.cost < 0) {
+    throw new RangeError("Pi session cost must be a finite non-negative number");
+  }
+  const scaledCost = stats.cost * 1_000_000;
+  const tolerance = Number.EPSILON * Math.max(1, Math.abs(scaledCost)) * 4;
+  const costUsdMicros = Math.ceil(scaledCost - tolerance);
+  if (!Number.isSafeInteger(costUsdMicros) || costUsdMicros < 0) {
+    throw new RangeError("Pi session cost exceeds Flow's micro-USD accounting range");
+  }
+  return Object.freeze({
+    inputTokens: stats.tokens.input,
+    outputTokens: stats.tokens.output,
+    cacheReadTokens: stats.tokens.cacheRead,
+    cacheWriteTokens: stats.tokens.cacheWrite,
+    costUsdMicros,
+  });
 }
 
 function sideEffectStatus(

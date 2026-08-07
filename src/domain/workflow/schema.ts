@@ -24,6 +24,29 @@ const commandApprovalSchema = z
   })
   .strict();
 
+const positiveSafeIntegerSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
+
+const runBudgetSchema = z
+  .object({
+    maxNodeStarts: positiveSafeIntegerSchema.optional(),
+    maxModelTokens: positiveSafeIntegerSchema.optional(),
+    maxCostUsd: z
+      .number()
+      .finite()
+      .positive()
+      .max(Number.MAX_SAFE_INTEGER / 1_000_000)
+      .refine(
+        (value) => Number.isSafeInteger(value * 1_000_000),
+        "must have at most six decimal places",
+      )
+      .optional(),
+    maxExecutionMs: positiveSafeIntegerSchema.optional(),
+  })
+  .strict()
+  .refine((budget) => Object.values(budget).some((value) => value !== undefined), {
+    message: "must declare at least one limit",
+  });
+
 const commandNodeSchema = z
   .object({
     ...commonNodeShape,
@@ -90,6 +113,7 @@ export const workflowSourceSchema = z
       })
       .strict(),
     goal: goalContractSchema.optional(),
+    budget: runBudgetSchema.optional(),
     nodes: z
       .array(z.discriminatedUnion("type", [commandNodeSchema, agentNodeSchema]))
       .min(1)

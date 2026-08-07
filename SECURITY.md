@@ -25,6 +25,11 @@ The embedded Pi runtime runs with the invoking user's operating-system permissio
   working directory, timeout, digest, request identity, and grant lifetime before any node start or
   sandbox preparation. Approval is single-use, expires predictably, and does not weaken the command
   sandbox. Denial and expiry execute nothing.
+- Run budgets persist checked start, token, reported-cost, and active-time accounting and can reduce
+  node timeouts before execution. They are scheduler controls, not provider-side billing
+  reservations, account quotas, CPU/memory limits, or a substitute for containment. One in-flight
+  model response may settle above its remaining allowance; Flow records it and starts no further
+  work.
 
 SRT is a beta native sandbox based on Seatbelt on macOS and bubblewrap, namespaces, and seccomp on Linux. It reduces command authority but is not equivalent to a microVM and cannot defend against a kernel or sandbox-runtime vulnerability. It also does not contain the host-side Pi process or make host-side pathname authorization atomic against a concurrently hostile workspace process. Use a reviewed container, microVM, Gondolin, OpenShell, or managed boundary for hostile or multi-tenant work.
 

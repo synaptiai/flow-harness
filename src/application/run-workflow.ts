@@ -6,6 +6,7 @@ import {
   reduceRunEvents,
   type NodeFailure,
   type RunEvent,
+  type RunBudgetExhaustedEvent,
   type RunCancelledEvent,
   type RunFailedEvent,
   type RunResumedEvent,
@@ -17,7 +18,12 @@ import {
   commandApprovalRequestId,
   createCommandApprovalOperation,
 } from "../domain/approval/command-approval.js";
-import type { CompiledNode, CompiledWorkflow } from "../domain/workflow/types.js";
+import type {
+  CompiledAgentNode,
+  CompiledCommandNode,
+  CompiledNode,
+  CompiledWorkflow,
+} from "../domain/workflow/types.js";
 import type {
   NodeExecutionOutcome,
   NodeExecutor,
@@ -59,6 +65,7 @@ export async function runWorkflow(
       workflowApiVersion: workflow.apiVersion,
       workflowDigest: calculateWorkflowDigest(workflow),
       executionCwd,
+      ...(workflow.budget === undefined ? {} : { budget: workflow.budget }),
       ...(approvalRequirements.length === 0 ? {} : { approvalRequirements }),
       ...(workflow.goal === undefined ? {} : { goal: workflow.goal }),
     };
@@ -136,6 +143,9 @@ async function continueWorkflow(
     if (failedNode.error === null) {
       throw new Error(`Failed node "${failedNodeId}" has no committed error`);
     }
+    if (hasSettlementExhaustion(state)) {
+      return await exhaustRun();
+    }
     await record({
       ...base(nextSequence()),
       type: "run_failed",
@@ -146,6 +156,9 @@ async function continueWorkflow(
   }
 
   while (completed.size < workflow.nodes.length) {
+    if ((state.budget?.exhausted.length ?? 0) > 0) {
+      return await exhaustRun();
+    }
     if (isAborted(options.signal)) {
       return await cancelRun();
     }
@@ -154,10 +167,14 @@ async function continueWorkflow(
       throw new Error("Compiled workflow has no ready node; compiler invariant was violated");
     }
 
+    const executionNode = boundNodeTimeout(node, state);
     const attempt = 1;
     let approval: { readonly requestId: string; readonly operationDigest: string } | undefined;
     if (node.type === "command" && node.approval !== undefined) {
-      const operation = createCommandApprovalOperation(node, options.cwd);
+      if (executionNode.type !== "command") {
+        throw new Error("bounded command node changed type");
+      }
+      const operation = createCommandApprovalOperation(executionNode, options.cwd);
       const operationDigest = calculateCommandApprovalOperationDigest(operation);
       const currentApproval = state.nodes[node.id]?.approval ?? null;
 
@@ -230,7 +247,7 @@ async function continueWorkflow(
 
     const outcome = isAborted(options.signal)
       ? abortedOutcome(options.signal)
-      : await executeNode(node, options.executor, {
+      : await executeNode(executionNode, options.executor, {
           runId,
           workflowId: workflow.id,
           attempt,
@@ -240,7 +257,7 @@ async function continueWorkflow(
         });
     const authoritativeOutcome =
       isAborted(options.signal) && outcome.status === "succeeded"
-        ? abortedOutcome(options.signal)
+        ? abortedOutcome(options.signal, outcome.evidence)
         : outcome;
 
     if (authoritativeOutcome.status === "failed") {
@@ -252,6 +269,9 @@ async function continueWorkflow(
         error: authoritativeOutcome.error,
         evidence: authoritativeOutcome.evidence,
       });
+      if (hasSettlementExhaustion(state)) {
+        return await exhaustRun();
+      }
       const failed: RunFailedEvent = {
         ...base(nextSequence()),
         type: "run_failed",
@@ -272,6 +292,9 @@ async function continueWorkflow(
     completed.add(node.id);
   }
 
+  if (state.budget?.exhausted.some((item) => item.dimension !== "nodeStarts") === true) {
+    return await exhaustRun();
+  }
   if (isAborted(options.signal)) {
     return await cancelRun();
   }
@@ -289,6 +312,20 @@ async function continueWorkflow(
       reason: abortReason(options.signal),
     };
     await record(cancelled);
+    return state;
+  }
+
+  async function exhaustRun(): Promise<RunState> {
+    const exhausted = state.budget?.exhausted;
+    if (exhausted === undefined || exhausted.length === 0) {
+      throw new Error("budget exhaustion invariant was violated");
+    }
+    const event: RunBudgetExhaustedEvent = {
+      ...base(nextSequence()),
+      type: "run_budget_exhausted",
+      exhausted,
+    };
+    await record(event);
     return state;
   }
 }
@@ -361,6 +398,13 @@ function validateRecovery(
     );
   }
 
+  if (!sameRunBudget(state.budget?.limits, workflow.budget)) {
+    throw new RunRecoveryError(
+      "workflow_mismatch",
+      `run "${runId}" budget does not match the compiled workflow`,
+    );
+  }
+
   const workflowNodeById = new Map(workflow.nodes.map((node) => [node.id, node]));
   for (const [nodeId, nodeState] of Object.entries(state.nodes)) {
     if (nodeState.approval === null) {
@@ -371,17 +415,6 @@ function validateRecovery(
       throw new RunRecoveryError(
         "workflow_mismatch",
         `run "${runId}" has approval state for non-approved node "${nodeId}"`,
-      );
-    }
-    const expectedOperation = createCommandApprovalOperation(node, executionCwd);
-    const expectedDigest = calculateCommandApprovalOperationDigest(expectedOperation);
-    if (
-      nodeState.approval.operationDigest !== expectedDigest ||
-      calculateCommandApprovalOperationDigest(nodeState.approval.operation) !== expectedDigest
-    ) {
-      throw new RunRecoveryError(
-        "workflow_mismatch",
-        `run "${runId}" approval operation does not match command node "${nodeId}"`,
       );
     }
   }
@@ -405,6 +438,7 @@ function validateRecoveredHistory(
 ): void {
   const nodeById = new Map(workflow.nodes.map((node) => [node.id, node]));
   const completed = new Set<string>();
+  let replayState: RunState | undefined;
 
   for (const event of events) {
     if (event.type === "command_approval_requested") {
@@ -418,6 +452,33 @@ function validateRecoveredHistory(
         throw new RunRecoveryError(
           "workflow_mismatch",
           `run "${runId}" contains approval history that violates the compiled workflow graph`,
+        );
+      }
+      if (replayState === undefined) {
+        throw new RunRecoveryError(
+          "workflow_mismatch",
+          `run "${runId}" approval history has no starting state`,
+        );
+      }
+      if (replayState.executionCwd === null) {
+        throw new RunRecoveryError(
+          "workflow_mismatch",
+          `run "${runId}" approval history has no persisted execution working directory`,
+        );
+      }
+      const executionNode = boundNodeTimeout(node, replayState);
+      const expectedOperation = createCommandApprovalOperation(
+        executionNode,
+        replayState.executionCwd,
+      );
+      const expectedDigest = calculateCommandApprovalOperationDigest(expectedOperation);
+      if (
+        event.operationDigest !== expectedDigest ||
+        calculateCommandApprovalOperationDigest(event.operation) !== expectedDigest
+      ) {
+        throw new RunRecoveryError(
+          "workflow_mismatch",
+          `run "${runId}" approval operation does not match command node "${event.nodeId}"`,
         );
       }
     } else if (event.type === "node_started") {
@@ -435,6 +496,7 @@ function validateRecoveredHistory(
     } else if (event.type === "node_succeeded") {
       completed.add(event.nodeId);
     }
+    replayState = appendRunEvent(replayState, event);
   }
 }
 
@@ -475,6 +537,18 @@ function sameApprovalRequirements(
         requirement.nodeId === right[index]?.nodeId &&
         requirement.grantTtlMs === right[index]?.grantTtlMs,
     )
+  );
+}
+
+function sameRunBudget(
+  left: CompiledWorkflow["budget"],
+  right: CompiledWorkflow["budget"],
+): boolean {
+  return (
+    left?.maxNodeStarts === right?.maxNodeStarts &&
+    left?.maxModelTokens === right?.maxModelTokens &&
+    left?.maxCostUsdMicros === right?.maxCostUsdMicros &&
+    left?.maxExecutionMs === right?.maxExecutionMs
   );
 }
 
@@ -541,6 +615,39 @@ function selectReadyNode(
   );
 }
 
+function hasSettlementExhaustion(state: RunState): boolean {
+  return state.budget?.exhausted.some((item) => item.dimension !== "nodeStarts") === true;
+}
+
+function boundNodeTimeout(node: CompiledCommandNode, state: RunState): CompiledCommandNode;
+function boundNodeTimeout(node: CompiledAgentNode, state: RunState): CompiledAgentNode;
+function boundNodeTimeout(node: CompiledNode, state: RunState): CompiledNode;
+function boundNodeTimeout(node: CompiledNode, state: RunState): CompiledNode {
+  const remaining = state.budget?.remaining.executionMs;
+  if (remaining === undefined) {
+    return node;
+  }
+  if (remaining <= 0) {
+    throw new Error("execution budget must be available before bounding a node timeout");
+  }
+  if (node.type === "command") {
+    if (node.command.timeoutMs <= remaining) {
+      return node;
+    }
+    return Object.freeze({
+      ...node,
+      command: Object.freeze({ ...node.command, timeoutMs: remaining }),
+    });
+  }
+  if (node.agent.timeoutMs <= remaining) {
+    return node;
+  }
+  return Object.freeze({
+    ...node,
+    agent: Object.freeze({ ...node.agent, timeoutMs: remaining }),
+  });
+}
+
 async function executeNode(
   node: CompiledNode,
   executor: NodeExecutor,
@@ -560,7 +667,10 @@ async function executeNode(
   }
 }
 
-function abortedOutcome(signal: AbortSignal | undefined): NodeExecutionOutcome {
+function abortedOutcome(
+  signal: AbortSignal | undefined,
+  evidence: NodeExecutionOutcome["evidence"] = null,
+): NodeExecutionOutcome {
   return {
     status: "failed",
     error: {
@@ -569,7 +679,7 @@ function abortedOutcome(signal: AbortSignal | undefined): NodeExecutionOutcome {
       retryable: false,
       sideEffectStatus: "uncertain",
     },
-    evidence: null,
+    evidence,
   };
 }
 
