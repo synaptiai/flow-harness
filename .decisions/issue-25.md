@@ -344,3 +344,31 @@ recorded here to constrain the next issue, not implemented by this one.
 - Future reconciliation can be adapter-specific and evidence-based without changing the prepared
   descriptor shape. Future remote executors may justify replacing callbacks with an acknowledged
   event stream, but this issue does not pay that complexity prematurely.
+
+## Final verification evidence
+
+- `npm run check`: passed on the final rebased tree with 44 default test files / 532 tests, a clean
+  production build, and 3 compiled-process files / 20 runtime tests.
+- Every acceptance-map selector passed with at least one executed test. The focused effect suites
+  cover reducer permutations, application serialization, real filesystem ordering, Pi adapter
+  behavior, legacy compatibility, event bounds, public documentation, and five compiled crash
+  windows.
+- `npm run test:coverage`: passed the configured 75% statement, 65% branch, 70% function, and 75%
+  line thresholds. The latest timing-sensitive run reported 82.84% statements, 74.23% branches,
+  91.16% functions, and 83.15% lines.
+- `npm run pack:check`: rebuilt and installed the packed artifact in a clean temporary consumer,
+  then exercised the installed CLI and project configuration. Package inspection reported 177
+  files, 230,321 bytes compressed, and 1,229,339 bytes unpacked.
+- `npm audit --omit=dev --audit-level=low`: passed with zero vulnerabilities.
+
+## Adversarial review dispositions
+
+| Finding | Priority | Disposition |
+| --- | --- | --- |
+| Security guidance said replay rejects an unresolved effect even though unresolved preparation is valid inspectable state | P2 | Fixed: guidance now distinguishes valid replay from forbidden terminalization; the public-doc contract directly asserts the wording |
+| The documented public-doc selector claimed to cover security and testing guidance without loading those files | P2 | Fixed: the durable-edit documentation test now reads and asserts both `SECURITY.md` and `docs/testing-and-evaluation.md` |
+| An executor could combine `unknown/post_commit_failure` with `retryable: true`, creating an unsafe durable retry signal | P2 | Fixed: the application forces unknown effects non-retryable and replay independently rejects a forged contradictory terminal event; both tests failed before the fix and pass afterward |
+
+Independent runtime review found zero remaining P1/P2/P3 issues in mutation ordering, append
+poisoning, interruption handling, or the stacked Issue #23 lifecycle. Final exact-head convergence
+is required again after this evidence commit.

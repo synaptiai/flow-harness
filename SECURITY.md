@@ -24,8 +24,9 @@ The embedded Pi runtime runs with the invoking user's operating-system permissio
   edit before rename and, while journal publication remains available, settle it as committed, not
   applied, or post-commit unknown. If settlement publication rejects, the attempt journal is
   poisoned and the effect remains unresolved. Authorization, effect events, and terminal receipts
-  are distinct replay-validated evidence; replay rejects an unresolved effect, an invented or
-  omitted receipt, and committed-record corruption.
+  are distinct replay-validated evidence; replay rejects terminalization while an effect remains
+  unresolved, terminal evidence with an invented or omitted receipt, and committed-record
+  corruption.
 - Approval-required command nodes persist the exact executable, ordered arguments, normalized
   working directory, timeout, digest, request identity, and grant lifetime before any node start or
   sandbox preparation. Approval is single-use, expires predictably, and does not weaken the command
