@@ -258,6 +258,64 @@ describe("LocalSupervisorService", () => {
     expect(harness.admissionStore.state.jobs[job.jobId]).toMatchObject({ status: "accepted" });
   });
 
+  it("continues restart adoption after one published worker becomes unreachable", async () => {
+    const harness = await createHarness(undefined, { maxActiveWorkers: 2, maxQueuedJobs: 0 });
+    const commands = [
+      submitCommand(randomUUID(), harness.directory, "unreachable-run"),
+      submitCommand(randomUUID(), harness.directory, "healthy-run"),
+    ];
+    const jobs: JobRecord[] = [];
+    for (const [index, command] of commands.entries()) {
+      if (command === undefined) {
+        throw new Error("test requires two commands");
+      }
+      const recordedAt = `2026-08-07T12:00:0${index}.000Z`;
+      await harness.store.recordCommand(createSubmissionCommandRecord({ ...command, recordedAt }));
+      const job = createJobRecord({
+        jobId: command.commandId,
+        workerId: randomUUID(),
+        runId: command.runId,
+        mode: command.mode,
+        sourceName: command.sourceName,
+        workflowSource: command.workflowSource,
+        cwd: command.cwd,
+        token: `${index + 1}`.repeat(64),
+        createdAt: recordedAt,
+      });
+      jobs.push(job);
+      await harness.store.reserveJob(job);
+      await harness.admissionStore.append(
+        createDispatchReservedEvent(
+          harness.admissionStore.state,
+          {
+            jobId: job.jobId,
+            workerId: job.workerId,
+            runId: job.runId,
+            jobDigest: job.digest,
+          },
+          recordedAt,
+        ),
+      );
+      await harness.launcher.launch(job);
+    }
+    harness.launcher.unreachableIdentityRunIds.add("unreachable-run");
+
+    await expect(harness.service.reconcile()).resolves.toBeUndefined();
+
+    expect(harness.admissionStore.state.jobs[jobs[0]?.jobId ?? ""]).toMatchObject({
+      status: "uncertain",
+    });
+    expect(harness.admissionStore.state.jobs[jobs[1]?.jobId ?? ""]).toMatchObject({
+      status: "accepted",
+    });
+    await expect(harness.store.readCommand(commands[0]?.commandId ?? "")).resolves.toMatchObject({
+      status: "uncertain",
+    });
+    await expect(harness.store.readCommand(commands[1]?.commandId ?? "")).resolves.toMatchObject({
+      status: "completed",
+    });
+  });
+
   it("rejects command-id reuse with different execution input", async () => {
     const harness = await createHarness();
     const command = submitCommand(randomUUID(), harness.directory);
@@ -693,6 +751,7 @@ class RecordingWorkerLauncher implements WorkerLauncher {
   readonly jobs: JobRecord[] = [];
   readonly cancelCommands: unknown[] = [];
   readonly failBeforeDescriptorRunIds = new Set<string>();
+  readonly unreachableIdentityRunIds = new Set<string>();
   identityMismatch = false;
   loseCancellationAcknowledgement = false;
   loseLaunchAcknowledgement = false;
@@ -768,6 +827,9 @@ class RecordingWorkerLauncher implements WorkerLauncher {
           lastSequence: 4,
         },
       } satisfies WorkerResponse;
+    }
+    if (this.unreachableIdentityRunIds.has(descriptor.runId)) {
+      throw new Error(`worker for ${descriptor.runId} is unreachable`);
     }
     const workerId = this.identityMismatch ? randomUUID() : descriptor.workerId;
     this.activeIdentityRequests += 1;

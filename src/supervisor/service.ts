@@ -502,7 +502,19 @@ export class LocalSupervisorService {
           await this.#launchJobOnce(action.job, command);
           continue;
         }
-        await this.#verifyWorkerIdentity(action.descriptor);
+        try {
+          await this.#verifyWorkerIdentity(action.descriptor);
+        } catch (error) {
+          if (error instanceof SupervisorServiceError) {
+            throw error;
+          }
+          const failure = errorMessage(error);
+          await this.#recordJobUncertain(action.job, failure);
+          if (command.status !== "uncertain") {
+            await this.#markSubmissionUncertain(command, failure);
+          }
+          continue;
+        }
         await this.#recordWorkerAccepted(action.job);
         if (command.status !== "completed") {
           await this.#completeSubmissionJournal(
