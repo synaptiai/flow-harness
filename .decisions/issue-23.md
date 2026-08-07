@@ -364,14 +364,14 @@ workers—each able to create providers, sandboxes, and later child graphs—are
 
 ## Final verification evidence
 
-- `npm run check`: passed on the final tree; 39 default test files / 444 tests, clean build, and 2
+- `npm run check`: passed on the final tree; 39 default test files / 461 tests, clean build, and 2
   compiled-process files / 13 runtime tests.
-- `npm run test:coverage`: passed with 82.50% statements, 73.61% branches, 90.73% functions, and
-  82.81% lines.
-- `npm run pack:check` with a task-local npm cache: 177 files, 214.0 kB compressed, 1.1 MB
-  unpacked.
-- Clean consumer: installed the final tarball with scripts disabled, ran the packaged `flow --help`,
-  created `.flow/config.yaml`, and inspected the canonical default 1/32 policy and project root.
+- `npm run test:coverage`: passed with 82.56% statements, 73.29% branches, 90.52% functions, and
+  82.91% lines.
+- Package metadata inspection: 177 files, 217,214 bytes compressed, and 1,151,871 bytes unpacked.
+- `npm run pack:check`: rebuilt and packed the final tree, installed the tarball in a clean temporary
+  consumer with lifecycle scripts disabled, ran the installed `flow --help`, created
+  `.flow/config.yaml`, and inspected the canonical default 1/32 policy and project root.
 - `npm audit --omit=dev --audit-level=low`: zero production vulnerabilities.
 - Admission model exploration: the exhaustive small-state reducer test visited more than 100
   reachable states while checking active/queue bounds and unique FIFO tickets.
@@ -397,6 +397,17 @@ workers—each able to create providers, sandboxes, and later child graphs—are
 | Protocol, records, and reducer duplicated hard capacity literals | P2 | Fixed: all schemas import the Flow domain cap constants |
 | Accepted frame could outgrow its job record through Flow metadata | P2 | Fixed: the private record limit reserves a fixed metadata envelope above the wire ceiling |
 | Unknown server/storage faults were mislabeled as invalid client protocol | P2 | Fixed: protocol parsing remains `protocol_invalid`; internal/storage failures normalize to `internal` |
+| Exact submission retry could recreate admission while queued cancellation committed | P1 | Fixed: serialized admission re-reads the durable command and fails closed for cancelling, missing, or uncertain queue state; deterministic barrier test prevents resurrection |
+| A timed-out daemon launch could outlive the startup lock and race a replacement generation | P1 | Fixed: timeout terminates the detached process group, escalates when required, reaps it before releasing the lock, and reports the parent-known PID |
+| One unreachable dispatching worker stopped adoption of unrelated healthy workers | P2 | Fixed: transport failure marks only that job and command uncertain while identity mismatches remain fatal; reconciliation continues |
+| `queue_cancelling` work was omitted from the idle/shutdown predicate | P2 | Fixed: idleness requires an empty admission job map, so cancellation must finish before shutdown or policy retirement |
+| A queue-full decision could be lost between admission and command-journal commit | P1 | Fixed: two-phase digest-bound rejection tombstones survive replay/compaction and exact retry; shutdown and retirement wait for commit completion |
+| Direct and dangling project/operator config symlinks were followed or treated as absent | P2 | Fixed: discovery uses path-identity checks and reads use `O_NOFOLLOW`; direct and dangling cases fail closed |
+| Initial `flow init` exposed the public config path before its bytes were complete | P2 | Fixed: a synced private inode is published through an atomic no-replace hard link and directory-synced before cleanup; concurrent initializers produce one complete winner |
+| Invalid-config acceptance selectors skipped claimed version, kind, bound, CLI, and documentation cases | P2 | Fixed: field-specific table tests, pre-mutation CLI holdout, public-doc assertions, and exact runnable selectors cover every claim |
+| `pack:check` inspected a dry-run file list but claimed a clean consumer install | P3 | Fixed: one local/CI script rebuilds, packs, clean-installs, and executes the installed CLI plus init/config smoke path |
+| Exclusive job, claim, command, and startup records were visible before serialization completed | P1 | Fixed: the shared exclusive writer now uses synced pending inodes and atomic no-replace publication; compiled startup contention and store regressions prove one complete winner |
+| The daemon-timeout regression depended on the child writing a PID file before its own deadline | P2 | Fixed: a typed timeout error carries the PID known immediately by the spawning parent and is emitted after process-group termination/reaping |
 
 ## Research references
 
