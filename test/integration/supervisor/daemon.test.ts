@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -67,6 +67,9 @@ describe("local supervisor daemon", () => {
       ok: true,
       result: { type: "shutdown", stopped: true },
     });
+    await expect(
+      stat(join(store.runsDirectory, ".supervisor", "admission.jsonl")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
     await expect(running.completed).resolves.toBeUndefined();
   });
 

@@ -405,11 +405,9 @@ export async function startSupervisorServer(
   let closePromise: Promise<void> | undefined;
   let fatalError: Error | undefined;
   let reconciling = false;
-  let retirePolicyOnClose = false;
   const server = createServer((socket) => {
     socket.on("error", () => socket.destroy());
     void handleConnection(socket, service, () => {
-      retirePolicyOnClose = true;
       clearInterval(reconciliationTimer);
       closePromise ??= closeSupervisorServer(server, socketPath);
     });
@@ -457,11 +455,7 @@ export async function startSupervisorServer(
       clearInterval(reconciliationTimer);
       void rm(socketPath, { force: true })
         .then(async () => {
-          if (retirePolicyOnClose) {
-            await service.retirePolicy();
-          } else {
-            await service.close();
-          }
+          await service.close();
           if (fatalError !== undefined) {
             throw fatalError;
           }
@@ -553,6 +547,7 @@ async function dispatch(
     case "shutdown": {
       try {
         await service.prepareShutdown();
+        await service.retirePolicy();
       } catch (error) {
         if (error instanceof SupervisorServiceError && error.code === "conflict") {
           throw new DaemonRequestError("active_workers", error.message);
