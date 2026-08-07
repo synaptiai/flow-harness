@@ -3,6 +3,7 @@ import { isAbsolute, join, resolve } from "node:path";
 
 import { z } from "zod";
 
+import { RUN_RECOVERY_ERROR_CODES } from "../application/run-workflow.js";
 import { MAX_ACTIVE_WORKERS, MAX_QUEUED_JOBS } from "../domain/config/resolver.js";
 import { SUPERVISOR_PROTOCOL_VERSION } from "./protocol.js";
 
@@ -204,6 +205,7 @@ const workerDescriptorSchema = z
       .optional(),
     exitCode: z.number().int().min(0).max(255).optional(),
     failure: z.string().min(1).max(16_384).optional(),
+    recoveryErrorCode: z.enum(RUN_RECOVERY_ERROR_CODES).optional(),
   })
   .strict()
   .superRefine((record, context) => {
@@ -227,6 +229,31 @@ const workerDescriptorSchema = z
         code: "custom",
         message: "failed worker status requires a failure description",
         path: ["failure"],
+      });
+    }
+    if (record.recoveryErrorCode !== undefined && record.status !== "terminal") {
+      context.addIssue({
+        code: "custom",
+        message: "recovery error code requires terminal worker status",
+        path: ["recoveryErrorCode"],
+      });
+    }
+    if (record.recoveryErrorCode !== undefined && record.failure === undefined) {
+      context.addIssue({
+        code: "custom",
+        message: "recovery error code requires a bounded failure description",
+        path: ["failure"],
+      });
+    }
+    if (
+      record.status === "terminal" &&
+      record.runStatus === "running" &&
+      record.recoveryErrorCode === undefined
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "terminal worker with a running run requires a recovery error code",
+        path: ["recoveryErrorCode"],
       });
     }
   });

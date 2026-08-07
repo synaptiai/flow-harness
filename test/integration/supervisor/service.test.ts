@@ -180,6 +180,23 @@ describe("LocalSupervisorService", () => {
     expect(harness.admissionStore.state).toMatchObject({ activeCount: 1, queuedCount: 0 });
   });
 
+  it("releases capacity when a resume worker preserves an uncertain running run", async () => {
+    const harness = await createHarness(undefined, { maxActiveWorkers: 1, maxQueuedJobs: 1 });
+    const uncertain = submitCommand(randomUUID(), harness.directory, "uncertain-run");
+    const queued = submitCommand(randomUUID(), harness.directory, "next-run");
+    await harness.service.submit(uncertain);
+    await harness.service.submit(queued);
+    await harness.launcher.completeRecoveryRefusal(uncertain.commandId);
+
+    await expect(harness.service.reconcile()).resolves.toBeUndefined();
+
+    expect(harness.launcher.jobs.map((job) => job.runId)).toEqual(["uncertain-run", "next-run"]);
+    expect(harness.admissionStore.state.jobs[uncertain.commandId]).toBeUndefined();
+    expect(harness.admissionStore.state.jobs[queued.commandId]).toMatchObject({
+      status: "accepted",
+    });
+  });
+
   it("continues independent FIFO launches after one queued launch becomes uncertain", async () => {
     const harness = await createHarness(undefined, { maxActiveWorkers: 2, maxQueuedJobs: 2 });
     const first = submitCommand(randomUUID(), harness.directory, "active-1");
@@ -870,6 +887,26 @@ class RecordingWorkerLauncher implements WorkerLauncher {
         status: "terminal",
         runStatus: "succeeded",
         exitCode: 0,
+        updatedAt: "2026-08-07T12:00:10.000Z",
+      }),
+    );
+    await this.store.releaseActiveRunClaim(job.runId, job.jobId);
+  }
+
+  async completeRecoveryRefusal(jobId: string): Promise<void> {
+    const job = this.jobs.find((candidate) => candidate.jobId === jobId);
+    if (job === undefined) {
+      throw new Error(`job "${jobId}" was not launched`);
+    }
+    const descriptor = await this.store.readWorkerDescriptor(job.workerId);
+    await this.store.writeWorkerDescriptor(
+      parseWorkerDescriptor({
+        ...descriptor,
+        status: "terminal",
+        runStatus: "running",
+        recoveryErrorCode: "uncertain_operation",
+        failure: "node attempt has no committed outcome",
+        exitCode: 1,
         updatedAt: "2026-08-07T12:00:10.000Z",
       }),
     );

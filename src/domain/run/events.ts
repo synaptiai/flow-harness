@@ -185,6 +185,46 @@ export type NodeEffectSettledEvent = RunEventBase & {
   readonly effectId: string;
 } & NodeEffectSettlementInput;
 
+export type NodeEffectReconciliationInput =
+  | {
+      readonly outcome: "applied";
+      readonly reason: "target_matches_after";
+      readonly observedSha256: string;
+      readonly observedMode: number;
+    }
+  | {
+      readonly outcome: "not_applied";
+      readonly reason: "target_matches_before";
+      readonly observedSha256: string;
+      readonly observedMode: number;
+    }
+  | {
+      readonly outcome: "unknown";
+      readonly reason: "target_content_diverged" | "target_mode_diverged";
+      readonly observedSha256: string;
+      readonly observedMode: number;
+    }
+  | {
+      readonly outcome: "unknown";
+      readonly reason:
+        | "target_missing"
+        | "target_not_regular"
+        | "target_unreadable"
+        | "target_too_large"
+        | "target_changed_during_observation";
+    };
+
+export type NodeEffectReconciliation = NodeEffectReconciliationInput & {
+  readonly reconciledAt: string;
+};
+
+export type NodeEffectReconciledEvent = RunEventBase & {
+  readonly type: "node_effect_reconciled";
+  readonly nodeId: string;
+  readonly attempt: number;
+  readonly effectId: string;
+} & NodeEffectReconciliationInput;
+
 export interface CommandApprovalRequirement {
   readonly nodeId: string;
   readonly grantTtlMs: number;
@@ -276,6 +316,7 @@ export type RunEvent =
   | NodeStartedEvent
   | NodeEffectPreparedEvent
   | NodeEffectSettledEvent
+  | NodeEffectReconciledEvent
   | NodeSucceededEvent
   | NodeFailedEvent
   | RunSucceededEvent
@@ -328,6 +369,7 @@ export interface NodeEffectRunState {
   readonly descriptor: FilesystemEditEffectDescriptor;
   readonly preparedAt: string;
   readonly settlement: NodeEffectSettlement | null;
+  readonly reconciliation: NodeEffectReconciliation | null;
 }
 
 export interface RunState {
@@ -676,6 +718,68 @@ export const runEventSchema = z.discriminatedUnion("type", [
           code: "custom",
           path: ["reason"],
           message: `effect settlement outcome "${event.outcome}" requires reason "${expectedReason}"`,
+        });
+      }
+    }),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("node_effect_reconciled"),
+      nodeId: identifierSchema,
+      attempt: z.number().int().positive(),
+      effectId: effectIdSchema,
+      outcome: z.enum(["applied", "not_applied", "unknown"]),
+      reason: z.enum([
+        "target_matches_after",
+        "target_matches_before",
+        "target_missing",
+        "target_not_regular",
+        "target_unreadable",
+        "target_too_large",
+        "target_content_diverged",
+        "target_mode_diverged",
+        "target_changed_during_observation",
+      ]),
+      observedSha256: sha256Schema.optional(),
+      observedMode: z.number().int().min(0).max(0o777).optional(),
+    })
+    .strict()
+    .superRefine((event, context) => {
+      const exactObservation =
+        event.reason === "target_matches_after" ||
+        event.reason === "target_matches_before" ||
+        event.reason === "target_content_diverged" ||
+        event.reason === "target_mode_diverged";
+      if (exactObservation !== (event.observedSha256 !== undefined)) {
+        context.addIssue({
+          code: "custom",
+          path: ["observedSha256"],
+          message: exactObservation
+            ? `effect reconciliation reason "${event.reason}" requires an observed digest`
+            : `effect reconciliation reason "${event.reason}" forbids an observed digest`,
+        });
+      }
+      if (exactObservation !== (event.observedMode !== undefined)) {
+        context.addIssue({
+          code: "custom",
+          path: ["observedMode"],
+          message: exactObservation
+            ? `effect reconciliation reason "${event.reason}" requires an observed mode`
+            : `effect reconciliation reason "${event.reason}" forbids an observed mode`,
+        });
+      }
+
+      const expectedOutcome =
+        event.reason === "target_matches_after"
+          ? "applied"
+          : event.reason === "target_matches_before"
+            ? "not_applied"
+            : "unknown";
+      if (event.outcome !== expectedOutcome) {
+        context.addIssue({
+          code: "custom",
+          path: ["outcome"],
+          message: `effect reconciliation reason "${event.reason}" requires outcome "${expectedOutcome}"`,
         });
       }
     }),
@@ -1155,6 +1259,7 @@ export function appendRunEvent(
         descriptor: structuredClone(event.descriptor),
         preparedAt: event.at,
         settlement: null,
+        reconciliation: null,
       });
       nodes[event.nodeId] = Object.freeze({
         ...current,
@@ -1181,6 +1286,9 @@ export function appendRunEvent(
       if (effect.settlement !== null) {
         throw new RunReplayError(eventIndex, `effect "${event.effectId}" is already settled`);
       }
+      if (effect.reconciliation !== null) {
+        throw new RunReplayError(eventIndex, `effect "${event.effectId}" is already reconciled`);
+      }
       const settlement: NodeEffectSettlement = deepFreeze({
         outcome: event.outcome,
         reason: event.reason,
@@ -1188,6 +1296,48 @@ export function appendRunEvent(
       } as NodeEffectSettlement);
       const effects = [...current.effects];
       effects[effectIndex] = Object.freeze({ ...effect, settlement });
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        effects: Object.freeze(effects),
+      });
+      break;
+    }
+    case "node_effect_reconciled": {
+      const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
+      if (current.effectProtocol !== DURABLE_EFFECT_PROTOCOL) {
+        throw new RunReplayError(
+          eventIndex,
+          `node "${event.nodeId}" attempt ${event.attempt} did not declare the durable effect protocol`,
+        );
+      }
+      const effectIndex = current.effects.findIndex((effect) => effect.effectId === event.effectId);
+      const effect = current.effects[effectIndex];
+      if (effect === undefined) {
+        throw new RunReplayError(
+          eventIndex,
+          `effect reconciliation references unknown effect "${event.effectId}"`,
+        );
+      }
+      if (effect.settlement !== null) {
+        throw new RunReplayError(eventIndex, `effect "${event.effectId}" is already settled`);
+      }
+      if (effect.reconciliation !== null) {
+        throw new RunReplayError(eventIndex, `effect "${event.effectId}" is already reconciled`);
+      }
+      validateEffectReconciliation(event, effect, eventIndex);
+      const reconciliation: NodeEffectReconciliation = deepFreeze({
+        outcome: event.outcome,
+        reason: event.reason,
+        ...(!("observedSha256" in event)
+          ? {}
+          : {
+              observedSha256: event.observedSha256,
+              observedMode: event.observedMode,
+            }),
+        reconciledAt: event.at,
+      } as NodeEffectReconciliation);
+      const effects = [...current.effects];
+      effects[effectIndex] = Object.freeze({ ...effect, reconciliation });
       nodes[event.nodeId] = Object.freeze({
         ...current,
         effects: Object.freeze(effects),
@@ -1578,6 +1728,63 @@ function validateSucceededEvidence(evidence: NodeEvidence, eventIndex: number): 
       eventIndex,
       "successful agent evidence must not contain an uncertain effect receipt",
     );
+  }
+}
+
+function validateEffectReconciliation(
+  event: NodeEffectReconciledEvent,
+  effect: NodeEffectRunState,
+  eventIndex: number,
+): void {
+  const descriptor = effect.descriptor;
+  switch (event.reason) {
+    case "target_matches_after":
+      if (
+        event.observedSha256 !== descriptor.afterSha256 ||
+        event.observedMode !== descriptor.mode
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          "applied effect reconciliation contradicts the prepared after digest or mode",
+        );
+      }
+      break;
+    case "target_matches_before":
+      if (
+        event.observedSha256 !== descriptor.beforeSha256 ||
+        event.observedMode !== descriptor.mode
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          "not-applied effect reconciliation contradicts the prepared before digest or mode",
+        );
+      }
+      break;
+    case "target_content_diverged":
+      if (
+        event.observedSha256 === descriptor.beforeSha256 ||
+        event.observedSha256 === descriptor.afterSha256
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          "content-diverged effect reconciliation matches a prepared digest",
+        );
+      }
+      break;
+    case "target_mode_diverged":
+      if (
+        (event.observedSha256 !== descriptor.beforeSha256 &&
+          event.observedSha256 !== descriptor.afterSha256) ||
+        event.observedMode === descriptor.mode
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          "mode-diverged effect reconciliation contradicts the prepared digest or mode",
+        );
+      }
+      break;
+    default:
+      break;
   }
 }
 

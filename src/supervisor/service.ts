@@ -565,7 +565,7 @@ export class LocalSupervisorService {
         }
         assertAdmissionMatchesDescriptor(admission, descriptor);
         const runStatus = descriptor.status === "failed" ? "failed" : descriptor.runStatus;
-        if (runStatus === undefined || runStatus === "running") {
+        if (runStatus === undefined) {
           throw new SupervisorServiceError(
             "identity_mismatch",
             `terminal worker "${descriptor.workerId}" has invalid run status`,

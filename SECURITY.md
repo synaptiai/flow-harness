@@ -27,6 +27,14 @@ The embedded Pi runtime runs with the invoking user's operating-system permissio
   are distinct replay-validated evidence; replay rejects terminalization while an effect remains
   unresolved, terminal evidence with an invented or omitted receipt, and committed-record
   corruption.
+- Recovery of an unsettled prepared edit uses the same target queue and cross-process lock as
+  mutation, rejects non-regular targets before opening them, opens without following symlinks,
+  hashes only the initially observed size in fixed chunks totaling at most 8 MiB, and appends a
+  bounded hash/mode observation before releasing the lock. If missing ancestry prevents the sibling
+  lock from existing, only a rechecked still-missing result may be published; any observable target
+  remains unresolved. Recovery does not store target bytes, raw operating-system errors, or repair
+  the workspace. The observation is not an executor settlement and cannot authorize node retry or
+  claim that a provider turn completed.
 - Approval-required command nodes persist the exact executable, ordered arguments, normalized
   working directory, timeout, digest, request identity, and grant lifetime before any node start or
   sandbox preparation. Approval is single-use, expires predictably, and does not weaken the command

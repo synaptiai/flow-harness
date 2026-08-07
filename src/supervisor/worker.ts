@@ -3,9 +3,18 @@ import { chmod, rm } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
 import { basename, join } from "node:path";
 
-import type { NodeExecutor, RecoverableRunEventStore } from "../application/ports.js";
-import { RunCancellation, resumeWorkflow, runWorkflow } from "../application/run-workflow.js";
-import type { RunState } from "../domain/run/events.js";
+import type {
+  NodeEffectReconciler,
+  NodeExecutor,
+  RecoverableRunEventStore,
+} from "../application/ports.js";
+import {
+  RunCancellation,
+  RunRecoveryError,
+  resumeWorkflow,
+  runWorkflow,
+} from "../application/run-workflow.js";
+import { reduceRunEvents, type RunState } from "../domain/run/events.js";
 import { compileWorkflowText } from "../domain/workflow/compiler.js";
 import type { LocalSupervisorStore } from "../infrastructure/fs/local-supervisor-store.js";
 import {
@@ -26,6 +35,7 @@ const ADOPTION_TIMEOUT_MS = 10_000;
 export interface ExecuteWorkerJobOptions {
   readonly store: LocalSupervisorStore;
   readonly executor: NodeExecutor;
+  readonly effectReconciler: NodeEffectReconciler;
   readonly createRunStore: (rootDirectory: string) => RecoverableRunEventStore;
   readonly pid?: number;
   readonly now?: () => Date;
@@ -37,6 +47,7 @@ type WorkerCommand = WorkerRequest["command"];
 interface WorkerCompletion {
   readonly state?: RunState;
   readonly error?: Error;
+  readonly recoveryError?: RunRecoveryError;
 }
 
 export async function executeWorkerJob(
@@ -191,6 +202,7 @@ export async function executeWorkerJob(
         protectedPaths: [options.store.runsDirectory],
         store: runStore,
         executor: options.executor,
+        effectReconciler: options.effectReconciler,
         signal: controller.signal,
         now,
       } as const;
@@ -200,20 +212,47 @@ export async function executeWorkerJob(
           : resumeWorkflow(workflow, { ...runOptions, runId: job.runId })
       ).then(
         (state) => ({ state }),
-        (error: unknown) => ({ error: error instanceof Error ? error : new Error(String(error)) }),
+        async (error: unknown): Promise<WorkerCompletion> => {
+          const normalized = error instanceof Error ? error : new Error(String(error));
+          if (!(normalized instanceof RunRecoveryError)) {
+            return { error: normalized };
+          }
+          try {
+            const state = reduceRunEvents(await runStore.read(job.runId));
+            return { state, recoveryError: normalized };
+          } catch (replayError) {
+            return {
+              error: new AggregateError(
+                [normalized, replayError],
+                `recovery failed and run "${job.runId}" could not be replayed`,
+              ),
+            };
+          }
+        },
       );
       void execution.then(resolveCompletion);
     }
   }
 
   const result = await completion;
-  const exitCode = result.state === undefined ? 1 : runStateExitCode(result.state);
+  const exitCode =
+    result.state === undefined || result.recoveryError !== undefined
+      ? 1
+      : runStateExitCode(result.state);
   descriptor = parseWorkerDescriptor({
     ...descriptor,
     status: result.state === undefined ? "failed" : "terminal",
     ...(result.state === undefined
       ? { failure: boundedMessage(result.error?.message ?? "worker execution failed") }
-      : { runStatus: result.state.status }),
+      : {
+          runStatus: result.state.status,
+          ...(result.recoveryError === undefined
+            ? {}
+            : {
+                recoveryErrorCode: result.recoveryError.code,
+                failure: boundedMessage(result.recoveryError.message),
+              }),
+        }),
     exitCode,
     updatedAt: now().toISOString(),
   });

@@ -9,7 +9,11 @@ import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import { ApprovalDecisionError, decideCommandApproval } from "../application/command-approval.js";
-import type { NodeExecutor, RecoverableRunEventStore } from "../application/ports.js";
+import type {
+  NodeEffectReconciler,
+  NodeExecutor,
+  RecoverableRunEventStore,
+} from "../application/ports.js";
 import { resumeWorkflow, RunRecoveryError, runWorkflow } from "../application/run-workflow.js";
 import {
   calculateFlowPolicyDigest,
@@ -32,6 +36,7 @@ import {
   LocalSupervisorStore,
   LocalSupervisorStoreError,
 } from "../infrastructure/fs/local-supervisor-store.js";
+import { createProductionNodeEffectReconciler } from "../infrastructure/runtime/production-effect-reconciler.js";
 import { createProductionNodeExecutor } from "../infrastructure/runtime/production-node-executor.js";
 import {
   ensureSupervisor,
@@ -74,6 +79,7 @@ export interface CliIo {
 export interface CliDependencies {
   readonly cwd: string;
   readonly executor: NodeExecutor;
+  readonly effectReconciler: NodeEffectReconciler;
   readonly createStore: (rootDirectory: string) => RecoverableRunEventStore;
   readonly readTextFile: (path: string) => Promise<string>;
   readonly initializeProject: (
@@ -311,6 +317,7 @@ async function resumeCommand(
     runId,
     store: dependencies.createStore(runsDirectory),
     executor: dependencies.executor,
+    effectReconciler: dependencies.effectReconciler,
     ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
   });
 
@@ -653,6 +660,7 @@ async function internalWorkerCommand(
   return await executeWorkerJob(jobId, {
     store: new LocalSupervisorStore(runsDirectory),
     executor: dependencies.executor,
+    effectReconciler: dependencies.effectReconciler,
     createRunStore: dependencies.createStore,
     ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
   });
@@ -786,6 +794,7 @@ function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies 
     ...storageDependencies,
     ...configDependencies,
     executor: overrides.executor ?? createProductionNodeExecutor(),
+    effectReconciler: overrides.effectReconciler ?? createProductionNodeEffectReconciler(),
     readTextFile: overrides.readTextFile ?? ((path) => readFile(path, "utf8")),
     ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
   };

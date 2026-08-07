@@ -201,6 +201,7 @@ const jobReleasedEventSchema = z
     type: z.literal("job_released"),
     jobId: uuidSchema,
     runStatus: z.enum([
+      "running",
       "succeeded",
       "failed",
       "cancelled",

@@ -601,7 +601,7 @@ nodes:
     ).resolves.toBe(before);
   });
 
-  it("inspects and refuses an open durable edit attempt without mutating its JSONL ledger", async () => {
+  it("reconciles an open durable edit and still refuses the unfinished node", async () => {
     const directory = await createTemporaryDirectory();
     const workflowPath = join(directory, "uncertain-edit.workflow.yaml");
     const target = join(directory, "source.ts");
@@ -674,6 +674,7 @@ nodes:
               effectSequence: 1,
               descriptor: { target },
               settlement: null,
+              reconciliation: null,
             },
           ],
         },
@@ -699,7 +700,36 @@ nodes:
     expect(resumeExitCode).toBe(1);
     expect(resumeCapture.stderr.join("\n")).toContain("uncertain_operation");
     expect(executorCalls).toBe(0);
-    await expect(readFile(ledgerPath, "utf8")).resolves.toBe(before);
+    expect(await readFile(target, "utf8")).toBe("export const value = 2;\n");
+    const after = await readFile(ledgerPath, "utf8");
+    expect(after.startsWith(before)).toBe(true);
+    expect(JSON.parse(after.trim().split("\n").at(-1) ?? "{}")).toMatchObject({
+      sequence: 4,
+      type: "node_effect_reconciled",
+      nodeId: "implement",
+      effectId: "effect-3",
+      outcome: "applied",
+      reason: "target_matches_after",
+    });
+
+    const repeatedCapture = createCapture();
+    const repeatedExitCode = await main(
+      ["resume", workflowPath, "--run-id", "cli-uncertain-edit", "--runs-dir", runsDirectory],
+      repeatedCapture.io,
+      {
+        cwd: directory,
+        executor: {
+          async execute() {
+            executorCalls += 1;
+            throw new Error("repeated recovery must not execute");
+          },
+        },
+      },
+    );
+    expect(repeatedExitCode).toBe(1);
+    expect(repeatedCapture.stderr.join("\n")).toContain("uncertain_operation");
+    expect(executorCalls).toBe(0);
+    await expect(readFile(ledgerPath, "utf8")).resolves.toBe(after);
   });
 
   it("persists cancellation and terminates the command group", async () => {

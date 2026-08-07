@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,6 +8,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { NodeExecutor } from "../../../src/application/ports.js";
 import { JsonlRunStore } from "../../../src/infrastructure/fs/jsonl-run-store.js";
 import { LocalSupervisorStore } from "../../../src/infrastructure/fs/local-supervisor-store.js";
+import { createProductionNodeEffectReconciler } from "../../../src/infrastructure/runtime/production-effect-reconciler.js";
+import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { executeWorkerJob, requestWorker } from "../../../src/supervisor/worker.js";
 import { createActiveRunClaim, createJobRecord } from "../../../src/supervisor/records.js";
 
@@ -94,6 +96,7 @@ describe("detached run worker", () => {
     const worker = executeWorkerJob(job.jobId, {
       store,
       executor,
+      effectReconciler: createProductionNodeEffectReconciler(),
       createRunStore: (root) => new JsonlRunStore(root),
       pid: 4321,
     });
@@ -160,6 +163,106 @@ describe("detached run worker", () => {
       exitCode: 1,
     });
   });
+
+  it("preserves an uncertain resumed run after durably reconciling its open edit", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-worker-reconcile-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    const target = join(directory, "source.ts");
+    await writeFile(target, "after\n", { mode: 0o640 });
+    await chmod(target, 0o640);
+    const store = new LocalSupervisorStore(runsDirectory);
+    await store.initialize();
+    const source = recoveryWorkflowSource();
+    const compiled = compileWorkflowText(source);
+    const runId = "worker-reconcile";
+    const runStore = new JsonlRunStore(runsDirectory);
+    await runStore.append({
+      ...runEventBase(compiled.id, runId, 1),
+      type: "run_started",
+      nodeIds: compiled.nodes.map((node) => node.id),
+      workflowApiVersion: compiled.apiVersion,
+      workflowDigest: createHash("sha256").update(JSON.stringify(compiled)).digest("hex"),
+      executionCwd: directory,
+    });
+    await runStore.append({
+      ...runEventBase(compiled.id, runId, 2),
+      type: "node_started",
+      nodeId: "implement",
+      attempt: 1,
+      effectProtocol: "flow.effects/v1",
+    });
+    await runStore.append({
+      ...runEventBase(compiled.id, runId, 3),
+      type: "node_effect_prepared",
+      nodeId: "implement",
+      attempt: 1,
+      effectId: "effect-3",
+      effectSequence: 1,
+      descriptor: {
+        kind: "filesystem.edit",
+        target,
+        operationDigest: "b".repeat(64),
+        beforeSha256: sha256("before\n"),
+        afterSha256: sha256("after\n"),
+        mode: 0o640,
+      },
+    });
+    await runStore.release(runId);
+
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId,
+      mode: "resume",
+      sourceName: join(directory, "workflow.yaml"),
+      workflowSource: source,
+      cwd: directory,
+      token: "c".repeat(64),
+      createdAt: "2026-08-07T12:00:00.000Z",
+    });
+    await store.reserveSubmission(
+      job,
+      createActiveRunClaim({
+        runId: job.runId,
+        jobId: job.jobId,
+        workerId: job.workerId,
+        claimedAt: job.createdAt,
+      }),
+    );
+    const worker = executeWorkerJob(job.jobId, {
+      store,
+      executor: {
+        async execute() {
+          throw new Error("an uncertain resume must not execute a node");
+        },
+      },
+      effectReconciler: createProductionNodeEffectReconciler(),
+      createRunStore: (root) => new JsonlRunStore(root),
+      pid: 4322,
+    });
+    const descriptor = await waitForDescriptor(store, job.workerId);
+    await expect(requestWorker(descriptor, { type: "identify" })).resolves.toMatchObject({
+      ok: true,
+      result: { status: "running", runId },
+    });
+
+    await expect(worker).resolves.toBe(1);
+    const events = await new JsonlRunStore(runsDirectory).read(runId);
+    expect(events.map((event) => event.type)).toEqual([
+      "run_started",
+      "node_started",
+      "node_effect_prepared",
+      "node_effect_reconciled",
+    ]);
+    await expect(store.readWorkerDescriptor(job.workerId)).resolves.toMatchObject({
+      status: "terminal",
+      runStatus: "running",
+      recoveryErrorCode: "uncertain_operation",
+      exitCode: 1,
+    });
+    await expect(store.readActiveRunClaim(runId)).resolves.toBeNull();
+  });
 });
 
 async function waitForDescriptor(store: LocalSupervisorStore, workerId: string) {
@@ -190,4 +293,37 @@ nodes:
       args: [--version]
       timeoutMs: 10000
 `;
+}
+
+function recoveryWorkflowSource(): string {
+  return `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: worker-reconciliation }
+nodes:
+  - id: implement
+    type: agent
+    agent:
+      prompt: Implement the requested change.
+      model: { provider: test, id: deterministic }
+      tools: [read, edit]
+  - id: verify
+    type: command
+    dependsOn: [implement]
+    command: { executable: node, args: [--version] }
+`;
+}
+
+function runEventBase(workflowId: string, runId: string, sequence: number) {
+  return {
+    version: 1 as const,
+    sequence,
+    at: `2026-08-07T12:00:${String(sequence).padStart(2, "0")}.000Z`,
+    runId,
+    workflowId,
+  };
+}
+
+function sha256(content: string): string {
+  return createHash("sha256").update(content).digest("hex");
 }
