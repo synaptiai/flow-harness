@@ -490,6 +490,7 @@ describe("LocalSupervisorService", () => {
         },
       ],
     });
+    expect(JSON.stringify(status)).not.toMatch(/workflowSource|sourceName|token|reason/);
 
     harness.launcher.identityMismatch = true;
     const mismatched = await harness.service.status();
