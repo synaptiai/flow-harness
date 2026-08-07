@@ -27,6 +27,13 @@ import {
   type CommandApprovalOperation,
 } from "../approval/command-approval.js";
 import {
+  calculateWorkflowApprovalRequestDigest,
+  workflowApprovalEvidenceTruncationMessage,
+  workflowApprovalDenialMessage,
+  workflowApprovalRequestId,
+  type WorkflowApprovalRequest,
+} from "../approval/workflow-approval.js";
+import {
   MAX_POLICY_DECISIONS,
   MAX_POLICY_TARGET_BYTES,
   calculatePolicyRequestDigest,
@@ -191,6 +198,18 @@ export interface ControlGraphExecutableNode extends ControlGraphNodeBase {
   readonly when?: ControlBranchGuard;
 }
 
+export interface ControlGraphApprovalNode extends ControlGraphNodeBase {
+  readonly type: "approval";
+  readonly when?: ControlBranchGuard;
+  readonly approval: {
+    readonly prompt: string;
+    readonly evidence: readonly {
+      readonly nodeId: string;
+      readonly field: ConditionSourceField;
+    }[];
+  };
+}
+
 export interface ControlGraphConditionNode extends ControlGraphNodeBase {
   readonly type: "condition";
   readonly when?: ControlBranchGuard;
@@ -241,6 +260,7 @@ export interface ControlGraphLoopNode extends ControlGraphNodeBase {
 
 export type ControlGraphNode =
   | ControlGraphExecutableNode
+  | ControlGraphApprovalNode
   | ControlGraphConditionNode
   | ControlGraphJoinNode
   | ControlGraphLoopCheckNode
@@ -458,6 +478,34 @@ export interface CommandApprovalExpiredEvent extends RunEventBase {
   readonly operationDigest: string;
 }
 
+export interface WorkflowApprovalRequestedEvent extends RunEventBase {
+  readonly type: "workflow_approval_requested";
+  readonly nodeId: string;
+  readonly attempt: 1;
+  readonly requestId: string;
+  readonly request: WorkflowApprovalRequest;
+  readonly requestDigest: string;
+}
+
+export interface WorkflowApprovalApprovedEvent extends RunEventBase {
+  readonly type: "workflow_approval_approved";
+  readonly nodeId: string;
+  readonly attempt: 1;
+  readonly requestId: string;
+  readonly requestDigest: string;
+  readonly actor: string;
+}
+
+export interface WorkflowApprovalDeniedEvent extends RunEventBase {
+  readonly type: "workflow_approval_denied";
+  readonly nodeId: string;
+  readonly attempt: 1;
+  readonly requestId: string;
+  readonly requestDigest: string;
+  readonly actor: string;
+  readonly reason?: string;
+}
+
 export interface NodeSucceededEvent extends RunEventBase {
   readonly type: "node_succeeded";
   readonly nodeId: string;
@@ -504,6 +552,9 @@ export type RunEvent =
   | CommandApprovalGrantedEvent
   | CommandApprovalDeniedEvent
   | CommandApprovalExpiredEvent
+  | WorkflowApprovalRequestedEvent
+  | WorkflowApprovalApprovedEvent
+  | WorkflowApprovalDeniedEvent
   | NodeStartedEvent
   | NodeAttemptInterruptedEvent
   | NodeConditionEvaluatedEvent
@@ -549,6 +600,20 @@ export interface CommandApprovalRunState {
   readonly consumedAt: string | null;
 }
 
+export type WorkflowApprovalStatus = "pending" | "approved" | "denied";
+
+export interface WorkflowApprovalRunState {
+  readonly status: WorkflowApprovalStatus;
+  readonly requestId: string;
+  readonly attempt: 1;
+  readonly requestedAt: string;
+  readonly request: WorkflowApprovalRequest;
+  readonly requestDigest: string;
+  readonly decidedAt: string | null;
+  readonly actor: string | null;
+  readonly reason: string | null;
+}
+
 export interface NodeRunState {
   readonly status: NodeRunStatus;
   readonly attempt: number;
@@ -557,6 +622,7 @@ export interface NodeRunState {
   readonly evidence: NodeEvidence | null;
   readonly error: NodeFailure | null;
   readonly approval: CommandApprovalRunState | null;
+  readonly workflowApproval: WorkflowApprovalRunState | null;
   readonly effectProtocol: typeof DURABLE_EFFECT_PROTOCOL | null;
   readonly effects: readonly NodeEffectRunState[];
   readonly interruptedAttempts: readonly InterruptedNodeAttemptState[];
@@ -565,6 +631,12 @@ export interface NodeRunState {
 }
 
 export type NodeControlRunState =
+  | {
+      readonly kind: "approval";
+      readonly requestId: string;
+      readonly requestDigest: string;
+      readonly actor: string;
+    }
   | {
       readonly kind: "condition";
       readonly sourceNodeId: string;
@@ -734,6 +806,45 @@ const approvalReferenceSchema = z
   .object({
     requestId: identifierSchema,
     operationDigest: sha256Schema,
+  })
+  .strict();
+
+const canonicalWorkflowApprovalPromptSchema = z
+  .string()
+  .min(1)
+  .max(4096)
+  .refine((value) => value === value.trim(), {
+    message: "workflow approval prompt must not contain surrounding whitespace",
+  });
+
+const workflowApprovalEvidenceObservationSchema = z
+  .object({
+    sourceNodeId: identifierSchema,
+    sourceAttempt: z.number().int().positive(),
+    sourceField: z.enum(["command.stdout", "command.stderr", "agent.text"]),
+    sourceHash: sha256Schema,
+  })
+  .strict();
+
+const workflowApprovalRequestSchema = z
+  .object({
+    version: z.literal(1),
+    runId: identifierSchema,
+    workflowId: identifierSchema,
+    workflowDigest: sha256Schema,
+    nodeId: identifierSchema,
+    attempt: z.literal(1),
+    prompt: canonicalWorkflowApprovalPromptSchema,
+    evidence: z
+      .array(workflowApprovalEvidenceObservationSchema)
+      .min(1)
+      .max(16)
+      .refine(
+        (items) =>
+          new Set(items.map((item) => `${item.sourceNodeId}\0${item.sourceField}`)).size ===
+          items.length,
+        "workflow approval evidence sources must be unique",
+      ),
   })
   .strict();
 
@@ -981,6 +1092,34 @@ const controlGraphNodeSchema = z.discriminatedUnion("type", [
   z
     .object({
       ...controlNodeBaseShape,
+      type: z.literal("approval"),
+      when: controlBranchGuardSchema.optional(),
+      approval: z
+        .object({
+          prompt: canonicalWorkflowApprovalPromptSchema,
+          evidence: z
+            .array(
+              z
+                .object({
+                  nodeId: identifierSchema,
+                  field: z.enum(["command.stdout", "command.stderr", "agent.text"]),
+                })
+                .strict(),
+            )
+            .min(1)
+            .max(16)
+            .refine(
+              (items) =>
+                new Set(items.map((item) => `${item.nodeId}\0${item.field}`)).size === items.length,
+              "workflow approval evidence sources must be unique",
+            ),
+        })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ...controlNodeBaseShape,
       type: z.literal("condition"),
       when: controlBranchGuardSchema.optional(),
       condition: controlConditionSchema,
@@ -1153,6 +1292,40 @@ export const runEventSchema = z.discriminatedUnion("type", [
       attempt: z.number().int().positive(),
       requestId: identifierSchema,
       operationDigest: sha256Schema,
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("workflow_approval_requested"),
+      nodeId: identifierSchema,
+      attempt: z.literal(1),
+      requestId: identifierSchema,
+      request: workflowApprovalRequestSchema,
+      requestDigest: sha256Schema,
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("workflow_approval_approved"),
+      nodeId: identifierSchema,
+      attempt: z.literal(1),
+      requestId: identifierSchema,
+      requestDigest: sha256Schema,
+      actor: actorSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("workflow_approval_denied"),
+      nodeId: identifierSchema,
+      attempt: z.literal(1),
+      requestId: identifierSchema,
+      requestDigest: sha256Schema,
+      actor: actorSchema,
+      reason: z.string().trim().min(1).max(4096).optional(),
     })
     .strict(),
   z
@@ -1827,6 +2000,149 @@ export function appendRunEvent(
       });
       break;
     }
+    case "workflow_approval_requested": {
+      requireRunningControlTransition(currentState, nodes, eventIndex);
+      if ((currentState.budget?.exhausted.length ?? 0) > 0) {
+        throw new RunReplayError(
+          eventIndex,
+          "workflow approval cannot be requested after the run budget is exhausted",
+        );
+      }
+      const unconsumedCommandApproval = Object.entries(nodes).find(
+        ([nodeId, node]) =>
+          nodeId !== event.nodeId &&
+          node.approval !== null &&
+          (node.approval.status === "pending" || node.approval.status === "granted"),
+      );
+      if (unconsumedCommandApproval !== undefined) {
+        throw new RunReplayError(
+          eventIndex,
+          `another approval remains open for node "${unconsumedCommandApproval[0]}"`,
+        );
+      }
+      const requirement = requireControlGraphNode(currentState, event.nodeId, eventIndex);
+      if (requirement.type !== "approval") {
+        throw new RunReplayError(
+          eventIndex,
+          `node "${event.nodeId}" is not a workflow approval control node`,
+        );
+      }
+      const current = requirePendingControlState(nodes, event.nodeId, event.attempt, eventIndex);
+      if (current.workflowApproval !== null) {
+        throw new RunReplayError(
+          eventIndex,
+          `node "${event.nodeId}" already has a workflow approval request`,
+        );
+      }
+      requireSucceededDependencies(requirement, nodes, eventIndex);
+      requireSelectedGuard(requirement, nodes, eventIndex);
+      const observations = requirement.approval.evidence.map((source) => {
+        const observation = controlSourceObservation(requirement.nodeId, source, nodes, eventIndex);
+        if (observation.truncated) {
+          throw new RunReplayError(
+            eventIndex,
+            `workflow approval "${event.nodeId}" source evidence is truncated`,
+          );
+        }
+        return {
+          sourceNodeId: source.nodeId,
+          sourceAttempt: observation.attempt,
+          sourceField: source.field,
+          sourceHash: observation.hash,
+        } as const;
+      });
+      const expectedRequest: WorkflowApprovalRequest = {
+        version: 1,
+        runId: currentState.runId,
+        workflowId: currentState.workflowId,
+        workflowDigest: currentState.workflowDigest,
+        nodeId: requirement.nodeId,
+        attempt: 1,
+        prompt: requirement.approval.prompt,
+        evidence: observations,
+      };
+      if (event.requestId !== workflowApprovalRequestId(event.sequence)) {
+        throw new RunReplayError(
+          eventIndex,
+          "workflow approval request id does not match its event sequence",
+        );
+      }
+      if (JSON.stringify(event.request) !== JSON.stringify(expectedRequest)) {
+        throw new RunReplayError(
+          eventIndex,
+          "workflow approval request snapshot does not match durable graph evidence",
+        );
+      }
+      const expectedDigest = calculateWorkflowApprovalRequestDigest(expectedRequest);
+      if (event.requestDigest !== expectedDigest) {
+        throw new RunReplayError(eventIndex, "workflow approval request digest is invalid");
+      }
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        workflowApproval: workflowApprovalStateFromRequest(event),
+      });
+      status = "waiting_for_approval";
+      break;
+    }
+    case "workflow_approval_approved": {
+      if (currentState.status !== "waiting_for_approval") {
+        throw new RunReplayError(eventIndex, "workflow approval requires a waiting run");
+      }
+      const current = requireNode(nodes, event.nodeId, eventIndex);
+      const approval = requirePendingWorkflowApproval(current, event, eventIndex);
+      const control: NodeControlRunState = deepFreeze({
+        kind: "approval",
+        requestId: event.requestId,
+        requestDigest: event.requestDigest,
+        actor: event.actor,
+      });
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        status: "succeeded",
+        attempt: event.attempt,
+        startedAt: event.at,
+        finishedAt: event.at,
+        workflowApproval: deepFreeze({
+          ...approval,
+          status: "approved" as const,
+          decidedAt: event.at,
+          actor: event.actor,
+        }),
+        control,
+      });
+      status = "running";
+      break;
+    }
+    case "workflow_approval_denied": {
+      if (currentState.status !== "waiting_for_approval") {
+        throw new RunReplayError(eventIndex, "workflow approval denial requires a waiting run");
+      }
+      const current = requireNode(nodes, event.nodeId, eventIndex);
+      const approval = requirePendingWorkflowApproval(current, event, eventIndex);
+      const message = workflowApprovalDenialMessage(event.actor, event.reason);
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        status: "failed",
+        attempt: event.attempt,
+        startedAt: event.at,
+        finishedAt: event.at,
+        error: Object.freeze({
+          code: "workflow_approval_denied",
+          message,
+          retryable: false,
+          sideEffectStatus: "none",
+        }),
+        workflowApproval: deepFreeze({
+          ...approval,
+          status: "denied" as const,
+          decidedAt: event.at,
+          actor: event.actor,
+          reason: event.reason ?? null,
+        }),
+      });
+      status = "running";
+      break;
+    }
     case "node_started": {
       if (currentState.status !== "running") {
         throw new RunReplayError(
@@ -1859,6 +2175,7 @@ export function appendRunEvent(
         const controlNode = requireControlGraphNode(currentState, event.nodeId, eventIndex);
         if (
           controlNode.type === "condition" ||
+          controlNode.type === "approval" ||
           controlNode.type === "join" ||
           controlNode.type === "loop-check" ||
           controlNode.type === "loop"
@@ -1954,6 +2271,7 @@ export function appendRunEvent(
         evidence: null,
         error: null,
         approval: null,
+        workflowApproval: null,
         effectProtocol: null,
         effects: Object.freeze([]),
         interruptedAttempts: Object.freeze([...current.interruptedAttempts, interruptedAttempt]),
@@ -2392,6 +2710,35 @@ export function appendRunEvent(
           throw new RunReplayError(
             eventIndex,
             "loop source truncation requires a side-effect-free non-retryable control failure",
+          );
+        }
+      } else if (requirement.type === "approval") {
+        requireSucceededDependencies(requirement, nodes, eventIndex);
+        requireSelectedGuard(requirement, nodes, eventIndex);
+        const truncated = requirement.approval.evidence.find(
+          (source) =>
+            controlSourceObservation(requirement.nodeId, source, nodes, eventIndex).truncated,
+        );
+        if (truncated === undefined) {
+          throw new RunReplayError(
+            eventIndex,
+            `workflow approval "${event.nodeId}" evidence is complete and cannot fail as truncated`,
+          );
+        }
+        if (
+          event.error.code !== "workflow_approval_evidence_truncated" ||
+          event.error.message !==
+            workflowApprovalEvidenceTruncationMessage(
+              event.nodeId,
+              truncated.nodeId,
+              truncated.field,
+            ) ||
+          event.error.retryable ||
+          event.error.sideEffectStatus !== "none"
+        ) {
+          throw new RunReplayError(
+            eventIndex,
+            "workflow approval evidence truncation requires the exact side-effect-free non-retryable control failure",
           );
         }
       } else if (requirement.type === "loop") {
@@ -2844,6 +3191,48 @@ function approvalStateFromRequest(event: CommandApprovalRequestedEvent): Command
   });
 }
 
+function workflowApprovalStateFromRequest(
+  event: WorkflowApprovalRequestedEvent,
+): WorkflowApprovalRunState {
+  return deepFreeze({
+    status: "pending",
+    requestId: event.requestId,
+    attempt: event.attempt,
+    requestedAt: event.at,
+    request: structuredClone(event.request),
+    requestDigest: event.requestDigest,
+    decidedAt: null,
+    actor: null,
+    reason: null,
+  });
+}
+
+type WorkflowApprovalIdentityEvent = WorkflowApprovalApprovedEvent | WorkflowApprovalDeniedEvent;
+
+function requirePendingWorkflowApproval(
+  node: NodeRunState,
+  event: WorkflowApprovalIdentityEvent,
+  eventIndex: number,
+): WorkflowApprovalRunState {
+  if (node.status !== "pending" || node.workflowApproval?.status !== "pending") {
+    throw new RunReplayError(
+      eventIndex,
+      "workflow approval request must be pending before decision",
+    );
+  }
+  if (
+    event.requestId !== node.workflowApproval.requestId ||
+    event.attempt !== node.workflowApproval.attempt ||
+    event.requestDigest !== node.workflowApproval.requestDigest
+  ) {
+    throw new RunReplayError(
+      eventIndex,
+      "workflow approval decision does not match the current exact request",
+    );
+  }
+  return node.workflowApproval;
+}
+
 type ApprovalIdentityEvent =
   | CommandApprovalGrantedEvent
   | CommandApprovalDeniedEvent
@@ -2962,6 +3351,20 @@ function validateControlGraph(
           eventIndex,
           `control graph condition "${node.nodeId}" has an invalid source`,
         );
+      }
+    }
+    if (node.type === "approval") {
+      for (const evidence of node.approval.evidence) {
+        const source = nodeById.get(evidence.nodeId);
+        const compatible =
+          (evidence.field.startsWith("command.") && source?.type === "command") ||
+          (evidence.field === "agent.text" && source?.type === "agent");
+        if (!node.dependsOn.includes(evidence.nodeId) || !compatible) {
+          throw new RunReplayError(
+            eventIndex,
+            `control graph approval "${node.nodeId}" has an invalid evidence source`,
+          );
+        }
       }
     }
     if (node.type === "join") {
@@ -3281,6 +3684,26 @@ function serializeLoopTemplateStructure(
               case: node.when.case,
             },
           }),
+    });
+  }
+  if (node.type === "approval") {
+    return JSON.stringify({
+      ...common,
+      ...(node.when === undefined
+        ? {}
+        : {
+            when: {
+              conditionId: templateNodeId(node.when.conditionId),
+              case: node.when.case,
+            },
+          }),
+      approval: {
+        prompt: node.approval.prompt,
+        evidence: node.approval.evidence.map((source) => ({
+          nodeId: templateNodeId(source.nodeId),
+          field: source.field,
+        })),
+      },
     });
   }
   if (node.type === "condition") {
@@ -4102,6 +4525,7 @@ function pendingNodeState(): NodeRunState {
     evidence: null,
     error: null,
     approval: null,
+    workflowApproval: null,
     effectProtocol: null,
     effects: Object.freeze([]),
     interruptedAttempts: Object.freeze([]),

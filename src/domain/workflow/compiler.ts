@@ -8,6 +8,7 @@ import {
   MAX_CONTROL_GRAPH_SERIALIZED_BYTES,
   MAX_COMPILED_WORKFLOW_NODES,
   type CompiledAgentNode,
+  type CompiledApprovalNode,
   type CompiledCommandNode,
   type CompiledConditionNode,
   type CompiledJoinNode,
@@ -32,6 +33,10 @@ export interface WorkflowDiagnostic {
     | "condition_source_field_mismatch"
     | "condition_source_requires_dependency"
     | "condition_source_unknown"
+    | "approval_source_field_mismatch"
+    | "approval_source_requires_dependency"
+    | "approval_source_self"
+    | "approval_source_unknown"
     | "criterion_verifier_requires_command"
     | "criterion_verifier_requires_terminal"
     | "duplicate_dependency"
@@ -535,6 +540,49 @@ function validateControlFlowNodes<T extends SourceNode | SourceBodyNode>(
     }
   }
 
+  for (const [index, approval] of nodes.entries()) {
+    if (approval.type !== "approval") {
+      continue;
+    }
+    for (const [sourceIndex, declaration] of approval.approval.evidence.entries()) {
+      const path = `${prefix}.${index}.approval.evidence.${sourceIndex}`;
+      const source = nodeById.get(declaration.nodeId);
+      if (declaration.nodeId === approval.id) {
+        diagnostics.push({
+          code: "approval_source_self",
+          path: `${path}.nodeId`,
+          message: `approval "${approval.id}" cannot review its own evidence`,
+        });
+        continue;
+      }
+      if (source === undefined) {
+        diagnostics.push({
+          code: "approval_source_unknown",
+          path: `${path}.nodeId`,
+          message: `approval "${approval.id}" references unknown evidence node "${declaration.nodeId}"`,
+        });
+        continue;
+      }
+      if (!approval.dependsOn.includes(source.id)) {
+        diagnostics.push({
+          code: "approval_source_requires_dependency",
+          path: `${path}.nodeId`,
+          message: `approval "${approval.id}" evidence source "${source.id}" must be a direct dependency`,
+        });
+      }
+      const compatible =
+        (declaration.field.startsWith("command.") && source.type === "command") ||
+        (declaration.field === "agent.text" && source.type === "agent");
+      if (!compatible) {
+        diagnostics.push({
+          code: "approval_source_field_mismatch",
+          path: `${path}.field`,
+          message: `approval "${approval.id}" evidence field "${declaration.field}" is incompatible with node "${source.id}" of type "${source.type}"`,
+        });
+      }
+    }
+  }
+
   for (const [index, node] of nodes.entries()) {
     if (node.type === "join" || node.type === "loop" || node.when === undefined) {
       continue;
@@ -690,6 +738,15 @@ function sourceControlGraph<T extends SourceNode | SourceBodyNode>(nodes: readon
           dependsOn: node.dependsOn,
           ...(node.when === undefined ? {} : { when: node.when }),
           condition: node.condition,
+        };
+      }
+      if (node.type === "approval") {
+        return {
+          nodeId: node.id,
+          type: node.type,
+          dependsOn: node.dependsOn,
+          ...(node.when === undefined ? {} : { when: node.when }),
+          approval: node.approval,
         };
       }
       if (node.type === "join") {
@@ -946,6 +1003,20 @@ function freezeNode(source: Exclude<SourceNode, SourceLoopNode> | SourceBodyNode
     return Object.freeze(node);
   }
 
+  if (source.type === "approval") {
+    const node: CompiledApprovalNode = {
+      id: source.id,
+      type: "approval",
+      dependsOn,
+      ...(source.when === undefined ? {} : { when: Object.freeze({ ...source.when }) }),
+      approval: Object.freeze({
+        prompt: source.approval.prompt,
+        evidence: Object.freeze(source.approval.evidence.map((item) => Object.freeze({ ...item }))),
+      }),
+    };
+    return Object.freeze(node);
+  }
+
   const node: CompiledJoinNode = {
     id: source.id,
     type: "join",
@@ -1115,6 +1186,26 @@ function freezeLoopBodyNode(
         }),
         cases: Object.freeze(source.condition.cases.map((item) => Object.freeze({ ...item }))),
         default: source.condition.default,
+      }),
+    };
+    return Object.freeze(node);
+  }
+
+  if (source.type === "approval") {
+    const node: CompiledApprovalNode = {
+      ...common,
+      type: "approval",
+      ...(when === undefined ? {} : { when }),
+      approval: Object.freeze({
+        prompt: source.approval.prompt,
+        evidence: Object.freeze(
+          source.approval.evidence.map((item) =>
+            Object.freeze({
+              nodeId: requireMappedLoopNode(idByTemplate, item.nodeId, loop.id),
+              field: item.field,
+            }),
+          ),
+        ),
       }),
     };
     return Object.freeze(node);

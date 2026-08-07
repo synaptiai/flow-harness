@@ -56,6 +56,11 @@ export interface CompiledBranchGuard {
   readonly case: string;
 }
 
+export interface CompiledApprovalEvidenceSource {
+  readonly nodeId: string;
+  readonly field: ConditionSourceField;
+}
+
 export interface CompiledGuardedNodeBase extends CompiledNodeBase {
   readonly when?: CompiledBranchGuard;
 }
@@ -106,6 +111,14 @@ export interface CompiledConditionNode extends CompiledGuardedNodeBase {
   };
 }
 
+export interface CompiledApprovalNode extends CompiledGuardedNodeBase {
+  readonly type: "approval";
+  readonly approval: {
+    readonly prompt: string;
+    readonly evidence: readonly CompiledApprovalEvidenceSource[];
+  };
+}
+
 export interface CompiledJoinNode extends CompiledNodeBase {
   readonly type: "join";
   readonly join: {
@@ -141,6 +154,7 @@ export interface CompiledLoopNode extends CompiledGuardedNodeBase {
 export type CompiledNode =
   | CompiledCommandNode
   | CompiledAgentNode
+  | CompiledApprovalNode
   | CompiledConditionNode
   | CompiledJoinNode
   | CompiledLoopCheckNode

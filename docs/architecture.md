@@ -6,7 +6,7 @@ Flow turns a collection of useful software-development practices into an enforce
 
 The standalone harness reverses that relationship. Flow owns workflow execution and delegates only bounded node work to an embedded agent runtime.
 
-This document describes the target architecture unless a section is explicitly labeled as the current executable slice. The delivery roadmap is the source of truth for implementation status. Gates 1 and 2 currently provide `validate`, `run`, `inspect`, optional versioned goal contracts, command-bound criterion evaluation, command and bounded Pi agent nodes, cancellation, and replayable local event ledgers. Gate 3 now includes a runtime-neutral policy broker for model-requested reads, lists, and hash-anchored single-file edits, a fail-closed native sandbox for every command node, and exact expiring pre-start approval for deterministic commands. Gate 4 adds `resume` at committed node boundaries, exclusive same-host process ownership, write-ahead durable evidence and typed recovery observation for each workspace edit, opt-in proof-safe fresh recovery for interrupted agent attempts, command approval waits that survive client detachment, durable resource accounting with run-wide start, model-token, reported-cost, and active-execution limits, project initialization and monotonic capacity configuration, plus a bounded local supervisor with authenticated detached workers, durable FIFO admission, status, event replay, cancellation, and restart adoption. Gate 5 adds replay-safe exact-output conditions, guarded branches, first-class omission, explicit joins, bounded deterministic static-DAG concurrency, and finite replay-safe bounded loops. A TUI, optimization rollback, child runs, opaque Pi session continuation, general failure/fallback retries, broader configurable policy, dynamic agent-tool approval, execute/network model tools, probabilistic evaluators, packages, and stronger VM or managed sandbox backends remain later work.
+This document describes the target architecture unless a section is explicitly labeled as the current executable slice. The delivery roadmap is the source of truth for implementation status. Gates 1 and 2 currently provide `validate`, `run`, `inspect`, optional versioned goal contracts, command-bound criterion evaluation, command and bounded Pi agent nodes, cancellation, and replayable local event ledgers. Gate 3 now includes a runtime-neutral policy broker for model-requested reads, lists, and hash-anchored single-file edits, a fail-closed native sandbox for every command node, and exact expiring pre-start approval for deterministic commands. Gate 4 adds `resume` at committed node boundaries, exclusive same-host process ownership, write-ahead durable evidence and typed recovery observation for each workspace edit, opt-in proof-safe fresh recovery for interrupted agent attempts, approval waits that survive client detachment, durable resource accounting with run-wide start, model-token, reported-cost, and active-execution limits, project initialization and monotonic capacity configuration, plus a bounded local supervisor with authenticated detached workers, durable FIFO admission, status, event replay, cancellation, and restart adoption. Gate 5 adds replay-safe exact-output conditions, guarded branches, first-class omission, explicit joins, bounded deterministic static-DAG concurrency, finite replay-safe bounded loops, and evidence-bound graph approval nodes. A TUI, optimization rollback, child runs, opaque Pi session continuation, general failure/fallback retries, broader configurable policy, dynamic agent-tool approval, execute/network model tools, probabilistic evaluators, packages, and stronger VM or managed sandbox backends remain later work.
 
 ## Target flows
 
@@ -209,9 +209,24 @@ a side-effect-free committed node failure and terminal run. The same owner recor
 decision-versus-decision and decision-versus-resume races.
 
 The actor label is asserted local audit metadata, not authenticated identity. Request ids are
-sequence-derived locators rather than bearer secrets. General approval nodes, remote callbacks, and
-dynamic Pi tool-call suspension remain separate capabilities. The latter requires persisted opaque
-session continuation so prior model effects are not replayed.
+sequence-derived locators rather than bearer secrets. Remote callbacks and dynamic Pi tool-call
+suspension remain separate capabilities. The latter requires persisted opaque session continuation
+so prior model effects are not replayed.
+
+### Durable graph approval
+
+An `approval` node is a pure control barrier over already-durable evidence. Its declaration binds a
+bounded prompt and one to sixteen ordered, unique source references. Every source is a compatible
+direct dependency selecting command standard output/error or agent text. The scheduler waits for a
+quiescent executable wave, rejects truncated evidence, and persists a request snapshot containing
+the workflow digest plus each source node, attempt, field, and hash.
+
+Approval and denial reuse the same exclusive application decision path and CLI as command approval,
+but emit dedicated events. Approval immediately succeeds the control node; denial immediately
+creates a side-effect-free, non-retryable node failure. Neither transition invokes an executor or
+consumes a node start. There is no grant or TTL because no later operation creates a
+time-of-check/time-of-use boundary. The request does not authorize a command or model tool and does
+not expand policy or containment authority.
 
 ### Durable resource accounting and budgets
 
@@ -255,6 +270,8 @@ Pi intentionally has no built-in security boundary and the host-side agent runti
 - Approval-required commands persist the exact executable, argv, normalized working directory,
   timeout, digest, request, and grant lifetime before a start. A grant authorizes only that scheduler
   transition; it neither expands the sandbox profile nor predicts every transitive process effect.
+- Graph approval requests persist the exact prompt and ordered hashes of complete durable evidence.
+  Approval completes only that pure node; it grants no execution, tool, sandbox, or policy authority.
 - Run budgets constrain scheduler admission and effective timeouts, but they are not a sandbox,
   provider-side reservation, account quota, or guarantee that one in-flight response cannot exceed
   its remaining reported-cost allowance.
@@ -269,7 +286,7 @@ Native sandboxing is not equivalent to a microVM. SRT is a beta dependency built
 
 The application-level workspace broker prevents ordinary traversal and symlink escapes. A target-local lock prevents concurrent edits by cooperating Flow processes on the same host and recovers locks whose same-host owner has exited. It is not a distributed lease and does not make pathname authorization and use atomic against a concurrently hostile or non-cooperating process. The command sandbox reduces the authority of command descendants; it does not turn the whole harness into a complete host security boundary.
 
-Approval remains separate from containment. OMP-style allow/prompt/deny rules can decide whether an exact operation is authorized, but authorization cannot replace containment of that operation's transitive effects. Flow currently proves that separation for deterministic command nodes; dynamic agent tools still require resumable session state.
+Approval remains separate from containment. OMP-style allow/prompt/deny rules can decide whether an exact operation is authorized, but authorization cannot replace containment of that operation's transitive effects. Flow currently proves that separation for deterministic command gates and evidence-bound graph gates; dynamic agent tools still require resumable session state.
 
 ## Target invariants
 

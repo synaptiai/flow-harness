@@ -1,0 +1,28 @@
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata:
+  id: evidence-approval
+nodes:
+  - id: collect-version
+    type: command
+    command:
+      executable: node
+      args: [--version]
+
+  - id: review-version
+    type: approval
+    dependsOn: [collect-version]
+    approval:
+      prompt: Approve the recorded Node.js version before final verification.
+      evidence:
+        - nodeId: collect-version
+          field: command.stdout
+
+  - id: verify
+    type: command
+    dependsOn: [review-version]
+    command:
+      executable: node
+      args:
+        - -e
+        - process.exit(0)

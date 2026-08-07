@@ -19,6 +19,17 @@ type ProjectedControlGraphNode =
       readonly when?: CompiledBranchGuard;
     })
   | (ProjectedNodeBase & {
+      readonly type: "approval";
+      readonly when?: CompiledBranchGuard;
+      readonly approval: {
+        readonly prompt: string;
+        readonly evidence: readonly {
+          readonly nodeId: string;
+          readonly field: ConditionSourceField;
+        }[];
+      };
+    })
+  | (ProjectedNodeBase & {
       readonly type: "condition";
       readonly when?: CompiledBranchGuard;
       readonly condition: {
@@ -62,6 +73,7 @@ export function workflowRequiresControlGraph(workflow: CompiledWorkflow): boolea
       (node) =>
         node.type === "condition" ||
         node.type === "join" ||
+        node.type === "approval" ||
         node.type === "loop-check" ||
         node.type === "loop",
     )
@@ -82,6 +94,14 @@ export function projectCompiledControlGraph(workflow: CompiledWorkflow): Project
         type: node.type,
         ...(node.when === undefined ? {} : { when: node.when }),
         condition: node.condition,
+      };
+    }
+    if (node.type === "approval") {
+      return {
+        ...common,
+        type: node.type,
+        ...(node.when === undefined ? {} : { when: node.when }),
+        approval: node.approval,
       };
     }
     if (node.type === "join") {

@@ -140,6 +140,35 @@ const conditionCaseSchema = z
   })
   .strict();
 
+const approvalEvidenceSchema = z
+  .object({
+    nodeId: identifierSchema,
+    field: z.enum(["command.stdout", "command.stderr", "agent.text"]),
+  })
+  .strict();
+
+const approvalNodeSchema = z
+  .object({
+    ...guardedNodeShape,
+    type: z.literal("approval"),
+    approval: z
+      .object({
+        prompt: z.string().trim().min(1).max(4096),
+        evidence: z
+          .array(approvalEvidenceSchema)
+          .min(1)
+          .max(16)
+          .refine(
+            (evidence) =>
+              new Set(evidence.map((source) => `${source.nodeId}\0${source.field}`)).size ===
+              evidence.length,
+            "approval evidence declarations must be unique",
+          ),
+      })
+      .strict(),
+  })
+  .strict();
+
 const conditionNodeSchema = z
   .object({
     ...guardedNodeShape,
@@ -225,6 +254,7 @@ const joinNodeSchema = z
 const loopBodyNodeSchema = z.discriminatedUnion("type", [
   commandNodeSchema,
   agentNodeSchema,
+  approvalNodeSchema,
   conditionNodeSchema,
   joinNodeSchema,
 ]);
@@ -275,6 +305,7 @@ export const workflowSourceSchema = z
         z.discriminatedUnion("type", [
           commandNodeSchema,
           agentNodeSchema,
+          approvalNodeSchema,
           conditionNodeSchema,
           joinNodeSchema,
           loopNodeSchema,

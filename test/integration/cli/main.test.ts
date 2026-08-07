@@ -467,6 +467,94 @@ nodes:
     ]);
   });
 
+  it("routes approve through a pending approval node and resumes downstream work", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "graph-approval.workflow.yaml");
+    const runsDirectory = join(directory, "runs");
+    await writeFile(workflowPath, graphApprovalWorkflow("cli-graph-approval"), "utf8");
+    const executorCalls: string[] = [];
+    const executor = successfulRecordingExecutor(executorCalls);
+    const runCapture = createCapture();
+
+    expect(
+      await main(
+        ["run", workflowPath, "--run-id", "cli-graph-approval", "--runs-dir", runsDirectory],
+        runCapture.io,
+        { cwd: directory, executor },
+      ),
+    ).toBe(3);
+    expect(executorCalls).toEqual(["plan"]);
+    expect(JSON.parse(runCapture.stdout.join("\n"))).toMatchObject({
+      status: "waiting_for_approval",
+      nodes: {
+        review: {
+          workflowApproval: {
+            status: "pending",
+            requestId: "approval-4",
+            request: { prompt: "Approve the verified plan." },
+          },
+        },
+      },
+    });
+
+    const approveCapture = createCapture();
+    expect(
+      await main(
+        [
+          "approve",
+          "cli-graph-approval",
+          "approval-4",
+          "--actor",
+          "operator:test",
+          "--runs-dir",
+          runsDirectory,
+        ],
+        approveCapture.io,
+        {
+          cwd: directory,
+          createStore: (rootDirectory) => new JsonlRunStore(rootDirectory),
+          get executor(): NodeExecutor {
+            throw new Error("approval must not initialize the execution plane");
+          },
+        },
+      ),
+    ).toBe(0);
+    expect(JSON.parse(approveCapture.stdout.join("\n"))).toMatchObject({
+      status: "running",
+      nodes: {
+        review: {
+          status: "succeeded",
+          workflowApproval: { status: "approved", actor: "operator:test" },
+        },
+      },
+    });
+
+    const resumeCapture = createCapture();
+    expect(
+      await main(
+        ["resume", workflowPath, "--run-id", "cli-graph-approval", "--runs-dir", runsDirectory],
+        resumeCapture.io,
+        { cwd: directory, executor },
+      ),
+    ).toBe(0);
+    expect(executorCalls).toEqual(["plan", "verify"]);
+    const ledger = await readFile(
+      join(runsDirectory, "cli-graph-approval", "events.jsonl"),
+      "utf8",
+    );
+    expect(ledgerTypes(ledger)).toEqual([
+      "run_started",
+      "node_started",
+      "node_succeeded",
+      "workflow_approval_requested",
+      "workflow_approval_approved",
+      "run_resumed",
+      "node_started",
+      "node_succeeded",
+      "run_succeeded",
+    ]);
+  });
+
   it("rejects malformed or stale approval commands without changing the ledger", async () => {
     const directory = await createTemporaryDirectory();
     const workflowPath = join(directory, "stale-approval.workflow.yaml");
@@ -1174,6 +1262,29 @@ nodes:
     type: command
     approval: { mode: required, grantTtlMs: 60000 }
     command: { executable: node, args: [--version], timeoutMs: 10000 }
+`;
+}
+
+function graphApprovalWorkflow(id: string): string {
+  return `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: ${id} }
+nodes:
+  - id: plan
+    type: command
+    command: { executable: node, args: [plan] }
+  - id: review
+    type: approval
+    dependsOn: [plan]
+    approval:
+      prompt: Approve the verified plan.
+      evidence:
+        - { nodeId: plan, field: command.stdout }
+  - id: verify
+    type: command
+    dependsOn: [review]
+    command: { executable: node, args: [verify] }
 `;
 }
 
