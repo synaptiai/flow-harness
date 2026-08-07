@@ -265,19 +265,28 @@ export class LocalSupervisorStore {
   > {
     const record = parseSupervisorStartLock(input);
     await this.initialize();
-    try {
-      await writeExclusiveRecord(this.#supervisorStartPath(), record);
-      return { acquired: true, record };
-    } catch (error) {
-      if (!isNodeError(error) || error.code !== "EEXIST") {
-        throw storeIoError("failed to reserve supervisor startup", error);
+    for (;;) {
+      try {
+        await writeExclusiveRecord(this.#supervisorStartPath(), record);
+        return { acquired: true, record };
+      } catch (error) {
+        if (!isNodeError(error) || error.code !== "EEXIST") {
+          throw storeIoError("failed to reserve supervisor startup", error);
+        }
+        try {
+          const existing = await this.#readRequiredRecord(
+            this.#supervisorStartPath(),
+            parseSupervisorStartLock,
+            "supervisor startup lock",
+          );
+          return { acquired: false, record: existing };
+        } catch (readError) {
+          if (readError instanceof LocalSupervisorStoreError && readError.code === "not_found") {
+            continue;
+          }
+          throw readError;
+        }
       }
-      const existing = await this.#readRequiredRecord(
-        this.#supervisorStartPath(),
-        parseSupervisorStartLock,
-        "supervisor startup lock",
-      );
-      return { acquired: false, record: existing };
     }
   }
 
