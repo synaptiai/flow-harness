@@ -139,6 +139,63 @@ nodes:
     });
   });
 
+  it("binds a model verifier to the exact durable evidence attempt", async () => {
+    const store = new MemoryRunStore();
+    const executor = executorFrom(async (node, context) => {
+      if (node.type !== "verifier") {
+        return successfulOutcome(node.id);
+      }
+      expect(context.verifierSources).toEqual([
+        {
+          sourceNodeId: "source",
+          sourceAttempt: 1,
+          sourceField: "command.stdout",
+          sourceHash: createHash("sha256").update("source").digest("hex"),
+          value: "source",
+          truncated: false,
+        },
+      ]);
+      const reason = "The persisted command output satisfies the rubric.";
+      const raw = JSON.stringify({ verdict: "accepted", reason });
+      return {
+        status: "succeeded",
+        evidence: {
+          kind: "verifier",
+          driver: "model",
+          result: "parsed",
+          verdict: "accepted",
+          reason,
+          reasonHash: createHash("sha256").update(reason).digest("hex"),
+          provider: "test",
+          model: "deterministic",
+          raw,
+          rawHash: createHash("sha256").update(raw).digest("hex"),
+          rawTruncated: false,
+          durationMs: 1,
+          sources: [
+            {
+              sourceNodeId: "source",
+              sourceAttempt: 1,
+              sourceField: "command.stdout",
+              sourceHash: createHash("sha256").update("source").digest("hex"),
+            },
+          ],
+        },
+      };
+    });
+
+    const state = await runWorkflow(
+      modelVerifierWorkflow(),
+      options(store, executor, "run-model-verifier"),
+    );
+
+    expect(state.status).toBe("succeeded");
+    expect(state.nodes.review).toMatchObject({
+      status: "succeeded",
+      evidence: { kind: "verifier", driver: "model", verdict: "accepted" },
+    });
+  });
+
   it("uses dependencies before declaration order and declaration order among ready nodes", async () => {
     const calls: string[] = [];
     const store = new MemoryRunStore();
@@ -839,6 +896,26 @@ nodes:
     type: command
     dependsOn: [prepare]
     command: { executable: npm, args: [test] }
+`);
+}
+
+function modelVerifierWorkflow() {
+  return compileWorkflowText(`
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: model-verifier-workflow }
+nodes:
+  - id: source
+    type: command
+    command: { executable: node, args: [--version] }
+  - id: review
+    type: verifier
+    dependsOn: [source]
+    verifier:
+      kind: model
+      prompt: Decide whether the command output proves the change is valid.
+      evidence: [{ nodeId: source, field: command.stdout }]
+      model: { provider: test, id: deterministic }
 `);
 }
 

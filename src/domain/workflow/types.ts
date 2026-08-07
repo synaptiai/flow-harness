@@ -9,7 +9,13 @@ export const MAX_LOOP_ITERATIONS = 32;
 
 export type AgentToolName = "read" | "ls" | "edit";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
-export type ConditionSourceField = "command.stdout" | "command.stderr" | "agent.text";
+export type EvidenceSourceField =
+  | "command.stdout"
+  | "command.stderr"
+  | "agent.text"
+  | "verifier.verdict"
+  | "verifier.reason";
+export type ConditionSourceField = EvidenceSourceField;
 
 export interface CompiledRunBudget {
   readonly maxNodeStarts?: number;
@@ -61,6 +67,11 @@ export interface CompiledApprovalEvidenceSource {
   readonly field: ConditionSourceField;
 }
 
+export interface CompiledVerifierEvidenceSource {
+  readonly nodeId: string;
+  readonly field: EvidenceSourceField;
+}
+
 export interface CompiledGuardedNodeBase extends CompiledNodeBase {
   readonly when?: CompiledBranchGuard;
 }
@@ -94,6 +105,32 @@ export interface CompiledAgentNode extends CompiledGuardedNodeBase {
     };
     readonly timeoutMs: number;
   };
+}
+
+export type CompiledVerifierConfig =
+  | {
+      readonly kind: "command";
+      readonly command: {
+        readonly executable: string;
+        readonly args: readonly string[];
+        readonly timeoutMs: number;
+      };
+    }
+  | {
+      readonly kind: "model";
+      readonly prompt: string;
+      readonly evidence: readonly CompiledVerifierEvidenceSource[];
+      readonly model: {
+        readonly provider: string;
+        readonly id: string;
+        readonly thinking: ThinkingLevel;
+      };
+      readonly timeoutMs: number;
+    };
+
+export interface CompiledVerifierNode extends CompiledGuardedNodeBase {
+  readonly type: "verifier";
+  readonly verifier: CompiledVerifierConfig;
 }
 
 export interface CompiledConditionNode extends CompiledGuardedNodeBase {
@@ -154,6 +191,7 @@ export interface CompiledLoopNode extends CompiledGuardedNodeBase {
 export type CompiledNode =
   | CompiledCommandNode
   | CompiledAgentNode
+  | CompiledVerifierNode
   | CompiledApprovalNode
   | CompiledConditionNode
   | CompiledJoinNode

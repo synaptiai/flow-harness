@@ -16,6 +16,7 @@ import {
   type CompiledLoopNode,
   type CompiledNode,
   type CompiledRunBudget,
+  type CompiledVerifierNode,
   type CompiledWorkflow,
   type CompiledWorkflowConcurrency,
 } from "./types.js";
@@ -60,7 +61,11 @@ export interface WorkflowDiagnostic {
     | "self_dependency"
     | "terminal_requires_command"
     | "unknown_criterion_verifier"
-    | "unknown_dependency";
+    | "unknown_dependency"
+    | "verifier_source_field_mismatch"
+    | "verifier_source_requires_dependency"
+    | "verifier_source_self"
+    | "verifier_source_unknown";
   readonly path: string;
   readonly message: string;
 }
@@ -208,11 +213,11 @@ function validateGraph(workflow: WorkflowSource): WorkflowDiagnostic[] {
 
   const dependedUpon = new Set(workflow.nodes.flatMap(sourceDependencies));
   for (const [index, node] of workflow.nodes.entries()) {
-    if (!dependedUpon.has(node.id) && node.type !== "command") {
+    if (!dependedUpon.has(node.id) && node.type !== "command" && node.type !== "verifier") {
       diagnostics.push({
         code: "terminal_requires_command",
         path: `nodes.${index}.type`,
-        message: `terminal node "${node.id}" must be a command verifier`,
+        message: `terminal node "${node.id}" must be a command or verifier node`,
       });
     }
   }
@@ -240,11 +245,11 @@ function validateGraph(workflow: WorkflowSource): WorkflowDiagnostic[] {
         });
         continue;
       }
-      if (verifier.type !== "command") {
+      if (verifier.type !== "command" && verifier.type !== "verifier") {
         diagnostics.push({
           code: "criterion_verifier_requires_command",
           path: verifierPath,
-          message: `criterion "${criterion.id}" verifier "${verifier.id}" must be a command node`,
+          message: `criterion "${criterion.id}" verifier "${verifier.id}" must be a command or verifier node`,
         });
       }
       if (dependedUpon.has(verifier.id)) {
@@ -422,9 +427,7 @@ function validateLoopSource(
   }
 
   const field = loop.loop.until.source.field;
-  const compatible =
-    (field.startsWith("command.") && source.type === "command") ||
-    (field === "agent.text" && source.type === "agent");
+  const compatible = evidenceFieldMatchesNode(field, source.type);
   if (!compatible) {
     diagnostics.push({
       code: "loop_source_field_mismatch",
@@ -527,9 +530,7 @@ function validateControlFlowNodes<T extends SourceNode | SourceBodyNode>(
           message: `condition "${condition.id}" source "${source.id}" must be a direct dependency`,
         });
       }
-      const fieldMatches =
-        (condition.condition.source.field.startsWith("command.") && source.type === "command") ||
-        (condition.condition.source.field === "agent.text" && source.type === "agent");
+      const fieldMatches = evidenceFieldMatchesNode(condition.condition.source.field, source.type);
       if (!fieldMatches) {
         diagnostics.push({
           code: "condition_source_field_mismatch",
@@ -570,14 +571,52 @@ function validateControlFlowNodes<T extends SourceNode | SourceBodyNode>(
           message: `approval "${approval.id}" evidence source "${source.id}" must be a direct dependency`,
         });
       }
-      const compatible =
-        (declaration.field.startsWith("command.") && source.type === "command") ||
-        (declaration.field === "agent.text" && source.type === "agent");
+      const compatible = evidenceFieldMatchesNode(declaration.field, source.type);
       if (!compatible) {
         diagnostics.push({
           code: "approval_source_field_mismatch",
           path: `${path}.field`,
           message: `approval "${approval.id}" evidence field "${declaration.field}" is incompatible with node "${source.id}" of type "${source.type}"`,
+        });
+      }
+    }
+  }
+
+  for (const [index, verifier] of nodes.entries()) {
+    if (verifier.type !== "verifier" || verifier.verifier.kind !== "model") {
+      continue;
+    }
+    for (const [sourceIndex, declaration] of verifier.verifier.evidence.entries()) {
+      const path = `${prefix}.${index}.verifier.evidence.${sourceIndex}`;
+      const source = nodeById.get(declaration.nodeId);
+      if (declaration.nodeId === verifier.id) {
+        diagnostics.push({
+          code: "verifier_source_self",
+          path: `${path}.nodeId`,
+          message: `verifier "${verifier.id}" cannot evaluate its own evidence`,
+        });
+        continue;
+      }
+      if (source === undefined) {
+        diagnostics.push({
+          code: "verifier_source_unknown",
+          path: `${path}.nodeId`,
+          message: `verifier "${verifier.id}" references unknown evidence node "${declaration.nodeId}"`,
+        });
+        continue;
+      }
+      if (!verifier.dependsOn.includes(source.id)) {
+        diagnostics.push({
+          code: "verifier_source_requires_dependency",
+          path: `${path}.nodeId`,
+          message: `verifier "${verifier.id}" evidence source "${source.id}" must be a direct dependency`,
+        });
+      }
+      if (!evidenceFieldMatchesNode(declaration.field, source.type)) {
+        diagnostics.push({
+          code: "verifier_source_field_mismatch",
+          path: `${path}.field`,
+          message: `verifier "${verifier.id}" evidence field "${declaration.field}" is incompatible with node "${source.id}" of type "${source.type}"`,
         });
       }
     }
@@ -749,6 +788,15 @@ function sourceControlGraph<T extends SourceNode | SourceBodyNode>(nodes: readon
           approval: node.approval,
         };
       }
+      if (node.type === "verifier") {
+        return {
+          nodeId: node.id,
+          type: node.type,
+          dependsOn: node.dependsOn,
+          ...(node.when === undefined ? {} : { when: node.when }),
+          verifier: node.verifier,
+        };
+      }
       if (node.type === "join") {
         return {
           nodeId: node.id,
@@ -772,6 +820,17 @@ function sourceControlGraph<T extends SourceNode | SourceBodyNode>(nodes: readon
       };
     }),
   };
+}
+
+function evidenceFieldMatchesNode(
+  field: string,
+  nodeType: SourceNode["type"] | SourceBodyNode["type"],
+): boolean {
+  return (
+    (field.startsWith("command.") && nodeType === "command") ||
+    (field === "agent.text" && nodeType === "agent") ||
+    (field.startsWith("verifier.") && nodeType === "verifier")
+  );
 }
 
 function conditionCases(
@@ -988,6 +1047,36 @@ function freezeNode(source: Exclude<SourceNode, SourceLoopNode> | SourceBodyNode
     return Object.freeze(node);
   }
 
+  if (source.type === "verifier") {
+    const verifier =
+      source.verifier.kind === "command"
+        ? Object.freeze({
+            kind: "command" as const,
+            command: Object.freeze({
+              executable: source.verifier.command.executable,
+              args: Object.freeze([...source.verifier.command.args]),
+              timeoutMs: source.verifier.command.timeoutMs,
+            }),
+          })
+        : Object.freeze({
+            kind: "model" as const,
+            prompt: source.verifier.prompt,
+            evidence: Object.freeze(
+              source.verifier.evidence.map((item) => Object.freeze({ ...item })),
+            ),
+            model: Object.freeze({ ...source.verifier.model }),
+            timeoutMs: source.verifier.timeoutMs,
+          });
+    const node: CompiledVerifierNode = {
+      id: source.id,
+      type: "verifier",
+      dependsOn,
+      ...(source.when === undefined ? {} : { when: Object.freeze({ ...source.when }) }),
+      verifier,
+    };
+    return Object.freeze(node);
+  }
+
   if (source.type === "condition") {
     const node: CompiledConditionNode = {
       id: source.id,
@@ -1170,6 +1259,40 @@ function freezeLoopBodyNode(
           : { recovery: Object.freeze({ ...source.agent.recovery }) }),
         timeoutMs: source.agent.timeoutMs,
       }),
+    };
+    return Object.freeze(node);
+  }
+
+  if (source.type === "verifier") {
+    const verifier =
+      source.verifier.kind === "command"
+        ? Object.freeze({
+            kind: "command" as const,
+            command: Object.freeze({
+              executable: source.verifier.command.executable,
+              args: Object.freeze([...source.verifier.command.args]),
+              timeoutMs: source.verifier.command.timeoutMs,
+            }),
+          })
+        : Object.freeze({
+            kind: "model" as const,
+            prompt: source.verifier.prompt,
+            evidence: Object.freeze(
+              source.verifier.evidence.map((item) =>
+                Object.freeze({
+                  nodeId: requireMappedLoopNode(idByTemplate, item.nodeId, loop.id),
+                  field: item.field,
+                }),
+              ),
+            ),
+            model: Object.freeze({ ...source.verifier.model }),
+            timeoutMs: source.verifier.timeoutMs,
+          });
+    const node: CompiledVerifierNode = {
+      ...common,
+      type: "verifier",
+      ...(when === undefined ? {} : { when }),
+      verifier,
     };
     return Object.freeze(node);
   }

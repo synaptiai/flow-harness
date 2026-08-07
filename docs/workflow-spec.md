@@ -34,26 +34,28 @@ goal:
         nodeId: verify
 nodes:
   - id: verify
-    type: command
-    command:
-      executable: npm
-      args: [test]
+    type: verifier
+    verifier:
+      kind: command
+      command:
+        executable: npm
+        args: [test]
 ```
 
 Identifiers begin with a lowercase letter and contain lowercase letters, digits, or hyphens. Unknown fields are rejected rather than ignored. `goal` is optional for graph-only operational workflows; when present, it has its own versioned contract and fail-closed completion semantics.
 
 ## Goal and criterion contract
 
-A goal contains a stable id, a human-readable outcome, and 1–64 uniquely identified criteria. Its complete serialized contract is capped at 256 KiB so every valid goal fits safely within the run-start event budget. Each criterion names one verifier node. The compiler rejects an unknown verifier, an agent verifier, or a verifier that is not terminal. This ensures a model response cannot be terminal proof and prevents a criterion from being accepted before later work nodes execute.
+A goal contains a stable id, a human-readable outcome, and 1–64 uniquely identified criteria. Its complete serialized contract is capped at 256 KiB so every valid goal fits safely within the run-start event budget. Each criterion names one verifier node. The compiler accepts a terminal command or first-class verifier node and rejects an unknown, agent, control, or non-terminal binding. This prevents a criterion from being accepted before later work nodes execute.
 
-Goal and criterion text explains intent to users, but it is not executable evidence. Only the linked terminal command node controls acceptance. Reusing one terminal verifier for multiple criteria is allowed when that command deterministically checks the combined contract.
+Goal and criterion text explains intent to users, but it is not executable evidence. Only the linked terminal command or verifier outcome controls acceptance. Reusing one terminal verifier for multiple criteria is allowed when it checks the combined contract. Deterministic command verification remains preferred for release claims; a model verdict proves only its declared evidence and rubric.
 
 Criterion state is one of:
 
 - `pending` — the verifier has not completed and the run is still active.
-- `accepted` — the verifier completed successfully with integrity-checked command evidence.
-- `rejected` — the verifier completed normally with a non-zero exit code.
-- `inconclusive` — verification ended through timeout, signal, missing command evidence, or an unexpected evidence kind.
+- `accepted` — the verifier completed with integrity-checked accepted evidence.
+- `rejected` — a command verifier exited normally non-zero or a model verifier returned a strict rejected verdict.
+- `inconclusive` — verification ended through timeout, signal, missing/truncated evidence, invalid model output, provider/runtime uncertainty, or cancellation.
 - `missing` — the run terminated before the verifier produced a decision.
 
 Every non-missing decision records the run id, verifier node id, attempt, timestamp, and whether evidence is available. The evidence itself remains on that exact node attempt, retaining the existing size bounds and hashes. The overall goal becomes `accepted` only with a successful run and all criteria accepted; every other terminal run reports `not_accepted`.
@@ -68,7 +70,7 @@ Criterion evaluation is a pure domain operation over the captured goal and durab
 - Self-dependencies, duplicate dependencies, and cycles are rejected.
 - The scheduler considers pending nodes in declaration order and applies the first legal transition whose dependencies are terminal. Ordinary work requires successful dependencies; omission propagates through ordinary descendants; an explicit join reconciles the selected success with omitted alternatives.
 - Independent ready executable nodes may overlap only when `concurrency.maxNodes` explicitly permits it; omission preserves the sequential maximum of one.
-- Every terminal node must be a command node. An agent response cannot be terminal proof.
+- Every terminal node must be a command or verifier node. An ordinary agent response cannot be terminal proof.
 - Compilation finishes before Flow creates a run ledger or invokes an executor.
 
 ## Exact conditions and explicit joins
@@ -142,7 +144,7 @@ arbitrary expression evaluation.
 
 ## Replay-safe bounded loops
 
-A top-level `loop` contains a local command/agent DAG and an exact stop contract:
+A top-level `loop` contains a local command/agent/verifier DAG and an exact stop contract:
 
 ```yaml
 - id: repair
@@ -208,7 +210,7 @@ concurrency:
 `maxNodes` is an integer from 1 through 32. Unknown fields, an empty object, zero, fractional
 values, and values above 32 fail compilation. Omitting the field preserves the legacy compiled
 shape and digest and gives the run an effective maximum of one. This limit controls executable
-command and agent nodes inside one workflow; it is independent of detached-supervisor worker
+command, agent, and verifier nodes inside one workflow; it is independent of detached-supervisor worker
 capacity.
 
 Flow schedules deterministic quiescent waves. It scans legal transitions in workflow declaration
@@ -263,7 +265,7 @@ outcome; equality or overshoot records `run_budget_exhausted`, produces terminal
 `resource_exhausted` state, rejects an incomplete goal, exits code 1, and starts no downstream work.
 The full observation is retained rather than clipped to the limit.
 
-An execution budget reduces a command or agent timeout to the remaining active milliseconds.
+An execution budget reduces a command, agent, or verifier-driver timeout to the remaining active milliseconds.
 Approval-required commands persist and display that reduced timeout in the exact operation, so a
 later resume cannot gain more execution authority. Approval wait, client detachment, and process
 downtime do not contribute because active time comes only from committed node evidence.
@@ -358,7 +360,9 @@ An approval node pauses graph advancement over exact completed evidence:
 `prompt` is trimmed, non-empty, and at most 4096 characters. `evidence` contains one through sixteen
 ordered unique `(nodeId, field)` declarations. Each source must be a direct dependency and have a
 compatible field: command nodes expose `command.stdout` and `command.stderr`; agent nodes expose
-`agent.text`. The node may be condition-guarded or appear in a bounded loop body under the same
+`agent.text`; accepted verifier nodes expose `verifier.verdict` and `verifier.reason`. Conditions,
+loop checks, and model verifiers use the same typed source compatibility. The node may be
+condition-guarded or appear in a bounded loop body under the same
 finite graph rules as other guarded control nodes.
 
 When ready, Flow requires every declared source to have complete successful durable evidence. It
@@ -375,6 +379,59 @@ or consumes execution budget. Unlike command approval, there is no grant, TTL, e
 consumption because the decision and graph transition are one committed event. The decision grants
 no command, model-tool, sandbox, credential, or policy authority. Resume remains a separate explicit
 operation using the exact workflow.
+
+## Verifier node
+
+A first-class verifier makes evaluation intent and authority explicit. It is a guarded executable
+node, may appear inside a bounded loop body, and uses one strict driver:
+
+```yaml
+- id: verify-tests
+  type: verifier
+  dependsOn: [implement]
+  verifier:
+    kind: command
+    command: { executable: npm, args: [test], timeoutMs: 120000 }
+
+- id: review-evidence
+  type: verifier
+  dependsOn: [plan, verify-tests]
+  verifier:
+    kind: model
+    prompt: Decide whether the declared evidence proves the plan is correct.
+    evidence:
+      - { nodeId: plan, field: agent.text }
+      - { nodeId: verify-tests, field: verifier.reason }
+    model: { provider: anthropic, id: claude-sonnet-4-5, thinking: medium }
+    timeoutMs: 120000
+```
+
+The command driver reuses the production sandbox. Exit zero is `accepted`; a normal non-zero exit
+is `rejected`; timeout, signal, containment failure, missing evidence, or runtime uncertainty is
+`inconclusive`. The wrapper retains the bounded command evidence and never weakens its conservative
+side-effect status.
+
+The model driver requires 1–16 ordered unique fields from direct dependencies. Flow resolves the
+exact successful source attempts from durable state and refuses truncated inputs. It renders the
+author rubric and canonical evidence records inside explicit untrusted-data delimiters, caps the
+complete UTF-8 input at 262144 bytes, and invokes Pi with a dedicated verifier system prompt, no
+tools, extensions, skills, templates, context files, or project discovery. The response is capped
+at 16384 bytes and must be exactly one JSON object with only `verdict` and `reason`; duplicate keys,
+extra prose, Markdown fences, unknown fields, invalid verdicts, or an empty/oversized reason become
+`inconclusive`.
+
+Verifier evidence records the driver, verdict, bounded reason and hash, duration, ordered source
+node/attempt/field/hash observations, and command or model provenance. Model evidence also retains
+bounded raw output, its complete hash/truncation state, and available Flow-owned usage. Only
+`accepted` may produce `node_succeeded`; `rejected` and `inconclusive` fail the node and current run,
+so no dependent is released. Cancellation overrides a late accepted result. Replay validates the
+declaration, provenance, source identities, hashes, strict raw response, verdict/outcome pairing,
+failure classification, and resources without consulting a provider.
+
+The separate zero-tool session and delimiters reduce accidental instruction following; they do not
+make a probabilistic verifier prompt-injection-proof or equivalent to hidden deterministic tests.
+Command-verifier approval, external verifier packages, remediation edges, fallback, and automatic
+retry of an interrupted verifier are not part of this contract.
 
 Every command node and descendant runs through Flow's required SRT adapter. The fixed `workspace-write-network-deny-v1` profile allows the selected workflow directory and a private temporary directory, denies network and undeclared Unix sockets, omits ambient credentials and injection variables from the child environment, and denies writes to the actual run store, `.flow`, `.git`, environment files, and key files. Concurrent same-policy commands share one initialized SRT session but receive distinct temporary directories, environment values, and per-command filesystem configurations. Flow reference-counts wraps, rejects a different concurrent workspace or policy, and resets SRT only after the last command releases. On Linux, Flow resolves SRT's packaged seccomp helper canonically, passes it as the explicit SRT apply path, and re-exposes only that file read-only when the Flow installation lies outside the workflow directory. If SRT is missing, unsupported, degraded, or cannot initialize, the node fails before spawn; Flow has no unsandboxed command fallback.
 
@@ -438,7 +495,7 @@ remain possible and stay bounded by the node timeout.
 
 Command nodes are supported on Linux and macOS. Flow rejects them before spawning on Windows until the command adapter can contain and terminate the full descendant process tree.
 
-An agent node succeeds when its bounded Pi session settles normally. Its text becomes diagnostic evidence. It cannot name the next node, mark acceptance criteria complete, or terminate the workflow successfully without a downstream command verifier.
+An agent node succeeds when its bounded Pi session settles normally. Its text becomes diagnostic evidence. It cannot name the next node, mark acceptance criteria complete, or terminate the workflow successfully without a downstream command or verifier node.
 
 Provider credentials remain outside workflow files and use Pi's configured credential runtime. Provider and model identifiers are execution configuration; no Pi type appears in the compiled or persisted Flow contracts.
 
@@ -458,7 +515,7 @@ Each run is stored at:
 Events have a version, contiguous sequence number, timestamp, run identity, workflow identity,
 workflow API version, and SHA-256 digest of the compiled workflow. New `run_started` events also
 capture the normalized execution directory, command approval requirements, agent recovery
-requirements, declared concurrency, the bounded control-graph projection, and exact compiled budget
+requirements, declared concurrency, verifier declarations, the bounded control-graph projection, and exact compiled budget
 when declared. Runs with an effective maximum above one must persist the graph even without control
 nodes. The control graph persists dependency, guard, exact condition, and join mappings so replay does not
 consult mutable workflow input to interpret branch history. A recovery requirement records the node,
@@ -527,7 +584,7 @@ the id to the complete request and rejects reuse with changed input.
 
 ## Current limitations
 
-- No arbitrary cycles, nested/unbounded/optimization loops, dynamic fan-out, general multi-condition joins, general verifier nodes, child runs, terminal-failure retry, or fallback semantics. Bounded loop bodies and static ready DAG nodes can execute concurrently, but iterations are sequential, share one workspace, and are not inferred to be conflict-free. Conditions and loop stops are limited to exact equality over complete durable command/agent text. Approval is available as deterministic command pre-start gates and pure evidence-bound graph nodes; dynamic in-session model-tool approval remains unavailable. Recovery is limited to the proof-safe fresh mode above.
+- No arbitrary cycles, nested/unbounded/optimization loops, dynamic fan-out, general multi-condition joins, child runs, terminal-failure retry, or fallback semantics. Bounded loop bodies and static ready DAG nodes can execute concurrently, but iterations are sequential, share one workspace, and are not inferred to be conflict-free. Conditions and loop stops are limited to exact equality over complete durable command, agent, or accepted verifier fields. Approval is available as deterministic command pre-start gates and pure evidence-bound graph nodes; command-verifier and dynamic in-session model-tool approval remain unavailable. Recovery is limited to proof-safe fresh agent attempts; interrupted verifier attempts are never retried automatically.
 - No automatic terminalization or session continuation of an interrupted node attempt. Unconfigured or ineligible durable starts still block continuation.
 - Detached workers can be adopted by a replacement local supervisor, but they cannot move between
   hosts and do not survive host reboot.
@@ -535,6 +592,6 @@ the id to the complete request and rejects reuse with changed input.
 - The native sandbox contains command descendants but does not contain the host-side Pi runtime; hostile workloads require a stronger container, microVM, or managed boundary.
 - The only agent mutation is exact single-file edit of an existing UTF-8 file; no create, delete, rename, shell, network, fuzzy patch, or multi-file transaction is exposed.
 - No in-flight Pi tool-call approval or opaque session continuation. A fresh retry is a new attempt and is allowed only by the persisted proof gate; it is not a substitute for restoring a live session.
-- No probabilistic or LLM evaluator; criteria currently bind only to deterministic terminal command nodes.
+- Model verifiers are zero-tool and evidence-bounded but remain probabilistic and not prompt-injection-proof. External verifier packages and reward/evaluation environments are not yet supported.
 - No prepaid hard model-cost cap, provider invoice reconciliation, CPU/memory/disk quota, or artifact-size budget. Per-run graph-node concurrency, detached worker count, and queue depth are separate bounded controls.
 - No schema migration path is promised while the format remains `v1alpha1`.

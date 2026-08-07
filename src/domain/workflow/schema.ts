@@ -77,31 +77,55 @@ const concurrencySchema = z
   })
   .strict();
 
+const modelSchema = z
+  .object({
+    provider: identifierSchema,
+    id: z.string().trim().min(1).max(256),
+    thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]).default("medium"),
+  })
+  .strict();
+
+const commandExecutionSchema = z
+  .object({
+    executable: z.string().trim().min(1).max(4096),
+    args: z
+      .array(z.string().max(4096))
+      .max(64)
+      .refine(
+        (args) => args.reduce((total, arg) => total + Buffer.byteLength(arg, "utf8"), 0) <= 65_536,
+        "command arguments must not exceed 65536 UTF-8 bytes in total",
+      )
+      .default([]),
+    timeoutMs: z.number().int().positive().max(86_400_000).default(60_000),
+  })
+  .strict()
+  .refine(
+    (command) =>
+      !command.executable.includes("\0") && command.args.every((arg) => !arg.includes("\0")),
+    "command values must not contain NUL bytes",
+  );
+
+const evidenceSourceFieldSchema = z.enum([
+  "command.stdout",
+  "command.stderr",
+  "agent.text",
+  "verifier.verdict",
+  "verifier.reason",
+]);
+
+const evidenceSourceSchema = z
+  .object({
+    nodeId: identifierSchema,
+    field: evidenceSourceFieldSchema,
+  })
+  .strict();
+
 const commandNodeSchema = z
   .object({
     ...guardedNodeShape,
     type: z.literal("command"),
     approval: commandApprovalSchema.optional(),
-    command: z
-      .object({
-        executable: z.string().trim().min(1).max(4096),
-        args: z
-          .array(z.string().max(4096))
-          .max(64)
-          .refine(
-            (args) =>
-              args.reduce((total, arg) => total + Buffer.byteLength(arg, "utf8"), 0) <= 65_536,
-            "command arguments must not exceed 65536 UTF-8 bytes in total",
-          )
-          .default([]),
-        timeoutMs: z.number().int().positive().max(86_400_000).default(60_000),
-      })
-      .strict()
-      .refine(
-        (command) =>
-          !command.executable.includes("\0") && command.args.every((arg) => !arg.includes("\0")),
-        "command values must not contain NUL bytes",
-      ),
+    command: commandExecutionSchema,
   })
   .strict();
 
@@ -112,15 +136,7 @@ const agentNodeSchema = z
     agent: z
       .object({
         prompt: z.string().trim().min(1).max(262_144),
-        model: z
-          .object({
-            provider: identifierSchema,
-            id: z.string().trim().min(1).max(256),
-            thinking: z
-              .enum(["off", "minimal", "low", "medium", "high", "xhigh"])
-              .default("medium"),
-          })
-          .strict(),
+        model: modelSchema,
         tools: z
           .array(z.enum(["read", "ls", "edit"]))
           .max(3)
@@ -140,13 +156,6 @@ const conditionCaseSchema = z
   })
   .strict();
 
-const approvalEvidenceSchema = z
-  .object({
-    nodeId: identifierSchema,
-    field: z.enum(["command.stdout", "command.stderr", "agent.text"]),
-  })
-  .strict();
-
 const approvalNodeSchema = z
   .object({
     ...guardedNodeShape,
@@ -155,7 +164,14 @@ const approvalNodeSchema = z
       .object({
         prompt: z.string().trim().min(1).max(4096),
         evidence: z
-          .array(approvalEvidenceSchema)
+          .array(
+            z
+              .object({
+                nodeId: identifierSchema,
+                field: evidenceSourceFieldSchema,
+              })
+              .strict(),
+          )
           .min(1)
           .max(16)
           .refine(
@@ -169,6 +185,39 @@ const approvalNodeSchema = z
   })
   .strict();
 
+const verifierNodeSchema = z
+  .object({
+    ...guardedNodeShape,
+    type: z.literal("verifier"),
+    verifier: z.discriminatedUnion("kind", [
+      z
+        .object({
+          kind: z.literal("command"),
+          command: commandExecutionSchema,
+        })
+        .strict(),
+      z
+        .object({
+          kind: z.literal("model"),
+          prompt: z.string().trim().min(1).max(16_384),
+          evidence: z
+            .array(evidenceSourceSchema)
+            .min(1)
+            .max(16)
+            .refine(
+              (evidence) =>
+                new Set(evidence.map((source) => `${source.nodeId}\0${source.field}`)).size ===
+                evidence.length,
+              "verifier evidence declarations must be unique",
+            ),
+          model: modelSchema,
+          timeoutMs: z.number().int().positive().max(86_400_000).default(300_000),
+        })
+        .strict(),
+    ]),
+  })
+  .strict();
+
 const conditionNodeSchema = z
   .object({
     ...guardedNodeShape,
@@ -178,7 +227,7 @@ const conditionNodeSchema = z
         source: z
           .object({
             nodeId: identifierSchema,
-            field: z.enum(["command.stdout", "command.stderr", "agent.text"]),
+            field: evidenceSourceFieldSchema,
           })
           .strict(),
         cases: z.array(conditionCaseSchema).min(1).max(32),
@@ -254,6 +303,7 @@ const joinNodeSchema = z
 const loopBodyNodeSchema = z.discriminatedUnion("type", [
   commandNodeSchema,
   agentNodeSchema,
+  verifierNodeSchema,
   approvalNodeSchema,
   conditionNodeSchema,
   joinNodeSchema,
@@ -271,7 +321,7 @@ const loopNodeSchema = z
             source: z
               .object({
                 nodeId: identifierSchema,
-                field: z.enum(["command.stdout", "command.stderr", "agent.text"]),
+                field: evidenceSourceFieldSchema,
               })
               .strict(),
             equals: z.string().max(65_536),
@@ -305,6 +355,7 @@ export const workflowSourceSchema = z
         z.discriminatedUnion("type", [
           commandNodeSchema,
           agentNodeSchema,
+          verifierNodeSchema,
           approvalNodeSchema,
           conditionNodeSchema,
           joinNodeSchema,

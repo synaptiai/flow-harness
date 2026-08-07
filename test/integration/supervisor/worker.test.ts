@@ -5,7 +5,12 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { NodeExecutor } from "../../../src/application/ports.js";
+import { NodeExecutorRouter } from "../../../src/application/node-executor-router.js";
+import type {
+  AgentExecutor,
+  CommandExecutor,
+  NodeExecutor,
+} from "../../../src/application/ports.js";
 import { JsonlRunStore } from "../../../src/infrastructure/fs/jsonl-run-store.js";
 import { LocalSupervisorStore } from "../../../src/infrastructure/fs/local-supervisor-store.js";
 import { createProductionNodeEffectReconciler } from "../../../src/infrastructure/runtime/production-effect-reconciler.js";
@@ -24,6 +29,93 @@ afterEach(async () => {
 });
 
 describe("detached run worker", () => {
+  it("persists typed verifier evidence through a detached worker", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-worker-verifier-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    const store = new LocalSupervisorStore(runsDirectory);
+    await store.initialize();
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "worker-verifier",
+      mode: "run",
+      sourceName: join(directory, "workflow.yaml"),
+      workflowSource: verifierWorkflowSource(),
+      cwd: directory,
+      token: "f".repeat(64),
+      createdAt: "2026-08-07T12:00:00.000Z",
+    });
+    await store.reserveSubmission(
+      job,
+      createActiveRunClaim({
+        runId: job.runId,
+        jobId: job.jobId,
+        workerId: job.workerId,
+        claimedAt: job.createdAt,
+      }),
+    );
+    const commandExecutor: CommandExecutor = {
+      async execute(node) {
+        const stdout = "verified";
+        return {
+          status: "succeeded",
+          evidence: {
+            kind: "command",
+            executable: node.command.executable,
+            args: node.command.args,
+            exitCode: 0,
+            signal: null,
+            stdout,
+            stderr: "",
+            stdoutHash: sha256(stdout),
+            stderrHash: sha256(""),
+            stdoutTruncated: false,
+            stderrTruncated: false,
+            timedOut: false,
+            durationMs: 1,
+          },
+        };
+      },
+    };
+    const agentExecutor: AgentExecutor = {
+      async execute() {
+        throw new Error("detached command verifier unexpectedly invoked a model");
+      },
+    };
+
+    const worker = executeWorkerJob(job.jobId, {
+      store,
+      executor: new NodeExecutorRouter(commandExecutor, agentExecutor),
+      effectReconciler: createProductionNodeEffectReconciler(),
+      createRunStore: (root) => new JsonlRunStore(root),
+      pid: 4325,
+    });
+    const descriptor = await waitForDescriptor(store, job.workerId);
+    await expect(requestWorker(descriptor, { type: "identify" })).resolves.toMatchObject({
+      ok: true,
+      result: { runId: job.runId, status: "running" },
+    });
+    await expect(worker).resolves.toBe(0);
+
+    const events = await new JsonlRunStore(runsDirectory).read(job.runId);
+    expect(events.map((event) => event.type)).toEqual([
+      "run_started",
+      "node_started",
+      "node_succeeded",
+      "run_succeeded",
+    ]);
+    expect(events[2]).toMatchObject({
+      type: "node_succeeded",
+      evidence: {
+        kind: "verifier",
+        driver: "command",
+        verdict: "accepted",
+        command: { stdout: "verified" },
+      },
+    });
+  });
+
   it("authenticates control, preserves cancellation evidence, and releases its claim", async () => {
     const directory = await mkdtemp(join(tmpdir(), "flow-worker-"));
     temporaryDirectories.push(directory);
@@ -479,6 +571,20 @@ nodes:
       executable: node
       args: [--version]
       timeoutMs: 10000
+`;
+}
+
+function verifierWorkflowSource(): string {
+  return `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: worker-verifier }
+nodes:
+  - id: verify
+    type: verifier
+    verifier:
+      kind: command
+      command: { executable: node, args: [--version] }
 `;
 }
 

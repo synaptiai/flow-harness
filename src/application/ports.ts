@@ -11,6 +11,8 @@ import type {
   CompiledAgentNode,
   CompiledCommandNode,
   CompiledNode,
+  CompiledVerifierNode,
+  EvidenceSourceField,
 } from "../domain/workflow/types.js";
 
 export interface RunEventStore {
@@ -30,7 +32,19 @@ export interface NodeExecutionContext {
   readonly cwd: string;
   readonly protectedPaths: readonly string[];
   readonly effectJournal?: NodeEffectJournal;
+  readonly verifierSources?: readonly VerifierSourceInput[];
+  readonly agentSystemPrompt?: string;
+  readonly agentMaxOutputBytes?: number;
   readonly signal?: AbortSignal;
+}
+
+export interface VerifierSourceInput {
+  readonly sourceNodeId: string;
+  readonly sourceAttempt: number;
+  readonly sourceField: EvidenceSourceField;
+  readonly sourceHash: string;
+  readonly value: string;
+  readonly truncated: boolean;
 }
 
 export interface NodeEffectJournal {
@@ -74,4 +88,8 @@ export interface CommandExecutor {
 
 export interface AgentExecutor {
   execute(node: CompiledAgentNode, context: NodeExecutionContext): Promise<NodeExecutionOutcome>;
+}
+
+export interface VerifierExecutor {
+  execute(node: CompiledVerifierNode, context: NodeExecutionContext): Promise<NodeExecutionOutcome>;
 }

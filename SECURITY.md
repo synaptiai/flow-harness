@@ -41,9 +41,17 @@ The embedded Pi runtime runs with the invoking user's operating-system permissio
   sandbox preparation. Approval is single-use, expires predictably, and does not weaken the command
   sandbox. Denial and expiry execute nothing.
 - Graph approval nodes persist a canonical prompt and ordered references to complete durable
-  command or agent evidence, including source attempts, fields, and hashes. Truncated evidence
+  command, agent, or accepted verifier evidence, including source attempts, fields, and hashes. Truncated evidence
   fails before a request. Approval completes only the pure control node; it grants no command,
   model-tool, sandbox, credential, or policy authority. Denial executes nothing.
+- Model verifier nodes receive only their author rubric and declared complete direct-dependency
+  evidence in a separate Pi session with a dedicated system prompt, empty tool set, disabled
+  extensions/skills/context discovery, and hard aggregate input and response bounds. Strict JSON
+  parsing, source hashes, and replay validation prevent malformed output from becoming acceptance.
+  These controls do not make model verdicts prompt-injection-proof or deterministic; untrusted
+  evidence may still influence the evaluator. Use sandboxed command verifiers and hidden checks for
+  release authority. A command verifier inherits the normal command sandbox and conservative
+  side-effect classification.
 - Run budgets persist checked start, token, reported-cost, and active-time accounting and can reduce
   node timeouts before execution. They are scheduler controls, not provider-side billing
   reservations, account quotas, CPU/memory limits, or a substitute for containment. One in-flight
@@ -89,4 +97,4 @@ signature. Request ids are locators rather than bearer secrets. The private run-
 permissions and authority of the invoking local account are the administrative boundary. Do not
 expose the run directory or approval CLI to untrusted users.
 
-Command output, agent text, executable arguments, and failure messages are persisted in the run ledger as evidence. They can contain secrets emitted by tools or providers. Keep `.flow/runs` private, apply repository ignore rules, and redact sensitive output at its source.
+Command output, agent text, verifier reasons and raw model responses, executable arguments, and failure messages are persisted in the run ledger as evidence. They can contain secrets emitted by tools or providers. Keep `.flow/runs` private, apply repository ignore rules, and redact sensitive output at its source.

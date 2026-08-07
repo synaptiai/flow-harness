@@ -6,6 +6,7 @@ import type {
   NodeExecutor,
 } from "./ports.js";
 import type { CompiledNode } from "../domain/workflow/types.js";
+import { VerifierNodeExecutor } from "./verifier-executor.js";
 
 export class NodeExecutorRouter implements NodeExecutor {
   constructor(
@@ -19,6 +20,11 @@ export class NodeExecutorRouter implements NodeExecutor {
         return this.commandExecutor.execute(node, context);
       case "agent":
         return this.agentExecutor.execute(node, context);
+      case "verifier":
+        return new VerifierNodeExecutor(this.commandExecutor, this.agentExecutor).execute(
+          node,
+          context,
+        );
       case "approval":
       case "condition":
       case "join":

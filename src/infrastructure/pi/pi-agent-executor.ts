@@ -34,6 +34,7 @@ export interface PiAgentRunRequest {
   readonly thinking: ThinkingLevel;
   readonly tools: readonly AgentToolName[];
   readonly maxOutputBytes: number;
+  readonly systemPrompt?: string;
   readonly policyBroker: PolicyBroker;
   readonly protectedPaths: readonly string[];
   readonly effectRecorder: AgentEffectRecorder;
@@ -83,6 +84,17 @@ export class PiAgentExecutor implements AgentExecutor {
     context: NodeExecutionContext,
   ): Promise<NodeExecutionOutcome> {
     const startedAt = this.now();
+    const maxOutputBytes = context.agentMaxOutputBytes ?? this.maxOutputBytes;
+    if (
+      !Number.isSafeInteger(maxOutputBytes) ||
+      maxOutputBytes <= 0 ||
+      maxOutputBytes > this.maxOutputBytes
+    ) {
+      return agentFailure(
+        "pi_output_limit_invalid",
+        `agent output limit must be between 1 and ${this.maxOutputBytes} bytes`,
+      );
+    }
     if (isAborted(context.signal)) {
       return agentFailure("pi_agent_aborted", "agent execution was cancelled before start");
     }
@@ -151,7 +163,10 @@ export class PiAgentExecutor implements AgentExecutor {
           model: node.agent.model.id,
           thinking: node.agent.model.thinking,
           tools: node.agent.tools,
-          maxOutputBytes: this.maxOutputBytes,
+          maxOutputBytes,
+          ...(context.agentSystemPrompt === undefined
+            ? {}
+            : { systemPrompt: context.agentSystemPrompt }),
           policyBroker,
           protectedPaths: context.protectedPaths,
           effectRecorder,
@@ -235,7 +250,7 @@ export class PiAgentExecutor implements AgentExecutor {
           policyFailureEvidence(),
         );
       }
-      const normalized = normalizeAgentResult(result, this.maxOutputBytes);
+      const normalized = normalizeAgentResult(result, maxOutputBytes);
       const policyDecisions = closePolicy();
       const effectReceipts = closeEffects();
       const evidence: AgentEvidence = {
@@ -261,7 +276,7 @@ export class PiAgentExecutor implements AgentExecutor {
       if (normalized.outputLimitExceeded) {
         return agentFailure(
           "pi_agent_output_limit",
-          `agent output exceeded ${this.maxOutputBytes} UTF-8 bytes`,
+          `agent output exceeded ${maxOutputBytes} UTF-8 bytes`,
           currentSideEffectStatus(),
           evidence,
         );
@@ -370,7 +385,7 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
       throw new Error(`Pi model "${request.provider}/${request.model}" is not available`);
     }
 
-    const resourceLoader = createLockedResourceLoader();
+    const resourceLoader = createLockedResourceLoader(request.systemPrompt);
     const tools = await createWorkspaceAgentTools(
       request.cwd,
       request.tools,
@@ -638,7 +653,7 @@ function boundedMessage(message: string): string {
   return `${bytes.subarray(0, 16_300).toString("utf8")}… [truncated]`;
 }
 
-function createLockedResourceLoader(): ResourceLoader {
+function createLockedResourceLoader(systemPrompt?: string): ResourceLoader {
   const extensionRuntime = createExtensionRuntime();
   return {
     getExtensions: () => ({ extensions: [], errors: [], runtime: extensionRuntime }),
@@ -647,6 +662,7 @@ function createLockedResourceLoader(): ResourceLoader {
     getThemes: () => ({ themes: [], diagnostics: [] }),
     getAgentsFiles: () => ({ agentsFiles: [] }),
     getSystemPrompt: () =>
+      systemPrompt ??
       [
         "You are executing one bounded node in a Flow workflow.",
         "Use only the tools provided to complete the node prompt.",
