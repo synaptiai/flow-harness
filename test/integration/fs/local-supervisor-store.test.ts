@@ -335,6 +335,42 @@ describe("LocalSupervisorStore", () => {
     ).toBe(true);
   });
 
+  it("never removes rotated daemon ownership when release races transfer", async () => {
+    const { store } = await createStore();
+
+    for (let index = 0; index < 64; index += 1) {
+      const parent = createSupervisorStartLock({
+        pid: 1234,
+        token: randomUUID(),
+        acquiredAt: "2026-08-07T12:00:00.000Z",
+      });
+      const daemonToken = randomUUID();
+      const contender = createSupervisorStartLock({
+        pid: 9012,
+        token: randomUUID(),
+        acquiredAt: "2026-08-07T12:00:01.000Z",
+      });
+      await store.reserveSupervisorStart(parent);
+
+      const [release, transfer] = await Promise.allSettled([
+        store.releaseSupervisorStart(parent.token),
+        store.transferSupervisorStart(parent.token, 5678, daemonToken),
+      ]);
+      const probe = await store.reserveSupervisorStart(contender);
+
+      if (transfer.status === "fulfilled") {
+        expect(probe).toMatchObject({
+          acquired: false,
+          record: { token: daemonToken, pid: 5678 },
+        });
+      } else {
+        expect(release.status).toBe("fulfilled");
+        expect(probe).toMatchObject({ acquired: true, record: { token: contender.token } });
+      }
+      await store.releaseSupervisorStart(probe.record.token);
+    }
+  });
+
   it("releases only the matching active claim", async () => {
     const { store } = await createStore();
     const job = jobRecord();

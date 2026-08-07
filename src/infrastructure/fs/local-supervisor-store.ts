@@ -12,6 +12,7 @@ import {
 } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 
 import {
   parseActiveRunClaim,
@@ -266,8 +267,26 @@ export class LocalSupervisorStore {
     const record = parseSupervisorStartLock(input);
     await this.initialize();
     for (;;) {
+      if (!(await this.#settleSupervisorStartReleases())) {
+        await delay(5);
+        continue;
+      }
       try {
         await writeExclusiveRecord(this.#supervisorStartPath(), record);
+        if ((await this.#supervisorStartReleasePaths()).length !== 0) {
+          await this.releaseSupervisorStart(record.token).catch((error: unknown) => {
+            if (
+              !(
+                error instanceof LocalSupervisorStoreError &&
+                (error.code === "not_found" || error.code === "identity_mismatch")
+              )
+            ) {
+              throw error;
+            }
+          });
+          await delay(5);
+          continue;
+        }
         return { acquired: true, record };
       } catch (error) {
         if (!isNodeError(error) || error.code !== "EEXIST") {
@@ -292,22 +311,9 @@ export class LocalSupervisorStore {
 
   async releaseSupervisorStart(token: string): Promise<void> {
     validateUuid(token, "supervisor startup token");
-    const existing = await this.#readRequiredRecord(
-      this.#supervisorStartPath(),
-      parseSupervisorStartLock,
-      "supervisor startup lock",
-    );
-    if (existing.token !== token) {
-      throw new LocalSupervisorStoreError(
-        "identity_mismatch",
-        "supervisor startup lock belongs to another caller",
-      );
-    }
-    const retired = join(this.controlDirectory, `.supervisor-start.${randomUUID()}.released`);
+    const retired = join(this.controlDirectory, `.supervisor-start.${randomUUID()}.releasing`);
     try {
       await rename(this.#supervisorStartPath(), retired);
-      await syncDirectory(this.controlDirectory);
-      await rm(retired);
       await syncDirectory(this.controlDirectory);
     } catch (error) {
       if (isNodeError(error) && error.code === "ENOENT") {
@@ -319,6 +325,39 @@ export class LocalSupervisorStore {
       }
       throw storeIoError("failed to release supervisor startup", error);
     }
+    let captured: SupervisorStartLock;
+    try {
+      captured = await this.#readRequiredRecord(
+        retired,
+        parseSupervisorStartLock,
+        "claimed supervisor startup lock",
+      );
+    } catch (error) {
+      const current = await this.#readOptionalRecord(
+        this.#supervisorStartPath(),
+        parseSupervisorStartLock,
+        "supervisor startup lock",
+      );
+      if (current !== null && current.token !== token) {
+        throw new LocalSupervisorStoreError(
+          "identity_mismatch",
+          "supervisor startup lock belongs to another caller",
+          { cause: error },
+        );
+      }
+      throw error;
+    }
+    if (captured.token !== token) {
+      while (!(await this.#restoreSupervisorStartRelease(retired, captured))) {
+        await delay(5);
+      }
+      throw new LocalSupervisorStoreError(
+        "identity_mismatch",
+        "supervisor startup lock belongs to another caller",
+      );
+    }
+    await rm(retired, { force: true });
+    await syncDirectory(this.controlDirectory);
   }
 
   async transferSupervisorStart(
@@ -328,6 +367,9 @@ export class LocalSupervisorStore {
   ): Promise<SupervisorStartLock> {
     validateUuid(token, "supervisor startup token");
     validateUuid(ownerToken, "supervisor startup owner token");
+    while (!(await this.#settleSupervisorStartReleases())) {
+      await delay(5);
+    }
     const existing = await this.#readRequiredRecord(
       this.#supervisorStartPath(),
       parseSupervisorStartLock,
@@ -342,6 +384,7 @@ export class LocalSupervisorStore {
     const transferred = parseSupervisorStartLock({ ...existing, pid, token: ownerToken });
     try {
       await writeAtomicRecord(this.#supervisorStartPath(), transferred);
+      await this.#discardSupervisorStartReleases(token);
       return transferred;
     } catch (error) {
       throw storeIoError("failed to transfer supervisor startup ownership", error);
@@ -529,6 +572,79 @@ export class LocalSupervisorStore {
 
   #supervisorStartPath(): string {
     return join(this.controlDirectory, "supervisor-start.json");
+  }
+
+  async #supervisorStartReleasePaths(): Promise<readonly string[]> {
+    const entries = await readdir(this.controlDirectory, { withFileTypes: true, encoding: "utf8" });
+    return entries
+      .filter(
+        (entry) =>
+          entry.isFile() && /^\.supervisor-start\.[0-9a-f-]+\.releasing$/u.test(entry.name),
+      )
+      .map((entry) => join(this.controlDirectory, entry.name));
+  }
+
+  async #settleSupervisorStartReleases(): Promise<boolean> {
+    for (const path of await this.#supervisorStartReleasePaths()) {
+      const captured = await this.#readOptionalRecord(
+        path,
+        parseSupervisorStartLock,
+        "claimed supervisor startup lock",
+      );
+      if (captured !== null && !(await this.#restoreSupervisorStartRelease(path, captured))) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  async #restoreSupervisorStartRelease(
+    path: string,
+    captured: SupervisorStartLock,
+  ): Promise<boolean> {
+    try {
+      await link(path, this.#supervisorStartPath());
+      await syncDirectory(this.controlDirectory);
+      await rm(path, { force: true });
+      await syncDirectory(this.controlDirectory);
+      return true;
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        return true;
+      }
+      if (!isNodeError(error) || error.code !== "EEXIST") {
+        throw storeIoError("failed to restore supervisor startup ownership", error);
+      }
+      const current = await this.#readOptionalRecord(
+        this.#supervisorStartPath(),
+        parseSupervisorStartLock,
+        "supervisor startup lock",
+      );
+      if (current !== null && current.token === captured.token) {
+        await rm(path, { force: true });
+        await syncDirectory(this.controlDirectory);
+        return true;
+      }
+      return false;
+    }
+  }
+
+  async #discardSupervisorStartReleases(token: string): Promise<void> {
+    let removed = false;
+    for (const path of await this.#supervisorStartReleasePaths()) {
+      const captured = await this.#readOptionalRecord(
+        path,
+        parseSupervisorStartLock,
+        "claimed supervisor startup lock",
+      );
+      if (captured?.token === token) {
+        await rm(path, { force: true });
+        removed = true;
+      }
+    }
+    if (removed) {
+      await syncDirectory(this.controlDirectory);
+    }
   }
 }
 
