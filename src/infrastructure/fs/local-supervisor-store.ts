@@ -321,8 +321,13 @@ export class LocalSupervisorStore {
     }
   }
 
-  async transferSupervisorStart(token: string, pid: number): Promise<SupervisorStartLock> {
+  async transferSupervisorStart(
+    token: string,
+    pid: number,
+    ownerToken: string,
+  ): Promise<SupervisorStartLock> {
     validateUuid(token, "supervisor startup token");
+    validateUuid(ownerToken, "supervisor startup owner token");
     const existing = await this.#readRequiredRecord(
       this.#supervisorStartPath(),
       parseSupervisorStartLock,
@@ -334,7 +339,7 @@ export class LocalSupervisorStore {
         "supervisor startup lock belongs to another caller",
       );
     }
-    const transferred = parseSupervisorStartLock({ ...existing, pid });
+    const transferred = parseSupervisorStartLock({ ...existing, pid, token: ownerToken });
     try {
       await writeAtomicRecord(this.#supervisorStartPath(), transferred);
       return transferred;

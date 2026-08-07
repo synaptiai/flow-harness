@@ -284,19 +284,29 @@ describe("LocalSupervisorStore", () => {
       token: randomUUID(),
       acquiredAt: "2026-08-07T12:00:01.000Z",
     });
+    const daemonToken = randomUUID();
     await store.reserveSupervisorStart(parent);
 
-    await expect(store.transferSupervisorStart(parent.token, 5678)).resolves.toMatchObject({
-      token: parent.token,
+    await expect(
+      store.transferSupervisorStart(parent.token, 5678, daemonToken),
+    ).resolves.toMatchObject({
+      token: daemonToken,
       pid: 5678,
       acquiredAt: parent.acquiredAt,
     });
     await expect(store.reserveSupervisorStart(contender)).resolves.toMatchObject({
       acquired: false,
-      record: { token: parent.token, pid: 5678 },
+      record: { token: daemonToken, pid: 5678 },
     });
-    await expect(store.transferSupervisorStart(contender.token, 9999)).rejects.toMatchObject({
+    await expect(
+      store.transferSupervisorStart(contender.token, 9999, randomUUID()),
+    ).rejects.toMatchObject({ code: "identity_mismatch" });
+    await expect(store.releaseSupervisorStart(parent.token)).rejects.toMatchObject({
       code: "identity_mismatch",
+    });
+    await expect(store.reserveSupervisorStart(contender)).resolves.toMatchObject({
+      acquired: false,
+      record: { token: daemonToken, pid: 5678 },
     });
   });
 

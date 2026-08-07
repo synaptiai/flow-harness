@@ -585,6 +585,7 @@ async function internalSupervisorCommand(
     "max-queued-jobs": { type: "string" },
     "policy-digest": { type: "string" },
     "runs-dir": { type: "string" },
+    "startup-owner-token": { type: "string" },
     "startup-token": { type: "string" },
   });
   if (positionals.length !== 0) {
@@ -624,9 +625,14 @@ async function internalSupervisorCommand(
     values["startup-token"],
     "internal supervisor requires --startup-token",
   );
+  const startupOwnerToken = requireStringOption(
+    values["startup-owner-token"],
+    "internal supervisor requires --startup-owner-token",
+  );
   await runSupervisorDaemon({
     store: new LocalSupervisorStore(runsDirectory),
     cliPath: fileURLToPath(import.meta.url),
+    startupOwnerToken,
     startupToken,
     policy: { policyDigest, supervisor },
     ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),

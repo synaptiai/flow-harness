@@ -83,6 +83,7 @@ describe("local supervisor daemon", () => {
       socketDirectory,
     });
     const startupToken = randomUUID();
+    const startupOwnerToken = randomUUID();
     await store.reserveSupervisorStart({
       version: 1,
       pid: 1234,
@@ -97,10 +98,12 @@ describe("local supervisor daemon", () => {
         store,
         cliPath: "/unused/flow-cli.js",
         startupToken,
+        startupOwnerToken,
         signal: controller.signal,
       }),
     ).resolves.toBeUndefined();
     expect(store.transferredPid).toBe(process.pid);
+    expect(store.transferredToken).toBe(startupOwnerToken);
   });
 
   it("refuses protocol shutdown while an active claim exists", async () => {
@@ -282,10 +285,12 @@ class HoldingLauncher implements WorkerLauncher {
 
 class OwnershipCheckingSupervisorStore extends LocalSupervisorStore {
   transferredPid: number | undefined;
+  transferredToken: string | undefined;
 
-  override async transferSupervisorStart(token: string, pid: number) {
-    const transferred = await super.transferSupervisorStart(token, pid);
+  override async transferSupervisorStart(token: string, pid: number, ownerToken: string) {
+    const transferred = await super.transferSupervisorStart(token, pid, ownerToken);
     this.transferredPid = pid;
+    this.transferredToken = transferred.token;
     return transferred;
   }
 

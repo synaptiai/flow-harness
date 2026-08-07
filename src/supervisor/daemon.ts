@@ -78,6 +78,7 @@ export interface RunSupervisorDaemonOptions {
   readonly store: LocalSupervisorStore;
   readonly cliPath: string;
   readonly startupToken?: string;
+  readonly startupOwnerToken?: string;
   readonly signal?: AbortSignal;
   readonly policy?: SupervisorPolicy;
 }
@@ -152,8 +153,15 @@ export class DetachedWorkerLauncher implements WorkerLauncher {
 }
 
 export async function runSupervisorDaemon(options: RunSupervisorDaemonOptions): Promise<void> {
-  if (options.startupToken !== undefined) {
-    await options.store.transferSupervisorStart(options.startupToken, process.pid);
+  if ((options.startupToken === undefined) !== (options.startupOwnerToken === undefined)) {
+    throw new Error("supervisor startup transfer requires both source and owner tokens");
+  }
+  if (options.startupToken !== undefined && options.startupOwnerToken !== undefined) {
+    await options.store.transferSupervisorStart(
+      options.startupToken,
+      process.pid,
+      options.startupOwnerToken,
+    );
   }
   const running = await startSupervisorServer({
     store: options.store,
@@ -216,7 +224,7 @@ export async function ensureSupervisor(
         options,
       );
     } finally {
-      await store.releaseSupervisorStart(requestedLock.token);
+      await releaseStaleSupervisorStart(store, requestedLock.token);
     }
   }
   throw new Error(`supervisor did not become ready within ${startupTimeoutMs}ms`);
@@ -266,6 +274,7 @@ async function launchSupervisor(
     basename(supervisorSocketPath(store.runsDirectory)),
   );
   await rm(socketPath, { force: true });
+  const startupOwnerToken = randomUUID();
   const child = spawn(
     process.execPath,
     [
@@ -275,6 +284,8 @@ async function launchSupervisor(
       store.runsDirectory,
       "--startup-token",
       startupToken,
+      "--startup-owner-token",
+      startupOwnerToken,
       "--policy-digest",
       policy.policyDigest,
       "--max-active-workers",
