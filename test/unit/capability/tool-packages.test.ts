@@ -7,6 +7,11 @@ import {
   type ToolPackageSnapshotInput,
   validateToolPackageSnapshot,
 } from "../../../src/domain/capability/tool-packages.js";
+import {
+  MAX_AGENT_COMMAND_ARG_BYTES,
+  MAX_AGENT_COMMAND_ARGS,
+  MAX_AGENT_COMMAND_ARGS_BYTES,
+} from "../../../src/domain/command-envelope.js";
 
 describe("tool package contract", () => {
   it("parses a strict inert command-tool manifest and freezes exact source identity", () => {
@@ -113,6 +118,56 @@ describe("tool package contract", () => {
         ),
       ),
     ).toThrow(/executable/i);
+  });
+
+  it("shares the live argument-count boundary", () => {
+    const atLimit = [
+      "%s".repeat(MAX_AGENT_COMMAND_ARGS - 1),
+      ...Array.from({ length: MAX_AGENT_COMMAND_ARGS - 1 }, () => ""),
+    ];
+    const overLimit = [
+      "%s".repeat(MAX_AGENT_COMMAND_ARGS),
+      ...Array.from({ length: MAX_AGENT_COMMAND_ARGS }, () => ""),
+    ];
+
+    expect(() => parseToolPackageManifest(Buffer.from(envelopeManifest(atLimit)))).not.toThrow();
+    expect(() => parseToolPackageManifest(Buffer.from(envelopeManifest(overLimit)))).toThrow(
+      new RegExp(String(MAX_AGENT_COMMAND_ARGS)),
+    );
+  });
+
+  it("shares the live per-argument UTF-8 byte boundary", () => {
+    const atLimit = "é".repeat(MAX_AGENT_COMMAND_ARG_BYTES / 2);
+    const overLimit = `${atLimit}a`;
+
+    expect(Buffer.byteLength(atLimit, "utf8")).toBe(MAX_AGENT_COMMAND_ARG_BYTES);
+    expect(() => parseToolPackageManifest(Buffer.from(envelopeManifest([atLimit])))).not.toThrow();
+    expect(() => parseToolPackageManifest(Buffer.from(envelopeManifest([overLimit])))).toThrow(
+      new RegExp(`${MAX_AGENT_COMMAND_ARG_BYTES} UTF-8 bytes`),
+    );
+  });
+
+  it("shares the live aggregate argument-byte boundary", () => {
+    const format = `${"a".repeat(MAX_AGENT_COMMAND_ARG_BYTES - 16)}${"%s".repeat(8)}`;
+    const atLimit = [
+      format,
+      ...Array.from({ length: 3 }, () => "a".repeat(8_192)),
+      "",
+      "",
+      "",
+      "",
+      "",
+    ];
+    const overLimit = [...atLimit];
+    overLimit[overLimit.length - 1] = "a";
+
+    expect(atLimit.reduce((total, arg) => total + Buffer.byteLength(arg), 0)).toBe(
+      MAX_AGENT_COMMAND_ARGS_BYTES,
+    );
+    expect(() => parseToolPackageManifest(Buffer.from(envelopeManifest(atLimit)))).not.toThrow();
+    expect(() => parseToolPackageManifest(Buffer.from(envelopeManifest(overLimit)))).toThrow(
+      new RegExp(`${MAX_AGENT_COMMAND_ARGS_BYTES} UTF-8 bytes in total`),
+    );
   });
 
   it.each(["printf", "sh", "bash", "node", "python", "env", "/bin/printf", "./printf"])(
@@ -295,6 +350,23 @@ spec:
       - --short
       - --untracked-files=normal
       - --ignore-submodules=all
+    timeoutMs: 10000
+  permissions: [process.execute]
+`;
+}
+
+function envelopeManifest(args: readonly string[]): string {
+  return `apiVersion: flow.synapti.ai/v1alpha1
+kind: ToolPackage
+metadata: { name: envelope-probe, version: 1.0.0, description: Probe command envelope bounds. }
+spec:
+  tool: { name: envelope_probe, description: Probe command envelope bounds., inputs: [] }
+  driver:
+    kind: command
+    version: v1
+    profile: posix-printf-v1
+    executable: /usr/bin/printf
+    args: ${JSON.stringify(args)}
     timeoutMs: 10000
   permissions: [process.execute]
 `;

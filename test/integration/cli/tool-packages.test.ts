@@ -55,6 +55,8 @@ describe("tool package CLI", () => {
         {
           name: "project-report",
           version: "1.2.3",
+          trust: "project-explicit",
+          provenance: ".flow/tools/project-report",
           toolName: "create_project_report",
           permissions: ["process.execute"],
           driver: { kind: "command", version: "v1", profile: "posix-printf-v1" },
@@ -65,6 +67,8 @@ describe("tool package CLI", () => {
       kind: "tool-package",
       name: "project-report",
       version: "1.2.3",
+      trust: "project-explicit",
+      provenance: ".flow/tools/project-report",
       digest: expect.stringMatching(/^[a-f0-9]{64}$/),
       definition: {
         tool: { name: "create_project_report" },
