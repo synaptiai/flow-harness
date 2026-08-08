@@ -5,6 +5,7 @@ import type {
   CompiledLoopInstance,
   CompiledOptimizationGuard,
   CompiledResultSchema,
+  CompiledToolPackageReference,
   CompiledVerifierConfig,
   CompiledWorkflow,
   ConditionSourceField,
@@ -20,8 +21,16 @@ interface ProjectedNodeBase {
 
 type ProjectedControlGraphNode =
   | (ProjectedNodeBase & {
-      readonly type: "command" | "agent";
+      readonly type: "command";
       readonly when?: CompiledBranchGuard;
+    })
+  | (ProjectedNodeBase & {
+      readonly type: "agent";
+      readonly when?: CompiledBranchGuard;
+      readonly commandTools?: {
+        readonly rawExec: boolean;
+        readonly packages: readonly CompiledToolPackageReference[];
+      };
     })
   | (ProjectedNodeBase & {
       readonly type: "child";
@@ -116,6 +125,7 @@ export function workflowRequiresControlGraph(workflow: CompiledWorkflow): boolea
     (workflow.concurrency?.maxNodes ?? 1) > 1 ||
     workflow.nodes.some(
       (node) =>
+        (node.type === "agent" && node.agent.toolPackages.length > 0) ||
         node.type === "condition" ||
         node.type === "join" ||
         node.type === "child" ||
@@ -198,6 +208,23 @@ export function projectCompiledControlGraph(workflow: CompiledWorkflow): Project
     }
     if (node.type === "optimization") {
       return { ...common, type: node.type, optimization: node.optimization };
+    }
+    if (node.type === "agent") {
+      return {
+        ...common,
+        type: node.type,
+        ...(node.when === undefined ? {} : { when: node.when }),
+        ...(node.agent.toolPackages.length === 0
+          ? {}
+          : {
+              commandTools: Object.freeze({
+                rawExec: node.agent.tools.includes("exec"),
+                packages: Object.freeze(
+                  node.agent.toolPackages.map((item) => Object.freeze({ ...item })),
+                ),
+              }),
+            }),
+      };
     }
     return {
       ...common,

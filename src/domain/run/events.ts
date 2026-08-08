@@ -33,6 +33,12 @@ import {
   MAX_AGENT_SKILL_PACKAGES,
   persistedCapabilitySnapshotSchema,
 } from "../capability/agent-skills.js";
+import { renderToolPackageCommand } from "../capability/tool-package-renderer.js";
+import {
+  type ToolPackageSnapshot,
+  toolPackageNameSchema,
+  toolPackageVersionSchema,
+} from "../capability/tool-packages.js";
 import {
   type VerifierPackageUseEvidence,
   verifierPackageNameSchema,
@@ -273,6 +279,7 @@ export interface RunStartedEvent extends RunEventBase {
   readonly capabilitySnapshot?: CapabilitySnapshot;
   readonly capabilityRequirements?: readonly AgentCapabilityRequirement[];
   readonly verifierPackageRequirements?: readonly VerifierPackageRequirement[];
+  readonly toolPackageRequirements?: readonly ToolPackageRequirement[];
   readonly budget?: CompiledRunBudget;
   readonly concurrency?: CompiledWorkflowConcurrency;
   readonly goal?: CompiledGoal;
@@ -341,9 +348,18 @@ interface ControlGraphNodeBase {
   readonly optimizationGuard?: ControlOptimizationGuard;
 }
 
-export interface ControlGraphExecutableNode extends ControlGraphNodeBase {
-  readonly type: "command" | "agent";
+export interface ControlGraphCommandNode extends ControlGraphNodeBase {
+  readonly type: "command";
   readonly when?: ControlBranchGuard;
+}
+
+export interface ControlGraphAgentNode extends ControlGraphNodeBase {
+  readonly type: "agent";
+  readonly when?: ControlBranchGuard;
+  readonly commandTools?: {
+    readonly rawExec: boolean;
+    readonly packages: readonly { readonly name: string; readonly version: string }[];
+  };
 }
 
 export interface ControlGraphChildNode extends ControlGraphNodeBase {
@@ -487,7 +503,8 @@ export interface ControlGraphOptimizationNode extends ControlGraphNodeBase {
 }
 
 export type ControlGraphNode =
-  | ControlGraphExecutableNode
+  | ControlGraphCommandNode
+  | ControlGraphAgentNode
   | ControlGraphChildNode
   | ControlGraphApprovalNode
   | ControlGraphVerifierNode
@@ -938,6 +955,14 @@ export interface VerifierPackageRequirement {
   readonly kind: "command" | "model";
 }
 
+export interface ToolPackageRequirement {
+  readonly nodeId: string;
+  readonly packages: readonly {
+    readonly name: string;
+    readonly version: string;
+  }[];
+}
+
 export interface CommandApprovalRequestedEvent extends RunEventBase {
   readonly type: "command_approval_requested";
   readonly nodeId: string;
@@ -1340,6 +1365,9 @@ export interface RunState {
   readonly capabilityRequirements: Readonly<Record<string, readonly string[]>>;
   readonly verifierPackageRequirements: Readonly<
     Record<string, Omit<VerifierPackageRequirement, "nodeId">>
+  >;
+  readonly toolPackageRequirements: Readonly<
+    Record<string, readonly { readonly name: string; readonly version: string }[]>
   >;
   readonly executionCwd: string | null;
   readonly executionWorkspace: ExecutionWorkspaceProvenance | null;
@@ -2067,6 +2095,27 @@ const controlGraphNodeSchema = z.discriminatedUnion("type", [
       ...controlNodeBaseShape,
       type: z.literal("agent"),
       when: controlBranchGuardSchema.optional(),
+      commandTools: z
+        .object({
+          rawExec: z.boolean(),
+          packages: z
+            .array(
+              z
+                .object({
+                  name: toolPackageNameSchema,
+                  version: toolPackageVersionSchema,
+                })
+                .strict(),
+            )
+            .min(1)
+            .max(MAX_AGENT_SKILL_PACKAGES)
+            .refine(
+              (items) => new Set(items.map((item) => item.name)).size === items.length,
+              "agent command tool package names must be unique",
+            ),
+        })
+        .strict()
+        .optional(),
     })
     .strict(),
   z
@@ -2382,6 +2431,31 @@ export const runEventSchema = z.discriminatedUnion("type", [
               name: verifierPackageNameSchema,
               version: verifierPackageVersionSchema,
               kind: z.enum(["command", "model"]),
+            })
+            .strict(),
+        )
+        .max(MAX_COMPILED_WORKFLOW_NODES)
+        .optional(),
+      toolPackageRequirements: z
+        .array(
+          z
+            .object({
+              nodeId: identifierSchema,
+              packages: z
+                .array(
+                  z
+                    .object({
+                      name: toolPackageNameSchema,
+                      version: toolPackageVersionSchema,
+                    })
+                    .strict(),
+                )
+                .min(1)
+                .max(MAX_AGENT_SKILL_PACKAGES)
+                .refine(
+                  (items) => new Set(items.map((item) => item.name)).size === items.length,
+                  "selected tool package names must be unique",
+                ),
             })
             .strict(),
         )
@@ -3362,6 +3436,81 @@ export function appendRunEvent(
         Object.freeze({ ...requirement }),
       ]),
     );
+    const toolPackageRequirements = event.toolPackageRequirements ?? [];
+    if (
+      new Set(toolPackageRequirements.map((requirement) => requirement.nodeId)).size !==
+      toolPackageRequirements.length
+    ) {
+      throw new RunReplayError(eventIndex, "tool package requirements must have unique node ids");
+    }
+    if (
+      toolPackageRequirements.some((requirement) => !event.nodeIds.includes(requirement.nodeId))
+    ) {
+      throw new RunReplayError(
+        eventIndex,
+        "tool package requirement references a node outside the run node set",
+      );
+    }
+    if (toolPackageRequirements.length > 0 && event.capabilitySnapshot === undefined) {
+      throw new RunReplayError(
+        eventIndex,
+        "tool package requirements require a durable capability snapshot",
+      );
+    }
+    const packagedAgentControlNodes =
+      controlGraph?.nodes.filter(
+        (node): node is ControlGraphAgentNode =>
+          node.type === "agent" && node.commandTools !== undefined,
+      ) ?? [];
+    if (packagedAgentControlNodes.length !== toolPackageRequirements.length) {
+      throw new RunReplayError(
+        eventIndex,
+        "tool package requirements do not cover the packaged agent control graph exactly",
+      );
+    }
+    for (const requirement of toolPackageRequirements) {
+      const controlNode = packagedAgentControlNodes.find(
+        (node) => node.nodeId === requirement.nodeId,
+      );
+      if (
+        controlNode?.commandTools === undefined ||
+        JSON.stringify(controlNode.commandTools.packages) !== JSON.stringify(requirement.packages)
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          `tool package requirement for node "${requirement.nodeId}" does not match the control graph`,
+        );
+      }
+      const toolNames = new Set<string>();
+      for (const reference of requirement.packages) {
+        const selected = event.capabilitySnapshot?.packages.find(
+          (item): item is ToolPackageSnapshot =>
+            item.kind === "tool-package" &&
+            item.name === reference.name &&
+            item.version === reference.version,
+        );
+        if (selected === undefined) {
+          throw new RunReplayError(
+            eventIndex,
+            `tool package requirement for node "${requirement.nodeId}" does not match the durable snapshot`,
+          );
+        }
+        const toolName = selected.definition.tool.name;
+        if (toolNames.has(toolName)) {
+          throw new RunReplayError(
+            eventIndex,
+            `tool package requirement for node "${requirement.nodeId}" contains duplicate model tool name "${toolName}"`,
+          );
+        }
+        toolNames.add(toolName);
+      }
+    }
+    const toolPackageRequirementsByNode = Object.fromEntries(
+      toolPackageRequirements.map((requirement) => [
+        requirement.nodeId,
+        Object.freeze(requirement.packages.map((item) => Object.freeze({ ...item }))),
+      ]),
+    );
     const concurrency = Object.freeze({ maxNodes: event.concurrency?.maxNodes ?? 1 });
     if (concurrency.maxNodes > 1 && controlGraph === null) {
       throw new RunReplayError(
@@ -3381,6 +3530,7 @@ export function appendRunEvent(
           : deepFreeze(structuredClone(event.capabilitySnapshot)),
       capabilityRequirements: Object.freeze(capabilityRequirementsByNode),
       verifierPackageRequirements: Object.freeze(verifierPackageRequirementsByNode),
+      toolPackageRequirements: Object.freeze(toolPackageRequirementsByNode),
       executionCwd: event.executionCwd ?? null,
       executionWorkspace:
         event.executionWorkspace === undefined
@@ -3639,6 +3789,12 @@ export function appendRunEvent(
           `node "${event.nodeId}" did not declare agent command execution`,
         );
       }
+      validateToolPackageCommandRequest(
+        currentState,
+        event.nodeId,
+        event.request.command,
+        eventIndex,
+      );
       const requirement = currentState.agentCommandApprovalRequirements[event.nodeId];
       if (requirement === undefined) {
         throw new RunReplayError(
@@ -4024,6 +4180,16 @@ export function appendRunEvent(
           throw new RunReplayError(
             eventIndex,
             `non-child node "${event.nodeId}" cannot carry a child link`,
+          );
+        }
+        if (
+          controlNode.type === "agent" &&
+          controlNode.commandTools !== undefined &&
+          event.commandProtocol !== AGENT_COMMAND_PROTOCOL
+        ) {
+          throw new RunReplayError(
+            eventIndex,
+            `package-enabled agent node "${event.nodeId}" must declare the agent command protocol`,
           );
         }
         requireSucceededDependencies(controlNode, nodes, eventIndex);
@@ -5188,6 +5354,7 @@ export function appendRunEvent(
         );
       }
       validatePreparedAgentCommand(event, eventIndex);
+      validateToolPackageCommandRequest(currentState, event.nodeId, event.request, eventIndex);
       const approvalRequirement = currentState.agentCommandApprovalRequirements[event.nodeId];
       let agentCommandApprovals = current.agentCommandApprovals;
       if (approvalRequirement === undefined) {
@@ -5654,6 +5821,7 @@ export function appendRunEvent(
     capabilitySnapshot: currentState.capabilitySnapshot,
     capabilityRequirements: currentState.capabilityRequirements,
     verifierPackageRequirements: currentState.verifierPackageRequirements,
+    toolPackageRequirements: currentState.toolPackageRequirements,
     executionCwd: currentState.executionCwd,
     executionWorkspace: currentState.executionWorkspace,
     approvalRequirements: currentState.approvalRequirements,
@@ -8375,6 +8543,76 @@ function validatePreparedAgentCommand(
   if (decision.requestDigest !== expectedRequestDigest) {
     throw new RunReplayError(eventIndex, "agent command policy request digest is invalid");
   }
+}
+
+function validateToolPackageCommandRequest(
+  state: RunState,
+  nodeId: string,
+  request: AgentCommandRequest,
+  eventIndex: number,
+): void {
+  const requirements = state.toolPackageRequirements[nodeId] ?? [];
+  const controlNode = state.controlGraph?.nodes.find((node) => node.nodeId === nodeId);
+  const commandTools = controlNode?.type === "agent" ? controlNode.commandTools : undefined;
+  const source = request.source;
+  if (source === undefined) {
+    if (requirements.length > 0 && commandTools?.rawExec !== true) {
+      throw new RunReplayError(
+        eventIndex,
+        `package-only agent node "${nodeId}" cannot prepare a source-free command`,
+      );
+    }
+    return;
+  }
+  const selectedReference = requirements.find(
+    (item) => item.name === source.name && item.version === source.version,
+  );
+  if (selectedReference === undefined) {
+    throw new RunReplayError(
+      eventIndex,
+      `agent command source references unselected tool package "${source.name}" version "${source.version}"`,
+    );
+  }
+  const selected = state.capabilitySnapshot?.packages.find(
+    (item): item is ToolPackageSnapshot =>
+      item.kind === "tool-package" && item.name === source.name && item.version === source.version,
+  );
+  if (
+    selected === undefined ||
+    selected.digest !== source.digest ||
+    selected.definition.tool.name !== source.toolName
+  ) {
+    throw new RunReplayError(
+      eventIndex,
+      `agent command source does not match selected tool package "${source.name}"`,
+    );
+  }
+  let rendered: ReturnType<typeof renderToolPackageCommand>;
+  try {
+    rendered = renderToolPackageCommand(selected, source.input);
+  } catch (error) {
+    throw new RunReplayError(
+      eventIndex,
+      `agent command source input is invalid for tool package "${source.name}": ${boundedToolPackageDetail(error instanceof Error ? error.message : String(error))}`,
+    );
+  }
+  if (source.inputDigest !== rendered.inputDigest) {
+    throw new RunReplayError(eventIndex, "agent command tool package input digest is invalid");
+  }
+  if (
+    request.executable !== rendered.request.executable ||
+    request.timeoutMs !== rendered.request.timeoutMs ||
+    !sameStrings(request.args, rendered.request.args)
+  ) {
+    throw new RunReplayError(
+      eventIndex,
+      "agent command does not match the selected tool package input rendering",
+    );
+  }
+}
+
+function boundedToolPackageDetail(value: string): string {
+  return value.length <= 4_096 ? value : `${value.slice(0, 4_060)}… [truncated]`;
 }
 
 function validateAgentCommandSettlement(

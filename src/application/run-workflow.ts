@@ -65,6 +65,7 @@ import {
   type RunResumedEvent,
   type RunStartedEvent,
   type RunState,
+  type ToolPackageRequirement,
   reduceRunEvents,
   type VerifierPackageRequirement,
 } from "../domain/run/events.js";
@@ -148,6 +149,7 @@ export async function runWorkflow(
     const agentCommandApprovalRequirements = workflowAgentCommandApprovalRequirements(workflow);
     const capabilityRequirements = agentCapabilityRequirements(workflow);
     const verifierPackageRequirements = workflowVerifierPackageRequirements(workflow);
+    const toolPackageRequirements = workflowToolPackageRequirements(workflow);
     const recoveryRequirements = agentRecoveryRequirements(workflow);
     const controlGraph = workflowControlGraph(workflow);
     const started: RunStartedEvent = {
@@ -169,6 +171,7 @@ export async function runWorkflow(
         : { agentCommandApprovalRequirements }),
       ...(capabilityRequirements.length === 0 ? {} : { capabilityRequirements }),
       ...(verifierPackageRequirements.length === 0 ? {} : { verifierPackageRequirements }),
+      ...(toolPackageRequirements.length === 0 ? {} : { toolPackageRequirements }),
       ...(recoveryRequirements.length === 0 ? {} : { recoveryRequirements }),
       ...(controlGraph === undefined ? {} : { controlGraph }),
       ...(workflow.goal === undefined ? {} : { goal: workflow.goal }),
@@ -1272,7 +1275,10 @@ function supportsDurableEffects(node: CompiledNode): node is CompiledAgentNode {
 }
 
 function supportsAgentCommands(node: CompiledNode): node is CompiledAgentNode {
-  return node.type === "agent" && node.agent.tools.includes("exec");
+  return (
+    node.type === "agent" &&
+    (node.agent.tools.includes("exec") || node.agent.toolPackages.length > 0)
+  );
 }
 
 function requiresAgentCommandApproval(node: CompiledNode): node is CompiledAgentNode & {
@@ -1565,6 +1571,19 @@ function validateRecoveryCompatibility(
     throw new RunRecoveryError(
       "workflow_mismatch",
       `run "${runId}" verifier package requirements do not match the compiled workflow`,
+    );
+  }
+
+  const expectedToolPackageRequirements = workflowToolPackageRequirements(workflow);
+  const recoveredToolPackageRequirements = Object.entries(state.toolPackageRequirements).map(
+    ([nodeId, packages]) => ({ nodeId, packages }),
+  );
+  if (
+    !sameToolPackageRequirements(recoveredToolPackageRequirements, expectedToolPackageRequirements)
+  ) {
+    throw new RunRecoveryError(
+      "workflow_mismatch",
+      `run "${runId}" tool package requirements do not match the compiled workflow`,
     );
   }
 
@@ -2113,6 +2132,25 @@ function workflowVerifierPackageRequirements(
   );
 }
 
+function workflowToolPackageRequirements(
+  workflow: CompiledWorkflow,
+): readonly ToolPackageRequirement[] {
+  return Object.freeze(
+    workflow.nodes.flatMap((node) =>
+      node.type === "agent" && node.agent.toolPackages.length > 0
+        ? [
+            Object.freeze({
+              nodeId: node.id,
+              packages: Object.freeze(
+                node.agent.toolPackages.map((item) => Object.freeze({ ...item })),
+              ),
+            }),
+          ]
+        : [],
+    ),
+  );
+}
+
 function agentRecoveryRequirements(
   workflow: CompiledWorkflow,
 ): readonly AgentRecoveryRequirement[] {
@@ -2183,6 +2221,25 @@ function sameVerifierPackageRequirements(
         requirement.name === right[index]?.name &&
         requirement.version === right[index]?.version &&
         requirement.kind === right[index]?.kind,
+    )
+  );
+}
+
+function sameToolPackageRequirements(
+  left: readonly ToolPackageRequirement[],
+  right: readonly ToolPackageRequirement[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every(
+      (requirement, index) =>
+        requirement.nodeId === right[index]?.nodeId &&
+        requirement.packages.length === right[index]?.packages.length &&
+        requirement.packages.every(
+          (item, packageIndex) =>
+            item.name === right[index]?.packages[packageIndex]?.name &&
+            item.version === right[index]?.packages[packageIndex]?.version,
+        ),
     )
   );
 }
