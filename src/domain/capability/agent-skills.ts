@@ -10,6 +10,14 @@ import {
   verifierPackageIdentityKey,
   verifierPackageSnapshotSchema,
 } from "./verifier-packages.js";
+import {
+  createToolPackageSnapshot,
+  type ToolPackageSnapshot,
+  type ToolPackageSnapshotInput,
+  toolPackageIdentityKey,
+  toolPackageSnapshotSchema,
+  validateToolPackageSnapshot,
+} from "./tool-packages.js";
 
 export const MAX_AGENT_SKILL_PACKAGES = 32;
 export const MAX_AGENT_SKILL_FILES = 128;
@@ -70,7 +78,10 @@ export interface AgentSkillPackageSnapshot {
   readonly digest: string;
 }
 
-export type CapabilityPackageSnapshot = AgentSkillPackageSnapshot | VerifierPackageSnapshot;
+export type CapabilityPackageSnapshot =
+  | AgentSkillPackageSnapshot
+  | VerifierPackageSnapshot
+  | ToolPackageSnapshot;
 
 export interface CapabilitySnapshot {
   readonly version: 1;
@@ -84,6 +95,10 @@ export interface AgentSkillCapabilitySnapshot extends CapabilitySnapshot {
 
 export interface VerifierPackageCapabilitySnapshot extends CapabilitySnapshot {
   readonly packages: readonly VerifierPackageSnapshot[];
+}
+
+export interface ToolPackageCapabilitySnapshot extends CapabilitySnapshot {
+  readonly packages: readonly ToolPackageSnapshot[];
 }
 
 export interface AgentSkillPackageSnapshotInput
@@ -145,7 +160,13 @@ const capabilitySnapshotSchema = z
   .object({
     version: z.literal(1),
     packages: z
-      .array(z.discriminatedUnion("kind", [packageSnapshotSchema, verifierPackageSnapshotSchema]))
+      .array(
+        z.discriminatedUnion("kind", [
+          packageSnapshotSchema,
+          verifierPackageSnapshotSchema,
+          toolPackageSnapshotSchema,
+        ]),
+      )
       .min(1)
       .max(MAX_AGENT_SKILL_PACKAGES),
     digest: sha256Schema,
@@ -203,14 +224,21 @@ export function createCapabilitySnapshot(
   verifierInputs: readonly VerifierPackageSnapshotInput[],
 ): VerifierPackageCapabilitySnapshot;
 export function createCapabilitySnapshot(
+  inputs: readonly [],
+  verifierInputs: readonly [],
+  toolInputs: readonly ToolPackageSnapshotInput[],
+): ToolPackageCapabilitySnapshot;
+export function createCapabilitySnapshot(
   inputs: readonly AgentSkillPackageSnapshotInput[],
   verifierInputs: readonly VerifierPackageSnapshotInput[],
+  toolInputs?: readonly ToolPackageSnapshotInput[],
 ): CapabilitySnapshot;
 export function createCapabilitySnapshot(
   inputs: readonly AgentSkillPackageSnapshotInput[],
   verifierInputs: readonly VerifierPackageSnapshotInput[] = [],
+  toolInputs: readonly ToolPackageSnapshotInput[] = [],
 ): CapabilitySnapshot {
-  if (inputs.length + verifierInputs.length === 0) {
+  if (inputs.length + verifierInputs.length + toolInputs.length === 0) {
     throw new RangeError("a capability snapshot requires at least one selected package");
   }
   const skills = inputs
@@ -251,6 +279,7 @@ export function createCapabilitySnapshot(
   const packages: CapabilityPackageSnapshot[] = [
     ...skills,
     ...verifierInputs.map(createVerifierPackageSnapshot),
+    ...toolInputs.map(createToolPackageSnapshot),
   ].sort((left, right) => compareStrings(capabilityPackageKey(left), capabilityPackageKey(right)));
   const candidate = {
     version: 1 as const,
@@ -266,6 +295,10 @@ export function validateCapabilitySnapshot(input: unknown): CapabilitySnapshot {
   for (const capability of parsed.packages) {
     if (capability.kind === "verifier-package") {
       validateVerifierPackageSnapshot(capability);
+      continue;
+    }
+    if (capability.kind === "tool-package") {
+      validateToolPackageSnapshot(capability);
       continue;
     }
     const skill = capability;
@@ -396,9 +429,12 @@ export function selectedAgentSkills(
 }
 
 function capabilityPackageKey(value: CapabilityPackageSnapshot): string {
-  return value.kind === "agent-skill"
-    ? `agent-skill\0${value.name}`
-    : verifierPackageIdentityKey(value);
+  if (value.kind === "agent-skill") {
+    return `agent-skill\0${value.name}`;
+  }
+  return value.kind === "verifier-package"
+    ? verifierPackageIdentityKey(value)
+    : toolPackageIdentityKey(value);
 }
 
 export function createAgentCapabilityEvidence(
