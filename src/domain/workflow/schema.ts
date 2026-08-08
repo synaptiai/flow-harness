@@ -2,16 +2,17 @@ import { z } from "zod";
 
 import { goalContractSchema } from "../goal/schema.js";
 import {
+  type CompiledResultSchema,
   FLOW_WORKFLOW_API_VERSION,
   MAX_CHILD_WORKFLOW_SOURCE_BYTES,
   MAX_CONCURRENT_NODES,
   MAX_LOOP_BODY_NODES,
   MAX_LOOP_ITERATIONS,
+  MAX_OPTIMIZATION_CANDIDATES,
   MAX_RESULT_ARRAY_ITEMS,
   MAX_RESULT_SCHEMA_DEPTH,
   MAX_RESULT_SCHEMA_NODES,
   MAX_RESULT_SCHEMA_SERIALIZED_BYTES,
-  type CompiledResultSchema,
 } from "./types.js";
 
 const identifierSchema = z
@@ -341,23 +342,86 @@ const resultNodeSchema = z
   })
   .strict();
 
+const childDefinitionSchema = z
+  .object({
+    resultNodeId: identifierSchema,
+    workflow: z
+      .string()
+      .refine(
+        (value) =>
+          value.trim().length > 0 &&
+          Buffer.byteLength(value, "utf8") <= MAX_CHILD_WORKFLOW_SOURCE_BYTES,
+        `embedded child workflow must be non-empty and not exceed ${MAX_CHILD_WORKFLOW_SOURCE_BYTES} UTF-8 bytes`,
+      ),
+  })
+  .strict();
+
 const childNodeSchema = z
   .object({
     ...guardedNodeShape,
     type: z.literal("child"),
-    child: z
+    child: childDefinitionSchema,
+  })
+  .strict();
+
+const optimizationScalarSchema = z.union([
+  z.null(),
+  z.boolean(),
+  z.number().finite(),
+  z.string().max(65_536),
+]);
+
+const optimizationNodeSchema = z
+  .object({
+    ...commonNodeShape,
+    type: z.literal("optimization"),
+    optimization: z
       .object({
-        resultNodeId: identifierSchema,
-        workflow: z
-          .string()
+        baseline: z
+          .object({
+            nodeId: identifierSchema,
+            field: z.literal("result.value"),
+          })
+          .strict(),
+        metric: z
+          .object({
+            pointer: z.string().max(4_096),
+            direction: z.enum(["minimize", "maximize"]),
+          })
+          .strict(),
+        invariants: z
+          .array(
+            z
+              .object({
+                pointer: z.string().max(4_096),
+                equals: optimizationScalarSchema,
+              })
+              .strict(),
+          )
+          .max(16)
           .refine(
-            (value) =>
-              value.trim().length > 0 &&
-              Buffer.byteLength(value, "utf8") <= MAX_CHILD_WORKFLOW_SOURCE_BYTES,
-            `embedded child workflow must be non-empty and not exceed ${MAX_CHILD_WORKFLOW_SOURCE_BYTES} UTF-8 bytes`,
+            (invariants) =>
+              new Set(invariants.map((invariant) => invariant.pointer)).size === invariants.length,
+            "optimization invariant pointers must be unique",
           ),
+        maxCandidates: z.number().int().min(1).max(MAX_OPTIMIZATION_CANDIDATES),
+        stagnation: z
+          .object({
+            maxConsecutiveNonImproving: z.number().int().min(1).max(MAX_OPTIMIZATION_CANDIDATES),
+          })
+          .strict(),
+        rollback: z.literal("previous-best"),
+        candidate: childDefinitionSchema,
       })
-      .strict(),
+      .strict()
+      .refine(
+        (optimization) =>
+          optimization.stagnation.maxConsecutiveNonImproving <= optimization.maxCandidates,
+        {
+          path: ["stagnation", "maxConsecutiveNonImproving"],
+          message: "optimization stagnation bound must not exceed maxCandidates",
+        },
+      ),
   })
   .strict();
 
@@ -507,6 +571,7 @@ export const workflowSourceSchema = z
           conditionNodeSchema,
           joinNodeSchema,
           loopNodeSchema,
+          optimizationNodeSchema,
         ]),
       )
       .min(1)

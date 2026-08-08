@@ -6,6 +6,8 @@ export const MAX_CONCURRENT_NODES = 32;
 export const MAX_COMPILED_WORKFLOW_NODES = 256;
 export const MAX_LOOP_BODY_NODES = 16;
 export const MAX_LOOP_ITERATIONS = 32;
+export const MAX_OPTIMIZATION_CANDIDATES = 16;
+export const MAX_OPTIMIZATION_DELTA_EVIDENCE_BYTES = 128 * 1024;
 export const MAX_RESULT_SCHEMA_DEPTH = 8;
 export const MAX_RESULT_SCHEMA_NODES = 128;
 export const MAX_RESULT_SCHEMA_SERIALIZED_BYTES = 65_536;
@@ -53,6 +55,7 @@ export interface CompiledNodeBase {
   readonly dependsOn: readonly string[];
   readonly loopInstance?: CompiledLoopInstance;
   readonly loopGuard?: CompiledLoopGuard;
+  readonly optimizationGuard?: CompiledOptimizationGuard;
 }
 
 export interface CompiledLoopInstance {
@@ -64,6 +67,12 @@ export interface CompiledLoopInstance {
 export interface CompiledLoopGuard {
   readonly loopId: string;
   readonly iteration: number;
+  readonly checkNodeId: string;
+}
+
+export interface CompiledOptimizationGuard {
+  readonly optimizationId: string;
+  readonly candidate: number;
   readonly checkNodeId: string;
 }
 
@@ -208,6 +217,11 @@ export interface CompiledResultNode extends CompiledGuardedNodeBase {
 
 export interface CompiledChildNode extends CompiledGuardedNodeBase {
   readonly type: "child";
+  readonly optimizationCandidate?: {
+    readonly optimizationId: string;
+    readonly candidate: number;
+    readonly checkNodeId: string;
+  };
   readonly child: {
     readonly workflow: CompiledWorkflow;
     readonly workflowDigest: string;
@@ -249,6 +263,54 @@ export interface CompiledLoopNode extends CompiledGuardedNodeBase {
   };
 }
 
+export interface CompiledOptimizationCheckNode extends CompiledGuardedNodeBase {
+  readonly type: "optimization-check";
+  readonly optimizationCheck: {
+    readonly optimizationId: string;
+    readonly candidate: number;
+    readonly candidateNodeId: string;
+    readonly priorCheckNodeId?: string;
+    readonly baseline: {
+      readonly nodeId: string;
+      readonly field: "result.value";
+    };
+    readonly metric: {
+      readonly pointer: string;
+      readonly direction: "minimize" | "maximize";
+    };
+    readonly invariants: readonly {
+      readonly pointer: string;
+      readonly equals: null | boolean | number | string;
+    }[];
+    readonly maxConsecutiveNonImproving: number;
+    readonly rollback: "previous-best";
+  };
+}
+
+export interface CompiledOptimizationNode extends CompiledGuardedNodeBase {
+  readonly type: "optimization";
+  readonly optimization: {
+    readonly baseline: {
+      readonly nodeId: string;
+      readonly field: "result.value";
+    };
+    readonly baselineSchemaDigest: string;
+    readonly metric: {
+      readonly pointer: string;
+      readonly direction: "minimize" | "maximize";
+    };
+    readonly invariants: readonly {
+      readonly pointer: string;
+      readonly equals: null | boolean | number | string;
+    }[];
+    readonly maxCandidates: number;
+    readonly maxConsecutiveNonImproving: number;
+    readonly rollback: "previous-best";
+    readonly candidateNodeIds: readonly string[];
+    readonly checkNodeIds: readonly string[];
+  };
+}
+
 export type CompiledNode =
   | CompiledCommandNode
   | CompiledAgentNode
@@ -259,4 +321,6 @@ export type CompiledNode =
   | CompiledConditionNode
   | CompiledJoinNode
   | CompiledLoopCheckNode
-  | CompiledLoopNode;
+  | CompiledLoopNode
+  | CompiledOptimizationCheckNode
+  | CompiledOptimizationNode;

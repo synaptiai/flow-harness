@@ -19,7 +19,9 @@ The embedded Pi runtime runs with the invoking user's operating-system permissio
 - Command nodes preserve explicit argument arrays through an audited encoder and run inside the fixed SRT `workspace-write-network-deny-v1` profile.
 - The profile denies network, undeclared Unix sockets, ambient credentials, writes to run state or sensitive project metadata, and home reads outside the workspace except for the exact canonical SRT seccomp helper required on Linux. That runtime-support file is re-exposed read-only when Flow is installed elsewhere. Ordinary workspace writes remain allowed by design.
 - Same-workspace, same-policy concurrent commands share SRT's process-global session but receive distinct temporary directories and per-command filesystem configurations. A command for a different workspace or policy waits for every active wrap to release, then Flow resets and reinitializes the session before admitting it. Cancellation while queued starts no process, and a poisoned session fails queued work closed.
-- Child workflows run from owner-only, content-verified reflink-or-copy working-tree snapshots. Flow excludes `.flow` and the configured run-store path, rejects special files and bounded-size overflow, records the snapshot identity in both ledgers, and discards the child workspace after terminal settlement. This prevents child writes from changing the parent working tree; it is not an atomic filesystem snapshot, VM-grade sandbox, or boundary against the invoking user. Host-side Pi retains that user's authority subject to Flow's tool broker, while child command descendants still use SRT.
+- Child workflows run from owner-only, content-verified reflink-or-copy working-tree snapshots. Flow excludes `.flow` and the configured run-store path, rejects special files and bounded-size overflow, and records the snapshot identity in both ledgers. Ordinary child workspaces are discarded after terminal settlement. Successful compiler-generated optimization candidates normally remain retained until their typed check rejects or conclusively promotes and cleans them. This prevents ordinary child writes from changing the parent working tree; it is not an atomic filesystem snapshot, VM-grade sandbox, or boundary against the invoking user. Host-side Pi retains that user's authority subject to Flow's tool broker, while child command descendants still use SRT.
+- Candidate capture separately bounds changed entries, logical file bytes, and serialized durable evidence. A cancellation after candidate success but before its check retains the isolated candidate for diagnosis; no evaluation, promotion, parent mutation, or later candidate starts. Operators should treat retained candidate workspaces as untrusted artifacts.
+- Child workspaces are stored beneath the run-store-owned workspace area. When a sandboxed child command starts, Flow removes only an ancestor run-store deny that would also deny that command's own canonical workspace. SRT's write allowlist remains exactly that workspace plus private temp, so ledgers and sibling workspaces remain non-writable.
 - Any dependency error or warning, initialization error, unsupported platform, or invalid sandbox launch descriptor fails before command spawn. There is no host-execution fallback.
 - Command nodes run only on Linux and macOS. Windows execution fails before spawn until full descendant-process containment is available.
 - Run events are synced before scheduler advancement. Writable agent attempts durably prepare each
@@ -69,6 +71,18 @@ The embedded Pi runtime runs with the invoking user's operating-system permissio
   its persisted graph to 512 KiB. Checks use exact, non-truncated durable evidence, later
   iterations require the immediately prior durable `continue`, and exhausting the bound fails
   closed. Arbitrary cycles, nested loops, and unbounded continuation are rejected.
+- Bounded optimization is also compiler-expanded rather than model-controlled. Metric and invariant
+  JSON Pointers are schema-checked, the baseline must come from deterministic command evidence,
+  and only a strict typed improvement may enter promotion. The ledger persists bounded path-level
+  before/after identities and recomputes their manifest digest during replay. Promotion opens no
+  leaf or stable intermediate path through a symlink, refuses special entries, verifies the parent
+  snapshot and every affected path before prepare, rechecks directory ancestors at mutation
+  and crash-cleanup boundaries, removes only regular-file or symlink staging entries, preserves
+  unrelated parent changes, and stores rollback bytes durably before mutation. A per-promotion
+  owner lock coordinates cooperating processes. Per-component checks
+  narrow but cannot eliminate pathname TOCTOU against a hostile same-user process, and these
+  controls do not protect private run state from that authority. Use stronger whole-harness
+  isolation for adversarial workloads.
 - Detached control metadata is stored below the selected run root in owner-only directories and
   files. Local Unix sockets use an owner-validated, non-symlink short temporary directory; worker
   control requires a random token plus matching worker, run, PID, and job-digest identity.

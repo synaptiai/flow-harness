@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -205,6 +205,81 @@ describe("detached run worker", () => {
     });
     expect(reduceRunEvents(await runStore.read(childRunId)).status).toBe("succeeded");
     await expect(stat(join(runsDirectory, ".workspaces", childRunId))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(store.readWorkerDescriptor(job.workerId)).resolves.toMatchObject({
+      status: "terminal",
+      runStatus: "succeeded",
+      exitCode: 0,
+    });
+  });
+
+  it("promotes a bounded optimization through the detached production composition", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-worker-optimization-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    const store = new LocalSupervisorStore(runsDirectory);
+    await store.initialize();
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "worker-optimization",
+      mode: "run",
+      sourceName: join(directory, "workflow.yaml"),
+      workflowSource: optimizationWorkflowSource(),
+      cwd: directory,
+      token: "b".repeat(64),
+      createdAt: "2026-08-08T12:45:00.000Z",
+    });
+    await store.reserveSubmission(
+      job,
+      createActiveRunClaim({
+        runId: job.runId,
+        jobId: job.jobId,
+        workerId: job.workerId,
+        claimedAt: job.createdAt,
+      }),
+    );
+
+    const worker = executeWorkerJob(job.jobId, {
+      store,
+      executor: optimizationExecutor(),
+      effectReconciler: createProductionNodeEffectReconciler(),
+      createRunStore: (root) => new JsonlRunStore(root),
+      pid: 4328,
+    });
+    const descriptor = await waitForDescriptor(store, job.workerId);
+    await expect(requestWorker(descriptor, { type: "identify" })).resolves.toMatchObject({
+      ok: true,
+      result: { runId: job.runId, status: "running" },
+    });
+    await expect(worker).resolves.toBe(0);
+
+    const runStore = new JsonlRunStore(runsDirectory);
+    const state = reduceRunEvents(await runStore.read(job.runId));
+    const candidateRunId = state.nodes["optimize--c1--candidate"]?.childRun?.runId;
+    expect(candidateRunId).toMatch(/^child-[a-f0-9]{48}$/);
+    if (candidateRunId === undefined) {
+      throw new Error("detached optimization did not persist its candidate child link");
+    }
+    expect(state).toMatchObject({
+      status: "succeeded",
+      nodes: {
+        "optimize--c1--check": {
+          optimization: {
+            decision: "promote",
+            settlement: { outcome: "committed" },
+            cleanedAt: expect.any(String),
+          },
+          control: { kind: "optimization-check", outcome: "accepted", bestMetric: 8 },
+        },
+        optimize: {
+          control: { kind: "optimization", bestCandidate: 1, stopReason: "max_candidates" },
+        },
+      },
+    });
+    await expect(readFile(join(directory, "optimized.txt"), "utf8")).resolves.toBe("score=8\n");
+    await expect(stat(join(runsDirectory, ".workspaces", candidateRunId))).rejects.toMatchObject({
       code: "ENOENT",
     });
     await expect(store.readWorkerDescriptor(job.workerId)).resolves.toMatchObject({
@@ -837,6 +912,98 @@ ${child
   .map((line) => `        ${line}`)
   .join("\n")}
 `;
+}
+
+function optimizationWorkflowSource(): string {
+  const candidate = `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: worker-optimization-candidate }
+budget:
+  maxNodeStarts: 4
+  maxModelTokens: 100
+  maxCostUsd: 0.01
+  maxExecutionMs: 10000
+nodes:
+  - id: improve
+    type: command
+    command: { executable: node, args: [improve] }
+  - id: publish
+    type: result
+    dependsOn: [improve]
+    result:
+      source: { nodeId: improve, field: command.stdout }
+      schema:
+        type: object
+        properties:
+          score: { type: number }
+          tests-passed: { type: boolean }
+        required: [score, tests-passed]
+`.trim();
+  return `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: worker-optimization }
+budget:
+  maxNodeStarts: 16
+  maxModelTokens: 1000
+  maxCostUsd: 1
+  maxExecutionMs: 60000
+nodes:
+  - id: measure
+    type: command
+    command: { executable: node, args: [measure] }
+  - id: baseline
+    type: result
+    dependsOn: [measure]
+    result:
+      source: { nodeId: measure, field: command.stdout }
+      schema:
+        type: object
+        properties:
+          score: { type: number }
+          tests-passed: { type: boolean }
+        required: [score, tests-passed]
+  - id: optimize
+    type: optimization
+    dependsOn: [baseline]
+    optimization:
+      baseline: { nodeId: baseline, field: result.value }
+      metric: { pointer: /score, direction: minimize }
+      invariants: [{ pointer: /tests-passed, equals: true }]
+      maxCandidates: 1
+      stagnation: { maxConsecutiveNonImproving: 1 }
+      rollback: previous-best
+      candidate:
+        resultNodeId: publish
+        workflow: |
+${candidate
+  .split("\n")
+  .map((line) => `          ${line}`)
+  .join("\n")}
+`;
+}
+
+function optimizationExecutor(): NodeExecutor {
+  return {
+    async execute(node, context) {
+      const stdout =
+        node.id === "measure"
+          ? '{"score":10,"tests-passed":true}'
+          : '{"score":8,"tests-passed":true}';
+      if (node.id === "improve") {
+        await writeFile(join(context.cwd, "optimized.txt"), "score=8\n", "utf8");
+      }
+      return {
+        status: "succeeded",
+        evidence: {
+          ...successfulCommandEvidence(node.id),
+          stdout,
+          stdoutHash: sha256(stdout),
+        },
+      };
+    },
+  };
 }
 
 function recoveryWorkflowSource(): string {

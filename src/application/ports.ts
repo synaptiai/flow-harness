@@ -47,6 +47,81 @@ export interface WorkspaceIsolator {
   cleanup(workspaceId: string): Promise<"discarded">;
 }
 
+export type WorkspaceEntryIdentity =
+  | { readonly kind: "missing" }
+  | { readonly kind: "directory"; readonly mode: number }
+  | {
+      readonly kind: "file";
+      readonly mode: number;
+      readonly size: number;
+      readonly sha256: string;
+    }
+  | { readonly kind: "symlink"; readonly target: string };
+
+export interface CandidateDeltaEntry {
+  readonly path: string;
+  readonly before: WorkspaceEntryIdentity;
+  readonly after: WorkspaceEntryIdentity;
+}
+
+export interface CandidateDelta {
+  readonly version: 1;
+  readonly workspaceId: string;
+  readonly baselineSnapshotDigest: string;
+  readonly candidateSnapshotDigest: string;
+  readonly entryCount: number;
+  readonly logicalBytes: number;
+  readonly entries: readonly CandidateDeltaEntry[];
+  readonly deltaDigest: string;
+}
+
+export interface CandidatePromotionRequest {
+  readonly promotionId: string;
+  readonly workspaceId: string;
+  readonly sourceCwd: string;
+  readonly deltaDigest: string;
+  readonly excludedPaths?: readonly string[];
+}
+
+export interface CandidatePromotionBoundary {
+  readonly promotionId: string;
+  readonly workspaceId: string;
+  readonly deltaDigest: string;
+  readonly baselineSnapshotDigest: string;
+  readonly candidateSnapshotDigest: string;
+  readonly entryCount: number;
+  readonly logicalBytes: number;
+}
+
+export type CandidatePromotionSettlement =
+  | { readonly outcome: "committed"; readonly reason: "local_commit_durable" }
+  | {
+      readonly outcome: "rolled_back";
+      readonly reason: "compensated_after_failure" | "reconciled_incomplete";
+    }
+  | { readonly outcome: "unknown"; readonly reason: "affected_path_diverged" };
+
+export interface CandidatePromotionLifecycle {
+  prepare(boundary: CandidatePromotionBoundary): Promise<void>;
+  settle(settlement: CandidatePromotionSettlement): Promise<void>;
+}
+
+export interface CandidateWorkspaceManager {
+  captureCandidateDelta(request: {
+    readonly workspaceId: string;
+    readonly sourceCwd: string;
+    readonly expectedSnapshotDigest: string;
+    readonly excludedPaths?: readonly string[];
+  }): Promise<CandidateDelta>;
+  promoteCandidateDelta(
+    request: CandidatePromotionRequest,
+    lifecycle: CandidatePromotionLifecycle,
+  ): Promise<CandidatePromotionSettlement>;
+  reconcileCandidatePromotion(
+    request: CandidatePromotionRequest,
+  ): Promise<CandidatePromotionSettlement>;
+}
+
 export interface NodeExecutionContext {
   readonly runId: string;
   readonly workflowId: string;

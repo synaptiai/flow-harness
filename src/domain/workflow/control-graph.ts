@@ -3,6 +3,7 @@ import type {
   CompiledChildNode,
   CompiledLoopGuard,
   CompiledLoopInstance,
+  CompiledOptimizationGuard,
   CompiledResultSchema,
   CompiledVerifierConfig,
   CompiledWorkflow,
@@ -14,6 +15,7 @@ interface ProjectedNodeBase {
   readonly dependsOn: readonly string[];
   readonly loopInstance?: CompiledLoopInstance;
   readonly loopGuard?: CompiledLoopGuard;
+  readonly optimizationGuard?: CompiledOptimizationGuard;
 }
 
 type ProjectedControlGraphNode =
@@ -31,6 +33,7 @@ type ProjectedControlGraphNode =
         readonly resultSchema: CompiledResultSchema;
         readonly resultSchemaDigest: string;
       };
+      readonly optimizationCandidate?: NonNullable<CompiledChildNode["optimizationCandidate"]>;
     })
   | (ProjectedNodeBase & {
       readonly type: "approval";
@@ -88,6 +91,20 @@ type ProjectedControlGraphNode =
         readonly maxIterations: number;
         readonly checkNodeIds: readonly string[];
       };
+    })
+  | (ProjectedNodeBase & {
+      readonly type: "optimization-check";
+      readonly optimizationCheck: Extract<
+        CompiledWorkflow["nodes"][number],
+        { readonly type: "optimization-check" }
+      >["optimizationCheck"];
+    })
+  | (ProjectedNodeBase & {
+      readonly type: "optimization";
+      readonly optimization: Extract<
+        CompiledWorkflow["nodes"][number],
+        { readonly type: "optimization" }
+      >["optimization"];
     });
 
 export interface ProjectedControlGraph {
@@ -106,7 +123,9 @@ export function workflowRequiresControlGraph(workflow: CompiledWorkflow): boolea
         node.type === "verifier" ||
         node.type === "result" ||
         node.type === "loop-check" ||
-        node.type === "loop",
+        node.type === "loop" ||
+        node.type === "optimization-check" ||
+        node.type === "optimization",
     )
   );
 }
@@ -118,6 +137,9 @@ export function projectCompiledControlGraph(workflow: CompiledWorkflow): Project
       dependsOn: node.dependsOn,
       ...(node.loopInstance === undefined ? {} : { loopInstance: node.loopInstance }),
       ...(node.loopGuard === undefined ? {} : { loopGuard: node.loopGuard }),
+      ...(node.optimizationGuard === undefined
+        ? {}
+        : { optimizationGuard: node.optimizationGuard }),
     };
     if (node.type === "condition") {
       return {
@@ -157,6 +179,9 @@ export function projectCompiledControlGraph(workflow: CompiledWorkflow): Project
         type: node.type,
         ...(node.when === undefined ? {} : { when: node.when }),
         child: projectChild(node),
+        ...(node.optimizationCandidate === undefined
+          ? {}
+          : { optimizationCandidate: node.optimizationCandidate }),
       };
     }
     if (node.type === "join") {
@@ -167,6 +192,12 @@ export function projectCompiledControlGraph(workflow: CompiledWorkflow): Project
     }
     if (node.type === "loop") {
       return { ...common, type: node.type, loop: node.loop };
+    }
+    if (node.type === "optimization-check") {
+      return { ...common, type: node.type, optimizationCheck: node.optimizationCheck };
+    }
+    if (node.type === "optimization") {
+      return { ...common, type: node.type, optimization: node.optimization };
     }
     return {
       ...common,

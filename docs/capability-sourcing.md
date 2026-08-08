@@ -13,13 +13,14 @@ Pi's experimental `AgentHarness` API is not a foundation for the first release. 
 | Capability | Why Flow owns it |
 | --- | --- |
 | Workflow schema and compiler | Workflow files must compile into executable graph state rather than advice to a model |
-| Scheduler and lifecycle | Readiness, conditions, bounded loop checks, proof-safe fresh attempts, future retries, joins, and terminal states are product semantics |
+| Scheduler and lifecycle | Readiness, conditions, bounded loop checks, optimization checks, proof-safe fresh attempts, future retries, joins, and terminal states are product semantics |
 | Typed node inputs and outputs | Flow validates bounded strict JSON, owns canonicalization and hashes, and prevents transitions from depending on persuasive prose |
 | Goals, budgets, and loop termination | Flow now durably owns start, token, reported-cost, and active-time boundaries; exhausted resources never imply successful completion |
 | Evidence and evaluation | A worker cannot authoritatively grade its own work |
 | Policy, approvals, tool broker, and sandbox profile | Authorization and containment are Flow product semantics even when enforcement is delegated |
 | Context assembly and redaction | Context composition is a major cost, safety, and quality control |
 | Event ledger and recovery | Pi transcripts cannot determine graph position or side-effect certainty |
+| Candidate evaluation and promotion | Metrics, invariants, stale-parent refusal, rollback, settlement, and accept-best state must remain provider-neutral replay semantics |
 | Local supervisor and worker protocol | Flow must supervise command, agent, and verifier nodes, preserve ledger authority, and expose provider-neutral control |
 | Model routing | Flow selects capability and cost profiles while Pi supplies models |
 | Skill and package trust | Installed content is untrusted and cannot broaden its own authority |
@@ -73,7 +74,7 @@ OMP is a Pi fork with a broad TypeScript, Bun, and Rust-native product surface. 
 | Hash-anchored edits | The first single-file full-SHA exact-edit tool is independently implemented with provenance receipts; OMP's compact line protocol, snapshots, stale recovery, and multi-file patcher remain benchmark candidates rather than dependencies |
 | Diagnostics after writes | Add through an optional language-service capability |
 | LSP and debugger operations | Optional first-party packages, outside scheduler core |
-| Worktree-isolated subagents | Adopt the isolation pattern while Flow owns fan-out and joins |
+| Worktree-isolated subagents | **Pattern adopted independently** through bounded child snapshots and optimization candidates while Flow owns fan-out, joins, typed deltas, and promotion |
 | Bounded tool-output summaries | Implement in Flow's artifact and evidence layer |
 | Model-specific tool and prompt tuning | Represent as benchmarked routing profiles |
 | Stream-triggered correction | Experimental only because retries can duplicate effects |
@@ -96,7 +97,7 @@ Prime Agent proves that Pi can support a distinct long-running harness. Its prod
 | Durable goals and autonomous continuation | Implement in Flow's scheduler |
 | Daemon workload limits | Prime leaves fixed caps outside its daemon layer; Flow independently adds strict operator/project ceilings, durable active reservations, a bounded FIFO queue, deterministic overflow rejection, and per-run graph-node concurrency. Artifact limits remain |
 | Heartbeats and schedules | Later trigger package now that bounded admission exists; triggers must not bypass the same queue |
-| Retained children and messaging | Represent as graph-owned child runs and mailbox events |
+| Retained children and messaging | Isolated child runs and bounded optimization-candidate retention are implemented as graph-owned state; general mailboxes remain future work |
 | Persistent IPython | Optional capability only; never describe it as a sandbox |
 | Recursive subagents | Use narrow contexts but keep recursion and joins graph-owned |
 | Executable Python skills | Defer because installation expands the supply-chain boundary |

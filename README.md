@@ -21,6 +21,7 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Replay-safe bounded loops over local command/agent/verifier DAGs | Implemented through finite acyclic expansion, exact stop evidence, and hard failure at the declared bound |
 | Typed result publication from durable evidence | Implemented with strict bounded JSON, closed schemas, canonical values, hashes, and replay verification |
 | Isolated child workflow runs with typed results | Implemented with deterministic child identities, separate ledgers, bounded run trees, portable reflink-or-copy workspaces, recovery, cancellation, and parent resource accounting |
+| Bounded accept-best optimization loops | Implemented with typed numeric metrics and invariants, finite candidate expansion, isolated candidate deltas, stale-parent refusal, write-ahead promotion/rollback, stagnation, and typed restart reconciliation |
 | Durable JSONL run ledger and inspection | Implemented |
 | Safe-boundary recovery with exclusive local ownership | Implemented |
 | Durable exact command approval with approve/deny CLI | Implemented |
@@ -32,7 +33,7 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Bounded Pi agent nodes with Flow-owned `read`, `ls`, and hash-anchored `edit` tools | Implemented |
 | Proof-safe fresh recovery of interrupted agent attempts | Implemented as explicit opt-in for read-only attempts and edit attempts proven not applied |
 | Fail-closed sandboxed command process trees | Implemented on Linux and macOS |
-| Dynamic agent-tool approval, optimization rollback/child patch promotion, and broader model tools | Planned |
+| Dynamic agent-tool approval, external verifier packages, and broader model tools | Planned |
 | VM-grade isolation of the host-side agent runtime | Planned |
 
 The executable format is `flow.synapti.ai/v1alpha1`. There is no compatibility or migration
@@ -157,8 +158,11 @@ scheduler, policy, sandbox, and ledger, then discards the workspace and imports 
 result and resource totals. The child ledger remains independently inspectable at the run id shown
 under `nodes.delegate.childRun`. Child budget ceilings are reserved against every bounded ancestor
 before materialization, and the compiled tree is limited to four child levels and 1,024 expanded
-nodes. Child workflows cannot wait for human approval. This slice intentionally does not apply or
-export child changes; candidate promotion and rollback belong to the optimization-loop gate.
+nodes. Child workflows cannot wait for human approval. Ordinary child nodes never apply or export
+child changes. Compiler-generated optimization candidates are the narrow exception: their
+successful workspace remains retained until the optimization check rejects and discards it or
+durably promotes its verified delta. Cancellation before that check starts no promotion or later
+candidate and retains the isolated workspace for diagnosis.
 
 To exercise durable conditional routing without model credentials:
 
@@ -201,6 +205,31 @@ The example advances a small workspace state file, records `continue` after iter
 state file. Loop bodies remain ordinary local DAGs, so approvals, budgets, effects, fresh recovery,
 and bounded node concurrency apply to each iteration-qualified instance. Reaching the declared
 bound without an exact match fails with `loop_limit_reached`; it never implies success.
+
+To exercise bounded accept-best optimization without model credentials:
+
+```sh
+node dist/cli/main.js validate examples/bounded-optimization.workflow.yaml
+node dist/cli/main.js run examples/bounded-optimization.workflow.yaml --run-id optimization-demo
+node dist/cli/main.js inspect optimization-demo
+```
+
+The example establishes a typed baseline with score `10`, runs each candidate in a separate
+reflink-or-copy workspace, and accepts only a strict invariant-preserving decrease. Candidate one
+changes a demo file and reports score `8`; Flow captures the complete typed path delta, verifies the
+parent still matches the candidate baseline, journals rollback bytes, and promotes it. Candidate
+two reports the same score, so it cannot change the parent, increments stagnation, and stops the
+finite graph. The final command verifies the promoted value and removes the demo file.
+
+Candidate capture has independent default ceilings of 20,000 changed entries, 2 GiB of logical
+before-plus-after file bytes, and 128 KiB of serialized delta evidence. An exact captured manifest
+is reopened after interrupted event publication; a different or partial manifest fails closed.
+
+Inspection exposes baseline and candidate metrics, expected and observed invariant values, delta
+entries and digest, promotion identity and settlement, cleanup, best candidate, stopping reason,
+and aggregate child resources. A crash after prepare resumes through typed reconciliation; Flow
+never reapplies a known committed promotion. A stale parent, rolled-back promotion, or unprovable
+affected path fails the check and starts no downstream node.
 
 ### Run in the background
 
