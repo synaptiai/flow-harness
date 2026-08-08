@@ -393,15 +393,16 @@ not expand policy or containment authority.
 ### Durable resource accounting and budgets
 
 Every run reconstructs provider-neutral resource consumption from authoritative events: committed
-node starts, evidence duration rounded up to whole milliseconds, four model-token components, and
-provider-reported cost normalized to integer micro-USD. The Pi adapter obtains its observation from
+node starts, evidence duration rounded up to whole milliseconds, four model-token components,
+provider-reported cost normalized to integer micro-USD, and UTF-8 bytes in retained primary
+executor payloads. The Pi adapter obtains its observation from
 `getSessionStats()` and translates it before the application or domain sees it. A future executor
 must produce the same Flow evidence shape; provider transcripts and runtime-specific settings never
 become graph authority.
 
-An optional compiled budget limits starts, total model tokens, reported model cost, and active
-execution duration. The scheduler consults only reduced run state before work and after outcome
-settlement. It appends `run_budget_exhausted` and produces distinct terminal
+An optional compiled budget limits starts, total model tokens, reported model cost, active
+execution duration, and retained artifact bytes. The scheduler consults only reduced run state
+before work and after outcome settlement. It appends `run_budget_exhausted` and produces distinct terminal
 `resource_exhausted` state rather than treating exhaustion as success, cancellation, or an invented
 node failure. Recovery validates the exact persisted limits and reaches the same decision after a
 crash between the node outcome and terminal event.
@@ -411,11 +412,22 @@ timeout and remaining allowance. For approval-required commands, this effective 
 the exact persisted operation before the client detaches. Human wait and process downtime consume
 no active duration because only committed evidence contributes.
 
-This is a settlement ceiling, not a prepaid billing control. Provider usage is authoritative only
-after a response, so one response can overshoot. Flow keeps the full observation and schedules no
-downstream work. External organization quotas, price catalogs, invoice reconciliation, distributed
-reservation, CPU/memory/disk limits, and artifact budgets remain separate capabilities. Per-run
-graph-node concurrency and supervisor-wide detached-worker admission are independently bounded.
+Artifact bytes are derived from command standard output/error, agent text, model-verifier raw
+output, nested command-verifier output, and verified child totals. Derived verdict/reason/result,
+approval, hash, policy, effect, sandbox, and control metadata is not charged again. Failed evidence
+is charged when committed; missing evidence is zero. Child ceilings are reserved before launch,
+while only the verified child tree total becomes consumed evidence and rolls up once per ancestor.
+Before a nonterminal parent resumes, the application recursively re-reduces every settled child
+ledger and compares the complete imported projection, so a forged terminal sequence, outcome,
+result, provenance, duration, or resource total fails closed before more work starts.
+
+These are settlement ceilings, not prepaid billing or physical-storage controls. Provider usage is
+authoritative only after a response, so one response can overshoot. Flow keeps the full observation
+and schedules no downstream work. External organization quotas, price catalogs, invoice
+reconciliation, distributed reservation, CPU/memory/disk limits, artifact storage,
+content-addressed storage, spill, download, retention, and garbage collection remain separate
+capabilities. Per-run graph-node concurrency and supervisor-wide detached-worker admission are
+independently bounded.
 
 ### Evaluators
 

@@ -26,7 +26,7 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Safe-boundary recovery with exclusive local ownership | Implemented |
 | Durable exact command approval with approve/deny CLI | Implemented |
 | Durable evidence-bound graph approval nodes with approve/deny CLI | Implemented |
-| Durable provider-neutral resource accounting and run budgets | Implemented for starts, model tokens, reported cost, and active execution time |
+| Durable provider-neutral resource accounting and run budgets | Implemented for starts, model tokens, reported cost, active execution time, and retained executor-output artifacts |
 | Strict project/operator configuration with inspectable monotonic limits | Implemented |
 | Bounded detached supervisor, durable FIFO queue, authenticated workers, cancellation, and event replay | Implemented on Linux and macOS |
 | First-class typed verifier nodes | Implemented for sandboxed command and evidence-isolated zero-tool Pi model drivers |
@@ -217,8 +217,10 @@ The parent durably records a deterministic child run link, snapshots the exact w
 into an owner-only reflink-or-copy workspace, runs the embedded workflow with the normal compiler,
 scheduler, policy, sandbox, and ledger, then discards the workspace and imports its canonical typed
 result and resource totals. The child ledger remains independently inspectable at the run id shown
-under `nodes.delegate.childRun`. Child budget ceilings are reserved against every bounded ancestor
-before materialization, and the compiled tree is limited to four child levels and 1,024 expanded
+under `nodes.delegate.childRun`. Every child declares all five run ceilings, including
+`maxArtifactBytes`. A child ceiling is reserved against its immediate parent's remaining budget
+before materialization; nested reservations and verified actual roll-ups propagate those bounds
+through the ancestor chain. The compiled tree is limited to four child levels and 1,024 expanded
 nodes. Child workflows cannot wait for human approval. Ordinary child nodes never apply or export
 child changes. Compiler-generated optimization candidates are the narrow exception: their
 successful workspace remains retained until the optimization check rejects and discards it or
@@ -386,7 +388,8 @@ event protocol. Resume is still explicit and requires the exact starting workflo
 
 ### Bound a run
 
-The budget example is credential-free and demonstrates run-wide start and active-execution limits:
+The budget example is credential-free and demonstrates run-wide start, active-execution, and
+retained-artifact limits:
 
 ```sh
 node dist/cli/main.js validate examples/budgeted-foundation.workflow.yaml
@@ -395,16 +398,31 @@ node dist/cli/main.js inspect budget-demo
 ```
 
 A workflow can declare any non-empty combination of `maxNodeStarts`, `maxModelTokens`,
-`maxCostUsd`, and `maxExecutionMs`. Missing `budget` means unbounded. Flow persists the compiled
-limits at run start and reconstructs `resources`, remaining allowance, and exhausted dimensions
-from the event ledger. Agent usage comes from Pi session statistics but is translated into
-Flow-owned token fields and integer micro-USD before persistence.
+`maxCostUsd`, `maxExecutionMs`, and `maxArtifactBytes`. Missing `budget` means unbounded. Each limit
+is a positive safe integer except `maxCostUsd`, which accepts positive values precise to one
+micro-USD. Flow persists the compiled limits at run start and reconstructs `resources`, remaining
+allowance, and exhausted dimensions from the event ledger. Agent usage comes from Pi session
+statistics but is translated into Flow-owned token fields and integer micro-USD before persistence.
 
-Reaching a model-token, reported-cost, or active-execution ceiling records
+`artifactBytes` counts UTF-8 bytes retained in terminal primary executor evidence: command
+`stdout + stderr`, agent `text`, model-verifier `raw`, command-verifier nested command
+`stdout + stderr`, and a verified child tree's own `artifactBytes`. Committed failed evidence is
+charged by the same rule; missing evidence contributes zero. Verdicts, verifier reasons, typed
+result values, approvals, hashes, policy/effect/sandbox metadata, and other derived or control
+projections are not charged again. This is a logical evidence-payload budget. Flow does not yet
+provide an artifact store, content-addressed storage, spill, download, retention, or garbage
+collection protocol.
+
+Reaching a model-token, reported-cost, active-execution, or artifact ceiling records
 `resource_exhausted`, exits with code 1, and starts no downstream work. A node-start limit prevents
 the next start but does not invalidate a graph that completed with its final allowed start. Node
 timeouts are reduced to the remaining active-execution allowance; an approval request displays and
 binds that reduced timeout. Approval wait and client-detached wall time do not consume active time.
+
+Artifact accounting settles with the terminal node outcome, so equality is terminal and one
+bounded outcome may overshoot. An already-admitted concurrency wave is allowed to quiesce; all of
+its declaration-ordered outcomes remain retained and charged before the run stops. Per-node output
+caps bound that overshoot, and bytes truncated before evidence exists cannot be recovered.
 
 Model usage and cost become authoritative only after the provider response settles, so one response
 can exceed its remaining allowance. Flow records the full observation and stops; it does not claim

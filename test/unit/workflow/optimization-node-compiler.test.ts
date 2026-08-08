@@ -236,6 +236,7 @@ budget:
   maxModelTokens: 10000
   maxCostUsd: 2
   maxExecutionMs: 300000
+  maxArtifactBytes: 1000000
 nodes:
   - id: measure-baseline
     type: command
@@ -283,6 +284,7 @@ budget:
   maxModelTokens: 1000
   maxCostUsd: 0.25
   maxExecutionMs: 60000
+  maxArtifactBytes: 100000
 nodes:
   - id: improve
     type: command

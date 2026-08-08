@@ -3,11 +3,11 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import {
+  type ChildEvidence,
   calculateChildRunId,
   parseRunEvent,
-  reduceRunEvents,
-  type ChildEvidence,
   type RunEvent,
+  reduceRunEvents,
 } from "../../../src/domain/run/events.js";
 
 describe("durable child run replay", () => {
@@ -21,6 +21,7 @@ describe("durable child run replay", () => {
         modelTokens: 30,
         modelCostUsdMicros: 400,
         executionMs: 25,
+        artifactBytes: 50,
       },
       nodes: {
         delegate: {
@@ -144,6 +145,7 @@ const childResources = {
   modelTokens: 30,
   modelCostUsdMicros: 400,
   executionMs: 25,
+  artifactBytes: 50,
 } as const;
 const childEvidence = {
   kind: "child" as const,

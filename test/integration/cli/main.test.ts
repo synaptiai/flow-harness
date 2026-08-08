@@ -7,7 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { NodeExecutor } from "../../../src/application/ports.js";
-import { main, type CliIo } from "../../../src/cli/main.js";
+import { type CliIo, main } from "../../../src/cli/main.js";
 import type { RunEvent, RunStartedEvent } from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { JsonlRunStore } from "../../../src/infrastructure/fs/jsonl-run-store.js";
@@ -1049,6 +1049,60 @@ nodes:
     ]);
   });
 
+  it("reports and inspects exact UTF-8 artifact exhaustion", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "artifact-budget.workflow.yaml");
+    const runsDirectory = join(directory, "runs");
+    await writeFile(
+      workflowPath,
+      `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: cli-artifact-budget }
+budget: { maxArtifactBytes: 2 }
+nodes:
+  - id: produce
+    type: command
+    command: { executable: node, args: [produce] }
+`,
+      "utf8",
+    );
+    const executor: NodeExecutor = {
+      async execute(node) {
+        return { status: "succeeded", evidence: commandEvidence(node.id, "é") };
+      },
+    };
+    const runCapture = createCapture();
+
+    const runExitCode = await main(
+      ["run", workflowPath, "--run-id", "cli-artifact-budget", "--runs-dir", runsDirectory],
+      runCapture.io,
+      { cwd: directory, executor },
+    );
+
+    expect(runExitCode).toBe(1);
+    const runState = JSON.parse(runCapture.stdout.join("\n"));
+    expect(runState).toMatchObject({
+      status: "resource_exhausted",
+      resources: { nodeStarts: 1, executionMs: 1, artifactBytes: 2 },
+      budget: {
+        limits: { maxArtifactBytes: 2 },
+        remaining: { artifactBytes: 0 },
+        exhausted: [{ dimension: "artifactBytes", limit: 2, consumed: 2 }],
+      },
+    });
+
+    const inspectCapture = createCapture();
+    expect(
+      await main(
+        ["inspect", "cli-artifact-budget", "--runs-dir", runsDirectory],
+        inspectCapture.io,
+        { cwd: directory },
+      ),
+    ).toBe(0);
+    expect(JSON.parse(inspectCapture.stdout.join("\n"))).toEqual(runState);
+  });
+
   it("resume reports an uncertain open attempt without appending or executing", async () => {
     const directory = await createTemporaryDirectory();
     const workflowPath = join(directory, "uncertain.workflow.yaml");
@@ -1506,16 +1560,16 @@ function eventBase(runId: string, workflowId: string, sequence: number) {
   };
 }
 
-function commandEvidence(nodeId = "completed") {
+function commandEvidence(nodeId = "completed", stdout = "") {
   return {
     kind: "command" as const,
     executable: process.execPath,
     args: ["-e", nodeId],
     exitCode: 0,
     signal: null,
-    stdout: "",
+    stdout,
     stderr: "",
-    stdoutHash: createHash("sha256").update("").digest("hex"),
+    stdoutHash: createHash("sha256").update(stdout).digest("hex"),
     stderrHash: createHash("sha256").update("").digest("hex"),
     stdoutTruncated: false,
     stderrTruncated: false,
@@ -1593,6 +1647,7 @@ budget:
   maxModelTokens: 100
   maxCostUsd: 0.01
   maxExecutionMs: 10000
+  maxArtifactBytes: 100000
 nodes:
   - id: produce
     type: command
@@ -1613,6 +1668,7 @@ budget:
   maxModelTokens: 1000
   maxCostUsd: 1
   maxExecutionMs: 60000
+  maxArtifactBytes: 1000000
 nodes:
   - id: delegate
     type: child
@@ -1642,6 +1698,7 @@ budget:
   maxModelTokens: 100
   maxCostUsd: 0.01
   maxExecutionMs: 10000
+  maxArtifactBytes: 100000
 nodes:
   - id: improve
     type: command
@@ -1679,6 +1736,7 @@ budget:
   maxModelTokens: 1000
   maxCostUsd: 1
   maxExecutionMs: 60000
+  maxArtifactBytes: 1000000
 nodes:
   - id: measure
     type: command
@@ -1732,6 +1790,7 @@ budget:
   maxModelTokens: 100
   maxCostUsd: 0.01
   maxExecutionMs: 10000
+  maxArtifactBytes: 100000
 nodes:
   - id: produce
     type: command
@@ -1764,6 +1823,7 @@ budget:
   maxModelTokens: 1000
   maxCostUsd: 1
   maxExecutionMs: 60000
+  maxArtifactBytes: 1000000
 concurrency: { maxNodes: 2 }
 nodes:
   - id: bootstrap

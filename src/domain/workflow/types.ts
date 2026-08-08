@@ -34,6 +34,7 @@ export interface CompiledRunBudget {
   readonly maxModelTokens?: number;
   readonly maxCostUsdMicros?: number;
   readonly maxExecutionMs?: number;
+  readonly maxArtifactBytes?: number;
 }
 
 export interface CompiledWorkflowConcurrency {

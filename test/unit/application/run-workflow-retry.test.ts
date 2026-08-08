@@ -16,8 +16,8 @@ import {
   runWorkflow,
 } from "../../../src/application/run-workflow.js";
 import {
-  parseRunEvent,
   type FilesystemEditEffectDescriptor,
+  parseRunEvent,
   type RunEvent,
 } from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
@@ -72,6 +72,24 @@ describe("runWorkflow proof-safe fresh recovery", () => {
       status: "succeeded",
       attempt: 2,
       interruptedAttempts: [{ attempt: 1, disposition: "fresh_retry" }],
+    });
+  });
+
+  it("does not charge an interrupted attempt before terminal artifact evidence is committed", async () => {
+    const compiled = workflow("read", true, 20);
+    const store = new MemoryRecoverableRunStore(openAttemptEvents(compiled));
+    const executor = successfulExecutor();
+
+    const state = await resumeWorkflow(compiled, resumeOptions(store, executor));
+
+    expect(executor.calls).toEqual([
+      { nodeId: "implement", attempt: 2 },
+      { nodeId: "verify", attempt: 1 },
+    ]);
+    expect(state).toMatchObject({
+      status: "succeeded",
+      resources: { artifactBytes: 13 },
+      budget: { remaining: { artifactBytes: 7 } },
     });
   });
 
@@ -383,6 +401,7 @@ function openAttemptEvents(
       workflowApiVersion: compiled.apiVersion,
       workflowDigest: createHash("sha256").update(JSON.stringify(compiled)).digest("hex"),
       executionCwd: resolve(process.cwd()),
+      ...(compiled.budget === undefined ? {} : { budget: compiled.budget }),
       ...(implement.agent.recovery === undefined
         ? {}
         : {
@@ -447,11 +466,12 @@ function reconcilerFor(outcome: "applied" | "not_applied"): NodeEffectReconciler
   };
 }
 
-function workflow(tool: "read" | "edit", recovery: boolean) {
+function workflow(tool: "read" | "edit", recovery: boolean, maxArtifactBytes?: number) {
   return compileWorkflowText(`
 apiVersion: flow.synapti.ai/v1alpha1
 kind: Workflow
 metadata: { id: proof-safe-retry }
+${maxArtifactBytes === undefined ? "" : `budget: { maxArtifactBytes: ${maxArtifactBytes} }`}
 nodes:
   - id: implement
     type: agent
