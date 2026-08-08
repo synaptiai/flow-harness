@@ -7,7 +7,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   calculateAgentSkillPackageDigest,
   calculateCapabilitySnapshotDigest,
+  createCapabilitySnapshot,
   MAX_AGENT_SKILL_FILE_BYTES,
+  MAX_AGENT_SKILL_METADATA_ENTRIES,
   validateCapabilitySnapshot,
 } from "../../../src/domain/capability/agent-skills.js";
 import {
@@ -118,6 +120,35 @@ Review.
     expect(() => validateCapabilitySnapshot(forged)).toThrow(/metadata keys.*sorted/i);
   });
 
+  it("enforces manifest bounds on snapshots received outside the local scanner", () => {
+    const input = {
+      kind: "agent-skill" as const,
+      name: "review",
+      description: "Review code.",
+      metadata: Object.fromEntries(
+        Array.from({ length: MAX_AGENT_SKILL_METADATA_ENTRIES + 1 }, (_, index) => [
+          `key-${String(index).padStart(2, "0")}`,
+          "value",
+        ]),
+      ),
+      requestedTools: [],
+      trust: "project-explicit" as const,
+      provenance: ".flow/skills/review",
+      files: [{ path: "SKILL.md", content: Buffer.from("# Review\n") }],
+    };
+
+    expect(() => createCapabilitySnapshot([input])).toThrow(/at most 64 entries/i);
+    expect(() =>
+      createCapabilitySnapshot([
+        {
+          ...input,
+          metadata: {},
+          requestedTools: ["Read\u0000Hidden"],
+        },
+      ]),
+    ).toThrow(/control characters/i);
+  });
+
   it("rejects duplicate names even when packages are stored at different depths", async () => {
     const project = await temporaryProject("flow-skills-duplicate-");
     await writeSkill(project, "one/shared", {
@@ -169,6 +200,25 @@ Review.
 
     const catalog = await discoverProjectAgentSkills(project);
     await expect(snapshotSelectedAgentSkills(catalog, ["unsafe"])).rejects.toMatchObject({
+      code: "unsafe_entry",
+    });
+  });
+
+  it("rejects a resource directory replaced by an in-root symlink after discovery", async () => {
+    const project = await temporaryProject("flow-skills-directory-race-");
+    await writeSkill(project, "review", {
+      source: skillSource("review", "Review package."),
+      resources: { "references/checklist.md": "original\n" },
+    });
+    const alternate = join(project, ".flow", "skills", "alternate-resources");
+    await mkdir(alternate, { recursive: true });
+    await writeFile(join(alternate, "checklist.md"), "substituted\n", "utf8");
+    const catalog = await discoverProjectAgentSkills(project);
+    const references = join(project, ".flow", "skills", "review", "references");
+    await rm(references, { recursive: true });
+    await symlink(alternate, references);
+
+    await expect(snapshotSelectedAgentSkills(catalog, ["review"])).rejects.toMatchObject({
       code: "unsafe_entry",
     });
   });

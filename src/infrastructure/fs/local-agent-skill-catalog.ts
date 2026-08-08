@@ -12,15 +12,16 @@ import {
   isAgentSkillName,
   MAX_AGENT_SKILL_FILE_BYTES,
   MAX_AGENT_SKILL_FILES,
+  MAX_AGENT_SKILL_METADATA_BYTES,
+  MAX_AGENT_SKILL_METADATA_ENTRIES,
   MAX_AGENT_SKILL_PACKAGE_BYTES,
   MAX_AGENT_SKILL_PACKAGES,
+  MAX_AGENT_SKILL_REQUESTED_TOOLS,
 } from "../../domain/capability/agent-skills.js";
 
 const MAX_DISCOVERY_DEPTH = 6;
 const MAX_DISCOVERY_ENTRIES = 2_000;
 const MAX_FRONTMATTER_BYTES = 64 * 1024;
-const MAX_METADATA_ENTRIES = 64;
-const MAX_METADATA_BYTES = 16 * 1024;
 
 const skillFrontmatterSchema = z
   .object({
@@ -35,8 +36,11 @@ const skillFrontmatterSchema = z
     metadata: z
       .record(z.string().min(1).max(256), z.string().max(4096))
       .default({})
-      .refine((value) => Object.keys(value).length <= MAX_METADATA_ENTRIES)
-      .refine((value) => Buffer.byteLength(JSON.stringify(value), "utf8") <= MAX_METADATA_BYTES),
+      .refine((value) => Object.keys(value).length <= MAX_AGENT_SKILL_METADATA_ENTRIES)
+      .refine(
+        (value) =>
+          Buffer.byteLength(JSON.stringify(value), "utf8") <= MAX_AGENT_SKILL_METADATA_BYTES,
+      ),
     "allowed-tools": z.string().max(8192).optional(),
   })
   .strict();
@@ -385,7 +389,7 @@ function parseRequestedTools(value: string | undefined, path: string): readonly 
   }
   const tools = value.trim().split(/\s+/).sort(compareStrings);
   if (
-    tools.length > 64 ||
+    tools.length > MAX_AGENT_SKILL_REQUESTED_TOOLS ||
     new Set(tools).size !== tools.length ||
     tools.some(
       (tool) =>

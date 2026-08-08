@@ -39,6 +39,7 @@ describe("run workflow capability snapshots", () => {
     expect(store.events[0]).toMatchObject({
       type: "run_started",
       capabilitySnapshot: { digest: snapshot.digest },
+      capabilityRequirements: [{ nodeId: "analyze", skills: ["review"] }],
     });
     expect(state.capabilitySnapshot).toEqual(snapshot);
   });
@@ -59,7 +60,9 @@ describe("run workflow capability snapshots", () => {
     });
 
     expect(store.events[0]).not.toHaveProperty("capabilitySnapshot");
+    expect(store.events[0]).not.toHaveProperty("capabilityRequirements");
     expect(state.capabilitySnapshot).toBeNull();
+    expect(state.capabilityRequirements).toEqual({});
     expect(context).not.toHaveProperty("capabilitySnapshot");
   });
 
@@ -207,7 +210,7 @@ describe("run workflow capability snapshots", () => {
         ),
         runId: "capability-attribution-run",
       }),
-    ).rejects.toMatchObject({ code: "workflow_mismatch" });
+    ).rejects.toThrow(/durable node declaration/i);
   });
 });
 

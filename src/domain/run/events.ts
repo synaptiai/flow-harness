@@ -4,8 +4,10 @@ import { z } from "zod";
 import {
   type AgentCapabilityEvidence,
   type CapabilitySnapshot,
+  agentSkillNameSchema,
   agentCapabilityEvidenceSchema,
   createAgentCapabilityEvidence,
+  MAX_AGENT_SKILL_PACKAGES,
   persistedCapabilitySnapshotSchema,
 } from "../capability/agent-skills.js";
 import {
@@ -243,6 +245,7 @@ export interface RunStartedEvent extends RunEventBase {
   readonly workflowApiVersion: "flow.synapti.ai/v1alpha1";
   readonly workflowDigest: string;
   readonly capabilitySnapshot?: CapabilitySnapshot;
+  readonly capabilityRequirements?: readonly AgentCapabilityRequirement[];
   readonly budget?: CompiledRunBudget;
   readonly concurrency?: CompiledWorkflowConcurrency;
   readonly goal?: CompiledGoal;
@@ -794,6 +797,11 @@ export interface AgentRecoveryRequirement {
   readonly effectProtocol: "none" | typeof DURABLE_EFFECT_PROTOCOL;
 }
 
+export interface AgentCapabilityRequirement {
+  readonly nodeId: string;
+  readonly skills: readonly string[];
+}
+
 export interface CommandApprovalRequestedEvent extends RunEventBase {
   readonly type: "command_approval_requested";
   readonly nodeId: string;
@@ -1137,6 +1145,7 @@ export interface RunState {
   readonly workflowApiVersion: "flow.synapti.ai/v1alpha1";
   readonly workflowDigest: string;
   readonly capabilitySnapshot: CapabilitySnapshot | null;
+  readonly capabilityRequirements: Readonly<Record<string, readonly string[]>>;
   readonly executionCwd: string | null;
   readonly executionWorkspace: ExecutionWorkspaceProvenance | null;
   readonly approvalRequirements: Readonly<
@@ -2049,6 +2058,24 @@ export const runEventSchema = z.discriminatedUnion("type", [
       workflowApiVersion: z.literal("flow.synapti.ai/v1alpha1"),
       workflowDigest: sha256Schema,
       capabilitySnapshot: persistedCapabilitySnapshotSchema.optional(),
+      capabilityRequirements: z
+        .array(
+          z
+            .object({
+              nodeId: identifierSchema,
+              skills: z
+                .array(agentSkillNameSchema)
+                .min(1)
+                .max(MAX_AGENT_SKILL_PACKAGES)
+                .refine(
+                  (items) => new Set(items).size === items.length,
+                  "selected Agent Skills must be unique",
+                ),
+            })
+            .strict(),
+        )
+        .max(MAX_COMPILED_WORKFLOW_NODES)
+        .optional(),
       budget: runBudgetLimitsSchema.optional(),
       concurrency: z
         .object({ maxNodes: z.number().int().min(1).max(MAX_CONCURRENT_NODES) })
@@ -2740,6 +2767,43 @@ export function appendRunEvent(
         Object.freeze({ grantTtlMs: requirement.grantTtlMs }),
       ]),
     );
+    const capabilityRequirements = event.capabilityRequirements ?? [];
+    if (
+      new Set(capabilityRequirements.map((requirement) => requirement.nodeId)).size !==
+      capabilityRequirements.length
+    ) {
+      throw new RunReplayError(eventIndex, "capability requirements must have unique node ids");
+    }
+    if (capabilityRequirements.some((requirement) => !event.nodeIds.includes(requirement.nodeId))) {
+      throw new RunReplayError(
+        eventIndex,
+        "capability requirement references a node outside the run node set",
+      );
+    }
+    if (capabilityRequirements.length > 0 && event.capabilitySnapshot === undefined) {
+      throw new RunReplayError(
+        eventIndex,
+        "capability requirements require a durable run capability snapshot",
+      );
+    }
+    const availableCapabilityNames = new Set(
+      event.capabilitySnapshot?.packages.map((skill) => skill.name) ?? [],
+    );
+    const missingRequiredCapability = capabilityRequirements
+      .flatMap((requirement) => requirement.skills)
+      .find((name) => !availableCapabilityNames.has(name));
+    if (missingRequiredCapability !== undefined) {
+      throw new RunReplayError(
+        eventIndex,
+        `capability requirement references missing Agent Skill "${missingRequiredCapability}"`,
+      );
+    }
+    const capabilityRequirementsByNode = Object.fromEntries(
+      capabilityRequirements.map((requirement) => [
+        requirement.nodeId,
+        Object.freeze([...requirement.skills]),
+      ]),
+    );
     const recoveryRequirements = event.recoveryRequirements ?? [];
     if (
       new Set(recoveryRequirements.map((requirement) => requirement.nodeId)).size !==
@@ -2784,6 +2848,7 @@ export function appendRunEvent(
         event.capabilitySnapshot === undefined
           ? null
           : deepFreeze(structuredClone(event.capabilitySnapshot)),
+      capabilityRequirements: Object.freeze(capabilityRequirementsByNode),
       executionCwd: event.executionCwd ?? null,
       executionWorkspace:
         event.executionWorkspace === undefined
@@ -4422,6 +4487,7 @@ export function appendRunEvent(
       validateEvidenceIntegrity(event.evidence, event, eventIndex, current.effectProtocol === null);
       validateAgentCapabilityEvidenceProjection(
         currentState.capabilitySnapshot,
+        currentState.capabilityRequirements[event.nodeId],
         event.evidence,
         eventIndex,
       );
@@ -4479,6 +4545,7 @@ export function appendRunEvent(
         );
         validateAgentCapabilityEvidenceProjection(
           currentState.capabilitySnapshot,
+          currentState.capabilityRequirements[event.nodeId],
           event.evidence,
           eventIndex,
         );
@@ -4665,6 +4732,7 @@ export function appendRunEvent(
     workflowApiVersion: currentState.workflowApiVersion,
     workflowDigest: currentState.workflowDigest,
     capabilitySnapshot: currentState.capabilitySnapshot,
+    capabilityRequirements: currentState.capabilityRequirements,
     executionCwd: currentState.executionCwd,
     executionWorkspace: currentState.executionWorkspace,
     approvalRequirements: currentState.approvalRequirements,
@@ -7428,26 +7496,30 @@ function requireNode(
 
 function validateAgentCapabilityEvidenceProjection(
   snapshot: CapabilitySnapshot | null,
+  declaredSkills: readonly string[] | undefined,
   evidence: NodeEvidence,
   eventIndex: number,
 ): void {
-  if (evidence.kind !== "agent" || evidence.capabilities === undefined) {
+  const capabilities = evidence.kind === "agent" ? evidence.capabilities : undefined;
+  if (declaredSkills === undefined) {
+    if (capabilities !== undefined) {
+      throw new RunReplayError(
+        eventIndex,
+        "agent capability evidence is not declared for this node",
+      );
+    }
     return;
   }
-  if (snapshot === null) {
+  if (snapshot === null || capabilities === undefined) {
     throw new RunReplayError(
       eventIndex,
-      "agent capability evidence requires a durable run capability snapshot",
+      "declared Agent Skills require capability evidence bound to the durable run snapshot",
     );
   }
   try {
-    const expected = createAgentCapabilityEvidence(
-      snapshot,
-      evidence.capabilities.selected.map((selection) => selection.name),
-      evidence.capabilities.reads,
-    );
-    if (JSON.stringify(expected) !== JSON.stringify(evidence.capabilities)) {
-      throw new Error("selected package evidence is not canonical");
+    const expected = createAgentCapabilityEvidence(snapshot, declaredSkills, capabilities.reads);
+    if (JSON.stringify(expected) !== JSON.stringify(capabilities)) {
+      throw new Error("selected package evidence does not match the durable node declaration");
     }
   } catch (error) {
     throw new RunReplayError(

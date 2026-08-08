@@ -26,6 +26,7 @@ import {
 } from "../domain/result/typed-result.js";
 import {
   type AgentEffectReceipt,
+  type AgentCapabilityRequirement,
   type AgentRecoveryRequirement,
   appendRunEvent,
   type ChildEvidence,
@@ -124,6 +125,7 @@ export async function runWorkflow(
   const executionCwd = resolve(options.cwd);
   return await releaseAfter(options.store, runId, async () => {
     const approvalRequirements = commandApprovalRequirements(workflow);
+    const capabilityRequirements = agentCapabilityRequirements(workflow);
     const recoveryRequirements = agentRecoveryRequirements(workflow);
     const controlGraph = workflowControlGraph(workflow);
     const started: RunStartedEvent = {
@@ -140,6 +142,7 @@ export async function runWorkflow(
       ...(workflow.budget === undefined ? {} : { budget: workflow.budget }),
       ...(workflow.concurrency === undefined ? {} : { concurrency: workflow.concurrency }),
       ...(approvalRequirements.length === 0 ? {} : { approvalRequirements }),
+      ...(capabilityRequirements.length === 0 ? {} : { capabilityRequirements }),
       ...(recoveryRequirements.length === 0 ? {} : { recoveryRequirements }),
       ...(controlGraph === undefined ? {} : { controlGraph }),
       ...(workflow.goal === undefined ? {} : { goal: workflow.goal }),
@@ -1121,6 +1124,19 @@ function validateRecoveryCompatibility(
     );
   }
 
+  const expectedCapabilityRequirements = agentCapabilityRequirements(workflow);
+  const recoveredCapabilityRequirements = Object.entries(state.capabilityRequirements).map(
+    ([nodeId, skills]) => ({ nodeId, skills }),
+  );
+  if (
+    !sameCapabilityRequirements(recoveredCapabilityRequirements, expectedCapabilityRequirements)
+  ) {
+    throw new RunRecoveryError(
+      "workflow_mismatch",
+      `run "${runId}" capability requirements do not match the compiled workflow`,
+    );
+  }
+
   const expectedRecoveryRequirements = agentRecoveryRequirements(workflow);
   const recoveredRecoveryRequirements = Object.entries(state.recoveryRequirements).map(
     ([nodeId, requirement]) => ({ nodeId, ...requirement }),
@@ -1564,6 +1580,23 @@ function commandApprovalRequirements(workflow: CompiledWorkflow) {
   );
 }
 
+function agentCapabilityRequirements(
+  workflow: CompiledWorkflow,
+): readonly AgentCapabilityRequirement[] {
+  return Object.freeze(
+    workflow.nodes.flatMap((node) =>
+      node.type === "agent" && node.agent.skills.length > 0
+        ? [
+            Object.freeze({
+              nodeId: node.id,
+              skills: Object.freeze([...node.agent.skills]),
+            }),
+          ]
+        : [],
+    ),
+  );
+}
+
 function agentRecoveryRequirements(
   workflow: CompiledWorkflow,
 ): readonly AgentRecoveryRequirement[] {
@@ -1604,6 +1637,20 @@ function sameApprovalRequirements(
       (requirement, index) =>
         requirement.nodeId === right[index]?.nodeId &&
         requirement.grantTtlMs === right[index]?.grantTtlMs,
+    )
+  );
+}
+
+function sameCapabilityRequirements(
+  left: readonly AgentCapabilityRequirement[],
+  right: readonly AgentCapabilityRequirement[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every(
+      (requirement, index) =>
+        requirement.nodeId === right[index]?.nodeId &&
+        sameStrings(requirement.skills, right[index]?.skills ?? []),
     )
   );
 }

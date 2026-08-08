@@ -21,6 +21,8 @@ describe("capability run history", () => {
 
     expect(state.capabilitySnapshot).toEqual(event.capabilitySnapshot);
     expect(Object.isFrozen(state.capabilitySnapshot)).toBe(true);
+    expect(state.capabilityRequirements).toEqual({ analyze: ["review"] });
+    expect(Object.isFrozen(state.capabilityRequirements.analyze)).toBe(true);
   });
 
   it("rejects forged capability file content during event parsing", () => {
@@ -136,6 +138,60 @@ describe("capability run history", () => {
       ]),
     ).toThrow(/not bound to durable content/i);
   });
+
+  it("rejects valid snapshot evidence attributed outside the node's durable declaration", () => {
+    const started = runStarted();
+    const snapshot = requireCapabilitySnapshot(started);
+
+    expect(() =>
+      reduceRunEvents([
+        started,
+        { ...base(2), type: "node_started", nodeId: "analyze", attempt: 1 },
+        {
+          ...base(3),
+          type: "node_succeeded",
+          nodeId: "analyze",
+          attempt: 1,
+          evidence: agentEvidence(createAgentCapabilityEvidence(snapshot, ["unused"])),
+        },
+      ]),
+    ).toThrow(/durable node declaration/i);
+  });
+
+  it("rejects capability requirements without a matching durable snapshot", () => {
+    const started = runStarted();
+    const { capabilitySnapshot: _capabilitySnapshot, ...withoutSnapshot } = started;
+
+    expect(() => reduceRunEvents([withoutSnapshot])).toThrow(
+      /require a durable run capability snapshot/i,
+    );
+  });
+
+  it("rejects duplicate and unknown capability requirement nodes", () => {
+    const started = runStarted();
+    const requirement = started.capabilityRequirements?.[0];
+    if (requirement === undefined) {
+      throw new Error("capability requirement fixture was not created");
+    }
+
+    expect(() =>
+      reduceRunEvents([
+        {
+          ...started,
+          capabilityRequirements: [requirement, requirement],
+        },
+      ]),
+    ).toThrow(/unique node ids/i);
+
+    expect(() =>
+      reduceRunEvents([
+        {
+          ...started,
+          capabilityRequirements: [{ ...requirement, nodeId: "other" }],
+        },
+      ]),
+    ).toThrow(/outside the run node set/i);
+  });
 });
 
 function requireCapabilitySnapshot(event: RunStartedEvent): CapabilitySnapshot {
@@ -192,6 +248,7 @@ function runStarted(): RunStartedEvent {
     nodeIds: ["analyze"],
     workflowApiVersion: "flow.synapti.ai/v1alpha1",
     workflowDigest: "a".repeat(64),
+    capabilityRequirements: [{ nodeId: "analyze", skills: ["review"] }],
     capabilitySnapshot: createCapabilitySnapshot([
       {
         kind: "agent-skill",
@@ -202,6 +259,16 @@ function runStarted(): RunStartedEvent {
         trust: "project-explicit",
         provenance: ".flow/skills/review",
         files: [{ path: "SKILL.md", content: Buffer.from("# Review\n") }],
+      },
+      {
+        kind: "agent-skill",
+        name: "unused",
+        description: "Unused package for attribution tests.",
+        metadata: { version: "1" },
+        requestedTools: [],
+        trust: "project-explicit",
+        provenance: ".flow/skills/unused",
+        files: [{ path: "SKILL.md", content: Buffer.from("# Unused\n") }],
       },
     ]),
   };

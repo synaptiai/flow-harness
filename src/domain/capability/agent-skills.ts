@@ -6,6 +6,9 @@ export const MAX_AGENT_SKILL_PACKAGES = 32;
 export const MAX_AGENT_SKILL_FILES = 128;
 export const MAX_AGENT_SKILL_FILE_BYTES = 128 * 1024;
 export const MAX_AGENT_SKILL_PACKAGE_BYTES = 256 * 1024;
+export const MAX_AGENT_SKILL_METADATA_ENTRIES = 64;
+export const MAX_AGENT_SKILL_METADATA_BYTES = 16 * 1024;
+export const MAX_AGENT_SKILL_REQUESTED_TOOLS = 64;
 export const MAX_CAPABILITY_SNAPSHOT_SERIALIZED_BYTES = 512 * 1024;
 export const MAX_CAPABILITY_READ_RECEIPTS = 128;
 
@@ -20,6 +23,22 @@ const portablePathSchema = z
   .min(1)
   .max(1024)
   .refine(isPortableRelativePath, "must be a normalized portable relative path");
+const requestedToolSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .refine((value) => !containsControlCharacter(value), "must not contain control characters");
+const agentSkillMetadataSchema = z
+  .record(z.string().min(1).max(256), z.string().max(4096))
+  .refine(
+    (metadata) => Object.keys(metadata).length <= MAX_AGENT_SKILL_METADATA_ENTRIES,
+    `must contain at most ${MAX_AGENT_SKILL_METADATA_ENTRIES} entries`,
+  )
+  .refine(
+    (metadata) =>
+      Buffer.byteLength(JSON.stringify(metadata), "utf8") <= MAX_AGENT_SKILL_METADATA_BYTES,
+    `serialized metadata must not exceed ${MAX_AGENT_SKILL_METADATA_BYTES} UTF-8 bytes`,
+  );
 
 export interface AgentSkillSnapshotFile {
   readonly path: string;
@@ -91,10 +110,10 @@ const packageSnapshotSchema = z
     description: z.string().min(1).max(1024),
     license: z.string().min(1).max(1024).optional(),
     compatibility: z.string().min(1).max(500).optional(),
-    metadata: z.record(z.string().min(1).max(256), z.string().max(4096)),
+    metadata: agentSkillMetadataSchema,
     requestedTools: z
-      .array(z.string().min(1).max(128))
-      .max(64)
+      .array(requestedToolSchema)
+      .max(MAX_AGENT_SKILL_REQUESTED_TOOLS)
       .refine((items) => new Set(items).size === items.length, "requested tools must be unique"),
     trust: z.literal("project-explicit"),
     provenance: portablePathSchema,
@@ -397,6 +416,13 @@ function comparePath(left: { readonly path: string }, right: { readonly path: st
 
 function compareStrings(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function containsControlCharacter(value: string): boolean {
+  return Array.from(value).some((character) => {
+    const point = character.codePointAt(0);
+    return point !== undefined && (point <= 31 || point === 127);
+  });
 }
 
 function sha256(value: string | Uint8Array): string {
