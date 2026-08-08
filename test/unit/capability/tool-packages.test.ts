@@ -144,6 +144,28 @@ describe("tool package contract", () => {
     expect(() => parseToolPackageManifest(Buffer.from(source))).toThrow(/posix-printf-v1/i);
   });
 
+  it("rejects a model-controlled printf format without trailing values", () => {
+    const source = `apiVersion: flow.synapti.ai/v1alpha1
+kind: ToolPackage
+metadata: { name: unsafe-format, version: 1.0.0, description: Unsafe dynamic format. }
+spec:
+  tool:
+    name: unsafe_format
+    description: Attempt to render a dynamic printf format.
+    inputs: [{ name: format, description: Dynamic format., type: string }]
+  driver:
+    kind: command
+    version: v1
+    profile: posix-printf-v1
+    executable: /usr/bin/printf
+    args: ["{input:format}"]
+    timeoutMs: 10000
+  permissions: [process.execute]
+`;
+
+    expect(() => parseToolPackageManifest(Buffer.from(source))).toThrow(/fixed non-option format/i);
+  });
+
   it("accepts only the exact hardened Git-status vector", () => {
     const source = gitStatusManifest();
 

@@ -426,7 +426,12 @@ function validateCommandProfile(
     );
   }
   const [format, ...values] = command.args;
-  if (format === undefined || format.length === 0 || format.startsWith("-")) {
+  if (
+    format === undefined ||
+    format.length === 0 ||
+    format.startsWith("-") ||
+    inputPlaceholder.test(format)
+  ) {
     profileIssue(
       context,
       ["args", 0],
