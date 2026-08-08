@@ -192,9 +192,10 @@ provider-neutral. A call creates the existing normalized `AgentCommandRequest` p
 Driver `v1` selects one closed Flow-owned profile. The initial registry contains the non-evaluating
 `posix-printf-v1` data profile and exact hardened `git-status-v1`; they bind `/usr/bin/printf` and
 `/usr/bin/git`, so a workspace-controlled `PATH` cannot replace the executable. Project packages
-cannot register profiles or executable identities. Manifest admission applies the live agent-command byte, argv,
-and timeout envelope. This closes the review-discovered path where an interpreter plus a model input
-could recreate raw execution and where a package could validate but never produce a valid call.
+cannot register profiles or executable identities. Manifest admission applies the live agent-command
+byte, argv, and timeout envelope. This closes the review-discovered path where an interpreter plus a
+model input could recreate raw execution and where a package could validate but never produce a
+valid call.
 
 Direct `flow_exec` requests omit `source`; their historical digest calculation is unchanged. When
 source is present, the operation digest covers source and rendered command. Selection grants only
@@ -287,7 +288,8 @@ code, remote acquisition, and non-command contributions.
    and recovery transport without live rediscovery.
 7. **REFACTOR/VERIFY** — Extract shared catalog mechanics only where both existing package kinds and
    tool packages prove the abstraction; update public docs/examples; run coverage, clean install,
-   runtime, audit, mutation probes, adversarial review, holdout verification, and graph refresh.
+   runtime, audit, mutation probes, adversarial review, and holdout verification. Refresh graph
+   artifacts only when the repository defines a tracked graph-output contract.
 
 ## Implementation tasks
 
@@ -297,5 +299,25 @@ code, remote acquisition, and non-command contributions.
 4. [x] Execute selected tools through Flow's existing command governance path.
 5. [x] Persist requirements and reconcile package calls independently during replay.
 6. [x] Complete CLI, attached/detached/child/recovery integration.
-7. [ ] Update public examples, README, architecture, workflow, security, recovery, testing,
+7. [x] Update public examples, README, architecture, workflow, security, recovery, testing,
    capability, and roadmap documentation; run full and adversarial verification.
+
+## Verification evidence
+
+Verified in a clean local clone on 2026-08-08:
+
+- `npm run check`: formatting and linting passed across 189 files; type checking and build passed;
+  1,445 tests passed across 113 files; 21 runtime tests passed across three files.
+- `npm run test:coverage`: 84.25% statements, 78.29% branches, 93.36% functions, and 84.30%
+  lines across the complete 1,445-test suite.
+- `npm audit --audit-level=high`: zero vulnerabilities.
+- `npm run pack:check`: the packed `synaptiai-flow-harness-0.0.0.tgz` installed into a clean
+  consumer project and its CLI initialized and resolved configuration successfully.
+- Compiled CLI smoke: the public `git-status@1.0.0` example passed `tools validate`, `tools list`,
+  exact-version `tools inspect`, and workflow validation; list and inspect exposed
+  `trust=project-explicit` and `provenance=.flow/tools/git-status`.
+- Independent security, holdout, and test challenge reviews converged at zero P1/P2/P3 findings
+  after all findings were fixed and re-reviewed.
+
+No graph artifact was refreshed: the repository defines no tracked graph-output contract, and the
+local untracked `graphify-out/` directory is user-owned and remained untouched.
