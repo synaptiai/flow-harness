@@ -25,8 +25,8 @@ import {
   createAgentCapabilityEvidence,
   validateCapabilitySnapshot,
 } from "../../domain/capability/agent-skills.js";
-import { resolveAgentToolPackages } from "../../domain/capability/workflow-capabilities.js";
 import type { ToolPackageSnapshot } from "../../domain/capability/tool-packages.js";
+import { resolveAgentToolPackages } from "../../domain/capability/workflow-capabilities.js";
 import { PolicyBroker } from "../../domain/policy/broker.js";
 import type { PolicyAction, PolicyDecision } from "../../domain/policy/types.js";
 import type { AgentModelUsage } from "../../domain/run/budget.js";

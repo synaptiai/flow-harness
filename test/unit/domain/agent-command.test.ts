@@ -76,6 +76,30 @@ describe("agent command contract", () => {
     );
   });
 
+  it("calculates one source digest regardless of durable input key insertion order", () => {
+    const source = {
+      kind: "tool-package" as const,
+      name: "project-report",
+      version: "1.2.3",
+      digest: "a".repeat(64),
+      toolName: "project_report",
+      inputDigest: "b".repeat(64),
+    };
+    const first = {
+      version: 1 as const,
+      executable: "/usr/bin/printf",
+      args: ["src", "12"],
+      timeoutMs: 10_000,
+      source: { ...source, input: { path: "src", limit: 12 } },
+    };
+    const reordered = {
+      ...first,
+      source: { ...source, input: { limit: 12, path: "src" } },
+    };
+
+    expect(calculateAgentCommandDigest(first)).toBe(calculateAgentCommandDigest(reordered));
+  });
+
   it.each([
     { label: "unknown source kind", mutate: { kind: "plugin" } },
     { label: "invalid package name", mutate: { name: "ProjectReport" } },

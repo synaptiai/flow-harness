@@ -80,7 +80,10 @@ The embedded Pi runtime runs with the invoking user's operating-system permissio
 - A `ToolPackage` is strict project-local `TOOL.yaml` data that contributes one declarative command
   tool through the existing agent-command boundary; it is not loaded as code. Selection binds an
   exact version and manifest digest to one agent, while model inputs may replace only complete argv
-  elements. Flow derives `process.execute` and retains the existing policy, optional live approval,
+  elements admitted as data by a closed Flow-owned driver profile. The initial registry accepts
+  only a non-evaluating `/usr/bin/printf` data profile and one exact hardened `/usr/bin/git` status profile; project
+  packages cannot add shells, interpreters, dispatchers, executable paths, subcommands, or profiles.
+  Flow derives `process.execute` and retains the existing policy, optional live approval,
   Linux PID-namespace containment, write-ahead command journal, output bounds, budgets, and replay
   checks. Discovery refuses symlinks, extra payloads, source races, duplicate or reserved names,
   unsupported authority, and malformed templates. Packages cannot add environment, credentials,

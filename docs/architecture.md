@@ -184,10 +184,20 @@ out-of-process authority and installation design.
 
 The command tool package catalog discovers `.flow/tools/**/TOOL.yaml` as inert project data. A
 package declares one exact SemVer identity, one provider-safe tool name, required scalar inputs, a
-fixed argv-only command template, and only the `process.execute` permission. Its directory may
+closed Flow-owned command-driver profile with an argv-only template, and only the
+`process.execute` permission. Its directory may
 contain no executable payload or extra resource. The no-follow scanner rejects symbolic links,
 special files, duplicate identities, source races, unknown fields, unsupported driver versions,
 partial input interpolation, and bounded-size overflow.
+
+Profiles are the admission boundary between data and code. The initial registry contains only
+`posix-printf-v1`, which binds `/usr/bin/printf` and whose fixed format may use `%%` and `%s` data
+conversions, and `git-status-v1`, which binds `/usr/bin/git` plus one exact hardened vector. Project
+packages cannot register executable identities or profiles, and shells, interpreters, dispatchers,
+alternate paths, and unsupported argument roles fail before tool registration. The system paths are
+part of Flow's host trust base; this is not binary signing or remote attestation. Profile definitions
+and the live agent-command byte/timeout envelope are checked while parsing the manifest, not deferred
+until the model calls the tool.
 
 Before admission, composition collects every root and child selection and adds the exact manifest
 bytes, parsed definition, trust/provenance metadata, and nested digests to the immutable capability
@@ -201,8 +211,8 @@ as one literal argv element. It then annotates the ordinary normalized agent-com
 package, tool, input, and digest provenance. The existing recorder remains the sole authority for
 policy, live approval, sandboxing, write-ahead prepare/settle events, cancellation, output bounds,
 and budget accounting. Replay independently rerenders the command from durable inputs and the
-snapshot, then reconciles the workflow selection, control graph, request, decision, approval, and
-settlement. Detached workers transport the snapshot unchanged, child ledgers bind only their
+snapshot, then reconciles the workflow selection, an independent raw-exec/package requirement, the
+control graph, request, decision, approval, and settlement. Detached workers transport the snapshot unchanged, child ledgers bind only their
 declared subset, and recovery never consults the live catalog.
 
 This is intentionally narrower than Pi or OMP in-process extensions and Prime-style Python skills.

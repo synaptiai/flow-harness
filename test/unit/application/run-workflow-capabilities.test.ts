@@ -190,7 +190,10 @@ describe("run workflow capability snapshots", () => {
       status: "succeeded",
       capabilitySnapshot: { digest: snapshot.digest },
       toolPackageRequirements: {
-        analyze: [{ name: "project-report", version: "1.2.3" }],
+        analyze: {
+          rawExec: false,
+          packages: [{ name: "project-report", version: "1.2.3" }],
+        },
       },
     });
   });
@@ -418,7 +421,8 @@ function toolPackage(name: string, version: string): ToolPackageSnapshotInput {
       driver: {
         kind: "command",
         version: "v1",
-        executable: "printf",
+        profile: "posix-printf-v1",
+        executable: "/usr/bin/printf",
         args: ["%s", "{input:subject}"],
         timeoutMs: 10_000,
       },
@@ -437,7 +441,8 @@ spec:
   driver:
     kind: command
     version: v1
-    executable: printf
+    profile: posix-printf-v1
+    executable: /usr/bin/printf
     args: ["%s", "{input:subject}"]
     timeoutMs: 10000
   permissions: [process.execute]

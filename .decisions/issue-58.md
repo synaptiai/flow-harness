@@ -146,8 +146,9 @@ spec:
   driver:
     kind: command
     version: v1
-    executable: git
-    args: [status, --short, "{input:includeUntracked}"]
+    profile: git-status-v1
+    executable: /usr/bin/git
+    args: [--no-optional-locks, -c, core.fsmonitor=false, -c, core.untrackedCache=false, status, --short, --untracked-files=normal, --ignore-submodules=all]
     timeoutMs: 10000
   permissions: [process.execute]
 ```
@@ -160,7 +161,7 @@ agent:
   toolPackages:
     - { name: git-status, version: 1.0.0 }
   toolApproval:
-    exec: { grantTtlMs: 300000 }
+    exec: { mode: required, grantTtlMs: 300000 }
 ```
 
 The first manifest version supports one tool and required scalar inputs only: bounded string,
@@ -190,6 +191,13 @@ provider-neutral. A call creates the existing normalized `AgentCommandRequest` p
   inputDigest: "<sha256>"
 }
 ```
+
+Driver `v1` selects one closed Flow-owned profile. The initial registry contains the non-evaluating
+`posix-printf-v1` data profile and exact hardened `git-status-v1`; they bind `/usr/bin/printf` and
+`/usr/bin/git`, so a workspace-controlled `PATH` cannot replace the executable. Project packages
+cannot register profiles or executable identities. Manifest admission applies the live agent-command byte, argv,
+and timeout envelope. This closes the review-discovered path where an interpreter plus a model input
+could recreate raw execution and where a package could validate but never produce a valid call.
 
 Direct `flow_exec` requests omit `source`; their historical digest calculation is unchanged. When
 source is present, the operation digest covers source and rendered command. Selection grants only
@@ -257,9 +265,9 @@ code, remote acquisition, and non-command contributions.
 | Criteria covered | Type | Verification command | Expected evidence | Does not promise |
 | --- | --- | --- | --- | --- |
 | Strict manifest, identity, digest, inspection | Contract/adversarial | `npx vitest run test/unit/capability/tool-packages.test.ts test/unit/capability/local-tool-packages.test.ts` | Exact valid snapshots pass; invalid, duplicate, unsafe, oversized, symlinked, drifted, reserved, and unsupported definitions reject without execution | Remote acquisition or signatures |
-| Exact workflow selection and unchanged defaults | Contract | `npx vitest run test/unit/workflow/tool-package-compiler.test.ts test/unit/capability/workflow-capabilities.test.ts` | Exact selections bind; unselected tools are absent; no-selection compilation stays compatible; collisions reject | Automatic package discovery on agents |
+| Exact workflow selection and unchanged defaults | Contract | `npx vitest run test/unit/workflow/tool-package-compiler.test.ts test/unit/capability/workflow-tool-packages.test.ts` | Exact selections bind; unselected tools are absent; no-selection compilation stays compatible; collisions reject | Automatic package discovery on agents |
 | Deterministic scalar input to literal argv | Domain/property | `npx vitest run test/unit/capability/tool-package-renderer.test.ts` | Valid scalar values render canonically; malformed, unknown, missing, excessive, unused, interpolated, and shell-like values cannot change argv structure | Shell, stdin, env, cwd, arrays, or nested input |
-| Existing policy/approval/sandbox/journal/budget path | Application/adversarial | `npx vitest run test/unit/application/agent-tool-packages.test.ts test/unit/application/agent-command-recorder.test.ts` | Package calls use the same recorder and preserve every direct-command control and cap | Correctness of external executables |
+| Existing policy/approval/sandbox/journal/budget path | Application/adversarial | `npx vitest run test/unit/infrastructure/pi/workspace-tool-packages.test.ts test/integration/pi/pi-agent-executor.test.ts` | A real Pi call plus focused adapter tests use the same recorder, required approval, and every direct-command control and cap | Correctness of external executables |
 | Durable requirements and replay reconciliation | Domain/adversarial | `npx vitest run test/unit/run/tool-package-reducer.test.ts` | Unselected, changed, early, reused, contradictory, forged-source/input/argv/digest, and outcome mismatches reject | Historical migration beyond the current v1 contract |
 | Attached/detached/child/recovery transport | Integration | `npx vitest run test/integration/cli/tool-packages.test.ts test/integration/supervisor/worker.test.ts -t "tool package"` | Exact immutable bytes cross every execution mode with no live-source fallback | Remote workers or host-reboot guarantees not already provided by Flow |
 | Metadata CLI and public credential-free example | Integration/docs | `npx vitest run test/integration/cli/tool-packages.test.ts test/scaffold/community-files.test.ts` | List/inspect/validate do not execute; example validates without model credentials | A credential-free live model call |

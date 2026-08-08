@@ -81,8 +81,8 @@ describe("workspace packaged command tools", () => {
     expect(events).toEqual(["prepare", "execute", "settle"]);
     expect(executedRequest).toEqual({
       version: 1,
-      executable: "reporter",
-      args: ["--fixed", "src; echo literal", "12", "false"],
+      executable: "/usr/bin/printf",
+      args: ["%s\n%s\n%s\n", "src; echo literal", "12", "false"],
       timeoutMs: 10_000,
       source: {
         kind: "tool-package",
@@ -98,7 +98,7 @@ describe("workspace packaged command tools", () => {
     expect(policy.snapshot()).toEqual([
       expect.objectContaining({
         action: "process.execute",
-        target: "reporter",
+        target: "/usr/bin/printf",
         operationDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
         outcome: "allowed",
       }),
@@ -186,8 +186,9 @@ spec:
   driver:
     kind: command
     version: v1
-    executable: reporter
-    args: [--fixed, "{input:path}", "{input:limit}", "{input:verbose}"]
+    profile: posix-printf-v1
+    executable: /usr/bin/printf
+    args: ["%s\\n%s\\n%s\\n", "{input:path}", "{input:limit}", "{input:verbose}"]
     timeoutMs: 10000
   permissions: [process.execute]
 `;

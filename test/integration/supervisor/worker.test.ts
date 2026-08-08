@@ -604,7 +604,7 @@ spec:
     const capabilitySnapshot = createCapabilitySnapshot(
       [],
       [],
-      [toolPackageInput("project-report", "1.2.3", "printf")],
+      [toolPackageInput("project-report", "1.2.3", "/usr/bin/printf")],
     );
     const job = createJobRecord({
       jobId: randomUUID(),
@@ -679,7 +679,7 @@ spec:
     });
     await expect(worker).resolves.toBe(0);
 
-    expect(observedExecutable).toBe("printf");
+    expect(observedExecutable).toBe("/usr/bin/printf");
     expect(observedExecutable).not.toBe("false");
     const events = await new JsonlRunStore(runsDirectory).read(job.runId);
     expect(events[0]).toMatchObject({
@@ -1874,6 +1874,7 @@ function toolPackageInput(
       driver: {
         kind: "command",
         version: "v1",
+        profile: "posix-printf-v1",
         executable,
         args: ["%s", "{input:subject}"],
         timeoutMs: 10_000,
@@ -1897,6 +1898,7 @@ spec:
   driver:
     kind: command
     version: v1
+    profile: posix-printf-v1
     executable: ${executable}
     args: ["%s", "{input:subject}"]
     timeoutMs: 10000

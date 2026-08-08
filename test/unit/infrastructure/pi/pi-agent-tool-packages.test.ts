@@ -11,8 +11,8 @@ import { compileWorkflowText } from "../../../../src/domain/workflow/compiler.js
 import type { CompiledAgentNode } from "../../../../src/domain/workflow/types.js";
 import {
   PiAgentExecutor,
-  type PiAgentRunRequest,
   type PiAgentRunner,
+  type PiAgentRunRequest,
 } from "../../../../src/infrastructure/pi/pi-agent-executor.js";
 
 describe("Pi agent tool package admission", () => {
@@ -24,7 +24,7 @@ describe("Pi agent tool package admission", () => {
         observed = request;
         const decision = request.policyBroker.authorize({
           action: "process.execute",
-          target: "reporter",
+          target: "/usr/bin/printf",
           boundary: "inside",
           operationDigest: "a".repeat(64),
         });
@@ -150,8 +150,9 @@ function toolPackage(version = "1.2.3"): ToolPackageSnapshotInput {
     driver: {
       kind: "command",
       version: "v1",
-      executable: "reporter",
-      args: ["{input:path}"],
+      profile: "posix-printf-v1",
+      executable: "/usr/bin/printf",
+      args: ["%s", "{input:path}"],
       timeoutMs: 10_000,
     },
     permissions: ["process.execute"],
@@ -177,8 +178,9 @@ spec:
   driver:
     kind: command
     version: v1
-    executable: reporter
-    args: ["{input:path}"]
+    profile: posix-printf-v1
+    executable: /usr/bin/printf
+    args: ["%s", "{input:path}"]
     timeoutMs: 10000
   permissions: [process.execute]
 `),

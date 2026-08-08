@@ -67,7 +67,7 @@ Gates 0–2 are implemented. Gate 3 has a model-tool policy broker, a full-SHA h
 - Agent Skills packages are discovered with progressive disclosure. *(Implemented for strict local project packages with explicit per-node selection, immutable attached/detached/child/recovery snapshots, and bounded `skill://` reads.)*
 - Package provenance, digest, license, permissions, compatibility, trust state, and observed use are recorded. *(Implemented with permission requests that cannot widen Flow authority.)*
 - Evaluator contributions use versioned manifests. *(Implemented for strict local command/model verifier packages with exact version selection, inert manifest-only directories, immutable attached/detached/child/recovery snapshots, and digest-bound verdict evidence.)*
-- Tool contributions use versioned manifests. *(Implemented for strict local declarative command tools with exact per-agent selection, typed scalar-to-literal-argv rendering, immutable attached/detached/child/recovery snapshots, and reuse of the existing policy/approval/sandbox/journal boundary. Executable code and remote acquisition remain deferred.)*
+- Tool contributions use versioned manifests. *(Implemented for strict local declarative command tools with exact per-agent selection, closed Flow-owned data-position command profiles, typed scalar-to-literal-argv rendering, immutable attached/detached/child/recovery snapshots, independently reconciled raw-exec authority, and reuse of the existing policy/approval/sandbox/journal boundary. Executable code and remote acquisition remain deferred.)*
 - Workflow, policy, and UI contributions use versioned manifests.
 - OMP-inspired high-value tools are benchmarked before adoption.
 

@@ -65,8 +65,8 @@ import {
   type RunResumedEvent,
   type RunStartedEvent,
   type RunState,
-  type ToolPackageRequirement,
   reduceRunEvents,
+  type ToolPackageRequirement,
   type VerifierPackageRequirement,
 } from "../domain/run/events.js";
 import {
@@ -1576,7 +1576,7 @@ function validateRecoveryCompatibility(
 
   const expectedToolPackageRequirements = workflowToolPackageRequirements(workflow);
   const recoveredToolPackageRequirements = Object.entries(state.toolPackageRequirements).map(
-    ([nodeId, packages]) => ({ nodeId, packages }),
+    ([nodeId, requirement]) => ({ nodeId, ...requirement }),
   );
   if (
     !sameToolPackageRequirements(recoveredToolPackageRequirements, expectedToolPackageRequirements)
@@ -2141,6 +2141,7 @@ function workflowToolPackageRequirements(
         ? [
             Object.freeze({
               nodeId: node.id,
+              rawExec: node.agent.tools.includes("exec"),
               packages: Object.freeze(
                 node.agent.toolPackages.map((item) => Object.freeze({ ...item })),
               ),
@@ -2234,6 +2235,7 @@ function sameToolPackageRequirements(
     left.every(
       (requirement, index) =>
         requirement.nodeId === right[index]?.nodeId &&
+        requirement.rawExec === right[index]?.rawExec &&
         requirement.packages.length === right[index]?.packages.length &&
         requirement.packages.every(
           (item, packageIndex) =>

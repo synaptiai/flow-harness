@@ -27,7 +27,12 @@ describe("tool package contract", () => {
             { name: "verbose", type: "boolean" },
           ],
         },
-        driver: { kind: "command", version: "v1", executable: "reporter" },
+        driver: {
+          kind: "command",
+          version: "v1",
+          profile: "posix-printf-v1",
+          executable: "/usr/bin/printf",
+        },
         permissions: ["process.execute"],
       },
     });
@@ -74,10 +79,80 @@ describe("tool package contract", () => {
     },
     {
       label: "unused input",
-      mutate: (source: string) => source.replace('    - "{input:verbose}"\n', ""),
+      mutate: (source: string) => source.replace(', "{input:verbose}"', ""),
+    },
+    {
+      label: "shell interpreter",
+      mutate: (source: string) =>
+        source
+          .replace("executable: /usr/bin/printf", "executable: sh")
+          .replace(
+            '    args: ["%s\\\\n%s\\\\n%s\\\\n%s\\\\n", "{input:path}", "{input:format}", "{input:limit}", "{input:verbose}"]',
+            '    args: [-c, "{input:path}", "{input:format}", "{input:limit}", "{input:verbose}"]',
+          ),
+    },
+    {
+      label: "workspace executable path",
+      mutate: (source: string) =>
+        source.replace("executable: /usr/bin/printf", "executable: ./printf"),
     },
   ])("rejects an unsafe or ambiguous manifest: $label", ({ mutate }) => {
     expect(() => parseToolPackageManifest(Buffer.from(mutate(manifest())))).toThrow();
+  });
+
+  it("rejects command definitions outside the live agent-command envelope", () => {
+    expect(() =>
+      parseToolPackageManifest(
+        Buffer.from(manifest().replace("timeoutMs: 10000", "timeoutMs: 600001")),
+      ),
+    ).toThrow(/timeout/i);
+    expect(() =>
+      parseToolPackageManifest(
+        Buffer.from(
+          manifest().replace("executable: /usr/bin/printf", `executable: ${"x".repeat(1_025)}`),
+        ),
+      ),
+    ).toThrow(/executable/i);
+  });
+
+  it.each(["printf", "sh", "bash", "node", "python", "env", "/bin/printf", "./printf"])(
+    "rejects unregistered executable identity %s",
+    (executable) => {
+      expect(() =>
+        parseToolPackageManifest(
+          Buffer.from(
+            manifest().replace("executable: /usr/bin/printf", `executable: ${executable}`),
+          ),
+        ),
+      ).toThrow(/profile.*requires executable/i);
+    },
+  );
+
+  it.each([
+    {
+      label: "escape-interpreting conversion",
+      value:
+        'args: ["%b%s%s%s", "{input:path}", "{input:format}", "{input:limit}", "{input:verbose}"]',
+    },
+    {
+      label: "model-controlled format",
+      value:
+        'args: ["{input:path}", "literal", "{input:format}", "{input:limit}", "{input:verbose}"]',
+    },
+  ])("rejects an unsafe printf argument role: $label", ({ value }) => {
+    const source = manifest().replace(/^ {4}args: .*$/m, `    ${value}`);
+    expect(() => parseToolPackageManifest(Buffer.from(source))).toThrow(/posix-printf-v1/i);
+  });
+
+  it("accepts only the exact hardened Git-status vector", () => {
+    const source = gitStatusManifest();
+
+    expect(parseToolPackageManifest(Buffer.from(source)).spec.driver.profile).toBe("git-status-v1");
+    expect(() =>
+      parseToolPackageManifest(
+        Buffer.from(source.replace("--short", "--short\\n      - --branch")),
+      ),
+    ).toThrow(/exact hardened status/i);
   });
 
   it("rejects forged snapshot bytes, definitions, provenance, and package digests", () => {
@@ -99,7 +174,7 @@ describe("tool package contract", () => {
           driver: { ...snapshot.definition.driver, executable: "other" },
         },
       }),
-    ).toThrow(/manifest disagrees/i);
+    ).toThrow(/profile|manifest disagrees/i);
     expect(() =>
       validateToolPackageSnapshot({ ...snapshot, provenance: ".flow/tools/other" }),
     ).toThrow(/provenance/i);
@@ -169,12 +244,35 @@ spec:
   driver:
     kind: command
     version: v1
-    executable: reporter
+    profile: posix-printf-v1
+    executable: /usr/bin/printf
+    args: ["%s\\n%s\\n%s\\n%s\\n", "{input:path}", "{input:format}", "{input:limit}", "{input:verbose}"]
+    timeoutMs: 10000
+  permissions: [process.execute]
+`;
+}
+
+function gitStatusManifest(): string {
+  return `apiVersion: flow.synapti.ai/v1alpha1
+kind: ToolPackage
+metadata: { name: git-status, version: 1.0.0, description: Read hardened Git status. }
+spec:
+  tool: { name: project_git_status, description: Read hardened Git status., inputs: [] }
+  driver:
+    kind: command
+    version: v1
+    profile: git-status-v1
+    executable: /usr/bin/git
     args:
-      - "{input:path}"
-      - "{input:format}"
-      - "{input:limit}"
-      - "{input:verbose}"
+      - --no-optional-locks
+      - -c
+      - core.fsmonitor=false
+      - -c
+      - core.untrackedCache=false
+      - status
+      - --short
+      - --untracked-files=normal
+      - --ignore-submodules=all
     timeoutMs: 10000
   permissions: [process.execute]
 `;

@@ -57,7 +57,7 @@ describe("tool package CLI", () => {
           version: "1.2.3",
           toolName: "create_project_report",
           permissions: ["process.execute"],
-          driver: { kind: "command", version: "v1" },
+          driver: { kind: "command", version: "v1", profile: "posix-printf-v1" },
         },
       ],
     });
@@ -68,7 +68,11 @@ describe("tool package CLI", () => {
       digest: expect.stringMatching(/^[a-f0-9]{64}$/),
       definition: {
         tool: { name: "create_project_report" },
-        driver: { kind: "command", executable: "printf", args: ["%s", "{input:subject}"] },
+        driver: {
+          kind: "command",
+          executable: "/usr/bin/printf",
+          args: ["%s", "{input:subject}"],
+        },
       },
       manifest: { bytes: expect.any(Number), sha256: expect.stringMatching(/^[a-f0-9]{64}$/) },
     });
@@ -200,7 +204,8 @@ spec:
   driver:
     kind: command
     version: v1
-    executable: printf
+    profile: posix-printf-v1
+    executable: /usr/bin/printf
     args: ["%s", "{input:subject}"]
     timeoutMs: 10000
   permissions: [process.execute]

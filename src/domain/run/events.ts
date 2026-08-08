@@ -957,6 +957,7 @@ export interface VerifierPackageRequirement {
 
 export interface ToolPackageRequirement {
   readonly nodeId: string;
+  readonly rawExec: boolean;
   readonly packages: readonly {
     readonly name: string;
     readonly version: string;
@@ -1367,7 +1368,13 @@ export interface RunState {
     Record<string, Omit<VerifierPackageRequirement, "nodeId">>
   >;
   readonly toolPackageRequirements: Readonly<
-    Record<string, readonly { readonly name: string; readonly version: string }[]>
+    Record<
+      string,
+      {
+        readonly rawExec: boolean;
+        readonly packages: readonly { readonly name: string; readonly version: string }[];
+      }
+    >
   >;
   readonly executionCwd: string | null;
   readonly executionWorkspace: ExecutionWorkspaceProvenance | null;
@@ -2441,6 +2448,7 @@ export const runEventSchema = z.discriminatedUnion("type", [
           z
             .object({
               nodeId: identifierSchema,
+              rawExec: z.boolean(),
               packages: z
                 .array(
                   z
@@ -3474,6 +3482,7 @@ export function appendRunEvent(
       );
       if (
         controlNode?.commandTools === undefined ||
+        controlNode.commandTools.rawExec !== requirement.rawExec ||
         JSON.stringify(controlNode.commandTools.packages) !== JSON.stringify(requirement.packages)
       ) {
         throw new RunReplayError(
@@ -3508,7 +3517,10 @@ export function appendRunEvent(
     const toolPackageRequirementsByNode = Object.fromEntries(
       toolPackageRequirements.map((requirement) => [
         requirement.nodeId,
-        Object.freeze(requirement.packages.map((item) => Object.freeze({ ...item }))),
+        Object.freeze({
+          rawExec: requirement.rawExec,
+          packages: Object.freeze(requirement.packages.map((item) => Object.freeze({ ...item }))),
+        }),
       ]),
     );
     const concurrency = Object.freeze({ maxNodes: event.concurrency?.maxNodes ?? 1 });
@@ -8551,12 +8563,11 @@ function validateToolPackageCommandRequest(
   request: AgentCommandRequest,
   eventIndex: number,
 ): void {
-  const requirements = state.toolPackageRequirements[nodeId] ?? [];
-  const controlNode = state.controlGraph?.nodes.find((node) => node.nodeId === nodeId);
-  const commandTools = controlNode?.type === "agent" ? controlNode.commandTools : undefined;
+  const requirement = state.toolPackageRequirements[nodeId];
+  const requirements = requirement?.packages ?? [];
   const source = request.source;
   if (source === undefined) {
-    if (requirements.length > 0 && commandTools?.rawExec !== true) {
+    if (requirements.length > 0 && requirement?.rawExec !== true) {
       throw new RunReplayError(
         eventIndex,
         `package-only agent node "${nodeId}" cannot prepare a source-free command`,

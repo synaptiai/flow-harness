@@ -591,9 +591,10 @@ An agent may require one exact human decision for each model-requested command:
 ```
 
 `toolApproval` is optional, closed, and currently accepts only an `exec` rule with
-`mode: required`. Declaring it without selecting the `exec` tool is invalid. `grantTtlMs` defaults
-to 300000 and accepts 1 through 86400000 milliseconds. The compiled configuration is frozen and
-included in the workflow digest; `run_started` persists the corresponding per-node requirement.
+`mode: required`. Declaring it without selecting raw `exec` or at least one command tool package is
+invalid. `grantTtlMs` defaults to 300000 and accepts 1 through 86400000 milliseconds. The compiled
+configuration is frozen and included in the workflow digest; `run_started` persists the
+corresponding per-node requirement.
 
 After the Flow policy broker allows a normalized `flow_exec` request, the application appends
 `agent_command_approval_requested` before command preparation, sandbox setup, or process spawn. The
@@ -824,7 +825,7 @@ metadata:
   version: 1.2.3
   description: Produce a bounded project report.
   license: Apache-2.0
-  compatibility: Requires the reporter executable.
+  compatibility: Requires POSIX printf in the execution environment.
 spec:
   tool:
     name: create_project_report
@@ -837,12 +838,9 @@ spec:
   driver:
     kind: command
     version: v1
-    executable: reporter
-    args:
-      - "{input:path}"
-      - "{input:format}"
-      - "{input:limit}"
-      - "{input:verbose}"
+    profile: posix-printf-v1
+    executable: /usr/bin/printf
+    args: ["path=%s format=%s limit=%s verbose=%s\\n", "{input:path}", "{input:format}", "{input:limit}", "{input:verbose}"]
     timeoutMs: 10000
   permissions: [process.execute]
 ```
@@ -852,15 +850,23 @@ names are unique; supported types are bounded strings, safe integers, booleans, 
 enums. Every declared input must occur in at least one exact whole-argument
 `{input:<name>}` placeholder. Partial interpolation and undeclared or unused inputs are rejected.
 String and enum values remain literal, integers render as canonical base-10 text, and booleans
-render as `true` or `false`. No shell parses the rendered vector.
+render as `true` or `false`. No shell or language runtime parses the rendered vector.
 
 The only driver is `{kind: command, version: v1}` and the only permission is
-`process.execute`. The manifest cannot declare code, environment variables, credentials, cwd,
-stdin, PTY, background execution, network, hooks, providers, middleware, or graph behavior.
-Manifest values have portable package bounds; every concrete rendered call must additionally pass
-the current agent-command envelope, including its 10-minute deadline, 1 KiB executable, 64 argv
-elements, 8 KiB per element, and 32 KiB aggregate argv. Call-bound failures occur before policy or
-spawn.
+`process.execute`. Every driver selects a closed Flow-owned profile; project manifests cannot add
+profiles. `posix-printf-v1` requires the host-controlled `/usr/bin/printf` executable, a fixed
+non-option format using only `%%` and one `%s` per following data argument, and permits placeholders
+only in those data arguments. `git-status-v1` requires `/usr/bin/git` plus the exact hardened vector
+used by the public example: optional locks, fsmonitor, untracked cache, and submodule inspection are
+disabled. Shells, language
+runtimes, environment dispatchers, executable paths, arbitrary subcommands, and evaluator flags
+therefore cannot validate as command tools.
+
+The manifest cannot declare code, environment variables, credentials, cwd, stdin, PTY, background
+execution, network, hooks, providers, middleware, or graph behavior. Admission applies the active
+agent-command envelope directly: a 10-minute deadline, 1 KiB executable, 64 argv elements, 8 KiB
+per element, and 32 KiB aggregate argv. A package outside that envelope fails `validate`, snapshot,
+and registration before a model or process starts.
 
 Discovery is bounded to 32 packages, depth 6, and 2,000 entries. Each manifest is at most 64 KiB.
 Unknown or duplicate fields, YAML aliases, malformed versions, reserved names, symbolic links,
@@ -872,9 +878,10 @@ driver.
 
 Admission collects all root and child selections and adds exact manifest bytes, parsed definition,
 trust/provenance metadata, and nested digests to the immutable capability snapshot. `run_started`
-records per-agent requirements, and its control graph records whether raw `exec` plus which package
-tools were available. Detached jobs carry the same bytes, children bind only their declared subset,
-and resume accepts only the durable snapshot. There is no live-source fallback.
+records per-agent requirements, including independent raw-`exec` eligibility, and its control graph
+separately projects whether raw `exec` plus which package tools were available. Replay reconciles
+the two records. Detached jobs carry the same bytes, children bind only their declared subset, and
+resume accepts only the durable snapshot. There is no live-source fallback.
 
 At model-session construction, the adapter creates definitions only for the selected packages. A
 call validates a plain closed input object, calculates a typed input digest, renders literal argv,

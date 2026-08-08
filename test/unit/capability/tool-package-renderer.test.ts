@@ -22,8 +22,8 @@ describe("tool package command renderer", () => {
 
     expect(rendered.request).toEqual({
       version: 1,
-      executable: "reporter",
-      args: ["--fixed", "src; echo not-a-shell | ignored", "json", "12", "false"],
+      executable: "/usr/bin/printf",
+      args: ["%s\n%s\n%s\n%s\n", "src; echo not-a-shell | ignored", "json", "12", "false"],
       timeoutMs: 10_000,
     });
     expect(rendered.input).toEqual({
@@ -94,21 +94,6 @@ describe("tool package command renderer", () => {
   ])("rejects malformed model input: $label", ({ input }) => {
     expect(() => renderToolPackageCommand(packageSnapshot(), input)).toThrow();
   });
-
-  it("applies the existing agent-command bounds after rendering", () => {
-    const snapshot = packageSnapshot(
-      manifest().replace("executable: reporter", `executable: ${"x".repeat(1_025)}`),
-    );
-
-    expect(() =>
-      renderToolPackageCommand(snapshot, {
-        path: "src",
-        format: "json",
-        limit: 1,
-        verbose: true,
-      }),
-    ).toThrow(/executable.*1024/i);
-  });
 });
 
 function packageSnapshot(source = manifest()): ToolPackageSnapshot {
@@ -154,13 +139,9 @@ spec:
   driver:
     kind: command
     version: v1
-    executable: reporter
-    args:
-      - --fixed
-      - "{input:path}"
-      - "{input:format}"
-      - "{input:limit}"
-      - "{input:verbose}"
+    profile: posix-printf-v1
+    executable: /usr/bin/printf
+    args: ["%s\\n%s\\n%s\\n%s\\n", "{input:path}", "{input:format}", "{input:limit}", "{input:verbose}"]
     timeoutMs: 10000
   permissions: [process.execute]
 `;

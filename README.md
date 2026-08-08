@@ -203,8 +203,12 @@ node dist/cli/main.js run examples/versioned-command-tool.workflow.yaml --run-id
 node dist/cli/main.js inspect tool-demo
 ```
 
-The v1 package contributes one model-visible tool, required bounded scalar inputs, one fixed
-executable, and literal argv with exact whole-argument input placeholders. There is no shell,
+The v1 package contributes one model-visible tool, required bounded scalar inputs, one closed
+Flow-owned command profile, and literal argv with exact whole-argument input placeholders. The
+public example uses the exact hardened `git-status-v1` profile; `posix-printf-v1` is the initial
+typed data-output profile. They bind `/usr/bin/git` and `/usr/bin/printf` respectively, preventing
+workspace-controlled `PATH` substitution. Project manifests cannot register profiles or executable identities.
+There is no shell,
 package code, hook, environment, credential, working-directory override, stdin, PTY, background
 process, or network grant. Flow snapshots exact manifest bytes before admission, presents only
 packages explicitly selected by that agent, renders typed inputs deterministically, and sends the

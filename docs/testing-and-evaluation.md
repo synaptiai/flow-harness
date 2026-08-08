@@ -113,8 +113,12 @@ model or command. Focused tests prove strict manifest and scalar-input contracts
 rendering, no-follow discovery and drift refusal, exact workflow binding and name-collision checks,
 Pi custom-tool translation, shared call caps, policy/approval/sandbox/journal reuse, durable sourced
 request reconciliation, metadata-only CLI behavior, attached execution, detached live-source drift
-immunity, child subset binding, and recovery from the durable snapshot alone. These tests do not
-claim remote acquisition, executable package-code containment, command correctness, provider
+immunity, child subset binding, and recovery from the durable snapshot alone. A real in-process Pi
+session also discovers a local package, calls it from a package-only agent, obtains required live
+approval, settles the command, publishes a typed result, and replays the ledger. Adversarial tests
+reject interpreter/dispatcher/path identities, unsafe profile argument roles, runtime-envelope
+overflow, reordered input-digest ambiguity, and forged raw-exec authority. These tests do not claim
+remote acquisition, arbitrary executable package-code containment, command correctness, provider
 correctness, macOS agent-command support, or hostile-workload isolation.
 
 Validating `examples/agent-command-approval.workflow.yaml` is credential-free. Running it requires

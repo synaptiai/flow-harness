@@ -6,14 +6,25 @@ import {
   toolPackageNameSchema,
   toolPackageVersionSchema,
 } from "./capability/tool-packages.js";
+import {
+  DEFAULT_AGENT_COMMAND_TIMEOUT_MS,
+  MAX_AGENT_COMMAND_ARG_BYTES,
+  MAX_AGENT_COMMAND_ARGS,
+  MAX_AGENT_COMMAND_ARGS_BYTES,
+  MAX_AGENT_COMMAND_EXECUTABLE_BYTES,
+  MAX_AGENT_COMMAND_TIMEOUT_MS,
+} from "./command-envelope.js";
+
+export {
+  DEFAULT_AGENT_COMMAND_TIMEOUT_MS,
+  MAX_AGENT_COMMAND_ARG_BYTES,
+  MAX_AGENT_COMMAND_ARGS,
+  MAX_AGENT_COMMAND_ARGS_BYTES,
+  MAX_AGENT_COMMAND_EXECUTABLE_BYTES,
+  MAX_AGENT_COMMAND_TIMEOUT_MS,
+} from "./command-envelope.js";
 
 export const AGENT_COMMAND_PROTOCOL = "flow.agent-commands/v1" as const;
-export const DEFAULT_AGENT_COMMAND_TIMEOUT_MS = 120_000;
-export const MAX_AGENT_COMMAND_TIMEOUT_MS = 600_000;
-export const MAX_AGENT_COMMAND_EXECUTABLE_BYTES = 1_024;
-export const MAX_AGENT_COMMAND_ARGS = 64;
-export const MAX_AGENT_COMMAND_ARG_BYTES = 8_192;
-export const MAX_AGENT_COMMAND_ARGS_BYTES = 32_768;
 
 const boundedCommandString = (label: string, maxBytes: number) =>
   z
@@ -146,7 +157,11 @@ export function calculateAgentCommandDigest(command: AgentCommandRequest): strin
             version: command.source.version,
             digest: command.source.digest,
             toolName: command.source.toolName,
-            input: command.source.input,
+            input: Object.fromEntries(
+              Object.entries(command.source.input).sort(([left], [right]) =>
+                compareStrings(left, right),
+              ),
+            ),
             inputDigest: command.source.inputDigest,
           },
         }),

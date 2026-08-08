@@ -207,8 +207,9 @@ function toolPackage(name: string, version: string, toolName: string): ToolPacka
     driver: {
       kind: "command",
       version: "v1",
-      executable: "reporter",
-      args: ["{input:path}"],
+      profile: "posix-printf-v1",
+      executable: "/usr/bin/printf",
+      args: ["%s", "{input:path}"],
       timeoutMs: 10_000,
     },
     permissions: ["process.execute"],
@@ -234,8 +235,9 @@ spec:
   driver:
     kind: command
     version: v1
-    executable: reporter
-    args: ["{input:path}"]
+    profile: posix-printf-v1
+    executable: /usr/bin/printf
+    args: ["%s", "{input:path}"]
     timeoutMs: 10000
   permissions: [process.execute]
 `),

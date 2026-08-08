@@ -50,17 +50,21 @@ describe("local tool package catalog", () => {
     });
   });
 
-  it("does not execute package content while discovering, snapshotting, or inspecting it", async () => {
+  it("rejects an unregistered executable without executing it", async () => {
     const project = await temporaryProject();
     const marker = join(project, "executed");
     await writeManifest(
       project,
       "project-report",
-      manifest("project-report", "1.2.3").replace("executable: reporter", `executable: ${marker}`),
+      manifest("project-report", "1.2.3").replace(
+        "executable: /usr/bin/printf",
+        `executable: ${marker}`,
+      ),
     );
 
-    const catalog = await discoverProjectToolPackages(project);
-    await snapshotSelectedToolPackages(catalog, [{ name: "project-report", version: "1.2.3" }]);
+    await expect(discoverProjectToolPackages(project)).rejects.toMatchObject({
+      code: "invalid_package",
+    });
 
     await expect(realpath(marker)).rejects.toMatchObject({ code: "ENOENT" });
   });
@@ -142,7 +146,7 @@ metadata:
   version: ${version}
   description: Produce a bounded project report.
   license: Apache-2.0
-  compatibility: Requires reporter on PATH.
+  compatibility: Requires printf on PATH.
 spec:
   tool:
     name: project_report
@@ -154,8 +158,9 @@ spec:
   driver:
     kind: command
     version: v1
-    executable: reporter
-    args: ["{input:path}"]
+    profile: posix-printf-v1
+    executable: /usr/bin/printf
+    args: ["%s", "{input:path}"]
     timeoutMs: 10000
   permissions: [process.execute]
 `;

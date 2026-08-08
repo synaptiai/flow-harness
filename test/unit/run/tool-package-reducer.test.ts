@@ -11,9 +11,9 @@ import type {
 } from "../../../src/application/ports.js";
 import { runWorkflow } from "../../../src/application/run-workflow.js";
 import {
+  type AgentCommandRequest,
   calculateAgentCommandDigest,
   normalizeAgentCommandRequest,
-  type AgentCommandRequest,
 } from "../../../src/domain/agent-command.js";
 import { createCapabilitySnapshot } from "../../../src/domain/capability/agent-skills.js";
 import { renderToolPackageCommand } from "../../../src/domain/capability/tool-package-renderer.js";
@@ -40,6 +40,7 @@ describe("tool package run history", () => {
     expect(started.toolPackageRequirements).toEqual([
       {
         nodeId: "agent",
+        rawExec: false,
         packages: [{ name: "project-report", version: "1.2.3" }],
       },
     ]);
@@ -52,7 +53,10 @@ describe("tool package run history", () => {
     });
     const state = reduceRunEvents(events);
     expect(state.toolPackageRequirements).toEqual({
-      agent: [{ name: "project-report", version: "1.2.3" }],
+      agent: {
+        rawExec: false,
+        packages: [{ name: "project-report", version: "1.2.3" }],
+      },
     });
     expect(state.status).toBe("succeeded");
   });
@@ -75,6 +79,7 @@ describe("tool package run history", () => {
           toolPackageRequirements: [
             {
               nodeId: "agent",
+              rawExec: false,
               packages: [{ name: "project-report", version: "1.2.4" }],
             },
           ],
@@ -151,6 +156,35 @@ describe("tool package run history", () => {
     replacePreparedRequest(events, mutate(requirePrepared(events).request));
 
     expect(() => reduceRunEvents(events)).toThrow(/tool package|source|input|command|selected/i);
+  });
+
+  it("rejects forged raw-exec authority combined with stripped package provenance", async () => {
+    const events = await packageEvents();
+    const started = requireStarted(events);
+    if (started.controlGraph === undefined) {
+      throw new Error("control graph fixture is missing");
+    }
+    events[0] = {
+      ...started,
+      controlGraph: {
+        nodes: started.controlGraph.nodes.map((node) =>
+          node.type === "agent" && node.nodeId === "agent" && node.commandTools !== undefined
+            ? { ...node, commandTools: { ...node.commandTools, rawExec: true } }
+            : node,
+        ),
+      },
+    };
+    const request = requirePrepared(events).request;
+    replacePreparedRequest(
+      events,
+      normalizeAgentCommandRequest({
+        executable: request.executable,
+        args: request.args,
+        timeoutMs: request.timeoutMs,
+      }),
+    );
+
+    expect(() => reduceRunEvents(events)).toThrow(/raw exec|tool package|control graph/i);
   });
 });
 
@@ -356,8 +390,9 @@ function packageInput(): ToolPackageSnapshotInput {
     driver: {
       kind: "command",
       version: "v1",
-      executable: "reporter",
-      args: ["{input:path}"],
+      profile: "posix-printf-v1",
+      executable: "/usr/bin/printf",
+      args: ["%s", "{input:path}"],
       timeoutMs: 10_000,
     },
     permissions: ["process.execute"],
@@ -383,8 +418,9 @@ spec:
   driver:
     kind: command
     version: v1
-    executable: reporter
-    args: ["{input:path}"]
+    profile: posix-printf-v1
+    executable: /usr/bin/printf
+    args: ["%s", "{input:path}"]
     timeoutMs: 10000
   permissions: [process.execute]
 `),

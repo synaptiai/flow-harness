@@ -580,7 +580,23 @@ describe("public repository contracts", () => {
       metadata: { name: "git-status", version: "1.0.0" },
       spec: {
         tool: { name: "project_git_status", inputs: [] },
-        driver: { kind: "command", version: "v1", executable: "git", args: ["status", "--short"] },
+        driver: {
+          kind: "command",
+          version: "v1",
+          profile: "git-status-v1",
+          executable: "/usr/bin/git",
+          args: [
+            "--no-optional-locks",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.untrackedCache=false",
+            "status",
+            "--short",
+            "--untracked-files=normal",
+            "--ignore-submodules=all",
+          ],
+        },
         permissions: ["process.execute"],
       },
     });

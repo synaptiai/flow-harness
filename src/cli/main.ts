@@ -485,6 +485,7 @@ async function toolsCommand(
               driver: {
                 kind: definition.driver.kind,
                 version: definition.driver.version,
+                profile: definition.driver.profile,
               },
               manifestSha256,
             }),

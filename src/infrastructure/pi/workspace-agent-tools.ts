@@ -7,7 +7,7 @@ import {
   type ReadOperations,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { Type, type TSchema } from "typebox";
+import { type TSchema, Type } from "typebox";
 import {
   calculateAgentCommandDigest,
   MAX_AGENT_COMMAND_ARG_BYTES,

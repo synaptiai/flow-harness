@@ -1,10 +1,10 @@
 import { z } from "zod";
 import { agentSkillNameSchema, MAX_AGENT_SKILL_PACKAGES } from "../capability/agent-skills.js";
+import { toolPackageNameSchema, toolPackageVersionSchema } from "../capability/tool-packages.js";
 import {
   verifierPackageNameSchema,
   verifierPackageVersionSchema,
 } from "../capability/verifier-packages.js";
-import { toolPackageNameSchema, toolPackageVersionSchema } from "../capability/tool-packages.js";
 import { goalContractSchema } from "../goal/schema.js";
 import {
   type CompiledResultSchema,

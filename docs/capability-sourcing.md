@@ -208,9 +208,12 @@ drivers; arbitrary evaluator code and reward environments remain out of scope.
 
 **Implemented for strict local declarative command tools.** Flow discovers `TOOL.yaml` below
 `.flow/tools`, validates one exact SemVer identity and one closed scalar model-tool contract, and
-snapshots the exact manifest only when a workflow selects its name and version. The v1 driver is a
-fixed executable plus literal argv template; inputs may occupy only complete argv elements, so
-model values cannot introduce shell structure.
+snapshots the exact manifest only when a workflow selects its name and version. The v1 driver must
+select a closed Flow-owned command profile. The initial `posix-printf-v1` and exact hardened
+`git-status-v1` profiles bind `/usr/bin/printf` or `/usr/bin/git` plus data-only argument positions;
+project packages cannot add shells, interpreters, dispatchers, alternate paths, or profiles. Inputs may
+occupy only complete profile-approved data elements, so model values cannot become code or shell
+structure.
 
 Flow reuses Pi's typed custom-tool seam but not its extension or package loader. It likewise does
 not import OMP's mutable hook/middleware surface or Prime Agent's shared Python kernel. The selected
@@ -221,8 +224,9 @@ and provider-neutral.
 
 Package metadata, exact manifest bytes, definition, requested permission, provenance, trust state,
 version, and digest share the immutable capability snapshot with skills and verifiers. Each agent
-has an exact compiled selection; `run_started` records that requirement and the control graph
-records whether raw `exec` and which packages were available. Detached jobs carry the bytes
+has an exact compiled selection; `run_started` records that requirement with raw-`exec` eligibility,
+and the control graph independently records whether raw `exec` and which packages were available.
+Replay reconciles both. Detached jobs carry the bytes
 unchanged, children bind only their own subset, and recovery refuses live-source substitution.
 Sourced command events also record the exact tool name, typed input and digest, rendered argv, and
 package identity so replay can derive rather than trust what should have executed.

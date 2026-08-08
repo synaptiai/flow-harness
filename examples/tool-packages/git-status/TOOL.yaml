@@ -14,7 +14,17 @@ spec:
   driver:
     kind: command
     version: v1
-    executable: git
-    args: [status, --short]
+    profile: git-status-v1
+    executable: /usr/bin/git
+    args:
+      - --no-optional-locks
+      - -c
+      - core.fsmonitor=false
+      - -c
+      - core.untrackedCache=false
+      - status
+      - --short
+      - --untracked-files=normal
+      - --ignore-submodules=all
     timeoutMs: 10000
   permissions: [process.execute]

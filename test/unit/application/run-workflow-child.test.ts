@@ -252,7 +252,10 @@ describe("child workflow execution", () => {
       status: "succeeded",
       capabilitySnapshot: { digest: snapshot.digest },
       toolPackageRequirements: {
-        inspect: [{ name: "project-report", version: "1.2.3" }],
+        inspect: {
+          rawExec: false,
+          packages: [{ name: "project-report", version: "1.2.3" }],
+        },
       },
     });
   });
@@ -1398,7 +1401,8 @@ function toolPackageInput(name: string, version: string): ToolPackageSnapshotInp
     driver: {
       kind: "command",
       version: "v1",
-      executable: "printf",
+      profile: "posix-printf-v1",
+      executable: "/usr/bin/printf",
       args: ["%s", "{input:subject}"],
       timeoutMs: 10_000,
     },
@@ -1426,7 +1430,8 @@ spec:
   driver:
     kind: command
     version: v1
-    executable: printf
+    profile: posix-printf-v1
+    executable: /usr/bin/printf
     args: ["%s", "{input:subject}"]
     timeoutMs: 10000
   permissions: [process.execute]

@@ -1,15 +1,6 @@
 import { createHash } from "node:crypto";
 
 import { z } from "zod";
-
-import {
-  createVerifierPackageSnapshot,
-  type VerifierPackageSnapshot,
-  type VerifierPackageSnapshotInput,
-  validateVerifierPackageSnapshot,
-  verifierPackageIdentityKey,
-  verifierPackageSnapshotSchema,
-} from "./verifier-packages.js";
 import {
   createToolPackageSnapshot,
   type ToolPackageSnapshot,
@@ -18,6 +9,14 @@ import {
   toolPackageSnapshotSchema,
   validateToolPackageSnapshot,
 } from "./tool-packages.js";
+import {
+  createVerifierPackageSnapshot,
+  type VerifierPackageSnapshot,
+  type VerifierPackageSnapshotInput,
+  validateVerifierPackageSnapshot,
+  verifierPackageIdentityKey,
+  verifierPackageSnapshotSchema,
+} from "./verifier-packages.js";
 
 export const MAX_AGENT_SKILL_PACKAGES = 32;
 export const MAX_AGENT_SKILL_FILES = 128;

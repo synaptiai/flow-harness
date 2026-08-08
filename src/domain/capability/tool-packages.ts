@@ -2,9 +2,17 @@ import { createHash } from "node:crypto";
 
 import { parseDocument } from "yaml";
 import { z } from "zod";
+import {
+  MAX_AGENT_COMMAND_ARG_BYTES,
+  MAX_AGENT_COMMAND_ARGS,
+  MAX_AGENT_COMMAND_ARGS_BYTES,
+  MAX_AGENT_COMMAND_EXECUTABLE_BYTES,
+  MAX_AGENT_COMMAND_TIMEOUT_MS,
+} from "../command-envelope.js";
 
 export const TOOL_PACKAGE_API_VERSION = "flow.synapti.ai/v1alpha1" as const;
 export const TOOL_PACKAGE_DRIVER_VERSION = "v1" as const;
+export const TOOL_PACKAGE_COMMAND_PROFILES = ["posix-printf-v1", "git-status-v1"] as const;
 export const MAX_TOOL_PACKAGE_MANIFEST_BYTES = 64 * 1024;
 export const MAX_TOOL_PACKAGE_INPUTS = 32;
 
@@ -71,26 +79,55 @@ const toolInputSchema = z.discriminatedUnion("type", [
 ]);
 
 const inputPlaceholder = /^\{input:([A-Za-z][A-Za-z0-9_]*)\}$/;
+const hardenedGitStatusArgs = Object.freeze([
+  "--no-optional-locks",
+  "-c",
+  "core.fsmonitor=false",
+  "-c",
+  "core.untrackedCache=false",
+  "status",
+  "--short",
+  "--untracked-files=normal",
+  "--ignore-submodules=all",
+]);
 const commandDriverSchema = z
   .object({
     kind: z.literal("command"),
     version: z.literal(TOOL_PACKAGE_DRIVER_VERSION),
-    executable: z.string().trim().min(1).max(4096),
-    args: z
-      .array(z.string().max(4096))
-      .max(64)
+    profile: z.enum(TOOL_PACKAGE_COMMAND_PROFILES),
+    executable: z
+      .string()
+      .trim()
+      .min(1)
       .refine(
-        (args) => args.reduce((total, arg) => total + Buffer.byteLength(arg, "utf8"), 0) <= 65_536,
-        "command arguments must not exceed 65536 UTF-8 bytes in total",
+        (value) => Buffer.byteLength(value, "utf8") <= MAX_AGENT_COMMAND_EXECUTABLE_BYTES,
+        `must not exceed ${MAX_AGENT_COMMAND_EXECUTABLE_BYTES} UTF-8 bytes`,
       ),
-    timeoutMs: z.number().int().positive().max(86_400_000),
+    args: z
+      .array(
+        z
+          .string()
+          .refine(
+            (value) => Buffer.byteLength(value, "utf8") <= MAX_AGENT_COMMAND_ARG_BYTES,
+            `must not exceed ${MAX_AGENT_COMMAND_ARG_BYTES} UTF-8 bytes`,
+          ),
+      )
+      .max(MAX_AGENT_COMMAND_ARGS)
+      .refine(
+        (args) =>
+          args.reduce((total, arg) => total + Buffer.byteLength(arg, "utf8"), 0) <=
+          MAX_AGENT_COMMAND_ARGS_BYTES,
+        `command arguments must not exceed ${MAX_AGENT_COMMAND_ARGS_BYTES} UTF-8 bytes in total`,
+      ),
+    timeoutMs: z.number().int().positive().max(MAX_AGENT_COMMAND_TIMEOUT_MS),
   })
   .strict()
   .refine(
     (command) =>
       !command.executable.includes("\0") && command.args.every((arg) => !arg.includes("\0")),
     "command values must not contain NUL bytes",
-  );
+  )
+  .superRefine(validateCommandProfile);
 
 export const toolPackageDefinitionSchema = z
   .object({
@@ -353,6 +390,84 @@ function isExactSemanticVersion(value: string): boolean {
     return false;
   }
   return prerelease === undefined || validIdentifiers(prerelease, true);
+}
+
+function validateCommandProfile(
+  command: {
+    readonly profile: (typeof TOOL_PACKAGE_COMMAND_PROFILES)[number];
+    readonly executable: string;
+    readonly args: readonly string[];
+  },
+  context: z.RefinementCtx,
+): void {
+  if (command.profile === "git-status-v1") {
+    if (command.executable !== "/usr/bin/git") {
+      profileIssue(
+        context,
+        ["executable"],
+        'profile "git-status-v1" requires executable "/usr/bin/git"',
+      );
+    }
+    if (!sameStrings(command.args, hardenedGitStatusArgs)) {
+      profileIssue(
+        context,
+        ["args"],
+        'profile "git-status-v1" requires Flow\'s exact hardened status argument vector',
+      );
+    }
+    return;
+  }
+
+  if (command.executable !== "/usr/bin/printf") {
+    profileIssue(
+      context,
+      ["executable"],
+      'profile "posix-printf-v1" requires executable "/usr/bin/printf"',
+    );
+  }
+  const [format, ...values] = command.args;
+  if (format === undefined || format.length === 0 || format.startsWith("-")) {
+    profileIssue(
+      context,
+      ["args", 0],
+      'profile "posix-printf-v1" requires a fixed non-option format argument',
+    );
+    return;
+  }
+  const conversions = countSafePrintfConversions(format);
+  if (conversions === null || conversions !== values.length) {
+    profileIssue(
+      context,
+      ["args"],
+      'profile "posix-printf-v1" permits only %% and one %s conversion per following data argument',
+    );
+  }
+}
+
+function countSafePrintfConversions(format: string): number | null {
+  let count = 0;
+  for (let index = 0; index < format.length; index += 1) {
+    if (format[index] !== "%") {
+      continue;
+    }
+    const conversion = format[index + 1];
+    if (conversion === undefined || (conversion !== "%" && conversion !== "s")) {
+      return null;
+    }
+    if (conversion === "s") {
+      count += 1;
+    }
+    index += 1;
+  }
+  return count;
+}
+
+function profileIssue(context: z.RefinementCtx, path: PropertyKey[], message: string): void {
+  context.addIssue({ code: "custom", path, message });
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function validIdentifiers(value: string, rejectNumericLeadingZeros: boolean): boolean {
