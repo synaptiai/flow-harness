@@ -18,7 +18,7 @@ export const MAX_CHILD_WORKFLOW_SOURCE_BYTES = 1_048_576;
 export const MAX_CHILD_WORKFLOW_DEPTH = 4;
 export const MAX_RUN_TREE_NODES = 1_024;
 
-export type AgentToolName = "read" | "ls" | "edit";
+export type AgentToolName = "read" | "ls" | "edit" | "exec";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 export type EvidenceSourceField =
   | "command.stdout"

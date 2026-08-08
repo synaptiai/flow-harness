@@ -6,6 +6,7 @@ import type {
   PreparedCommand,
 } from "../../../../src/application/command-sandbox.js";
 import type { NodeExecutionContext } from "../../../../src/application/ports.js";
+import { normalizeAgentCommandRequest } from "../../../../src/domain/agent-command.js";
 import type { SandboxEvidence } from "../../../../src/domain/run/events.js";
 import type { CompiledCommandNode } from "../../../../src/domain/workflow/types.js";
 import { CommandNodeExecutor } from "../../../../src/infrastructure/process/command-node-executor.js";
@@ -26,6 +27,34 @@ const context: NodeExecutionContext = {
 };
 
 describe("CommandNodeExecutor sandbox boundary", () => {
+  it("executes a normalized agent command through the same sandbox boundary", async () => {
+    const sandbox = new FakeCommandSandbox({
+      launch: {
+        executable: process.execPath,
+        args: ["-e", 'process.stdout.write("agent-sandboxed")'],
+        env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+      },
+      evidence: sandboxEvidence,
+    });
+    const executor = new CommandNodeExecutor({ sandbox });
+
+    const outcome = await executor.executeAgentCommand(
+      normalizeAgentCommandRequest({ executable: "npm", args: ["test"], timeoutMs: 10_000 }),
+      context,
+    );
+
+    expect(outcome).toMatchObject({
+      status: "succeeded",
+      evidence: {
+        executable: "npm",
+        args: ["test"],
+        stdout: "agent-sandboxed",
+        sandbox: sandboxEvidence,
+      },
+    });
+    expect(sandbox.requests[0]).toMatchObject({ executable: "npm", args: ["test"] });
+  });
+
   it("spawns only the prepared launch and retains requested-command evidence", async () => {
     const sandbox = new FakeCommandSandbox({
       launch: {

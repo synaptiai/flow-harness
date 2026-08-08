@@ -1,12 +1,13 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { createHash, type Hash } from "node:crypto";
-
+import type { CommandSandbox, PreparedCommand } from "../../application/command-sandbox.js";
 import type {
+  AgentCommandExecutor,
   CommandExecutor,
   NodeExecutionContext,
   NodeExecutionOutcome,
 } from "../../application/ports.js";
-import type { CommandSandbox, PreparedCommand } from "../../application/command-sandbox.js";
+import type { AgentCommandRequest } from "../../domain/agent-command.js";
 import type { CommandEvidence, NodeFailure } from "../../domain/run/events.js";
 import type { CompiledCommandNode } from "../../domain/workflow/types.js";
 
@@ -17,7 +18,7 @@ export interface CommandNodeExecutorOptions {
   readonly terminationGraceMs?: number;
 }
 
-export class CommandNodeExecutor implements CommandExecutor {
+export class CommandNodeExecutor implements CommandExecutor, AgentCommandExecutor {
   readonly #maxOutputBytes: number;
   readonly #platform: NodeJS.Platform;
   readonly #sandbox: CommandSandbox;
@@ -141,6 +142,25 @@ export class CommandNodeExecutor implements CommandExecutor {
     }
 
     return { status: "succeeded", evidence };
+  }
+
+  async executeAgentCommand(
+    command: AgentCommandRequest,
+    context: NodeExecutionContext,
+  ): Promise<NodeExecutionOutcome> {
+    return await this.execute(
+      {
+        id: "agent-command",
+        type: "command",
+        dependsOn: [],
+        command: {
+          executable: command.executable,
+          args: command.args,
+          timeoutMs: command.timeoutMs,
+        },
+      },
+      context,
+    );
   }
 }
 

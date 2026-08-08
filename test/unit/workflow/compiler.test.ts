@@ -3,8 +3,8 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 import {
-  WorkflowCompilationError,
   compileWorkflowText,
+  WorkflowCompilationError,
 } from "../../../src/domain/workflow/compiler.js";
 
 const validWorkflowUrl = new URL(
@@ -533,6 +533,30 @@ nodes:
     });
   });
 
+  it("compiles an immutable explicit agent exec selection", () => {
+    const source = workflowWithNodes(`
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Run the repository checks and report the evidence.
+      model: { provider: anthropic, id: claude-sonnet-4-5 }
+      tools: [read, ls, edit, exec]
+  - id: verify
+    type: command
+    dependsOn: [analyze]
+    command: { executable: npm, args: [test] }
+`);
+
+    const workflow = compileWorkflowText(source, "agent-exec.workflow.yaml");
+    const node = workflow.nodes[0];
+
+    expect(node).toMatchObject({
+      type: "agent",
+      agent: { tools: ["read", "ls", "edit", "exec"] },
+    });
+    expect(node?.type === "agent" && Object.isFrozen(node.agent.tools)).toBe(true);
+  });
+
   it("compiles an immutable explicit Agent Skills selection", () => {
     const source = workflowWithNodes(`
   - id: analyze
@@ -651,6 +675,24 @@ nodes:
 
     expect(node?.type).toBe("agent");
     expect(node?.type === "agent" ? node.agent.recovery : undefined).toBeUndefined();
+  });
+
+  it("rejects fresh recovery for an agent with arbitrary command execution", () => {
+    const source = workflowWithNodes(`
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Run a command and recover if the session is interrupted.
+      model: { provider: anthropic, id: claude-sonnet-4-5 }
+      tools: [exec]
+      recovery: { mode: fresh, maxAttempts: 2 }
+  - id: verify
+    type: command
+    dependsOn: [analyze]
+    command: { executable: npm, args: [test] }
+`);
+
+    expectCompilationFailure(source, "invalid_schema", "nodes.0.agent.recovery");
   });
 
   it.each([

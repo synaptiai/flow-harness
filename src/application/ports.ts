@@ -1,3 +1,4 @@
+import type { AgentCommandRequest } from "../domain/agent-command.js";
 import type { CapabilitySnapshot } from "../domain/capability/agent-skills.js";
 import type { VerifierPackageUseEvidence } from "../domain/capability/verifier-packages.js";
 import type {
@@ -185,6 +186,13 @@ export interface NodeExecutor {
 
 export interface CommandExecutor {
   execute(node: CompiledCommandNode, context: NodeExecutionContext): Promise<NodeExecutionOutcome>;
+}
+
+export interface AgentCommandExecutor {
+  executeAgentCommand(
+    command: AgentCommandRequest,
+    context: NodeExecutionContext,
+  ): Promise<NodeExecutionOutcome>;
 }
 
 export interface AgentExecutor {
