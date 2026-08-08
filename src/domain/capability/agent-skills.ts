@@ -356,6 +356,25 @@ export function calculateCapabilitySnapshotDigest(
   );
 }
 
+export function combineCapabilitySnapshots(
+  snapshots: readonly CapabilitySnapshot[],
+): CapabilitySnapshot | undefined {
+  if (snapshots.length === 0) {
+    return undefined;
+  }
+  if (snapshots.length === 1) {
+    return snapshots[0];
+  }
+  const packages = snapshots
+    .flatMap((snapshot) => snapshot.packages)
+    .sort((left, right) => compareStrings(capabilityPackageKey(left), capabilityPackageKey(right)));
+  return validateCapabilitySnapshot({
+    version: 1,
+    packages,
+    digest: calculateCapabilitySnapshotDigest(packages),
+  });
+}
+
 export function selectedAgentSkills(
   snapshot: CapabilitySnapshot,
   names: readonly string[],

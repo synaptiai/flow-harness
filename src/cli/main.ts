@@ -5,8 +5,8 @@ import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
 
 import { ApprovalDecisionError, decideApproval } from "../application/command-approval.js";
 import type {
@@ -15,36 +15,49 @@ import type {
   RecoverableRunEventStore,
   WorkspaceIsolator,
 } from "../application/ports.js";
-import { resumeWorkflow, RunRecoveryError, runWorkflow } from "../application/run-workflow.js";
-import type { CapabilitySnapshot } from "../domain/capability/agent-skills.js";
-import { collectWorkflowAgentSkillNames } from "../domain/capability/workflow-capabilities.js";
+import { RunRecoveryError, resumeWorkflow, runWorkflow } from "../application/run-workflow.js";
+import {
+  type CapabilitySnapshot,
+  combineCapabilitySnapshots,
+} from "../domain/capability/agent-skills.js";
+import {
+  collectWorkflowAgentSkillNames,
+  collectWorkflowVerifierPackageReferences,
+  WorkflowCapabilityError,
+} from "../domain/capability/workflow-capabilities.js";
 import {
   calculateFlowPolicyDigest,
-  FlowConfigError,
   type EffectiveFlowConfig,
+  FlowConfigError,
 } from "../domain/config/resolver.js";
-import { reduceRunEvents, type RunStatus } from "../domain/run/events.js";
+import { type RunStatus, reduceRunEvents } from "../domain/run/events.js";
 import { compileWorkflowText, WorkflowCompilationError } from "../domain/workflow/compiler.js";
 import {
-  FlowConfigStoreError,
-  initializeFlowProject,
-  type InitializeFlowProjectOptions,
-  type InitializedFlowProject,
-  loadEffectiveFlowConfig,
   type FlowConfigLocationOptions,
+  FlowConfigStoreError,
+  type InitializedFlowProject,
+  type InitializeFlowProjectOptions,
+  initializeFlowProject,
+  loadEffectiveFlowConfig,
 } from "../infrastructure/fs/flow-config-store.js";
+import { AdmissionStoreError } from "../infrastructure/fs/jsonl-admission-store.js";
+import { JsonlRunStore, RunStoreError } from "../infrastructure/fs/jsonl-run-store.js";
 import {
   AgentSkillCatalogError,
   discoverProjectAgentSkills,
-  snapshotSelectedAgentSkills,
   type ProjectAgentSkillCatalog,
+  snapshotSelectedAgentSkills,
 } from "../infrastructure/fs/local-agent-skill-catalog.js";
-import { AdmissionStoreError } from "../infrastructure/fs/jsonl-admission-store.js";
-import { JsonlRunStore, RunStoreError } from "../infrastructure/fs/jsonl-run-store.js";
 import {
   LocalSupervisorStore,
   LocalSupervisorStoreError,
 } from "../infrastructure/fs/local-supervisor-store.js";
+import {
+  discoverProjectVerifierPackages,
+  type ProjectVerifierPackageCatalog,
+  snapshotSelectedVerifierPackages,
+  VerifierPackageCatalogError,
+} from "../infrastructure/fs/local-verifier-package-catalog.js";
 import { createProductionNodeEffectReconciler } from "../infrastructure/runtime/production-effect-reconciler.js";
 import { createProductionNodeExecutor } from "../infrastructure/runtime/production-node-executor.js";
 import { createProductionWorkspaceIsolator } from "../infrastructure/runtime/production-workspace-isolator.js";
@@ -54,13 +67,13 @@ import {
   runSupervisorDaemon,
   type SupervisorPolicy,
 } from "../supervisor/daemon.js";
-import { SupervisorServiceError } from "../supervisor/service.js";
 import type {
   SubmitCommand,
   SupervisorErrorCode,
   SupervisorResponse,
   SupervisorResult,
 } from "../supervisor/protocol.js";
+import { SupervisorServiceError } from "../supervisor/service.js";
 import { executeWorkerJob } from "../supervisor/worker.js";
 
 const HELP = `Flow — Provider-neutral coding-agent harness
@@ -71,6 +84,9 @@ Usage:
   flow skills list
   flow skills inspect <name>
   flow skills validate
+  flow verifiers list
+  flow verifiers inspect <name>
+  flow verifiers validate
   flow validate <workflow.yaml>
   flow run <workflow.yaml> [--detach] [--command-id <uuid>] [--run-id <id>] [--runs-dir <path>] [--cwd <path>]
   flow resume <workflow.yaml> --run-id <id> [--detach] [--command-id <uuid>] [--runs-dir <path>] [--cwd <path>]
@@ -140,6 +156,8 @@ export async function main(
         return await configCommand(args.slice(1), io, dependencyOverrides);
       case "skills":
         return await skillsCommand(args.slice(1), io, dependencyOverrides);
+      case "verifiers":
+        return await verifiersCommand(args.slice(1), io, dependencyOverrides);
       case "validate":
         return await validateCommand(args.slice(1), io, dependencyOverrides);
       case "run":
@@ -183,6 +201,10 @@ export async function main(
       return 1;
     }
     if (error instanceof AgentSkillCatalogError) {
+      io.stderr(`${error.code}: ${error.message}`);
+      return 1;
+    }
+    if (error instanceof VerifierPackageCatalogError || error instanceof WorkflowCapabilityError) {
       io.stderr(`${error.code}: ${error.message}`);
       return 1;
     }
@@ -318,6 +340,88 @@ async function skillsCommand(
   return 0;
 }
 
+async function verifiersCommand(
+  args: readonly string[],
+  io: CliIo,
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  const { positionals } = parseCommandArgs(args, {});
+  const subcommand = positionals[0];
+  if (
+    (subcommand !== "list" && subcommand !== "validate" && subcommand !== "inspect") ||
+    (subcommand === "inspect" ? positionals.length !== 2 : positionals.length !== 1)
+  ) {
+    throw new CliUsageError("verifiers requires list, validate, or inspect <name>");
+  }
+  const dependencies = configDependenciesFrom(overrides);
+  const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
+  const catalog = await discoverConfiguredVerifierPackages(config);
+
+  if (subcommand === "list") {
+    io.stdout(
+      JSON.stringify(
+        {
+          root: catalog.root,
+          packages: catalog.packages.map(
+            ({ directory: _directory, manifestSha256, definition, ...item }) => ({
+              ...item,
+              definition: { kind: definition.kind },
+              manifestSha256,
+            }),
+          ),
+        },
+        null,
+        2,
+      ),
+    );
+    return 0;
+  }
+
+  if (subcommand === "inspect") {
+    const name = positionals[1];
+    if (name === undefined) {
+      throw new CliUsageError("verifiers inspect requires one package name");
+    }
+    const discovered = catalog.packages.find((item) => item.name === name);
+    if (discovered === undefined) {
+      throw new VerifierPackageCatalogError(
+        "missing_package",
+        `verifier package "${name}" was not found`,
+      );
+    }
+    const snapshot = await snapshotSelectedVerifierPackages(catalog, [
+      { name, version: discovered.version },
+    ]);
+    const selected = snapshot.packages[0];
+    if (selected === undefined) {
+      throw new VerifierPackageCatalogError(
+        "missing_package",
+        `verifier package "${name}" was not captured`,
+      );
+    }
+    const { contentBase64: _contentBase64, ...manifest } = selected.manifest;
+    const { definition: _definition, ...identity } = selected;
+    io.stdout(JSON.stringify({ ...identity, manifest }, null, 2));
+    return 0;
+  }
+
+  for (const item of catalog.packages) {
+    await snapshotSelectedVerifierPackages(catalog, [{ name: item.name, version: item.version }]);
+  }
+  io.stdout(
+    JSON.stringify(
+      {
+        valid: true,
+        root: catalog.root,
+        packages: catalog.packages.map((item) => `${item.name}@${item.version}`),
+      },
+      null,
+      2,
+    ),
+  );
+  return 0;
+}
+
 async function approvalDecisionCommand(
   decision: "approve" | "deny",
   args: readonly string[],
@@ -428,9 +532,13 @@ async function validateCommand(
   const workflow = await compileWorkflowFile(workflowPath, dependencies.readTextFile);
   const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
   const capabilitySnapshot = await resolveWorkflowCapabilitySnapshot(workflow, config);
+  const skillCount =
+    capabilitySnapshot?.packages.filter((item) => item.kind === "agent-skill").length ?? 0;
+  const verifierPackageCount =
+    capabilitySnapshot?.packages.filter((item) => item.kind === "verifier-package").length ?? 0;
 
   io.stdout(
-    `Workflow "${workflow.id}" is valid (nodes: ${workflow.nodes.length}, criteria: ${workflow.goal?.criteria.length ?? 0}, skills: ${capabilitySnapshot?.packages.length ?? 0}).`,
+    `Workflow "${workflow.id}" is valid (nodes: ${workflow.nodes.length}, criteria: ${workflow.goal?.criteria.length ?? 0}, skills: ${skillCount}, verifier packages: ${verifierPackageCount}).`,
   );
   return 0;
 }
@@ -887,11 +995,17 @@ async function resolveWorkflowCapabilitySnapshot(
   config: EffectiveFlowConfig,
 ): Promise<CapabilitySnapshot | undefined> {
   const names = collectWorkflowAgentSkillNames(workflow);
-  if (names.length === 0) {
-    return undefined;
+  const verifierReferences = collectWorkflowVerifierPackageReferences(workflow);
+  const snapshots: CapabilitySnapshot[] = [];
+  if (names.length > 0) {
+    const catalog = await discoverConfiguredAgentSkills(config);
+    snapshots.push(await snapshotSelectedAgentSkills(catalog, names));
   }
-  const catalog = await discoverConfiguredAgentSkills(config);
-  return await snapshotSelectedAgentSkills(catalog, names);
+  if (verifierReferences.length > 0) {
+    const catalog = await discoverConfiguredVerifierPackages(config);
+    snapshots.push(await snapshotSelectedVerifierPackages(catalog, verifierReferences));
+  }
+  return combineCapabilitySnapshots(snapshots);
 }
 
 async function discoverConfiguredAgentSkills(
@@ -904,6 +1018,18 @@ async function discoverConfiguredAgentSkills(
     );
   }
   return await discoverProjectAgentSkills(config.projectRoot);
+}
+
+async function discoverConfiguredVerifierPackages(
+  config: EffectiveFlowConfig,
+): Promise<ProjectVerifierPackageCatalog> {
+  if (config.projectRoot === null) {
+    throw new VerifierPackageCatalogError(
+      "missing_package",
+      "verifier packages require a Flow project root containing .flow/verifiers",
+    );
+  }
+  return await discoverProjectVerifierPackages(config.projectRoot);
 }
 
 function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies {
