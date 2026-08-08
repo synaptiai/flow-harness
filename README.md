@@ -32,9 +32,10 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | First-class typed verifier nodes | Implemented for sandboxed command and evidence-isolated zero-tool Pi model drivers |
 | Bounded Pi agent nodes with Flow-owned `read`, `ls`, and hash-anchored `edit` tools | Implemented |
 | Portable Agent Skills packages with progressive disclosure | Implemented for strict local project packages, explicit workflow selection, immutable run snapshots, and digest-bound read evidence |
+| Versioned verifier packages | Implemented for strict local command/model manifests, exact workflow selection, immutable run snapshots, and digest-bound verdict evidence |
 | Proof-safe fresh recovery of interrupted agent attempts | Implemented as explicit opt-in for read-only attempts and edit attempts proven not applied |
 | Fail-closed sandboxed command process trees | Implemented on Linux and macOS |
-| Dynamic agent-tool approval, external verifier packages, and broader model tools | Planned |
+| Dynamic agent-tool approval, remote package installation, other package kinds, and broader model tools | Planned |
 | VM-grade isolation of the host-side agent runtime | Planned |
 
 The executable format is `flow.synapti.ai/v1alpha1`. There is no compatibility or migration
@@ -145,6 +146,34 @@ resource addresses at startup, then uses `flow_read` to load instructions or res
 `allowed-tools` in a package is an auditable request, not authorization: only the workflow's
 `agent.tools` list and Flow policy can grant an operation. Package files are data and are never
 executed automatically.
+
+### Use a versioned verifier package
+
+Flow discovers strict inert `VerifierPackage` manifests below the project-owned `.flow/verifiers`
+directory. Install the credential-free example explicitly, inspect its public identity, and bind
+the exact version from a workflow:
+
+```sh
+mkdir -p .flow/verifiers
+cp -R examples/verifier-packages/release-tests .flow/verifiers/
+node dist/cli/main.js verifiers validate
+node dist/cli/main.js verifiers list
+node dist/cli/main.js verifiers inspect release-tests
+node dist/cli/main.js validate examples/versioned-verifier-package.workflow.yaml
+node dist/cli/main.js run examples/versioned-verifier-package.workflow.yaml --run-id package-demo
+node dist/cli/main.js inspect package-demo
+```
+
+The workflow selects `release-tests@1.0.0`. Flow snapshots the exact manifest before admission,
+resolves it through the existing sandboxed command-verifier driver, and records name, version, and
+package digest on the typed verdict. Listing and inspection execute nothing and do not reveal a
+model package's private rubric. Queued workers, child runs, and recovery use the same durable
+snapshot even if the live manifest changes.
+
+Command packages own an argv-only command declaration. Model packages own only a bounded rubric;
+the workflow still owns evidence order, provider/model selection, thinking level, and timeout.
+Packages cannot add tools, credentials, network access, graph transitions, policy, hooks, or
+executable extension code. Remote installation and arbitrary evaluator runtimes remain unsupported.
 
 To exercise the first-class verifier contract without model credentials:
 
@@ -492,7 +521,9 @@ tools are not exposed. Filesystem operations are canonically resolved and author
 policy broker. Pi's ambient tools, extensions, skill discovery, templates, context discovery,
 built-in edit semantics, and executable-downloading helpers are disabled. Explicit Flow-selected
 Agent Skills instead use immutable provider-neutral snapshots and bounded `skill://` reads; they
-grant no filesystem or execution authority.
+grant no filesystem or execution authority. Verifier packages are inert manifests captured in the
+same snapshot; they execute only by resolving to the existing command or zero-tool model verifier
+boundary and cannot widen either driver's authority.
 
 Supervisor control state is stored in an owner-only directory under the selected run root. Its
 Unix-domain sockets use a short owner-only temporary path so valid deep project paths also work on

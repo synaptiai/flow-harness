@@ -39,6 +39,14 @@ node dist/cli/main.js skills validate
 node dist/cli/main.js skills list
 node dist/cli/main.js skills inspect review
 node dist/cli/main.js validate examples/portable-agent-skill.workflow.yaml
+mkdir -p .flow/verifiers
+cp -R examples/verifier-packages/release-tests .flow/verifiers/
+node dist/cli/main.js verifiers validate
+node dist/cli/main.js verifiers list
+node dist/cli/main.js verifiers inspect release-tests
+node dist/cli/main.js validate examples/versioned-verifier-package.workflow.yaml
+node dist/cli/main.js run examples/versioned-verifier-package.workflow.yaml --run-id package-smoke
+node dist/cli/main.js inspect package-smoke
 node dist/cli/main.js validate examples/verify-foundation.workflow.yaml
 node dist/cli/main.js run examples/verify-foundation.workflow.yaml --run-id smoke
 node dist/cli/main.js inspect smoke
@@ -75,6 +83,14 @@ a configured model provider. Focused capability tests prove strict discovery, tr
 special-file refusal, source-race detection, canonical size/digest bounds, progressive UTF-8 reads,
 metadata-only prompt assembly, permission non-escalation, attached/detached/child/recovery snapshot
 identity, and forged selection/read refusal.
+
+The credential-free versioned verifier-package smoke run snapshots an exact local manifest and
+executes its argv-only definition through the production sandboxed command-verifier path. Focused
+tests prove strict SemVer and manifest parsing, inert manifest-only directories, symlink and source
+race refusal, aggregate bounds, exact version/kind binding, command/model driver reuse, redacted
+metadata operations, requirement/snapshot/control-graph/evidence replay reconciliation, live-source
+drift immunity, and attached, detached, child, and recovery transport. They do not claim remote
+installation, arbitrary evaluator-code isolation, provider correctness, or model-rubric safety.
 
 The remaining examples use the real argv-only command executor through the production sandbox, accept declared goals from legacy command and first-class typed command-verifier evidence, publish strict canonical typed results, execute independently-ledgered isolated children, promote one bounded optimization candidate, exercise durable resource inspection and exact loop convergence, and require no model credentials. Focused child and optimization tests prove recursive contract bounds, deterministic linkage, typed composition, numeric direction and invariants, complete delta evidence, independent metadata/content/entry ceilings, idempotent capture reopening, stale-parent refusal, write-ahead promotion and compensation, tree-wide accounting, boundary cancellation without later evaluation or promotion, concurrency, crash recovery without reapply, protected-state exclusion, snapshot fidelity, replay mutation resistance, and cleanup. Focused result tests prove duplicate-key/I-JSON refusal, closed schema and complexity bounds, RFC 8785 canonicalization, resource neutrality, branch/approval/verifier/loop composition, recovery idempotence, and replay mutation resistance. Focused verifier tests use deterministic fake runners to prove exact durable input binding, zero-tool model invocation, strict verdict parsing, aggregate bounds, branch/approval/loop composition, cancellation precedence, budget narrowing, replay mutation resistance, and refusal to repeat an open attempt. Attached CLI and detached-worker integration preserve typed results, child histories, optimization evidence, promoted parent files, and verifier evidence through real JSONL stores. The bounded-loop example records one continue, one stop, unused-iteration omission, final verification, and cleanup; the optimization example records one accepted promotion, one equal rejection, stagnation, and cleanup. The ordinary concurrent CLI test makes two same-workspace SRT-contained commands wait for each other's workspace marker, so it fails under accidental same-session serialization; incompatible child-workspace SRT command phases are intentionally queued across session reset. Default integration tests also reopen interrupted agent attempts from real JSONL: applied edits remain blocked, while read-only or not-applied edit attempts with an explicit policy continue at the exact next attempt in both attached CLI and detached-worker paths. The tests prove repeated recovery cannot duplicate reconciliation, result publication, loop transitions, child import, candidate capture, candidate promotion, or interruption disposition. `npm run test:runtime` additionally spawns compiled children and exits writable workers at five deterministic edit boundaries—before rename, after rename, after a real directory sync, when settlement append rejects, and after settlement persistence—to verify ledger/file truth. It also delivers `SIGINT`, proves its POSIX command process group terminates, verifies the forced-exit guard for leaked provider handles, races separate processes for one run identifier, and attacks the real filesystem, environment, run-store, and loopback-network boundary. These tests do not simulate host reboot or power loss. The package supports Linux and macOS; Windows command nodes fail before spawn because descendant containment is not yet implemented.
 

@@ -237,10 +237,10 @@ verifier compatibility. Defer executable package code and remote installation.
 
 ## Implementation tasks
 
-1. [ ] Build and verify the strict local verifier-package catalog and union snapshot.
-2. [ ] Compile and bind exact packaged command/model verifier selections.
-3. [ ] Persist and replay package requirements and use evidence.
-4. [ ] Execute packaged verifiers through the existing safety boundary.
-5. [ ] Complete CLI, attached/detached/child/recovery integration.
+1. [x] Build and verify the strict local verifier-package catalog and union snapshot.
+2. [x] Compile and bind exact packaged command/model verifier selections.
+3. [x] Persist and replay package requirements and use evidence.
+4. [x] Execute packaged verifiers through the existing safety boundary.
+5. [x] Complete CLI, attached/detached/child/recovery integration.
 6. [ ] Update examples, README, architecture, workflow, security, recovery, testing, capability,
    and roadmap documentation; run full and adversarial verification.

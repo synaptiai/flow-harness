@@ -644,8 +644,80 @@ failure classification, and resources without consulting a provider.
 
 The separate zero-tool session and delimiters reduce accidental instruction following; they do not
 make a probabilistic verifier prompt-injection-proof or equivalent to hidden deterministic tests.
-Command-verifier approval, external verifier packages, remediation edges, fallback, and automatic
-retry of an interrupted verifier are not part of this contract.
+Command-verifier approval, remediation edges, fallback, and automatic retry of an interrupted
+verifier are not part of this contract.
+
+## Versioned verifier packages
+
+Workflows may select one exact project-local package instead of repeating an inline verifier
+definition:
+
+```yaml
+- id: release-tests
+  type: verifier
+  verifier:
+    kind: packaged-command
+    package: { name: release-tests, version: 1.0.0 }
+
+- id: review-evidence
+  type: verifier
+  dependsOn: [tests]
+  verifier:
+    kind: packaged-model
+    package: { name: evidence-review, version: 1.2.0 }
+    evidence: [{ nodeId: tests, field: command.stdout }]
+    model: { provider: anthropic, id: claude-sonnet-4-5, thinking: medium }
+    timeoutMs: 120000
+```
+
+`packaged-command` contains only `kind` and an exact `{name, version}` reference. Its selected
+manifest supplies the complete command object. `packaged-model` also declares the same reference,
+but the workflow must still provide 1–16 ordered direct-dependency evidence fields, model, and
+timeout. The selected manifest supplies only the rubric. This keeps provider and evidence authority
+in the workflow and makes model packages portable across executor adapters.
+
+Packages are discovered below `.flow/verifiers/<path>/<name>/VERIFIER.yaml`. Each directory contains
+only that regular UTF-8 manifest. The strict shape is:
+
+```yaml
+apiVersion: flow.synapti.ai/v1alpha1
+kind: VerifierPackage
+metadata:
+  name: release-tests
+  version: 1.0.0
+  description: Run the repository release gate.
+  license: Apache-2.0
+  compatibility: Requires Node.js and npm.
+spec:
+  kind: command
+  command:
+    executable: npm
+    args: [test]
+    timeoutMs: 120000
+```
+
+`metadata.name` is lowercase kebab-case, must match the immediate directory, and is bounded to 64
+characters. `metadata.version` is an exact SemVer value; ranges, tags, and numeric prerelease
+identifiers with leading zeroes are rejected. Description is required; license and compatibility
+are optional. Unknown or duplicate fields, YAML aliases, symlinks, non-regular or extra directory
+entries, source races, and unsafe paths fail closed. Discovery permits at most 32 packages, depth 6,
+and 2,000 entries. A manifest is 1–65536 bytes; a model rubric is 1–16384 trimmed characters. The
+combined capability snapshot, including Agent Skills, is at most 32 packages and 512 KiB serialized.
+
+Compilation includes the exact reference in the workflow digest and persisted control graph. Run
+admission recursively collects root and child references and captures one sorted immutable
+capability snapshot. `run_started` records the snapshot plus each node's name, version, and driver
+kind requirement. The scheduler resolves only from that snapshot and records name, version, and
+package digest on verifier evidence. Missing packages, version or kind mismatch, extra packages at
+a root run, changed source during capture, or inconsistent replay evidence fail before acceptance.
+Child runs may receive unused parent-owned entries but can execute only their own compiled
+selection. Detached and resumed execution never reload the live catalog.
+
+`flow verifiers list`, `inspect <name>`, and `validate` are metadata-only operations and execute no
+driver. Inspection reports identity, provenance, and hashes but omits manifest content and the
+parsed definition so a model rubric is not printed. Packages cannot contribute executable files,
+hooks, tools, models, evidence, graph edges, policy, credentials, or network authority. Remote
+installation, version solving, arbitrary evaluator code, and reward environments are unsupported.
 
 Every command node and descendant runs through Flow's required SRT adapter. The fixed `workspace-write-network-deny-v1` profile allows the selected workflow directory and a private temporary directory, denies network and undeclared Unix sockets, omits ambient credentials and injection variables from the child environment, and denies writes to the actual run store, `.flow`, `.git`, environment files, and key files. Concurrent same-policy commands share one initialized SRT session but receive distinct temporary directories, environment values, and per-command filesystem configurations. Flow reference-counts wraps, queues a different concurrent workspace or policy until the active session resets, honors cancellation while queued, and resets SRT only after the last compatible command releases. On Linux, Flow resolves SRT's packaged seccomp helper canonically, passes it as the explicit SRT apply path, and re-exposes only that file read-only when the Flow installation lies outside the workflow directory. If SRT is missing, unsupported, degraded, or cannot initialize, the node fails before spawn; Flow has no unsandboxed command fallback.
 
@@ -873,6 +945,6 @@ the id to the complete request and rejects reuse with changed input.
 - The native sandbox contains command descendants but does not contain the host-side Pi runtime; hostile workloads require a stronger container, microVM, or managed boundary.
 - The only agent mutation is exact single-file edit of an existing UTF-8 file; no create, delete, rename, shell, network, fuzzy patch, or multi-file transaction is exposed.
 - No in-flight Pi tool-call approval or opaque session continuation. A fresh retry is a new attempt and is allowed only by the persisted proof gate; it is not a substitute for restoring a live session.
-- Model verifiers are zero-tool and evidence-bounded but remain probabilistic and not prompt-injection-proof. External verifier packages and reward/evaluation environments are not yet supported.
+- Model verifiers, including packaged rubrics, are zero-tool and evidence-bounded but remain probabilistic and not prompt-injection-proof. Arbitrary evaluator code and reward/evaluation environments are not supported.
 - No prepaid hard model-cost cap, provider invoice reconciliation, CPU/memory/disk quota, or artifact-size budget. Per-run graph-node concurrency, detached worker count, and queue depth are separate bounded controls.
 - No schema migration path is promised while the format remains `v1alpha1`.
