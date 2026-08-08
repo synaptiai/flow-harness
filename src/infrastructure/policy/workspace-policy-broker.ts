@@ -5,6 +5,7 @@ import type { PolicyBroker } from "../../domain/policy/broker.js";
 import type { PolicyAction } from "../../domain/policy/types.js";
 
 const PRIVATE_KEY_FILE_NAMES = new Set(["id_dsa", "id_ecdsa", "id_ed25519", "id_rsa"]);
+type WorkspacePolicyAction = Extract<PolicyAction, `filesystem.${string}`>;
 
 export class WorkspacePolicyBroker {
   constructor(
@@ -14,7 +15,7 @@ export class WorkspacePolicyBroker {
   ) {}
 
   async execute<T>(
-    action: PolicyAction,
+    action: WorkspacePolicyAction,
     inputPath: string,
     effect: (canonicalTarget: string) => Promise<T>,
     options: { readonly operationDigest?: string } = {},

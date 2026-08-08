@@ -1,18 +1,28 @@
-import { describe, expect, it } from "vitest";
-import type { createAgentSession } from "@earendil-works/pi-coding-agent";
 import { createHash } from "node:crypto";
+import type { createAgentSession } from "@earendil-works/pi-coding-agent";
+import { describe, expect, it } from "vitest";
 
-import type { NodeEffectJournal, NodeExecutionContext } from "../../../../src/application/ports.js";
-import type { CompiledAgentNode } from "../../../../src/domain/workflow/types.js";
+import type {
+  AgentCommandExecutor,
+  NodeAgentCommandJournal,
+  NodeEffectJournal,
+  NodeExecutionContext,
+} from "../../../../src/application/ports.js";
+import {
+  calculateAgentCommandDigest,
+  normalizeAgentCommandRequest,
+} from "../../../../src/domain/agent-command.js";
 import { createCapabilitySnapshot } from "../../../../src/domain/capability/agent-skills.js";
 import { PolicyBroker } from "../../../../src/domain/policy/broker.js";
+import type { AgentCommandSettlementOutcome } from "../../../../src/domain/run/events.js";
+import type { CompiledAgentNode } from "../../../../src/domain/workflow/types.js";
+import { AgentEffectRecorder } from "../../../../src/infrastructure/pi/agent-effect-recorder.js";
 import {
   EmbeddedPiAgentRunner,
   PiAgentExecutor,
-  type PiAgentRunRequest,
   type PiAgentRunner,
+  type PiAgentRunRequest,
 } from "../../../../src/infrastructure/pi/pi-agent-executor.js";
-import { AgentEffectRecorder } from "../../../../src/infrastructure/pi/agent-effect-recorder.js";
 
 const context: NodeExecutionContext = {
   runId: "run-agent",
@@ -23,6 +33,103 @@ const context: NodeExecutionContext = {
 };
 
 describe("PiAgentExecutor", () => {
+  it("overrides a terminal model result after durable command output exhausts the artifact budget", async () => {
+    const runner: PiAgentRunner = {
+      async run(input) {
+        const request = normalizeAgentCommandRequest({ executable: "npm", args: ["test"] });
+        const operationDigest = calculateAgentCommandDigest(request);
+        const decision = input.policyBroker.authorize({
+          action: "process.execute",
+          target: request.executable,
+          boundary: "inside",
+          operationDigest,
+        });
+        await input.commandRecorder?.execute(request, decision);
+        return { text: "continued after exhausted output", stopReason: "stop" };
+      },
+    };
+
+    const outcome = await new PiAgentExecutor(runner, () => 100).execute(
+      agentNode(300_000, ["exec"]),
+      contextWithAgentCommand(true),
+    );
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "pi_agent_artifact_budget_exhausted",
+        sideEffectStatus: "committed",
+      },
+      evidence: {
+        policyDecisions: [{ action: "process.execute", outcome: "allowed" }],
+      },
+    });
+  });
+
+  it("aborts the agent attempt after durable unconfirmed command termination", async () => {
+    let observedAbort = false;
+    const runner: PiAgentRunner = {
+      async run(input) {
+        const request = normalizeAgentCommandRequest({ executable: "npm", args: ["test"] });
+        const operationDigest = calculateAgentCommandDigest(request);
+        const decision = input.policyBroker.authorize({
+          action: "process.execute",
+          target: request.executable,
+          boundary: "inside",
+          operationDigest,
+        });
+        await input.commandRecorder?.execute(request, decision);
+        observedAbort = input.signal?.aborted === true;
+        return { text: "must not become success", stopReason: "stop" };
+      },
+    };
+
+    const outcome = await new PiAgentExecutor(runner, () => 100).execute(
+      agentNode(300_000, ["exec"]),
+      contextWithAgentCommand(false, "unconfirmed"),
+    );
+
+    expect(observedAbort).toBe(true);
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "pi_agent_command_termination_unconfirmed",
+        sideEffectStatus: "uncertain",
+      },
+      evidence: {
+        policyDecisions: [{ action: "process.execute", outcome: "allowed" }],
+      },
+    });
+  });
+
+  it("rejects command execution without the shared executor and durable journal before starting Pi", async () => {
+    let runnerCalls = 0;
+    const runner: PiAgentRunner = {
+      async run() {
+        runnerCalls += 1;
+        return { text: "should not run", stopReason: "stop" };
+      },
+    };
+
+    const outcome = await new PiAgentExecutor(runner).execute(
+      agentNode(300_000, ["exec"]),
+      context,
+    );
+
+    expect(runnerCalls).toBe(0);
+    expect(outcome).toEqual({
+      status: "failed",
+      error: {
+        code: "pi_command_journal_unavailable",
+        message:
+          "agent command execution requires the shared sandbox executor and a durable command journal",
+        retryable: false,
+        sideEffectStatus: "none",
+      },
+      evidence: null,
+    });
+  });
+
   it("rejects a writable attempt without a durable effect journal before starting Pi", async () => {
     let runnerCalls = 0;
     const runner: PiAgentRunner = {
@@ -1141,6 +1248,65 @@ function testEffectRecorder() {
 
 function contextWithEffectJournal(): NodeExecutionContext {
   return { ...context, effectJournal: testNodeEffectJournal() };
+}
+
+function contextWithAgentCommand(
+  artifactBudgetExhausted: boolean,
+  terminationStatus: "not-required" | "unconfirmed" = "not-required",
+): NodeExecutionContext {
+  const evidence = {
+    kind: "command" as const,
+    executable: "npm",
+    args: ["test"],
+    exitCode: terminationStatus === "unconfirmed" ? null : 0,
+    signal: null,
+    stdout: "output",
+    stderr: "",
+    stdoutHash: createHash("sha256").update("output").digest("hex"),
+    stderrHash: createHash("sha256").update("").digest("hex"),
+    stdoutRetainedHash: createHash("sha256").update("output").digest("hex"),
+    stderrRetainedHash: createHash("sha256").update("").digest("hex"),
+    stdoutRetainedBytes: 6,
+    stderrRetainedBytes: 0,
+    stdoutTruncated: false,
+    stderrTruncated: false,
+    timedOut: terminationStatus === "unconfirmed",
+    aborted: false,
+    durationMs: 1,
+    processContainment: "linux-pid-namespace" as const,
+    terminationStatus,
+    sandbox: {
+      backend: "test-sandbox",
+      backendVersion: "1",
+      profile: "workspace-write-network-deny-v1",
+      policyDigest: "a".repeat(64),
+    },
+  };
+  const executor: AgentCommandExecutor = {
+    executeAgentCommand: async (request): Promise<AgentCommandSettlementOutcome> => {
+      const requestEvidence = { ...evidence, executable: request.executable, args: request.args };
+      return terminationStatus === "unconfirmed"
+        ? {
+            status: "failed",
+            error: {
+              code: "command_termination_failed",
+              message: "command process tree termination could not be confirmed",
+              retryable: false,
+              sideEffectStatus: "uncertain",
+            },
+            evidence: requestEvidence,
+          }
+        : { status: "succeeded", evidence: requestEvidence };
+    },
+  };
+  const journal: NodeAgentCommandJournal = {
+    prepare: async () => ({
+      commandId: "command-3",
+      commandSequence: 1,
+      settle: async () => ({ artifactBudgetExhausted }),
+    }),
+  };
+  return { ...context, agentCommandExecutor: executor, agentCommandJournal: journal };
 }
 
 function testNodeEffectJournal(): NodeEffectJournal {

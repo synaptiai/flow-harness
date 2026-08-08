@@ -71,6 +71,21 @@ describe("child node compilation", () => {
     expect(() => compileWorkflowText(source)).not.toThrow();
   });
 
+  it("preserves and digest-binds an explicit exec selection in a child workflow", () => {
+    const withExec = compileWorkflowText(parentWorkflow(childAgentWorkflow("[read, exec]")));
+    const withoutExec = compileWorkflowText(parentWorkflow(childAgentWorkflow("[read]")));
+    const child = withExec.nodes.find((node) => node.id === "delegate");
+    const comparison = withoutExec.nodes.find((node) => node.id === "delegate");
+
+    expect(child?.type === "child" ? child.child.workflow.nodes[0] : undefined).toMatchObject({
+      type: "agent",
+      agent: { tools: ["read", "exec"] },
+    });
+    expect(child?.type === "child" ? child.child.workflowDigest : undefined).not.toBe(
+      comparison?.type === "child" ? comparison.child.workflowDigest : undefined,
+    );
+  });
+
   it.each([
     [
       "a complete five-dimensional budget",
@@ -177,6 +192,33 @@ nodes:
     result:
       source: { nodeId: produce, field: command.stdout }
       schema: { type: boolean }
+`;
+}
+
+function childAgentWorkflow(tools: string): string {
+  return `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: child-agent }
+budget:
+  maxNodeStarts: 8
+  maxModelTokens: 1000
+  maxCostUsd: 0.25
+  maxExecutionMs: 60000
+  maxArtifactBytes: 100000
+nodes:
+  - id: produce
+    type: agent
+    agent:
+      prompt: Inspect and report.
+      model: { provider: anthropic, id: claude-sonnet-4-5 }
+      tools: ${tools}
+  - id: publish
+    type: result
+    dependsOn: [produce]
+    result:
+      source: { nodeId: produce, field: agent.text }
+      schema: { type: string, maxLength: 65536 }
 `;
 }
 

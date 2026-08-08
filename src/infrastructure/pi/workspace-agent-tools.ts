@@ -1,25 +1,33 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import { createHash } from "node:crypto";
+import { access, readdir, readFile, realpath } from "node:fs/promises";
 import {
   createReadToolDefinition,
   defineTool,
   type ReadOperations,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { AsyncLocalStorage } from "node:async_hooks";
-import { createHash } from "node:crypto";
-import { access, readFile, readdir, realpath } from "node:fs/promises";
 import { Type } from "typebox";
-
+import {
+  calculateAgentCommandDigest,
+  MAX_AGENT_COMMAND_ARG_BYTES,
+  MAX_AGENT_COMMAND_ARGS,
+  MAX_AGENT_COMMAND_EXECUTABLE_BYTES,
+  MAX_AGENT_COMMAND_TIMEOUT_MS,
+  normalizeAgentCommandRequest,
+} from "../../domain/agent-command.js";
 import type { AgentSkillSession } from "../../domain/capability/agent-skill-session.js";
 import type { PolicyBroker } from "../../domain/policy/broker.js";
 import type { AgentToolName } from "../../domain/workflow/types.js";
 import {
-  MAX_EDIT_INPUT_BYTES,
-  MAX_EDIT_REPLACEMENTS,
   editHashAnchoredTextFile,
   type HashAnchoredEditRequest,
   type HashAnchoredEditResult,
+  MAX_EDIT_INPUT_BYTES,
+  MAX_EDIT_REPLACEMENTS,
 } from "../fs/hash-anchored-edit.js";
 import { createWorkspacePolicyBroker } from "../policy/workspace-policy-broker.js";
+import type { AgentCommandRecorder } from "./agent-command-recorder.js";
 import type { AgentEffectRecorder } from "./agent-effect-recorder.js";
 
 const MAX_TOOL_PATH_BYTES = 1024;
@@ -82,6 +90,30 @@ const editSchema = Type.Object(
   { additionalProperties: false },
 );
 
+const execSchema = Type.Object(
+  {
+    executable: Type.String({
+      minLength: 1,
+      maxLength: MAX_AGENT_COMMAND_EXECUTABLE_BYTES,
+      description: "Executable name or path. Shell syntax is not supported.",
+    }),
+    args: Type.Optional(
+      Type.Array(Type.String({ maxLength: MAX_AGENT_COMMAND_ARG_BYTES }), {
+        maxItems: MAX_AGENT_COMMAND_ARGS,
+        description: "Literal argument vector passed without shell expansion.",
+      }),
+    ),
+    timeoutMs: Type.Optional(
+      Type.Integer({
+        minimum: 1,
+        maximum: MAX_AGENT_COMMAND_TIMEOUT_MS,
+        description: "Command deadline in milliseconds (default: 120000).",
+      }),
+    ),
+  },
+  { additionalProperties: false },
+);
+
 export interface FlowAgentTools {
   readonly names: readonly string[];
   readonly definitions: readonly ToolDefinition[];
@@ -90,6 +122,7 @@ export interface FlowAgentTools {
 export interface FlowAgentToolOptions {
   readonly protectedPaths?: readonly string[];
   readonly effectRecorder?: AgentEffectRecorder;
+  readonly commandRecorder?: AgentCommandRecorder;
   readonly editFile?: typeof editHashAnchoredTextFile;
   readonly capabilitySession?: AgentSkillSession;
 }
@@ -123,17 +156,26 @@ export async function createWorkspaceAgentTools(
   const definitions: ToolDefinition[] = [];
   const names: string[] = [];
   for (const tool of tools) {
-    const definition =
-      tool === "read"
-        ? createVersionedReadDefinition(
-            root,
-            readOperations,
-            readVersions,
-            options.capabilitySession,
-          )
-        : tool === "ls"
-          ? createLsDefinition(broker)
-          : createEditDefinition(broker, options);
+    let definition: ToolDefinition;
+    switch (tool) {
+      case "read":
+        definition = createVersionedReadDefinition(
+          root,
+          readOperations,
+          readVersions,
+          options.capabilitySession,
+        );
+        break;
+      case "ls":
+        definition = createLsDefinition(broker);
+        break;
+      case "edit":
+        definition = createEditDefinition(broker, options);
+        break;
+      case "exec":
+        definition = createExecDefinition(policy, options);
+        break;
+    }
     definitions.push(definition as ToolDefinition);
     names.push(definition.name);
   }
@@ -142,6 +184,78 @@ export async function createWorkspaceAgentTools(
     names: Object.freeze(names),
     definitions: Object.freeze(definitions),
   };
+}
+
+function createExecDefinition(policy: PolicyBroker, options: FlowAgentToolOptions): ToolDefinition {
+  const commandRecorder = options.commandRecorder;
+  if (commandRecorder === undefined) {
+    throw new Error("Flow exec requires an attempt-scoped command recorder");
+  }
+  return defineTool({
+    name: "flow_exec",
+    label: "exec",
+    description:
+      "Execute one bounded executable and literal argument vector in Flow's production sandbox. No shell, environment overrides, cwd overrides, stdin, PTY, background mode, or network access are available.",
+    promptSnippet: "Run a bounded argv-only command in the Flow sandbox",
+    promptGuidelines: [
+      "Pass the executable and each argument separately; shell operators and expansion are not supported.",
+      "Inspect the returned exit code, signal, timeout, stdout, and stderr before deciding the next step.",
+      "A failed command is evidence, not workflow completion; correct the issue or report it accurately.",
+    ],
+    parameters: execSchema,
+    executionMode: "sequential",
+    async execute(_toolCallId, input, signal) {
+      throwIfToolAborted(signal);
+      const request = normalizeAgentCommandRequest(input);
+      const operationDigest = calculateAgentCommandDigest(request);
+      const decision = policy.authorize({
+        action: "process.execute",
+        target: request.executable,
+        boundary: "inside",
+        operationDigest,
+      });
+      const outcome = await commandRecorder.execute(request, decision, signal);
+      return {
+        content: [{ type: "text" as const, text: formatCommandOutcome(outcome) }],
+        details: outcome,
+      };
+    },
+  }) as ToolDefinition;
+}
+
+function formatCommandOutcome(
+  outcome: Awaited<ReturnType<AgentCommandRecorder["execute"]>>,
+): string {
+  const evidence = outcome.evidence;
+  const lines = [
+    `status: ${outcome.status}`,
+    ...(outcome.status === "failed"
+      ? [`error: ${outcome.error.code}: ${outcome.error.message}`]
+      : []),
+  ];
+  if (evidence === null) {
+    return lines.join("\n");
+  }
+  lines.push(
+    `exit code: ${evidence.exitCode === null ? "null" : evidence.exitCode}`,
+    `signal: ${evidence.signal ?? "none"}`,
+    `timed out: ${evidence.timedOut}`,
+    `aborted: ${evidence.aborted}`,
+    `duration ms: ${evidence.durationMs}`,
+    `process containment: ${evidence.processContainment}`,
+    `termination status: ${evidence.terminationStatus}`,
+    `sandbox backend: ${evidence.sandbox.backend}`,
+    `sandbox backend version: ${evidence.sandbox.backendVersion}`,
+    `sandbox profile: ${evidence.sandbox.profile}`,
+    `sandbox policy sha256: ${evidence.sandbox.policyDigest}`,
+    `stdout sha256: ${evidence.stdoutHash}${evidence.stdoutTruncated ? " (truncated)" : ""}`,
+    `stderr sha256: ${evidence.stderrHash}${evidence.stderrTruncated ? " (truncated)" : ""}`,
+    "stdout:",
+    evidence.stdout,
+    "stderr:",
+    evidence.stderr,
+  );
+  return lines.join("\n");
 }
 
 function createVersionedReadDefinition(

@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { isAbsolute, join, relative, sep } from "node:path";
+import { delimiter, dirname, isAbsolute, join, relative, sep } from "node:path";
 
 import type {
   CommandSandbox,
@@ -59,6 +60,7 @@ interface ManagerRuntimeState {
 const MANAGER_RUNTIME_STATES = new WeakMap<SrtSandboxManager, ManagerRuntimeState>();
 
 export interface SrtRuntimeConfig {
+  readonly bwrapPath?: string;
   readonly network: {
     readonly allowedDomains: readonly string[];
     readonly deniedDomains: readonly string[];
@@ -108,6 +110,7 @@ export interface SrtCommandSandboxOptions {
   readonly removeTemporaryDirectory?: (path: string) => Promise<void>;
   readonly cleanupTimeoutMs?: number;
   readonly seccompApplyPath?: string;
+  readonly resolveTrustedBwrapPath?: (workspace: string) => Promise<string>;
 }
 
 export class SrtCommandSandbox implements CommandSandbox {
@@ -120,6 +123,7 @@ export class SrtCommandSandbox implements CommandSandbox {
   readonly #manager: SrtSandboxManager;
   readonly #platform: NodeJS.Platform;
   readonly #removeTemporaryDirectory: (path: string) => Promise<void>;
+  readonly #resolveTrustedBwrapPath: (workspace: string) => Promise<string>;
   readonly #seccompApplyPath: string | undefined;
 
   constructor(manager: SrtSandboxManager, options: SrtCommandSandboxOptions) {
@@ -139,6 +143,9 @@ export class SrtCommandSandbox implements CommandSandbox {
       ((path) => rm(path, { recursive: true, force: true, maxRetries: 2 }));
     this.#cleanupTimeoutMs = options.cleanupTimeoutMs ?? 5_000;
     this.#seccompApplyPath = options.seccompApplyPath;
+    this.#resolveTrustedBwrapPath =
+      options.resolveTrustedBwrapPath ??
+      ((workspace) => resolveTrustedBwrapPath(this.#environment, workspace));
     if (!Number.isSafeInteger(this.#cleanupTimeoutMs) || this.#cleanupTimeoutMs <= 0) {
       throw new RangeError("cleanupTimeoutMs must be a positive safe integer");
     }
@@ -163,6 +170,10 @@ export class SrtCommandSandbox implements CommandSandbox {
     let wrapped = false;
     try {
       const canonicalWorkspace = await this.#canonicalize(request.cwd);
+      const trustedBwrapPath =
+        this.#platform === "linux"
+          ? await this.#resolveTrustedBwrapPath(canonicalWorkspace)
+          : undefined;
       const canonicalProtectedPaths = await Promise.all(
         request.protectedPaths.map((path) => this.#canonicalize(path)),
       );
@@ -184,6 +195,7 @@ export class SrtCommandSandbox implements CommandSandbox {
         canonicalProtectedPaths,
         this.#homeDirectory,
         canonicalSeccompApplyPath,
+        trustedBwrapPath,
       );
       const sessionKey = sandboxSessionKey(
         this.#platform,
@@ -191,6 +203,7 @@ export class SrtCommandSandbox implements CommandSandbox {
         canonicalProtectedPaths,
         this.#homeDirectory,
         canonicalSeccompApplyPath,
+        trustedBwrapPath,
       );
       await this.#acquireSession(config, sessionKey, request.signal);
       sessionAcquired = true;
@@ -204,6 +217,11 @@ export class SrtCommandSandbox implements CommandSandbox {
       );
       wrapped = true;
       validateDescriptor(descriptor.argv);
+      const processContainment = validateProcessContainment(
+        this.#platform,
+        descriptor.argv,
+        trustedBwrapPath,
+      );
 
       const launch = Object.freeze({
         executable: descriptor.argv[0] as string,
@@ -213,6 +231,7 @@ export class SrtCommandSandbox implements CommandSandbox {
       const evidence = sandboxEvidence(this.#backendVersion);
       let released = false;
       return Object.freeze({
+        processContainment,
         launch,
         evidence,
         release: async () => {
@@ -421,6 +440,7 @@ function sandboxSessionKey(
   protectedPaths: readonly string[],
   homeDirectory: string,
   seccompApplyPath: string | undefined,
+  trustedBwrapPath: string | undefined,
 ): string {
   return createHash("sha256")
     .update(
@@ -430,6 +450,7 @@ function sandboxSessionKey(
         protectedPaths,
         homeDirectory,
         seccompApplyPath: seccompApplyPath ?? null,
+        trustedBwrapPath: trustedBwrapPath ?? null,
       }),
     )
     .digest("hex");
@@ -441,6 +462,7 @@ function createRuntimeConfig(
   protectedPaths: readonly string[],
   homeDirectory: string,
   seccompApplyPath: string | undefined,
+  trustedBwrapPath: string | undefined,
 ): SrtRuntimeConfig {
   const allowRead = [workspace, privateTemporaryDirectory];
   if (
@@ -451,6 +473,7 @@ function createRuntimeConfig(
     allowRead.push(seccompApplyPath);
   }
   return Object.freeze({
+    ...(trustedBwrapPath === undefined ? {} : { bwrapPath: trustedBwrapPath }),
     network: Object.freeze({
       allowedDomains: Object.freeze([]),
       deniedDomains: Object.freeze(["*"]),
@@ -528,6 +551,223 @@ function validateDescriptor(argv: readonly string[]): void {
   }
   if (!argv.every((value) => typeof value === "string" && !value.includes("\0"))) {
     throw new Error("sandbox backend returned an invalid launch descriptor");
+  }
+}
+
+function validateProcessContainment(
+  platform: NodeJS.Platform,
+  argv: readonly string[],
+  trustedBwrapPath: string | undefined,
+): PreparedCommand["processContainment"] {
+  if (platform === "darwin") {
+    return "process-group";
+  }
+  const wrapperArgv =
+    argv.length === 3 && argv[0] === "/bin/bash" && argv[1] === "-c"
+      ? parseCanonicalSrtShellArgv(argv[2] as string)
+      : null;
+  const bwrapDescriptor = wrapperArgv === null ? null : parseBwrapDescriptor(wrapperArgv);
+  const lifecycleTail = bwrapDescriptor?.options.slice(-4) ?? [];
+  if (
+    trustedBwrapPath === undefined ||
+    wrapperArgv === null ||
+    wrapperArgv[0] !== trustedBwrapPath ||
+    bwrapDescriptor === null ||
+    bwrapDescriptor.options[0]?.name !== "--new-session" ||
+    bwrapDescriptor.options[1]?.name !== "--die-with-parent" ||
+    !sameBwrapOptions(lifecycleTail, [
+      { name: "--unshare-pid", operands: [] },
+      { name: "--unshare-user", operands: [] },
+      { name: "--cap-drop", operands: ["ALL"] },
+      { name: "--proc", operands: ["/proc"] },
+    ]) ||
+    bwrapDescriptor.command.length !== 3 ||
+    bwrapDescriptor.command[0] !== "/bin/bash" ||
+    bwrapDescriptor.command[1] !== "-c"
+  ) {
+    throw new Error(
+      "sandbox backend did not provide required Linux PID namespace descendant containment",
+    );
+  }
+  return "linux-pid-namespace";
+}
+
+interface BwrapOption {
+  readonly name: string;
+  readonly operands: readonly string[];
+}
+
+interface BwrapDescriptor {
+  readonly options: readonly BwrapOption[];
+  readonly command: readonly string[];
+}
+
+const BWRAP_OPTION_ARITY = new Map<string, number>([
+  ["--new-session", 0],
+  ["--die-with-parent", 0],
+  ["--unshare-net", 0],
+  ["--unshare-pid", 0],
+  ["--unshare-user", 0],
+  ["--unsetenv", 1],
+  ["--dev", 1],
+  ["--proc", 1],
+  ["--cap-drop", 1],
+  ["--tmpfs", 1],
+  ["--bind", 2],
+  ["--ro-bind", 2],
+  ["--setenv", 2],
+]);
+
+function parseBwrapDescriptor(argv: readonly string[]): BwrapDescriptor | null {
+  const options: BwrapOption[] = [];
+  let cursor = 1;
+  while (cursor < argv.length) {
+    const name = argv[cursor] as string;
+    if (name === "--") {
+      return {
+        options: Object.freeze(options),
+        command: Object.freeze(argv.slice(cursor + 1)),
+      };
+    }
+    const arity = BWRAP_OPTION_ARITY.get(name);
+    if (arity === undefined || cursor + arity >= argv.length) {
+      return null;
+    }
+    options.push(
+      Object.freeze({
+        name,
+        operands: Object.freeze(argv.slice(cursor + 1, cursor + 1 + arity)),
+      }),
+    );
+    cursor += arity + 1;
+  }
+  return null;
+}
+
+const SRT_BARE_SHELL_WORD = /^[A-Za-z0-9_./:@+,-][A-Za-z0-9_./:=@+,-]*$/;
+const SRT_SINGLE_QUOTE_SPLICE = "\"'\"'";
+
+function parseCanonicalSrtShellArgv(command: string): readonly string[] | null {
+  if (command.length === 0) {
+    return null;
+  }
+  const values: string[] = [];
+  let cursor = 0;
+  while (cursor < command.length) {
+    if (command[cursor] === " ") {
+      return null;
+    }
+    if (command[cursor] !== "'") {
+      const separator = command.indexOf(" ", cursor);
+      const end = separator === -1 ? command.length : separator;
+      const value = command.slice(cursor, end);
+      if (!SRT_BARE_SHELL_WORD.test(value)) {
+        return null;
+      }
+      values.push(value);
+      cursor = end;
+    } else {
+      cursor += 1;
+      let value = "";
+      while (true) {
+        const quoteEnd = command.indexOf("'", cursor);
+        if (quoteEnd === -1) {
+          return null;
+        }
+        value += command.slice(cursor, quoteEnd);
+        cursor = quoteEnd + 1;
+        if (cursor === command.length || command[cursor] === " ") {
+          break;
+        }
+        if (
+          command.slice(cursor, cursor + SRT_SINGLE_QUOTE_SPLICE.length) !== SRT_SINGLE_QUOTE_SPLICE
+        ) {
+          return null;
+        }
+        value += "'";
+        cursor += SRT_SINGLE_QUOTE_SPLICE.length;
+      }
+      values.push(value);
+    }
+    if (cursor === command.length) {
+      break;
+    }
+    if (command[cursor] !== " " || cursor + 1 === command.length || command[cursor + 1] === " ") {
+      return null;
+    }
+    cursor += 1;
+  }
+  return Object.freeze(values);
+}
+
+function sameBwrapOptions(left: readonly BwrapOption[], right: readonly BwrapOption[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every(
+      (option, index) =>
+        option.name === right[index]?.name &&
+        option.operands.length === right[index]?.operands.length &&
+        option.operands.every(
+          (operand, operandIndex) => operand === right[index]?.operands[operandIndex],
+        ),
+    )
+  );
+}
+
+async function resolveTrustedBwrapPath(
+  environment: NodeJS.ProcessEnv,
+  workspace: string,
+): Promise<string> {
+  const pathEntries = environment.PATH?.split(delimiter) ?? [];
+  const inspected = new Set<string>();
+  for (const entry of pathEntries) {
+    if (!isAbsolute(entry)) {
+      continue;
+    }
+    let candidate: string;
+    try {
+      candidate = await realpath(join(entry, "bwrap"));
+    } catch {
+      continue;
+    }
+    if (inspected.has(candidate) || isAtOrWithin(candidate, workspace)) {
+      continue;
+    }
+    inspected.add(candidate);
+    if (!/^\/[A-Za-z0-9_./:@+,-]+$/.test(candidate)) {
+      continue;
+    }
+    try {
+      const candidateStat = await stat(candidate);
+      if (
+        !candidateStat.isFile() ||
+        candidateStat.uid !== 0 ||
+        (candidateStat.mode & 0o022) !== 0 ||
+        !(await hasTrustedAncestors(candidate))
+      ) {
+        continue;
+      }
+      await access(candidate, constants.X_OK);
+      return candidate;
+    } catch {}
+  }
+  throw new Error(
+    "sandbox dependencies unavailable: trusted root-owned bubblewrap executable not found outside the workspace",
+  );
+}
+
+async function hasTrustedAncestors(path: string): Promise<boolean> {
+  let current = dirname(path);
+  while (true) {
+    const metadata = await stat(current);
+    if (!metadata.isDirectory() || metadata.uid !== 0 || (metadata.mode & 0o022) !== 0) {
+      return false;
+    }
+    const parent = dirname(current);
+    if (parent === current) {
+      return true;
+    }
+    current = parent;
   }
 }
 

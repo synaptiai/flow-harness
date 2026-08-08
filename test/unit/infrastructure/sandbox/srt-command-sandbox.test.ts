@@ -1,3 +1,5 @@
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
@@ -73,6 +75,9 @@ describe("SrtCommandSandbox", () => {
         TEMP: privateTemp,
       },
     });
+    expect(
+      (prepared as typeof prepared & { readonly processContainment: string }).processContainment,
+    ).toBe("process-group");
     expect(prepared.evidence).toEqual({
       backend: "anthropic-sandbox-runtime",
       backendVersion: "0.0.70",
@@ -87,6 +92,115 @@ describe("SrtCommandSandbox", () => {
     expect(manager.resetCalls).toBe(1);
     expect(removeTemporaryDirectory).toHaveBeenCalledTimes(1);
     expect(removeTemporaryDirectory).toHaveBeenCalledWith(privateTemp);
+  });
+
+  it("advertises verified Linux PID-namespace containment", async () => {
+    const manager = new FakeSrtManager();
+    manager.descriptor = [
+      "/bin/bash",
+      "-c",
+      quoteSrtArgs([
+        "/usr/bin/bwrap",
+        "--new-session",
+        "--die-with-parent",
+        "--unshare-pid",
+        "--unshare-user",
+        "--cap-drop",
+        "ALL",
+        "--proc",
+        "/proc",
+        "--",
+        "/bin/bash",
+        "-c",
+        "'/usr/bin/node' '-e' 'process.exit(0)'",
+      ]),
+    ];
+    const prepared = await createSandbox(manager, { platform: "linux" }).prepare({
+      executable: "node",
+      args: [],
+      cwd: workspace,
+      protectedPaths: [],
+    });
+
+    expect(
+      (prepared as typeof prepared & { readonly processContainment: string }).processContainment,
+    ).toBe("linux-pid-namespace");
+    await prepared.release();
+  });
+
+  it.each([
+    "/usr/bin/bwrap --new-session -- true",
+    "bwrap --unshare-pid --die-with-parent -- true",
+    "echo --unshare-pid --die-with-parent -- true",
+    "/usr/bin/bwrap --new-session --unshare-pid --die-with-parent ; /workspace/escape -- true",
+    "/usr/bin/bwrap --new-session --die-with-parent --setenv X --unshare-pid --unshare-user --cap-drop ALL --proc /proc -- /bin/bash -c true",
+  ])(
+    "rejects degraded Linux descriptor %s before returning spawn authority",
+    async (descriptor) => {
+      const manager = new FakeSrtManager();
+      manager.descriptor = ["/bin/bash", "-c", descriptor];
+
+      await expect(
+        createSandbox(manager, { platform: "linux" }).prepare({
+          executable: "node",
+          args: [],
+          cwd: workspace,
+          protectedPaths: [],
+        }),
+      ).rejects.toThrow(/PID namespace|descendant containment/i);
+    },
+  );
+
+  it("rejects a substituted outer Linux launcher before returning spawn authority", async () => {
+    const manager = new FakeSrtManager();
+    manager.descriptor = [
+      "/workspace/escape",
+      "-c",
+      "/usr/bin/bwrap --new-session --unshare-pid --die-with-parent -- true",
+    ];
+
+    await expect(
+      createSandbox(manager, { platform: "linux" }).prepare({
+        executable: "node",
+        args: [],
+        cwd: workspace,
+        protectedPaths: [],
+      }),
+    ).rejects.toThrow(/launch descriptor|PID namespace|descendant containment/i);
+  });
+
+  it("rejects a workspace-controlled bubblewrap executable from PATH", async () => {
+    const temporaryWorkspace = await mkdtemp(join(tmpdir(), "flow-fake-bwrap-"));
+    const fakeBwrap = join(temporaryWorkspace, "bwrap");
+    await writeFile(fakeBwrap, "#!/bin/sh\nexit 0\n", "utf8");
+    await chmod(fakeBwrap, 0o755);
+    const manager = new FakeSrtManager();
+    const sandbox = new SrtCommandSandbox(manager, {
+      backendVersion: "0.0.70",
+      platform: "linux",
+      environment: { PATH: temporaryWorkspace },
+      homeDirectory: temporaryWorkspace,
+      canonicalize: async (path) => path,
+      createTemporaryDirectory: async () => join(temporaryWorkspace, "private-temp"),
+      removeTemporaryDirectory: async () => undefined,
+      cleanupTimeoutMs: 100,
+    });
+
+    try {
+      await expect(
+        sandbox.prepare({
+          executable: "node",
+          args: [],
+          cwd: temporaryWorkspace,
+          protectedPaths: [],
+        }),
+      ).rejects.toThrow(/trusted root-owned bubblewrap|outside the workspace/i);
+
+      expect(manager.checkCalls).toBe(0);
+      expect(manager.initializeCalls).toBe(0);
+    } finally {
+      await rm(temporaryWorkspace, { recursive: true, force: true });
+    }
   });
 
   it.each([
@@ -328,6 +442,16 @@ describe("SrtCommandSandbox", () => {
   });
 });
 
+function quoteSrtArgs(values: readonly string[]): string {
+  return values
+    .map((value) =>
+      /^[A-Za-z0-9_./:@+,-][A-Za-z0-9_./:=@+,-]*$/.test(value)
+        ? value
+        : `'${value.replaceAll("'", `'"'"'`)}'`,
+    )
+    .join(" ");
+}
+
 function createSandbox(
   manager: FakeSrtManager,
   overrides: {
@@ -337,12 +461,14 @@ function createSandbox(
     readonly seccompApplyPath?: string;
     readonly canonicalize?: (path: string) => Promise<string>;
     readonly removeTemporaryDirectory?: (path: string) => Promise<void>;
+    readonly resolveTrustedBwrapPath?: (workspace: string) => Promise<string>;
   } = {},
 ): SrtCommandSandbox {
   const selectedPrivateTemp = overrides.privateTemp ?? privateTemp;
+  const platform = overrides.platform ?? "darwin";
   return new SrtCommandSandbox(manager, {
     backendVersion: "0.0.70",
-    platform: overrides.platform ?? "darwin",
+    platform,
     environment: {
       PATH: "/safe/bin",
       LANG: "en_US.UTF-8",
@@ -357,6 +483,12 @@ function createSandbox(
     createTemporaryDirectory: async () => selectedPrivateTemp,
     seccompApplyPath: overrides.seccompApplyPath ?? seccompApplyPath,
     removeTemporaryDirectory: overrides.removeTemporaryDirectory ?? (async () => undefined),
+    ...(platform === "linux"
+      ? {
+          resolveTrustedBwrapPath:
+            overrides.resolveTrustedBwrapPath ?? (async () => "/usr/bin/bwrap"),
+        }
+      : {}),
     cleanupTimeoutMs: 100,
   });
 }
@@ -382,6 +514,7 @@ class FakeSrtManager implements SrtSandboxManager {
   wrapCalls = 0;
   cleanupCalls = 0;
   resetCalls = 0;
+  descriptor: readonly string[] = ["/bin/bash", "-c", "wrapped"];
 
   checkDependencies(): {
     readonly errors: readonly string[];
@@ -414,7 +547,7 @@ class FakeSrtManager implements SrtSandboxManager {
       throw this.wrapError;
     }
     return {
-      argv: ["/bin/bash", "-c", "wrapped"],
+      argv: this.descriptor,
       env: { FLOW_TEST_SECRET: "backend-must-not-leak" },
     };
   }

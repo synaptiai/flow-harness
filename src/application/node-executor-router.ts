@@ -1,5 +1,6 @@
 import type { CompiledNode } from "../domain/workflow/types.js";
 import type {
+  AgentCommandExecutor,
   AgentExecutor,
   CommandExecutor,
   NodeExecutionContext,
@@ -19,7 +20,12 @@ export class NodeExecutorRouter implements NodeExecutor {
       case "command":
         return this.commandExecutor.execute(node, context);
       case "agent":
-        return this.agentExecutor.execute(node, context);
+        return this.agentExecutor.execute(node, {
+          ...context,
+          ...(isAgentCommandExecutor(this.commandExecutor)
+            ? { agentCommandExecutor: this.commandExecutor }
+            : {}),
+        });
       case "verifier":
         return new VerifierNodeExecutor(this.commandExecutor, this.agentExecutor).execute(
           node,
@@ -37,4 +43,10 @@ export class NodeExecutorRouter implements NodeExecutor {
         throw new Error(`Control node "${node.id}" must be resolved by the workflow scheduler`);
     }
   }
+}
+
+function isAgentCommandExecutor(
+  executor: CommandExecutor,
+): executor is CommandExecutor & AgentCommandExecutor {
+  return "executeAgentCommand" in executor && typeof executor.executeAgentCommand === "function";
 }

@@ -2,6 +2,12 @@ import { createHash } from "node:crypto";
 import { isAbsolute, normalize } from "node:path";
 import { z } from "zod";
 import {
+  AGENT_COMMAND_PROTOCOL,
+  type AgentCommandRequest,
+  agentCommandRequestSchema,
+  calculateAgentCommandDigest,
+} from "../agent-command.js";
+import {
   type CommandApprovalOperation,
   calculateCommandApprovalOperationDigest,
   commandApprovalRequestId,
@@ -105,10 +111,16 @@ export interface CommandEvidence {
   readonly stderr: string;
   readonly stdoutHash: string;
   readonly stderrHash: string;
+  readonly stdoutRetainedHash?: string;
+  readonly stderrRetainedHash?: string;
+  readonly stdoutRetainedBytes?: number;
+  readonly stderrRetainedBytes?: number;
   readonly stdoutTruncated: boolean;
   readonly stderrTruncated: boolean;
   readonly timedOut: boolean;
+  readonly aborted?: boolean;
   readonly durationMs: number;
+  readonly terminationStatus?: "confirmed" | "not-required" | "unconfirmed";
   readonly sandbox?: SandboxEvidence;
 }
 
@@ -213,6 +225,7 @@ export interface ChildEvidence {
 }
 
 export const MAX_AGENT_EFFECT_RECEIPTS = 32;
+export const MAX_AGENT_COMMANDS_PER_ATTEMPT = 32;
 export const MAX_RUN_EVENT_BYTES = 2_097_152;
 export const DURABLE_EFFECT_PROTOCOL = "flow.effects/v1" as const;
 
@@ -275,6 +288,7 @@ export interface NodeStartedEvent extends RunEventBase {
   readonly nodeId: string;
   readonly attempt: number;
   readonly effectProtocol?: typeof DURABLE_EFFECT_PROTOCOL;
+  readonly commandProtocol?: typeof AGENT_COMMAND_PROTOCOL;
   readonly approval?: {
     readonly requestId: string;
     readonly operationDigest: string;
@@ -730,6 +744,44 @@ export interface NodeEffectPreparedEvent extends RunEventBase {
   readonly descriptor: FilesystemEditEffectDescriptor;
 }
 
+export interface NodeAgentCommandPreparedEvent extends RunEventBase {
+  readonly type: "node_agent_command_prepared";
+  readonly nodeId: string;
+  readonly attempt: number;
+  readonly commandId: string;
+  readonly commandSequence: number;
+  readonly request: AgentCommandRequest;
+  readonly operationDigest: string;
+  readonly decision: PolicyDecision;
+}
+
+export interface AgentCommandEvidence extends CommandEvidence {
+  readonly stdoutRetainedHash: string;
+  readonly stderrRetainedHash: string;
+  readonly stdoutRetainedBytes: number;
+  readonly stderrRetainedBytes: number;
+  readonly processContainment: "linux-pid-namespace";
+  readonly aborted: boolean;
+  readonly terminationStatus: "confirmed" | "not-required" | "unconfirmed";
+  readonly sandbox: SandboxEvidence;
+}
+
+export type AgentCommandSettlementOutcome =
+  | { readonly status: "succeeded"; readonly evidence: AgentCommandEvidence }
+  | {
+      readonly status: "failed";
+      readonly error: NodeFailure;
+      readonly evidence: AgentCommandEvidence | null;
+    };
+
+export interface NodeAgentCommandSettledEvent extends RunEventBase {
+  readonly type: "node_agent_command_settled";
+  readonly nodeId: string;
+  readonly attempt: number;
+  readonly commandId: string;
+  readonly outcome: AgentCommandSettlementOutcome;
+}
+
 export type NodeEffectSettlementInput =
   | {
       readonly outcome: "committed";
@@ -949,6 +1001,8 @@ export type RunEvent =
   | NodeOptimizationCheckedEvent
   | NodeOptimizationCompletedEvent
   | NodeControlFailedEvent
+  | NodeAgentCommandPreparedEvent
+  | NodeAgentCommandSettledEvent
   | NodeEffectPreparedEvent
   | NodeEffectSettledEvent
   | NodeEffectReconciledEvent
@@ -1012,6 +1066,8 @@ export interface NodeRunState {
   readonly childRun: ChildRunLink | null;
   readonly effectProtocol: typeof DURABLE_EFFECT_PROTOCOL | null;
   readonly effects: readonly NodeEffectRunState[];
+  readonly commandProtocol: typeof AGENT_COMMAND_PROTOCOL | null;
+  readonly commands: readonly NodeAgentCommandRunState[];
   readonly interruptedAttempts: readonly InterruptedNodeAttemptState[];
   readonly control: NodeControlRunState | null;
   readonly omission: NodeOmissionRunState | null;
@@ -1145,6 +1201,21 @@ export interface InterruptedNodeAttemptState {
   readonly resourceAccounting: "incomplete";
   readonly effectProtocol: typeof DURABLE_EFFECT_PROTOCOL | null;
   readonly effects: readonly NodeEffectRunState[];
+  readonly commandProtocol: typeof AGENT_COMMAND_PROTOCOL | null;
+  readonly commands: readonly NodeAgentCommandRunState[];
+}
+
+export interface NodeAgentCommandRunState {
+  readonly commandId: string;
+  readonly commandSequence: number;
+  readonly request: AgentCommandRequest;
+  readonly operationDigest: string;
+  readonly decision: PolicyDecision;
+  readonly preparedAt: string;
+  readonly settlement: {
+    readonly outcome: AgentCommandSettlementOutcome;
+    readonly settledAt: string;
+  } | null;
 }
 
 export interface NodeEffectRunState {
@@ -1223,6 +1294,12 @@ const effectIdSchema = z
   .min(8)
   .max(32)
   .regex(/^effect-[1-9][0-9]*$/);
+
+const agentCommandIdSchema = z
+  .string()
+  .min(9)
+  .max(32)
+  .regex(/^command-[1-9][0-9]*$/);
 
 const absolutePathSchema = z
   .string()
@@ -1396,13 +1473,36 @@ const commandEvidenceSchema = z
     stderr: commandOutputSchema,
     stdoutHash: z.string().regex(/^[a-f0-9]{64}$/),
     stderrHash: z.string().regex(/^[a-f0-9]{64}$/),
+    stdoutRetainedHash: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
+    stderrRetainedHash: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
+    stdoutRetainedBytes: z.number().int().nonnegative().max(32_768).optional(),
+    stderrRetainedBytes: z.number().int().nonnegative().max(32_768).optional(),
     stdoutTruncated: z.boolean(),
     stderrTruncated: z.boolean(),
     timedOut: z.boolean(),
+    aborted: z.boolean().optional(),
     durationMs: z.number().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    terminationStatus: z.enum(["confirmed", "not-required", "unconfirmed"]).optional(),
     sandbox: sandboxEvidenceSchema.optional(),
   })
   .strict();
+
+const agentCommandEvidenceSchema = commandEvidenceSchema.extend({
+  stdoutRetainedHash: z.string().regex(/^[a-f0-9]{64}$/),
+  stderrRetainedHash: z.string().regex(/^[a-f0-9]{64}$/),
+  stdoutRetainedBytes: z.number().int().nonnegative().max(32_768),
+  stderrRetainedBytes: z.number().int().nonnegative().max(32_768),
+  processContainment: z.literal("linux-pid-namespace"),
+  aborted: z.boolean(),
+  terminationStatus: z.enum(["confirmed", "not-required", "unconfirmed"]),
+  sandbox: sandboxEvidenceSchema,
+});
 
 const agentEvidenceSchema = z
   .object({
@@ -2278,6 +2378,7 @@ export const runEventSchema = z.discriminatedUnion("type", [
       nodeId: identifierSchema,
       attempt: z.number().int().positive(),
       effectProtocol: z.literal(DURABLE_EFFECT_PROTOCOL).optional(),
+      commandProtocol: z.literal(AGENT_COMMAND_PROTOCOL).optional(),
       approval: approvalReferenceSchema.optional(),
       child: childRunLinkSchema.optional(),
     })
@@ -2591,6 +2692,38 @@ export const runEventSchema = z.discriminatedUnion("type", [
       nodeId: identifierSchema,
       attempt: z.literal(1),
       error: nodeFailureSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("node_agent_command_prepared"),
+      nodeId: identifierSchema,
+      attempt: z.number().int().positive(),
+      commandId: agentCommandIdSchema,
+      commandSequence: z.number().int().positive().max(MAX_AGENT_COMMANDS_PER_ATTEMPT),
+      request: agentCommandRequestSchema,
+      operationDigest: sha256Schema,
+      decision: policyDecisionSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("node_agent_command_settled"),
+      nodeId: identifierSchema,
+      attempt: z.number().int().positive(),
+      commandId: agentCommandIdSchema,
+      outcome: z.discriminatedUnion("status", [
+        z.object({ status: z.literal("succeeded"), evidence: agentCommandEvidenceSchema }).strict(),
+        z
+          .object({
+            status: z.literal("failed"),
+            error: nodeFailureSchema,
+            evidence: agentCommandEvidenceSchema.nullable(),
+          })
+          .strict(),
+      ]),
     })
     .strict(),
   z
@@ -3528,6 +3661,8 @@ export function appendRunEvent(
         childRun,
         effectProtocol: event.effectProtocol ?? null,
         effects: Object.freeze([]),
+        commandProtocol: event.commandProtocol ?? null,
+        commands: Object.freeze([]),
       });
       resources = addResourcesForStart(resources, eventIndex);
       break;
@@ -3545,6 +3680,8 @@ export function appendRunEvent(
         resourceAccounting: event.resourceAccounting,
         effectProtocol: current.effectProtocol,
         effects: current.effects,
+        commandProtocol: current.commandProtocol,
+        commands: current.commands,
       });
       nodes[event.nodeId] = Object.freeze({
         ...current,
@@ -3557,6 +3694,8 @@ export function appendRunEvent(
         workflowApproval: null,
         effectProtocol: null,
         effects: Object.freeze([]),
+        commandProtocol: null,
+        commands: Object.freeze([]),
         interruptedAttempts: Object.freeze([...current.interruptedAttempts, interruptedAttempt]),
       });
       break;
@@ -4577,6 +4716,117 @@ export function appendRunEvent(
       });
       break;
     }
+    case "node_agent_command_prepared": {
+      const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
+      if (current.commandProtocol !== AGENT_COMMAND_PROTOCOL) {
+        throw new RunReplayError(
+          eventIndex,
+          `node "${event.nodeId}" attempt ${event.attempt} did not declare the agent command protocol`,
+        );
+      }
+      if (event.commandId !== nodeAgentCommandId(event.sequence)) {
+        throw new RunReplayError(
+          eventIndex,
+          "command id does not match its prepare event sequence",
+        );
+      }
+      const expectedCommandSequence = current.commands.length + 1;
+      if (event.commandSequence !== expectedCommandSequence) {
+        throw new RunReplayError(
+          eventIndex,
+          `command sequence ${event.commandSequence} does not match next command sequence ${expectedCommandSequence}`,
+        );
+      }
+      if (current.commands.length >= MAX_AGENT_COMMANDS_PER_ATTEMPT) {
+        throw new RunReplayError(
+          eventIndex,
+          `agent command limit of ${MAX_AGENT_COMMANDS_PER_ATTEMPT} was exceeded`,
+        );
+      }
+      const fatalCommand = current.commands.find(
+        (command) => command.settlement?.outcome.evidence?.terminationStatus === "unconfirmed",
+      );
+      if (fatalCommand !== undefined) {
+        throw new RunReplayError(
+          eventIndex,
+          `command "${fatalCommand.commandId}" has unconfirmed termination; later command preparation is forbidden`,
+        );
+      }
+      const unresolvedCommand = current.commands.find((command) => command.settlement === null);
+      if (unresolvedCommand !== undefined) {
+        throw new RunReplayError(
+          eventIndex,
+          `command "${unresolvedCommand.commandId}" must settle before another command is prepared`,
+        );
+      }
+      validatePreparedAgentCommand(event, eventIndex);
+      const command: NodeAgentCommandRunState = deepFreeze({
+        commandId: event.commandId,
+        commandSequence: event.commandSequence,
+        request: structuredClone(event.request),
+        operationDigest: event.operationDigest,
+        decision: structuredClone(event.decision),
+        preparedAt: event.at,
+        settlement: null,
+      });
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        commands: Object.freeze([...current.commands, command]),
+      });
+      break;
+    }
+    case "node_agent_command_settled": {
+      const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
+      if (current.commandProtocol !== AGENT_COMMAND_PROTOCOL) {
+        throw new RunReplayError(
+          eventIndex,
+          `node "${event.nodeId}" attempt ${event.attempt} did not declare the agent command protocol`,
+        );
+      }
+      const commandIndex = current.commands.findIndex(
+        (command) => command.commandId === event.commandId,
+      );
+      const command = current.commands[commandIndex];
+      if (command === undefined) {
+        throw new RunReplayError(
+          eventIndex,
+          `command settlement references unknown command "${event.commandId}"`,
+        );
+      }
+      if (command.settlement !== null) {
+        throw new RunReplayError(eventIndex, `command "${event.commandId}" is already settled`);
+      }
+      const nextUnsettledCommand = current.commands.find(
+        (candidate) => candidate.settlement === null,
+      );
+      if (nextUnsettledCommand?.commandId !== event.commandId) {
+        throw new RunReplayError(
+          eventIndex,
+          `command "${event.commandId}" settled out of order before earlier command "${nextUnsettledCommand?.commandId ?? "none"}"`,
+        );
+      }
+      validateAgentCommandSettlement(command, event.outcome, eventIndex);
+      const commands = [...current.commands];
+      commands[commandIndex] = deepFreeze({
+        ...command,
+        settlement: { outcome: structuredClone(event.outcome), settledAt: event.at },
+      });
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        commands: Object.freeze(commands),
+      });
+      const commandEvidence = event.outcome.evidence;
+      if (commandEvidence !== null) {
+        try {
+          resources = addRunResources(resources, {
+            artifactBytes: retainedArtifactBytes([commandEvidence.stdout, commandEvidence.stderr]),
+          });
+        } catch (error) {
+          throw resourceReplayError(eventIndex, error);
+        }
+      }
+      break;
+    }
     case "node_effect_settled": {
       const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
       if (current.effectProtocol !== DURABLE_EFFECT_PROTOCOL) {
@@ -4658,7 +4908,14 @@ export function appendRunEvent(
       requireNextRunningOutcome(nodes, event.nodeId, eventIndex);
       const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
       validateDurableEffectProjection(current, event.evidence, event, eventIndex);
-      validateEvidenceIntegrity(event.evidence, event, eventIndex, current.effectProtocol === null);
+      validateDurableAgentCommandProjection(current, event.evidence, event, eventIndex);
+      validateEvidenceIntegrity(
+        event.evidence,
+        event,
+        eventIndex,
+        current.effectProtocol === null,
+        current.commands.some((command) => agentCommandSideEffectStatus(command) !== "none"),
+      );
       validateAgentCapabilityEvidenceProjection(
         currentState.capabilitySnapshot,
         currentState.capabilityRequirements[event.nodeId],
@@ -4712,12 +4969,14 @@ export function appendRunEvent(
       requireNextRunningOutcome(nodes, event.nodeId, eventIndex);
       const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
       validateDurableEffectProjection(current, event.evidence, event, eventIndex);
+      validateDurableAgentCommandProjection(current, event.evidence, event, eventIndex);
       if (event.evidence !== null) {
         validateEvidenceIntegrity(
           event.evidence,
           event,
           eventIndex,
           current.effectProtocol === null,
+          current.commands.some((command) => agentCommandSideEffectStatus(command) !== "none"),
         );
         validateAgentCapabilityEvidenceProjection(
           currentState.capabilitySnapshot,
@@ -7496,6 +7755,275 @@ function validateDurableEffectProjection(
   }
 }
 
+function validatePreparedAgentCommand(
+  event: NodeAgentCommandPreparedEvent,
+  eventIndex: number,
+): void {
+  if (event.operationDigest !== calculateAgentCommandDigest(event.request)) {
+    throw new RunReplayError(eventIndex, "agent command operation digest is invalid");
+  }
+  const decision = event.decision;
+  if (
+    decision.runId !== event.runId ||
+    decision.workflowId !== event.workflowId ||
+    decision.nodeId !== event.nodeId ||
+    decision.attempt !== event.attempt ||
+    decision.authority !== "execute" ||
+    decision.action !== "process.execute" ||
+    decision.target !== event.request.executable ||
+    decision.operationDigest !== event.operationDigest ||
+    decision.outcome !== "allowed" ||
+    decision.reason !== "operation_declared"
+  ) {
+    throw new RunReplayError(
+      eventIndex,
+      "agent command preparation does not match its exact allowed process authorization",
+    );
+  }
+  const expectedRequestDigest = calculatePolicyRequestDigest({
+    version: decision.version,
+    runId: decision.runId,
+    workflowId: decision.workflowId,
+    nodeId: decision.nodeId,
+    attempt: decision.attempt,
+    authority: decision.authority,
+    action: decision.action,
+    target: decision.target,
+    operationDigest: decision.operationDigest,
+  });
+  if (decision.requestDigest !== expectedRequestDigest) {
+    throw new RunReplayError(eventIndex, "agent command policy request digest is invalid");
+  }
+}
+
+function validateAgentCommandSettlement(
+  command: NodeAgentCommandRunState,
+  outcome: AgentCommandSettlementOutcome,
+  eventIndex: number,
+): void {
+  const evidence = outcome.evidence;
+  if (evidence !== null) {
+    if (evidence.sandbox === undefined) {
+      throw new RunReplayError(
+        eventIndex,
+        "agent command settlement evidence is missing sandbox provenance",
+      );
+    }
+    if (
+      evidence.executable !== command.request.executable ||
+      !sameStrings(evidence.args, command.request.args)
+    ) {
+      throw new RunReplayError(
+        eventIndex,
+        "agent command settlement evidence does not match its prepared request",
+      );
+    }
+    validateCommandOutputHashes(evidence, eventIndex);
+    validateAgentCommandTerminationEvidence(evidence, eventIndex);
+  }
+  if (
+    outcome.status === "succeeded" &&
+    (outcome.evidence.exitCode !== 0 ||
+      outcome.evidence.signal !== null ||
+      outcome.evidence.timedOut ||
+      outcome.evidence.terminationStatus !== "not-required")
+  ) {
+    throw new RunReplayError(eventIndex, "successful agent command settlement is not successful");
+  }
+  if (outcome.status === "failed" && outcome.error.retryable) {
+    throw new RunReplayError(eventIndex, "agent command settlement cannot be retryable");
+  }
+  if (outcome.status === "failed") {
+    validateFailedAgentCommandSettlement(outcome, eventIndex);
+  }
+}
+
+function validateFailedAgentCommandSettlement(
+  outcome: Extract<AgentCommandSettlementOutcome, { readonly status: "failed" }>,
+  eventIndex: number,
+): void {
+  const evidence = outcome.evidence;
+  if (evidence === null) {
+    if (
+      outcome.error.sideEffectStatus !== "none" ||
+      ![
+        "command_platform_unsupported",
+        "command_timeout",
+        "command_aborted",
+        "command_spawn_failed",
+        "command_sandbox_unavailable",
+        "command_sandbox_cleanup_failed",
+      ].includes(outcome.error.code)
+    ) {
+      throw new RunReplayError(
+        eventIndex,
+        "agent command failure without process evidence has an invalid code or side-effect status",
+      );
+    }
+    return;
+  }
+  if (outcome.error.sideEffectStatus !== "uncertain") {
+    throw new RunReplayError(
+      eventIndex,
+      "agent command failure with process evidence requires uncertain side-effect status",
+    );
+  }
+  const consistent =
+    (outcome.error.code === "command_sandbox_cleanup_failed" &&
+      evidence.terminationStatus !== "unconfirmed") ||
+    (outcome.error.code === "command_termination_failed" &&
+      evidence.terminationStatus === "unconfirmed") ||
+    (outcome.error.code === "command_timeout" &&
+      evidence.timedOut &&
+      !evidence.aborted &&
+      evidence.terminationStatus === "confirmed") ||
+    (outcome.error.code === "command_aborted" &&
+      !evidence.timedOut &&
+      evidence.aborted &&
+      evidence.terminationStatus === "confirmed") ||
+    (outcome.error.code === "command_signaled" &&
+      !evidence.timedOut &&
+      !evidence.aborted &&
+      evidence.signal !== null &&
+      evidence.terminationStatus === "not-required") ||
+    (outcome.error.code === "command_failed" &&
+      !evidence.timedOut &&
+      !evidence.aborted &&
+      evidence.signal === null &&
+      evidence.exitCode !== null &&
+      evidence.exitCode !== 0 &&
+      evidence.terminationStatus === "not-required");
+  if (!consistent) {
+    throw new RunReplayError(
+      eventIndex,
+      "agent command failure code contradicts its settlement evidence",
+    );
+  }
+}
+
+function validateAgentCommandTerminationEvidence(
+  evidence: AgentCommandEvidence,
+  eventIndex: number,
+): void {
+  const interruptionCount = Number(evidence.timedOut) + Number(evidence.aborted);
+  const terminationRequired = evidence.terminationStatus !== "not-required";
+  if (interruptionCount > 1 || terminationRequired !== (interruptionCount === 1)) {
+    throw new RunReplayError(
+      eventIndex,
+      "agent command timeout, abort, and termination evidence contradict each other",
+    );
+  }
+}
+
+function validateCommandOutputHashes(evidence: CommandEvidence, eventIndex: number): void {
+  const stdoutRetainedHash = sha256(evidence.stdout);
+  const stderrRetainedHash = sha256(evidence.stderr);
+  if (
+    evidence.stdoutRetainedHash !== stdoutRetainedHash ||
+    evidence.stdoutRetainedBytes !== Buffer.byteLength(evidence.stdout, "utf8")
+  ) {
+    throw new RunReplayError(eventIndex, "agent command retained stdout integrity is invalid");
+  }
+  if (
+    evidence.stderrRetainedHash !== stderrRetainedHash ||
+    evidence.stderrRetainedBytes !== Buffer.byteLength(evidence.stderr, "utf8")
+  ) {
+    throw new RunReplayError(eventIndex, "agent command retained stderr integrity is invalid");
+  }
+  if (evidence.stdoutTruncated === (evidence.stdoutHash === stdoutRetainedHash)) {
+    throw new RunReplayError(
+      eventIndex,
+      "agent command stdout truncation/full-stream hash relation is invalid",
+    );
+  }
+  if (evidence.stderrTruncated === (evidence.stderrHash === stderrRetainedHash)) {
+    throw new RunReplayError(
+      eventIndex,
+      "agent command stderr truncation/full-stream hash relation is invalid",
+    );
+  }
+}
+
+function validateDurableAgentCommandProjection(
+  node: NodeRunState,
+  evidence: NodeEvidence | null,
+  event: NodeSucceededEvent | NodeFailedEvent,
+  eventIndex: number,
+): void {
+  if (node.commandProtocol === null) {
+    return;
+  }
+  const unresolved = node.commands.find((command) => command.settlement === null);
+  if (unresolved !== undefined) {
+    throw new RunReplayError(
+      eventIndex,
+      `node cannot complete while unresolved command "${unresolved.commandId}" remains prepared`,
+    );
+  }
+  if (node.commands.length > 0 && evidence?.kind !== "agent") {
+    throw new RunReplayError(
+      eventIndex,
+      "agent command authorization evidence is missing from the terminal agent evidence",
+    );
+  }
+  if (evidence?.kind === "agent") {
+    const matchedDecisionIndexes = new Set<number>();
+    for (const command of node.commands) {
+      const matchingDecisionIndex = evidence.policyDecisions.findIndex(
+        (decision, decisionIndex) =>
+          !matchedDecisionIndexes.has(decisionIndex) &&
+          decision.sequence === command.decision.sequence &&
+          decision.requestDigest === command.decision.requestDigest &&
+          decision.action === "process.execute" &&
+          decision.operationDigest === command.operationDigest &&
+          decision.outcome === "allowed",
+      );
+      if (matchingDecisionIndex === -1) {
+        throw new RunReplayError(
+          eventIndex,
+          `agent command "${command.commandId}" has no distinct unused terminal authorization evidence`,
+        );
+      }
+      matchedDecisionIndexes.add(matchingDecisionIndex);
+    }
+  }
+  const unconfirmedTermination = node.commands.some(
+    (command) => command.settlement?.outcome.evidence?.terminationStatus === "unconfirmed",
+  );
+  if (event.type === "node_succeeded" && unconfirmedTermination) {
+    throw new RunReplayError(
+      eventIndex,
+      "agent node cannot succeed after unconfirmed command termination",
+    );
+  }
+  if (event.type !== "node_failed") {
+    return;
+  }
+  const statuses = node.commands.map(agentCommandSideEffectStatus);
+  if (statuses.includes("uncertain") && event.error.sideEffectStatus !== "uncertain") {
+    throw new RunReplayError(
+      eventIndex,
+      "uncertain agent command settlement requires uncertain failure side-effect status",
+    );
+  }
+  if (statuses.includes("committed") && event.error.sideEffectStatus === "none") {
+    throw new RunReplayError(
+      eventIndex,
+      "completed agent command cannot have side-effect-free failure status",
+    );
+  }
+}
+
+function agentCommandSideEffectStatus(
+  command: NodeAgentCommandRunState,
+): NodeFailure["sideEffectStatus"] {
+  const outcome = command.settlement?.outcome;
+  if (outcome === undefined) {
+    return "uncertain";
+  }
+  return outcome.status === "succeeded" ? "committed" : outcome.error.sideEffectStatus;
+}
+
 function sameEffectReceipt(left: AgentEffectReceipt, right: AgentEffectReceipt): boolean {
   return (
     left.version === right.version &&
@@ -7518,6 +8046,7 @@ function validateEvidenceIntegrity(
   event: NodeSucceededEvent | NodeFailedEvent,
   eventIndex: number,
   requireContiguousReceiptSequence: boolean,
+  hasDurableCommandSideEffect = false,
 ): void {
   if (
     evidence.kind === "child" &&
@@ -7540,6 +8069,7 @@ function validateEvidenceIntegrity(
         event,
         eventIndex,
         requireContiguousReceiptSequence,
+        hasDurableCommandSideEffect,
       );
     }
   }
@@ -7636,7 +8166,8 @@ function validateEvidenceIntegrity(
     if (
       event.type === "node_failed" &&
       event.error.sideEffectStatus === "committed" &&
-      evidence.effectReceipts.length === 0
+      evidence.effectReceipts.length === 0 &&
+      !hasDurableCommandSideEffect
     ) {
       throw new RunReplayError(
         eventIndex,
@@ -7688,6 +8219,8 @@ function pendingNodeState(): NodeRunState {
     childRun: null,
     effectProtocol: null,
     effects: Object.freeze([]),
+    commandProtocol: null,
+    commands: Object.freeze([]),
     interruptedAttempts: Object.freeze([]),
     control: null,
     omission: null,
@@ -7708,6 +8241,12 @@ function validateInterruptedAttemptRecovery(
     throw new RunReplayError(
       eventIndex,
       `fresh recovery attempts are exhausted at attempt ${node.attempt}`,
+    );
+  }
+  if (node.commandProtocol !== null || node.commands.length > 0) {
+    throw new RunReplayError(
+      eventIndex,
+      "fresh recovery cannot retry an execution-capable agent attempt",
     );
   }
 
@@ -7772,6 +8311,13 @@ export function nodeEffectId(eventSequence: number): string {
     throw new RangeError("effect event sequence must be a positive safe integer");
   }
   return `effect-${eventSequence}`;
+}
+
+export function nodeAgentCommandId(eventSequence: number): string {
+  if (!Number.isSafeInteger(eventSequence) || eventSequence <= 0) {
+    throw new RangeError("agent command event sequence must be a positive safe integer");
+  }
+  return `command-${eventSequence}`;
 }
 
 function requireNode(

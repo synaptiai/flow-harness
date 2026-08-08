@@ -154,8 +154,8 @@ const agentConfigSchema = z
     prompt: z.string().trim().min(1).max(262_144),
     model: modelSchema,
     tools: z
-      .array(z.enum(["read", "ls", "edit"]))
-      .max(3)
+      .array(z.enum(["read", "ls", "edit", "exec"]))
+      .max(4)
       .refine((tools) => new Set(tools).size === tools.length, "agent tools must be unique")
       .default([]),
     skills: z
@@ -173,6 +173,13 @@ const agentConfigSchema = z
         code: "custom",
         path: ["skills"],
         message: "agent skills require the declared read tool for progressive disclosure",
+      });
+    }
+    if (agent.recovery !== undefined && agent.tools.includes("exec")) {
+      context.addIssue({
+        code: "custom",
+        path: ["recovery"],
+        message: "fresh agent recovery is not supported with arbitrary command execution",
       });
     }
   });

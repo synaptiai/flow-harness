@@ -29,11 +29,11 @@ interface PolicyOperationBase {
 
 export type PolicyOperation =
   | (PolicyOperationBase & {
-      readonly action: "filesystem.write";
+      readonly action: "filesystem.write" | "process.execute";
       readonly operationDigest: string;
     })
   | (PolicyOperationBase & {
-      readonly action: Exclude<PolicyAction, "filesystem.write">;
+      readonly action: Exclude<PolicyAction, "filesystem.write" | "process.execute">;
       readonly operationDigest?: string;
     });
 

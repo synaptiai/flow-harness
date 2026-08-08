@@ -1,13 +1,13 @@
+import { createHash, type Hash } from "node:crypto";
 import {
   createAgentSession,
   createExtensionRuntime,
   ModelRuntime,
   type ResourceLoader,
-  type SessionStats,
   SessionManager,
+  type SessionStats,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { createHash, type Hash } from "node:crypto";
 
 import type {
   AgentExecutor,
@@ -24,15 +24,16 @@ import {
   type CapabilitySnapshot,
   createAgentCapabilityEvidence,
 } from "../../domain/capability/agent-skills.js";
-import type { AgentEffectReceipt, AgentEvidence, NodeFailure } from "../../domain/run/events.js";
-import type { AgentModelUsage } from "../../domain/run/budget.js";
 import { PolicyBroker } from "../../domain/policy/broker.js";
 import type { PolicyAction, PolicyDecision } from "../../domain/policy/types.js";
+import type { AgentModelUsage } from "../../domain/run/budget.js";
+import type { AgentEffectReceipt, AgentEvidence, NodeFailure } from "../../domain/run/events.js";
 import type {
   AgentToolName,
   CompiledAgentNode,
   ThinkingLevel,
 } from "../../domain/workflow/types.js";
+import { AgentCommandRecorder } from "./agent-command-recorder.js";
 import { AgentEffectRecorder } from "./agent-effect-recorder.js";
 import { createWorkspaceAgentTools } from "./workspace-agent-tools.js";
 
@@ -48,6 +49,7 @@ export interface PiAgentRunRequest {
   readonly policyBroker: PolicyBroker;
   readonly protectedPaths: readonly string[];
   readonly effectRecorder: AgentEffectRecorder;
+  readonly commandRecorder?: AgentCommandRecorder;
   readonly capabilities?: {
     readonly snapshot: CapabilitySnapshot;
     readonly selected: readonly string[];
@@ -138,6 +140,15 @@ export class PiAgentExecutor implements AgentExecutor {
         "writable agent execution requires a durable effect journal",
       );
     }
+    if (
+      node.agent.tools.includes("exec") &&
+      (context.agentCommandJournal === undefined || context.agentCommandExecutor === undefined)
+    ) {
+      return agentFailure(
+        "pi_command_journal_unavailable",
+        "agent command execution requires the shared sandbox executor and a durable command journal",
+      );
+    }
     const attribution = {
       runId: context.runId,
       workflowId: context.workflowId,
@@ -146,6 +157,39 @@ export class PiAgentExecutor implements AgentExecutor {
     } as const;
     const policyBroker = new PolicyBroker(attribution, policyActionsForTools(node.agent.tools));
     const effectRecorder = new AgentEffectRecorder(attribution, context.effectJournal);
+    const commandBudgetController = new AbortController();
+    let commandBudgetExhausted = false;
+    let resolveCommandBudgetExhausted: () => void = () => undefined;
+    const commandBudgetExhaustion = new Promise<void>((resolve) => {
+      resolveCommandBudgetExhausted = resolve;
+    });
+    const commandSafetyController = new AbortController();
+    let commandTerminationUnconfirmed = false;
+    let resolveCommandTerminationUnconfirmed: () => void = () => undefined;
+    const commandTerminationUnconfirmedSignal = new Promise<void>((resolve) => {
+      resolveCommandTerminationUnconfirmed = resolve;
+    });
+    const commandRecorder = new AgentCommandRecorder(
+      context.agentCommandExecutor,
+      context.agentCommandJournal,
+      context,
+      () => {
+        if (commandBudgetExhausted) {
+          return;
+        }
+        commandBudgetExhausted = true;
+        commandBudgetController.abort(new Error("Flow artifact budget exhausted"));
+        resolveCommandBudgetExhausted();
+      },
+      () => {
+        if (commandTerminationUnconfirmed) {
+          return;
+        }
+        commandTerminationUnconfirmed = true;
+        commandSafetyController.abort(new Error("Flow command termination unconfirmed"));
+        resolveCommandTerminationUnconfirmed();
+      },
+    );
     let observedUsage: AgentModelUsage | undefined;
     let observedCapabilityEvidence = capabilityEvidence;
     let closedPolicyDecisions: readonly PolicyDecision[] | undefined;
@@ -158,9 +202,11 @@ export class PiAgentExecutor implements AgentExecutor {
       closedEffectReceipts ??= effectRecorder.close();
       return closedEffectReceipts;
     };
+    const closeCommands = () => commandRecorder.close();
     const policyFailureEvidence = (): AgentEvidence | null => {
       const policyDecisions = closePolicy();
       const effectReceipts = closeEffects();
+      closeCommands();
       if (
         policyDecisions.length === 0 &&
         effectReceipts.length === 0 &&
@@ -180,13 +226,25 @@ export class PiAgentExecutor implements AgentExecutor {
       );
     };
     const currentSideEffectStatus = (forceUncertain = false) =>
-      sideEffectStatus(effectRecorder.snapshot(), forceUncertain);
+      combineSideEffectStatuses(
+        sideEffectStatus(effectRecorder.snapshot(), forceUncertain),
+        commandRecorder.sideEffectStatus(forceUncertain),
+      );
 
     const timeoutController = new AbortController();
     const combinedSignal =
       context.signal === undefined
-        ? timeoutController.signal
-        : AbortSignal.any([context.signal, timeoutController.signal]);
+        ? AbortSignal.any([
+            timeoutController.signal,
+            commandBudgetController.signal,
+            commandSafetyController.signal,
+          ])
+        : AbortSignal.any([
+            context.signal,
+            timeoutController.signal,
+            commandBudgetController.signal,
+            commandSafetyController.signal,
+          ]);
     let timedOut = false;
     let timeoutHandle: NodeJS.Timeout | undefined;
     let removeExternalAbortListener: () => void = () => undefined;
@@ -207,6 +265,7 @@ export class PiAgentExecutor implements AgentExecutor {
           policyBroker,
           protectedPaths: context.protectedPaths,
           effectRecorder,
+          commandRecorder,
           ...(context.capabilitySnapshot === undefined || node.agent.skills.length === 0
             ? {}
             : {
@@ -259,12 +318,33 @@ export class PiAgentExecutor implements AgentExecutor {
         runPromise.then((result) => ({ kind: "result" as const, result })),
         timeout.then(() => ({ kind: "timeout" as const })),
         externalAbort.then(() => ({ kind: "external_abort" as const })),
+        commandBudgetExhaustion.then(() => ({ kind: "artifact_budget" as const })),
+        commandTerminationUnconfirmedSignal.then(() => ({
+          kind: "command_termination_unconfirmed" as const,
+        })),
       ]);
 
+      if (settled.kind === "artifact_budget") {
+        const cleanupSettled = await settlesAgentCleanupWithin(
+          runPromise,
+          effectRecorder,
+          commandRecorder,
+          this.abortGraceMs,
+        );
+        return agentFailure(
+          "pi_agent_artifact_budget_exhausted",
+          cleanupSettled
+            ? "agent command output exhausted the run artifact budget"
+            : `agent command output exhausted the run artifact budget and abort cleanup did not settle within ${this.abortGraceMs}ms`,
+          currentSideEffectStatus(!cleanupSettled),
+          policyFailureEvidence(),
+        );
+      }
       if (settled.kind === "timeout") {
         const cleanupSettled = await settlesAgentCleanupWithin(
           runPromise,
           effectRecorder,
+          commandRecorder,
           this.abortGraceMs,
         );
         return agentFailure(
@@ -280,6 +360,7 @@ export class PiAgentExecutor implements AgentExecutor {
         const cleanupSettled = await settlesAgentCleanupWithin(
           runPromise,
           effectRecorder,
+          commandRecorder,
           this.abortGraceMs,
         );
         const message = abortMessage(context.signal);
@@ -292,11 +373,60 @@ export class PiAgentExecutor implements AgentExecutor {
           policyFailureEvidence(),
         );
       }
+      if (settled.kind === "command_termination_unconfirmed") {
+        const cleanupSettled = await settlesAgentCleanupWithin(
+          runPromise,
+          effectRecorder,
+          commandRecorder,
+          this.abortGraceMs,
+        );
+        return agentFailure(
+          "pi_agent_command_termination_unconfirmed",
+          cleanupSettled
+            ? "agent command process-tree termination could not be confirmed"
+            : `agent command process-tree termination could not be confirmed and abort cleanup did not settle within ${this.abortGraceMs}ms`,
+          "uncertain",
+          policyFailureEvidence(),
+        );
+      }
       const result = settled.result;
+      if (commandTerminationUnconfirmed) {
+        const cleanupSettled = await settlesAgentCleanupWithin(
+          runPromise,
+          effectRecorder,
+          commandRecorder,
+          this.abortGraceMs,
+        );
+        return agentFailure(
+          "pi_agent_command_termination_unconfirmed",
+          cleanupSettled
+            ? "agent command process-tree termination could not be confirmed"
+            : `agent command process-tree termination could not be confirmed and abort cleanup did not settle within ${this.abortGraceMs}ms`,
+          "uncertain",
+          policyFailureEvidence(),
+        );
+      }
+      if (commandBudgetExhausted) {
+        const cleanupSettled = await settlesAgentCleanupWithin(
+          runPromise,
+          effectRecorder,
+          commandRecorder,
+          this.abortGraceMs,
+        );
+        return agentFailure(
+          "pi_agent_artifact_budget_exhausted",
+          cleanupSettled
+            ? "agent command output exhausted the run artifact budget"
+            : `agent command output exhausted the run artifact budget and abort cleanup did not settle within ${this.abortGraceMs}ms`,
+          currentSideEffectStatus(!cleanupSettled),
+          policyFailureEvidence(),
+        );
+      }
       if (isAborted(context.signal)) {
         const cleanupSettled = await settlesAgentCleanupWithin(
           runPromise,
           effectRecorder,
+          commandRecorder,
           this.abortGraceMs,
         );
         const message = abortMessage(context.signal);
@@ -312,6 +442,7 @@ export class PiAgentExecutor implements AgentExecutor {
       const normalized = normalizeAgentResult(result, maxOutputBytes);
       const policyDecisions = closePolicy();
       const effectReceipts = closeEffects();
+      closeCommands();
       const completedCapabilityEvidence =
         capabilityEvidence === undefined ? undefined : observedCapabilityEvidence;
       const evidence: AgentEvidence = {
@@ -357,7 +488,10 @@ export class PiAgentExecutor implements AgentExecutor {
           boundedMessage(
             result.errorMessage ?? `Pi session ended with stop reason "${result.stopReason}"`,
           ),
-          sideEffectStatus(effectReceipts),
+          combineSideEffectStatuses(
+            sideEffectStatus(effectReceipts),
+            commandRecorder.sideEffectStatus(),
+          ),
           policyDecisions.length === 0 &&
             effectReceipts.length === 0 &&
             result.usage === undefined &&
@@ -380,11 +514,54 @@ export class PiAgentExecutor implements AgentExecutor {
         evidence,
       };
     } catch (error) {
+      if (commandTerminationUnconfirmed) {
+        const cleanupSettled =
+          activeRunPromise === undefined
+            ? true
+            : await settlesAgentCleanupWithin(
+                activeRunPromise,
+                effectRecorder,
+                commandRecorder,
+                this.abortGraceMs,
+              );
+        return agentFailure(
+          "pi_agent_command_termination_unconfirmed",
+          cleanupSettled
+            ? "agent command process-tree termination could not be confirmed"
+            : `agent command process-tree termination could not be confirmed and abort cleanup did not settle within ${this.abortGraceMs}ms`,
+          "uncertain",
+          policyFailureEvidence(),
+        );
+      }
+      if (commandBudgetExhausted) {
+        const cleanupSettled =
+          activeRunPromise === undefined
+            ? true
+            : await settlesAgentCleanupWithin(
+                activeRunPromise,
+                effectRecorder,
+                commandRecorder,
+                this.abortGraceMs,
+              );
+        return agentFailure(
+          "pi_agent_artifact_budget_exhausted",
+          cleanupSettled
+            ? "agent command output exhausted the run artifact budget"
+            : `agent command output exhausted the run artifact budget and abort cleanup did not settle within ${this.abortGraceMs}ms`,
+          currentSideEffectStatus(!cleanupSettled),
+          policyFailureEvidence(),
+        );
+      }
       if (timedOut) {
         const cleanupSettled =
           activeRunPromise === undefined
             ? true
-            : await settlesAgentCleanupWithin(activeRunPromise, effectRecorder, this.abortGraceMs);
+            : await settlesAgentCleanupWithin(
+                activeRunPromise,
+                effectRecorder,
+                commandRecorder,
+                this.abortGraceMs,
+              );
         return agentFailure(
           "pi_agent_timeout",
           cleanupSettled
@@ -398,7 +575,12 @@ export class PiAgentExecutor implements AgentExecutor {
         const cleanupSettled =
           activeRunPromise === undefined
             ? true
-            : await settlesAgentCleanupWithin(activeRunPromise, effectRecorder, this.abortGraceMs);
+            : await settlesAgentCleanupWithin(
+                activeRunPromise,
+                effectRecorder,
+                commandRecorder,
+                this.abortGraceMs,
+              );
         const message = abortMessage(context.signal);
         return agentFailure(
           "pi_agent_aborted",
@@ -418,6 +600,7 @@ export class PiAgentExecutor implements AgentExecutor {
         policyFailureEvidence(),
       );
     } finally {
+      commandRecorder.close();
       removeExternalAbortListener();
       if (timeoutHandle !== undefined) {
         clearTimeout(timeoutHandle);
@@ -433,9 +616,14 @@ class PiCapabilityEvidenceError extends Error {
 async function settlesAgentCleanupWithin(
   runPromise: Promise<PiAgentRunResult>,
   effectRecorder: AgentEffectRecorder,
+  commandRecorder: AgentCommandRecorder,
   timeoutMs: number,
 ): Promise<boolean> {
-  const cleanup = Promise.allSettled([runPromise, effectRecorder.whenIdle()]).then(() => undefined);
+  const cleanup = Promise.allSettled([
+    runPromise,
+    effectRecorder.whenIdle(),
+    commandRecorder.whenIdle(),
+  ]).then(() => undefined);
   return await settlesWithin(cleanup, timeoutMs);
 }
 
@@ -473,6 +661,9 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
       {
         protectedPaths: request.protectedPaths,
         effectRecorder: request.effectRecorder,
+        ...(request.commandRecorder === undefined
+          ? {}
+          : { commandRecorder: request.commandRecorder }),
         ...(capabilitySession === undefined ? {} : { capabilitySession }),
       },
     );
@@ -591,9 +782,24 @@ function agentFailure(
 }
 
 function policyActionsForTools(tools: readonly AgentToolName[]): readonly PolicyAction[] {
-  return tools.map((tool) =>
-    tool === "read" ? "filesystem.read" : tool === "ls" ? "filesystem.list" : "filesystem.write",
-  );
+  return tools.map((tool) => {
+    switch (tool) {
+      case "read":
+        return "filesystem.read";
+      case "ls":
+        return "filesystem.list";
+      case "edit":
+        return "filesystem.write";
+      case "exec":
+        return "process.execute";
+      default:
+        return assertNever(tool);
+    }
+  });
+}
+
+function assertNever(value: never): never {
+  throw new TypeError(`Unsupported agent tool: ${String(value)}`);
 }
 
 function emptyAgentEvidence(
@@ -656,6 +862,16 @@ function sideEffectStatus(
     return "uncertain";
   }
   return effectReceipts.length > 0 ? "committed" : "none";
+}
+
+function combineSideEffectStatuses(
+  left: NodeFailure["sideEffectStatus"],
+  right: NodeFailure["sideEffectStatus"],
+): NodeFailure["sideEffectStatus"] {
+  if (left === "uncertain" || right === "uncertain") {
+    return "uncertain";
+  }
+  return left === "committed" || right === "committed" ? "committed" : "none";
 }
 
 interface NormalizedAgentResult {

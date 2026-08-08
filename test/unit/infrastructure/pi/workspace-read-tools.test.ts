@@ -1,14 +1,20 @@
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { NodeEffectJournal } from "../../../../src/application/ports.js";
+import type {
+  AgentCommandExecutor,
+  NodeAgentCommandJournal,
+  NodeEffectJournal,
+  NodeExecutionContext,
+} from "../../../../src/application/ports.js";
 import { createAgentSkillSession } from "../../../../src/domain/capability/agent-skill-session.js";
 import { createCapabilitySnapshot } from "../../../../src/domain/capability/agent-skills.js";
 import { PolicyBroker } from "../../../../src/domain/policy/broker.js";
+import { AgentCommandRecorder } from "../../../../src/infrastructure/pi/agent-command-recorder.js";
 import { AgentEffectRecorder } from "../../../../src/infrastructure/pi/agent-effect-recorder.js";
 import { createWorkspaceAgentTools } from "../../../../src/infrastructure/pi/workspace-agent-tools.js";
 
@@ -39,6 +45,100 @@ describe("workspace-confined Pi tools", () => {
     expect(tools.definitions[0]?.description).toContain("UTF-8 text");
     expect(tools.definitions[0]?.description).toContain("image decoding is not supported");
     expect(tools.definitions[0]?.description).not.toMatch(/bash/i);
+  });
+
+  it("authorizes and executes an argv-only command through the durable recorder", async () => {
+    const root = await createTemporaryDirectory();
+    const policy = policyBroker(["process.execute"]);
+    const journalEvents: string[] = [];
+    const toolController = new AbortController();
+    const executor: AgentCommandExecutor = {
+      executeAgentCommand: async (request, context) => {
+        journalEvents.push("execute");
+        expect(context.signal).toBe(toolController.signal);
+        return {
+          status: "failed",
+          error: {
+            code: "command_failed",
+            message: "command exited with code 1",
+            retryable: false,
+            sideEffectStatus: "uncertain",
+          },
+          evidence: {
+            kind: "command",
+            executable: request.executable,
+            args: request.args,
+            exitCode: 1,
+            signal: null,
+            stdout: "tests ran",
+            stderr: "one failed",
+            stdoutHash: sha256("tests ran"),
+            stderrHash: sha256("one failed"),
+            stdoutRetainedHash: sha256("tests ran"),
+            stderrRetainedHash: sha256("one failed"),
+            stdoutRetainedBytes: 9,
+            stderrRetainedBytes: 10,
+            stdoutTruncated: false,
+            stderrTruncated: false,
+            timedOut: false,
+            aborted: false,
+            durationMs: 5,
+            processContainment: "linux-pid-namespace",
+            terminationStatus: "not-required",
+            sandbox: {
+              backend: "test-sandbox",
+              backendVersion: "1",
+              profile: "workspace-write-network-deny-v1",
+              policyDigest: "a".repeat(64),
+            },
+          },
+        };
+      },
+    };
+    const journal: NodeAgentCommandJournal = {
+      prepare: async () => {
+        journalEvents.push("prepare");
+        return {
+          commandId: "command-3",
+          commandSequence: 1,
+          settle: async () => {
+            journalEvents.push("settle");
+            return { artifactBudgetExhausted: false };
+          },
+        };
+      },
+    };
+    const commandRecorder = new AgentCommandRecorder(executor, journal, executionContext(root));
+    const tools = await createWorkspaceAgentTools(root, ["exec"], policy, { commandRecorder });
+    const execTool = tools.definitions[0];
+    if (execTool === undefined) {
+      throw new Error("exec tool was not registered");
+    }
+
+    const result = await execTool.execute(
+      "exec-call",
+      { executable: "npm", args: ["test"], timeoutMs: 10_000 },
+      toolController.signal,
+      undefined,
+      {} as never,
+    );
+
+    expect(tools.names).toEqual(["flow_exec"]);
+    expect(journalEvents).toEqual(["prepare", "execute", "settle"]);
+    expect(result.content).toContainEqual({
+      type: "text",
+      text: expect.stringMatching(
+        /status: failed[\s\S]*exit code: 1[\s\S]*process containment: linux-pid-namespace[\s\S]*termination status: not-required[\s\S]*sandbox backend: test-sandbox[\s\S]*sandbox profile: workspace-write-network-deny-v1[\s\S]*tests ran[\s\S]*one failed/i,
+      ),
+    });
+    expect(policy.snapshot()).toEqual([
+      expect.objectContaining({
+        action: "process.execute",
+        target: "npm",
+        operationDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+        outcome: "allowed",
+      }),
+    ]);
   });
 
   it("enforces confinement through the registered read tool", async () => {
@@ -372,10 +472,12 @@ async function createTemporaryDirectory(): Promise<string> {
 }
 
 function policyBroker(
-  actions: readonly ("filesystem.read" | "filesystem.list" | "filesystem.write")[] = [
-    "filesystem.read",
-    "filesystem.list",
-  ],
+  actions: readonly (
+    | "filesystem.read"
+    | "filesystem.list"
+    | "filesystem.write"
+    | "process.execute"
+  )[] = ["filesystem.read", "filesystem.list"],
 ): PolicyBroker {
   return new PolicyBroker(
     {
@@ -386,6 +488,16 @@ function policyBroker(
     },
     actions,
   );
+}
+
+function executionContext(cwd: string): NodeExecutionContext {
+  return {
+    runId: "run-tools",
+    workflowId: "tools-workflow",
+    attempt: 1,
+    cwd,
+    protectedPaths: [],
+  };
 }
 
 function effectRecorder(

@@ -739,7 +739,7 @@ installation, version solving, arbitrary evaluator code, and reward environments
 
 Every command node and descendant runs through Flow's required SRT adapter. The fixed `workspace-write-network-deny-v1` profile allows the selected workflow directory and a private temporary directory, denies network and undeclared Unix sockets, omits ambient credentials and injection variables from the child environment, and denies writes to the actual run store, `.flow`, `.git`, environment files, and key files. Concurrent same-policy commands share one initialized SRT session but receive distinct temporary directories, environment values, and per-command filesystem configurations. Flow reference-counts wraps, queues a different concurrent workspace or policy until the active session resets, honors cancellation while queued, and resets SRT only after the last compatible command releases. On Linux, Flow resolves SRT's packaged seccomp helper canonically, passes it as the explicit SRT apply path, and re-exposes only that file read-only when the Flow installation lies outside the workflow directory. If SRT is missing, unsupported, degraded, or cannot initialize, the node fails before spawn; Flow has no unsandboxed command fallback.
 
-New command evidence records `anthropic-sandbox-runtime`, its exact installed version, the named profile, and a SHA-256 digest of the semantic policy. The field is optional only when replaying ledgers created before sandbox evidence existed.
+New command evidence records `anthropic-sandbox-runtime`, its exact installed version, the named profile, and a SHA-256 digest of the semantic policy. Generic command-node evidence keeps this field optional only for compatibility with ledgers created before sandbox evidence existed. The `flow.agent-commands/v1` settlement schema always requires sandbox provenance plus retained-prefix hashes and byte counts.
 
 ## Agent node
 
@@ -769,13 +769,47 @@ New command evidence records `anthropic-sandbox-runtime`, its exact installed ve
     args: [test]
 ```
 
-The embedded Pi adapter permits only Flow-owned `read`, `ls`, and `edit` tools. The allowlist may be empty, every name must be unique, and a tool is structurally unavailable unless declared. Every filesystem operation passes through an attempt-scoped Flow policy broker. The broker canonicalizes existing targets and the nearest existing ancestor of missing targets, rejects ordinary lexical traversal and symlink escapes, derives authority from the semantic operation rather than its Pi name, and permits only actions declared by the compiled node. `flow_ls` sorts and bounds one directory listing behind one logical `filesystem.list` authorization; it does not spend policy-decision capacity per returned entry.
+The embedded Pi adapter permits only Flow-owned `read`, `ls`, `edit`, and `exec` tools. The allowlist may be empty, every name must be unique, and a tool is structurally unavailable unless declared. Every tool operation passes through an attempt-scoped Flow policy broker. The broker canonicalizes filesystem targets, derives authority from the semantic operation rather than its Pi name, and permits only actions declared by the compiled node. `flow_ls` sorts and bounds one directory listing behind one logical `filesystem.list` authorization; it does not spend policy-decision capacity per returned entry.
 
 `flow_read` preserves Pi's bounded paging behavior and adds a full-file version marker of the form `sha256:<64-lowercase-hex>`. The digest covers the exact bytes read, not only the displayed page. `flow_edit` accepts `path`, `expectedSha256`, and one to 32 `{oldText,newText}` replacements with at most 256 KiB of replacement text. It edits one existing regular UTF-8 file no larger than 8 MiB. Replacement strings must contain valid Unicode scalar values. Every non-empty `oldText` must occur exactly once, replacements must not overlap, and all matches are computed against the same original content. The edit fails with `stale_version` when the current full-file hash differs. It never performs fuzzy matching, snapshot recovery, or automatic merging.
 
+`flow_exec` accepts only `executable`, optional literal `args`, and optional `timeoutMs`. It defaults
+to 120000 ms and caps the deadline at 600000 ms, the executable at 1024 UTF-8 bytes, 64 arguments,
+each argument at 8192 UTF-8 bytes, and the aggregate vector at 32768 UTF-8 bytes. NUL bytes and
+unknown fields are rejected. There is no shell, environment or working-directory override, stdin,
+PTY, background mode, or implicit network authority. Flow hashes the normalized v1 request,
+requires an exact allowed `process.execute` decision, commits a protocol-v1 prepare event, and only
+then invokes the same SRT-contained process-tree executor used by command nodes. The settlement
+records bounded stdout/stderr, independent hashes and UTF-8 byte counts for the retained prefixes,
+full-stream hashes, truncation, exit/signal, timeout, duration, failure classification, and sandbox
+provenance. The deadline starts before sandbox preparation and includes spawn, execution, and
+confirmed kernel-backed descendant termination. Before SRT initialization, Flow resolves
+Bubblewrap to one canonical executable outside the workspace whose complete path is root-owned and
+not group- or world-writable. Immediately before spawn, Flow verifies both the absolute monotonic
+deadline and one canonical `/bin/bash -c` SRT descriptor. Its parsed argv must bind that same
+absolute executable, place `--new-session` and `--die-with-parent` first, end its active options with
+the secure `--unshare-pid --unshare-user --cap-drop ALL --proc /proc` tail, contain one command
+boundary, and invoke `/bin/bash -c` inside the namespace. Shell operators, substituted outer
+launchers, noncanonical quoting, and lifecycle-looking option values are rejected. An uncooperative sandbox-preparation promise cannot create late spawn
+authority; late preparation is released asynchronously. Commands are serialized as prepare/settle pairs within one
+agent attempt. Nonzero exit and sandbox backend/profile/policy provenance are returned to the agent
+as evidence so it can correct the work; they do not themselves establish workflow completion.
+
+`flow_exec` currently runs only on Linux. macOS Seatbelt confines filesystem/network access for
+ordinary command nodes, but its process-group cleanup cannot contain a descendant that creates a new
+session. Flow therefore returns `command_sandbox_unavailable` and releases sandbox preparation before
+spawning an agent-issued command on macOS. The settlement persists
+`processContainment: linux-pid-namespace`, distinct `timedOut` and `aborted` observations, plus
+`terminationStatus` so replay can verify every termination-related failure classification. If
+termination cannot be confirmed, the durable settlement closes the command audit, aborts the Pi
+session, forbids later command preparation in runtime and replay, and prevents either path from
+publishing terminal success. If termination cannot be confirmed and sandbox cleanup
+also fails, the settlement keeps `command_termination_failed` and `terminationStatus: unconfirmed`
+as the primary truth and appends only bounded cleanup context to its message.
+
 After policy authorization, Flow reserves bounded evidence capacity, acquires a target-local exclusive lock, re-reads and preflights the complete request, writes a same-directory exclusive temporary file, preserves permission bits, syncs it, and rechecks the live target bytes and mode. While still holding the lock and before rename, it syncs a `node_effect_prepared` event containing an event-derived identity, attempt-local sequence, canonical target, operation digest, before/after hashes, and mode. Only then may it atomically rename. After directory sync it settles committed; a post-prepare failure before rename settles not applied; a failure after rename settles unknown when publication remains available. The lock coordinates cooperating same-host Flow processes: a live owner produces `target_busy`, an exited same-host owner is recoverable, and corrupt or foreign-host ownership fails closed. The run store, `.flow` and `.git` segments at any path depth, environment files, private-key names and suffixes, outside paths, and canonical symlink escapes are protected. Pre-prepare failure leaves the target unchanged without an effect event. A later provider failure retains committed receipts and cannot be classified as side-effect-free.
 
-The lock is a cooperative local coordination mechanism, not a security boundary or distributed lease. This application-level check is not atomic against a concurrently hostile process changing path components after canonical authorization; the current release retains its trusted-workspace requirement until agent/tool process isolation lands. Pi's built-in tools are disabled, so Flow does not inherit Pi's fuzzy edit rules, direct-write semantics, or optional executable-download behavior. Pi extensions, skills, prompt templates, themes, context files, and project discovery are disabled for the node session. `timeoutMs` is Flow-owned, defaults to five minutes, and is limited to 24 hours. Agent output is capped at 64 KiB; the ledger retains the bounded text, the complete SHA-256 stream hash, truncation status, ordered policy decisions, and ordered effect receipts, and classifies overflow as `pi_agent_output_limit`. Cancellation aborts the active Pi session; only Pi's terminal `stop` reason is accepted as node success. After timeout or operator cancellation, Flow permits a bounded adapter cleanup grace and waits for both the provider runner and active effect reservations. A runner or effect that still does not settle produces `pi_agent_timeout` or `pi_agent_aborted` with uncertain side-effect status rather than blocking the scheduler indefinitely. Closed audits deny late authorization or receipt publication.
+The lock is a cooperative local coordination mechanism, not a security boundary or distributed lease. This application-level check is not atomic against a concurrently hostile process changing path components after canonical authorization; the current release retains its trusted-workspace requirement until agent/tool process isolation lands. Pi's built-in tools are disabled, so Flow does not inherit Pi's fuzzy edit rules, direct-write semantics, or optional executable-download behavior. Pi extensions, skills, prompt templates, themes, context files, and project discovery are disabled for the node session. `timeoutMs` is Flow-owned, defaults to five minutes, and is limited to 24 hours. Agent output is capped at 64 KiB; the ledger retains the bounded text, the complete SHA-256 stream hash, truncation status, ordered policy decisions, and ordered effect receipts, and classifies overflow as `pi_agent_output_limit`. Cancellation aborts the active Pi session; only Pi's terminal `stop` reason is accepted as node success. After timeout or operator cancellation, Flow permits a bounded adapter cleanup grace and waits for the provider runner plus active edit and command reservations. A runner, effect, or command reservation that still does not settle produces `pi_agent_timeout` or `pi_agent_aborted` with uncertain side-effect status rather than blocking the scheduler indefinitely. Closed audits deny late authorization, receipt publication, or command execution.
 
 `recovery` is optional and is accepted only on agent nodes. The only current mode is `fresh`.
 `maxAttempts` includes the initial attempt, is required when recovery is present, and must be an
@@ -792,6 +826,11 @@ writable state blocks. The retry also requires an attempt below `maxAttempts` an
 `maxNodeStarts`. Declared model-token, reported-cost, or active-execution limits block automatic
 fresh recovery because interrupted consumption is incomplete. See [Recovery and interruption
 safety](recovery.md) for the event ordering and full refusal table.
+
+An agent selecting `exec` cannot declare `recovery`; the compiler rejects the combination because
+arbitrary process execution is never classified as read-only and has no general reconciliation
+proof. A prepared command blocks terminal settlement until its outcome is durable, and an open
+command-capable attempt is never replayed automatically.
 
 Flow disables both Pi assistant-turn retries and provider retries in the embedded session. This
 keeps retry ownership at the Flow attempt layer. Normal model/tool turns inside one live session
@@ -960,9 +999,9 @@ the id to the complete request and rejects reuse with changed input.
 - Detached workers can be adopted by a replacement local supervisor, but they cannot move between
   hosts and do not survive host reboot.
 - The SRT profile is fixed; workflows cannot yet request network, credential injection, or a different sandbox backend.
-- The native sandbox contains command descendants but does not contain the host-side Pi runtime; hostile workloads require a stronger container, microVM, or managed boundary.
-- The only agent mutation is exact single-file edit of an existing UTF-8 file; no create, delete, rename, shell, network, fuzzy patch, or multi-file transaction is exposed.
+- Linux PID namespaces contain agent-command descendants; macOS agent commands fail before spawn because process groups are insufficient. The native sandbox does not contain the host-side Pi runtime; hostile workloads require a stronger container, microVM, or managed boundary.
+- Agent mutation is limited to exact single-file edit of an existing UTF-8 file plus explicitly selected, argv-only sandboxed commands. No direct create, delete, rename, shell, network, fuzzy patch, environment/cwd override, interactive process, background job, or multi-file transaction tool is exposed.
 - No in-flight Pi tool-call approval or opaque session continuation. A fresh retry is a new attempt and is allowed only by the persisted proof gate; it is not a substitute for restoring a live session.
 - Model verifiers, including packaged rubrics, are zero-tool and evidence-bounded but remain probabilistic and not prompt-injection-proof. Arbitrary evaluator code and reward/evaluation environments are not supported.
-- No prepaid hard model-cost cap, provider invoice reconciliation, CPU/memory/disk quota, or artifact-size budget. Per-run graph-node concurrency, detached worker count, and queue depth are separate bounded controls.
+- No prepaid hard model-cost cap, provider invoice reconciliation, or CPU/memory/disk quota. `maxArtifactBytes` bounds logical retained evidence, not physical storage, spill, or disk usage. Per-run graph-node concurrency, detached worker count, and queue depth are separate bounded controls.
 - No schema migration path is promised while the format remains `v1alpha1`.
