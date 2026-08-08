@@ -858,9 +858,8 @@ profiles. `posix-printf-v1` requires the host-controlled `/usr/bin/printf` execu
 non-option format using only `%%` and one `%s` per following data argument, and permits placeholders
 only in those data arguments. `git-status-v1` requires `/usr/bin/git` plus the exact hardened vector
 used by the public example: optional locks, fsmonitor, untracked cache, and submodule inspection are
-disabled. Shells, language
-runtimes, environment dispatchers, executable paths, arbitrary subcommands, and evaluator flags
-therefore cannot validate as command tools.
+disabled. Shells, language runtimes, environment dispatchers, alternate executable identities or
+paths, arbitrary subcommands, and evaluator flags therefore cannot validate as command tools.
 
 The manifest cannot declare code, environment variables, credentials, cwd, stdin, PTY, background
 execution, network, hooks, providers, middleware, or graph behavior. Admission applies the active

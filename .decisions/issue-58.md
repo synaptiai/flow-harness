@@ -139,10 +139,7 @@ spec:
   tool:
     name: project_git_status
     description: Return the current project status.
-    inputs:
-      - name: includeUntracked
-        description: Include untracked paths.
-        type: boolean
+    inputs: []
   driver:
     kind: command
     version: v1
@@ -187,7 +184,7 @@ provider-neutral. A call creates the existing normalized `AgentCommandRequest` p
   version: "1.0.0",
   digest: "<sha256>",
   toolName: "project_git_status",
-  input: { includeUntracked: true },
+  input: {},
   inputDigest: "<sha256>"
 }
 ```
