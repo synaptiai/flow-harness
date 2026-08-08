@@ -29,7 +29,8 @@ Pending nodes retain their normal dependency order and use the lesser of their d
 and remaining active-execution budget. The command prints the same JSON `RunState` shape as
 `flow run` when recovery can continue.
 
-A run that selects Agent Skills or versioned verifiers persists one durable capability snapshot in
+A run that selects Agent Skills, versioned verifiers, or versioned command tools persists one
+durable capability snapshot in
 `run_started`. For a verifier package, replay reparses the captured manifest and reconciles its
 name, exact version, driver kind, definition, manifest hash, package digest, compiled control-graph
 reference, node requirement, and any committed verdict evidence. Resume resolves the package only
@@ -37,6 +38,15 @@ from that durable verifier package snapshot. It never reads `.flow/verifiers`; a
 snapshot must have the exact durable aggregate digest or recovery refuses with `workflow_mismatch`.
 The same rule applies inside a child ledger, which may carry the parent snapshot but can bind only
 its own compiled selections.
+
+For a command tool package, replay reparses the durable command tool package snapshot and
+reconciles its name, exact version, definition, manifest hash, package digest, compiled node
+selection, control-graph command-tool declaration, and every sourced request. A sourced request is
+valid only when replay can reproduce its typed input digest and exact executable, argv, and timeout
+from the frozen definition. Resume never reads `.flow/tools` and never accepts a caller replacement.
+An agent with a package command is command-capable even when it does not declare raw `exec`: an open
+attempt remains `uncertain_operation`, and the compiler rejects fresh recovery because arbitrary
+process effects cannot be reconstructed from workspace observation.
 
 When a concurrent wave was interrupted, Flow processes every open attempt in workflow declaration
 order. It first reconciles every open typed effect in that order, then appends one
@@ -136,7 +146,7 @@ with `uncertain_operation`. A sidecar without an owner-appended decision never g
 | An unconfigured `node_started` has no matching outcome | Preserve any reconciliation prefix, refuse with `uncertain_operation`, and append no retry disposition or `run_resumed` |
 | Run is `succeeded`, `failed`, `cancelled`, or `resource_exhausted` | Refuse with `terminal_run` |
 | Workflow identity, version, digest, budget, node set, persisted control graph, or committed transition order differs | Refuse with `workflow_mismatch` |
-| Durable capability snapshot, verifier package requirement, exact version/kind, or package-use evidence differs | Refuse with `workflow_mismatch`; do not read or substitute the live package catalog |
+| Durable capability snapshot; skill, verifier, or command-tool requirement; exact version/kind; or package-use evidence differs | Refuse with `workflow_mismatch`; do not read or substitute the live package catalog |
 | A new run is resumed with a different normalized execution directory | Refuse with `execution_context_mismatch` |
 | No child event is durable, but a stale deterministic child workspace exists | Discard the uncommitted workspace, recreate it from the parent, and start the child once |
 | A child ledger is nonterminal and its exact manifest, snapshot digest, or workspace is missing or divergent | Refuse with `child_recovery_ineligible`; do not create a replacement child or repeat uncertain work |

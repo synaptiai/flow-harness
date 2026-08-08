@@ -200,9 +200,37 @@ and digest; replay cross-checks that identity with the compiled control graph an
 requirement. Listing, inspection, and validation invoke no verifier, and inspection omits a model
 rubric.
 
-Remote installation, executable extensions, and tool/workflow/policy/UI package manifests remain
-later Gate 6 work. Evaluator manifests are implemented only for the current command/model verifier
+Remote installation, executable extensions, and workflow/policy/UI package manifests remain later
+Gate 6 work. Evaluator manifests are implemented only for the current command/model verifier
 drivers; arbitrary evaluator code and reward environments remain out of scope.
+
+## Command tool packages
+
+**Implemented for strict local declarative command tools.** Flow discovers `TOOL.yaml` below
+`.flow/tools`, validates one exact SemVer identity and one closed scalar model-tool contract, and
+snapshots the exact manifest only when a workflow selects its name and version. The v1 driver is a
+fixed executable plus literal argv template; inputs may occupy only complete argv elements, so
+model values cannot introduce shell structure.
+
+Flow reuses Pi's typed custom-tool seam but not its extension or package loader. It likewise does
+not import OMP's mutable hook/middleware surface or Prime Agent's shared Python kernel. The selected
+definition is translated at the adapter boundary, while the rendered request enters Flow's
+existing agent-command recorder. Policy, optional live approval, sandboxing, process lifecycle,
+write-ahead evidence, cancellation, output bounds, budgets, and replay therefore remain Flow-owned
+and provider-neutral.
+
+Package metadata, exact manifest bytes, definition, requested permission, provenance, trust state,
+version, and digest share the immutable capability snapshot with skills and verifiers. Each agent
+has an exact compiled selection; `run_started` records that requirement and the control graph
+records whether raw `exec` and which packages were available. Detached jobs carry the bytes
+unchanged, children bind only their own subset, and recovery refuses live-source substitution.
+Sourced command events also record the exact tool name, typed input and digest, rendered argv, and
+package identity so replay can derive rather than trust what should have executed.
+
+This ABI is deliberately not a general plugin host. Packages cannot contribute JavaScript,
+Python, Wasm, native payloads, hooks, providers, result middleware, graph nodes, credentials,
+network grants, environment variables, or policy. Remote acquisition and executable drivers remain
+future work behind separate installation and containment contracts.
 
 ## Coupling rules
 

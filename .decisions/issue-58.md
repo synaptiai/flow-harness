@@ -286,11 +286,11 @@ code, remote acquisition, and non-command contributions.
 
 ## Implementation tasks
 
-1. [ ] Build and verify the strict local command-tool package catalog and immutable snapshot.
-2. [ ] Render bounded scalar calls to literal argv without shell semantics.
-3. [ ] Compile and bind exact per-agent package selections.
-4. [ ] Execute selected tools through Flow's existing command governance path.
-5. [ ] Persist requirements and reconcile package calls independently during replay.
-6. [ ] Complete CLI, attached/detached/child/recovery integration.
+1. [x] Build and verify the strict local command-tool package catalog and immutable snapshot.
+2. [x] Render bounded scalar calls to literal argv without shell semantics.
+3. [x] Compile and bind exact per-agent package selections.
+4. [x] Execute selected tools through Flow's existing command governance path.
+5. [x] Persist requirements and reconcile package calls independently during replay.
+6. [x] Complete CLI, attached/detached/child/recovery integration.
 7. [ ] Update public examples, README, architecture, workflow, security, recovery, testing,
    capability, and roadmap documentation; run full and adversarial verification.

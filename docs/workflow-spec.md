@@ -791,6 +791,106 @@ parsed definition so a model rubric is not printed. Packages cannot contribute e
 hooks, tools, models, evidence, graph edges, policy, credentials, or network authority. Remote
 installation, version solving, arbitrary evaluator code, and reward environments are unsupported.
 
+## Versioned command tool packages
+
+An agent may select exact project-local command tools without enabling unrestricted `exec`:
+
+```yaml
+- id: inspect
+  type: agent
+  agent:
+    prompt: Inspect the repository and summarize its state.
+    model: { provider: anthropic, id: claude-sonnet-4-6 }
+    tools: [read]
+    toolPackages:
+      - { name: git-status, version: 1.0.0 }
+```
+
+`toolPackages` is optional and compiles to an empty frozen list. Each entry contains only an exact
+lowercase kebab-case name and exact SemVer version. The complete workflow tree may select at most
+32 distinct names. A package is visible only to the agent nodes that declare it. Two selected
+packages may not expose the same model tool name, and package tools may not collide with Flow's
+built-ins or use the reserved `flow_` prefix. Selection grants only the ability to request that
+declared tool; ordinary policy, approval, sandbox, budget, and evidence rules still apply.
+
+Packages are discovered below `.flow/tools/<path>/<name>/TOOL.yaml`. A directory contains only its
+regular UTF-8 manifest. The v1 shape is:
+
+```yaml
+apiVersion: flow.synapti.ai/v1alpha1
+kind: ToolPackage
+metadata:
+  name: project-report
+  version: 1.2.3
+  description: Produce a bounded project report.
+  license: Apache-2.0
+  compatibility: Requires the reporter executable.
+spec:
+  tool:
+    name: create_project_report
+    description: Produce a report for one project path.
+    inputs:
+      - { name: path, description: Relative path to inspect., type: string }
+      - { name: format, description: Output format., type: enum, values: [json, text] }
+      - { name: limit, description: Maximum entries., type: integer }
+      - { name: verbose, description: Include details., type: boolean }
+  driver:
+    kind: command
+    version: v1
+    executable: reporter
+    args:
+      - "{input:path}"
+      - "{input:format}"
+      - "{input:limit}"
+      - "{input:verbose}"
+    timeoutMs: 10000
+  permissions: [process.execute]
+```
+
+The package declares exactly one provider-safe tool and zero to 32 required scalar inputs. Input
+names are unique; supported types are bounded strings, safe integers, booleans, and bounded string
+enums. Every declared input must occur in at least one exact whole-argument
+`{input:<name>}` placeholder. Partial interpolation and undeclared or unused inputs are rejected.
+String and enum values remain literal, integers render as canonical base-10 text, and booleans
+render as `true` or `false`. No shell parses the rendered vector.
+
+The only driver is `{kind: command, version: v1}` and the only permission is
+`process.execute`. The manifest cannot declare code, environment variables, credentials, cwd,
+stdin, PTY, background execution, network, hooks, providers, middleware, or graph behavior.
+Manifest values have portable package bounds; every concrete rendered call must additionally pass
+the current agent-command envelope, including its 10-minute deadline, 1 KiB executable, 64 argv
+elements, 8 KiB per element, and 32 KiB aggregate argv. Call-bound failures occur before policy or
+spawn.
+
+Discovery is bounded to 32 packages, depth 6, and 2,000 entries. Each manifest is at most 64 KiB.
+Unknown or duplicate fields, YAML aliases, malformed versions, reserved names, symbolic links,
+special or extra entries, source races, duplicate package identities, and size overflow fail
+closed. `flow tools list` reports bounded authority metadata; `flow tools inspect <name> --version
+<exact>` snapshots and reports the exact definition, provenance, and hashes without encoded source
+bytes; `flow tools validate` snapshots every discovered manifest. These commands never invoke a
+driver.
+
+Admission collects all root and child selections and adds exact manifest bytes, parsed definition,
+trust/provenance metadata, and nested digests to the immutable capability snapshot. `run_started`
+records per-agent requirements, and its control graph records whether raw `exec` plus which package
+tools were available. Detached jobs carry the same bytes, children bind only their declared subset,
+and resume accepts only the durable snapshot. There is no live-source fallback.
+
+At model-session construction, the adapter creates definitions only for the selected packages. A
+call validates a plain closed input object, calculates a typed input digest, renders literal argv,
+and creates the ordinary normalized `flow.agent-commands/v1` request with package source metadata.
+The existing broker derives `process.execute`; configured `toolApproval.exec` applies equally to
+raw and packaged commands. The recorder commits the exact request before spawn and settles it
+through the same Linux PID-namespace-contained sandbox path. The existing per-agent command-call cap
+counts raw and packaged commands together.
+
+Replay independently rerenders every sourced command from its durable typed input and package
+definition. It reconciles package name/version/digest, model tool name, input digest, executable,
+argv, timeout, compiled node selection, control graph, policy decision, approval, preparation, and
+settlement. A package-only agent rejects source-free commands. An interrupted command-capable agent
+attempt is never fresh-retried. Remote acquisition, dependency installation, signatures, version
+solving, executable package code, and non-command drivers are unsupported.
+
 Every command node and descendant runs through Flow's required SRT adapter. The fixed `workspace-write-network-deny-v1` profile allows the selected workflow directory and a private temporary directory, denies network and undeclared Unix sockets, omits ambient credentials and injection variables from the child environment, and denies writes to the actual run store, `.flow`, `.git`, environment files, and key files. Concurrent same-policy commands share one initialized SRT session but receive distinct temporary directories, environment values, and per-command filesystem configurations. Flow reference-counts wraps, queues a different concurrent workspace or policy until the active session resets, honors cancellation while queued, and resets SRT only after the last compatible command releases. On Linux, Flow resolves SRT's packaged seccomp helper canonically, passes it as the explicit SRT apply path, and re-exposes only that file read-only when the Flow installation lies outside the workflow directory. If SRT is missing, unsupported, degraded, or cannot initialize, the node fails before spawn; Flow has no unsandboxed command fallback.
 
 New command evidence records `anthropic-sandbox-runtime`, its exact installed version, the named profile, and a SHA-256 digest of the semantic policy. Generic command-node evidence keeps this field optional only for compatibility with ledgers created before sandbox evidence existed. The `flow.agent-commands/v1` settlement schema always requires sandbox provenance plus retained-prefix hashes and byte counts.

@@ -1,0 +1,24 @@
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata:
+  id: versioned-command-tool
+  description: Give one agent an exact reusable Git status command through the Flow command boundary.
+nodes:
+  - id: inspect
+    type: agent
+    agent:
+      prompt: Inspect the repository. Use project_git_status once, then summarize the working-tree state.
+      model:
+        provider: anthropic
+        id: claude-sonnet-4-6
+        thinking: medium
+      tools: [read]
+      toolPackages:
+        - { name: git-status, version: 1.0.0 }
+      timeoutMs: 300000
+  - id: publish
+    type: result
+    dependsOn: [inspect]
+    result:
+      source: { nodeId: inspect, field: agent.text }
+      schema: { type: string, maxLength: 65536 }
