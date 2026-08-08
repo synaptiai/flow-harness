@@ -1,73 +1,81 @@
-import { z } from "zod";
 import { createHash } from "node:crypto";
 import { isAbsolute, normalize } from "node:path";
-
+import { z } from "zod";
 import {
-  GoalEvaluationError,
+  type CommandApprovalOperation,
+  calculateCommandApprovalOperationDigest,
+  commandApprovalRequestId,
+  isValidApprovalActor,
+} from "../approval/command-approval.js";
+import {
+  calculateWorkflowApprovalRequestDigest,
+  type WorkflowApprovalRequest,
+  workflowApprovalDenialMessage,
+  workflowApprovalEvidenceTruncationMessage,
+  workflowApprovalRequestId,
+} from "../approval/workflow-approval.js";
+import {
   acceptGoal,
   createGoalRunState,
+  GoalEvaluationError,
   recordCriterionDecision,
   rejectIncompleteGoal,
 } from "../goal/evaluator.js";
 import { compiledGoalSchema } from "../goal/schema.js";
 import type { CompiledGoal, GoalRunState } from "../goal/types.js";
-import { parseVerifierVerdictJson } from "../verification/verdict.js";
 import {
-  TypedResultError,
-  calculateResultSchemaDigest,
-  evaluateTypedResult,
-  resultSourceTruncationMessage,
-} from "../result/typed-result.js";
-import { boundedCompiledResultSchemaSchema } from "../workflow/schema.js";
-import {
-  MAX_CONCURRENT_NODES,
-  MAX_COMPILED_WORKFLOW_NODES,
-  MAX_CONTROL_GRAPH_SERIALIZED_BYTES,
-  MAX_LOOP_ITERATIONS,
-  MAX_RESULT_VALUE_BYTES,
-  type CompiledRunBudget,
-  type CompiledResultSchema,
-  type CompiledVerifierConfig,
-  type CompiledWorkflowConcurrency,
-  type ConditionSourceField,
-  type EvidenceSourceField,
-} from "../workflow/types.js";
-import {
-  calculateCommandApprovalOperationDigest,
-  commandApprovalRequestId,
-  isValidApprovalActor,
-  type CommandApprovalOperation,
-} from "../approval/command-approval.js";
-import {
-  calculateWorkflowApprovalRequestDigest,
-  workflowApprovalEvidenceTruncationMessage,
-  workflowApprovalDenialMessage,
-  workflowApprovalRequestId,
-  type WorkflowApprovalRequest,
-} from "../approval/workflow-approval.js";
-import {
-  MAX_POLICY_DECISIONS,
-  MAX_POLICY_TARGET_BYTES,
   calculatePolicyRequestDigest,
   classifyPolicyAction,
+  MAX_POLICY_DECISIONS,
+  MAX_POLICY_TARGET_BYTES,
 } from "../policy/broker.js";
 import { policyDecisionSchema } from "../policy/schema.js";
 import type { PolicyDecision } from "../policy/types.js";
 import {
+  evaluateOptimizationBaseline,
+  evaluateOptimizationCandidate,
+  type OptimizationInvariantObservation,
+  OptimizationResultError,
+  resolveOptimizationPointerSchema,
+} from "../result/optimization-result.js";
+import {
+  calculateResultSchemaDigest,
+  evaluateTypedResult,
+  resultSourceTruncationMessage,
+  TypedResultError,
+} from "../result/typed-result.js";
+import { parseVerifierVerdictJson } from "../verification/verdict.js";
+import { boundedCompiledResultSchemaSchema } from "../workflow/schema.js";
+import {
+  type CompiledResultSchema,
+  type CompiledRunBudget,
+  type CompiledVerifierConfig,
+  type CompiledWorkflowConcurrency,
+  type ConditionSourceField,
+  type EvidenceSourceField,
+  MAX_COMPILED_WORKFLOW_NODES,
+  MAX_CONCURRENT_NODES,
+  MAX_CONTROL_GRAPH_SERIALIZED_BYTES,
+  MAX_LOOP_ITERATIONS,
+  MAX_OPTIMIZATION_CANDIDATES,
+  MAX_OPTIMIZATION_DELTA_EVIDENCE_BYTES,
+  MAX_RESULT_VALUE_BYTES,
+} from "../workflow/types.js";
+import {
+  type AgentModelUsage,
   addRunResources,
   agentModelUsageSchema,
   budgetExhaustionReason,
   calculateRunBudgetState,
   committedDurationMs,
   emptyRunResources,
+  type RunBudgetExhaustion,
+  type RunBudgetState,
+  type RunResourceConsumption,
   runBudgetExhaustionSchema,
   runBudgetLimitsSchema,
   sameBudgetExhaustions,
   totalModelTokens,
-  type AgentModelUsage,
-  type RunBudgetExhaustion,
-  type RunBudgetState,
-  type RunResourceConsumption,
 } from "./budget.js";
 
 export interface CommandEvidence {
@@ -278,11 +286,18 @@ export interface ControlLoopGuard {
   readonly checkNodeId: string;
 }
 
+export interface ControlOptimizationGuard {
+  readonly optimizationId: string;
+  readonly candidate: number;
+  readonly checkNodeId: string;
+}
+
 interface ControlGraphNodeBase {
   readonly nodeId: string;
   readonly dependsOn: readonly string[];
   readonly loopInstance?: ControlLoopInstance;
   readonly loopGuard?: ControlLoopGuard;
+  readonly optimizationGuard?: ControlOptimizationGuard;
 }
 
 export interface ControlGraphExecutableNode extends ControlGraphNodeBase {
@@ -299,6 +314,11 @@ export interface ControlGraphChildNode extends ControlGraphNodeBase {
     readonly resultNodeId: string;
     readonly resultSchema: CompiledResultSchema;
     readonly resultSchemaDigest: string;
+  };
+  readonly optimizationCandidate?: {
+    readonly optimizationId: string;
+    readonly candidate: number;
+    readonly checkNodeId: string;
   };
 }
 
@@ -381,6 +401,50 @@ export interface ControlGraphLoopNode extends ControlGraphNodeBase {
   };
 }
 
+export interface ControlGraphOptimizationCheckNode extends ControlGraphNodeBase {
+  readonly type: "optimization-check";
+  readonly when?: never;
+  readonly optimizationCheck: {
+    readonly optimizationId: string;
+    readonly candidate: number;
+    readonly candidateNodeId: string;
+    readonly priorCheckNodeId?: string;
+    readonly baseline: { readonly nodeId: string; readonly field: "result.value" };
+    readonly metric: {
+      readonly pointer: string;
+      readonly direction: "minimize" | "maximize";
+    };
+    readonly invariants: readonly {
+      readonly pointer: string;
+      readonly equals: null | boolean | number | string;
+    }[];
+    readonly maxConsecutiveNonImproving: number;
+    readonly rollback: "previous-best";
+  };
+}
+
+export interface ControlGraphOptimizationNode extends ControlGraphNodeBase {
+  readonly type: "optimization";
+  readonly when?: never;
+  readonly optimization: {
+    readonly baseline: { readonly nodeId: string; readonly field: "result.value" };
+    readonly baselineSchemaDigest: string;
+    readonly metric: {
+      readonly pointer: string;
+      readonly direction: "minimize" | "maximize";
+    };
+    readonly invariants: readonly {
+      readonly pointer: string;
+      readonly equals: null | boolean | number | string;
+    }[];
+    readonly maxCandidates: number;
+    readonly maxConsecutiveNonImproving: number;
+    readonly rollback: "previous-best";
+    readonly candidateNodeIds: readonly string[];
+    readonly checkNodeIds: readonly string[];
+  };
+}
+
 export type ControlGraphNode =
   | ControlGraphExecutableNode
   | ControlGraphChildNode
@@ -390,7 +454,9 @@ export type ControlGraphNode =
   | ControlGraphConditionNode
   | ControlGraphJoinNode
   | ControlGraphLoopCheckNode
-  | ControlGraphLoopNode;
+  | ControlGraphLoopNode
+  | ControlGraphOptimizationCheckNode
+  | ControlGraphOptimizationNode;
 
 export interface ControlGraph {
   readonly nodes: readonly ControlGraphNode[];
@@ -444,6 +510,14 @@ export type NodeOmittedEvent = RunEventBase &
         readonly iteration: number;
         readonly checkNodeId: string;
       }
+    | {
+        readonly type: "node_omitted";
+        readonly nodeId: string;
+        readonly reason: "optimization_stopped";
+        readonly optimizationId: string;
+        readonly candidate: number;
+        readonly checkNodeId: string;
+      }
   );
 
 export interface NodeJoinedEvent extends RunEventBase {
@@ -475,6 +549,138 @@ export interface NodeLoopCompletedEvent extends RunEventBase {
   readonly attempt: 1;
   readonly completedIterations: number;
   readonly terminatingCheckNodeId: string;
+}
+
+export type OptimizationCandidateOutcome =
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "resource_exhausted";
+
+export type OptimizationEvaluationReason =
+  | "improved"
+  | "not_improved"
+  | "invariant_failed"
+  | "candidate_no_change"
+  | "candidate_delta_limit_exceeded"
+  | "candidate_failed"
+  | "candidate_cancelled"
+  | "candidate_resource_exhausted";
+
+export interface OptimizationPromotionBoundary {
+  readonly promotionId: string;
+  readonly workspaceId: string;
+  readonly deltaDigest: string;
+  readonly baselineSnapshotDigest: string;
+  readonly candidateSnapshotDigest: string;
+  readonly entryCount: number;
+  readonly logicalBytes: number;
+}
+
+export type OptimizationWorkspaceEntryIdentity =
+  | { readonly kind: "missing" }
+  | { readonly kind: "directory"; readonly mode: number }
+  | {
+      readonly kind: "file";
+      readonly mode: number;
+      readonly size: number;
+      readonly sha256: string;
+    }
+  | { readonly kind: "symlink"; readonly target: string };
+
+export interface OptimizationDeltaEntry {
+  readonly path: string;
+  readonly before: OptimizationWorkspaceEntryIdentity;
+  readonly after: OptimizationWorkspaceEntryIdentity;
+}
+
+export interface NodeOptimizationEvaluatedEvent extends RunEventBase {
+  readonly type: "node_optimization_evaluated";
+  readonly nodeId: string;
+  readonly attempt: 1;
+  readonly optimizationId: string;
+  readonly candidate: number;
+  readonly candidateNodeId: string;
+  readonly baselineValueHash: string;
+  readonly baselineMetric: number;
+  readonly baselineInvariants: readonly OptimizationInvariantObservation[];
+  readonly bestValueHashBefore: string;
+  readonly bestMetricBefore: number;
+  readonly candidateOutcome: OptimizationCandidateOutcome;
+  readonly candidateValueHash: string | null;
+  readonly candidateMetric: number | null;
+  readonly candidateInvariants: readonly OptimizationInvariantObservation[] | null;
+  readonly decision: "promote" | "reject";
+  readonly reason: OptimizationEvaluationReason;
+  readonly stagnation: number;
+  readonly stop: boolean;
+  readonly promotion: OptimizationPromotionBoundary | null;
+  readonly deltaEntries: readonly OptimizationDeltaEntry[] | null;
+}
+
+export interface NodeOptimizationPromotionPreparedEvent extends RunEventBase {
+  readonly type: "node_optimization_promotion_prepared";
+  readonly nodeId: string;
+  readonly attempt: 1;
+  readonly optimizationId: string;
+  readonly candidate: number;
+  readonly promotion: OptimizationPromotionBoundary;
+}
+
+export type OptimizationPromotionSettlement =
+  | { readonly outcome: "committed"; readonly reason: "local_commit_durable" }
+  | {
+      readonly outcome: "rolled_back";
+      readonly reason: "compensated_after_failure" | "reconciled_incomplete";
+    }
+  | { readonly outcome: "unknown"; readonly reason: "affected_path_diverged" };
+
+export type NodeOptimizationPromotionSettledEvent = RunEventBase & {
+  readonly type: "node_optimization_promotion_settled";
+  readonly nodeId: string;
+  readonly attempt: 1;
+  readonly optimizationId: string;
+  readonly candidate: number;
+  readonly promotionId: string;
+  readonly deltaDigest: string;
+} & OptimizationPromotionSettlement;
+
+export interface NodeOptimizationCandidateCleanedEvent extends RunEventBase {
+  readonly type: "node_optimization_candidate_cleaned";
+  readonly nodeId: string;
+  readonly attempt: 1;
+  readonly optimizationId: string;
+  readonly candidate: number;
+  readonly candidateNodeId: string;
+  readonly workspaceId: string;
+  readonly reason: "rejected" | "promotion_settled";
+}
+
+export interface NodeOptimizationCheckedEvent extends RunEventBase {
+  readonly type: "node_optimization_checked";
+  readonly nodeId: string;
+  readonly attempt: 1;
+  readonly optimizationId: string;
+  readonly candidate: number;
+  readonly outcome: "accepted" | "rejected";
+  readonly reason: OptimizationEvaluationReason;
+  readonly bestValueHash: string;
+  readonly bestMetric: number;
+  readonly bestCandidate: number | null;
+  readonly stagnation: number;
+  readonly stop: boolean;
+}
+
+export interface NodeOptimizationCompletedEvent extends RunEventBase {
+  readonly type: "node_optimization_completed";
+  readonly nodeId: string;
+  readonly attempt: 1;
+  readonly completedCandidates: number;
+  readonly terminatingCheckNodeId: string;
+  readonly bestValueHash: string;
+  readonly bestMetric: number;
+  readonly bestCandidate: number | null;
+  readonly stopReason: "stagnation" | "max_candidates";
 }
 
 export interface NodeControlFailedEvent extends RunEventBase {
@@ -702,6 +908,12 @@ export type RunEvent =
   | NodeJoinedEvent
   | NodeLoopCheckedEvent
   | NodeLoopCompletedEvent
+  | NodeOptimizationEvaluatedEvent
+  | NodeOptimizationPromotionPreparedEvent
+  | NodeOptimizationPromotionSettledEvent
+  | NodeOptimizationCandidateCleanedEvent
+  | NodeOptimizationCheckedEvent
+  | NodeOptimizationCompletedEvent
   | NodeControlFailedEvent
   | NodeEffectPreparedEvent
   | NodeEffectSettledEvent
@@ -769,6 +981,32 @@ export interface NodeRunState {
   readonly interruptedAttempts: readonly InterruptedNodeAttemptState[];
   readonly control: NodeControlRunState | null;
   readonly omission: NodeOmissionRunState | null;
+  readonly optimization: OptimizationCheckRunState | null;
+}
+
+export interface OptimizationCheckRunState {
+  readonly optimizationId: string;
+  readonly candidate: number;
+  readonly candidateNodeId: string;
+  readonly baselineValueHash: string;
+  readonly baselineMetric: number;
+  readonly baselineInvariants: readonly OptimizationInvariantObservation[];
+  readonly bestValueHashBefore: string;
+  readonly bestMetricBefore: number;
+  readonly candidateOutcome: OptimizationCandidateOutcome;
+  readonly candidateValueHash: string | null;
+  readonly candidateMetric: number | null;
+  readonly candidateInvariants: readonly OptimizationInvariantObservation[] | null;
+  readonly decision: "promote" | "reject";
+  readonly reason: OptimizationEvaluationReason;
+  readonly stagnation: number;
+  readonly stop: boolean;
+  readonly promotion: OptimizationPromotionBoundary | null;
+  readonly deltaEntries: readonly OptimizationDeltaEntry[] | null;
+  readonly evaluatedAt: string;
+  readonly preparedAt: string | null;
+  readonly settlement: (OptimizationPromotionSettlement & { readonly settledAt: string }) | null;
+  readonly cleanedAt: string | null;
 }
 
 export type NodeControlRunState =
@@ -817,6 +1055,27 @@ export type NodeControlRunState =
       readonly kind: "loop";
       readonly completedIterations: number;
       readonly terminatingCheckNodeId: string;
+    }
+  | {
+      readonly kind: "optimization-check";
+      readonly optimizationId: string;
+      readonly candidate: number;
+      readonly outcome: "accepted" | "rejected";
+      readonly reason: OptimizationEvaluationReason;
+      readonly bestValueHash: string;
+      readonly bestMetric: number;
+      readonly bestCandidate: number | null;
+      readonly stagnation: number;
+      readonly stop: boolean;
+    }
+  | {
+      readonly kind: "optimization";
+      readonly completedCandidates: number;
+      readonly terminatingCheckNodeId: string;
+      readonly bestValueHash: string;
+      readonly bestMetric: number;
+      readonly bestCandidate: number | null;
+      readonly stopReason: "stagnation" | "max_candidates";
     };
 
 export type NodeOmissionRunState =
@@ -834,6 +1093,12 @@ export type NodeOmissionRunState =
       readonly reason: "loop_not_continued";
       readonly loopId: string;
       readonly iteration: number;
+      readonly checkNodeId: string;
+    }
+  | {
+      readonly reason: "optimization_stopped";
+      readonly optimizationId: string;
+      readonly candidate: number;
       readonly checkNodeId: string;
     };
 
@@ -896,6 +1161,10 @@ export class RunReplayError extends Error {
 export function calculateChildRunId(parentRunId: string, nodeId: string, attempt: number): string {
   const identity = sha256(`${parentRunId}\0${nodeId}\0${attempt}`).slice(0, 48);
   return `child-${identity}`;
+}
+
+export function calculateOptimizationPromotionId(runId: string, checkNodeId: string): string {
+  return `promotion-${sha256(`${runId}\0${checkNodeId}`).slice(0, 48)}`;
 }
 
 export function loopLimitFailureMessage(loopId: string, maxIterations: number): string {
@@ -1302,12 +1571,44 @@ const controlLoopGuardSchema = z
   })
   .strict();
 
+const optimizationCandidateNumberSchema = z.number().int().min(1).max(MAX_OPTIMIZATION_CANDIDATES);
+
+const controlOptimizationGuardSchema = z
+  .object({
+    optimizationId: identifierSchema,
+    candidate: optimizationCandidateNumberSchema,
+    checkNodeId: identifierSchema,
+  })
+  .strict();
+
 const controlNodeBaseShape = {
   nodeId: identifierSchema,
   dependsOn: controlDependencySchema,
   loopInstance: controlLoopInstanceSchema.optional(),
   loopGuard: controlLoopGuardSchema.optional(),
+  optimizationGuard: controlOptimizationGuardSchema.optional(),
 };
+
+const controlOptimizationMetricSchema = z
+  .object({
+    pointer: z.string().max(4_096),
+    direction: z.enum(["minimize", "maximize"]),
+  })
+  .strict();
+
+const controlOptimizationInvariantSchema = z
+  .object({
+    pointer: z.string().max(4_096),
+    equals: z.union([z.null(), z.boolean(), z.number().finite(), z.string().max(65_536)]),
+  })
+  .strict();
+
+const controlOptimizationBaselineSchema = z
+  .object({
+    nodeId: identifierSchema,
+    field: z.literal("result.value"),
+  })
+  .strict();
 
 const controlConditionSchema = z
   .object({
@@ -1464,6 +1765,14 @@ const controlGraphNodeSchema = z.discriminatedUnion("type", [
           resultSchemaDigest: sha256Schema,
         })
         .strict(),
+      optimizationCandidate: z
+        .object({
+          optimizationId: identifierSchema,
+          candidate: optimizationCandidateNumberSchema,
+          checkNodeId: identifierSchema,
+        })
+        .strict()
+        .optional(),
     })
     .strict(),
   z
@@ -1588,6 +1897,44 @@ const controlGraphNodeSchema = z.discriminatedUnion("type", [
         .strict(),
     })
     .strict(),
+  z
+    .object({
+      ...controlNodeBaseShape,
+      type: z.literal("optimization-check"),
+      optimizationCheck: z
+        .object({
+          optimizationId: identifierSchema,
+          candidate: optimizationCandidateNumberSchema,
+          candidateNodeId: identifierSchema,
+          priorCheckNodeId: identifierSchema.optional(),
+          baseline: controlOptimizationBaselineSchema,
+          metric: controlOptimizationMetricSchema,
+          invariants: z.array(controlOptimizationInvariantSchema).max(16),
+          maxConsecutiveNonImproving: optimizationCandidateNumberSchema,
+          rollback: z.literal("previous-best"),
+        })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ...controlNodeBaseShape,
+      type: z.literal("optimization"),
+      optimization: z
+        .object({
+          baseline: controlOptimizationBaselineSchema,
+          baselineSchemaDigest: sha256Schema,
+          metric: controlOptimizationMetricSchema,
+          invariants: z.array(controlOptimizationInvariantSchema).max(16),
+          maxCandidates: optimizationCandidateNumberSchema,
+          maxConsecutiveNonImproving: optimizationCandidateNumberSchema,
+          rollback: z.literal("previous-best"),
+          candidateNodeIds: z.array(identifierSchema).min(1).max(MAX_OPTIMIZATION_CANDIDATES),
+          checkNodeIds: z.array(identifierSchema).min(1).max(MAX_OPTIMIZATION_CANDIDATES),
+        })
+        .strict(),
+    })
+    .strict(),
 ]);
 
 const controlGraphSchema = z
@@ -1607,6 +1954,77 @@ const controlGraphSchema = z
       Buffer.byteLength(JSON.stringify(graph), "utf8") <= MAX_CONTROL_GRAPH_SERIALIZED_BYTES,
     `serialized control graph must not exceed ${MAX_CONTROL_GRAPH_SERIALIZED_BYTES} UTF-8 bytes`,
   );
+
+const optimizationEvaluationReasonSchema = z.enum([
+  "improved",
+  "not_improved",
+  "invariant_failed",
+  "candidate_no_change",
+  "candidate_delta_limit_exceeded",
+  "candidate_failed",
+  "candidate_cancelled",
+  "candidate_resource_exhausted",
+]);
+const optimizationScalarSchema = z.union([
+  z.null(),
+  z.boolean(),
+  z.number().finite(),
+  z.string().max(65_536),
+]);
+const optimizationInvariantObservationSchema = z
+  .object({
+    pointer: z.string().max(4_096),
+    expected: optimizationScalarSchema,
+    actual: optimizationScalarSchema,
+    passed: z.boolean(),
+  })
+  .strict();
+const optimizationWorkspaceEntryIdentitySchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("missing") }).strict(),
+  z
+    .object({
+      kind: z.literal("directory"),
+      mode: z.number().int().min(0).max(0o777),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("file"),
+      mode: z.number().int().min(0).max(0o777),
+      size: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+      sha256: sha256Schema,
+    })
+    .strict(),
+  z.object({ kind: z.literal("symlink"), target: z.string().max(4_096) }).strict(),
+]);
+const optimizationDeltaEntrySchema = z
+  .object({
+    path: z
+      .string()
+      .min(1)
+      .max(4_096)
+      .refine(
+        (path) =>
+          !path.startsWith("/") &&
+          !path.includes("\0") &&
+          path.split("/").every((segment) => segment !== "" && segment !== "." && segment !== ".."),
+        "optimization delta path must be a canonical relative path",
+      ),
+    before: optimizationWorkspaceEntryIdentitySchema,
+    after: optimizationWorkspaceEntryIdentitySchema,
+  })
+  .strict();
+const optimizationPromotionBoundarySchema = z
+  .object({
+    promotionId: identifierSchema,
+    workspaceId: identifierSchema,
+    deltaDigest: sha256Schema,
+    baselineSnapshotDigest: sha256Schema,
+    candidateSnapshotDigest: sha256Schema,
+    entryCount: z.number().int().positive().max(20_000),
+    logicalBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  })
+  .strict();
 
 export const runEventSchema = z.discriminatedUnion("type", [
   z
@@ -1792,7 +2210,12 @@ export const runEventSchema = z.discriminatedUnion("type", [
       ...eventBaseShape,
       type: z.literal("node_omitted"),
       nodeId: identifierSchema,
-      reason: z.enum(["condition_not_selected", "dependency_omitted", "loop_not_continued"]),
+      reason: z.enum([
+        "condition_not_selected",
+        "dependency_omitted",
+        "loop_not_continued",
+        "optimization_stopped",
+      ]),
       conditionId: identifierSchema.optional(),
       selectedCase: identifierSchema.optional(),
       expectedCase: identifierSchema.optional(),
@@ -1800,6 +2223,8 @@ export const runEventSchema = z.discriminatedUnion("type", [
       loopId: identifierSchema.optional(),
       iteration: loopIterationSchema.optional(),
       checkNodeId: identifierSchema.optional(),
+      optimizationId: identifierSchema.optional(),
+      candidate: optimizationCandidateNumberSchema.optional(),
     })
     .strict()
     .superRefine((event, context) => {
@@ -1820,9 +2245,18 @@ export const runEventSchema = z.discriminatedUnion("type", [
         event.loopId !== undefined ||
         event.iteration !== undefined ||
         event.checkNodeId !== undefined;
+      const hasAllOptimizationFields =
+        event.optimizationId !== undefined &&
+        event.candidate !== undefined &&
+        event.checkNodeId !== undefined;
+      const hasAnyOptimizationField =
+        event.optimizationId !== undefined || event.candidate !== undefined;
       if (
         event.reason === "condition_not_selected" &&
-        (!hasAllConditionFields || hasDependencyFields || hasAnyLoopField)
+        (!hasAllConditionFields ||
+          hasDependencyFields ||
+          hasAnyLoopField ||
+          hasAnyOptimizationField)
       ) {
         context.addIssue({
           code: "custom",
@@ -1832,7 +2266,7 @@ export const runEventSchema = z.discriminatedUnion("type", [
       }
       if (
         event.reason === "dependency_omitted" &&
-        (!hasDependencyFields || hasAnyConditionField || hasAnyLoopField)
+        (!hasDependencyFields || hasAnyConditionField || hasAnyLoopField || hasAnyOptimizationField)
       ) {
         context.addIssue({
           code: "custom",
@@ -1842,12 +2276,29 @@ export const runEventSchema = z.discriminatedUnion("type", [
       }
       if (
         event.reason === "loop_not_continued" &&
-        (!hasAllLoopFields || hasAnyConditionField || hasDependencyFields)
+        (!hasAllLoopFields ||
+          hasAnyConditionField ||
+          hasDependencyFields ||
+          hasAnyOptimizationField)
       ) {
         context.addIssue({
           code: "custom",
           path: ["reason"],
           message: "loop omission requires only loop guard fields",
+        });
+      }
+      if (
+        event.reason === "optimization_stopped" &&
+        (!hasAllOptimizationFields ||
+          event.loopId !== undefined ||
+          event.iteration !== undefined ||
+          hasAnyConditionField ||
+          hasDependencyFields)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["reason"],
+          message: "optimization omission requires only optimization guard fields",
         });
       }
     }),
@@ -1886,6 +2337,131 @@ export const runEventSchema = z.discriminatedUnion("type", [
       attempt: z.literal(1),
       completedIterations: loopIterationSchema,
       terminatingCheckNodeId: identifierSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("node_optimization_evaluated"),
+      nodeId: identifierSchema,
+      attempt: z.literal(1),
+      optimizationId: identifierSchema,
+      candidate: optimizationCandidateNumberSchema,
+      candidateNodeId: identifierSchema,
+      baselineValueHash: sha256Schema,
+      baselineMetric: z.number().finite(),
+      baselineInvariants: z.array(optimizationInvariantObservationSchema).max(16),
+      bestValueHashBefore: sha256Schema,
+      bestMetricBefore: z.number().finite(),
+      candidateOutcome: z.enum(["succeeded", "failed", "cancelled", "resource_exhausted"]),
+      candidateValueHash: sha256Schema.nullable(),
+      candidateMetric: z.number().finite().nullable(),
+      candidateInvariants: z.array(optimizationInvariantObservationSchema).max(16).nullable(),
+      decision: z.enum(["promote", "reject"]),
+      reason: optimizationEvaluationReasonSchema,
+      stagnation: z.number().int().nonnegative().max(MAX_OPTIMIZATION_CANDIDATES),
+      stop: z.boolean(),
+      promotion: optimizationPromotionBoundarySchema.nullable(),
+      deltaEntries: z
+        .array(optimizationDeltaEntrySchema)
+        .min(1)
+        .max(20_000)
+        .refine(
+          (entries) =>
+            Buffer.byteLength(JSON.stringify(entries), "utf8") <=
+            MAX_OPTIMIZATION_DELTA_EVIDENCE_BYTES,
+          `serialized optimization delta evidence must not exceed ${MAX_OPTIMIZATION_DELTA_EVIDENCE_BYTES} UTF-8 bytes`,
+        )
+        .nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("node_optimization_promotion_prepared"),
+      nodeId: identifierSchema,
+      attempt: z.literal(1),
+      optimizationId: identifierSchema,
+      candidate: optimizationCandidateNumberSchema,
+      promotion: optimizationPromotionBoundarySchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("node_optimization_promotion_settled"),
+      nodeId: identifierSchema,
+      attempt: z.literal(1),
+      optimizationId: identifierSchema,
+      candidate: optimizationCandidateNumberSchema,
+      promotionId: identifierSchema,
+      deltaDigest: sha256Schema,
+      outcome: z.enum(["committed", "rolled_back", "unknown"]),
+      reason: z.enum([
+        "local_commit_durable",
+        "compensated_after_failure",
+        "reconciled_incomplete",
+        "affected_path_diverged",
+      ]),
+    })
+    .strict()
+    .superRefine((event, context) => {
+      const valid =
+        (event.outcome === "committed" && event.reason === "local_commit_durable") ||
+        (event.outcome === "rolled_back" &&
+          (event.reason === "compensated_after_failure" ||
+            event.reason === "reconciled_incomplete")) ||
+        (event.outcome === "unknown" && event.reason === "affected_path_diverged");
+      if (!valid) {
+        context.addIssue({
+          code: "custom",
+          path: ["reason"],
+          message: `promotion settlement outcome "${event.outcome}" has an invalid reason`,
+        });
+      }
+    }),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("node_optimization_candidate_cleaned"),
+      nodeId: identifierSchema,
+      attempt: z.literal(1),
+      optimizationId: identifierSchema,
+      candidate: optimizationCandidateNumberSchema,
+      candidateNodeId: identifierSchema,
+      workspaceId: identifierSchema,
+      reason: z.enum(["rejected", "promotion_settled"]),
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("node_optimization_checked"),
+      nodeId: identifierSchema,
+      attempt: z.literal(1),
+      optimizationId: identifierSchema,
+      candidate: optimizationCandidateNumberSchema,
+      outcome: z.enum(["accepted", "rejected"]),
+      reason: optimizationEvaluationReasonSchema,
+      bestValueHash: sha256Schema,
+      bestMetric: z.number().finite(),
+      bestCandidate: optimizationCandidateNumberSchema.nullable(),
+      stagnation: z.number().int().nonnegative().max(MAX_OPTIMIZATION_CANDIDATES),
+      stop: z.boolean(),
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("node_optimization_completed"),
+      nodeId: identifierSchema,
+      attempt: z.literal(1),
+      completedCandidates: optimizationCandidateNumberSchema,
+      terminatingCheckNodeId: identifierSchema,
+      bestValueHash: sha256Schema,
+      bestMetric: z.number().finite(),
+      bestCandidate: optimizationCandidateNumberSchema.nullable(),
+      stopReason: z.enum(["stagnation", "max_candidates"]),
     })
     .strict(),
   z
@@ -3085,6 +3661,36 @@ export function appendRunEvent(
           iteration: event.iteration,
           checkNodeId: event.checkNodeId,
         });
+      } else if (event.reason === "optimization_stopped") {
+        const guard = requirement.optimizationGuard;
+        if (
+          guard === undefined ||
+          event.optimizationId !== guard.optimizationId ||
+          event.candidate !== guard.candidate ||
+          event.checkNodeId !== guard.checkNodeId
+        ) {
+          throw new RunReplayError(
+            eventIndex,
+            `node "${event.nodeId}" optimization omission does not match its exact guard`,
+          );
+        }
+        const prior = requireNode(nodes, guard.checkNodeId, eventIndex);
+        if (
+          prior.status !== "succeeded" ||
+          prior.control?.kind !== "optimization-check" ||
+          !prior.control.stop
+        ) {
+          throw new RunReplayError(
+            eventIndex,
+            `node "${event.nodeId}" prior optimization check did not stop`,
+          );
+        }
+        omission = deepFreeze({
+          reason: event.reason,
+          optimizationId: event.optimizationId,
+          candidate: event.candidate,
+          checkNodeId: event.checkNodeId,
+        });
       } else {
         if (
           requirement.type !== "join" &&
@@ -3195,6 +3801,281 @@ export function appendRunEvent(
         selectedCase: event.selectedCase,
         completedNodeId: event.completedNodeId,
         omittedNodeIds: Object.freeze([...event.omittedNodeIds]),
+      });
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        status: "succeeded",
+        attempt: event.attempt,
+        startedAt: event.at,
+        finishedAt: event.at,
+        control,
+      });
+      break;
+    }
+    case "node_optimization_evaluated": {
+      requireRunningControlTransition(currentState, nodes, eventIndex);
+      const requirement = requireOptimizationCheckRequirement(
+        currentState,
+        event.nodeId,
+        eventIndex,
+      );
+      const current = requirePendingControlState(nodes, event.nodeId, event.attempt, eventIndex);
+      requireTerminalDependencies(requirement, nodes, eventIndex);
+      requireSelectedGuard(requirement, nodes, eventIndex);
+      if (current.optimization !== null) {
+        throw new RunReplayError(eventIndex, `optimization check "${event.nodeId}" is evaluated`);
+      }
+      const expected = expectedOptimizationEvaluation(currentState, requirement, nodes, eventIndex);
+      validateOptimizationEvaluationEvent(event, expected, eventIndex);
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        optimization: deepFreeze({
+          optimizationId: event.optimizationId,
+          candidate: event.candidate,
+          candidateNodeId: event.candidateNodeId,
+          baselineValueHash: event.baselineValueHash,
+          baselineMetric: event.baselineMetric,
+          baselineInvariants: structuredClone(event.baselineInvariants),
+          bestValueHashBefore: event.bestValueHashBefore,
+          bestMetricBefore: event.bestMetricBefore,
+          candidateOutcome: event.candidateOutcome,
+          candidateValueHash: event.candidateValueHash,
+          candidateMetric: event.candidateMetric,
+          candidateInvariants:
+            event.candidateInvariants === null ? null : structuredClone(event.candidateInvariants),
+          decision: event.decision,
+          reason: event.reason,
+          stagnation: event.stagnation,
+          stop: event.stop,
+          promotion: event.promotion === null ? null : structuredClone(event.promotion),
+          deltaEntries: event.deltaEntries === null ? null : structuredClone(event.deltaEntries),
+          evaluatedAt: event.at,
+          preparedAt: null,
+          settlement: null,
+          cleanedAt: null,
+        }),
+      });
+      break;
+    }
+    case "node_optimization_promotion_prepared": {
+      requireRunningControlTransition(currentState, nodes, eventIndex);
+      const requirement = requireOptimizationCheckRequirement(
+        currentState,
+        event.nodeId,
+        eventIndex,
+      );
+      const current = requirePendingControlState(nodes, event.nodeId, event.attempt, eventIndex);
+      const optimization = requireOptimizationEvaluation(current, event.nodeId, eventIndex);
+      requireOptimizationEventIdentity(requirement, optimization, event, eventIndex);
+      if (optimization.decision !== "promote" || optimization.promotion === null) {
+        throw new RunReplayError(eventIndex, "only an improving candidate can prepare promotion");
+      }
+      if (optimization.preparedAt !== null) {
+        throw new RunReplayError(eventIndex, `optimization promotion is already prepared`);
+      }
+      if (!sameOptimizationPromotion(event.promotion, optimization.promotion)) {
+        throw new RunReplayError(
+          eventIndex,
+          "optimization promotion prepare boundary does not match its evaluation",
+        );
+      }
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        optimization: deepFreeze({ ...optimization, preparedAt: event.at }),
+      });
+      break;
+    }
+    case "node_optimization_promotion_settled": {
+      requireRunningControlTransition(currentState, nodes, eventIndex);
+      const requirement = requireOptimizationCheckRequirement(
+        currentState,
+        event.nodeId,
+        eventIndex,
+      );
+      const current = requirePendingControlState(nodes, event.nodeId, event.attempt, eventIndex);
+      const optimization = requireOptimizationEvaluation(current, event.nodeId, eventIndex);
+      requireOptimizationEventIdentity(requirement, optimization, event, eventIndex);
+      if (optimization.preparedAt === null || optimization.promotion === null) {
+        throw new RunReplayError(
+          eventIndex,
+          "optimization promotion must be prepared before settlement",
+        );
+      }
+      if (optimization.settlement !== null) {
+        throw new RunReplayError(eventIndex, "optimization promotion is already settled");
+      }
+      if (
+        event.promotionId !== optimization.promotion.promotionId ||
+        event.deltaDigest !== optimization.promotion.deltaDigest
+      ) {
+        throw new RunReplayError(eventIndex, "optimization settlement identity is invalid");
+      }
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        optimization: deepFreeze({
+          ...optimization,
+          settlement: {
+            outcome: event.outcome,
+            reason: event.reason,
+            settledAt: event.at,
+          } as OptimizationPromotionSettlement & { readonly settledAt: string },
+        }),
+      });
+      break;
+    }
+    case "node_optimization_candidate_cleaned": {
+      requireRunningControlTransition(currentState, nodes, eventIndex);
+      const requirement = requireOptimizationCheckRequirement(
+        currentState,
+        event.nodeId,
+        eventIndex,
+      );
+      const current = requirePendingControlState(nodes, event.nodeId, event.attempt, eventIndex);
+      const optimization = requireOptimizationEvaluation(current, event.nodeId, eventIndex);
+      requireOptimizationEventIdentity(requirement, optimization, event, eventIndex);
+      if (optimization.cleanedAt !== null) {
+        throw new RunReplayError(eventIndex, "optimization candidate is already cleaned");
+      }
+      const candidate = requireOptimizationCandidateEvidence(requirement, nodes, eventIndex);
+      if (
+        event.candidateNodeId !== requirement.optimizationCheck.candidateNodeId ||
+        event.workspaceId !== candidate.childRunId
+      ) {
+        throw new RunReplayError(eventIndex, "optimization cleanup workspace identity is invalid");
+      }
+      if (candidate.workspace.disposition !== "retained") {
+        throw new RunReplayError(eventIndex, "optimization cleanup requires a retained workspace");
+      }
+      if (optimization.decision === "promote") {
+        if (optimization.settlement === null || optimization.settlement.outcome === "unknown") {
+          throw new RunReplayError(
+            eventIndex,
+            "optimization cleanup requires a conclusive promotion settlement",
+          );
+        }
+        if (event.reason !== "promotion_settled") {
+          throw new RunReplayError(eventIndex, "promoted candidate cleanup has an invalid reason");
+        }
+      } else if (event.reason !== "rejected") {
+        throw new RunReplayError(eventIndex, "rejected candidate cleanup has an invalid reason");
+      }
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        optimization: deepFreeze({ ...optimization, cleanedAt: event.at }),
+      });
+      break;
+    }
+    case "node_optimization_checked": {
+      requireRunningControlTransition(currentState, nodes, eventIndex);
+      const requirement = requireOptimizationCheckRequirement(
+        currentState,
+        event.nodeId,
+        eventIndex,
+      );
+      const current = requirePendingControlState(nodes, event.nodeId, event.attempt, eventIndex);
+      const optimization = requireOptimizationEvaluation(current, event.nodeId, eventIndex);
+      requireOptimizationEventIdentity(requirement, optimization, event, eventIndex);
+      const candidate = requireOptimizationCandidateEvidence(requirement, nodes, eventIndex);
+      if (candidate.workspace.disposition === "retained" && optimization.cleanedAt === null) {
+        throw new RunReplayError(
+          eventIndex,
+          "optimization candidate must be cleaned before check completion",
+        );
+      }
+      const accepted =
+        optimization.decision === "promote" && optimization.settlement?.outcome === "committed";
+      if (optimization.decision === "promote" && optimization.settlement === null) {
+        throw new RunReplayError(eventIndex, "optimization promotion has no durable settlement");
+      }
+      if (optimization.settlement?.outcome === "unknown") {
+        throw new RunReplayError(eventIndex, "an uncertain promotion cannot complete its check");
+      }
+      const expectedBestValueHash = accepted
+        ? optimization.candidateValueHash
+        : optimization.bestValueHashBefore;
+      const expectedBestMetric = accepted
+        ? optimization.candidateMetric
+        : optimization.bestMetricBefore;
+      const previousBestCandidate = priorOptimizationBestCandidate(requirement, nodes, eventIndex);
+      const expectedBestCandidate = accepted ? optimization.candidate : previousBestCandidate;
+      if (
+        expectedBestValueHash === null ||
+        expectedBestMetric === null ||
+        event.outcome !== (accepted ? "accepted" : "rejected") ||
+        event.reason !== optimization.reason ||
+        event.bestValueHash !== expectedBestValueHash ||
+        event.bestMetric !== expectedBestMetric ||
+        event.bestCandidate !== expectedBestCandidate ||
+        event.stagnation !== optimization.stagnation ||
+        event.stop !== optimization.stop
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          "optimization check summary contradicts its durable evaluation",
+        );
+      }
+      const control: NodeControlRunState = deepFreeze({
+        kind: "optimization-check",
+        optimizationId: event.optimizationId,
+        candidate: event.candidate,
+        outcome: event.outcome,
+        reason: event.reason,
+        bestValueHash: event.bestValueHash,
+        bestMetric: event.bestMetric,
+        bestCandidate: event.bestCandidate,
+        stagnation: event.stagnation,
+        stop: event.stop,
+      });
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        status: "succeeded",
+        attempt: event.attempt,
+        startedAt: optimization.evaluatedAt,
+        finishedAt: event.at,
+        control,
+      });
+      break;
+    }
+    case "node_optimization_completed": {
+      requireRunningControlTransition(currentState, nodes, eventIndex);
+      const requirement = requireControlGraphNode(currentState, event.nodeId, eventIndex);
+      if (requirement.type !== "optimization") {
+        throw new RunReplayError(
+          eventIndex,
+          `node "${event.nodeId}" is not an optimization controller`,
+        );
+      }
+      const current = requirePendingControlState(nodes, event.nodeId, event.attempt, eventIndex);
+      requireTerminalDependencies(requirement, nodes, eventIndex);
+      const completed = completedOptimizationChecks(requirement, nodes, eventIndex);
+      const terminating = completed.at(-1);
+      if (terminating === undefined) {
+        throw new RunReplayError(eventIndex, "optimization controller has no completed candidate");
+      }
+      const stopped = terminating.control.stop;
+      const expectedReason = stopped ? "stagnation" : "max_candidates";
+      if (
+        (!stopped && completed.length !== requirement.optimization.maxCandidates) ||
+        event.completedCandidates !== completed.length ||
+        event.terminatingCheckNodeId !== terminating.nodeId ||
+        event.bestValueHash !== terminating.control.bestValueHash ||
+        event.bestMetric !== terminating.control.bestMetric ||
+        event.bestCandidate !== terminating.control.bestCandidate ||
+        event.stopReason !== expectedReason
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          "optimization completion contradicts its durable checks",
+        );
+      }
+      const control: NodeControlRunState = deepFreeze({
+        kind: "optimization",
+        completedCandidates: event.completedCandidates,
+        terminatingCheckNodeId: event.terminatingCheckNodeId,
+        bestValueHash: event.bestValueHash,
+        bestMetric: event.bestMetric,
+        bestCandidate: event.bestCandidate,
+        stopReason: event.stopReason,
       });
       nodes[event.nodeId] = Object.freeze({
         ...current,
@@ -3328,6 +4209,40 @@ export function appendRunEvent(
               "result validation failure classification does not match durable source evidence",
             );
           }
+        }
+      } else if (requirement.type === "optimization-check") {
+        requireTerminalDependencies(requirement, nodes, eventIndex);
+        requireSelectedGuard(requirement, nodes, eventIndex);
+        const allowedCodes = new Set([
+          "candidate_runtime_unavailable",
+          "candidate_evaluation_failed",
+          "candidate_delta_exists",
+          "candidate_delta_limit_exceeded",
+          "candidate_source_stale",
+          "candidate_promotion_failed",
+          "candidate_promotion_invalid",
+          "candidate_promotion_missing",
+          "candidate_promotion_rolled_back",
+          "candidate_promotion_stale",
+          "candidate_promotion_uncertain",
+          "candidate_workspace_cleanup_failed",
+        ]);
+        const settlement = current.optimization?.settlement?.outcome;
+        const expectedSideEffect =
+          settlement === "committed"
+            ? "committed"
+            : settlement === "unknown" || event.error.code === "candidate_promotion_uncertain"
+              ? "uncertain"
+              : "none";
+        if (
+          !allowedCodes.has(event.error.code) ||
+          event.error.retryable ||
+          event.error.sideEffectStatus !== expectedSideEffect
+        ) {
+          throw new RunReplayError(
+            eventIndex,
+            "optimization failure has an invalid code, retry policy, or side-effect status",
+          );
         }
       } else if (requirement.type === "loop") {
         requireTerminalDependencies(requirement, nodes, eventIndex);
@@ -3952,6 +4867,8 @@ function validateControlGraph(
       node.type !== "join" &&
       node.type !== "loop-check" &&
       node.type !== "loop" &&
+      node.type !== "optimization-check" &&
+      node.type !== "optimization" &&
       node.when !== undefined
     ) {
       const condition = nodeById.get(node.when.conditionId);
@@ -4148,6 +5065,7 @@ function validateControlGraph(
     throw new RunReplayError(eventIndex, "control graph contains a dependency cycle");
   }
   validateControlGraphLoopInstances(graph.nodes, nodeById, eventIndex);
+  validateControlGraphOptimizations(graph.nodes, nodeById, eventIndex);
   const dependedUpon = new Set(graph.nodes.flatMap((node) => node.dependsOn));
   const invalidTerminal = graph.nodes.find(
     (node) =>
@@ -4155,7 +5073,8 @@ function validateControlGraph(
       node.type !== "command" &&
       node.type !== "verifier" &&
       node.type !== "result" &&
-      node.type !== "child",
+      node.type !== "child" &&
+      node.type !== "optimization",
   );
   if (invalidTerminal !== undefined) {
     throw new RunReplayError(
@@ -4313,6 +5232,209 @@ function validateControlGraphLoopInstances(
       }
     }
   }
+}
+
+function validateControlGraphOptimizations(
+  nodes: readonly ControlGraphNode[],
+  nodeById: ReadonlyMap<string, ControlGraphNode>,
+  eventIndex: number,
+): void {
+  const controllers = nodes.filter(
+    (node): node is ControlGraphOptimizationNode => node.type === "optimization",
+  );
+  const registeredCandidateIds = new Set<string>();
+  const registeredCheckIds = new Set<string>();
+
+  for (const controller of controllers) {
+    const contract = controller.optimization;
+    if (
+      contract.candidateNodeIds.length !== contract.maxCandidates ||
+      contract.checkNodeIds.length !== contract.maxCandidates ||
+      new Set(contract.candidateNodeIds).size !== contract.candidateNodeIds.length ||
+      new Set(contract.checkNodeIds).size !== contract.checkNodeIds.length ||
+      contract.maxConsecutiveNonImproving > contract.maxCandidates ||
+      !sameStrings(controller.dependsOn, contract.checkNodeIds)
+    ) {
+      throw new RunReplayError(
+        eventIndex,
+        `control graph optimization "${controller.nodeId}" has inconsistent bounds or registrations`,
+      );
+    }
+
+    const baseline = nodeById.get(contract.baseline.nodeId);
+    if (
+      baseline?.type !== "result" ||
+      baseline.result.schemaDigest !== contract.baselineSchemaDigest ||
+      baseline.result.schemaDigest !== calculateResultSchemaDigest(baseline.result.schema)
+    ) {
+      throw new RunReplayError(
+        eventIndex,
+        `control graph optimization "${controller.nodeId}" has an invalid baseline schema`,
+      );
+    }
+    validateControlOptimizationPointers(controller, baseline.result.schema, eventIndex);
+
+    for (let candidate = 1; candidate <= contract.maxCandidates; candidate += 1) {
+      const candidateNodeId = contract.candidateNodeIds[candidate - 1];
+      const checkNodeId = contract.checkNodeIds[candidate - 1];
+      const priorCheckNodeId = candidate === 1 ? undefined : contract.checkNodeIds[candidate - 2];
+      const candidateNode =
+        candidateNodeId === undefined ? undefined : nodeById.get(candidateNodeId);
+      const checkNode = checkNodeId === undefined ? undefined : nodeById.get(checkNodeId);
+      if (
+        candidateNode?.type !== "child" ||
+        candidateNode.optimizationCandidate?.optimizationId !== controller.nodeId ||
+        candidateNode.optimizationCandidate.candidate !== candidate ||
+        candidateNode.optimizationCandidate.checkNodeId !== checkNodeId ||
+        candidateNode.child.resultSchemaDigest !== contract.baselineSchemaDigest
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          `control graph optimization "${controller.nodeId}" candidate ${candidate} is invalid`,
+        );
+      }
+      if (
+        checkNode?.type !== "optimization-check" ||
+        checkNode.optimizationCheck.optimizationId !== controller.nodeId ||
+        checkNode.optimizationCheck.candidate !== candidate ||
+        checkNode.optimizationCheck.candidateNodeId !== candidateNodeId ||
+        checkNode.optimizationCheck.priorCheckNodeId !== priorCheckNodeId ||
+        !sameStrings(checkNode.dependsOn, [candidateNodeId]) ||
+        !sameOptimizationCheckContract(checkNode, controller)
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          `control graph optimization "${controller.nodeId}" check ${candidate} is invalid`,
+        );
+      }
+
+      if (candidate === 1) {
+        if (
+          candidateNode.optimizationGuard !== undefined ||
+          checkNode.optimizationGuard !== undefined ||
+          !candidateNode.dependsOn.includes(contract.baseline.nodeId)
+        ) {
+          throw new RunReplayError(
+            eventIndex,
+            `control graph optimization "${controller.nodeId}" first candidate has an invalid entry`,
+          );
+        }
+      } else if (
+        priorCheckNodeId === undefined ||
+        !sameOptimizationGuard(
+          candidateNode.optimizationGuard,
+          controller.nodeId,
+          candidate,
+          priorCheckNodeId,
+        ) ||
+        !sameOptimizationGuard(
+          checkNode.optimizationGuard,
+          controller.nodeId,
+          candidate,
+          priorCheckNodeId,
+        ) ||
+        !sameStrings(candidateNode.dependsOn, [priorCheckNodeId])
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          `control graph optimization "${controller.nodeId}" candidate ${candidate} has an invalid prior-check guard`,
+        );
+      }
+      registeredCandidateIds.add(candidateNode.nodeId);
+      registeredCheckIds.add(checkNode.nodeId);
+    }
+  }
+
+  for (const node of nodes) {
+    if (node.type === "child" && node.optimizationCandidate !== undefined) {
+      if (!registeredCandidateIds.has(node.nodeId)) {
+        throw new RunReplayError(
+          eventIndex,
+          `control graph candidate child "${node.nodeId}" is not registered by an optimization`,
+        );
+      }
+    } else if (node.type === "optimization-check") {
+      if (!registeredCheckIds.has(node.nodeId)) {
+        throw new RunReplayError(
+          eventIndex,
+          `control graph optimization check "${node.nodeId}" is not registered by an optimization`,
+        );
+      }
+    } else if (node.optimizationGuard !== undefined) {
+      throw new RunReplayError(
+        eventIndex,
+        `control graph node "${node.nodeId}" has optimization guard metadata outside a candidate sequence`,
+      );
+    }
+  }
+}
+
+function validateControlOptimizationPointers(
+  controller: ControlGraphOptimizationNode,
+  schema: CompiledResultSchema,
+  eventIndex: number,
+): void {
+  try {
+    const metricSchema = resolveOptimizationPointerSchema(
+      schema,
+      controller.optimization.metric.pointer,
+    );
+    if (metricSchema.type !== "number" && metricSchema.type !== "integer") {
+      throw new RunReplayError(
+        eventIndex,
+        `control graph optimization "${controller.nodeId}" metric is not numeric`,
+      );
+    }
+    for (const invariant of controller.optimization.invariants) {
+      const invariantSchema = resolveOptimizationPointerSchema(schema, invariant.pointer);
+      if (invariantSchema.type === "array" || invariantSchema.type === "object") {
+        throw new RunReplayError(
+          eventIndex,
+          `control graph optimization "${controller.nodeId}" invariant is not scalar`,
+        );
+      }
+      evaluateTypedResult(JSON.stringify(invariant.equals), invariantSchema);
+    }
+  } catch (error) {
+    if (error instanceof RunReplayError) {
+      throw error;
+    }
+    if (error instanceof OptimizationResultError || error instanceof TypedResultError) {
+      throw new RunReplayError(
+        eventIndex,
+        `control graph optimization "${controller.nodeId}" has an invalid metric or invariant contract`,
+      );
+    }
+    throw error;
+  }
+}
+
+function sameOptimizationCheckContract(
+  check: ControlGraphOptimizationCheckNode,
+  controller: ControlGraphOptimizationNode,
+): boolean {
+  const checkContract = check.optimizationCheck;
+  const controllerContract = controller.optimization;
+  return (
+    JSON.stringify(checkContract.baseline) === JSON.stringify(controllerContract.baseline) &&
+    JSON.stringify(checkContract.metric) === JSON.stringify(controllerContract.metric) &&
+    JSON.stringify(checkContract.invariants) === JSON.stringify(controllerContract.invariants) &&
+    checkContract.maxConsecutiveNonImproving === controllerContract.maxConsecutiveNonImproving &&
+    checkContract.rollback === controllerContract.rollback
+  );
+}
+
+function sameOptimizationGuard(
+  guard: ControlOptimizationGuard | undefined,
+  optimizationId: string,
+  candidate: number,
+  checkNodeId: string,
+): boolean {
+  return (
+    guard?.optimizationId === optimizationId &&
+    guard.candidate === candidate &&
+    guard.checkNodeId === checkNodeId
+  );
 }
 
 function serializeLoopTemplateStructure(
@@ -4736,6 +5858,392 @@ function requireLoopCheckDecision(
   return check.control;
 }
 
+function requireOptimizationCheckRequirement(
+  state: RunState,
+  nodeId: string,
+  eventIndex: number,
+): ControlGraphOptimizationCheckNode {
+  const requirement = requireControlGraphNode(state, nodeId, eventIndex);
+  if (requirement.type !== "optimization-check") {
+    throw new RunReplayError(eventIndex, `node "${nodeId}" is not an optimization check`);
+  }
+  return requirement;
+}
+
+function requireOptimizationEvaluation(
+  state: NodeRunState,
+  nodeId: string,
+  eventIndex: number,
+): OptimizationCheckRunState {
+  if (state.optimization === null) {
+    throw new RunReplayError(eventIndex, `optimization check "${nodeId}" is not evaluated`);
+  }
+  return state.optimization;
+}
+
+function requireOptimizationCandidateEvidence(
+  requirement: ControlGraphOptimizationCheckNode,
+  nodes: Readonly<Record<string, NodeRunState>>,
+  eventIndex: number,
+): ChildEvidence {
+  const candidate = requireNode(nodes, requirement.optimizationCheck.candidateNodeId, eventIndex);
+  if (candidate.status !== "succeeded" || candidate.evidence?.kind !== "child") {
+    throw new RunReplayError(
+      eventIndex,
+      `optimization candidate "${requirement.optimizationCheck.candidateNodeId}" has no durable child evidence`,
+    );
+  }
+  return candidate.evidence;
+}
+
+interface ExpectedOptimizationEvaluation {
+  readonly optimizationId: string;
+  readonly candidateNumber: number;
+  readonly candidateNodeId: string;
+  readonly baselineValueHash: string;
+  readonly baselineMetric: number;
+  readonly baselineInvariants: readonly OptimizationInvariantObservation[];
+  readonly bestValueHashBefore: string;
+  readonly bestMetricBefore: number;
+  readonly priorStagnation: number;
+  readonly maxConsecutiveNonImproving: number;
+  readonly candidate: ChildEvidence;
+  readonly candidateValueHash: string | null;
+  readonly candidateMetric: number | null;
+  readonly candidateInvariants: readonly OptimizationInvariantObservation[] | null;
+  readonly decision: "accepted" | "rejected";
+  readonly reason: OptimizationEvaluationReason;
+  readonly stagnation: number;
+  readonly stop: boolean;
+}
+
+function expectedOptimizationEvaluation(
+  state: RunState,
+  requirement: ControlGraphOptimizationCheckNode,
+  nodes: Readonly<Record<string, NodeRunState>>,
+  eventIndex: number,
+): ExpectedOptimizationEvaluation {
+  const baseline = requireNode(nodes, requirement.optimizationCheck.baseline.nodeId, eventIndex);
+  if (baseline.status !== "succeeded" || baseline.control?.kind !== "result") {
+    throw new RunReplayError(eventIndex, "optimization baseline has no durable typed result");
+  }
+  const candidateNode = state.controlGraph?.nodes.find(
+    (node): node is ControlGraphChildNode =>
+      node.nodeId === requirement.optimizationCheck.candidateNodeId && node.type === "child",
+  );
+  if (candidateNode === undefined) {
+    throw new RunReplayError(eventIndex, "optimization candidate declaration is not a child");
+  }
+  const candidate = requireOptimizationCandidateEvidence(requirement, nodes, eventIndex);
+  let baselineObservation: ReturnType<typeof evaluateOptimizationBaseline>;
+  const prior = priorOptimizationCheck(requirement, nodes, eventIndex);
+  const bestValueHashBefore = prior?.bestValueHash ?? baseline.control.valueHash;
+  const priorStagnation = prior?.stagnation ?? 0;
+  try {
+    baselineObservation = evaluateOptimizationBaseline({
+      source: baseline.control.canonicalValue,
+      schema: candidateNode.child.resultSchema,
+      metric: requirement.optimizationCheck.metric,
+      invariants: requirement.optimizationCheck.invariants,
+    });
+  } catch (error) {
+    throw new RunReplayError(
+      eventIndex,
+      `optimization evidence is invalid: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  const common = {
+    optimizationId: requirement.optimizationCheck.optimizationId,
+    candidateNumber: requirement.optimizationCheck.candidate,
+    candidateNodeId: requirement.optimizationCheck.candidateNodeId,
+    baselineValueHash: baselineObservation.valueHash,
+    baselineMetric: baselineObservation.metric,
+    baselineInvariants: baselineObservation.invariants,
+    bestValueHashBefore,
+    bestMetricBefore: prior?.bestMetric ?? baselineObservation.metric,
+    priorStagnation,
+    maxConsecutiveNonImproving: requirement.optimizationCheck.maxConsecutiveNonImproving,
+    candidate,
+  };
+  if (candidate.outcome !== "succeeded") {
+    const stagnation = priorStagnation + 1;
+    return {
+      ...common,
+      candidateValueHash: null,
+      candidateMetric: null,
+      candidateInvariants: null,
+      decision: "rejected",
+      reason: optimizationCandidateFailureReason(candidate.outcome),
+      stagnation,
+      stop: stagnation >= requirement.optimizationCheck.maxConsecutiveNonImproving,
+    };
+  }
+  if (candidate.result === null) {
+    throw new RunReplayError(eventIndex, "successful optimization candidate has no typed result");
+  }
+  let candidateObservation: ReturnType<typeof evaluateOptimizationCandidate>;
+  try {
+    candidateObservation = evaluateOptimizationCandidate({
+      source: candidate.result.canonicalValue,
+      schema: candidateNode.child.resultSchema,
+      metric: requirement.optimizationCheck.metric,
+      invariants: requirement.optimizationCheck.invariants,
+      bestMetric: prior?.bestMetric ?? baselineObservation.metric,
+      priorStagnation,
+      maxConsecutiveNonImproving: requirement.optimizationCheck.maxConsecutiveNonImproving,
+    });
+  } catch (error) {
+    throw new RunReplayError(
+      eventIndex,
+      `optimization evidence is invalid: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  return {
+    ...common,
+    candidateValueHash: candidateObservation.valueHash,
+    candidateMetric: candidateObservation.metric,
+    candidateInvariants: candidateObservation.invariants,
+    decision: candidateObservation.decision,
+    reason: candidateObservation.reason,
+    stagnation: candidateObservation.stagnation,
+    stop: candidateObservation.stop,
+  };
+}
+
+function optimizationCandidateFailureReason(
+  outcome: Exclude<OptimizationCandidateOutcome, "succeeded">,
+): OptimizationEvaluationReason {
+  switch (outcome) {
+    case "failed":
+      return "candidate_failed";
+    case "cancelled":
+      return "candidate_cancelled";
+    case "resource_exhausted":
+      return "candidate_resource_exhausted";
+  }
+}
+
+function validateOptimizationEvaluationEvent(
+  event: NodeOptimizationEvaluatedEvent,
+  expected: ExpectedOptimizationEvaluation,
+  eventIndex: number,
+): void {
+  if (
+    event.optimizationId !== expected.optimizationId ||
+    event.candidate !== expected.candidateNumber ||
+    event.candidateNodeId !== expected.candidateNodeId
+  ) {
+    throw new RunReplayError(eventIndex, "optimization evaluation identity is invalid");
+  }
+  if (
+    event.baselineValueHash !== expected.baselineValueHash ||
+    event.baselineMetric !== expected.baselineMetric ||
+    !sameOptimizationInvariantObservations(event.baselineInvariants, expected.baselineInvariants)
+  ) {
+    throw new RunReplayError(eventIndex, "optimization baseline metric or value hash is invalid");
+  }
+  if (
+    event.bestValueHashBefore !== expected.bestValueHashBefore ||
+    event.bestMetricBefore !== expected.bestMetricBefore
+  ) {
+    throw new RunReplayError(eventIndex, "optimization best metric or value hash is invalid");
+  }
+  if (
+    event.candidateOutcome !== expected.candidate.outcome ||
+    event.candidateValueHash !== expected.candidateValueHash ||
+    event.candidateMetric !== expected.candidateMetric ||
+    !sameNullableOptimizationInvariantObservations(
+      event.candidateInvariants,
+      expected.candidateInvariants,
+    )
+  ) {
+    throw new RunReplayError(eventIndex, "optimization candidate metric or outcome is invalid");
+  }
+
+  const captureRejection =
+    expected.decision === "accepted" &&
+    (event.reason === "candidate_no_change" || event.reason === "candidate_delta_limit_exceeded");
+  const expectedDecision =
+    expected.decision === "accepted" && !captureRejection ? "promote" : "reject";
+  const expectedReason = captureRejection ? event.reason : expected.reason;
+  const expectedStagnation = captureRejection ? expected.priorStagnation + 1 : expected.stagnation;
+  const expectedStop = captureRejection
+    ? expectedStagnation >= expected.maxConsecutiveNonImproving
+    : expected.stop;
+  if (
+    event.decision !== expectedDecision ||
+    event.reason !== expectedReason ||
+    event.stagnation !== expectedStagnation ||
+    event.stop !== expectedStop
+  ) {
+    throw new RunReplayError(eventIndex, "optimization decision or stagnation is invalid");
+  }
+  if (event.decision === "promote") {
+    const promotion = event.promotion;
+    if (
+      promotion === null ||
+      event.deltaEntries === null ||
+      promotion.promotionId !== calculateOptimizationPromotionId(event.runId, event.nodeId) ||
+      promotion.workspaceId !== expected.candidate.childRunId ||
+      promotion.baselineSnapshotDigest !== expected.candidate.workspace.snapshotDigest ||
+      promotion.candidateSnapshotDigest === promotion.baselineSnapshotDigest ||
+      !optimizationDeltaMatchesBoundary(promotion, event.deltaEntries)
+    ) {
+      throw new RunReplayError(eventIndex, "optimization promotion boundary is invalid");
+    }
+  } else if (event.promotion !== null || event.deltaEntries !== null) {
+    throw new RunReplayError(eventIndex, "rejected optimization candidate cannot carry promotion");
+  }
+}
+
+function sameNullableOptimizationInvariantObservations(
+  left: readonly OptimizationInvariantObservation[] | null,
+  right: readonly OptimizationInvariantObservation[] | null,
+): boolean {
+  return left === null || right === null
+    ? left === right
+    : sameOptimizationInvariantObservations(left, right);
+}
+
+function sameOptimizationInvariantObservations(
+  left: readonly OptimizationInvariantObservation[],
+  right: readonly OptimizationInvariantObservation[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every(
+      (observation, index) =>
+        observation.pointer === right[index]?.pointer &&
+        observation.expected === right[index]?.expected &&
+        observation.actual === right[index]?.actual &&
+        observation.passed === right[index]?.passed,
+    )
+  );
+}
+
+function optimizationDeltaMatchesBoundary(
+  boundary: OptimizationPromotionBoundary,
+  entries: readonly OptimizationDeltaEntry[],
+): boolean {
+  if (
+    entries.length !== boundary.entryCount ||
+    new Set(entries.map((entry) => entry.path)).size !== entries.length ||
+    entries.some((entry, index) =>
+      index === 0 ? false : (entries[index - 1]?.path.localeCompare(entry.path, "en") ?? 0) >= 0,
+    )
+  ) {
+    return false;
+  }
+  const logicalBytes = entries.reduce(
+    (total, entry) =>
+      total +
+      (entry.before.kind === "file" ? entry.before.size : 0) +
+      (entry.after.kind === "file" ? entry.after.size : 0),
+    0,
+  );
+  if (!Number.isSafeInteger(logicalBytes) || logicalBytes !== boundary.logicalBytes) {
+    return false;
+  }
+  const manifest = {
+    version: 1 as const,
+    workspaceId: boundary.workspaceId,
+    baselineSnapshotDigest: boundary.baselineSnapshotDigest,
+    candidateSnapshotDigest: boundary.candidateSnapshotDigest,
+    entryCount: boundary.entryCount,
+    logicalBytes: boundary.logicalBytes,
+    entries,
+  };
+  return sha256(JSON.stringify(manifest)) === boundary.deltaDigest;
+}
+
+function priorOptimizationCheck(
+  requirement: ControlGraphOptimizationCheckNode,
+  nodes: Readonly<Record<string, NodeRunState>>,
+  eventIndex: number,
+): Extract<NodeControlRunState, { readonly kind: "optimization-check" }> | undefined {
+  const priorId = requirement.optimizationCheck.priorCheckNodeId;
+  if (priorId === undefined) {
+    return undefined;
+  }
+  const prior = requireNode(nodes, priorId, eventIndex);
+  if (prior.status !== "succeeded" || prior.control?.kind !== "optimization-check") {
+    throw new RunReplayError(eventIndex, `prior optimization check "${priorId}" has no decision`);
+  }
+  return prior.control;
+}
+
+function priorOptimizationBestCandidate(
+  requirement: ControlGraphOptimizationCheckNode,
+  nodes: Readonly<Record<string, NodeRunState>>,
+  eventIndex: number,
+): number | null {
+  return priorOptimizationCheck(requirement, nodes, eventIndex)?.bestCandidate ?? null;
+}
+
+function requireOptimizationEventIdentity(
+  requirement: ControlGraphOptimizationCheckNode,
+  optimization: OptimizationCheckRunState,
+  event: { readonly optimizationId: string; readonly candidate: number },
+  eventIndex: number,
+): void {
+  if (
+    event.optimizationId !== requirement.optimizationCheck.optimizationId ||
+    event.candidate !== requirement.optimizationCheck.candidate ||
+    optimization.optimizationId !== event.optimizationId ||
+    optimization.candidate !== event.candidate
+  ) {
+    throw new RunReplayError(eventIndex, "optimization event identity is invalid");
+  }
+}
+
+function sameOptimizationPromotion(
+  left: OptimizationPromotionBoundary,
+  right: OptimizationPromotionBoundary,
+): boolean {
+  return (
+    left.promotionId === right.promotionId &&
+    left.workspaceId === right.workspaceId &&
+    left.deltaDigest === right.deltaDigest &&
+    left.baselineSnapshotDigest === right.baselineSnapshotDigest &&
+    left.candidateSnapshotDigest === right.candidateSnapshotDigest &&
+    left.entryCount === right.entryCount &&
+    left.logicalBytes === right.logicalBytes
+  );
+}
+
+function completedOptimizationChecks(
+  requirement: ControlGraphOptimizationNode,
+  nodes: Readonly<Record<string, NodeRunState>>,
+  eventIndex: number,
+): readonly {
+  readonly nodeId: string;
+  readonly control: Extract<NodeControlRunState, { readonly kind: "optimization-check" }>;
+}[] {
+  const completed: Array<{
+    readonly nodeId: string;
+    readonly control: Extract<NodeControlRunState, { readonly kind: "optimization-check" }>;
+  }> = [];
+  let stopped = false;
+  for (const checkNodeId of requirement.optimization.checkNodeIds) {
+    const check = requireNode(nodes, checkNodeId, eventIndex);
+    if (check.status === "omitted") {
+      if (!stopped) {
+        throw new RunReplayError(
+          eventIndex,
+          "optimization check was omitted before a stop decision",
+        );
+      }
+      continue;
+    }
+    if (stopped || check.status !== "succeeded" || check.control?.kind !== "optimization-check") {
+      throw new RunReplayError(eventIndex, "optimization controller has an invalid check sequence");
+    }
+    completed.push({ nodeId: checkNodeId, control: check.control });
+    stopped = check.control.stop;
+  }
+  return Object.freeze(completed);
+}
+
 function requireSelectedGuard(
   requirement: ControlGraphNode,
   nodes: Readonly<Record<string, NodeRunState>>,
@@ -4747,6 +6255,21 @@ function requireSelectedGuard(
       throw new RunReplayError(
         eventIndex,
         `node "${requirement.nodeId}" prior loop check did not continue iteration ${requirement.loopGuard.iteration}`,
+      );
+    }
+  }
+  if (requirement.optimizationGuard !== undefined) {
+    const prior = requireNode(nodes, requirement.optimizationGuard.checkNodeId, eventIndex);
+    if (prior.status !== "succeeded" || prior.control?.kind !== "optimization-check") {
+      throw new RunReplayError(
+        eventIndex,
+        `node "${requirement.nodeId}" prior optimization check has no durable decision`,
+      );
+    }
+    if (prior.control.stop) {
+      throw new RunReplayError(
+        eventIndex,
+        `node "${requirement.nodeId}" prior optimization check stopped candidate ${requirement.optimizationGuard.candidate}`,
       );
     }
   }
@@ -4983,17 +6506,6 @@ function validateSucceededEvidence(evidence: NodeEvidence, eventIndex: number): 
       "successful agent evidence must not contain an uncertain effect receipt",
     );
   }
-  if (
-    evidence.kind === "child" &&
-    (evidence.outcome !== "succeeded" ||
-      evidence.result === null ||
-      evidence.workspace.disposition !== "discarded")
-  ) {
-    throw new RunReplayError(
-      eventIndex,
-      "successful child evidence requires a succeeded child, typed result, and discarded workspace",
-    );
-  }
 }
 
 function validateChildEvidenceProjection(
@@ -5063,8 +6575,28 @@ function validateChildEvidenceProjection(
   if (evidence.outcome === "succeeded" && evidence.result === null) {
     throw new RunReplayError(eventIndex, "succeeded child evidence is missing its typed result");
   }
-  if (event.type === "node_succeeded" && evidence.outcome !== "succeeded") {
-    throw new RunReplayError(eventIndex, "successful child node has a non-success child outcome");
+  if (event.type === "node_succeeded") {
+    if (requirement.optimizationCandidate === undefined) {
+      if (
+        evidence.outcome !== "succeeded" ||
+        evidence.result === null ||
+        evidence.workspace.disposition !== "discarded"
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          "successful child evidence requires a succeeded child, typed result, and discarded workspace",
+        );
+      }
+    } else if (
+      (evidence.outcome === "succeeded" &&
+        (evidence.result === null || evidence.workspace.disposition !== "retained")) ||
+      (evidence.outcome !== "succeeded" && evidence.workspace.disposition !== "discarded")
+    ) {
+      throw new RunReplayError(
+        eventIndex,
+        "optimization candidate outcome has an invalid result or workspace disposition",
+      );
+    }
   }
   if (event.type === "node_failed") {
     const cleanupFailed = event.error.code === "child_workspace_cleanup_failed";
@@ -5772,6 +7304,7 @@ function pendingNodeState(): NodeRunState {
     interruptedAttempts: Object.freeze([]),
     control: null,
     omission: null,
+    optimization: null,
   });
 }
 

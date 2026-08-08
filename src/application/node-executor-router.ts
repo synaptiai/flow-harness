@@ -1,3 +1,4 @@
+import type { CompiledNode } from "../domain/workflow/types.js";
 import type {
   AgentExecutor,
   CommandExecutor,
@@ -5,7 +6,6 @@ import type {
   NodeExecutionOutcome,
   NodeExecutor,
 } from "./ports.js";
-import type { CompiledNode } from "../domain/workflow/types.js";
 import { VerifierNodeExecutor } from "./verifier-executor.js";
 
 export class NodeExecutorRouter implements NodeExecutor {
@@ -32,6 +32,8 @@ export class NodeExecutorRouter implements NodeExecutor {
       case "join":
       case "loop-check":
       case "loop":
+      case "optimization-check":
+      case "optimization":
         throw new Error(`Control node "${node.id}" must be resolved by the workflow scheduler`);
     }
   }

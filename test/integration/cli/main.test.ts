@@ -230,6 +230,62 @@ nodes:
     });
   });
 
+  it("promotes and inspects a bounded optimization through the attached production composition", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "optimization.workflow.yaml");
+    const runsDirectory = join(directory, "custom-runs");
+    await writeFile(workflowPath, optimizationWorkflow("cli-optimization"), "utf8");
+    const capture = createCapture();
+
+    const exitCode = await main(
+      [
+        "run",
+        workflowPath,
+        "--run-id",
+        "cli-optimization-run",
+        "--runs-dir",
+        runsDirectory,
+        "--cwd",
+        directory,
+      ],
+      capture.io,
+      { cwd: directory },
+    );
+
+    expect(exitCode, [...capture.stderr, ...capture.stdout].join("\n")).toBe(0);
+    const state = JSON.parse(capture.stdout.join("\n"));
+    const candidateRunId = state.nodes["optimize--c1--candidate"].childRun.runId as string;
+    expect(state).toMatchObject({
+      status: "succeeded",
+      nodes: {
+        "optimize--c1--check": {
+          optimization: {
+            decision: "promote",
+            settlement: { outcome: "committed" },
+            cleanedAt: expect.any(String),
+          },
+          control: { kind: "optimization-check", outcome: "accepted", bestMetric: 8 },
+        },
+        optimize: {
+          control: { kind: "optimization", bestCandidate: 1, stopReason: "max_candidates" },
+        },
+      },
+    });
+    await expect(readFile(join(directory, "optimized.txt"), "utf8")).resolves.toBe("score=8\n");
+    await expect(stat(join(runsDirectory, ".workspaces", candidateRunId))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+
+    const inspectCapture = createCapture();
+    const inspectExitCode = await main(
+      ["inspect", "cli-optimization-run", "--runs-dir", runsDirectory],
+      inspectCapture.io,
+      { cwd: directory },
+    );
+    expect(inspectExitCode).toBe(0);
+    expect(JSON.parse(inspectCapture.stdout.join("\n"))).toEqual(state);
+  });
+
   it("runs sibling child commands across production SRT workspace sessions", async () => {
     const directory = await createTemporaryDirectory();
     const workflowPath = join(directory, "sibling-children.workflow.yaml");
@@ -1567,6 +1623,102 @@ ${child
   .split("\n")
   .map((line) => `        ${line}`)
   .join("\n")}
+`;
+}
+
+function optimizationWorkflow(id: string): string {
+  const improveScript = `
+const fs = require("node:fs");
+const value = { score: 8, "tests-passed": true };
+fs.writeFileSync("optimized.txt", "score=8\\n");
+process.stdout.write(JSON.stringify(value));
+`.trim();
+  const candidate = `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: ${id}-candidate }
+budget:
+  maxNodeStarts: 4
+  maxModelTokens: 100
+  maxCostUsd: 0.01
+  maxExecutionMs: 10000
+nodes:
+  - id: improve
+    type: command
+    command:
+      executable: ${JSON.stringify(process.execPath)}
+      args: [-e, ${JSON.stringify(improveScript)}]
+  - id: publish
+    type: result
+    dependsOn: [improve]
+    result:
+      source: { nodeId: improve, field: command.stdout }
+      schema:
+        type: object
+        properties:
+          score: { type: number }
+          tests-passed: { type: boolean }
+        required: [score, tests-passed]
+`.trim();
+  const baselineScript = `
+const fs = require("node:fs");
+const value = { score: 10, "tests-passed": true };
+fs.writeFileSync("optimized.txt", "score=10\\n");
+process.stdout.write(JSON.stringify(value));
+`.trim();
+  const verifyScript = `
+const fs = require("node:fs");
+if (fs.readFileSync("optimized.txt", "utf8") !== "score=8\\n") process.exit(1);
+`.trim();
+  return `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: ${id} }
+budget:
+  maxNodeStarts: 16
+  maxModelTokens: 1000
+  maxCostUsd: 1
+  maxExecutionMs: 60000
+nodes:
+  - id: measure
+    type: command
+    command:
+      executable: ${JSON.stringify(process.execPath)}
+      args: [-e, ${JSON.stringify(baselineScript)}]
+  - id: baseline
+    type: result
+    dependsOn: [measure]
+    result:
+      source: { nodeId: measure, field: command.stdout }
+      schema:
+        type: object
+        properties:
+          score: { type: number }
+          tests-passed: { type: boolean }
+        required: [score, tests-passed]
+  - id: optimize
+    type: optimization
+    dependsOn: [baseline]
+    optimization:
+      baseline: { nodeId: baseline, field: result.value }
+      metric: { pointer: /score, direction: minimize }
+      invariants: [{ pointer: /tests-passed, equals: true }]
+      maxCandidates: 1
+      stagnation: { maxConsecutiveNonImproving: 1 }
+      rollback: previous-best
+      candidate:
+        resultNodeId: publish
+        workflow: |
+${candidate
+  .split("\n")
+  .map((line) => `          ${line}`)
+  .join("\n")}
+  - id: finish
+    type: command
+    dependsOn: [optimize]
+    command:
+      executable: ${JSON.stringify(process.execPath)}
+      args: [-e, ${JSON.stringify(verifyScript)}]
 `;
 }
 

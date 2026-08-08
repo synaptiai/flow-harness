@@ -70,7 +70,7 @@ Criterion evaluation is a pure domain operation over the captured goal and durab
 - Self-dependencies, duplicate dependencies, and cycles are rejected.
 - The scheduler considers pending nodes in declaration order and applies the first legal transition whose dependencies are terminal. Ordinary work requires successful dependencies; omission propagates through ordinary descendants; an explicit join reconciles the selected success with omitted alternatives.
 - Independent ready executable nodes may overlap only when `concurrency.maxNodes` explicitly permits it; omission preserves the sequential maximum of one.
-- Every terminal node must be a command, child, verifier, or result node. An ordinary agent response cannot be terminal proof. A terminal result completes an operational graph but cannot satisfy a goal criterion.
+- Every terminal node must be a command, child, verifier, result, or optimization controller. An ordinary agent response cannot be terminal proof. A terminal result or optimization completes an operational graph but cannot satisfy a goal criterion.
 - Compilation finishes before Flow creates a run ledger or invokes an executor.
 
 ## Typed result node
@@ -179,12 +179,14 @@ filesystem snapshot or security boundary.
 
 The child executes the same Flow compiler, scheduler, policy, sandbox, executors, cancellation
 signal, and recovery rules in its isolated working directory, but writes a separate JSONL history.
-Its `run_started` event binds snapshot backend/digest and exact parent linkage. On terminal success,
-the parent discards the workspace and records the child terminal sequence, canonical result,
-resource totals, duration, snapshot digest, and cleanup disposition. A successful child requires a
+Its `run_started` event binds snapshot backend/digest and exact parent linkage. For an ordinary
+child, the parent discards the workspace and records the child terminal sequence, canonical result,
+resource totals, duration, snapshot digest, and cleanup disposition. Ordinary success requires a
 valid result and confirmed discard. Failed, cancelled, and exhausted children retain linked
-evidence and fail the parent child node. Cleanup failure retains the workspace and fails closed.
-Child changes are never copied back, exported, merged, or promoted in this contract.
+evidence and fail the ordinary parent child node. Cleanup failure retains the workspace and fails
+closed. Only compiler-generated optimization candidates use a different settlement: successful
+workspaces remain retained for the typed optimization check, while failed candidates are discarded
+and become bounded rejection evidence rather than an automatic parent failure.
 
 Every child ceiling is reserved against the parent's remaining bounded budget before the workspace
 exists; sibling reservations are aggregated within a wave. Actual child starts, model tokens,
@@ -328,10 +330,86 @@ Executable instances retain existing approval, budget, cancellation, effect, and
 contracts. Loop iteration and retry attempt are separate: attempt 2 of an interrupted
 `repair--i3--node--fix` remains iteration 3.
 
-This contract does not provide arbitrary graph cycles, nested or unbounded loops, dynamic maps,
-numeric optimization direction, stagnation detection, workspace snapshots, accept-best behavior,
-or rollback. Those require an optimization contract that promotes and compares isolated child
-candidates; the current child contract always discards workspace changes.
+This contract does not provide arbitrary graph cycles, nested or unbounded loops, or dynamic maps.
+Numeric accept-best iteration uses the separate bounded optimization contract below.
+
+## Bounded accept-best optimization
+
+An `optimization` compares a command-evaluated typed baseline with independently-ledgered isolated
+candidates:
+
+```yaml
+- id: optimize
+  type: optimization
+  dependsOn: [baseline]
+  optimization:
+    baseline: { nodeId: baseline, field: result.value }
+    metric: { pointer: /score, direction: minimize }
+    invariants:
+      - { pointer: /tests-passed, equals: true }
+    maxCandidates: 4
+    stagnation: { maxConsecutiveNonImproving: 2 }
+    rollback: previous-best
+    candidate:
+      resultNodeId: publish
+      workflow: |
+        # Complete bounded child workflow with terminal result node `publish`.
+```
+
+The baseline must be an unconditional direct `result` dependency produced from deterministic
+command evidence. Candidate and baseline result schemas must match exactly. `metric.pointer` is an
+RFC 6901 JSON Pointer that resolves to a finite `number` or safe `integer`; `direction` is
+`minimize` or `maximize`. Each invariant pointer resolves to a scalar and compares by exact typed
+equality with `equals`. Malformed or unresolved pointers, incompatible expected values,
+model-authored baseline evaluation, nested optimization, unordered top-level workspace mutation,
+and schema drift fail compilation.
+
+`maxCandidates` is 1–16. `maxConsecutiveNonImproving` is positive and no greater than the candidate
+bound. Compilation creates a finite child/check pair per possible candidate and retains the author
+id as a pure controller. Later pairs require the immediately prior check to continue; reaching the
+stagnation threshold durably omits unused pairs. Nested optimization and hidden runtime recursion
+are not supported.
+
+A successful candidate result is revalidated and canonicalized against the persisted schema. Flow
+records baseline and candidate value hashes, numeric metrics, every expected/actual invariant
+observation, decision, stagnation, and stop flag. Only a strict metric improvement with all
+invariants satisfied may enter promotion. Equal, worse, invariant-failing, failed, cancelled,
+resource-exhausted, and no-file-change candidates are rejected. Rejection cannot mutate the parent.
+
+For an improvement, Flow captures a deterministic delta containing additions, modifications,
+deletions, executable modes, directories, regular files, and symbolic links. Paths, before/after
+identities, entry count, logical bytes, snapshot digests, and manifest digest are persisted in the
+run event. Defaults limit a delta to 20,000 entries and 2 GiB of logical before-plus-after file
+bytes. The exact persisted entry list has a separate 128 KiB UTF-8 ceiling so the complete
+evaluation stays within the 2 MiB run-event envelope even at the typed-result and control-graph
+limits. Exceeding any capture bound records a non-improving candidate rejection and cleans the
+workspace without mutating the parent. Sockets, devices, FIFOs, malformed paths, duplicate paths,
+and changed source identities fail closed.
+
+Promotion uses `rollback: previous-best`. Before its durable prepare event, Flow verifies the entire
+parent still matches the candidate's isolation snapshot, verifies every affected path and removed
+directory closure, stores content-addressed candidate and rollback blobs, and fsyncs its journal.
+It then applies deterministic no-follow steps under a cross-process promotion lock. A local commit
+is recorded only after every affected path matches the candidate state and the journal is durable.
+Unrelated parent paths are preserved; a changed affected path refuses promotion rather than
+overwriting newer work.
+
+The event order is `node_optimization_evaluated`, optional
+`node_optimization_promotion_prepared`, optional `node_optimization_promotion_settled`, optional
+`node_optimization_candidate_cleaned`, `node_optimization_checked`, and finally
+`node_optimization_completed`. Replay recomputes typed observations and the complete delta digest,
+checks every identity and boundary, and rejects invented or reordered transitions. A committed
+candidate becomes the new best; rejection retains the prior best. Candidate child resources are
+charged to the parent exactly like ordinary children, while control events are resource-neutral.
+
+Interruption before prepare retries promotion from the same captured delta. Prepared without
+settlement invokes typed journal reconciliation. Reconciliation classifies the parent as committed,
+rolled back, or unknown; it never guesses from a partial path set. Committed work is not applied
+again, conclusive cleanup is idempotent, and unknown state fails with uncertain side-effect status
+while retaining artifacts. Cancellation or budget exhaustion starts no later candidate and never
+turns an exhausted bound into acceptance. Cancellation after candidate-child success but before
+evaluation leaves that isolated workspace retained for diagnosis because no durable reject or
+promotion boundary exists from which cleanup could be replayed.
 
 ## Bounded node concurrency
 
@@ -732,7 +810,7 @@ the id to the complete request and rejects reuse with changed input.
 
 ## Current limitations
 
-- No arbitrary cycles, nested/unbounded/optimization loops, dynamic fan-out, general multi-condition joins, child patch promotion, terminal-failure retry, or fallback semantics. Bounded loop bodies and static ready DAG nodes can execute concurrently, but iterations are sequential, share one workspace, and are not inferred to be conflict-free. Child workflows isolate workspaces and histories but always discard their changes. Conditions and loop stops are limited to exact equality over complete durable command, agent, accepted verifier, or typed-result fields. Approval is available as deterministic command pre-start gates and pure evidence-bound graph nodes; command-verifier and dynamic in-session model-tool approval remain unavailable. Recovery is limited to proof-safe fresh agent attempts; interrupted verifier attempts are never retried automatically.
+- No arbitrary cycles, nested or unbounded loops, nested optimization, dynamic fan-out, general multi-condition joins, general child patch promotion, terminal-failure retry, or fallback semantics. Bounded loop bodies and static ready DAG nodes can execute concurrently, but iterations are sequential, share one workspace, and are not inferred to be conflict-free. Ordinary child workflows isolate workspaces and histories and discard their changes; only compiler-generated bounded optimization candidates can use the typed promotion saga. Conditions and loop stops are limited to exact equality over complete durable command, agent, accepted verifier, or typed-result fields. Approval is available as deterministic command pre-start gates and pure evidence-bound graph nodes; command-verifier and dynamic in-session model-tool approval remain unavailable. Recovery is limited to proof-safe fresh agent attempts; interrupted verifier attempts are never retried automatically.
 - No automatic terminalization or session continuation of an interrupted node attempt. Unconfigured or ineligible durable starts still block continuation.
 - Detached workers can be adopted by a replacement local supervisor, but they cannot move between
   hosts and do not survive host reboot.

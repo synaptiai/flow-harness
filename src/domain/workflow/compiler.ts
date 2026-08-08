@@ -2,15 +2,15 @@ import { parseDocument } from "yaml";
 
 import type { GoalContractSource } from "../goal/schema.js";
 import type { CompiledGoal } from "../goal/types.js";
-import { calculateResultSchemaDigest } from "../result/typed-result.js";
+import {
+  OptimizationResultError,
+  resolveOptimizationPointerSchema,
+} from "../result/optimization-result.js";
+import { calculateResultSchemaDigest, evaluateTypedResult } from "../result/typed-result.js";
 import { projectCompiledControlGraph, workflowRequiresControlGraph } from "./control-graph.js";
 import { calculateWorkflowDigest } from "./digest.js";
-import { workflowSourceSchema, type WorkflowSource } from "./schema.js";
+import { type WorkflowSource, workflowSourceSchema } from "./schema.js";
 import {
-  MAX_CONTROL_GRAPH_SERIALIZED_BYTES,
-  MAX_CHILD_WORKFLOW_DEPTH,
-  MAX_COMPILED_WORKFLOW_NODES,
-  MAX_RUN_TREE_NODES,
   type CompiledAgentNode,
   type CompiledApprovalNode,
   type CompiledChildNode,
@@ -20,12 +20,18 @@ import {
   type CompiledLoopCheckNode,
   type CompiledLoopNode,
   type CompiledNode,
+  type CompiledOptimizationCheckNode,
+  type CompiledOptimizationNode,
   type CompiledResultNode,
   type CompiledResultSchema,
   type CompiledRunBudget,
   type CompiledVerifierNode,
   type CompiledWorkflow,
   type CompiledWorkflowConcurrency,
+  MAX_CHILD_WORKFLOW_DEPTH,
+  MAX_COMPILED_WORKFLOW_NODES,
+  MAX_CONTROL_GRAPH_SERIALIZED_BYTES,
+  MAX_RUN_TREE_NODES,
 } from "./types.js";
 
 export interface WorkflowDiagnostic {
@@ -71,6 +77,22 @@ export interface WorkflowDiagnostic {
     | "loop_source_field_mismatch"
     | "loop_source_not_unconditional"
     | "loop_source_unknown"
+    | "optimization_barrier_unordered"
+    | "optimization_baseline_not_unconditional"
+    | "optimization_baseline_requires_dependency"
+    | "optimization_baseline_requires_result"
+    | "optimization_baseline_unknown"
+    | "optimization_evaluator_not_deterministic"
+    | "optimization_expansion_too_large"
+    | "optimization_instance_id_collision"
+    | "optimization_instance_id_too_long"
+    | "optimization_invariant_mismatch"
+    | "optimization_invariant_not_scalar"
+    | "optimization_metric_not_numeric"
+    | "optimization_nested_unsupported"
+    | "optimization_pointer_invalid"
+    | "optimization_pointer_unresolved"
+    | "optimization_schema_mismatch"
     | "result_source_field_mismatch"
     | "result_source_requires_dependency"
     | "result_source_self"
@@ -127,6 +149,19 @@ function compileWorkflowTextInternal(
       message: issue.message,
     }));
     throw new WorkflowCompilationError(sourceName, Object.freeze(diagnostics));
+  }
+
+  if (context.depth > 0 && result.data.nodes.some((node) => node.type === "optimization")) {
+    throw new WorkflowCompilationError(
+      sourceName,
+      Object.freeze([
+        {
+          code: "optimization_nested_unsupported",
+          path: "nodes",
+          message: "optimization nodes are only supported in the root workflow",
+        },
+      ]),
+    );
   }
 
   const diagnostics = validateGraph(result.data);
@@ -264,7 +299,8 @@ function validateGraph(workflow: WorkflowSource): WorkflowDiagnostic[] {
       node.type !== "command" &&
       node.type !== "verifier" &&
       node.type !== "result" &&
-      node.type !== "child"
+      node.type !== "child" &&
+      node.type !== "optimization"
     ) {
       diagnostics.push({
         code: "terminal_requires_command",
@@ -316,6 +352,7 @@ function validateGraph(workflow: WorkflowSource): WorkflowDiagnostic[] {
 
   validateControlFlow(workflow, diagnostics);
   validateLoops(workflow, diagnostics);
+  validateOptimizations(workflow, diagnostics);
 
   const cycle = findCycle(workflow.nodes);
   if (cycle !== undefined) {
@@ -331,6 +368,7 @@ function validateGraph(workflow: WorkflowSource): WorkflowDiagnostic[] {
 
 type SourceNode = WorkflowSource["nodes"][number];
 type SourceLoopNode = Extract<SourceNode, { readonly type: "loop" }>;
+type SourceOptimizationNode = Extract<SourceNode, { readonly type: "optimization" }>;
 type SourceBodyNode = SourceLoopNode["loop"]["body"]["nodes"][number];
 
 function sourceDependencies(node: SourceNode): readonly string[] {
@@ -391,6 +429,213 @@ function validateLoops(workflow: WorkflowSource, diagnostics: WorkflowDiagnostic
       message: `compiled workflow must not exceed ${MAX_COMPILED_WORKFLOW_NODES} nodes; loop expansion produces ${compiledNodeCount}`,
     });
   }
+}
+
+function validateOptimizations(workflow: WorkflowSource, diagnostics: WorkflowDiagnostic[]): void {
+  const optimizations = workflow.nodes.filter(
+    (node): node is SourceOptimizationNode => node.type === "optimization",
+  );
+  if (optimizations.length === 0) {
+    return;
+  }
+
+  const nodesById = nodeMap(workflow.nodes);
+  const compiledIds = new Set(workflow.nodes.map((node) => node.id));
+  const expandedNodeCount =
+    workflow.nodes.length +
+    workflow.nodes.reduce(
+      (count, node) =>
+        count +
+        (node.type === "loop"
+          ? node.loop.maxIterations * (node.loop.body.nodes.length + 1)
+          : node.type === "optimization"
+            ? node.optimization.maxCandidates * 2
+            : 0),
+      0,
+    );
+  if (expandedNodeCount > MAX_COMPILED_WORKFLOW_NODES) {
+    diagnostics.push({
+      code: "optimization_expansion_too_large",
+      path: "nodes",
+      message: `compiled workflow must not exceed ${MAX_COMPILED_WORKFLOW_NODES} nodes; bounded expansion produces ${expandedNodeCount}`,
+    });
+  }
+
+  for (const optimization of optimizations) {
+    const optimizationIndex = workflow.nodes.indexOf(optimization);
+    const prefix = `nodes.${optimizationIndex}.optimization`;
+    validateOptimizationBaseline(optimization, optimizationIndex, workflow, diagnostics);
+
+    for (const [otherIndex, other] of workflow.nodes.entries()) {
+      if (other.id === optimization.id) {
+        continue;
+      }
+      const ordered =
+        isAncestor(other.id, optimization.id, nodesById) ||
+        isAncestor(optimization.id, other.id, nodesById);
+      if (!ordered) {
+        diagnostics.push({
+          code: "optimization_barrier_unordered",
+          path: `nodes.${otherIndex}.dependsOn`,
+          message: `node "${other.id}" must be ordered before or after optimization "${optimization.id}"`,
+        });
+      }
+    }
+
+    for (let candidate = 1; candidate <= optimization.optimization.maxCandidates; candidate += 1) {
+      for (const generatedId of [
+        optimizationCandidateNodeId(optimization.id, candidate),
+        optimizationCheckNodeId(optimization.id, candidate),
+      ]) {
+        if (generatedId.length > 128) {
+          diagnostics.push({
+            code: "optimization_instance_id_too_long",
+            path: `nodes.${optimizationIndex}.id`,
+            message: `optimization "${optimization.id}" generates durable node id "${generatedId}" longer than 128 characters`,
+          });
+        }
+        if (compiledIds.has(generatedId)) {
+          diagnostics.push({
+            code: "optimization_instance_id_collision",
+            path: `nodes.${optimizationIndex}.id`,
+            message: `optimization "${optimization.id}" generates duplicate durable node id "${generatedId}"`,
+          });
+        }
+        compiledIds.add(generatedId);
+      }
+    }
+
+    const baseline = workflow.nodes.find(
+      (node): node is Extract<SourceNode, { readonly type: "result" }> =>
+        node.id === optimization.optimization.baseline.nodeId && node.type === "result",
+    );
+    if (baseline === undefined) {
+      continue;
+    }
+    validateOptimizationPointers(optimization, baseline.result.schema, prefix, diagnostics);
+  }
+}
+
+function validateOptimizationBaseline(
+  optimization: SourceOptimizationNode,
+  optimizationIndex: number,
+  workflow: WorkflowSource,
+  diagnostics: WorkflowDiagnostic[],
+): void {
+  const baselinePath = `nodes.${optimizationIndex}.optimization.baseline.nodeId`;
+  const baseline = workflow.nodes.find(
+    (node) => node.id === optimization.optimization.baseline.nodeId,
+  );
+  if (baseline === undefined) {
+    diagnostics.push({
+      code: "optimization_baseline_unknown",
+      path: baselinePath,
+      message: `optimization "${optimization.id}" references unknown baseline result "${optimization.optimization.baseline.nodeId}"`,
+    });
+    return;
+  }
+  if (baseline.type !== "result") {
+    diagnostics.push({
+      code: "optimization_baseline_requires_result",
+      path: baselinePath,
+      message: `optimization "${optimization.id}" baseline "${baseline.id}" must be a result node`,
+    });
+    return;
+  }
+  if (!optimization.dependsOn.includes(baseline.id)) {
+    diagnostics.push({
+      code: "optimization_baseline_requires_dependency",
+      path: baselinePath,
+      message: `optimization "${optimization.id}" must directly depend on baseline result "${baseline.id}"`,
+    });
+  }
+  if (baseline.when !== undefined) {
+    diagnostics.push({
+      code: "optimization_baseline_not_unconditional",
+      path: baselinePath,
+      message: `optimization "${optimization.id}" baseline result "${baseline.id}" must be unconditional`,
+    });
+  }
+  const evaluator = workflow.nodes.find((node) => node.id === baseline.result.source.nodeId);
+  if (
+    evaluator?.type !== "command" ||
+    (baseline.result.source.field !== "command.stdout" &&
+      baseline.result.source.field !== "command.stderr")
+  ) {
+    diagnostics.push({
+      code: "optimization_evaluator_not_deterministic",
+      path: baselinePath,
+      message: `optimization "${optimization.id}" baseline must be published directly from command evidence`,
+    });
+  }
+}
+
+function validateOptimizationPointers(
+  optimization: SourceOptimizationNode,
+  schema: CompiledResultSchema,
+  prefix: string,
+  diagnostics: WorkflowDiagnostic[],
+): void {
+  const metricPath = `${prefix}.metric.pointer`;
+  try {
+    const metricSchema = resolveOptimizationPointerSchema(
+      schema,
+      optimization.optimization.metric.pointer,
+    );
+    if (metricSchema.type !== "number" && metricSchema.type !== "integer") {
+      diagnostics.push({
+        code: "optimization_metric_not_numeric",
+        path: metricPath,
+        message: `optimization metric pointer ${JSON.stringify(optimization.optimization.metric.pointer)} must resolve to a number or integer schema`,
+      });
+    }
+  } catch (error) {
+    pushOptimizationPointerDiagnostic(error, metricPath, diagnostics);
+  }
+
+  for (const [index, invariant] of optimization.optimization.invariants.entries()) {
+    const pointerPath = `${prefix}.invariants.${index}.pointer`;
+    let invariantSchema: CompiledResultSchema;
+    try {
+      invariantSchema = resolveOptimizationPointerSchema(schema, invariant.pointer);
+    } catch (error) {
+      pushOptimizationPointerDiagnostic(error, pointerPath, diagnostics);
+      continue;
+    }
+    if (invariantSchema.type === "array" || invariantSchema.type === "object") {
+      diagnostics.push({
+        code: "optimization_invariant_not_scalar",
+        path: pointerPath,
+        message: `optimization invariant pointer ${JSON.stringify(invariant.pointer)} must resolve to a scalar schema`,
+      });
+      continue;
+    }
+    try {
+      evaluateTypedResult(JSON.stringify(invariant.equals), invariantSchema);
+    } catch {
+      diagnostics.push({
+        code: "optimization_invariant_mismatch",
+        path: `${prefix}.invariants.${index}.equals`,
+        message: `optimization invariant value at ${JSON.stringify(invariant.pointer)} does not match its result schema`,
+      });
+    }
+  }
+}
+
+function pushOptimizationPointerDiagnostic(
+  error: unknown,
+  path: string,
+  diagnostics: WorkflowDiagnostic[],
+): void {
+  if (
+    error instanceof OptimizationResultError &&
+    (error.code === "optimization_pointer_invalid" ||
+      error.code === "optimization_pointer_unresolved")
+  ) {
+    diagnostics.push({ code: error.code, path, message: error.message });
+    return;
+  }
+  throw error;
 }
 
 function validateLoopBodyGraph(
@@ -533,6 +778,14 @@ function loopBodyNodeId(loopId: string, iteration: number, nodeId: string): stri
 
 function loopCheckNodeId(loopId: string, iteration: number): string {
   return `${loopId}--i${iteration}--check`;
+}
+
+function optimizationCandidateNodeId(optimizationId: string, candidate: number): string {
+  return `${optimizationId}--c${candidate}--candidate`;
+}
+
+function optimizationCheckNodeId(optimizationId: string, candidate: number): string {
+  return `${optimizationId}--c${candidate}--check`;
 }
 
 function validateControlFlow(workflow: WorkflowSource, diagnostics: WorkflowDiagnostic[]): void {
@@ -714,7 +967,12 @@ function validateControlFlowNodes<T extends SourceNode | SourceBodyNode>(
   }
 
   for (const [index, node] of nodes.entries()) {
-    if (node.type === "join" || node.type === "loop" || node.when === undefined) {
+    if (
+      node.type === "join" ||
+      node.type === "loop" ||
+      node.type === "optimization" ||
+      node.when === undefined
+    ) {
       continue;
     }
     const condition = nodeById.get(node.when.conditionId);
@@ -784,6 +1042,7 @@ function validateControlFlowNodes<T extends SourceNode | SourceBodyNode>(
         (node) =>
           node.type !== "join" &&
           node.type !== "loop" &&
+          node.type !== "optimization" &&
           node.when?.conditionId === condition.id &&
           node.when.case === caseId,
       );
@@ -912,6 +1171,14 @@ function sourceControlGraph<T extends SourceNode | SourceBodyNode>(nodes: readon
           dependsOn: node.dependsOn,
         };
       }
+      if (node.type === "optimization") {
+        return {
+          nodeId: node.id,
+          type: node.type,
+          dependsOn: node.dependsOn,
+          optimization: node.optimization,
+        };
+      }
       return {
         nodeId: node.id,
         type: node.type,
@@ -971,7 +1238,10 @@ function branchMembership(
     visiting.delete(nodeId);
 
     let result: string | "cross" | undefined;
-    const directGuard = node.type === "join" || node.type === "loop" ? undefined : node.when;
+    const directGuard =
+      node.type === "join" || node.type === "loop" || node.type === "optimization"
+        ? undefined
+        : node.when;
     if (directGuard?.conditionId === conditionId) {
       result = dependencyMemberships.some(
         (value) => value === "cross" || value !== directGuard.case,
@@ -1059,9 +1329,15 @@ function findCycle(nodes: readonly (SourceNode | SourceBodyNode)[]): readonly st
 
 function freezeWorkflow(source: WorkflowSource, context: CompilationContext): CompiledWorkflow {
   const nodes = Object.freeze(
-    source.nodes.flatMap((node) =>
-      node.type === "loop" ? freezeLoop(node, context) : [freezeNode(node, context)],
-    ),
+    source.nodes.flatMap((node, index) => {
+      if (node.type === "loop") {
+        return freezeLoop(node, context);
+      }
+      if (node.type === "optimization") {
+        return freezeOptimization(source, node, index, context);
+      }
+      return [freezeNode(node, context)];
+    }),
   );
   const workflow: CompiledWorkflow = {
     apiVersion: source.apiVersion,
@@ -1114,7 +1390,7 @@ function freezeGoal(source: GoalContractSource): CompiledGoal {
 }
 
 function freezeNode(
-  source: Exclude<SourceNode, SourceLoopNode> | SourceBodyNode,
+  source: Exclude<SourceNode, SourceLoopNode | SourceOptimizationNode> | SourceBodyNode,
   context: CompilationContext,
 ): CompiledNode {
   const dependsOn = Object.freeze([...sourceDependencies(source)]);
@@ -1318,6 +1594,142 @@ function freezeLoop(source: SourceLoopNode, context: CompilationContext): readon
   };
   expanded.push(Object.freeze(controller));
   return expanded;
+}
+
+function freezeOptimization(
+  workflow: WorkflowSource,
+  source: SourceOptimizationNode,
+  sourceIndex: number,
+  context: CompilationContext,
+): readonly CompiledNode[] {
+  const baseline = workflow.nodes.find(
+    (node): node is Extract<SourceNode, { readonly type: "result" }> =>
+      node.id === source.optimization.baseline.nodeId && node.type === "result",
+  );
+  if (baseline === undefined) {
+    throw new Error(`validated optimization "${source.id}" has no baseline result`);
+  }
+  const baselineSchema = freezeResultSchema(baseline.result.schema);
+  const baselineSchemaDigest = calculateResultSchemaDigest(baselineSchema);
+  const metric = Object.freeze({ ...source.optimization.metric });
+  const invariants = Object.freeze(
+    source.optimization.invariants.map((invariant) => Object.freeze({ ...invariant })),
+  );
+  const candidateNodeIds: string[] = [];
+  const checkNodeIds: string[] = [];
+  const expanded: CompiledNode[] = [];
+
+  for (let candidate = 1; candidate <= source.optimization.maxCandidates; candidate += 1) {
+    const candidateNodeId = optimizationCandidateNodeId(source.id, candidate);
+    const checkNodeId = optimizationCheckNodeId(source.id, candidate);
+    const priorCheckNodeId =
+      candidate === 1 ? undefined : optimizationCheckNodeId(source.id, candidate - 1);
+    const guard =
+      priorCheckNodeId === undefined
+        ? undefined
+        : Object.freeze({
+            optimizationId: source.id,
+            candidate,
+            checkNodeId: priorCheckNodeId,
+          });
+    const child = freezeChildDefinition(candidateNodeId, source.optimization.candidate, context);
+    if (child.resultSchemaDigest !== baselineSchemaDigest) {
+      throw new WorkflowCompilationError(
+        `${source.id}.optimization.candidate.workflow`,
+        Object.freeze([
+          {
+            code: "optimization_schema_mismatch",
+            path: `nodes.${sourceIndex}.optimization.candidate.resultNodeId`,
+            message: `optimization "${source.id}" candidate result schema must match baseline result "${baseline.id}"`,
+          },
+        ]),
+      );
+    }
+    if (!compiledResultUsesCommandEvidence(child.workflow, child.resultNodeId)) {
+      throw new WorkflowCompilationError(
+        `${source.id}.optimization.candidate.workflow`,
+        Object.freeze([
+          {
+            code: "optimization_evaluator_not_deterministic",
+            path: `nodes.${sourceIndex}.optimization.candidate.resultNodeId`,
+            message: `optimization "${source.id}" candidate result must be published directly from command evidence`,
+          },
+        ]),
+      );
+    }
+
+    const candidateNode: CompiledChildNode = {
+      id: candidateNodeId,
+      type: "child",
+      dependsOn: Object.freeze(
+        priorCheckNodeId === undefined ? [...source.dependsOn] : [priorCheckNodeId],
+      ),
+      ...(guard === undefined ? {} : { optimizationGuard: guard }),
+      optimizationCandidate: Object.freeze({
+        optimizationId: source.id,
+        candidate,
+        checkNodeId,
+      }),
+      child,
+    };
+    expanded.push(Object.freeze(candidateNode));
+
+    const checkNode: CompiledOptimizationCheckNode = {
+      id: checkNodeId,
+      type: "optimization-check",
+      dependsOn: Object.freeze([candidateNodeId]),
+      ...(guard === undefined ? {} : { optimizationGuard: guard }),
+      optimizationCheck: Object.freeze({
+        optimizationId: source.id,
+        candidate,
+        candidateNodeId,
+        ...(priorCheckNodeId === undefined ? {} : { priorCheckNodeId }),
+        baseline: Object.freeze({ ...source.optimization.baseline }),
+        metric,
+        invariants,
+        maxConsecutiveNonImproving: source.optimization.stagnation.maxConsecutiveNonImproving,
+        rollback: source.optimization.rollback,
+      }),
+    };
+    expanded.push(Object.freeze(checkNode));
+    candidateNodeIds.push(candidateNodeId);
+    checkNodeIds.push(checkNodeId);
+  }
+
+  const controller: CompiledOptimizationNode = {
+    id: source.id,
+    type: "optimization",
+    dependsOn: Object.freeze([...checkNodeIds]),
+    optimization: Object.freeze({
+      baseline: Object.freeze({ ...source.optimization.baseline }),
+      baselineSchemaDigest,
+      metric,
+      invariants,
+      maxCandidates: source.optimization.maxCandidates,
+      maxConsecutiveNonImproving: source.optimization.stagnation.maxConsecutiveNonImproving,
+      rollback: source.optimization.rollback,
+      candidateNodeIds: Object.freeze([...candidateNodeIds]),
+      checkNodeIds: Object.freeze([...checkNodeIds]),
+    }),
+  };
+  expanded.push(Object.freeze(controller));
+  return Object.freeze(expanded);
+}
+
+function compiledResultUsesCommandEvidence(
+  workflow: CompiledWorkflow,
+  resultNodeId: string,
+): boolean {
+  const result = workflow.nodes.find((node) => node.id === resultNodeId);
+  if (result?.type !== "result") {
+    return false;
+  }
+  const evaluator = workflow.nodes.find((node) => node.id === result.result.source.nodeId);
+  return (
+    evaluator?.type === "command" &&
+    (result.result.source.field === "command.stdout" ||
+      result.result.source.field === "command.stderr")
+  );
 }
 
 function freezeLoopBodyNode(

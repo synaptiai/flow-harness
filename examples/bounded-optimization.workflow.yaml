@@ -1,0 +1,94 @@
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata:
+  id: bounded-optimization
+budget:
+  maxNodeStarts: 16
+  maxModelTokens: 100
+  maxCostUsd: 0.1
+  maxExecutionMs: 60000
+nodes:
+  - id: seed-baseline
+    type: command
+    command:
+      executable: node
+      args:
+        - -e
+        - |
+          const fs = require("node:fs");
+          const value = { score: 10, "tests-passed": true };
+          fs.writeFileSync(".flow-optimization-demo.json", `${JSON.stringify(value)}\n`);
+          process.stdout.write(JSON.stringify(value));
+
+  - id: baseline
+    type: result
+    dependsOn: [seed-baseline]
+    result:
+      source: { nodeId: seed-baseline, field: command.stdout }
+      schema:
+        type: object
+        properties:
+          score: { type: number }
+          tests-passed: { type: boolean }
+        required: [score, tests-passed]
+
+  - id: optimize
+    type: optimization
+    dependsOn: [baseline]
+    optimization:
+      baseline: { nodeId: baseline, field: result.value }
+      metric: { pointer: /score, direction: minimize }
+      invariants:
+        - { pointer: /tests-passed, equals: true }
+      maxCandidates: 2
+      stagnation: { maxConsecutiveNonImproving: 1 }
+      rollback: previous-best
+      candidate:
+        resultNodeId: publish
+        workflow: |
+          apiVersion: flow.synapti.ai/v1alpha1
+          kind: Workflow
+          metadata:
+            id: optimization-candidate
+          budget:
+            maxNodeStarts: 2
+            maxModelTokens: 10
+            maxCostUsd: 0.01
+            maxExecutionMs: 10000
+          nodes:
+            - id: improve
+              type: command
+              command:
+                executable: node
+                args:
+                  - -e
+                  - |
+                    const fs = require("node:fs");
+                    const value = { score: 8, "tests-passed": true };
+                    fs.writeFileSync(".flow-optimization-demo.json", `${JSON.stringify(value)}\n`);
+                    process.stdout.write(JSON.stringify(value));
+            - id: publish
+              type: result
+              dependsOn: [improve]
+              result:
+                source: { nodeId: improve, field: command.stdout }
+                schema:
+                  type: object
+                  properties:
+                    score: { type: number }
+                    tests-passed: { type: boolean }
+                  required: [score, tests-passed]
+
+  - id: verify-and-clean
+    type: command
+    dependsOn: [optimize]
+    command:
+      executable: node
+      args:
+        - -e
+        - |
+          const fs = require("node:fs");
+          const path = ".flow-optimization-demo.json";
+          const value = JSON.parse(fs.readFileSync(path, "utf8"));
+          if (value.score !== 8 || value["tests-passed"] !== true) process.exit(1);
+          fs.unlinkSync(path);

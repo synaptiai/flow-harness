@@ -114,6 +114,12 @@ The actor label is caller-supplied audit attribution rather than authenticated i
 | No child event is durable, but a stale deterministic child workspace exists | Discard the uncommitted workspace, recreate it from the parent, and start the child once |
 | A child ledger is nonterminal and its exact manifest, snapshot digest, or workspace is missing or divergent | Refuse with `child_recovery_ineligible`; do not create a replacement child or repeat uncertain work |
 | A child ledger is terminal but its parent outcome is absent | Treat the child ledger as authoritative, idempotently confirm workspace discard, verify its linked typed result and resources, and append only the parent outcome |
+| An optimization candidate succeeded but no evaluation is durable | Append `run_resumed`, recompute metric/invariants from its canonical child result, reopen an exact durable capture or capture the same bounded delta, and record one evaluation; a partial or divergent capture fails closed |
+| `node_optimization_evaluated` chose promotion but prepare is absent | Reuse the captured delta identity and enter promotion once; never rerun the child |
+| `node_optimization_promotion_prepared` has no settlement | Reconcile the exact local journal and affected paths, then append committed, rolled-back, or unknown settlement |
+| Promotion settlement is committed but cleanup or check completion is absent | Retry idempotent workspace cleanup and append only the missing cleanup/check transitions; never reapply the delta |
+| Promotion settlement is rolled back or unknown | Fail the check with no side effects or uncertain side effects respectively; retain diagnostic artifacts and start no downstream node |
+| A check is complete but later candidates or the controller are absent | Append `run_resumed`, apply its durable continue/stop guard, omit or schedule only the next finite candidate, and derive controller completion from checks |
 
 A started attempt is uncertain because its command, model, or external tool may have performed an
 effect before the process stopped. Flow does not infer failure, success, or idempotency from the
@@ -131,6 +137,28 @@ reevaluates a result, condition, or committed loop check from the current worksp
 workflow file. If a crash occurs after one of these events is synced, resume continues
 from the following transition without repeating its source node. A retry of an interrupted
 iteration-qualified agent increments that instance's attempt; it does not advance the loop.
+
+Optimization checks are also resource-neutral control nodes, but promotion contains an external
+filesystem saga. Evaluation persists canonical baseline/candidate metrics, expected and actual
+invariants, complete sorted before/after delta entries, and a recomputable manifest digest before
+promotion. The adapter then stores candidate and rollback blobs plus a local journal before asking
+the application to append `node_optimization_promotion_prepared`. It cannot begin an affected-path
+mutation unless that callback succeeds.
+
+The promotion journal advances through deterministic forward and rollback steps. A crash can be
+observed at the durable-temporary, applied-step, rollback-step, or local-commit boundary. Recovery
+checks the journaled step and the one-step crash window against exact before/after identities,
+removes only promotion-owned temporary paths, and either completes compensation, confirms the
+committed after-state, or records `unknown/affected_path_diverged`. It never treats a partially
+matching path set as success. The run event settlement is distinct from the local journal: a
+committed local journal with a missing event is reconciled forward, while a committed event is
+never applied again.
+
+Cleanup follows only rejection or a conclusive promotion settlement. A crash after filesystem
+cleanup but before its event causes the same workspace-id cleanup to run again; the production
+operation is idempotent. A retained workspace is never silently replaced. Replay independently
+recomputes typed observations and the delta digest, binds prepare/settlement to the exact promotion
+id, and requires cleanup before check completion when candidate evidence says retained.
 
 Writable agent attempts add more precise, but non-terminal, evidence. `node_started` declares
 `flow.effects/v1`. Before an atomic edit rename, Flow syncs `node_effect_prepared` with a stable
@@ -284,6 +312,10 @@ run directory, or corrupt owner record fails closed and is preserved for diagnos
 | `workflow_mismatch` | The supplied workflow or persisted workflow-derived requirements do not match the exact compiled run contract | Locate the exact workflow revision used to start the run; treat unexpected ledger requirements as corruption |
 | `execution_context_mismatch` | The requested working directory differs from the one persisted by a new run | Resume from the exact original execution directory |
 | `child_recovery_ineligible` | A durable child cannot be resumed from its exact recorded workspace identity, or its recovered state cannot safely continue | Preserve both ledgers and workspace state; inspect their provenance and start a new reviewed root run rather than deleting or replacing evidence |
+| `candidate_promotion_stale` | An affected parent path or removed-directory closure no longer matches the captured baseline | Preserve the newer parent state and candidate evidence; rerun from a fresh reviewed baseline |
+| `candidate_promotion_rolled_back` | Promotion failed after prepare and deterministic compensation restored the prior best | Inspect the journal and failure; do not hand-apply the candidate or mark it accepted |
+| `candidate_promotion_uncertain` | Reconciliation cannot prove a complete committed or compensated affected-path state | Preserve the run, candidate workspace, and promotion journal; resolve manually and start a new reviewed run |
+| `candidate_workspace_cleanup_failed` | A conclusive candidate workspace could not be discarded | Inspect permissions/storage and preserve the run; do not delete ledger evidence |
 | `request_mismatch` | The supplied approval request is not the current pending request | Inspect the run and decide only the displayed request id |
 | `not_waiting` | The run no longer accepts an approval decision | Inspect for a prior decision, expiry, start, or terminal outcome |
 | `not_owner` | Another live process owns execution | Inspect without claiming, or wait for that process to exit |
@@ -316,6 +348,15 @@ target whose parent is also absent: because cooperating Flow edits cannot acquir
 or create the target, recovery may publish only a rechecked missing result under the target queue.
 Any observable target remains unresolved. These guarantees authorize a fresh surrounding attempt
 only when the separately persisted policy and every eligibility check above also pass.
+
+For optimization promotion, Flow guarantees that no affected path is entered before durable
+prepare, all rollback bytes are durable first, a changed affected path is never overwritten, a
+committed settlement is never applied again, rejected candidates never mutate the parent, and an
+unknown reconciliation blocks the graph. Stable intermediate symlinks are rejected as stale, and
+directory ancestors are rechecked at mutation and crash-cleanup boundaries; unsafe cleanup is
+skipped and reconciliation becomes unknown. This is deterministic same-host filesystem recovery,
+not an atomic multi-filesystem transaction: a hostile process with the same user authority can
+still race between a pathname check and the corresponding filesystem operation.
 
 Flow does not guarantee exactly-once effects in arbitrary external systems, authenticated approval
 or cancellation identity, trusted time, mid-node restoration of Pi sessions, automatic retry of

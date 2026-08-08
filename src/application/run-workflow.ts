@@ -1,32 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { resolve } from "node:path";
-
-import {
-  DURABLE_EFFECT_PROTOCOL,
-  RunReplayError,
-  appendRunEvent,
-  calculateChildRunId,
-  loopLimitFailureMessage,
-  nodeEffectId,
-  reduceRunEvents,
-  type AgentEffectReceipt,
-  type AgentRecoveryRequirement,
-  type ChildEvidence,
-  type ChildRunLink,
-  type ControlGraph,
-  type FilesystemEditEffectDescriptor,
-  type ExecutionWorkspaceProvenance,
-  type NodeEffectSettlementInput,
-  type NodeEffectReconciledEvent,
-  type NodeFailure,
-  type RunEvent,
-  type RunBudgetExhaustedEvent,
-  type RunCancelledEvent,
-  type RunFailedEvent,
-  type RunResumedEvent,
-  type RunStartedEvent,
-  type RunState,
-} from "../domain/run/events.js";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import {
   calculateCommandApprovalOperationDigest,
   commandApprovalRequestId,
@@ -38,31 +11,71 @@ import {
   workflowApprovalRequestId,
 } from "../domain/approval/workflow-approval.js";
 import {
-  TypedResultError,
+  evaluateOptimizationBaseline,
+  evaluateOptimizationCandidate,
+} from "../domain/result/optimization-result.js";
+import {
   evaluateTypedResult,
   resultSourceTruncationMessage,
+  TypedResultError,
 } from "../domain/result/typed-result.js";
-import type {
-  CompiledAgentNode,
-  CompiledApprovalNode,
-  CompiledCommandNode,
-  CompiledConditionNode,
-  CompiledChildNode,
-  CompiledJoinNode,
-  CompiledLoopCheckNode,
-  CompiledLoopNode,
-  CompiledNode,
-  CompiledResultNode,
-  CompiledVerifierNode,
-  CompiledWorkflow,
-  EvidenceSourceField,
-} from "../domain/workflow/types.js";
+import {
+  type AgentEffectReceipt,
+  type AgentRecoveryRequirement,
+  appendRunEvent,
+  type ChildEvidence,
+  type ChildRunLink,
+  type ControlGraph,
+  calculateChildRunId,
+  calculateOptimizationPromotionId,
+  DURABLE_EFFECT_PROTOCOL,
+  type ExecutionWorkspaceProvenance,
+  type FilesystemEditEffectDescriptor,
+  loopLimitFailureMessage,
+  type NodeEffectReconciledEvent,
+  type NodeEffectSettlementInput,
+  type NodeFailure,
+  type NodeOptimizationEvaluatedEvent,
+  nodeEffectId,
+  type OptimizationCheckRunState,
+  type OptimizationPromotionBoundary,
+  type RunBudgetExhaustedEvent,
+  type RunCancelledEvent,
+  type RunEvent,
+  type RunFailedEvent,
+  RunReplayError,
+  type RunResumedEvent,
+  type RunStartedEvent,
+  type RunState,
+  reduceRunEvents,
+} from "../domain/run/events.js";
 import {
   projectCompiledControlGraph,
   workflowRequiresControlGraph,
 } from "../domain/workflow/control-graph.js";
 import { calculateWorkflowDigest } from "../domain/workflow/digest.js";
+import { MAX_OPTIMIZATION_DELTA_EVIDENCE_BYTES } from "../domain/workflow/types.js";
 import type {
+  CompiledAgentNode,
+  CompiledApprovalNode,
+  CompiledChildNode,
+  CompiledCommandNode,
+  CompiledConditionNode,
+  CompiledJoinNode,
+  CompiledLoopCheckNode,
+  CompiledLoopNode,
+  CompiledNode,
+  CompiledOptimizationCheckNode,
+  CompiledOptimizationNode,
+  CompiledResultNode,
+  CompiledVerifierNode,
+  CompiledWorkflow,
+  EvidenceSourceField,
+} from "../domain/workflow/types.js";
+import type {
+  CandidatePromotionRequest,
+  CandidatePromotionSettlement,
+  CandidateWorkspaceManager,
   IsolatedWorkspace,
   NodeEffectJournal,
   NodeEffectReconciler,
@@ -282,6 +295,23 @@ async function continueWorkflow(
           state.nodes[transition.node.id]?.workflowApproval?.status === "pending"
         ) {
           return state;
+        }
+        if (transition.kind === "evaluate_optimization") {
+          await progressOptimizationCheck(transition.node);
+          const checkState = state.nodes[transition.node.id];
+          if (checkState?.status === "failed") {
+            if (checkState.error === null) {
+              throw new Error(`Failed optimization check "${transition.node.id}" has no error`);
+            }
+            await record({
+              ...base(nextSequence()),
+              type: "run_failed",
+              failedNodeId: transition.node.id,
+              reason: checkState.error.message,
+            });
+            return state;
+          }
+          continue workflowLoop;
         }
         const event = controlTransitionEvent(transition, state, base(nextSequence()));
         await record(event);
@@ -527,6 +557,190 @@ async function continueWorkflow(
     type: "run_succeeded",
   });
   return state;
+
+  async function progressOptimizationCheck(node: CompiledOptimizationCheckNode): Promise<void> {
+    const manager = candidateWorkspaceManager(options.workspaceIsolator);
+    if (manager === null) {
+      await failOptimizationCheck(
+        node,
+        "candidate_runtime_unavailable",
+        "optimization candidates require a candidate workspace manager",
+        "none",
+      );
+      return;
+    }
+
+    let check = state.nodes[node.id];
+    if (check === undefined) {
+      throw new Error(`optimization check "${node.id}" has no run state`);
+    }
+    if (check.optimization === null) {
+      let evaluation: NodeOptimizationEvaluatedEvent;
+      try {
+        evaluation = await createOptimizationEvaluationEvent(
+          node,
+          state,
+          manager,
+          options.cwd,
+          options.protectedPaths,
+          base(nextSequence()),
+        );
+      } catch (error) {
+        await failOptimizationCheck(
+          node,
+          optimizationFailureCode(error, "candidate_evaluation_failed"),
+          boundedFailureMessage(error instanceof Error ? error.message : String(error)),
+          "none",
+        );
+        return;
+      }
+      await record(evaluation);
+      check = state.nodes[node.id];
+    }
+
+    let optimization = check?.optimization;
+    if (optimization === null || optimization === undefined) {
+      throw new Error(`optimization check "${node.id}" has no durable evaluation`);
+    }
+    if (optimization.decision === "promote") {
+      const request = optimizationPromotionRequest(
+        optimization,
+        options.cwd,
+        options.protectedPaths,
+      );
+      try {
+        if (optimization.preparedAt === null) {
+          await manager.promoteCandidateDelta(request, {
+            prepare: async (boundary) => {
+              await record({
+                ...base(nextSequence()),
+                type: "node_optimization_promotion_prepared",
+                nodeId: node.id,
+                attempt: 1,
+                optimizationId: node.optimizationCheck.optimizationId,
+                candidate: node.optimizationCheck.candidate,
+                promotion: boundary,
+              });
+            },
+            settle: async (settlement) => {
+              await record(
+                optimizationSettlementEvent(node, request, settlement, base(nextSequence())),
+              );
+            },
+          });
+        } else if (optimization.settlement === null) {
+          const settlement = await manager.reconcileCandidatePromotion(request);
+          await record(
+            optimizationSettlementEvent(node, request, settlement, base(nextSequence())),
+          );
+        }
+      } catch (error) {
+        const latest = state.nodes[node.id]?.optimization;
+        const failureCode = optimizationFailureCode(error, "candidate_promotion_failed");
+        await failOptimizationCheck(
+          node,
+          failureCode,
+          boundedFailureMessage(error instanceof Error ? error.message : String(error)),
+          latest?.settlement?.outcome === "unknown" ||
+            failureCode === "candidate_promotion_uncertain"
+            ? "uncertain"
+            : latest?.settlement?.outcome === "committed"
+              ? "committed"
+              : "none",
+        );
+        return;
+      }
+      check = state.nodes[node.id];
+      optimization = check?.optimization;
+      if (optimization === null || optimization === undefined) {
+        throw new Error(`optimization check "${node.id}" lost its durable evaluation`);
+      }
+      if (optimization.settlement?.outcome !== "committed") {
+        const outcome = optimization.settlement?.outcome;
+        await failOptimizationCheck(
+          node,
+          outcome === "unknown"
+            ? "candidate_promotion_uncertain"
+            : "candidate_promotion_rolled_back",
+          outcome === "unknown"
+            ? `optimization promotion for "${node.id}" has an uncertain affected path`
+            : `optimization promotion for "${node.id}" was rolled back`,
+          outcome === "unknown" ? "uncertain" : "none",
+        );
+        return;
+      }
+    }
+
+    const candidate = optimizationCandidateEvidence(node, state);
+    if (candidate.workspace.disposition === "retained" && optimization.cleanedAt === null) {
+      try {
+        await options.workspaceIsolator?.cleanup(candidate.childRunId);
+      } catch (error) {
+        await failOptimizationCheck(
+          node,
+          "candidate_workspace_cleanup_failed",
+          `candidate workspace "${candidate.childRunId}" could not be discarded: ${boundedFailureMessage(error instanceof Error ? error.message : String(error))}`,
+          optimization.settlement?.outcome === "committed" ? "committed" : "none",
+        );
+        return;
+      }
+      await record({
+        ...base(nextSequence()),
+        type: "node_optimization_candidate_cleaned",
+        nodeId: node.id,
+        attempt: 1,
+        optimizationId: node.optimizationCheck.optimizationId,
+        candidate: node.optimizationCheck.candidate,
+        candidateNodeId: node.optimizationCheck.candidateNodeId,
+        workspaceId: candidate.childRunId,
+        reason: optimization.decision === "promote" ? "promotion_settled" : "rejected",
+      });
+      optimization = state.nodes[node.id]?.optimization ?? optimization;
+    }
+
+    const accepted =
+      optimization.decision === "promote" && optimization.settlement?.outcome === "committed";
+    const priorBestCandidate = optimizationPriorBestCandidate(node, state);
+    await record({
+      ...base(nextSequence()),
+      type: "node_optimization_checked",
+      nodeId: node.id,
+      attempt: 1,
+      optimizationId: node.optimizationCheck.optimizationId,
+      candidate: node.optimizationCheck.candidate,
+      outcome: accepted ? "accepted" : "rejected",
+      reason: optimization.reason,
+      bestValueHash: accepted
+        ? requireOptimizationCandidateValue(optimization.candidateValueHash, node.id)
+        : optimization.bestValueHashBefore,
+      bestMetric: accepted
+        ? requireOptimizationCandidateMetric(optimization.candidateMetric, node.id)
+        : optimization.bestMetricBefore,
+      bestCandidate: accepted ? node.optimizationCheck.candidate : priorBestCandidate,
+      stagnation: optimization.stagnation,
+      stop: optimization.stop,
+    });
+  }
+
+  async function failOptimizationCheck(
+    node: CompiledOptimizationCheckNode,
+    code: string,
+    message: string,
+    sideEffectStatus: NodeFailure["sideEffectStatus"],
+  ): Promise<void> {
+    await record({
+      ...base(nextSequence()),
+      type: "node_control_failed",
+      nodeId: node.id,
+      attempt: 1,
+      error: {
+        code,
+        message,
+        retryable: false,
+        sideEffectStatus,
+      },
+    });
+  }
 
   function createEffectJournal(nodeId: string, attempt: number): NodeEffectJournal {
     return Object.freeze({
@@ -1204,6 +1418,12 @@ function validateRecoveredHistory(
       event.type === "node_result_published" ||
       event.type === "node_loop_checked" ||
       event.type === "node_loop_completed" ||
+      event.type === "node_optimization_evaluated" ||
+      event.type === "node_optimization_promotion_prepared" ||
+      event.type === "node_optimization_promotion_settled" ||
+      event.type === "node_optimization_candidate_cleaned" ||
+      event.type === "node_optimization_checked" ||
+      event.type === "node_optimization_completed" ||
       event.type === "node_omitted" ||
       event.type === "node_joined" ||
       event.type === "node_control_failed"
@@ -1414,9 +1634,12 @@ type WorkflowTransition =
         | CompiledChildNode
         | CompiledConditionNode;
     }
+  | { readonly kind: "omit_optimization"; readonly node: CompiledNode }
   | { readonly kind: "join"; readonly node: CompiledJoinNode }
   | { readonly kind: "evaluate_loop"; readonly node: CompiledLoopCheckNode }
-  | { readonly kind: "complete_loop"; readonly node: CompiledLoopNode };
+  | { readonly kind: "complete_loop"; readonly node: CompiledLoopNode }
+  | { readonly kind: "evaluate_optimization"; readonly node: CompiledOptimizationCheckNode }
+  | { readonly kind: "complete_optimization"; readonly node: CompiledOptimizationNode };
 
 function selectNextTransition(
   nodes: readonly CompiledNode[],
@@ -1434,6 +1657,17 @@ function selectNextTransition(
       )
     ) {
       continue;
+    }
+    if (node.optimizationGuard !== undefined) {
+      const decision = optimizationCheckDecision(state, node.optimizationGuard.checkNodeId);
+      if (decision === "stop") {
+        return { kind: "omit_optimization", node };
+      }
+      if (decision === undefined) {
+        if (state.nodes[node.optimizationGuard.checkNodeId]?.status !== "omitted") {
+          continue;
+        }
+      }
     }
     if (node.type === "join") {
       const decision = conditionDecision(state, node.join.conditionId);
@@ -1473,6 +1707,17 @@ function selectNextTransition(
       return omittedDependencies.length > 0
         ? { kind: "omit_dependency", node, omittedDependencies }
         : { kind: "complete_loop", node };
+    }
+    if (node.type === "optimization-check") {
+      const omittedDependencies = node.dependsOn.filter(
+        (dependency) => state.nodes[dependency]?.status === "omitted",
+      );
+      return omittedDependencies.length > 0
+        ? { kind: "omit_dependency", node, omittedDependencies }
+        : { kind: "evaluate_optimization", node };
+    }
+    if (node.type === "optimization") {
+      return { kind: "complete_optimization", node };
     }
     if (node.loopGuard !== undefined) {
       const decision = loopCheckDecision(state, node.loopGuard.checkNodeId);
@@ -1524,6 +1769,12 @@ function controlEventMatchesTransition(
         | "node_result_published"
         | "node_loop_checked"
         | "node_loop_completed"
+        | "node_optimization_evaluated"
+        | "node_optimization_promotion_prepared"
+        | "node_optimization_promotion_settled"
+        | "node_optimization_candidate_cleaned"
+        | "node_optimization_checked"
+        | "node_optimization_completed"
         | "node_omitted"
         | "node_joined"
         | "node_control_failed"
@@ -1547,13 +1798,27 @@ function controlEventMatchesTransition(
   if (event.type === "node_loop_completed") {
     return transition?.kind === "complete_loop" && transition.node.id === event.nodeId;
   }
+  if (
+    event.type === "node_optimization_evaluated" ||
+    event.type === "node_optimization_promotion_prepared" ||
+    event.type === "node_optimization_promotion_settled" ||
+    event.type === "node_optimization_candidate_cleaned" ||
+    event.type === "node_optimization_checked"
+  ) {
+    return transition?.kind === "evaluate_optimization" && transition.node.id === event.nodeId;
+  }
+  if (event.type === "node_optimization_completed") {
+    return transition?.kind === "complete_optimization" && transition.node.id === event.nodeId;
+  }
   if (event.type === "node_control_failed") {
     return (
       (transition?.kind === "evaluate_condition" ||
         transition?.kind === "request_approval" ||
         transition?.kind === "publish_result" ||
         transition?.kind === "evaluate_loop" ||
-        transition?.kind === "complete_loop") &&
+        transition?.kind === "complete_loop" ||
+        transition?.kind === "evaluate_optimization" ||
+        transition?.kind === "complete_optimization") &&
       transition.node.id === event.nodeId
     );
   }
@@ -1563,16 +1828,35 @@ function controlEventMatchesTransition(
   return (
     (transition?.kind === "omit_condition" ||
       transition?.kind === "omit_dependency" ||
-      transition?.kind === "omit_loop") &&
+      transition?.kind === "omit_loop" ||
+      transition?.kind === "omit_optimization") &&
     transition.node.id === event.nodeId
   );
 }
 
 function controlTransitionEvent(
-  transition: Exclude<WorkflowTransition, { readonly kind: "execute" }>,
+  transition: Exclude<
+    WorkflowTransition,
+    { readonly kind: "execute" } | { readonly kind: "evaluate_optimization" }
+  >,
   state: RunState,
   base: ReturnType<typeof eventBase>,
 ): RunEvent {
+  if (transition.kind === "omit_optimization") {
+    const guard = transition.node.optimizationGuard;
+    if (guard === undefined) {
+      throw new Error(`optimization omission for node "${transition.node.id}" has no guard`);
+    }
+    return {
+      ...base,
+      type: "node_omitted",
+      nodeId: transition.node.id,
+      reason: "optimization_stopped",
+      optimizationId: guard.optimizationId,
+      candidate: guard.candidate,
+      checkNodeId: guard.checkNodeId,
+    };
+  }
   if (transition.kind === "omit_loop") {
     const guard = transition.node.loopGuard;
     if (guard === undefined) {
@@ -1664,6 +1948,29 @@ function controlTransitionEvent(
       attempt: 1,
       completedIterations,
       terminatingCheckNodeId,
+    };
+  }
+
+  if (transition.kind === "complete_optimization") {
+    const completed = transition.node.optimization.checkNodeIds.flatMap((checkNodeId) => {
+      const control = state.nodes[checkNodeId]?.control;
+      return control?.kind === "optimization-check" ? [{ checkNodeId, control }] : [];
+    });
+    const terminating = completed.at(-1);
+    if (terminating === undefined) {
+      throw new Error(`optimization "${transition.node.id}" has no durable check`);
+    }
+    return {
+      ...base,
+      type: "node_optimization_completed",
+      nodeId: transition.node.id,
+      attempt: 1,
+      completedCandidates: completed.length,
+      terminatingCheckNodeId: terminating.checkNodeId,
+      bestValueHash: terminating.control.bestValueHash,
+      bestMetric: terminating.control.bestMetric,
+      bestCandidate: terminating.control.bestCandidate,
+      stopReason: terminating.control.stop ? "stagnation" : "max_candidates",
     };
   }
 
@@ -1846,6 +2153,310 @@ function conditionDecision(
 function loopCheckDecision(state: RunState, checkNodeId: string): "stop" | "continue" | undefined {
   const control = state.nodes[checkNodeId]?.control;
   return control?.kind === "loop-check" ? control.decision : undefined;
+}
+
+function optimizationCheckDecision(
+  state: RunState,
+  checkNodeId: string,
+): "stop" | "continue" | undefined {
+  const control = state.nodes[checkNodeId]?.control;
+  return control?.kind === "optimization-check" ? (control.stop ? "stop" : "continue") : undefined;
+}
+
+async function createOptimizationEvaluationEvent(
+  node: CompiledOptimizationCheckNode,
+  state: RunState,
+  manager: CandidateWorkspaceManager,
+  sourceCwd: string,
+  protectedPaths: readonly string[],
+  base: ReturnType<typeof eventBase>,
+): Promise<NodeOptimizationEvaluatedEvent> {
+  const baselineState = state.nodes[node.optimizationCheck.baseline.nodeId];
+  if (baselineState?.status !== "succeeded" || baselineState.control?.kind !== "result") {
+    throw new Error(`optimization baseline for "${node.id}" has no typed result`);
+  }
+  const candidateDeclaration = state.controlGraph?.nodes.find(
+    (candidate) =>
+      candidate.nodeId === node.optimizationCheck.candidateNodeId && candidate.type === "child",
+  );
+  if (candidateDeclaration?.type !== "child") {
+    throw new Error(`optimization candidate for "${node.id}" has no child declaration`);
+  }
+  const candidate = optimizationCandidateEvidence(node, state);
+  const baseline = evaluateOptimizationBaseline({
+    source: baselineState.control.canonicalValue,
+    schema: candidateDeclaration.child.resultSchema,
+    metric: node.optimizationCheck.metric,
+    invariants: node.optimizationCheck.invariants,
+  });
+  const priorControl =
+    node.optimizationCheck.priorCheckNodeId === undefined
+      ? undefined
+      : state.nodes[node.optimizationCheck.priorCheckNodeId]?.control;
+  if (
+    node.optimizationCheck.priorCheckNodeId !== undefined &&
+    priorControl?.kind !== "optimization-check"
+  ) {
+    throw new Error(`optimization check "${node.id}" has no prior durable decision`);
+  }
+  const prior = priorControl?.kind === "optimization-check" ? priorControl : undefined;
+  const common = {
+    ...base,
+    type: "node_optimization_evaluated" as const,
+    nodeId: node.id,
+    attempt: 1 as const,
+    optimizationId: node.optimizationCheck.optimizationId,
+    candidate: node.optimizationCheck.candidate,
+    candidateNodeId: node.optimizationCheck.candidateNodeId,
+    baselineValueHash: baseline.valueHash,
+    baselineMetric: baseline.metric,
+    baselineInvariants: baseline.invariants,
+    bestValueHashBefore: prior?.bestValueHash ?? baseline.valueHash,
+    bestMetricBefore: prior?.bestMetric ?? baseline.metric,
+    candidateOutcome: candidate.outcome,
+  };
+  const priorStagnation = prior?.stagnation ?? 0;
+  if (candidate.outcome !== "succeeded") {
+    const stagnation = priorStagnation + 1;
+    return {
+      ...common,
+      candidateValueHash: null,
+      candidateMetric: null,
+      candidateInvariants: null,
+      decision: "reject",
+      reason: candidateFailureReason(candidate.outcome),
+      stagnation,
+      stop: stagnation >= node.optimizationCheck.maxConsecutiveNonImproving,
+      promotion: null,
+      deltaEntries: null,
+    };
+  }
+  if (candidate.result === null) {
+    throw new Error(`successful optimization candidate "${candidate.childRunId}" has no result`);
+  }
+  const evaluated = evaluateOptimizationCandidate({
+    source: candidate.result.canonicalValue,
+    schema: candidateDeclaration.child.resultSchema,
+    metric: node.optimizationCheck.metric,
+    invariants: node.optimizationCheck.invariants,
+    bestMetric: prior?.bestMetric ?? baseline.metric,
+    priorStagnation,
+    maxConsecutiveNonImproving: node.optimizationCheck.maxConsecutiveNonImproving,
+  });
+  if (evaluated.decision === "rejected") {
+    return {
+      ...common,
+      candidateValueHash: evaluated.valueHash,
+      candidateMetric: evaluated.metric,
+      candidateInvariants: evaluated.invariants,
+      decision: "reject",
+      reason: evaluated.reason,
+      stagnation: evaluated.stagnation,
+      stop: evaluated.stop,
+      promotion: null,
+      deltaEntries: null,
+    };
+  }
+
+  let delta: Awaited<ReturnType<CandidateWorkspaceManager["captureCandidateDelta"]>>;
+  try {
+    delta = await manager.captureCandidateDelta({
+      workspaceId: candidate.childRunId,
+      sourceCwd,
+      expectedSnapshotDigest: candidate.workspace.snapshotDigest,
+      excludedPaths: protectedPaths,
+    });
+  } catch (error) {
+    const captureReason = errorCodeValue(error);
+    if (
+      captureReason !== "candidate_no_change" &&
+      captureReason !== "candidate_delta_limit_exceeded"
+    ) {
+      throw error;
+    }
+    const stagnation = priorStagnation + 1;
+    return {
+      ...common,
+      candidateValueHash: evaluated.valueHash,
+      candidateMetric: evaluated.metric,
+      candidateInvariants: evaluated.invariants,
+      decision: "reject",
+      reason: captureReason,
+      stagnation,
+      stop: stagnation >= node.optimizationCheck.maxConsecutiveNonImproving,
+      promotion: null,
+      deltaEntries: null,
+    };
+  }
+  if (
+    Buffer.byteLength(JSON.stringify(delta.entries), "utf8") > MAX_OPTIMIZATION_DELTA_EVIDENCE_BYTES
+  ) {
+    const stagnation = priorStagnation + 1;
+    return {
+      ...common,
+      candidateValueHash: evaluated.valueHash,
+      candidateMetric: evaluated.metric,
+      candidateInvariants: evaluated.invariants,
+      decision: "reject",
+      reason: "candidate_delta_limit_exceeded",
+      stagnation,
+      stop: stagnation >= node.optimizationCheck.maxConsecutiveNonImproving,
+      promotion: null,
+      deltaEntries: null,
+    };
+  }
+  const promotion: OptimizationPromotionBoundary = Object.freeze({
+    promotionId: calculateOptimizationPromotionId(state.runId, node.id),
+    workspaceId: delta.workspaceId,
+    deltaDigest: delta.deltaDigest,
+    baselineSnapshotDigest: delta.baselineSnapshotDigest,
+    candidateSnapshotDigest: delta.candidateSnapshotDigest,
+    entryCount: delta.entryCount,
+    logicalBytes: delta.logicalBytes,
+  });
+  return {
+    ...common,
+    candidateValueHash: evaluated.valueHash,
+    candidateMetric: evaluated.metric,
+    candidateInvariants: evaluated.invariants,
+    decision: "promote",
+    reason: "improved",
+    stagnation: 0,
+    stop: false,
+    promotion,
+    deltaEntries: delta.entries,
+  };
+}
+
+function candidateFailureReason(
+  outcome: Exclude<ChildEvidence["outcome"], "succeeded">,
+): "candidate_failed" | "candidate_cancelled" | "candidate_resource_exhausted" {
+  switch (outcome) {
+    case "failed":
+      return "candidate_failed";
+    case "cancelled":
+      return "candidate_cancelled";
+    case "resource_exhausted":
+      return "candidate_resource_exhausted";
+  }
+}
+
+function candidateWorkspaceManager(
+  workspaceIsolator: WorkspaceIsolator | undefined,
+): (WorkspaceIsolator & CandidateWorkspaceManager) | null {
+  if (
+    workspaceIsolator === undefined ||
+    !("captureCandidateDelta" in workspaceIsolator) ||
+    typeof workspaceIsolator.captureCandidateDelta !== "function" ||
+    !("promoteCandidateDelta" in workspaceIsolator) ||
+    typeof workspaceIsolator.promoteCandidateDelta !== "function" ||
+    !("reconcileCandidatePromotion" in workspaceIsolator) ||
+    typeof workspaceIsolator.reconcileCandidatePromotion !== "function"
+  ) {
+    return null;
+  }
+  return workspaceIsolator as WorkspaceIsolator & CandidateWorkspaceManager;
+}
+
+function optimizationCandidateEvidence(
+  node: CompiledOptimizationCheckNode,
+  state: RunState,
+): ChildEvidence {
+  const candidate = state.nodes[node.optimizationCheck.candidateNodeId];
+  if (candidate?.status !== "succeeded" || candidate.evidence?.kind !== "child") {
+    throw new Error(
+      `optimization candidate "${node.optimizationCheck.candidateNodeId}" has no evidence`,
+    );
+  }
+  return candidate.evidence;
+}
+
+function optimizationPromotionRequest(
+  optimization: OptimizationCheckRunState,
+  sourceCwd: string,
+  protectedPaths: readonly string[],
+): CandidatePromotionRequest {
+  if (optimization.promotion === null) {
+    throw new Error("optimization promotion request has no durable boundary");
+  }
+  return Object.freeze({
+    promotionId: optimization.promotion.promotionId,
+    workspaceId: optimization.promotion.workspaceId,
+    sourceCwd,
+    deltaDigest: optimization.promotion.deltaDigest,
+    excludedPaths: protectedPaths,
+  });
+}
+
+function optimizationSettlementEvent(
+  node: CompiledOptimizationCheckNode,
+  request: CandidatePromotionRequest,
+  settlement: CandidatePromotionSettlement,
+  base: ReturnType<typeof eventBase>,
+): RunEvent {
+  return {
+    ...base,
+    type: "node_optimization_promotion_settled",
+    nodeId: node.id,
+    attempt: 1,
+    optimizationId: node.optimizationCheck.optimizationId,
+    candidate: node.optimizationCheck.candidate,
+    promotionId: request.promotionId,
+    deltaDigest: request.deltaDigest,
+    ...settlement,
+  };
+}
+
+function optimizationPriorBestCandidate(
+  node: CompiledOptimizationCheckNode,
+  state: RunState,
+): number | null {
+  const priorId = node.optimizationCheck.priorCheckNodeId;
+  if (priorId === undefined) {
+    return null;
+  }
+  const control = state.nodes[priorId]?.control;
+  if (control?.kind !== "optimization-check") {
+    throw new Error(`optimization check "${node.id}" has no prior best candidate`);
+  }
+  return control.bestCandidate;
+}
+
+function requireOptimizationCandidateValue(value: string | null, nodeId: string): string {
+  if (value === null) {
+    throw new Error(`optimization check "${nodeId}" has no candidate value hash`);
+  }
+  return value;
+}
+
+function requireOptimizationCandidateMetric(value: number | null, nodeId: string): number {
+  if (value === null) {
+    throw new Error(`optimization check "${nodeId}" has no candidate metric`);
+  }
+  return value;
+}
+
+function optimizationFailureCode(error: unknown, fallback: string): string {
+  const code = errorCodeValue(error);
+  return code !== undefined && OPTIMIZATION_FAILURE_CODES.has(code) ? code : fallback;
+}
+
+const OPTIMIZATION_FAILURE_CODES: ReadonlySet<string> = new Set([
+  "candidate_delta_exists",
+  "candidate_delta_limit_exceeded",
+  "candidate_source_stale",
+  "candidate_promotion_invalid",
+  "candidate_promotion_missing",
+  "candidate_promotion_rolled_back",
+  "candidate_promotion_stale",
+  "candidate_promotion_uncertain",
+]);
+
+function errorCodeValue(error: unknown): string | undefined {
+  if (error === null || typeof error !== "object" || !("code" in error)) {
+    return undefined;
+  }
+  return typeof error.code === "string" ? error.code : undefined;
 }
 
 function conditionSource(
@@ -2225,10 +2836,11 @@ async function executeChildNode(
     parentNodeId: node.id,
     parentAttempt: context.attempt,
   });
+  const protectedPaths = childExecutionProtectedPaths(workspace.cwd, context.protectedPaths);
   const childState = await runWorkflow(node.child.workflow, {
     runId: link.runId,
     cwd: workspace.cwd,
-    protectedPaths: context.protectedPaths,
+    protectedPaths,
     store,
     executor: options.executor,
     ...(options.workspaceIsolator === undefined
@@ -2291,7 +2903,7 @@ async function recoverChildNode(
     childState = await resumeWorkflow(node.child.workflow, {
       runId: link.runId,
       cwd: workspace.cwd,
-      protectedPaths: options.protectedPaths,
+      protectedPaths: childExecutionProtectedPaths(workspace.cwd, options.protectedPaths),
       store,
       executor: options.executor,
       workspaceIsolator: options.workspaceIsolator,
@@ -2304,6 +2916,24 @@ async function recoverChildNode(
     });
   }
   return await settleChildState(node, childState, options.workspaceIsolator);
+}
+
+function childExecutionProtectedPaths(
+  workspaceCwd: string,
+  protectedPaths: readonly string[],
+): readonly string[] {
+  const workspace = resolve(workspaceCwd);
+  return Object.freeze(
+    protectedPaths.filter((protectedPath) => !isPathAtOrWithin(workspace, resolve(protectedPath))),
+  );
+}
+
+function isPathAtOrWithin(path: string, directory: string): boolean {
+  const fromDirectory = relative(directory, path);
+  return (
+    fromDirectory === "" ||
+    (fromDirectory !== ".." && !fromDirectory.startsWith(`..${sep}`) && !isAbsolute(fromDirectory))
+  );
 }
 
 function validateRecoveredChildIdentity(
@@ -2339,6 +2969,13 @@ async function settleChildState(
     );
   }
 
+  if (node.optimizationCandidate !== undefined && childState.status === "succeeded") {
+    return {
+      status: "succeeded",
+      evidence: childEvidence(node, childState, "retained"),
+    };
+  }
+
   let disposition: "discarded" | "retained" = "discarded";
   try {
     await workspaceIsolator.cleanup(childState.runId);
@@ -2354,6 +2991,9 @@ async function settleChildState(
     );
   }
   if (childState.status === "succeeded") {
+    return { status: "succeeded", evidence };
+  }
+  if (node.optimizationCandidate !== undefined) {
     return { status: "succeeded", evidence };
   }
   return childFailure(
