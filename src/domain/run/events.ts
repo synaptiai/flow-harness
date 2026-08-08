@@ -144,6 +144,47 @@ export interface ModelVerifierEvidence extends VerifierEvidenceBase {
 
 export type VerifierEvidence = CommandVerifierEvidence | ModelVerifierEvidence;
 
+export interface ChildRunLink {
+  readonly runId: string;
+  readonly workflowId: string;
+  readonly workflowDigest: string;
+  readonly resultNodeId: string;
+  readonly resultSchemaDigest: string;
+  readonly isolationBackend: "reflink-copy-v1";
+}
+
+export interface ExecutionWorkspaceProvenance {
+  readonly backend: "reflink-copy-v1";
+  readonly snapshotDigest: string;
+  readonly parentRunId: string;
+  readonly parentNodeId: string;
+  readonly parentAttempt: number;
+}
+
+export interface ChildResultEvidence {
+  readonly nodeId: string;
+  readonly schemaDigest: string;
+  readonly canonicalValue: string;
+  readonly valueHash: string;
+}
+
+export interface ChildEvidence {
+  readonly kind: "child";
+  readonly childRunId: string;
+  readonly workflowId: string;
+  readonly workflowDigest: string;
+  readonly terminalSequence: number;
+  readonly outcome: "succeeded" | "failed" | "cancelled" | "resource_exhausted";
+  readonly result: ChildResultEvidence | null;
+  readonly resources: RunResourceConsumption;
+  readonly durationMs: number;
+  readonly workspace: {
+    readonly backend: "reflink-copy-v1";
+    readonly snapshotDigest: string;
+    readonly disposition: "discarded" | "retained";
+  };
+}
+
 export const MAX_AGENT_EFFECT_RECEIPTS = 32;
 export const MAX_RUN_EVENT_BYTES = 2_097_152;
 export const DURABLE_EFFECT_PROTOCOL = "flow.effects/v1" as const;
@@ -163,7 +204,7 @@ export interface AgentEffectReceipt {
   readonly outcome: "committed" | "uncertain";
 }
 
-export type NodeEvidence = CommandEvidence | AgentEvidence | VerifierEvidence;
+export type NodeEvidence = CommandEvidence | AgentEvidence | VerifierEvidence | ChildEvidence;
 
 export interface NodeFailure {
   readonly code: string;
@@ -189,6 +230,7 @@ export interface RunStartedEvent extends RunEventBase {
   readonly concurrency?: CompiledWorkflowConcurrency;
   readonly goal?: CompiledGoal;
   readonly executionCwd?: string;
+  readonly executionWorkspace?: ExecutionWorkspaceProvenance;
   readonly approvalRequirements?: readonly CommandApprovalRequirement[];
   readonly recoveryRequirements?: readonly AgentRecoveryRequirement[];
   readonly controlGraph?: ControlGraph;
@@ -207,6 +249,7 @@ export interface NodeStartedEvent extends RunEventBase {
     readonly requestId: string;
     readonly operationDigest: string;
   };
+  readonly child?: ChildRunLink;
 }
 
 export interface NodeAttemptInterruptedEvent extends RunEventBase {
@@ -245,6 +288,18 @@ interface ControlGraphNodeBase {
 export interface ControlGraphExecutableNode extends ControlGraphNodeBase {
   readonly type: "command" | "agent";
   readonly when?: ControlBranchGuard;
+}
+
+export interface ControlGraphChildNode extends ControlGraphNodeBase {
+  readonly type: "child";
+  readonly when?: ControlBranchGuard;
+  readonly child: {
+    readonly workflowId: string;
+    readonly workflowDigest: string;
+    readonly resultNodeId: string;
+    readonly resultSchema: CompiledResultSchema;
+    readonly resultSchemaDigest: string;
+  };
 }
 
 export interface ControlGraphApprovalNode extends ControlGraphNodeBase {
@@ -328,6 +383,7 @@ export interface ControlGraphLoopNode extends ControlGraphNodeBase {
 
 export type ControlGraphNode =
   | ControlGraphExecutableNode
+  | ControlGraphChildNode
   | ControlGraphApprovalNode
   | ControlGraphVerifierNode
   | ControlGraphResultNode
@@ -707,6 +763,7 @@ export interface NodeRunState {
   readonly error: NodeFailure | null;
   readonly approval: CommandApprovalRunState | null;
   readonly workflowApproval: WorkflowApprovalRunState | null;
+  readonly childRun: ChildRunLink | null;
   readonly effectProtocol: typeof DURABLE_EFFECT_PROTOCOL | null;
   readonly effects: readonly NodeEffectRunState[];
   readonly interruptedAttempts: readonly InterruptedNodeAttemptState[];
@@ -806,6 +863,7 @@ export interface RunState {
   readonly workflowApiVersion: "flow.synapti.ai/v1alpha1";
   readonly workflowDigest: string;
   readonly executionCwd: string | null;
+  readonly executionWorkspace: ExecutionWorkspaceProvenance | null;
   readonly approvalRequirements: Readonly<
     Record<string, Omit<CommandApprovalRequirement, "nodeId">>
   >;
@@ -833,6 +891,11 @@ export class RunReplayError extends Error {
   ) {
     super(`Cannot replay event ${eventIndex + 1}: ${message}`);
   }
+}
+
+export function calculateChildRunId(parentRunId: string, nodeId: string, attempt: number): string {
+  const identity = sha256(`${parentRunId}\0${nodeId}\0${attempt}`).slice(0, 48);
+  return `child-${identity}`;
 }
 
 export function loopLimitFailureMessage(loopId: string, maxIterations: number): string {
@@ -1130,11 +1193,77 @@ const modelVerifierEvidenceSchema = z
   })
   .strict();
 
+const childRunLinkSchema = z
+  .object({
+    runId: identifierSchema,
+    workflowId: identifierSchema,
+    workflowDigest: sha256Schema,
+    resultNodeId: identifierSchema,
+    resultSchemaDigest: sha256Schema,
+    isolationBackend: z.literal("reflink-copy-v1"),
+  })
+  .strict();
+
+const executionWorkspaceSchema = z
+  .object({
+    backend: z.literal("reflink-copy-v1"),
+    snapshotDigest: sha256Schema,
+    parentRunId: identifierSchema,
+    parentNodeId: identifierSchema,
+    parentAttempt: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  })
+  .strict();
+
+const childResultEvidenceSchema = z
+  .object({
+    nodeId: identifierSchema,
+    schemaDigest: sha256Schema,
+    canonicalValue: z
+      .string()
+      .refine(
+        (value) => Buffer.byteLength(value, "utf8") <= MAX_RESULT_VALUE_BYTES,
+        `child canonical result must not exceed ${MAX_RESULT_VALUE_BYTES} UTF-8 bytes`,
+      ),
+    valueHash: sha256Schema,
+  })
+  .strict();
+
+const childResourceSchema = z
+  .object({
+    nodeStarts: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    modelTokens: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    modelCostUsdMicros: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    executionMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  })
+  .strict();
+
+const childEvidenceSchema = z
+  .object({
+    kind: z.literal("child"),
+    childRunId: identifierSchema,
+    workflowId: identifierSchema,
+    workflowDigest: sha256Schema,
+    terminalSequence: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    outcome: z.enum(["succeeded", "failed", "cancelled", "resource_exhausted"]),
+    result: childResultEvidenceSchema.nullable(),
+    resources: childResourceSchema,
+    durationMs: z.number().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    workspace: z
+      .object({
+        backend: z.literal("reflink-copy-v1"),
+        snapshotDigest: sha256Schema,
+        disposition: z.enum(["discarded", "retained"]),
+      })
+      .strict(),
+  })
+  .strict();
+
 const nodeEvidenceSchema = z.union([
   commandEvidenceSchema,
   agentEvidenceSchema,
   commandVerifierEvidenceSchema,
   modelVerifierEvidenceSchema,
+  childEvidenceSchema,
 ]);
 
 const nodeFailureSchema = z
@@ -1324,6 +1453,22 @@ const controlGraphNodeSchema = z.discriminatedUnion("type", [
   z
     .object({
       ...controlNodeBaseShape,
+      type: z.literal("child"),
+      when: controlBranchGuardSchema.optional(),
+      child: z
+        .object({
+          workflowId: identifierSchema,
+          workflowDigest: sha256Schema,
+          resultNodeId: identifierSchema,
+          resultSchema: boundedCompiledResultSchemaSchema,
+          resultSchemaDigest: sha256Schema,
+        })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      ...controlNodeBaseShape,
       type: z.literal("approval"),
       when: controlBranchGuardSchema.optional(),
       approval: z
@@ -1481,6 +1626,7 @@ export const runEventSchema = z.discriminatedUnion("type", [
         .optional(),
       goal: compiledGoalSchema.optional(),
       executionCwd: absolutePathSchema.optional(),
+      executionWorkspace: executionWorkspaceSchema.optional(),
       approvalRequirements: z
         .array(z.object({ nodeId: identifierSchema, grantTtlMs: grantTtlSchema }).strict())
         .max(MAX_COMPILED_WORKFLOW_NODES)
@@ -1595,6 +1741,7 @@ export const runEventSchema = z.discriminatedUnion("type", [
       attempt: z.number().int().positive(),
       effectProtocol: z.literal(DURABLE_EFFECT_PROTOCOL).optional(),
       approval: approvalReferenceSchema.optional(),
+      child: childRunLinkSchema.optional(),
     })
     .strict(),
   z
@@ -2046,6 +2193,10 @@ export function appendRunEvent(
       workflowApiVersion: event.workflowApiVersion,
       workflowDigest: event.workflowDigest,
       executionCwd: event.executionCwd ?? null,
+      executionWorkspace:
+        event.executionWorkspace === undefined
+          ? null
+          : deepFreeze(structuredClone(event.executionWorkspace)),
       approvalRequirements: Object.freeze(approvalRequirements),
       recoveryRequirements: Object.freeze(recoveryRequirementsByNode),
       controlGraph,
@@ -2449,6 +2600,7 @@ export function appendRunEvent(
       if (current.status !== "pending") {
         throw new RunReplayError(eventIndex, `node "${event.nodeId}" must be pending before start`);
       }
+      let childRun: ChildRunLink | null = null;
       if (currentState.controlGraph !== null) {
         const controlNode = requireControlGraphNode(currentState, event.nodeId, eventIndex);
         if (
@@ -2464,8 +2616,28 @@ export function appendRunEvent(
             `control node "${event.nodeId}" cannot start through an executor`,
           );
         }
+        if (controlNode.type === "child") {
+          if (
+            event.child === undefined ||
+            event.child.runId !== calculateChildRunId(event.runId, event.nodeId, event.attempt) ||
+            !childRunLinkMatches(event.child, controlNode.child)
+          ) {
+            throw new RunReplayError(
+              eventIndex,
+              `child node "${event.nodeId}" start does not match its durable child link`,
+            );
+          }
+          childRun = deepFreeze(structuredClone(event.child));
+        } else if (event.child !== undefined) {
+          throw new RunReplayError(
+            eventIndex,
+            `non-child node "${event.nodeId}" cannot carry a child link`,
+          );
+        }
         requireSucceededDependencies(controlNode, nodes, eventIndex);
         requireSelectedGuard(controlNode, nodes, eventIndex);
+      } else if (event.child !== undefined) {
+        throw new RunReplayError(eventIndex, "child node start requires a persisted control graph");
       }
       const requirement = currentState.approvalRequirements[event.nodeId];
       let approval = current.approval;
@@ -2522,6 +2694,7 @@ export function appendRunEvent(
         attempt: event.attempt,
         startedAt: event.at,
         approval,
+        childRun,
         effectProtocol: event.effectProtocol ?? null,
         effects: Object.freeze([]),
       });
@@ -3324,6 +3497,13 @@ export function appendRunEvent(
         event.evidence,
         eventIndex,
       );
+      validateChildEvidenceProjection(
+        currentState.controlGraph,
+        nodes,
+        event,
+        event.evidence,
+        eventIndex,
+      );
       resources = addResourcesForEvidence(resources, event.evidence, eventIndex);
       nodes[event.nodeId] = Object.freeze({
         ...current,
@@ -3363,6 +3543,13 @@ export function appendRunEvent(
         );
       }
       validateVerifierEvidenceProjection(
+        currentState.controlGraph,
+        nodes,
+        event,
+        event.evidence,
+        eventIndex,
+      );
+      validateChildEvidenceProjection(
         currentState.controlGraph,
         nodes,
         event,
@@ -3537,6 +3724,7 @@ export function appendRunEvent(
     workflowApiVersion: currentState.workflowApiVersion,
     workflowDigest: currentState.workflowDigest,
     executionCwd: currentState.executionCwd,
+    executionWorkspace: currentState.executionWorkspace,
     approvalRequirements: currentState.approvalRequirements,
     recoveryRequirements: currentState.recoveryRequirements,
     controlGraph: currentState.controlGraph,
@@ -3966,12 +4154,13 @@ function validateControlGraph(
       !dependedUpon.has(node.nodeId) &&
       node.type !== "command" &&
       node.type !== "verifier" &&
-      node.type !== "result",
+      node.type !== "result" &&
+      node.type !== "child",
   );
   if (invalidTerminal !== undefined) {
     throw new RunReplayError(
       eventIndex,
-      `control graph terminal "${invalidTerminal.nodeId}" must be a command or verifier node`,
+      `control graph terminal "${invalidTerminal.nodeId}" must be a command, child, verifier, or result node`,
     );
   }
   for (const condition of graph.nodes.filter(
@@ -4153,6 +4342,20 @@ function serializeLoopTemplateStructure(
           }),
     });
   }
+  if (node.type === "child") {
+    return JSON.stringify({
+      ...common,
+      ...(node.when === undefined
+        ? {}
+        : {
+            when: {
+              conditionId: templateNodeId(node.when.conditionId),
+              case: node.when.case,
+            },
+          }),
+      child: node.child,
+    });
+  }
   if (node.type === "verifier") {
     const verifier =
       node.verifier.kind === "command"
@@ -4266,7 +4469,7 @@ function controlEvidenceFieldMatchesNode(
     (field.startsWith("command.") && nodeType === "command") ||
     (field === "agent.text" && nodeType === "agent") ||
     (field.startsWith("verifier.") && nodeType === "verifier") ||
-    (field === "result.value" && nodeType === "result")
+    (field === "result.value" && (nodeType === "result" || nodeType === "child"))
   );
 }
 
@@ -4617,6 +4820,14 @@ function controlSourceObservation(
         truncated: false,
       };
     }
+    if (source.evidence?.kind === "child" && source.evidence.result !== null) {
+      return {
+        attempt: source.attempt,
+        value: source.evidence.result.canonicalValue,
+        hash: source.evidence.result.valueHash,
+        truncated: false,
+      };
+    }
     throw new RunReplayError(
       eventIndex,
       `control node "${controlNodeId}" source field is incompatible with durable evidence`,
@@ -4690,6 +4901,19 @@ function sameStrings(left: readonly string[], right: readonly string[]): boolean
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
+function childRunLinkMatches(
+  link: ChildRunLink,
+  requirement: ControlGraphChildNode["child"],
+): boolean {
+  return (
+    link.workflowId === requirement.workflowId &&
+    link.workflowDigest === requirement.workflowDigest &&
+    link.resultNodeId === requirement.resultNodeId &&
+    link.resultSchemaDigest === requirement.resultSchemaDigest &&
+    link.isolationBackend === "reflink-copy-v1"
+  );
+}
+
 function addResourcesForStart(
   resources: RunResourceConsumption,
   eventIndex: number,
@@ -4707,6 +4931,9 @@ function addResourcesForEvidence(
   eventIndex: number,
 ): RunResourceConsumption {
   try {
+    if (evidence.kind === "child") {
+      return addRunResources(resources, evidence.resources);
+    }
     return addRunResources(resources, {
       executionMs: committedDurationMs(evidence.durationMs),
       ...((evidence.kind === "agent" ||
@@ -4755,6 +4982,109 @@ function validateSucceededEvidence(evidence: NodeEvidence, eventIndex: number): 
       eventIndex,
       "successful agent evidence must not contain an uncertain effect receipt",
     );
+  }
+  if (
+    evidence.kind === "child" &&
+    (evidence.outcome !== "succeeded" ||
+      evidence.result === null ||
+      evidence.workspace.disposition !== "discarded")
+  ) {
+    throw new RunReplayError(
+      eventIndex,
+      "successful child evidence requires a succeeded child, typed result, and discarded workspace",
+    );
+  }
+}
+
+function validateChildEvidenceProjection(
+  graph: ControlGraph | null,
+  nodes: Readonly<Record<string, NodeRunState>>,
+  event: NodeSucceededEvent | NodeFailedEvent,
+  evidence: NodeEvidence | null,
+  eventIndex: number,
+): void {
+  const requirement = graph?.nodes.find((node) => node.nodeId === event.nodeId);
+  if (requirement?.type !== "child") {
+    if (evidence?.kind === "child") {
+      throw new RunReplayError(eventIndex, "child evidence belongs to a non-child node");
+    }
+    return;
+  }
+  const childRun = requireNode(nodes, event.nodeId, eventIndex).childRun;
+  if (childRun === null || !childRunLinkMatches(childRun, requirement.child)) {
+    throw new RunReplayError(eventIndex, "child evidence has no matching durable child link");
+  }
+  if (evidence === null) {
+    if (
+      event.type !== "node_failed" ||
+      !event.error.code.startsWith("child_") ||
+      event.error.sideEffectStatus !== "none"
+    ) {
+      throw new RunReplayError(eventIndex, "child node is missing its durable child evidence");
+    }
+    return;
+  }
+  if (evidence.kind !== "child") {
+    throw new RunReplayError(eventIndex, "child node has incompatible evidence");
+  }
+  if (
+    evidence.childRunId !== childRun.runId ||
+    evidence.workflowId !== requirement.child.workflowId ||
+    evidence.workflowDigest !== requirement.child.workflowDigest ||
+    evidence.workspace.backend !== childRun.isolationBackend
+  ) {
+    throw new RunReplayError(eventIndex, "child evidence does not match its durable child link");
+  }
+  if (evidence.result !== null) {
+    let evaluated: ReturnType<typeof evaluateTypedResult>;
+    try {
+      evaluated = evaluateTypedResult(
+        evidence.result.canonicalValue,
+        requirement.child.resultSchema,
+      );
+    } catch (error) {
+      throw new RunReplayError(
+        eventIndex,
+        `child canonical result is invalid: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (
+      evidence.result.nodeId !== requirement.child.resultNodeId ||
+      evidence.result.schemaDigest !== requirement.child.resultSchemaDigest ||
+      evaluated.canonicalValue !== evidence.result.canonicalValue ||
+      evaluated.valueHash !== evidence.result.valueHash
+    ) {
+      throw new RunReplayError(
+        eventIndex,
+        "child result does not match its node, schema, canonical value, or hash",
+      );
+    }
+  }
+  if (evidence.outcome === "succeeded" && evidence.result === null) {
+    throw new RunReplayError(eventIndex, "succeeded child evidence is missing its typed result");
+  }
+  if (event.type === "node_succeeded" && evidence.outcome !== "succeeded") {
+    throw new RunReplayError(eventIndex, "successful child node has a non-success child outcome");
+  }
+  if (event.type === "node_failed") {
+    const cleanupFailed = event.error.code === "child_workspace_cleanup_failed";
+    if (cleanupFailed !== (evidence.workspace.disposition === "retained")) {
+      throw new RunReplayError(
+        eventIndex,
+        "child workspace disposition does not match its cleanup failure",
+      );
+    }
+    const expectedFailureCode = cleanupFailed
+      ? "child_workspace_cleanup_failed"
+      : evidence.outcome === "succeeded"
+        ? null
+        : `child_run_${evidence.outcome}`;
+    if (expectedFailureCode === null || event.error.code !== expectedFailureCode) {
+      throw new RunReplayError(
+        eventIndex,
+        `child outcome "${evidence.outcome}" does not match failure code "${event.error.code}"`,
+      );
+    }
   }
 }
 
@@ -5002,6 +5332,13 @@ function verifierSourceObservation(
       return {
         attempt: source.attempt,
         hash: source.control.valueHash,
+        truncated: false,
+      };
+    }
+    if (source.evidence?.kind === "child" && source.evidence.result !== null) {
+      return {
+        attempt: source.attempt,
+        hash: source.evidence.result.valueHash,
         truncated: false,
       };
     }
@@ -5263,6 +5600,13 @@ function validateEvidenceIntegrity(
   eventIndex: number,
   requireContiguousReceiptSequence: boolean,
 ): void {
+  if (
+    evidence.kind === "child" &&
+    evidence.result !== null &&
+    evidence.result.valueHash !== sha256(evidence.result.canonicalValue)
+  ) {
+    throw new RunReplayError(eventIndex, "child result value hash is invalid");
+  }
   if (evidence.kind === "verifier") {
     if (evidence.reasonHash !== sha256(evidence.reason)) {
       throw new RunReplayError(eventIndex, "verifier evidence reason hash is invalid");
@@ -5422,6 +5766,7 @@ function pendingNodeState(): NodeRunState {
     error: null,
     approval: null,
     workflowApproval: null,
+    childRun: null,
     effectProtocol: null,
     effects: Object.freeze([]),
     interruptedAttempts: Object.freeze([]),

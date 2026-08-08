@@ -7,6 +7,7 @@ import type {
   NodeEffectReconciler,
   NodeExecutor,
   RecoverableRunEventStore,
+  WorkspaceIsolator,
 } from "../application/ports.js";
 import {
   RunCancellation,
@@ -17,6 +18,7 @@ import {
 import { reduceRunEvents, type RunState } from "../domain/run/events.js";
 import { compileWorkflowText } from "../domain/workflow/compiler.js";
 import type { LocalSupervisorStore } from "../infrastructure/fs/local-supervisor-store.js";
+import { createProductionWorkspaceIsolator } from "../infrastructure/runtime/production-workspace-isolator.js";
 import {
   encodeSupervisorMessage,
   parseWorkerRequestFrame,
@@ -37,6 +39,7 @@ export interface ExecuteWorkerJobOptions {
   readonly executor: NodeExecutor;
   readonly effectReconciler: NodeEffectReconciler;
   readonly createRunStore: (rootDirectory: string) => RecoverableRunEventStore;
+  readonly createWorkspaceIsolator?: (runsDirectory: string) => WorkspaceIsolator;
   readonly pid?: number;
   readonly now?: () => Date;
   readonly signal?: AbortSignal;
@@ -203,6 +206,9 @@ export async function executeWorkerJob(
         store: runStore,
         executor: options.executor,
         effectReconciler: options.effectReconciler,
+        workspaceIsolator: (options.createWorkspaceIsolator ?? createProductionWorkspaceIsolator)(
+          options.store.runsDirectory,
+        ),
         signal: controller.signal,
         now,
       } as const;

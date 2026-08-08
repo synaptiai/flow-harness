@@ -4,12 +4,16 @@ import type { GoalContractSource } from "../goal/schema.js";
 import type { CompiledGoal } from "../goal/types.js";
 import { calculateResultSchemaDigest } from "../result/typed-result.js";
 import { projectCompiledControlGraph, workflowRequiresControlGraph } from "./control-graph.js";
+import { calculateWorkflowDigest } from "./digest.js";
 import { workflowSourceSchema, type WorkflowSource } from "./schema.js";
 import {
   MAX_CONTROL_GRAPH_SERIALIZED_BYTES,
+  MAX_CHILD_WORKFLOW_DEPTH,
   MAX_COMPILED_WORKFLOW_NODES,
+  MAX_RUN_TREE_NODES,
   type CompiledAgentNode,
   type CompiledApprovalNode,
+  type CompiledChildNode,
   type CompiledCommandNode,
   type CompiledConditionNode,
   type CompiledJoinNode,
@@ -37,6 +41,12 @@ export interface WorkflowDiagnostic {
     | "condition_source_field_mismatch"
     | "condition_source_requires_dependency"
     | "condition_source_unknown"
+    | "child_budget_required"
+    | "child_depth_exceeded"
+    | "child_result_not_terminal"
+    | "child_result_not_unconditional"
+    | "child_tree_too_large"
+    | "child_wait_unsupported"
     | "approval_source_field_mismatch"
     | "approval_source_requires_dependency"
     | "approval_source_self"
@@ -91,6 +101,22 @@ export class WorkflowCompilationError extends Error {
 }
 
 export function compileWorkflowText(source: string, sourceName = "workflow"): CompiledWorkflow {
+  return compileWorkflowTextInternal(source, sourceName, {
+    depth: 0,
+    nodeCount: { value: 0 },
+  });
+}
+
+interface CompilationContext {
+  readonly depth: number;
+  readonly nodeCount: { value: number };
+}
+
+function compileWorkflowTextInternal(
+  source: string,
+  sourceName: string,
+  context: CompilationContext,
+): CompiledWorkflow {
   const parsed = parseYaml(source, sourceName);
   const result = workflowSourceSchema.safeParse(parsed);
 
@@ -108,7 +134,20 @@ export function compileWorkflowText(source: string, sourceName = "workflow"): Co
     throw new WorkflowCompilationError(sourceName, Object.freeze(diagnostics));
   }
 
-  const workflow = freezeWorkflow(result.data);
+  const workflow = freezeWorkflow(result.data, context);
+  context.nodeCount.value += workflow.nodes.length;
+  if (context.nodeCount.value > MAX_RUN_TREE_NODES) {
+    throw new WorkflowCompilationError(
+      sourceName,
+      Object.freeze([
+        {
+          code: "child_tree_too_large",
+          path: "nodes",
+          message: `compiled run tree must not exceed ${MAX_RUN_TREE_NODES} nodes`,
+        },
+      ]),
+    );
+  }
   if (
     workflowRequiresControlGraph(workflow) &&
     Buffer.byteLength(JSON.stringify(projectCompiledControlGraph(workflow)), "utf8") >
@@ -224,12 +263,13 @@ function validateGraph(workflow: WorkflowSource): WorkflowDiagnostic[] {
       !dependedUpon.has(node.id) &&
       node.type !== "command" &&
       node.type !== "verifier" &&
-      node.type !== "result"
+      node.type !== "result" &&
+      node.type !== "child"
     ) {
       diagnostics.push({
         code: "terminal_requires_command",
         path: `nodes.${index}.type`,
-        message: `terminal node "${node.id}" must be a command, verifier, or result node`,
+        message: `terminal node "${node.id}" must be a command, child, verifier, or result node`,
       });
     }
   }
@@ -890,7 +930,7 @@ function evidenceFieldMatchesNode(
     (field.startsWith("command.") && nodeType === "command") ||
     (field === "agent.text" && nodeType === "agent") ||
     (field.startsWith("verifier.") && nodeType === "verifier") ||
-    (field === "result.value" && nodeType === "result")
+    (field === "result.value" && (nodeType === "result" || nodeType === "child"))
   );
 }
 
@@ -1017,9 +1057,11 @@ function findCycle(nodes: readonly (SourceNode | SourceBodyNode)[]): readonly st
   return undefined;
 }
 
-function freezeWorkflow(source: WorkflowSource): CompiledWorkflow {
+function freezeWorkflow(source: WorkflowSource, context: CompilationContext): CompiledWorkflow {
   const nodes = Object.freeze(
-    source.nodes.flatMap((node) => (node.type === "loop" ? freezeLoop(node) : [freezeNode(node)])),
+    source.nodes.flatMap((node) =>
+      node.type === "loop" ? freezeLoop(node, context) : [freezeNode(node, context)],
+    ),
   );
   const workflow: CompiledWorkflow = {
     apiVersion: source.apiVersion,
@@ -1071,7 +1113,10 @@ function freezeGoal(source: GoalContractSource): CompiledGoal {
   });
 }
 
-function freezeNode(source: Exclude<SourceNode, SourceLoopNode> | SourceBodyNode): CompiledNode {
+function freezeNode(
+  source: Exclude<SourceNode, SourceLoopNode> | SourceBodyNode,
+  context: CompilationContext,
+): CompiledNode {
   const dependsOn = Object.freeze([...sourceDependencies(source)]);
   if (source.type === "command") {
     const node: CompiledCommandNode = {
@@ -1178,6 +1223,17 @@ function freezeNode(source: Exclude<SourceNode, SourceLoopNode> | SourceBodyNode
     });
   }
 
+  if (source.type === "child") {
+    const node: CompiledChildNode = {
+      id: source.id,
+      type: "child",
+      dependsOn,
+      ...(source.when === undefined ? {} : { when: Object.freeze({ ...source.when }) }),
+      child: freezeChildDefinition(source.id, source.child, context),
+    };
+    return Object.freeze(node);
+  }
+
   const node: CompiledJoinNode = {
     id: source.id,
     type: "join",
@@ -1190,7 +1246,7 @@ function freezeNode(source: Exclude<SourceNode, SourceLoopNode> | SourceBodyNode
   return Object.freeze(node);
 }
 
-function freezeLoop(source: SourceLoopNode): readonly CompiledNode[] {
+function freezeLoop(source: SourceLoopNode, context: CompilationContext): readonly CompiledNode[] {
   const bodyNodes = source.loop.body.nodes;
   const entry = bodyNodes.find((node) => sourceDependencies(node).length === 0);
   if (entry === undefined) {
@@ -1209,7 +1265,15 @@ function freezeLoop(source: SourceLoopNode): readonly CompiledNode[] {
       iteration === 1 ? undefined : loopCheckNodeId(source.id, iteration - 1);
     for (const bodyNode of bodyNodes) {
       expanded.push(
-        freezeLoopBodyNode(source, bodyNode, entry.id, iteration, idByTemplate, priorCheckNodeId),
+        freezeLoopBodyNode(
+          source,
+          bodyNode,
+          entry.id,
+          iteration,
+          idByTemplate,
+          priorCheckNodeId,
+          context,
+        ),
       );
     }
 
@@ -1263,6 +1327,7 @@ function freezeLoopBodyNode(
   iteration: number,
   idByTemplate: ReadonlyMap<string, string>,
   priorCheckNodeId: string | undefined,
+  context: CompilationContext,
 ): CompiledNode {
   const id = requireMappedLoopNode(idByTemplate, source.id, loop.id);
   const isEntry = source.id === entryNodeId;
@@ -1416,6 +1481,16 @@ function freezeLoopBodyNode(
     });
   }
 
+  if (source.type === "child") {
+    const node: CompiledChildNode = {
+      ...common,
+      type: "child",
+      ...(when === undefined ? {} : { when }),
+      child: freezeChildDefinition(source.id, source.child, context),
+    };
+    return Object.freeze(node);
+  }
+
   const node: CompiledJoinNode = {
     ...common,
     type: "join",
@@ -1432,6 +1507,113 @@ function freezeLoopBodyNode(
     }),
   };
   return Object.freeze(node);
+}
+
+function freezeChildDefinition(
+  nodeId: string,
+  source: { readonly workflow: string; readonly resultNodeId: string },
+  context: CompilationContext,
+): CompiledChildNode["child"] {
+  const sourceName = `${nodeId}.child.workflow`;
+  if (context.depth >= MAX_CHILD_WORKFLOW_DEPTH) {
+    throw new WorkflowCompilationError(
+      sourceName,
+      Object.freeze([
+        {
+          code: "child_depth_exceeded",
+          path: "child.workflow",
+          message: `child workflow nesting must not exceed ${MAX_CHILD_WORKFLOW_DEPTH}`,
+        },
+      ]),
+    );
+  }
+  const workflow = compileWorkflowTextInternal(source.workflow, sourceName, {
+    depth: context.depth + 1,
+    nodeCount: context.nodeCount,
+  });
+  if (
+    workflow.budget?.maxNodeStarts === undefined ||
+    workflow.budget.maxModelTokens === undefined ||
+    workflow.budget.maxCostUsdMicros === undefined ||
+    workflow.budget.maxExecutionMs === undefined
+  ) {
+    throw new WorkflowCompilationError(
+      sourceName,
+      Object.freeze([
+        {
+          code: "child_budget_required",
+          path: "budget",
+          message:
+            "child workflow must declare node-start, model-token, cost, and execution ceilings",
+        },
+      ]),
+    );
+  }
+  const result = workflow.nodes.find((node) => node.id === source.resultNodeId);
+  if (result?.type !== "result") {
+    throw new WorkflowCompilationError(
+      sourceName,
+      Object.freeze([
+        {
+          code: "invalid_schema",
+          path: "child.resultNodeId",
+          message: `child result node "${source.resultNodeId}" must name a result node`,
+        },
+      ]),
+    );
+  }
+  if (
+    result.when !== undefined ||
+    result.loopInstance !== undefined ||
+    result.loopGuard !== undefined
+  ) {
+    throw new WorkflowCompilationError(
+      sourceName,
+      Object.freeze([
+        {
+          code: "child_result_not_unconditional",
+          path: "child.resultNodeId",
+          message: `child result node "${result.id}" must be unconditional`,
+        },
+      ]),
+    );
+  }
+  if (workflow.nodes.some((node) => node.dependsOn.includes(result.id))) {
+    throw new WorkflowCompilationError(
+      sourceName,
+      Object.freeze([
+        {
+          code: "child_result_not_terminal",
+          path: "child.resultNodeId",
+          message: `child result node "${result.id}" must be terminal`,
+        },
+      ]),
+    );
+  }
+  if (
+    workflow.nodes.some(
+      (node) =>
+        node.type === "approval" || (node.type === "command" && node.approval !== undefined),
+    )
+  ) {
+    throw new WorkflowCompilationError(
+      sourceName,
+      Object.freeze([
+        {
+          code: "child_wait_unsupported",
+          path: "nodes",
+          message: "child workflows cannot contain human approval waits",
+        },
+      ]),
+    );
+  }
+  return Object.freeze({
+    workflow,
+    workflowDigest: calculateWorkflowDigest(workflow),
+    resultNodeId: result.id,
+    resultSchema: result.result.schema,
+    resultSchemaDigest: result.result.schemaDigest,
+  });
 }
 
 function freezeResultNode(input: {

@@ -1,0 +1,805 @@
+import { createHash } from "node:crypto";
+
+import { describe, expect, it } from "vitest";
+
+import type {
+  IsolatedWorkspace,
+  NodeExecutionContext,
+  NodeExecutionOutcome,
+  NodeExecutor,
+  RecoverableRunEventStore,
+  WorkspaceIsolator,
+} from "../../../src/application/ports.js";
+import { resumeWorkflow, runWorkflow } from "../../../src/application/run-workflow.js";
+import {
+  calculateChildRunId,
+  parseRunEvent,
+  reduceRunEvents,
+  type RunEvent,
+} from "../../../src/domain/run/events.js";
+import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
+import type { CompiledNode } from "../../../src/domain/workflow/types.js";
+
+describe("child workflow execution", () => {
+  it("runs a separately-ledgered child in an isolated workspace and imports its result", async () => {
+    const store = new TreeMemoryStore();
+    const isolator = new MemoryWorkspaceIsolator();
+    const executor = new ChildCommandExecutor();
+    const workflow = compileWorkflowText(parentWorkflow());
+
+    const state = await runWorkflow(workflow, {
+      runId: "parent-run",
+      cwd: "/workspace",
+      protectedPaths: ["/state/runs"],
+      store,
+      executor,
+      workspaceIsolator: isolator,
+      now: clock(),
+    });
+
+    const childRunId = calculateChildRunId("parent-run", "delegate", 1);
+    expect(state).toMatchObject({
+      status: "succeeded",
+      resources: {
+        nodeStarts: 2,
+        modelTokens: 0,
+        modelCostUsdMicros: 0,
+        executionMs: 5,
+      },
+      nodes: {
+        delegate: {
+          childRun: { runId: childRunId },
+          evidence: {
+            kind: "child",
+            childRunId,
+            result: { canonicalValue: "true", valueHash: sha256("true") },
+            resources: { nodeStarts: 1, executionMs: 5 },
+            workspace: {
+              snapshotDigest: "a".repeat(64),
+              disposition: "discarded",
+            },
+          },
+        },
+      },
+    });
+    expect(reduceRunEvents(await store.read(childRunId)).status).toBe("succeeded");
+    expect(executor.calls).toEqual([
+      expect.objectContaining({ nodeId: "produce", cwd: `/isolated/${childRunId}` }),
+    ]);
+    expect(isolator.cleaned).toEqual([childRunId]);
+  });
+
+  it("recovers a terminal child after a crash before the parent outcome append", async () => {
+    const store = new TreeMemoryStore();
+    const isolator = new MemoryWorkspaceIsolator();
+    const executor = new ChildCommandExecutor();
+    const workflow = compileWorkflowText(parentWorkflow());
+    store.rejectNextParentOutcome = true;
+
+    await expect(
+      runWorkflow(workflow, {
+        runId: "parent-crash",
+        cwd: "/workspace",
+        protectedPaths: ["/state/runs"],
+        store,
+        executor,
+        workspaceIsolator: isolator,
+        now: clock(),
+      }),
+    ).rejects.toThrow(/simulated parent outcome crash/i);
+
+    const resumed = await resumeWorkflow(workflow, {
+      runId: "parent-crash",
+      cwd: "/workspace",
+      protectedPaths: ["/state/runs"],
+      store,
+      executor,
+      workspaceIsolator: isolator,
+      now: clock(20),
+    });
+
+    expect(resumed.status).toBe("succeeded");
+    expect(executor.calls).toHaveLength(1);
+    expect(
+      isolator.cleaned.filter((id) => id === calculateChildRunId("parent-crash", "delegate", 1)),
+    ).toHaveLength(2);
+  });
+
+  it("does not materialize a child whose ceiling exceeds the parent remaining budget", async () => {
+    const store = new TreeMemoryStore();
+    const isolator = new MemoryWorkspaceIsolator();
+    const workflow = compileWorkflowText(
+      parentWorkflow().replace("maxNodeStarts: 32", "maxNodeStarts: 2"),
+    );
+
+    const state = await runWorkflow(workflow, {
+      runId: "parent-budget",
+      cwd: "/workspace",
+      protectedPaths: ["/state/runs"],
+      store,
+      executor: new ChildCommandExecutor(),
+      workspaceIsolator: isolator,
+      now: clock(),
+    });
+
+    expect(state).toMatchObject({
+      status: "failed",
+      nodes: {
+        delegate: {
+          error: { code: "child_budget_unavailable", sideEffectStatus: "none" },
+          evidence: null,
+        },
+      },
+    });
+    expect(isolator.created).toEqual([]);
+  });
+
+  it("imports a failed child as terminal linked evidence", async () => {
+    const store = new TreeMemoryStore();
+    const isolator = new MemoryWorkspaceIsolator();
+    const workflow = compileWorkflowText(parentWorkflow());
+
+    const state = await runWorkflow(workflow, {
+      runId: "parent-child-failure",
+      cwd: "/workspace",
+      protectedPaths: ["/state/runs"],
+      store,
+      executor: new FailingChildCommandExecutor(),
+      workspaceIsolator: isolator,
+      now: clock(),
+    });
+
+    const childRunId = calculateChildRunId("parent-child-failure", "delegate", 1);
+    expect(state).toMatchObject({
+      status: "failed",
+      nodes: {
+        delegate: {
+          error: { code: "child_run_failed", sideEffectStatus: "none" },
+          evidence: {
+            kind: "child",
+            childRunId,
+            outcome: "failed",
+            result: null,
+            workspace: { disposition: "discarded" },
+          },
+        },
+      },
+    });
+    expect(reduceRunEvents(await store.read(childRunId)).status).toBe("failed");
+    expect(isolator.cleaned).toContain(childRunId);
+  });
+
+  it("propagates cancellation to the active child and terminalizes both ledgers", async () => {
+    const controller = new AbortController();
+    const store = new TreeMemoryStore();
+    const isolator = new MemoryWorkspaceIsolator();
+    const workflow = compileWorkflowText(parentWorkflow());
+
+    const state = await runWorkflow(workflow, {
+      runId: "parent-cancel",
+      cwd: "/workspace",
+      protectedPaths: ["/state/runs"],
+      store,
+      executor: new CancellingChildCommandExecutor(controller),
+      workspaceIsolator: isolator,
+      signal: controller.signal,
+      now: clock(),
+    });
+
+    const childRunId = calculateChildRunId("parent-cancel", "delegate", 1);
+    const childState = reduceRunEvents(await store.read(childRunId));
+    expect(state.status).toBe("cancelled");
+    expect(childState.status).toBe("cancelled");
+    expect(state.nodes.delegate?.evidence).toMatchObject({
+      kind: "child",
+      childRunId,
+      outcome: "cancelled",
+      workspace: { disposition: "discarded" },
+    });
+  });
+
+  it("imports a durable child success when cancellation arrives during terminal cleanup", async () => {
+    const controller = new AbortController();
+    const store = new TreeMemoryStore();
+    const isolator = new CancellingCleanupWorkspaceIsolator(controller);
+    const workflow = compileWorkflowText(parentWorkflow());
+
+    const state = await runWorkflow(workflow, {
+      runId: "parent-cancel-after-child",
+      cwd: "/workspace",
+      protectedPaths: ["/state/runs"],
+      store,
+      executor: new ChildCommandExecutor(),
+      workspaceIsolator: isolator,
+      signal: controller.signal,
+      now: clock(),
+    });
+
+    const childRunId = calculateChildRunId("parent-cancel-after-child", "delegate", 1);
+    expect(reduceRunEvents(await store.read(childRunId)).status).toBe("succeeded");
+    expect(state).toMatchObject({
+      status: "cancelled",
+      nodes: {
+        delegate: {
+          status: "succeeded",
+          evidence: {
+            kind: "child",
+            childRunId,
+            outcome: "succeeded",
+            workspace: { disposition: "discarded" },
+          },
+        },
+      },
+    });
+  });
+
+  it("cancels a durably admitted child before workspace materialization", async () => {
+    const controller = new AbortController();
+    const store = new TreeMemoryStore();
+    store.abortOnParentChildStart = controller;
+    const isolator = new MemoryWorkspaceIsolator();
+    const workflow = compileWorkflowText(parentWorkflow());
+
+    const state = await runWorkflow(workflow, {
+      runId: "parent-cancel-before-child",
+      cwd: "/workspace",
+      protectedPaths: ["/state/runs"],
+      store,
+      executor: new ChildCommandExecutor(),
+      workspaceIsolator: isolator,
+      signal: controller.signal,
+      now: clock(),
+    });
+
+    const childRunId = calculateChildRunId("parent-cancel-before-child", "delegate", 1);
+    expect(state).toMatchObject({
+      status: "cancelled",
+      nodes: {
+        delegate: {
+          status: "failed",
+          error: { code: "child_cancelled_before_start", sideEffectStatus: "none" },
+          evidence: null,
+        },
+      },
+    });
+    expect(await store.exists(childRunId)).toBe(false);
+    expect(isolator.created).toEqual([]);
+  });
+
+  it("executes ready sibling children concurrently in distinct workspaces", async () => {
+    const store = new TreeMemoryStore();
+    const isolator = new MemoryWorkspaceIsolator();
+    const executor = new ConcurrentChildCommandExecutor(2);
+    const workflow = compileWorkflowText(parentWorkflowWithTwoChildren(64));
+
+    const state = await runWorkflow(workflow, {
+      runId: "parent-concurrent",
+      cwd: "/workspace",
+      protectedPaths: ["/state/runs"],
+      store,
+      executor,
+      workspaceIsolator: isolator,
+      now: clock(),
+    });
+
+    expect(state.status).toBe("succeeded");
+    expect(executor.maximumActive).toBe(2);
+    expect(
+      new Set(executor.calls.filter((call) => call.nodeId === "produce").map((call) => call.cwd))
+        .size,
+    ).toBe(2);
+    expect(isolator.created).toHaveLength(2);
+  });
+
+  it("reserves sibling child ceilings as a tree-wide aggregate", async () => {
+    const store = new TreeMemoryStore();
+    const isolator = new MemoryWorkspaceIsolator();
+    const workflow = compileWorkflowText(parentWorkflowWithTwoChildren(18));
+
+    const state = await runWorkflow(workflow, {
+      runId: "parent-sibling-budget",
+      cwd: "/workspace",
+      protectedPaths: ["/state/runs"],
+      store,
+      executor: new ChildCommandExecutor(),
+      workspaceIsolator: isolator,
+      now: clock(),
+    });
+
+    expect(state.status).toBe("failed");
+    expect(state.nodes["delegate-b"]?.error?.code).toBe("child_budget_unavailable");
+    expect(isolator.created).toHaveLength(1);
+  });
+
+  it("recreates a stale pre-ledger workspace after an interrupted child start", async () => {
+    const store = new TreeMemoryStore();
+    const isolator = new MemoryWorkspaceIsolator();
+    const executor = new ChildCommandExecutor();
+    const workflow = compileWorkflowText(parentWorkflow());
+    store.rejectNextChildRunStart = true;
+
+    await expect(
+      runWorkflow(workflow, {
+        runId: "parent-pre-ledger-crash",
+        cwd: "/workspace",
+        protectedPaths: ["/state/runs"],
+        store,
+        executor,
+        workspaceIsolator: isolator,
+        now: clock(),
+      }),
+    ).rejects.toThrow(/simulated child start crash/i);
+
+    const childRunId = calculateChildRunId("parent-pre-ledger-crash", "delegate", 1);
+    expect(isolator.workspaces.has(childRunId)).toBe(true);
+    expect(await store.exists(childRunId)).toBe(false);
+
+    const resumed = await resumeWorkflow(workflow, {
+      runId: "parent-pre-ledger-crash",
+      cwd: "/workspace",
+      protectedPaths: ["/state/runs"],
+      store,
+      executor,
+      workspaceIsolator: isolator,
+      now: clock(20),
+    });
+
+    expect(resumed.status).toBe("succeeded");
+    expect(isolator.created.filter((id) => id === childRunId)).toHaveLength(2);
+  });
+
+  it("fails closed when a nonterminal child loses its exact workspace", async () => {
+    const store = new TreeMemoryStore();
+    const isolator = new MemoryWorkspaceIsolator();
+    const workflow = compileWorkflowText(parentWorkflow());
+    store.rejectNextChildOutcome = true;
+
+    await expect(
+      runWorkflow(workflow, {
+        runId: "parent-missing-child-workspace",
+        cwd: "/workspace",
+        protectedPaths: ["/state/runs"],
+        store,
+        executor: new ChildCommandExecutor(),
+        workspaceIsolator: isolator,
+        now: clock(),
+      }),
+    ).rejects.toThrow(/simulated child outcome crash/i);
+
+    const childRunId = calculateChildRunId("parent-missing-child-workspace", "delegate", 1);
+    isolator.workspaces.delete(childRunId);
+
+    await expect(
+      resumeWorkflow(workflow, {
+        runId: "parent-missing-child-workspace",
+        cwd: "/workspace",
+        protectedPaths: ["/state/runs"],
+        store,
+        executor: new ChildCommandExecutor(),
+        workspaceIsolator: isolator,
+        now: clock(20),
+      }),
+    ).rejects.toMatchObject({
+      code: "child_recovery_ineligible",
+      message: expect.stringMatching(/workspace .* is missing/i),
+    });
+  });
+
+  it("publishes an outer typed result from the imported child value", async () => {
+    const workflow = compileWorkflowText(`${parentWorkflow()}  - id: outer-result
+    type: result
+    dependsOn: [delegate]
+    result:
+      source: { nodeId: delegate, field: result.value }
+      schema: { type: boolean }
+`);
+
+    const state = await runWorkflow(workflow, {
+      runId: "parent-result-composition",
+      cwd: "/workspace",
+      protectedPaths: ["/state/runs"],
+      store: new TreeMemoryStore(),
+      executor: new ChildCommandExecutor(),
+      workspaceIsolator: new MemoryWorkspaceIsolator(),
+      now: clock(),
+    });
+
+    expect(state).toMatchObject({
+      status: "succeeded",
+      nodes: {
+        "outer-result": {
+          control: { kind: "result", canonicalValue: "true", valueHash: sha256("true") },
+        },
+      },
+    });
+  });
+
+  it("binds imported child result provenance into a model verifier", async () => {
+    const workflow = compileWorkflowText(`${parentWorkflow()}  - id: review
+    type: verifier
+    dependsOn: [delegate]
+    verifier:
+      kind: model
+      prompt: Verify the child result.
+      evidence: [{ nodeId: delegate, field: result.value }]
+      model: { provider: test, id: deterministic }
+`);
+    const executor = new ChildResultVerifierExecutor();
+
+    const state = await runWorkflow(workflow, {
+      runId: "parent-verifier-composition",
+      cwd: "/workspace",
+      protectedPaths: ["/state/runs"],
+      store: new TreeMemoryStore(),
+      executor,
+      workspaceIsolator: new MemoryWorkspaceIsolator(),
+      now: clock(),
+    });
+
+    expect(state.status).toBe("succeeded");
+    expect(executor.verifierSources).toEqual([
+      {
+        sourceNodeId: "delegate",
+        sourceAttempt: 1,
+        sourceField: "result.value",
+        sourceHash: sha256("true"),
+        value: "true",
+        truncated: false,
+      },
+    ]);
+  });
+});
+
+class TreeMemoryStore implements RecoverableRunEventStore {
+  readonly events = new Map<string, RunEvent[]>();
+  abortOnParentChildStart: AbortController | undefined;
+  rejectNextParentOutcome = false;
+  rejectNextChildRunStart = false;
+  rejectNextChildOutcome = false;
+
+  async append(input: RunEvent): Promise<void> {
+    const event = parseRunEvent(input);
+    if (
+      this.rejectNextParentOutcome &&
+      event.runId.startsWith("parent-") &&
+      event.type === "node_succeeded" &&
+      event.nodeId === "delegate"
+    ) {
+      this.rejectNextParentOutcome = false;
+      throw new Error("simulated parent outcome crash");
+    }
+    if (
+      this.rejectNextChildRunStart &&
+      event.runId.startsWith("child-") &&
+      event.type === "run_started"
+    ) {
+      this.rejectNextChildRunStart = false;
+      throw new Error("simulated child start crash");
+    }
+    if (
+      this.rejectNextChildOutcome &&
+      event.runId.startsWith("child-") &&
+      event.type === "node_succeeded"
+    ) {
+      this.rejectNextChildOutcome = false;
+      throw new Error("simulated child outcome crash");
+    }
+    const existing = this.events.get(event.runId) ?? [];
+    this.events.set(event.runId, [...existing, event]);
+    if (
+      event.runId.startsWith("parent-") &&
+      event.type === "node_started" &&
+      event.child !== undefined
+    ) {
+      this.abortOnParentChildStart?.abort("operator stop before child materialization");
+    }
+  }
+
+  async read(runId: string): Promise<readonly RunEvent[]> {
+    return this.events.get(runId) ?? [];
+  }
+
+  async claim(runId: string): Promise<readonly RunEvent[]> {
+    const events = await this.read(runId);
+    if (events.length === 0) {
+      throw new Error(`run "${runId}" is missing`);
+    }
+    return events;
+  }
+
+  async exists(runId: string): Promise<boolean> {
+    return (this.events.get(runId)?.length ?? 0) > 0;
+  }
+
+  async release(_runId: string): Promise<void> {}
+}
+
+class MemoryWorkspaceIsolator implements WorkspaceIsolator {
+  readonly workspaces = new Map<string, IsolatedWorkspace>();
+  readonly created: string[] = [];
+  readonly reopened: string[] = [];
+  readonly cleaned: string[] = [];
+
+  async create(request: {
+    readonly workspaceId: string;
+    readonly sourceCwd: string;
+  }): Promise<IsolatedWorkspace> {
+    if (this.workspaces.has(request.workspaceId)) {
+      throw new Error(`workspace "${request.workspaceId}" already exists`);
+    }
+    const workspace = Object.freeze({
+      workspaceId: request.workspaceId,
+      cwd: `/isolated/${request.workspaceId}`,
+      backend: "reflink-copy-v1" as const,
+      snapshotDigest: "a".repeat(64),
+    });
+    this.created.push(request.workspaceId);
+    this.workspaces.set(request.workspaceId, workspace);
+    return workspace;
+  }
+
+  async reopen(request: {
+    readonly workspaceId: string;
+    readonly sourceCwd: string;
+  }): Promise<IsolatedWorkspace> {
+    this.reopened.push(request.workspaceId);
+    const workspace = this.workspaces.get(request.workspaceId);
+    if (workspace === undefined) {
+      throw new Error(`workspace "${request.workspaceId}" is missing`);
+    }
+    return workspace;
+  }
+
+  async cleanup(workspaceId: string): Promise<"discarded"> {
+    this.cleaned.push(workspaceId);
+    this.workspaces.delete(workspaceId);
+    return "discarded";
+  }
+}
+
+class CancellingCleanupWorkspaceIsolator extends MemoryWorkspaceIsolator {
+  constructor(private readonly controller: AbortController) {
+    super();
+  }
+
+  override async cleanup(workspaceId: string): Promise<"discarded"> {
+    const disposition = await super.cleanup(workspaceId);
+    this.controller.abort("operator stop after child completion");
+    return disposition;
+  }
+}
+
+class ChildCommandExecutor implements NodeExecutor {
+  readonly calls: Array<{ readonly nodeId: string; readonly cwd: string }> = [];
+
+  async execute(node: CompiledNode, context: NodeExecutionContext): Promise<NodeExecutionOutcome> {
+    if (node.type !== "command") {
+      throw new Error(`unexpected executor node "${node.type}"`);
+    }
+    this.calls.push({ nodeId: node.id, cwd: context.cwd });
+    return {
+      status: "succeeded",
+      evidence: {
+        kind: "command",
+        executable: node.command.executable,
+        args: node.command.args,
+        exitCode: 0,
+        signal: null,
+        stdout: "true",
+        stderr: "",
+        stdoutHash: sha256("true"),
+        stderrHash: sha256(""),
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        timedOut: false,
+        durationMs: 5,
+      },
+    };
+  }
+}
+
+class FailingChildCommandExecutor implements NodeExecutor {
+  async execute(node: CompiledNode, _context: NodeExecutionContext): Promise<NodeExecutionOutcome> {
+    if (node.type !== "command") {
+      throw new Error(`unexpected executor node "${node.type}"`);
+    }
+    return {
+      status: "failed",
+      error: {
+        code: "command_failed",
+        message: "child command failed",
+        retryable: false,
+        sideEffectStatus: "none",
+      },
+      evidence: {
+        kind: "command",
+        executable: node.command.executable,
+        args: node.command.args,
+        exitCode: 1,
+        signal: null,
+        stdout: "",
+        stderr: "failed",
+        stdoutHash: sha256(""),
+        stderrHash: sha256("failed"),
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        timedOut: false,
+        durationMs: 5,
+      },
+    };
+  }
+}
+
+class CancellingChildCommandExecutor extends ChildCommandExecutor {
+  constructor(private readonly controller: AbortController) {
+    super();
+  }
+
+  override async execute(
+    node: CompiledNode,
+    context: NodeExecutionContext,
+  ): Promise<NodeExecutionOutcome> {
+    const outcome = await super.execute(node, context);
+    this.controller.abort("operator stop");
+    return outcome;
+  }
+}
+
+class ConcurrentChildCommandExecutor extends ChildCommandExecutor {
+  active = 0;
+  maximumActive = 0;
+  readonly #target: number;
+  #release: (() => void) | undefined;
+  readonly #barrier: Promise<void>;
+
+  constructor(target: number) {
+    super();
+    this.#target = target;
+    this.#barrier = new Promise((resolve) => {
+      this.#release = resolve;
+    });
+  }
+
+  override async execute(
+    node: CompiledNode,
+    context: NodeExecutionContext,
+  ): Promise<NodeExecutionOutcome> {
+    if (node.id === "bootstrap") {
+      return await super.execute(node, context);
+    }
+    this.active += 1;
+    this.maximumActive = Math.max(this.maximumActive, this.active);
+    if (this.active === this.#target) {
+      this.#release?.();
+    }
+    await this.#barrier;
+    try {
+      return await super.execute(node, context);
+    } finally {
+      this.active -= 1;
+    }
+  }
+}
+
+class ChildResultVerifierExecutor extends ChildCommandExecutor {
+  verifierSources: NodeExecutionContext["verifierSources"];
+
+  override async execute(
+    node: CompiledNode,
+    context: NodeExecutionContext,
+  ): Promise<NodeExecutionOutcome> {
+    if (node.type !== "verifier") {
+      return await super.execute(node, context);
+    }
+    this.verifierSources = context.verifierSources;
+    const reason = "child result is accepted";
+    return {
+      status: "succeeded",
+      evidence: {
+        kind: "verifier",
+        verdict: "accepted",
+        reason,
+        reasonHash: sha256(reason),
+        durationMs: 1,
+        sources: (context.verifierSources ?? []).map((source) => ({
+          sourceNodeId: source.sourceNodeId,
+          sourceAttempt: source.sourceAttempt,
+          sourceField: source.sourceField,
+          sourceHash: source.sourceHash,
+        })),
+        driver: "model",
+        result: "parsed",
+        provider: "test",
+        model: "deterministic",
+        raw: '{"verdict":"accepted","reason":"child result is accepted"}',
+        rawHash: sha256('{"verdict":"accepted","reason":"child result is accepted"}'),
+        rawTruncated: false,
+      },
+    };
+  }
+}
+
+function parentWorkflow(): string {
+  const child = childWorkflowSource();
+  return `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: parent-workflow }
+budget:
+  maxNodeStarts: 32
+  maxModelTokens: 10000
+  maxCostUsd: 2
+  maxExecutionMs: 300000
+nodes:
+${childNode("delegate", child)}
+`;
+}
+
+function parentWorkflowWithTwoChildren(maxNodeStarts: number): string {
+  const child = childWorkflowSource();
+  return `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: parent-concurrent-workflow }
+budget:
+  maxNodeStarts: ${maxNodeStarts}
+  maxModelTokens: 10000
+  maxCostUsd: 2
+  maxExecutionMs: 300000
+concurrency: { maxNodes: 2 }
+nodes:
+  - id: bootstrap
+    type: command
+    command: { executable: node }
+${childNode("delegate-a", child, ["bootstrap"])}
+${childNode("delegate-b", child, ["bootstrap"])}
+`;
+}
+
+function childWorkflowSource(): string {
+  return `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: child-analysis }
+budget:
+  maxNodeStarts: 8
+  maxModelTokens: 1000
+  maxCostUsd: 0.25
+  maxExecutionMs: 60000
+nodes:
+  - id: produce
+    type: command
+    command: { executable: node }
+  - id: publish
+    type: result
+    dependsOn: [produce]
+    result:
+      source: { nodeId: produce, field: command.stdout }
+      schema: { type: boolean }
+`.trim();
+}
+
+function childNode(id: string, child: string, dependsOn: readonly string[] = []): string {
+  return `  - id: ${id}
+    type: child
+${dependsOn.length === 0 ? "" : `    dependsOn: [${dependsOn.join(", ")}]\n`}    child:
+      resultNodeId: publish
+      workflow: |
+${child
+  .split("\n")
+  .map((line) => `        ${line}`)
+  .join("\n")}
+`;
+}
+
+function clock(start = 0): () => Date {
+  let seconds = start;
+  return () => {
+    seconds += 1;
+    return new Date(`2026-08-08T00:00:${String(seconds).padStart(2, "0")}.000Z`);
+  };
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}

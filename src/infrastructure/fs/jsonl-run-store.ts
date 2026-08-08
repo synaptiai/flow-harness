@@ -104,6 +104,19 @@ export class JsonlRunStore implements RecoverableRunEventStore {
     return Object.freeze([...ledger.events]);
   }
 
+  async exists(runIdInput: string): Promise<boolean> {
+    const runId = validateRunId(runIdInput);
+    try {
+      await access(this.#eventsPath(runId));
+      return true;
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        return false;
+      }
+      throw error;
+    }
+  }
+
   async claim(runIdInput: string): Promise<readonly RunEvent[]> {
     const runId = validateRunId(runIdInput);
     await this.#assertLedgerExists(runId);

@@ -36,6 +36,16 @@ order. It first reconciles every open typed effect in that order, then appends o
 committed reconciliation and safe dispositions remain valid evidence. Repeating resume continues
 from that prefix without duplicating events.
 
+Child recovery uses the child ledger as the execution commit marker and the workspace manifest as
+its isolation proof. The parent derives the same child run and workspace identities from its own run,
+node, attempt, and compiled child digest. If no child event was committed, Flow may discard a stale
+pre-ledger workspace and recreate the child. Once any child event exists, resume must reopen the
+exact workspace manifest and snapshot digest and then apply the ordinary recovery rules to that
+separate ledger; a missing or divergent workspace fails with `child_recovery_ineligible` and no
+replacement child starts. A terminal child ledger remains authoritative if cleanup completed before
+the parent imported its outcome. Flow idempotently confirms discard, verifies the linked evidence,
+and appends only the missing parent outcome.
+
 To submit either operation to the local supervisor, add `--detach`:
 
 ```sh
@@ -101,6 +111,9 @@ The actor label is caller-supplied audit attribution rather than authenticated i
 | Run is `succeeded`, `failed`, `cancelled`, or `resource_exhausted` | Refuse with `terminal_run` |
 | Workflow identity, version, digest, budget, node set, persisted control graph, or committed transition order differs | Refuse with `workflow_mismatch` |
 | A new run is resumed with a different normalized execution directory | Refuse with `execution_context_mismatch` |
+| No child event is durable, but a stale deterministic child workspace exists | Discard the uncommitted workspace, recreate it from the parent, and start the child once |
+| A child ledger is nonterminal and its exact manifest, snapshot digest, or workspace is missing or divergent | Refuse with `child_recovery_ineligible`; do not create a replacement child or repeat uncertain work |
+| A child ledger is terminal but its parent outcome is absent | Treat the child ledger as authoritative, idempotently confirm workspace discard, verify its linked typed result and resources, and append only the parent outcome |
 
 A started attempt is uncertain because its command, model, or external tool may have performed an
 effect before the process stopped. Flow does not infer failure, success, or idempotency from the
@@ -270,6 +283,7 @@ run directory, or corrupt owner record fails closed and is preserved for diagnos
 | `terminal_run` | The run already has a terminal event | Use `flow inspect`; start a new run for new work |
 | `workflow_mismatch` | The supplied workflow or persisted workflow-derived requirements do not match the exact compiled run contract | Locate the exact workflow revision used to start the run; treat unexpected ledger requirements as corruption |
 | `execution_context_mismatch` | The requested working directory differs from the one persisted by a new run | Resume from the exact original execution directory |
+| `child_recovery_ineligible` | A durable child cannot be resumed from its exact recorded workspace identity, or its recovered state cannot safely continue | Preserve both ledgers and workspace state; inspect their provenance and start a new reviewed root run rather than deleting or replacing evidence |
 | `request_mismatch` | The supplied approval request is not the current pending request | Inspect the run and decide only the displayed request id |
 | `not_waiting` | The run no longer accepts an approval decision | Inspect for a prior decision, expiry, start, or terminal outcome |
 | `not_owner` | Another live process owns execution | Inspect without claiming, or wait for that process to exit |

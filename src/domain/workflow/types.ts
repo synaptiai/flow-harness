@@ -12,6 +12,9 @@ export const MAX_RESULT_SCHEMA_SERIALIZED_BYTES = 65_536;
 export const MAX_RESULT_VALUE_BYTES = 262_144;
 export const MAX_RESULT_VALUE_NODES = 16_384;
 export const MAX_RESULT_ARRAY_ITEMS = MAX_RESULT_VALUE_NODES - 1;
+export const MAX_CHILD_WORKFLOW_SOURCE_BYTES = 1_048_576;
+export const MAX_CHILD_WORKFLOW_DEPTH = 4;
+export const MAX_RUN_TREE_NODES = 1_024;
 
 export type AgentToolName = "read" | "ls" | "edit";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
@@ -203,6 +206,17 @@ export interface CompiledResultNode extends CompiledGuardedNodeBase {
   };
 }
 
+export interface CompiledChildNode extends CompiledGuardedNodeBase {
+  readonly type: "child";
+  readonly child: {
+    readonly workflow: CompiledWorkflow;
+    readonly workflowDigest: string;
+    readonly resultNodeId: string;
+    readonly resultSchema: CompiledResultSchema;
+    readonly resultSchemaDigest: string;
+  };
+}
+
 export interface CompiledJoinNode extends CompiledNodeBase {
   readonly type: "join";
   readonly join: {
@@ -241,6 +255,7 @@ export type CompiledNode =
   | CompiledVerifierNode
   | CompiledApprovalNode
   | CompiledResultNode
+  | CompiledChildNode
   | CompiledConditionNode
   | CompiledJoinNode
   | CompiledLoopCheckNode

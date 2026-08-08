@@ -35,7 +35,7 @@ describe("flow CLI integration", () => {
 
     const exitCode = await main(["validate", fixture], capture.io);
 
-    expect(exitCode).toBe(0);
+    expect(exitCode, [...capture.stderr, ...capture.stdout].join("\n")).toBe(0);
     expect(capture.stdout.join("\n")).toContain('Workflow "verify-foundation" is valid');
   });
 
@@ -177,6 +177,95 @@ nodes:
     expect(JSON.parse(inspectCapture.stdout.join("\n"))).toEqual(
       JSON.parse(runCapture.stdout.join("\n")),
     );
+  });
+
+  it("runs an isolated child through the attached production composition", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "child.workflow.yaml");
+    const runsDirectory = join(directory, "custom-runs");
+    const calls: string[] = [];
+    await writeFile(workflowPath, childWorkflow("cli-child"), "utf8");
+    const capture = createCapture();
+
+    const exitCode = await main(
+      [
+        "run",
+        workflowPath,
+        "--run-id",
+        "cli-child-run",
+        "--runs-dir",
+        runsDirectory,
+        "--cwd",
+        directory,
+      ],
+      capture.io,
+      { cwd: directory, executor: jsonStringRecordingExecutor(calls) },
+    );
+
+    expect(exitCode, [...capture.stderr, ...capture.stdout].join("\n")).toBe(0);
+    const state = JSON.parse(capture.stdout.join("\n"));
+    const childRunId = state.nodes.delegate.childRun.runId as string;
+    expect(state).toMatchObject({
+      status: "succeeded",
+      nodes: {
+        delegate: {
+          evidence: {
+            kind: "child",
+            childRunId,
+            result: { canonicalValue: '"ok"' },
+            workspace: { disposition: "discarded" },
+          },
+        },
+      },
+    });
+    expect(calls).toEqual(["produce"]);
+    await expect(new JsonlRunStore(runsDirectory).read(childRunId)).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "run_started", runId: childRunId }),
+        expect.objectContaining({ type: "run_succeeded", runId: childRunId }),
+      ]),
+    );
+    await expect(stat(join(runsDirectory, ".workspaces", childRunId))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("runs sibling child commands across production SRT workspace sessions", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "sibling-children.workflow.yaml");
+    const runsDirectory = join(directory, "custom-runs");
+    await writeFile(workflowPath, siblingChildWorkflow(), "utf8");
+    const capture = createCapture();
+
+    const exitCode = await main(
+      [
+        "run",
+        workflowPath,
+        "--run-id",
+        "cli-sibling-children",
+        "--runs-dir",
+        runsDirectory,
+        "--cwd",
+        directory,
+      ],
+      capture.io,
+      { cwd: directory },
+    );
+
+    expect(exitCode, [...capture.stderr, ...capture.stdout].join("\n")).toBe(0);
+    expect(JSON.parse(capture.stdout.join("\n"))).toMatchObject({
+      status: "succeeded",
+      nodes: {
+        "child-a": {
+          status: "succeeded",
+          evidence: { kind: "child", result: { canonicalValue: "true" } },
+        },
+        "child-b": {
+          status: "succeeded",
+          evidence: { kind: "child", result: { canonicalValue: "true" } },
+        },
+      },
+    });
   });
 
   it("runs and inspects the same durable typed result through the attached CLI", async () => {
@@ -1438,11 +1527,123 @@ nodes:
 `;
 }
 
+function childWorkflow(id: string): string {
+  const child = `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: ${id}-inner }
+budget:
+  maxNodeStarts: 4
+  maxModelTokens: 100
+  maxCostUsd: 0.01
+  maxExecutionMs: 10000
+nodes:
+  - id: produce
+    type: command
+    command: { executable: node }
+  - id: publish
+    type: result
+    dependsOn: [produce]
+    result:
+      source: { nodeId: produce, field: command.stdout }
+      schema: { type: string, maxLength: 1024 }
+`.trim();
+  return `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: ${id} }
+budget:
+  maxNodeStarts: 16
+  maxModelTokens: 1000
+  maxCostUsd: 1
+  maxExecutionMs: 60000
+nodes:
+  - id: delegate
+    type: child
+    child:
+      resultNodeId: publish
+      workflow: |
+${child
+  .split("\n")
+  .map((line) => `        ${line}`)
+  .join("\n")}
+`;
+}
+
+function siblingChildWorkflow(): string {
+  const child = `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: cli-sibling-inner }
+budget:
+  maxNodeStarts: 4
+  maxModelTokens: 100
+  maxCostUsd: 0.01
+  maxExecutionMs: 10000
+nodes:
+  - id: produce
+    type: command
+    command:
+      executable: ${JSON.stringify(process.execPath)}
+      args: [-e, ${JSON.stringify("process.stdout.write('true')")}]
+  - id: publish
+    type: result
+    dependsOn: [produce]
+    result:
+      source: { nodeId: produce, field: command.stdout }
+      schema: { type: boolean }
+`.trim();
+  const childNode = (id: string) => `  - id: ${id}
+    type: child
+    dependsOn: [bootstrap]
+    child:
+      resultNodeId: publish
+      workflow: |
+${child
+  .split("\n")
+  .map((line) => `        ${line}`)
+  .join("\n")}`;
+  return `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: cli-sibling-children }
+budget:
+  maxNodeStarts: 32
+  maxModelTokens: 1000
+  maxCostUsd: 1
+  maxExecutionMs: 60000
+concurrency: { maxNodes: 2 }
+nodes:
+  - id: bootstrap
+    type: command
+    command: { executable: ${JSON.stringify(process.execPath)}, args: [--version] }
+${childNode("child-a")}
+${childNode("child-b")}
+`;
+}
+
 function successfulRecordingExecutor(calls: string[]): NodeExecutor {
   return {
     async execute(node) {
       calls.push(node.id);
       return { status: "succeeded", evidence: commandEvidence(node.id) };
+    },
+  };
+}
+
+function jsonStringRecordingExecutor(calls: string[]): NodeExecutor {
+  return {
+    async execute(node) {
+      calls.push(node.id);
+      const stdout = '"ok"';
+      return {
+        status: "succeeded",
+        evidence: {
+          ...commandEvidence(node.id),
+          stdout,
+          stdoutHash: createHash("sha256").update(stdout).digest("hex"),
+        },
+      };
     },
   };
 }

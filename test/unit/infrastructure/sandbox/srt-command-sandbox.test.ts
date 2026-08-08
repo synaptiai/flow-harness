@@ -152,7 +152,7 @@ describe("SrtCommandSandbox", () => {
     ]);
   });
 
-  it("rejects a different concurrent workspace on the shared backend", async () => {
+  it("serializes a different concurrent workspace on the shared backend", async () => {
     const manager = new FakeSrtManager();
     const first = await createSandbox(manager).prepare({
       executable: "node",
@@ -161,18 +161,60 @@ describe("SrtCommandSandbox", () => {
       protectedPaths: [],
     });
 
-    await expect(
-      createSandbox(manager, {
-        privateTemp: "/private/tmp/flow-command-two",
-      }).prepare({
-        executable: "node",
-        args: [],
-        cwd: "/Users/alice/other-project",
-        protectedPaths: [],
-      }),
-    ).rejects.toThrow(/different.*policy|policy.*active|workspace/i);
+    let secondSettled = false;
+    const secondPromise = createSandbox(manager, {
+      privateTemp: "/private/tmp/flow-command-two",
+    }).prepare({
+      executable: "node",
+      args: [],
+      cwd: "/Users/alice/other-project",
+      protectedPaths: [],
+    });
+    void secondPromise.then(
+      () => {
+        secondSettled = true;
+      },
+      () => {
+        secondSettled = true;
+      },
+    );
+    await waitForChecks(manager, 2);
+    await Promise.resolve();
+    expect(secondSettled).toBe(false);
+    expect(manager.initializeCalls).toBe(1);
 
     await first.release();
+    const second = await secondPromise;
+    expect(manager.initializeCalls).toBe(2);
+    expect(manager.resetCalls).toBe(1);
+    await second.release();
+    expect(manager.resetCalls).toBe(2);
+  });
+
+  it("cancels a different-workspace command while it waits for the shared backend", async () => {
+    const manager = new FakeSrtManager();
+    const first = await createSandbox(manager).prepare({
+      executable: "node",
+      args: [],
+      cwd: workspace,
+      protectedPaths: [],
+    });
+    const controller = new AbortController();
+    const second = createSandbox(manager, {
+      privateTemp: "/private/tmp/flow-command-two",
+    }).prepare({
+      executable: "node",
+      args: [],
+      cwd: "/Users/alice/other-project",
+      protectedPaths: [],
+      signal: controller.signal,
+    });
+
+    await waitForChecks(manager, 2);
+    controller.abort("cancelled while queued");
+    await expect(second).rejects.toThrow(/cancel/i);
+    await first.release();
+    expect(manager.initializeCalls).toBe(1);
   });
 
   it("cleans partial state when initialization or wrapping fails", async () => {
@@ -317,6 +359,13 @@ function createSandbox(
     removeTemporaryDirectory: overrides.removeTemporaryDirectory ?? (async () => undefined),
     cleanupTimeoutMs: 100,
   });
+}
+
+async function waitForChecks(manager: FakeSrtManager, expected: number): Promise<void> {
+  for (let attempt = 0; attempt < 20 && manager.checkCalls < expected; attempt += 1) {
+    await Promise.resolve();
+  }
+  expect(manager.checkCalls).toBe(expected);
 }
 
 class FakeSrtManager implements SrtSandboxManager {

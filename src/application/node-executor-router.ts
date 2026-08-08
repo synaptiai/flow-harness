@@ -26,6 +26,7 @@ export class NodeExecutorRouter implements NodeExecutor {
           context,
         );
       case "approval":
+      case "child":
       case "result":
       case "condition":
       case "join":

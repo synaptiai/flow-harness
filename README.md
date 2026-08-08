@@ -20,6 +20,7 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Durable exact-output conditions, guarded branches, omission propagation, and explicit joins | Implemented with bounded selected-branch concurrency |
 | Replay-safe bounded loops over local command/agent/verifier DAGs | Implemented through finite acyclic expansion, exact stop evidence, and hard failure at the declared bound |
 | Typed result publication from durable evidence | Implemented with strict bounded JSON, closed schemas, canonical values, hashes, and replay verification |
+| Isolated child workflow runs with typed results | Implemented with deterministic child identities, separate ledgers, bounded run trees, portable reflink-or-copy workspaces, recovery, cancellation, and parent resource accounting |
 | Durable JSONL run ledger and inspection | Implemented |
 | Safe-boundary recovery with exclusive local ownership | Implemented |
 | Durable exact command approval with approve/deny CLI | Implemented |
@@ -31,7 +32,7 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Bounded Pi agent nodes with Flow-owned `read`, `ls`, and hash-anchored `edit` tools | Implemented |
 | Proof-safe fresh recovery of interrupted agent attempts | Implemented as explicit opt-in for read-only attempts and edit attempts proven not applied |
 | Fail-closed sandboxed command process trees | Implemented on Linux and macOS |
-| Dynamic agent-tool approval, optimization rollback, child runs, and broader model tools | Planned |
+| Dynamic agent-tool approval, optimization rollback/child patch promotion, and broader model tools | Planned |
 | VM-grade isolation of the host-side agent runtime | Planned |
 
 The executable format is `flow.synapti.ai/v1alpha1`. There is no compatibility or migration
@@ -141,6 +142,23 @@ and value hashes. It is a pure control transition: it invokes no executor and co
 token, cost, or active-time budget. Downstream conditions, approvals, model verifiers, and bounded
 loop checks can read the canonical value as `result.value`. A typed result is data, not a goal
 verdict; it cannot satisfy a goal criterion by itself.
+
+To run a separately-ledgered child workflow against an isolated snapshot:
+
+```sh
+node dist/cli/main.js validate examples/isolated-child.workflow.yaml
+node dist/cli/main.js run examples/isolated-child.workflow.yaml --run-id child-demo
+node dist/cli/main.js inspect child-demo
+```
+
+The parent durably records a deterministic child run link, snapshots the exact working-tree content
+into an owner-only reflink-or-copy workspace, runs the embedded workflow with the normal compiler,
+scheduler, policy, sandbox, and ledger, then discards the workspace and imports its canonical typed
+result and resource totals. The child ledger remains independently inspectable at the run id shown
+under `nodes.delegate.childRun`. Child budget ceilings are reserved against every bounded ancestor
+before materialization, and the compiled tree is limited to four child levels and 1,024 expanded
+nodes. Child workflows cannot wait for human approval. This slice intentionally does not apply or
+export child changes; candidate promotion and rollback belong to the optimization-loop gate.
 
 To exercise durable conditional routing without model credentials:
 
@@ -380,6 +398,12 @@ On Linux, Flow explicitly re-exposes the canonical packaged SRT seccomp helper a
 runtime-support file when Flow is installed outside the selected workspace. The rest of the user
 home remains denied.
 
+Child workspaces are owner-only reflink-or-copy snapshots that exclude Flow and run-store state and
+are discarded after terminal settlement. They prevent child mutations from changing the parent
+working tree, but they are not atomic filesystem snapshots or security sandboxes. Child command
+processes still use SRT; host-side Pi agent sessions still have the invoking user's host authority
+subject to the Flow tool broker. Use a stronger backend for hostile child workloads.
+
 Agent nodes are different: the host-side Pi runtime runs with the invoking user's operating-system
 permissions and receives only explicitly declared Flow-owned `read`, `ls`, and `edit` tools. Reads
 return a full-file SHA-256 version. An edit must name that version and exact unique replacements for
@@ -424,6 +448,7 @@ system. Flow separates those responsibilities:
 
 - Models solve bounded tasks inside workflow nodes.
 - A deterministic scheduler controls graph transitions.
+- Independently-ledgered child workflows isolate bounded delegated work and return typed results.
 - A policy broker controls model-requested operations.
 - A sandbox contains command process trees.
 - An append-only event ledger records authoritative run state.

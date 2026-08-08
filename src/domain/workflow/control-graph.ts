@@ -1,5 +1,6 @@
 import type {
   CompiledBranchGuard,
+  CompiledChildNode,
   CompiledLoopGuard,
   CompiledLoopInstance,
   CompiledResultSchema,
@@ -19,6 +20,17 @@ type ProjectedControlGraphNode =
   | (ProjectedNodeBase & {
       readonly type: "command" | "agent";
       readonly when?: CompiledBranchGuard;
+    })
+  | (ProjectedNodeBase & {
+      readonly type: "child";
+      readonly when?: CompiledBranchGuard;
+      readonly child: {
+        readonly workflowId: string;
+        readonly workflowDigest: string;
+        readonly resultNodeId: string;
+        readonly resultSchema: CompiledResultSchema;
+        readonly resultSchemaDigest: string;
+      };
     })
   | (ProjectedNodeBase & {
       readonly type: "approval";
@@ -89,6 +101,7 @@ export function workflowRequiresControlGraph(workflow: CompiledWorkflow): boolea
       (node) =>
         node.type === "condition" ||
         node.type === "join" ||
+        node.type === "child" ||
         node.type === "approval" ||
         node.type === "verifier" ||
         node.type === "result" ||
@@ -138,6 +151,14 @@ export function projectCompiledControlGraph(workflow: CompiledWorkflow): Project
         result: node.result,
       };
     }
+    if (node.type === "child") {
+      return {
+        ...common,
+        type: node.type,
+        ...(node.when === undefined ? {} : { when: node.when }),
+        child: projectChild(node),
+      };
+    }
     if (node.type === "join") {
       return { ...common, type: node.type, join: node.join };
     }
@@ -154,4 +175,14 @@ export function projectCompiledControlGraph(workflow: CompiledWorkflow): Project
     };
   });
   return Object.freeze({ nodes: Object.freeze(nodes) });
+}
+
+function projectChild(node: CompiledChildNode) {
+  return Object.freeze({
+    workflowId: node.child.workflow.id,
+    workflowDigest: node.child.workflowDigest,
+    resultNodeId: node.child.resultNodeId,
+    resultSchema: node.child.resultSchema,
+    resultSchemaDigest: node.child.resultSchemaDigest,
+  });
 }

@@ -5,13 +5,17 @@ import {
   DURABLE_EFFECT_PROTOCOL,
   RunReplayError,
   appendRunEvent,
+  calculateChildRunId,
   loopLimitFailureMessage,
   nodeEffectId,
   reduceRunEvents,
   type AgentEffectReceipt,
   type AgentRecoveryRequirement,
+  type ChildEvidence,
+  type ChildRunLink,
   type ControlGraph,
   type FilesystemEditEffectDescriptor,
+  type ExecutionWorkspaceProvenance,
   type NodeEffectSettlementInput,
   type NodeEffectReconciledEvent,
   type NodeFailure,
@@ -43,6 +47,7 @@ import type {
   CompiledApprovalNode,
   CompiledCommandNode,
   CompiledConditionNode,
+  CompiledChildNode,
   CompiledJoinNode,
   CompiledLoopCheckNode,
   CompiledLoopNode,
@@ -56,7 +61,9 @@ import {
   projectCompiledControlGraph,
   workflowRequiresControlGraph,
 } from "../domain/workflow/control-graph.js";
+import { calculateWorkflowDigest } from "../domain/workflow/digest.js";
 import type {
+  IsolatedWorkspace,
   NodeEffectJournal,
   NodeEffectReconciler,
   NodeExecutionOutcome,
@@ -64,6 +71,7 @@ import type {
   RecoverableRunEventStore,
   RunEventStore,
   VerifierSourceInput,
+  WorkspaceIsolator,
 } from "./ports.js";
 
 export interface RunWorkflowOptions {
@@ -71,6 +79,8 @@ export interface RunWorkflowOptions {
   readonly protectedPaths: readonly string[];
   readonly store: RunEventStore;
   readonly executor: NodeExecutor;
+  readonly workspaceIsolator?: WorkspaceIsolator;
+  readonly executionWorkspace?: ExecutionWorkspaceProvenance;
   readonly runId?: string;
   readonly now?: () => Date;
   readonly signal?: AbortSignal;
@@ -101,6 +111,9 @@ export async function runWorkflow(
       workflowApiVersion: workflow.apiVersion,
       workflowDigest: calculateWorkflowDigest(workflow),
       executionCwd,
+      ...(options.executionWorkspace === undefined
+        ? {}
+        : { executionWorkspace: options.executionWorkspace }),
       ...(workflow.budget === undefined ? {} : { budget: workflow.budget }),
       ...(workflow.concurrency === undefined ? {} : { concurrency: workflow.concurrency }),
       ...(approvalRequirements.length === 0 ? {} : { approvalRequirements }),
@@ -131,10 +144,18 @@ export async function resumeWorkflow(
     let state = reduceRunEvents(events);
     const executionCwd = resolve(options.cwd);
     const now = options.now ?? (() => new Date());
-    validateRecoveryCompatibility(workflow, options.runId, executionCwd, state, events);
+    validateRecoveryCompatibility(
+      workflow,
+      options.runId,
+      executionCwd,
+      options.executionWorkspace,
+      state,
+      events,
+    );
     state = await reconcileOpenEffects(workflow, options, state, now);
     assertNotAborted(options.signal);
     state = await disposeProofSafeInterruptedAttempt(workflow, options, state, now);
+    state = await recoverOpenChildAttempts(workflow, options, state, now);
     rejectOpenAttempt(options.runId, state);
     const resumed: RunResumedEvent = {
       ...eventBase(workflow, options.runId, state.lastSequence + 1, now),
@@ -235,7 +256,14 @@ async function continueWorkflow(
       readonly attempt: number;
       readonly effectJournal?: NodeEffectJournal;
       readonly verifierSources?: readonly VerifierSourceInput[];
+      readonly preflightOutcome?: NodeExecutionOutcome;
     }> = [];
+    const childBudgetReservations = {
+      nodeStarts: 0,
+      modelTokens: 0,
+      modelCostUsdMicros: 0,
+      executionMs: 0,
+    };
 
     while (admitted.length < state.concurrency.maxNodes) {
       const transition = selectNextTransition(workflow.nodes, state);
@@ -274,9 +302,16 @@ async function continueWorkflow(
       }
 
       const node = transition.node;
+      if (admitted.length > 0 && (node.type === "child") !== (admitted[0]?.node.type === "child")) {
+        break;
+      }
       const executionNode = boundNodeTimeout(node, state);
       const attempt = (state.nodes[node.id]?.attempt ?? 0) + 1;
       const verifierSources = verifierExecutionSources(executionNode, state);
+      const preflightOutcome =
+        executionNode.type === "child"
+          ? childBudgetPreflight(executionNode, state, childBudgetReservations)
+          : undefined;
       let approval: { readonly requestId: string; readonly operationDigest: string } | undefined;
       let startTime: Date | undefined;
       if (node.type === "command" && node.approval !== undefined) {
@@ -354,6 +389,7 @@ async function continueWorkflow(
         type: "node_started",
         nodeId: node.id,
         attempt,
+        ...(node.type === "child" ? { child: createChildRunLink(runId, node, attempt) } : {}),
         ...(approval === undefined ? {} : { approval }),
         ...(supportsDurableEffects(node) ? { effectProtocol: DURABLE_EFFECT_PROTOCOL } : {}),
       });
@@ -366,29 +402,48 @@ async function continueWorkflow(
         attempt,
         ...(effectJournal === undefined ? {} : { effectJournal }),
         ...(verifierSources === undefined ? {} : { verifierSources }),
+        ...(preflightOutcome === undefined ? {} : { preflightOutcome }),
       });
+      if (executionNode.type === "child" && preflightOutcome === undefined) {
+        reserveChildBudget(executionNode, childBudgetReservations);
+      }
+      if (preflightOutcome !== undefined) {
+        break;
+      }
       if ((state.budget?.exhausted.length ?? 0) > 0) {
         break;
       }
     }
 
     const settlements = await Promise.all(
-      admitted.map(async ({ executionNode, attempt, effectJournal, verifierSources }) => {
-        const abortedBeforeExecution = isAborted(options.signal);
-        const outcome = abortedBeforeExecution
-          ? abortedOutcome(options.signal)
-          : await executeNode(executionNode, options.executor, {
-              runId,
-              workflowId: workflow.id,
-              attempt,
-              cwd: options.cwd,
-              protectedPaths: options.protectedPaths,
-              ...(effectJournal === undefined ? {} : { effectJournal }),
-              ...(verifierSources === undefined ? {} : { verifierSources }),
-              ...(options.signal === undefined ? {} : { signal: options.signal }),
-            });
-        return { outcome, abortedBeforeExecution };
-      }),
+      admitted.map(
+        async ({ executionNode, attempt, effectJournal, verifierSources, preflightOutcome }) => {
+          const abortedBeforeExecution = isAborted(options.signal);
+          const outcome = abortedBeforeExecution
+            ? executionNode.type === "child"
+              ? childFailure("child_cancelled_before_start", abortReason(options.signal))
+              : abortedOutcome(options.signal)
+            : preflightOutcome !== undefined
+              ? preflightOutcome
+              : await executeNode(
+                  executionNode,
+                  options.executor,
+                  {
+                    runId,
+                    workflowId: workflow.id,
+                    attempt,
+                    cwd: options.cwd,
+                    protectedPaths: options.protectedPaths,
+                    ...(effectJournal === undefined ? {} : { effectJournal }),
+                    ...(verifierSources === undefined ? {} : { verifierSources }),
+                    ...(options.signal === undefined ? {} : { signal: options.signal }),
+                  },
+                  options,
+                  now,
+                );
+          return { outcome, abortedBeforeExecution };
+        },
+      ),
     );
     await publicationTail;
 
@@ -399,7 +454,9 @@ async function continueWorkflow(
       }
       const { outcome, abortedBeforeExecution } = settlement;
       const abortAfterSuccessfulExecution =
-        isAborted(options.signal) && outcome.status === "succeeded";
+        isAborted(options.signal) &&
+        outcome.status === "succeeded" &&
+        admission.node.type !== "child";
       const interruptedOutcome = abortAfterSuccessfulExecution
         ? abortedOutcome(options.signal, outcome.evidence)
         : outcome;
@@ -606,7 +663,101 @@ function supportsDurableEffects(node: CompiledNode): node is CompiledAgentNode {
   return node.type === "agent" && node.agent.tools.includes("edit");
 }
 
+function createChildRunLink(
+  parentRunId: string,
+  node: CompiledChildNode,
+  attempt: number,
+): ChildRunLink {
+  return Object.freeze({
+    runId: calculateChildRunId(parentRunId, node.id, attempt),
+    workflowId: node.child.workflow.id,
+    workflowDigest: node.child.workflowDigest,
+    resultNodeId: node.child.resultNodeId,
+    resultSchemaDigest: node.child.resultSchemaDigest,
+    isolationBackend: "reflink-copy-v1",
+  });
+}
+
+interface ChildBudgetReservation {
+  nodeStarts: number;
+  modelTokens: number;
+  modelCostUsdMicros: number;
+  executionMs: number;
+}
+
+function childBudgetPreflight(
+  node: CompiledChildNode,
+  state: RunState,
+  reserved: ChildBudgetReservation,
+): NodeExecutionOutcome | undefined {
+  const remaining = state.budget?.remaining;
+  const child = node.child.workflow.budget;
+  if (remaining === undefined || child === undefined) {
+    return undefined;
+  }
+  const unavailable = [
+    remaining.nodeStarts !== undefined &&
+    1 + reserved.nodeStarts + requireBudgetLimit(child.maxNodeStarts) > remaining.nodeStarts
+      ? "nodeStarts"
+      : null,
+    remaining.modelTokens !== undefined &&
+    reserved.modelTokens + requireBudgetLimit(child.maxModelTokens) > remaining.modelTokens
+      ? "modelTokens"
+      : null,
+    remaining.modelCostUsdMicros !== undefined &&
+    reserved.modelCostUsdMicros + requireBudgetLimit(child.maxCostUsdMicros) >
+      remaining.modelCostUsdMicros
+      ? "modelCostUsdMicros"
+      : null,
+    remaining.executionMs !== undefined &&
+    reserved.executionMs + requireBudgetLimit(child.maxExecutionMs) > remaining.executionMs
+      ? "executionMs"
+      : null,
+  ].filter((value): value is string => value !== null);
+  return unavailable.length === 0
+    ? undefined
+    : childFailure(
+        "child_budget_unavailable",
+        `child node "${node.id}" ceiling exceeds parent remaining budget for ${unavailable.join(", ")}`,
+      );
+}
+
+function reserveChildBudget(node: CompiledChildNode, reserved: ChildBudgetReservation): void {
+  const budget = node.child.workflow.budget;
+  if (budget === undefined) {
+    return;
+  }
+  reserved.nodeStarts = saturatingAdd(
+    reserved.nodeStarts,
+    requireBudgetLimit(budget.maxNodeStarts),
+  );
+  reserved.modelTokens = saturatingAdd(
+    reserved.modelTokens,
+    requireBudgetLimit(budget.maxModelTokens),
+  );
+  reserved.modelCostUsdMicros = saturatingAdd(
+    reserved.modelCostUsdMicros,
+    requireBudgetLimit(budget.maxCostUsdMicros),
+  );
+  reserved.executionMs = saturatingAdd(
+    reserved.executionMs,
+    requireBudgetLimit(budget.maxExecutionMs),
+  );
+}
+
+function requireBudgetLimit(value: number | undefined): number {
+  if (value === undefined) {
+    throw new Error("compiled child workflow is missing a required budget limit");
+  }
+  return value;
+}
+
+function saturatingAdd(left: number, right: number): number {
+  return Math.min(Number.MAX_SAFE_INTEGER, left + right);
+}
+
 export const RUN_RECOVERY_ERROR_CODES = [
+  "child_recovery_ineligible",
   "execution_context_mismatch",
   "reconciliation_incomplete",
   "reconciliation_unavailable",
@@ -657,6 +808,7 @@ function validateRecoveryCompatibility(
   workflow: CompiledWorkflow,
   runId: string,
   executionCwd: string,
+  executionWorkspace: ExecutionWorkspaceProvenance | undefined,
   state: RunState,
   events: readonly RunEvent[],
 ): void {
@@ -671,6 +823,12 @@ function validateRecoveryCompatibility(
     throw new RunRecoveryError(
       "execution_context_mismatch",
       `run "${runId}" was started in "${state.executionCwd}" and cannot resume in "${executionCwd}"`,
+    );
+  }
+  if (!sameExecutionWorkspace(state.executionWorkspace, executionWorkspace)) {
+    throw new RunRecoveryError(
+      "execution_context_mismatch",
+      `run "${runId}" workspace provenance does not match its recovery context`,
     );
   }
 
@@ -854,6 +1012,61 @@ async function disposeProofSafeInterruptedAttempt(
         `run "${options.runId}" cannot fresh-retry node "${nodeId}" attempt ${node.attempt}: ${error.message}`,
       );
     }
+    await options.store.append(event);
+    state = nextState;
+  }
+  return state;
+}
+
+async function recoverOpenChildAttempts(
+  workflow: CompiledWorkflow,
+  options: ResumeWorkflowOptions,
+  initialState: RunState,
+  now: () => Date,
+): Promise<RunState> {
+  let state = initialState;
+  const nodeById = new Map(workflow.nodes.map((node) => [node.id, node]));
+  for (const [nodeId, nodeState] of Object.entries(state.nodes)) {
+    if (nodeState.status !== "running") {
+      continue;
+    }
+    const node = nodeById.get(nodeId);
+    if (node?.type !== "child") {
+      continue;
+    }
+    let outcome: NodeExecutionOutcome;
+    try {
+      outcome = await recoverChildNode(node, nodeState.attempt, options, now);
+    } catch (error) {
+      throw new RunRecoveryError(
+        "child_recovery_ineligible",
+        `run "${options.runId}" cannot recover child node "${nodeId}": ${boundedFailureMessage(error instanceof Error ? error.message : String(error))}`,
+      );
+    }
+    if (outcome.status === "failed" && outcome.evidence === null) {
+      throw new RunRecoveryError(
+        "child_recovery_ineligible",
+        `run "${options.runId}" cannot recover child node "${nodeId}": ${outcome.error.message}`,
+      );
+    }
+    const event: RunEvent =
+      outcome.status === "succeeded"
+        ? {
+            ...eventBase(workflow, options.runId, state.lastSequence + 1, now),
+            type: "node_succeeded",
+            nodeId,
+            attempt: nodeState.attempt,
+            evidence: outcome.evidence,
+          }
+        : {
+            ...eventBase(workflow, options.runId, state.lastSequence + 1, now),
+            type: "node_failed",
+            nodeId,
+            attempt: nodeState.attempt,
+            error: outcome.error,
+            evidence: outcome.evidence,
+          };
+    const nextState = appendRunEvent(state, event);
     await options.store.append(event);
     state = nextState;
   }
@@ -1106,12 +1319,15 @@ function sameRunBudget(
   );
 }
 
-function calculateWorkflowDigest(workflow: CompiledWorkflow): string {
-  return createHash("sha256").update(JSON.stringify(workflow)).digest("hex");
-}
-
 function sameStrings(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function sameExecutionWorkspace(
+  left: ExecutionWorkspaceProvenance | null,
+  right: ExecutionWorkspaceProvenance | undefined,
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right ?? null);
 }
 
 async function releaseAfter<T>(
@@ -1159,7 +1375,11 @@ function hasRelease(
   return "release" in store && typeof store.release === "function";
 }
 
-type ExecutableNode = CompiledAgentNode | CompiledCommandNode | CompiledVerifierNode;
+type ExecutableNode =
+  | CompiledAgentNode
+  | CompiledChildNode
+  | CompiledCommandNode
+  | CompiledVerifierNode;
 
 type WorkflowTransition =
   | { readonly kind: "execute"; readonly node: ExecutableNode }
@@ -1174,6 +1394,7 @@ type WorkflowTransition =
         | CompiledVerifierNode
         | CompiledApprovalNode
         | CompiledResultNode
+        | CompiledChildNode
         | CompiledConditionNode;
       readonly selectedCase: string;
     }
@@ -1190,6 +1411,7 @@ type WorkflowTransition =
         | CompiledVerifierNode
         | CompiledApprovalNode
         | CompiledResultNode
+        | CompiledChildNode
         | CompiledConditionNode;
     }
   | { readonly kind: "join"; readonly node: CompiledJoinNode }
@@ -1658,13 +1880,9 @@ function controlSource(
     throw new Error(`control node "${controlNodeId}" source has no successful evidence`);
   }
   if (declaration.field === "result.value") {
-    if (source.control?.kind === "result") {
-      return {
-        attempt: source.attempt,
-        value: source.control.canonicalValue,
-        hash: source.control.valueHash,
-        truncated: false,
-      };
+    const result = typedResultSource(source);
+    if (result !== null) {
+      return result;
     }
     throw new Error(
       `control node "${controlNodeId}" source field is incompatible with its evidence`,
@@ -1765,13 +1983,9 @@ function verifierSource(
     throw new Error(`verifier node "${verifierNodeId}" source has no successful evidence`);
   }
   if (declaration.field === "result.value") {
-    if (source.control?.kind === "result") {
-      return {
-        attempt: source.attempt,
-        value: source.control.canonicalValue,
-        hash: source.control.valueHash,
-        truncated: false,
-      };
+    const result = typedResultSource(source);
+    if (result !== null) {
+      return result;
     }
     throw new Error(
       `verifier node "${verifierNodeId}" source field is incompatible with its evidence`,
@@ -1837,9 +2051,47 @@ function verifierSource(
   );
 }
 
+function typedResultSource(source: RunState["nodes"][string]): {
+  readonly attempt: number;
+  readonly value: string;
+  readonly hash: string;
+  readonly truncated: false;
+} | null {
+  if (source.control?.kind === "result") {
+    return {
+      attempt: source.attempt,
+      value: source.control.canonicalValue,
+      hash: source.control.valueHash,
+      truncated: false,
+    };
+  }
+  if (source.evidence?.kind === "child" && source.evidence.result !== null) {
+    return {
+      attempt: source.attempt,
+      value: source.evidence.result.canonicalValue,
+      hash: source.evidence.result.valueHash,
+      truncated: false,
+    };
+  }
+  return null;
+}
+
 function workflowIsTerminal(state: RunState): boolean {
   return Object.values(state.nodes).every(
     (node) => node.status === "succeeded" || node.status === "omitted",
+  );
+}
+
+type TerminalRunState = RunState & {
+  readonly status: "succeeded" | "failed" | "cancelled" | "resource_exhausted";
+};
+
+function runStateIsTerminal(state: RunState): state is TerminalRunState {
+  return (
+    state.status === "succeeded" ||
+    state.status === "failed" ||
+    state.status === "cancelled" ||
+    state.status === "resource_exhausted"
   );
 }
 
@@ -1911,7 +2163,12 @@ async function executeNode(
   node: CompiledNode,
   executor: NodeExecutor,
   context: Parameters<NodeExecutor["execute"]>[1],
+  options: Omit<RunWorkflowOptions, "runId">,
+  now: () => Date,
 ): Promise<NodeExecutionOutcome> {
+  if (node.type === "child") {
+    return await executeChildNode(node, context, options, now);
+  }
   try {
     return await executor.execute(node, context);
   } catch (error) {
@@ -1924,6 +2181,281 @@ async function executeNode(
     };
     return { status: "failed", error: failure, evidence: null };
   }
+}
+
+async function executeChildNode(
+  node: CompiledChildNode,
+  context: Parameters<NodeExecutor["execute"]>[1],
+  options: Omit<RunWorkflowOptions, "runId">,
+  now: () => Date,
+): Promise<NodeExecutionOutcome> {
+  const store = childRunStore(options.store);
+  if (store === null || options.workspaceIsolator === undefined) {
+    return childFailure(
+      "child_runtime_unavailable",
+      "child workflows require a recoverable run store and workspace isolator",
+    );
+  }
+  const link = createChildRunLink(context.runId, node, context.attempt);
+  if (await store.exists(link.runId)) {
+    return childFailure(
+      "child_run_collision",
+      `child run "${link.runId}" already exists before its parent attempt started`,
+    );
+  }
+
+  let workspace: IsolatedWorkspace;
+  try {
+    workspace = await options.workspaceIsolator.create({
+      workspaceId: link.runId,
+      sourceCwd: context.cwd,
+      excludedPaths: context.protectedPaths,
+    });
+  } catch (error) {
+    return childFailure(
+      "child_workspace_unavailable",
+      `child workspace could not be created: ${boundedFailureMessage(error instanceof Error ? error.message : String(error))}`,
+    );
+  }
+
+  const executionWorkspace: ExecutionWorkspaceProvenance = Object.freeze({
+    backend: workspace.backend,
+    snapshotDigest: workspace.snapshotDigest,
+    parentRunId: context.runId,
+    parentNodeId: node.id,
+    parentAttempt: context.attempt,
+  });
+  const childState = await runWorkflow(node.child.workflow, {
+    runId: link.runId,
+    cwd: workspace.cwd,
+    protectedPaths: context.protectedPaths,
+    store,
+    executor: options.executor,
+    ...(options.workspaceIsolator === undefined
+      ? {}
+      : { workspaceIsolator: options.workspaceIsolator }),
+    executionWorkspace,
+    now,
+    ...(context.signal === undefined ? {} : { signal: context.signal }),
+  });
+  return await settleChildState(node, childState, options.workspaceIsolator);
+}
+
+async function recoverChildNode(
+  node: CompiledChildNode,
+  attempt: number,
+  options: ResumeWorkflowOptions,
+  now: () => Date,
+): Promise<NodeExecutionOutcome> {
+  const store = childRunStore(options.store);
+  if (store === null || options.workspaceIsolator === undefined) {
+    return childFailure(
+      "child_runtime_unavailable",
+      "child workflows require a recoverable run store and workspace isolator",
+    );
+  }
+  const link = createChildRunLink(options.runId, node, attempt);
+  if (!(await store.exists(link.runId))) {
+    await options.workspaceIsolator.cleanup(link.runId);
+    return await executeChildNode(
+      node,
+      {
+        runId: options.runId,
+        workflowId: node.child.workflow.id,
+        attempt,
+        cwd: resolve(options.cwd),
+        protectedPaths: options.protectedPaths,
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+      },
+      options,
+      now,
+    );
+  }
+
+  let childState = reduceRunEvents(await store.read(link.runId));
+  validateRecoveredChildIdentity(link, node, options.runId, attempt, childState);
+  if (!runStateIsTerminal(childState)) {
+    const workspace = await options.workspaceIsolator.reopen({
+      workspaceId: link.runId,
+      sourceCwd: resolve(options.cwd),
+      excludedPaths: options.protectedPaths,
+    });
+    const provenance = childState.executionWorkspace;
+    if (
+      provenance === null ||
+      provenance.backend !== workspace.backend ||
+      provenance.snapshotDigest !== workspace.snapshotDigest
+    ) {
+      throw new Error(`child run "${link.runId}" workspace provenance has diverged`);
+    }
+    childState = await resumeWorkflow(node.child.workflow, {
+      runId: link.runId,
+      cwd: workspace.cwd,
+      protectedPaths: options.protectedPaths,
+      store,
+      executor: options.executor,
+      workspaceIsolator: options.workspaceIsolator,
+      executionWorkspace: provenance,
+      ...(options.effectReconciler === undefined
+        ? {}
+        : { effectReconciler: options.effectReconciler }),
+      now,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    });
+  }
+  return await settleChildState(node, childState, options.workspaceIsolator);
+}
+
+function validateRecoveredChildIdentity(
+  link: ChildRunLink,
+  node: CompiledChildNode,
+  parentRunId: string,
+  attempt: number,
+  state: RunState,
+): void {
+  const provenance = state.executionWorkspace;
+  if (
+    state.runId !== link.runId ||
+    state.workflowId !== link.workflowId ||
+    state.workflowDigest !== link.workflowDigest ||
+    provenance === null ||
+    provenance.parentRunId !== parentRunId ||
+    provenance.parentNodeId !== node.id ||
+    provenance.parentAttempt !== attempt
+  ) {
+    throw new Error(`child run "${link.runId}" does not match its durable parent link`);
+  }
+}
+
+async function settleChildState(
+  node: CompiledChildNode,
+  childState: RunState,
+  workspaceIsolator: WorkspaceIsolator,
+): Promise<NodeExecutionOutcome> {
+  if (!runStateIsTerminal(childState)) {
+    return childFailure(
+      "child_wait_unsupported",
+      `child run "${childState.runId}" entered unsupported status "${childState.status}"`,
+    );
+  }
+
+  let disposition: "discarded" | "retained" = "discarded";
+  try {
+    await workspaceIsolator.cleanup(childState.runId);
+  } catch {
+    disposition = "retained";
+  }
+  const evidence = childEvidence(node, childState, disposition);
+  if (disposition === "retained") {
+    return childFailure(
+      "child_workspace_cleanup_failed",
+      `child workspace "${childState.runId}" could not be discarded`,
+      evidence,
+    );
+  }
+  if (childState.status === "succeeded") {
+    return { status: "succeeded", evidence };
+  }
+  return childFailure(
+    childFailureCode(childState.status),
+    childState.failureReason ??
+      `child run "${childState.runId}" ended with status "${childState.status}"`,
+    evidence,
+  );
+}
+
+function childEvidence(
+  node: CompiledChildNode,
+  state: RunState,
+  disposition: "discarded" | "retained",
+): ChildEvidence {
+  const provenance = state.executionWorkspace;
+  if (provenance === null) {
+    throw new Error(`child run "${state.runId}" has no workspace provenance`);
+  }
+  const resultState = state.nodes[node.child.resultNodeId];
+  const result =
+    resultState?.control?.kind === "result"
+      ? Object.freeze({
+          nodeId: node.child.resultNodeId,
+          schemaDigest: resultState.control.schemaDigest,
+          canonicalValue: resultState.control.canonicalValue,
+          valueHash: resultState.control.valueHash,
+        })
+      : null;
+  const finishedAt =
+    state.finishedAt === null ? Date.parse(state.startedAt) : Date.parse(state.finishedAt);
+  return Object.freeze({
+    kind: "child",
+    childRunId: state.runId,
+    workflowId: state.workflowId,
+    workflowDigest: state.workflowDigest,
+    terminalSequence: state.lastSequence,
+    outcome: requireChildTerminalStatus(state.status),
+    result,
+    resources: state.resources,
+    durationMs: Math.max(0, finishedAt - Date.parse(state.startedAt)),
+    workspace: Object.freeze({
+      backend: provenance.backend,
+      snapshotDigest: provenance.snapshotDigest,
+      disposition,
+    }),
+  });
+}
+
+function requireChildTerminalStatus(status: RunState["status"]): ChildEvidence["outcome"] {
+  if (
+    status === "succeeded" ||
+    status === "failed" ||
+    status === "cancelled" ||
+    status === "resource_exhausted"
+  ) {
+    return status;
+  }
+  throw new Error(`child run is not terminal: ${status}`);
+}
+
+function childFailureCode(status: ChildEvidence["outcome"]): string {
+  switch (status) {
+    case "failed":
+      return "child_run_failed";
+    case "cancelled":
+      return "child_run_cancelled";
+    case "resource_exhausted":
+      return "child_run_resource_exhausted";
+    case "succeeded":
+      return "child_run_failed";
+  }
+}
+
+function childFailure(
+  code: string,
+  message: string,
+  evidence: ChildEvidence | null = null,
+): NodeExecutionOutcome {
+  return {
+    status: "failed",
+    error: {
+      code,
+      message: boundedFailureMessage(message),
+      retryable: false,
+      sideEffectStatus: "none",
+    },
+    evidence,
+  };
+}
+
+function childRunStore(
+  store: RunEventStore,
+): (RecoverableRunEventStore & { exists(runId: string): Promise<boolean> }) | null {
+  return "claim" in store &&
+    typeof store.claim === "function" &&
+    "release" in store &&
+    typeof store.release === "function" &&
+    "exists" in store &&
+    typeof store.exists === "function"
+    ? (store as RecoverableRunEventStore & { exists(runId: string): Promise<boolean> })
+    : null;
 }
 
 function abortedOutcome(

@@ -6,7 +6,7 @@ Flow turns a collection of useful software-development practices into an enforce
 
 The standalone harness reverses that relationship. Flow owns workflow execution and delegates only bounded node work to an embedded agent runtime.
 
-This document describes the target architecture unless a section is explicitly labeled as the current executable slice. The delivery roadmap is the source of truth for implementation status. Gates 1 and 2 currently provide `validate`, `run`, `inspect`, optional versioned goal contracts, command-bound criterion evaluation, command and bounded Pi agent nodes, cancellation, and replayable local event ledgers. Gate 3 now includes a runtime-neutral policy broker for model-requested reads, lists, and hash-anchored single-file edits, a fail-closed native sandbox for every command node, and exact expiring pre-start approval for deterministic commands. Gate 4 adds `resume` at committed node boundaries, exclusive same-host process ownership, write-ahead durable evidence and typed recovery observation for each workspace edit, opt-in proof-safe fresh recovery for interrupted agent attempts, approval waits that survive client detachment, durable resource accounting with run-wide start, model-token, reported-cost, and active-execution limits, project initialization and monotonic capacity configuration, plus a bounded local supervisor with authenticated detached workers, durable FIFO admission, status, event replay, cancellation, and restart adoption. Gate 5 adds replay-safe exact-output conditions, guarded branches, first-class omission, explicit joins, bounded deterministic static-DAG concurrency, finite replay-safe bounded loops, evidence-bound graph approval nodes, replay-verified typed result publication, and first-class typed verifier nodes with sandboxed command and evidence-isolated zero-tool model drivers. A TUI, optimization rollback, child runs, opaque Pi session continuation, general failure/fallback retries, broader configurable policy, dynamic agent-tool approval, execute/network model tools, external verifier packages, and stronger VM or managed sandbox backends remain later work.
+This document describes the target architecture unless a section is explicitly labeled as the current executable slice. The delivery roadmap is the source of truth for implementation status. Gates 1 and 2 currently provide `validate`, `run`, `inspect`, optional versioned goal contracts, command-bound criterion evaluation, command and bounded Pi agent nodes, cancellation, and replayable local event ledgers. Gate 3 now includes a runtime-neutral policy broker for model-requested reads, lists, and hash-anchored single-file edits, a fail-closed native sandbox for every command node, and exact expiring pre-start approval for deterministic commands. Gate 4 adds `resume` at committed node boundaries, exclusive same-host process ownership, write-ahead durable evidence and typed recovery observation for each workspace edit, opt-in proof-safe fresh recovery for interrupted agent attempts, approval waits that survive client detachment, durable resource accounting with run-wide start, model-token, reported-cost, and active-execution limits, project initialization and monotonic capacity configuration, plus a bounded local supervisor with authenticated detached workers, durable FIFO admission, status, event replay, cancellation, and restart adoption. Gate 5 adds replay-safe exact-output conditions, guarded branches, first-class omission, explicit joins, bounded deterministic static-DAG concurrency, finite replay-safe bounded loops, evidence-bound graph approval nodes, replay-verified typed result publication, first-class typed verifier nodes with sandboxed command and evidence-isolated zero-tool model drivers, and independently-ledgered child workflows in isolated reflink-or-copy workspaces. A TUI, optimization rollback and child patch promotion, opaque Pi session continuation, general failure/fallback retries, broader configurable policy, dynamic agent-tool approval, execute/network model tools, external verifier packages, and stronger VM or managed sandbox backends remain later work.
 
 ## Target flows
 
@@ -80,14 +80,17 @@ runtime-pi             store-local / tools-* / adapters-*
 Owns workflow and goal contracts, graph rules, lifecycle state machines, exact condition, join,
 bounded-loop, and typed-result contracts, omission state, evidence contracts, policy decisions,
 approvals, budgets, and failure classifications. It imports no Pi, OMP, Prime Agent, provider, UI,
-filesystem, or database types.
+filesystem, or database types. Child contracts contain only provider-neutral workflow, run-link,
+workspace-provenance, typed-result, and resource projections.
 
 ### Flow application
 
 Compiles workflows, including finite expansion of bounded loop bodies, selects the next legal
 executable or control transition, assembles minimal context, calls domain ports, evaluates results,
 and records transitions. It binds model verifiers and typed results to exact complete durable source
-attempts. The same state-based selector checks recovered history. It never executes tools directly,
+attempts. It recursively schedules independently-ledgered child workflows through an isolation
+port, reserves their ceilings against ancestors, and imports only typed results and resource
+evidence. The same state-based selector checks recovered history. It never executes tools directly,
 and result, condition, join, loop-check, and loop-controller nodes never enter an executor port.
 
 ### Pi runtime
@@ -100,7 +103,7 @@ The current broker normalizes and canonically resolves every model-requested `re
 
 ### Command sandbox
 
-Every command executor depends on a Flow-owned `CommandSandbox` port. The production composition uses Anthropic Sandbox Runtime (SRT) with a fixed, versioned profile: workspace and private-temp writes are allowed; network, home-directory reads, ambient credentials, run-store writes, and writes to sensitive project state are denied. Sandbox dependency errors and degraded-security warnings fail before spawn. Same-policy concurrent commands share one process-global SRT session while each wrap receives its own private temporary directory and complete per-exec filesystem configuration. A reference-counted Flow coordinator serializes initialization and teardown, rejects a different concurrent workspace or policy, invokes SRT's per-command cleanup once per wrap, and resets only after the final command releases. Cleanup must complete before a node can succeed.
+Every command executor depends on a Flow-owned `CommandSandbox` port. The production composition uses Anthropic Sandbox Runtime (SRT) with a fixed, versioned profile: workspace and private-temp writes are allowed; network, home-directory reads, ambient credentials, run-store writes, and writes to sensitive project state are denied. Sandbox dependency errors and degraded-security warnings fail before spawn. Same-policy concurrent commands share one process-global SRT session while each wrap receives its own private temporary directory and complete per-exec filesystem configuration. A reference-counted Flow coordinator serializes initialization and teardown, queues an incompatible workspace or policy until the active session resets, invokes SRT's per-command cleanup once per wrap, honors cancellation while queued, and resets only after the final compatible command releases. Cleanup must complete before a node can succeed.
 
 The port isolates Flow from the backend. Pi's official SRT and Gondolin examples validate this tool-routing seam; Flow imports SRT as a containment primitive but owns policy, lifecycle, evidence, and failure semantics. The pinned SRT Linux implementation already tracks concurrent active sandbox wraps so mount-point cleanup waits for the last command; Flow's coordinator preserves that backend contract. A future Gondolin, OpenShell, or container adapter can implement the same port without changing workflow or ledger contracts.
 
@@ -125,8 +128,55 @@ The design deliberately separates completion timing from durable ordering. Effec
 settlement events remain real-time write-ahead facts, while node outcomes, dependency release, and
 primary-failure selection are deterministic. The reducer independently enforces the persisted
 capacity, graph dependencies, outcome order, full-wave quiescence, and ordered cancellation set.
-Concurrency is not workspace isolation: branches that mutate related state require explicit graph
-ordering until worktree-isolated child runs exist.
+Concurrency is not workspace isolation for ordinary branches: mutations in the shared parent still
+require explicit graph ordering. Authors can choose an explicit child node when independent
+history, budget, result, and workspace isolation are required.
+
+### Isolated child run trees
+
+A compiled `child` node contains a recursively compiled workflow, its digest, one unconditional
+terminal typed-result contract, and no runtime-specific session type. The compiler requires all
+four child budget ceilings, rejects human waits, limits nesting to four levels, limits every
+embedded source to 1 MiB, and counts the complete expanded tree against a 1,024-node ceiling.
+
+The root-tree scheduler—not Pi, SRT, or the supervisor—owns child admission. Before materialization,
+the parent appends a deterministic link derived from parent run, node, and attempt. A child-only
+wave prevents parent-workspace executors from mutating the source while sibling snapshots begin.
+Each child ceiling is reserved against bounded ancestor remainder, including sibling reservations;
+actual resource totals are later charged to every ancestor in addition to the child node start.
+This keeps the supervisor's one-worker-per-root-tree model and avoids routing descendants through a
+capacity queue that could deadlock behind their own parent.
+
+`WorkspaceIsolator` is an application port with create, reopen, and idempotent cleanup operations.
+The initial backend materializes an owner-only reflink where supported and otherwise copies the
+current dirty/untracked tree. It preserves modes and symlinks without following them, excludes Flow
+and protected run state by normalized source-relative policy, verifies regular-file content and
+source stability, rejects special files, records a durable manifest, and atomically exposes the
+completed directory. The backend protects the parent from child mutations but is not an atomic
+filesystem snapshot, process sandbox, or hostile-code boundary. A native APFS/Btrfs/ZFS/overlay,
+Gondolin, OpenShell, container, or managed implementation can replace it behind the same port.
+
+The child recursively invokes the normal run application with its own run id, owner record, JSONL
+history, working directory, budget, and persisted execution-workspace provenance. The parent and
+child share the cancellation signal and executor composition, but no mutable scheduler state. On
+terminal settlement, the parent imports only the canonical typed result, child terminal sequence,
+resource totals, duration, workflow identity, snapshot identity, and cleanup disposition. Workspace
+changes are discarded; applying a candidate requires a later validation/promotion/rollback
+contract.
+
+Recovery uses two write-ahead boundaries. Parent `node_started` fixes child identity before
+materialization. Child `run_started` fixes workspace provenance before child execution. With no
+child ledger, the claimed parent can discard a stale pre-ledger directory and recreate it. With any
+child event, recovery must reopen the exact manifest and resume the exact ledger; it never creates a
+replacement. A terminal child history can be imported after an idempotent cleanup even when the
+parent outcome append previously crashed. Missing or divergent nonterminal state fails with typed
+recovery refusal.
+
+Ready child workflows can overlap under parent concurrency. The current SRT backend has a narrower
+process-global lifecycle: same-workspace command wraps share a session, while incompatible child
+workspaces wait for reset and reinitialization. This serializes those command phases without
+changing graph admission or rejecting the second child. A backend with independent sessions can
+provide full command overlap without changing domain or application contracts.
 
 ### Event and evidence store
 
@@ -139,7 +189,10 @@ replay reparses the original durable evidence with the persisted bounded schema,
 RFC 8785 canonical JSON, and verifies source, schema, canonical bytes, and value hashes. Other
 control replay recomputes source identity, selected case or loop decision, guard, dependency
 propagation, and completion result before accepting it. Truncated source evidence produces a typed
-control failure. Policy decisions prove authorization. `node_effect_prepared` proves Flow reached a
+control failure. Child starts persist deterministic run/workflow/result/schema linkage; child
+outcomes bind terminal sequence, typed value, resource totals, workspace backend/digest, and cleanup
+disposition. Replay validates that projection against the persisted child control contract and
+charges its resources to the parent. Policy decisions prove authorization. `node_effect_prepared` proves Flow reached a
 specific edit boundary before rename; `node_effect_settled` records an executor's committed,
 not-applied, or post-commit-unknown state; `node_effect_reconciled` records what recovery later
 observed for a still-open edit; terminal receipts project only executor-settled effects. None is
@@ -344,6 +397,10 @@ Approval remains separate from containment. OMP-style allow/prompt/deny rules ca
     reaching the final bound without a stop fails closed.
 19. A typed result is reproduced from durable source evidence and its closed schema during replay;
     stored canonical bytes or hashes alone never authorize publication.
+20. Every child event history has one deterministic parent node attempt, exact workflow/result
+    contract, independent owner, and persisted workspace provenance.
+21. A child workspace is never replaced after its first durable child event, and no child result is
+    imported until the workspace has a recorded cleanup disposition.
 
 ## Failure modes
 
@@ -352,6 +409,11 @@ Approval remains separate from containment. OMP-style allow/prompt/deny rules ca
 | Invalid workflow or configuration | Reject with path-specific diagnostics before creating side effects |
 | Result JSON is malformed, duplicated-key, non-I-JSON, oversized, too complex, truncated, or schema-incompatible | Record the exact typed side-effect-free control failure and start no dependent work |
 | Result publication identity, schema, canonical value, or hash is forged | Reject replay before advancing or executing another node |
+| Child source, nesting, result, wait, budget, or tree bound is invalid | Reject the root workflow before creating its ledger or workspace |
+| Child ceiling exceeds an ancestor remainder | Fail the child node before workspace materialization |
+| Child workspace is missing or divergent after its ledger starts | Refuse recovery; never create a replacement or infer an outcome |
+| Child cleanup fails | Retain the workspace, record retained disposition, and fail the parent child node |
+| Parent crashes after child terminalization | Replay the terminal child ledger, retry idempotent cleanup, and import the same evidence once |
 | Condition source is truncated or incompatible | Record a typed control failure and never select a branch from partial or mismatched evidence |
 | Branch or join event is forged, premature, or inconsistent | Reject replay before advancing or executing another node |
 | Loop graph, check, omission, completion, or iteration order is forged | Reject replay before advancing or executing another node |
@@ -403,6 +465,7 @@ Approval remains separate from containment. OMP-style allow/prompt/deny rules ca
 - Flow does not permit live mutation of policy, evaluator definitions, or graph semantics.
 - Flow does not make a Python or JavaScript kernel a mandatory core primitive.
 - Flow does not treat process or worktree isolation as a security sandbox.
+- Flow does not automatically copy, export, merge, or promote changes from a child workspace.
 - Flow does not permit arbitrary dependency cycles, nested or unbounded loops, or automatic
   optimization rollback in the current loop contract.
 
