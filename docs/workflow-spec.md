@@ -144,6 +144,7 @@ A `child` node embeds one complete workflow and names its typed result boundary:
         maxModelTokens: 100000
         maxCostUsd: 1
         maxExecutionMs: 300000
+        maxArtifactBytes: 1048576
       nodes:
         - id: analyze
           type: agent
@@ -160,7 +161,7 @@ A `child` node embeds one complete workflow and names its typed result boundary:
 ```
 
 The embedded source is a non-empty YAML string of at most 1 MiB. Flow recursively compiles and
-freezes it before creating the parent ledger. A child must declare all four budget dimensions and
+freezes it before creating the parent ledger. A child must declare all five budget dimensions and
 name an existing, unconditional, terminal `result` node. Human `approval` nodes and
 approval-required commands are rejected because a descendant cannot suspend the root tree for
 interactive input. Child nesting is limited to four levels, and the complete recursively compiled
@@ -190,9 +191,10 @@ and become bounded rejection evidence rather than an automatic parent failure.
 
 Every child ceiling is reserved against the parent's remaining bounded budget before the workspace
 exists; sibling reservations are aggregated within a wave. Actual child starts, model tokens,
-reported cost, and active time are then added to every ancestor, while the parent child node's own
-start is counted separately. Downstream results, conditions, approvals, loop checks, and model
-verifiers consume the imported canonical value as `result.value` with its original hash.
+reported cost, active time, and artifact bytes are then added to every ancestor exactly once, while
+the parent child node's own start is counted separately. Downstream results, conditions, approvals,
+loop checks, and model verifiers consume the imported canonical value as `result.value` with its
+original hash.
 
 Ready siblings may share a child-only scheduler wave, so their parent snapshot is not interleaved
 with a parent-workspace executor. Backends may impose a narrower execution limit. In particular,
@@ -455,28 +457,44 @@ budget:
   maxModelTokens: 250000
   maxCostUsd: 2.5
   maxExecutionMs: 900000
+  maxArtifactBytes: 1048576
 ```
 
 At least one limit is required when `budget` is present. Every value must be finite and positive.
-Starts, tokens, and milliseconds are safe integers. `maxCostUsd` accepts at most six decimal places;
-the compiler converts it to integer micro-USD before workflow hashing, persistence, and comparison.
+Starts, tokens, milliseconds, and artifact bytes are safe integers. `maxCostUsd` accepts at most six
+decimal places; the compiler converts it to integer micro-USD before workflow hashing, persistence,
+and comparison.
 Unknown fields, an empty object, zero, negative, fractional integer dimensions, unsafe integers,
 non-finite values, and finer cost precision fail compilation before a run or effect exists. Omitting
 `budget` retains unbounded scheduling behavior.
 
 Run state always exposes durable `resources`: node starts, total model tokens, provider-reported
-model cost in micro-USD, and active execution milliseconds. A start is counted by its committed
-`node_started` event. A node outcome contributes its evidence duration rounded up to a whole
-millisecond. Successful and failed agent evidence contributes available input, output, cache-read,
-and cache-write tokens plus reported cost. Totals use checked safe-integer arithmetic; invalid or
-overflowing evidence fails replay rather than wrapping or being ignored.
+model cost in micro-USD, active execution milliseconds, and retained artifact bytes. A start is
+counted by its committed `node_started` event. A node outcome contributes its evidence duration
+rounded up to a whole millisecond. Successful and failed agent evidence contributes available
+input, output, cache-read, and cache-write tokens plus reported cost. Totals use checked safe-integer
+arithmetic; invalid or overflowing evidence fails replay rather than wrapping or being ignored.
+
+Artifact consumption is the UTF-8 byte length of terminal primary executor payloads: command
+`stdout + stderr`, agent `text`, model-verifier `raw`, command-verifier nested command
+`stdout + stderr`, and verified child `resources.artifactBytes`. Committed failed evidence follows
+the same rule; missing evidence contributes zero. Verifier reason/verdict, typed result canonical
+values, approvals, hashes, and policy/effect/sandbox/control metadata are derived projections and
+are excluded. The sum is replayed from durable evidence with checked arithmetic; there is no
+mutable executor-local counter.
 
 Before new work or an approval request, Flow refuses scheduling when a configured dimension is
 already exhausted. Using the final permitted node start does not invalidate a graph that is already
-complete. Model-token, reported-cost, and active-time consumption is settled after each node
+complete. Model-token, reported-cost, active-time, and artifact consumption is settled after each node
 outcome; equality or overshoot records `run_budget_exhausted`, produces terminal
 `resource_exhausted` state, rejects an incomplete goal, exits code 1, and starts no downstream work.
 The full observation is retained rather than clipped to the limit.
+
+Artifact equality is terminal. One bounded node may overshoot, and a complete already-admitted
+concurrency wave quiesces before exhaustion is recorded; every declaration-ordered outcome remains
+charged. Per-node output bounds cap the overshoot. This contract budgets logical retained evidence
+payloads only: it does not add content-addressed storage, spill-to-disk, download, retention,
+garbage collection, physical disk accounting, or recovery of executor-truncated bytes.
 
 An execution budget reduces a command, agent, or verifier-driver timeout to the remaining active milliseconds.
 Approval-required commands persist and display that reduced timeout in the exact operation, so a

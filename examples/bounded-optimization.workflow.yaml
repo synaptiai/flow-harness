@@ -7,6 +7,7 @@ budget:
   maxModelTokens: 100
   maxCostUsd: 0.1
   maxExecutionMs: 60000
+  maxArtifactBytes: 1000000
 nodes:
   - id: seed-baseline
     type: command
@@ -55,6 +56,7 @@ nodes:
             maxModelTokens: 10
             maxCostUsd: 0.01
             maxExecutionMs: 10000
+            maxArtifactBytes: 100000
           nodes:
             - id: improve
               type: command

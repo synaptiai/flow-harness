@@ -2,10 +2,11 @@ apiVersion: flow.synapti.ai/v1alpha1
 kind: Workflow
 metadata:
   id: budgeted-foundation
-  description: Exercise credential-free commands inside durable start and active-time boundaries.
+  description: Exercise credential-free commands inside durable start, active-time, and artifact boundaries.
 budget:
   maxNodeStarts: 2
   maxExecutionMs: 130000
+  maxArtifactBytes: 1048576
 goal:
   apiVersion: flow.synapti.ai/v1alpha1
   kind: Goal

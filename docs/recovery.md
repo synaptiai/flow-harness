@@ -104,7 +104,7 @@ The actor label is caller-supplied audit attribution rather than authenticated i
 | `node_result_published` is durable | Verify source, schema, canonical value, and hashes during replay; continue after the result without republishing it |
 | All nodes succeeded or were omitted but `run_succeeded` is absent | Append `run_resumed`, append `run_succeeded`, and execute no node |
 | `node_failed` is durable, no limit is exhausted, and `run_failed` is absent | Append `run_resumed`, append `run_failed`, and do not retry the failed node |
-| A completed node outcome reaches a model-token, reported-cost, or active-time limit but `run_budget_exhausted` is absent | Append `run_resumed`, append `run_budget_exhausted`, and execute no node |
+| A completed node outcome reaches a model-token, reported-cost, active-time, or artifact limit but `run_budget_exhausted` is absent | Replay the exact retained payload bytes, append `run_resumed`, append `run_budget_exhausted`, and execute no node |
 | A start limit is exhausted and pending work remains | Append `run_resumed`, append `run_budget_exhausted`, and execute no node |
 | `command_approval_requested` is pending | Append `run_resumed`, retain `waiting_for_approval`, and execute nothing |
 | `command_approval_granted` is unexpired | Append `run_resumed`, consume the exact grant in `node_started`, and execute once |
@@ -124,6 +124,7 @@ The actor label is caller-supplied audit attribution rather than authenticated i
 | No child event is durable, but a stale deterministic child workspace exists | Discard the uncommitted workspace, recreate it from the parent, and start the child once |
 | A child ledger is nonterminal and its exact manifest, snapshot digest, or workspace is missing or divergent | Refuse with `child_recovery_ineligible`; do not create a replacement child or repeat uncertain work |
 | A child ledger is terminal but its parent outcome is absent | Treat the child ledger as authoritative, idempotently confirm workspace discard, verify its linked typed result and resources, and append only the parent outcome |
+| A parent child outcome is durable but the parent run is nonterminal | Re-reduce every settled child ledger recursively and compare its link, terminal sequence, outcome, typed result, duration, workspace provenance, and all five resource totals with the imported projection; refuse divergence with `child_recovery_ineligible` before appending `run_resumed` |
 | An optimization candidate succeeded but no evaluation is durable | Append `run_resumed`, recompute metric/invariants from its canonical child result, reopen an exact durable capture or capture the same bounded delta, and record one evaluation; a partial or divergent capture fails closed |
 | `node_optimization_evaluated` chose promotion but prepare is absent | Reuse the captured delta identity and enter promotion once; never rerun the child |
 | `node_optimization_promotion_prepared` has no settlement | Reconcile the exact local journal and affected paths, then append committed, rolled-back, or unknown settlement |
@@ -242,6 +243,12 @@ It is not session continuation: no old transcript, dangling tool call, provider 
 model state is restored. Flow explicitly disables Pi assistant-turn retries and provider retries,
 so one Flow attempt cannot silently expand through those retry layers. Ordinary tool/model turns
 inside the live session remain bounded by the node timeout.
+
+Artifact accounting does not block this fresh retry because an open attempt has no committed
+terminal evidence payload. Only a later durable success/failure outcome contributes its command,
+agent, verifier, or child payload bytes. If Flow later persists streamed artifacts before a terminal
+outcome, that storage contract must add an explicit interruption-accounting rule rather than
+silently changing this behavior.
 
 Fresh retry is also distinct from completion proof. The retried agent must still produce its own
 terminal evidence, and downstream deterministic verifier nodes still decide criterion acceptance.

@@ -35,6 +35,97 @@ afterEach(async () => {
 });
 
 describe("detached run worker", () => {
+  it("enforces and replays an exact detached artifact budget", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-worker-artifact-budget-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    const store = new LocalSupervisorStore(runsDirectory);
+    await store.initialize();
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "worker-artifact-budget",
+      mode: "run",
+      sourceName: join(directory, "workflow.yaml"),
+      workflowSource: `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: detached-artifact-budget }
+budget: { maxArtifactBytes: 2 }
+nodes:
+  - id: produce
+    type: command
+    command: { executable: node, args: [produce] }
+`,
+      cwd: directory,
+      token: "8".repeat(64),
+      createdAt: "2026-08-08T11:45:00.000Z",
+    });
+    await store.reserveSubmission(
+      job,
+      createActiveRunClaim({
+        runId: job.runId,
+        jobId: job.jobId,
+        workerId: job.workerId,
+        claimedAt: job.createdAt,
+      }),
+    );
+    const executor: NodeExecutor = {
+      async execute(node) {
+        const stdout = "é";
+        return {
+          status: "succeeded",
+          evidence: {
+            kind: "command",
+            executable: node.type === "command" ? node.command.executable : "node",
+            args: node.type === "command" ? node.command.args : [],
+            exitCode: 0,
+            signal: null,
+            stdout,
+            stderr: "",
+            stdoutHash: sha256(stdout),
+            stderrHash: sha256(""),
+            stdoutTruncated: false,
+            stderrTruncated: false,
+            timedOut: false,
+            durationMs: 1,
+          },
+        };
+      },
+    };
+
+    const worker = executeWorkerJob(job.jobId, {
+      store,
+      executor,
+      effectReconciler: createProductionNodeEffectReconciler(),
+      createRunStore: (root) => new JsonlRunStore(root),
+      pid: 4325,
+    });
+    const descriptor = await waitForDescriptor(store, job.workerId);
+    await expect(requestWorker(descriptor, { type: "identify" })).resolves.toMatchObject({
+      ok: true,
+      result: { runId: job.runId },
+    });
+    await expect(worker).resolves.toBe(1);
+
+    const events = await new JsonlRunStore(runsDirectory).read(job.runId);
+    expect(events.map((event) => event.type)).toEqual([
+      "run_started",
+      "node_started",
+      "node_succeeded",
+      "run_budget_exhausted",
+    ]);
+    expect(reduceRunEvents(events)).toMatchObject({
+      status: "resource_exhausted",
+      resources: { artifactBytes: 2 },
+      budget: {
+        limits: { maxArtifactBytes: 2 },
+        remaining: { artifactBytes: 0 },
+        exhausted: [{ dimension: "artifactBytes", limit: 2, consumed: 2 }],
+      },
+    });
+  });
+
   it("publishes and replays a typed result through a detached worker", async () => {
     const directory = await mkdtemp(join(tmpdir(), "flow-worker-result-"));
     temporaryDirectories.push(directory);
@@ -1143,6 +1234,7 @@ budget:
   maxModelTokens: 100
   maxCostUsd: 0.01
   maxExecutionMs: 10000
+  maxArtifactBytes: 100000
 nodes:
   - id: produce
     type: command
@@ -1163,6 +1255,7 @@ budget:
   maxModelTokens: 1000
   maxCostUsd: 1
   maxExecutionMs: 60000
+  maxArtifactBytes: 1000000
 nodes:
   - id: delegate
     type: child
@@ -1186,6 +1279,7 @@ budget:
   maxModelTokens: 100
   maxCostUsd: 0.01
   maxExecutionMs: 10000
+  maxArtifactBytes: 100000
 nodes:
   - id: improve
     type: command
@@ -1211,6 +1305,7 @@ budget:
   maxModelTokens: 1000
   maxCostUsd: 1
   maxExecutionMs: 60000
+  maxArtifactBytes: 1000000
 nodes:
   - id: measure
     type: command

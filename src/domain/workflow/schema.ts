@@ -76,6 +76,7 @@ const runBudgetSchema = z
       )
       .optional(),
     maxExecutionMs: positiveSafeIntegerSchema.optional(),
+    maxArtifactBytes: positiveSafeIntegerSchema.optional(),
   })
   .strict()
   .refine((budget) => Object.values(budget).some((value) => value !== undefined), {

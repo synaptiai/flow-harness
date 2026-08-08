@@ -413,6 +413,7 @@ budget:
   maxModelTokens: 100000
   maxCostUsd: 1
   maxExecutionMs: 300000
+  maxArtifactBytes: 1000000
 nodes:
 ${nodes}`;
 }
