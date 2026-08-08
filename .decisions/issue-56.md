@@ -228,7 +228,7 @@ agent:
 7. [x] Cover denial, expiry, cancellation, timeout, append failure, and owner-loss behavior.
 8. [x] Complete attached, detached, inspection, child restriction, and recovery verification.
 9. [x] Update public architecture, workflow, security, recovery, roadmap, README, and example docs.
-10. [ ] Run focused, full, clean-room, package, holdout, and adversarial verification.
+10. [x] Run focused, full, clean-room, package, holdout, and adversarial verification.
 
 ## Adversarial review cycle 1
 
@@ -268,3 +268,17 @@ agent:
 - **P3 · lossy UTF-8 decoding could rewrite receipt attribution** — fixed with fatal UTF-8 decoding
   before JSON parsing. A raw-byte regression proves malformed actor bytes close as
   `decision_invalid` rather than becoming replacement characters in a durable grant.
+
+## Final verification
+
+- `npm run check` passed from a clean local clone of feature commit `fe54164`: formatting and lint
+  checked 176 files, type checking passed, 104 test files with 1,349 tests passed, the build passed,
+  and 3 runtime files with 21 process tests passed.
+- `npm run test:coverage` passed on the final implementation with 84.16% statements, 78.21%
+  branches, 93.44% functions, and 84.23% lines.
+- `npm run pack:check` passed a clean tarball installation and CLI execution.
+- The focused detached-worker approval test and the complete suite exposed a first-append polling
+  race only in test observation. The helper now retries the exact transient empty-ledger window;
+  all other corruption remains immediately visible, and the complete suite passes afterward.
+- Independent holdout validation passed without conflicts. The adversarial reviewer reached zero
+  actionable P1/P2/P3 findings, including a final targeted review of the polling-race correction.
