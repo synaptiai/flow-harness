@@ -1,13 +1,4 @@
 import { createHash } from "node:crypto";
-
-import type {
-  AgentExecutor,
-  CommandExecutor,
-  NodeExecutionContext,
-  NodeExecutionOutcome,
-  VerifierExecutor,
-  VerifierSourceInput,
-} from "./ports.js";
 import type {
   AgentEvidence,
   CommandEvidence,
@@ -16,12 +7,20 @@ import type {
   VerifierEvidence,
   VerifierVerdict,
 } from "../domain/run/events.js";
+import { parseVerifierVerdictJson } from "../domain/verification/verdict.js";
 import type {
   CompiledAgentNode,
   CompiledCommandNode,
   CompiledVerifierNode,
 } from "../domain/workflow/types.js";
-import { parseVerifierVerdictJson } from "../domain/verification/verdict.js";
+import type {
+  AgentExecutor,
+  CommandExecutor,
+  NodeExecutionContext,
+  NodeExecutionOutcome,
+  VerifierExecutor,
+  VerifierSourceInput,
+} from "./ports.js";
 
 export const MAX_VERIFIER_INPUT_BYTES = 262_144;
 export const MAX_VERIFIER_RAW_BYTES = 16_384;
@@ -48,9 +47,14 @@ export class VerifierNodeExecutor implements VerifierExecutor {
     node: CompiledVerifierNode,
     context: NodeExecutionContext,
   ): Promise<NodeExecutionOutcome> {
-    return node.verifier.kind === "command"
-      ? await this.executeCommand(node, node.verifier, context)
-      : await this.executeModel(node, node.verifier, context);
+    if (node.verifier.kind === "packaged-command" || node.verifier.kind === "packaged-model") {
+      throw new Error(`verifier node "${node.id}" package must be resolved before execution`);
+    }
+    const outcome =
+      node.verifier.kind === "command"
+        ? await this.executeCommand(node, node.verifier, context)
+        : await this.executeModel(node, node.verifier, context);
+    return bindVerifierPackageEvidence(outcome, context);
   }
 
   private async executeCommand(
@@ -473,4 +477,27 @@ function boundedReason(value: string): string {
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function bindVerifierPackageEvidence(
+  outcome: NodeExecutionOutcome,
+  context: NodeExecutionContext,
+): NodeExecutionOutcome {
+  if (context.verifierPackage === undefined || outcome.evidence?.kind !== "verifier") {
+    return outcome;
+  }
+  return deepFreeze({
+    ...outcome,
+    evidence: { ...outcome.evidence, package: { ...context.verifierPackage } },
+  });
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const item of Object.values(value)) {
+      deepFreeze(item);
+    }
+  }
+  return value;
 }

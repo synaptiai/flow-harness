@@ -167,6 +167,36 @@ describe("capability run history", () => {
     );
   });
 
+  it("does not let a verifier package with the same name satisfy an Agent Skill requirement", () => {
+    const started = runStarted();
+    const capabilitySnapshot = createCapabilitySnapshot(
+      [],
+      [
+        {
+          kind: "verifier-package",
+          apiVersion: "flow.synapti.ai/v1alpha1",
+          name: "review",
+          version: "1.0.0",
+          description: "Review evidence.",
+          trust: "project-explicit",
+          provenance: ".flow/verifiers/review",
+          definition: { kind: "model", prompt: "Review evidence." },
+          manifest: {
+            content: Buffer.from(`apiVersion: flow.synapti.ai/v1alpha1
+kind: VerifierPackage
+metadata: { name: review, version: 1.0.0, description: Review evidence. }
+spec: { kind: model, prompt: Review evidence. }
+`),
+          },
+        },
+      ],
+    );
+
+    expect(() => reduceRunEvents([{ ...started, capabilitySnapshot }])).toThrow(
+      /missing Agent Skill "review"/i,
+    );
+  });
+
   it("rejects duplicate and unknown capability requirement nodes", () => {
     const started = runStarted();
     const requirement = started.capabilityRequirements?.[0];
