@@ -118,6 +118,7 @@ export interface CompiledAgentNode extends CompiledGuardedNodeBase {
       readonly thinking: ThinkingLevel;
     };
     readonly tools: readonly AgentToolName[];
+    readonly skills: readonly string[];
     readonly recovery?: {
       readonly mode: "fresh";
       readonly maxAttempts: number;

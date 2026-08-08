@@ -16,6 +16,8 @@ import type {
   WorkspaceIsolator,
 } from "../application/ports.js";
 import { resumeWorkflow, RunRecoveryError, runWorkflow } from "../application/run-workflow.js";
+import type { CapabilitySnapshot } from "../domain/capability/agent-skills.js";
+import { collectWorkflowAgentSkillNames } from "../domain/capability/workflow-capabilities.js";
 import {
   calculateFlowPolicyDigest,
   FlowConfigError,
@@ -31,6 +33,12 @@ import {
   loadEffectiveFlowConfig,
   type FlowConfigLocationOptions,
 } from "../infrastructure/fs/flow-config-store.js";
+import {
+  AgentSkillCatalogError,
+  discoverProjectAgentSkills,
+  snapshotSelectedAgentSkills,
+  type ProjectAgentSkillCatalog,
+} from "../infrastructure/fs/local-agent-skill-catalog.js";
 import { AdmissionStoreError } from "../infrastructure/fs/jsonl-admission-store.js";
 import { JsonlRunStore, RunStoreError } from "../infrastructure/fs/jsonl-run-store.js";
 import {
@@ -60,6 +68,9 @@ const HELP = `Flow — Provider-neutral coding-agent harness
 Usage:
   flow init [directory] [--force]
   flow config show
+  flow skills list
+  flow skills inspect <name>
+  flow skills validate
   flow validate <workflow.yaml>
   flow run <workflow.yaml> [--detach] [--command-id <uuid>] [--run-id <id>] [--runs-dir <path>] [--cwd <path>]
   flow resume <workflow.yaml> --run-id <id> [--detach] [--command-id <uuid>] [--runs-dir <path>] [--cwd <path>]
@@ -127,6 +138,8 @@ export async function main(
         return await initCommand(args.slice(1), io, dependencyOverrides);
       case "config":
         return await configCommand(args.slice(1), io, dependencyOverrides);
+      case "skills":
+        return await skillsCommand(args.slice(1), io, dependencyOverrides);
       case "validate":
         return await validateCommand(args.slice(1), io, dependencyOverrides);
       case "run":
@@ -166,6 +179,10 @@ export async function main(
       return 2;
     }
     if (error instanceof FlowConfigStoreError) {
+      io.stderr(`${error.code}: ${error.message}`);
+      return 1;
+    }
+    if (error instanceof AgentSkillCatalogError) {
       io.stderr(`${error.code}: ${error.message}`);
       return 1;
     }
@@ -231,6 +248,73 @@ async function configCommand(
   const dependencies = configDependenciesFrom(overrides);
   const result = await dependencies.loadConfig({ cwd: dependencies.cwd });
   io.stdout(JSON.stringify(result, null, 2));
+  return 0;
+}
+
+async function skillsCommand(
+  args: readonly string[],
+  io: CliIo,
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  const { positionals } = parseCommandArgs(args, {});
+  const subcommand = positionals[0];
+  if (
+    (subcommand !== "list" && subcommand !== "validate" && subcommand !== "inspect") ||
+    (subcommand === "inspect" ? positionals.length !== 2 : positionals.length !== 1)
+  ) {
+    throw new CliUsageError("skills requires list, validate, or inspect <name>");
+  }
+  const dependencies = configDependenciesFrom(overrides);
+  const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
+  const catalog = await discoverConfiguredAgentSkills(config);
+
+  if (subcommand === "list") {
+    io.stdout(
+      JSON.stringify(
+        {
+          root: catalog.root,
+          skills: catalog.skills.map(({ directory: _directory, ...skill }) => skill),
+        },
+        null,
+        2,
+      ),
+    );
+    return 0;
+  }
+
+  if (subcommand === "inspect") {
+    const name = positionals[1];
+    if (name === undefined) {
+      throw new CliUsageError("skills inspect requires one Agent Skill name");
+    }
+    const snapshot = await snapshotSelectedAgentSkills(catalog, [name]);
+    const skill = snapshot.packages[0];
+    if (skill === undefined) {
+      throw new AgentSkillCatalogError("missing_skill", `Agent Skill "${name}" was not found`);
+    }
+    io.stdout(
+      JSON.stringify(
+        {
+          ...skill,
+          files: skill.files.map(({ contentBase64: _contentBase64, ...file }) => file),
+        },
+        null,
+        2,
+      ),
+    );
+    return 0;
+  }
+
+  for (const skill of catalog.skills) {
+    await snapshotSelectedAgentSkills(catalog, [skill.name]);
+  }
+  io.stdout(
+    JSON.stringify(
+      { valid: true, root: catalog.root, skills: catalog.skills.map((skill) => skill.name) },
+      null,
+      2,
+    ),
+  );
   return 0;
 }
 
@@ -342,9 +426,11 @@ async function validateCommand(
   const dependencies = dependenciesFrom(overrides);
   const workflowPath = resolve(dependencies.cwd, workflowArgument);
   const workflow = await compileWorkflowFile(workflowPath, dependencies.readTextFile);
+  const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
+  const capabilitySnapshot = await resolveWorkflowCapabilitySnapshot(workflow, config);
 
   io.stdout(
-    `Workflow "${workflow.id}" is valid (nodes: ${workflow.nodes.length}, criteria: ${workflow.goal?.criteria.length ?? 0}).`,
+    `Workflow "${workflow.id}" is valid (nodes: ${workflow.nodes.length}, criteria: ${workflow.goal?.criteria.length ?? 0}, skills: ${capabilitySnapshot?.packages.length ?? 0}).`,
   );
   return 0;
 }
@@ -369,6 +455,7 @@ async function runCommand(
   // Compilation intentionally precedes construction of the run store or invocation of an executor.
   const workflowSource = await dependencies.readTextFile(workflowPath);
   const workflow = compileWorkflowText(workflowSource, workflowPath);
+  const capabilitySnapshot = await resolveWorkflowCapabilitySnapshot(workflow, config);
   const runsDirectory = resolveRunsDirectory(dependencies.cwd, values["runs-dir"], config);
   const executionCwd = resolve(dependencies.cwd, values.cwd ?? ".");
   const runId = values["run-id"] ?? randomUUID();
@@ -384,6 +471,7 @@ async function runCommand(
         sourceName: workflowPath,
         workflowSource,
         cwd: executionCwd,
+        ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
       },
       runsDirectory,
       config,
@@ -397,6 +485,7 @@ async function runCommand(
     workspaceIsolator: dependencies.createWorkspaceIsolator(runsDirectory),
     executor: dependencies.executor,
     ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
+    ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
     runId,
   });
 
@@ -791,6 +880,30 @@ async function compileWorkflowFile(
 ) {
   const source = await readTextFile(workflowPath);
   return compileWorkflowText(source, workflowPath);
+}
+
+async function resolveWorkflowCapabilitySnapshot(
+  workflow: ReturnType<typeof compileWorkflowText>,
+  config: EffectiveFlowConfig,
+): Promise<CapabilitySnapshot | undefined> {
+  const names = collectWorkflowAgentSkillNames(workflow);
+  if (names.length === 0) {
+    return undefined;
+  }
+  const catalog = await discoverConfiguredAgentSkills(config);
+  return await snapshotSelectedAgentSkills(catalog, names);
+}
+
+async function discoverConfiguredAgentSkills(
+  config: EffectiveFlowConfig,
+): Promise<ProjectAgentSkillCatalog> {
+  if (config.projectRoot === null) {
+    throw new AgentSkillCatalogError(
+      "missing_skill",
+      "Agent Skills require a Flow project root containing .flow/skills",
+    );
+  }
+  return await discoverProjectAgentSkills(config.projectRoot);
 }
 
 function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies {

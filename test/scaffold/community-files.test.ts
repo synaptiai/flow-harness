@@ -397,6 +397,41 @@ describe("public repository contracts", () => {
     expect(roadmap).toMatch(/durable bounded FIFO admission/is);
     expect(security).toMatch(/capacity ceiling.*does not contain a worker/is);
   });
+
+  it("documents portable Agent Skills with a valid progressive-disclosure example", async () => {
+    const [readme, architecture, workflowSpec, sourcing, roadmap, testing, workflowSource, skill] =
+      await Promise.all([
+        readText("README.md"),
+        readText("docs/architecture.md"),
+        readText("docs/workflow-spec.md"),
+        readText("docs/capability-sourcing.md"),
+        readText("docs/roadmap.md"),
+        readText("docs/testing-and-evaluation.md"),
+        readText("examples/portable-agent-skill.workflow.yaml"),
+        readText("examples/agent-skills/review/SKILL.md"),
+      ]);
+
+    expect(readme).toMatch(/Portable Agent Skills packages.*Implemented/is);
+    expect(readme).toContain("skills validate");
+    expect(readme).toContain("examples/portable-agent-skill.workflow.yaml");
+    expect(architecture).toMatch(/immutable capability snapshot.*run_started/is);
+    expect(workflowSpec).toContain("## Portable Agent Skills");
+    expect(workflowSpec).toMatch(/allowed-tools.*request.*not.*author/i);
+    expect(sourcing).toMatch(/Portable skills.*Implemented/is);
+    expect(sourcing).toMatch(/Pi.*ambient skill discovery.*disabled/is);
+    expect(roadmap).toMatch(/Agent Skills packages.*Implemented/is);
+    expect(testing).toContain("examples/portable-agent-skill.workflow.yaml");
+    expect(skill).toMatch(/name:\s+review/);
+
+    const workflow = compileWorkflowText(
+      workflowSource,
+      "examples/portable-agent-skill.workflow.yaml",
+    );
+    expect(workflow.nodes[0]).toMatchObject({
+      type: "agent",
+      agent: { tools: ["read"], skills: ["review"] },
+    });
+  });
 });
 
 async function readText(path: string): Promise<string> {

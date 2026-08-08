@@ -9,6 +9,7 @@ import { createHash } from "node:crypto";
 import { access, readFile, readdir, realpath } from "node:fs/promises";
 import { Type } from "typebox";
 
+import type { AgentSkillSession } from "../../domain/capability/agent-skill-session.js";
 import type { PolicyBroker } from "../../domain/policy/broker.js";
 import type { AgentToolName } from "../../domain/workflow/types.js";
 import {
@@ -90,6 +91,7 @@ export interface FlowAgentToolOptions {
   readonly protectedPaths?: readonly string[];
   readonly effectRecorder?: AgentEffectRecorder;
   readonly editFile?: typeof editHashAnchoredTextFile;
+  readonly capabilitySession?: AgentSkillSession;
 }
 
 interface ReadVersionContext {
@@ -123,7 +125,12 @@ export async function createWorkspaceAgentTools(
   for (const tool of tools) {
     const definition =
       tool === "read"
-        ? createVersionedReadDefinition(root, readOperations, readVersions)
+        ? createVersionedReadDefinition(
+            root,
+            readOperations,
+            readVersions,
+            options.capabilitySession,
+          )
         : tool === "ls"
           ? createLsDefinition(broker)
           : createEditDefinition(broker, options);
@@ -141,6 +148,7 @@ function createVersionedReadDefinition(
   root: string,
   operations: ReadOperations,
   versions: AsyncLocalStorage<ReadVersionContext>,
+  capabilitySession?: AgentSkillSession,
 ): ToolDefinition {
   const base = createReadToolDefinition(root, { autoResizeImages: false, operations });
   const baseExecute = base.execute.bind(base);
@@ -149,14 +157,34 @@ function createVersionedReadDefinition(
     name: "flow_read",
     label: "read",
     description:
-      "Read a UTF-8 text file inside the Flow execution workspace. The result includes a full-file SHA-256 version for flow_edit. Binary and image decoding is not supported.",
-    promptSnippet: "Read workspace text files and obtain their Flow SHA-256 versions",
+      "Read a UTF-8 text file inside the Flow execution workspace or an explicitly selected immutable skill:// resource. Workspace results include a full-file SHA-256 version for flow_edit. Binary and image decoding is not supported.",
+    promptSnippet:
+      "Read workspace text files with Flow SHA-256 versions and selected skill:// resources",
     promptGuidelines: [
       "Use flow_read only for paths inside the Flow execution workspace.",
+      "Use listed skill:// URIs only for Agent Skills selected on this node.",
       "Pass the returned full-file SHA-256 version to flow_edit; re-read after a stale-version error.",
     ],
-    execute: async (...args: Parameters<typeof baseExecute>) =>
-      versions.run({}, async () => {
+    execute: async (...args: Parameters<typeof baseExecute>) => {
+      const input = args[1];
+      const signal = args[2];
+      if (input.path.startsWith("skill://")) {
+        throwIfToolAborted(signal);
+        if (capabilitySession === undefined) {
+          throw new Error("Agent Skill resources are unavailable for this node");
+        }
+        const resource = capabilitySession.readText(input.path);
+        return {
+          content: [{ type: "text" as const, text: resource.text }],
+          details: {
+            flowCapabilityUri: resource.receipt.uri,
+            packageDigest: resource.receipt.packageDigest,
+            fileDigest: resource.receipt.fileDigest,
+            bytes: resource.receipt.bytes,
+          },
+        };
+      }
+      return await versions.run({}, async () => {
         const result = await baseExecute(...args);
         const version = versions.getStore()?.sha256;
         if (version === undefined) {
@@ -170,7 +198,8 @@ function createVersionedReadDefinition(
           ],
           details: { ...result.details, flowFileSha256: version },
         };
-      }),
+      });
+    },
   };
   return definition as ToolDefinition;
 }

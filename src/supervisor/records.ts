@@ -6,6 +6,10 @@ import { z } from "zod";
 import { RUN_RECOVERY_ERROR_CODES } from "../application/run-workflow.js";
 import { MAX_ACTIVE_WORKERS, MAX_QUEUED_JOBS } from "../domain/config/resolver.js";
 import { SUPERVISOR_PROTOCOL_VERSION } from "./protocol.js";
+import {
+  type CapabilitySnapshot,
+  persistedCapabilitySnapshotSchema,
+} from "../domain/capability/agent-skills.js";
 
 const uuidSchema = z.uuid();
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
@@ -39,6 +43,7 @@ export interface JobDigestInput {
   readonly sourceName: string;
   readonly workflowSource: string;
   readonly cwd: string;
+  readonly capabilitySnapshot?: CapabilitySnapshot | undefined;
   readonly token: string;
   readonly createdAt: string;
 }
@@ -56,6 +61,7 @@ export interface SubmissionCommandIdentity {
   readonly mode: "run" | "resume";
   readonly sourceName: string;
   readonly workflowSourceDigest: string;
+  readonly capabilitySnapshotDigest?: string | undefined;
   readonly cwd: string;
 }
 
@@ -155,6 +161,7 @@ const jobRecordShape = {
   sourceName: absolutePathSchema,
   workflowSource: z.string().min(1).max(20_000_000),
   cwd: absolutePathSchema,
+  capabilitySnapshot: persistedCapabilitySnapshotSchema.optional(),
   token: tokenSchema,
   createdAt: timestampSchema,
 };
@@ -165,6 +172,15 @@ const jobRecordSchema: z.ZodType<JobRecord> = z
     digest: sha256Schema,
   })
   .strict()
+  .superRefine((record, context) => {
+    if (record.mode === "resume" && record.capabilitySnapshot !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["capabilitySnapshot"],
+        message: "resume jobs must obtain capabilities from durable run history",
+      });
+    }
+  })
   .refine((record) => calculateJobDigest(record) === record.digest, {
     message: "job digest does not match its immutable snapshot",
     path: ["digest"],
@@ -346,6 +362,7 @@ const submissionCommandBaseShape = {
   mode: z.enum(["run", "resume"]),
   sourceName: absolutePathSchema,
   workflowSourceDigest: sha256Schema,
+  capabilitySnapshotDigest: sha256Schema.optional(),
   cwd: absolutePathSchema,
   requestDigest: sha256Schema,
   recordedAt: timestampSchema,
@@ -426,6 +443,7 @@ export interface CreateSubmissionCommandInput {
   readonly mode: "run" | "resume";
   readonly sourceName: string;
   readonly workflowSource: string;
+  readonly capabilitySnapshot?: CapabilitySnapshot | undefined;
   readonly cwd: string;
   readonly recordedAt: string;
 }
@@ -450,6 +468,9 @@ export function calculateJobDigest(record: JobDigestInput | JobRecord): string {
     sourceName: record.sourceName,
     workflowSource: record.workflowSource,
     cwd: record.cwd,
+    ...(record.capabilitySnapshot === undefined
+      ? {}
+      : { capabilitySnapshot: record.capabilitySnapshot }),
     token: record.token,
     createdAt: record.createdAt,
   };
@@ -557,6 +578,9 @@ export function createSubmissionCommandRecord(
     mode: input.mode,
     sourceName: input.sourceName,
     workflowSourceDigest: createHash("sha256").update(input.workflowSource).digest("hex"),
+    ...(input.capabilitySnapshot === undefined
+      ? {}
+      : { capabilitySnapshotDigest: input.capabilitySnapshot.digest }),
     cwd: input.cwd,
   };
   return deepFreeze(
@@ -665,6 +689,9 @@ export function calculateSubmissionCommandDigest(input: SubmissionCommandIdentit
     mode: input.mode,
     sourceName: input.sourceName,
     workflowSourceDigest: input.workflowSourceDigest,
+    ...(input.capabilitySnapshotDigest === undefined
+      ? {}
+      : { capabilitySnapshotDigest: input.capabilitySnapshotDigest }),
     cwd: input.cwd,
   };
   return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
@@ -720,6 +747,9 @@ function submissionCommandBase(record: SubmissionCommandRecord): SubmissionComma
     mode: record.mode,
     sourceName: record.sourceName,
     workflowSourceDigest: record.workflowSourceDigest,
+    ...(record.capabilitySnapshotDigest === undefined
+      ? {}
+      : { capabilitySnapshotDigest: record.capabilitySnapshotDigest }),
     cwd: record.cwd,
     requestDigest: record.requestDigest,
     recordedAt: record.recordedAt,

@@ -214,7 +214,13 @@ export async function executeWorkerJob(
       } as const;
       const execution = (
         job.mode === "run"
-          ? runWorkflow(workflow, { ...runOptions, runId: job.runId })
+          ? runWorkflow(workflow, {
+              ...runOptions,
+              runId: job.runId,
+              ...(job.capabilitySnapshot === undefined
+                ? {}
+                : { capabilitySnapshot: job.capabilitySnapshot }),
+            })
           : resumeWorkflow(workflow, { ...runOptions, runId: job.runId })
       ).then(
         (state) => ({ state }),

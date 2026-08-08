@@ -4,7 +4,7 @@
 
 Flow owns every semantic that determines whether work is allowed, contained, complete, recoverable, or correct. Pi initially supplies the model-facing machinery. Anthropic Sandbox Runtime (SRT) supplies the first command-containment primitive behind a Flow-owned port. OMP and Prime Agent are reference implementations and possible sources for carefully isolated future capability packages.
 
-The first runtime will embed [`@earendil-works/pi-coding-agent`](https://pi.dev/docs/latest/sdk) behind a narrow Flow-owned executor. The package is pinned exactly and all events are translated before persistence.
+The first runtime embeds [`@earendil-works/pi-coding-agent`](https://pi.dev/docs/latest/sdk) behind a narrow Flow-owned executor. The package is pinned exactly and all events are translated before persistence.
 
 Pi's experimental `AgentHarness` API is not a foundation for the first release. Pi v0.84.0 describes unfinished paths that reject with `HarnessNotImplemented`; Flow will use the established `createAgentSession()` API instead. See the [Pi v0.84.0 release](https://github.com/earendil-works/pi/releases/tag/v0.84.0).
 
@@ -145,16 +145,34 @@ and [AWS idempotency guidance](https://docs.aws.amazon.com/durable-execution/pat
 
 ## Portable skills
 
-Flow will support the open [Agent Skills specification](https://agentskills.io/specification), not Claude-specific discovery rules.
+**Implemented for strict local project packages.** Flow supports the open [Agent Skills
+specification](https://agentskills.io/specification), not Claude-specific discovery rules. A
+workflow explicitly selects packages by name; Flow snapshots the exact bounded content before run
+admission and progressively exposes selected resources through its existing `flow_read` tool.
 
 Additional Flow rules:
 
-- Validate packages before indexing.
-- Load metadata during discovery and full instructions only for selected nodes.
-- Treat `allowed-tools` as a request, never authorization.
-- Record provenance, digest, version, license, dependencies, and trust state.
-- Execute skill code through the same policy and sandbox boundary as every other tool.
+- Validate strict manifests, size limits, regular-file identity, symlink refusal, and package names
+  before indexing.
+- Load metadata during discovery and full instructions or resources only when a selected node reads
+  their `skill://` URI.
+- Treat `allowed-tools` as a permission request, never authorization; a package cannot widen the
+  node's compiled Flow tools or broker policy.
+- Record provenance, content digests, license, compatibility, metadata, requested tools, project
+  trust state, selected identity, and exact observed reads.
+- Preserve selected content in the provider-neutral `run_started` capability snapshot and detached
+  job record so queueing, child execution, and resume never reload drifted live sources.
+- Treat package code as inert resources. No script or extension is executed automatically.
 - Prevent packages from directly changing transitions or evaluator definitions.
+
+Pi's ambient skill discovery is disabled alongside its extensions, prompt templates, themes,
+context files, and project discovery. This is intentional even though Pi can discover Agent Skills
+natively: Flow's custom `flow_read`, durable snapshot, child-run, detached-worker, replay, and policy
+contracts must remain identical across providers and future executor adapters. Pi receives only a
+Flow-generated metadata catalog and resolves content through Flow-owned immutable sessions.
+
+Remote installation, executable extensions, and tool/evaluator/workflow/policy/UI package
+manifests remain later Gate 6 work.
 
 ## Coupling rules
 

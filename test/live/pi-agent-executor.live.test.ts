@@ -20,6 +20,7 @@ describe("PiAgentExecutor live", () => {
         prompt: "Reply with exactly FLOW_LIVE_OK and do not call tools.",
         model: { provider, id: model, thinking: "off" },
         tools: [],
+        skills: [],
         timeoutMs: 120_000,
       },
     };

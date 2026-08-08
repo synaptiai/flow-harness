@@ -2,6 +2,7 @@ import { isAbsolute } from "node:path";
 import { z } from "zod";
 
 import { MAX_ACTIVE_WORKERS, MAX_QUEUED_JOBS } from "../domain/config/resolver.js";
+import { persistedCapabilitySnapshotSchema } from "../domain/capability/agent-skills.js";
 import { runEventSchema, type RunEvent, type RunStatus } from "../domain/run/events.js";
 
 export const SUPERVISOR_PROTOCOL_VERSION = 2 as const;
@@ -43,8 +44,18 @@ const submitCommandSchema = z
     sourceName: absolutePathSchema,
     workflowSource: z.string().min(1).max(MAX_WORKFLOW_SOURCE_CHARACTERS),
     cwd: absolutePathSchema,
+    capabilitySnapshot: persistedCapabilitySnapshotSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((command, context) => {
+    if (command.mode === "resume" && command.capabilitySnapshot !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["capabilitySnapshot"],
+        message: "resume submissions must obtain the capability snapshot from durable run history",
+      });
+    }
+  });
 
 const cancelCommandSchema = z
   .object({

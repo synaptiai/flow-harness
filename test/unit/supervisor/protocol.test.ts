@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
+import { createCapabilitySnapshot } from "../../../src/domain/capability/agent-skills.js";
 
 import {
   encodeSupervisorMessage,
@@ -55,6 +56,56 @@ describe("supervisor protocol", () => {
         cwd: "/workspace",
       },
     });
+  });
+
+  it("carries a validated immutable capability snapshot only for detached new runs", () => {
+    const capabilitySnapshot = testCapabilitySnapshot();
+    const command = {
+      type: "submit",
+      policyDigest: "a".repeat(64),
+      commandId: randomUUID(),
+      mode: "run",
+      runId: "detached-skilled-run",
+      sourceName: "/workspace/workflow.yaml",
+      workflowSource:
+        "apiVersion: flow.synapti.ai/v1alpha1\nkind: Workflow\nmetadata: { id: detached }\nnodes: []\n",
+      cwd: "/workspace",
+      capabilitySnapshot,
+    } as const;
+
+    const request = parseSupervisorRequestFrame(
+      encodeSupervisorMessage({
+        version: SUPERVISOR_PROTOCOL_VERSION,
+        requestId: randomUUID(),
+        command,
+      }),
+    );
+
+    expect(request.command).toMatchObject({
+      type: "submit",
+      capabilitySnapshot: { digest: capabilitySnapshot.digest },
+    });
+    expect(() =>
+      parseSupervisorRequestFrame(
+        encodeSupervisorMessage({
+          version: SUPERVISOR_PROTOCOL_VERSION,
+          requestId: randomUUID(),
+          command: { ...command, mode: "resume" },
+        }),
+      ),
+    ).toThrow(/resume.*capability snapshot/i);
+    expect(() =>
+      parseSupervisorRequestFrame(
+        encodeSupervisorMessage({
+          version: SUPERVISOR_PROTOCOL_VERSION,
+          requestId: randomUUID(),
+          command: {
+            ...command,
+            capabilitySnapshot: { ...capabilitySnapshot, digest: "f".repeat(64) },
+          },
+        }),
+      ),
+    ).toThrow();
   });
 
   it("parses bounded cursor replay and attributable cancellation commands", () => {
@@ -343,3 +394,18 @@ describe("supervisor protocol", () => {
     expect(() => parseSupervisorRequestFrame(oversized)).toThrow(/maximum/i);
   });
 });
+
+function testCapabilitySnapshot() {
+  return createCapabilitySnapshot([
+    {
+      kind: "agent-skill",
+      name: "review",
+      description: "Review code when selected.",
+      metadata: {},
+      requestedTools: [],
+      trust: "project-explicit",
+      provenance: ".flow/skills/review",
+      files: [{ path: "SKILL.md", content: Buffer.from("# Review\n") }],
+    },
+  ]);
+}

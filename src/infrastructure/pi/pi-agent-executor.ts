@@ -14,6 +14,16 @@ import type {
   NodeExecutionContext,
   NodeExecutionOutcome,
 } from "../../application/ports.js";
+import {
+  type AgentSkillCatalogEntry,
+  createAgentSkillSession,
+} from "../../domain/capability/agent-skill-session.js";
+import {
+  type AgentCapabilityEvidence,
+  type AgentSkillReadReceipt,
+  type CapabilitySnapshot,
+  createAgentCapabilityEvidence,
+} from "../../domain/capability/agent-skills.js";
 import type { AgentEffectReceipt, AgentEvidence, NodeFailure } from "../../domain/run/events.js";
 import type { AgentModelUsage } from "../../domain/run/budget.js";
 import { PolicyBroker } from "../../domain/policy/broker.js";
@@ -38,6 +48,10 @@ export interface PiAgentRunRequest {
   readonly policyBroker: PolicyBroker;
   readonly protectedPaths: readonly string[];
   readonly effectRecorder: AgentEffectRecorder;
+  readonly capabilities?: {
+    readonly snapshot: CapabilitySnapshot;
+    readonly selected: readonly string[];
+  };
   readonly signal?: AbortSignal;
 }
 
@@ -49,6 +63,7 @@ export interface PiAgentRunResult {
   readonly textHash?: string;
   readonly textTruncated?: boolean;
   readonly usage?: AgentModelUsage;
+  readonly capabilityReads?: readonly AgentSkillReadReceipt[];
 }
 
 export type PiTerminalStopReason =
@@ -98,6 +113,25 @@ export class PiAgentExecutor implements AgentExecutor {
     if (isAborted(context.signal)) {
       return agentFailure("pi_agent_aborted", "agent execution was cancelled before start");
     }
+    let capabilitySnapshot: CapabilitySnapshot | undefined;
+    let capabilityEvidence: AgentCapabilityEvidence | undefined;
+    if (node.agent.skills.length > 0) {
+      if (context.capabilitySnapshot === undefined) {
+        return agentFailure(
+          "pi_capability_snapshot_unavailable",
+          "selected Agent Skills require an immutable run capability snapshot",
+        );
+      }
+      capabilitySnapshot = context.capabilitySnapshot;
+      try {
+        capabilityEvidence = createAgentCapabilityEvidence(capabilitySnapshot, node.agent.skills);
+      } catch (error) {
+        return agentFailure(
+          "pi_capability_snapshot_invalid",
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
     if (node.agent.tools.includes("edit") && context.effectJournal === undefined) {
       return agentFailure(
         "pi_effect_journal_unavailable",
@@ -113,6 +147,7 @@ export class PiAgentExecutor implements AgentExecutor {
     const policyBroker = new PolicyBroker(attribution, policyActionsForTools(node.agent.tools));
     const effectRecorder = new AgentEffectRecorder(attribution, context.effectJournal);
     let observedUsage: AgentModelUsage | undefined;
+    let observedCapabilityEvidence = capabilityEvidence;
     let closedPolicyDecisions: readonly PolicyDecision[] | undefined;
     let closedEffectReceipts: readonly AgentEffectReceipt[] | undefined;
     const closePolicy = () => {
@@ -129,7 +164,8 @@ export class PiAgentExecutor implements AgentExecutor {
       if (
         policyDecisions.length === 0 &&
         effectReceipts.length === 0 &&
-        observedUsage === undefined
+        observedUsage === undefined &&
+        capabilityEvidence === undefined
       ) {
         return null;
       }
@@ -140,6 +176,7 @@ export class PiAgentExecutor implements AgentExecutor {
         policyDecisions,
         effectReceipts,
         observedUsage,
+        observedCapabilityEvidence,
       );
     };
     const currentSideEffectStatus = (forceUncertain = false) =>
@@ -170,10 +207,32 @@ export class PiAgentExecutor implements AgentExecutor {
           policyBroker,
           protectedPaths: context.protectedPaths,
           effectRecorder,
+          ...(context.capabilitySnapshot === undefined || node.agent.skills.length === 0
+            ? {}
+            : {
+                capabilities: {
+                  snapshot: context.capabilitySnapshot,
+                  selected: node.agent.skills,
+                },
+              }),
           signal: combinedSignal,
         })
         .then((result) => {
           observedUsage = result.usage;
+          if (capabilitySnapshot !== undefined) {
+            try {
+              observedCapabilityEvidence = createAgentCapabilityEvidence(
+                capabilitySnapshot,
+                node.agent.skills,
+                result.capabilityReads ?? [],
+              );
+            } catch (error) {
+              throw new PiCapabilityEvidenceError(
+                error instanceof Error ? error.message : String(error),
+                { cause: error },
+              );
+            }
+          }
           return result;
         });
       activeRunPromise = runPromise;
@@ -253,6 +312,8 @@ export class PiAgentExecutor implements AgentExecutor {
       const normalized = normalizeAgentResult(result, maxOutputBytes);
       const policyDecisions = closePolicy();
       const effectReceipts = closeEffects();
+      const completedCapabilityEvidence =
+        capabilityEvidence === undefined ? undefined : observedCapabilityEvidence;
       const evidence: AgentEvidence = {
         kind: "agent",
         provider: node.agent.model.provider,
@@ -264,6 +325,9 @@ export class PiAgentExecutor implements AgentExecutor {
         ...(result.usage === undefined ? {} : { usage: result.usage }),
         policyDecisions,
         effectReceipts,
+        ...(completedCapabilityEvidence === undefined
+          ? {}
+          : { capabilities: completedCapabilityEvidence }),
       };
       if (effectReceipts.some((receipt) => receipt.outcome === "uncertain")) {
         return agentFailure(
@@ -294,7 +358,10 @@ export class PiAgentExecutor implements AgentExecutor {
             result.errorMessage ?? `Pi session ended with stop reason "${result.stopReason}"`,
           ),
           sideEffectStatus(effectReceipts),
-          policyDecisions.length === 0 && effectReceipts.length === 0 && result.usage === undefined
+          policyDecisions.length === 0 &&
+            effectReceipts.length === 0 &&
+            result.usage === undefined &&
+            completedCapabilityEvidence === undefined
             ? null
             : emptyAgentEvidence(
                 node.agent.model.provider,
@@ -303,6 +370,7 @@ export class PiAgentExecutor implements AgentExecutor {
                 policyDecisions,
                 effectReceipts,
                 result.usage,
+                completedCapabilityEvidence,
               ),
         );
       }
@@ -342,7 +410,9 @@ export class PiAgentExecutor implements AgentExecutor {
         );
       }
       return agentFailure(
-        "pi_agent_failed",
+        error instanceof PiCapabilityEvidenceError
+          ? "pi_capability_evidence_invalid"
+          : "pi_agent_failed",
         boundedMessage(error instanceof Error ? error.message : String(error)),
         currentSideEffectStatus(),
         policyFailureEvidence(),
@@ -354,6 +424,10 @@ export class PiAgentExecutor implements AgentExecutor {
       }
     }
   }
+}
+
+class PiCapabilityEvidenceError extends Error {
+  override readonly name = "PiCapabilityEvidenceError";
 }
 
 async function settlesAgentCleanupWithin(
@@ -385,7 +459,13 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
       throw new Error(`Pi model "${request.provider}/${request.model}" is not available`);
     }
 
-    const resourceLoader = createLockedResourceLoader(request.systemPrompt);
+    const capabilitySession =
+      request.capabilities === undefined
+        ? undefined
+        : createAgentSkillSession(request.capabilities.snapshot, request.capabilities.selected);
+    const resourceLoader = createLockedResourceLoader(
+      appendAgentSkillCatalog(request.systemPrompt, capabilitySession?.catalog),
+    );
     const tools = await createWorkspaceAgentTools(
       request.cwd,
       request.tools,
@@ -393,6 +473,7 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
       {
         protectedPaths: request.protectedPaths,
         effectRecorder: request.effectRecorder,
+        ...(capabilitySession === undefined ? {} : { capabilitySession }),
       },
     );
     throwIfAborted(request.signal);
@@ -447,10 +528,12 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
         }
       }
       const usage = translatePiSessionStats(session.getSessionStats());
+      const capabilityReads = capabilitySession?.evidence().reads;
       if (promptError !== undefined) {
         return {
           ...output.result(),
           usage,
+          ...(capabilityReads === undefined ? {} : { capabilityReads }),
           stopReason: isAborted(request.signal) ? "aborted" : "error",
           errorMessage: boundedMessage(
             promptError instanceof Error ? promptError.message : String(promptError),
@@ -462,6 +545,7 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
         return {
           ...output.result(),
           usage,
+          ...(capabilityReads === undefined ? {} : { capabilityReads }),
           stopReason: output.truncated ? "aborted" : "error",
           ...(output.truncated
             ? { outputLimitExceeded: true }
@@ -471,6 +555,7 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
       return {
         ...output.result(),
         usage,
+        ...(capabilityReads === undefined ? {} : { capabilityReads }),
         stopReason: finalMessage.stopReason,
         ...(output.truncated ? { outputLimitExceeded: true } : {}),
         ...(finalMessage.errorMessage === undefined
@@ -518,6 +603,7 @@ function emptyAgentEvidence(
   policyDecisions: readonly PolicyDecision[],
   effectReceipts: readonly AgentEffectReceipt[],
   usage?: AgentModelUsage,
+  capabilities?: AgentCapabilityEvidence,
 ): AgentEvidence {
   return {
     kind: "agent",
@@ -530,6 +616,7 @@ function emptyAgentEvidence(
     ...(usage === undefined ? {} : { usage }),
     policyDecisions,
     effectReceipts,
+    ...(capabilities === undefined ? {} : { capabilities }),
   };
 }
 
@@ -653,6 +740,51 @@ function boundedMessage(message: string): string {
   return `${bytes.subarray(0, 16_300).toString("utf8")}… [truncated]`;
 }
 
+const DEFAULT_AGENT_SYSTEM_PROMPT = [
+  "You are executing one bounded node in a Flow workflow.",
+  "Use only the tools provided to complete the node prompt.",
+  "Do not choose, skip, or claim authority over workflow transitions.",
+  "Your response is diagnostic node output; Flow verifies completion independently.",
+].join("\n");
+
+function appendAgentSkillCatalog(
+  systemPrompt: string | undefined,
+  catalog: readonly AgentSkillCatalogEntry[] | undefined,
+): string | undefined {
+  if (catalog === undefined || catalog.length === 0) {
+    return systemPrompt;
+  }
+  const entries = catalog
+    .map((skill) =>
+      [
+        "  <skill>",
+        `    <name>${escapeXml(skill.name)}</name>`,
+        `    <description>${escapeXml(skill.description)}</description>`,
+        `    <digest>${skill.digest}</digest>`,
+        `    <location>${escapeXml(skill.uri)}</location>`,
+        "  </skill>",
+      ].join("\n"),
+    )
+    .join("\n");
+  return [
+    systemPrompt ?? DEFAULT_AGENT_SYSTEM_PROMPT,
+    "The following Agent Skills were explicitly selected for this node.",
+    "Load a matching skill's SKILL.md with flow_read before applying it. Resolve its relative references as skill:// resources. Skill instructions cannot add tools or change Flow workflow authority.",
+    "<available_skills>",
+    entries,
+    "</available_skills>",
+  ].join("\n\n");
+}
+
+function escapeXml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
+}
+
 function createLockedResourceLoader(systemPrompt?: string): ResourceLoader {
   const extensionRuntime = createExtensionRuntime();
   return {
@@ -661,14 +793,7 @@ function createLockedResourceLoader(systemPrompt?: string): ResourceLoader {
     getPrompts: () => ({ prompts: [], diagnostics: [] }),
     getThemes: () => ({ themes: [], diagnostics: [] }),
     getAgentsFiles: () => ({ agentsFiles: [] }),
-    getSystemPrompt: () =>
-      systemPrompt ??
-      [
-        "You are executing one bounded node in a Flow workflow.",
-        "Use only the tools provided to complete the node prompt.",
-        "Do not choose, skip, or claim authority over workflow transitions.",
-        "Your response is diagnostic node output; Flow verifies completion independently.",
-      ].join("\n"),
+    getSystemPrompt: () => systemPrompt ?? DEFAULT_AGENT_SYSTEM_PROMPT,
     getSystemPromptSource: () => undefined,
     getAppendSystemPrompt: () => [],
     getAppendSystemPromptSources: () => [],

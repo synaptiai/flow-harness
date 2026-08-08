@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { goalContractSchema } from "../goal/schema.js";
+import { agentSkillNameSchema, MAX_AGENT_SKILL_PACKAGES } from "../capability/agent-skills.js";
 import {
   type CompiledResultSchema,
   FLOW_WORKFLOW_API_VERSION,
@@ -137,23 +138,39 @@ const commandNodeSchema = z
   })
   .strict();
 
+const agentConfigSchema = z
+  .object({
+    prompt: z.string().trim().min(1).max(262_144),
+    model: modelSchema,
+    tools: z
+      .array(z.enum(["read", "ls", "edit"]))
+      .max(3)
+      .refine((tools) => new Set(tools).size === tools.length, "agent tools must be unique")
+      .default([]),
+    skills: z
+      .array(agentSkillNameSchema)
+      .max(MAX_AGENT_SKILL_PACKAGES)
+      .refine((skills) => new Set(skills).size === skills.length, "agent skills must be unique")
+      .default([]),
+    recovery: agentRecoverySchema.optional(),
+    timeoutMs: z.number().int().positive().max(86_400_000).default(300_000),
+  })
+  .strict()
+  .superRefine((agent, context) => {
+    if (agent.skills.length > 0 && !agent.tools.includes("read")) {
+      context.addIssue({
+        code: "custom",
+        path: ["skills"],
+        message: "agent skills require the declared read tool for progressive disclosure",
+      });
+    }
+  });
+
 const agentNodeSchema = z
   .object({
     ...guardedNodeShape,
     type: z.literal("agent"),
-    agent: z
-      .object({
-        prompt: z.string().trim().min(1).max(262_144),
-        model: modelSchema,
-        tools: z
-          .array(z.enum(["read", "ls", "edit"]))
-          .max(3)
-          .refine((tools) => new Set(tools).size === tools.length, "agent tools must be unique")
-          .default([]),
-        recovery: agentRecoverySchema.optional(),
-        timeoutMs: z.number().int().positive().max(86_400_000).default(300_000),
-      })
-      .strict(),
+    agent: agentConfigSchema,
   })
   .strict();
 

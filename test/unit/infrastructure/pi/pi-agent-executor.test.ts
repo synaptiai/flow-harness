@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 
 import type { NodeEffectJournal, NodeExecutionContext } from "../../../../src/application/ports.js";
 import type { CompiledAgentNode } from "../../../../src/domain/workflow/types.js";
+import { createCapabilitySnapshot } from "../../../../src/domain/capability/agent-skills.js";
 import { PolicyBroker } from "../../../../src/domain/policy/broker.js";
 import {
   EmbeddedPiAgentRunner,
@@ -127,6 +128,143 @@ describe("PiAgentExecutor", () => {
           }),
         ],
         effectReceipts: [],
+      },
+    });
+  });
+
+  it("passes selected immutable skills and records exact observed resource reads", async () => {
+    const snapshot = createCapabilitySnapshot([
+      {
+        kind: "agent-skill",
+        name: "review",
+        description: "Review code when selected.",
+        metadata: { version: "1" },
+        requestedTools: ["Bash"],
+        trust: "project-explicit",
+        provenance: ".flow/skills/review",
+        files: [{ path: "SKILL.md", content: Buffer.from("# Review\n") }],
+      },
+    ]);
+    const selected = snapshot.packages[0];
+    const file = selected?.files[0];
+    if (selected === undefined || file === undefined) {
+      throw new Error("skill fixture was not created");
+    }
+    let request: PiAgentRunRequest | undefined;
+    const runner: PiAgentRunner = {
+      async run(input) {
+        request = input;
+        return {
+          text: "Reviewed.",
+          stopReason: "stop",
+          capabilityReads: [
+            {
+              uri: "skill://review/SKILL.md",
+              packageDigest: selected.digest,
+              fileDigest: file.sha256,
+              bytes: file.bytes,
+            },
+          ],
+        };
+      },
+    };
+    const node = agentNode();
+
+    const outcome = await new PiAgentExecutor(runner).execute(
+      { ...node, agent: { ...node.agent, skills: ["review"] } },
+      { ...context, capabilitySnapshot: snapshot },
+    );
+
+    expect(request?.capabilities).toEqual({ snapshot, selected: ["review"] });
+    expect(outcome).toMatchObject({
+      status: "succeeded",
+      evidence: {
+        capabilities: {
+          selected: [{ name: "review", digest: selected.digest }],
+          reads: [
+            {
+              uri: "skill://review/SKILL.md",
+              packageDigest: selected.digest,
+              fileDigest: file.sha256,
+              bytes: file.bytes,
+            },
+          ],
+        },
+      },
+    });
+  });
+
+  it("rejects a selected skill when immutable run context is absent", async () => {
+    let calls = 0;
+    const runner: PiAgentRunner = {
+      async run() {
+        calls += 1;
+        return { text: "not reached", stopReason: "stop" };
+      },
+    };
+    const node = agentNode();
+
+    const outcome = await new PiAgentExecutor(runner).execute(
+      { ...node, agent: { ...node.agent, skills: ["review"] } },
+      context,
+    );
+
+    expect(calls).toBe(0);
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: { code: "pi_capability_snapshot_unavailable" },
+    });
+  });
+
+  it("fails closed with baseline evidence when a runner forges skill read receipts", async () => {
+    const snapshot = createCapabilitySnapshot([
+      {
+        kind: "agent-skill",
+        name: "review",
+        description: "Review code when selected.",
+        metadata: {},
+        requestedTools: [],
+        trust: "project-explicit",
+        provenance: ".flow/skills/review",
+        files: [{ path: "SKILL.md", content: Buffer.from("# Review\n") }],
+      },
+    ]);
+    const skill = snapshot.packages[0];
+    const file = skill?.files[0];
+    if (skill === undefined || file === undefined) {
+      throw new Error("skill fixture was not created");
+    }
+    const runner: PiAgentRunner = {
+      async run() {
+        return {
+          text: "forged",
+          stopReason: "stop",
+          capabilityReads: [
+            {
+              uri: "skill://review/SKILL.md",
+              packageDigest: skill.digest,
+              fileDigest: "f".repeat(64),
+              bytes: file.bytes,
+            },
+          ],
+        };
+      },
+    };
+    const node = agentNode();
+
+    const outcome = await new PiAgentExecutor(runner).execute(
+      { ...node, agent: { ...node.agent, skills: ["review"] } },
+      { ...context, capabilitySnapshot: snapshot },
+    );
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: { code: "pi_capability_evidence_invalid" },
+      evidence: {
+        capabilities: {
+          selected: [{ name: "review", digest: skill.digest }],
+          reads: [],
+        },
       },
     });
   });
@@ -597,6 +735,57 @@ describe("PiAgentExecutor", () => {
 });
 
 describe("EmbeddedPiAgentRunner", () => {
+  it("adds only selected skill metadata to the locked prompt while Pi resources stay empty", async () => {
+    const snapshot = createCapabilitySnapshot([
+      {
+        kind: "agent-skill",
+        name: "review",
+        description: "Review code when selected & needed.",
+        metadata: {},
+        requestedTools: ["Bash"],
+        trust: "project-explicit",
+        provenance: ".flow/skills/review",
+        files: [
+          {
+            path: "SKILL.md",
+            content: Buffer.from("PRIVATE FULL SKILL INSTRUCTIONS\n"),
+          },
+        ],
+      },
+    ]);
+    let sessionOptions: Parameters<typeof createAgentSession>[0] | undefined;
+    const fakeSession = {
+      state: { messages: [{ role: "assistant", stopReason: "stop" }] },
+      subscribe: () => () => undefined,
+      prompt: async () => undefined,
+      abort: async () => undefined,
+      getSessionStats: () => sessionStats(),
+      dispose: () => undefined,
+    };
+    const createSession = (async (options: Parameters<typeof createAgentSession>[0]) => {
+      sessionOptions = options;
+      return { session: fakeSession };
+    }) as unknown as typeof createAgentSession;
+    const runner = new EmbeddedPiAgentRunner(
+      async () => ({ getModel: () => ({}) }) as never,
+      createSession,
+    );
+
+    await runner.run({
+      ...agentRequest(),
+      capabilities: { snapshot, selected: ["review"] },
+    });
+
+    const prompt = sessionOptions?.resourceLoader?.getSystemPrompt();
+    expect(prompt).toContain("<name>review</name>");
+    expect(prompt).toContain("Review code when selected &amp; needed.");
+    expect(prompt).toContain("skill://review/SKILL.md");
+    expect(prompt).toContain(snapshot.packages[0]?.digest);
+    expect(prompt).not.toContain("PRIVATE FULL SKILL INSTRUCTIONS");
+    expect(sessionOptions?.resourceLoader?.getSkills().skills).toEqual([]);
+    expect(sessionOptions?.resourceLoader?.getExtensions().extensions).toEqual([]);
+  });
+
   it("keeps retry ownership in Flow by disabling Pi turn and provider retries", async () => {
     let sessionOptions: Parameters<typeof createAgentSession>[0];
     const fakeSession = {
@@ -896,6 +1085,7 @@ function agentNode(
         thinking: "medium",
       },
       tools,
+      skills: [],
       timeoutMs,
     },
   };

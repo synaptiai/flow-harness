@@ -1,6 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import {
+  createAgentCapabilityEvidence,
+  type CapabilitySnapshot,
+} from "../domain/capability/agent-skills.js";
+import { bindWorkflowCapabilities } from "../domain/capability/workflow-capabilities.js";
+import {
   calculateCommandApprovalOperationDigest,
   commandApprovalRequestId,
   createCommandApprovalOperation,
@@ -21,6 +26,7 @@ import {
 } from "../domain/result/typed-result.js";
 import {
   type AgentEffectReceipt,
+  type AgentCapabilityRequirement,
   type AgentRecoveryRequirement,
   appendRunEvent,
   type ChildEvidence,
@@ -90,6 +96,7 @@ import type {
 export interface RunWorkflowOptions {
   readonly cwd: string;
   readonly protectedPaths: readonly string[];
+  readonly capabilitySnapshot?: CapabilitySnapshot;
   readonly store: RunEventStore;
   readonly executor: NodeExecutor;
   readonly workspaceIsolator?: WorkspaceIsolator;
@@ -110,11 +117,15 @@ export async function runWorkflow(
   options: RunWorkflowOptions,
 ): Promise<RunState> {
   assertNotAborted(options.signal);
+  const capabilitySnapshot = bindWorkflowCapabilities(workflow, options.capabilitySnapshot, {
+    allowUnexpected: options.executionWorkspace?.parentRunId !== undefined,
+  });
   const runId = options.runId ?? randomUUID();
   const now = options.now ?? (() => new Date());
   const executionCwd = resolve(options.cwd);
   return await releaseAfter(options.store, runId, async () => {
     const approvalRequirements = commandApprovalRequirements(workflow);
+    const capabilityRequirements = agentCapabilityRequirements(workflow);
     const recoveryRequirements = agentRecoveryRequirements(workflow);
     const controlGraph = workflowControlGraph(workflow);
     const started: RunStartedEvent = {
@@ -123,6 +134,7 @@ export async function runWorkflow(
       nodeIds: workflow.nodes.map((node) => node.id),
       workflowApiVersion: workflow.apiVersion,
       workflowDigest: calculateWorkflowDigest(workflow),
+      ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
       executionCwd,
       ...(options.executionWorkspace === undefined
         ? {}
@@ -130,6 +142,7 @@ export async function runWorkflow(
       ...(workflow.budget === undefined ? {} : { budget: workflow.budget }),
       ...(workflow.concurrency === undefined ? {} : { concurrency: workflow.concurrency }),
       ...(approvalRequirements.length === 0 ? {} : { approvalRequirements }),
+      ...(capabilityRequirements.length === 0 ? {} : { capabilityRequirements }),
       ...(recoveryRequirements.length === 0 ? {} : { recoveryRequirements }),
       ...(controlGraph === undefined ? {} : { controlGraph }),
       ...(workflow.goal === undefined ? {} : { goal: workflow.goal }),
@@ -137,7 +150,11 @@ export async function runWorkflow(
     await options.store.append(started);
     return await continueWorkflow(
       workflow,
-      { ...options, cwd: executionCwd },
+      {
+        ...options,
+        cwd: executionCwd,
+        ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
+      },
       runId,
       appendRunEvent(undefined, started),
       now,
@@ -155,6 +172,38 @@ export async function resumeWorkflow(
   return await releaseAfter(options.store, options.runId, async () => {
     assertNotAborted(options.signal);
     let state = reduceRunEvents(events);
+    let persistedCapabilitySnapshot: CapabilitySnapshot | undefined;
+    try {
+      persistedCapabilitySnapshot = bindWorkflowCapabilities(
+        workflow,
+        state.capabilitySnapshot ?? undefined,
+        {
+          allowUnexpected:
+            options.executionWorkspace?.parentRunId !== undefined ||
+            state.executionWorkspace?.parentRunId !== undefined,
+        },
+      );
+    } catch (error) {
+      throw new RunRecoveryError(
+        "workflow_mismatch",
+        `run "${options.runId}" capability history is incompatible: ${boundedFailureMessage(error instanceof Error ? error.message : String(error))}`,
+      );
+    }
+    if (
+      options.capabilitySnapshot !== undefined &&
+      options.capabilitySnapshot.digest !== persistedCapabilitySnapshot?.digest
+    ) {
+      throw new RunRecoveryError(
+        "workflow_mismatch",
+        `run "${options.runId}" capability snapshot does not match durable history`,
+      );
+    }
+    const effectiveOptions: ResumeWorkflowOptions = {
+      ...options,
+      ...(persistedCapabilitySnapshot === undefined
+        ? {}
+        : { capabilitySnapshot: persistedCapabilitySnapshot }),
+    };
     const executionCwd = resolve(options.cwd);
     const now = options.now ?? (() => new Date());
     validateRecoveryCompatibility(
@@ -165,10 +214,10 @@ export async function resumeWorkflow(
       state,
       events,
     );
-    state = await reconcileOpenEffects(workflow, options, state, now);
+    state = await reconcileOpenEffects(workflow, effectiveOptions, state, now);
     assertNotAborted(options.signal);
-    state = await disposeProofSafeInterruptedAttempt(workflow, options, state, now);
-    state = await recoverOpenChildAttempts(workflow, options, state, now);
+    state = await disposeProofSafeInterruptedAttempt(workflow, effectiveOptions, state, now);
+    state = await recoverOpenChildAttempts(workflow, effectiveOptions, state, now);
     rejectOpenAttempt(options.runId, state);
     const resumed: RunResumedEvent = {
       ...eventBase(workflow, options.runId, state.lastSequence + 1, now),
@@ -178,7 +227,7 @@ export async function resumeWorkflow(
     state = appendRunEvent(state, resumed);
     return await continueWorkflow(
       workflow,
-      { ...options, cwd: executionCwd },
+      { ...effectiveOptions, cwd: executionCwd },
       options.runId,
       state,
       now,
@@ -464,6 +513,9 @@ async function continueWorkflow(
                     attempt,
                     cwd: options.cwd,
                     protectedPaths: options.protectedPaths,
+                    ...(options.capabilitySnapshot === undefined
+                      ? {}
+                      : { capabilitySnapshot: options.capabilitySnapshot }),
                     ...(effectJournal === undefined ? {} : { effectJournal }),
                     ...(verifierSources === undefined ? {} : { verifierSources }),
                     ...(options.signal === undefined ? {} : { signal: options.signal }),
@@ -1072,6 +1124,19 @@ function validateRecoveryCompatibility(
     );
   }
 
+  const expectedCapabilityRequirements = agentCapabilityRequirements(workflow);
+  const recoveredCapabilityRequirements = Object.entries(state.capabilityRequirements).map(
+    ([nodeId, skills]) => ({ nodeId, skills }),
+  );
+  if (
+    !sameCapabilityRequirements(recoveredCapabilityRequirements, expectedCapabilityRequirements)
+  ) {
+    throw new RunRecoveryError(
+      "workflow_mismatch",
+      `run "${runId}" capability requirements do not match the compiled workflow`,
+    );
+  }
+
   const expectedRecoveryRequirements = agentRecoveryRequirements(workflow);
   const recoveredRecoveryRequirements = Object.entries(state.recoveryRequirements).map(
     ([nodeId, requirement]) => ({ nodeId, ...requirement }),
@@ -1413,6 +1478,13 @@ function validateRecoveredHistory(
         );
       }
       interruptionRequiresResume = true;
+    } else if (event.type === "node_succeeded" || event.type === "node_failed") {
+      validateRecoveredAgentCapabilities(
+        nodeById.get(event.nodeId),
+        event.evidence,
+        replayState?.capabilitySnapshot ?? null,
+        runId,
+      );
     } else if (
       event.type === "node_condition_evaluated" ||
       event.type === "node_result_published" ||
@@ -1441,6 +1513,47 @@ function validateRecoveredHistory(
   }
 }
 
+function validateRecoveredAgentCapabilities(
+  node: CompiledNode | undefined,
+  evidence: NodeExecutionOutcome["evidence"],
+  snapshot: CapabilitySnapshot | null,
+  runId: string,
+): void {
+  if (node?.type !== "agent") {
+    return;
+  }
+  const capabilities = evidence?.kind === "agent" ? evidence.capabilities : undefined;
+  if (node.agent.skills.length === 0) {
+    if (capabilities !== undefined) {
+      throw new RunRecoveryError(
+        "workflow_mismatch",
+        `run "${runId}" attributes undeclared Agent Skills to node "${node.id}"`,
+      );
+    }
+    return;
+  }
+  if (evidence === null) {
+    return;
+  }
+  if (snapshot === null || capabilities === undefined) {
+    throw new RunRecoveryError(
+      "workflow_mismatch",
+      `run "${runId}" omits selected Agent Skills evidence for node "${node.id}"`,
+    );
+  }
+  try {
+    const expected = createAgentCapabilityEvidence(snapshot, node.agent.skills, capabilities.reads);
+    if (JSON.stringify(expected) !== JSON.stringify(capabilities)) {
+      throw new Error("node selection does not match compiled workflow");
+    }
+  } catch (error) {
+    throw new RunRecoveryError(
+      "workflow_mismatch",
+      `run "${runId}" has incompatible Agent Skills evidence for node "${node.id}": ${boundedFailureMessage(error instanceof Error ? error.message : String(error))}`,
+    );
+  }
+}
+
 function eventBase(
   workflow: CompiledWorkflow,
   runId: string,
@@ -1462,6 +1575,23 @@ function commandApprovalRequirements(workflow: CompiledWorkflow) {
     workflow.nodes.flatMap((node) =>
       node.type === "command" && node.approval !== undefined
         ? [Object.freeze({ nodeId: node.id, grantTtlMs: node.approval.grantTtlMs })]
+        : [],
+    ),
+  );
+}
+
+function agentCapabilityRequirements(
+  workflow: CompiledWorkflow,
+): readonly AgentCapabilityRequirement[] {
+  return Object.freeze(
+    workflow.nodes.flatMap((node) =>
+      node.type === "agent" && node.agent.skills.length > 0
+        ? [
+            Object.freeze({
+              nodeId: node.id,
+              skills: Object.freeze([...node.agent.skills]),
+            }),
+          ]
         : [],
     ),
   );
@@ -1507,6 +1637,20 @@ function sameApprovalRequirements(
       (requirement, index) =>
         requirement.nodeId === right[index]?.nodeId &&
         requirement.grantTtlMs === right[index]?.grantTtlMs,
+    )
+  );
+}
+
+function sameCapabilityRequirements(
+  left: readonly AgentCapabilityRequirement[],
+  right: readonly AgentCapabilityRequirement[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every(
+      (requirement, index) =>
+        requirement.nodeId === right[index]?.nodeId &&
+        sameStrings(requirement.skills, right[index]?.skills ?? []),
     )
   );
 }
@@ -2781,7 +2925,9 @@ async function executeNode(
     return await executeChildNode(node, context, options, now);
   }
   try {
-    return await executor.execute(node, context);
+    const outcome = await executor.execute(node, context);
+    validateAgentCapabilityOutcome(node, outcome, context.capabilitySnapshot);
+    return outcome;
   } catch (error) {
     const message = boundedFailureMessage(error instanceof Error ? error.message : String(error));
     const failure: NodeFailure = {
@@ -2791,6 +2937,36 @@ async function executeNode(
       sideEffectStatus: "uncertain",
     };
     return { status: "failed", error: failure, evidence: null };
+  }
+}
+
+function validateAgentCapabilityOutcome(
+  node: Exclude<CompiledNode, CompiledChildNode>,
+  outcome: NodeExecutionOutcome,
+  snapshot: CapabilitySnapshot | undefined,
+): void {
+  if (node.type !== "agent") {
+    return;
+  }
+  const capabilities =
+    outcome.evidence?.kind === "agent" ? outcome.evidence.capabilities : undefined;
+  if (node.agent.skills.length === 0) {
+    if (capabilities !== undefined) {
+      throw new Error(`agent node "${node.id}" reported undeclared Agent Skills`);
+    }
+    return;
+  }
+  if (outcome.status === "failed" && outcome.evidence === null) {
+    return;
+  }
+  if (snapshot === undefined || capabilities === undefined) {
+    throw new Error(`agent node "${node.id}" omitted its selected Agent Skills evidence`);
+  }
+  const expected = createAgentCapabilityEvidence(snapshot, node.agent.skills, capabilities.reads);
+  if (JSON.stringify(expected) !== JSON.stringify(capabilities)) {
+    throw new Error(
+      `agent node "${node.id}" reported Agent Skills evidence outside its declaration`,
+    );
   }
 }
 
@@ -2847,6 +3023,9 @@ async function executeChildNode(
       ? {}
       : { workspaceIsolator: options.workspaceIsolator }),
     executionWorkspace,
+    ...(context.capabilitySnapshot === undefined
+      ? {}
+      : { capabilitySnapshot: context.capabilitySnapshot }),
     now,
     ...(context.signal === undefined ? {} : { signal: context.signal }),
   });
@@ -2877,6 +3056,9 @@ async function recoverChildNode(
         attempt,
         cwd: resolve(options.cwd),
         protectedPaths: options.protectedPaths,
+        ...(options.capabilitySnapshot === undefined
+          ? {}
+          : { capabilitySnapshot: options.capabilitySnapshot }),
         ...(options.signal === undefined ? {} : { signal: options.signal }),
       },
       options,
@@ -2908,6 +3090,9 @@ async function recoverChildNode(
       executor: options.executor,
       workspaceIsolator: options.workspaceIsolator,
       executionWorkspace: provenance,
+      ...(options.capabilitySnapshot === undefined
+        ? {}
+        : { capabilitySnapshot: options.capabilitySnapshot }),
       ...(options.effectReconciler === undefined
         ? {}
         : { effectReconciler: options.effectReconciler }),

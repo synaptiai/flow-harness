@@ -181,6 +181,7 @@ function agentNode(tools: CompiledAgentNode["agent"]["tools"] = []): CompiledAge
       prompt: "Read source.ts, change value 1 to 2, then report the deterministic marker.",
       model: { provider: "flow-test", id: "deterministic", thinking: "off" },
       tools,
+      skills: [],
       timeoutMs: 5_000,
     },
   };

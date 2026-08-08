@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -12,6 +12,10 @@ import type {
   NodeExecutor,
 } from "../../../src/application/ports.js";
 import { JsonlRunStore } from "../../../src/infrastructure/fs/jsonl-run-store.js";
+import {
+  createAgentCapabilityEvidence,
+  createCapabilitySnapshot,
+} from "../../../src/domain/capability/agent-skills.js";
 import { LocalSupervisorStore } from "../../../src/infrastructure/fs/local-supervisor-store.js";
 import { createProductionNodeEffectReconciler } from "../../../src/infrastructure/runtime/production-effect-reconciler.js";
 import { reduceRunEvents } from "../../../src/domain/run/events.js";
@@ -124,6 +128,106 @@ describe("detached run worker", () => {
         },
       },
     });
+  });
+
+  it("uses the frozen detached job capability snapshot after live package source drift", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-worker-skills-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    const store = new LocalSupervisorStore(runsDirectory);
+    await store.initialize();
+    const originalContent = Buffer.from("ORIGINAL DETACHED INSTRUCTIONS\n");
+    const capabilitySnapshot = createCapabilitySnapshot([
+      {
+        kind: "agent-skill",
+        name: "review",
+        description: "Review code when selected.",
+        metadata: { version: "1" },
+        requestedTools: ["Read"],
+        trust: "project-explicit",
+        provenance: ".flow/skills/review",
+        files: [{ path: "SKILL.md", content: originalContent }],
+      },
+    ]);
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "worker-skills",
+      mode: "run",
+      sourceName: join(directory, "workflow.yaml"),
+      workflowSource: skilledWorkflowSource(),
+      cwd: directory,
+      token: "9".repeat(64),
+      createdAt: "2026-08-08T12:15:00.000Z",
+      capabilitySnapshot,
+    });
+    await store.reserveSubmission(
+      job,
+      createActiveRunClaim({
+        runId: job.runId,
+        jobId: job.jobId,
+        workerId: job.workerId,
+        claimedAt: job.createdAt,
+      }),
+    );
+    const livePackage = join(directory, ".flow", "skills", "review");
+    await mkdir(livePackage, { recursive: true });
+    await writeFile(join(livePackage, "SKILL.md"), "CHANGED LIVE INSTRUCTIONS\n", "utf8");
+    let observedContent: string | undefined;
+    const executor: NodeExecutor = {
+      async execute(node, context) {
+        if (node.type !== "agent" || context.capabilitySnapshot === undefined) {
+          throw new Error(`unexpected detached capability node "${node.type}"`);
+        }
+        const frozenFile = context.capabilitySnapshot.packages[0]?.files[0];
+        if (frozenFile === undefined) {
+          throw new Error("detached capability snapshot has no file");
+        }
+        observedContent = Buffer.from(frozenFile.contentBase64, "base64").toString("utf8");
+        const text = JSON.stringify("reviewed");
+        return {
+          status: "succeeded",
+          evidence: {
+            kind: "agent",
+            provider: "test",
+            model: "deterministic",
+            text,
+            textHash: sha256(text),
+            textTruncated: false,
+            durationMs: 1,
+            policyDecisions: [],
+            effectReceipts: [],
+            capabilities: createAgentCapabilityEvidence(
+              context.capabilitySnapshot,
+              node.agent.skills,
+            ),
+          },
+        };
+      },
+    };
+
+    const worker = executeWorkerJob(job.jobId, {
+      store,
+      executor,
+      effectReconciler: createProductionNodeEffectReconciler(),
+      createRunStore: (root) => new JsonlRunStore(root),
+      pid: 4328,
+    });
+    const descriptor = await waitForDescriptor(store, job.workerId);
+    await expect(requestWorker(descriptor, { type: "identify" })).resolves.toMatchObject({
+      ok: true,
+      result: { runId: job.runId, status: "running" },
+    });
+    await expect(worker).resolves.toBe(0);
+
+    expect(observedContent).toBe(originalContent.toString("utf8"));
+    expect(observedContent).not.toContain("CHANGED LIVE");
+    const events = await new JsonlRunStore(runsDirectory).read(job.runId);
+    expect(events[0]).toMatchObject({
+      type: "run_started",
+      capabilitySnapshot: { digest: capabilitySnapshot.digest },
+    });
+    expect(reduceRunEvents(events).status).toBe("succeeded");
   });
 
   it("runs a separately-ledgered isolated child through a detached worker", async () => {
@@ -868,6 +972,28 @@ nodes:
           accepted: { type: boolean }
           score: { type: integer, minimum: 0, maximum: 10 }
         required: [accepted, score]
+`;
+}
+
+function skilledWorkflowSource(): string {
+  return `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: worker-skills }
+nodes:
+  - id: review
+    type: agent
+    agent:
+      prompt: Review.
+      model: { provider: test, id: deterministic }
+      tools: [read]
+      skills: [review]
+  - id: publish
+    type: result
+    dependsOn: [review]
+    result:
+      source: { nodeId: review, field: agent.text }
+      schema: { type: string, maxLength: 1024 }
 `;
 }
 
