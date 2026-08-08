@@ -23,7 +23,10 @@ import {
   type AgentSkillReadReceipt,
   type CapabilitySnapshot,
   createAgentCapabilityEvidence,
+  validateCapabilitySnapshot,
 } from "../../domain/capability/agent-skills.js";
+import { resolveAgentToolPackages } from "../../domain/capability/workflow-capabilities.js";
+import type { ToolPackageSnapshot } from "../../domain/capability/tool-packages.js";
 import { PolicyBroker } from "../../domain/policy/broker.js";
 import type { PolicyAction, PolicyDecision } from "../../domain/policy/types.js";
 import type { AgentModelUsage } from "../../domain/run/budget.js";
@@ -44,6 +47,7 @@ export interface PiAgentRunRequest {
   readonly model: string;
   readonly thinking: ThinkingLevel;
   readonly tools: readonly AgentToolName[];
+  readonly toolPackages?: readonly ToolPackageSnapshot[];
   readonly maxOutputBytes: number;
   readonly systemPrompt?: string;
   readonly policyBroker: PolicyBroker;
@@ -134,6 +138,24 @@ export class PiAgentExecutor implements AgentExecutor {
         );
       }
     }
+    let toolPackages: readonly ToolPackageSnapshot[] = Object.freeze([]);
+    if (node.agent.toolPackages.length > 0) {
+      if (context.capabilitySnapshot === undefined) {
+        return agentFailure(
+          "pi_tool_package_snapshot_unavailable",
+          "selected command tool packages require an immutable run capability snapshot",
+        );
+      }
+      try {
+        const snapshot = validateCapabilitySnapshot(context.capabilitySnapshot);
+        toolPackages = resolveAgentToolPackages(node, snapshot);
+      } catch (error) {
+        return agentFailure(
+          "pi_tool_package_snapshot_invalid",
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
     if (node.agent.tools.includes("edit") && context.effectJournal === undefined) {
       return agentFailure(
         "pi_effect_journal_unavailable",
@@ -141,7 +163,7 @@ export class PiAgentExecutor implements AgentExecutor {
       );
     }
     if (
-      node.agent.tools.includes("exec") &&
+      (node.agent.tools.includes("exec") || toolPackages.length > 0) &&
       (context.agentCommandJournal === undefined || context.agentCommandExecutor === undefined)
     ) {
       return agentFailure(
@@ -155,7 +177,10 @@ export class PiAgentExecutor implements AgentExecutor {
       nodeId: node.id,
       attempt: context.attempt,
     } as const;
-    const policyBroker = new PolicyBroker(attribution, policyActionsForTools(node.agent.tools));
+    const policyBroker = new PolicyBroker(
+      attribution,
+      policyActionsForTools(node.agent.tools, toolPackages.length > 0),
+    );
     const effectRecorder = new AgentEffectRecorder(attribution, context.effectJournal);
     const commandBudgetController = new AbortController();
     let commandBudgetExhausted = false;
@@ -258,6 +283,7 @@ export class PiAgentExecutor implements AgentExecutor {
           model: node.agent.model.id,
           thinking: node.agent.model.thinking,
           tools: node.agent.tools,
+          toolPackages,
           maxOutputBytes,
           ...(context.agentSystemPrompt === undefined
             ? {}
@@ -664,6 +690,7 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
         ...(request.commandRecorder === undefined
           ? {}
           : { commandRecorder: request.commandRecorder }),
+        toolPackages: request.toolPackages ?? [],
         ...(capabilitySession === undefined ? {} : { capabilitySession }),
       },
     );
@@ -781,8 +808,11 @@ function agentFailure(
   return { status: "failed", error: failure, evidence };
 }
 
-function policyActionsForTools(tools: readonly AgentToolName[]): readonly PolicyAction[] {
-  return tools.map((tool) => {
+function policyActionsForTools(
+  tools: readonly AgentToolName[],
+  hasToolPackages = false,
+): readonly PolicyAction[] {
+  const actions = tools.map((tool) => {
     switch (tool) {
       case "read":
         return "filesystem.read";
@@ -796,6 +826,10 @@ function policyActionsForTools(tools: readonly AgentToolName[]): readonly Policy
         return assertNever(tool);
     }
   });
+  if (hasToolPackages) {
+    actions.push("process.execute");
+  }
+  return Object.freeze([...new Set(actions)]);
 }
 
 function assertNever(value: never): never {

@@ -5,6 +5,7 @@ import {
   type AgentCommandRequest,
   agentCommandRequestSchema,
   calculateAgentCommandDigest,
+  normalizeAgentCommandRequest,
 } from "../agent-command.js";
 import type { CompiledCommandNode } from "../workflow/types.js";
 
@@ -99,12 +100,7 @@ export function createAgentCommandApprovalRequest(input: {
     throw new RangeError("agent command approval grant lifetime must be between 1 and 86400000ms");
   }
   const parsed = agentCommandRequestSchema.parse(input.command);
-  const command: AgentCommandRequest = Object.freeze({
-    version: 1,
-    executable: parsed.executable,
-    args: Object.freeze([...parsed.args]),
-    timeoutMs: parsed.timeoutMs,
-  });
+  const command: AgentCommandRequest = normalizeAgentCommandRequest(parsed);
   return Object.freeze({
     version: 1,
     runId: input.runId,

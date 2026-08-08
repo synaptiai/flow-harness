@@ -5840,7 +5840,8 @@ function sameAgentCommandRequest(left: AgentCommandRequest, right: AgentCommandR
     left.version === right.version &&
     left.executable === right.executable &&
     left.timeoutMs === right.timeoutMs &&
-    sameStrings(left.args, right.args)
+    sameStrings(left.args, right.args) &&
+    JSON.stringify(left.source ?? null) === JSON.stringify(right.source ?? null)
   );
 }
 

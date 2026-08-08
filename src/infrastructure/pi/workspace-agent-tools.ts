@@ -7,7 +7,7 @@ import {
   type ReadOperations,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { Type, type TSchema } from "typebox";
 import {
   calculateAgentCommandDigest,
   MAX_AGENT_COMMAND_ARG_BYTES,
@@ -17,6 +17,11 @@ import {
   normalizeAgentCommandRequest,
 } from "../../domain/agent-command.js";
 import type { AgentSkillSession } from "../../domain/capability/agent-skill-session.js";
+import { renderToolPackageCommand } from "../../domain/capability/tool-package-renderer.js";
+import {
+  type ToolPackageSnapshot,
+  validateToolPackageSnapshot,
+} from "../../domain/capability/tool-packages.js";
 import type { PolicyBroker } from "../../domain/policy/broker.js";
 import type { AgentToolName } from "../../domain/workflow/types.js";
 import {
@@ -125,6 +130,7 @@ export interface FlowAgentToolOptions {
   readonly commandRecorder?: AgentCommandRecorder;
   readonly editFile?: typeof editHashAnchoredTextFile;
   readonly capabilitySession?: AgentSkillSession;
+  readonly toolPackages?: readonly ToolPackageSnapshot[];
 }
 
 interface ReadVersionContext {
@@ -179,11 +185,99 @@ export async function createWorkspaceAgentTools(
     definitions.push(definition as ToolDefinition);
     names.push(definition.name);
   }
+  for (const input of options.toolPackages ?? []) {
+    const snapshot = validateToolPackageSnapshot(input);
+    const definition = createToolPackageDefinition(snapshot, policy, options);
+    if (names.includes(definition.name)) {
+      throw new Error(`agent tool name "${definition.name}" is selected more than once`);
+    }
+    definitions.push(definition);
+    names.push(definition.name);
+  }
 
   return {
     names: Object.freeze(names),
     definitions: Object.freeze(definitions),
   };
+}
+
+function createToolPackageDefinition(
+  snapshot: ToolPackageSnapshot,
+  policy: PolicyBroker,
+  options: FlowAgentToolOptions,
+): ToolDefinition {
+  const commandRecorder = options.commandRecorder;
+  if (commandRecorder === undefined) {
+    throw new Error("Flow command tool packages require an attempt-scoped command recorder");
+  }
+  const properties: Record<string, TSchema> = {};
+  for (const input of snapshot.definition.tool.inputs) {
+    switch (input.type) {
+      case "string":
+        properties[input.name] = Type.String({
+          maxLength: 4_096,
+          description: input.description,
+        });
+        break;
+      case "integer":
+        properties[input.name] = Type.Integer({
+          minimum: Number.MIN_SAFE_INTEGER,
+          maximum: Number.MAX_SAFE_INTEGER,
+          description: input.description,
+        });
+        break;
+      case "boolean":
+        properties[input.name] = Type.Boolean({ description: input.description });
+        break;
+      case "enum":
+        properties[input.name] = Type.Union(
+          input.values.map((value) => Type.Literal(value)),
+          { description: input.description },
+        );
+        break;
+    }
+  }
+  return defineTool({
+    name: snapshot.definition.tool.name,
+    label: snapshot.name,
+    description: snapshot.definition.tool.description,
+    promptSnippet: snapshot.definition.tool.description,
+    promptGuidelines: [
+      "Inputs become literal argv values; shell syntax and expansion are not supported.",
+      "Inspect the returned exit code, signal, timeout, stdout, and stderr before continuing.",
+      "A failed command is evidence and must not be reported as successful completion.",
+    ],
+    parameters: Type.Object(properties, { additionalProperties: false }),
+    executionMode: "sequential",
+    async execute(_toolCallId, input, signal) {
+      throwIfToolAborted(signal);
+      const rendered = renderToolPackageCommand(snapshot, input);
+      const request = normalizeAgentCommandRequest({
+        ...rendered.request,
+        source: {
+          kind: "tool-package",
+          name: snapshot.name,
+          version: snapshot.version,
+          digest: snapshot.digest,
+          toolName: snapshot.definition.tool.name,
+          input: rendered.input,
+          inputDigest: rendered.inputDigest,
+        },
+      });
+      const operationDigest = calculateAgentCommandDigest(request);
+      const decision = policy.authorize({
+        action: "process.execute",
+        target: request.executable,
+        boundary: "inside",
+        operationDigest,
+      });
+      const outcome = await commandRecorder.execute(request, decision, signal);
+      return {
+        content: [{ type: "text" as const, text: formatCommandOutcome(outcome) }],
+        details: outcome,
+      };
+    },
+  }) as ToolDefinition;
 }
 
 function createExecDefinition(policy: PolicyBroker, options: FlowAgentToolOptions): ToolDefinition {

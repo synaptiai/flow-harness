@@ -20,12 +20,87 @@ describe("agent command contract", () => {
     });
     expect(Object.isFrozen(command)).toBe(true);
     expect(Object.isFrozen(command.args)).toBe(true);
-    expect(calculateAgentCommandDigest(command)).toMatch(/^[a-f0-9]{64}$/);
+    expect(calculateAgentCommandDigest(command)).toBe(
+      "ae08971fe36f9b9b78b0b484f5fbe322f4efbf6a088d4e922597f3a6f3e3e436",
+    );
     expect(
       calculateAgentCommandDigest(
         normalizeAgentCommandRequest({ executable: "npm", args: ["test", "--", "other"] }),
       ),
     ).not.toBe(calculateAgentCommandDigest(command));
+  });
+
+  it("normalizes and digest-binds immutable tool-package source provenance", () => {
+    const command = normalizeAgentCommandRequest({
+      executable: "reporter",
+      args: ["src", "12", "false"],
+      timeoutMs: 10_000,
+      source: {
+        kind: "tool-package",
+        name: "project-report",
+        version: "1.2.3",
+        digest: "a".repeat(64),
+        toolName: "project_report",
+        input: { verbose: false, limit: 12, path: "src" },
+        inputDigest: "b".repeat(64),
+      },
+    });
+
+    expect(command.source).toEqual({
+      kind: "tool-package",
+      name: "project-report",
+      version: "1.2.3",
+      digest: "a".repeat(64),
+      toolName: "project_report",
+      input: { limit: 12, path: "src", verbose: false },
+      inputDigest: "b".repeat(64),
+    });
+    expect(Object.isFrozen(command.source)).toBe(true);
+    expect(Object.isFrozen(command.source?.input)).toBe(true);
+    expect(calculateAgentCommandDigest(command)).not.toBe(
+      calculateAgentCommandDigest(
+        normalizeAgentCommandRequest({
+          executable: "reporter",
+          args: ["src", "12", "false"],
+          timeoutMs: 10_000,
+        }),
+      ),
+    );
+
+    const changedInput = normalizeAgentCommandRequest({
+      ...command,
+      source: { ...command.source, input: { limit: 13, path: "src", verbose: false } },
+    });
+    expect(calculateAgentCommandDigest(changedInput)).not.toBe(
+      calculateAgentCommandDigest(command),
+    );
+  });
+
+  it.each([
+    { label: "unknown source kind", mutate: { kind: "plugin" } },
+    { label: "invalid package name", mutate: { name: "ProjectReport" } },
+    { label: "mutable package version", mutate: { version: "latest" } },
+    { label: "invalid package digest", mutate: { digest: "short" } },
+    { label: "reserved model tool name", mutate: { toolName: "flow_exec" } },
+    { label: "invalid input digest", mutate: { inputDigest: "short" } },
+    { label: "nested input", mutate: { input: { path: { nested: true } } } },
+  ])("rejects $label provenance", ({ mutate }) => {
+    expect(() =>
+      normalizeAgentCommandRequest({
+        executable: "reporter",
+        args: ["src"],
+        source: {
+          kind: "tool-package",
+          name: "project-report",
+          version: "1.2.3",
+          digest: "a".repeat(64),
+          toolName: "project_report",
+          input: { path: "src" },
+          inputDigest: "b".repeat(64),
+          ...mutate,
+        },
+      }),
+    ).toThrow();
   });
 
   it.each([
