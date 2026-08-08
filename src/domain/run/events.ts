@@ -8,9 +8,13 @@ import {
   calculateAgentCommandDigest,
 } from "../agent-command.js";
 import {
+  type AgentCommandApprovalRequest,
+  agentCommandApprovalRequestId,
   type CommandApprovalOperation,
+  calculateAgentCommandApprovalRequestDigest,
   calculateCommandApprovalOperationDigest,
   commandApprovalRequestId,
+  createAgentCommandApprovalRequest,
   isValidApprovalActor,
 } from "../approval/command-approval.js";
 import {
@@ -275,6 +279,7 @@ export interface RunStartedEvent extends RunEventBase {
   readonly executionCwd?: string;
   readonly executionWorkspace?: ExecutionWorkspaceProvenance;
   readonly approvalRequirements?: readonly CommandApprovalRequirement[];
+  readonly agentCommandApprovalRequirements?: readonly AgentCommandApprovalRequirement[];
   readonly recoveryRequirements?: readonly AgentRecoveryRequirement[];
   readonly controlGraph?: ControlGraph;
 }
@@ -753,6 +758,7 @@ export interface NodeAgentCommandPreparedEvent extends RunEventBase {
   readonly request: AgentCommandRequest;
   readonly operationDigest: string;
   readonly decision: PolicyDecision;
+  readonly approval?: AgentCommandApprovalReference;
 }
 
 export interface AgentCommandEvidence extends CommandEvidence {
@@ -850,6 +856,67 @@ export type NodeEffectReconciledEvent = RunEventBase & {
 export interface CommandApprovalRequirement {
   readonly nodeId: string;
   readonly grantTtlMs: number;
+}
+
+export interface AgentCommandApprovalRequirement {
+  readonly nodeId: string;
+  readonly grantTtlMs: number;
+}
+
+export interface AgentCommandApprovalReference {
+  readonly requestId: string;
+  readonly requestDigest: string;
+  readonly operationDigest: string;
+}
+
+export interface AgentCommandApprovalRequestedEvent extends RunEventBase {
+  readonly type: "agent_command_approval_requested";
+  readonly nodeId: string;
+  readonly attempt: number;
+  readonly requestId: string;
+  readonly request: AgentCommandApprovalRequest;
+  readonly requestDigest: string;
+}
+
+export interface AgentCommandApprovalGrantedEvent extends RunEventBase {
+  readonly type: "agent_command_approval_granted";
+  readonly nodeId: string;
+  readonly attempt: number;
+  readonly requestId: string;
+  readonly requestDigest: string;
+  readonly operationDigest: string;
+  readonly actor: string;
+  readonly expiresAt: string;
+}
+
+export interface AgentCommandApprovalDeniedEvent extends RunEventBase {
+  readonly type: "agent_command_approval_denied";
+  readonly nodeId: string;
+  readonly attempt: number;
+  readonly requestId: string;
+  readonly requestDigest: string;
+  readonly operationDigest: string;
+  readonly actor: string;
+  readonly reason?: string;
+}
+
+export interface AgentCommandApprovalExpiredEvent extends RunEventBase {
+  readonly type: "agent_command_approval_expired";
+  readonly nodeId: string;
+  readonly attempt: number;
+  readonly requestId: string;
+  readonly requestDigest: string;
+  readonly operationDigest: string;
+}
+
+export interface AgentCommandApprovalCancelledEvent extends RunEventBase {
+  readonly type: "agent_command_approval_cancelled";
+  readonly nodeId: string;
+  readonly attempt: number;
+  readonly requestId: string;
+  readonly requestDigest: string;
+  readonly operationDigest: string;
+  readonly reason: "agent_aborted" | "decision_channel_failed" | "decision_invalid";
 }
 
 export interface AgentRecoveryRequirement {
@@ -983,6 +1050,11 @@ export type RunEvent =
   | CommandApprovalGrantedEvent
   | CommandApprovalDeniedEvent
   | CommandApprovalExpiredEvent
+  | AgentCommandApprovalRequestedEvent
+  | AgentCommandApprovalGrantedEvent
+  | AgentCommandApprovalDeniedEvent
+  | AgentCommandApprovalExpiredEvent
+  | AgentCommandApprovalCancelledEvent
   | WorkflowApprovalRequestedEvent
   | WorkflowApprovalApprovedEvent
   | WorkflowApprovalDeniedEvent
@@ -1040,6 +1112,36 @@ export interface CommandApprovalRunState {
   readonly consumedAt: string | null;
 }
 
+export type AgentCommandApprovalStatus =
+  | "pending"
+  | "granted"
+  | "denied"
+  | "expired"
+  | "cancelled"
+  | "consumed";
+
+export interface AgentCommandApprovalRunState {
+  readonly status: AgentCommandApprovalStatus;
+  readonly requestId: string;
+  readonly request: AgentCommandApprovalRequest;
+  readonly requestDigest: string;
+  readonly operationDigest: string;
+  readonly requestedAt: string;
+  readonly decidedAt: string | null;
+  readonly actor: string | null;
+  readonly reason: string | null;
+  readonly expiresAt: string | null;
+  readonly expiredAt: string | null;
+  readonly cancelledAt: string | null;
+  readonly cancellationReason:
+    | "agent_aborted"
+    | "decision_channel_failed"
+    | "decision_invalid"
+    | null;
+  readonly consumedAt: string | null;
+  readonly consumedByCommandId: string | null;
+}
+
 export type WorkflowApprovalStatus = "pending" | "approved" | "denied";
 
 export interface WorkflowApprovalRunState {
@@ -1063,6 +1165,7 @@ export interface NodeRunState {
   readonly error: NodeFailure | null;
   readonly approval: CommandApprovalRunState | null;
   readonly workflowApproval: WorkflowApprovalRunState | null;
+  readonly agentCommandApprovals: readonly AgentCommandApprovalRunState[];
   readonly childRun: ChildRunLink | null;
   readonly effectProtocol: typeof DURABLE_EFFECT_PROTOCOL | null;
   readonly effects: readonly NodeEffectRunState[];
@@ -1211,6 +1314,7 @@ export interface NodeAgentCommandRunState {
   readonly request: AgentCommandRequest;
   readonly operationDigest: string;
   readonly decision: PolicyDecision;
+  readonly approval: AgentCommandApprovalReference | null;
   readonly preparedAt: string;
   readonly settlement: {
     readonly outcome: AgentCommandSettlementOutcome;
@@ -1241,6 +1345,9 @@ export interface RunState {
   readonly executionWorkspace: ExecutionWorkspaceProvenance | null;
   readonly approvalRequirements: Readonly<
     Record<string, Omit<CommandApprovalRequirement, "nodeId">>
+  >;
+  readonly agentCommandApprovalRequirements: Readonly<
+    Record<string, Omit<AgentCommandApprovalRequirement, "nodeId">>
   >;
   readonly recoveryRequirements: Readonly<Record<string, Omit<AgentRecoveryRequirement, "nodeId">>>;
   readonly controlGraph: ControlGraph | null;
@@ -1347,6 +1454,29 @@ const approvalOperationSchema = z
 const approvalReferenceSchema = z
   .object({
     requestId: identifierSchema,
+    operationDigest: sha256Schema,
+  })
+  .strict();
+
+const agentCommandApprovalRequestSchema = z
+  .object({
+    version: z.literal(1),
+    runId: identifierSchema,
+    workflowId: identifierSchema,
+    nodeId: identifierSchema,
+    attempt: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    tool: z.literal("exec"),
+    cwd: absolutePathSchema,
+    command: agentCommandRequestSchema,
+    operationDigest: sha256Schema,
+    grantTtlMs: grantTtlSchema,
+  })
+  .strict();
+
+const agentCommandApprovalReferenceSchema = z
+  .object({
+    requestId: identifierSchema,
+    requestDigest: sha256Schema,
     operationDigest: sha256Schema,
   })
   .strict();
@@ -2269,6 +2399,10 @@ export const runEventSchema = z.discriminatedUnion("type", [
         .array(z.object({ nodeId: identifierSchema, grantTtlMs: grantTtlSchema }).strict())
         .max(MAX_COMPILED_WORKFLOW_NODES)
         .optional(),
+      agentCommandApprovalRequirements: z
+        .array(z.object({ nodeId: identifierSchema, grantTtlMs: grantTtlSchema }).strict())
+        .max(MAX_COMPILED_WORKFLOW_NODES)
+        .optional(),
       recoveryRequirements: z
         .array(
           z
@@ -2335,6 +2469,66 @@ export const runEventSchema = z.discriminatedUnion("type", [
       attempt: z.number().int().positive(),
       requestId: identifierSchema,
       operationDigest: sha256Schema,
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("agent_command_approval_requested"),
+      nodeId: identifierSchema,
+      attempt: z.number().int().positive(),
+      requestId: identifierSchema,
+      request: agentCommandApprovalRequestSchema,
+      requestDigest: sha256Schema,
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("agent_command_approval_granted"),
+      nodeId: identifierSchema,
+      attempt: z.number().int().positive(),
+      requestId: identifierSchema,
+      requestDigest: sha256Schema,
+      operationDigest: sha256Schema,
+      actor: actorSchema,
+      expiresAt: z.iso.datetime({ offset: true }),
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("agent_command_approval_denied"),
+      nodeId: identifierSchema,
+      attempt: z.number().int().positive(),
+      requestId: identifierSchema,
+      requestDigest: sha256Schema,
+      operationDigest: sha256Schema,
+      actor: actorSchema,
+      reason: z.string().trim().min(1).max(4096).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("agent_command_approval_expired"),
+      nodeId: identifierSchema,
+      attempt: z.number().int().positive(),
+      requestId: identifierSchema,
+      requestDigest: sha256Schema,
+      operationDigest: sha256Schema,
+    })
+    .strict(),
+  z
+    .object({
+      ...eventBaseShape,
+      type: z.literal("agent_command_approval_cancelled"),
+      nodeId: identifierSchema,
+      attempt: z.number().int().positive(),
+      requestId: identifierSchema,
+      requestDigest: sha256Schema,
+      operationDigest: sha256Schema,
+      reason: z.enum(["agent_aborted", "decision_channel_failed", "decision_invalid"]),
     })
     .strict(),
   z
@@ -2705,6 +2899,7 @@ export const runEventSchema = z.discriminatedUnion("type", [
       request: agentCommandRequestSchema,
       operationDigest: sha256Schema,
       decision: policyDecisionSchema,
+      approval: agentCommandApprovalReferenceSchema.optional(),
     })
     .strict(),
   z
@@ -2981,6 +3176,36 @@ export function appendRunEvent(
         Object.freeze({ grantTtlMs: requirement.grantTtlMs }),
       ]),
     );
+    const agentCommandRequirements = event.agentCommandApprovalRequirements ?? [];
+    if (
+      new Set(agentCommandRequirements.map((requirement) => requirement.nodeId)).size !==
+      agentCommandRequirements.length
+    ) {
+      throw new RunReplayError(
+        eventIndex,
+        "agent command approval requirements must have unique node ids",
+      );
+    }
+    if (
+      agentCommandRequirements.some((requirement) => !event.nodeIds.includes(requirement.nodeId))
+    ) {
+      throw new RunReplayError(
+        eventIndex,
+        "agent command approval requirement references a node outside the run node set",
+      );
+    }
+    if (agentCommandRequirements.length > 0 && event.executionCwd === undefined) {
+      throw new RunReplayError(
+        eventIndex,
+        "agent command approval requirements require a persisted execution working directory",
+      );
+    }
+    const agentCommandApprovalRequirements = Object.fromEntries(
+      agentCommandRequirements.map((requirement) => [
+        requirement.nodeId,
+        Object.freeze({ grantTtlMs: requirement.grantTtlMs }),
+      ]),
+    );
     const capabilityRequirements = event.capabilityRequirements ?? [];
     if (
       new Set(capabilityRequirements.map((requirement) => requirement.nodeId)).size !==
@@ -3162,6 +3387,7 @@ export function appendRunEvent(
           ? null
           : deepFreeze(structuredClone(event.executionWorkspace)),
       approvalRequirements: Object.freeze(approvalRequirements),
+      agentCommandApprovalRequirements: Object.freeze(agentCommandApprovalRequirements),
       recoveryRequirements: Object.freeze(recoveryRequirementsByNode),
       controlGraph,
       concurrency,
@@ -3390,6 +3616,208 @@ export function appendRunEvent(
           status: "expired" as const,
           expiredAt: event.at,
         }),
+      });
+      break;
+    }
+    case "agent_command_approval_requested": {
+      if (currentState.status !== "running") {
+        throw new RunReplayError(
+          eventIndex,
+          "agent command approval request requires a running run",
+        );
+      }
+      if ((currentState.budget?.exhausted.length ?? 0) > 0) {
+        throw new RunReplayError(
+          eventIndex,
+          "agent command approval cannot be requested after the run budget is exhausted",
+        );
+      }
+      const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
+      if (current.commandProtocol !== AGENT_COMMAND_PROTOCOL) {
+        throw new RunReplayError(
+          eventIndex,
+          `node "${event.nodeId}" did not declare agent command execution`,
+        );
+      }
+      const requirement = currentState.agentCommandApprovalRequirements[event.nodeId];
+      if (requirement === undefined) {
+        throw new RunReplayError(
+          eventIndex,
+          `node "${event.nodeId}" does not require agent command approval`,
+        );
+      }
+      if (
+        current.agentCommandApprovals.filter(
+          (approval) => approval.request.attempt === event.attempt,
+        ).length >= MAX_AGENT_COMMANDS_PER_ATTEMPT
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          `agent command limit of ${MAX_AGENT_COMMANDS_PER_ATTEMPT} was exceeded`,
+        );
+      }
+      const pendingApproval = Object.entries(nodes).find(([, node]) =>
+        node.agentCommandApprovals.some((approval) => approval.status === "pending"),
+      );
+      if (pendingApproval !== undefined) {
+        throw new RunReplayError(
+          eventIndex,
+          `another agent command approval remains pending for node "${pendingApproval[0]}"`,
+        );
+      }
+      if (event.requestId !== agentCommandApprovalRequestId(event.sequence)) {
+        throw new RunReplayError(
+          eventIndex,
+          "agent command approval request id does not match its event sequence",
+        );
+      }
+      const expectedRequest = createAgentCommandApprovalRequest({
+        runId: event.runId,
+        workflowId: event.workflowId,
+        nodeId: event.nodeId,
+        attempt: event.attempt,
+        cwd: currentState.executionCwd ?? "",
+        command: event.request.command,
+        grantTtlMs: requirement.grantTtlMs,
+      });
+      if (!sameAgentCommandApprovalRequest(event.request, expectedRequest)) {
+        throw new RunReplayError(
+          eventIndex,
+          "agent command approval request does not match the running attempt",
+        );
+      }
+      const expectedRequestDigest = calculateAgentCommandApprovalRequestDigest(expectedRequest);
+      if (event.requestDigest !== expectedRequestDigest) {
+        throw new RunReplayError(eventIndex, "agent command approval request digest is invalid");
+      }
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        agentCommandApprovals: Object.freeze([
+          ...current.agentCommandApprovals,
+          agentCommandApprovalStateFromRequest(event),
+        ]),
+      });
+      status = "waiting_for_approval";
+      break;
+    }
+    case "agent_command_approval_granted": {
+      if (currentState.status !== "waiting_for_approval") {
+        throw new RunReplayError(eventIndex, "agent command approval grant requires a waiting run");
+      }
+      const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
+      const { approval, index } = requireAgentCommandApproval(
+        current,
+        event,
+        "pending",
+        eventIndex,
+      );
+      const expectedExpiry = new Date(
+        Date.parse(event.at) + approval.request.grantTtlMs,
+      ).toISOString();
+      if (event.expiresAt !== expectedExpiry) {
+        throw new RunReplayError(
+          eventIndex,
+          "agent command approval expiry does not match the declared grant lifetime",
+        );
+      }
+      const approvals = [...current.agentCommandApprovals];
+      approvals[index] = deepFreeze({
+        ...approval,
+        status: "granted" as const,
+        decidedAt: event.at,
+        actor: event.actor,
+        expiresAt: event.expiresAt,
+      });
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        agentCommandApprovals: Object.freeze(approvals),
+      });
+      status = "running";
+      break;
+    }
+    case "agent_command_approval_denied": {
+      if (currentState.status !== "waiting_for_approval") {
+        throw new RunReplayError(
+          eventIndex,
+          "agent command approval denial requires a waiting run",
+        );
+      }
+      const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
+      const { approval, index } = requireAgentCommandApproval(
+        current,
+        event,
+        "pending",
+        eventIndex,
+      );
+      const approvals = [...current.agentCommandApprovals];
+      approvals[index] = deepFreeze({
+        ...approval,
+        status: "denied" as const,
+        decidedAt: event.at,
+        actor: event.actor,
+        reason: event.reason ?? null,
+      });
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        agentCommandApprovals: Object.freeze(approvals),
+      });
+      status = "running";
+      break;
+    }
+    case "agent_command_approval_cancelled": {
+      if (currentState.status !== "waiting_for_approval") {
+        throw new RunReplayError(
+          eventIndex,
+          "agent command approval cancellation requires a waiting run",
+        );
+      }
+      const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
+      const { approval, index } = requireAgentCommandApproval(
+        current,
+        event,
+        "pending",
+        eventIndex,
+      );
+      const approvals = [...current.agentCommandApprovals];
+      approvals[index] = deepFreeze({
+        ...approval,
+        status: "cancelled" as const,
+        cancelledAt: event.at,
+        cancellationReason: event.reason,
+      });
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        agentCommandApprovals: Object.freeze(approvals),
+      });
+      status = "running";
+      break;
+    }
+    case "agent_command_approval_expired": {
+      if (currentState.status !== "running" && currentState.status !== "waiting_for_approval") {
+        throw new RunReplayError(
+          eventIndex,
+          "agent command approval expiry requires an active run",
+        );
+      }
+      const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
+      const { approval, index } = requireAgentCommandApproval(
+        current,
+        event,
+        "granted",
+        eventIndex,
+      );
+      if (approval.expiresAt === null || Date.parse(event.at) < Date.parse(approval.expiresAt)) {
+        throw new RunReplayError(eventIndex, "agent command approval grant has not expired");
+      }
+      const approvals = [...current.agentCommandApprovals];
+      approvals[index] = deepFreeze({
+        ...approval,
+        status: "expired" as const,
+        expiredAt: event.at,
+      });
+      nodes[event.nodeId] = Object.freeze({
+        ...current,
+        agentCommandApprovals: Object.freeze(approvals),
       });
       break;
     }
@@ -4760,17 +5188,70 @@ export function appendRunEvent(
         );
       }
       validatePreparedAgentCommand(event, eventIndex);
+      const approvalRequirement = currentState.agentCommandApprovalRequirements[event.nodeId];
+      let agentCommandApprovals = current.agentCommandApprovals;
+      if (approvalRequirement === undefined) {
+        if (event.approval !== undefined) {
+          throw new RunReplayError(
+            eventIndex,
+            `node "${event.nodeId}" does not declare agent command approval`,
+          );
+        }
+      } else {
+        if (event.approval === undefined) {
+          throw new RunReplayError(
+            eventIndex,
+            `node "${event.nodeId}" requires a matching agent command approval grant`,
+          );
+        }
+        const approvalIndex = current.agentCommandApprovals.findIndex(
+          (approval) => approval.requestId === event.approval?.requestId,
+        );
+        const approval = current.agentCommandApprovals[approvalIndex];
+        if (
+          approval === undefined ||
+          approval.status !== "granted" ||
+          approval.requestDigest !== event.approval.requestDigest ||
+          approval.operationDigest !== event.approval.operationDigest ||
+          approval.request.attempt !== event.attempt ||
+          approval.request.cwd !== currentState.executionCwd ||
+          approval.request.grantTtlMs !== approvalRequirement.grantTtlMs ||
+          approval.operationDigest !== event.operationDigest ||
+          !sameAgentCommandRequest(approval.request.command, event.request)
+        ) {
+          throw new RunReplayError(
+            eventIndex,
+            "agent command preparation does not have a matching unconsumed approval grant",
+          );
+        }
+        if (approval.expiresAt === null || Date.parse(event.at) >= Date.parse(approval.expiresAt)) {
+          throw new RunReplayError(
+            eventIndex,
+            "agent command approval grant expired before command preparation",
+          );
+        }
+        const updatedApprovals = [...current.agentCommandApprovals];
+        updatedApprovals[approvalIndex] = deepFreeze({
+          ...approval,
+          status: "consumed" as const,
+          consumedAt: event.at,
+          consumedByCommandId: event.commandId,
+        });
+        agentCommandApprovals = Object.freeze(updatedApprovals);
+      }
       const command: NodeAgentCommandRunState = deepFreeze({
         commandId: event.commandId,
         commandSequence: event.commandSequence,
         request: structuredClone(event.request),
         operationDigest: event.operationDigest,
         decision: structuredClone(event.decision),
+        approval: event.approval === undefined ? null : structuredClone(event.approval),
         preparedAt: event.at,
         settlement: null,
       });
       nodes[event.nodeId] = Object.freeze({
         ...current,
+        agentCommandApprovals,
         commands: Object.freeze([...current.commands, command]),
       });
       break;
@@ -4907,6 +5388,7 @@ export function appendRunEvent(
     case "node_succeeded": {
       requireNextRunningOutcome(nodes, event.nodeId, eventIndex);
       const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
+      requireNoOpenAgentCommandApproval(current, eventIndex);
       validateDurableEffectProjection(current, event.evidence, event, eventIndex);
       validateDurableAgentCommandProjection(current, event.evidence, event, eventIndex);
       validateEvidenceIntegrity(
@@ -4968,6 +5450,7 @@ export function appendRunEvent(
     case "node_failed": {
       requireNextRunningOutcome(nodes, event.nodeId, eventIndex);
       const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
+      requireNoOpenAgentCommandApproval(current, eventIndex);
       validateDurableEffectProjection(current, event.evidence, event, eventIndex);
       validateDurableAgentCommandProjection(current, event.evidence, event, eventIndex);
       if (event.evidence !== null) {
@@ -5174,6 +5657,7 @@ export function appendRunEvent(
     executionCwd: currentState.executionCwd,
     executionWorkspace: currentState.executionWorkspace,
     approvalRequirements: currentState.approvalRequirements,
+    agentCommandApprovalRequirements: currentState.agentCommandApprovalRequirements,
     recoveryRequirements: currentState.recoveryRequirements,
     controlGraph: currentState.controlGraph,
     concurrency: currentState.concurrency,
@@ -5262,6 +5746,102 @@ function approvalStateFromRequest(event: CommandApprovalRequestedEvent): Command
     expiredAt: null,
     consumedAt: null,
   });
+}
+
+function agentCommandApprovalStateFromRequest(
+  event: AgentCommandApprovalRequestedEvent,
+): AgentCommandApprovalRunState {
+  return deepFreeze({
+    status: "pending",
+    requestId: event.requestId,
+    request: structuredClone(event.request),
+    requestDigest: event.requestDigest,
+    operationDigest: event.request.operationDigest,
+    requestedAt: event.at,
+    decidedAt: null,
+    actor: null,
+    reason: null,
+    expiresAt: null,
+    expiredAt: null,
+    cancelledAt: null,
+    cancellationReason: null,
+    consumedAt: null,
+    consumedByCommandId: null,
+  });
+}
+
+type AgentCommandApprovalIdentityEvent =
+  | AgentCommandApprovalGrantedEvent
+  | AgentCommandApprovalDeniedEvent
+  | AgentCommandApprovalExpiredEvent
+  | AgentCommandApprovalCancelledEvent;
+
+function requireAgentCommandApproval(
+  node: NodeRunState,
+  event: AgentCommandApprovalIdentityEvent,
+  expectedStatus: "pending" | "granted",
+  eventIndex: number,
+): { readonly approval: AgentCommandApprovalRunState; readonly index: number } {
+  const index = node.agentCommandApprovals.findIndex(
+    (approval) => approval.requestId === event.requestId,
+  );
+  const approval = node.agentCommandApprovals[index];
+  if (approval === undefined || approval.status !== expectedStatus) {
+    throw new RunReplayError(
+      eventIndex,
+      `agent command approval request must be ${expectedStatus} before this transition`,
+    );
+  }
+  if (
+    approval.request.attempt !== event.attempt ||
+    approval.requestDigest !== event.requestDigest ||
+    approval.operationDigest !== event.operationDigest
+  ) {
+    throw new RunReplayError(
+      eventIndex,
+      "agent command approval decision does not match the exact request identity",
+    );
+  }
+  return { approval, index };
+}
+
+function requireNoOpenAgentCommandApproval(node: NodeRunState, eventIndex: number): void {
+  const open = node.agentCommandApprovals.find(
+    (approval) => approval.status === "pending" || approval.status === "granted",
+  );
+  if (open !== undefined) {
+    throw new RunReplayError(
+      eventIndex,
+      `agent command approval "${open.requestId}" remains unconsumed before node terminalization`,
+    );
+  }
+}
+
+function sameAgentCommandApprovalRequest(
+  left: AgentCommandApprovalRequest,
+  right: AgentCommandApprovalRequest,
+): boolean {
+  return (
+    left.version === right.version &&
+    left.runId === right.runId &&
+    left.workflowId === right.workflowId &&
+    left.nodeId === right.nodeId &&
+    left.attempt === right.attempt &&
+    left.tool === right.tool &&
+    left.cwd === right.cwd &&
+    left.operationDigest === right.operationDigest &&
+    left.grantTtlMs === right.grantTtlMs &&
+    sameAgentCommandRequest(left.command, right.command)
+  );
+}
+
+function sameAgentCommandRequest(left: AgentCommandRequest, right: AgentCommandRequest): boolean {
+  return (
+    left.version === right.version &&
+    left.executable === right.executable &&
+    left.timeoutMs === right.timeoutMs &&
+    sameStrings(left.args, right.args)
+  );
 }
 
 function workflowApprovalStateFromRequest(
@@ -8216,6 +8796,7 @@ function pendingNodeState(): NodeRunState {
     error: null,
     approval: null,
     workflowApproval: null,
+    agentCommandApprovals: Object.freeze([]),
     childRun: null,
     effectProtocol: null,
     effects: Object.freeze([]),

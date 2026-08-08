@@ -43,6 +43,14 @@ The embedded Pi runtime runs with the invoking user's operating-system permissio
   working directory, timeout, digest, request identity, and grant lifetime before any node start or
   sandbox preparation. Approval is single-use, expires predictably, and does not weaken the command
   sandbox. Denial and expiry execute nothing.
+- Approval-required agent commands persist the exact live tool request and context before command
+  preparation. A same-user decision client publishes an immutable owner-only sidecar, but only the
+  active run owner can validate it and append authority to the ledger. Grant consumption and
+  command preparation are atomic; denial, cancellation, invalid identity, expiry, and reuse execute
+  nothing. Receipt reads are non-blocking, no-follow, regular-file-only, strict UTF-8, and byte
+  bounded before parsing. Invalid identity closes without execution; transient receipt-read failure retries with
+  bounded abortable backoff and grants no authority. This approval gate supplements rather than
+  replaces policy and sandbox containment.
 - Graph approval nodes persist a canonical prompt and ordered references to complete durable
   command, agent, or accepted verifier evidence, including source attempts, fields, and hashes. Truncated evidence
   fails before a request. Approval completes only the pure control node; it grants no command,
@@ -120,9 +128,10 @@ SRT is a beta native sandbox based on Seatbelt on macOS and bubblewrap, namespac
 
 Workflow files remain trusted orchestration configuration: command nodes can execute arbitrary programs within the declared workspace-write boundary. Review workflows before running them and scope host credentials outside the Flow process where possible.
 
-`flow approve` and `flow deny` route the current typed command or graph request and record a
-caller-supplied actor label. The label is audit attribution, not authenticated identity, RBAC, or a
-signature. Request ids are locators rather than bearer secrets. The private run-directory
+`flow approve` and `flow deny` route the current typed command, live agent-command, or graph request
+and record a caller-supplied actor label. Agent-command decisions remain sidecar submissions until
+the active owner commits them. The label is audit attribution, not authenticated identity, RBAC, or
+a signature. Request ids are locators rather than bearer secrets. The private run-directory
 permissions and authority of the invoking local account are the administrative boundary. Do not
 expose the run directory or approval CLI to untrusted users.
 

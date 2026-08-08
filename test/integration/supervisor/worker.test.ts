@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
-
+import { trySubmitAgentCommandApprovalDecision } from "../../../src/application/command-approval.js";
 import type { CommandSandbox } from "../../../src/application/command-sandbox.js";
 import { NodeExecutorRouter } from "../../../src/application/node-executor-router.js";
 import type {
@@ -23,7 +23,8 @@ import {
 import type { VerifierPackageSnapshotInput } from "../../../src/domain/capability/verifier-packages.js";
 import { reduceRunEvents } from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
-import { JsonlRunStore } from "../../../src/infrastructure/fs/jsonl-run-store.js";
+import { JsonlRunStore, RunStoreError } from "../../../src/infrastructure/fs/jsonl-run-store.js";
+import { LocalAgentCommandApprovalChannel } from "../../../src/infrastructure/fs/local-agent-command-approval-channel.js";
 import { LocalSupervisorStore } from "../../../src/infrastructure/fs/local-supervisor-store.js";
 import { PiAgentExecutor } from "../../../src/infrastructure/pi/pi-agent-executor.js";
 import { CommandNodeExecutor } from "../../../src/infrastructure/process/command-node-executor.js";
@@ -108,6 +109,80 @@ describe("detached run worker", () => {
       status: "terminal",
       runStatus: "succeeded",
       exitCode: 0,
+    });
+  });
+
+  it("keeps a detached agent tool live until its exact sidecar decision is committed", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-worker-agent-approval-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    const store = new LocalSupervisorStore(runsDirectory);
+    await store.initialize();
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "worker-agent-approval",
+      mode: "run",
+      sourceName: join(directory, "workflow.yaml"),
+      workflowSource: detachedAgentCommandWorkflowSource(true),
+      cwd: directory,
+      token: "8".repeat(64),
+      createdAt: "2026-08-08T12:46:00.000Z",
+    });
+    await store.reserveSubmission(
+      job,
+      createActiveRunClaim({
+        runId: job.runId,
+        jobId: job.jobId,
+        workerId: job.workerId,
+        claimedAt: job.createdAt,
+      }),
+    );
+    const worker = executeWorkerJob(job.jobId, {
+      store,
+      executor: detachedAgentCommandExecutor(),
+      effectReconciler: createProductionNodeEffectReconciler(),
+      createRunStore: (root) => new JsonlRunStore(root),
+      pid: 4400,
+    });
+    const descriptor = await waitForDescriptor(store, job.workerId);
+    await requestWorker(descriptor, { type: "identify" });
+    const pending = await waitForPendingAgentApproval(runsDirectory, job.runId);
+
+    expect(pending.status).toBe("waiting_for_approval");
+    await expect(
+      trySubmitAgentCommandApprovalDecision({
+        runId: job.runId,
+        requestId: "agent-approval-3",
+        actor: "operator:test",
+        decision: "approve",
+        store: new JsonlRunStore(runsDirectory),
+        sink: new LocalAgentCommandApprovalChannel(runsDirectory, 2),
+      }),
+    ).resolves.toMatchObject({
+      kind: "agent_command_approval_decision_submitted",
+      requestId: "agent-approval-3",
+    });
+    await expect(worker).resolves.toBe(0);
+
+    const events = await new JsonlRunStore(runsDirectory).read(job.runId);
+    expect(events.map((event) => event.type)).toEqual(
+      expect.arrayContaining([
+        "agent_command_approval_requested",
+        "agent_command_approval_granted",
+        "node_agent_command_prepared",
+        "node_agent_command_settled",
+      ]),
+    );
+    expect(reduceRunEvents(events).nodes.execute).toMatchObject({
+      status: "succeeded",
+      agentCommandApprovals: [
+        {
+          status: "consumed",
+          actor: "operator:test",
+          consumedByCommandId: "command-5",
+        },
+      ],
     });
   });
 
@@ -1212,6 +1287,31 @@ async function waitForDescriptor(store: LocalSupervisorStore, workerId: string) 
   throw new Error("timed out waiting for worker descriptor");
 }
 
+async function waitForPendingAgentApproval(runsDirectory: string, runId: string) {
+  const deadline = Date.now() + 5_000;
+  const store = new JsonlRunStore(runsDirectory);
+  while (Date.now() < deadline) {
+    try {
+      const state = reduceRunEvents(await store.read(runId));
+      if (state.status === "waiting_for_approval") {
+        return state;
+      }
+    } catch (error) {
+      if (
+        !(
+          error instanceof RunStoreError &&
+          (error.code === "not_found" ||
+            (error.code === "corrupt" && error.message.endsWith("the ledger is empty")))
+        )
+      ) {
+        throw error;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("timed out waiting for detached agent command approval");
+}
+
 function workflowSource(): string {
   return `
 apiVersion: flow.synapti.ai/v1alpha1
@@ -1439,7 +1539,7 @@ function optimizationExecutor(): NodeExecutor {
   };
 }
 
-function detachedAgentCommandWorkflowSource(): string {
+function detachedAgentCommandWorkflowSource(requireApproval = false): string {
   return `
 apiVersion: flow.synapti.ai/v1alpha1
 kind: Workflow
@@ -1457,6 +1557,13 @@ nodes:
       prompt: Run the bounded command.
       model: { provider: test, id: deterministic }
       tools: [exec]
+${
+  requireApproval
+    ? `      toolApproval:
+        exec: { mode: required, grantTtlMs: 300000 }
+`
+    : ""
+}
   - id: verify
     type: command
     dependsOn: [execute]

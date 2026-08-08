@@ -162,9 +162,10 @@ A `child` node embeds one complete workflow and names its typed result boundary:
 
 The embedded source is a non-empty YAML string of at most 1 MiB. Flow recursively compiles and
 freezes it before creating the parent ledger. A child must declare all five budget dimensions and
-name an existing, unconditional, terminal `result` node. Human `approval` nodes and
-approval-required commands are rejected because a descendant cannot suspend the root tree for
-interactive input. Child nesting is limited to four levels, and the complete recursively compiled
+name an existing, unconditional, terminal `result` node. Human `approval` nodes,
+approval-required commands, and agent `toolApproval` declarations are rejected because a
+descendant cannot suspend the root tree for interactive input. Child nesting is limited to four
+levels, and the complete recursively compiled
 tree is limited to 1,024 nodes. These are compile-time tree limits in addition to each workflow's
 ordinary 64-source-node and 256-expanded-node limits.
 
@@ -569,9 +570,62 @@ conflicting, mismatched, or tampered decisions fail closed. Run ownership serial
 local clients.
 
 The actor label is bounded explicit attribution supplied by the caller. It is not authenticated
-identity, RBAC, or a signature, and the request id is not a bearer secret. This slice approves only
-deterministic command nodes. In-flight Pi tool-call approval requires persisted session continuation
-and is not implemented.
+identity, RBAC, or a signature, and the request id is not a bearer secret. This declaration approves
+only deterministic command nodes; agent tool calls use the separate live protocol below.
+
+### Live agent `exec` approval
+
+An agent may require one exact human decision for each model-requested command:
+
+```yaml
+- id: implement
+  type: agent
+  agent:
+    prompt: Implement the change and run focused verification.
+    model: { provider: anthropic, id: claude-sonnet-4-5 }
+    tools: [read, edit, exec]
+    toolApproval:
+      exec:
+        mode: required
+        grantTtlMs: 300000
+```
+
+`toolApproval` is optional, closed, and currently accepts only an `exec` rule with
+`mode: required`. Declaring it without selecting the `exec` tool is invalid. `grantTtlMs` defaults
+to 300000 and accepts 1 through 86400000 milliseconds. The compiled configuration is frozen and
+included in the workflow digest; `run_started` persists the corresponding per-node requirement.
+
+After the Flow policy broker allows a normalized `flow_exec` request, the application appends
+`agent_command_approval_requested` before command preparation, sandbox setup, or process spawn. The
+request binds version, run, workflow, node, attempt, tool, normalized absolute working directory,
+executable, ordered arguments, timeout, operation digest, and grant lifetime. A second digest binds
+that complete context. The running node remains open while the run reports
+`waiting_for_approval`.
+
+`flow approve` or `flow deny` reads the current ledger projection and publishes one immutable local
+decision receipt. The active attached process or detached worker remains the sole ledger writer: it
+checks the exact request and appends the grant or denial. Approval expiry is calculated from the
+owner's committed grant timestamp, not the receipt timestamp. A valid grant returns the run to
+`running`; one matching `node_agent_command_prepared` atomically consumes it before execution. An
+expired, reused, changed, missing, or forged grant cannot prepare a command.
+
+Denial records actor and optional reason, returns a bounded tool error to the live Pi loop, and does
+not by itself fail the node. Aborting the tool wait or reading a malformed, forged, or mismatched
+decision identity appends `agent_command_approval_cancelled`; no process is prepared. Transient
+receipt-read failures use bounded abortable backoff and leave the request pending until a valid
+receipt, node deadline, or cancellation arrives. An unclassified terminal channel failure closes as
+`decision_channel_failed`. A node cannot settle while a request is pending or a grant is unconsumed. A run-scoped queue permits only one
+pending human decision across concurrent agent nodes; already granted exact commands may continue
+to preparation. Policy allowance, human approval, and sandbox containment are independent gates:
+no one gate widens or replaces another.
+
+The local receipt path is
+`.flow/runs/<run-id>/agent-command-approvals/<request-id>.decision.json`. It is created through a
+synced temporary file and atomic no-overwrite publication with mode `0600`. Reads are non-blocking,
+no-follow, restricted to regular files, fatal on malformed UTF-8, and capped at 16 KiB before JSON parsing. The receipt is
+retained for audit but never treated as authority without a matching owner-appended ledger event.
+Actor labels remain unauthenticated same-user attribution. Remote/RBAC approval and opaque
+continuation after a process dies with an open Pi tool call are outside this contract.
 
 ## Approval node
 
@@ -915,7 +969,8 @@ Each run is stored at:
 
 Events have a version, contiguous sequence number, timestamp, run identity, workflow identity,
 workflow API version, and SHA-256 digest of the compiled workflow. New `run_started` events also
-capture the normalized execution directory, command approval requirements, agent recovery
+capture the normalized execution directory, command approval requirements, agent-command approval
+requirements, agent recovery
 requirements, declared concurrency, verifier declarations, the bounded control-graph projection, and exact compiled budget
 when declared. Runs with an effective maximum above one must persist the graph even without control
 nodes. The control graph persists dependency, guard, exact condition, and join mappings so replay does not
@@ -940,6 +995,12 @@ incomplete-resource-accounting dispositions. The reducer archives the attempt nu
 interruption timestamps, effect protocol, and immutable effects before returning the node to
 pending. The next `node_started` must use the prior attempt plus one. At most `A` starts and `A-1`
 interruption dispositions exist for `maxAttempts: A`.
+
+Agent-command approval history retains every exact request, decision or cancellation, expiry, and
+single command consumption on its running node. `node_agent_command_prepared` carries the approval
+reference when the compiled node requires it. Replay rejects missing or extra references, changed
+commands, digests, working directories, attempts, lifetimes, early or expired grants, reuse, and
+terminal outcomes with pending or unconsumed authority.
 
 Agent evidence retains at most 64 policy decisions. Each decision has a contiguous attempt-local
 sequence, exact run/workflow/node/attempt attribution, derived authority, semantic action,
@@ -994,14 +1055,14 @@ the id to the complete request and rejects reuse with changed input.
 
 ## Current limitations
 
-- No arbitrary cycles, nested or unbounded loops, nested optimization, dynamic fan-out, general multi-condition joins, general child patch promotion, terminal-failure retry, or fallback semantics. Bounded loop bodies and static ready DAG nodes can execute concurrently, but iterations are sequential, share one workspace, and are not inferred to be conflict-free. Ordinary child workflows isolate workspaces and histories and discard their changes; only compiler-generated bounded optimization candidates can use the typed promotion saga. Conditions and loop stops are limited to exact equality over complete durable command, agent, accepted verifier, or typed-result fields. Approval is available as deterministic command pre-start gates and pure evidence-bound graph nodes; command-verifier and dynamic in-session model-tool approval remain unavailable. Recovery is limited to proof-safe fresh agent attempts; interrupted verifier attempts are never retried automatically.
+- No arbitrary cycles, nested or unbounded loops, nested optimization, dynamic fan-out, general multi-condition joins, general child patch promotion, terminal-failure retry, or fallback semantics. Bounded loop bodies and static ready DAG nodes can execute concurrently, but iterations are sequential, share one workspace, and are not inferred to be conflict-free. Ordinary child workflows isolate workspaces and histories and discard their changes; only compiler-generated bounded optimization candidates can use the typed promotion saga. Conditions and loop stops are limited to exact equality over complete durable command, agent, accepted verifier, or typed-result fields. Approval is available as deterministic command pre-start gates, live per-call agent `exec` gates, and pure evidence-bound graph nodes; command-verifier approval remains unavailable. Recovery is limited to proof-safe fresh agent attempts; interrupted verifier attempts are never retried automatically.
 - No automatic terminalization or session continuation of an interrupted node attempt. Unconfigured or ineligible durable starts still block continuation.
 - Detached workers can be adopted by a replacement local supervisor, but they cannot move between
   hosts and do not survive host reboot.
 - The SRT profile is fixed; workflows cannot yet request network, credential injection, or a different sandbox backend.
 - Linux PID namespaces contain agent-command descendants; macOS agent commands fail before spawn because process groups are insufficient. The native sandbox does not contain the host-side Pi runtime; hostile workloads require a stronger container, microVM, or managed boundary.
 - Agent mutation is limited to exact single-file edit of an existing UTF-8 file plus explicitly selected, argv-only sandboxed commands. No direct create, delete, rename, shell, network, fuzzy patch, environment/cwd override, interactive process, background job, or multi-file transaction tool is exposed.
-- No in-flight Pi tool-call approval or opaque session continuation. A fresh retry is a new attempt and is allowed only by the persisted proof gate; it is not a substitute for restoring a live session.
+- No opaque continuation after a process dies during an in-flight Pi tool call. Live approval works only while the owning attached process or detached worker retains that Pi session. A fresh retry is a new attempt and is allowed only by the persisted proof gate; it is not a substitute for restoring a live session.
 - Model verifiers, including packaged rubrics, are zero-tool and evidence-bounded but remain probabilistic and not prompt-injection-proof. Arbitrary evaluator code and reward/evaluation environments are not supported.
 - No prepaid hard model-cost cap, provider invoice reconciliation, or CPU/memory/disk quota. `maxArtifactBytes` bounds logical retained evidence, not physical storage, spill, or disk usage. Per-run graph-node concurrency, detached worker count, and queue depth are separate bounded controls.
 - No schema migration path is promised while the format remains `v1alpha1`.

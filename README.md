@@ -25,6 +25,7 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Durable JSONL run ledger and inspection | Implemented |
 | Safe-boundary recovery with exclusive local ownership | Implemented |
 | Durable exact command approval with approve/deny CLI | Implemented |
+| Durable per-call agent `exec` approval with approve/deny CLI | Implemented for attached and detached live Pi sessions through exact, expiring, single-use grants |
 | Durable evidence-bound graph approval nodes with approve/deny CLI | Implemented |
 | Durable provider-neutral resource accounting and run budgets | Implemented for starts, model tokens, reported cost, active execution time, and retained executor-output artifacts |
 | Strict project/operator configuration with inspectable monotonic limits | Implemented |
@@ -35,7 +36,7 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Versioned verifier packages | Implemented for strict local command/model manifests, exact workflow selection, immutable run snapshots, and digest-bound verdict evidence |
 | Proof-safe fresh recovery of interrupted agent attempts | Implemented as explicit opt-in for read-only attempts and edit attempts proven not applied |
 | Fail-closed sandboxed command isolation | Filesystem/network isolation is implemented on Linux and macOS; strict agent-command descendant lifecycle containment is currently Linux-only |
-| Dynamic agent-tool approval, remote package installation, other package kinds, and model network tools | Planned |
+| Remote package installation, other package kinds, and model network tools | Planned |
 | VM-grade isolation of the host-side agent runtime | Planned |
 
 The executable format is `flow.synapti.ai/v1alpha1`. There is no compatibility or migration
@@ -364,6 +365,58 @@ The actor label is append-only attribution supplied by the caller, not authentic
 Anyone who can control the private run directory or invoke Flow with the same local permissions is
 inside this slice's administrative trust boundary.
 
+### Approve an agent `exec` tool call
+
+An agent node can require an operator decision for every model-requested `flow_exec` call:
+
+```yaml
+agent:
+  prompt: Implement the change and run the focused tests.
+  model: { provider: anthropic, id: claude-sonnet-4-5 }
+  tools: [read, edit, exec]
+  toolApproval:
+    exec:
+      mode: required
+      grantTtlMs: 300000
+```
+
+Start the credential-requiring example in one terminal, attached or detached:
+
+```sh
+node dist/cli/main.js run examples/agent-command-approval.workflow.yaml \
+  --run-id agent-approval-demo
+node dist/cli/main.js inspect agent-approval-demo
+```
+
+Inspection shows the live Pi node plus its pending exact executable, ordered arguments, normalized
+working directory, timeout, operation digest, request digest, request id, and grant lifetime. From
+another terminal, submit the decision:
+
+```sh
+node dist/cli/main.js approve agent-approval-demo <request-id> --actor local:daniel
+# or
+node dist/cli/main.js deny agent-approval-demo <request-id> --actor local:daniel \
+  --reason "command is not authorized"
+```
+
+The decision command writes an immutable owner-only receipt and reports
+`agent_command_approval_decision_submitted`. It does not append authoritative run state or spawn a
+process. The active run owner validates the exact run, workflow, node, attempt, working directory,
+command, timeout, and digests, then records the grant or denial in the event ledger. A grant is
+exclusive, expiring, and consumed atomically by one matching command-preparation event before
+sandbox preparation or spawn. A denial becomes a bounded tool error so the live model can revise
+its plan; it does not automatically fail the agent node. A malformed, forged, or mismatched receipt
+closes the pending request as invalid and executes nothing. Transient local receipt-read failures
+keep waiting with bounded backoff until the node is cancelled, reaches its deadline, or reads a
+valid receipt. Concurrent agent nodes share a run-scoped decision queue, so only one exact human
+prompt is pending at a time.
+
+This is a live tool-call suspension, so there is no `resume` step after an ordinary decision. If
+the owning process crashes while Pi is suspended, Flow preserves the request for inspection but
+does not reconstruct the opaque Pi tool call or transcript; recovery fails closed. Child workflows
+cannot declare interactive approvals. Actor labels and same-user run-directory access have the
+same local administrative trust boundary as command and graph approvals.
+
 ### Approve durable graph evidence
 
 An `approval` node pauses the graph after its declared command, agent, accepted verifier, or typed
@@ -539,6 +592,12 @@ explicit environment allowlist, and no network. The actual run store, `.flow`, `
 files, and key files are write-protected. If the sandbox is unavailable or reports degraded
 isolation, Flow does not spawn the command. Agent-issued commands add a stricter lifecycle gate:
 only verified Linux PID-namespace containment can authorize process creation.
+
+When `agent.toolApproval.exec.mode` is `required`, Flow adds a human authorization boundary between
+policy allowance and command preparation. The owner-only decision sidecar is transport only; the
+append-only ledger remains authoritative. Approval never widens the declared tool set, policy
+decision, sandbox profile, filesystem scope, network denial, timeout, or descendant-containment
+requirements.
 
 Flow does not trust a bare `bwrap` resolved through the model-visible `PATH`. The Linux adapter pins
 one canonical root-owned executable outside the workspace and fails before SRT initialization if no

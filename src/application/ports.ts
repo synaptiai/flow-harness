@@ -1,8 +1,10 @@
 import type { AgentCommandRequest } from "../domain/agent-command.js";
+import type { AgentCommandApprovalRequest } from "../domain/approval/command-approval.js";
 import type { CapabilitySnapshot } from "../domain/capability/agent-skills.js";
 import type { VerifierPackageUseEvidence } from "../domain/capability/verifier-packages.js";
 import type { PolicyDecision } from "../domain/policy/types.js";
 import type {
+  AgentCommandApprovalReference,
   AgentCommandSettlementOutcome,
   AgentEffectReceipt,
   FilesystemEditEffectDescriptor,
@@ -136,6 +138,7 @@ export interface NodeExecutionContext {
   readonly capabilitySnapshot?: CapabilitySnapshot;
   readonly effectJournal?: NodeEffectJournal;
   readonly agentCommandJournal?: NodeAgentCommandJournal;
+  readonly agentCommandApprovalGate?: NodeAgentCommandApprovalGate;
   readonly agentCommandExecutor?: AgentCommandExecutor;
   readonly verifierSources?: readonly VerifierSourceInput[];
   readonly verifierPackage?: VerifierPackageUseEvidence;
@@ -168,7 +171,69 @@ export interface NodeAgentCommandJournal {
     readonly request: AgentCommandRequest;
     readonly operationDigest: string;
     readonly decision: PolicyDecision;
+    readonly approval?: AgentCommandApprovalReference;
   }): Promise<PreparedNodeAgentCommand>;
+}
+
+export interface AgentCommandApprovalWait {
+  readonly requestId: string;
+  readonly request: AgentCommandApprovalRequest;
+  readonly requestDigest: string;
+}
+
+export interface AgentCommandApprovalDecision {
+  readonly version: 1;
+  readonly runId: string;
+  readonly requestId: string;
+  readonly requestDigest: string;
+  readonly operationDigest: string;
+  readonly decision: "approve" | "deny";
+  readonly actor: string;
+  readonly reason?: string;
+  readonly submittedAt: string;
+}
+
+export interface AgentCommandApprovalDecisionSource {
+  waitForDecision(
+    wait: AgentCommandApprovalWait,
+    signal?: AbortSignal,
+  ): Promise<AgentCommandApprovalDecision>;
+}
+
+export type AgentCommandApprovalDecisionSourceErrorCode =
+  | "decision_invalid"
+  | "temporarily_unavailable";
+
+/** Provider-neutral classification for decision input that the application must audit or retry. */
+export class AgentCommandApprovalDecisionSourceError extends Error {
+  override readonly name = "AgentCommandApprovalDecisionSourceError";
+
+  constructor(
+    readonly code: AgentCommandApprovalDecisionSourceErrorCode,
+    message: string,
+    readonly retryAfterMs = 50,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    if (!Number.isSafeInteger(retryAfterMs) || retryAfterMs <= 0 || retryAfterMs > 1_000) {
+      throw new RangeError("decision-source retry delay must be between 1 and 1000ms");
+    }
+  }
+}
+
+export interface AgentCommandApprovalDecisionSink {
+  submitDecision(decision: AgentCommandApprovalDecision): Promise<void>;
+}
+
+export interface AgentCommandApprovalDecisionChannel
+  extends AgentCommandApprovalDecisionSource,
+    AgentCommandApprovalDecisionSink {}
+
+export interface NodeAgentCommandApprovalGate {
+  authorize(
+    request: AgentCommandRequest,
+    signal?: AbortSignal,
+  ): Promise<AgentCommandApprovalReference>;
 }
 
 export interface PreparedNodeAgentCommand {

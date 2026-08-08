@@ -125,6 +125,12 @@ export interface CompiledAgentNode extends CompiledGuardedNodeBase {
     };
     readonly tools: readonly AgentToolName[];
     readonly skills: readonly string[];
+    readonly toolApproval?: {
+      readonly exec: {
+        readonly mode: "required";
+        readonly grantTtlMs: number;
+      };
+    };
     readonly recovery?: {
       readonly mode: "fresh";
       readonly maxAttempts: number;
