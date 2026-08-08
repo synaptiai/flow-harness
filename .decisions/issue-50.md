@@ -1,6 +1,6 @@
 # Decision Journal: Issue #50 — Run reusable versioned local verifier packages
 
-**Issue**: #50 | **Branch**: `codex/issue-50-verifier-packages` | **Started**: 2026-08-08  
+**Issue**: #50 | **Branch**: `codex/issue-50-verifier-packages` | **Started**: 2026-08-08
 **Base dependency**: PR #49, commit `f6b293e4f668834bd2a30965eebb8461e23d7b06`
 
 ---
@@ -242,5 +242,36 @@ verifier compatibility. Defer executable package code and remote installation.
 3. [x] Persist and replay package requirements and use evidence.
 4. [x] Execute packaged verifiers through the existing safety boundary.
 5. [x] Complete CLI, attached/detached/child/recovery integration.
-6. [ ] Update examples, README, architecture, workflow, security, recovery, testing, capability,
+6. [x] Update examples, README, architecture, workflow, security, recovery, testing, capability,
    and roadmap documentation; run full and adversarial verification.
+
+## Verification and adversarial review
+
+The final review first mapped every Issue #50 acceptance criterion to implementation and runnable
+evidence, then examined security, correctness, error behavior, performance, maintainability, tests,
+and public claims. A separate holdout pass mapped its results only to the visible acceptance
+criteria. Two material findings were reproduced with failing tests and fixed before release:
+
+- A valid parent-owned snapshot containing two versions of one verifier name could resolve the
+  first name match instead of the exact selected `(name, version)` tuple. Binding, execution
+  resolution, run-start reconciliation, and verdict replay now all use the exact tuple.
+- A malformed capability snapshot supplied through the application API could reach a permissive
+  custom event store before reducer validation. Capability binding now validates, copies, and deeply
+  freezes the complete snapshot before persistence or executor invocation. Typed errors also
+  distinguish invalid snapshots, unexpected skills, and unexpected verifier packages.
+
+The added tests prove both defects fail before execution, invalid snapshots leave no event behind,
+and child execution selects the exact requested version from a parent-owned multi-version snapshot.
+After the fixes, the review and holdout passes had no unresolved P1, P2, or P3 findings.
+
+Verification ran from clean commit `c34d9a89d133d226d8934dbef1d482dd54919772` in a tracked-only
+copy:
+
+- `npm run check`: format, lint, typecheck, 92 source files / 1,184 tests, build, and 3 runtime files
+  / 20 process tests passed.
+- `npm run test:coverage`: 83.93% statements, 77.79% branches, 93.58% functions, and 83.96% lines.
+- `npm run pack:check`: clean tarball installation and installed CLI execution passed; the installed
+  project reported policy digest
+  `5818be92618d24b2680a89bfae4a3b6678f7190cc93f06d02de90a797ef52c85`.
+- `npm audit --audit-level=high`: zero vulnerabilities.
+- `actionlint .github/workflows/ci.yml`: passed.
