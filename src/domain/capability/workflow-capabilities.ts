@@ -1,5 +1,10 @@
-import type { CompiledVerifierNode, CompiledWorkflow } from "../workflow/types.js";
+import type {
+  CompiledAgentNode,
+  CompiledVerifierNode,
+  CompiledWorkflow,
+} from "../workflow/types.js";
 import { type CapabilitySnapshot, validateCapabilitySnapshot } from "./agent-skills.js";
+import type { ToolPackageSnapshot } from "./tool-packages.js";
 import type { VerifierPackageSnapshot, VerifierPackageUseEvidence } from "./verifier-packages.js";
 
 export type WorkflowCapabilityErrorCode =
@@ -9,6 +14,7 @@ export type WorkflowCapabilityErrorCode =
   | "missing_skill"
   | "missing_snapshot"
   | "package_kind_mismatch"
+  | "tool_name_collision"
   | "unexpected_package"
   | "unexpected_skill"
   | "version_mismatch";
@@ -37,6 +43,11 @@ export interface WorkflowVerifierPackageReference {
   readonly kind: "command" | "model";
 }
 
+export interface WorkflowToolPackageReference {
+  readonly name: string;
+  readonly version: string;
+}
+
 type InlineVerifierConfig = Extract<
   CompiledVerifierNode["verifier"],
   { readonly kind: "command" | "model" }
@@ -61,6 +72,16 @@ export function collectWorkflowVerifierPackageReferences(
   );
 }
 
+export function collectWorkflowToolPackageReferences(
+  workflow: CompiledWorkflow,
+): readonly WorkflowToolPackageReference[] {
+  const references = new Map<string, WorkflowToolPackageReference>();
+  collectToolPackages(workflow, references);
+  return Object.freeze(
+    [...references.values()].sort((left, right) => compareStrings(left.name, right.name)),
+  );
+}
+
 export function bindWorkflowCapabilities(
   workflow: CompiledWorkflow,
   snapshot?: CapabilitySnapshot,
@@ -68,8 +89,9 @@ export function bindWorkflowCapabilities(
 ): CapabilitySnapshot | undefined {
   const requiredSkills = collectWorkflowAgentSkillNames(workflow);
   const requiredVerifiers = collectWorkflowVerifierPackageReferences(workflow);
+  const requiredTools = collectWorkflowToolPackageReferences(workflow);
   const boundSnapshot = validateWorkflowCapabilitySnapshot(snapshot);
-  if (requiredSkills.length + requiredVerifiers.length === 0) {
+  if (requiredSkills.length + requiredVerifiers.length + requiredTools.length === 0) {
     if (boundSnapshot !== undefined && options.allowUnexpected !== true) {
       const unexpectedSkill = boundSnapshot.packages.find((item) => item.kind === "agent-skill");
       if (unexpectedSkill !== undefined) {
@@ -81,15 +103,24 @@ export function bindWorkflowCapabilities(
       const unexpectedVerifier = boundSnapshot.packages.find(
         (item): item is VerifierPackageSnapshot => item.kind === "verifier-package",
       );
-      if (unexpectedVerifier === undefined) {
+      if (unexpectedVerifier !== undefined) {
         throw new WorkflowCapabilityError(
-          "invalid_snapshot",
-          "capability snapshot contains no recognized package",
+          "unexpected_package",
+          `capability snapshot contains verifier package "${unexpectedVerifier.name}" version "${unexpectedVerifier.version}" that workflow "${workflow.id}" does not select`,
+        );
+      }
+      const unexpectedTool = boundSnapshot.packages.find(
+        (item): item is ToolPackageSnapshot => item.kind === "tool-package",
+      );
+      if (unexpectedTool !== undefined) {
+        throw new WorkflowCapabilityError(
+          "unexpected_package",
+          `capability snapshot contains tool package "${unexpectedTool.name}" version "${unexpectedTool.version}" that workflow "${workflow.id}" does not select`,
         );
       }
       throw new WorkflowCapabilityError(
-        "unexpected_package",
-        `capability snapshot contains verifier package "${unexpectedVerifier.name}" version "${unexpectedVerifier.version}" that workflow "${workflow.id}" does not select`,
+        "invalid_snapshot",
+        "capability snapshot contains no recognized package",
       );
     }
     return boundSnapshot;
@@ -97,7 +128,7 @@ export function bindWorkflowCapabilities(
   if (boundSnapshot === undefined) {
     throw new WorkflowCapabilityError(
       "missing_snapshot",
-      `workflow "${workflow.id}" selects ${capabilitySelectionLabel(requiredSkills, requiredVerifiers)} but has no immutable capability snapshot`,
+      `workflow "${workflow.id}" selects ${capabilitySelectionLabel(requiredSkills, requiredVerifiers, requiredTools)} but has no immutable capability snapshot`,
     );
   }
   const availableSkills = boundSnapshot.packages.filter((item) => item.kind === "agent-skill");
@@ -139,6 +170,30 @@ export function bindWorkflowCapabilities(
       );
     }
   }
+  const availableTools = boundSnapshot.packages.filter(
+    (item): item is ToolPackageSnapshot => item.kind === "tool-package",
+  );
+  for (const required of requiredTools) {
+    const selected = availableTools.find(
+      (item) => item.name === required.name && item.version === required.version,
+    );
+    if (selected === undefined) {
+      const otherVersions = availableTools
+        .filter((item) => item.name === required.name)
+        .map((item) => item.version);
+      if (otherVersions.length > 0) {
+        throw new WorkflowCapabilityError(
+          "version_mismatch",
+          `workflow "${workflow.id}" selects tool package "${required.name}" version "${required.version}" but the snapshot contains ${formatVersions(otherVersions)}`,
+        );
+      }
+      throw new WorkflowCapabilityError(
+        "missing_package",
+        `workflow "${workflow.id}" selects tool package "${required.name}" but the snapshot does not contain it`,
+      );
+    }
+  }
+  assertAgentToolNames(workflow, availableTools);
   const unexpected = availableSkills.find((skill) => !requiredSkills.includes(skill.name));
   if (unexpected !== undefined && options.allowUnexpected !== true) {
     throw new WorkflowCapabilityError(
@@ -158,7 +213,63 @@ export function bindWorkflowCapabilities(
       `capability snapshot contains verifier package "${unexpectedVerifier.name}" version "${unexpectedVerifier.version}" that workflow "${workflow.id}" does not select`,
     );
   }
+  const unexpectedTool = availableTools.find(
+    (item) =>
+      !requiredTools.some(
+        (required) => required.name === item.name && required.version === item.version,
+      ),
+  );
+  if (unexpectedTool !== undefined && options.allowUnexpected !== true) {
+    throw new WorkflowCapabilityError(
+      "unexpected_package",
+      `capability snapshot contains tool package "${unexpectedTool.name}" version "${unexpectedTool.version}" that workflow "${workflow.id}" does not select`,
+    );
+  }
   return boundSnapshot;
+}
+
+export function resolveAgentToolPackages(
+  node: CompiledAgentNode,
+  snapshot?: CapabilitySnapshot,
+): readonly ToolPackageSnapshot[] {
+  if (node.agent.toolPackages.length === 0) {
+    return Object.freeze([]);
+  }
+  if (snapshot === undefined) {
+    throw new WorkflowCapabilityError(
+      "missing_snapshot",
+      `agent node "${node.id}" selects tool packages but has no immutable capability snapshot`,
+    );
+  }
+  const selected = node.agent.toolPackages.map((reference) => {
+    const exact = snapshot.packages.find(
+      (item): item is ToolPackageSnapshot =>
+        item.kind === "tool-package" &&
+        item.name === reference.name &&
+        item.version === reference.version,
+    );
+    if (exact !== undefined) {
+      return exact;
+    }
+    const otherVersions = snapshot.packages
+      .filter(
+        (item): item is ToolPackageSnapshot =>
+          item.kind === "tool-package" && item.name === reference.name,
+      )
+      .map((item) => item.version);
+    if (otherVersions.length > 0) {
+      throw new WorkflowCapabilityError(
+        "version_mismatch",
+        `agent node "${node.id}" selects tool package "${reference.name}" version "${reference.version}" but the snapshot contains ${formatVersions(otherVersions)}`,
+      );
+    }
+    throw new WorkflowCapabilityError(
+      "missing_package",
+      `agent node "${node.id}" selects missing tool package "${reference.name}"`,
+    );
+  });
+  assertUniqueToolNames(node, selected);
+  return Object.freeze(selected);
 }
 
 export function resolveVerifierPackageNode(
@@ -281,6 +392,70 @@ function collectVerifierPackages(
   }
 }
 
+function collectToolPackages(
+  workflow: CompiledWorkflow,
+  references: Map<string, WorkflowToolPackageReference>,
+): void {
+  for (const node of workflow.nodes) {
+    if (node.type === "agent") {
+      for (const selected of node.agent.toolPackages) {
+        const existing = references.get(selected.name);
+        if (existing !== undefined && existing.version !== selected.version) {
+          throw new WorkflowCapabilityError(
+            "conflicting_package",
+            `workflow "${workflow.id}" selects incompatible versions of tool package "${selected.name}"`,
+          );
+        }
+        references.set(selected.name, Object.freeze({ ...selected }));
+      }
+    } else if (node.type === "child") {
+      collectToolPackages(node.child.workflow, references);
+    }
+  }
+}
+
+function assertAgentToolNames(
+  workflow: CompiledWorkflow,
+  available: readonly ToolPackageSnapshot[],
+): void {
+  for (const node of workflow.nodes) {
+    if (node.type === "agent") {
+      const selected = node.agent.toolPackages.map((reference) => {
+        const exact = available.find(
+          (item) => item.name === reference.name && item.version === reference.version,
+        );
+        if (exact === undefined) {
+          throw new WorkflowCapabilityError(
+            "missing_package",
+            `agent node "${node.id}" cannot bind tool package "${reference.name}"`,
+          );
+        }
+        return exact;
+      });
+      assertUniqueToolNames(node, selected);
+    } else if (node.type === "child") {
+      assertAgentToolNames(node.child.workflow, available);
+    }
+  }
+}
+
+function assertUniqueToolNames(
+  node: CompiledAgentNode,
+  packages: readonly ToolPackageSnapshot[],
+): void {
+  const names = new Set<string>();
+  for (const item of packages) {
+    const toolName = item.definition.tool.name;
+    if (names.has(toolName)) {
+      throw new WorkflowCapabilityError(
+        "tool_name_collision",
+        `agent node "${node.id}" selects multiple packages with model tool name "${toolName}"`,
+      );
+    }
+    names.add(toolName);
+  }
+}
+
 function impossiblePackagedModel(node: CompiledVerifierNode): never {
   throw new Error(`verifier node "${node.id}" has an impossible packaged model definition`);
 }
@@ -306,11 +481,16 @@ function validateWorkflowCapabilitySnapshot(
 function capabilitySelectionLabel(
   skills: readonly string[],
   verifiers: readonly WorkflowVerifierPackageReference[],
+  tools: readonly WorkflowToolPackageReference[],
 ): string {
-  if (skills.length > 0 && verifiers.length > 0) {
-    return "Agent Skills and verifier packages";
-  }
-  return skills.length > 0 ? "Agent Skills" : "verifier packages";
+  const selected = [
+    ...(skills.length > 0 ? ["Agent Skills"] : []),
+    ...(verifiers.length > 0 ? ["verifier packages"] : []),
+    ...(tools.length > 0 ? ["tool packages"] : []),
+  ];
+  return selected.length === 1
+    ? (selected[0] ?? "capabilities")
+    : `${selected.slice(0, -1).join(", ")} and ${selected.at(-1)}`;
 }
 
 function formatVersions(versions: readonly string[]): string {

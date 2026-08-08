@@ -1425,6 +1425,9 @@ function freezeNode(
         model: Object.freeze({ ...source.agent.model }),
         tools: Object.freeze([...source.agent.tools]),
         skills: Object.freeze([...source.agent.skills]),
+        toolPackages: Object.freeze(
+          source.agent.toolPackages.map((item) => Object.freeze({ ...item })),
+        ),
         ...(source.agent.toolApproval === undefined
           ? {}
           : {
@@ -1829,6 +1832,9 @@ function freezeLoopBodyNode(
         model: Object.freeze({ ...source.agent.model }),
         tools: Object.freeze([...source.agent.tools]),
         skills: Object.freeze([...source.agent.skills]),
+        toolPackages: Object.freeze(
+          source.agent.toolPackages.map((item) => Object.freeze({ ...item })),
+        ),
         ...(source.agent.toolApproval === undefined
           ? {}
           : {

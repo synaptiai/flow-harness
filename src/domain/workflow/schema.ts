@@ -4,6 +4,7 @@ import {
   verifierPackageNameSchema,
   verifierPackageVersionSchema,
 } from "../capability/verifier-packages.js";
+import { toolPackageNameSchema, toolPackageVersionSchema } from "../capability/tool-packages.js";
 import { goalContractSchema } from "../goal/schema.js";
 import {
   type CompiledResultSchema,
@@ -140,6 +141,13 @@ const verifierPackageReferenceSchema = z
   })
   .strict();
 
+const toolPackageReferenceSchema = z
+  .object({
+    name: toolPackageNameSchema,
+    version: toolPackageVersionSchema,
+  })
+  .strict();
+
 const commandNodeSchema = z
   .object({
     ...guardedNodeShape,
@@ -169,6 +177,14 @@ const agentConfigSchema = z
       .max(MAX_AGENT_SKILL_PACKAGES)
       .refine((skills) => new Set(skills).size === skills.length, "agent skills must be unique")
       .default([]),
+    toolPackages: z
+      .array(toolPackageReferenceSchema)
+      .max(MAX_AGENT_SKILL_PACKAGES)
+      .refine(
+        (packages) => new Set(packages.map((item) => item.name)).size === packages.length,
+        "agent tool package names must be unique",
+      )
+      .default([]),
     toolApproval: agentToolApprovalSchema.optional(),
     recovery: agentRecoverySchema.optional(),
     timeoutMs: z.number().int().positive().max(86_400_000).default(300_000),
@@ -182,18 +198,25 @@ const agentConfigSchema = z
         message: "agent skills require the declared read tool for progressive disclosure",
       });
     }
-    if (agent.recovery !== undefined && agent.tools.includes("exec")) {
+    if (
+      agent.recovery !== undefined &&
+      (agent.tools.includes("exec") || agent.toolPackages.length > 0)
+    ) {
       context.addIssue({
         code: "custom",
         path: ["recovery"],
-        message: "fresh agent recovery is not supported with arbitrary command execution",
+        message: "fresh agent recovery is not supported with agent command execution",
       });
     }
-    if (agent.toolApproval !== undefined && !agent.tools.includes("exec")) {
+    if (
+      agent.toolApproval !== undefined &&
+      !agent.tools.includes("exec") &&
+      agent.toolPackages.length === 0
+    ) {
       context.addIssue({
         code: "custom",
         path: ["toolApproval"],
-        message: "agent exec approval requires the declared exec tool",
+        message: "agent exec approval requires raw exec or a selected command tool package",
       });
     }
   });

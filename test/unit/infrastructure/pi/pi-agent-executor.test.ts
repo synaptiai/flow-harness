@@ -1289,6 +1289,7 @@ function agentNode(
       },
       tools,
       skills: [],
+      toolPackages: [],
       timeoutMs,
     },
   };

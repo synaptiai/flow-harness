@@ -182,6 +182,7 @@ function agentNode(tools: CompiledAgentNode["agent"]["tools"] = []): CompiledAge
       model: { provider: "flow-test", id: "deterministic", thinking: "off" },
       tools,
       skills: [],
+      toolPackages: [],
       timeoutMs: 5_000,
     },
   };

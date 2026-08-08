@@ -97,6 +97,11 @@ export interface CompiledVerifierPackageReference {
   readonly version: string;
 }
 
+export interface CompiledToolPackageReference {
+  readonly name: string;
+  readonly version: string;
+}
+
 export interface CompiledGuardedNodeBase extends CompiledNodeBase {
   readonly when?: CompiledBranchGuard;
 }
@@ -125,6 +130,7 @@ export interface CompiledAgentNode extends CompiledGuardedNodeBase {
     };
     readonly tools: readonly AgentToolName[];
     readonly skills: readonly string[];
+    readonly toolPackages: readonly CompiledToolPackageReference[];
     readonly toolApproval?: {
       readonly exec: {
         readonly mode: "required";
