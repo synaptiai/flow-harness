@@ -317,6 +317,43 @@ describe("public repository contracts", () => {
     expect(() => compileWorkflowText(source, "examples/typed-result.workflow.yaml")).not.toThrow();
   });
 
+  it("documents isolated child runs with a valid credential-free example", async () => {
+    const [readme, architecture, workflowSpec, recovery, security, roadmap, testing, source] =
+      await Promise.all([
+        readText("README.md"),
+        readText("docs/architecture.md"),
+        readText("docs/workflow-spec.md"),
+        readText("docs/recovery.md"),
+        readText("SECURITY.md"),
+        readText("docs/roadmap.md"),
+        readText("docs/testing-and-evaluation.md"),
+        readText("examples/isolated-child.workflow.yaml"),
+      ]);
+
+    expect(readme).toMatch(/Isolated child workflow runs.*Implemented/is);
+    expect(readme).toContain("examples/isolated-child.workflow.yaml");
+    expect(architecture).toContain("### Isolated child run trees");
+    expect(workflowSpec).toContain("## Isolated child workflow node");
+    expect(workflowSpec).toMatch(/not an atomic\s+filesystem snapshot or security boundary/is);
+    expect(recovery).toContain("child_recovery_ineligible");
+    expect(security).toMatch(/Child workflows run from owner-only.*reflink-or-copy/is);
+    expect(security).toMatch(/different workspace or policy waits/is);
+    expect(roadmap).toMatch(/Child runs use isolated workspaces.*Implemented/is);
+    expect(testing).toContain("examples/isolated-child.workflow.yaml");
+
+    const workflow = compileWorkflowText(source, "examples/isolated-child.workflow.yaml");
+    expect(workflow.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "delegate",
+          type: "child",
+          child: expect.objectContaining({ resultNodeId: "publish" }),
+        }),
+        expect.objectContaining({ id: "publish-parent", type: "result" }),
+      ]),
+    );
+  });
+
   it("documents detached supervision without overstating its trust boundary", async () => {
     const [readme, architecture, workflowSpec, recovery, sourcing, roadmap, security] =
       await Promise.all([

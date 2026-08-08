@@ -33,6 +33,7 @@ describe("compileWorkflowText", () => {
     "implement-and-verify.workflow.yaml",
     "approval-gated-command.workflow.yaml",
     "concurrent-fork.workflow.yaml",
+    "isolated-child.workflow.yaml",
   ])("keeps published example %s compilable", async (fileName) => {
     const exampleUrl = new URL(`../../../examples/${fileName}`, import.meta.url);
     const source = await readFile(exampleUrl, "utf8");

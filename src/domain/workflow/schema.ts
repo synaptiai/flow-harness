@@ -3,6 +3,7 @@ import { z } from "zod";
 import { goalContractSchema } from "../goal/schema.js";
 import {
   FLOW_WORKFLOW_API_VERSION,
+  MAX_CHILD_WORKFLOW_SOURCE_BYTES,
   MAX_CONCURRENT_NODES,
   MAX_LOOP_BODY_NODES,
   MAX_LOOP_ITERATIONS,
@@ -340,6 +341,26 @@ const resultNodeSchema = z
   })
   .strict();
 
+const childNodeSchema = z
+  .object({
+    ...guardedNodeShape,
+    type: z.literal("child"),
+    child: z
+      .object({
+        resultNodeId: identifierSchema,
+        workflow: z
+          .string()
+          .refine(
+            (value) =>
+              value.trim().length > 0 &&
+              Buffer.byteLength(value, "utf8") <= MAX_CHILD_WORKFLOW_SOURCE_BYTES,
+            `embedded child workflow must be non-empty and not exceed ${MAX_CHILD_WORKFLOW_SOURCE_BYTES} UTF-8 bytes`,
+          ),
+      })
+      .strict(),
+  })
+  .strict();
+
 const conditionNodeSchema = z
   .object({
     ...guardedNodeShape,
@@ -428,6 +449,7 @@ const loopBodyNodeSchema = z.discriminatedUnion("type", [
   verifierNodeSchema,
   approvalNodeSchema,
   resultNodeSchema,
+  childNodeSchema,
   conditionNodeSchema,
   joinNodeSchema,
 ]);
@@ -481,6 +503,7 @@ export const workflowSourceSchema = z
           verifierNodeSchema,
           approvalNodeSchema,
           resultNodeSchema,
+          childNodeSchema,
           conditionNodeSchema,
           joinNodeSchema,
           loopNodeSchema,

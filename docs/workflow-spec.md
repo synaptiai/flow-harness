@@ -70,7 +70,7 @@ Criterion evaluation is a pure domain operation over the captured goal and durab
 - Self-dependencies, duplicate dependencies, and cycles are rejected.
 - The scheduler considers pending nodes in declaration order and applies the first legal transition whose dependencies are terminal. Ordinary work requires successful dependencies; omission propagates through ordinary descendants; an explicit join reconciles the selected success with omitted alternatives.
 - Independent ready executable nodes may overlap only when `concurrency.maxNodes` explicitly permits it; omission preserves the sequential maximum of one.
-- Every terminal node must be a command, verifier, or result node. An ordinary agent response cannot be terminal proof. A terminal result completes an operational graph but cannot satisfy a goal criterion.
+- Every terminal node must be a command, child, verifier, or result node. An ordinary agent response cannot be terminal proof. A terminal result completes an operational graph but cannot satisfy a goal criterion.
 - Compilation finishes before Flow creates a run ledger or invokes an executor.
 
 ## Typed result node
@@ -122,8 +122,89 @@ executor, and consumes no start, model-token, reported-cost, or active-time budg
 
 A typed result is not a verifier verdict. Goal criteria remain bound to terminal command or verifier
 nodes. Results instead provide a stable data boundary for exact conditions, evidence-bound
-approvals, model-verifier inputs, loop checks, inspection, detached execution, and future child-run
+approvals, model-verifier inputs, loop checks, inspection, detached execution, and child-run
 composition.
+
+## Isolated child workflow node
+
+A `child` node embeds one complete workflow and names its typed result boundary:
+
+```yaml
+- id: delegate
+  type: child
+  dependsOn: [prepare]
+  child:
+    resultNodeId: publish
+    workflow: |
+      apiVersion: flow.synapti.ai/v1alpha1
+      kind: Workflow
+      metadata: { id: delegated-analysis }
+      budget:
+        maxNodeStarts: 8
+        maxModelTokens: 100000
+        maxCostUsd: 1
+        maxExecutionMs: 300000
+      nodes:
+        - id: analyze
+          type: agent
+          agent:
+            prompt: Analyze the isolated candidate.
+            model: { provider: anthropic, id: claude-sonnet-4-6 }
+            tools: [read, ls, edit]
+        - id: publish
+          type: result
+          dependsOn: [analyze]
+          result:
+            source: { nodeId: analyze, field: agent.text }
+            schema: { type: string, maxLength: 65536 }
+```
+
+The embedded source is a non-empty YAML string of at most 1 MiB. Flow recursively compiles and
+freezes it before creating the parent ledger. A child must declare all four budget dimensions and
+name an existing, unconditional, terminal `result` node. Human `approval` nodes and
+approval-required commands are rejected because a descendant cannot suspend the root tree for
+interactive input. Child nesting is limited to four levels, and the complete recursively compiled
+tree is limited to 1,024 nodes. These are compile-time tree limits in addition to each workflow's
+ordinary 64-source-node and 256-expanded-node limits.
+
+`node_started` derives one deterministic child run id from the parent run id, child node id, and
+attempt. It persists that id together with the child workflow/schema digests before materializing a
+workspace. The production backend creates an owner-only copy-on-write clone where supported and
+falls back to an ordinary copy. It includes dirty and untracked content, modes, and symbolic links
+without following them; excludes `.flow` and every protected run-store path; refuses sockets,
+devices, and FIFOs; and applies default ceilings of 200,000 entries and 10 GiB of logical file
+content. Each copied regular file is hash-checked and rejected if its source identity changes during
+copy. This portable backend is content-verified isolation from parent mutations, not an atomic
+filesystem snapshot or security boundary.
+
+The child executes the same Flow compiler, scheduler, policy, sandbox, executors, cancellation
+signal, and recovery rules in its isolated working directory, but writes a separate JSONL history.
+Its `run_started` event binds snapshot backend/digest and exact parent linkage. On terminal success,
+the parent discards the workspace and records the child terminal sequence, canonical result,
+resource totals, duration, snapshot digest, and cleanup disposition. A successful child requires a
+valid result and confirmed discard. Failed, cancelled, and exhausted children retain linked
+evidence and fail the parent child node. Cleanup failure retains the workspace and fails closed.
+Child changes are never copied back, exported, merged, or promoted in this contract.
+
+Every child ceiling is reserved against the parent's remaining bounded budget before the workspace
+exists; sibling reservations are aggregated within a wave. Actual child starts, model tokens,
+reported cost, and active time are then added to every ancestor, while the parent child node's own
+start is counted separately. Downstream results, conditions, approvals, loop checks, and model
+verifiers consume the imported canonical value as `result.value` with its original hash.
+
+Ready siblings may share a child-only scheduler wave, so their parent snapshot is not interleaved
+with a parent-workspace executor. Backends may impose a narrower execution limit. In particular,
+the current process-global SRT backend shares same-workspace sessions but serializes incompatible
+child-workspace command sessions through reset/reinitialize; it does not reject the second child.
+Agent/model work and alternate future sandbox backends can still overlap under the declared
+`concurrency.maxNodes` limit.
+
+Recovery treats the child ledger as the execution commit marker. If no child event exists, Flow may
+discard a stale pre-ledger workspace and recreate the deterministic child. A nonterminal ledger
+must reopen the exact manifest and snapshot digest and then satisfy normal child recovery; missing
+or divergent workspace state produces `child_recovery_ineligible`. A terminal child ledger is
+authoritative even when cleanup completed before the parent outcome append, and cleanup is
+idempotently retried. Flow never silently replaces a workspace after a child event exists.
 
 ## Exact conditions and explicit joins
 
@@ -249,7 +330,8 @@ contracts. Loop iteration and retry attempt are separate: attempt 2 of an interr
 
 This contract does not provide arbitrary graph cycles, nested or unbounded loops, dynamic maps,
 numeric optimization direction, stagnation detection, workspace snapshots, accept-best behavior,
-or rollback. Those require later child-run and optimization contracts.
+or rollback. Those require an optimization contract that promotes and compares isolated child
+candidates; the current child contract always discards workspace changes.
 
 ## Bounded node concurrency
 
@@ -280,10 +362,10 @@ A settlement resource ceiling may be crossed by the combined wave; Flow retains 
 terminalizes as `resource_exhausted`, and schedules no later node. A node-start ceiling is checked
 before each admission.
 
-Concurrency does not isolate one branch's workspace from another. Authors must encode causal
-dependencies for operations that cannot safely overlap. It applies inside one active bounded-loop
-body, but iterations remain sequential. Dynamic fan-out, worktree-isolated child runs, and
-per-target conflict inference are not part of this contract.
+Concurrency does not isolate ordinary branches that share the parent workspace. Authors must encode
+causal dependencies for operations that cannot safely overlap or move the work into explicit child
+nodes. It applies inside one active bounded-loop body, but iterations remain sequential. Dynamic
+fan-out and per-target conflict inference are not part of this contract.
 
 ## Run budget
 
@@ -487,7 +569,7 @@ make a probabilistic verifier prompt-injection-proof or equivalent to hidden det
 Command-verifier approval, external verifier packages, remediation edges, fallback, and automatic
 retry of an interrupted verifier are not part of this contract.
 
-Every command node and descendant runs through Flow's required SRT adapter. The fixed `workspace-write-network-deny-v1` profile allows the selected workflow directory and a private temporary directory, denies network and undeclared Unix sockets, omits ambient credentials and injection variables from the child environment, and denies writes to the actual run store, `.flow`, `.git`, environment files, and key files. Concurrent same-policy commands share one initialized SRT session but receive distinct temporary directories, environment values, and per-command filesystem configurations. Flow reference-counts wraps, rejects a different concurrent workspace or policy, and resets SRT only after the last command releases. On Linux, Flow resolves SRT's packaged seccomp helper canonically, passes it as the explicit SRT apply path, and re-exposes only that file read-only when the Flow installation lies outside the workflow directory. If SRT is missing, unsupported, degraded, or cannot initialize, the node fails before spawn; Flow has no unsandboxed command fallback.
+Every command node and descendant runs through Flow's required SRT adapter. The fixed `workspace-write-network-deny-v1` profile allows the selected workflow directory and a private temporary directory, denies network and undeclared Unix sockets, omits ambient credentials and injection variables from the child environment, and denies writes to the actual run store, `.flow`, `.git`, environment files, and key files. Concurrent same-policy commands share one initialized SRT session but receive distinct temporary directories, environment values, and per-command filesystem configurations. Flow reference-counts wraps, queues a different concurrent workspace or policy until the active session resets, honors cancellation while queued, and resets SRT only after the last compatible command releases. On Linux, Flow resolves SRT's packaged seccomp helper canonically, passes it as the explicit SRT apply path, and re-exposes only that file read-only when the Flow installation lies outside the workflow directory. If SRT is missing, unsupported, degraded, or cannot initialize, the node fails before spawn; Flow has no unsandboxed command fallback.
 
 New command evidence records `anthropic-sandbox-runtime`, its exact installed version, the named profile, and a SHA-256 digest of the semantic policy. The field is optional only when replaying ledgers created before sandbox evidence existed.
 
@@ -580,6 +662,14 @@ fresh mode, maximum attempts, and whether replay requires no effect protocol or
 `flow.effects/v1`. When declared, the compiled goal is also captured, so replay and inspection do
 not need the original workflow file.
 
+A child `node_started` also captures its deterministic child run id, embedded workflow digest,
+result node/schema identity, and isolation backend. The child ledger's own `run_started` captures
+snapshot digest and parent run/node/attempt provenance. Parent child evidence retains the terminal
+child sequence, outcome, canonical result when available, imported resources, duration, workspace
+digest, and discarded/retained disposition. Replay rejects mismatched linkage, forged typed values,
+negative or overflowing resources, successful children without results, and successful children
+whose workspaces were not discarded.
+
 A writable `node_started` declares `flow.effects/v1`; its attempt may append at most 32 prepared
 effects and at most one mutually exclusive executor settlement or recovery reconciliation per
 effect. `node_attempt_interrupted` can follow a running opted-in attempt only after replay validates
@@ -630,7 +720,8 @@ CLI or uses `--detach`. Detached submission stores the exact workflow source and
 execution directory in an immutable job record; it never defers compilation to a mutable file path.
 The supervisor first reserves bounded capacity or assigns a durable FIFO ticket. A queued job has no
 run owner or worker until it is dispatched; queue-full rejection retains no executable snapshot.
-One authenticated worker then owns one normal application run. Supervisor health and admission
+One authenticated worker then owns one root run tree, including every recursively scheduled child.
+Children do not consume supervisor worker slots or re-enter FIFO admission. Supervisor health and admission
 state cannot advance the graph or override ledger state. If detached resume ends in a typed
 recovery refusal, its descriptor retains that code and the replayed run status; the worker slot may
 end while an uncertain authoritative run remains `running`.
@@ -641,7 +732,7 @@ the id to the complete request and rejects reuse with changed input.
 
 ## Current limitations
 
-- No arbitrary cycles, nested/unbounded/optimization loops, dynamic fan-out, general multi-condition joins, child runs, terminal-failure retry, or fallback semantics. Bounded loop bodies and static ready DAG nodes can execute concurrently, but iterations are sequential, share one workspace, and are not inferred to be conflict-free. Conditions and loop stops are limited to exact equality over complete durable command, agent, accepted verifier, or typed-result fields. Approval is available as deterministic command pre-start gates and pure evidence-bound graph nodes; command-verifier and dynamic in-session model-tool approval remain unavailable. Recovery is limited to proof-safe fresh agent attempts; interrupted verifier attempts are never retried automatically.
+- No arbitrary cycles, nested/unbounded/optimization loops, dynamic fan-out, general multi-condition joins, child patch promotion, terminal-failure retry, or fallback semantics. Bounded loop bodies and static ready DAG nodes can execute concurrently, but iterations are sequential, share one workspace, and are not inferred to be conflict-free. Child workflows isolate workspaces and histories but always discard their changes. Conditions and loop stops are limited to exact equality over complete durable command, agent, accepted verifier, or typed-result fields. Approval is available as deterministic command pre-start gates and pure evidence-bound graph nodes; command-verifier and dynamic in-session model-tool approval remain unavailable. Recovery is limited to proof-safe fresh agent attempts; interrupted verifier attempts are never retried automatically.
 - No automatic terminalization or session continuation of an interrupted node attempt. Unconfigured or ineligible durable starts still block continuation.
 - Detached workers can be adopted by a replacement local supervisor, but they cannot move between
   hosts and do not survive host reboot.

@@ -23,6 +23,28 @@ export interface RunEventStore {
 export interface RecoverableRunEventStore extends RunEventStore {
   claim(runId: string): Promise<readonly RunEvent[]>;
   release(runId: string): Promise<void>;
+  exists?(runId: string): Promise<boolean>;
+}
+
+export interface IsolatedWorkspace {
+  readonly workspaceId: string;
+  readonly cwd: string;
+  readonly backend: "reflink-copy-v1";
+  readonly snapshotDigest: string;
+}
+
+export interface WorkspaceIsolator {
+  create(request: {
+    readonly workspaceId: string;
+    readonly sourceCwd: string;
+    readonly excludedPaths?: readonly string[];
+  }): Promise<IsolatedWorkspace>;
+  reopen(request: {
+    readonly workspaceId: string;
+    readonly sourceCwd: string;
+    readonly excludedPaths?: readonly string[];
+  }): Promise<IsolatedWorkspace>;
+  cleanup(workspaceId: string): Promise<"discarded">;
 }
 
 export interface NodeExecutionContext {

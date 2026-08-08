@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -123,6 +123,94 @@ describe("detached run worker", () => {
           control: { kind: "result", canonicalValue: '{"accepted":true,"score":1}' },
         },
       },
+    });
+  });
+
+  it("runs a separately-ledgered isolated child through a detached worker", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-worker-child-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    const store = new LocalSupervisorStore(runsDirectory);
+    await store.initialize();
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "worker-child",
+      mode: "run",
+      sourceName: join(directory, "workflow.yaml"),
+      workflowSource: childWorkflowSource(),
+      cwd: directory,
+      token: "a".repeat(64),
+      createdAt: "2026-08-08T12:30:00.000Z",
+    });
+    await store.reserveSubmission(
+      job,
+      createActiveRunClaim({
+        runId: job.runId,
+        jobId: job.jobId,
+        workerId: job.workerId,
+        claimedAt: job.createdAt,
+      }),
+    );
+    const executor: NodeExecutor = {
+      async execute(node) {
+        if (node.type !== "command") {
+          throw new Error(`unexpected worker child node "${node.type}"`);
+        }
+        const stdout = '"ok"';
+        return {
+          status: "succeeded",
+          evidence: {
+            ...successfulCommandEvidence(node.id),
+            stdout,
+            stdoutHash: sha256(stdout),
+          },
+        };
+      },
+    };
+
+    const worker = executeWorkerJob(job.jobId, {
+      store,
+      executor,
+      effectReconciler: createProductionNodeEffectReconciler(),
+      createRunStore: (root) => new JsonlRunStore(root),
+      pid: 4327,
+    });
+    const descriptor = await waitForDescriptor(store, job.workerId);
+    await expect(requestWorker(descriptor, { type: "identify" })).resolves.toMatchObject({
+      ok: true,
+      result: { runId: job.runId, status: "running" },
+    });
+    await expect(worker).resolves.toBe(0);
+
+    const runStore = new JsonlRunStore(runsDirectory);
+    const parentState = reduceRunEvents(await runStore.read(job.runId));
+    const childRunId = parentState.nodes.delegate?.childRun?.runId;
+    expect(childRunId).toMatch(/^child-[a-f0-9]{48}$/);
+    if (childRunId === undefined) {
+      throw new Error("detached parent did not persist its child run link");
+    }
+    expect(parentState).toMatchObject({
+      status: "succeeded",
+      nodes: {
+        delegate: {
+          evidence: {
+            kind: "child",
+            childRunId,
+            result: { canonicalValue: '"ok"' },
+            workspace: { disposition: "discarded" },
+          },
+        },
+      },
+    });
+    expect(reduceRunEvents(await runStore.read(childRunId)).status).toBe("succeeded");
+    await expect(stat(join(runsDirectory, ".workspaces", childRunId))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(store.readWorkerDescriptor(job.workerId)).resolves.toMatchObject({
+      status: "terminal",
+      runStatus: "succeeded",
+      exitCode: 0,
     });
   });
 
@@ -705,6 +793,49 @@ nodes:
           accepted: { type: boolean }
           score: { type: integer, minimum: 0, maximum: 10 }
         required: [accepted, score]
+`;
+}
+
+function childWorkflowSource(): string {
+  const child = `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: worker-child-inner }
+budget:
+  maxNodeStarts: 4
+  maxModelTokens: 100
+  maxCostUsd: 0.01
+  maxExecutionMs: 10000
+nodes:
+  - id: produce
+    type: command
+    command: { executable: node }
+  - id: publish
+    type: result
+    dependsOn: [produce]
+    result:
+      source: { nodeId: produce, field: command.stdout }
+      schema: { type: string, maxLength: 1024 }
+`.trim();
+  return `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: worker-child-parent }
+budget:
+  maxNodeStarts: 16
+  maxModelTokens: 1000
+  maxCostUsd: 1
+  maxExecutionMs: 60000
+nodes:
+  - id: delegate
+    type: child
+    child:
+      resultNodeId: publish
+      workflow: |
+${child
+  .split("\n")
+  .map((line) => `        ${line}`)
+  .join("\n")}
 `;
 }
 

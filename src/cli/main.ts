@@ -13,6 +13,7 @@ import type {
   NodeEffectReconciler,
   NodeExecutor,
   RecoverableRunEventStore,
+  WorkspaceIsolator,
 } from "../application/ports.js";
 import { resumeWorkflow, RunRecoveryError, runWorkflow } from "../application/run-workflow.js";
 import {
@@ -38,6 +39,7 @@ import {
 } from "../infrastructure/fs/local-supervisor-store.js";
 import { createProductionNodeEffectReconciler } from "../infrastructure/runtime/production-effect-reconciler.js";
 import { createProductionNodeExecutor } from "../infrastructure/runtime/production-node-executor.js";
+import { createProductionWorkspaceIsolator } from "../infrastructure/runtime/production-workspace-isolator.js";
 import {
   ensureSupervisor,
   requestSupervisor,
@@ -81,6 +83,7 @@ export interface CliDependencies {
   readonly executor: NodeExecutor;
   readonly effectReconciler: NodeEffectReconciler;
   readonly createStore: (rootDirectory: string) => RecoverableRunEventStore;
+  readonly createWorkspaceIsolator: (runsDirectory: string) => WorkspaceIsolator;
   readonly readTextFile: (path: string) => Promise<string>;
   readonly initializeProject: (
     directory: string,
@@ -316,6 +319,7 @@ async function resumeCommand(
     protectedPaths: [runsDirectory],
     runId,
     store: dependencies.createStore(runsDirectory),
+    workspaceIsolator: dependencies.createWorkspaceIsolator(runsDirectory),
     executor: dependencies.executor,
     effectReconciler: dependencies.effectReconciler,
     ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
@@ -390,6 +394,7 @@ async function runCommand(
     cwd: executionCwd,
     protectedPaths: [runsDirectory],
     store: dependencies.createStore(runsDirectory),
+    workspaceIsolator: dependencies.createWorkspaceIsolator(runsDirectory),
     executor: dependencies.executor,
     ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
     runId,
@@ -662,6 +667,7 @@ async function internalWorkerCommand(
     executor: dependencies.executor,
     effectReconciler: dependencies.effectReconciler,
     createRunStore: dependencies.createStore,
+    createWorkspaceIsolator: dependencies.createWorkspaceIsolator,
     ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
   });
 }
@@ -795,6 +801,7 @@ function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies 
     ...configDependencies,
     executor: overrides.executor ?? createProductionNodeExecutor(),
     effectReconciler: overrides.effectReconciler ?? createProductionNodeEffectReconciler(),
+    createWorkspaceIsolator: overrides.createWorkspaceIsolator ?? createProductionWorkspaceIsolator,
     readTextFile: overrides.readTextFile ?? ((path) => readFile(path, "utf8")),
     ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
   };

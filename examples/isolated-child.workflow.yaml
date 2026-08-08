@@ -1,0 +1,55 @@
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata:
+  id: isolated-child
+  description: Run a typed delegated check in an isolated child workspace.
+budget:
+  maxNodeStarts: 16
+  maxModelTokens: 1000
+  maxCostUsd: 1
+  maxExecutionMs: 60000
+nodes:
+  - id: delegate
+    type: child
+    child:
+      resultNodeId: publish
+      workflow: |
+        apiVersion: flow.synapti.ai/v1alpha1
+        kind: Workflow
+        metadata:
+          id: isolated-child-check
+        budget:
+          maxNodeStarts: 4
+          maxModelTokens: 100
+          maxCostUsd: 0.01
+          maxExecutionMs: 10000
+        nodes:
+          - id: inspect
+            type: command
+            command:
+              executable: node
+              args:
+                - -e
+                - process.stdout.write(JSON.stringify({accepted:true,source:"child"}))
+          - id: publish
+            type: result
+            dependsOn: [inspect]
+            result:
+              source: { nodeId: inspect, field: command.stdout }
+              schema:
+                type: object
+                properties:
+                  accepted: { type: boolean }
+                  source: { type: string, maxLength: 32 }
+                required: [accepted, source]
+  - id: publish-parent
+    type: result
+    dependsOn: [delegate]
+    result:
+      source: { nodeId: delegate, field: result.value }
+      schema:
+        type: object
+        properties:
+          accepted: { type: boolean }
+          source: { type: string, maxLength: 32 }
+        required: [accepted, source]
