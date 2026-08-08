@@ -2979,7 +2979,10 @@ export function appendRunEvent(
         );
       }
       const selected = event.capabilitySnapshot?.packages.find(
-        (item) => item.kind === "verifier-package" && item.name === requirement.name,
+        (item) =>
+          item.kind === "verifier-package" &&
+          item.name === requirement.name &&
+          item.version === requirement.version,
       );
       if (
         selected?.kind !== "verifier-package" ||
@@ -6926,7 +6929,10 @@ function resolvePersistedVerifierRequirement(
     );
   }
   const selected = snapshot?.packages.find(
-    (item) => item.kind === "verifier-package" && item.name === packageRequirement.name,
+    (item) =>
+      item.kind === "verifier-package" &&
+      item.name === packageRequirement.name &&
+      item.version === packageRequirement.version,
   );
   if (
     selected?.kind !== "verifier-package" ||

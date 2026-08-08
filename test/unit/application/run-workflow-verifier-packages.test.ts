@@ -20,6 +20,73 @@ import type { AgentEvidence, CommandEvidence, RunEvent } from "../../../src/doma
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 
 describe("runWorkflow verifier packages", () => {
+  it("rejects an invalid capability snapshot before persistence or execution", async () => {
+    const snapshot = commandSnapshot();
+    const invalid = { ...snapshot, digest: "0".repeat(64) };
+    const command = fakeCommandExecutor();
+    const store = new MemoryStore();
+
+    await expect(
+      runWorkflow(packagedCommandWorkflow(), {
+        cwd: process.cwd(),
+        protectedPaths: [],
+        runId: "invalid-package-snapshot",
+        store,
+        executor: new NodeExecutorRouter(command, fakeAgentExecutor()),
+        capabilitySnapshot: invalid,
+      }),
+    ).rejects.toMatchObject({ code: "invalid_snapshot" });
+
+    expect(store.events).toEqual([]);
+    expect(command.execute).not.toHaveBeenCalled();
+  });
+
+  it("executes the exact selected version from a parent-owned multi-version snapshot", async () => {
+    const snapshot = createCapabilitySnapshot(
+      [],
+      [
+        packageInput("release-tests", "0.9.0", {
+          kind: "command",
+          command: { executable: "node", args: ["--help"], timeoutMs: 30_000 },
+        }),
+        packageInput("release-tests", "1.0.0", {
+          kind: "command",
+          command: { executable: "node", args: ["--version"], timeoutMs: 30_000 },
+        }),
+      ],
+    );
+    const selected = snapshot.packages.find(
+      (item) => item.kind === "verifier-package" && item.version === "1.0.0",
+    );
+    const command = fakeCommandExecutor(async (node) => {
+      expect(node.command.args).toEqual(["--version"]);
+      return commandSuccess(node.id, "v22.0.0");
+    });
+    const store = new MemoryStore();
+
+    const state = await runWorkflow(packagedCommandWorkflow(), {
+      cwd: process.cwd(),
+      protectedPaths: [],
+      runId: "multi-version-package-snapshot",
+      store,
+      executor: new NodeExecutorRouter(command, fakeAgentExecutor()),
+      capabilitySnapshot: snapshot,
+      executionWorkspace: {
+        backend: "reflink-copy-v1",
+        snapshotDigest: "a".repeat(64),
+        parentRunId: "parent-run",
+        parentNodeId: "delegate",
+        parentAttempt: 1,
+      },
+    });
+
+    expect(state.status).toBe("succeeded");
+    expect(state.nodes.release?.evidence).toMatchObject({
+      kind: "verifier",
+      package: { name: "release-tests", version: "1.0.0", digest: selected?.digest },
+    });
+  });
+
   it("binds an immutable model rubric and records exact package use on the verdict", async () => {
     const snapshot = modelSnapshot();
     const command = fakeCommandExecutor(async (node) => commandSuccess(node.id, "verified input"));

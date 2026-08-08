@@ -1,9 +1,10 @@
 import type { CompiledVerifierNode, CompiledWorkflow } from "../workflow/types.js";
-import type { CapabilitySnapshot } from "./agent-skills.js";
+import { type CapabilitySnapshot, validateCapabilitySnapshot } from "./agent-skills.js";
 import type { VerifierPackageSnapshot, VerifierPackageUseEvidence } from "./verifier-packages.js";
 
 export type WorkflowCapabilityErrorCode =
   | "conflicting_package"
+  | "invalid_snapshot"
   | "missing_package"
   | "missing_skill"
   | "missing_snapshot"
@@ -18,8 +19,9 @@ export class WorkflowCapabilityError extends Error {
   constructor(
     readonly code: WorkflowCapabilityErrorCode,
     message: string,
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
   }
 }
 
@@ -66,22 +68,39 @@ export function bindWorkflowCapabilities(
 ): CapabilitySnapshot | undefined {
   const requiredSkills = collectWorkflowAgentSkillNames(workflow);
   const requiredVerifiers = collectWorkflowVerifierPackageReferences(workflow);
+  const boundSnapshot = validateWorkflowCapabilitySnapshot(snapshot);
   if (requiredSkills.length + requiredVerifiers.length === 0) {
-    if (snapshot !== undefined && options.allowUnexpected !== true) {
+    if (boundSnapshot !== undefined && options.allowUnexpected !== true) {
+      const unexpectedSkill = boundSnapshot.packages.find((item) => item.kind === "agent-skill");
+      if (unexpectedSkill !== undefined) {
+        throw new WorkflowCapabilityError(
+          "unexpected_skill",
+          `capability snapshot contains Agent Skill "${unexpectedSkill.name}" that workflow "${workflow.id}" does not select`,
+        );
+      }
+      const unexpectedVerifier = boundSnapshot.packages.find(
+        (item): item is VerifierPackageSnapshot => item.kind === "verifier-package",
+      );
+      if (unexpectedVerifier === undefined) {
+        throw new WorkflowCapabilityError(
+          "invalid_snapshot",
+          "capability snapshot contains no recognized package",
+        );
+      }
       throw new WorkflowCapabilityError(
-        "unexpected_skill",
-        `workflow "${workflow.id}" selects no Agent Skills but received a capability snapshot`,
+        "unexpected_package",
+        `capability snapshot contains verifier package "${unexpectedVerifier.name}" version "${unexpectedVerifier.version}" that workflow "${workflow.id}" does not select`,
       );
     }
-    return snapshot;
+    return boundSnapshot;
   }
-  if (snapshot === undefined) {
+  if (boundSnapshot === undefined) {
     throw new WorkflowCapabilityError(
       "missing_snapshot",
-      `workflow "${workflow.id}" selects Agent Skills but has no immutable capability snapshot`,
+      `workflow "${workflow.id}" selects ${capabilitySelectionLabel(requiredSkills, requiredVerifiers)} but has no immutable capability snapshot`,
     );
   }
-  const availableSkills = snapshot.packages.filter((item) => item.kind === "agent-skill");
+  const availableSkills = boundSnapshot.packages.filter((item) => item.kind === "agent-skill");
   const missing = requiredSkills.find(
     (name) => !availableSkills.some((skill) => skill.name === name),
   );
@@ -91,21 +110,26 @@ export function bindWorkflowCapabilities(
       `workflow "${workflow.id}" selects Agent Skill "${missing}" but the snapshot does not contain it`,
     );
   }
-  const availableVerifiers = snapshot.packages.filter(
+  const availableVerifiers = boundSnapshot.packages.filter(
     (item): item is VerifierPackageSnapshot => item.kind === "verifier-package",
   );
   for (const required of requiredVerifiers) {
-    const selected = availableVerifiers.find((item) => item.name === required.name);
+    const selected = availableVerifiers.find(
+      (item) => item.name === required.name && item.version === required.version,
+    );
     if (selected === undefined) {
+      const otherVersions = availableVerifiers
+        .filter((item) => item.name === required.name)
+        .map((item) => item.version);
+      if (otherVersions.length > 0) {
+        throw new WorkflowCapabilityError(
+          "version_mismatch",
+          `workflow "${workflow.id}" selects verifier package "${required.name}" version "${required.version}" but the snapshot contains ${formatVersions(otherVersions)}`,
+        );
+      }
       throw new WorkflowCapabilityError(
         "missing_package",
         `workflow "${workflow.id}" selects verifier package "${required.name}" but the snapshot does not contain it`,
-      );
-    }
-    if (selected.version !== required.version) {
-      throw new WorkflowCapabilityError(
-        "version_mismatch",
-        `workflow "${workflow.id}" selects verifier package "${required.name}" version "${required.version}" but the snapshot contains "${selected.version}"`,
       );
     }
     if (selected.definition.kind !== required.kind) {
@@ -134,7 +158,7 @@ export function bindWorkflowCapabilities(
       `capability snapshot contains verifier package "${unexpectedVerifier.name}" version "${unexpectedVerifier.version}" that workflow "${workflow.id}" does not select`,
     );
   }
-  return snapshot;
+  return boundSnapshot;
 }
 
 export function resolveVerifierPackageNode(
@@ -153,18 +177,26 @@ export function resolveVerifierPackageNode(
   const reference = node.verifier.package;
   const selected = snapshot.packages.find(
     (item): item is VerifierPackageSnapshot =>
-      item.kind === "verifier-package" && item.name === reference.name,
+      item.kind === "verifier-package" &&
+      item.name === reference.name &&
+      item.version === reference.version,
   );
   if (selected === undefined) {
+    const otherVersions = snapshot.packages
+      .filter(
+        (item): item is VerifierPackageSnapshot =>
+          item.kind === "verifier-package" && item.name === reference.name,
+      )
+      .map((item) => item.version);
+    if (otherVersions.length > 0) {
+      throw new WorkflowCapabilityError(
+        "version_mismatch",
+        `verifier node "${node.id}" selects package "${reference.name}" version "${reference.version}" but the snapshot contains ${formatVersions(otherVersions)}`,
+      );
+    }
     throw new WorkflowCapabilityError(
       "missing_package",
       `verifier node "${node.id}" selects missing package "${reference.name}"`,
-    );
-  }
-  if (selected.version !== reference.version) {
-    throw new WorkflowCapabilityError(
-      "version_mismatch",
-      `verifier node "${node.id}" selects package "${reference.name}" version "${reference.version}" but the snapshot contains "${selected.version}"`,
     );
   }
   const expectedKind = node.verifier.kind === "packaged-command" ? "command" : "model";
@@ -251,6 +283,45 @@ function collectVerifierPackages(
 
 function impossiblePackagedModel(node: CompiledVerifierNode): never {
   throw new Error(`verifier node "${node.id}" has an impossible packaged model definition`);
+}
+
+function validateWorkflowCapabilitySnapshot(
+  snapshot: CapabilitySnapshot | undefined,
+): CapabilitySnapshot | undefined {
+  if (snapshot === undefined) {
+    return undefined;
+  }
+  try {
+    return validateCapabilitySnapshot(snapshot);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new WorkflowCapabilityError(
+      "invalid_snapshot",
+      `capability snapshot is invalid: ${boundedMessage(detail)}`,
+      { cause: error },
+    );
+  }
+}
+
+function capabilitySelectionLabel(
+  skills: readonly string[],
+  verifiers: readonly WorkflowVerifierPackageReference[],
+): string {
+  if (skills.length > 0 && verifiers.length > 0) {
+    return "Agent Skills and verifier packages";
+  }
+  return skills.length > 0 ? "Agent Skills" : "verifier packages";
+}
+
+function formatVersions(versions: readonly string[]): string {
+  const quoted = versions.map((version) => `"${version}"`);
+  return quoted.length === 1
+    ? (quoted[0] ?? "an unknown version")
+    : `versions ${quoted.join(", ")}`;
+}
+
+function boundedMessage(value: string): string {
+  return value.length <= 4_096 ? value : `${value.slice(0, 4_060)}… [truncated]`;
 }
 
 function compareStrings(left: string, right: string): number {

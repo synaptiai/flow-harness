@@ -62,14 +62,14 @@ describe("workflow capability binding", () => {
     const workflow = skilledWorkflow(["review", "testing"]);
     const snapshot = createCapabilitySnapshot([skill("testing"), skill("review")]);
 
-    expect(bindWorkflowCapabilities(workflow, snapshot)).toBe(snapshot);
+    expect(bindWorkflowCapabilities(workflow, snapshot)).toEqual(snapshot);
   });
 
   it("allows a child workflow to bind its declared subset from the parent snapshot", () => {
     const child = skilledWorkflow(["testing"]);
     const parentSnapshot = createCapabilitySnapshot([skill("review"), skill("testing")]);
 
-    expect(bindWorkflowCapabilities(child, parentSnapshot, { allowUnexpected: true })).toBe(
+    expect(bindWorkflowCapabilities(child, parentSnapshot, { allowUnexpected: true })).toEqual(
       parentSnapshot,
     );
   });
@@ -78,6 +78,33 @@ describe("workflow capability binding", () => {
     const workflow = skilledWorkflow([]);
 
     expect(bindWorkflowCapabilities(workflow)).toBeUndefined();
+  });
+
+  it("classifies an unselected verifier package as an unexpected package", () => {
+    const workflow = skilledWorkflow([]);
+    const snapshot = createCapabilitySnapshot(
+      [],
+      [
+        verifierPackage("release-tests", "1.0.0", {
+          kind: "command",
+          command: { executable: "node", args: ["--version"], timeoutMs: 30_000 },
+        }),
+      ],
+    );
+
+    expect(() => bindWorkflowCapabilities(workflow, snapshot)).toThrowError(
+      expect.objectContaining<Partial<WorkflowCapabilityError>>({ code: "unexpected_package" }),
+    );
+  });
+
+  it("rejects an invalid snapshot before capability selection", () => {
+    const workflow = skilledWorkflow(["review"]);
+    const snapshot = createCapabilitySnapshot([skill("review")]);
+    const invalid = { ...snapshot, digest: "0".repeat(64) };
+
+    expect(() => bindWorkflowCapabilities(workflow, invalid)).toThrowError(
+      expect.objectContaining<Partial<WorkflowCapabilityError>>({ code: "invalid_snapshot" }),
+    );
   });
 
   it.each([
@@ -163,7 +190,7 @@ describe("workflow capability binding", () => {
       { name: "evidence-review", version: "1.2.0", kind: "model" },
       { name: "release-tests", version: "1.0.0", kind: "command" },
     ]);
-    expect(bindWorkflowCapabilities(workflow, snapshot)).toBe(snapshot);
+    expect(bindWorkflowCapabilities(workflow, snapshot)).toEqual(snapshot);
   });
 
   it("resolves a packaged model into the ordinary verifier driver and exact use evidence", () => {
@@ -214,6 +241,36 @@ describe("workflow capability binding", () => {
       version: "1.2.0",
       digest: snapshot.packages[0]?.digest,
     });
+  });
+
+  it("resolves the exact verifier version when a parent snapshot carries another version", () => {
+    const workflow = packagedModelWorkflow("1.3.0");
+    const snapshot = createCapabilitySnapshot(
+      [],
+      [
+        verifierPackage("evidence-review", "1.2.0", {
+          kind: "model",
+          prompt: "Review using the old rubric.",
+        }),
+        verifierPackage("evidence-review", "1.3.0", {
+          kind: "model",
+          prompt: "Review using the selected rubric.",
+        }),
+      ],
+    );
+    const bound = bindWorkflowCapabilities(workflow, snapshot, { allowUnexpected: true });
+    const node = workflow.nodes.find((item) => item.id === "review");
+    if (node?.type !== "verifier") {
+      throw new Error("verifier fixture was not compiled");
+    }
+
+    const resolved = resolveVerifierPackageNode(node, bound);
+
+    expect(resolved.node.verifier).toMatchObject({
+      kind: "model",
+      prompt: "Review using the selected rubric.",
+    });
+    expect(resolved.package).toMatchObject({ name: "evidence-review", version: "1.3.0" });
   });
 
   it.each([
