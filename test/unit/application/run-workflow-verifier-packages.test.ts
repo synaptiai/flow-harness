@@ -7,9 +7,10 @@ import type {
   AgentExecutor,
   CommandExecutor,
   NodeExecutionOutcome,
+  RecoverableRunEventStore,
   RunEventStore,
 } from "../../../src/application/ports.js";
-import { runWorkflow } from "../../../src/application/run-workflow.js";
+import { resumeWorkflow, runWorkflow } from "../../../src/application/run-workflow.js";
 import {
   type CapabilitySnapshot,
   createCapabilitySnapshot,
@@ -119,22 +120,109 @@ describe("runWorkflow verifier packages", () => {
       },
     });
   });
+
+  it("resumes from the durable verifier package snapshot and rejects a caller replacement", async () => {
+    const snapshot = commandSnapshot();
+    const interrupted = new MemoryStore("node_started");
+
+    await expect(
+      runWorkflow(packagedCommandWorkflow(), {
+        cwd: process.cwd(),
+        protectedPaths: [],
+        runId: "packaged-command-recovery",
+        store: interrupted,
+        executor: new NodeExecutorRouter(fakeCommandExecutor(), fakeAgentExecutor()),
+        capabilitySnapshot: snapshot,
+      }),
+    ).rejects.toThrow("injected persistence failure");
+    expect(interrupted.events).toHaveLength(1);
+
+    const replacement = createCapabilitySnapshot(
+      [],
+      [
+        packageInput("release-tests", "1.0.0", {
+          kind: "command",
+          command: { executable: "node", args: ["--help"], timeoutMs: 30_000 },
+        }),
+      ],
+    );
+    await expect(
+      resumeWorkflow(packagedCommandWorkflow(), {
+        cwd: process.cwd(),
+        protectedPaths: [],
+        runId: "packaged-command-recovery",
+        store: new MemoryStore(undefined, interrupted.events),
+        executor: new NodeExecutorRouter(fakeCommandExecutor(), fakeAgentExecutor()),
+        capabilitySnapshot: replacement,
+      }),
+    ).rejects.toMatchObject({ code: "workflow_mismatch" });
+
+    const command = fakeCommandExecutor(async (node, context) => {
+      expect(node.command.args).toEqual(["--version"]);
+      expect(context.verifierPackage).toEqual({
+        name: "release-tests",
+        version: "1.0.0",
+        digest: snapshot.packages[0]?.digest,
+      });
+      return commandSuccess(node.id, "v22.0.0");
+    });
+    const recovered = new MemoryStore(undefined, interrupted.events);
+    const state = await resumeWorkflow(packagedCommandWorkflow(), {
+      cwd: process.cwd(),
+      protectedPaths: [],
+      runId: "packaged-command-recovery",
+      store: recovered,
+      executor: new NodeExecutorRouter(command, fakeAgentExecutor()),
+    });
+
+    expect(command.execute).toHaveBeenCalledOnce();
+    expect(state.nodes.release?.evidence).toMatchObject({
+      kind: "verifier",
+      package: {
+        name: "release-tests",
+        version: "1.0.0",
+        digest: snapshot.packages[0]?.digest,
+      },
+    });
+  });
 });
 
-class MemoryStore implements RunEventStore {
-  readonly events: RunEvent[] = [];
+class MemoryStore implements RunEventStore, RecoverableRunEventStore {
+  readonly events: RunEvent[];
+
+  constructor(
+    private readonly failingType?: RunEvent["type"],
+    initial: readonly RunEvent[] = [],
+  ) {
+    this.events = structuredClone([...initial]);
+  }
 
   async append(event: RunEvent): Promise<void> {
+    if (event.type === this.failingType) {
+      throw new Error("injected persistence failure");
+    }
     this.events.push(structuredClone(event));
   }
 
   async read(): Promise<readonly RunEvent[]> {
     return structuredClone(this.events);
   }
+
+  async claim(): Promise<readonly RunEvent[]> {
+    return await this.read();
+  }
+
+  async exists(): Promise<boolean> {
+    return this.events.length > 0;
+  }
+
+  async release(): Promise<void> {}
 }
 
 function fakeCommandExecutor(
-  implementation: CommandExecutor["execute"],
+  implementation: CommandExecutor["execute"] = async () => {
+    throw new Error("unexpected command verifier invocation");
+  },
 ): CommandExecutor & { execute: ReturnType<typeof vi.fn<CommandExecutor["execute"]>> } {
   return { execute: vi.fn(implementation) };
 }
