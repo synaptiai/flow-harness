@@ -282,7 +282,7 @@ Model-facing tool input:
 7. [x] Cover timeout, cancellation, append failure, open-command recovery, and side-effect status.
 8. [x] Complete attached, detached, child, and inspection paths.
 9. [x] Update every public document and executable example.
-10. [ ] Run focused, full, clean-room, mutation, holdout, and adversarial verification.
+10. [x] Run focused, full, clean-room, mutation, holdout, and adversarial verification.
 
 ## Adversarial review resolutions
 
@@ -352,3 +352,18 @@ preparation. The complete resolution is:
 - The reducer rejects every `node_agent_command_prepared` after an unconfirmed termination
   settlement, matching the live recorder's closed audit in addition to the existing terminal-success
   refusal.
+
+## Final verification evidence
+
+- Focused descriptor, executor, Pi-attempt, recorder, tool, and replay suites passed after every
+  accepted adversarial fix.
+- The stable-diff suite passed 99 test files and 1,292 tests; the compiled-process runtime suite
+  passed three files and 20 tests.
+- Coverage passed at 84.03% statements, 78.05% branches, 93.45% functions, and 84.09% lines.
+- Type checking, production build, action workflow validation, the executable agent-command example,
+  dependency audit, diff whitespace validation, and clean tarball installation/CLI execution passed.
+- A clean archive of commit `ecc827e` passed the complete `npm run check` sequence: formatting,
+  linting, type checking, 1,292 tests, production build, and 20 compiled-runtime tests.
+- Mutation-style forged descriptors, lifecycle-looking operands, contradictory termination facts,
+  later prepares, and false terminal success are directly rejected by regression tests.
+- The final independent skeptic and holdout reruns each reported no P1/P2 findings.
