@@ -35,7 +35,7 @@ describe("run workflow capability snapshots", () => {
       capabilitySnapshot: snapshot,
     });
 
-    expect(observed).toBe(snapshot);
+    expect(observed).toEqual(snapshot);
     expect(store.events[0]).toMatchObject({
       type: "run_started",
       capabilitySnapshot: { digest: snapshot.digest },

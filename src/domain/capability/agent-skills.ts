@@ -2,6 +2,15 @@ import { createHash } from "node:crypto";
 
 import { z } from "zod";
 
+import {
+  createVerifierPackageSnapshot,
+  type VerifierPackageSnapshot,
+  type VerifierPackageSnapshotInput,
+  validateVerifierPackageSnapshot,
+  verifierPackageIdentityKey,
+  verifierPackageSnapshotSchema,
+} from "./verifier-packages.js";
+
 export const MAX_AGENT_SKILL_PACKAGES = 32;
 export const MAX_AGENT_SKILL_FILES = 128;
 export const MAX_AGENT_SKILL_FILE_BYTES = 128 * 1024;
@@ -61,10 +70,20 @@ export interface AgentSkillPackageSnapshot {
   readonly digest: string;
 }
 
+export type CapabilityPackageSnapshot = AgentSkillPackageSnapshot | VerifierPackageSnapshot;
+
 export interface CapabilitySnapshot {
   readonly version: 1;
-  readonly packages: readonly AgentSkillPackageSnapshot[];
+  readonly packages: readonly CapabilityPackageSnapshot[];
   readonly digest: string;
+}
+
+export interface AgentSkillCapabilitySnapshot extends CapabilitySnapshot {
+  readonly packages: readonly AgentSkillPackageSnapshot[];
+}
+
+export interface VerifierPackageCapabilitySnapshot extends CapabilitySnapshot {
+  readonly packages: readonly VerifierPackageSnapshot[];
 }
 
 export interface AgentSkillPackageSnapshotInput
@@ -125,7 +144,10 @@ const packageSnapshotSchema = z
 const capabilitySnapshotSchema = z
   .object({
     version: z.literal(1),
-    packages: z.array(packageSnapshotSchema).min(1).max(MAX_AGENT_SKILL_PACKAGES),
+    packages: z
+      .array(z.discriminatedUnion("kind", [packageSnapshotSchema, verifierPackageSnapshotSchema]))
+      .min(1)
+      .max(MAX_AGENT_SKILL_PACKAGES),
     digest: sha256Schema,
   })
   .strict();
@@ -175,11 +197,23 @@ export function isAgentSkillName(value: string): boolean {
 
 export function createCapabilitySnapshot(
   inputs: readonly AgentSkillPackageSnapshotInput[],
+): AgentSkillCapabilitySnapshot;
+export function createCapabilitySnapshot(
+  inputs: readonly [],
+  verifierInputs: readonly VerifierPackageSnapshotInput[],
+): VerifierPackageCapabilitySnapshot;
+export function createCapabilitySnapshot(
+  inputs: readonly AgentSkillPackageSnapshotInput[],
+  verifierInputs: readonly VerifierPackageSnapshotInput[],
+): CapabilitySnapshot;
+export function createCapabilitySnapshot(
+  inputs: readonly AgentSkillPackageSnapshotInput[],
+  verifierInputs: readonly VerifierPackageSnapshotInput[] = [],
 ): CapabilitySnapshot {
-  if (inputs.length === 0) {
+  if (inputs.length + verifierInputs.length === 0) {
     throw new RangeError("a capability snapshot requires at least one selected package");
   }
-  const packages = inputs
+  const skills = inputs
     .map((input): AgentSkillPackageSnapshot => {
       const files = input.files
         .map((file): AgentSkillSnapshotFile => {
@@ -214,9 +248,13 @@ export function createCapabilitySnapshot(
       };
     })
     .sort((left, right) => compareStrings(left.name, right.name));
+  const packages: CapabilityPackageSnapshot[] = [
+    ...skills,
+    ...verifierInputs.map(createVerifierPackageSnapshot),
+  ].sort((left, right) => compareStrings(capabilityPackageKey(left), capabilityPackageKey(right)));
   const candidate = {
     version: 1 as const,
-    packages,
+    packages: Object.freeze(packages),
     digest: calculateCapabilitySnapshotDigest(packages),
   };
   return validateCapabilitySnapshot(candidate);
@@ -224,11 +262,13 @@ export function createCapabilitySnapshot(
 
 export function validateCapabilitySnapshot(input: unknown): CapabilitySnapshot {
   const parsed = capabilitySnapshotSchema.parse(input);
-  assertSortedUnique(
-    parsed.packages.map((item) => item.name),
-    "capability package names",
-  );
-  for (const skill of parsed.packages) {
+  assertSortedUnique(parsed.packages.map(capabilityPackageKey), "capability package identities");
+  for (const capability of parsed.packages) {
+    if (capability.kind === "verifier-package") {
+      validateVerifierPackageSnapshot(capability);
+      continue;
+    }
+    const skill = capability;
     assertSortedUnique(Object.keys(skill.metadata), `skill "${skill.name}" metadata keys`);
     assertSortedUnique(
       skill.files.map((file) => file.path),
@@ -297,21 +337,53 @@ export function calculateAgentSkillPackageDigest(
 }
 
 export function calculateCapabilitySnapshotDigest(
-  packages: readonly AgentSkillPackageSnapshot[],
+  packages: readonly CapabilityPackageSnapshot[],
 ): string {
   return sha256(
     JSON.stringify({
       version: 1,
-      packages: packages.map((skill) => ({ name: skill.name, digest: skill.digest })),
+      packages: packages.map((capability) =>
+        capability.kind === "agent-skill"
+          ? { name: capability.name, digest: capability.digest }
+          : {
+              kind: capability.kind,
+              name: capability.name,
+              version: capability.version,
+              digest: capability.digest,
+            },
+      ),
     }),
   );
+}
+
+export function combineCapabilitySnapshots(
+  snapshots: readonly CapabilitySnapshot[],
+): CapabilitySnapshot | undefined {
+  if (snapshots.length === 0) {
+    return undefined;
+  }
+  if (snapshots.length === 1) {
+    return snapshots[0];
+  }
+  const packages = snapshots
+    .flatMap((snapshot) => snapshot.packages)
+    .sort((left, right) => compareStrings(capabilityPackageKey(left), capabilityPackageKey(right)));
+  return validateCapabilitySnapshot({
+    version: 1,
+    packages,
+    digest: calculateCapabilitySnapshotDigest(packages),
+  });
 }
 
 export function selectedAgentSkills(
   snapshot: CapabilitySnapshot,
   names: readonly string[],
 ): readonly AgentSkillPackageSnapshot[] {
-  const byName = new Map(snapshot.packages.map((skill) => [skill.name, skill]));
+  const byName = new Map(
+    snapshot.packages
+      .filter((item): item is AgentSkillPackageSnapshot => item.kind === "agent-skill")
+      .map((skill) => [skill.name, skill]),
+  );
   return Object.freeze(
     names.map((name) => {
       const skill = byName.get(name);
@@ -321,6 +393,12 @@ export function selectedAgentSkills(
       return skill;
     }),
   );
+}
+
+function capabilityPackageKey(value: CapabilityPackageSnapshot): string {
+  return value.kind === "agent-skill"
+    ? `agent-skill\0${value.name}`
+    : verifierPackageIdentityKey(value);
 }
 
 export function createAgentCapabilityEvidence(

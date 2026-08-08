@@ -6,8 +6,8 @@ import { parseDocument } from "yaml";
 import { z } from "zod";
 
 import {
+  type AgentSkillCapabilitySnapshot,
   type AgentSkillPackageSnapshotInput,
-  type CapabilitySnapshot,
   createCapabilitySnapshot,
   isAgentSkillName,
   MAX_AGENT_SKILL_FILE_BYTES,
@@ -139,7 +139,7 @@ export async function discoverProjectAgentSkills(
 export async function snapshotSelectedAgentSkills(
   catalog: ProjectAgentSkillCatalog,
   names: readonly string[],
-): Promise<CapabilitySnapshot> {
+): Promise<AgentSkillCapabilitySnapshot> {
   if (names.length === 0) {
     throw new AgentSkillCatalogError(
       "missing_skill",

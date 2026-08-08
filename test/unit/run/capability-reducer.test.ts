@@ -3,14 +3,14 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import {
+  type CapabilitySnapshot,
   createAgentCapabilityEvidence,
   createCapabilitySnapshot,
-  type CapabilitySnapshot,
 } from "../../../src/domain/capability/agent-skills.js";
 import {
   parseRunEvent,
-  reduceRunEvents,
   type RunStartedEvent,
+  reduceRunEvents,
 } from "../../../src/domain/run/events.js";
 
 describe("capability run history", () => {
@@ -167,6 +167,36 @@ describe("capability run history", () => {
     );
   });
 
+  it("does not let a verifier package with the same name satisfy an Agent Skill requirement", () => {
+    const started = runStarted();
+    const capabilitySnapshot = createCapabilitySnapshot(
+      [],
+      [
+        {
+          kind: "verifier-package",
+          apiVersion: "flow.synapti.ai/v1alpha1",
+          name: "review",
+          version: "1.0.0",
+          description: "Review evidence.",
+          trust: "project-explicit",
+          provenance: ".flow/verifiers/review",
+          definition: { kind: "model", prompt: "Review evidence." },
+          manifest: {
+            content: Buffer.from(`apiVersion: flow.synapti.ai/v1alpha1
+kind: VerifierPackage
+metadata: { name: review, version: 1.0.0, description: Review evidence. }
+spec: { kind: model, prompt: Review evidence. }
+`),
+          },
+        },
+      ],
+    );
+
+    expect(() => reduceRunEvents([{ ...started, capabilitySnapshot }])).toThrow(
+      /missing Agent Skill "review"/i,
+    );
+  });
+
   it("rejects duplicate and unknown capability requirement nodes", () => {
     const started = runStarted();
     const requirement = started.capabilityRequirements?.[0];
@@ -204,8 +234,8 @@ function requireCapabilitySnapshot(event: RunStartedEvent): CapabilitySnapshot {
 function capabilityFixture(event: RunStartedEvent) {
   const snapshot = requireCapabilitySnapshot(event);
   const skill = snapshot.packages[0];
-  const file = skill?.files[0];
-  if (skill === undefined || file === undefined) {
+  const file = skill?.kind === "agent-skill" ? skill.files[0] : undefined;
+  if (skill?.kind !== "agent-skill" || file === undefined) {
     throw new Error("skill fixture was not created");
   }
   return { snapshot, skill, file };

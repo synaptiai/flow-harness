@@ -11,17 +11,18 @@ import type {
   CommandExecutor,
   NodeExecutor,
 } from "../../../src/application/ports.js";
-import { JsonlRunStore } from "../../../src/infrastructure/fs/jsonl-run-store.js";
 import {
   createAgentCapabilityEvidence,
   createCapabilitySnapshot,
 } from "../../../src/domain/capability/agent-skills.js";
-import { LocalSupervisorStore } from "../../../src/infrastructure/fs/local-supervisor-store.js";
-import { createProductionNodeEffectReconciler } from "../../../src/infrastructure/runtime/production-effect-reconciler.js";
+import type { VerifierPackageSnapshotInput } from "../../../src/domain/capability/verifier-packages.js";
 import { reduceRunEvents } from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
-import { executeWorkerJob, requestWorker } from "../../../src/supervisor/worker.js";
+import { JsonlRunStore } from "../../../src/infrastructure/fs/jsonl-run-store.js";
+import { LocalSupervisorStore } from "../../../src/infrastructure/fs/local-supervisor-store.js";
+import { createProductionNodeEffectReconciler } from "../../../src/infrastructure/runtime/production-effect-reconciler.js";
 import { createActiveRunClaim, createJobRecord } from "../../../src/supervisor/records.js";
+import { executeWorkerJob, requestWorker } from "../../../src/supervisor/worker.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -179,7 +180,9 @@ describe("detached run worker", () => {
         if (node.type !== "agent" || context.capabilitySnapshot === undefined) {
           throw new Error(`unexpected detached capability node "${node.type}"`);
         }
-        const frozenFile = context.capabilitySnapshot.packages[0]?.files[0];
+        const selectedPackage = context.capabilitySnapshot.packages[0];
+        const frozenFile =
+          selectedPackage?.kind === "agent-skill" ? selectedPackage.files[0] : undefined;
         if (frozenFile === undefined) {
           throw new Error("detached capability snapshot has no file");
         }
@@ -228,6 +231,125 @@ describe("detached run worker", () => {
       capabilitySnapshot: { digest: capabilitySnapshot.digest },
     });
     expect(reduceRunEvents(events).status).toBe("succeeded");
+  });
+
+  it("uses the frozen detached verifier package after its live manifest drifts", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-worker-verifier-package-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    const store = new LocalSupervisorStore(runsDirectory);
+    await store.initialize();
+    const capabilitySnapshot = createCapabilitySnapshot(
+      [],
+      [
+        verifierPackageInput("release-tests", "1.0.0", {
+          kind: "command",
+          command: { executable: "node", args: ["--version"], timeoutMs: 30_000 },
+        }),
+      ],
+    );
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "worker-verifier-package",
+      mode: "run",
+      sourceName: join(directory, "workflow.yaml"),
+      workflowSource: packagedVerifierWorkflowSource(),
+      cwd: directory,
+      token: "8".repeat(64),
+      createdAt: "2026-08-08T12:20:00.000Z",
+      capabilitySnapshot,
+    });
+    await store.reserveSubmission(
+      job,
+      createActiveRunClaim({
+        runId: job.runId,
+        jobId: job.jobId,
+        workerId: job.workerId,
+        claimedAt: job.createdAt,
+      }),
+    );
+    const livePackage = join(directory, ".flow", "verifiers", "release-tests");
+    await mkdir(livePackage, { recursive: true });
+    await writeFile(
+      join(livePackage, "VERIFIER.yaml"),
+      `apiVersion: flow.synapti.ai/v1alpha1
+kind: VerifierPackage
+metadata: { name: release-tests, version: 1.0.0, description: Drifted. }
+spec:
+  kind: command
+  command: { executable: node, args: [--help], timeoutMs: 30000 }
+`,
+      "utf8",
+    );
+    let observedArgs: readonly string[] | undefined;
+    const command: CommandExecutor = {
+      async execute(node, context) {
+        observedArgs = node.command.args;
+        expect(context.verifierPackage).toEqual({
+          name: "release-tests",
+          version: "1.0.0",
+          digest: capabilitySnapshot.packages[0]?.digest,
+        });
+        return {
+          status: "succeeded",
+          evidence: {
+            kind: "command",
+            executable: node.command.executable,
+            args: node.command.args,
+            exitCode: 0,
+            signal: null,
+            stdout: "v22.0.0",
+            stderr: "",
+            stdoutHash: sha256("v22.0.0"),
+            stderrHash: sha256(""),
+            stdoutTruncated: false,
+            stderrTruncated: false,
+            timedOut: false,
+            durationMs: 1,
+          },
+        };
+      },
+    };
+
+    const worker = executeWorkerJob(job.jobId, {
+      store,
+      executor: new NodeExecutorRouter(command, {
+        async execute() {
+          throw new Error("detached command verifier unexpectedly invoked a model");
+        },
+      }),
+      effectReconciler: createProductionNodeEffectReconciler(),
+      createRunStore: (root) => new JsonlRunStore(root),
+      pid: 4329,
+    });
+    const descriptor = await waitForDescriptor(store, job.workerId);
+    await expect(requestWorker(descriptor, { type: "identify" })).resolves.toMatchObject({
+      ok: true,
+      result: { runId: job.runId, status: "running" },
+    });
+    await expect(worker).resolves.toBe(0);
+
+    expect(observedArgs).toEqual(["--version"]);
+    const events = await new JsonlRunStore(runsDirectory).read(job.runId);
+    expect(events[0]).toMatchObject({
+      type: "run_started",
+      capabilitySnapshot: { digest: capabilitySnapshot.digest },
+      verifierPackageRequirements: [
+        { nodeId: "verify", name: "release-tests", version: "1.0.0", kind: "command" },
+      ],
+    });
+    expect(events[2]).toMatchObject({
+      type: "node_succeeded",
+      evidence: {
+        kind: "verifier",
+        package: {
+          name: "release-tests",
+          version: "1.0.0",
+          digest: capabilitySnapshot.packages[0]?.digest,
+        },
+      },
+    });
   });
 
   it("runs a separately-ledgered isolated child through a detached worker", async () => {
@@ -952,6 +1074,20 @@ nodes:
 `;
 }
 
+function packagedVerifierWorkflowSource(): string {
+  return `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: worker-packaged-verifier }
+nodes:
+  - id: verify
+    type: verifier
+    verifier:
+      kind: packaged-command
+      package: { name: release-tests, version: 1.0.0 }
+`;
+}
+
 function typedResultWorkflowSource(): string {
   return `
 apiVersion: flow.synapti.ai/v1alpha1
@@ -1208,6 +1344,35 @@ function successfulCommandEvidence(nodeId: string) {
     stderrTruncated: false,
     timedOut: false,
     durationMs: 1,
+  };
+}
+
+function verifierPackageInput(
+  name: string,
+  version: string,
+  definition: VerifierPackageSnapshotInput["definition"],
+): VerifierPackageSnapshotInput {
+  if (definition.kind !== "command") {
+    throw new Error("detached verifier fixture requires a command package");
+  }
+  return {
+    kind: "verifier-package",
+    apiVersion: "flow.synapti.ai/v1alpha1",
+    name,
+    version,
+    description: `Reusable ${name} verifier.`,
+    trust: "project-explicit",
+    provenance: `.flow/verifiers/${name}`,
+    definition,
+    manifest: {
+      content: Buffer.from(`apiVersion: flow.synapti.ai/v1alpha1
+kind: VerifierPackage
+metadata: { name: ${name}, version: ${version}, description: Reusable ${name} verifier. }
+spec:
+  kind: command
+  command: { executable: ${definition.command.executable}, args: [${definition.command.args.join(", ")}], timeoutMs: ${definition.command.timeoutMs} }
+`),
+    },
   };
 }
 

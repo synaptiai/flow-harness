@@ -2,15 +2,6 @@ import { createHash } from "node:crypto";
 import { isAbsolute, normalize } from "node:path";
 import { z } from "zod";
 import {
-  type AgentCapabilityEvidence,
-  type CapabilitySnapshot,
-  agentSkillNameSchema,
-  agentCapabilityEvidenceSchema,
-  createAgentCapabilityEvidence,
-  MAX_AGENT_SKILL_PACKAGES,
-  persistedCapabilitySnapshotSchema,
-} from "../capability/agent-skills.js";
-import {
   type CommandApprovalOperation,
   calculateCommandApprovalOperationDigest,
   commandApprovalRequestId,
@@ -23,6 +14,21 @@ import {
   workflowApprovalEvidenceTruncationMessage,
   workflowApprovalRequestId,
 } from "../approval/workflow-approval.js";
+import {
+  type AgentCapabilityEvidence,
+  agentCapabilityEvidenceSchema,
+  agentSkillNameSchema,
+  type CapabilitySnapshot,
+  createAgentCapabilityEvidence,
+  MAX_AGENT_SKILL_PACKAGES,
+  persistedCapabilitySnapshotSchema,
+} from "../capability/agent-skills.js";
+import {
+  type VerifierPackageUseEvidence,
+  verifierPackageNameSchema,
+  verifierPackageUseEvidenceSchema,
+  verifierPackageVersionSchema,
+} from "../capability/verifier-packages.js";
 import {
   acceptGoal,
   createGoalRunState,
@@ -141,6 +147,7 @@ interface VerifierEvidenceBase {
   readonly reasonHash: string;
   readonly durationMs: number;
   readonly sources: readonly VerifierSourceObservation[];
+  readonly package?: VerifierPackageUseEvidence;
 }
 
 export interface CommandVerifierEvidence extends VerifierEvidenceBase {
@@ -246,6 +253,7 @@ export interface RunStartedEvent extends RunEventBase {
   readonly workflowDigest: string;
   readonly capabilitySnapshot?: CapabilitySnapshot;
   readonly capabilityRequirements?: readonly AgentCapabilityRequirement[];
+  readonly verifierPackageRequirements?: readonly VerifierPackageRequirement[];
   readonly budget?: CompiledRunBudget;
   readonly concurrency?: CompiledWorkflowConcurrency;
   readonly goal?: CompiledGoal;
@@ -802,6 +810,13 @@ export interface AgentCapabilityRequirement {
   readonly skills: readonly string[];
 }
 
+export interface VerifierPackageRequirement {
+  readonly nodeId: string;
+  readonly name: string;
+  readonly version: string;
+  readonly kind: "command" | "model";
+}
+
 export interface CommandApprovalRequestedEvent extends RunEventBase {
   readonly type: "command_approval_requested";
   readonly nodeId: string;
@@ -1146,6 +1161,9 @@ export interface RunState {
   readonly workflowDigest: string;
   readonly capabilitySnapshot: CapabilitySnapshot | null;
   readonly capabilityRequirements: Readonly<Record<string, readonly string[]>>;
+  readonly verifierPackageRequirements: Readonly<
+    Record<string, Omit<VerifierPackageRequirement, "nodeId">>
+  >;
   readonly executionCwd: string | null;
   readonly executionWorkspace: ExecutionWorkspaceProvenance | null;
   readonly approvalRequirements: Readonly<
@@ -1444,6 +1462,7 @@ const verifierEvidenceCommonShape = {
     }),
   reasonHash: sha256Schema,
   durationMs: z.number().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  package: verifierPackageUseEvidenceSchema.optional(),
 };
 
 const commandVerifierEvidenceSchema = z
@@ -1728,6 +1747,52 @@ const controlVerifierSchema = z.discriminatedUnion("kind", [
         .refine((value) => value === value.trim(), {
           message: "verifier prompt must not contain surrounding whitespace",
         }),
+      evidence: z
+        .array(
+          z
+            .object({
+              nodeId: identifierSchema,
+              field: evidenceSourceFieldSchema,
+            })
+            .strict(),
+        )
+        .min(1)
+        .max(16)
+        .refine(
+          (items) =>
+            new Set(items.map((item) => `${item.nodeId}\0${item.field}`)).size === items.length,
+          "verifier evidence sources must be unique",
+        ),
+      model: z
+        .object({
+          provider: z.string().min(1).max(96),
+          id: z.string().min(1).max(256),
+          thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
+        })
+        .strict(),
+      timeoutMs: z.number().int().positive().max(86_400_000),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("packaged-command"),
+      package: z
+        .object({
+          name: verifierPackageNameSchema,
+          version: verifierPackageVersionSchema,
+        })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("packaged-model"),
+      package: z
+        .object({
+          name: verifierPackageNameSchema,
+          version: verifierPackageVersionSchema,
+        })
+        .strict(),
       evidence: z
         .array(
           z
@@ -2071,6 +2136,19 @@ export const runEventSchema = z.discriminatedUnion("type", [
                   (items) => new Set(items).size === items.length,
                   "selected Agent Skills must be unique",
                 ),
+            })
+            .strict(),
+        )
+        .max(MAX_COMPILED_WORKFLOW_NODES)
+        .optional(),
+      verifierPackageRequirements: z
+        .array(
+          z
+            .object({
+              nodeId: identifierSchema,
+              name: verifierPackageNameSchema,
+              version: verifierPackageVersionSchema,
+              kind: z.enum(["command", "model"]),
             })
             .strict(),
         )
@@ -2787,7 +2865,9 @@ export function appendRunEvent(
       );
     }
     const availableCapabilityNames = new Set(
-      event.capabilitySnapshot?.packages.map((skill) => skill.name) ?? [],
+      event.capabilitySnapshot?.packages
+        .filter((item) => item.kind === "agent-skill")
+        .map((skill) => skill.name) ?? [],
     );
     const missingRequiredCapability = capabilityRequirements
       .flatMap((requirement) => requirement.skills)
@@ -2804,6 +2884,30 @@ export function appendRunEvent(
         Object.freeze([...requirement.skills]),
       ]),
     );
+    const verifierPackageRequirements = event.verifierPackageRequirements ?? [];
+    if (
+      new Set(verifierPackageRequirements.map((requirement) => requirement.nodeId)).size !==
+      verifierPackageRequirements.length
+    ) {
+      throw new RunReplayError(
+        eventIndex,
+        "verifier package requirements must have unique node ids",
+      );
+    }
+    if (
+      verifierPackageRequirements.some((requirement) => !event.nodeIds.includes(requirement.nodeId))
+    ) {
+      throw new RunReplayError(
+        eventIndex,
+        "verifier package requirement references a node outside the run node set",
+      );
+    }
+    if (verifierPackageRequirements.length > 0 && event.capabilitySnapshot === undefined) {
+      throw new RunReplayError(
+        eventIndex,
+        "verifier package requirements require a durable capability snapshot",
+      );
+    }
     const recoveryRequirements = event.recoveryRequirements ?? [];
     if (
       new Set(recoveryRequirements.map((requirement) => requirement.nodeId)).size !==
@@ -2831,6 +2935,72 @@ export function appendRunEvent(
       event.controlGraph === undefined
         ? null
         : validateControlGraph(event.controlGraph, event.nodeIds, eventIndex);
+    const packagedControlNodes =
+      controlGraph?.nodes.filter(
+        (node) =>
+          node.type === "verifier" &&
+          (node.verifier.kind === "packaged-command" || node.verifier.kind === "packaged-model"),
+      ) ?? [];
+    if (packagedControlNodes.length !== verifierPackageRequirements.length) {
+      throw new RunReplayError(
+        eventIndex,
+        "verifier package requirements do not cover the packaged control graph exactly",
+      );
+    }
+    for (const requirement of verifierPackageRequirements) {
+      const controlNode = packagedControlNodes.find((node) => node.nodeId === requirement.nodeId);
+      if (controlNode?.type !== "verifier") {
+        throw new RunReplayError(
+          eventIndex,
+          `verifier package requirement references non-packaged node "${requirement.nodeId}"`,
+        );
+      }
+      const expectedKind =
+        controlNode.verifier.kind === "packaged-command"
+          ? "command"
+          : controlNode.verifier.kind === "packaged-model"
+            ? "model"
+            : null;
+      const reference =
+        controlNode.verifier.kind === "packaged-command" ||
+        controlNode.verifier.kind === "packaged-model"
+          ? controlNode.verifier.package
+          : null;
+      if (
+        expectedKind === null ||
+        reference === null ||
+        requirement.name !== reference.name ||
+        requirement.version !== reference.version ||
+        requirement.kind !== expectedKind
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          `verifier package requirement for node "${requirement.nodeId}" does not match the control graph`,
+        );
+      }
+      const selected = event.capabilitySnapshot?.packages.find(
+        (item) =>
+          item.kind === "verifier-package" &&
+          item.name === requirement.name &&
+          item.version === requirement.version,
+      );
+      if (
+        selected?.kind !== "verifier-package" ||
+        selected.version !== requirement.version ||
+        selected.definition.kind !== requirement.kind
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          `verifier package requirement for node "${requirement.nodeId}" does not match the durable snapshot`,
+        );
+      }
+    }
+    const verifierPackageRequirementsByNode = Object.fromEntries(
+      verifierPackageRequirements.map(({ nodeId, ...requirement }) => [
+        nodeId,
+        Object.freeze({ ...requirement }),
+      ]),
+    );
     const concurrency = Object.freeze({ maxNodes: event.concurrency?.maxNodes ?? 1 });
     if (concurrency.maxNodes > 1 && controlGraph === null) {
       throw new RunReplayError(
@@ -2849,6 +3019,7 @@ export function appendRunEvent(
           ? null
           : deepFreeze(structuredClone(event.capabilitySnapshot)),
       capabilityRequirements: Object.freeze(capabilityRequirementsByNode),
+      verifierPackageRequirements: Object.freeze(verifierPackageRequirementsByNode),
       executionCwd: event.executionCwd ?? null,
       executionWorkspace:
         event.executionWorkspace === undefined
@@ -4494,6 +4665,8 @@ export function appendRunEvent(
       validateSucceededEvidence(event.evidence, eventIndex);
       validateVerifierEvidenceProjection(
         currentState.controlGraph,
+        currentState.capabilitySnapshot,
+        currentState.verifierPackageRequirements,
         nodes,
         event,
         event.evidence,
@@ -4552,6 +4725,8 @@ export function appendRunEvent(
       }
       validateVerifierEvidenceProjection(
         currentState.controlGraph,
+        currentState.capabilitySnapshot,
+        currentState.verifierPackageRequirements,
         nodes,
         event,
         event.evidence,
@@ -4733,6 +4908,7 @@ export function appendRunEvent(
     workflowDigest: currentState.workflowDigest,
     capabilitySnapshot: currentState.capabilitySnapshot,
     capabilityRequirements: currentState.capabilityRequirements,
+    verifierPackageRequirements: currentState.verifierPackageRequirements,
     executionCwd: currentState.executionCwd,
     executionWorkspace: currentState.executionWorkspace,
     approvalRequirements: currentState.approvalRequirements,
@@ -5575,7 +5751,7 @@ function serializeLoopTemplateStructure(
   }
   if (node.type === "verifier") {
     const verifier =
-      node.verifier.kind === "command"
+      node.verifier.kind === "command" || node.verifier.kind === "packaged-command"
         ? node.verifier
         : {
             ...node.verifier,
@@ -6715,8 +6891,100 @@ function validateChildEvidenceProjection(
   }
 }
 
+type InlineVerifierRequirement = Extract<
+  CompiledVerifierConfig,
+  { readonly kind: "command" | "model" }
+>;
+
+function resolvePersistedVerifierRequirement(
+  requirement: ControlGraphVerifierNode,
+  snapshot: CapabilitySnapshot | null,
+  packageRequirement: Omit<VerifierPackageRequirement, "nodeId"> | undefined,
+  evidence: NodeEvidence | null,
+  eventIndex: number,
+): InlineVerifierRequirement {
+  const declared = requirement.verifier;
+  if (declared.kind === "command" || declared.kind === "model") {
+    if (
+      packageRequirement !== undefined ||
+      (evidence?.kind === "verifier" && evidence.package !== undefined)
+    ) {
+      throw new RunReplayError(
+        eventIndex,
+        `inline verifier node "${requirement.nodeId}" cannot report package identity`,
+      );
+    }
+    return declared;
+  }
+  const expectedKind = declared.kind === "packaged-command" ? "command" : "model";
+  if (
+    packageRequirement === undefined ||
+    packageRequirement.name !== declared.package.name ||
+    packageRequirement.version !== declared.package.version ||
+    packageRequirement.kind !== expectedKind
+  ) {
+    throw new RunReplayError(
+      eventIndex,
+      `packaged verifier node "${requirement.nodeId}" has inconsistent durable requirements`,
+    );
+  }
+  const selected = snapshot?.packages.find(
+    (item) =>
+      item.kind === "verifier-package" &&
+      item.name === packageRequirement.name &&
+      item.version === packageRequirement.version,
+  );
+  if (
+    selected?.kind !== "verifier-package" ||
+    selected.version !== packageRequirement.version ||
+    selected.definition.kind !== expectedKind
+  ) {
+    throw new RunReplayError(
+      eventIndex,
+      `packaged verifier node "${requirement.nodeId}" has no matching durable package`,
+    );
+  }
+  if (
+    evidence?.kind === "verifier" &&
+    (evidence.package === undefined ||
+      evidence.package.name !== selected.name ||
+      evidence.package.version !== selected.version ||
+      evidence.package.digest !== selected.digest)
+  ) {
+    throw new RunReplayError(
+      eventIndex,
+      `packaged verifier node "${requirement.nodeId}" evidence does not match package identity`,
+    );
+  }
+  if (selected.definition.kind === "command") {
+    return Object.freeze({
+      kind: "command",
+      command: Object.freeze({
+        executable: selected.definition.command.executable,
+        args: Object.freeze([...selected.definition.command.args]),
+        timeoutMs: selected.definition.command.timeoutMs,
+      }),
+    });
+  }
+  if (declared.kind !== "packaged-model") {
+    throw new RunReplayError(
+      eventIndex,
+      `packaged verifier node "${requirement.nodeId}" has incompatible model configuration`,
+    );
+  }
+  return Object.freeze({
+    kind: "model",
+    prompt: selected.definition.prompt,
+    evidence: declared.evidence,
+    model: declared.model,
+    timeoutMs: declared.timeoutMs,
+  });
+}
+
 function validateVerifierEvidenceProjection(
   graph: ControlGraph | null,
+  snapshot: CapabilitySnapshot | null,
+  packageRequirements: Readonly<Record<string, Omit<VerifierPackageRequirement, "nodeId">>>,
   nodes: Readonly<Record<string, NodeRunState>>,
   event: NodeSucceededEvent | NodeFailedEvent,
   evidence: NodeEvidence | null,
@@ -6729,6 +6997,13 @@ function validateVerifierEvidenceProjection(
     }
     return;
   }
+  const verifier = resolvePersistedVerifierRequirement(
+    requirement,
+    snapshot,
+    packageRequirements[event.nodeId],
+    evidence,
+    eventIndex,
+  );
   if (evidence === null) {
     if (
       event.type !== "node_failed" ||
@@ -6749,7 +7024,7 @@ function validateVerifierEvidenceProjection(
       `verifier node "${event.nodeId}" has incompatible evidence`,
     );
   }
-  if (evidence.driver !== requirement.verifier.kind) {
+  if (evidence.driver !== verifier.kind) {
     throw new RunReplayError(
       eventIndex,
       "verifier evidence driver does not match the control graph",
@@ -6779,7 +7054,7 @@ function validateVerifierEvidenceProjection(
   }
 
   if (evidence.driver === "command") {
-    if (requirement.verifier.kind !== "command") {
+    if (verifier.kind !== "command") {
       throw new RunReplayError(eventIndex, "command verifier evidence has no command requirement");
     }
     const command = evidence.command;
@@ -6794,8 +7069,8 @@ function validateVerifierEvidenceProjection(
     }
     if (command !== null) {
       if (
-        command.executable !== requirement.verifier.command.executable ||
-        !sameStrings(command.args, requirement.verifier.command.args) ||
+        command.executable !== verifier.command.executable ||
+        !sameStrings(command.args, verifier.command.args) ||
         command.durationMs !== evidence.durationMs
       ) {
         throw new RunReplayError(
@@ -6840,25 +7115,22 @@ function validateVerifierEvidenceProjection(
     return;
   }
 
-  if (requirement.verifier.kind !== "model") {
+  if (verifier.kind !== "model") {
     throw new RunReplayError(eventIndex, "model verifier evidence has no model requirement");
   }
-  if (
-    evidence.provider !== requirement.verifier.model.provider ||
-    evidence.model !== requirement.verifier.model.id
-  ) {
+  if (evidence.provider !== verifier.model.provider || evidence.model !== verifier.model.id) {
     throw new RunReplayError(
       eventIndex,
       "model verifier provenance does not match its declaration",
     );
   }
-  if (evidence.sources.length !== requirement.verifier.evidence.length) {
+  if (evidence.sources.length !== verifier.evidence.length) {
     throw new RunReplayError(
       eventIndex,
       "model verifier source observations do not match declaration",
     );
   }
-  for (const [index, declaration] of requirement.verifier.evidence.entries()) {
+  for (const [index, declaration] of verifier.evidence.entries()) {
     const observation = evidence.sources[index];
     if (observation === undefined) {
       throw new RunReplayError(eventIndex, "model verifier source observation is missing");

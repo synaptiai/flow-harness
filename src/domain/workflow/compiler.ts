@@ -888,7 +888,10 @@ function validateControlFlowNodes<T extends SourceNode | SourceBodyNode>(
   }
 
   for (const [index, verifier] of nodes.entries()) {
-    if (verifier.type !== "verifier" || verifier.verifier.kind !== "model") {
+    if (
+      verifier.type !== "verifier" ||
+      (verifier.verifier.kind !== "model" && verifier.verifier.kind !== "packaged-model")
+    ) {
       continue;
     }
     for (const [sourceIndex, declaration] of verifier.verifier.evidence.entries()) {
@@ -1431,25 +1434,38 @@ function freezeNode(
   }
 
   if (source.type === "verifier") {
-    const verifier =
-      source.verifier.kind === "command"
-        ? Object.freeze({
-            kind: "command" as const,
-            command: Object.freeze({
-              executable: source.verifier.command.executable,
-              args: Object.freeze([...source.verifier.command.args]),
-              timeoutMs: source.verifier.command.timeoutMs,
-            }),
-          })
-        : Object.freeze({
-            kind: "model" as const,
-            prompt: source.verifier.prompt,
-            evidence: Object.freeze(
-              source.verifier.evidence.map((item) => Object.freeze({ ...item })),
-            ),
-            model: Object.freeze({ ...source.verifier.model }),
-            timeoutMs: source.verifier.timeoutMs,
-          });
+    let verifier: CompiledVerifierNode["verifier"];
+    if (source.verifier.kind === "command") {
+      verifier = Object.freeze({
+        kind: "command" as const,
+        command: Object.freeze({
+          executable: source.verifier.command.executable,
+          args: Object.freeze([...source.verifier.command.args]),
+          timeoutMs: source.verifier.command.timeoutMs,
+        }),
+      });
+    } else if (source.verifier.kind === "model") {
+      verifier = Object.freeze({
+        kind: "model" as const,
+        prompt: source.verifier.prompt,
+        evidence: Object.freeze(source.verifier.evidence.map((item) => Object.freeze({ ...item }))),
+        model: Object.freeze({ ...source.verifier.model }),
+        timeoutMs: source.verifier.timeoutMs,
+      });
+    } else if (source.verifier.kind === "packaged-command") {
+      verifier = Object.freeze({
+        kind: "packaged-command" as const,
+        package: Object.freeze({ ...source.verifier.package }),
+      });
+    } else {
+      verifier = Object.freeze({
+        kind: "packaged-model" as const,
+        package: Object.freeze({ ...source.verifier.package }),
+        evidence: Object.freeze(source.verifier.evidence.map((item) => Object.freeze({ ...item }))),
+        model: Object.freeze({ ...source.verifier.model }),
+        timeoutMs: source.verifier.timeoutMs,
+      });
+    }
     const node: CompiledVerifierNode = {
       id: source.id,
       type: "verifier",
@@ -1815,30 +1831,52 @@ function freezeLoopBodyNode(
   }
 
   if (source.type === "verifier") {
-    const verifier =
-      source.verifier.kind === "command"
-        ? Object.freeze({
-            kind: "command" as const,
-            command: Object.freeze({
-              executable: source.verifier.command.executable,
-              args: Object.freeze([...source.verifier.command.args]),
-              timeoutMs: source.verifier.command.timeoutMs,
+    let verifier: CompiledVerifierNode["verifier"];
+    if (source.verifier.kind === "command") {
+      verifier = Object.freeze({
+        kind: "command" as const,
+        command: Object.freeze({
+          executable: source.verifier.command.executable,
+          args: Object.freeze([...source.verifier.command.args]),
+          timeoutMs: source.verifier.command.timeoutMs,
+        }),
+      });
+    } else if (source.verifier.kind === "model") {
+      verifier = Object.freeze({
+        kind: "model" as const,
+        prompt: source.verifier.prompt,
+        evidence: Object.freeze(
+          source.verifier.evidence.map((item) =>
+            Object.freeze({
+              nodeId: requireMappedLoopNode(idByTemplate, item.nodeId, loop.id),
+              field: item.field,
             }),
-          })
-        : Object.freeze({
-            kind: "model" as const,
-            prompt: source.verifier.prompt,
-            evidence: Object.freeze(
-              source.verifier.evidence.map((item) =>
-                Object.freeze({
-                  nodeId: requireMappedLoopNode(idByTemplate, item.nodeId, loop.id),
-                  field: item.field,
-                }),
-              ),
-            ),
-            model: Object.freeze({ ...source.verifier.model }),
-            timeoutMs: source.verifier.timeoutMs,
-          });
+          ),
+        ),
+        model: Object.freeze({ ...source.verifier.model }),
+        timeoutMs: source.verifier.timeoutMs,
+      });
+    } else if (source.verifier.kind === "packaged-command") {
+      verifier = Object.freeze({
+        kind: "packaged-command" as const,
+        package: Object.freeze({ ...source.verifier.package }),
+      });
+    } else {
+      verifier = Object.freeze({
+        kind: "packaged-model" as const,
+        package: Object.freeze({ ...source.verifier.package }),
+        evidence: Object.freeze(
+          source.verifier.evidence.map((item) =>
+            Object.freeze({
+              nodeId: requireMappedLoopNode(idByTemplate, item.nodeId, loop.id),
+              field: item.field,
+            }),
+          ),
+        ),
+        model: Object.freeze({ ...source.verifier.model }),
+        timeoutMs: source.verifier.timeoutMs,
+      });
+    }
     const node: CompiledVerifierNode = {
       ...common,
       type: "verifier",

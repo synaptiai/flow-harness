@@ -91,6 +91,11 @@ export interface CompiledVerifierEvidenceSource {
   readonly field: EvidenceSourceField;
 }
 
+export interface CompiledVerifierPackageReference {
+  readonly name: string;
+  readonly version: string;
+}
+
 export interface CompiledGuardedNodeBase extends CompiledNodeBase {
   readonly when?: CompiledBranchGuard;
 }
@@ -139,6 +144,21 @@ export type CompiledVerifierConfig =
   | {
       readonly kind: "model";
       readonly prompt: string;
+      readonly evidence: readonly CompiledVerifierEvidenceSource[];
+      readonly model: {
+        readonly provider: string;
+        readonly id: string;
+        readonly thinking: ThinkingLevel;
+      };
+      readonly timeoutMs: number;
+    }
+  | {
+      readonly kind: "packaged-command";
+      readonly package: CompiledVerifierPackageReference;
+    }
+  | {
+      readonly kind: "packaged-model";
+      readonly package: CompiledVerifierPackageReference;
       readonly evidence: readonly CompiledVerifierEvidenceSource[];
       readonly model: {
         readonly provider: string;

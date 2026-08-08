@@ -6,7 +6,7 @@ Flow turns a collection of useful software-development practices into an enforce
 
 The standalone harness reverses that relationship. Flow owns workflow execution and delegates only bounded node work to an embedded agent runtime.
 
-This document describes the target architecture unless a section is explicitly labeled as the current executable slice. The delivery roadmap is the source of truth for implementation status. Gates 1 and 2 currently provide `validate`, `run`, `inspect`, optional versioned goal contracts, command-bound criterion evaluation, command and bounded Pi agent nodes, cancellation, and replayable local event ledgers. Gate 3 now includes a runtime-neutral policy broker for model-requested reads, lists, and hash-anchored single-file edits, a fail-closed native sandbox for every command node, and exact expiring pre-start approval for deterministic commands. Gate 4 adds `resume` at committed node boundaries, exclusive same-host process ownership, write-ahead durable evidence and typed recovery observation for each workspace edit, opt-in proof-safe fresh recovery for interrupted agent attempts, approval waits that survive client detachment, durable resource accounting with run-wide start, model-token, reported-cost, and active-execution limits, project initialization and monotonic capacity configuration, plus a bounded local supervisor with authenticated detached workers, durable FIFO admission, status, event replay, cancellation, and restart adoption. Gate 5 adds replay-safe exact-output conditions, guarded branches, first-class omission, explicit joins, bounded deterministic static-DAG concurrency, finite replay-safe bounded and accept-best optimization loops, evidence-bound graph approval nodes, replay-verified typed result publication, first-class typed verifier nodes with sandboxed command and evidence-isolated zero-tool model drivers, independently-ledgered child workflows, and write-ahead candidate promotion in isolated reflink-or-copy workspaces. Gate 6 now begins with strict local portable Agent Skills, explicit node selection, progressive disclosure, immutable run snapshots, and provider-neutral use evidence. A TUI, remote package installation, other capability package types, opaque Pi session continuation, general failure/fallback retries, broader configurable policy, dynamic agent-tool approval, execute/network model tools, external verifier packages, and stronger VM or managed sandbox backends remain later work.
+This document describes the target architecture unless a section is explicitly labeled as the current executable slice. The delivery roadmap is the source of truth for implementation status. Gates 1 and 2 currently provide `validate`, `run`, `inspect`, optional versioned goal contracts, command-bound criterion evaluation, command and bounded Pi agent nodes, cancellation, and replayable local event ledgers. Gate 3 now includes a runtime-neutral policy broker for model-requested reads, lists, and hash-anchored single-file edits, a fail-closed native sandbox for every command node, and exact expiring pre-start approval for deterministic commands. Gate 4 adds `resume` at committed node boundaries, exclusive same-host process ownership, write-ahead durable evidence and typed recovery observation for each workspace edit, opt-in proof-safe fresh recovery for interrupted agent attempts, approval waits that survive client detachment, durable resource accounting with run-wide start, model-token, reported-cost, and active-execution limits, project initialization and monotonic capacity configuration, plus a bounded local supervisor with authenticated detached workers, durable FIFO admission, status, event replay, cancellation, and restart adoption. Gate 5 adds replay-safe exact-output conditions, guarded branches, first-class omission, explicit joins, bounded deterministic static-DAG concurrency, finite replay-safe bounded and accept-best optimization loops, evidence-bound graph approval nodes, replay-verified typed result publication, first-class typed verifier nodes with sandboxed command and evidence-isolated zero-tool model drivers, independently-ledgered child workflows, and write-ahead candidate promotion in isolated reflink-or-copy workspaces. Gate 6 now includes strict local portable Agent Skills plus versioned command/model verifier packages, explicit workflow selection, immutable run snapshots, and provider-neutral use evidence. A TUI, remote package installation, executable extensions, other capability package types, opaque Pi session continuation, general failure/fallback retries, broader configurable policy, dynamic agent-tool approval, execute/network model tools, arbitrary evaluator runtimes, and stronger VM or managed sandbox backends remain later work.
 
 ## Target flows
 
@@ -116,6 +116,35 @@ and exact observed resource reads back into the provider-neutral ledger. Domain 
 receipts against frozen bytes; workflow recovery additionally validates each selection against the
 compiled node. A future non-Pi executor can implement the same contract without changing workflow
 or history formats.
+
+### Versioned verifier packages
+
+The verifier catalog discovers strict local `VERIFIER.yaml` manifests below `.flow/verifiers`.
+Each package declares an exact SemVer identity and either an argv-only command definition or a
+bounded model rubric. Directories may contain only that inert manifest: symbolic links, executable
+resources, unknown fields, duplicate names, source races, and package or aggregate bound failures
+reject admission. Metadata operations validate identity and provenance without invoking a driver;
+inspection omits the model rubric.
+
+The workflow selects an exact package tuple with `packaged-command` or `packaged-model`. A command
+package owns the existing command declaration. A model package owns only the rubric, while the
+workflow retains evidence order, provider/model choice, thinking level, and timeout. The compiler
+preserves that reference in its digest and control graph. Before admission, application composition
+collects root and child references and adds their exact manifest bytes and parsed definitions to
+the same tagged immutable capability snapshot used by Agent Skills.
+
+Immediately before execution, the scheduler resolves the selected definition from the frozen
+snapshot into the ordinary inline verifier shape. The existing verifier executor therefore retains
+command containment, zero-tool model isolation, input bounds, cancellation, and verdict semantics.
+It records package name, version, and digest on typed verifier evidence. `run_started` separately
+persists each node requirement; domain replay reconciles requirement, snapshot, control graph, and
+evidence without consulting the live catalog or provider. Detached jobs transport the snapshot
+unchanged, child ledgers use their declared subset, and recovery refuses any caller replacement.
+
+This is a declarative package boundary, not a general plugin host. Packages cannot execute hooks,
+register tools, add credentials or network, mutate policy or graph structure, select a model, or
+import Prime Verifiers environments. Future executable or remote package sources require a separate
+out-of-process authority and installation design.
 
 ### Tool broker
 
@@ -521,6 +550,9 @@ Approval remains separate from containment. OMP-style allow/prompt/deny rules ca
 | Agent Skill is missing, duplicated, unsafe, oversized, or changes while being snapshotted | Reject before ledger creation or detached reservation; never fall back to partial or live content |
 | Agent Skill source changes after submission | Continue from the immutable submitted snapshot; do not absorb the changed source into attached, queued, child, or resumed work |
 | Agent reports an undeclared selection or forged resource read | Fail the node before persisting success, or reject replay/recovery before later work starts |
+| Verifier package is missing, malformed, unsafe, oversized, kind-incompatible, version-mismatched, or changes during capture | Reject the complete selection before ledger creation or detached reservation; execute no verifier |
+| Live verifier manifest changes after submission | Continue from the immutable submitted snapshot; bind no live replacement during attached, queued, child, or resumed work |
+| Verifier evidence reports the wrong package identity | Fail before persistence or reject replay; never infer identity from a successful driver result |
 
 ## Non-goals
 
