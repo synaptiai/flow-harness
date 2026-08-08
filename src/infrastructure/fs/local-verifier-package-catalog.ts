@@ -150,7 +150,18 @@ export async function snapshotSelectedVerifierPackages(
     }
     inputs.push(await snapshotPackage(catalog, discovered));
   }
-  return createCapabilitySnapshot([], inputs);
+  try {
+    return createCapabilitySnapshot([], inputs);
+  } catch (error) {
+    if (error instanceof VerifierPackageCatalogError) {
+      throw error;
+    }
+    throw new VerifierPackageCatalogError(
+      "invalid_package",
+      `failed to create verifier package snapshot: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
+  }
 }
 
 async function scanPackages(

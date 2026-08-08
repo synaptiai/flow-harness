@@ -22,10 +22,7 @@ export const verifierPackageVersionSchema = z
   .string()
   .min(1)
   .max(128)
-  .regex(
-    /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/,
-    "must be an exact semantic version",
-  );
+  .refine(isExactSemanticVersion, "must be an exact semantic version");
 
 const commandDefinitionSchema = z
   .object({
@@ -255,6 +252,46 @@ export function verifierPackageIdentityKey(value: {
   readonly version: string;
 }): string {
   return `verifier-package\0${value.name}\0${value.version}`;
+}
+
+function isExactSemanticVersion(value: string): boolean {
+  const buildParts = value.split("+");
+  if (buildParts.length > 2) {
+    return false;
+  }
+  const coreAndPrerelease = buildParts[0];
+  const build = buildParts[1];
+  if (coreAndPrerelease === undefined || (build !== undefined && !validIdentifiers(build, false))) {
+    return false;
+  }
+  const prereleaseSeparator = coreAndPrerelease.indexOf("-");
+  const core =
+    prereleaseSeparator === -1
+      ? coreAndPrerelease
+      : coreAndPrerelease.slice(0, prereleaseSeparator);
+  const prerelease =
+    prereleaseSeparator === -1 ? undefined : coreAndPrerelease.slice(prereleaseSeparator + 1);
+  const coreIdentifiers = core.split(".");
+  if (coreIdentifiers.length !== 3 || !coreIdentifiers.every(validNumericIdentifier)) {
+    return false;
+  }
+  return prerelease === undefined || validIdentifiers(prerelease, true);
+}
+
+function validIdentifiers(value: string, rejectNumericLeadingZeros: boolean): boolean {
+  const identifiers = value.split(".");
+  return identifiers.every(
+    (identifier) =>
+      identifier.length > 0 &&
+      /^[0-9A-Za-z-]+$/.test(identifier) &&
+      (!rejectNumericLeadingZeros ||
+        !/^\d+$/.test(identifier) ||
+        validNumericIdentifier(identifier)),
+  );
+}
+
+function validNumericIdentifier(value: string): boolean {
+  return /^(?:0|[1-9]\d*)$/.test(value);
 }
 
 function decodeCanonicalBase64(value: string): Buffer {

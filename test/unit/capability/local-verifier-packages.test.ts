@@ -66,6 +66,10 @@ describe("local verifier package catalog", () => {
       source: modelManifest("review", "latest"),
     },
     {
+      label: "numeric prerelease with a leading zero",
+      source: modelManifest("review", "1.0.0-01"),
+    },
+    {
       label: "name mismatch",
       source: modelManifest("different", "1.0.0"),
     },
@@ -112,6 +116,22 @@ describe("local verifier package catalog", () => {
       snapshotSelectedVerifierPackages(catalog, [{ name: "review", version: "1.0.0" }]),
     ).rejects.toMatchObject({ code: "source_changed" });
   });
+
+  it("normalizes an aggregate snapshot bound failure into a typed catalog error", async () => {
+    const project = await temporaryProject();
+    const references: Array<{ readonly name: string; readonly version: string }> = [];
+    for (let index = 0; index < 24; index += 1) {
+      const name = `review-${index}`;
+      references.push({ name, version: "1.0.0" });
+      await writeManifest(project, name, modelManifest(name, "1.0.0", "x".repeat(16_000)));
+    }
+    const catalog = await discoverProjectVerifierPackages(project);
+
+    await expect(snapshotSelectedVerifierPackages(catalog, references)).rejects.toMatchObject({
+      code: "invalid_package",
+      message: expect.stringMatching(/snapshot|serialized/i),
+    });
+  });
 });
 
 async function temporaryProject(): Promise<string> {
@@ -145,7 +165,11 @@ spec:
 `;
 }
 
-function modelManifest(name: string, version: string): string {
+function modelManifest(
+  name: string,
+  version: string,
+  prompt = "Reject unsupported claims.",
+): string {
   return `apiVersion: flow.synapti.ai/v1alpha1
 kind: VerifierPackage
 metadata:
@@ -154,6 +178,6 @@ metadata:
   description: Review declared evidence.
 spec:
   kind: model
-  prompt: Reject unsupported claims.
+  prompt: ${prompt}
 `;
 }
