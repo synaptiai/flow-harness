@@ -1420,6 +1420,7 @@ function freezeNode(
         prompt: source.agent.prompt,
         model: Object.freeze({ ...source.agent.model }),
         tools: Object.freeze([...source.agent.tools]),
+        skills: Object.freeze([...source.agent.skills]),
         ...(source.agent.recovery === undefined
           ? {}
           : { recovery: Object.freeze({ ...source.agent.recovery }) }),
@@ -1803,6 +1804,7 @@ function freezeLoopBodyNode(
         prompt: source.agent.prompt,
         model: Object.freeze({ ...source.agent.model }),
         tools: Object.freeze([...source.agent.tools]),
+        skills: Object.freeze([...source.agent.skills]),
         ...(source.agent.recovery === undefined
           ? {}
           : { recovery: Object.freeze({ ...source.agent.recovery }) }),

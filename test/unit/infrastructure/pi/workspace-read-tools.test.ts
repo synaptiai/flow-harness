@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { NodeEffectJournal } from "../../../../src/application/ports.js";
+import { createAgentSkillSession } from "../../../../src/domain/capability/agent-skill-session.js";
+import { createCapabilitySnapshot } from "../../../../src/domain/capability/agent-skills.js";
 import { PolicyBroker } from "../../../../src/domain/policy/broker.js";
 import { AgentEffectRecorder } from "../../../../src/infrastructure/pi/agent-effect-recorder.js";
 import { createWorkspaceAgentTools } from "../../../../src/infrastructure/pi/workspace-agent-tools.js";
@@ -172,6 +174,49 @@ describe("workspace-confined Pi tools", () => {
       type: "text",
       text: `[Flow file version: sha256:${sha256(content)}]`,
     });
+  });
+
+  it("loads selected immutable skill resources without workspace policy widening", async () => {
+    const root = await createTemporaryDirectory();
+    const policy = policyBroker();
+    const session = createAgentSkillSession(
+      createCapabilitySnapshot([
+        {
+          kind: "agent-skill",
+          name: "review",
+          description: "Review code when selected.",
+          metadata: {},
+          requestedTools: ["Bash"],
+          trust: "project-explicit",
+          provenance: ".flow/skills/review",
+          files: [{ path: "SKILL.md", content: Buffer.from("# Review\n") }],
+        },
+      ]),
+      ["review"],
+    );
+    const tools = await createWorkspaceAgentTools(root, ["read"], policy, {
+      capabilitySession: session,
+    });
+    const readTool = tools.definitions[0];
+    if (readTool === undefined) {
+      throw new Error("read tool was not registered");
+    }
+
+    const result = await readTool.execute(
+      "skill-call",
+      { path: "skill://review/SKILL.md" },
+      undefined,
+      undefined,
+      {} as never,
+    );
+
+    expect(result.content).toEqual([{ type: "text", text: "# Review\n" }]);
+    expect(result.details).toMatchObject({
+      flowCapabilityUri: "skill://review/SKILL.md",
+      fileDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(policy.snapshot()).toEqual([]);
+    expect(session.evidence().reads).toHaveLength(1);
   });
 
   it("uses the read version token to commit an attributable edit receipt", async () => {

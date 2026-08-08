@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 import { reduceRunEvents, type RunEvent, type RunStatus } from "../domain/run/events.js";
 import { compileWorkflowText } from "../domain/workflow/compiler.js";
+import { bindWorkflowCapabilities } from "../domain/capability/workflow-capabilities.js";
 import { JsonlRunStore, RunStoreError } from "../infrastructure/fs/jsonl-run-store.js";
 import type { JsonlAdmissionStore } from "../infrastructure/fs/jsonl-admission-store.js";
 import {
@@ -142,7 +143,8 @@ export class LocalSupervisorService {
 
   async #submitOnce(command: SubmitCommand): Promise<SubmissionResult> {
     // Compilation must precede every durable reservation and worker launch.
-    compileWorkflowText(command.workflowSource, command.sourceName);
+    const workflow = compileWorkflowText(command.workflowSource, command.sourceName);
+    bindWorkflowCapabilities(workflow, command.capabilitySnapshot);
 
     let journal: SubmissionCommandRecord;
     try {
@@ -154,6 +156,9 @@ export class LocalSupervisorService {
           mode: command.mode,
           sourceName: command.sourceName,
           workflowSource: command.workflowSource,
+          ...(command.capabilitySnapshot === undefined
+            ? {}
+            : { capabilitySnapshot: command.capabilitySnapshot }),
           cwd: command.cwd,
           recordedAt: this.#now().toISOString(),
         }),
@@ -267,6 +272,9 @@ export class LocalSupervisorService {
         mode: command.mode,
         sourceName: command.sourceName,
         workflowSource: command.workflowSource,
+        ...(command.capabilitySnapshot === undefined
+          ? {}
+          : { capabilitySnapshot: command.capabilitySnapshot }),
         cwd: command.cwd,
         token: randomBytes(32).toString("hex"),
         createdAt,
@@ -1512,6 +1520,7 @@ function journalMatchesJob(journal: SubmissionCommandRecord, job: JobRecord): bo
     journal.sourceName === job.sourceName &&
     journal.workflowSourceDigest ===
       createHash("sha256").update(job.workflowSource).digest("hex") &&
+    journal.capabilitySnapshotDigest === job.capabilitySnapshot?.digest &&
     journal.cwd === job.cwd
   );
 }
@@ -1523,6 +1532,7 @@ function sameSubmission(job: JobRecord, command: SubmitCommand): boolean {
     job.mode === command.mode &&
     job.sourceName === command.sourceName &&
     job.workflowSource === command.workflowSource &&
+    job.capabilitySnapshot?.digest === command.capabilitySnapshot?.digest &&
     job.cwd === command.cwd
   );
 }
@@ -1534,6 +1544,7 @@ function sameSubmitCommand(left: SubmitCommand, right: SubmitCommand): boolean {
     left.mode === right.mode &&
     left.sourceName === right.sourceName &&
     left.workflowSource === right.workflowSource &&
+    left.capabilitySnapshot?.digest === right.capabilitySnapshot?.digest &&
     left.cwd === right.cwd
   );
 }

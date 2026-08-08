@@ -2,6 +2,13 @@ import { createHash } from "node:crypto";
 import { isAbsolute, normalize } from "node:path";
 import { z } from "zod";
 import {
+  type AgentCapabilityEvidence,
+  type CapabilitySnapshot,
+  agentCapabilityEvidenceSchema,
+  createAgentCapabilityEvidence,
+  persistedCapabilitySnapshotSchema,
+} from "../capability/agent-skills.js";
+import {
   type CommandApprovalOperation,
   calculateCommandApprovalOperationDigest,
   commandApprovalRequestId,
@@ -113,6 +120,7 @@ export interface AgentEvidence {
   readonly usage?: AgentModelUsage;
   readonly policyDecisions: readonly PolicyDecision[];
   readonly effectReceipts: readonly AgentEffectReceipt[];
+  readonly capabilities?: AgentCapabilityEvidence;
 }
 
 export type VerifierVerdict = "accepted" | "rejected" | "inconclusive";
@@ -234,6 +242,7 @@ export interface RunStartedEvent extends RunEventBase {
   readonly nodeIds: readonly string[];
   readonly workflowApiVersion: "flow.synapti.ai/v1alpha1";
   readonly workflowDigest: string;
+  readonly capabilitySnapshot?: CapabilitySnapshot;
   readonly budget?: CompiledRunBudget;
   readonly concurrency?: CompiledWorkflowConcurrency;
   readonly goal?: CompiledGoal;
@@ -1127,6 +1136,7 @@ export interface RunState {
   readonly workflowId: string;
   readonly workflowApiVersion: "flow.synapti.ai/v1alpha1";
   readonly workflowDigest: string;
+  readonly capabilitySnapshot: CapabilitySnapshot | null;
   readonly executionCwd: string | null;
   readonly executionWorkspace: ExecutionWorkspaceProvenance | null;
   readonly approvalRequirements: Readonly<
@@ -1400,6 +1410,7 @@ const agentEvidenceSchema = z
       )
       .max(MAX_AGENT_EFFECT_RECEIPTS)
       .default([]),
+    capabilities: agentCapabilityEvidenceSchema.optional(),
   })
   .strict();
 
@@ -2037,6 +2048,7 @@ export const runEventSchema = z.discriminatedUnion("type", [
         .refine((items) => new Set(items).size === items.length, "node ids must be unique"),
       workflowApiVersion: z.literal("flow.synapti.ai/v1alpha1"),
       workflowDigest: sha256Schema,
+      capabilitySnapshot: persistedCapabilitySnapshotSchema.optional(),
       budget: runBudgetLimitsSchema.optional(),
       concurrency: z
         .object({ maxNodes: z.number().int().min(1).max(MAX_CONCURRENT_NODES) })
@@ -2768,6 +2780,10 @@ export function appendRunEvent(
       workflowId: event.workflowId,
       workflowApiVersion: event.workflowApiVersion,
       workflowDigest: event.workflowDigest,
+      capabilitySnapshot:
+        event.capabilitySnapshot === undefined
+          ? null
+          : deepFreeze(structuredClone(event.capabilitySnapshot)),
       executionCwd: event.executionCwd ?? null,
       executionWorkspace:
         event.executionWorkspace === undefined
@@ -4404,6 +4420,11 @@ export function appendRunEvent(
       const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
       validateDurableEffectProjection(current, event.evidence, event, eventIndex);
       validateEvidenceIntegrity(event.evidence, event, eventIndex, current.effectProtocol === null);
+      validateAgentCapabilityEvidenceProjection(
+        currentState.capabilitySnapshot,
+        event.evidence,
+        eventIndex,
+      );
       validateSucceededEvidence(event.evidence, eventIndex);
       validateVerifierEvidenceProjection(
         currentState.controlGraph,
@@ -4455,6 +4476,11 @@ export function appendRunEvent(
           event,
           eventIndex,
           current.effectProtocol === null,
+        );
+        validateAgentCapabilityEvidenceProjection(
+          currentState.capabilitySnapshot,
+          event.evidence,
+          eventIndex,
         );
       }
       validateVerifierEvidenceProjection(
@@ -4638,6 +4664,7 @@ export function appendRunEvent(
     workflowId: currentState.workflowId,
     workflowApiVersion: currentState.workflowApiVersion,
     workflowDigest: currentState.workflowDigest,
+    capabilitySnapshot: currentState.capabilitySnapshot,
     executionCwd: currentState.executionCwd,
     executionWorkspace: currentState.executionWorkspace,
     approvalRequirements: currentState.approvalRequirements,
@@ -7397,6 +7424,37 @@ function requireNode(
     throw new RunReplayError(eventIndex, `event references unknown node "${nodeId}"`);
   }
   return node;
+}
+
+function validateAgentCapabilityEvidenceProjection(
+  snapshot: CapabilitySnapshot | null,
+  evidence: NodeEvidence,
+  eventIndex: number,
+): void {
+  if (evidence.kind !== "agent" || evidence.capabilities === undefined) {
+    return;
+  }
+  if (snapshot === null) {
+    throw new RunReplayError(
+      eventIndex,
+      "agent capability evidence requires a durable run capability snapshot",
+    );
+  }
+  try {
+    const expected = createAgentCapabilityEvidence(
+      snapshot,
+      evidence.capabilities.selected.map((selection) => selection.name),
+      evidence.capabilities.reads,
+    );
+    if (JSON.stringify(expected) !== JSON.stringify(evidence.capabilities)) {
+      throw new Error("selected package evidence is not canonical");
+    }
+  } catch (error) {
+    throw new RunReplayError(
+      eventIndex,
+      `agent capability evidence is not bound to durable content: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }
 
 function requireRunningAttempt(

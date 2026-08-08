@@ -533,6 +533,82 @@ nodes:
     });
   });
 
+  it("compiles an immutable explicit Agent Skills selection", () => {
+    const source = workflowWithNodes(`
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Analyze the repository with the selected guidance.
+      model: { provider: anthropic, id: claude-sonnet-4-5 }
+      tools: [read]
+      skills: [security-review, testing]
+  - id: verify
+    type: command
+    dependsOn: [analyze]
+    command: { executable: npm, args: [test] }
+`);
+
+    const workflow = compileWorkflowText(source, "skilled-agent.workflow.yaml");
+    const agent = workflow.nodes[0];
+
+    expect(agent).toMatchObject({
+      type: "agent",
+      agent: { tools: ["read"], skills: ["security-review", "testing"] },
+    });
+    expect(agent?.type === "agent" && Object.isFrozen(agent.agent.skills)).toBe(true);
+  });
+
+  it("keeps omission of Agent Skills equivalent to an empty selection", () => {
+    const workflow = compileWorkflowText(
+      workflowWithNodes(`
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Analyze without skills.
+      model: { provider: anthropic, id: claude-sonnet-4-5 }
+  - id: verify
+    type: command
+    dependsOn: [analyze]
+    command: { executable: npm, args: [test] }
+`),
+    );
+
+    expect(workflow.nodes[0]).toMatchObject({ type: "agent", agent: { skills: [] } });
+  });
+
+  it.each([
+    {
+      label: "selection without read authority",
+      fragment: "tools: [ls]\n      skills: [testing]",
+      field: "nodes.0.agent.skills",
+    },
+    {
+      label: "duplicate selection",
+      fragment: "tools: [read]\n      skills: [testing, testing]",
+      field: "nodes.0.agent.skills",
+    },
+    {
+      label: "invalid skill name",
+      fragment: "tools: [read]\n      skills: [Testing]",
+      field: "nodes.0.agent.skills.0",
+    },
+  ])("rejects Agent Skills $label", ({ fragment, field }) => {
+    const source = workflowWithNodes(`
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Analyze.
+      model: { provider: anthropic, id: claude-sonnet-4-5 }
+      ${fragment}
+  - id: verify
+    type: command
+    dependsOn: [analyze]
+    command: { executable: npm, args: [test] }
+`);
+
+    expectCompilationFailure(source, "invalid_schema", field);
+  });
+
   it("compiles an immutable opt-in fresh recovery policy", () => {
     const source = workflowWithNodes(`
   - id: analyze

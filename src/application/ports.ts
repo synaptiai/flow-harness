@@ -1,3 +1,4 @@
+import type { CapabilitySnapshot } from "../domain/capability/agent-skills.js";
 import type {
   AgentEffectReceipt,
   FilesystemEditEffectDescriptor,
@@ -128,6 +129,7 @@ export interface NodeExecutionContext {
   readonly attempt: number;
   readonly cwd: string;
   readonly protectedPaths: readonly string[];
+  readonly capabilitySnapshot?: CapabilitySnapshot;
   readonly effectJournal?: NodeEffectJournal;
   readonly verifierSources?: readonly VerifierSourceInput[];
   readonly agentSystemPrompt?: string;
