@@ -27,6 +27,7 @@ import {
 } from "../domain/capability/agent-skills.js";
 import {
   collectWorkflowAgentSkillNames,
+  collectWorkflowToolPackageReferences,
   collectWorkflowVerifierPackageReferences,
   WorkflowCapabilityError,
 } from "../domain/capability/workflow-capabilities.js";
@@ -62,6 +63,12 @@ import {
   LocalSupervisorStoreError,
 } from "../infrastructure/fs/local-supervisor-store.js";
 import {
+  discoverProjectToolPackages,
+  type ProjectToolPackageCatalog,
+  snapshotSelectedToolPackages,
+  ToolPackageCatalogError,
+} from "../infrastructure/fs/local-tool-package-catalog.js";
+import {
   discoverProjectVerifierPackages,
   type ProjectVerifierPackageCatalog,
   snapshotSelectedVerifierPackages,
@@ -96,6 +103,9 @@ Usage:
   flow verifiers list
   flow verifiers inspect <name>
   flow verifiers validate
+  flow tools list
+  flow tools inspect <name> --version <exact>
+  flow tools validate
   flow validate <workflow.yaml>
   flow run <workflow.yaml> [--detach] [--command-id <uuid>] [--run-id <id>] [--runs-dir <path>] [--cwd <path>]
   flow resume <workflow.yaml> --run-id <id> [--detach] [--command-id <uuid>] [--runs-dir <path>] [--cwd <path>]
@@ -170,6 +180,8 @@ export async function main(
         return await skillsCommand(args.slice(1), io, dependencyOverrides);
       case "verifiers":
         return await verifiersCommand(args.slice(1), io, dependencyOverrides);
+      case "tools":
+        return await toolsCommand(args.slice(1), io, dependencyOverrides);
       case "validate":
         return await validateCommand(args.slice(1), io, dependencyOverrides);
       case "run":
@@ -216,7 +228,11 @@ export async function main(
       io.stderr(`${error.code}: ${error.message}`);
       return 1;
     }
-    if (error instanceof VerifierPackageCatalogError || error instanceof WorkflowCapabilityError) {
+    if (
+      error instanceof VerifierPackageCatalogError ||
+      error instanceof ToolPackageCatalogError ||
+      error instanceof WorkflowCapabilityError
+    ) {
       io.stderr(`${error.code}: ${error.message}`);
       return 1;
     }
@@ -438,6 +454,85 @@ async function verifiersCommand(
   return 0;
 }
 
+async function toolsCommand(
+  args: readonly string[],
+  io: CliIo,
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  const { positionals, values } = parseCommandArgs(args, {
+    version: { type: "string" },
+  });
+  const subcommand = positionals[0];
+  if (
+    (subcommand !== "list" && subcommand !== "validate" && subcommand !== "inspect") ||
+    (subcommand === "inspect" ? positionals.length !== 2 : positionals.length !== 1) ||
+    (subcommand === "inspect" ? values.version === undefined : values.version !== undefined)
+  ) {
+    throw new CliUsageError("tools requires list, validate, or inspect <name> --version <exact>");
+  }
+  const dependencies = configDependenciesFrom(overrides);
+  const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
+  const catalog = await discoverConfiguredToolPackages(config);
+
+  if (subcommand === "list") {
+    io.stdout(
+      JSON.stringify(
+        {
+          root: catalog.root,
+          packages: catalog.packages.map(
+            ({ directory: _directory, definition, manifestSha256, ...item }) => ({
+              ...item,
+              driver: {
+                kind: definition.driver.kind,
+                version: definition.driver.version,
+              },
+              manifestSha256,
+            }),
+          ),
+        },
+        null,
+        2,
+      ),
+    );
+    return 0;
+  }
+
+  if (subcommand === "inspect") {
+    const name = positionals[1];
+    const version = values.version;
+    if (name === undefined || version === undefined) {
+      throw new CliUsageError("tools inspect requires <name> --version <exact>");
+    }
+    const snapshot = await snapshotSelectedToolPackages(catalog, [{ name, version }]);
+    const selected = snapshot.packages.find((item) => item.kind === "tool-package");
+    if (selected === undefined) {
+      throw new ToolPackageCatalogError(
+        "missing_package",
+        `tool package "${name}" version "${version}" was not captured`,
+      );
+    }
+    const { contentBase64: _contentBase64, ...manifest } = selected.manifest;
+    io.stdout(JSON.stringify({ ...selected, manifest }, null, 2));
+    return 0;
+  }
+
+  for (const item of catalog.packages) {
+    await snapshotSelectedToolPackages(catalog, [{ name: item.name, version: item.version }]);
+  }
+  io.stdout(
+    JSON.stringify(
+      {
+        valid: true,
+        root: catalog.root,
+        packages: catalog.packages.map((item) => `${item.name}@${item.version}`),
+      },
+      null,
+      2,
+    ),
+  );
+  return 0;
+}
+
 async function approvalDecisionCommand(
   decision: "approve" | "deny",
   args: readonly string[],
@@ -571,9 +666,11 @@ async function validateCommand(
     capabilitySnapshot?.packages.filter((item) => item.kind === "agent-skill").length ?? 0;
   const verifierPackageCount =
     capabilitySnapshot?.packages.filter((item) => item.kind === "verifier-package").length ?? 0;
+  const toolPackageCount =
+    capabilitySnapshot?.packages.filter((item) => item.kind === "tool-package").length ?? 0;
 
   io.stdout(
-    `Workflow "${workflow.id}" is valid (nodes: ${workflow.nodes.length}, criteria: ${workflow.goal?.criteria.length ?? 0}, skills: ${skillCount}, verifier packages: ${verifierPackageCount}).`,
+    `Workflow "${workflow.id}" is valid (nodes: ${workflow.nodes.length}, criteria: ${workflow.goal?.criteria.length ?? 0}, skills: ${skillCount}, verifier packages: ${verifierPackageCount}, tool packages: ${toolPackageCount}).`,
   );
   return 0;
 }
@@ -1033,6 +1130,7 @@ async function resolveWorkflowCapabilitySnapshot(
 ): Promise<CapabilitySnapshot | undefined> {
   const names = collectWorkflowAgentSkillNames(workflow);
   const verifierReferences = collectWorkflowVerifierPackageReferences(workflow);
+  const toolReferences = collectWorkflowToolPackageReferences(workflow);
   const snapshots: CapabilitySnapshot[] = [];
   if (names.length > 0) {
     const catalog = await discoverConfiguredAgentSkills(config);
@@ -1041,6 +1139,10 @@ async function resolveWorkflowCapabilitySnapshot(
   if (verifierReferences.length > 0) {
     const catalog = await discoverConfiguredVerifierPackages(config);
     snapshots.push(await snapshotSelectedVerifierPackages(catalog, verifierReferences));
+  }
+  if (toolReferences.length > 0) {
+    const catalog = await discoverConfiguredToolPackages(config);
+    snapshots.push(await snapshotSelectedToolPackages(catalog, toolReferences));
   }
   return combineCapabilitySnapshots(snapshots);
 }
@@ -1067,6 +1169,18 @@ async function discoverConfiguredVerifierPackages(
     );
   }
   return await discoverProjectVerifierPackages(config.projectRoot);
+}
+
+async function discoverConfiguredToolPackages(
+  config: EffectiveFlowConfig,
+): Promise<ProjectToolPackageCatalog> {
+  if (config.projectRoot === null) {
+    throw new ToolPackageCatalogError(
+      "missing_package",
+      "tool packages require a Flow project root containing .flow/tools",
+    );
+  }
+  return await discoverProjectToolPackages(config.projectRoot);
 }
 
 function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies {

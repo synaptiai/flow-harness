@@ -20,6 +20,7 @@ import {
   createAgentCapabilityEvidence,
   createCapabilitySnapshot,
 } from "../../../src/domain/capability/agent-skills.js";
+import type { ToolPackageSnapshotInput } from "../../../src/domain/capability/tool-packages.js";
 import type { VerifierPackageSnapshotInput } from "../../../src/domain/capability/verifier-packages.js";
 import { reduceRunEvents } from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
@@ -592,6 +593,106 @@ spec:
         },
       },
     });
+  });
+
+  it("uses the frozen detached tool package after its live manifest drifts", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-worker-tool-package-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    const store = new LocalSupervisorStore(runsDirectory);
+    await store.initialize();
+    const capabilitySnapshot = createCapabilitySnapshot(
+      [],
+      [],
+      [toolPackageInput("project-report", "1.2.3", "printf")],
+    );
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "worker-tool-package",
+      mode: "run",
+      sourceName: join(directory, "workflow.yaml"),
+      workflowSource: toolPackageWorkflowSource(),
+      cwd: directory,
+      token: "7".repeat(64),
+      createdAt: "2026-08-08T12:25:00.000Z",
+      capabilitySnapshot,
+    });
+    await store.reserveSubmission(
+      job,
+      createActiveRunClaim({
+        runId: job.runId,
+        jobId: job.jobId,
+        workerId: job.workerId,
+        claimedAt: job.createdAt,
+      }),
+    );
+    const livePackage = join(directory, ".flow", "tools", "project-report");
+    await mkdir(livePackage, { recursive: true });
+    await writeFile(
+      join(livePackage, "TOOL.yaml"),
+      toolPackageManifest("project-report", "1.2.3", "false"),
+      "utf8",
+    );
+    let observedExecutable: string | undefined;
+    const executor: NodeExecutor = {
+      async execute(node, context) {
+        if (node.type !== "agent" || context.capabilitySnapshot === undefined) {
+          throw new Error(`unexpected detached tool package node "${node.type}"`);
+        }
+        const selected = context.capabilitySnapshot.packages.find(
+          (item) => item.kind === "tool-package",
+        );
+        if (selected === undefined) {
+          throw new Error("detached capability snapshot has no tool package");
+        }
+        observedExecutable = selected.definition.driver.executable;
+        const text = JSON.stringify("inspected");
+        return {
+          status: "succeeded",
+          evidence: {
+            kind: "agent",
+            provider: "test",
+            model: "deterministic",
+            text,
+            textHash: sha256(text),
+            textTruncated: false,
+            durationMs: 1,
+            policyDecisions: [],
+            effectReceipts: [],
+          },
+        };
+      },
+    };
+
+    const worker = executeWorkerJob(job.jobId, {
+      store,
+      executor,
+      effectReconciler: createProductionNodeEffectReconciler(),
+      createRunStore: (root) => new JsonlRunStore(root),
+      pid: 4330,
+    });
+    const descriptor = await waitForDescriptor(store, job.workerId);
+    await expect(requestWorker(descriptor, { type: "identify" })).resolves.toMatchObject({
+      ok: true,
+      result: { runId: job.runId, status: "running" },
+    });
+    await expect(worker).resolves.toBe(0);
+
+    expect(observedExecutable).toBe("printf");
+    expect(observedExecutable).not.toBe("false");
+    const events = await new JsonlRunStore(runsDirectory).read(job.runId);
+    expect(events[0]).toMatchObject({
+      type: "run_started",
+      capabilitySnapshot: { digest: capabilitySnapshot.digest },
+      toolPackageRequirements: [
+        {
+          nodeId: "inspect",
+          packages: [{ name: "project-report", version: "1.2.3" }],
+        },
+      ],
+    });
+    expect(reduceRunEvents(events).status).toBe("succeeded");
   });
 
   it("runs a separately-ledgered isolated child through a detached worker", async () => {
@@ -1400,6 +1501,29 @@ nodes:
 `;
 }
 
+function toolPackageWorkflowSource(): string {
+  return `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: worker-tool-package }
+nodes:
+  - id: inspect
+    type: agent
+    agent:
+      prompt: Inspect the project.
+      model: { provider: test, id: deterministic }
+      tools: [read]
+      toolPackages:
+        - { name: project-report, version: 1.2.3 }
+  - id: publish
+    type: result
+    dependsOn: [inspect]
+    result:
+      source: { nodeId: inspect, field: agent.text }
+      schema: { type: string, maxLength: 1024 }
+`;
+}
+
 function childWorkflowSource(): string {
   const child = `
 apiVersion: flow.synapti.ai/v1alpha1
@@ -1726,6 +1850,58 @@ spec:
 `),
     },
   };
+}
+
+function toolPackageInput(
+  name: string,
+  version: string,
+  executable: string,
+): ToolPackageSnapshotInput {
+  return {
+    kind: "tool-package",
+    apiVersion: "flow.synapti.ai/v1alpha1",
+    name,
+    version,
+    description: `Reusable ${name} tool.`,
+    trust: "project-explicit",
+    provenance: `.flow/tools/${name}`,
+    definition: {
+      tool: {
+        name: "create_project_report",
+        description: "Print a selected report subject.",
+        inputs: [{ name: "subject", description: "Report subject.", type: "string" }],
+      },
+      driver: {
+        kind: "command",
+        version: "v1",
+        executable,
+        args: ["%s", "{input:subject}"],
+        timeoutMs: 10_000,
+      },
+      permissions: ["process.execute"],
+    },
+    manifest: { content: Buffer.from(toolPackageManifest(name, version, executable)) },
+  };
+}
+
+function toolPackageManifest(name: string, version: string, executable: string): string {
+  return `apiVersion: flow.synapti.ai/v1alpha1
+kind: ToolPackage
+metadata: { name: ${name}, version: ${version}, description: Reusable ${name} tool. }
+spec:
+  tool:
+    name: create_project_report
+    description: Print a selected report subject.
+    inputs:
+      - { name: subject, description: Report subject., type: string }
+  driver:
+    kind: command
+    version: v1
+    executable: ${executable}
+    args: ["%s", "{input:subject}"]
+    timeoutMs: 10000
+  permissions: [process.execute]
+`;
 }
 
 function runEventBase(workflowId: string, runId: string, sequence: number) {
