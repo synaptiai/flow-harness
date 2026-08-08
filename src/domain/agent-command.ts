@@ -19,32 +19,33 @@ const boundedCommandString = (label: string, maxBytes: number) =>
       `${label} must not exceed ${maxBytes} UTF-8 bytes`,
     );
 
+const commandFields = {
+  executable: boundedCommandString("command executable", MAX_AGENT_COMMAND_EXECUTABLE_BYTES).refine(
+    (value) => Buffer.byteLength(value, "utf8") > 0,
+    "command executable must not be empty",
+  ),
+  args: z
+    .array(boundedCommandString("command argument", MAX_AGENT_COMMAND_ARG_BYTES))
+    .max(MAX_AGENT_COMMAND_ARGS)
+    .refine(
+      (args) =>
+        args.reduce((total, arg) => total + Buffer.byteLength(arg, "utf8"), 0) <=
+        MAX_AGENT_COMMAND_ARGS_BYTES,
+      `command arguments must not exceed ${MAX_AGENT_COMMAND_ARGS_BYTES} UTF-8 bytes in total`,
+    ),
+  timeoutMs: z.number().int().positive().max(MAX_AGENT_COMMAND_TIMEOUT_MS),
+};
+
 const agentCommandInputSchema = z
   .object({
-    executable: boundedCommandString(
-      "command executable",
-      MAX_AGENT_COMMAND_EXECUTABLE_BYTES,
-    ).refine(
-      (value) => Buffer.byteLength(value, "utf8") > 0,
-      "command executable must not be empty",
-    ),
-    args: z
-      .array(boundedCommandString("command argument", MAX_AGENT_COMMAND_ARG_BYTES))
-      .max(MAX_AGENT_COMMAND_ARGS)
-      .refine(
-        (args) =>
-          args.reduce((total, arg) => total + Buffer.byteLength(arg, "utf8"), 0) <=
-          MAX_AGENT_COMMAND_ARGS_BYTES,
-        `command arguments must not exceed ${MAX_AGENT_COMMAND_ARGS_BYTES} UTF-8 bytes in total`,
-      )
-      .default([]),
-    timeoutMs: z
-      .number()
-      .int()
-      .positive()
-      .max(MAX_AGENT_COMMAND_TIMEOUT_MS)
-      .default(DEFAULT_AGENT_COMMAND_TIMEOUT_MS),
+    ...commandFields,
+    args: commandFields.args.default([]),
+    timeoutMs: commandFields.timeoutMs.default(DEFAULT_AGENT_COMMAND_TIMEOUT_MS),
   })
+  .strict();
+
+export const agentCommandRequestSchema = z
+  .object({ version: z.literal(1), ...commandFields })
   .strict();
 
 export interface AgentCommandRequest {

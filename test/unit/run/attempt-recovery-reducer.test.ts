@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseRunEvent, reduceRunEvents, type RunEvent } from "../../../src/domain/run/events.js";
+import { parseRunEvent, type RunEvent, reduceRunEvents } from "../../../src/domain/run/events.js";
 
 describe("proof-safe interrupted attempt replay", () => {
   it("archives a read-only attempt and permits the exact next attempt", () => {
@@ -85,6 +85,16 @@ describe("proof-safe interrupted attempt replay", () => {
         interrupted(4),
       ]),
     ).toThrow(/open|unresolved|not applied|effect/i);
+  });
+
+  it("rejects fresh recovery for an execution-capable attempt even before a command starts", () => {
+    expect(() =>
+      replay([
+        runStarted({ effectProtocol: "none" }),
+        { ...nodeStarted(2), commandProtocol: "flow.agent-commands/v1" },
+        interrupted(3),
+      ]),
+    ).toThrow(/command|execution|recovery/i);
   });
 
   it.each([

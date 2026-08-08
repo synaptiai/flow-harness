@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
+import { describe, expect, it } from "vitest";
 
 import type { CommandSandbox } from "../../../src/application/command-sandbox.js";
 import type { NodeExecutionContext } from "../../../src/application/ports.js";
@@ -142,6 +142,46 @@ describe("CommandNodeExecutor", () => {
     });
   });
 
+  it("does not settle until a SIGTERM-resistant descendant is terminated", async () => {
+    const executor = commandExecutor({ terminationGraceMs: 25 });
+    let descendantPid: number | undefined;
+
+    try {
+      const outcome = await executor.execute(
+        commandNode(
+          process.execPath,
+          [
+            "-e",
+            [
+              'const { spawn } = require("node:child_process")',
+              'const descendant = spawn(process.execPath, ["-e", "process.on(\\"SIGTERM\\", () => {}); setInterval(() => {}, 1000)"], { stdio: "ignore" })',
+              "process.stdout.write(String(descendant.pid))",
+              "setInterval(() => {}, 1000)",
+            ].join(";"),
+          ],
+          100,
+        ),
+        context,
+      );
+
+      if (outcome.evidence?.kind !== "command") {
+        throw new Error("expected command evidence");
+      }
+      descendantPid = Number(outcome.evidence.stdout);
+      expect(Number.isSafeInteger(descendantPid)).toBe(true);
+      expect(outcome).toMatchObject({
+        status: "failed",
+        error: { code: "command_timeout" },
+        evidence: { timedOut: true },
+      });
+      expect(processIsAlive(descendantPid)).toBe(false);
+    } finally {
+      if (descendantPid !== undefined && processIsAlive(descendantPid)) {
+        process.kill(descendantPid, "SIGKILL");
+      }
+    }
+  });
+
   it("terminates immediately when execution starts with an aborted signal", async () => {
     const executor = commandExecutor({ terminationGraceMs: 25 });
     const controller = new AbortController();
@@ -154,8 +194,8 @@ describe("CommandNodeExecutor", () => {
 
     expect(outcome).toMatchObject({
       status: "failed",
-      error: { code: "command_aborted" },
-      evidence: { timedOut: false },
+      error: { code: "command_aborted", sideEffectStatus: "none" },
+      evidence: null,
     });
   });
 
@@ -242,6 +282,15 @@ function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error instanceof Error && "code" in error && error.code === "EPERM";
+  }
+}
+
 const directTestSandbox: CommandSandbox = {
   async prepare(request) {
     const environment = Object.fromEntries(
@@ -250,6 +299,7 @@ const directTestSandbox: CommandSandbox = {
       ),
     );
     return {
+      processContainment: "process-group",
       launch: {
         executable: request.executable,
         args: request.args,

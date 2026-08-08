@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import { AGENT_COMMAND_PROTOCOL, type AgentCommandRequest } from "../domain/agent-command.js";
 import {
   calculateCommandApprovalOperationDigest,
   commandApprovalRequestId,
@@ -19,6 +20,7 @@ import {
   bindWorkflowCapabilities,
   resolveVerifierPackageNode,
 } from "../domain/capability/workflow-capabilities.js";
+import type { PolicyDecision } from "../domain/policy/types.js";
 import {
   evaluateOptimizationBaseline,
   evaluateOptimizationCandidate,
@@ -30,6 +32,7 @@ import {
 } from "../domain/result/typed-result.js";
 import {
   type AgentCapabilityRequirement,
+  type AgentCommandSettlementOutcome,
   type AgentEffectReceipt,
   type AgentRecoveryRequirement,
   appendRunEvent,
@@ -46,6 +49,7 @@ import {
   type NodeEffectSettlementInput,
   type NodeFailure,
   type NodeOptimizationEvaluatedEvent,
+  nodeAgentCommandId,
   nodeEffectId,
   type OptimizationCheckRunState,
   type OptimizationPromotionBoundary,
@@ -88,6 +92,7 @@ import type {
   CandidatePromotionSettlement,
   CandidateWorkspaceManager,
   IsolatedWorkspace,
+  NodeAgentCommandJournal,
   NodeEffectJournal,
   NodeEffectReconciler,
   NodeExecutionOutcome,
@@ -325,6 +330,7 @@ async function continueWorkflow(
       readonly executionNode: ExecutableNode;
       readonly attempt: number;
       readonly effectJournal?: NodeEffectJournal;
+      readonly agentCommandJournal?: NodeAgentCommandJournal;
       readonly verifierSources?: readonly VerifierSourceInput[];
       readonly verifierPackage?: VerifierPackageUseEvidence;
       readonly preflightOutcome?: NodeExecutionOutcome;
@@ -485,15 +491,20 @@ async function continueWorkflow(
         ...(node.type === "child" ? { child: createChildRunLink(runId, node, attempt) } : {}),
         ...(approval === undefined ? {} : { approval }),
         ...(supportsDurableEffects(node) ? { effectProtocol: DURABLE_EFFECT_PROTOCOL } : {}),
+        ...(supportsAgentCommands(node) ? { commandProtocol: AGENT_COMMAND_PROTOCOL } : {}),
       });
       const effectJournal = supportsDurableEffects(node)
         ? createEffectJournal(node.id, attempt)
+        : undefined;
+      const agentCommandJournal = supportsAgentCommands(node)
+        ? createAgentCommandJournal(node.id, attempt)
         : undefined;
       admitted.push({
         node,
         executionNode,
         attempt,
         ...(effectJournal === undefined ? {} : { effectJournal }),
+        ...(agentCommandJournal === undefined ? {} : { agentCommandJournal }),
         ...(verifierSources === undefined ? {} : { verifierSources }),
         ...(verifierResolution?.package === undefined
           ? {}
@@ -517,6 +528,7 @@ async function continueWorkflow(
           executionNode,
           attempt,
           effectJournal,
+          agentCommandJournal,
           verifierSources,
           verifierPackage,
           preflightOutcome,
@@ -541,6 +553,7 @@ async function continueWorkflow(
                       ? {}
                       : { capabilitySnapshot: options.capabilitySnapshot }),
                     ...(effectJournal === undefined ? {} : { effectJournal }),
+                    ...(agentCommandJournal === undefined ? {} : { agentCommandJournal }),
                     ...(verifierSources === undefined ? {} : { verifierSources }),
                     ...(verifierPackage === undefined ? {} : { verifierPackage }),
                     ...(options.signal === undefined ? {} : { signal: options.signal }),
@@ -878,6 +891,56 @@ async function continueWorkflow(
     });
   }
 
+  function createAgentCommandJournal(nodeId: string, attempt: number): NodeAgentCommandJournal {
+    return Object.freeze({
+      prepare: async (input: {
+        readonly request: AgentCommandRequest;
+        readonly operationDigest: string;
+        readonly decision: PolicyDecision;
+      }) =>
+        await publish(async () => {
+          const durableInput = structuredClone(input);
+          const sequence = nextSequence();
+          const commandId = nodeAgentCommandId(sequence);
+          const commandSequence = (state.nodes[nodeId]?.commands.length ?? 0) + 1;
+          await append({
+            ...base(sequence),
+            type: "node_agent_command_prepared",
+            nodeId,
+            attempt,
+            commandId,
+            commandSequence,
+            ...durableInput,
+          });
+          let settled = false;
+          return Object.freeze({
+            commandId,
+            commandSequence,
+            settle: async (outcome: AgentCommandSettlementOutcome) =>
+              await publish(async () => {
+                if (settled) {
+                  throw new Error(`command "${commandId}" is already settled`);
+                }
+                await append({
+                  ...base(nextSequence()),
+                  type: "node_agent_command_settled",
+                  nodeId,
+                  attempt,
+                  commandId,
+                  outcome: structuredClone(outcome),
+                });
+                settled = true;
+                return Object.freeze({
+                  artifactBudgetExhausted:
+                    state.budget?.exhausted.some((item) => item.dimension === "artifactBytes") ===
+                    true,
+                });
+              }),
+          });
+        }),
+    });
+  }
+
   function normalizeWorkflowAbortEffectStatus(
     nodeId: string,
     outcome: NodeExecutionOutcome,
@@ -952,6 +1015,10 @@ async function continueWorkflow(
 
 function supportsDurableEffects(node: CompiledNode): node is CompiledAgentNode {
   return node.type === "agent" && node.agent.tools.includes("edit");
+}
+
+function supportsAgentCommands(node: CompiledNode): node is CompiledAgentNode {
+  return node.type === "agent" && node.agent.tools.includes("exec");
 }
 
 function createChildRunLink(
@@ -1549,7 +1616,10 @@ function validateRecoveredHistory(
         expectedTransition.node.id !== event.nodeId ||
         expectedAttempt === undefined ||
         event.attempt !== expectedAttempt + 1 ||
-        (event.effectProtocol !== undefined && !supportsDurableEffects(node))
+        (event.effectProtocol !== undefined && !supportsDurableEffects(node)) ||
+        (supportsAgentCommands(node)
+          ? event.commandProtocol !== AGENT_COMMAND_PROTOCOL
+          : event.commandProtocol !== undefined)
       ) {
         throw new RunRecoveryError(
           "workflow_mismatch",

@@ -182,9 +182,9 @@ autonomous implementation mandate, and primary-source comparison._
 
 ### Failure modes
 
-- **Timeouts** — The per-command deadline and outer node deadline share cancellation. Expiry kills
-  the complete process tree, settles bounded partial evidence when available, and reports a typed
-  tool failure. No automatic command replay occurs.
+- **Timeouts** — The per-command deadline and outer node deadline share cancellation. On supported
+  Linux execution, expiry terminates the PID-namespace process tree, settles bounded partial evidence
+  when available, and reports a typed tool failure. No automatic command replay occurs.
 - **Partial failures** — A prepare append failure prevents spawn. A settlement append failure after
   execution leaves an open command, poisons the active command recorder, prevents a valid terminal
   node event, and makes recovery uncertain.
@@ -199,12 +199,13 @@ autonomous implementation mandate, and primary-source comparison._
 - **Resource exhaustion** — Each stream is bounded by the existing command cap. Settlement charges
   retained UTF-8 bytes exactly once; equality/overshoot aborts the remaining active agent session,
   permits its terminal outcome to settle, and then uses existing run exhaustion semantics.
-- **Cancellation** — Cancellation terminates the current process tree and Pi session. Prepared but
-  unsettled commands remain uncertain; settled evidence is never replayed.
+- **Cancellation** — Cancellation terminates the current Linux PID-namespace process tree and Pi
+  session. Prepared but unsettled commands remain uncertain; settled evidence is never replayed.
 - **Concurrency** — `flow_exec` is sequential within one Pi session. Workflow-level node waves and
   detached-run capacity retain their existing independent bounds.
-- **Unsupported platform** — Windows or a degraded containment backend returns a bounded failure
-  before spawning the requested project process.
+- **Unsupported platform** — macOS/Windows or a degraded Linux PID-namespace backend returns a
+  bounded agent-command failure before spawning the requested project process. Ordinary command
+  nodes retain their separately documented platform support.
 - **Tampering** — Missing/reordered/duplicate command identifiers, altered request digests,
   mismatched policy decisions, invalid output hashes, inconsistent error/evidence pairs, terminal
   outcomes with open commands, and understated artifact totals reject replay.
@@ -239,6 +240,15 @@ Model-facing tool input:
   command id, attempt-local sequence, exact request, digest, and allowed policy decision. Settled
   events carry exactly one matching success/failure outcome with bounded `CommandEvidence` and/or
   `NodeFailure`.
+- Each agent command settlement requires sandbox backend/version/profile/policy provenance,
+  `processContainment: linux-pid-namespace`, and a reconciled termination status, plus independent
+  SHA-256 hashes and UTF-8 byte counts for the retained stdout/stderr prefixes. The
+  full-stream hashes remain authoritative for complete output, including bytes beyond truncation.
+- Commands are serialized within an attempt: a preparation must settle before the next preparation.
+  The deadline begins before sandbox preparation and the executor does not settle an interrupted
+  process until its outer POSIX process group is confirmed absent or containment failure is
+  reported. Linux Bubblewrap's verified PID namespace prevents descendants from escaping that
+  lifecycle. Late sandbox preparation is released but cannot spawn after the absolute deadline.
 - Per-node state exposes ordered commands. Interrupted-attempt state retains its ordered commands.
   Terminal agent evidence retains the ordinary policy list and must reconcile every prepared
   command to the same unused allowed `process.execute` decision.
@@ -250,26 +260,95 @@ Model-facing tool input:
 
 | Criterion | Type | Verification command | Expected evidence | Does not promise |
 | --- | --- | --- | --- | --- |
-| Selection, compilation, digest, child/transport preservation | Contract | `npx vitest run test/unit/workflow/agent-exec-compiler.test.ts test/unit/workflow/child-node-compiler.test.ts test/unit/supervisor/protocol.test.ts` | `exec` compiles immutably, changes digest, survives child/job serialization; omission works | Runtime execution |
-| Strict executable/argv/deadline input | Error/contract | `npx vitest run test/unit/infrastructure/pi/agent-exec-tool.test.ts -t "input"` | Every bound and unknown field rejects before policy/executor; exact boundary values pass | Shell syntax |
-| Policy and production sandbox | Integration/security | `npx vitest run test/unit/policy/broker.test.ts test/unit/infrastructure/pi/agent-exec-tool.test.ts test/integration/process/command-node-executor.test.ts` | Exact execute digest required; undeclared calls deny; injected executor uses sandbox; degradation prevents spawn | VM isolation or network enablement |
+| Selection, compilation, digest, child/transport preservation | Contract | `npx vitest run test/unit/workflow/compiler.test.ts test/unit/workflow/child-node-compiler.test.ts -t "exec"` | `exec` compiles immutably, changes digest, survives child compilation; omission works | Runtime execution |
+| Strict executable/argv/deadline input | Error/contract | `npx vitest run test/unit/domain/agent-command.test.ts test/unit/infrastructure/pi/workspace-read-tools.test.ts` | Every bound and unknown field rejects before policy/executor; exact boundary values pass | Shell syntax |
+| Policy and production sandbox | Integration/security | `npx vitest run test/unit/policy/broker.test.ts test/unit/infrastructure/policy/workspace-policy-broker.test.ts test/unit/infrastructure/pi/workspace-read-tools.test.ts test/integration/process/command-node-executor.test.ts` | Exact execute digest required; undeclared calls deny; injected executor uses sandbox; degradation prevents spawn | VM isolation or network enablement |
 | Durable prepare/settle and replay | Domain/adversarial | `npx vitest run test/unit/run/agent-command-reducer.test.ts` | Valid histories project exactly; missing/reordered/duplicate/tampered histories reject | Automatic reconciliation of arbitrary effects |
-| Model result and inspectable evidence | Integration | `npx vitest run test/integration/pi/pi-agent-executor.test.ts -t "flow_exec" test/integration/cli/main.test.ts -t "agent command"` | Nonzero/success output returns to loop; inspection exposes streams, hashes, status, duration, provenance | Full-output storage |
-| Timeout, cancellation, crash/publication failure | Application/runtime | `npx vitest run test/unit/application/run-workflow-agent-command.test.ts test/integration/process/command-node-executor.test.ts -t "timeout|abort|process tree"` | Process tree ends; prepare failure does not execute; settle failure leaves uncertainty and no automatic replay | Resuming the same model call |
-| Artifact budget accounting | Domain/application | `npx vitest run test/unit/run/agent-command-budget-reducer.test.ts test/unit/application/run-workflow-agent-command.test.ts -t "artifact"` | Multibyte output charges once before terminal agent evidence; equality/overshoot exhausts | Physical disk bytes |
-| Fresh recovery refusal | Recovery | `npx vitest run test/unit/workflow/agent-exec-compiler.test.ts test/unit/run/attempt-recovery-reducer.test.ts test/unit/application/run-workflow-retry.test.ts -t "exec"` | `exec` plus fresh recovery rejects; open commands never replay | Safe retry classification for arbitrary commands |
-| Attached/detached/child behavioral matrix | Integration | `npx vitest run test/integration/cli/main.test.ts test/integration/supervisor/worker.test.ts test/unit/application/run-workflow-child.test.ts -t "agent command|flow_exec"` | Public transports and child ledger preserve behavior and evidence | Hosted TUI or remote execution |
-| Public contract and example | Docs/scaffold | `npx vitest run test/scaffold/community-files.test.ts test/unit/workflow/compiler.test.ts` | README, architecture, recovery, workflow/testing/roadmap docs, and example match scope/nonclaims | Dynamic approval, shell, spill, VM |
+| Model result and inspectable evidence | Integration | `npx vitest run test/unit/infrastructure/pi/pi-agent-executor.test.ts test/unit/infrastructure/pi/workspace-read-tools.test.ts test/integration/cli/main.test.ts -t "agent command"` | Nonzero/success output returns to loop; inspection exposes streams, hashes, status, duration, provenance | Full-output storage |
+| Timeout, cancellation, crash/publication failure | Application/runtime | `npx vitest run test/unit/application/run-workflow-agent-command.test.ts test/unit/infrastructure/pi/agent-command-recorder.test.ts test/integration/process/command-node-executor.test.ts` | Process tree ends; prepare failure does not execute; settle failure leaves uncertainty and no automatic replay | Resuming the same model call |
+| Artifact budget accounting | Domain/application | `npx vitest run test/unit/run/agent-command-reducer.test.ts test/unit/application/run-workflow-agent-command.test.ts -t "artifact|charges"` | Multibyte output charges once before terminal agent evidence; equality/overshoot exhausts | Physical disk bytes |
+| Fresh recovery refusal | Recovery | `npx vitest run test/unit/workflow/compiler.test.ts test/unit/run/attempt-recovery-reducer.test.ts -t "exec|execution-capable"` | `exec` plus fresh recovery rejects; open commands never replay | Safe retry classification for arbitrary commands |
+| Attached/detached/child behavioral matrix | Integration | `npx vitest run test/integration/cli/main.test.ts test/integration/supervisor/worker.test.ts -t "agent command"` | Attached CLI, detached worker, child ledger, and inspection preserve behavior and evidence | Hosted TUI or remote execution |
+| Public contract and example | Docs/scaffold | `npm run build && node dist/cli/main.js validate examples/agent-command.workflow.yaml` | README, architecture, recovery, workflow/testing/roadmap docs, and example match scope/nonclaims | Dynamic approval, shell, spill, VM |
 
 ## Planned RED -> GREEN -> REFACTOR sequence
 
-1. [ ] Compile and transport the fourth agent tool selection while rejecting fresh recovery.
-2. [ ] Define and enforce the exact `flow_exec` input and policy-digest boundary.
-3. [ ] Add write-ahead command events and adversarial reducer invariants.
-4. [ ] Reuse the command executor through a provider-neutral application port.
-5. [ ] Integrate the tool into the Pi loop and reconcile terminal policy evidence.
-6. [ ] Charge settled output and stop on mid-agent artifact exhaustion.
-7. [ ] Cover timeout, cancellation, append failure, open-command recovery, and side-effect status.
-8. [ ] Complete attached, detached, child, and inspection paths.
-9. [ ] Update every public document and executable example.
+1. [x] Compile and transport the fourth agent tool selection while rejecting fresh recovery.
+2. [x] Define and enforce the exact `flow_exec` input and policy-digest boundary.
+3. [x] Add write-ahead command events and adversarial reducer invariants.
+4. [x] Reuse the command executor through a provider-neutral application port.
+5. [x] Integrate the tool into the Pi loop and reconcile terminal policy evidence.
+6. [x] Charge settled output and stop on mid-agent artifact exhaustion.
+7. [x] Cover timeout, cancellation, append failure, open-command recovery, and side-effect status.
+8. [x] Complete attached, detached, child, and inspection paths.
+9. [x] Update every public document and executable example.
 10. [ ] Run focused, full, clean-room, mutation, holdout, and adversarial verification.
+
+## Adversarial review resolutions
+
+The first independent skeptic/verifier pass found seven material gaps. All were accepted and fixed:
+
+- Replay now rejects a second preparation while an earlier command is unresolved and retains an
+  additional settlement-order guard.
+- Failure codes, side-effect states, and evidence must form one consistent state; pre-spawn timeout
+  and cancellation are the only new evidence-free interruption cases.
+- Interrupted process execution waits for leader exit and confirmed process-group disappearance,
+  preserves SIGKILL escalation after leader close, and fails uncertainly if containment cannot be
+  confirmed.
+- Truncated retained stdout/stderr prefixes carry their own hashes and byte counts, independently
+  of the complete-stream hashes.
+- Per-command deadlines start before sandbox preparation instead of after it.
+- Model-visible command results include sandbox backend, version, profile, and policy digest.
+- Dedicated attached CLI, isolated child, exact inspection, and authenticated detached-worker
+  tests now exercise the durable command protocol through production orchestration boundaries.
+
+The second independent pass initially found four additional gaps. A verification pass then rejected
+the first attempted PID-polling fix and found two more related defects. The final resolution is:
+
+- Raw PID/PPID polling was removed because reparenting, zombies, PID reuse, and synchronous `ps`
+  scans cannot provide safe containment. Agent commands instead require a verified Linux SRT
+  Bubblewrap PID namespace plus parent-death control before spawn; macOS fails closed.
+- Sandbox preparation is raced against the command deadline and checked against an absolute
+  monotonic expiry immediately before spawn. A preparation adapter that ignores cancellation cannot
+  create late spawn authority; late preparation is released.
+- Replay requires the truncation flag to agree with the relationship between the retained-prefix
+  hash and complete-stream hash, rejecting forged complete/truncated evidence.
+- Replay binds termination-related failure codes to durable containment and termination facts.
+- Public cancellation and quota documentation now includes command reservations and distinguishes
+  logical artifact accounting from physical storage, spill, and disk limits.
+
+The final adversarial gate found two additional pre-spawn and settlement-precedence defects. Both
+were accepted and fixed:
+
+- Linux preparation now resolves one canonical, executable, root-owned Bubblewrap binary outside
+  the workspace through root-owned non-writable ancestors, passes that absolute path into SRT, and
+  rejects any returned descriptor that does not bind it. A workspace-controlled `bwrap` earlier in
+  model-visible `PATH` cannot impersonate the containment boundary.
+- Command evidence records termination independently of the final error code. If process-tree
+  termination is unconfirmed and sandbox cleanup also fails, `command_termination_failed` remains
+  primary, `terminationStatus: unconfirmed` remains durable, and cleanup is bounded secondary
+  context.
+
+The subsequent holdout rerun found that textual lifecycle-token checks did not bind the complete
+launch descriptor and that an unconfirmed command settlement could still be followed by terminal
+agent success. Both findings were accepted:
+
+- Flow now accepts only SRT's canonical quoted argv grammar beneath an exact `/bin/bash -c` outer
+  launcher. It position-checks the trusted Bubblewrap executable, initial parent-lifecycle options,
+  secure PID/user/capability/process-mount tail, single command boundary, and inner shell. Shell
+  operators, substituted launchers, and lifecycle-looking option values fail before spawn.
+- Agent command evidence now persists `aborted` separately from `timedOut` and replay requires
+  exactly one interruption cause whenever termination is required. An unconfirmed settlement closes
+  command authority, aborts the Pi session, forces uncertain attempt failure, and makes terminal
+  success invalid under replay.
+
+The next falsification round found that a preceding multi-operand Bubblewrap option could still
+consume a lifecycle-looking token and that replay did not yet apply the fatal latch to later command
+preparation. The complete resolution is:
+
+- Flow parses every pre-boundary Bubblewrap option through an explicit reviewed arity allowlist.
+  Required lifecycle controls must be parsed zero-arity options in the exact secure suffix; operand
+  values never count, and unknown future options fail closed until reviewed.
+- The reducer rejects every `node_agent_command_prepared` after an unconfirmed termination
+  settlement, matching the live recorder's closed audit in addition to the existing terminal-success
+  refusal.

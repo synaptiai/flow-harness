@@ -31,6 +31,7 @@ describe("compileWorkflowText", () => {
     "verify-foundation.workflow.yaml",
     "budgeted-foundation.workflow.yaml",
     "implement-and-verify.workflow.yaml",
+    "agent-command.workflow.yaml",
     "approval-gated-command.workflow.yaml",
     "concurrent-fork.workflow.yaml",
     "isolated-child.workflow.yaml",

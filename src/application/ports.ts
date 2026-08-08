@@ -1,7 +1,9 @@
 import type { AgentCommandRequest } from "../domain/agent-command.js";
 import type { CapabilitySnapshot } from "../domain/capability/agent-skills.js";
 import type { VerifierPackageUseEvidence } from "../domain/capability/verifier-packages.js";
+import type { PolicyDecision } from "../domain/policy/types.js";
 import type {
+  AgentCommandSettlementOutcome,
   AgentEffectReceipt,
   FilesystemEditEffectDescriptor,
   NodeEffectReconciliationInput,
@@ -133,6 +135,8 @@ export interface NodeExecutionContext {
   readonly protectedPaths: readonly string[];
   readonly capabilitySnapshot?: CapabilitySnapshot;
   readonly effectJournal?: NodeEffectJournal;
+  readonly agentCommandJournal?: NodeAgentCommandJournal;
+  readonly agentCommandExecutor?: AgentCommandExecutor;
   readonly verifierSources?: readonly VerifierSourceInput[];
   readonly verifierPackage?: VerifierPackageUseEvidence;
   readonly agentSystemPrompt?: string;
@@ -157,6 +161,24 @@ export interface PreparedNodeEffect {
   readonly effectId: string;
   readonly effectSequence: number;
   settle(settlement: NodeEffectSettlementInput): Promise<AgentEffectReceipt | null>;
+}
+
+export interface NodeAgentCommandJournal {
+  prepare(input: {
+    readonly request: AgentCommandRequest;
+    readonly operationDigest: string;
+    readonly decision: PolicyDecision;
+  }): Promise<PreparedNodeAgentCommand>;
+}
+
+export interface PreparedNodeAgentCommand {
+  readonly commandId: string;
+  readonly commandSequence: number;
+  settle(outcome: AgentCommandSettlementOutcome): Promise<AgentCommandSettlementReceipt>;
+}
+
+export interface AgentCommandSettlementReceipt {
+  readonly artifactBudgetExhausted: boolean;
 }
 
 export interface NodeEffectReconciler {
@@ -192,7 +214,7 @@ export interface AgentCommandExecutor {
   executeAgentCommand(
     command: AgentCommandRequest,
     context: NodeExecutionContext,
-  ): Promise<NodeExecutionOutcome>;
+  ): Promise<AgentCommandSettlementOutcome>;
 }
 
 export interface AgentExecutor {

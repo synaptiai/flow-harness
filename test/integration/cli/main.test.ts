@@ -5,12 +5,23 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { afterEach, describe, expect, it } from "vitest";
-
+import type { CommandSandbox } from "../../../src/application/command-sandbox.js";
+import { NodeExecutorRouter } from "../../../src/application/node-executor-router.js";
 import type { NodeExecutor } from "../../../src/application/ports.js";
 import { type CliIo, main } from "../../../src/cli/main.js";
-import type { RunEvent, RunStartedEvent } from "../../../src/domain/run/events.js";
+import {
+  calculateAgentCommandDigest,
+  normalizeAgentCommandRequest,
+} from "../../../src/domain/agent-command.js";
+import {
+  type RunEvent,
+  type RunStartedEvent,
+  reduceRunEvents,
+} from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { JsonlRunStore } from "../../../src/infrastructure/fs/jsonl-run-store.js";
+import { PiAgentExecutor } from "../../../src/infrastructure/pi/pi-agent-executor.js";
+import { CommandNodeExecutor } from "../../../src/infrastructure/process/command-node-executor.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -228,6 +239,73 @@ nodes:
     await expect(stat(join(runsDirectory, ".workspaces", childRunId))).rejects.toMatchObject({
       code: "ENOENT",
     });
+  });
+
+  it("runs, child-ledgers, and inspects a durable agent command through the attached CLI", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "agent-command-child.workflow.yaml");
+    const runsDirectory = join(directory, "runs");
+    await writeFile(workflowPath, childAgentCommandWorkflow("cli-agent-command"), "utf8");
+    const runCapture = createCapture();
+
+    const exitCode = await main(
+      [
+        "run",
+        workflowPath,
+        "--run-id",
+        "cli-agent-command-run",
+        "--runs-dir",
+        runsDirectory,
+        "--cwd",
+        directory,
+      ],
+      runCapture.io,
+      { cwd: directory, executor: durableAgentCommandExecutor() },
+    );
+
+    expect(exitCode, [...runCapture.stderr, ...runCapture.stdout].join("\n")).toBe(0);
+    const parentState = JSON.parse(runCapture.stdout.join("\n"));
+    const childRunId = parentState.nodes.delegate.childRun.runId as string;
+    const runStore = new JsonlRunStore(runsDirectory);
+    const childEvents = await runStore.read(childRunId);
+    const childState = reduceRunEvents(childEvents);
+    expect(childEvents.map((event) => event.type)).toEqual(
+      expect.arrayContaining(["node_agent_command_prepared", "node_agent_command_settled"]),
+    );
+    expect(childState.nodes.execute).toMatchObject({
+      status: "succeeded",
+      commandProtocol: "flow.agent-commands/v1",
+      commands: [
+        {
+          request: {
+            executable: process.execPath,
+            args: ["-e", 'process.stdout.write("child-command")'],
+          },
+          settlement: {
+            outcome: {
+              status: "succeeded",
+              evidence: {
+                stdout: "child-command",
+                sandbox: { profile: "workspace-write-network-deny-v1" },
+              },
+            },
+          },
+        },
+      ],
+    });
+
+    for (const [runId, expected] of [
+      ["cli-agent-command-run", parentState],
+      [childRunId, childState],
+    ] as const) {
+      const inspectCapture = createCapture();
+      expect(
+        await main(["inspect", runId, "--runs-dir", runsDirectory], inspectCapture.io, {
+          cwd: directory,
+        }),
+      ).toBe(0);
+      expect(JSON.parse(inspectCapture.stdout.join("\n"))).toEqual(expected);
+    }
   });
 
   it("promotes and inspects a bounded optimization through the attached production composition", async () => {
@@ -1681,6 +1759,106 @@ ${child
   .join("\n")}
 `;
 }
+
+function childAgentCommandWorkflow(id: string): string {
+  const child = `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: ${id}-inner }
+budget:
+  maxNodeStarts: 4
+  maxModelTokens: 100
+  maxCostUsd: 0.01
+  maxExecutionMs: 10000
+  maxArtifactBytes: 100000
+nodes:
+  - id: execute
+    type: agent
+    agent:
+      prompt: Run the bounded command.
+      model: { provider: test, id: deterministic }
+      tools: [exec]
+  - id: publish
+    type: result
+    dependsOn: [execute]
+    result:
+      source: { nodeId: execute, field: agent.text }
+      schema: { type: string, maxLength: 1024 }
+`.trim();
+  return `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: ${id} }
+budget:
+  maxNodeStarts: 16
+  maxModelTokens: 1000
+  maxCostUsd: 1
+  maxExecutionMs: 60000
+  maxArtifactBytes: 1000000
+nodes:
+  - id: delegate
+    type: child
+    child:
+      resultNodeId: publish
+      workflow: |
+${child
+  .split("\n")
+  .map((line) => `        ${line}`)
+  .join("\n")}
+`;
+}
+
+function durableAgentCommandExecutor(): NodeExecutor {
+  const commandExecutor = new CommandNodeExecutor({ sandbox: directAgentCommandSandbox });
+  const agentExecutor = new PiAgentExecutor({
+    async run(input) {
+      if (input.commandRecorder === undefined) {
+        throw new Error("agent command recorder was not injected");
+      }
+      const request = normalizeAgentCommandRequest({
+        executable: process.execPath,
+        args: ["-e", 'process.stdout.write("child-command")'],
+        timeoutMs: 5_000,
+      });
+      const decision = input.policyBroker.authorize({
+        action: "process.execute",
+        target: request.executable,
+        boundary: "inside",
+        operationDigest: calculateAgentCommandDigest(request),
+      });
+      const outcome = await input.commandRecorder.execute(request, decision, input.signal);
+      return {
+        text: JSON.stringify(outcome.evidence?.stdout ?? "command failed"),
+        stopReason: "stop" as const,
+      };
+    },
+  });
+  return new NodeExecutorRouter(commandExecutor, agentExecutor);
+}
+
+const directAgentCommandSandbox: CommandSandbox = {
+  async prepare(request) {
+    return {
+      processContainment: "linux-pid-namespace",
+      launch: {
+        executable: request.executable,
+        args: request.args,
+        env: Object.fromEntries(
+          Object.entries(process.env).filter(
+            (entry): entry is [string, string] => entry[1] !== undefined,
+          ),
+        ),
+      },
+      evidence: {
+        backend: "test-sandbox",
+        backendVersion: "1",
+        profile: "workspace-write-network-deny-v1",
+        policyDigest: "d".repeat(64),
+      },
+      release: async () => undefined,
+    };
+  },
+};
 
 function optimizationWorkflow(id: string): string {
   const improveScript = `

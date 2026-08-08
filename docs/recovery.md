@@ -3,7 +3,7 @@
 Flow can resume an interrupted run when its durable ledger proves that execution stopped between
 node attempts. An agent node may also opt into a bounded fresh attempt when replay proves the open
 attempt applied no effects. Recovery remains conservative: ambiguous work is reported to the
-operator and is never repeated automatically. Command and model verifier attempts never opt into
+operator and is never repeated automatically. Agent attempts that select `exec`, command attempts, and model verifier attempts never opt into
 fresh recovery; an open verifier start is refused as uncertain.
 
 ## Operator workflow
@@ -44,6 +44,13 @@ order. It first reconciles every open typed effect in that order, then appends o
 `run_resumed`. A command attempt or any other unsafe sibling still blocks new execution; already
 committed reconciliation and safe dispositions remain valid evidence. Repeating resume continues
 from that prefix without duplicating events.
+
+Agent command execution has its own `flow.agent-commands/v1` write-ahead ledger. A normalized
+executable/argv/deadline request and its exact allowed `process.execute` decision are committed
+before spawn; the bounded outcome is committed afterward. Resume never runs an open or settled
+agent command again and cannot reconcile arbitrary process side effects from filesystem
+observation. The compiler therefore rejects `recovery: { mode: fresh, ... }` whenever the node
+selects `exec`, and a command-capable open attempt is reported as `uncertain_operation`.
 
 Child recovery uses the child ledger as the execution commit marker and the workspace manifest as
 its isolation proof. The parent derives the same child run and workspace identities from its own run,

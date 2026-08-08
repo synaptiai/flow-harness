@@ -52,4 +52,19 @@ describe("agent command contract", () => {
 
     expect(command.args).toEqual(["--version"]);
   });
+
+  it("accepts every exact public input boundary", () => {
+    const command = normalizeAgentCommandRequest({
+      executable: "é".repeat(512),
+      args: Array(64).fill("🙂".repeat(128)),
+      timeoutMs: 600_000,
+    });
+
+    expect(Buffer.byteLength(command.executable, "utf8")).toBe(1_024);
+    expect(command.args).toHaveLength(64);
+    expect(
+      command.args.reduce((total, argument) => total + Buffer.byteLength(argument, "utf8"), 0),
+    ).toBe(32_768);
+    expect(command.timeoutMs).toBe(600_000);
+  });
 });
