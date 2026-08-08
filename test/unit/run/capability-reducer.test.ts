@@ -3,14 +3,14 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import {
+  type CapabilitySnapshot,
   createAgentCapabilityEvidence,
   createCapabilitySnapshot,
-  type CapabilitySnapshot,
 } from "../../../src/domain/capability/agent-skills.js";
 import {
   parseRunEvent,
-  reduceRunEvents,
   type RunStartedEvent,
+  reduceRunEvents,
 } from "../../../src/domain/run/events.js";
 
 describe("capability run history", () => {
@@ -204,8 +204,8 @@ function requireCapabilitySnapshot(event: RunStartedEvent): CapabilitySnapshot {
 function capabilityFixture(event: RunStartedEvent) {
   const snapshot = requireCapabilitySnapshot(event);
   const skill = snapshot.packages[0];
-  const file = skill?.files[0];
-  if (skill === undefined || file === undefined) {
+  const file = skill?.kind === "agent-skill" ? skill.files[0] : undefined;
+  if (skill?.kind !== "agent-skill" || file === undefined) {
     throw new Error("skill fixture was not created");
   }
   return { snapshot, skill, file };

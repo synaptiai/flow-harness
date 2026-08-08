@@ -11,17 +11,17 @@ import type {
   CommandExecutor,
   NodeExecutor,
 } from "../../../src/application/ports.js";
-import { JsonlRunStore } from "../../../src/infrastructure/fs/jsonl-run-store.js";
 import {
   createAgentCapabilityEvidence,
   createCapabilitySnapshot,
 } from "../../../src/domain/capability/agent-skills.js";
-import { LocalSupervisorStore } from "../../../src/infrastructure/fs/local-supervisor-store.js";
-import { createProductionNodeEffectReconciler } from "../../../src/infrastructure/runtime/production-effect-reconciler.js";
 import { reduceRunEvents } from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
-import { executeWorkerJob, requestWorker } from "../../../src/supervisor/worker.js";
+import { JsonlRunStore } from "../../../src/infrastructure/fs/jsonl-run-store.js";
+import { LocalSupervisorStore } from "../../../src/infrastructure/fs/local-supervisor-store.js";
+import { createProductionNodeEffectReconciler } from "../../../src/infrastructure/runtime/production-effect-reconciler.js";
 import { createActiveRunClaim, createJobRecord } from "../../../src/supervisor/records.js";
+import { executeWorkerJob, requestWorker } from "../../../src/supervisor/worker.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -179,7 +179,9 @@ describe("detached run worker", () => {
         if (node.type !== "agent" || context.capabilitySnapshot === undefined) {
           throw new Error(`unexpected detached capability node "${node.type}"`);
         }
-        const frozenFile = context.capabilitySnapshot.packages[0]?.files[0];
+        const selectedPackage = context.capabilitySnapshot.packages[0];
+        const frozenFile =
+          selectedPackage?.kind === "agent-skill" ? selectedPackage.files[0] : undefined;
         if (frozenFile === undefined) {
           throw new Error("detached capability snapshot has no file");
         }
