@@ -7,19 +7,31 @@ import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import type { CommandSandbox } from "../../../src/application/command-sandbox.js";
 import { NodeExecutorRouter } from "../../../src/application/node-executor-router.js";
-import type { NodeExecutor } from "../../../src/application/ports.js";
+import {
+  type AgentCommandApprovalDecisionChannel,
+  AgentCommandApprovalDecisionSourceError,
+  type NodeExecutor,
+} from "../../../src/application/ports.js";
+import { AgentCommandApprovalDeniedError } from "../../../src/application/run-workflow.js";
 import { type CliIo, main } from "../../../src/cli/main.js";
 import {
   calculateAgentCommandDigest,
   normalizeAgentCommandRequest,
 } from "../../../src/domain/agent-command.js";
 import {
+  calculateAgentCommandApprovalRequestDigest,
+  createAgentCommandApprovalRequest,
+} from "../../../src/domain/approval/command-approval.js";
+import {
   type RunEvent,
   type RunStartedEvent,
+  type RunState,
+  type RunStatus,
   reduceRunEvents,
 } from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { JsonlRunStore } from "../../../src/infrastructure/fs/jsonl-run-store.js";
+import { LocalAgentCommandApprovalChannel } from "../../../src/infrastructure/fs/local-agent-command-approval-channel.js";
 import { PiAgentExecutor } from "../../../src/infrastructure/pi/pi-agent-executor.js";
 import { CommandNodeExecutor } from "../../../src/infrastructure/process/command-node-executor.js";
 
@@ -306,6 +318,291 @@ nodes:
       ).toBe(0);
       expect(JSON.parse(inspectCapture.stdout.join("\n"))).toEqual(expected);
     }
+  });
+
+  it("keeps an attached Pi tool call live until approve submits its exact sidecar", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "agent-command-approval.workflow.yaml");
+    const runsDirectory = join(directory, "runs");
+    await writeFile(workflowPath, agentCommandApprovalWorkflow(), "utf8");
+    const runCapture = createCapture();
+    const running = main(
+      [
+        "run",
+        workflowPath,
+        "--run-id",
+        "cli-live-agent-approval",
+        "--runs-dir",
+        runsDirectory,
+        "--cwd",
+        directory,
+      ],
+      runCapture.io,
+      { cwd: directory, executor: durableAgentCommandExecutor() },
+    );
+    const waiting = await waitForRunStatus(
+      runsDirectory,
+      "cli-live-agent-approval",
+      "waiting_for_approval",
+    );
+    expect(waiting.nodes.execute?.agentCommandApprovals[0]).toMatchObject({
+      status: "pending",
+      requestId: "agent-approval-3",
+    });
+    const approveCapture = createCapture();
+
+    expect(
+      await main(
+        [
+          "approve",
+          "cli-live-agent-approval",
+          "agent-approval-3",
+          "--actor",
+          "operator:test",
+          "--runs-dir",
+          runsDirectory,
+        ],
+        approveCapture.io,
+        { cwd: directory },
+      ),
+    ).toBe(0);
+    expect(JSON.parse(approveCapture.stdout.join("\n"))).toMatchObject({
+      kind: "agent_command_approval_decision_submitted",
+      requestId: "agent-approval-3",
+      decision: "approve",
+    });
+    await expect(running).resolves.toBe(0);
+    expect(JSON.parse(runCapture.stdout.join("\n"))).toMatchObject({
+      status: "succeeded",
+      nodes: {
+        execute: {
+          agentCommandApprovals: [
+            {
+              status: "consumed",
+              actor: "operator:test",
+              consumedByCommandId: "command-5",
+            },
+          ],
+        },
+      },
+    });
+  });
+
+  it("returns an external live denial to the attached agent without command preparation or spawn", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "agent-command-denial.workflow.yaml");
+    const runsDirectory = join(directory, "runs");
+    await writeFile(workflowPath, agentCommandApprovalWorkflow(), "utf8");
+    const runCapture = createCapture();
+    const running = main(
+      [
+        "run",
+        workflowPath,
+        "--run-id",
+        "cli-live-agent-denial",
+        "--runs-dir",
+        runsDirectory,
+        "--cwd",
+        directory,
+      ],
+      runCapture.io,
+      { cwd: directory, executor: durableAgentCommandDenialAwareExecutor() },
+    );
+    const waiting = await waitForRunStatus(
+      runsDirectory,
+      "cli-live-agent-denial",
+      "waiting_for_approval",
+    );
+    expect(waiting.nodes.execute?.agentCommandApprovals[0]).toMatchObject({
+      status: "pending",
+      requestId: "agent-approval-3",
+    });
+    const denyCapture = createCapture();
+
+    expect(
+      await main(
+        [
+          "deny",
+          "cli-live-agent-denial",
+          "agent-approval-3",
+          "--actor",
+          "operator:test",
+          "--reason",
+          "not authorized",
+          "--runs-dir",
+          runsDirectory,
+        ],
+        denyCapture.io,
+        { cwd: directory },
+      ),
+    ).toBe(0);
+    expect(JSON.parse(denyCapture.stdout.join("\n"))).toMatchObject({
+      kind: "agent_command_approval_decision_submitted",
+      requestId: "agent-approval-3",
+      decision: "deny",
+      actor: "operator:test",
+    });
+    await expect(running).resolves.toBe(0);
+    const state = JSON.parse(runCapture.stdout.join("\n"));
+    expect(state).toMatchObject({
+      status: "succeeded",
+      nodes: {
+        execute: {
+          status: "succeeded",
+          evidence: {
+            text: JSON.stringify("agent command approval denied by operator:test: not authorized"),
+          },
+          agentCommandApprovals: [
+            {
+              status: "denied",
+              actor: "operator:test",
+              reason: "not authorized",
+            },
+          ],
+        },
+      },
+    });
+    const events = await new JsonlRunStore(runsDirectory).read("cli-live-agent-denial");
+    expect(events.map((event) => event.type)).not.toEqual(
+      expect.arrayContaining(["node_agent_command_prepared", "node_agent_command_settled"]),
+    );
+  });
+
+  it("audits a mismatched real-channel receipt as invalid without preparing a command", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "agent-command-invalid.workflow.yaml");
+    const runsDirectory = join(directory, "runs");
+    await writeFile(workflowPath, agentCommandApprovalWorkflow(), "utf8");
+    const channel = new LocalAgentCommandApprovalChannel(runsDirectory, 2);
+    const runCapture = createCapture();
+    const running = main(
+      [
+        "run",
+        workflowPath,
+        "--run-id",
+        "cli-agent-invalid-receipt",
+        "--runs-dir",
+        runsDirectory,
+        "--cwd",
+        directory,
+      ],
+      runCapture.io,
+      {
+        cwd: directory,
+        executor: durableAgentCommandDenialAwareExecutor(),
+        createAgentCommandApprovalChannel: () => channel,
+      },
+    );
+    const waiting = await waitForRunStatus(
+      runsDirectory,
+      "cli-agent-invalid-receipt",
+      "waiting_for_approval",
+    );
+    const pending = waiting.nodes.execute?.agentCommandApprovals[0];
+    if (pending?.status !== "pending") {
+      throw new Error("agent command approval fixture did not become pending");
+    }
+
+    await channel.submitDecision({
+      version: 1,
+      runId: "cli-agent-invalid-receipt",
+      requestId: pending.requestId,
+      requestDigest: "f".repeat(64),
+      operationDigest: pending.operationDigest,
+      decision: "approve",
+      actor: "operator:forged",
+      submittedAt: "2026-08-08T12:00:00.000Z",
+    });
+
+    await expect(running).resolves.toBe(1);
+    const state = JSON.parse(runCapture.stdout.join("\n"));
+    expect(state.nodes.execute).toMatchObject({
+      status: "failed",
+      commands: [],
+      agentCommandApprovals: [
+        {
+          status: "cancelled",
+          cancellationReason: "decision_invalid",
+        },
+      ],
+    });
+    const events = await new JsonlRunStore(runsDirectory).read("cli-agent-invalid-receipt");
+    expect(events.map((event) => event.type)).not.toEqual(
+      expect.arrayContaining(["node_agent_command_prepared", "node_agent_command_settled"]),
+    );
+  });
+
+  it("keeps a real-channel request open across a transient source outage", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "agent-command-transient.workflow.yaml");
+    const runsDirectory = join(directory, "runs");
+    await writeFile(workflowPath, agentCommandApprovalWorkflow(), "utf8");
+    const realChannel = new LocalAgentCommandApprovalChannel(runsDirectory, 2);
+    let waitCalls = 0;
+    const transientChannel: AgentCommandApprovalDecisionChannel = {
+      submitDecision: (decision) => realChannel.submitDecision(decision),
+      async waitForDecision(wait, signal) {
+        waitCalls += 1;
+        if (waitCalls === 1) {
+          throw new AgentCommandApprovalDecisionSourceError(
+            "temporarily_unavailable",
+            "simulated transient filesystem read failure",
+            1,
+          );
+        }
+        return await realChannel.waitForDecision(wait, signal);
+      },
+    };
+    const runCapture = createCapture();
+    const running = main(
+      [
+        "run",
+        workflowPath,
+        "--run-id",
+        "cli-agent-transient-channel",
+        "--runs-dir",
+        runsDirectory,
+        "--cwd",
+        directory,
+      ],
+      runCapture.io,
+      {
+        cwd: directory,
+        executor: durableAgentCommandExecutor(),
+        createAgentCommandApprovalChannel: () => transientChannel,
+      },
+    );
+    await waitForRunStatus(runsDirectory, "cli-agent-transient-channel", "waiting_for_approval");
+    const approveCapture = createCapture();
+
+    expect(
+      await main(
+        [
+          "approve",
+          "cli-agent-transient-channel",
+          "agent-approval-3",
+          "--actor",
+          "operator:test",
+          "--runs-dir",
+          runsDirectory,
+        ],
+        approveCapture.io,
+        { cwd: directory },
+      ),
+    ).toBe(0);
+    await expect(running).resolves.toBe(0);
+    expect(waitCalls).toBeGreaterThanOrEqual(2);
+    const state = JSON.parse(runCapture.stdout.join("\n"));
+    expect(state).toMatchObject({
+      status: "succeeded",
+      nodes: {
+        execute: {
+          agentCommandApprovals: [{ status: "consumed", actor: "operator:test" }],
+        },
+      },
+    });
+    const events = await new JsonlRunStore(runsDirectory).read("cli-agent-transient-channel");
+    expect(events.map((event) => event.type)).not.toContain("agent_command_approval_cancelled");
   });
 
   it("promotes and inspects a bounded optimization through the attached production composition", async () => {
@@ -760,6 +1057,111 @@ nodes:
       "node_succeeded",
       "run_succeeded",
     ]);
+  });
+
+  it("routes a live agent-tool approval through the immutable decision inbox", async () => {
+    const directory = await createTemporaryDirectory();
+    const runsDirectory = join(directory, "runs");
+    const owner = new JsonlRunStore(runsDirectory);
+    const request = createAgentCommandApprovalRequest({
+      runId: "cli-agent-approval",
+      workflowId: "agent-command-approval",
+      nodeId: "implement",
+      attempt: 1,
+      cwd: directory,
+      command: normalizeAgentCommandRequest({ executable: "npm", args: ["test"] }),
+      grantTtlMs: 300_000,
+    });
+    const requestDigest = calculateAgentCommandApprovalRequestDigest(request);
+    await owner.append({
+      version: 1,
+      sequence: 1,
+      at: "2026-08-08T10:00:01.000Z",
+      runId: "cli-agent-approval",
+      workflowId: "agent-command-approval",
+      type: "run_started",
+      nodeIds: ["implement"],
+      workflowApiVersion: "flow.synapti.ai/v1alpha1",
+      workflowDigest: "a".repeat(64),
+      executionCwd: directory,
+      agentCommandApprovalRequirements: [{ nodeId: "implement", grantTtlMs: 300_000 }],
+    });
+    await owner.append({
+      version: 1,
+      sequence: 2,
+      at: "2026-08-08T10:00:02.000Z",
+      runId: "cli-agent-approval",
+      workflowId: "agent-command-approval",
+      type: "node_started",
+      nodeId: "implement",
+      attempt: 1,
+      commandProtocol: "flow.agent-commands/v1",
+    });
+    await owner.append({
+      version: 1,
+      sequence: 3,
+      at: "2026-08-08T10:00:03.000Z",
+      runId: "cli-agent-approval",
+      workflowId: "agent-command-approval",
+      type: "agent_command_approval_requested",
+      nodeId: "implement",
+      attempt: 1,
+      requestId: "agent-approval-3",
+      request,
+      requestDigest,
+    });
+    const capture = createCapture();
+
+    const exitCode = await main(
+      [
+        "approve",
+        "cli-agent-approval",
+        "agent-approval-3",
+        "--actor",
+        "operator:test",
+        "--runs-dir",
+        runsDirectory,
+      ],
+      capture.io,
+      {
+        cwd: directory,
+        get executor(): NodeExecutor {
+          throw new Error("approval must not initialize the execution plane");
+        },
+      },
+    );
+
+    expect(exitCode, capture.stderr.join("\n")).toBe(0);
+    expect(JSON.parse(capture.stdout.join("\n"))).toEqual({
+      kind: "agent_command_approval_decision_submitted",
+      runId: "cli-agent-approval",
+      requestId: "agent-approval-3",
+      decision: "approve",
+      actor: "operator:test",
+    });
+    const receipt = JSON.parse(
+      await readFile(
+        join(
+          runsDirectory,
+          "cli-agent-approval",
+          "agent-command-approvals",
+          "agent-approval-3.decision.json",
+        ),
+        "utf8",
+      ),
+    );
+    expect(receipt).toMatchObject({
+      requestDigest,
+      operationDigest: request.operationDigest,
+      decision: "approve",
+      actor: "operator:test",
+    });
+    expect((await owner.read("cli-agent-approval")).map((event) => event.type)).toEqual([
+      "run_started",
+      "node_started",
+      "agent_command_approval_requested",
+    ]);
+    await owner.release("cli-agent-approval");
   });
 
   it("denies a durable approval without executing the command", async () => {
@@ -1808,6 +2210,35 @@ ${child
 `;
 }
 
+function agentCommandApprovalWorkflow(): string {
+  return `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: cli-live-agent-approval }
+budget:
+  maxNodeStarts: 4
+  maxModelTokens: 100
+  maxCostUsd: 0.01
+  maxExecutionMs: 10000
+  maxArtifactBytes: 100000
+nodes:
+  - id: execute
+    type: agent
+    agent:
+      prompt: Run the bounded command.
+      model: { provider: test, id: deterministic }
+      tools: [exec]
+      toolApproval:
+        exec: { mode: required, grantTtlMs: 300000 }
+  - id: publish
+    type: result
+    dependsOn: [execute]
+    result:
+      source: { nodeId: execute, field: agent.text }
+      schema: { type: string, maxLength: 1024 }
+`;
+}
+
 function durableAgentCommandExecutor(): NodeExecutor {
   const commandExecutor = new CommandNodeExecutor({ sandbox: directAgentCommandSandbox });
   const agentExecutor = new PiAgentExecutor({
@@ -1831,6 +2262,44 @@ function durableAgentCommandExecutor(): NodeExecutor {
         text: JSON.stringify(outcome.evidence?.stdout ?? "command failed"),
         stopReason: "stop" as const,
       };
+    },
+  });
+  return new NodeExecutorRouter(commandExecutor, agentExecutor);
+}
+
+function durableAgentCommandDenialAwareExecutor(): NodeExecutor {
+  const commandExecutor = new CommandNodeExecutor({
+    sandbox: {
+      async prepare() {
+        throw new Error("denied command must not reach sandbox preparation");
+      },
+    },
+  });
+  const agentExecutor = new PiAgentExecutor({
+    async run(input) {
+      if (input.commandRecorder === undefined) {
+        throw new Error("agent command recorder was not injected");
+      }
+      const request = normalizeAgentCommandRequest({
+        executable: process.execPath,
+        args: ["-e", 'process.stdout.write("denied-command")'],
+        timeoutMs: 5_000,
+      });
+      const decision = input.policyBroker.authorize({
+        action: "process.execute",
+        target: request.executable,
+        boundary: "inside",
+        operationDigest: calculateAgentCommandDigest(request),
+      });
+      try {
+        await input.commandRecorder.execute(request, decision, input.signal);
+        throw new Error("denied command unexpectedly executed");
+      } catch (error) {
+        if (!(error instanceof AgentCommandApprovalDeniedError)) {
+          throw error;
+        }
+        return { text: JSON.stringify(error.message), stopReason: "stop" as const };
+      }
     },
   });
   return new NodeExecutorRouter(commandExecutor, agentExecutor);
@@ -2049,6 +2518,30 @@ async function createTemporaryDirectory(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "flow-cli-"));
   temporaryDirectories.push(directory);
   return directory;
+}
+
+async function waitForRunStatus(
+  runsDirectory: string,
+  runId: string,
+  status: RunStatus,
+  timeoutMs = 5_000,
+): Promise<RunState> {
+  const deadline = Date.now() + timeoutMs;
+  const store = new JsonlRunStore(runsDirectory);
+  while (Date.now() < deadline) {
+    try {
+      const state = reduceRunEvents(await store.read(runId));
+      if (state.status === status) {
+        return state;
+      }
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "not_found")) {
+        throw error;
+      }
+    }
+    await delay(10);
+  }
+  throw new Error(`Timed out waiting for run "${runId}" to reach "${status}"`);
 }
 
 async function waitForFile(path: string, timeoutMs = 2_000): Promise<void> {

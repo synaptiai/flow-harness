@@ -2,9 +2,13 @@ import { createHash, randomUUID } from "node:crypto";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { AGENT_COMMAND_PROTOCOL, type AgentCommandRequest } from "../domain/agent-command.js";
 import {
+  agentCommandApprovalRequestId,
+  calculateAgentCommandApprovalRequestDigest,
   calculateCommandApprovalOperationDigest,
   commandApprovalRequestId,
+  createAgentCommandApprovalRequest,
   createCommandApprovalOperation,
+  isValidApprovalActor,
 } from "../domain/approval/command-approval.js";
 import {
   calculateWorkflowApprovalRequestDigest,
@@ -88,10 +92,14 @@ import type {
 } from "../domain/workflow/types.js";
 import { MAX_OPTIMIZATION_DELTA_EVIDENCE_BYTES } from "../domain/workflow/types.js";
 import type {
+  AgentCommandApprovalDecision,
+  AgentCommandApprovalDecisionSource,
+  AgentCommandApprovalWait,
   CandidatePromotionRequest,
   CandidatePromotionSettlement,
   CandidateWorkspaceManager,
   IsolatedWorkspace,
+  NodeAgentCommandApprovalGate,
   NodeAgentCommandJournal,
   NodeEffectJournal,
   NodeEffectReconciler,
@@ -102,6 +110,7 @@ import type {
   VerifierSourceInput,
   WorkspaceIsolator,
 } from "./ports.js";
+import { AgentCommandApprovalDecisionSourceError } from "./ports.js";
 
 export interface RunWorkflowOptions {
   readonly cwd: string;
@@ -114,6 +123,7 @@ export interface RunWorkflowOptions {
   readonly runId?: string;
   readonly now?: () => Date;
   readonly signal?: AbortSignal;
+  readonly agentCommandApprovalDecisions?: AgentCommandApprovalDecisionSource;
 }
 
 export interface ResumeWorkflowOptions extends Omit<RunWorkflowOptions, "runId" | "store"> {
@@ -135,6 +145,7 @@ export async function runWorkflow(
   const executionCwd = resolve(options.cwd);
   return await releaseAfter(options.store, runId, async () => {
     const approvalRequirements = commandApprovalRequirements(workflow);
+    const agentCommandApprovalRequirements = workflowAgentCommandApprovalRequirements(workflow);
     const capabilityRequirements = agentCapabilityRequirements(workflow);
     const verifierPackageRequirements = workflowVerifierPackageRequirements(workflow);
     const recoveryRequirements = agentRecoveryRequirements(workflow);
@@ -153,6 +164,9 @@ export async function runWorkflow(
       ...(workflow.budget === undefined ? {} : { budget: workflow.budget }),
       ...(workflow.concurrency === undefined ? {} : { concurrency: workflow.concurrency }),
       ...(approvalRequirements.length === 0 ? {} : { approvalRequirements }),
+      ...(agentCommandApprovalRequirements.length === 0
+        ? {}
+        : { agentCommandApprovalRequirements }),
       ...(capabilityRequirements.length === 0 ? {} : { capabilityRequirements }),
       ...(verifierPackageRequirements.length === 0 ? {} : { verifierPackageRequirements }),
       ...(recoveryRequirements.length === 0 ? {} : { recoveryRequirements }),
@@ -259,6 +273,7 @@ async function continueWorkflow(
   let publicationTail = Promise.resolve();
   let publicationPoisoned = false;
   let publicationFailure: unknown;
+  let agentCommandApprovalTail = Promise.resolve();
 
   async function record(event: RunEvent): Promise<void> {
     await publish(async () => {
@@ -331,6 +346,7 @@ async function continueWorkflow(
       readonly attempt: number;
       readonly effectJournal?: NodeEffectJournal;
       readonly agentCommandJournal?: NodeAgentCommandJournal;
+      readonly agentCommandApprovalGate?: NodeAgentCommandApprovalGate;
       readonly verifierSources?: readonly VerifierSourceInput[];
       readonly verifierPackage?: VerifierPackageUseEvidence;
       readonly preflightOutcome?: NodeExecutionOutcome;
@@ -499,12 +515,16 @@ async function continueWorkflow(
       const agentCommandJournal = supportsAgentCommands(node)
         ? createAgentCommandJournal(node.id, attempt)
         : undefined;
+      const agentCommandApprovalGate = requiresAgentCommandApproval(node)
+        ? createAgentCommandApprovalGate(node.id, attempt, node.agent.toolApproval.exec.grantTtlMs)
+        : undefined;
       admitted.push({
         node,
         executionNode,
         attempt,
         ...(effectJournal === undefined ? {} : { effectJournal }),
         ...(agentCommandJournal === undefined ? {} : { agentCommandJournal }),
+        ...(agentCommandApprovalGate === undefined ? {} : { agentCommandApprovalGate }),
         ...(verifierSources === undefined ? {} : { verifierSources }),
         ...(verifierResolution?.package === undefined
           ? {}
@@ -529,6 +549,7 @@ async function continueWorkflow(
           attempt,
           effectJournal,
           agentCommandJournal,
+          agentCommandApprovalGate,
           verifierSources,
           verifierPackage,
           preflightOutcome,
@@ -554,6 +575,7 @@ async function continueWorkflow(
                       : { capabilitySnapshot: options.capabilitySnapshot }),
                     ...(effectJournal === undefined ? {} : { effectJournal }),
                     ...(agentCommandJournal === undefined ? {} : { agentCommandJournal }),
+                    ...(agentCommandApprovalGate === undefined ? {} : { agentCommandApprovalGate }),
                     ...(verifierSources === undefined ? {} : { verifierSources }),
                     ...(verifierPackage === undefined ? {} : { verifierPackage }),
                     ...(options.signal === undefined ? {} : { signal: options.signal }),
@@ -891,20 +913,244 @@ async function continueWorkflow(
     });
   }
 
+  function createAgentCommandApprovalGate(
+    nodeId: string,
+    attempt: number,
+    grantTtlMs: number,
+  ): NodeAgentCommandApprovalGate {
+    return Object.freeze({
+      authorize: async (command: AgentCommandRequest, signal?: AbortSignal) => {
+        const approvalSignal = combineAbortSignals(options.signal, signal);
+        return await serializeAgentCommandApproval(approvalSignal, async () => {
+          const decisions = options.agentCommandApprovalDecisions;
+          if (decisions === undefined) {
+            throw new AgentCommandApprovalUnavailableError();
+          }
+          const request = createAgentCommandApprovalRequest({
+            runId,
+            workflowId: workflow.id,
+            nodeId,
+            attempt,
+            cwd: options.cwd,
+            command,
+            grantTtlMs,
+          });
+          const requestDigest = calculateAgentCommandApprovalRequestDigest(request);
+          const wait = await publish(async (): Promise<AgentCommandApprovalWait> => {
+            const sequence = nextSequence();
+            const requestId = agentCommandApprovalRequestId(sequence);
+            await append({
+              ...base(sequence),
+              type: "agent_command_approval_requested",
+              nodeId,
+              attempt,
+              requestId,
+              request,
+              requestDigest,
+            });
+            return Object.freeze({ requestId, request, requestDigest });
+          });
+
+          let decision: AgentCommandApprovalDecision;
+          try {
+            decision = await waitForAgentCommandApprovalDecision(decisions, wait, approvalSignal);
+          } catch (error) {
+            const cancellationReason = isAborted(approvalSignal)
+              ? "agent_aborted"
+              : error instanceof AgentCommandApprovalDecisionSourceError &&
+                  error.code === "decision_invalid"
+                ? "decision_invalid"
+                : "decision_channel_failed";
+            await cancelAgentCommandApproval(wait, cancellationReason);
+            if (cancellationReason === "decision_invalid") {
+              throw new AgentCommandApprovalDecisionInvalidError();
+            }
+            throw error;
+          }
+          if (isAborted(approvalSignal)) {
+            await cancelAgentCommandApproval(wait, "agent_aborted");
+            throw approvalSignal?.reason ?? new Error("agent command approval wait was cancelled");
+          }
+
+          if (!isExactAgentCommandApprovalDecision(decision, wait)) {
+            await cancelAgentCommandApproval(wait, "decision_invalid");
+            throw new AgentCommandApprovalDecisionInvalidError();
+          }
+          const actor = decision.actor;
+          const reason = decision.reason;
+          if (decision.decision === "deny") {
+            const committed = await publish(async () => {
+              if (isAborted(approvalSignal)) {
+                await appendAgentCommandApprovalCancellation(wait, "agent_aborted");
+                return false;
+              }
+              await append({
+                ...base(nextSequence()),
+                type: "agent_command_approval_denied",
+                nodeId,
+                attempt,
+                requestId: wait.requestId,
+                requestDigest,
+                operationDigest: request.operationDigest,
+                actor,
+                ...(reason === undefined ? {} : { reason }),
+              });
+              return true;
+            });
+            if (!committed) {
+              throw (
+                approvalSignal?.reason ?? new Error("agent command approval wait was cancelled")
+              );
+            }
+            throw new AgentCommandApprovalDeniedError(actor, reason);
+          }
+
+          const committed = await publish(async () => {
+            if (isAborted(approvalSignal)) {
+              await appendAgentCommandApprovalCancellation(wait, "agent_aborted");
+              return false;
+            }
+            const grantedAt = now();
+            await append({
+              ...base(nextSequence(), grantedAt),
+              type: "agent_command_approval_granted",
+              nodeId,
+              attempt,
+              requestId: wait.requestId,
+              requestDigest,
+              operationDigest: request.operationDigest,
+              actor,
+              expiresAt: new Date(grantedAt.getTime() + grantTtlMs).toISOString(),
+            });
+            return true;
+          });
+          if (!committed) {
+            throw approvalSignal?.reason ?? new Error("agent command approval wait was cancelled");
+          }
+          return Object.freeze({
+            requestId: wait.requestId,
+            requestDigest,
+            operationDigest: request.operationDigest,
+          });
+        });
+      },
+    });
+  }
+
+  async function waitForAgentCommandApprovalDecision(
+    source: AgentCommandApprovalDecisionSource,
+    wait: AgentCommandApprovalWait,
+    signal: AbortSignal | undefined,
+  ): Promise<AgentCommandApprovalDecision> {
+    while (true) {
+      try {
+        return await source.waitForDecision(wait, signal);
+      } catch (error) {
+        if (isAborted(signal)) {
+          throw signal?.reason ?? new Error("agent command approval wait was cancelled");
+        }
+        if (
+          !(error instanceof AgentCommandApprovalDecisionSourceError) ||
+          error.code !== "temporarily_unavailable"
+        ) {
+          throw error;
+        }
+        await abortableApprovalDelay(error.retryAfterMs, signal);
+      }
+    }
+  }
+
+  function serializeAgentCommandApproval<T>(
+    signal: AbortSignal | undefined,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const queued = agentCommandApprovalTail.then(async () => {
+      if (isAborted(signal)) {
+        throw signal?.reason ?? new Error("agent command approval wait was cancelled");
+      }
+      return await operation();
+    });
+    agentCommandApprovalTail = queued.then(
+      () => undefined,
+      () => undefined,
+    );
+    return queued;
+  }
+
+  async function cancelAgentCommandApproval(
+    wait: AgentCommandApprovalWait,
+    reason: "agent_aborted" | "decision_channel_failed" | "decision_invalid",
+  ): Promise<void> {
+    await publish(async () => {
+      await appendAgentCommandApprovalCancellation(wait, reason);
+    });
+  }
+
+  async function appendAgentCommandApprovalCancellation(
+    wait: AgentCommandApprovalWait,
+    reason: "agent_aborted" | "decision_channel_failed" | "decision_invalid",
+  ): Promise<void> {
+    await append({
+      ...base(nextSequence()),
+      type: "agent_command_approval_cancelled",
+      nodeId: wait.request.nodeId,
+      attempt: wait.request.attempt,
+      requestId: wait.requestId,
+      requestDigest: wait.requestDigest,
+      operationDigest: wait.request.operationDigest,
+      reason,
+    });
+  }
+
   function createAgentCommandJournal(nodeId: string, attempt: number): NodeAgentCommandJournal {
     return Object.freeze({
       prepare: async (input: {
         readonly request: AgentCommandRequest;
         readonly operationDigest: string;
         readonly decision: PolicyDecision;
-      }) =>
-        await publish(async () => {
+        readonly approval?: {
+          readonly requestId: string;
+          readonly requestDigest: string;
+          readonly operationDigest: string;
+        };
+      }) => {
+        const result = await publish(async () => {
           const durableInput = structuredClone(input);
+          const preparationAt = durableInput.approval === undefined ? undefined : now();
+          const approval =
+            durableInput.approval === undefined
+              ? undefined
+              : state.nodes[nodeId]?.agentCommandApprovals.find(
+                  (candidate) =>
+                    candidate.requestId === durableInput.approval?.requestId &&
+                    candidate.status === "granted" &&
+                    candidate.requestDigest === durableInput.approval.requestDigest &&
+                    candidate.operationDigest === durableInput.approval.operationDigest &&
+                    candidate.operationDigest === durableInput.operationDigest &&
+                    candidate.request.attempt === attempt,
+                );
+          if (
+            approval?.expiresAt !== null &&
+            approval?.expiresAt !== undefined &&
+            preparationAt !== undefined &&
+            preparationAt.getTime() >= Date.parse(approval.expiresAt)
+          ) {
+            await append({
+              ...base(nextSequence(), preparationAt),
+              type: "agent_command_approval_expired",
+              nodeId,
+              attempt,
+              requestId: approval.requestId,
+              requestDigest: approval.requestDigest,
+              operationDigest: approval.operationDigest,
+            });
+            return Object.freeze({ kind: "expired" as const, requestId: approval.requestId });
+          }
           const sequence = nextSequence();
           const commandId = nodeAgentCommandId(sequence);
           const commandSequence = (state.nodes[nodeId]?.commands.length ?? 0) + 1;
           await append({
-            ...base(sequence),
+            ...base(sequence, preparationAt),
             type: "node_agent_command_prepared",
             nodeId,
             attempt,
@@ -914,30 +1160,38 @@ async function continueWorkflow(
           });
           let settled = false;
           return Object.freeze({
-            commandId,
-            commandSequence,
-            settle: async (outcome: AgentCommandSettlementOutcome) =>
-              await publish(async () => {
-                if (settled) {
-                  throw new Error(`command "${commandId}" is already settled`);
-                }
-                await append({
-                  ...base(nextSequence()),
-                  type: "node_agent_command_settled",
-                  nodeId,
-                  attempt,
-                  commandId,
-                  outcome: structuredClone(outcome),
-                });
-                settled = true;
-                return Object.freeze({
-                  artifactBudgetExhausted:
-                    state.budget?.exhausted.some((item) => item.dimension === "artifactBytes") ===
-                    true,
-                });
-              }),
+            kind: "prepared" as const,
+            value: Object.freeze({
+              commandId,
+              commandSequence,
+              settle: async (outcome: AgentCommandSettlementOutcome) =>
+                await publish(async () => {
+                  if (settled) {
+                    throw new Error(`command "${commandId}" is already settled`);
+                  }
+                  await append({
+                    ...base(nextSequence()),
+                    type: "node_agent_command_settled",
+                    nodeId,
+                    attempt,
+                    commandId,
+                    outcome: structuredClone(outcome),
+                  });
+                  settled = true;
+                  return Object.freeze({
+                    artifactBudgetExhausted:
+                      state.budget?.exhausted.some((item) => item.dimension === "artifactBytes") ===
+                      true,
+                  });
+                }),
+            }),
           });
-        }),
+        });
+        if (result.kind === "expired") {
+          throw new AgentCommandApprovalExpiredError(result.requestId);
+        }
+        return result.value;
+      },
     });
   }
 
@@ -1019,6 +1273,14 @@ function supportsDurableEffects(node: CompiledNode): node is CompiledAgentNode {
 
 function supportsAgentCommands(node: CompiledNode): node is CompiledAgentNode {
   return node.type === "agent" && node.agent.tools.includes("exec");
+}
+
+function requiresAgentCommandApproval(node: CompiledNode): node is CompiledAgentNode & {
+  readonly agent: CompiledAgentNode["agent"] & {
+    readonly toolApproval: NonNullable<CompiledAgentNode["agent"]["toolApproval"]>;
+  };
+} {
+  return node.type === "agent" && node.agent.toolApproval !== undefined;
 }
 
 function createChildRunLink(
@@ -1151,6 +1413,41 @@ export class RunWorkflowAbortedError extends Error {
   override readonly name = "RunWorkflowAbortedError";
 }
 
+export class AgentCommandApprovalUnavailableError extends Error {
+  override readonly name = "AgentCommandApprovalUnavailableError";
+
+  constructor() {
+    super("agent command approval requires a configured durable decision channel");
+  }
+}
+
+export class AgentCommandApprovalDecisionInvalidError extends Error {
+  override readonly name = "AgentCommandApprovalDecisionInvalidError";
+
+  constructor() {
+    super("agent command approval decision does not match the exact pending request");
+  }
+}
+
+export class AgentCommandApprovalDeniedError extends Error {
+  override readonly name = "AgentCommandApprovalDeniedError";
+
+  constructor(
+    readonly actor: string,
+    readonly reason: string | undefined,
+  ) {
+    super(`agent command approval denied by ${actor}${reason === undefined ? "" : `: ${reason}`}`);
+  }
+}
+
+export class AgentCommandApprovalExpiredError extends Error {
+  override readonly name = "AgentCommandApprovalExpiredError";
+
+  constructor(readonly requestId: string) {
+    super(`agent command approval "${requestId}" expired before command preparation`);
+  }
+}
+
 export class RunCancellation extends Error {
   override readonly name = "RunCancellation";
 
@@ -1222,6 +1519,23 @@ function validateRecoveryCompatibility(
     throw new RunRecoveryError(
       "workflow_mismatch",
       `run "${runId}" approval requirements do not match the compiled workflow`,
+    );
+  }
+
+  const expectedAgentCommandApprovalRequirements =
+    workflowAgentCommandApprovalRequirements(workflow);
+  const recoveredAgentCommandApprovalRequirements = Object.entries(
+    state.agentCommandApprovalRequirements,
+  ).map(([nodeId, requirement]) => ({ nodeId, grantTtlMs: requirement.grantTtlMs }));
+  if (
+    !sameApprovalRequirements(
+      recoveredAgentCommandApprovalRequirements,
+      expectedAgentCommandApprovalRequirements,
+    )
+  ) {
+    throw new RunRecoveryError(
+      "workflow_mismatch",
+      `run "${runId}" agent command approval requirements do not match the compiled workflow`,
     );
   }
 
@@ -1739,6 +2053,21 @@ function commandApprovalRequirements(workflow: CompiledWorkflow) {
     workflow.nodes.flatMap((node) =>
       node.type === "command" && node.approval !== undefined
         ? [Object.freeze({ nodeId: node.id, grantTtlMs: node.approval.grantTtlMs })]
+        : [],
+    ),
+  );
+}
+
+function workflowAgentCommandApprovalRequirements(workflow: CompiledWorkflow) {
+  return Object.freeze(
+    workflow.nodes.flatMap((node) =>
+      requiresAgentCommandApproval(node)
+        ? [
+            Object.freeze({
+              nodeId: node.id,
+              grantTtlMs: node.agent.toolApproval.exec.grantTtlMs,
+            }),
+          ]
         : [],
     ),
   );
@@ -3235,6 +3564,9 @@ async function executeChildNode(
       : { capabilitySnapshot: context.capabilitySnapshot }),
     now,
     ...(context.signal === undefined ? {} : { signal: context.signal }),
+    ...(options.agentCommandApprovalDecisions === undefined
+      ? {}
+      : { agentCommandApprovalDecisions: options.agentCommandApprovalDecisions }),
   });
   return await settleChildState(node, childState, options.workspaceIsolator);
 }
@@ -3305,6 +3637,9 @@ async function recoverChildNode(
         : { effectReconciler: options.effectReconciler }),
       now,
       ...(options.signal === undefined ? {} : { signal: options.signal }),
+      ...(options.agentCommandApprovalDecisions === undefined
+        ? {}
+        : { agentCommandApprovalDecisions: options.agentCommandApprovalDecisions }),
     });
   }
   return await settleChildState(node, childState, options.workspaceIsolator);
@@ -3550,12 +3885,74 @@ function abortReason(signal: AbortSignal | undefined): string {
   return "workflow execution was cancelled";
 }
 
+async function abortableApprovalDelay(
+  milliseconds: number,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  if (isAborted(signal)) {
+    throw signal?.reason ?? new Error("agent command approval wait was cancelled");
+  }
+  await new Promise<void>((resolveDelay, reject) => {
+    const timeout = setTimeout(finish, milliseconds);
+    const onAbort = () =>
+      finish(signal?.reason ?? new Error("agent command approval wait was cancelled"));
+    signal?.addEventListener("abort", onAbort, { once: true });
+
+    function finish(error?: unknown): void {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", onAbort);
+      if (error === undefined) {
+        resolveDelay();
+      } else {
+        reject(error);
+      }
+    }
+  });
+}
+
 function boundedFailureMessage(message: string): string {
   return message.length <= 16_384 ? message : `${message.slice(0, 16_350)}… [truncated]`;
 }
 
 function isAborted(signal: AbortSignal | undefined): boolean {
   return signal?.aborted === true;
+}
+
+function combineAbortSignals(
+  first: AbortSignal | undefined,
+  second: AbortSignal | undefined,
+): AbortSignal | undefined {
+  if (first === undefined) {
+    return second;
+  }
+  if (second === undefined || first === second) {
+    return first;
+  }
+  return AbortSignal.any([first, second]);
+}
+
+function isExactAgentCommandApprovalDecision(
+  decision: AgentCommandApprovalDecision,
+  wait: AgentCommandApprovalWait,
+): boolean {
+  const validReason =
+    decision.reason === undefined ||
+    (decision.reason === decision.reason.trim() &&
+      decision.reason.length > 0 &&
+      decision.reason.length <= 4096);
+  return (
+    decision.version === 1 &&
+    decision.runId === wait.request.runId &&
+    decision.requestId === wait.requestId &&
+    decision.requestDigest === wait.requestDigest &&
+    decision.operationDigest === wait.request.operationDigest &&
+    (decision.decision === "approve" || decision.decision === "deny") &&
+    decision.actor === decision.actor.trim() &&
+    isValidApprovalActor(decision.actor) &&
+    validReason &&
+    (decision.decision === "deny" || decision.reason === undefined) &&
+    Number.isFinite(Date.parse(decision.submittedAt))
+  );
 }
 
 function assertNotAborted(signal: AbortSignal | undefined): void {

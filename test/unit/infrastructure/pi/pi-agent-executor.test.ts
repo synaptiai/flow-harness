@@ -1,13 +1,14 @@
 import { createHash } from "node:crypto";
-import type { createAgentSession } from "@earendil-works/pi-coding-agent";
+import { createFauxCore, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+import { createAgentSession } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
-
 import type {
   AgentCommandExecutor,
   NodeAgentCommandJournal,
   NodeEffectJournal,
   NodeExecutionContext,
 } from "../../../../src/application/ports.js";
+import { AgentCommandApprovalDeniedError } from "../../../../src/application/run-workflow.js";
 import {
   calculateAgentCommandDigest,
   normalizeAgentCommandRequest,
@@ -16,6 +17,7 @@ import { createCapabilitySnapshot } from "../../../../src/domain/capability/agen
 import { PolicyBroker } from "../../../../src/domain/policy/broker.js";
 import type { AgentCommandSettlementOutcome } from "../../../../src/domain/run/events.js";
 import type { CompiledAgentNode } from "../../../../src/domain/workflow/types.js";
+import { AgentCommandRecorder } from "../../../../src/infrastructure/pi/agent-command-recorder.js";
 import { AgentEffectRecorder } from "../../../../src/infrastructure/pi/agent-effect-recorder.js";
 import {
   EmbeddedPiAgentRunner,
@@ -842,6 +844,100 @@ describe("PiAgentExecutor", () => {
 });
 
 describe("EmbeddedPiAgentRunner", () => {
+  it("returns a Flow approval denial to the production Pi loop as a model-visible tool error", async () => {
+    const faux = createFauxCore({
+      provider: "flow-test",
+      models: [{ id: "denial-model", reasoning: false }],
+    });
+    const model = faux.getModel();
+    if (model === undefined) {
+      throw new Error("faux model fixture was not created");
+    }
+    let observedToolResult: unknown;
+    faux.setResponses([
+      fauxAssistantMessage(
+        fauxToolCall(
+          "flow_exec",
+          { executable: process.execPath, args: ["--version"], timeoutMs: 5_000 },
+          { id: "tool-call-denied" },
+        ),
+        { stopReason: "toolUse" },
+      ),
+      (piContext) => {
+        observedToolResult = piContext.messages.at(-1);
+        return fauxAssistantMessage("denial observed; no command executed");
+      },
+    ]);
+    let prepareCalls = 0;
+    let executorCalls = 0;
+    const commandRecorder = new AgentCommandRecorder(
+      {
+        async executeAgentCommand() {
+          executorCalls += 1;
+          throw new Error("denied command must not reach the sandbox executor");
+        },
+      },
+      {
+        async prepare() {
+          prepareCalls += 1;
+          throw new Error("denied command must not reach command preparation");
+        },
+      },
+      {
+        ...context,
+        agentCommandApprovalGate: {
+          async authorize() {
+            throw new AgentCommandApprovalDeniedError("operator:test", "not authorized");
+          },
+        },
+      },
+    );
+    const modelRuntime = {
+      getModel: (provider: string, modelId: string) =>
+        provider === model.provider && modelId === model.id ? model : undefined,
+      hasConfiguredAuth: () => true,
+      checkAuth: async () => undefined,
+      isUsingOAuth: () => false,
+      streamSimple: faux.streamSimple,
+    };
+    const runner = new EmbeddedPiAgentRunner(async () => modelRuntime as never, createAgentSession);
+
+    const result = await runner.run({
+      ...agentRequest(),
+      provider: model.provider,
+      model: model.id,
+      tools: ["exec"],
+      policyBroker: new PolicyBroker(
+        {
+          runId: "run-agent",
+          workflowId: "agent-workflow",
+          nodeId: "analyze",
+          attempt: 1,
+        },
+        ["process.execute"],
+      ),
+      commandRecorder,
+    });
+
+    expect(result).toMatchObject({
+      text: "denial observed; no command executed",
+      stopReason: "stop",
+    });
+    expect(observedToolResult).toMatchObject({
+      role: "toolResult",
+      toolCallId: "tool-call-denied",
+      toolName: "flow_exec",
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: "agent command approval denied by operator:test: not authorized",
+        },
+      ],
+    });
+    expect({ prepareCalls, executorCalls }).toEqual({ prepareCalls: 0, executorCalls: 0 });
+  });
+
   it("adds only selected skill metadata to the locked prompt while Pi resources stay empty", async () => {
     const snapshot = createCapabilitySnapshot([
       {

@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -300,6 +300,109 @@ describe("compiled Flow process", () => {
       "node_succeeded",
       "run_succeeded",
     ]);
+  });
+
+  it("delivers live agent-command denial from a separate CLI process to the attached owner", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "agent-command-denial.workflow.yaml");
+    const runsDirectory = join(directory, "runs");
+    await writeFile(workflowPath, agentCommandApprovalWorkflow(), "utf8");
+    const cliUrl = new URL("../../dist/cli/main.js", import.meta.url).href;
+    const routerUrl = new URL("../../dist/application/node-executor-router.js", import.meta.url)
+      .href;
+    const runWorkflowUrl = new URL("../../dist/application/run-workflow.js", import.meta.url).href;
+    const agentCommandUrl = new URL("../../dist/domain/agent-command.js", import.meta.url).href;
+    const piUrl = new URL("../../dist/infrastructure/pi/pi-agent-executor.js", import.meta.url)
+      .href;
+    const commandUrl = new URL(
+      "../../dist/infrastructure/process/command-node-executor.js",
+      import.meta.url,
+    ).href;
+    const ownerScript = `
+      import { main } from ${JSON.stringify(cliUrl)};
+      import { NodeExecutorRouter } from ${JSON.stringify(routerUrl)};
+      import { AgentCommandApprovalDeniedError } from ${JSON.stringify(runWorkflowUrl)};
+      import { calculateAgentCommandDigest, normalizeAgentCommandRequest } from ${JSON.stringify(agentCommandUrl)};
+      import { PiAgentExecutor } from ${JSON.stringify(piUrl)};
+      import { CommandNodeExecutor } from ${JSON.stringify(commandUrl)};
+      const commandExecutor = new CommandNodeExecutor({
+        sandbox: { prepare: async () => { throw new Error("denied command reached sandbox preparation"); } }
+      });
+      const agentExecutor = new PiAgentExecutor({
+        async run(input) {
+          const request = normalizeAgentCommandRequest({
+            executable: process.execPath,
+            args: ["-e", "process.exit(99)"],
+            timeoutMs: 5000
+          });
+          const decision = input.policyBroker.authorize({
+            action: "process.execute",
+            target: request.executable,
+            boundary: "inside",
+            operationDigest: calculateAgentCommandDigest(request)
+          });
+          try {
+            await input.commandRecorder.execute(request, decision, input.signal);
+            throw new Error("denied command unexpectedly executed");
+          } catch (error) {
+            if (!(error instanceof AgentCommandApprovalDeniedError)) throw error;
+            return { text: JSON.stringify(error.message), stopReason: "stop" };
+          }
+        }
+      });
+      const exitCode = await main(
+        ["run", ${JSON.stringify(workflowPath)}, "--run-id", "runtime-agent-denial", "--runs-dir", ${JSON.stringify(runsDirectory)}, "--cwd", ${JSON.stringify(directory)}],
+        undefined,
+        { cwd: ${JSON.stringify(directory)}, executor: new NodeExecutorRouter(commandExecutor, agentExecutor) }
+      );
+      process.exitCode = exitCode;
+    `;
+    const owner = spawnCaptured(process.execPath, ["--input-type=module", "-e", ownerScript]);
+    await waitForRunStatus(runsDirectory, "runtime-agent-denial", "waiting_for_approval");
+
+    const denied = await spawnFlow([
+      "deny",
+      "runtime-agent-denial",
+      "agent-approval-3",
+      "--actor",
+      "runtime:test",
+      "--reason",
+      "not authorized",
+      "--runs-dir",
+      runsDirectory,
+    ]).completed;
+
+    expect(denied.code, denied.stderr).toBe(0);
+    expect(JSON.parse(denied.stdout)).toMatchObject({
+      kind: "agent_command_approval_decision_submitted",
+      requestId: "agent-approval-3",
+      decision: "deny",
+      actor: "runtime:test",
+    });
+    const ownerResult = await owner.completed;
+    expect(ownerResult.code, ownerResult.stderr).toBe(0);
+    expect(JSON.parse(ownerResult.stdout)).toMatchObject({
+      status: "succeeded",
+      nodes: {
+        execute: {
+          status: "succeeded",
+          evidence: {
+            text: JSON.stringify("agent command approval denied by runtime:test: not authorized"),
+          },
+          agentCommandApprovals: [
+            {
+              status: "denied",
+              actor: "runtime:test",
+              reason: "not authorized",
+            },
+          ],
+        },
+      },
+    });
+    const events = await readLedger(join(runsDirectory, "runtime-agent-denial", "events.jsonl"));
+    expect(events.map((event) => event.type)).not.toEqual(
+      expect.arrayContaining(["node_agent_command_prepared", "node_agent_command_settled"]),
+    );
   });
 
   it("runs detached work beyond the client and replays it from another CLI", async () => {
@@ -705,6 +808,29 @@ nodes:
         - -e
         - ${JSON.stringify(script)}
       timeoutMs: 10000
+`;
+}
+
+function agentCommandApprovalWorkflow(): string {
+  return `apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: runtime-agent-command-denial }
+nodes:
+  - id: execute
+    type: agent
+    agent:
+      prompt: Request one command and handle a denial.
+      model: { provider: test, id: deterministic, thinking: off }
+      tools: [exec]
+      toolApproval:
+        exec: { mode: required, grantTtlMs: 300000 }
+      timeoutMs: 10000
+  - id: publish
+    type: result
+    dependsOn: [execute]
+    result:
+      source: { nodeId: execute, field: agent.text }
+      schema: { type: string, maxLength: 1024 }
 `;
 }
 

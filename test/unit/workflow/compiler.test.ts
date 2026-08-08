@@ -6,6 +6,7 @@ import {
   compileWorkflowText,
   WorkflowCompilationError,
 } from "../../../src/domain/workflow/compiler.js";
+import { calculateWorkflowDigest } from "../../../src/domain/workflow/digest.js";
 
 const validWorkflowUrl = new URL(
   "../../fixtures/workflows/valid-command.workflow.yaml",
@@ -556,6 +557,111 @@ nodes:
       agent: { tools: ["read", "ls", "edit", "exec"] },
     });
     expect(node?.type === "agent" && Object.isFrozen(node.agent.tools)).toBe(true);
+  });
+
+  it("compiles and digest-binds immutable per-call agent exec approval", () => {
+    const approvedSource = workflowWithNodes(`
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Run the repository checks after operator approval.
+      model: { provider: anthropic, id: claude-sonnet-4-5 }
+      tools: [read, exec]
+      toolApproval:
+        exec: { mode: required }
+  - id: verify
+    type: command
+    dependsOn: [analyze]
+    command: { executable: npm, args: [test] }
+`);
+    const unapprovedSource = approvedSource.replace(
+      "      toolApproval:\n        exec: { mode: required }\n",
+      "",
+    );
+
+    const approved = compileWorkflowText(approvedSource, "agent-exec-approval.workflow.yaml");
+    const unapproved = compileWorkflowText(unapprovedSource);
+    const node = approved.nodes[0];
+
+    expect(node).toMatchObject({
+      type: "agent",
+      agent: {
+        toolApproval: { exec: { mode: "required", grantTtlMs: 300000 } },
+      },
+    });
+    expect(node?.type === "agent" && Object.isFrozen(node.agent.toolApproval?.exec)).toBe(true);
+    expect(calculateWorkflowDigest(approved)).not.toBe(calculateWorkflowDigest(unapproved));
+  });
+
+  it("keeps agent tool approval absent unless the workflow explicitly opts in", () => {
+    const workflow = compileWorkflowText(
+      workflowWithNodes(`
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Run the repository checks without a human gate.
+      model: { provider: anthropic, id: claude-sonnet-4-5 }
+      tools: [exec]
+  - id: verify
+    type: command
+    dependsOn: [analyze]
+    command: { executable: npm, args: [test] }
+`),
+    );
+    const node = workflow.nodes[0];
+
+    expect(node?.type).toBe("agent");
+    expect(node?.type === "agent" ? node.agent.toolApproval : undefined).toBeUndefined();
+  });
+
+  it.each([
+    {
+      label: "approval without exec authority",
+      tools: "[read]",
+      approval: "exec: { mode: required }",
+      field: "nodes.0.agent.toolApproval",
+    },
+    {
+      label: "unsupported mode",
+      tools: "[exec]",
+      approval: "exec: { mode: allow }",
+      field: "nodes.0.agent.toolApproval.exec.mode",
+    },
+    {
+      label: "non-positive lifetime",
+      tools: "[exec]",
+      approval: "exec: { mode: required, grantTtlMs: 0 }",
+      field: "nodes.0.agent.toolApproval.exec.grantTtlMs",
+    },
+    {
+      label: "oversized lifetime",
+      tools: "[exec]",
+      approval: "exec: { mode: required, grantTtlMs: 86400001 }",
+      field: "nodes.0.agent.toolApproval.exec.grantTtlMs",
+    },
+    {
+      label: "unknown tool",
+      tools: "[exec]",
+      approval: "edit: { mode: required }",
+      field: "nodes.0.agent.toolApproval",
+    },
+  ])("rejects per-call agent tool approval with $label", ({ tools, approval, field }) => {
+    const source = workflowWithNodes(`
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Run a governed command.
+      model: { provider: anthropic, id: claude-sonnet-4-5 }
+      tools: ${tools}
+      toolApproval:
+        ${approval}
+  - id: verify
+    type: command
+    dependsOn: [analyze]
+    command: { executable: npm, args: [test] }
+`);
+
+    expectCompilationFailure(source, "invalid_schema", field);
   });
 
   it("compiles an immutable explicit Agent Skills selection", () => {

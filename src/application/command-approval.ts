@@ -1,17 +1,22 @@
-import type { RecoverableRunEventStore } from "./ports.js";
 import { isValidApprovalActor } from "../domain/approval/command-approval.js";
 import {
+  type AgentCommandApprovalRunState,
   appendRunEvent,
-  reduceRunEvents,
   type CommandApprovalDeniedEvent,
   type CommandApprovalGrantedEvent,
   type CommandApprovalRunState,
   type RunFailedEvent,
   type RunState,
+  reduceRunEvents,
   type WorkflowApprovalApprovedEvent,
   type WorkflowApprovalDeniedEvent,
   type WorkflowApprovalRunState,
 } from "../domain/run/events.js";
+import type {
+  AgentCommandApprovalDecisionSink,
+  RecoverableRunEventStore,
+  RunEventStore,
+} from "./ports.js";
 
 interface ApprovalDecisionOptionsBase {
   readonly runId: string;
@@ -26,6 +31,29 @@ export type ApprovalDecisionOptions = ApprovalDecisionOptionsBase &
     | { readonly decision: "approve"; readonly reason?: never }
     | { readonly decision: "deny"; readonly reason?: string }
   );
+
+interface AgentCommandApprovalDecisionOptionsBase {
+  readonly runId: string;
+  readonly requestId: string;
+  readonly actor: string;
+  readonly store: RunEventStore;
+  readonly sink: AgentCommandApprovalDecisionSink;
+  readonly now?: () => Date;
+}
+
+export type AgentCommandApprovalDecisionOptions = AgentCommandApprovalDecisionOptionsBase &
+  (
+    | { readonly decision: "approve"; readonly reason?: never }
+    | { readonly decision: "deny"; readonly reason?: string }
+  );
+
+export interface AgentCommandApprovalDecisionSubmission {
+  readonly kind: "agent_command_approval_decision_submitted";
+  readonly runId: string;
+  readonly requestId: string;
+  readonly decision: "approve" | "deny";
+  readonly actor: string;
+}
 
 export type ApprovalDecisionErrorCode =
   | "invalid_actor"
@@ -153,6 +181,53 @@ export async function decideApproval(options: ApprovalDecisionOptions): Promise<
   });
 }
 
+export async function trySubmitAgentCommandApprovalDecision(
+  options: AgentCommandApprovalDecisionOptions,
+): Promise<AgentCommandApprovalDecisionSubmission | null> {
+  const actor = normalizeActor(options.actor);
+  const reason = options.decision === "deny" ? normalizeReason(options.reason) : undefined;
+  const state = reduceRunEvents(await options.store.read(options.runId));
+  if (
+    state.status === "succeeded" ||
+    state.status === "failed" ||
+    state.status === "cancelled" ||
+    state.status === "resource_exhausted"
+  ) {
+    throw new ApprovalDecisionError(
+      "terminal_run",
+      `run "${options.runId}" is already terminal with status "${state.status}"`,
+    );
+  }
+  const pending = currentPendingAgentCommandApproval(state);
+  if (pending === undefined) {
+    return null;
+  }
+  if (pending.approval.requestId !== options.requestId) {
+    throw new ApprovalDecisionError(
+      "request_mismatch",
+      `request "${options.requestId}" is not the current pending approval for run "${options.runId}"`,
+    );
+  }
+  await options.sink.submitDecision({
+    version: 1,
+    runId: state.runId,
+    requestId: pending.approval.requestId,
+    requestDigest: pending.approval.requestDigest,
+    operationDigest: pending.approval.operationDigest,
+    decision: options.decision,
+    actor,
+    ...(reason === undefined ? {} : { reason }),
+    submittedAt: (options.now ?? (() => new Date()))().toISOString(),
+  });
+  return Object.freeze({
+    kind: "agent_command_approval_decision_submitted",
+    runId: state.runId,
+    requestId: pending.approval.requestId,
+    decision: options.decision,
+    actor,
+  });
+}
+
 export async function decideCommandApproval(options: ApprovalDecisionOptions): Promise<RunState> {
   return await decideApproval(options);
 }
@@ -175,6 +250,21 @@ function currentPendingApproval(state: RunState):
     }
     if (node.workflowApproval?.status === "pending") {
       return { kind: "workflow", nodeId, approval: node.workflowApproval };
+    }
+  }
+  return undefined;
+}
+
+function currentPendingAgentCommandApproval(state: RunState):
+  | {
+      readonly nodeId: string;
+      readonly approval: AgentCommandApprovalRunState;
+    }
+  | undefined {
+  for (const [nodeId, node] of Object.entries(state.nodes)) {
+    const approval = node.agentCommandApprovals.find((item) => item.status === "pending");
+    if (approval !== undefined) {
+      return { nodeId, approval };
     }
   }
   return undefined;

@@ -1,0 +1,33 @@
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata:
+  id: agent-command-approval
+  description: Require an exact operator grant for every model-requested command.
+budget:
+  maxNodeStarts: 4
+  maxModelTokens: 100000
+  maxCostUsd: 1
+  maxExecutionMs: 600000
+  maxArtifactBytes: 1048576
+nodes:
+  - id: implement
+    type: agent
+    agent:
+      prompt: Inspect the repository, make the requested change, and run only the focused tests needed to verify it.
+      model:
+        provider: anthropic
+        id: claude-sonnet-4-5
+        thinking: medium
+      tools: [read, ls, edit, exec]
+      toolApproval:
+        exec:
+          mode: required
+          grantTtlMs: 300000
+      timeoutMs: 600000
+  - id: verify
+    type: command
+    dependsOn: [implement]
+    command:
+      executable: npm
+      args: [test]
+      timeoutMs: 600000

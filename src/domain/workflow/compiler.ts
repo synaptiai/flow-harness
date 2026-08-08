@@ -1425,6 +1425,13 @@ function freezeNode(
         model: Object.freeze({ ...source.agent.model }),
         tools: Object.freeze([...source.agent.tools]),
         skills: Object.freeze([...source.agent.skills]),
+        ...(source.agent.toolApproval === undefined
+          ? {}
+          : {
+              toolApproval: Object.freeze({
+                exec: Object.freeze({ ...source.agent.toolApproval.exec }),
+              }),
+            }),
         ...(source.agent.recovery === undefined
           ? {}
           : { recovery: Object.freeze({ ...source.agent.recovery }) }),
@@ -1822,6 +1829,13 @@ function freezeLoopBodyNode(
         model: Object.freeze({ ...source.agent.model }),
         tools: Object.freeze([...source.agent.tools]),
         skills: Object.freeze([...source.agent.skills]),
+        ...(source.agent.toolApproval === undefined
+          ? {}
+          : {
+              toolApproval: Object.freeze({
+                exec: Object.freeze({ ...source.agent.toolApproval.exec }),
+              }),
+            }),
         ...(source.agent.recovery === undefined
           ? {}
           : { recovery: Object.freeze({ ...source.agent.recovery }) }),
@@ -2047,7 +2061,9 @@ function freezeChildDefinition(
   if (
     workflow.nodes.some(
       (node) =>
-        node.type === "approval" || (node.type === "command" && node.approval !== undefined),
+        node.type === "approval" ||
+        (node.type === "command" && node.approval !== undefined) ||
+        (node.type === "agent" && node.agent.toolApproval !== undefined),
     )
   ) {
     throw new WorkflowCompilationError(

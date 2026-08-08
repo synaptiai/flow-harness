@@ -8,8 +8,13 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-import { ApprovalDecisionError, decideApproval } from "../application/command-approval.js";
+import {
+  ApprovalDecisionError,
+  decideApproval,
+  trySubmitAgentCommandApprovalDecision,
+} from "../application/command-approval.js";
 import type {
+  AgentCommandApprovalDecisionChannel,
   NodeEffectReconciler,
   NodeExecutor,
   RecoverableRunEventStore,
@@ -42,6 +47,10 @@ import {
 } from "../infrastructure/fs/flow-config-store.js";
 import { AdmissionStoreError } from "../infrastructure/fs/jsonl-admission-store.js";
 import { JsonlRunStore, RunStoreError } from "../infrastructure/fs/jsonl-run-store.js";
+import {
+  LocalAgentCommandApprovalChannel,
+  LocalAgentCommandApprovalChannelError,
+} from "../infrastructure/fs/local-agent-command-approval-channel.js";
 import {
   AgentSkillCatalogError,
   discoverProjectAgentSkills,
@@ -110,6 +119,9 @@ export interface CliDependencies {
   readonly executor: NodeExecutor;
   readonly effectReconciler: NodeEffectReconciler;
   readonly createStore: (rootDirectory: string) => RecoverableRunEventStore;
+  readonly createAgentCommandApprovalChannel: (
+    rootDirectory: string,
+  ) => AgentCommandApprovalDecisionChannel;
   readonly createWorkspaceIsolator: (runsDirectory: string) => WorkspaceIsolator;
   readonly readTextFile: (path: string) => Promise<string>;
   readonly initializeProject: (
@@ -209,6 +221,10 @@ export async function main(
       return 1;
     }
     if (error instanceof RunStoreError) {
+      io.stderr(`${error.code}: ${error.message}`);
+      return 1;
+    }
+    if (error instanceof LocalAgentCommandApprovalChannelError) {
       io.stderr(`${error.code}: ${error.message}`);
       return 1;
     }
@@ -441,11 +457,29 @@ async function approvalDecisionCommand(
   const dependencies = controlDependenciesFrom(overrides);
   const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
   const runsDirectory = resolveRunsDirectory(dependencies.cwd, values["runs-dir"], config);
+  const store = dependencies.createStore(runsDirectory);
+  const agentSubmission = await trySubmitAgentCommandApprovalDecision({
+    runId,
+    requestId,
+    actor,
+    store,
+    sink: dependencies.createAgentCommandApprovalChannel(runsDirectory),
+    ...(decision === "approve"
+      ? { decision }
+      : {
+          decision,
+          ...(values.reason === undefined ? {} : { reason: values.reason }),
+        }),
+  });
+  if (agentSubmission !== null) {
+    io.stdout(JSON.stringify(agentSubmission, null, 2));
+    return 0;
+  }
   const state = await decideApproval({
     runId,
     requestId,
     actor,
-    store: dependencies.createStore(runsDirectory),
+    store,
     ...(decision === "approve"
       ? { decision }
       : {
@@ -510,6 +544,7 @@ async function resumeCommand(
     workspaceIsolator: dependencies.createWorkspaceIsolator(runsDirectory),
     executor: dependencies.executor,
     effectReconciler: dependencies.effectReconciler,
+    agentCommandApprovalDecisions: dependencies.createAgentCommandApprovalChannel(runsDirectory),
     ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
   });
 
@@ -592,6 +627,7 @@ async function runCommand(
     store: dependencies.createStore(runsDirectory),
     workspaceIsolator: dependencies.createWorkspaceIsolator(runsDirectory),
     executor: dependencies.executor,
+    agentCommandApprovalDecisions: dependencies.createAgentCommandApprovalChannel(runsDirectory),
     ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
     ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
     runId,
@@ -864,6 +900,7 @@ async function internalWorkerCommand(
     executor: dependencies.executor,
     effectReconciler: dependencies.effectReconciler,
     createRunStore: dependencies.createStore,
+    createAgentCommandApprovalChannel: dependencies.createAgentCommandApprovalChannel,
     createWorkspaceIsolator: dependencies.createWorkspaceIsolator,
     ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
   });
@@ -1048,10 +1085,13 @@ function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies 
 
 function storageDependenciesFrom(
   overrides: Partial<CliDependencies>,
-): Pick<CliDependencies, "cwd" | "createStore"> {
+): Pick<CliDependencies, "cwd" | "createStore" | "createAgentCommandApprovalChannel"> {
   return {
     cwd: overrides.cwd ?? process.cwd(),
     createStore: overrides.createStore ?? ((rootDirectory) => new JsonlRunStore(rootDirectory)),
+    createAgentCommandApprovalChannel:
+      overrides.createAgentCommandApprovalChannel ??
+      ((rootDirectory) => new LocalAgentCommandApprovalChannel(rootDirectory)),
   };
 }
 
@@ -1067,7 +1107,10 @@ function configDependenciesFrom(
 
 function controlDependenciesFrom(
   overrides: Partial<CliDependencies>,
-): Pick<CliDependencies, "cwd" | "createStore" | "loadConfig"> {
+): Pick<
+  CliDependencies,
+  "cwd" | "createStore" | "createAgentCommandApprovalChannel" | "loadConfig"
+> {
   return {
     ...storageDependenciesFrom(overrides),
     loadConfig: overrides.loadConfig ?? loadEffectiveFlowConfig,
