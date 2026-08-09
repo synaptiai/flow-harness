@@ -15,6 +15,7 @@ export interface SandboxLaunch {
 }
 
 export interface PreparedCommand {
+  readonly processContainment: "linux-pid-namespace" | "process-group";
   readonly launch: SandboxLaunch;
   readonly evidence: SandboxEvidence;
   release(): Promise<void>;

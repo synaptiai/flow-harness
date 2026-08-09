@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  classifyPolicyAction,
   MAX_POLICY_DECISIONS,
   PolicyAuditClosedError,
   PolicyAuditLimitError,
   PolicyBroker,
   PolicyDeniedError,
-  classifyPolicyAction,
 } from "../../../src/domain/policy/broker.js";
 
 const attribution = {
@@ -166,6 +166,19 @@ describe("PolicyBroker", () => {
         boundary: "inside",
       } as never),
     ).toThrowError(/write.*operation digest/i);
+    expect(broker.snapshot()).toEqual([]);
+  });
+
+  it("rejects process execution without an exact operation digest before recording a decision", () => {
+    const broker = new PolicyBroker(attribution, ["process.execute"]);
+
+    expect(() =>
+      broker.authorize({
+        action: "process.execute",
+        target: "npm",
+        boundary: "inside",
+      } as never),
+    ).toThrowError(/process\.execute.*operation digest/i);
     expect(broker.snapshot()).toEqual([]);
   });
 

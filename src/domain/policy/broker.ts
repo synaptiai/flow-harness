@@ -153,8 +153,11 @@ function validateTarget(target: string): void {
 }
 
 function validateOperationDigest(action: PolicyAction, operationDigest: string | undefined): void {
-  if (action === "filesystem.write" && operationDigest === undefined) {
-    throw new RangeError("filesystem write requires an exact operation digest");
+  if (
+    (action === "filesystem.write" || action === "process.execute") &&
+    operationDigest === undefined
+  ) {
+    throw new RangeError(`${action} requires an exact operation digest`);
   }
   if (operationDigest !== undefined && !/^[a-f0-9]{64}$/.test(operationDigest)) {
     throw new RangeError("policy operation digest must be a lowercase SHA-256 hex value");

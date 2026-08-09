@@ -1,11 +1,12 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-
+import { NodeExecutorRouter } from "../../../src/application/node-executor-router.js";
 import type {
+  AgentCommandExecutor,
   AgentExecutor,
   CommandExecutor,
   NodeExecutionContext,
 } from "../../../src/application/ports.js";
-import { NodeExecutorRouter } from "../../../src/application/node-executor-router.js";
 import type {
   CompiledAgentNode,
   CompiledCommandNode,
@@ -21,6 +22,41 @@ const context: NodeExecutionContext = {
 };
 
 describe("NodeExecutorRouter", () => {
+  it("injects the same command executor as the agent command capability", async () => {
+    const command: CommandExecutor & AgentCommandExecutor = {
+      async execute() {
+        return { status: "succeeded", evidence: commandEvidence() };
+      },
+      async executeAgentCommand() {
+        return { status: "succeeded", evidence: commandEvidence() };
+      },
+    };
+    let injected: AgentCommandExecutor | undefined;
+    const agent: AgentExecutor = {
+      async execute(node, executionContext) {
+        injected = executionContext.agentCommandExecutor;
+        return {
+          status: "succeeded",
+          evidence: {
+            kind: "agent",
+            provider: node.agent.model.provider,
+            model: node.agent.model.id,
+            text: "done",
+            textHash: "a".repeat(64),
+            textTruncated: false,
+            durationMs: 1,
+            policyDecisions: [],
+            effectReceipts: [],
+          },
+        };
+      },
+    };
+
+    await new NodeExecutorRouter(command, agent).execute(agentNode(), context);
+
+    expect(injected).toBe(command);
+  });
+
   it("dispatches command and agent nodes only to their typed executors", async () => {
     const calls: string[] = [];
     const command: CommandExecutor = {
@@ -148,9 +184,26 @@ function commandEvidence() {
     stderr: "",
     stdoutHash: "a".repeat(64),
     stderrHash: "b".repeat(64),
+    stdoutRetainedHash: createHash("sha256").update("v22.19.0").digest("hex"),
+    stderrRetainedHash: createHash("sha256").update("").digest("hex"),
+    stdoutRetainedBytes: 9,
+    stderrRetainedBytes: 0,
     stdoutTruncated: false,
     stderrTruncated: false,
     timedOut: false,
+    aborted: false,
     durationMs: 1,
+    processContainment: "linux-pid-namespace" as const,
+    terminationStatus: "not-required" as const,
+    sandbox: testSandboxEvidence(),
+  };
+}
+
+function testSandboxEvidence() {
+  return {
+    backend: "test-sandbox",
+    backendVersion: "1",
+    profile: "workspace-write-network-deny-v1",
+    policyDigest: "c".repeat(64),
   };
 }

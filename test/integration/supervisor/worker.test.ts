@@ -5,12 +5,17 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import type { CommandSandbox } from "../../../src/application/command-sandbox.js";
 import { NodeExecutorRouter } from "../../../src/application/node-executor-router.js";
 import type {
   AgentExecutor,
   CommandExecutor,
   NodeExecutor,
 } from "../../../src/application/ports.js";
+import {
+  calculateAgentCommandDigest,
+  normalizeAgentCommandRequest,
+} from "../../../src/domain/agent-command.js";
 import {
   createAgentCapabilityEvidence,
   createCapabilitySnapshot,
@@ -20,6 +25,8 @@ import { reduceRunEvents } from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { JsonlRunStore } from "../../../src/infrastructure/fs/jsonl-run-store.js";
 import { LocalSupervisorStore } from "../../../src/infrastructure/fs/local-supervisor-store.js";
+import { PiAgentExecutor } from "../../../src/infrastructure/pi/pi-agent-executor.js";
+import { CommandNodeExecutor } from "../../../src/infrastructure/process/command-node-executor.js";
 import { createProductionNodeEffectReconciler } from "../../../src/infrastructure/runtime/production-effect-reconciler.js";
 import { createActiveRunClaim, createJobRecord } from "../../../src/supervisor/records.js";
 import { executeWorkerJob, requestWorker } from "../../../src/supervisor/worker.js";
@@ -35,6 +42,75 @@ afterEach(async () => {
 });
 
 describe("detached run worker", () => {
+  it("persists and replays a durable agent command through a detached worker", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-worker-agent-command-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    const store = new LocalSupervisorStore(runsDirectory);
+    await store.initialize();
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "worker-agent-command",
+      mode: "run",
+      sourceName: join(directory, "workflow.yaml"),
+      workflowSource: detachedAgentCommandWorkflowSource(),
+      cwd: directory,
+      token: "9".repeat(64),
+      createdAt: "2026-08-08T12:45:00.000Z",
+    });
+    await store.reserveSubmission(
+      job,
+      createActiveRunClaim({
+        runId: job.runId,
+        jobId: job.jobId,
+        workerId: job.workerId,
+        claimedAt: job.createdAt,
+      }),
+    );
+
+    const worker = executeWorkerJob(job.jobId, {
+      store,
+      executor: detachedAgentCommandExecutor(),
+      effectReconciler: createProductionNodeEffectReconciler(),
+      createRunStore: (root) => new JsonlRunStore(root),
+      pid: 4399,
+    });
+    const descriptor = await waitForDescriptor(store, job.workerId);
+    await expect(requestWorker(descriptor, { type: "identify" })).resolves.toMatchObject({
+      ok: true,
+      result: { runId: job.runId },
+    });
+    await expect(worker).resolves.toBe(0);
+
+    const events = await new JsonlRunStore(runsDirectory).read(job.runId);
+    expect(events.map((event) => event.type)).toEqual(
+      expect.arrayContaining(["node_agent_command_prepared", "node_agent_command_settled"]),
+    );
+    expect(reduceRunEvents(events).nodes.execute).toMatchObject({
+      status: "succeeded",
+      commandProtocol: "flow.agent-commands/v1",
+      commands: [
+        {
+          settlement: {
+            outcome: {
+              status: "succeeded",
+              evidence: {
+                stdout: "detached-command",
+                sandbox: { profile: "workspace-write-network-deny-v1" },
+              },
+            },
+          },
+        },
+      ],
+    });
+    await expect(store.readWorkerDescriptor(job.workerId)).resolves.toMatchObject({
+      status: "terminal",
+      runStatus: "succeeded",
+      exitCode: 0,
+    });
+  });
+
   it("enforces and replays an exact detached artifact budget", async () => {
     const directory = await mkdtemp(join(tmpdir(), "flow-worker-artifact-budget-"));
     temporaryDirectories.push(directory);
@@ -1362,6 +1438,80 @@ function optimizationExecutor(): NodeExecutor {
     },
   };
 }
+
+function detachedAgentCommandWorkflowSource(): string {
+  return `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: worker-agent-command }
+budget:
+  maxNodeStarts: 4
+  maxModelTokens: 100
+  maxCostUsd: 0.01
+  maxExecutionMs: 10000
+  maxArtifactBytes: 100000
+nodes:
+  - id: execute
+    type: agent
+    agent:
+      prompt: Run the bounded command.
+      model: { provider: test, id: deterministic }
+      tools: [exec]
+  - id: verify
+    type: command
+    dependsOn: [execute]
+    command: { executable: ${JSON.stringify(process.execPath)}, args: [--version] }
+`;
+}
+
+function detachedAgentCommandExecutor(): NodeExecutor {
+  const commandExecutor = new CommandNodeExecutor({ sandbox: detachedAgentCommandSandbox });
+  const agentExecutor = new PiAgentExecutor({
+    async run(input) {
+      if (input.commandRecorder === undefined) {
+        throw new Error("agent command recorder was not injected");
+      }
+      const request = normalizeAgentCommandRequest({
+        executable: process.execPath,
+        args: ["-e", 'process.stdout.write("detached-command")'],
+        timeoutMs: 5_000,
+      });
+      const decision = input.policyBroker.authorize({
+        action: "process.execute",
+        target: request.executable,
+        boundary: "inside",
+        operationDigest: calculateAgentCommandDigest(request),
+      });
+      const outcome = await input.commandRecorder.execute(request, decision, input.signal);
+      return { text: outcome.evidence?.stdout ?? "command failed", stopReason: "stop" as const };
+    },
+  });
+  return new NodeExecutorRouter(commandExecutor, agentExecutor);
+}
+
+const detachedAgentCommandSandbox: CommandSandbox = {
+  async prepare(request) {
+    return {
+      processContainment: "linux-pid-namespace",
+      launch: {
+        executable: request.executable,
+        args: request.args,
+        env: Object.fromEntries(
+          Object.entries(process.env).filter(
+            (entry): entry is [string, string] => entry[1] !== undefined,
+          ),
+        ),
+      },
+      evidence: {
+        backend: "test-sandbox",
+        backendVersion: "1",
+        profile: "workspace-write-network-deny-v1",
+        policyDigest: "e".repeat(64),
+      },
+      release: async () => undefined,
+    };
+  },
+};
 
 function recoveryWorkflowSource(): string {
   return `

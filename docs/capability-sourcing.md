@@ -39,7 +39,7 @@ Pi's experimental `AgentHarness` API is not a foundation for the first release. 
 | Concurrent tool calls | Reference implementation only | Pi may run independent tool calls concurrently, but Flow owns graph admission, quiescent waves, durable ordering, failure, and recovery semantics |
 | Per-node model and thinking level | Reuse execution support | Selection remains Flow policy |
 | Exact tool allowlists | Current defense in depth | The adapter passes the exact allowlist to Pi; Flow's broker remains the per-call authorization boundary |
-| Basic coding tools | Flow-owned workspace-confined `read`, `ls`, and hash-anchored `edit` definitions built on Pi's custom-tool interface | Pi's built-in edit, fuzzy matching, direct writes, ambient path access, and helper-binary downloads are disabled; Flow owns policy, atomic replacement, and receipts |
+| Basic coding tools | Flow-owned workspace-confined `read`, `ls`, hash-anchored `edit`, and sandboxed argv-only `exec` definitions built on Pi's custom-tool interface | Pi's built-in edit and bash tools, fuzzy matching, direct writes, ambient path access, and helper-binary downloads are disabled; Flow owns policy, atomic replacement, command/effect journals, containment, and evidence |
 | Custom tool API | Present Flow broker tools to the model | Tool schemas remain Flow-owned |
 | Context transformation and compaction | Reuse mechanics | Durable state remains outside context |
 | Session usage statistics | Translate `getSessionStats()` after settlement | Persist only Flow token components and integer micro-USD; Pi totals and transcripts are not authoritative |
@@ -55,6 +55,10 @@ Pi's official containment documentation demonstrates three useful deployment sha
 The first adapter pins [`@anthropic-ai/sandbox-runtime`](https://github.com/anthropic-experimental/sandbox-runtime) exactly. SRT provides Seatbelt enforcement on macOS and bubblewrap, network namespaces, and seccomp enforcement on Linux. Flow adds the security semantics required by its harness contract:
 
 - no unsandboxed fallback;
+- Linux agent commands require one canonical root-owned Bubblewrap executable outside the
+  workspace, and the returned descriptor must bind that exact path plus PID-namespace and
+  parent-death controls in a canonical, position-checked launch shape;
+- macOS process-group preparation is insufficient for agent commands and fails before spawn;
 - no default network allowlist;
 - no inherited environment or provider credentials;
 - protection for the actual run store and sensitive project state;
@@ -70,7 +74,7 @@ OMP is a Pi fork with a broad TypeScript, Bun, and Rust-native product surface. 
 
 | Capability | Treatment |
 | --- | --- |
-| Read/write/exec approval tiers | Exact expiring command pre-start approval and evidence-bound graph approval are implemented independently; configurable tiers and dynamic model-tool prompting remain future work; approval never substitutes for containment |
+| Read/write/exec approval tiers | Exact expiring command pre-start approval, evidence-bound graph approval, and durable policy authorization for agent `exec` are implemented independently; configurable tiers and dynamic model-tool prompting remain future work; approval never substitutes for containment |
 | Hash-anchored edits | The first single-file full-SHA exact-edit tool is independently implemented with provenance receipts; OMP's compact line protocol, snapshots, stale recovery, and multi-file patcher remain benchmark candidates rather than dependencies |
 | Diagnostics after writes | Add through an optional language-service capability |
 | LSP and debugger operations | Optional first-party packages, outside scheduler core |
@@ -138,7 +142,9 @@ session for each fresh attempt and archives the previous attempt only in Flow's 
 Prime Agent's daemon journals mutating client commands before dispatch and does not replay an
 uncertain side effect merely because its durable result is missing. Flow applies the same principle
 inside the agent node: automatic fresh recovery is legal only for read-only attempts or durable
-edits whose every effect is positively proven `not_applied`. Applied, committed, open, and unknown
+edits whose every effect is positively proven `not_applied`. Agent attempts with arbitrary `exec`
+are categorically ineligible because no general observation can prove a command was not applied.
+Applied, committed, open, and unknown
 states remain blocked. See [Prime Agent daemon
 semantics](https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/daemon.md)
 and [AWS idempotency guidance](https://docs.aws.amazon.com/durable-execution/patterns/best-practices/idempotency/).
