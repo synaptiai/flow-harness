@@ -39,12 +39,38 @@ describe("SrtCommandSandbox", () => {
         allowLocalBinding: false,
       },
       filesystem: {
-        denyRead: ["/Users/alice"],
+        denyRead: [
+          "/Users/alice",
+          protectedRunStore,
+          "/Users/alice/project/.other-project.flow-workspaces",
+          "/Users/alice/project/.flow",
+          "/Users/alice/project/.flow-workspaces",
+          "/Users/alice/project/.flow-workspaces/**",
+          "/Users/alice/project/.*.flow-workspaces",
+          "/Users/alice/project/.*.flow-workspaces/**",
+          "/Users/alice/project/**/.flow-workspaces",
+          "/Users/alice/project/**/.flow-workspaces/**",
+          "/Users/alice/project/**/.*.flow-workspaces",
+          "/Users/alice/project/**/.*.flow-workspaces/**",
+          "/Users/alice/project/.env",
+          "/Users/alice/project/.env.*",
+          "/Users/alice/project/**/*.pem",
+          "/Users/alice/project/**/*.key",
+        ],
         allowRead: [workspace, privateTemp, seccompApplyPath],
         allowWrite: [workspace, privateTemp],
         denyWrite: [
           protectedRunStore,
+          "/Users/alice/project/.other-project.flow-workspaces",
           join(workspace, ".flow"),
+          join(workspace, ".flow-workspaces"),
+          join(workspace, ".flow-workspaces/**"),
+          join(workspace, ".*.flow-workspaces"),
+          join(workspace, ".*.flow-workspaces/**"),
+          join(workspace, "**/.flow-workspaces"),
+          join(workspace, "**/.flow-workspaces/**"),
+          join(workspace, "**/.*.flow-workspaces"),
+          join(workspace, "**/.*.flow-workspaces/**"),
           join(workspace, ".git"),
           join(workspace, ".env"),
           join(workspace, ".env.*"),
@@ -125,6 +151,91 @@ describe("SrtCommandSandbox", () => {
     expect(
       (prepared as typeof prepared & { readonly processContainment: string }).processContainment,
     ).toBe("linux-pid-namespace");
+    await prepared.release();
+  });
+
+  it("denies sibling reads without denying writes in the selected child workspace", async () => {
+    const manager = new FakeSrtManager();
+    const collection = "/private/tmp/.project.flow-workspaces";
+    const outerCollection = "/private/.outer.flow-workspaces";
+    const childWorkspace = join(collection, "owner", "child", "workspace");
+    const sandbox = createSandbox(manager, {
+      discoverPrivateWorkspaceCollections: async () => [],
+      discoverPrivateWorkspaceCollectionAncestors: async () => [collection, outerCollection],
+    });
+
+    const prepared = await sandbox.prepare({
+      executable: "/usr/bin/node",
+      args: ["--version"],
+      cwd: childWorkspace,
+      protectedPaths: [],
+    });
+
+    expect(manager.initializedConfig?.filesystem.denyRead).toContain(collection);
+    expect(manager.initializedConfig?.filesystem.denyRead).toContain(outerCollection);
+    expect(manager.initializedConfig?.filesystem.denyWrite).not.toContain(collection);
+    expect(manager.initializedConfig?.filesystem.denyWrite).not.toContain(outerCollection);
+    expect(manager.initializedConfig?.filesystem.allowRead).toContain(childWorkspace);
+    expect(manager.initializedConfig?.filesystem.allowWrite).toContain(childWorkspace);
+    await prepared.release();
+  });
+
+  it("rejects a Linux command root that contains the configured Flow project", async () => {
+    const manager = new FakeSrtManager();
+    const sandbox = createSandbox(manager, {
+      platform: "linux",
+      discoverPrivateWorkspaceCollections: async () => [],
+    });
+
+    await expect(
+      sandbox.prepare({
+        executable: "node",
+        args: [],
+        cwd: "/Users/alice",
+        projectRoot: "/Users/alice/project",
+        protectedPaths: ["/Users/alice/project/.flow"],
+      }),
+    ).rejects.toThrow(/must not contain the configured Flow project root/i);
+
+    expect(manager.checkCalls).toBe(0);
+    expect(manager.initializeCalls).toBe(0);
+  });
+
+  it("does not treat a custom protected .flow run store as the project root", async () => {
+    const manager = new FakeSrtManager();
+    manager.descriptor = [
+      "/bin/bash",
+      "-c",
+      quoteSrtArgs([
+        "/usr/bin/bwrap",
+        "--new-session",
+        "--die-with-parent",
+        "--unshare-pid",
+        "--unshare-user",
+        "--cap-drop",
+        "ALL",
+        "--proc",
+        "/proc",
+        "--",
+        "/bin/bash",
+        "-c",
+        "'/usr/bin/node' '--version'",
+      ]),
+    ];
+    const sandbox = createSandbox(manager, {
+      platform: "linux",
+      discoverPrivateWorkspaceCollections: async () => [],
+    });
+
+    const prepared = await sandbox.prepare({
+      executable: "node",
+      args: [],
+      cwd: "/Users/alice/project",
+      projectRoot: "/Users/alice/project",
+      protectedPaths: ["/Users/alice/project/.flow", "/Users/alice/project/state/.flow"],
+    });
+
+    expect(manager.initializeCalls).toBe(1);
     await prepared.release();
   });
 
@@ -461,6 +572,12 @@ function createSandbox(
     readonly seccompApplyPath?: string;
     readonly canonicalize?: (path: string) => Promise<string>;
     readonly removeTemporaryDirectory?: (path: string) => Promise<void>;
+    readonly discoverPrivateWorkspaceCollections?: (
+      workspace: string,
+    ) => Promise<readonly string[]>;
+    readonly discoverPrivateWorkspaceCollectionAncestors?: (
+      workspace: string,
+    ) => Promise<readonly string[]>;
     readonly resolveTrustedBwrapPath?: (workspace: string) => Promise<string>;
   } = {},
 ): SrtCommandSandbox {
@@ -483,6 +600,11 @@ function createSandbox(
     createTemporaryDirectory: async () => selectedPrivateTemp,
     seccompApplyPath: overrides.seccompApplyPath ?? seccompApplyPath,
     removeTemporaryDirectory: overrides.removeTemporaryDirectory ?? (async () => undefined),
+    discoverPrivateWorkspaceCollections:
+      overrides.discoverPrivateWorkspaceCollections ??
+      (async () => ["/Users/alice/project/.other-project.flow-workspaces"]),
+    discoverPrivateWorkspaceCollectionAncestors:
+      overrides.discoverPrivateWorkspaceCollectionAncestors ?? (async () => []),
     ...(platform === "linux"
       ? {
           resolveTrustedBwrapPath:

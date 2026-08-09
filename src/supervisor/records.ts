@@ -4,13 +4,14 @@ import { isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 
 import { RUN_RECOVERY_ERROR_CODES } from "../application/run-workflow.js";
-import { MAX_ACTIVE_WORKERS, MAX_QUEUED_JOBS } from "../domain/config/resolver.js";
-import { SUPERVISOR_PROTOCOL_VERSION } from "./protocol.js";
+import { parsePromptActivationLocator } from "../domain/adaptation/prompt-activation.js";
 import {
   type CapabilitySnapshot,
   persistedCapabilitySnapshotSchema,
 } from "../domain/capability/agent-skills.js";
 import { parseWorkflowPackageLocator } from "../domain/capability/workflow-packages.js";
+import { MAX_ACTIVE_WORKERS, MAX_QUEUED_JOBS } from "../domain/config/resolver.js";
+import { SUPERVISOR_PROTOCOL_VERSION } from "./protocol.js";
 
 const uuidSchema = z.uuid();
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
@@ -21,11 +22,19 @@ const absolutePathSchema = z
   .min(1)
   .max(4096)
   .refine((value) => isAbsolute(value), "must be an absolute path");
+const protectedPathsSchema = z
+  .array(absolutePathSchema)
+  .min(1)
+  .max(16)
+  .refine((paths) => new Set(paths).size === paths.length, "protected paths must be unique");
 const workflowSourceNameSchema = z
   .string()
   .min(1)
   .max(4096)
-  .refine(isWorkflowSourceName, "must be an absolute path or exact workflow package locator");
+  .refine(
+    isWorkflowSourceName,
+    "must be an absolute path, exact workflow package locator, or exact activation locator",
+  );
 const timestampSchema = z.iso.datetime({ offset: true });
 const actorSchema = z
   .string()
@@ -49,6 +58,8 @@ export interface JobDigestInput {
   readonly sourceName: string;
   readonly workflowSource: string;
   readonly cwd: string;
+  readonly projectRoot?: string | undefined;
+  readonly protectedPaths?: readonly string[] | undefined;
   readonly capabilitySnapshot?: CapabilitySnapshot | undefined;
   readonly token: string;
   readonly createdAt: string;
@@ -69,6 +80,8 @@ export interface SubmissionCommandIdentity {
   readonly workflowSourceDigest: string;
   readonly capabilitySnapshotDigest?: string | undefined;
   readonly cwd: string;
+  readonly projectRoot?: string | undefined;
+  readonly protectedPaths?: readonly string[] | undefined;
 }
 
 interface SubmissionCommandBase extends SubmissionCommandIdentity {
@@ -167,6 +180,8 @@ const jobRecordShape = {
   sourceName: workflowSourceNameSchema,
   workflowSource: z.string().min(1).max(20_000_000),
   cwd: absolutePathSchema,
+  projectRoot: absolutePathSchema.optional(),
+  protectedPaths: protectedPathsSchema.optional(),
   capabilitySnapshot: persistedCapabilitySnapshotSchema.optional(),
   token: tokenSchema,
   createdAt: timestampSchema,
@@ -188,7 +203,9 @@ function isWorkflowSourceName(value: string): boolean {
     return true;
   }
   try {
-    return parseWorkflowPackageLocator(value) !== null;
+    return (
+      parseWorkflowPackageLocator(value) !== null || parsePromptActivationLocator(value) !== null
+    );
   } catch {
     return false;
   }
@@ -372,6 +389,8 @@ const submissionCommandBaseShape = {
   workflowSourceDigest: sha256Schema,
   capabilitySnapshotDigest: sha256Schema.optional(),
   cwd: absolutePathSchema,
+  projectRoot: absolutePathSchema.optional(),
+  protectedPaths: protectedPathsSchema.optional(),
   requestDigest: sha256Schema,
   recordedAt: timestampSchema,
 };
@@ -453,6 +472,8 @@ export interface CreateSubmissionCommandInput {
   readonly workflowSource: string;
   readonly capabilitySnapshot?: CapabilitySnapshot | undefined;
   readonly cwd: string;
+  readonly projectRoot?: string | undefined;
+  readonly protectedPaths?: readonly string[] | undefined;
   readonly recordedAt: string;
 }
 
@@ -476,6 +497,8 @@ export function calculateJobDigest(record: JobDigestInput | JobRecord): string {
     sourceName: record.sourceName,
     workflowSource: record.workflowSource,
     cwd: record.cwd,
+    ...(record.projectRoot === undefined ? {} : { projectRoot: record.projectRoot }),
+    ...(record.protectedPaths === undefined ? {} : { protectedPaths: record.protectedPaths }),
     ...(record.capabilitySnapshot === undefined
       ? {}
       : { capabilitySnapshot: record.capabilitySnapshot }),
@@ -590,6 +613,8 @@ export function createSubmissionCommandRecord(
       ? {}
       : { capabilitySnapshotDigest: input.capabilitySnapshot.digest }),
     cwd: input.cwd,
+    ...(input.projectRoot === undefined ? {} : { projectRoot: input.projectRoot }),
+    ...(input.protectedPaths === undefined ? {} : { protectedPaths: input.protectedPaths }),
   };
   return deepFreeze(
     submissionCommandRecordSchema.parse({
@@ -701,6 +726,8 @@ export function calculateSubmissionCommandDigest(input: SubmissionCommandIdentit
       ? {}
       : { capabilitySnapshotDigest: input.capabilitySnapshotDigest }),
     cwd: input.cwd,
+    ...(input.projectRoot === undefined ? {} : { projectRoot: input.projectRoot }),
+    ...(input.protectedPaths === undefined ? {} : { protectedPaths: input.protectedPaths }),
   };
   return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 }
@@ -759,6 +786,8 @@ function submissionCommandBase(record: SubmissionCommandRecord): SubmissionComma
       ? {}
       : { capabilitySnapshotDigest: record.capabilitySnapshotDigest }),
     cwd: record.cwd,
+    ...(record.projectRoot === undefined ? {} : { projectRoot: record.projectRoot }),
+    ...(record.protectedPaths === undefined ? {} : { protectedPaths: record.protectedPaths }),
     requestDigest: record.requestDigest,
     recordedAt: record.recordedAt,
   };

@@ -17,6 +17,7 @@ export const MAX_PROMPT_CANDIDATE_BYTES = 1_048_576;
 export const MAX_PROMPT_CANDIDATE_EVIDENCE = 16;
 export const MAX_PROMPT_CANDIDATE_CHANGES = 16;
 export const MAX_PROMPT_CANDIDATE_TOTAL_PROMPT_BYTES = 1_048_576;
+export const MAX_PROMPT_CANDIDATE_PROJECTED_WORKFLOW_BYTES = 8 * 1024 * 1024;
 
 const identifierSchema = z
   .string()
@@ -427,6 +428,15 @@ export function projectPromptCandidate(
   });
 
   const projectedWorkflowSource = JSON.stringify(projectedSource);
+  if (
+    Buffer.byteLength(projectedWorkflowSource, "utf8") >
+    MAX_PROMPT_CANDIDATE_PROJECTED_WORKFLOW_BYTES
+  ) {
+    throw new PromptCandidateError(
+      "limit_exceeded",
+      `projected workflow exceeds ${MAX_PROMPT_CANDIDATE_PROJECTED_WORKFLOW_BYTES} UTF-8 bytes`,
+    );
+  }
   let compiled: CompiledWorkflow;
   try {
     compiled = compileWorkflowText(projectedWorkflowSource, input.manifestProvenance);

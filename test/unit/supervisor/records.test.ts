@@ -2,17 +2,16 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 import { createCapabilitySnapshot } from "../../../src/domain/capability/agent-skills.js";
-
+import { SUPERVISOR_PROTOCOL_VERSION } from "../../../src/supervisor/protocol.js";
 import {
   calculateJobDigest,
-  completeSubmissionCommand,
   completeCancellationCommand,
-  createSubmissionCommandRecord,
-  createCancellationCommandRecord,
-  rejectSubmissionCommand,
-  createSupervisorStartLock,
+  completeSubmissionCommand,
   createActiveRunClaim,
+  createCancellationCommandRecord,
   createJobRecord,
+  createSubmissionCommandRecord,
+  createSupervisorStartLock,
   parseActiveRunClaim,
   parseJobRecord,
   parseSupervisorCommandRecord,
@@ -20,10 +19,10 @@ import {
   parseSupervisorStartLock,
   parseWorkerDescriptor,
   queueSubmissionCommand,
+  rejectSubmissionCommand,
   supervisorSocketPath,
   workerSocketPath,
 } from "../../../src/supervisor/records.js";
-import { SUPERVISOR_PROTOCOL_VERSION } from "../../../src/supervisor/protocol.js";
 
 describe("supervisor durable records", () => {
   it("creates an immutable job snapshot with a reproducible digest", () => {
@@ -35,6 +34,8 @@ describe("supervisor durable records", () => {
       sourceName: "/workspace/workflow.yaml",
       workflowSource: "kind: Workflow\n",
       cwd: "/workspace",
+      projectRoot: "/workspace",
+      protectedPaths: ["/workspace/.flow/runs", "/workspace/.flow"],
       token: "a".repeat(64),
       createdAt: "2026-08-07T12:00:00.000Z",
     });
@@ -43,6 +44,10 @@ describe("supervisor durable records", () => {
     expect(calculateJobDigest(job)).toBe(job.digest);
     expect(Object.isFrozen(job)).toBe(true);
     expect(parseJobRecord(JSON.parse(JSON.stringify(job)))).toEqual(job);
+    expect(() => parseJobRecord({ ...job, protectedPaths: ["/workspace/.flow/runs"] })).toThrow(
+      /digest/i,
+    );
+    expect(() => parseJobRecord({ ...job, projectRoot: "/other-project" })).toThrow(/digest/i);
   });
 
   it("rejects a changed job snapshot even when the persisted digest is retained", () => {

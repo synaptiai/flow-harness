@@ -160,7 +160,7 @@ describe("prompt candidate CLI", () => {
           evaluations,
         ],
         candidateRun.io,
-        { cwd: project, executor: evaluationExecutor(observedPrompts) },
+        { cwd: project, executor: evaluationExecutor(observedPrompts, true) },
       ),
       candidateRun.stderr.join("\n"),
     ).toBe(0);
@@ -212,6 +212,224 @@ describe("prompt candidate CLI", () => {
       },
     });
 
+    const activationPreviewOutput = capture();
+    expect(
+      await main(
+        [
+          "candidate",
+          "activate",
+          candidatePath,
+          "--evaluation",
+          "candidate-evaluation",
+          "--evaluations-dir",
+          evaluations,
+          "--actor",
+          "operator:test",
+          "--reason",
+          "The candidate passed the declared evaluation.",
+          "--dry-run",
+        ],
+        activationPreviewOutput.io,
+        { cwd: project },
+      ),
+      activationPreviewOutput.stderr.join("\n"),
+    ).toBe(0);
+    const activationPreview = JSON.parse(activationPreviewOutput.stdout.join("\n"));
+    expect(activationPreview).toMatchObject({
+      dryRun: true,
+      activation: {
+        workflowId: "evaluated-profile",
+        candidateId: "better-instructions",
+        candidateVersion: "1.0.0",
+        evaluation: { evaluationId: "candidate-evaluation" },
+        source: { bytes: expect.any(Number), sha256: expect.stringMatching(/^[a-f0-9]{64}$/) },
+      },
+      proposal: {
+        action: "activate",
+        current: { generation: 0, activationDigest: null },
+        proposalDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+    });
+    expect(activationPreviewOutput.stdout.join("\n")).not.toContain("contentBase64");
+    expect(activationPreviewOutput.stdout.join("\n")).not.toContain("holdout-secret");
+    expect(activationPreviewOutput.stdout.join("\n")).not.toContain("RESULT.md");
+
+    const changedCandidate = structuredClone(candidateSource);
+    const changedPrompt = changedCandidate.changes.prompts[0];
+    if (changedPrompt === undefined) {
+      throw new Error("candidate prompt fixture is missing");
+    }
+    changedPrompt.value = "Use changed instructions after the review.";
+    await writeFile(candidatePath, JSON.stringify(changedCandidate));
+    const staleActivation = capture();
+    expect(
+      await main(
+        [
+          "candidate",
+          "activate",
+          candidatePath,
+          "--evaluation",
+          "candidate-evaluation",
+          "--evaluations-dir",
+          evaluations,
+          "--actor",
+          "operator:test",
+          "--reason",
+          "The candidate passed the declared evaluation.",
+          "--expected-digest",
+          activationPreview.proposal.proposalDigest,
+        ],
+        staleActivation.io,
+        { cwd: project },
+      ),
+    ).toBe(1);
+    expect(staleActivation.stderr.join("\n")).toMatch(/identity_mismatch/);
+    const unchangedActivations = capture();
+    expect(await main(["activation", "list"], unchangedActivations.io, { cwd: project })).toBe(0);
+    expect(JSON.parse(unchangedActivations.stdout.join("\n"))).toEqual({
+      version: 1,
+      activations: [],
+      heads: [],
+      history: [],
+    });
+    await writeFile(candidatePath, candidateText);
+
+    const activationApplyOutput = capture();
+    expect(
+      await main(
+        [
+          "candidate",
+          "activate",
+          candidatePath,
+          "--evaluation",
+          "candidate-evaluation",
+          "--evaluations-dir",
+          evaluations,
+          "--actor",
+          "operator:test",
+          "--reason",
+          "The candidate passed the declared evaluation.",
+          "--expected-digest",
+          activationPreview.proposal.proposalDigest,
+        ],
+        activationApplyOutput.io,
+        { cwd: project },
+      ),
+      activationApplyOutput.stderr.join("\n"),
+    ).toBe(0);
+    expect(JSON.parse(activationApplyOutput.stdout.join("\n"))).toMatchObject({
+      status: "activated",
+      head: { workflowId: "evaluated-profile", generation: 1 },
+    });
+
+    await rm(candidatePath);
+    await rm(evidencePath);
+    await rm(join(project, "baseline.workflow.yaml"));
+    const activePrompts: string[] = [];
+    const activeRunOutput = capture();
+    expect(
+      await main(
+        [
+          "run",
+          "activation:evaluated-profile",
+          "--run-id",
+          "stable-active-source",
+          "--runs-dir",
+          join(project, "activation-runs"),
+        ],
+        activeRunOutput.io,
+        { cwd: project, executor: evaluationExecutor(activePrompts) },
+      ),
+      activeRunOutput.stderr.join("\n"),
+    ).toBe(0);
+    expect(activePrompts).toEqual([
+      "Read TASK.md, implement exactly what it asks, then verify the result.",
+    ]);
+    await writeFile(candidatePath, candidateText);
+    await writeFile(evidencePath, evidenceText);
+    await writeFile(join(project, "baseline.workflow.yaml"), baselineText);
+
+    const activationList = capture();
+    const activationInspect = capture();
+    expect(await main(["activation", "list"], activationList.io, { cwd: project })).toBe(0);
+    expect(
+      await main(["activation", "inspect", "evaluated-profile"], activationInspect.io, {
+        cwd: project,
+      }),
+    ).toBe(0);
+    expect(JSON.parse(activationList.stdout.join("\n"))).toMatchObject({
+      activations: [
+        {
+          candidateId: "better-instructions",
+          candidateVersion: "1.0.0",
+          selection: "baseline",
+        },
+        {
+          candidateId: "better-instructions",
+          candidateVersion: "1.0.0",
+          selection: "candidate",
+        },
+      ],
+      heads: [{ workflowId: "evaluated-profile", generation: 1 }],
+    });
+    expect(JSON.parse(activationInspect.stdout.join("\n"))).toMatchObject({
+      workflowId: "evaluated-profile",
+      head: { generation: 1 },
+      active: {
+        selection: "candidate",
+        candidateId: "better-instructions",
+        candidateVersion: "1.0.0",
+        evaluation: { evaluationId: "candidate-evaluation" },
+      },
+    });
+    expect(activationInspect.stdout.join("\n")).not.toContain("contentBase64");
+
+    const rollbackPreviewOutput = capture();
+    expect(
+      await main(
+        [
+          "activation",
+          "rollback",
+          "evaluated-profile",
+          "--to",
+          "baseline",
+          "--actor",
+          "operator:test",
+          "--dry-run",
+        ],
+        rollbackPreviewOutput.io,
+        { cwd: project },
+      ),
+    ).toBe(0);
+    const rollbackPreview = JSON.parse(rollbackPreviewOutput.stdout.join("\n"));
+    expect(rollbackPreview).toMatchObject({
+      dryRun: true,
+      proposal: { action: "rollback", target: { selection: "baseline" } },
+    });
+    const rollbackApplyOutput = capture();
+    expect(
+      await main(
+        [
+          "activation",
+          "rollback",
+          "evaluated-profile",
+          "--to",
+          "baseline",
+          "--actor",
+          "operator:test",
+          "--expected-digest",
+          rollbackPreview.proposal.proposalDigest,
+        ],
+        rollbackApplyOutput.io,
+        { cwd: project },
+      ),
+    ).toBe(0);
+    expect(JSON.parse(rollbackApplyOutput.stdout.join("\n"))).toMatchObject({
+      status: "rolled_back",
+      head: { generation: 2, activationDigest: expect.stringMatching(/^[a-f0-9]{64}$/) },
+    });
+    expect(await readFile(join(project, "baseline.workflow.yaml"), "utf8")).toBe(baselineText);
+
     await writeFile(
       candidatePath,
       JSON.stringify({
@@ -257,6 +475,11 @@ describe("prompt candidate CLI", () => {
 async function candidateEvaluationProject(): Promise<string> {
   const project = await mkdtemp(join(tmpdir(), "flow-candidate-cli-"));
   temporaryDirectories.push(project);
+  await mkdir(join(project, ".flow"), { recursive: true });
+  await writeFile(
+    join(project, ".flow", "config.yaml"),
+    "apiVersion: flow.synapti.ai/v1alpha1\nkind: FlowProjectConfig\n",
+  );
   for (const task of ["tuning-task", "holdout-secret"]) {
     await mkdir(join(project, "fixtures", task), { recursive: true });
     await writeFile(join(project, "fixtures", task, "TASK.md"), "Create RESULT.md.\n");
@@ -343,14 +566,23 @@ nodes:
 `;
 }
 
-function evaluationExecutor(observedPrompts: string[] = []): NodeExecutor {
+function evaluationExecutor(
+  observedPrompts: string[] = [],
+  candidateOnlySuccess = false,
+): NodeExecutor {
   return {
     execute: async (node, context) => {
       if (node.type !== "agent") {
         throw new Error("unexpected executable node");
       }
       observedPrompts.push(node.agent.prompt);
-      await writeFile(join(context.cwd, "RESULT.md"), "verified\n");
+      if (
+        !candidateOnlySuccess ||
+        node.agent.prompt ===
+          "Read TASK.md, implement exactly what it asks, then verify the result."
+      ) {
+        await writeFile(join(context.cwd, "RESULT.md"), "verified\n");
+      }
       return {
         status: "succeeded",
         evidence: {

@@ -1,60 +1,60 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 import { compileWorkflowFromSnapshot } from "../application/workflow-package-admission.js";
-import { reduceRunEvents, type RunEvent, type RunStatus } from "../domain/run/events.js";
 import { bindWorkflowCapabilities } from "../domain/capability/workflow-capabilities.js";
-import { JsonlRunStore, RunStoreError } from "../infrastructure/fs/jsonl-run-store.js";
+import { type RunEvent, type RunStatus, reduceRunEvents } from "../domain/run/events.js";
 import type { JsonlAdmissionStore } from "../infrastructure/fs/jsonl-admission-store.js";
+import { JsonlRunStore, RunStoreError } from "../infrastructure/fs/jsonl-run-store.js";
 import {
-  LocalSupervisorStoreError,
   type LocalSupervisorStore,
+  LocalSupervisorStoreError,
 } from "../infrastructure/fs/local-supervisor-store.js";
+import {
+  type AdmissionJobIdentity,
+  type AdmissionJobState,
+  AdmissionStateError,
+  classifyNewAdmission,
+  createDispatchReservedEvent,
+  createJobEnqueuedEvent,
+  createJobRejectedEvent,
+  createJobRejectionCommittedEvent,
+  createJobReleasedEvent,
+  createJobUncertainEvent,
+  createQueueCancellationCompletedEvent,
+  createQueueCancellationRecordedEvent,
+  createWorkerAcceptedEvent,
+} from "./admission.js";
 import type {
   AcceptedResult,
   CancelCommand,
   CancelledResult,
   EventsCommand,
   EventsResult,
-  SubmitCommand,
   SubmissionResult,
+  SubmitCommand,
   SupervisorResult,
-  WorkerResponse,
   WorkerRequest,
+  WorkerResponse,
   WorkerSummary,
 } from "./protocol.js";
 import {
+  type ActiveRunClaim,
+  type CancellationCommandRecord,
   completeCancellationCommand,
   completeSubmissionCommand,
   createActiveRunClaim,
   createCancellationCommandRecord,
   createJobRecord,
   createSubmissionCommandRecord,
+  type JobRecord,
   markCancellationCommandUncertain,
   markSubmissionCommandUncertain,
+  type QueuedSubmissionCommand,
   queueSubmissionCommand,
   rejectSubmissionCommand,
-  type ActiveRunClaim,
-  type CancellationCommandRecord,
-  type JobRecord,
-  type QueuedSubmissionCommand,
   type SubmissionCommandRecord,
   type WorkerDescriptor,
 } from "./records.js";
-import {
-  AdmissionStateError,
-  classifyNewAdmission,
-  createDispatchReservedEvent,
-  createJobEnqueuedEvent,
-  createJobRejectionCommittedEvent,
-  createJobRejectedEvent,
-  createJobReleasedEvent,
-  createJobUncertainEvent,
-  createQueueCancellationCompletedEvent,
-  createQueueCancellationRecordedEvent,
-  createWorkerAcceptedEvent,
-  type AdmissionJobIdentity,
-  type AdmissionJobState,
-} from "./admission.js";
 
 export type SupervisorServiceErrorCode =
   | "command_uncertain"
@@ -166,6 +166,10 @@ export class LocalSupervisorService {
             ? {}
             : { capabilitySnapshot: command.capabilitySnapshot }),
           cwd: command.cwd,
+          ...(command.projectRoot === undefined ? {} : { projectRoot: command.projectRoot }),
+          ...(command.protectedPaths === undefined
+            ? {}
+            : { protectedPaths: command.protectedPaths }),
           recordedAt: this.#now().toISOString(),
         }),
       );
@@ -282,6 +286,8 @@ export class LocalSupervisorService {
           ? {}
           : { capabilitySnapshot: command.capabilitySnapshot }),
         cwd: command.cwd,
+        ...(command.projectRoot === undefined ? {} : { projectRoot: command.projectRoot }),
+        ...(command.protectedPaths === undefined ? {} : { protectedPaths: command.protectedPaths }),
         token: randomBytes(32).toString("hex"),
         createdAt,
       });
@@ -1527,7 +1533,9 @@ function journalMatchesJob(journal: SubmissionCommandRecord, job: JobRecord): bo
     journal.workflowSourceDigest ===
       createHash("sha256").update(job.workflowSource).digest("hex") &&
     journal.capabilitySnapshotDigest === job.capabilitySnapshot?.digest &&
-    journal.cwd === job.cwd
+    journal.cwd === job.cwd &&
+    journal.projectRoot === job.projectRoot &&
+    samePaths(journal.protectedPaths, job.protectedPaths)
   );
 }
 
@@ -1539,7 +1547,9 @@ function sameSubmission(job: JobRecord, command: SubmitCommand): boolean {
     job.sourceName === command.sourceName &&
     job.workflowSource === command.workflowSource &&
     job.capabilitySnapshot?.digest === command.capabilitySnapshot?.digest &&
-    job.cwd === command.cwd
+    job.cwd === command.cwd &&
+    job.projectRoot === command.projectRoot &&
+    samePaths(job.protectedPaths, command.protectedPaths)
   );
 }
 
@@ -1551,8 +1561,17 @@ function sameSubmitCommand(left: SubmitCommand, right: SubmitCommand): boolean {
     left.sourceName === right.sourceName &&
     left.workflowSource === right.workflowSource &&
     left.capabilitySnapshot?.digest === right.capabilitySnapshot?.digest &&
-    left.cwd === right.cwd
+    left.cwd === right.cwd &&
+    left.projectRoot === right.projectRoot &&
+    samePaths(left.protectedPaths, right.protectedPaths)
   );
+}
+
+function samePaths(left: readonly string[] | undefined, right: readonly string[] | undefined) {
+  if (left === undefined || right === undefined) {
+    return left === right;
+  }
+  return left.length === right.length && left.every((path, index) => path === right[index]);
 }
 
 function assertWorkerMatchesJob(descriptor: WorkerDescriptor, job: JobRecord): void {

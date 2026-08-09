@@ -10,30 +10,12 @@ import { runWorkflow } from "../../../src/application/run-workflow.js";
 import { createCapabilitySnapshot } from "../../../src/domain/capability/agent-skills.js";
 import type { WorkflowPackageSnapshotInput } from "../../../src/domain/capability/workflow-packages.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
-import { JsonlRunStore } from "../../../src/infrastructure/fs/jsonl-run-store.js";
 import { JsonlAdmissionStore } from "../../../src/infrastructure/fs/jsonl-admission-store.js";
+import { JsonlRunStore } from "../../../src/infrastructure/fs/jsonl-run-store.js";
 import {
   LocalSupervisorStore,
   LocalSupervisorStoreError,
 } from "../../../src/infrastructure/fs/local-supervisor-store.js";
-import {
-  LocalSupervisorService,
-  SupervisorServiceError,
-  type WorkerLauncher,
-} from "../../../src/supervisor/service.js";
-import {
-  SUPERVISOR_PROTOCOL_VERSION,
-  type WorkerResponse,
-} from "../../../src/supervisor/protocol.js";
-import {
-  createActiveRunClaim,
-  createJobRecord,
-  createSubmissionCommandRecord,
-  parseWorkerDescriptor,
-  type JobRecord,
-  type ActiveRunClaim,
-  type SupervisorCommandRecord,
-} from "../../../src/supervisor/records.js";
 import {
   createAdmissionInitializedEvent,
   createDispatchReservedEvent,
@@ -41,6 +23,25 @@ import {
   createJobReleasedEvent,
   createQueueCancellationRecordedEvent,
 } from "../../../src/supervisor/admission.js";
+import {
+  SUPERVISOR_PROTOCOL_VERSION,
+  type WorkerResponse,
+} from "../../../src/supervisor/protocol.js";
+import {
+  type ActiveRunClaim,
+  createActiveRunClaim,
+  createJobRecord,
+  createSubmissionCommandRecord,
+  type JobRecord,
+  parseWorkerDescriptor,
+  type SupervisorCommandRecord,
+} from "../../../src/supervisor/records.js";
+import {
+  LocalSupervisorService,
+  SupervisorServiceError,
+  type WorkerLauncher,
+} from "../../../src/supervisor/service.js";
+import { projectedPromptActivationSource } from "../../fixtures/prompt-activation.js";
 
 const temporaryDirectories: string[] = [];
 const POLICY_DIGEST = "a".repeat(64);
@@ -54,6 +55,19 @@ afterEach(async () => {
 });
 
 describe("LocalSupervisorService", () => {
+  it("rejects an activation locator without an exact activation snapshot", async () => {
+    const harness = await createHarness();
+    const command = {
+      ...submitCommand(randomUUID(), harness.directory, "missing-activation"),
+      sourceName: "activation:adaptive-workflow",
+      workflowSource: projectedPromptActivationSource,
+    };
+
+    await expect(harness.service.submit(command)).rejects.toThrow(/one exact activation/i);
+    await expect(harness.store.listActiveRunClaims()).resolves.toEqual([]);
+    await expect(harness.store.listWorkerDescriptors()).resolves.toEqual([]);
+  });
+
   it("admits a packaged root from the submitted immutable snapshot", async () => {
     const harness = await createHarness();
     const source = workflowSource().trim();
@@ -78,6 +92,26 @@ describe("LocalSupervisorService", () => {
     expect(harness.launcher.jobs[0]).toMatchObject({
       sourceName: "workflow:service-root@1.0.0",
       capabilitySnapshot: { digest: capabilitySnapshot.digest },
+    });
+  });
+
+  it("persists the project root in the detached job identity", async () => {
+    const harness = await createHarness();
+    const projectRoot = join(harness.directory, "project-root");
+    const command = {
+      ...submitCommand(randomUUID(), harness.directory, "project-root-run"),
+      projectRoot,
+    };
+
+    await expect(harness.service.submit(command)).resolves.toMatchObject({
+      type: "accepted",
+      runId: "project-root-run",
+    });
+
+    expect(harness.launcher.jobs).toHaveLength(1);
+    expect(harness.launcher.jobs[0]).toMatchObject({ projectRoot });
+    await expect(harness.store.readCommand(command.commandId)).resolves.toMatchObject({
+      projectRoot,
     });
   });
 

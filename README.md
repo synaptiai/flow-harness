@@ -20,7 +20,7 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Durable exact-output conditions, guarded branches, omission propagation, and explicit joins | Implemented with bounded selected-branch concurrency |
 | Replay-safe bounded loops over local command/agent/verifier DAGs | Implemented through finite acyclic expansion, exact stop evidence, and hard failure at the declared bound |
 | Typed result publication from durable evidence | Implemented with strict bounded JSON, closed schemas, canonical values, hashes, and replay verification |
-| Isolated child workflow runs with typed results | Implemented with deterministic child identities, separate ledgers, bounded run trees, portable reflink-or-copy workspaces, recovery, cancellation, and parent resource accounting |
+| Isolated child workflow runs with typed results | Implemented with deterministic child identities, separate ledgers, bounded run trees, private project-sibling workspaces, legacy relocation before recovery, cancellation, and parent resource accounting |
 | Bounded accept-best optimization loops | Implemented with typed numeric metrics and invariants, finite candidate expansion, isolated candidate deltas, stale-parent refusal, write-ahead promotion/rollback, stagnation, and typed restart reconciliation |
 | Durable JSONL run ledger and inspection | Implemented |
 | Safe-boundary recovery with exclusive local ownership | Implemented |
@@ -38,9 +38,9 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Versioned workflow packages | Implemented for strict local or digest-pinned installed inert source manifests, exact packaged roots and children, closed snapshot-only compilation, and durable replay identity |
 | Remote capability bundle distribution | Implemented with deterministic inert `.flowpkg` files, explicit public HTTPS plus SHA-256 installation, a content-addressed project store, deterministic lock, local audit/removal commands, and offline execution/recovery |
 | Reproducible harness evaluation | Implemented for paired `flow-workflow-v1` profiles, immutable task/workflow/verifier identity, fresh trial workspaces, private deterministic checks, digest-chained evidence, offline reports, and constrained paired comparison |
-| Evidence-bound prompt candidates | Implemented for canonical tuning-only evidence, strict prompt-only overlays on exact baseline workflows, candidate-aware paired evaluation, and immutable public identity; automatic generation and activation remain unavailable |
+| Evidence-bound prompt candidates | Flow implements tuning evidence, strict prompt overlays, paired evaluation, reviewed activation, durable run snapshots, and rollback. Automatic generation remains unavailable |
 | Proof-safe fresh recovery of interrupted agent attempts | Implemented as explicit opt-in for read-only attempts and edit attempts proven not applied |
-| Fail-closed sandboxed command isolation | Filesystem/network isolation is implemented on Linux and macOS; strict agent-command descendant lifecycle containment is currently Linux-only |
+| Fail-closed sandboxed command isolation | Flow implements filesystem and network isolation on Linux and macOS. Linux alone provides strict agent-command descendant lifecycle containment |
 | Signed registries, automatic updates, policy/UI packages, and model network tools | Planned |
 | VM-grade isolation of the host-side agent runtime | Planned |
 
@@ -206,12 +206,43 @@ profiles:
   - { id: candidate, adapter: flow-workflow-v1, candidate: better.prompt-candidate.yaml }
 ```
 
-Flow verifies stable no-follow source reads and root/ancestor/final identities, every declared digest, the
-exact current prompt hash, and evidence coverage of the baseline. It changes only the declared
-prompt leaves, serializes the projection deterministically, and passes it through the ordinary
-compiler and evaluation adapter.
-A favorable report is evidence only: automatic candidate generation, activation, rollout,
-rollback, and live self-modification remain unavailable.
+Flow verifies stable no-follow reads and each declared digest. It also verifies the current prompt
+hash and baseline evidence coverage. Flow changes only the declared prompt fields. It then uses the
+standard compiler and evaluation adapter.
+
+Activation requires a complete superior evaluation. First, request a preview:
+
+```sh
+node dist/cli/main.js candidate activate better.prompt-candidate.yaml \
+  --evaluation candidate-evaluation --actor operator:test --dry-run
+```
+
+Review the candidate identity, evaluation proof, current selection, and proposal digest. Apply only
+that digest:
+
+```sh
+node dist/cli/main.js candidate activate better.prompt-candidate.yaml \
+  --evaluation candidate-evaluation --actor operator:test \
+  --expected-digest <proposal-sha256>
+node dist/cli/main.js activation inspect evaluated-profile
+node dist/cli/main.js run activation:evaluated-profile --run-id active-candidate-run
+```
+
+Activation does not change the baseline file. Flow stores one candidate artifact and one baseline
+artifact from the same reviewed evaluation. Each run stores only the exact selected artifact in its
+durable capability snapshot. A later activation or rollback does not change that run.
+
+Rollback selects an earlier candidate artifact or the exact stored baseline artifact for future
+runs. It does not delete stored activation artifacts:
+
+```sh
+node dist/cli/main.js activation rollback evaluated-profile \
+  --to baseline --actor operator:test --dry-run
+node dist/cli/main.js activation rollback evaluated-profile \
+  --to baseline --actor operator:test --expected-digest <proposal-sha256>
+```
+
+Automatic candidate generation and model-authorized activation remain unavailable.
 
 ### Use a portable Agent Skill
 
@@ -443,10 +474,12 @@ node dist/cli/main.js run examples/isolated-child.workflow.yaml --run-id child-d
 node dist/cli/main.js inspect child-demo
 ```
 
-The parent durably records a deterministic child run link, snapshots the exact working-tree content
-into an owner-only reflink-or-copy workspace, runs the embedded workflow with the normal compiler,
-scheduler, policy, sandbox, and ledger, then discards the workspace and imports its canonical typed
-result and resource totals. The child ledger remains independently inspectable at the run id shown
+The parent durably records a deterministic child run link.
+It snapshots the exact working-tree content in an owner-only reflink-or-copy workspace outside the protected project `.flow` directory and run store.
+It runs the embedded workflow with the normal compiler, scheduler, policy, sandbox, and ledger.
+It then discards the workspace and imports its canonical typed result and resource totals.
+
+The child ledger remains independently inspectable at the run id shown
 under `nodes.delegate.childRun`. Every child declares all five run ceilings, including
 `maxArtifactBytes`. A child ceiling is reserved against its immediate parent's remaining budget
 before materialization; nested reservations and verified actual roll-ups propagate those bounds
@@ -816,9 +849,10 @@ ambiguous work.
 ## Security boundary
 
 Each command and descendant receives workspace write access, a private temporary directory, an
-explicit environment allowlist, and no network. The actual run store, `.flow`, `.git`, environment
-files, and key files are write-protected. If the sandbox is unavailable or reports degraded
-isolation, Flow does not spawn the command. Agent-issued commands add a stricter lifecycle gate:
+explicit environment allowlist, and no network. Flow denies reads of the canonical project `.flow`
+directory and the actual run store. Flow denies writes to those paths, `.git`, environment files,
+and key files. If the sandbox is unavailable or reports degraded isolation, Flow does not spawn the
+command. Agent-issued commands add a stricter lifecycle gate:
 only verified Linux PID-namespace containment can authorize process creation.
 
 When `agent.toolApproval.exec.mode` is `required`, Flow adds a human authorization boundary between

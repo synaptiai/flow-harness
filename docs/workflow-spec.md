@@ -169,15 +169,53 @@ levels, and the complete recursively compiled
 tree is limited to 1,024 nodes. These are compile-time tree limits in addition to each workflow's
 ordinary 64-source-node and 256-expanded-node limits.
 
-`node_started` derives one deterministic child run id from the parent run id, child node id, and
-attempt. It persists that id together with the child workflow/schema digests before materializing a
-workspace. The production backend creates an owner-only copy-on-write clone where supported and
-falls back to an ordinary copy. It includes dirty and untracked content, modes, and symbolic links
-without following them; excludes `.flow` and every protected run-store path; refuses sockets,
-devices, and FIFOs; and applies default ceilings of 200,000 entries and 10 GiB of logical file
-content. Each copied regular file is hash-checked and rejected if its source identity changes during
-copy. This portable backend is content-verified isolation from parent mutations, not an atomic
-filesystem snapshot or security boundary.
+`node_started` derives one deterministic child run id from the parent run id, child node id, and attempt.
+It saves that id and the child workflow and schema digests before it creates a workspace.
+The production backend creates an owner-only copy-on-write clone where the filesystem supports it.
+The backend uses an ordinary copy on other filesystems.
+New workspaces are in an owner-only project-sibling collection.
+The collection name is `.<project-name>.flow-workspaces`.
+A hash of the canonical physical run-store path separates workspace groups.
+Filesystem aliases for one run store select one workspace group.
+The project workspace, the protected project `.flow` directory, and the configured run store do not contain the collection.
+Attached runs use the canonical configured project root.
+Detached jobs save the same optional root in their immutable identity.
+For an old job without these fields, Flow can infer the root from the durable `.flow/runs` ancestor.
+It accepts the root only when the job directory is in that project.
+Flow rejects a linked collection or owner directory.
+
+It also excludes `.flow` and every protected run-store path.
+It includes dirty and untracked content, modes, and symbolic links without following them.
+It refuses sockets, devices, and FIFOs.
+It applies default ceilings of 200,000 entries and 10 GiB of logical file content.
+
+Flow hash-checks each copied regular file.
+It rejects a file if its source identity changes during copy.
+This portable backend is content-verified isolation from parent mutations.
+It is not an atomic filesystem snapshot or security boundary.
+Each child command keeps the complete protected-path deny list.
+The broker and SRT protect the `.flow` path in its child workspace.
+The broker denies each historical `.flow-workspaces` or named `.<name>.flow-workspaces` path segment.
+Before command spawn, SRT scans at most 200,000 execution-root entries.
+It adds each existing private collection as a literal protected path.
+It rejects linked or indirect collections.
+For a child, SRT denies reads from every ancestor collection but permits writes in the selected workspace.
+Thus, a child cannot read a sibling workspace at any nesting level.
+The snapshot copier omits these collections.
+On Linux, Flow rejects a command root that strictly contains the configured project root.
+Linux SRT cannot protect a matching path that does not exist when the sandbox starts.
+
+Recovery can find a workspace in the old run-store location.
+Flow validates the old manifest with its old exclusion identity.
+For a nested child, Flow translates the moved parent path to the old parent path.
+Flow moves and syncs the identity when both locations use one filesystem.
+Across filesystems, Flow uses a bounded staging copy.
+It verifies and syncs the copy before one rename publishes it.
+It removes the old identity after publication.
+The first recovery event records the old and new paths in `run_resumed.workspaceRelocation`.
+A parent records this event before it starts recovery in that child.
+Flow moves and syncs the complete workspace identity directory to the project-sibling collection.
+Flow reopens the moved workspace before command or model activity starts.
 
 The child executes the same Flow compiler, scheduler, policy, sandbox, executors, cancellation
 signal, and recovery rules in its isolated working directory, but writes a separate JSONL history.
@@ -270,9 +308,8 @@ derived from those mappings. It succeeds only after the selected terminal succee
 unselected terminal was omitted. Cross-case dependencies, incomplete branch terminals, ambiguous
 joins, and derived cycles fail compilation.
 
-The serialized persisted control-graph projection is capped at 512 KiB across the workflow; both
-compilation and event parsing measure its actual JSON UTF-8 bytes. This leaves bounded room in the
-2 MiB run-event envelope for goal, budget, approval, and recovery metadata.
+The serialized persisted control graph is at most 512 KiB. Compilation and event parsing measure its
+JSON UTF-8 bytes. The 20 MiB run-event limit also holds activation snapshots and recovery metadata.
 
 The source field must be untruncated. Truncated output records a typed, non-retryable,
 side-effect-free control failure and terminates the run rather than making a partial-data decision.
@@ -384,8 +421,8 @@ deletions, executable modes, directories, regular files, and symbolic links. Pat
 identities, entry count, logical bytes, snapshot digests, and manifest digest are persisted in the
 run event. Defaults limit a delta to 20,000 entries and 2 GiB of logical before-plus-after file
 bytes. The exact persisted entry list has a separate 128 KiB UTF-8 ceiling so the complete
-evaluation stays within the 2 MiB run-event envelope even at the typed-result and control-graph
-limits. Exceeding any capture bound records a non-improving candidate rejection and cleans the
+evaluation stays within the 20 MiB run-event envelope. Exceeding any capture bound records a
+non-improving candidate rejection and cleans the
 workspace without mutating the parent. Sockets, devices, FIFOs, malformed paths, duplicate paths,
 and changed source identities fail closed.
 
@@ -988,6 +1025,10 @@ executable package code, and non-command drivers are unsupported.
 
 Every command node and descendant runs through Flow's required SRT adapter. The fixed `workspace-write-network-deny-v1` profile allows the selected workflow directory and a private temporary directory, denies network and undeclared Unix sockets, omits ambient credentials and injection variables from the child environment, and denies writes to the actual run store, `.flow`, `.git`, environment files, and key files. Concurrent same-policy commands share one initialized SRT session but receive distinct temporary directories, environment values, and per-command filesystem configurations. Flow reference-counts wraps, queues a different concurrent workspace or policy until the active session resets, honors cancellation while queued, and resets SRT only after the last compatible command releases. On Linux, Flow resolves SRT's packaged seccomp helper canonically, passes it as the explicit SRT apply path, and re-exposes only that file read-only when the Flow installation lies outside the workflow directory. If SRT is missing, unsupported, degraded, or cannot initialize, the node fails before spawn; Flow has no unsandboxed command fallback.
 
+On Linux, a read-denied directory can appear as an ephemeral SRT mask. A write call in that mask can
+report success, but it cannot change the host run store, `.flow` path, or private collection. On
+macOS, the same write call fails. The protected host-write result is the cross-platform contract.
+
 New command evidence records `anthropic-sandbox-runtime`, its exact installed version, the named profile, and a SHA-256 digest of the semantic policy. Generic command-node evidence keeps this field optional only for compatibility with ledgers created before sandbox evidence existed. The `flow.agent-commands/v1` settlement schema always requires sandbox provenance plus retained-prefix hashes and byte counts.
 
 ## Agent node
@@ -1221,8 +1262,8 @@ operation digest, sequence-derived request identity, grant lifetime, actor, expi
 consumed start. Graph approval replay reconstructs the prompt and ordered evidence observations,
 verifies their attempts, fields, hashes, completeness, request identity and digest, then validates
 the exact attributable decision.
-A single serialized JSONL event is capped at 2 MiB. The ceiling includes worst-case JSON escaping
-at the documented decision, effect, receipt, target, output, and error bounds.
+A single serialized JSONL event is at most 20 MiB. The limit includes worst-case JSON escaping and
+one complete 16 MiB capability snapshot.
 
 Fresh and recovered execution publish complete ownership metadata atomically before appending. The metadata contains a process ID and random token. A live process blocks another claimant; an exited owner can be moved aside atomically; corrupt or incomplete ownership metadata fails closed. This provides exclusive same-host execution, not a distributed lease. Creating `events.jsonl` still atomically grants a fresh run identifier. The ledger's run ID must match its directory name.
 
@@ -1305,7 +1346,7 @@ changes:
       value: Read the task, implement it carefully, and verify the result.
 ```
 
-Candidate source is at most 1 MiB. Identifiers and semantic versions are canonical. Baseline and
+Candidate source is at most 1 MiB. The projected workflow is at most 8 MiB. Identifiers and semantic versions are canonical. Baseline and
 evidence paths are portable relative paths below the candidate directory and must resolve through
 direct regular no-follow files. A candidate declares 1–16 unique evidence paths/digests and 1–16
 unique prompt targets; each replacement is non-empty and at most 262144 characters, with at most
@@ -1334,7 +1375,59 @@ selects a candidate with `candidate: <path>` instead of `workflow: <path>` while
 `adapter: flow-workflow-v1`. It must be the declared comparison candidate and must overlay the exact
 declared comparison baseline. Public headers distinguish generated candidate projections from
 file-backed workflow sources; direct file sources omit the discriminator to preserve version-1 plan
-digests and legacy resume. Automatic generation and activation remain unavailable.
+digests and legacy resume. Automatic generation remains unavailable.
+
+### Prompt activation
+
+An operator can activate a prompt candidate after a complete superior evaluation. Preview creates a
+proposal without changing state:
+
+```text
+flow candidate activate <candidate.yaml> --evaluation <id> --actor <label> --dry-run
+```
+
+Apply requires the exact preview digest:
+
+```text
+flow candidate activate <candidate.yaml> --evaluation <id> --actor <label> \
+  --expected-digest <sha256>
+```
+
+Each activation snapshot contains the selection role, complete candidate identity, aggregate
+evaluation proof, and exact selected source. Candidate selection binds the projected workflow.
+Baseline selection binds the exact baseline workflow. A source is at most 8 MiB. The complete
+capability snapshot is at most 16 MiB.
+
+Flow stores one candidate artifact and one baseline artifact below `.flow/activations/sha256` for
+each approval. One atomic index contains sorted artifact entries, workflow heads, and a hash-chained
+transition history. One recoverable mutation lock protects each index change.
+
+The store permits at most 128 artifacts, 128 workflow heads, and 2,048 transitions.
+The index is at most 4 MiB.
+Stored artifacts use at most 256 MiB in total.
+Each index or lock recovery scan permits at most 128 temporary files and 8 MiB of temporary data.
+Blob recovery permits at most 128 temporary files and 256 MiB of temporary data.
+Each blob temporary file is at most 16 MiB.
+
+`activation:<workflow-id>` selects the current artifact for a new run. Detached compilation requires
+one matching activation in the immutable capability snapshot. It verifies the exact decoded source
+bytes, compiles the saved source, and verifies its evaluated workflow digest. The run stores the
+complete snapshot before execution.
+
+Resume and detached execution use the durable run snapshot. They do not read the live activation
+index. A later activation or rollback cannot change the admitted run.
+
+Rollback selects an earlier stored candidate artifact or the stored baseline artifact for the
+current lineage:
+
+```text
+flow activation rollback <workflow-id> --to <candidate-id>@<version>|baseline \
+  --actor <label> --dry-run
+```
+
+Apply requires the exact rollback proposal digest. Flow verifies the target artifact before it
+changes the head. Rollback does not rewrite the baseline file, change active runs, or delete
+artifacts.
 
 ## Current limitations
 
@@ -1347,7 +1440,7 @@ digests and legacy resume. Automatic generation and activation remain unavailabl
 - Agent mutation is limited to exact single-file edit of an existing UTF-8 file plus explicitly selected, argv-only sandboxed commands. No direct create, delete, rename, shell, network, fuzzy patch, environment/cwd override, interactive process, background job, or multi-file transaction tool is exposed.
 - No opaque continuation after a process dies during an in-flight Pi tool call. Live approval works only while the owning attached process or detached worker retains that Pi session. A fresh retry is a new attempt and is allowed only by the persisted proof gate; it is not a substitute for restoring a live session.
 - Model verifiers, including packaged rubrics, are zero-tool and evidence-bounded but remain probabilistic and not prompt-injection-proof. Arbitrary evaluator code and reward/evaluation environments are not supported.
-- Adaptive candidates are prompt-only, root-agent overlays. Skill, memory, sub-agent, routing,
-  activation, rollout, and rollback contracts remain unavailable.
+- Adaptive candidates are prompt-only, root-agent overlays. Automatic skill, memory, sub-agent, and
+  routing candidates remain unavailable. Traffic splitting and staged rollout remain unavailable.
 - No prepaid hard model-cost cap, provider invoice reconciliation, or CPU/memory/disk quota. `maxArtifactBytes` bounds logical retained evidence, not physical storage, spill, or disk usage. Per-run graph-node concurrency, detached worker count, and queue depth are separate bounded controls.
 - No schema migration path is promised while the format remains `v1alpha1`.

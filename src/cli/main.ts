@@ -22,12 +22,22 @@ import type {
   RecoverableRunEventStore,
   WorkspaceIsolator,
 } from "../application/ports.js";
+import {
+  createPromptActivationFromEvaluation,
+  PromptActivationAdmissionError,
+} from "../application/prepare-prompt-activation.js";
 import { runEvaluationTrials } from "../application/run-evaluation.js";
 import { RunRecoveryError, resumeWorkflow, runWorkflow } from "../application/run-workflow.js";
 import {
   admitWorkflowPackages,
   compileWorkflowFromSnapshot,
 } from "../application/workflow-package-admission.js";
+import {
+  PromptActivationError,
+  type PromptActivationSnapshot,
+  parsePromptActivationLocator,
+  promptActivationSource,
+} from "../domain/adaptation/prompt-activation.js";
 import { PromptCandidateError } from "../domain/adaptation/prompt-candidate.js";
 import {
   type CapabilitySnapshot,
@@ -108,6 +118,10 @@ import {
   type StoredEvaluation,
 } from "../infrastructure/fs/local-evaluation-store.js";
 import {
+  LocalPromptActivationStore,
+  PromptActivationStoreError,
+} from "../infrastructure/fs/local-prompt-activation-store.js";
+import {
   admitLocalPromptCandidate,
   LocalPromptCandidateError,
 } from "../infrastructure/fs/local-prompt-candidate.js";
@@ -178,14 +192,18 @@ Usage:
   flow packages verify
   flow packages remove <name> --version <exact>
   flow candidate validate <candidate.yaml>
+  flow candidate activate <candidate.yaml> --evaluation <id> --actor <label> [--reason <text>] [--evaluations-dir <path>] <--dry-run|--expected-digest <sha256>>
+  flow activation list
+  flow activation inspect <workflow-id>
+  flow activation rollback <workflow-id> --to <candidate-id>@<version>|baseline --actor <label> [--reason <text>] <--dry-run|--expected-digest <sha256>>
   flow eval validate <plan.yaml>
   flow eval run <plan.yaml> [--evaluation-id <id>] [--evaluations-dir <path>]
   flow eval inspect <evaluation-id> [--evaluations-dir <path>]
   flow eval export <evaluation-id> --output <path> [--evaluations-dir <path>]
   flow eval tuning-evidence <evaluation-id> --output <path> [--evaluations-dir <path>]
-  flow validate <workflow.yaml|workflow:name@version>
-  flow run <workflow.yaml|workflow:name@version> [--detach] [--command-id <uuid>] [--run-id <id>] [--runs-dir <path>] [--cwd <path>]
-  flow resume <workflow.yaml|workflow:name@version> --run-id <id> [--detach] [--command-id <uuid>] [--runs-dir <path>] [--cwd <path>]
+  flow validate <workflow.yaml|workflow:name@version|activation:workflow-id>
+  flow run <workflow.yaml|workflow:name@version|activation:workflow-id> [--detach] [--command-id <uuid>] [--run-id <id>] [--runs-dir <path>] [--cwd <path>]
+  flow resume <workflow.yaml|workflow:name@version|activation:workflow-id> --run-id <id> [--detach] [--command-id <uuid>] [--runs-dir <path>] [--cwd <path>]
   flow approve <run-id> <request-id> --actor <label> [--runs-dir <path>]
   flow deny <run-id> <request-id> --actor <label> [--reason <text>] [--runs-dir <path>]
   flow cancel <run-id> --actor <label> [--reason <text>] [--command-id <uuid>] [--runs-dir <path>]
@@ -241,7 +259,12 @@ export interface CliDependencies {
   readonly createAgentCommandApprovalChannel: (
     rootDirectory: string,
   ) => AgentCommandApprovalDecisionChannel;
-  readonly createWorkspaceIsolator: (runsDirectory: string) => WorkspaceIsolator;
+  readonly createWorkspaceIsolator: (
+    runsDirectory: string,
+    protectedPaths?: readonly string[],
+    executionRoot?: string,
+    projectRoot?: string,
+  ) => WorkspaceIsolator;
   readonly readTextFile: (path: string) => Promise<string>;
   readonly initializeProject: (
     directory: string,
@@ -298,6 +321,8 @@ export async function main(
         return await packagesCommand(args.slice(1), io, dependencyOverrides);
       case "candidate":
         return await candidateCommand(args.slice(1), io, dependencyOverrides);
+      case "activation":
+        return await activationCommand(args.slice(1), io, dependencyOverrides);
       case "eval":
         return await evaluationCommand(args.slice(1), io, dependencyOverrides);
       case "validate":
@@ -409,6 +434,14 @@ export async function main(
     }
     if (error instanceof PromptCandidateError || error instanceof LocalPromptCandidateError) {
       io.stderr(boundedCliDiagnostic(error.message));
+      return 1;
+    }
+    if (
+      error instanceof PromptActivationError ||
+      error instanceof PromptActivationAdmissionError ||
+      error instanceof PromptActivationStoreError
+    ) {
+      io.stderr(`${error.code}: ${boundedCliDiagnostic(error.message)}`);
       return 1;
     }
     if (error instanceof TuningEvidenceError) {
@@ -1062,7 +1095,13 @@ async function evaluationCommand(
     const claimed = await store.claim(evaluationId, admitted.planDigest);
     const evaluationRuntime = join(evaluationsDirectory, evaluationId, "runtime");
     const runStoreDirectory = join(evaluationsDirectory, evaluationId, "runs");
-    const workspaceIsolator = dependencies.createWorkspaceIsolator(evaluationRuntime);
+    const evaluationRoot = join(evaluationsDirectory, evaluationId);
+    const workspaceIsolator = dependencies.createWorkspaceIsolator(
+      evaluationRuntime,
+      [evaluationRuntime],
+      evaluationRuntime,
+      evaluationRoot,
+    );
     const adapters = new Map<string, FlowWorkflowEvaluationAdapter>();
     try {
       await runEvaluationTrials({
@@ -1156,18 +1195,218 @@ async function candidateCommand(
   overrides: Partial<CliDependencies>,
 ): Promise<number> {
   const subcommand = args[0];
-  if (subcommand !== "validate") {
-    throw new CliUsageError("candidate requires the validate subcommand");
+  if (subcommand === "validate") {
+    const { positionals } = parseCommandArgs(args.slice(1), {});
+    const candidatePath = requireSinglePositional(
+      positionals,
+      "candidate validate requires one candidate path",
+    );
+    const cwd = overrides.cwd ?? process.cwd();
+    const admitted = await admitLocalPromptCandidate(resolve(cwd, candidatePath));
+    io.stdout(JSON.stringify({ valid: true, candidate: admitted.identity }, null, 2));
+    return 0;
   }
-  const { positionals } = parseCommandArgs(args.slice(1), {});
-  const candidatePath = requireSinglePositional(
-    positionals,
-    "candidate validate requires one candidate path",
-  );
-  const cwd = overrides.cwd ?? process.cwd();
-  const admitted = await admitLocalPromptCandidate(resolve(cwd, candidatePath));
-  io.stdout(JSON.stringify({ valid: true, candidate: admitted.identity }, null, 2));
-  return 0;
+  if (subcommand === "activate") {
+    const dryRun = extractBooleanFlag(args.slice(1), "--dry-run");
+    const { positionals, values } = parseCommandArgs(dryRun.args, {
+      actor: { type: "string" },
+      evaluation: { type: "string" },
+      "evaluations-dir": { type: "string" },
+      "expected-digest": { type: "string" },
+      reason: { type: "string" },
+    });
+    const candidatePath = requireSinglePositional(
+      positionals,
+      "candidate activate requires one candidate path",
+    );
+    const actor = requireStringOption(values.actor, "candidate activate requires --actor <label>");
+    const evaluationId = requireStringOption(
+      values.evaluation,
+      "candidate activate requires --evaluation <id>",
+    );
+    requireMutationMode(dryRun.enabled, values["expected-digest"], "candidate activate");
+    const dependencies = configDependenciesFrom(overrides);
+    const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
+    const store = promptActivationStore(config);
+    const candidate = await admitLocalPromptCandidate(resolve(dependencies.cwd, candidatePath));
+    const evaluationsDirectory = await resolveEvaluationsDirectory(
+      dependencies,
+      values["evaluations-dir"],
+    );
+    const evaluation = await new LocalEvaluationStore(evaluationsDirectory).read(evaluationId);
+    const snapshots = createPromptActivationFromEvaluation(candidate, evaluation);
+    const input = {
+      snapshot: snapshots.candidate,
+      baselineSnapshot: snapshots.baseline,
+      actor,
+      ...(values.reason === undefined ? {} : { reason: values.reason }),
+    };
+    if (dryRun.enabled) {
+      io.stdout(
+        JSON.stringify(
+          {
+            dryRun: true,
+            activation: promptActivationView(snapshots.candidate),
+            proposal: await store.previewActivate(input),
+          },
+          null,
+          2,
+        ),
+      );
+      return 0;
+    }
+    io.stdout(
+      JSON.stringify(
+        await store.applyActivate({
+          ...input,
+          expectedDigest: requireStringOption(
+            values["expected-digest"],
+            "candidate activate requires --expected-digest <sha256>",
+          ),
+        }),
+        null,
+        2,
+      ),
+    );
+    return 0;
+  }
+  throw new CliUsageError("candidate requires validate or activate");
+}
+
+async function activationCommand(
+  args: readonly string[],
+  io: CliIo,
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  const subcommand = args[0];
+  const dependencies = configDependenciesFrom(overrides);
+  const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
+  const store = promptActivationStore(config);
+  if (subcommand === "list") {
+    const { positionals } = parseCommandArgs(args.slice(1), {});
+    if (positionals.length !== 0) {
+      throw new CliUsageError("activation list accepts no arguments");
+    }
+    io.stdout(JSON.stringify(await store.list(), null, 2));
+    return 0;
+  }
+  if (subcommand === "inspect") {
+    const { positionals } = parseCommandArgs(args.slice(1), {});
+    const workflowId = requireSinglePositional(
+      positionals,
+      "activation inspect requires one workflow id",
+    );
+    const index = await store.list();
+    const head = index.heads.find((item) => item.workflowId === workflowId);
+    if (head === undefined) {
+      throw new PromptActivationStoreError(
+        "not_found",
+        `workflow "${workflowId}" has no activation history`,
+      );
+    }
+    const activations = index.activations.filter((item) => item.workflowId === workflowId);
+    const active =
+      head.activationDigest === null
+        ? null
+        : promptActivationView((await store.loadActive(workflowId)).snapshot);
+    io.stdout(JSON.stringify({ workflowId, head, activations, active }, null, 2));
+    return 0;
+  }
+  if (subcommand === "rollback") {
+    const dryRun = extractBooleanFlag(args.slice(1), "--dry-run");
+    const { positionals, values } = parseCommandArgs(dryRun.args, {
+      actor: { type: "string" },
+      "expected-digest": { type: "string" },
+      reason: { type: "string" },
+      to: { type: "string" },
+    });
+    const workflowId = requireSinglePositional(
+      positionals,
+      "activation rollback requires one workflow id",
+    );
+    const actor = requireStringOption(values.actor, "activation rollback requires --actor <label>");
+    const target = parseRollbackSelection(
+      requireStringOption(values.to, "activation rollback requires --to <target>"),
+    );
+    requireMutationMode(dryRun.enabled, values["expected-digest"], "activation rollback");
+    const input = {
+      workflowId,
+      target,
+      actor,
+      ...(values.reason === undefined ? {} : { reason: values.reason }),
+    };
+    if (dryRun.enabled) {
+      io.stdout(
+        JSON.stringify({ dryRun: true, proposal: await store.previewRollback(input) }, null, 2),
+      );
+      return 0;
+    }
+    io.stdout(
+      JSON.stringify(
+        await store.applyRollback({
+          ...input,
+          expectedDigest: requireStringOption(
+            values["expected-digest"],
+            "activation rollback requires --expected-digest <sha256>",
+          ),
+        }),
+        null,
+        2,
+      ),
+    );
+    return 0;
+  }
+  throw new CliUsageError("activation requires list, inspect, or rollback");
+}
+
+function promptActivationStore(config: EffectiveFlowConfig): LocalPromptActivationStore {
+  if (config.projectRoot === null) {
+    throw new PromptActivationStoreError(
+      "not_found",
+      "prompt activation requires a Flow project root",
+    );
+  }
+  return new LocalPromptActivationStore(config.projectRoot);
+}
+
+function promptActivationView(snapshot: PromptActivationSnapshot) {
+  return Object.freeze({
+    version: snapshot.version,
+    kind: snapshot.kind,
+    selection: snapshot.selection,
+    workflowId: snapshot.workflowId,
+    candidateId: snapshot.candidateId,
+    candidateVersion: snapshot.candidateVersion,
+    candidate: snapshot.candidate,
+    evaluation: snapshot.evaluation,
+    source: { bytes: snapshot.source.bytes, sha256: snapshot.source.sha256 },
+    activationDigest: snapshot.activationDigest,
+  });
+}
+
+function requireMutationMode(
+  dryRun: boolean,
+  expectedDigest: string | undefined,
+  command: string,
+): void {
+  if (dryRun === (expectedDigest !== undefined)) {
+    throw new CliUsageError(
+      `${command} requires exactly one of --dry-run or --expected-digest <sha256>`,
+    );
+  }
+}
+
+function parseRollbackSelection(value: string) {
+  if (value === "baseline") {
+    return null;
+  }
+  const match = /^([^@]+)@([^@]+)$/.exec(value);
+  if (match?.[1] === undefined || match[2] === undefined) {
+    throw new CliUsageError(
+      "activation rollback target must be baseline or <candidate-id>@<exact-version>",
+    );
+  }
+  return Object.freeze({ candidateId: match[1], candidateVersion: match[2] });
 }
 
 function tuningEvidence(stored: StoredEvaluation) {
@@ -1285,6 +1524,7 @@ async function resumeCommand(
     dependencies,
   );
   const executionCwd = resolve(dependencies.cwd, values.cwd ?? ".");
+  const protectedPaths = resolveRunProtectedPaths(runsDirectory, config);
   const commandId = detachedCommandId(values["command-id"], detached.enabled);
   if (detached.enabled) {
     return await submitDetached(
@@ -1297,6 +1537,8 @@ async function resumeCommand(
         sourceName: admitted.sourceName,
         workflowSource: admitted.source,
         cwd: executionCwd,
+        ...(config.projectRoot === null ? {} : { projectRoot: config.projectRoot }),
+        protectedPaths,
         ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
       },
       runsDirectory,
@@ -1306,10 +1548,16 @@ async function resumeCommand(
   }
   const state = await resumeWorkflow(admitted.workflow, {
     cwd: executionCwd,
-    protectedPaths: [runsDirectory],
+    ...(config.projectRoot === null ? {} : { projectRoot: config.projectRoot }),
+    protectedPaths,
     runId,
     store,
-    workspaceIsolator: dependencies.createWorkspaceIsolator(runsDirectory),
+    workspaceIsolator: dependencies.createWorkspaceIsolator(
+      runsDirectory,
+      protectedPaths,
+      executionCwd,
+      config.projectRoot ?? undefined,
+    ),
     executor: dependencies.executor,
     effectReconciler: dependencies.effectReconciler,
     agentCommandApprovalDecisions: dependencies.createAgentCommandApprovalChannel(runsDirectory),
@@ -1381,6 +1629,7 @@ async function runCommand(
   ]);
   const runsDirectory = resolveRunsDirectory(dependencies.cwd, values["runs-dir"], config);
   const executionCwd = resolve(dependencies.cwd, values.cwd ?? ".");
+  const protectedPaths = resolveRunProtectedPaths(runsDirectory, config);
   const runId = values["run-id"] ?? randomUUID();
   const commandId = detachedCommandId(values["command-id"], detached.enabled);
   if (detached.enabled) {
@@ -1394,6 +1643,8 @@ async function runCommand(
         sourceName: admitted.sourceName,
         workflowSource: admitted.source,
         cwd: executionCwd,
+        ...(config.projectRoot === null ? {} : { projectRoot: config.projectRoot }),
+        protectedPaths,
         ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
       },
       runsDirectory,
@@ -1403,9 +1654,15 @@ async function runCommand(
   }
   const state = await runWorkflow(admitted.workflow, {
     cwd: executionCwd,
-    protectedPaths: [runsDirectory],
+    ...(config.projectRoot === null ? {} : { projectRoot: config.projectRoot }),
+    protectedPaths,
     store: dependencies.createStore(runsDirectory),
-    workspaceIsolator: dependencies.createWorkspaceIsolator(runsDirectory),
+    workspaceIsolator: dependencies.createWorkspaceIsolator(
+      runsDirectory,
+      protectedPaths,
+      executionCwd,
+      config.projectRoot ?? undefined,
+    ),
     executor: dependencies.executor,
     agentCommandApprovalDecisions: dependencies.createAgentCommandApprovalChannel(runsDirectory),
     ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
@@ -1859,6 +2116,38 @@ async function admitWorkflowArgument(
     );
     return await workflowPackageLoader(await catalogPromise)(reference);
   };
+  const activationLocator = parseActiveWorkflowLocator(argument);
+  if (activationLocator !== null) {
+    if (config.projectRoot === null) {
+      throw new PromptActivationStoreError(
+        "not_found",
+        "activation locators require a Flow project root",
+      );
+    }
+    const loaded = await new LocalPromptActivationStore(config.projectRoot).loadActive(
+      activationLocator.workflowId,
+    );
+    const source = promptActivationSource(loaded.snapshot);
+    const sourceName = `activation:${activationLocator.workflowId}`;
+    const admitted = await admitWorkflowPackages({
+      source: { kind: "inline", content: source, sourceName },
+      loadPackage,
+    });
+    const capabilitySnapshot = combineOptionalCapabilitySnapshots([
+      loaded.capabilitySnapshot,
+      admitted.capabilitySnapshot,
+    ]);
+    return Object.freeze({
+      source,
+      sourceName,
+      ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
+      workflow: compileWorkflowFromSnapshot({
+        source,
+        sourceName,
+        ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
+      }),
+    });
+  }
   const locator = parseWorkflowLocator(argument);
   if (locator !== null) {
     const snapshot = await loadPackage(locator);
@@ -1882,15 +2171,36 @@ function parseWorkflowLocator(value: string): WorkflowPackageReference | null {
   }
 }
 
+function parseActiveWorkflowLocator(value: string) {
+  try {
+    return parsePromptActivationLocator(value);
+  } catch {
+    throw new CliUsageError('activation locators must use "activation:<workflow-id>"');
+  }
+}
+
 async function admitResumeWorkflowArgument(
   argument: string,
   capabilitySnapshot: CapabilitySnapshot | undefined,
   dependencies: Pick<CliDependencies, "cwd" | "readTextFile">,
 ) {
-  const locator = parseWorkflowLocator(argument);
+  const activationLocator = parseActiveWorkflowLocator(argument);
+  const locator = activationLocator === null ? parseWorkflowLocator(argument) : null;
   let source: string;
   let sourceName: string;
-  if (locator === null) {
+  if (activationLocator !== null) {
+    const selected = capabilitySnapshot?.activations?.find(
+      (item) => item.workflowId === activationLocator.workflowId,
+    );
+    if (selected === undefined) {
+      throw new RunRecoveryError(
+        "workflow_mismatch",
+        `durable run history does not contain activation "${activationLocator.workflowId}"`,
+      );
+    }
+    sourceName = `activation:${activationLocator.workflowId}`;
+    source = promptActivationSource(selected);
+  } else if (locator === null) {
     sourceName = resolve(dependencies.cwd, argument);
     source = await dependencies.readTextFile(sourceName);
   } else {
@@ -2057,6 +2367,15 @@ function resolveRunsDirectory(
     return resolve(invocationDirectory, explicitRunsDirectory);
   }
   return resolve(config.projectRoot ?? invocationDirectory, ".flow/runs");
+}
+
+function resolveRunProtectedPaths(runsDirectory: string, config: EffectiveFlowConfig): string[] {
+  return [
+    ...new Set([
+      runsDirectory,
+      ...(config.projectRoot === null ? [] : [join(config.projectRoot, ".flow")]),
+    ]),
+  ];
 }
 
 async function resolveEvaluationsDirectory(

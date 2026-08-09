@@ -4,6 +4,7 @@ export interface CommandSandboxRequest {
   readonly executable: string;
   readonly args: readonly string[];
   readonly cwd: string;
+  readonly projectRoot?: string;
   readonly protectedPaths: readonly string[];
   readonly signal?: AbortSignal;
 }

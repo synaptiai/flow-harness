@@ -1,14 +1,14 @@
-import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
-
-import {
-  RunReplayError,
-  parseRunEvent,
-  reduceRunEvents,
-  type RunEvent,
-  type RunStartedEvent,
-} from "../../../src/domain/run/events.js";
+import { describe, expect, it } from "vitest";
 import { PolicyBroker } from "../../../src/domain/policy/broker.js";
+import {
+  calculateChildRunId,
+  parseRunEvent,
+  type RunEvent,
+  RunReplayError,
+  type RunStartedEvent,
+  reduceRunEvents,
+} from "../../../src/domain/run/events.js";
 
 describe("reduceRunEvents", () => {
   it("reconstructs a successful run from authoritative events", () => {
@@ -537,6 +537,53 @@ describe("reduceRunEvents", () => {
     expect(state).toMatchObject({ status: "running", lastSequence: 4 });
     expect(state.nodes["node-version"]).toMatchObject({ status: "succeeded", attempt: 1 });
     expect(state.nodes.typecheck).toMatchObject({ status: "pending", attempt: 0 });
+  });
+
+  it("records a verified child workspace relocation at a recovery boundary", () => {
+    const parentRunId = "parent-relocation";
+    const childRunId = calculateChildRunId(parentRunId, "delegate", 1);
+    const started = {
+      ...runStarted(),
+      runId: childRunId,
+      executionCwd: "/old/workspace",
+      executionWorkspace: {
+        backend: "reflink-copy-v1" as const,
+        snapshotDigest: "a".repeat(64),
+        parentRunId,
+        parentNodeId: "delegate",
+        parentAttempt: 1,
+      },
+    };
+    const resumed = {
+      ...base(2),
+      runId: childRunId,
+      type: "run_resumed" as const,
+      workspaceRelocation: {
+        fromCwd: "/old/workspace",
+        toCwd: "/private/workspace",
+      },
+    };
+
+    expect(reduceRunEvents([started, resumed])).toMatchObject({
+      executionCwd: "/private/workspace",
+      executionWorkspace: { parentRunId },
+    });
+  });
+
+  it("rejects a workspace relocation for a root run", () => {
+    expect(() =>
+      reduceRunEvents([
+        { ...runStarted(), executionCwd: "/old/workspace" },
+        {
+          ...base(2),
+          type: "run_resumed",
+          workspaceRelocation: {
+            fromCwd: "/old/workspace",
+            toCwd: "/private/workspace",
+          },
+        },
+      ]),
+    ).toThrow(/durable child execution context/i);
   });
 
   it("rejects recovery while a node attempt remains open", () => {

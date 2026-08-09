@@ -105,17 +105,19 @@ Prime Agent proves that Pi can support a distinct long-running harness. Its prod
 | Persistent IPython | Optional capability only; never describe it as a sandbox |
 | Recursive subagents | Use narrow contexts but keep recursion and joins graph-owned |
 | Executable Python skills | Defer because installation expands the supply-chain boundary |
-| Continual harness refinement | **Partially implemented independently** for evidence-bound prompt candidates: canonical tuning-only evidence, immutable supplemental prompt overlays, and paired regression/holdout evaluation. Model-driven proposal, skills, memory, routing, activation, rollout, and rollback remain future work |
+| Continual harness refinement | **Partially implemented independently** for prompt candidates, paired evaluation, reviewed activation, durable run snapshots, and rollback. Model-driven proposals and other adaptation surfaces remain future work |
 | Immutable base plus supplemental state | Adopt as the boundary for any future learning system |
 
 See [Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent), its [architecture](https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/architecture.md), and its [RLM trust model](https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/rlm.md). Prime Agent is MIT-licensed; substantial copied portions require preservation of both Pi and Prime notices.
 
-Prime Agent validates the value of keeping an immutable base plus supplemental refinements. Flow's
-first implementation narrows that pattern further: a prompt candidate has no Python/runtime
-authority, cannot directly apply itself, and must bind the exact tuning evidence and baseline it was
-derived from. Flow projects it through the normal compiler and uses the existing held-out/regression
-evaluation gate before any future activation design. Flow does not import Prime's refiner, durable
-state format, IPython kernel, or direct-apply behavior.
+Prime Agent shows the value of an immutable base with supplemental refinements. Flow narrows that
+pattern. A prompt candidate has no Python or runtime authority. It cannot apply itself. It must bind
+the exact tuning evidence and baseline.
+
+Flow uses its standard compiler and paired evaluation gate. An operator can activate only a complete
+superior evaluation. The activation store keeps immutable artifacts, durable run snapshots, and
+rollback history. Flow does not import Prime's refiner, state format, IPython kernel, or direct-apply
+behavior.
 
 Flow follows Prime Agent's proven client/supervisor/worker separation but does not import its
 Python RLM, graph state, protocol, or code. Pi remains embedded through its typed TypeScript SDK

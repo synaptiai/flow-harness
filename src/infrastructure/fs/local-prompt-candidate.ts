@@ -17,6 +17,7 @@ import {
 } from "../../domain/evaluation/tuning-evidence.js";
 import { parseStrictJson } from "../../domain/strict-json.js";
 import { compileWorkflowText, parseWorkflowSourceText } from "../../domain/workflow/compiler.js";
+import { calculateWorkflowDigest } from "../../domain/workflow/digest.js";
 import type { WorkflowSource } from "../../domain/workflow/schema.js";
 import type { CompiledWorkflow } from "../../domain/workflow/types.js";
 
@@ -51,6 +52,7 @@ export interface AdmittedLocalPromptCandidate {
     readonly source: WorkflowSource;
     readonly sourceSha256: string;
     readonly compiled: CompiledWorkflow;
+    readonly workflowDigest: string;
   };
   readonly evidence: readonly {
     readonly sourcePath: string;
@@ -191,6 +193,7 @@ export async function admitLocalPromptCandidate(
       source: baselineSource,
       sourceSha256: baselineFile.sha256,
       compiled: baselineCompiled,
+      workflowDigest: calculateWorkflowDigest(baselineCompiled),
     },
     evidence,
     workflow: projected.workflow,

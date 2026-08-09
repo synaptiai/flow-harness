@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, rm } from "node:fs/promises";
+import { chmod, realpath, rm } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
-import { basename, join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 
 import type {
   AgentCommandApprovalDecisionChannel,
@@ -44,7 +44,12 @@ export interface ExecuteWorkerJobOptions {
   readonly createAgentCommandApprovalChannel?: (
     rootDirectory: string,
   ) => AgentCommandApprovalDecisionChannel;
-  readonly createWorkspaceIsolator?: (runsDirectory: string) => WorkspaceIsolator;
+  readonly createWorkspaceIsolator?: (
+    runsDirectory: string,
+    protectedPaths?: readonly string[],
+    executionRoot?: string,
+    projectRoot?: string,
+  ) => WorkspaceIsolator;
   readonly pid?: number;
   readonly now?: () => Date;
   readonly signal?: AbortSignal;
@@ -209,14 +214,23 @@ export async function executeWorkerJob(
 
     if (!completionSettled) {
       const runStore = options.createRunStore(options.store.runsDirectory);
+      const protectedPaths = Object.freeze([
+        ...new Set([options.store.runsDirectory, ...(job.protectedPaths ?? [])]),
+      ]);
+      const projectRoot =
+        job.projectRoot ?? (await inferLegacyProjectRoot(job.cwd, protectedPaths));
       const runOptions = {
         cwd: job.cwd,
-        protectedPaths: [options.store.runsDirectory],
+        ...(projectRoot === undefined ? {} : { projectRoot }),
+        protectedPaths,
         store: runStore,
         executor: options.executor,
         effectReconciler: options.effectReconciler,
         workspaceIsolator: (options.createWorkspaceIsolator ?? createProductionWorkspaceIsolator)(
           options.store.runsDirectory,
+          protectedPaths,
+          job.cwd,
+          projectRoot,
         ),
         agentCommandApprovalDecisions: (
           options.createAgentCommandApprovalChannel ??
@@ -293,6 +307,42 @@ export async function executeWorkerJob(
   await rm(socketPath, { force: true });
   await options.store.releaseActiveRunClaim(job.runId, job.jobId);
   return exitCode;
+}
+
+async function inferLegacyProjectRoot(
+  executionCwd: string,
+  protectedPaths: readonly string[],
+): Promise<string | undefined> {
+  const canonicalExecutionCwd = await realpath(executionCwd);
+  for (const protectedPath of protectedPaths) {
+    let candidate = protectedPath;
+    for (;;) {
+      if (basename(candidate) === ".flow") {
+        let projectRoot: string;
+        try {
+          projectRoot = await realpath(dirname(candidate));
+        } catch (error) {
+          if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+            break;
+          }
+          throw error;
+        }
+        const fromProject = relative(projectRoot, canonicalExecutionCwd);
+        if (
+          fromProject === "" ||
+          (fromProject !== ".." && !fromProject.startsWith(`..${sep}`) && !isAbsolute(fromProject))
+        ) {
+          return projectRoot;
+        }
+      }
+      const parent = dirname(candidate);
+      if (parent === candidate) {
+        break;
+      }
+      candidate = parent;
+    }
+  }
+  return undefined;
 }
 
 export async function requestWorker(

@@ -848,7 +848,7 @@ describe("public repository contracts", () => {
     }
   });
 
-  it("documents evidence-bound prompt candidates without claiming automatic activation", async () => {
+  it("documents reviewed prompt activation without claiming model authority", async () => {
     const [
       readme,
       architecture,
@@ -873,19 +873,22 @@ describe("public repository contracts", () => {
 
     expect(readme).toMatch(/(?:flow|main\.js) candidate validate/);
     expect(readme).toMatch(/(?:flow|main\.js) eval tuning-evidence/);
-    expect(architecture).toMatch(/prompt candidate.*ordinary.*compiler/is);
-    expect(sourcing).toMatch(/Prime Agent.*supplemental.*Flow.*evaluation/is);
-    expect(evaluation).toMatch(/tuning-only evidence.*regression.*holdout/is);
+    expect(readme).toMatch(/(?:flow|main\.js) candidate activate/);
+    expect(readme).toMatch(/(?:flow|main\.js) activation rollback/);
+    expect(architecture).toMatch(/activation store contains immutable.*saved snapshot/is);
+    expect(sourcing).toMatch(/Prime Agent.*supplemental.*Flow.*activate/is);
+    expect(evaluation).toMatch(/activation gate.*complete.*superior/is);
     expect(workflowSpec).toContain("kind: PromptCandidate");
-    expect(recovery).toMatch(/prompt candidate.*does not.*activation/is);
-    expect(roadmap).toMatch(/prompt candidate.*Implemented/is);
-    expect(security).toMatch(/prompt candidate.*cannot.*tool|prompt candidate.*cannot.*policy/is);
+    expect(workflowSpec).toContain("activation:<workflow-id>");
+    expect(recovery).toContain("run_started");
+    expect(recovery).toMatch(/live index changes.*saved\s+snapshot/is);
+    expect(roadmap).toMatch(/Activation is versioned.*Implemented/is);
+    expect(security).toMatch(/operator command.*complete superior evaluation/is);
+    expect(security).toMatch(/candidate cannot authorize.*activation/is);
     expect(testing).toContain("test/integration/cli/prompt-candidate.test.ts");
-    for (const document of [readme, architecture, evaluation, workflowSpec, roadmap, security]) {
-      expect(document).toMatch(
-        /(?:activation.*(?:not|unavailable|remain|future|never)|does not activate)/i,
-      );
-    }
+    expect(testing).toMatch(/Activation tests cover.*rollback/is);
+    expect(readme).toMatch(/model-authorized activation remain unavailable/is);
+    expect(architecture).toMatch(/model-authorized activation.*unavailable/is);
   });
 });
 

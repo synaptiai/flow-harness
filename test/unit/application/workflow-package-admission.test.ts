@@ -1,19 +1,23 @@
 import { describe, expect, it, vi } from "vitest";
-
-import {
-  calculateCapabilitySnapshotDigest,
-  type CapabilitySnapshot,
-  validateCapabilitySnapshot,
-} from "../../../src/domain/capability/agent-skills.js";
-import {
-  type WorkflowPackageSnapshot,
-  createWorkflowPackageSnapshot,
-} from "../../../src/domain/capability/workflow-packages.js";
 import {
   admitWorkflowPackages,
   compileWorkflowFromSnapshot,
   createSnapshotWorkflowPackageResolver,
 } from "../../../src/application/workflow-package-admission.js";
+import { createPromptActivationSnapshot } from "../../../src/domain/adaptation/prompt-activation.js";
+import {
+  type CapabilitySnapshot,
+  calculateCapabilitySnapshotDigest,
+  validateCapabilitySnapshot,
+} from "../../../src/domain/capability/agent-skills.js";
+import {
+  createWorkflowPackageSnapshot,
+  type WorkflowPackageSnapshot,
+} from "../../../src/domain/capability/workflow-packages.js";
+import {
+  projectedPromptActivationSource,
+  promptActivationInput,
+} from "../../fixtures/prompt-activation.js";
 
 describe("workflow package admission", () => {
   it("captures a transitive exact package set and recompiles from snapshot bytes", async () => {
@@ -126,7 +130,44 @@ describe("workflow package admission", () => {
       }),
     ).toThrow(/source.*manifest|does not match/i);
   });
+
+  it("requires exact activation evidence for an activation locator", () => {
+    const activation = createPromptActivationSnapshot(promptActivationInput());
+    const capabilitySnapshot = activationSnapshot(activation);
+
+    expect(
+      compileWorkflowFromSnapshot({
+        source: projectedPromptActivationSource,
+        sourceName: "activation:adaptive-workflow",
+        capabilitySnapshot,
+      }).id,
+    ).toBe("adaptive-workflow");
+    expect(() =>
+      compileWorkflowFromSnapshot({
+        source: projectedPromptActivationSource,
+        sourceName: "activation:adaptive-workflow",
+      }),
+    ).toThrow(/does not contain.*activation/i);
+    expect(() =>
+      compileWorkflowFromSnapshot({
+        source: projectedPromptActivationSource.replace("verify", "publish"),
+        sourceName: "activation:adaptive-workflow",
+        capabilitySnapshot,
+      }),
+    ).toThrow(/source does not match/i);
+  });
 });
+
+function activationSnapshot(
+  activation: ReturnType<typeof createPromptActivationSnapshot>,
+): CapabilitySnapshot {
+  return validateCapabilitySnapshot({
+    version: 1,
+    packages: [],
+    activations: [activation],
+    digest: calculateCapabilitySnapshotDigest([], [activation]),
+  });
+}
 
 function snapshotOf(root: WorkflowPackageSnapshot): CapabilitySnapshot {
   return validateCapabilitySnapshot({

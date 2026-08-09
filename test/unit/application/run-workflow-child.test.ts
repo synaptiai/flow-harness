@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { NodeExecutorRouter } from "../../../src/application/node-executor-router.js";
-import { admitWorkflowPackages } from "../../../src/application/workflow-package-admission.js";
 import type {
   AgentExecutor,
   CommandExecutor,
@@ -15,13 +17,14 @@ import type {
   WorkspaceIsolator,
 } from "../../../src/application/ports.js";
 import { resumeWorkflow, runWorkflow } from "../../../src/application/run-workflow.js";
+import { admitWorkflowPackages } from "../../../src/application/workflow-package-admission.js";
 import { createCapabilitySnapshot } from "../../../src/domain/capability/agent-skills.js";
+import type { ToolPackageSnapshotInput } from "../../../src/domain/capability/tool-packages.js";
+import type { VerifierPackageSnapshotInput } from "../../../src/domain/capability/verifier-packages.js";
 import {
   createWorkflowPackageSnapshot,
   type WorkflowPackageSnapshot,
 } from "../../../src/domain/capability/workflow-packages.js";
-import type { ToolPackageSnapshotInput } from "../../../src/domain/capability/tool-packages.js";
-import type { VerifierPackageSnapshotInput } from "../../../src/domain/capability/verifier-packages.js";
 import {
   calculateChildRunId,
   parseRunEvent,
@@ -30,6 +33,16 @@ import {
 } from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import type { CompiledNode } from "../../../src/domain/workflow/types.js";
+import { ReflinkCopyWorkspaceIsolator } from "../../../src/infrastructure/fs/reflink-copy-workspace-isolator.js";
+import { createProductionWorkspaceIsolator } from "../../../src/infrastructure/runtime/production-workspace-isolator.js";
+
+const temporaryDirectories: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(
+    temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true })),
+  );
+});
 
 describe("child workflow execution", () => {
   it("runs a package-selected child through the ordinary isolated child lifecycle", async () => {
@@ -136,6 +149,30 @@ describe("child workflow execution", () => {
       expect.objectContaining({ nodeId: "produce", cwd: `/isolated/${childRunId}` }),
     ]);
     expect(isolator.cleaned).toEqual([childRunId]);
+  });
+
+  it("keeps protected ancestor paths in a child execution context", async () => {
+    const store = new TreeMemoryStore();
+    const isolator = new ProtectedAncestorWorkspaceIsolator();
+    const executor = new ChildCommandExecutor();
+    const workflow = compileWorkflowText(parentWorkflow());
+
+    const state = await runWorkflow(workflow, {
+      runId: "parent-protected-paths",
+      cwd: "/workspace",
+      protectedPaths: ["/state/runs", "/workspace/.flow"],
+      store,
+      executor,
+      workspaceIsolator: isolator,
+      now: clock(),
+    });
+
+    expect(state.status).toBe("succeeded");
+    expect(executor.calls).toEqual([
+      expect.objectContaining({
+        protectedPaths: ["/state/runs", "/workspace/.flow"],
+      }),
+    ]);
   });
 
   it("charges a child's bounded artifact overshoot to its parent exactly once", async () => {
@@ -356,6 +393,144 @@ describe("child workflow execution", () => {
     expect(
       isolator.cleaned.filter((id) => id === calculateChildRunId("parent-crash", "delegate", 1)),
     ).toHaveLength(2);
+  });
+
+  it("moves a legacy child and records its new working directory before command recovery", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-legacy-child-recovery-")));
+    temporaryDirectories.push(root);
+    const project = join(root, "project");
+    const flowDirectory = join(project, ".flow");
+    const runsDirectory = join(flowDirectory, "runs");
+    await mkdir(runsDirectory, { recursive: true });
+    await writeFile(join(project, "source.txt"), "source\n");
+    const store = new TreeMemoryStore();
+    store.rejectNextChildSecondStart = true;
+    const executor = new ChildCommandExecutor();
+    const workflow = compileWorkflowText(twoStepParentWorkflow());
+    const oldIsolator = new ReflinkCopyWorkspaceIsolator(join(runsDirectory, ".workspaces"));
+
+    await expect(
+      runWorkflow(workflow, {
+        runId: "parent-legacy-relocation",
+        cwd: project,
+        protectedPaths: [runsDirectory],
+        store,
+        executor,
+        workspaceIsolator: oldIsolator,
+        now: clock(),
+      }),
+    ).rejects.toThrow(/simulated second child start crash/i);
+
+    const resumed = await resumeWorkflow(workflow, {
+      runId: "parent-legacy-relocation",
+      cwd: project,
+      protectedPaths: [runsDirectory, flowDirectory],
+      store,
+      executor,
+      workspaceIsolator: createProductionWorkspaceIsolator(
+        runsDirectory,
+        [runsDirectory, flowDirectory],
+        project,
+        project,
+      ),
+      now: clock(20),
+    });
+
+    const childRunId = calculateChildRunId("parent-legacy-relocation", "delegate", 1);
+    expect(resumed.status).toBe("succeeded");
+    expect(executor.calls).toHaveLength(2);
+    expect(executor.calls[0]?.cwd).toContain(join(runsDirectory, ".workspaces"));
+    expect(executor.calls[1]?.cwd).toContain(join(root, ".project.flow-workspaces"));
+    const childEvents = await store.read(childRunId);
+    expect(childEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "run_resumed",
+          workspaceRelocation: {
+            fromCwd: executor.calls[0]?.cwd,
+            toCwd: executor.calls[1]?.cwd,
+          },
+        }),
+      ]),
+    );
+    const relocationIndex = childEvents.findIndex(
+      (event) => event.type === "run_resumed" && event.workspaceRelocation !== undefined,
+    );
+    const recoveredStartIndex = childEvents.findIndex(
+      (event) => event.type === "node_started" && event.nodeId === "produce-two",
+    );
+    expect(relocationIndex).toBeGreaterThanOrEqual(0);
+    expect(recoveredStartIndex).toBeGreaterThan(relocationIndex);
+  });
+
+  it("records nested legacy relocations before grandchild command recovery", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-legacy-nested-recovery-")));
+    temporaryDirectories.push(root);
+    const project = join(root, "project");
+    const flowDirectory = join(project, ".flow");
+    const runsDirectory = join(flowDirectory, "runs");
+    await mkdir(runsDirectory, { recursive: true });
+    await writeFile(join(project, "source.txt"), "source\n");
+    const store = new TreeMemoryStore();
+    store.rejectNextGrandchildStart = true;
+    const executor = new ChildCommandExecutor();
+    const workflow = compileWorkflowText(nestedParentWorkflow());
+    const oldIsolator = new ReflinkCopyWorkspaceIsolator(join(runsDirectory, ".workspaces"));
+
+    await expect(
+      runWorkflow(workflow, {
+        runId: "parent-legacy-nested-relocation",
+        cwd: project,
+        protectedPaths: [runsDirectory],
+        store,
+        executor,
+        workspaceIsolator: oldIsolator,
+        now: clock(),
+      }),
+    ).rejects.toThrow(/simulated grandchild start crash/i);
+
+    const resumed = await resumeWorkflow(workflow, {
+      runId: "parent-legacy-nested-relocation",
+      cwd: project,
+      protectedPaths: [runsDirectory, flowDirectory],
+      store,
+      executor,
+      workspaceIsolator: createProductionWorkspaceIsolator(
+        runsDirectory,
+        [runsDirectory, flowDirectory],
+        project,
+        project,
+      ),
+      now: clock(30),
+    });
+
+    const childRunId = calculateChildRunId("parent-legacy-nested-relocation", "delegate", 1);
+    const grandchildRunId = calculateChildRunId(childRunId, "nested", 1);
+    const childRelocationIndex = store.appendLog.findIndex(
+      (event) =>
+        event.runId === childRunId &&
+        event.type === "run_resumed" &&
+        event.workspaceRelocation !== undefined,
+    );
+    const grandchildRelocationIndex = store.appendLog.findIndex(
+      (event) =>
+        event.runId === grandchildRunId &&
+        event.type === "run_resumed" &&
+        event.workspaceRelocation !== undefined,
+    );
+    const grandchildStartIndex = store.appendLog.findIndex(
+      (event) =>
+        event.runId === grandchildRunId &&
+        event.type === "node_started" &&
+        event.nodeId === "produce",
+    );
+
+    expect(resumed.status).toBe("succeeded");
+    expect(childRelocationIndex).toBeGreaterThanOrEqual(0);
+    expect(grandchildRelocationIndex).toBeGreaterThan(childRelocationIndex);
+    expect(grandchildStartIndex).toBeGreaterThan(grandchildRelocationIndex);
+    expect(executor.calls).toHaveLength(1);
+    expect(executor.calls[0]?.cwd).toContain(join(root, ".project.flow-workspaces"));
   });
 
   it("revalidates a settled child tree before recovering the parent terminal event", async () => {
@@ -934,11 +1109,14 @@ describe("child workflow execution", () => {
 
 class TreeMemoryStore implements RecoverableRunEventStore {
   readonly events = new Map<string, RunEvent[]>();
+  readonly appendLog: RunEvent[] = [];
   abortOnParentChildStart: AbortController | undefined;
   rejectNextParentOutcome = false;
   rejectNextParentSuccess = false;
   rejectNextChildRunStart = false;
   rejectNextChildOutcome = false;
+  rejectNextChildSecondStart = false;
+  rejectNextGrandchildStart = false;
 
   async append(input: RunEvent): Promise<void> {
     const event = parseRunEvent(input);
@@ -968,6 +1146,24 @@ class TreeMemoryStore implements RecoverableRunEventStore {
       throw new Error("simulated child start crash");
     }
     if (
+      this.rejectNextChildSecondStart &&
+      event.runId.startsWith("child-") &&
+      event.type === "node_started" &&
+      event.nodeId === "produce-two"
+    ) {
+      this.rejectNextChildSecondStart = false;
+      throw new Error("simulated second child start crash");
+    }
+    if (
+      this.rejectNextGrandchildStart &&
+      event.runId.startsWith("child-") &&
+      event.type === "node_started" &&
+      event.nodeId === "produce"
+    ) {
+      this.rejectNextGrandchildStart = false;
+      throw new Error("simulated grandchild start crash");
+    }
+    if (
       this.rejectNextChildOutcome &&
       event.runId.startsWith("child-") &&
       event.type === "node_succeeded"
@@ -977,6 +1173,7 @@ class TreeMemoryStore implements RecoverableRunEventStore {
     }
     const existing = this.events.get(event.runId) ?? [];
     this.events.set(event.runId, [...existing, event]);
+    this.appendLog.push(event);
     if (
       event.runId.startsWith("parent-") &&
       event.type === "node_started" &&
@@ -1048,6 +1245,23 @@ class MemoryWorkspaceIsolator implements WorkspaceIsolator {
   }
 }
 
+class ProtectedAncestorWorkspaceIsolator extends MemoryWorkspaceIsolator {
+  override async create(request: {
+    readonly workspaceId: string;
+    readonly sourceCwd: string;
+  }): Promise<IsolatedWorkspace> {
+    const workspace = Object.freeze({
+      workspaceId: request.workspaceId,
+      cwd: `/state/runs/.workspaces/${request.workspaceId}/workspace`,
+      backend: "reflink-copy-v1" as const,
+      snapshotDigest: "a".repeat(64),
+    });
+    this.created.push(request.workspaceId);
+    this.workspaces.set(request.workspaceId, workspace);
+    return workspace;
+  }
+}
+
 class CancellingCleanupWorkspaceIsolator extends MemoryWorkspaceIsolator {
   constructor(private readonly controller: AbortController) {
     super();
@@ -1061,13 +1275,21 @@ class CancellingCleanupWorkspaceIsolator extends MemoryWorkspaceIsolator {
 }
 
 class ChildCommandExecutor implements NodeExecutor {
-  readonly calls: Array<{ readonly nodeId: string; readonly cwd: string }> = [];
+  readonly calls: Array<{
+    readonly nodeId: string;
+    readonly cwd: string;
+    readonly protectedPaths: readonly string[];
+  }> = [];
 
   async execute(node: CompiledNode, context: NodeExecutionContext): Promise<NodeExecutionOutcome> {
     if (node.type !== "command") {
       throw new Error(`unexpected executor node "${node.type}"`);
     }
-    this.calls.push({ nodeId: node.id, cwd: context.cwd });
+    this.calls.push({
+      nodeId: node.id,
+      cwd: context.cwd,
+      protectedPaths: context.protectedPaths,
+    });
     return {
       status: "succeeded",
       evidence: {
@@ -1422,6 +1644,47 @@ nodes:
       source: { nodeId: produce, field: command.stdout }
       schema: { type: boolean }
 `.trim();
+}
+
+function twoStepParentWorkflow(): string {
+  const child = `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: two-step-child }
+budget:
+  maxNodeStarts: 8
+  maxModelTokens: 1000
+  maxCostUsd: 0.25
+  maxExecutionMs: 60000
+  maxArtifactBytes: 100000
+nodes:
+  - id: produce-one
+    type: command
+    command: { executable: node }
+  - id: produce-two
+    type: command
+    dependsOn: [produce-one]
+    command: { executable: node }
+  - id: publish
+    type: result
+    dependsOn: [produce-two]
+    result:
+      source: { nodeId: produce-two, field: command.stdout }
+      schema: { type: boolean }
+`.trim();
+  return `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: parent-two-step-child }
+budget:
+  maxNodeStarts: 16
+  maxModelTokens: 2000
+  maxCostUsd: 0.5
+  maxExecutionMs: 120000
+  maxArtifactBytes: 200000
+nodes:
+${childNode("delegate", child)}
+`;
 }
 
 function childNode(id: string, child: string, dependsOn: readonly string[] = []): string {

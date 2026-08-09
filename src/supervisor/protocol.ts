@@ -1,10 +1,11 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod";
 
-import { MAX_ACTIVE_WORKERS, MAX_QUEUED_JOBS } from "../domain/config/resolver.js";
+import { parsePromptActivationLocator } from "../domain/adaptation/prompt-activation.js";
 import { persistedCapabilitySnapshotSchema } from "../domain/capability/agent-skills.js";
 import { parseWorkflowPackageLocator } from "../domain/capability/workflow-packages.js";
-import { runEventSchema, type RunEvent, type RunStatus } from "../domain/run/events.js";
+import { MAX_ACTIVE_WORKERS, MAX_QUEUED_JOBS } from "../domain/config/resolver.js";
+import { type RunEvent, type RunStatus, runEventSchema } from "../domain/run/events.js";
 
 export const SUPERVISOR_PROTOCOL_VERSION = 2 as const;
 export const MAX_SUPERVISOR_FRAME_BYTES = 40 * 1024 * 1024;
@@ -18,11 +19,19 @@ const absolutePathSchema = z
   .min(1)
   .max(4096)
   .refine((value) => isAbsolute(value), "must be an absolute path");
+const protectedPathsSchema = z
+  .array(absolutePathSchema)
+  .min(1)
+  .max(16)
+  .refine((paths) => new Set(paths).size === paths.length, "protected paths must be unique");
 const workflowSourceNameSchema = z
   .string()
   .min(1)
   .max(4096)
-  .refine(isWorkflowSourceName, "must be an absolute path or exact workflow package locator");
+  .refine(
+    isWorkflowSourceName,
+    "must be an absolute path, exact workflow package locator, or exact activation locator",
+  );
 const actorSchema = z
   .string()
   .min(1)
@@ -50,6 +59,8 @@ const submitCommandSchema = z
     sourceName: workflowSourceNameSchema,
     workflowSource: z.string().min(1).max(MAX_WORKFLOW_SOURCE_CHARACTERS),
     cwd: absolutePathSchema,
+    projectRoot: absolutePathSchema.optional(),
+    protectedPaths: protectedPathsSchema.optional(),
     capabilitySnapshot: persistedCapabilitySnapshotSchema.optional(),
   })
   .strict();
@@ -59,7 +70,9 @@ function isWorkflowSourceName(value: string): boolean {
     return true;
   }
   try {
-    return parseWorkflowPackageLocator(value) !== null;
+    return (
+      parseWorkflowPackageLocator(value) !== null || parsePromptActivationLocator(value) !== null
+    );
   } catch {
     return false;
   }

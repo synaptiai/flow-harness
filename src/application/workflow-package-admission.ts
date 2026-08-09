@@ -1,25 +1,29 @@
 import {
+  parsePromptActivationLocator,
+  promptActivationSource,
+} from "../domain/adaptation/prompt-activation.js";
+import {
   type CapabilitySnapshot,
   calculateCapabilitySnapshotDigest,
   validateCapabilitySnapshot,
 } from "../domain/capability/agent-skills.js";
 import {
   parseWorkflowPackageLocator,
-  type WorkflowPackageSnapshot,
   validateWorkflowPackageSnapshot,
+  type WorkflowPackageSnapshot,
   workflowPackageIdentityKey,
   workflowPackageSource,
 } from "../domain/capability/workflow-packages.js";
+import {
+  compileWorkflowText,
+  type ResolvedWorkflowPackage,
+  type WorkflowPackageReference,
+  type WorkflowPackageResolver,
+} from "../domain/workflow/compiler.js";
 import type {
   CompiledWorkflow,
   CompiledWorkflowPackageReference,
 } from "../domain/workflow/types.js";
-import {
-  type ResolvedWorkflowPackage,
-  type WorkflowPackageReference,
-  type WorkflowPackageResolver,
-  compileWorkflowText,
-} from "../domain/workflow/compiler.js";
 
 export const MAX_ADMITTED_WORKFLOW_PACKAGES = 32;
 
@@ -60,6 +64,23 @@ export function compileWorkflowFromSnapshot(
     input.capabilitySnapshot === undefined
       ? undefined
       : validateCapabilitySnapshot(input.capabilitySnapshot);
+  const activationLocator = parsePromptActivationLocator(input.sourceName);
+  if (activationLocator !== null) {
+    const selected =
+      snapshot?.activations?.filter((item) => item.workflowId === activationLocator.workflowId) ??
+      [];
+    const exactActivation = selected[0];
+    if (selected.length !== 1 || exactActivation === undefined) {
+      throw new Error(
+        `capability snapshot does not contain one exact activation for workflow "${activationLocator.workflowId}"`,
+      );
+    }
+    if (promptActivationSource(exactActivation) !== input.source) {
+      throw new Error(
+        `activation for workflow "${activationLocator.workflowId}" source does not match its exact snapshot`,
+      );
+    }
+  }
   const locator = parseWorkflowPackageLocator(input.sourceName);
   let sourcePackage: CompiledWorkflowPackageReference | undefined;
   if (locator !== null) {

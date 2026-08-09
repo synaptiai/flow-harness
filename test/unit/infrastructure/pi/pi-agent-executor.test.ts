@@ -9,11 +9,16 @@ import type {
   NodeExecutionContext,
 } from "../../../../src/application/ports.js";
 import { AgentCommandApprovalDeniedError } from "../../../../src/application/run-workflow.js";
+import { createPromptActivationSnapshot } from "../../../../src/domain/adaptation/prompt-activation.js";
 import {
   calculateAgentCommandDigest,
   normalizeAgentCommandRequest,
 } from "../../../../src/domain/agent-command.js";
-import { createCapabilitySnapshot } from "../../../../src/domain/capability/agent-skills.js";
+import {
+  calculateCapabilitySnapshotDigest,
+  createCapabilitySnapshot,
+  validateCapabilitySnapshot,
+} from "../../../../src/domain/capability/agent-skills.js";
 import { PolicyBroker } from "../../../../src/domain/policy/broker.js";
 import type { AgentCommandSettlementOutcome } from "../../../../src/domain/run/events.js";
 import type { CompiledAgentNode } from "../../../../src/domain/workflow/types.js";
@@ -25,6 +30,7 @@ import {
   type PiAgentRunner,
   type PiAgentRunRequest,
 } from "../../../../src/infrastructure/pi/pi-agent-executor.js";
+import { promptActivationInput } from "../../../fixtures/prompt-activation.js";
 
 const context: NodeExecutionContext = {
   runId: "run-agent",
@@ -998,7 +1004,7 @@ describe("EmbeddedPiAgentRunner", () => {
   });
 
   it("adds only selected skill metadata to the locked prompt while Pi resources stay empty", async () => {
-    const snapshot = createCapabilitySnapshot([
+    const skillSnapshot = createCapabilitySnapshot([
       {
         kind: "agent-skill",
         name: "review",
@@ -1015,6 +1021,13 @@ describe("EmbeddedPiAgentRunner", () => {
         ],
       },
     ]);
+    const activation = createPromptActivationSnapshot(promptActivationInput());
+    const snapshot = validateCapabilitySnapshot({
+      version: 1,
+      packages: skillSnapshot.packages,
+      activations: [activation],
+      digest: calculateCapabilitySnapshotDigest(skillSnapshot.packages, [activation]),
+    });
     let sessionOptions: Parameters<typeof createAgentSession>[0] | undefined;
     const fakeSession = {
       state: { messages: [{ role: "assistant", stopReason: "stop" }] },
@@ -1044,6 +1057,11 @@ describe("EmbeddedPiAgentRunner", () => {
     expect(prompt).toContain("skill://review/SKILL.md");
     expect(prompt).toContain(snapshot.packages[0]?.digest);
     expect(prompt).not.toContain("PRIVATE FULL SKILL INSTRUCTIONS");
+    expect(prompt).not.toContain(activation.activationDigest);
+    expect(prompt).not.toContain(activation.candidate.candidateDigest);
+    expect(prompt).not.toContain(activation.evaluation.evaluationId);
+    expect(prompt).not.toContain(activation.evaluation.planDigest);
+    expect(prompt).not.toContain("Read TASK.md and verify the result.");
     expect(sessionOptions?.resourceLoader?.getSkills().skills).toEqual([]);
     expect(sessionOptions?.resourceLoader?.getExtensions().extensions).toEqual([]);
   });

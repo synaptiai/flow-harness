@@ -17,11 +17,13 @@ The embedded Pi runtime runs with the invoking user's operating-system permissio
 - Agent sessions receive a Flow-owned system prompt and exact Flow-owned `read`, `ls`, and hash-anchored `edit` tools whose canonical paths are confined to the execution workspace. Edit is declaration-gated, requires a current full-file SHA-256, changes only one existing UTF-8 file, coordinates cooperating Flow processes on the same host, atomically replaces the target, and denies run state and sensitive project paths. Pi built-in tools are disabled.
 - Pi project extensions, skills, templates, themes, and context discovery are disabled.
 - Command nodes preserve explicit argument arrays through an audited encoder and run inside the fixed SRT `workspace-write-network-deny-v1` profile.
-- The profile denies network, undeclared Unix sockets, ambient credentials, writes to run state or sensitive project metadata, and home reads outside the workspace except for the exact canonical SRT seccomp helper required on Linux. That runtime-support file is re-exposed read-only when Flow is installed elsewhere. Ordinary workspace writes remain allowed by design.
+- The profile denies network, undeclared Unix sockets, ambient credentials, host writes to run state or sensitive project metadata, and home reads outside the workspace except for the exact canonical SRT seccomp helper required on Linux. On Linux, SRT can hide a read-denied directory with an ephemeral mask. A write call in that mask can report success, but it cannot change the host path. That runtime-support file is re-exposed read-only when Flow is installed elsewhere. Ordinary workspace writes remain allowed by design.
 - Same-workspace, same-policy concurrent commands share SRT's process-global session but receive distinct temporary directories and per-command filesystem configurations. A command for a different workspace or policy waits for every active wrap to release, then Flow resets and reinitializes the session before admitting it. Cancellation while queued starts no process, and a poisoned session fails queued work closed.
 - Child workflows run from owner-only, content-verified reflink-or-copy working-tree snapshots. Flow excludes `.flow` and the configured run-store path, rejects special files and bounded-size overflow, and records the snapshot identity in both ledgers. Ordinary child workspaces are discarded after terminal settlement. Successful compiler-generated optimization candidates normally remain retained until their typed check rejects or conclusively promotes and cleans them. This prevents ordinary child writes from changing the parent working tree; it is not an atomic filesystem snapshot, VM-grade sandbox, or boundary against the invoking user. Host-side Pi retains that user's authority subject to Flow's tool broker, while child command descendants still use SRT.
 - Candidate capture separately bounds changed entries, logical file bytes, and serialized durable evidence. A cancellation after candidate success but before its check retains the isolated candidate for diagnosis; no evaluation, promotion, parent mutation, or later candidate starts. Operators should treat retained candidate workspaces as untrusted artifacts.
-- Child workspaces are stored beneath the run-store-owned workspace area. When a sandboxed child command starts, Flow removes only an ancestor run-store deny that would also deny that command's own canonical workspace. SRT's write allowlist remains exactly that workspace plus private temp, so ledgers and sibling workspaces remain non-writable.
+- Flow creates new child workspaces in an owner-only project-sibling collection. The collection name is `.<project-name>.flow-workspaces`. A hash of the canonical physical run-store path separates workspace groups. Filesystem aliases for one run store select one workspace group. Thus, the project workspace, the protected project `.flow` directory, and the configured run store do not contain the collection. Attached runs use the canonical configured project root. Detached jobs save the same optional root in their immutable identity. For an old detached record, Flow can infer the project root from the durable `.flow/runs` ancestor. Flow rejects a linked collection or owner directory.
+- The broker denies reads and writes for each historical `.flow-workspaces` or named `.<name>.flow-workspaces` path segment. Before a command starts, SRT scans at most 200,000 execution-root entries. It adds each existing private collection as a literal protected path and rejects linked or indirect collections. For a selected child workspace, SRT also denies reads from every ancestor collection. This rule prevents a read from any sibling workspace and keeps writes to the selected child available. The snapshot copier omits these collections. Every child command keeps the complete protected-path deny list. The broker and SRT derive the local `.flow` denial from the child workspace. SRT permits host writes only in that child workspace and its private temporary directory. On Linux, Flow rejects a command root that strictly contains the configured project root. This rule prevents a command from creating a future reserved collection that Linux SRT cannot match before the path exists.
+- Recovery can find a workspace in the old run-store location. Flow first validates the old manifest with its old exclusion identity. For a nested child, Flow translates the moved parent path to the old parent path. Flow moves and syncs the complete identity directory when both locations use one filesystem. Across filesystems, Flow makes a bounded staging copy, verifies stable source and target hashes, syncs it, publishes it with one rename, and removes the old identity last. Flow reopens the moved workspace. Its first recovery event records the exact old and new paths in `run_resumed.workspaceRelocation`. Thus, a parent records each child relocation before it starts recovery in that child. Flow does not create new workspaces in the old location.
 - Any dependency error or warning, initialization error, unsupported platform, or invalid sandbox launch descriptor fails before command spawn. There is no host-execution fallback.
 - Command nodes run only on Linux and macOS. Windows execution fails before spawn until full descendant-process containment is available.
 - Run events are synced before scheduler advancement. Writable agent attempts durably prepare each
@@ -197,18 +199,36 @@ single-writer ownership, fatal UTF-8 decoding, direct-directory and no-follow fi
 offline replay detect many local substitutions;
 they are not signatures and cannot defend state from root or the same trusted account.
 
-A prompt candidate is trusted orchestration input with a deliberately closed change surface. Flow
-opens the candidate, baseline, and tuning-evidence files as bounded regular no-follow files, checks
-stable candidate-root, ancestor, and final identity while reading, verifies source/content/plan/prompt hashes, and projects only declared
-root-agent prompt leaves through the ordinary compiler. A prompt candidate cannot add or change a
-tool, skill, package, graph edge, model route, policy, approval, budget, verifier, retry rule,
-credential, network permission, executable, or activation action. It never edits the baseline.
+A prompt candidate is trusted orchestration input with a closed change surface. Flow reads each
+candidate, baseline, and tuning-evidence file as a bounded no-follow regular file. Flow verifies
+stable path identity and all declared hashes. It changes only declared root-agent prompt fields.
 
-The tuning-only packet prevents the Flow refiner seam from receiving regression or holdout rows and
-verifier evidence. Its bounded reasons expose truncation explicitly, and its parser rejects
-internally contradictory or incomplete paired claims, impossible seed/repetition mappings, and
-declared totals that cannot come from the bounded scheduler. It is not a confidentiality boundary against the operator who owns the raw
-evaluation store. Packet and candidate SHA-256 values are integrity identities, not signatures or
-authorship proof. Review candidate sources and evidence provenance as trusted local configuration.
-A favorable held-out result remains evidence only; activation, rollout, rollback, and online
-self-modification are unavailable.
+A candidate cannot change tools, skills, packages, graph edges, models, policy, approvals, budgets,
+verifiers, retries, credentials, network access, or executables. A candidate cannot authorize its
+activation. It never edits the baseline.
+
+Activation requires an operator command and a complete superior evaluation. Preview binds the
+candidate, evaluation proof, current head, actor, and reason to one proposal digest. Apply holds a
+cross-process lock and requires that exact digest.
+
+Flow stores immutable candidate and baseline activation artifacts below `.flow/activations`. One
+atomic index selects an exact artifact. The artifacts contain prompt text. Protect this directory
+and `.flow/runs` as sensitive data. Each new run stores its exact selected activation snapshot.
+Resume and detached execution use only that saved snapshot. Attached execution protects the
+canonical project `.flow` directory. A detached job saves the same protected path and gives it to
+the worker.
+
+Rollback selects a stored candidate or baseline artifact for future runs. It does not change active
+runs or delete artifacts. Flow does not add evaluation proof, activation digests, actor labels, or
+reasons to model input. Direct model file tools cannot read or list `.flow` or protected run paths.
+SRT denies the same paths to agent commands. An unsandboxed raw command keeps the operating-system
+authority of the Flow process and can read same-user project files. Use SRT or a stronger boundary
+when command output must not expose these files.
+
+The tuning packet omits regression rows, holdout rows, and verifier evidence. Its parser rejects
+contradictory outcomes, incomplete pairs, impossible schedules, and invalid totals. The packet is
+not a confidentiality boundary for the evaluation-store owner.
+
+Packet, candidate, and activation SHA-256 values identify exact content. They are not signatures or
+authorship proof. A trusted same-user project owner can replace and re-digest project state. This
+threat is outside the current boundary.

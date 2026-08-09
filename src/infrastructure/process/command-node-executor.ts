@@ -77,6 +77,7 @@ export class CommandNodeExecutor implements CommandExecutor, AgentCommandExecuto
       executable: node.command.executable,
       args: node.command.args,
       cwd: context.cwd,
+      ...(context.projectRoot === undefined ? {} : { projectRoot: context.projectRoot }),
       protectedPaths: context.protectedPaths,
       signal: deadline.signal,
     });
