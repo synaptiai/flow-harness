@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   appendFile,
   mkdir,
@@ -15,6 +16,11 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import {
+  calculateEvaluationPlanDigest,
+  createEvaluationSchedule,
+  type EvaluationPlanIdentity,
+} from "../../../../src/domain/evaluation/plan.js";
 import {
   createEvaluationTrialRecord,
   unavailableEvaluationMetrics,
@@ -225,6 +231,328 @@ describe("local evaluation store", () => {
     await expect(store.read("different-run")).rejects.toThrow(/identity|header|evaluation id/i);
   });
 
+  it("rejects a redigested header that moves candidate provenance off the comparison candidate", async () => {
+    const { root, admitted } = await admittedEvaluation();
+    const evaluations = join(root, "evaluations");
+    const store = new LocalEvaluationStore(evaluations);
+    const header = createPublicEvaluationHeader(
+      admitted,
+      "evaluation-run",
+      "2026-08-09T10:00:00.000Z",
+    );
+    await store.create(header);
+
+    const misplacedIdentityWithoutDigest = {
+      version: 1 as const,
+      id: "misplaced-candidate",
+      candidateVersion: "1.0.0",
+      scope: { kind: "workflow" as const, workflowId: "benchmark-profile" },
+      manifest: {
+        provenance: "candidate.prompt-candidate.yaml",
+        sourceSha256: "a".repeat(64),
+      },
+      baseline: {
+        provenance: header.profiles[0]?.workflow.provenance ?? "baseline.workflow.yaml",
+        sourceSha256: header.profiles[0]?.workflow.sourceSha256 ?? "b".repeat(64),
+        workflowDigest: header.profiles[0]?.workflow.workflowDigest ?? "c".repeat(64),
+      },
+      evidence: [
+        {
+          provenance: "tuning-evidence.json",
+          sourceSha256: "d".repeat(64),
+          evidenceDigest: "e".repeat(64),
+          planDigest: "f".repeat(64),
+        },
+      ],
+      changes: [
+        {
+          nodeId: "implement",
+          beforeSha256: "1".repeat(64),
+          afterSha256: "2".repeat(64),
+        },
+      ],
+      projectedWorkflow: {
+        sourceSha256: header.profiles[0]?.workflow.sourceSha256 ?? "3".repeat(64),
+        workflowDigest: header.profiles[0]?.workflow.workflowDigest ?? "4".repeat(64),
+      },
+    };
+    const candidate = {
+      provenance: "candidate.prompt-candidate.yaml",
+      identity: {
+        ...misplacedIdentityWithoutDigest,
+        candidateDigest: sha256Canonical(misplacedIdentityWithoutDigest),
+      },
+    };
+    const profiles = header.profiles.map((profile, index) => ({
+      id: profile.id,
+      adapter: profile.adapter,
+      workflow: {
+        provenance: profile.workflow.provenance,
+        sourceSha256: profile.workflow.sourceSha256,
+        workflowDigest: profile.workflow.workflowDigest,
+        ...(index === 0
+          ? { sourceKind: "prompt-candidate-projection" as const }
+          : profile.workflow.sourceKind === undefined
+            ? {}
+            : { sourceKind: profile.workflow.sourceKind }),
+      },
+      ...(index === 0
+        ? { candidate }
+        : profile.candidate === undefined
+          ? {}
+          : { candidate: profile.candidate }),
+    }));
+    const identity: EvaluationPlanIdentity = {
+      version: 1,
+      apiVersion: header.apiVersion,
+      id: header.planId,
+      suite: header.suite,
+      profiles,
+      controls: header.controls,
+      seeds: header.seeds,
+      order: header.order,
+      comparison: header.comparison,
+    };
+    const planDigest = calculateEvaluationPlanDigest(identity);
+    const tamperedHeader = {
+      ...header,
+      planDigest,
+      profiles,
+      schedule: createEvaluationSchedule(
+        planDigest,
+        header.suite.tasks.map((task) => task.id),
+        profiles.map((profile) => profile.id),
+        header.seeds,
+      ),
+    };
+    await writeFile(
+      join(evaluations, "evaluation-run", "plan.json"),
+      `${JSON.stringify(tamperedHeader)}\n`,
+    );
+
+    await expect(store.read("evaluation-run")).rejects.toThrow(/corrupt|header/i);
+  });
+
+  it("claims a legacy direct-workflow header with the currently admitted unchanged plan", async () => {
+    const { root, admitted } = await admittedEvaluation();
+    const evaluations = join(root, "evaluations");
+    const store = new LocalEvaluationStore(evaluations);
+    const current = createPublicEvaluationHeader(
+      admitted,
+      "evaluation-run",
+      "2026-08-09T10:00:00.000Z",
+    );
+    const profiles = current.profiles.map((profile) => ({
+      id: profile.id,
+      adapter: profile.adapter,
+      workflow: {
+        provenance: profile.workflow.provenance,
+        sourceSha256: profile.workflow.sourceSha256,
+        workflowDigest: profile.workflow.workflowDigest,
+      },
+    }));
+    const legacyIdentity: EvaluationPlanIdentity = {
+      version: 1,
+      apiVersion: current.apiVersion,
+      id: current.planId,
+      suite: current.suite,
+      profiles,
+      controls: current.controls,
+      seeds: current.seeds,
+      order: current.order,
+      comparison: current.comparison,
+    };
+    const planDigest = calculateEvaluationPlanDigest(legacyIdentity);
+    await store.create({
+      ...current,
+      planDigest,
+      profiles,
+      schedule: [
+        ...createEvaluationSchedule(
+          planDigest,
+          current.suite.tasks.map((task) => task.id),
+          profiles.map((profile) => profile.id),
+          current.seeds,
+        ),
+      ],
+    });
+
+    expect(admitted.planDigest).toBe(planDigest);
+    await expect(store.claim("evaluation-run", admitted.planDigest)).resolves.toMatchObject({
+      records: [],
+    });
+  });
+
+  it("rejects the non-canonical explicit file source kind in a redigested public header", async () => {
+    const { root, admitted } = await admittedEvaluation();
+    const store = new LocalEvaluationStore(join(root, "evaluations"));
+    const header = createPublicEvaluationHeader(
+      admitted,
+      "evaluation-run",
+      "2026-08-09T10:00:00.000Z",
+    );
+    const profiles = header.profiles.map((profile) => ({
+      ...profile,
+      workflow: { ...profile.workflow, sourceKind: "file" as const },
+    }));
+    const identity = {
+      version: 1 as const,
+      apiVersion: header.apiVersion,
+      id: header.planId,
+      suite: header.suite,
+      profiles,
+      controls: header.controls,
+      seeds: header.seeds,
+      order: header.order,
+      comparison: header.comparison,
+    } as unknown as EvaluationPlanIdentity;
+    const planDigest = calculateEvaluationPlanDigest(identity);
+
+    await expect(
+      store.create({
+        ...header,
+        planDigest,
+        profiles: profiles as never,
+        schedule: [
+          ...createEvaluationSchedule(
+            planDigest,
+            header.suite.tasks.map((task) => task.id),
+            profiles.map((profile) => profile.id),
+            header.seeds,
+          ),
+        ],
+      }),
+    ).rejects.toThrow(/corrupt|header/i);
+  });
+
+  it("rejects a redigested header whose complete candidate identity is internally inconsistent", async () => {
+    const { root, admitted } = await admittedEvaluation();
+    const evaluations = join(root, "evaluations");
+    const store = new LocalEvaluationStore(evaluations);
+    const direct = createPublicEvaluationHeader(
+      admitted,
+      "evaluation-run",
+      "2026-08-09T10:00:00.000Z",
+    );
+    const baseline = direct.profiles[0];
+    const selected = direct.profiles[1];
+    if (baseline === undefined || selected === undefined) {
+      throw new Error("fixture profiles are missing");
+    }
+    const identityWithoutDigest = {
+      version: 1 as const,
+      id: "better-instructions",
+      candidateVersion: "1.0.0",
+      scope: { kind: "workflow" as const, workflowId: "benchmark-profile" },
+      manifest: {
+        provenance: "candidate.prompt-candidate.yaml",
+        sourceSha256: "a".repeat(64),
+      },
+      baseline: {
+        provenance: baseline.workflow.provenance,
+        sourceSha256: baseline.workflow.sourceSha256,
+        workflowDigest: baseline.workflow.workflowDigest,
+      },
+      evidence: [
+        {
+          provenance: "tuning-evidence.json",
+          sourceSha256: "b".repeat(64),
+          evidenceDigest: "c".repeat(64),
+          planDigest: "d".repeat(64),
+        },
+      ],
+      changes: [
+        {
+          nodeId: "implement",
+          beforeSha256: "e".repeat(64),
+          afterSha256: "f".repeat(64),
+        },
+      ],
+      projectedWorkflow: {
+        sourceSha256: selected.workflow.sourceSha256,
+        workflowDigest: selected.workflow.workflowDigest,
+      },
+    };
+    const candidateIdentity = {
+      ...identityWithoutDigest,
+      candidateDigest: sha256Canonical(identityWithoutDigest),
+    };
+    const profiles = [
+      {
+        ...baseline,
+        workflow: {
+          provenance: baseline.workflow.provenance,
+          sourceSha256: baseline.workflow.sourceSha256,
+          workflowDigest: baseline.workflow.workflowDigest,
+        },
+      },
+      {
+        ...selected,
+        workflow: {
+          ...selected.workflow,
+          provenance: "candidate.prompt-candidate.yaml",
+          sourceKind: "prompt-candidate-projection" as const,
+        },
+        candidate: {
+          provenance: "candidate.prompt-candidate.yaml",
+          identity: candidateIdentity,
+        },
+      },
+    ];
+    const identity = {
+      version: 1 as const,
+      apiVersion: direct.apiVersion,
+      id: direct.planId,
+      suite: direct.suite,
+      profiles,
+      controls: direct.controls,
+      seeds: direct.seeds,
+      order: direct.order,
+      comparison: direct.comparison,
+    } as unknown as EvaluationPlanIdentity;
+    const planDigest = calculateEvaluationPlanDigest(identity);
+    await store.create({
+      ...direct,
+      planDigest,
+      profiles: profiles as never,
+      schedule: [
+        ...createEvaluationSchedule(
+          planDigest,
+          direct.suite.tasks.map((task) => task.id),
+          profiles.map((profile) => profile.id),
+          direct.seeds,
+        ),
+      ],
+    });
+
+    const headerPath = join(evaluations, "evaluation-run", "plan.json");
+    const tampered = JSON.parse(await readFile(headerPath, "utf8"));
+    tampered.profiles[1].candidate.identity.evidence[0].evidenceDigest = "9".repeat(64);
+    const tamperedIdentity = {
+      version: 1,
+      apiVersion: tampered.apiVersion,
+      id: tampered.planId,
+      suite: tampered.suite,
+      profiles: tampered.profiles,
+      controls: tampered.controls,
+      seeds: tampered.seeds,
+      order: tampered.order,
+      comparison: tampered.comparison,
+    };
+    tampered.planDigest = calculateEvaluationPlanDigest(
+      tamperedIdentity as unknown as EvaluationPlanIdentity,
+    );
+    tampered.schedule = createEvaluationSchedule(
+      tampered.planDigest,
+      tampered.suite.tasks.map((task: { id: string }) => task.id),
+      tampered.profiles.map((profile: { id: string }) => profile.id),
+      tampered.seeds,
+    );
+    await writeFile(headerPath, `${JSON.stringify(tampered)}\n`);
+
+    await expect(store.read("evaluation-run")).rejects.toThrow(/corrupt|header/i);
+  });
+
   it("rejects duplicate JSON keys in public headers and committed trial records", async () => {
     const headerFixture = await admittedEvaluation();
     const headerEvaluations = join(headerFixture.root, "evaluations");
@@ -378,4 +706,31 @@ function invalidUtf8At(contents: Buffer, marker: string): Buffer {
   }
   copy[index] = 0x80;
   return copy;
+}
+
+function sha256Canonical(value: unknown): string {
+  return createHash("sha256").update(canonicalize(value)).digest("hex");
+}
+
+function canonicalize(value: unknown): string {
+  if (
+    value === null ||
+    typeof value === "boolean" ||
+    typeof value === "string" ||
+    (typeof value === "number" && Number.isFinite(value))
+  ) {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalize).join(",")}]`;
+  }
+  if (typeof value === "object" && value !== null) {
+    return `{${Object.keys(value)
+      .sort()
+      .map(
+        (key) => `${JSON.stringify(key)}:${canonicalize((value as Record<string, unknown>)[key])}`,
+      )
+      .join(",")}}`;
+  }
+  throw new Error("test identity is not canonical JSON");
 }

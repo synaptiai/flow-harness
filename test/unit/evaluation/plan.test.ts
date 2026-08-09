@@ -61,6 +61,32 @@ describe("evaluation plan", () => {
     ).toThrow(/candidate.*profile/i);
   });
 
+  it("admits exactly one direct-workflow or prompt-candidate source per profile", () => {
+    const candidatePlan = validPlan().replace(
+      "workflow: candidate.workflow.yaml",
+      "candidate: better.prompt-candidate.yaml",
+    );
+    expect(parseEvaluationPlanText(candidatePlan).profiles[1]).toEqual({
+      id: "candidate",
+      adapter: "flow-workflow-v1",
+      candidate: "better.prompt-candidate.yaml",
+    });
+
+    expect(() =>
+      parseEvaluationPlanText(
+        candidatePlan.replace(
+          "candidate: better.prompt-candidate.yaml",
+          "workflow: candidate.workflow.yaml\n    candidate: better.prompt-candidate.yaml",
+        ),
+      ),
+    ).toThrow(/invalid_schema|unrecognized|exactly one/i);
+    expect(() =>
+      parseEvaluationPlanText(
+        candidatePlan.replace("    candidate: better.prompt-candidate.yaml\n", ""),
+      ),
+    ).toThrow(/invalid_schema|required|exactly one/i);
+  });
+
   it("rejects a comparison minimum that exceeds the holdout pair schedule", () => {
     const mixed = validPlan()
       .replace(

@@ -847,6 +847,46 @@ describe("public repository contracts", () => {
       });
     }
   });
+
+  it("documents evidence-bound prompt candidates without claiming automatic activation", async () => {
+    const [
+      readme,
+      architecture,
+      sourcing,
+      evaluation,
+      workflowSpec,
+      recovery,
+      roadmap,
+      security,
+      testing,
+    ] = await Promise.all([
+      readText("README.md"),
+      readText("docs/architecture.md"),
+      readText("docs/capability-sourcing.md"),
+      readText("docs/evaluation.md"),
+      readText("docs/workflow-spec.md"),
+      readText("docs/recovery.md"),
+      readText("docs/roadmap.md"),
+      readText("SECURITY.md"),
+      readText("docs/testing-and-evaluation.md"),
+    ]);
+
+    expect(readme).toMatch(/(?:flow|main\.js) candidate validate/);
+    expect(readme).toMatch(/(?:flow|main\.js) eval tuning-evidence/);
+    expect(architecture).toMatch(/prompt candidate.*ordinary.*compiler/is);
+    expect(sourcing).toMatch(/Prime Agent.*supplemental.*Flow.*evaluation/is);
+    expect(evaluation).toMatch(/tuning-only evidence.*regression.*holdout/is);
+    expect(workflowSpec).toContain("kind: PromptCandidate");
+    expect(recovery).toMatch(/prompt candidate.*does not.*activation/is);
+    expect(roadmap).toMatch(/prompt candidate.*Implemented/is);
+    expect(security).toMatch(/prompt candidate.*cannot.*tool|prompt candidate.*cannot.*policy/is);
+    expect(testing).toContain("test/integration/cli/prompt-candidate.test.ts");
+    for (const document of [readme, architecture, evaluation, workflowSpec, roadmap, security]) {
+      expect(document).toMatch(
+        /(?:activation.*(?:not|unavailable|remain|future|never)|does not activate)/i,
+      );
+    }
+  });
 });
 
 async function readText(path: string): Promise<string> {

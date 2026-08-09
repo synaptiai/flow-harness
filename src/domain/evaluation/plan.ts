@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { parseDocument } from "yaml";
 import { z } from "zod";
+import type { PromptCandidateIdentity } from "../adaptation/prompt-candidate.js";
 
 export const EVALUATION_PLAN_API_VERSION = "flow.synapti.ai/v1alpha1" as const;
 export const MAX_EVALUATION_TASKS = 64;
@@ -60,13 +61,22 @@ const taskSchema = z
   })
   .strict();
 
-const profileSchema = z
-  .object({
-    id: identifierSchema,
-    adapter: z.literal("flow-workflow-v1"),
-    workflow: canonicalRelativePathSchema,
-  })
-  .strict();
+const profileSchema = z.union([
+  z
+    .object({
+      id: identifierSchema,
+      adapter: z.literal("flow-workflow-v1"),
+      workflow: canonicalRelativePathSchema,
+    })
+    .strict(),
+  z
+    .object({
+      id: identifierSchema,
+      adapter: z.literal("flow-workflow-v1"),
+      candidate: canonicalRelativePathSchema,
+    })
+    .strict(),
+]);
 
 const budgetSchema = z
   .object({
@@ -215,9 +225,14 @@ export interface EvaluationPlanIdentity {
     readonly id: string;
     readonly adapter: EvaluationProfileSource["adapter"];
     readonly workflow: {
+      readonly sourceKind?: "prompt-candidate-projection";
       readonly provenance: string;
       readonly sourceSha256: string;
       readonly workflowDigest: string;
+    };
+    readonly candidate?: {
+      readonly provenance: string;
+      readonly identity: PromptCandidateIdentity;
     };
   }[];
   readonly controls: EvaluationPlanSource["controls"];

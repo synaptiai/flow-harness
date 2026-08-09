@@ -28,6 +28,7 @@ import {
   admitWorkflowPackages,
   compileWorkflowFromSnapshot,
 } from "../application/workflow-package-admission.js";
+import { PromptCandidateError } from "../domain/adaptation/prompt-candidate.js";
 import {
   type CapabilitySnapshot,
   combineCapabilitySnapshots,
@@ -53,6 +54,10 @@ import { aggregateEvaluation, EvaluationAggregationError } from "../domain/evalu
 import { verifyEvaluationWorkspace } from "../domain/evaluation/filesystem-verifier.js";
 import { EvaluationPlanError } from "../domain/evaluation/plan.js";
 import { EvaluationRecordError } from "../domain/evaluation/records.js";
+import {
+  createTuningEvidencePacket,
+  TuningEvidenceError,
+} from "../domain/evaluation/tuning-evidence.js";
 import { type RunStatus, reduceRunEvents } from "../domain/run/events.js";
 import {
   WorkflowCompilationError,
@@ -102,6 +107,10 @@ import {
   LocalEvaluationStore,
   type StoredEvaluation,
 } from "../infrastructure/fs/local-evaluation-store.js";
+import {
+  admitLocalPromptCandidate,
+  LocalPromptCandidateError,
+} from "../infrastructure/fs/local-prompt-candidate.js";
 import {
   LocalSupervisorStore,
   LocalSupervisorStoreError,
@@ -168,10 +177,12 @@ Usage:
   flow packages inspect <name> --version <exact>
   flow packages verify
   flow packages remove <name> --version <exact>
+  flow candidate validate <candidate.yaml>
   flow eval validate <plan.yaml>
   flow eval run <plan.yaml> [--evaluation-id <id>] [--evaluations-dir <path>]
   flow eval inspect <evaluation-id> [--evaluations-dir <path>]
   flow eval export <evaluation-id> --output <path> [--evaluations-dir <path>]
+  flow eval tuning-evidence <evaluation-id> --output <path> [--evaluations-dir <path>]
   flow validate <workflow.yaml|workflow:name@version>
   flow run <workflow.yaml|workflow:name@version> [--detach] [--command-id <uuid>] [--run-id <id>] [--runs-dir <path>] [--cwd <path>]
   flow resume <workflow.yaml|workflow:name@version> --run-id <id> [--detach] [--command-id <uuid>] [--runs-dir <path>] [--cwd <path>]
@@ -285,6 +296,8 @@ export async function main(
         return await workflowsCommand(args.slice(1), io, dependencyOverrides);
       case "packages":
         return await packagesCommand(args.slice(1), io, dependencyOverrides);
+      case "candidate":
+        return await candidateCommand(args.slice(1), io, dependencyOverrides);
       case "eval":
         return await evaluationCommand(args.slice(1), io, dependencyOverrides);
       case "validate":
@@ -379,7 +392,7 @@ export async function main(
       return 1;
     }
     if (error instanceof EvaluationPlanError) {
-      io.stderr(`${error.code}: ${error.message}`);
+      io.stderr(boundedCliDiagnostic(error.message));
       return 2;
     }
     if (
@@ -387,11 +400,19 @@ export async function main(
       error instanceof EvaluationStoreError ||
       error instanceof EvaluationExportError
     ) {
-      io.stderr(`${error.code}: ${error.message}`);
+      io.stderr(boundedCliDiagnostic(error.message));
       return 1;
     }
     if (error instanceof EvaluationAggregationError || error instanceof EvaluationRecordError) {
       io.stderr(error.message);
+      return 1;
+    }
+    if (error instanceof PromptCandidateError || error instanceof LocalPromptCandidateError) {
+      io.stderr(boundedCliDiagnostic(error.message));
+      return 1;
+    }
+    if (error instanceof TuningEvidenceError) {
+      io.stderr(boundedCliDiagnostic(error.message));
       return 1;
     }
 
@@ -962,8 +983,48 @@ async function evaluationCommand(
             id: profile.id,
             adapter: profile.adapter,
             workflowDigest: profile.workflow.workflowDigest,
+            ...(profile.candidate === undefined
+              ? {}
+              : { candidateDigest: profile.candidate.candidateDigest }),
           })),
           scheduledTrials: admitted.schedule.length,
+        },
+        null,
+        2,
+      ),
+    );
+    return 0;
+  }
+
+  if (subcommand === "tuning-evidence") {
+    const { positionals, values } = parseCommandArgs(args.slice(1), {
+      "evaluations-dir": { type: "string" },
+      output: { type: "string" },
+    });
+    const evaluationId = requireSinglePositional(
+      positionals,
+      "eval tuning-evidence requires one evaluation id",
+    );
+    const dependencies = configDependenciesFrom(overrides);
+    const evaluationsDirectory = await resolveEvaluationsDirectory(
+      dependencies,
+      values["evaluations-dir"],
+    );
+    const stored = await new LocalEvaluationStore(evaluationsDirectory).read(evaluationId);
+    const packet = tuningEvidence(stored);
+    const output = requireStringOption(
+      values.output,
+      "eval tuning-evidence requires --output <path>",
+    );
+    const outputPath = resolve(dependencies.cwd, output);
+    await writeCanonicalEvaluationExport(outputPath, packet);
+    io.stdout(
+      JSON.stringify(
+        {
+          exported: true,
+          evaluationId,
+          evidenceDigest: packet.evidenceDigest,
+          output: outputPath,
         },
         null,
         2,
@@ -1086,7 +1147,49 @@ async function evaluationCommand(
     return 0;
   }
 
-  throw new CliUsageError("eval requires validate, run, inspect, or export");
+  throw new CliUsageError("eval requires validate, run, inspect, export, or tuning-evidence");
+}
+
+async function candidateCommand(
+  args: readonly string[],
+  io: CliIo,
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  const subcommand = args[0];
+  if (subcommand !== "validate") {
+    throw new CliUsageError("candidate requires the validate subcommand");
+  }
+  const { positionals } = parseCommandArgs(args.slice(1), {});
+  const candidatePath = requireSinglePositional(
+    positionals,
+    "candidate validate requires one candidate path",
+  );
+  const cwd = overrides.cwd ?? process.cwd();
+  const admitted = await admitLocalPromptCandidate(resolve(cwd, candidatePath));
+  io.stdout(JSON.stringify({ valid: true, candidate: admitted.identity }, null, 2));
+  return 0;
+}
+
+function tuningEvidence(stored: StoredEvaluation) {
+  return createTuningEvidencePacket({
+    evaluationId: stored.header.evaluationId,
+    planDigest: stored.header.planDigest,
+    suite: { id: stored.header.suite.id, version: stored.header.suite.version },
+    tasks: stored.header.suite.tasks.map((task) => ({
+      id: task.id,
+      partition: task.partition,
+    })),
+    profiles: stored.header.profiles.map((profile) => ({
+      id: profile.id,
+      adapter: profile.adapter,
+      workflowDigest: profile.workflow.workflowDigest,
+      ...(profile.candidate === undefined
+        ? {}
+        : { candidateDigest: profile.candidate.identity.candidateDigest }),
+    })),
+    schedule: stored.header.schedule,
+    records: stored.records,
+  });
 }
 
 function evaluationEvidence(stored: StoredEvaluation) {
@@ -1927,6 +2030,10 @@ function configDependenciesFrom(
     initializeProject: overrides.initializeProject ?? initializeFlowProject,
     loadConfig: overrides.loadConfig ?? loadEffectiveFlowConfig,
   };
+}
+
+function boundedCliDiagnostic(message: string): string {
+  return message.length <= 8_192 ? message : `${message.slice(0, 8_192)}…`;
 }
 
 function controlDependenciesFrom(

@@ -6,6 +6,10 @@ import { join, resolve } from "node:path";
 import { z } from "zod";
 
 import {
+  type PromptCandidateIdentity,
+  parsePromptCandidateIdentity,
+} from "../../domain/adaptation/prompt-candidate.js";
+import {
   type EvaluationReportInput,
   validateCommittedEvaluationPrefix,
 } from "../../domain/evaluation/aggregate.js";
@@ -22,7 +26,10 @@ import {
   parseEvaluationTrialRecord,
 } from "../../domain/evaluation/records.js";
 import { parseStrictJson } from "../../domain/strict-json.js";
-import type { AdmittedEvaluationPlan } from "./local-evaluation-plan.js";
+import {
+  type AdmittedEvaluationPlan,
+  projectEvaluationCandidateIdentity,
+} from "./local-evaluation-plan.js";
 
 export const MAX_EVALUATION_HEADER_BYTES = 2 * 1024 * 1024;
 export const MAX_EVALUATION_TRIAL_RECORD_BYTES = 64 * 1024;
@@ -108,17 +115,33 @@ const taskSchema = z
   })
   .strict();
 
+const candidateIdentitySchema = z
+  .object({
+    provenance: relativePathSchema,
+    identity: z.custom<PromptCandidateIdentity>((value) => {
+      try {
+        parsePromptCandidateIdentity(value);
+        return true;
+      } catch {
+        return false;
+      }
+    }, "candidate identity is invalid or internally inconsistent"),
+  })
+  .strict();
+
 const profileSchema = z
   .object({
     id: identifierSchema,
     adapter: z.literal("flow-workflow-v1"),
     workflow: z
       .object({
+        sourceKind: z.literal("prompt-candidate-projection").optional(),
         provenance: relativePathSchema,
         sourceSha256: sha256Schema,
         workflowDigest: sha256Schema,
       })
       .strict(),
+    candidate: candidateIdentitySchema.optional(),
   })
   .strict();
 
@@ -206,6 +229,42 @@ const publicHeaderSchema = z
         path: ["comparison"],
         message: "comparison must reference two different declared profiles",
       });
+    }
+    const baseline = header.profiles.find(
+      (profile) => profile.id === header.comparison.baselineProfileId,
+    );
+    const candidate = header.profiles.find(
+      (profile) => profile.id === header.comparison.candidateProfileId,
+    );
+    const candidateProfiles = header.profiles.filter((profile) => profile.candidate !== undefined);
+    const projectionProfiles = header.profiles.filter(
+      (profile) => profile.workflow.sourceKind === "prompt-candidate-projection",
+    );
+    if (candidateProfiles.length > 0 || projectionProfiles.length > 0) {
+      if (
+        candidateProfiles.length !== 1 ||
+        projectionProfiles.length !== 1 ||
+        baseline === undefined ||
+        candidate === undefined ||
+        baseline.candidate !== undefined ||
+        baseline.workflow.sourceKind === "prompt-candidate-projection" ||
+        candidate.candidate === undefined ||
+        candidate.workflow.sourceKind !== "prompt-candidate-projection" ||
+        candidate.candidate.provenance !== candidate.workflow.provenance ||
+        candidate.candidate.identity.baseline.sourceSha256 !== baseline.workflow.sourceSha256 ||
+        candidate.candidate.identity.baseline.workflowDigest !== baseline.workflow.workflowDigest ||
+        candidate.candidate.identity.projectedWorkflow.sourceSha256 !==
+          candidate.workflow.sourceSha256 ||
+        candidate.candidate.identity.projectedWorkflow.workflowDigest !==
+          candidate.workflow.workflowDigest
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["profiles"],
+          message:
+            "candidate provenance must identify one projection on the comparison candidate over the exact comparison baseline",
+        });
+      }
     }
     const holdoutPairs =
       header.suite.tasks.filter((task) => task.partition === "holdout").length *
@@ -302,7 +361,15 @@ export function createPublicEvaluationHeader(
         provenance: profile.workflow.provenance,
         sourceSha256: profile.workflow.sourceSha256,
         workflowDigest: profile.workflow.workflowDigest,
+        ...(profile.workflow.sourceKind === "prompt-candidate-projection"
+          ? { sourceKind: profile.workflow.sourceKind }
+          : {}),
       },
+      ...(profile.candidate === undefined
+        ? {}
+        : {
+            candidate: projectEvaluationCandidateIdentity(profile.candidate),
+          }),
     })),
     controls: admitted.controls,
     seeds: admitted.seeds,
@@ -809,7 +876,19 @@ function headerIdentity(header: PublicEvaluationHeader): EvaluationPlanIdentity 
     apiVersion: header.apiVersion,
     id: header.planId,
     suite: header.suite,
-    profiles: header.profiles,
+    profiles: header.profiles.map((profile) => ({
+      id: profile.id,
+      adapter: profile.adapter,
+      workflow: {
+        provenance: profile.workflow.provenance,
+        sourceSha256: profile.workflow.sourceSha256,
+        workflowDigest: profile.workflow.workflowDigest,
+        ...(profile.workflow.sourceKind === undefined
+          ? {}
+          : { sourceKind: profile.workflow.sourceKind }),
+      },
+      ...(profile.candidate === undefined ? {} : { candidate: profile.candidate }),
+    })),
     controls: header.controls,
     seeds: header.seeds,
     order: header.order,

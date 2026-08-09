@@ -354,6 +354,22 @@ JSONL records are committed only when newline-terminated. Recovery ignores a fin
 fragment and truncates it immediately before the next append. An invalid earlier record, mismatched
 run directory, or corrupt owner record fails closed and is preserved for diagnosis.
 
+## Prompt candidate and evaluation recovery
+
+A prompt candidate has no mutable runtime or activation journal to recover. Candidate admission is a
+read-only, all-or-nothing observation of the manifest, baseline workflow, and tuning evidence. If a
+source changes during admission, no evaluation header or trial is created; the operator must review
+the new bytes and validate again. Candidate validation does not modify the baseline, and a favorable
+evaluation does not grant activation authority.
+
+Once an evaluation starts, the public header binds the candidate source hash, candidate digest,
+baseline workflow digest, evidence digests, prompt before/after hashes, and projected workflow
+digest. Resume re-admits the supplied plan and refuses candidate removal, replacement, or source
+drift through the existing plan-identity check. Committed trial recovery remains exact-suffix
+evaluation recovery; it never regenerates a candidate, re-exports evidence, edits the baseline, or
+activates the projection. Tuning-evidence export is a separate atomic no-overwrite operation and is
+safe to retry only with a different absent output path or after confirming the first output.
+
 ## Error codes and outcomes
 
 | Code | Meaning | Operator action |

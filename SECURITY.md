@@ -196,3 +196,19 @@ identifiers. Store `.flow/evaluations` with the same privacy as `.flow/runs`. Di
 single-writer ownership, fatal UTF-8 decoding, direct-directory and no-follow file checks, and
 offline replay detect many local substitutions;
 they are not signatures and cannot defend state from root or the same trusted account.
+
+A prompt candidate is trusted orchestration input with a deliberately closed change surface. Flow
+opens the candidate, baseline, and tuning-evidence files as bounded regular no-follow files, checks
+stable candidate-root, ancestor, and final identity while reading, verifies source/content/plan/prompt hashes, and projects only declared
+root-agent prompt leaves through the ordinary compiler. A prompt candidate cannot add or change a
+tool, skill, package, graph edge, model route, policy, approval, budget, verifier, retry rule,
+credential, network permission, executable, or activation action. It never edits the baseline.
+
+The tuning-only packet prevents the Flow refiner seam from receiving regression or holdout rows and
+verifier evidence. Its bounded reasons expose truncation explicitly, and its parser rejects
+internally contradictory or incomplete paired claims, impossible seed/repetition mappings, and
+declared totals that cannot come from the bounded scheduler. It is not a confidentiality boundary against the operator who owns the raw
+evaluation store. Packet and candidate SHA-256 values are integrity identities, not signatures or
+authorship proof. Review candidate sources and evidence provenance as trusted local configuration.
+A favorable held-out result remains evidence only; activation, rollout, rollback, and online
+self-modification are unavailable.
