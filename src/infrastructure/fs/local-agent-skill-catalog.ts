@@ -2,9 +2,6 @@ import { constants, type Dirent, type Stats } from "node:fs";
 import { type FileHandle, lstat, open, readdir, realpath } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 
-import { parseDocument } from "yaml";
-import { z } from "zod";
-
 import {
   type AgentSkillCapabilitySnapshot,
   type AgentSkillPackageSnapshotInput,
@@ -12,39 +9,21 @@ import {
   isAgentSkillName,
   MAX_AGENT_SKILL_FILE_BYTES,
   MAX_AGENT_SKILL_FILES,
-  MAX_AGENT_SKILL_METADATA_BYTES,
-  MAX_AGENT_SKILL_METADATA_ENTRIES,
   MAX_AGENT_SKILL_PACKAGE_BYTES,
   MAX_AGENT_SKILL_PACKAGES,
-  MAX_AGENT_SKILL_REQUESTED_TOOLS,
 } from "../../domain/capability/agent-skills.js";
+import {
+  AgentSkillManifestError,
+  parseAgentSkillManifest,
+} from "../../domain/capability/agent-skill-manifest.js";
+import type { CapabilityBundleAgentSkillPackage } from "../../domain/capability/capability-bundles.js";
 
 const MAX_DISCOVERY_DEPTH = 6;
 const MAX_DISCOVERY_ENTRIES = 2_000;
-const MAX_FRONTMATTER_BYTES = 64 * 1024;
-
-const skillFrontmatterSchema = z
-  .object({
-    name: z
-      .string()
-      .min(1)
-      .max(64)
-      .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
-    description: z.string().min(1).max(1024),
-    license: z.string().min(1).max(1024).optional(),
-    compatibility: z.string().min(1).max(500).optional(),
-    metadata: z
-      .record(z.string().min(1).max(256), z.string().max(4096))
-      .default({})
-      .refine((value) => Object.keys(value).length <= MAX_AGENT_SKILL_METADATA_ENTRIES)
-      .refine(
-        (value) =>
-          Buffer.byteLength(JSON.stringify(value), "utf8") <= MAX_AGENT_SKILL_METADATA_BYTES,
-      ),
-    "allowed-tools": z.string().max(8192).optional(),
-  })
-  .strict();
-
+const installedAgentSkillSources = new WeakMap<
+  DiscoveredAgentSkill,
+  CapabilityBundleAgentSkillPackage["files"]
+>();
 export type AgentSkillCatalogErrorCode =
   | "duplicate_skill"
   | "invalid_skill"
@@ -82,6 +61,30 @@ export interface ProjectAgentSkillCatalog {
   readonly projectRoot: string;
   readonly root: string;
   readonly skills: readonly DiscoveredAgentSkill[];
+}
+
+export function createInstalledDiscoveredAgentSkill(input: {
+  readonly projectRoot: string;
+  readonly bundleDigest: string;
+  readonly skill: CapabilityBundleAgentSkillPackage;
+}): DiscoveredAgentSkill {
+  const digest = requireBundleDigest(input.bundleDigest);
+  const provenance = `.flow/packages/sha256/${digest}/agent-skill/${input.skill.name}`;
+  const discovered = deepFreeze({
+    name: input.skill.name,
+    description: input.skill.description,
+    ...(input.skill.license === undefined ? {} : { license: input.skill.license }),
+    ...(input.skill.compatibility === undefined
+      ? {}
+      : { compatibility: input.skill.compatibility }),
+    metadata: input.skill.metadata,
+    requestedTools: input.skill.requestedTools,
+    trust: "project-explicit" as const,
+    provenance,
+    directory: join(input.projectRoot, ...provenance.split("/")),
+  });
+  installedAgentSkillSources.set(discovered, input.skill.files);
+  return discovered;
 }
 
 interface ScanBudget {
@@ -223,14 +226,13 @@ async function readDiscoveredSkill(
 ): Promise<DiscoveredAgentSkill> {
   const manifestPath = join(directory, "SKILL.md");
   const source = await readRegularFile(manifestPath, skillsRoot, MAX_AGENT_SKILL_FILE_BYTES);
-  const frontmatter = parseSkillFrontmatter(source, manifestPath);
+  const frontmatter = parseLocalSkillManifest(source, manifestPath);
   if (frontmatter.name !== basename(directory)) {
     throw new AgentSkillCatalogError(
       "invalid_skill",
       `${manifestPath}: name "${frontmatter.name}" must match parent directory "${basename(directory)}"`,
     );
   }
-  const requestedTools = parseRequestedTools(frontmatter["allowed-tools"], manifestPath);
   return deepFreeze({
     name: frontmatter.name,
     description: frontmatter.description,
@@ -239,7 +241,7 @@ async function readDiscoveredSkill(
       ? {}
       : { compatibility: frontmatter.compatibility }),
     metadata: frontmatter.metadata,
-    requestedTools,
+    requestedTools: frontmatter.requestedTools,
     trust: "project-explicit" as const,
     provenance: portableRelative(projectRoot, directory),
     directory,
@@ -250,6 +252,26 @@ async function snapshotPackage(
   catalog: ProjectAgentSkillCatalog,
   discovered: DiscoveredAgentSkill,
 ): Promise<AgentSkillPackageSnapshotInput> {
+  const installedFiles = installedAgentSkillSources.get(discovered);
+  if (installedFiles !== undefined) {
+    return {
+      kind: "agent-skill",
+      name: discovered.name,
+      description: discovered.description,
+      ...(discovered.license === undefined ? {} : { license: discovered.license }),
+      ...(discovered.compatibility === undefined
+        ? {}
+        : { compatibility: discovered.compatibility }),
+      metadata: discovered.metadata,
+      requestedTools: discovered.requestedTools,
+      trust: discovered.trust,
+      provenance: discovered.provenance,
+      files: installedFiles.map((file) => ({
+        path: file.path,
+        content: Buffer.from(file.contentBase64, "base64"),
+      })),
+    };
+  }
   const directoryMetadata = await lstatSafe(discovered.directory);
   assertRealDirectory(directoryMetadata, discovered.directory);
   const canonicalDirectoryPath = await realpath(discovered.directory);
@@ -273,7 +295,7 @@ async function snapshotPackage(
       `Agent Skill "${discovered.name}" no longer contains SKILL.md`,
     );
   }
-  const current = parseSkillFrontmatter(
+  const current = parseLocalSkillManifest(
     Buffer.from(manifest.content),
     join(discovered.directory, "SKILL.md"),
   );
@@ -283,8 +305,7 @@ async function snapshotPackage(
     current.license !== discovered.license ||
     current.compatibility !== discovered.compatibility ||
     JSON.stringify(current.metadata) !== JSON.stringify(discovered.metadata) ||
-    JSON.stringify(parseRequestedTools(current["allowed-tools"], discovered.directory)) !==
-      JSON.stringify(discovered.requestedTools)
+    JSON.stringify(current.requestedTools) !== JSON.stringify(discovered.requestedTools)
   ) {
     throw new AgentSkillCatalogError(
       "source_changed",
@@ -337,75 +358,15 @@ async function collectPackageFiles(
   }
 }
 
-function parseSkillFrontmatter(source: Uint8Array, path: string) {
-  let text: string;
+function parseLocalSkillManifest(source: Uint8Array, path: string) {
   try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(source);
+    return parseAgentSkillManifest(source, path);
   } catch (error) {
-    throw new AgentSkillCatalogError("invalid_skill", `${path}: SKILL.md must be valid UTF-8`, {
-      cause: error,
-    });
+    if (error instanceof AgentSkillManifestError) {
+      throw new AgentSkillCatalogError(error.code, error.message, { cause: error });
+    }
+    throw error;
   }
-  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text);
-  if (match?.[1] === undefined) {
-    throw new AgentSkillCatalogError(
-      "invalid_skill",
-      `${path}: SKILL.md must start with bounded YAML frontmatter`,
-    );
-  }
-  if (Buffer.byteLength(match[1], "utf8") > MAX_FRONTMATTER_BYTES) {
-    throw limitError(`${path}: frontmatter exceeds ${MAX_FRONTMATTER_BYTES} bytes`);
-  }
-  const document = parseDocument(match[1], { uniqueKeys: true });
-  if (document.errors.length > 0) {
-    throw new AgentSkillCatalogError(
-      "invalid_skill",
-      `${path}: ${document.errors[0]?.message ?? "invalid YAML frontmatter"}`,
-    );
-  }
-  let input: unknown;
-  try {
-    input = document.toJS({ maxAliasCount: 0 });
-  } catch (error) {
-    throw new AgentSkillCatalogError("invalid_skill", `${path}: YAML aliases are not supported`, {
-      cause: error,
-    });
-  }
-  const parsed = skillFrontmatterSchema.safeParse(input);
-  if (!parsed.success) {
-    const issue = parsed.error.issues[0];
-    throw new AgentSkillCatalogError(
-      "invalid_skill",
-      `${path}: ${issue?.path.map(String).join(".") || "<frontmatter>"}: ${issue?.message ?? "invalid frontmatter"}`,
-      { cause: parsed.error },
-    );
-  }
-  return deepFreeze(parsed.data);
-}
-
-function parseRequestedTools(value: string | undefined, path: string): readonly string[] {
-  if (value === undefined || value.trim().length === 0) {
-    return Object.freeze([]);
-  }
-  const tools = value.trim().split(/\s+/).sort(compareStrings);
-  if (
-    tools.length > MAX_AGENT_SKILL_REQUESTED_TOOLS ||
-    new Set(tools).size !== tools.length ||
-    tools.some(
-      (tool) =>
-        tool.length > 128 ||
-        Array.from(tool).some((character) => {
-          const point = character.codePointAt(0);
-          return point !== undefined && (point <= 31 || point === 127);
-        }),
-    )
-  ) {
-    throw new AgentSkillCatalogError(
-      "invalid_skill",
-      `${path}: allowed-tools must contain at most 64 unique bounded tool names`,
-    );
-  }
-  return Object.freeze(tools);
 }
 
 async function readRegularFile(path: string, root: string, maxBytes: number): Promise<Buffer> {
@@ -552,6 +513,17 @@ function errorMessage(error: unknown): string {
 
 function compareStrings(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function requireBundleDigest(value: string): string {
+  const match = /^sha256:([a-f0-9]{64})$/.exec(value);
+  if (match?.[1] === undefined) {
+    throw new AgentSkillCatalogError(
+      "invalid_skill",
+      "installed Agent Skill bundle digest is invalid",
+    );
+  }
+  return match[1];
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {

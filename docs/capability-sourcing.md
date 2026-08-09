@@ -151,7 +151,7 @@ and [AWS idempotency guidance](https://docs.aws.amazon.com/durable-execution/pat
 
 ## Portable skills
 
-**Implemented for strict local project packages.** Flow supports the open [Agent Skills
+**Implemented for strict local and digest-pinned installed project packages.** Flow supports the open [Agent Skills
 specification](https://agentskills.io/specification), not Claude-specific discovery rules. A
 workflow explicitly selects packages by name; Flow snapshots the exact bounded content before run
 admission and progressively exposes selected resources through its existing `flow_read` tool.
@@ -179,7 +179,7 @@ Flow-generated metadata catalog and resolves content through Flow-owned immutabl
 
 ## Verifier packages
 
-**Implemented for strict local declarative command and model packages.** Flow discovers
+**Implemented for strict local and digest-pinned installed declarative command and model packages.** Flow discovers
 `VERIFIER.yaml` below `.flow/verifiers`, validates an exact SemVer identity, and snapshots the exact
 manifest only when a workflow selects its name and version. A command package contributes the
 existing argv-only verifier command. A model package contributes only a bounded rubric; evidence,
@@ -200,13 +200,13 @@ and digest; replay cross-checks that identity with the compiled control graph an
 requirement. Listing, inspection, and validation invoke no verifier, and inspection omits a model
 rubric.
 
-Remote installation, executable extensions, and workflow/policy/UI package manifests remain later
-Gate 6 work. Evaluator manifests are implemented only for the current command/model verifier
+Executable extensions and workflow/policy/UI package manifests remain later Gate 6 work. Evaluator
+manifests are implemented only for the current command/model verifier
 drivers; arbitrary evaluator code and reward environments remain out of scope.
 
 ## Command tool packages
 
-**Implemented for strict local declarative command tools.** Flow discovers `TOOL.yaml` below
+**Implemented for strict local and digest-pinned installed declarative command tools.** Flow discovers `TOOL.yaml` below
 `.flow/tools`, validates one exact SemVer identity and one closed scalar model-tool contract, and
 snapshots the exact manifest only when a workflow selects its name and version. The v1 driver must
 select a closed Flow-owned command profile. The initial `posix-printf-v1` and exact hardened
@@ -233,8 +233,61 @@ package identity so replay can derive rather than trust what should have execute
 
 This ABI is deliberately not a general plugin host. Packages cannot contribute JavaScript,
 Python, Wasm, native payloads, hooks, providers, result middleware, graph nodes, credentials,
-network grants, environment variables, or policy. Remote acquisition and executable drivers remain
-future work behind separate installation and containment contracts.
+network grants, environment variables, or policy. Executable drivers remain future work behind a
+separate containment contract.
+
+## Digest-pinned bundle distribution
+
+**Implemented for the three existing inert package ABIs.** `flow packages pack` reads one strict
+`BUNDLE.json` plus optional `skills/`, `verifiers/`, and `tools/` source roots. It rejects unknown
+top-level entries, symlinks, special files, unsafe paths, source races, and extra verifier/tool
+payloads, then emits canonical strict JSON with bounded canonical base64 content. There is no tar,
+zip, dependency graph, executable extension, hook, or install script. Rebuilding the same source
+produces the same bytes and SHA-256.
+
+`flow packages install <https-url> --sha256 <hex>` is the only remote operation. The URL must be a
+canonical public HTTPS URL without credentials, query, fragment, or redirect. Flow resolves all
+addresses, rejects any non-public result, and pins one validated address into Node's TLS connection
+while preserving hostname verification. It sends only fixed Accept and User-Agent headers, shares
+one deadline across DNS/connection/body work, and stops at the bundle byte limit. Expected SHA-256
+is checked over the exact response before UTF-8, strict JSON, or package parsing.
+
+Validated bytes are published once at `.flow/packages/sha256/<hex>.flowpkg`. A deterministic
+`.flow/packages.lock.json` entry is published last under a same-host owner lock; therefore a crash
+may leave only an inactive orphan blob. Reinstallation of the same identity and bytes is
+idempotent. A different digest for the same bundle identity, duplicate package name, duplicate
+provider-facing tool name, missing/corrupt blob, or local/installed collision fails closed. List,
+inspect, verify, and remove are local and invoke no package driver. Removal publishes the reduced
+lock before best-effort orphan cleanup.
+
+Mutation locks fail closed and are not retired automatically. If the recorded process has exited,
+an operator must first verify that no package mutation is active, then remove only the exact
+`.flow/packages.mutation.lock`. `commit_uncertain` means a replacement became visible or a mutation
+completed but directory durability or lock cleanup could not be confirmed. Inspect the live lock,
+run `flow packages verify`, and reconcile the requested exact versions before retrying.
+
+There is no atomic upgrade command. Pause new admissions, retain the old source and digest, install
+the new exact bundle version, remove the old exact version, verify, then resume. Overlapping package
+or provider-facing tool names make catalog discovery fail closed while both versions are locked;
+non-overlapping versions may coexist. Rollback explicitly reinstalls the retained old version and
+removes the new one. Same-name/same-version bytes are immutable, and Flow performs no automatic
+update discovery, rollback, or garbage collection.
+
+Catalog composition reopens and rehashes every lock-selected blob, re-derives bundle/package
+identities, and captures verified content in memory. Provenance has the portable form
+`.flow/packages/sha256/<digest>/<kind>/<name>`; the recorded source URL is not run evidence or a
+fetch instruction. Attached and detached admission snapshots exact selected content. Child runs,
+workers, resume, and replay use only that durable snapshot and never consult the live lock, blob,
+URL, DNS, or publisher.
+
+This design adopts the [OCI descriptor](https://github.com/opencontainers/image-spec/blob/main/descriptor.md)
+principle—verify expected digest and size before consuming content—without importing registry,
+layer, authentication, or archive semantics. It intentionally does not reuse
+[Pi's npm/Git package manager](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md)
+because Pi packages may install dependencies and execute host extensions. A digest proves exact
+bytes only. Publisher signing, freshness, expiry, rollback protection, revocation, transparency,
+delegation, and automatic update discovery require a future
+[TUF-like registry metadata layer](https://theupdateframework.github.io/specification/).
 
 ## Coupling rules
 

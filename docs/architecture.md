@@ -16,9 +16,10 @@ recovery, exclusive local ownership, typed edit reconciliation, proof-safe fresh
 durable budgets, detachable waits, and bounded authenticated local supervision. Gate 5 adds typed
 results and verifiers, replay-safe conditions, joins, concurrency, bounded loops and optimization,
 evidence-bound graph approvals, isolated child workflows, and candidate promotion. Gate 6 adds
-strict local Agent Skills, versioned verifier packages, and declarative command tool packages with
-immutable capability snapshots. A
-TUI, remote package installation, executable extensions, other package types, opaque Pi session
+strict local and digest-pinned installed Agent Skills, versioned verifier packages, declarative
+command tool packages, deterministic inert bundle distribution, a content-addressed project store,
+and immutable capability snapshots. A
+TUI, signed registries, executable extensions, other package types, opaque Pi session
 continuation, general failure/fallback retries, broader configurable policy, model network tools,
 arbitrary evaluator runtimes, and stronger VM or managed sandbox backends remain later work.
 
@@ -36,6 +37,7 @@ Architecture is derived from these flows.
 | Steer | A user pauses, cancels, supplies input, or approves an operation | A durable, attributable state transition |
 | Resume | A user reopens an interrupted run | Reconciled state and continuation from the next safe node |
 | Extend | A user installs a capability package | Validated and explicitly enabled skills, tools, workflows, evaluators, or policies |
+| Distribute | A publisher packs inert capability sources and an operator installs exact HTTPS bytes | Reproducible bundle identity, reviewable lock state, and no runtime/provider lock-in |
 
 ### Operator flows
 
@@ -177,8 +179,9 @@ unchanged, child ledgers use their declared subset, and recovery refuses any cal
 
 This is a declarative package boundary, not a general plugin host. Packages cannot execute hooks,
 register tools, add credentials or network, mutate policy or graph structure, select a model, or
-import Prime Verifiers environments. Future executable or remote package sources require a separate
-out-of-process authority and installation design.
+import Prime Verifiers environments. Digest-pinned remote distribution of this inert ABI uses the
+separate installation boundary described below. Future executable package sources require a
+separate out-of-process authority and containment design.
 
 ### Versioned command tool packages
 
@@ -217,8 +220,8 @@ declared subset, and recovery never consults the live catalog.
 
 This is intentionally narrower than Pi or OMP in-process extensions and Prime-style Python skills.
 Package code cannot enter the host runtime, intercept results, add hooks, mutate the graph, select a
-provider, or widen policy. Remote acquisition and future executable drivers require separate trust,
-installation, and out-of-process containment designs.
+provider, or widen policy. Digest-pinned remote acquisition has its own transport and installation
+trust boundary. Future executable drivers require a separate out-of-process containment design.
 
 ### Tool broker
 

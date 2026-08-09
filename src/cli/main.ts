@@ -25,6 +25,7 @@ import {
   type CapabilitySnapshot,
   combineCapabilitySnapshots,
 } from "../domain/capability/agent-skills.js";
+import { assertCapabilityBundleSha256 } from "../domain/capability/capability-bundles.js";
 import {
   collectWorkflowAgentSkillNames,
   collectWorkflowToolPackageReferences,
@@ -54,7 +55,6 @@ import {
 } from "../infrastructure/fs/local-agent-command-approval-channel.js";
 import {
   AgentSkillCatalogError,
-  discoverProjectAgentSkills,
   type ProjectAgentSkillCatalog,
   snapshotSelectedAgentSkills,
 } from "../infrastructure/fs/local-agent-skill-catalog.js";
@@ -63,17 +63,29 @@ import {
   LocalSupervisorStoreError,
 } from "../infrastructure/fs/local-supervisor-store.js";
 import {
-  discoverProjectToolPackages,
+  CapabilityPackageStoreError,
+  LocalCapabilityPackageStore,
+} from "../infrastructure/fs/local-capability-package-store.js";
+import {
+  CapabilityBundlePackError,
+  packCapabilityBundleDirectory,
+} from "../infrastructure/fs/capability-bundle-packer.js";
+import {
   type ProjectToolPackageCatalog,
   snapshotSelectedToolPackages,
   ToolPackageCatalogError,
 } from "../infrastructure/fs/local-tool-package-catalog.js";
 import {
-  discoverProjectVerifierPackages,
   type ProjectVerifierPackageCatalog,
   snapshotSelectedVerifierPackages,
   VerifierPackageCatalogError,
 } from "../infrastructure/fs/local-verifier-package-catalog.js";
+import { discoverProjectCapabilityCatalogs } from "../infrastructure/fs/project-capability-catalog.js";
+import { createProductionCapabilityBundleFetcher } from "../infrastructure/http/node-https-capability-bundle-transport.js";
+import {
+  CapabilityBundleFetchError,
+  type CapabilityBundleFetcher,
+} from "../infrastructure/http/strict-capability-bundle-fetcher.js";
 import { createProductionNodeEffectReconciler } from "../infrastructure/runtime/production-effect-reconciler.js";
 import { createProductionNodeExecutor } from "../infrastructure/runtime/production-node-executor.js";
 import { createProductionWorkspaceIsolator } from "../infrastructure/runtime/production-workspace-isolator.js";
@@ -106,6 +118,12 @@ Usage:
   flow tools list
   flow tools inspect <name> --version <exact>
   flow tools validate
+  flow packages install <https-url> --sha256 <64-lowercase-hex>
+  flow packages pack <source-directory> --output <bundle.flowpkg>
+  flow packages list
+  flow packages inspect <name> --version <exact>
+  flow packages verify
+  flow packages remove <name> --version <exact>
   flow validate <workflow.yaml>
   flow run <workflow.yaml> [--detach] [--command-id <uuid>] [--run-id <id>] [--runs-dir <path>] [--cwd <path>]
   flow resume <workflow.yaml> --run-id <id> [--detach] [--command-id <uuid>] [--runs-dir <path>] [--cwd <path>]
@@ -139,6 +157,7 @@ export interface CliDependencies {
     options?: InitializeFlowProjectOptions,
   ) => Promise<InitializedFlowProject>;
   readonly loadConfig: (options?: FlowConfigLocationOptions) => Promise<EffectiveFlowConfig>;
+  readonly capabilityBundleFetcher: CapabilityBundleFetcher;
   readonly signal?: AbortSignal;
 }
 
@@ -182,6 +201,8 @@ export async function main(
         return await verifiersCommand(args.slice(1), io, dependencyOverrides);
       case "tools":
         return await toolsCommand(args.slice(1), io, dependencyOverrides);
+      case "packages":
+        return await packagesCommand(args.slice(1), io, dependencyOverrides);
       case "validate":
         return await validateCommand(args.slice(1), io, dependencyOverrides);
       case "run":
@@ -225,6 +246,14 @@ export async function main(
       return 1;
     }
     if (error instanceof AgentSkillCatalogError) {
+      io.stderr(`${error.code}: ${error.message}`);
+      return 1;
+    }
+    if (
+      error instanceof CapabilityBundleFetchError ||
+      error instanceof CapabilityPackageStoreError ||
+      error instanceof CapabilityBundlePackError
+    ) {
       io.stderr(`${error.code}: ${error.message}`);
       return 1;
     }
@@ -532,6 +561,201 @@ async function toolsCommand(
     ),
   );
   return 0;
+}
+
+async function packagesCommand(
+  args: readonly string[],
+  io: CliIo,
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  const { positionals, values } = parseCommandArgs(args, {
+    output: { type: "string" },
+    sha256: { type: "string" },
+    version: { type: "string" },
+  });
+  const subcommand = positionals[0];
+  const valid =
+    (subcommand === "install" &&
+      positionals.length === 2 &&
+      values.output === undefined &&
+      values.sha256 !== undefined &&
+      values.version === undefined) ||
+    (subcommand === "pack" &&
+      positionals.length === 2 &&
+      values.output !== undefined &&
+      values.sha256 === undefined &&
+      values.version === undefined) ||
+    ((subcommand === "list" || subcommand === "verify") &&
+      positionals.length === 1 &&
+      values.output === undefined &&
+      values.sha256 === undefined &&
+      values.version === undefined) ||
+    ((subcommand === "inspect" || subcommand === "remove") &&
+      positionals.length === 2 &&
+      values.output === undefined &&
+      values.sha256 === undefined &&
+      values.version !== undefined);
+  if (!valid) {
+    throw new CliUsageError(
+      "packages requires pack <source-directory> --output <bundle.flowpkg>, install <https-url> --sha256 <hex>, list, inspect <name> --version <exact>, verify, or remove <name> --version <exact>",
+    );
+  }
+  const dependencies = configDependenciesFrom(overrides);
+  if (subcommand === "pack") {
+    const sourceDirectory = positionals[1];
+    const output = values.output;
+    if (sourceDirectory === undefined || output === undefined) {
+      throw new CliUsageError(
+        "packages pack requires <source-directory> --output <bundle.flowpkg>",
+      );
+    }
+    const created = await packCapabilityBundleDirectory(
+      resolve(dependencies.cwd, sourceDirectory),
+      resolve(dependencies.cwd, output),
+    );
+    io.stdout(
+      JSON.stringify(
+        {
+          status: "packed",
+          name: created.bundle.name,
+          version: created.bundle.version,
+          bytes: created.bundle.bytes,
+          digest: created.bundle.digest,
+          packages: created.bundle.packages.map(capabilityBundlePackageSummary),
+        },
+        null,
+        2,
+      ),
+    );
+    return 0;
+  }
+  const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
+  if (config.projectRoot === null) {
+    throw new CapabilityPackageStoreError(
+      "io",
+      "capability packages require a Flow project root containing .flow",
+    );
+  }
+  const store = new LocalCapabilityPackageStore(config.projectRoot);
+  if (subcommand === "install") {
+    const source = positionals[1];
+    const expectedSha256 = values.sha256;
+    if (source === undefined || expectedSha256 === undefined) {
+      throw new CliUsageError("packages install requires <https-url> --sha256 <hex>");
+    }
+    try {
+      assertCapabilityBundleSha256(expectedSha256);
+    } catch (error) {
+      throw new CapabilityPackageStoreError(
+        "invalid_bundle",
+        error instanceof Error ? error.message : String(error),
+        { cause: error },
+      );
+    }
+    const fetcher = overrides.capabilityBundleFetcher ?? createProductionCapabilityBundleFetcher();
+    const content = await fetcher.fetch(source, overrides.signal);
+    const installed = await store.install({ source, expectedSha256, content });
+    io.stdout(
+      JSON.stringify(
+        {
+          status: installed.status,
+          name: installed.bundle.name,
+          version: installed.bundle.version,
+          description: installed.bundle.description,
+          ...(installed.bundle.license === undefined ? {} : { license: installed.bundle.license }),
+          ...(installed.bundle.compatibility === undefined
+            ? {}
+            : { compatibility: installed.bundle.compatibility }),
+          bytes: installed.bundle.bytes,
+          digest: installed.bundle.digest,
+          packages: installed.bundle.packages.map(capabilityBundlePackageSummary),
+        },
+        null,
+        2,
+      ),
+    );
+    return 0;
+  }
+  if (subcommand === "list") {
+    io.stdout(JSON.stringify(await store.list(), null, 2));
+    return 0;
+  }
+  if (subcommand === "verify") {
+    const verified = await store.verify();
+    io.stdout(
+      JSON.stringify(
+        {
+          valid: true,
+          bundles: verified.length,
+          packages: verified.reduce((total, item) => total + item.bundle.packages.length, 0),
+        },
+        null,
+        2,
+      ),
+    );
+    return 0;
+  }
+  const name = positionals[1];
+  const version = values.version;
+  if (name === undefined || version === undefined) {
+    throw new CliUsageError(`packages ${subcommand} requires <name> --version <exact>`);
+  }
+  if (subcommand === "remove") {
+    const removed = await store.remove(name, version);
+    io.stdout(
+      JSON.stringify(
+        {
+          status: removed.status,
+          cleanup: removed.cleanup,
+          name: removed.entry.name,
+          version: removed.entry.version,
+          digest: removed.entry.digest,
+        },
+        null,
+        2,
+      ),
+    );
+    return 0;
+  }
+  const verified = await store.verify();
+  const selected = verified.find(
+    (item) => item.entry.name === name && item.entry.version === version,
+  );
+  if (selected === undefined) {
+    throw new CapabilityPackageStoreError(
+      "not_found",
+      `capability bundle ${name}@${version} is not installed`,
+    );
+  }
+  io.stdout(
+    JSON.stringify(
+      {
+        valid: true,
+        ...selected.entry,
+        description: selected.bundle.description,
+        ...(selected.bundle.license === undefined ? {} : { license: selected.bundle.license }),
+        ...(selected.bundle.compatibility === undefined
+          ? {}
+          : { compatibility: selected.bundle.compatibility }),
+        packages: selected.bundle.packages.map(capabilityBundlePackageSummary),
+      },
+      null,
+      2,
+    ),
+  );
+  return 0;
+}
+
+function capabilityBundlePackageSummary(
+  item: Awaited<
+    ReturnType<LocalCapabilityPackageStore["verify"]>
+  >[number]["bundle"]["packages"][number],
+): Readonly<Record<string, unknown>> {
+  return Object.freeze({
+    kind: item.kind,
+    name: item.name,
+    ...(item.kind === "agent-skill" ? {} : { version: item.version }),
+  });
 }
 
 async function approvalDecisionCommand(
@@ -1132,18 +1356,37 @@ async function resolveWorkflowCapabilitySnapshot(
   const names = collectWorkflowAgentSkillNames(workflow);
   const verifierReferences = collectWorkflowVerifierPackageReferences(workflow);
   const toolReferences = collectWorkflowToolPackageReferences(workflow);
+  if (names.length === 0 && verifierReferences.length === 0 && toolReferences.length === 0) {
+    return undefined;
+  }
+  if (config.projectRoot === null) {
+    if (names.length > 0) {
+      throw new AgentSkillCatalogError(
+        "missing_skill",
+        "Agent Skills require a Flow project root containing .flow/skills",
+      );
+    }
+    if (verifierReferences.length > 0) {
+      throw new VerifierPackageCatalogError(
+        "missing_package",
+        "verifier packages require a Flow project root containing .flow/verifiers",
+      );
+    }
+    throw new ToolPackageCatalogError(
+      "missing_package",
+      "tool packages require a Flow project root containing .flow/tools",
+    );
+  }
+  const catalogs = await discoverProjectCapabilityCatalogs(config.projectRoot);
   const snapshots: CapabilitySnapshot[] = [];
   if (names.length > 0) {
-    const catalog = await discoverConfiguredAgentSkills(config);
-    snapshots.push(await snapshotSelectedAgentSkills(catalog, names));
+    snapshots.push(await snapshotSelectedAgentSkills(catalogs.agentSkills, names));
   }
   if (verifierReferences.length > 0) {
-    const catalog = await discoverConfiguredVerifierPackages(config);
-    snapshots.push(await snapshotSelectedVerifierPackages(catalog, verifierReferences));
+    snapshots.push(await snapshotSelectedVerifierPackages(catalogs.verifiers, verifierReferences));
   }
   if (toolReferences.length > 0) {
-    const catalog = await discoverConfiguredToolPackages(config);
-    snapshots.push(await snapshotSelectedToolPackages(catalog, toolReferences));
+    snapshots.push(await snapshotSelectedToolPackages(catalogs.tools, toolReferences));
   }
   return combineCapabilitySnapshots(snapshots);
 }
@@ -1157,7 +1400,7 @@ async function discoverConfiguredAgentSkills(
       "Agent Skills require a Flow project root containing .flow/skills",
     );
   }
-  return await discoverProjectAgentSkills(config.projectRoot);
+  return (await discoverProjectCapabilityCatalogs(config.projectRoot)).agentSkills;
 }
 
 async function discoverConfiguredVerifierPackages(
@@ -1169,7 +1412,7 @@ async function discoverConfiguredVerifierPackages(
       "verifier packages require a Flow project root containing .flow/verifiers",
     );
   }
-  return await discoverProjectVerifierPackages(config.projectRoot);
+  return (await discoverProjectCapabilityCatalogs(config.projectRoot)).verifiers;
 }
 
 async function discoverConfiguredToolPackages(
@@ -1181,7 +1424,7 @@ async function discoverConfiguredToolPackages(
       "tool packages require a Flow project root containing .flow/tools",
     );
   }
-  return await discoverProjectToolPackages(config.projectRoot);
+  return (await discoverProjectCapabilityCatalogs(config.projectRoot)).tools;
 }
 
 function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies {
@@ -1194,6 +1437,8 @@ function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies 
     effectReconciler: overrides.effectReconciler ?? createProductionNodeEffectReconciler(),
     createWorkspaceIsolator: overrides.createWorkspaceIsolator ?? createProductionWorkspaceIsolator,
     readTextFile: overrides.readTextFile ?? ((path) => readFile(path, "utf8")),
+    capabilityBundleFetcher:
+      overrides.capabilityBundleFetcher ?? createProductionCapabilityBundleFetcher(),
     ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
   };
 }

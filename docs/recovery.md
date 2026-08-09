@@ -36,6 +36,9 @@ name, exact version, driver kind, definition, manifest hash, package digest, com
 reference, node requirement, and any committed verdict evidence. Resume resolves the package only
 from that durable verifier package snapshot. It never reads `.flow/verifiers`; a caller-supplied
 snapshot must have the exact durable aggregate digest or recovery refuses with `workflow_mismatch`.
+For an installed package it likewise never reads `.flow/packages.lock.json`, reopens a bundle blob,
+or contacts the recorded source URL. The lock and blob are admission inputs only; `run_started` is
+the recovery authority.
 The same rule applies inside a child ledger, which may carry the parent snapshot but can bind only
 its own compiled selections.
 
