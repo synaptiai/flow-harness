@@ -169,3 +169,49 @@ The provider-neutral application port is `HarnessEvaluationAdapter`. The first i
 durable run state. Future Pi-, OMP-, or Prime-native adapters can implement the same request/result
 contract, but they must not receive verifier definitions or evaluation-store authority and must
 preserve the plan's fairness controls. No adapter other than `flow-workflow-v1` is admitted today.
+
+## Tuning-only evidence and prompt candidates
+
+A completed evaluation with at least one tuning task can produce a deterministic refiner input:
+
+```sh
+flow eval tuning-evidence <evaluation-id> --output <path> [--evaluations-dir <path>]
+```
+
+Export reopens the store through the normal header, schedule, strict-record, digest-chain, and
+completeness validation. It refuses a partial or corrupt evaluation, an evaluation without tuning
+tasks, or an existing output path. The packet contains source evaluation/suite identity, the
+terminal ledger digest, both profile workflow identities, optional prior candidate digests, and only
+tuning trial classifications, bounded harness/verification outcomes, and nullable metrics. Harness
+reasons retain at most 512 UTF-8 bytes and state whether they were truncated. Packet admission
+rejects contradictory outcome/classification/recovery evidence, duplicate trials, incomplete pairs,
+inconsistent tuning schedules, reused seeds/repetitions, non-contiguous repetitions, and totals that
+cannot imply an integral bounded source-task count.
+
+Regression and holdout task ids, records, outcomes, metrics, reasons, assertions, verifier digests,
+assertion counts, fixtures, instructions, trial ids, run ids, record digests, and schedule positions
+are absent rather than replaced by redaction markers. The packet has its own canonical
+`evidenceDigest`; editing any retained value invalidates it. A SHA-256 digest proves exact bytes, not
+who authored them or that the underlying tasks were independent.
+
+An evaluation profile may select exactly one `workflow` or `candidate` source:
+
+```yaml
+profiles:
+  - { id: baseline, adapter: flow-workflow-v1, workflow: baseline.workflow.yaml }
+  - { id: candidate, adapter: flow-workflow-v1, candidate: better.prompt-candidate.yaml }
+```
+
+Candidate admission verifies the exact manifest, baseline, evidence packets, current prompt hashes,
+and projected workflow. The candidate must be selected as the declared comparison candidate and its
+embedded baseline must exactly match the comparison baseline profile. Candidate and projected identities enter the plan digest, deterministic
+schedule, public header, resume checks, inspect output, and export. Runtime fairness controls are
+unchanged because the projection still executes as `flow-workflow-v1`. The baseline file is never
+modified. A comparison verdict does not activate the candidate; automatic activation and rollback
+remain unavailable.
+
+The public header stores the complete prompt-free candidate identity and recomputes its independent
+digest during replay. Its baseline and projected source/workflow hashes must match the surrounding
+comparison profiles even if an outer plan digest and schedule were recomputed. Direct workflow
+profiles omit the projection source discriminator, preserving existing version-1 plan digests and
+incomplete-run resume compatibility.

@@ -735,6 +735,37 @@ It does not make task selection representative, control provider stochasticity t
 seed, or turn a bootstrap interval into a universal performance claim. See
 [Reproducible harness evaluation](evaluation.md).
 
+## Adaptive prompt candidate layer
+
+The first Gate 7 slice sits above evaluation rather than inside a running model session. A complete
+evaluation can be projected into a canonical tuning-only evidence packet. The projection is a
+closed allowlist: it retains tuning classifications, bounded outcomes, available metrics, and exact
+profile/source identity while omitting regression and holdout material, verifier evidence, run
+handles, and schedule positions. Bounded reasons retain an explicit truncation bit, and packet
+admission rejects contradictory classifications, outcomes, recovery metrics, or paired tuples.
+It also requires the scheduler's one-to-one seed/repetition mapping, contiguous repetitions, and a
+declared total implying an integral bounded source-task count.
+
+A `PromptCandidate` is inert supplemental state. It binds an exact baseline source and compiled
+workflow digest, exact tuning-evidence packets, a workflow scope, and prompt replacements for
+existing root agent nodes. Admission performs stable no-follow reads, revalidates candidate-root,
+ancestor, and final
+identities, verifies every declared hash, requires the evidence to cover the baseline workflow,
+checks the current prompt hash, and constructs the projection by changing only those prompt leaves.
+The candidate profile must overlay the exact declared comparison baseline. The result then passes through the ordinary
+workflow compiler and the existing `flow-workflow-v1` evaluation adapter. There is no adaptive
+compiler, scheduler, tool broker, or executor.
+
+The manifest hash proves what was proposed; the independently recomputed candidate digest binds the
+complete public baseline, evidence, target, and projected identities; the projected workflow digest
+proves what the scheduler will execute. The complete candidate identity enters the evaluation
+plan/header without persisting prompt bodies and is cross-checked against both surrounding workflow
+profiles during replay. A generated candidate projection carries an explicit source discriminator;
+ordinary file-backed workflows omit it to preserve version-1 plan digests and legacy resume. A candidate
+cannot change graph structure, tools, skills, packages, policy, approvals, budgets, verifier
+definitions, retry behavior, or model routing. Candidate validation and evaluation do not mutate the
+baseline. Automatic proposal, activation, rollout, and rollback remain future reviewed boundaries.
+
 ## Non-goals
 
 - Flow does not retain Claude Code plugin compatibility.
@@ -746,6 +777,8 @@ seed, or turn a bootstrap interval into a universal performance claim. See
 - Flow does not guarantee exactly-once behavior for arbitrary external side effects.
 - Flow does not guarantee prepaid or invoice-authoritative model-cost caps, currency conversion, or distributed quota reservation.
 - Flow does not autonomously merge, release, deploy, or weaken its safety floor.
+- Flow does not automatically activate an adaptive prompt candidate; a favorable evaluation is
+  evidence, not mutation authority.
 - Flow does not permit live mutation of policy, evaluator definitions, or graph semantics.
 - Flow does not make a Python or JavaScript kernel a mandatory core primitive.
 - Flow does not treat process or worktree isolation as a security sandbox.

@@ -181,19 +181,9 @@ function compileWorkflowTextInternal(
   sourceName: string,
   context: CompilationContext,
 ): CompiledWorkflow {
-  const parsed = parseYaml(source, sourceName);
-  const result = workflowSourceSchema.safeParse(parsed);
+  const workflowSource = parseWorkflowSourceText(source, sourceName);
 
-  if (!result.success) {
-    const diagnostics = result.error.issues.map<WorkflowDiagnostic>((issue) => ({
-      code: "invalid_schema",
-      path: formatPath(issue.path),
-      message: issue.message,
-    }));
-    throw new WorkflowCompilationError(sourceName, Object.freeze(diagnostics));
-  }
-
-  if (context.depth > 0 && result.data.nodes.some((node) => node.type === "optimization")) {
+  if (context.depth > 0 && workflowSource.nodes.some((node) => node.type === "optimization")) {
     throw new WorkflowCompilationError(
       sourceName,
       Object.freeze([
@@ -206,12 +196,12 @@ function compileWorkflowTextInternal(
     );
   }
 
-  const diagnostics = validateGraph(result.data);
+  const diagnostics = validateGraph(workflowSource);
   if (diagnostics.length > 0) {
     throw new WorkflowCompilationError(sourceName, Object.freeze(diagnostics));
   }
 
-  const workflow = freezeWorkflow(result.data, context);
+  const workflow = freezeWorkflow(workflowSource, context);
   context.nodeCount.value += workflow.nodes.length;
   if (context.nodeCount.value > MAX_RUN_TREE_NODES) {
     throw new WorkflowCompilationError(
@@ -242,6 +232,20 @@ function compileWorkflowTextInternal(
     );
   }
   return workflow;
+}
+
+export function parseWorkflowSourceText(source: string, sourceName = "workflow"): WorkflowSource {
+  const parsed = parseYaml(source, sourceName);
+  const result = workflowSourceSchema.safeParse(parsed);
+  if (!result.success) {
+    const diagnostics = result.error.issues.map<WorkflowDiagnostic>((issue) => ({
+      code: "invalid_schema",
+      path: formatPath(issue.path),
+      message: issue.message,
+    }));
+    throw new WorkflowCompilationError(sourceName, Object.freeze(diagnostics));
+  }
+  return result.data;
 }
 
 function parseYaml(source: string, sourceName: string): unknown {

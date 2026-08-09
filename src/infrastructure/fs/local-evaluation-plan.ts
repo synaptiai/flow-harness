@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { constants, type Stats } from "node:fs";
 import { type FileHandle, lstat, open, opendir, realpath } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
-
+import type { PromptCandidateIdentity } from "../../domain/adaptation/prompt-candidate.js";
 import {
   calculateEvaluationPlanDigest,
   calculateEvaluationVerifierDigest,
@@ -16,6 +16,7 @@ import {
 import { compileWorkflowText } from "../../domain/workflow/compiler.js";
 import { calculateWorkflowDigest } from "../../domain/workflow/digest.js";
 import type { CompiledRunBudget, CompiledWorkflow } from "../../domain/workflow/types.js";
+import { admitLocalPromptCandidate } from "./local-prompt-candidate.js";
 
 export const MAX_EVALUATION_FIXTURE_ENTRIES = 4_096;
 export const MAX_EVALUATION_FIXTURE_BYTES = 256 * 1024 * 1024;
@@ -67,13 +68,15 @@ export interface AdmittedEvaluationProfile {
   readonly id: string;
   readonly adapter: "flow-workflow-v1";
   readonly workflow: {
-    readonly sourcePath: string;
+    readonly sourceKind: "file" | "prompt-candidate-projection";
+    readonly sourcePath: string | null;
     readonly provenance: string;
     readonly source: string;
     readonly sourceSha256: string;
     readonly workflowDigest: string;
     readonly compiled: CompiledWorkflow;
   };
+  readonly candidate?: PromptCandidateIdentity & { readonly selectionProvenance: string };
 }
 
 export interface AdmittedEvaluationPlan {
@@ -92,6 +95,13 @@ export interface AdmittedEvaluationPlan {
   readonly order: EvaluationPlanSource["order"];
   readonly comparison: EvaluationPlanSource["comparison"];
   readonly schedule: readonly EvaluationTrialScheduleItem[];
+}
+
+export function projectEvaluationCandidateIdentity(
+  candidate: NonNullable<AdmittedEvaluationProfile["candidate"]>,
+): { readonly provenance: string; readonly identity: PromptCandidateIdentity } {
+  const { selectionProvenance, ...identity } = candidate;
+  return Object.freeze({ provenance: selectionProvenance, identity: Object.freeze(identity) });
 }
 
 interface FixtureScanState {
@@ -144,39 +154,73 @@ export async function admitLocalEvaluationPlan(planPath: string): Promise<Admitt
 
   const admittedProfiles = await Promise.all(
     source.profiles.map(async (profile): Promise<AdmittedEvaluationProfile> => {
-      const workflowPath = await resolveAdmittedPath(planRoot, profile.workflow, "file");
-      const workflowFile = await stableReadFile(
-        workflowPath,
-        MAX_EVALUATION_WORKFLOW_BYTES,
-        `workflow "${profile.id}"`,
-      );
-      const workflowSource = workflowFile.content.toString("utf8");
-      let compiled: CompiledWorkflow;
+      if ("workflow" in profile) {
+        const workflowPath = await resolveAdmittedPath(planRoot, profile.workflow, "file");
+        const workflowFile = await stableReadFile(
+          workflowPath,
+          MAX_EVALUATION_WORKFLOW_BYTES,
+          `workflow "${profile.id}"`,
+        );
+        const workflowSource = workflowFile.content.toString("utf8");
+        let compiled: CompiledWorkflow;
+        try {
+          compiled = compileWorkflowText(workflowSource, profile.workflow);
+        } catch (error) {
+          throw new EvaluationAdmissionError(
+            "invalid_workflow",
+            `profile "${profile.id}" workflow cannot be compiled: ${boundedMessage(error)}`,
+            { cause: error },
+          );
+        }
+        assertWorkflowControls(profile.id, compiled, source.controls);
+        return Object.freeze({
+          id: profile.id,
+          adapter: profile.adapter,
+          workflow: Object.freeze({
+            sourceKind: "file" as const,
+            sourcePath: workflowPath,
+            provenance: profile.workflow,
+            source: workflowSource,
+            sourceSha256: workflowFile.sha256,
+            workflowDigest: calculateWorkflowDigest(compiled),
+            compiled,
+          }),
+        });
+      }
+
+      const candidatePath = await resolveAdmittedPath(planRoot, profile.candidate, "file");
+      let admittedCandidate: Awaited<ReturnType<typeof admitLocalPromptCandidate>>;
       try {
-        compiled = compileWorkflowText(workflowSource, profile.workflow);
+        admittedCandidate = await admitLocalPromptCandidate(candidatePath);
       } catch (error) {
         throw new EvaluationAdmissionError(
           "invalid_workflow",
-          `profile "${profile.id}" workflow cannot be compiled: ${boundedMessage(error)}`,
+          `profile "${profile.id}" prompt candidate cannot be admitted: ${boundedMessage(error)}`,
           { cause: error },
         );
       }
-      assertWorkflowControls(profile.id, compiled, source.controls);
+      assertWorkflowControls(profile.id, admittedCandidate.workflow.compiled, source.controls);
       return Object.freeze({
         id: profile.id,
         adapter: profile.adapter,
         workflow: Object.freeze({
-          sourcePath: workflowPath,
-          provenance: profile.workflow,
-          source: workflowSource,
-          sourceSha256: workflowFile.sha256,
-          workflowDigest: calculateWorkflowDigest(compiled),
-          compiled,
+          sourceKind: "prompt-candidate-projection" as const,
+          sourcePath: null,
+          provenance: profile.candidate,
+          source: admittedCandidate.workflow.source,
+          sourceSha256: admittedCandidate.workflow.sourceSha256,
+          workflowDigest: admittedCandidate.workflow.workflowDigest,
+          compiled: admittedCandidate.workflow.compiled,
+        }),
+        candidate: Object.freeze({
+          ...admittedCandidate.identity,
+          selectionProvenance: profile.candidate,
         }),
       });
     }),
   );
   const profiles = admittedProfiles as [AdmittedEvaluationProfile, AdmittedEvaluationProfile];
+  assertCandidateComparison(profiles, source.comparison);
 
   const planDigest = calculateEvaluationPlanDigest({
     version: 1,
@@ -210,7 +254,15 @@ export async function admitLocalEvaluationPlan(planPath: string): Promise<Admitt
         provenance: profile.workflow.provenance,
         sourceSha256: profile.workflow.sourceSha256,
         workflowDigest: profile.workflow.workflowDigest,
+        ...(profile.workflow.sourceKind === "prompt-candidate-projection"
+          ? { sourceKind: profile.workflow.sourceKind }
+          : {}),
       },
+      ...(profile.candidate === undefined
+        ? {}
+        : {
+            candidate: projectEvaluationCandidateIdentity(profile.candidate),
+          }),
     })),
     controls: source.controls,
     seeds: source.seeds,
@@ -418,6 +470,39 @@ async function stableReadFile(path: string, maxBytes: number, label: string): Pr
     });
   } finally {
     await handle.close();
+  }
+}
+
+function assertCandidateComparison(
+  profiles: readonly [AdmittedEvaluationProfile, AdmittedEvaluationProfile],
+  comparison: EvaluationPlanSource["comparison"],
+): void {
+  const candidateProfiles = profiles.filter((profile) => profile.candidate !== undefined);
+  if (candidateProfiles.length === 0) {
+    return;
+  }
+  const baseline = profiles.find((profile) => profile.id === comparison.baselineProfileId);
+  const candidate = profiles.find((profile) => profile.id === comparison.candidateProfileId);
+  if (
+    candidateProfiles.length !== 1 ||
+    baseline === undefined ||
+    candidate === undefined ||
+    baseline.candidate !== undefined ||
+    candidate.candidate === undefined
+  ) {
+    throw new EvaluationAdmissionError(
+      "invalid_workflow",
+      "a prompt candidate source must be selected only on the comparison candidate profile",
+    );
+  }
+  if (
+    candidate.candidate.baseline.sourceSha256 !== baseline.workflow.sourceSha256 ||
+    candidate.candidate.baseline.workflowDigest !== baseline.workflow.workflowDigest
+  ) {
+    throw new EvaluationAdmissionError(
+      "invalid_workflow",
+      "the prompt candidate must overlay the exact comparison baseline workflow identity",
+    );
   }
 }
 

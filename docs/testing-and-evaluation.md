@@ -200,6 +200,21 @@ incomplete safety evidence, and constraint/verdict gates.
 Adapter telemetry tests also execute a child-only profile and require unprojected child activity,
 policy, intervention, and recovery measurements to remain unavailable.
 
+Evidence-bound adaptation tests cover strict tuning-only projection, deterministic packet digests,
+forbidden regression/holdout/verifier/run-handle fields, incomplete and contradictory ledgers,
+internally contradictory outcomes/recovery metrics, duplicate pairs, maximum-size exports, bounded
+diagnostics, impossible seed/repetition mappings and declared totals, strict prompt-candidate
+schemas and bounds, exact prompt whitespace, stale
+baseline/evidence/prompt identities, unrelated evidence, invalid targets, stable no-follow local
+admission, candidate-root and nested-path symbolic-link races, path escapes, invalid UTF-8,
+oversized and malformed evidence, exact comparison-baseline binding, generated-source provenance,
+legacy direct-plan resume, and internally redigested durable candidate-identity refusal.
+`test/integration/cli/prompt-candidate.test.ts` runs the credential-free vertical slice: complete
+mixed-partition evaluation, tuning-only export and no-overwrite refusal, candidate validation,
+candidate-plan admission, exact projected execution, offline inspect/export, candidate-drift resume
+refusal, public-header tamper refusal, durable candidate identity, and unchanged baseline source.
+These tests do not claim model-driven generation or activation; both remain future gates.
+
 The production CLI integration runs the complete composition with a deterministic fake executor, so
 unit and integration suites need no provider credentials or network. Live provider comparisons are
 operator-run evidence and are not part of `npm test`.

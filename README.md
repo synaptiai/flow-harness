@@ -38,6 +38,7 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Versioned workflow packages | Implemented for strict local or digest-pinned installed inert source manifests, exact packaged roots and children, closed snapshot-only compilation, and durable replay identity |
 | Remote capability bundle distribution | Implemented with deterministic inert `.flowpkg` files, explicit public HTTPS plus SHA-256 installation, a content-addressed project store, deterministic lock, local audit/removal commands, and offline execution/recovery |
 | Reproducible harness evaluation | Implemented for paired `flow-workflow-v1` profiles, immutable task/workflow/verifier identity, fresh trial workspaces, private deterministic checks, digest-chained evidence, offline reports, and constrained paired comparison |
+| Evidence-bound prompt candidates | Implemented for canonical tuning-only evidence, strict prompt-only overlays on exact baseline workflows, candidate-aware paired evaluation, and immutable public identity; automatic generation and activation remain unavailable |
 | Proof-safe fresh recovery of interrupted agent attempts | Implemented as explicit opt-in for read-only attempts and edit attempts proven not applied |
 | Fail-closed sandboxed command isolation | Filesystem/network isolation is implemented on Linux and macOS; strict agent-command descendant lifecycle containment is currently Linux-only |
 | Signed registries, automatic updates, policy/UI packages, and model network tools | Planned |
@@ -146,6 +147,71 @@ policy, zero-retry policy, fixtures, verifier identity, and seeds. Missing trial
 denominator and unavailable telemetry remains unavailable rather than becoming zero. See
 [Reproducible harness evaluation](docs/evaluation.md) for the plan contract, trust boundary,
 resume behavior, metrics, and comparison rules.
+
+### Evaluate an adaptive prompt candidate
+
+After a complete evaluation containing at least one `tuning` task, export the bounded refiner input:
+
+```sh
+node dist/cli/main.js eval tuning-evidence harness-comparison \
+  --output tuning-evidence.json
+```
+
+The canonical packet contains only tuning task ids, terminal classifications, bounded harness and
+verification outcomes, available metrics, profile workflow identities, and source-ledger identity.
+Harness reasons retain at most 512 UTF-8 bytes and carry an explicit `reasonTruncated` flag.
+Packet admission also requires Flow-scheduler-compatible one-to-one seed/repetition mappings,
+contiguous repetitions, complete profile pairs, and a feasible declared total task count.
+Regression and holdout task ids, records, outcomes, metrics, reasons, verifier material, run ids,
+and schedule positions are omitted completely.
+
+A `PromptCandidate` manifest binds an exact baseline workflow, one through sixteen exact evidence
+packets, and one through sixteen prompt replacements on existing root agent nodes:
+
+```yaml
+apiVersion: flow.synapti.ai/v1alpha1
+kind: PromptCandidate
+metadata: { id: clearer-implementation-prompt, version: 1.0.0 }
+scope: { kind: workflow, workflowId: evaluated-profile }
+baseline:
+  workflow: baseline.workflow.yaml
+  sourceSha256: <64-lowercase-hex>
+  workflowDigest: <64-lowercase-hex>
+evidence:
+  - path: tuning-evidence.json
+    sourceSha256: <64-lowercase-hex>
+    evidenceDigest: <64-lowercase-hex>
+    planDigest: <64-lowercase-hex>
+changes:
+  prompts:
+    - nodeId: implement
+      expectedSha256: <64-lowercase-hex>
+      value: Read TASK.md, implement it carefully, and verify the result.
+```
+
+Validation is credential-free, changes no source file, and prints hashes and target node ids rather
+than prompt bodies:
+
+```sh
+node dist/cli/main.js candidate validate better.prompt-candidate.yaml
+```
+
+To evaluate the projection, select it in the candidate profile while keeping
+`adapter: flow-workflow-v1`. The candidate's exact embedded baseline must match the declared
+comparison baseline profile:
+
+```yaml
+profiles:
+  - { id: baseline, adapter: flow-workflow-v1, workflow: baseline.workflow.yaml }
+  - { id: candidate, adapter: flow-workflow-v1, candidate: better.prompt-candidate.yaml }
+```
+
+Flow verifies stable no-follow source reads and root/ancestor/final identities, every declared digest, the
+exact current prompt hash, and evidence coverage of the baseline. It changes only the declared
+prompt leaves, serializes the projection deterministically, and passes it through the ordinary
+compiler and evaluation adapter.
+A favorable report is evidence only: automatic candidate generation, activation, rollout,
+rollback, and live self-modification remain unavailable.
 
 ### Use a portable Agent Skill
 

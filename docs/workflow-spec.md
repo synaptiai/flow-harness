@@ -1280,6 +1280,62 @@ to contribute profile metrics and constraints. A declared regression ceiling is 
 complete environment-matched regression pairs only. Child-only activity, policy, intervention, and
 recovery fields remain `null` until child evidence carries those recursive aggregates.
 
+### Prompt candidates
+
+A prompt candidate is a separate inert document, not a workflow node or executable package:
+
+```yaml
+apiVersion: flow.synapti.ai/v1alpha1
+kind: PromptCandidate
+metadata: { id: better-instructions, version: 1.0.0 }
+scope: { kind: workflow, workflowId: evaluated-profile }
+baseline:
+  workflow: baseline.workflow.yaml
+  sourceSha256: <64-lowercase-hex>
+  workflowDigest: <64-lowercase-hex>
+evidence:
+  - path: tuning-evidence.json
+    sourceSha256: <64-lowercase-hex>
+    evidenceDigest: <64-lowercase-hex>
+    planDigest: <64-lowercase-hex>
+changes:
+  prompts:
+    - nodeId: implement
+      expectedSha256: <64-lowercase-hex>
+      value: Read the task, implement it carefully, and verify the result.
+```
+
+Candidate source is at most 1 MiB. Identifiers and semantic versions are canonical. Baseline and
+evidence paths are portable relative paths below the candidate directory and must resolve through
+direct regular no-follow files. A candidate declares 1–16 unique evidence paths/digests and 1–16
+unique prompt targets; each replacement is non-empty and at most 262144 characters, with at most
+1 MiB of replacement UTF-8 in total. Evidence files are strict canonical tuning packets of at most
+8 MiB each. A retained harness reason is at most 512 UTF-8 bytes and includes
+`reasonTruncated`; packet parsing rejects contradictory classifications, outcomes, recovery metrics,
+duplicate trial identities, incomplete profile pairs, reused seeds/repetitions, non-contiguous
+repetitions, infeasible declared totals, and other inconsistent tuning schedules.
+
+Admission binds the candidate source SHA-256, exact baseline source and compiled digest, each
+evidence file/source/packet/plan digest, workflow scope, and each current prompt digest. Every
+evidence packet must contain a profile with the exact baseline workflow digest. A target must be an
+existing root `agent` node; nested nodes and every non-agent node are invalid. The projection starts
+from the validated baseline source, replaces only declared `agent.prompt` leaves, serializes
+deterministic JSON, and runs through the ordinary compiler. The public candidate identity contains
+only provenance, ids, versions, and hashes—not prompt bodies or absolute paths. Its digest is
+recomputed independently during durable replay, and its complete baseline/projected identities must
+match the surrounding evaluation profiles.
+
+Unknown fields, duplicate targets/evidence, malformed YAML/JSON, excessive input, path escape,
+symbolic link, special/missing file, unstable read, stale source/prompt identity, unrelated evidence,
+or invalid projection fails before evaluation execution. No candidate field can express graph,
+model routing, tool, skill, package, policy, approval, budget, verifier, retry, or activation changes.
+`flow candidate validate <candidate.yaml>` is read-only and credential-free. An evaluation plan
+selects a candidate with `candidate: <path>` instead of `workflow: <path>` while retaining
+`adapter: flow-workflow-v1`. It must be the declared comparison candidate and must overlay the exact
+declared comparison baseline. Public headers distinguish generated candidate projections from
+file-backed workflow sources; direct file sources omit the discriminator to preserve version-1 plan
+digests and legacy resume. Automatic generation and activation remain unavailable.
+
 ## Current limitations
 
 - No arbitrary cycles, nested or unbounded loops, nested optimization, dynamic fan-out, general multi-condition joins, general child patch promotion, terminal-failure retry, or fallback semantics. Bounded loop bodies and static ready DAG nodes can execute concurrently, but iterations are sequential, share one workspace, and are not inferred to be conflict-free. Ordinary child workflows isolate workspaces and histories and discard their changes; only compiler-generated bounded optimization candidates can use the typed promotion saga. Conditions and loop stops are limited to exact equality over complete durable command, agent, accepted verifier, or typed-result fields. Approval is available as deterministic command pre-start gates, live per-call agent `exec` gates, and pure evidence-bound graph nodes; command-verifier approval remains unavailable. Recovery is limited to proof-safe fresh agent attempts; interrupted verifier attempts are never retried automatically.
@@ -1291,5 +1347,7 @@ recovery fields remain `null` until child evidence carries those recursive aggre
 - Agent mutation is limited to exact single-file edit of an existing UTF-8 file plus explicitly selected, argv-only sandboxed commands. No direct create, delete, rename, shell, network, fuzzy patch, environment/cwd override, interactive process, background job, or multi-file transaction tool is exposed.
 - No opaque continuation after a process dies during an in-flight Pi tool call. Live approval works only while the owning attached process or detached worker retains that Pi session. A fresh retry is a new attempt and is allowed only by the persisted proof gate; it is not a substitute for restoring a live session.
 - Model verifiers, including packaged rubrics, are zero-tool and evidence-bounded but remain probabilistic and not prompt-injection-proof. Arbitrary evaluator code and reward/evaluation environments are not supported.
+- Adaptive candidates are prompt-only, root-agent overlays. Skill, memory, sub-agent, routing,
+  activation, rollout, and rollback contracts remain unavailable.
 - No prepaid hard model-cost cap, provider invoice reconciliation, or CPU/memory/disk quota. `maxArtifactBytes` bounds logical retained evidence, not physical storage, spill, or disk usage. Per-run graph-node concurrency, detached worker count, and queue depth are separate bounded controls.
 - No schema migration path is promised while the format remains `v1alpha1`.

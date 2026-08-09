@@ -1,10 +1,16 @@
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
-
+import { createEvaluationSchedule } from "../../../../src/domain/evaluation/plan.js";
+import { createEvaluationTrialRecord } from "../../../../src/domain/evaluation/records.js";
+import { createTuningEvidencePacket } from "../../../../src/domain/evaluation/tuning-evidence.js";
+import { compileWorkflowText } from "../../../../src/domain/workflow/compiler.js";
+import { calculateWorkflowDigest } from "../../../../src/domain/workflow/digest.js";
 import { admitLocalEvaluationPlan } from "../../../../src/infrastructure/fs/local-evaluation-plan.js";
+import { createPublicEvaluationHeader } from "../../../../src/infrastructure/fs/local-evaluation-store.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -87,6 +93,130 @@ describe("local evaluation plan admission", () => {
 
     expect(left.planDigest).toBe(right.planDigest);
     expect(left.suite.tasks[0]?.fixture.digest).toBe(right.suite.tasks[0]?.fixture.digest);
+  });
+
+  it("preserves the legacy direct-workflow plan identity", async () => {
+    const project = await evaluationProject();
+    const admitted = await admitLocalEvaluationPlan(join(project, "evaluation.yaml"));
+    const header = createPublicEvaluationHeader(admitted, "direct-evaluation");
+
+    expect(header.profiles.every((profile) => profile.workflow.sourceKind === undefined)).toBe(
+      true,
+    );
+  });
+
+  it("admits a prompt-candidate profile as an exact projected workflow identity", async () => {
+    const project = await evaluationProject();
+    const baselineText = await readFile(join(project, "baseline.workflow.yaml"), "utf8");
+    const baselineDigest = calculateWorkflowDigest(compileWorkflowText(baselineText));
+    const evidence = tuningEvidence(baselineDigest);
+    const evidenceText = JSON.stringify(evidence);
+    await writeFile(join(project, "tuning.json"), evidenceText);
+    await writeFile(
+      join(project, "better.prompt-candidate.yaml"),
+      JSON.stringify({
+        apiVersion: "flow.synapti.ai/v1alpha1",
+        kind: "PromptCandidate",
+        metadata: { id: "better-instructions", version: "1.0.0" },
+        scope: { kind: "workflow", workflowId: "baseline" },
+        baseline: {
+          workflow: "baseline.workflow.yaml",
+          sourceSha256: sha256(baselineText),
+          workflowDigest: baselineDigest,
+        },
+        evidence: [
+          {
+            path: "tuning.json",
+            sourceSha256: sha256(evidenceText),
+            evidenceDigest: evidence.evidenceDigest,
+            planDigest: evidence.evaluation.planDigest,
+          },
+        ],
+        changes: {
+          prompts: [
+            {
+              nodeId: "implement",
+              expectedSha256: sha256("Follow TASK.md exactly."),
+              value: "Read TASK.md, implement it carefully, and verify the result.",
+            },
+          ],
+        },
+      }),
+    );
+    const direct = await admitLocalEvaluationPlan(join(project, "evaluation.yaml"));
+    const plan = await readFile(join(project, "evaluation.yaml"), "utf8");
+    await writeFile(
+      join(project, "evaluation.yaml"),
+      plan.replace("workflow: candidate.workflow.yaml", "candidate: better.prompt-candidate.yaml"),
+    );
+
+    const admitted = await admitLocalEvaluationPlan(join(project, "evaluation.yaml"));
+    const candidate = admitted.profiles[1];
+    expect(candidate.candidate).toMatchObject({
+      id: "better-instructions",
+      candidateVersion: "1.0.0",
+      candidateDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      baseline: { workflowDigest: baselineDigest },
+      changes: [{ nodeId: "implement" }],
+    });
+    expect(candidate.workflow.compiled.nodes[0]).toMatchObject({
+      type: "agent",
+      agent: { prompt: "Read TASK.md, implement it carefully, and verify the result." },
+    });
+    expect(candidate.workflow.sourcePath).toBeNull();
+    expect(candidate.workflow.sourceKind).toBe("prompt-candidate-projection");
+    expect(admitted.planDigest).not.toBe(direct.planDigest);
+    expect(
+      createPublicEvaluationHeader(admitted, "candidate-evaluation").profiles[1],
+    ).toMatchObject({
+      id: "candidate",
+      candidate: {
+        provenance: "better.prompt-candidate.yaml",
+        identity: {
+          candidateDigest: candidate.candidate?.candidateDigest,
+          baseline: { workflowDigest: baselineDigest },
+          evidence: [{ evidenceDigest: evidence.evidenceDigest }],
+          changes: [{ nodeId: "implement" }],
+        },
+      },
+      workflow: { sourceKind: "prompt-candidate-projection" },
+    });
+  });
+
+  it("requires a candidate projection to overlay the declared comparison baseline", async () => {
+    const project = await evaluationProject();
+    await configureCandidateProfile(project, "overlay-baseline.workflow.yaml");
+    const directBaseline = await readFile(join(project, "baseline.workflow.yaml"), "utf8");
+    await writeFile(
+      join(project, "baseline.workflow.yaml"),
+      directBaseline.replace("Follow TASK.md exactly.", "Use a different baseline prompt."),
+    );
+
+    await expect(admitLocalEvaluationPlan(join(project, "evaluation.yaml"))).rejects.toThrowError(
+      /comparison baseline|exact baseline|overlay/i,
+    );
+  });
+
+  it("rejects a prompt candidate selected on the comparison baseline profile", async () => {
+    const project = await evaluationProject();
+    await configureCandidateProfile(project);
+    const plan = await readFile(join(project, "evaluation.yaml"), "utf8");
+    await writeFile(
+      join(project, "evaluation.yaml"),
+      plan
+        .replace(
+          "- { id: baseline, adapter: flow-workflow-v1, workflow: baseline.workflow.yaml }",
+          "- { id: baseline, adapter: flow-workflow-v1, candidate: better.prompt-candidate.yaml }",
+        )
+        .replace(
+          "- { id: candidate, adapter: flow-workflow-v1, candidate: better.prompt-candidate.yaml }",
+          "- { id: candidate, adapter: flow-workflow-v1, workflow: candidate.workflow.yaml }",
+        ),
+    );
+
+    await expect(admitLocalEvaluationPlan(join(project, "evaluation.yaml"))).rejects.toThrowError(
+      /comparison candidate profile|candidate source/i,
+    );
   });
 
   it("rejects workflow model and budget drift from the declared controls", async () => {
@@ -269,4 +399,122 @@ comparison:
   maxPolicyViolations: 0
   maxVerifiedSuccessRegression: 0
 `;
+}
+
+function tuningEvidence(workflowDigest: string) {
+  const planDigest = "a".repeat(64);
+  const schedule = createEvaluationSchedule(
+    planDigest,
+    ["tuning-task"],
+    ["baseline", "other"],
+    [1],
+  );
+  let previousDigest: string | null = null;
+  const records = schedule.map((item) => {
+    const record = createEvaluationTrialRecord({
+      schedule: item,
+      planDigest,
+      previousDigest,
+      startedAt: "2026-08-09T00:00:00.000Z",
+      completedAt: "2026-08-09T00:00:01.000Z",
+      environment: {
+        platform: "linux",
+        architecture: "x64",
+        nodeVersion: "v22.19.0",
+        flowVersion: "0.0.0-test",
+        workspaceBackend: "reflink-copy-v1",
+        workspaceSnapshotDigest: "9".repeat(64),
+      },
+      harness: { outcome: "completed", runId: "run", reason: null },
+      verification: {
+        outcome: "accepted",
+        verifierDigest: "b".repeat(64),
+        assertions: [{ kind: "exists", path: "RESULT.md", outcome: true }],
+      },
+      metrics: {
+        costUsdMicros: 1,
+        inputTokens: 1,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        outputTokens: 1,
+        turns: 1,
+        toolCalls: 0,
+        toolErrors: 0,
+        wallTimeMs: 1,
+        activeTimeMs: 1,
+        interventions: 0,
+        policyViolations: 0,
+        recoveryAttempts: 0,
+        recoveryOutcome: "not_attempted",
+      },
+    });
+    previousDigest = record.recordDigest;
+    return record;
+  });
+  return createTuningEvidencePacket({
+    evaluationId: "source-evaluation",
+    planDigest,
+    suite: { id: "adaptive-suite", version: "1.0.0" },
+    tasks: [{ id: "tuning-task", partition: "tuning" }],
+    profiles: [
+      { id: "baseline", adapter: "flow-workflow-v1", workflowDigest },
+      { id: "other", adapter: "flow-workflow-v1", workflowDigest: "c".repeat(64) },
+    ],
+    schedule,
+    records,
+  });
+}
+
+async function configureCandidateProfile(
+  project: string,
+  baselineProvenance = "baseline.workflow.yaml",
+): Promise<void> {
+  const baselineText = await readFile(join(project, "baseline.workflow.yaml"), "utf8");
+  if (baselineProvenance !== "baseline.workflow.yaml") {
+    await writeFile(join(project, baselineProvenance), baselineText);
+  }
+  const baselineDigest = calculateWorkflowDigest(compileWorkflowText(baselineText));
+  const evidence = tuningEvidence(baselineDigest);
+  const evidenceText = JSON.stringify(evidence);
+  await writeFile(join(project, "tuning.json"), evidenceText);
+  await writeFile(
+    join(project, "better.prompt-candidate.yaml"),
+    JSON.stringify({
+      apiVersion: "flow.synapti.ai/v1alpha1",
+      kind: "PromptCandidate",
+      metadata: { id: "better-instructions", version: "1.0.0" },
+      scope: { kind: "workflow", workflowId: "baseline" },
+      baseline: {
+        workflow: baselineProvenance,
+        sourceSha256: sha256(baselineText),
+        workflowDigest: baselineDigest,
+      },
+      evidence: [
+        {
+          path: "tuning.json",
+          sourceSha256: sha256(evidenceText),
+          evidenceDigest: evidence.evidenceDigest,
+          planDigest: evidence.evaluation.planDigest,
+        },
+      ],
+      changes: {
+        prompts: [
+          {
+            nodeId: "implement",
+            expectedSha256: sha256("Follow TASK.md exactly."),
+            value: "Read TASK.md, implement it carefully, and verify the result.",
+          },
+        ],
+      },
+    }),
+  );
+  const plan = await readFile(join(project, "evaluation.yaml"), "utf8");
+  await writeFile(
+    join(project, "evaluation.yaml"),
+    plan.replace("workflow: candidate.workflow.yaml", "candidate: better.prompt-candidate.yaml"),
+  );
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }
