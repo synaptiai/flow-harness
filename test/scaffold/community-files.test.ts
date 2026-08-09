@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
@@ -768,6 +769,83 @@ describe("public repository contracts", () => {
         toolApproval: { exec: { mode: "required", grantTtlMs: 300000 } },
       },
     });
+  });
+
+  it("documents reproducible harness evaluation with an admission-ready example", async () => {
+    const [
+      readme,
+      architecture,
+      evaluation,
+      workflowSpec,
+      roadmap,
+      security,
+      testing,
+      plan,
+      task,
+      result,
+      baseline,
+      candidate,
+    ] = await Promise.all([
+      readText("README.md"),
+      readText("docs/architecture.md"),
+      readText("docs/evaluation.md"),
+      readText("docs/workflow-spec.md"),
+      readText("docs/roadmap.md"),
+      readText("SECURITY.md"),
+      readText("docs/testing-and-evaluation.md"),
+      readText("examples/evaluation/harness-comparison.evaluation.yaml"),
+      readText("examples/evaluation/fixture/TASK.md"),
+      readText("examples/evaluation/fixture/RESULT.md"),
+      readText("examples/evaluation/baseline.workflow.yaml"),
+      readText("examples/evaluation/candidate.workflow.yaml"),
+    ]);
+
+    expect(readme).toContain("flow eval validate");
+    expect(readme).toContain("docs/evaluation.md");
+    expect(architecture).toMatch(/ordinary run\s+ledger.*separate evaluation ledger/is);
+    expect(evaluation).toContain("paired-alternating-v1");
+    expect(evaluation).toMatch(/missing.*never.*success|missing.*denominator/is);
+    expect(evaluation).toContain("thinking");
+    expect(workflowSpec).toContain("## Evaluation plans");
+    expect(roadmap).toMatch(/reproducible harness evaluation.*Implemented/is);
+    expect(security).toMatch(/evaluation fixture.*untrusted/is);
+    expect(testing).toContain("examples/evaluation/harness-comparison.evaluation.yaml");
+    expect(plan).toContain("kind: EvaluationPlan");
+
+    const parsedPlan = parse(plan) as {
+      readonly suite: {
+        readonly tasks: ReadonlyArray<{
+          readonly verifier: {
+            readonly assertions: ReadonlyArray<{
+              readonly kind: string;
+              readonly path: string;
+              readonly value?: string;
+            }>;
+          };
+        }>;
+      };
+    };
+    expect(task).toMatch(/edit the existing `RESULT\.md`/i);
+    expect(result).toMatch(/replace this placeholder/i);
+    expect(parsedPlan.suite.tasks[0]?.verifier.assertions).toContainEqual({
+      kind: "sha256",
+      path: "RESULT.md",
+      value: createHash("sha256")
+        .update(
+          "Deterministic verification checks the requested artifact instead of trusting a model's completion claim.\n",
+        )
+        .digest("hex"),
+    });
+    for (const [name, source] of [
+      ["baseline", baseline],
+      ["candidate", candidate],
+    ] as const) {
+      const workflow = compileWorkflowText(source, `${name}.workflow.yaml`);
+      expect(workflow.nodes.find((node) => node.type === "agent")).toMatchObject({
+        type: "agent",
+        agent: { tools: expect.arrayContaining(["read", "edit"]) },
+      });
+    }
   });
 });
 

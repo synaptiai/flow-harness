@@ -37,6 +37,7 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Versioned command tool packages | Implemented for strict local or digest-pinned installed declarative manifests, exact per-agent selection, deterministic argv rendering, and the existing policy/approval/sandbox/journal boundary |
 | Versioned workflow packages | Implemented for strict local or digest-pinned installed inert source manifests, exact packaged roots and children, closed snapshot-only compilation, and durable replay identity |
 | Remote capability bundle distribution | Implemented with deterministic inert `.flowpkg` files, explicit public HTTPS plus SHA-256 installation, a content-addressed project store, deterministic lock, local audit/removal commands, and offline execution/recovery |
+| Reproducible harness evaluation | Implemented for paired `flow-workflow-v1` profiles, immutable task/workflow/verifier identity, fresh trial workspaces, private deterministic checks, digest-chained evidence, offline reports, and constrained paired comparison |
 | Proof-safe fresh recovery of interrupted agent attempts | Implemented as explicit opt-in for read-only attempts and edit attempts proven not applied |
 | Fail-closed sandboxed command isolation | Filesystem/network isolation is implemented on Linux and macOS; strict agent-command descendant lifecycle containment is currently Linux-only |
 | Signed registries, automatic updates, policy/UI packages, and model network tools | Planned |
@@ -120,6 +121,31 @@ accepted. Authoritative events are written to:
 
 The inspected result identifies graph state, criterion decisions, bounded command output and
 hashes, plus the sandbox backend, exact version, profile, and semantic policy digest.
+
+### Compare harness profiles
+
+The `flow eval validate` command admits a plan without model credentials or filesystem mutation. In
+the source preview, run it through the built entry point:
+
+```sh
+node dist/cli/main.js eval validate examples/evaluation/harness-comparison.evaluation.yaml
+```
+
+Running it uses the declared provider credentials, copies the fixture into a fresh workspace for
+each paired trial, keeps the deterministic verifier private from both profiles, and stores evidence
+below `.flow/evaluations/harness-comparison/`:
+
+```sh
+node dist/cli/main.js eval run examples/evaluation/harness-comparison.evaluation.yaml
+node dist/cli/main.js eval inspect harness-comparison
+node dist/cli/main.js eval export harness-comparison --output harness-comparison.json
+```
+
+The baseline and candidate must use the same provider, model, thinking level, budgets, network
+policy, zero-retry policy, fixtures, verifier identity, and seeds. Missing trials remain in the
+denominator and unavailable telemetry remains unavailable rather than becoming zero. See
+[Reproducible harness evaluation](docs/evaluation.md) for the plan contract, trust boundary,
+resume behavior, metrics, and comparison rules.
 
 ### Use a portable Agent Skill
 
@@ -821,6 +847,7 @@ override missing or failing evidence.
 - [Workflow specification](docs/workflow-spec.md)
 - [Recovery and interruption safety](docs/recovery.md)
 - [Testing and evaluation](docs/testing-and-evaluation.md)
+- [Reproducible harness evaluation](docs/evaluation.md)
 - [Delivery roadmap](docs/roadmap.md)
 
 ## Community

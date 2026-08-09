@@ -30,7 +30,12 @@ import { resolveAgentToolPackages } from "../../domain/capability/workflow-capab
 import { PolicyBroker } from "../../domain/policy/broker.js";
 import type { PolicyAction, PolicyDecision } from "../../domain/policy/types.js";
 import type { AgentModelUsage } from "../../domain/run/budget.js";
-import type { AgentEffectReceipt, AgentEvidence, NodeFailure } from "../../domain/run/events.js";
+import type {
+  AgentActivity,
+  AgentEffectReceipt,
+  AgentEvidence,
+  NodeFailure,
+} from "../../domain/run/events.js";
 import type {
   AgentToolName,
   CompiledAgentNode,
@@ -69,6 +74,7 @@ export interface PiAgentRunResult {
   readonly textHash?: string;
   readonly textTruncated?: boolean;
   readonly usage?: AgentModelUsage;
+  readonly activity?: AgentActivity;
   readonly capabilityReads?: readonly AgentSkillReadReceipt[];
 }
 
@@ -216,6 +222,7 @@ export class PiAgentExecutor implements AgentExecutor {
       },
     );
     let observedUsage: AgentModelUsage | undefined;
+    let observedActivity: AgentActivity | undefined;
     let observedCapabilityEvidence = capabilityEvidence;
     let closedPolicyDecisions: readonly PolicyDecision[] | undefined;
     let closedEffectReceipts: readonly AgentEffectReceipt[] | undefined;
@@ -236,6 +243,7 @@ export class PiAgentExecutor implements AgentExecutor {
         policyDecisions.length === 0 &&
         effectReceipts.length === 0 &&
         observedUsage === undefined &&
+        observedActivity === undefined &&
         capabilityEvidence === undefined
       ) {
         return null;
@@ -247,6 +255,7 @@ export class PiAgentExecutor implements AgentExecutor {
         policyDecisions,
         effectReceipts,
         observedUsage,
+        observedActivity,
         observedCapabilityEvidence,
       );
     };
@@ -304,6 +313,7 @@ export class PiAgentExecutor implements AgentExecutor {
         })
         .then((result) => {
           observedUsage = result.usage;
+          observedActivity = normalizeAgentActivity(result.activity);
           if (capabilitySnapshot !== undefined) {
             try {
               observedCapabilityEvidence = createAgentCapabilityEvidence(
@@ -480,6 +490,7 @@ export class PiAgentExecutor implements AgentExecutor {
         textTruncated: normalized.textTruncated,
         durationMs: Math.max(0, this.now() - startedAt),
         ...(result.usage === undefined ? {} : { usage: result.usage }),
+        ...(observedActivity === undefined ? {} : { activity: observedActivity }),
         policyDecisions,
         effectReceipts,
         ...(completedCapabilityEvidence === undefined
@@ -521,6 +532,7 @@ export class PiAgentExecutor implements AgentExecutor {
           policyDecisions.length === 0 &&
             effectReceipts.length === 0 &&
             result.usage === undefined &&
+            observedActivity === undefined &&
             completedCapabilityEvidence === undefined
             ? null
             : emptyAgentEvidence(
@@ -530,6 +542,7 @@ export class PiAgentExecutor implements AgentExecutor {
                 policyDecisions,
                 effectReceipts,
                 result.usage,
+                observedActivity,
                 completedCapabilityEvidence,
               ),
         );
@@ -721,6 +734,7 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
     }
 
     const output = new BoundedAgentOutput(request.maxOutputBytes);
+    let toolErrors = 0;
     let abortPromise: Promise<void> | undefined;
     const abortSession = () => {
       abortPromise ??= session.abort().catch(() => undefined);
@@ -731,6 +745,9 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
         if (output.truncated) {
           abortSession();
         }
+      }
+      if (event.type === "tool_execution_end" && event.isError) {
+        toolErrors += 1;
       }
     });
     const abortHandler = abortSession;
@@ -745,12 +762,15 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
           promptError = error;
         }
       }
-      const usage = translatePiSessionStats(session.getSessionStats());
+      const stats = session.getSessionStats();
+      const usage = translatePiSessionStats(stats);
+      const activity = translatePiSessionActivity(stats, toolErrors);
       const capabilityReads = capabilitySession?.evidence().reads;
       if (promptError !== undefined) {
         return {
           ...output.result(),
           usage,
+          activity,
           ...(capabilityReads === undefined ? {} : { capabilityReads }),
           stopReason: isAborted(request.signal) ? "aborted" : "error",
           errorMessage: boundedMessage(
@@ -763,6 +783,7 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
         return {
           ...output.result(),
           usage,
+          activity,
           ...(capabilityReads === undefined ? {} : { capabilityReads }),
           stopReason: output.truncated ? "aborted" : "error",
           ...(output.truncated
@@ -773,6 +794,7 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
       return {
         ...output.result(),
         usage,
+        activity,
         ...(capabilityReads === undefined ? {} : { capabilityReads }),
         stopReason: finalMessage.stopReason,
         ...(output.truncated ? { outputLimitExceeded: true } : {}),
@@ -843,6 +865,7 @@ function emptyAgentEvidence(
   policyDecisions: readonly PolicyDecision[],
   effectReceipts: readonly AgentEffectReceipt[],
   usage?: AgentModelUsage,
+  activity?: AgentActivity,
   capabilities?: AgentCapabilityEvidence,
 ): AgentEvidence {
   return {
@@ -854,10 +877,37 @@ function emptyAgentEvidence(
     textTruncated: false,
     durationMs,
     ...(usage === undefined ? {} : { usage }),
+    ...(activity === undefined ? {} : { activity }),
     policyDecisions,
     effectReceipts,
     ...(capabilities === undefined ? {} : { capabilities }),
   };
+}
+
+function normalizeAgentActivity(activity: AgentActivity | undefined): AgentActivity | undefined {
+  if (activity === undefined) {
+    return undefined;
+  }
+  const values = [activity.turns, activity.toolCalls, activity.toolErrors];
+  if (values.some((value) => !Number.isSafeInteger(value) || value < 0)) {
+    throw new RangeError("Pi session activity must contain non-negative safe integers");
+  }
+  if (activity.toolErrors > activity.toolCalls) {
+    throw new RangeError("Pi session tool errors cannot exceed tool calls");
+  }
+  return Object.freeze({ ...activity });
+}
+
+function translatePiSessionActivity(stats: SessionStats, toolErrors: number): AgentActivity {
+  const activity = normalizeAgentActivity({
+    turns: stats.assistantMessages,
+    toolCalls: stats.toolCalls,
+    toolErrors,
+  });
+  if (activity === undefined) {
+    throw new TypeError("translated Pi session activity is unavailable");
+  }
+  return activity;
 }
 
 function translatePiSessionStats(stats: SessionStats): AgentModelUsage {

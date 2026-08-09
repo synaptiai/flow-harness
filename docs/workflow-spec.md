@@ -1248,6 +1248,38 @@ end while an uncertain authoritative run remains `running`.
 retry the exact detached submission or cancellation after losing a response. The supervisor binds
 the id to the complete request and rejects reuse with changed input.
 
+## Evaluation plans
+
+An evaluation plan is a separate `flow.synapti.ai/v1alpha1` document with
+`kind: EvaluationPlan`; it is not a workflow node and cannot alter an ordinary run graph. The full
+authoring contract and example are in [Reproducible harness evaluation](evaluation.md) and
+`examples/evaluation/harness-comparison.evaluation.yaml`.
+
+Version 1 admits exactly two `flow-workflow-v1` profiles. Each plan declares a versioned suite of
+bounded tasks, portable fixture and instruction paths, a private `filesystem-v1` verifier, one
+shared provider/model/`thinking` tuple, an exact run budget, `network: deny`, zero provider and
+harness retries, unique seeds, `paired-alternating-v1`, and fixed comparison constraints. Both
+compiled workflows must contain at least one model-bearing node and match the declared model and
+budget recursively.
+
+Evaluation admission rejects unknown fields, non-canonical identifiers and paths, duplicate task,
+profile, verifier, or seed identities, excess schedule size, symbolic links, special fixture entries,
+`.flow` fixture state, mutable source observations, and profile/control drift. Agent Skills, tool
+packages, packaged verifiers, workflow packages, and agent fresh recovery are not admitted in this
+version because the plan does not yet capture their complete semantics.
+
+`filesystem-v1` is a closed assertion union of `exists`, `absent`, and regular-file `sha256`.
+Assertions enter the verifier digest and plan identity but never enter the adapter request. Missing
+trial records remain missing in the scheduled denominator. Metric values are non-negative safe
+integers or explicit `null`; absence is never interpreted as zero.
+
+The redacted public header retains each verifier digest and assertion count. Trial replay requires
+the exact digest and complete accepted/rejected evidence cardinality. Comparative inference uses
+only environment-matched holdout pairs; tuning and regression tasks remain descriptive and continue
+to contribute profile metrics and constraints. A declared regression ceiling is computed from
+complete environment-matched regression pairs only. Child-only activity, policy, intervention, and
+recovery fields remain `null` until child evidence carries those recursive aggregates.
+
 ## Current limitations
 
 - No arbitrary cycles, nested or unbounded loops, nested optimization, dynamic fan-out, general multi-condition joins, general child patch promotion, terminal-failure retry, or fallback semantics. Bounded loop bodies and static ready DAG nodes can execute concurrently, but iterations are sequential, share one workspace, and are not inferred to be conflict-free. Ordinary child workflows isolate workspaces and histories and discard their changes; only compiler-generated bounded optimization candidates can use the typed promotion saga. Conditions and loop stops are limited to exact equality over complete durable command, agent, accepted verifier, or typed-result fields. Approval is available as deterministic command pre-start gates, live per-call agent `exec` gates, and pure evidence-bound graph nodes; command-verifier approval remains unavailable. Recovery is limited to proof-safe fresh agent attempts; interrupted verifier attempts are never retried automatically.
