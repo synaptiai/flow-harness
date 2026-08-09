@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
+import { parseToolPackageManifest } from "../../src/domain/capability/tool-packages.js";
 import { parseVerifierPackageManifest } from "../../src/domain/capability/verifier-packages.js";
 import { compileWorkflowText } from "../../src/domain/workflow/compiler.js";
 
@@ -521,6 +522,83 @@ describe("public repository contracts", () => {
       kind: "VerifierPackage",
       metadata: { name: "release-tests", version: "1.0.0" },
       spec: { kind: "command", command: { executable: "node", args: ["--version"] } },
+    });
+  });
+
+  it("documents versioned command tools with a valid credential-free example", async () => {
+    const [
+      readme,
+      architecture,
+      workflowSpec,
+      sourcing,
+      recovery,
+      roadmap,
+      security,
+      testing,
+      source,
+      manifest,
+    ] = await Promise.all([
+      readText("README.md"),
+      readText("docs/architecture.md"),
+      readText("docs/workflow-spec.md"),
+      readText("docs/capability-sourcing.md"),
+      readText("docs/recovery.md"),
+      readText("docs/roadmap.md"),
+      readText("SECURITY.md"),
+      readText("docs/testing-and-evaluation.md"),
+      readText("examples/versioned-command-tool.workflow.yaml"),
+      readText("examples/tool-packages/git-status/TOOL.yaml"),
+    ]);
+
+    expect(readme).toMatch(/Versioned command tool packages.*Implemented/is);
+    expect(readme).toContain("tools inspect git-status --version 1.0.0");
+    expect(readme).toContain("examples/versioned-command-tool.workflow.yaml");
+    expect(architecture).toMatch(/command tool package.*immutable capability snapshot/is);
+    expect(workflowSpec).toContain("## Versioned command tool packages");
+    expect(sourcing).toMatch(/Command tool packages.*Implemented/is);
+    expect(recovery).toMatch(/durable command tool package snapshot/i);
+    expect(roadmap).toMatch(/Tool.*versioned manifests.*Implemented/is);
+    expect(security).toMatch(/ToolPackage.*existing agent-command boundary/is);
+    expect(testing).toContain("examples/versioned-command-tool.workflow.yaml");
+
+    const workflow = compileWorkflowText(source, "examples/versioned-command-tool.workflow.yaml");
+    expect(workflow.nodes[0]).toMatchObject({
+      type: "agent",
+      agent: {
+        tools: ["read"],
+        toolPackages: [{ name: "git-status", version: "1.0.0" }],
+      },
+    });
+    expect(
+      parseToolPackageManifest(
+        Buffer.from(manifest),
+        "examples/tool-packages/git-status/TOOL.yaml",
+      ),
+    ).toMatchObject({
+      apiVersion: "flow.synapti.ai/v1alpha1",
+      kind: "ToolPackage",
+      metadata: { name: "git-status", version: "1.0.0" },
+      spec: {
+        tool: { name: "project_git_status", inputs: [] },
+        driver: {
+          kind: "command",
+          version: "v1",
+          profile: "git-status-v1",
+          executable: "/usr/bin/git",
+          args: [
+            "--no-optional-locks",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.untrackedCache=false",
+            "status",
+            "--short",
+            "--untracked-files=normal",
+            "--ignore-submodules=all",
+          ],
+        },
+        permissions: ["process.execute"],
+      },
     });
   });
 

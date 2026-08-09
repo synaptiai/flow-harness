@@ -168,6 +168,7 @@ function agentNode(): CompiledAgentNode {
       model: { provider: "anthropic", id: "claude-sonnet-4-5", thinking: "medium" },
       tools: [],
       skills: [],
+      toolPackages: [],
       timeoutMs: 300_000,
     },
   };

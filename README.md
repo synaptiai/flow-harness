@@ -34,6 +34,7 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Bounded Pi agent nodes with Flow-owned `read`, `ls`, hash-anchored `edit`, and sandboxed argv-only `exec` tools | Implemented; `exec` currently requires Linux PID-namespace containment |
 | Portable Agent Skills packages with progressive disclosure | Implemented for strict local project packages, explicit workflow selection, immutable run snapshots, and digest-bound read evidence |
 | Versioned verifier packages | Implemented for strict local command/model manifests, exact workflow selection, immutable run snapshots, and digest-bound verdict evidence |
+| Versioned command tool packages | Implemented for strict local declarative manifests, exact per-agent selection, deterministic argv rendering, and the existing policy/approval/sandbox/journal boundary |
 | Proof-safe fresh recovery of interrupted agent attempts | Implemented as explicit opt-in for read-only attempts and edit attempts proven not applied |
 | Fail-closed sandboxed command isolation | Filesystem/network isolation is implemented on Linux and macOS; strict agent-command descendant lifecycle containment is currently Linux-only |
 | Remote package installation, other package kinds, and model network tools | Planned |
@@ -176,6 +177,44 @@ Command packages own an argv-only command declaration. Model packages own only a
 the workflow still owns evidence order, provider/model selection, thinking level, and timeout.
 Packages cannot add tools, credentials, network access, graph transitions, policy, hooks, or
 executable extension code. Remote installation and arbitrary evaluator runtimes remain unsupported.
+
+### Use a versioned command tool package
+
+Flow discovers strict inert `ToolPackage` manifests below the project-owned `.flow/tools`
+directory. Install the example explicitly, validate every discovered manifest, and inspect its
+exact version and authority without executing it:
+
+```sh
+mkdir -p .flow/tools
+cp -R examples/tool-packages/git-status .flow/tools/
+node dist/cli/main.js tools validate
+node dist/cli/main.js tools list
+node dist/cli/main.js tools inspect git-status --version 1.0.0
+node dist/cli/main.js validate examples/versioned-command-tool.workflow.yaml
+```
+
+Those commands require no model credentials and never invoke the package driver. The workflow
+selects `git-status@1.0.0` only for its `inspect` agent. A live run requires a configured provider;
+if the model calls `project_git_status`, agent-command execution additionally requires Flow's
+Linux PID-namespace containment:
+
+```sh
+node dist/cli/main.js run examples/versioned-command-tool.workflow.yaml --run-id tool-demo
+node dist/cli/main.js inspect tool-demo
+```
+
+The v1 package contributes one model-visible tool, required bounded scalar inputs, one closed
+Flow-owned command profile, and literal argv with exact whole-argument input placeholders. The
+public example uses the exact hardened `git-status-v1` profile; `posix-printf-v1` is the initial
+typed data-output profile. They bind `/usr/bin/git` and `/usr/bin/printf` respectively, preventing
+workspace-controlled `PATH` substitution. Project manifests cannot register profiles or executable identities.
+There is no shell,
+package code, hook, environment, credential, working-directory override, stdin, PTY, background
+process, or network grant. Flow snapshots exact manifest bytes before admission, presents only
+packages explicitly selected by that agent, renders typed inputs deterministically, and sends the
+result through the same `process.execute` policy, optional live approval, sandbox, write-ahead
+command journal, cancellation, output, budget, and replay path as `flow_exec`. Queued workers,
+child runs, and recovery consume the immutable snapshot rather than reloading `.flow/tools`.
 
 To exercise the first-class verifier contract without model credentials:
 

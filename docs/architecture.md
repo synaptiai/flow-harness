@@ -16,7 +16,8 @@ recovery, exclusive local ownership, typed edit reconciliation, proof-safe fresh
 durable budgets, detachable waits, and bounded authenticated local supervision. Gate 5 adds typed
 results and verifiers, replay-safe conditions, joins, concurrency, bounded loops and optimization,
 evidence-bound graph approvals, isolated child workflows, and candidate promotion. Gate 6 adds
-strict local Agent Skills and versioned verifier packages with immutable capability snapshots. A
+strict local Agent Skills, versioned verifier packages, and declarative command tool packages with
+immutable capability snapshots. A
 TUI, remote package installation, executable extensions, other package types, opaque Pi session
 continuation, general failure/fallback retries, broader configurable policy, model network tools,
 arbitrary evaluator runtimes, and stronger VM or managed sandbox backends remain later work.
@@ -178,6 +179,46 @@ This is a declarative package boundary, not a general plugin host. Packages cann
 register tools, add credentials or network, mutate policy or graph structure, select a model, or
 import Prime Verifiers environments. Future executable or remote package sources require a separate
 out-of-process authority and installation design.
+
+### Versioned command tool packages
+
+The command tool package catalog discovers `.flow/tools/**/TOOL.yaml` as inert project data. A
+package declares one exact SemVer identity, one provider-safe tool name, required scalar inputs, a
+closed Flow-owned command-driver profile with an argv-only template, and only the
+`process.execute` permission. Its directory may
+contain no executable payload or extra resource. The no-follow scanner rejects symbolic links,
+special files, duplicate identities, source races, unknown fields, unsupported driver versions,
+partial input interpolation, and bounded-size overflow.
+
+Profiles are the admission boundary between data and code. The initial registry contains only
+`posix-printf-v1`, which binds `/usr/bin/printf` and whose fixed format may use `%%` and `%s` data
+conversions, and `git-status-v1`, which binds `/usr/bin/git` plus one exact hardened vector. Project
+packages cannot register executable identities or profiles, and shells, interpreters, dispatchers,
+alternate paths, and unsupported argument roles fail before tool registration. The system paths are
+part of Flow's host trust base; this is not binary signing or remote attestation. Profile definitions
+and the live agent-command byte/timeout envelope are checked while parsing the manifest, not deferred
+until the model calls the tool.
+
+Before admission, composition collects every root and child selection and adds the exact manifest
+bytes, parsed definition, trust/provenance metadata, and nested digests to the immutable capability
+snapshot. A command tool package is visible only on the agent that selects its exact name and
+version; duplicate model names and collisions with Flow tools fail the complete workflow. Pi is an
+adapter at this seam: Flow translates the provider-neutral definition into one custom Pi tool while
+keeping Pi extensions and package loading disabled.
+
+When the model calls the tool, Flow validates its closed scalar input object and renders each input
+as one literal argv element. It then annotates the ordinary normalized agent-command request with
+package, tool, input, and digest provenance. The existing recorder remains the sole authority for
+policy, live approval, sandboxing, write-ahead prepare/settle events, cancellation, output bounds,
+and budget accounting. Replay independently rerenders the command from durable inputs and the
+snapshot, then reconciles the workflow selection, an independent raw-exec/package requirement, the
+control graph, request, decision, approval, and settlement. Detached workers transport the snapshot unchanged, child ledgers bind only their
+declared subset, and recovery never consults the live catalog.
+
+This is intentionally narrower than Pi or OMP in-process extensions and Prime-style Python skills.
+Package code cannot enter the host runtime, intercept results, add hooks, mutate the graph, select a
+provider, or widen policy. Remote acquisition and future executable drivers require separate trust,
+installation, and out-of-process containment designs.
 
 ### Tool broker
 
@@ -508,7 +549,7 @@ The verifier executor is a separate application seam. Its command driver delegat
 
 Pi intentionally has no built-in security boundary and the host-side agent runtime still runs with the invoking user's operating-system permissions. Flow therefore distinguishes the agent-tool authorization boundary from the command containment boundary.
 
-- Agent nodes receive only declared Flow-provided `read`, `ls`, `edit`, and argv-only `exec` tools; implicit project extensions and resource discovery are disabled. Reads include an exact-byte full-file SHA-256 version. Edits require that version, preflight exact unique Unicode-scalar replacements, coordinate same-file mutations across cooperating same-host Flow processes, atomically replace one existing UTF-8 target, and protect durable/sensitive project paths at every path depth. Stale versions fail without fuzzy or three-way recovery.
+- Agent nodes receive only declared Flow-provided `read`, `ls`, `edit`, and argv-only `exec` tools plus exact selected declarative command tools; implicit project extensions and resource discovery are disabled. Reads include an exact-byte full-file SHA-256 version. Edits require that version, preflight exact unique Unicode-scalar replacements, coordinate same-file mutations across cooperating same-host Flow processes, atomically replace one existing UTF-8 target, and protect durable/sensitive project paths at every path depth. Stale versions fail without fuzzy or three-way recovery.
 - Every command node and descendant executes inside SRT on Linux or macOS. Agent commands execute only after Linux SRT binds a canonical root-owned Bubblewrap executable outside the workspace and proves PID-namespace lifecycle containment; process-group-only macOS preparation is denied before spawn. Flow preserves argv boundaries through an audited POSIX encoder, passes an explicit environment allowlist, denies network and undeclared Unix sockets, and protects the actual run-store path. Linux execution canonically resolves and re-exposes only SRT's required seccomp helper read-only when the harness installation is outside the selected workspace.
 - Missing dependencies, seccomp degradation, unsupported platforms, initialization errors, and invalid launch descriptors fail closed with no command spawn. There is no unsandboxed fallback.
 - Each new command result records the backend, exact backend version, named profile, and semantic policy digest. Backend and profile values use bounded machine identifiers rather than an SRT-only persisted union, preserving the event shape for future adapters. Generic command-node replay keeps the added field optional for older ledgers; protocol-v1 agent-command settlements require it, independently bind retained stdout/stderr prefixes by hash and UTF-8 byte count, and persist distinct timeout, abort, and termination observations.

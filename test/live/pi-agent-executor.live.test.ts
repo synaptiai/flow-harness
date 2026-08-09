@@ -21,6 +21,7 @@ describe("PiAgentExecutor live", () => {
         model: { provider, id: model, thinking: "off" },
         tools: [],
         skills: [],
+        toolPackages: [],
         timeoutMs: 120_000,
       },
     };

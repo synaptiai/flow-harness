@@ -10,10 +10,11 @@ import type {
 } from "../../../src/application/ports.js";
 import { resumeWorkflow, runWorkflow } from "../../../src/application/run-workflow.js";
 import {
+  type CapabilitySnapshot,
   createAgentCapabilityEvidence,
   createCapabilitySnapshot,
-  type CapabilitySnapshot,
 } from "../../../src/domain/capability/agent-skills.js";
+import type { ToolPackageSnapshotInput } from "../../../src/domain/capability/tool-packages.js";
 import type { RunEvent } from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 
@@ -153,6 +154,50 @@ describe("run workflow capability snapshots", () => {
     expect(state).toMatchObject({ status: "succeeded", failureReason: null });
   });
 
+  it("resumes a selected tool package from the durable snapshot alone", async () => {
+    const interruptedStore = new MemoryStore("node_started");
+    const snapshot = createCapabilitySnapshot([], [], [toolPackage("project-report", "1.2.3")]);
+    const workflow = toolPackageWorkflow();
+    await expect(
+      runWorkflow(workflow, {
+        ...options(
+          interruptedStore,
+          executorFrom(() => agentSuccess()),
+        ),
+        runId: "resume-tool-package-run",
+        capabilitySnapshot: snapshot,
+      }),
+    ).rejects.toThrow("injected persistence failure");
+    expect(interruptedStore.events).toHaveLength(1);
+
+    const recoveredStore = new MemoryStore(undefined, interruptedStore.events);
+    let observedDigest: string | undefined;
+    const state = await resumeWorkflow(workflow, {
+      ...options(
+        recoveredStore,
+        executorFrom((_node, context) => {
+          observedDigest = context.capabilitySnapshot?.packages.find(
+            (item) => item.kind === "tool-package",
+          )?.digest;
+          return agentSuccess();
+        }),
+      ),
+      runId: "resume-tool-package-run",
+    });
+
+    expect(observedDigest).toBe(snapshot.packages[0]?.digest);
+    expect(state).toMatchObject({
+      status: "succeeded",
+      capabilitySnapshot: { digest: snapshot.digest },
+      toolPackageRequirements: {
+        analyze: {
+          rawExec: false,
+          packages: [{ name: "project-report", version: "1.2.3" }],
+        },
+      },
+    });
+  });
+
   it("rejects recovery history that attributes a valid package to the wrong agent node", async () => {
     const snapshot = createCapabilitySnapshot([skill("review"), skill("unused")]);
     const completed = new MemoryStore();
@@ -269,6 +314,28 @@ function unskilledWorkflow() {
   return compileWorkflowText(workflowSource(""));
 }
 
+function toolPackageWorkflow() {
+  return compileWorkflowText(`apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: tool-package-recovery }
+nodes:
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Analyze.
+      model: { provider: test, id: deterministic }
+      tools: [read]
+      toolPackages:
+        - { name: project-report, version: 1.2.3 }
+  - id: publish
+    type: result
+    dependsOn: [analyze]
+    result:
+      source: { nodeId: analyze, field: agent.text }
+      schema: { type: string, maxLength: 1024 }
+`);
+}
+
 function twoSkilledAgentsWorkflow() {
   return compileWorkflowText(`apiVersion: flow.synapti.ai/v1alpha1
 kind: Workflow
@@ -333,6 +400,54 @@ function skill(name: string) {
     trust: "project-explicit" as const,
     provenance: `.flow/skills/${name}`,
     files: [{ path: "SKILL.md", content: Buffer.from(`# ${name}\n`) }],
+  };
+}
+
+function toolPackage(name: string, version: string): ToolPackageSnapshotInput {
+  return {
+    kind: "tool-package",
+    apiVersion: "flow.synapti.ai/v1alpha1",
+    name,
+    version,
+    description: `Reusable ${name} tool.`,
+    trust: "project-explicit",
+    provenance: `.flow/tools/${name}`,
+    definition: {
+      tool: {
+        name: "create_project_report",
+        description: "Print a selected report subject.",
+        inputs: [{ name: "subject", description: "Report subject.", type: "string" }],
+      },
+      driver: {
+        kind: "command",
+        version: "v1",
+        profile: "posix-printf-v1",
+        executable: "/usr/bin/printf",
+        args: ["%s", "{input:subject}"],
+        timeoutMs: 10_000,
+      },
+      permissions: ["process.execute"],
+    },
+    manifest: {
+      content: Buffer.from(`apiVersion: flow.synapti.ai/v1alpha1
+kind: ToolPackage
+metadata: { name: ${name}, version: ${version}, description: Reusable ${name} tool. }
+spec:
+  tool:
+    name: create_project_report
+    description: Print a selected report subject.
+    inputs:
+      - { name: subject, description: Report subject., type: string }
+  driver:
+    kind: command
+    version: v1
+    profile: posix-printf-v1
+    executable: /usr/bin/printf
+    args: ["%s", "{input:subject}"]
+    timeoutMs: 10000
+  permissions: [process.execute]
+`),
+    },
   };
 }
 

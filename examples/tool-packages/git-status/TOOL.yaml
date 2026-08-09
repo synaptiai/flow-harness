@@ -1,0 +1,30 @@
+apiVersion: flow.synapti.ai/v1alpha1
+kind: ToolPackage
+metadata:
+  name: git-status
+  version: 1.0.0
+  description: Show the concise status of the execution workspace.
+  license: Apache-2.0
+  compatibility: Requires Git in the execution environment.
+spec:
+  tool:
+    name: project_git_status
+    description: Return the concise Git status of the current execution workspace.
+    inputs: []
+  driver:
+    kind: command
+    version: v1
+    profile: git-status-v1
+    executable: /usr/bin/git
+    args:
+      - --no-optional-locks
+      - -c
+      - core.fsmonitor=false
+      - -c
+      - core.untrackedCache=false
+      - status
+      - --short
+      - --untracked-files=normal
+      - --ignore-submodules=all
+    timeoutMs: 10000
+  permissions: [process.execute]

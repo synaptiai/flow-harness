@@ -66,6 +66,7 @@ describe("compiled Flow process", () => {
           model: { provider: "test", id: "hung", thinking: "off" },
           tools: [],
           skills: [],
+          toolPackages: [],
           timeoutMs: 10
         }
       };

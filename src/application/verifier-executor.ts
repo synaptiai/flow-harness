@@ -162,6 +162,7 @@ export class VerifierNodeExecutor implements VerifierExecutor {
         model: verifier.model,
         tools: Object.freeze([]),
         skills: Object.freeze([]),
+        toolPackages: Object.freeze([]),
         timeoutMs: verifier.timeoutMs,
       },
     };

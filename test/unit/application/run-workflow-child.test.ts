@@ -15,6 +15,7 @@ import type {
 } from "../../../src/application/ports.js";
 import { resumeWorkflow, runWorkflow } from "../../../src/application/run-workflow.js";
 import { createCapabilitySnapshot } from "../../../src/domain/capability/agent-skills.js";
+import type { ToolPackageSnapshotInput } from "../../../src/domain/capability/tool-packages.js";
 import type { VerifierPackageSnapshotInput } from "../../../src/domain/capability/verifier-packages.js";
 import {
   calculateChildRunId,
@@ -190,6 +191,70 @@ describe("child workflow execution", () => {
               digest: snapshot.packages[0]?.digest,
             },
           },
+        },
+      },
+    });
+  });
+
+  it("binds a nested agent tool to the parent's frozen package snapshot", async () => {
+    const store = new TreeMemoryStore();
+    const isolator = new MemoryWorkspaceIsolator();
+    const snapshot = createCapabilitySnapshot(
+      [],
+      [],
+      [toolPackageInput("project-report", "1.2.3")],
+    );
+    let observedDigest: string | undefined;
+    const executor: NodeExecutor = {
+      async execute(node, context) {
+        if (node.type !== "agent" || context.capabilitySnapshot === undefined) {
+          throw new Error(`unexpected nested tool package node "${node.type}"`);
+        }
+        const selected = context.capabilitySnapshot.packages.find(
+          (item) => item.kind === "tool-package",
+        );
+        observedDigest = selected?.digest;
+        const text = JSON.stringify("inspected");
+        return {
+          status: "succeeded",
+          evidence: {
+            kind: "agent",
+            provider: "test",
+            model: "deterministic",
+            text,
+            textHash: sha256(text),
+            textTruncated: false,
+            durationMs: 1,
+            policyDecisions: [],
+            effectReceipts: [],
+          },
+        };
+      },
+    };
+    const workflow = compileWorkflowText(parentToolPackageWorkflow());
+
+    const state = await runWorkflow(workflow, {
+      runId: "parent-tool-package",
+      cwd: "/workspace",
+      protectedPaths: ["/state/runs"],
+      store,
+      executor,
+      workspaceIsolator: isolator,
+      capabilitySnapshot: snapshot,
+      now: clock(),
+    });
+
+    const childRunId = calculateChildRunId("parent-tool-package", "delegate", 1);
+    const childState = reduceRunEvents(await store.read(childRunId));
+    expect(state.status).toBe("succeeded");
+    expect(observedDigest).toBe(snapshot.packages[0]?.digest);
+    expect(childState).toMatchObject({
+      status: "succeeded",
+      capabilitySnapshot: { digest: snapshot.digest },
+      toolPackageRequirements: {
+        inspect: {
+          rawExec: false,
+          packages: [{ name: "project-report", version: "1.2.3" }],
         },
       },
     });
@@ -1194,6 +1259,42 @@ ${childNode("delegate", child)}
 `;
 }
 
+function parentToolPackageWorkflow(): string {
+  const child = `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: tool-package-child }
+budget:
+  maxNodeStarts: 4
+  maxModelTokens: 100
+  maxCostUsd: 0.01
+  maxExecutionMs: 10000
+  maxArtifactBytes: 100000
+nodes:
+  - id: inspect
+    type: agent
+    agent:
+      prompt: Inspect the project.
+      model: { provider: test, id: deterministic }
+      tools: [read]
+      toolPackages:
+        - { name: project-report, version: 1.2.3 }
+  - id: publish
+    type: result
+    dependsOn: [inspect]
+    result:
+      source: { nodeId: inspect, field: agent.text }
+      schema: { type: string, maxLength: 1024 }
+`.trim();
+  return `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: parent-tool-package }
+nodes:
+${childNode("delegate", child)}
+`;
+}
+
 function childWorkflowSource(maxArtifactBytes = 100000): string {
   return `
 apiVersion: flow.synapti.ai/v1alpha1
@@ -1285,6 +1386,55 @@ metadata: { name: ${name}, version: ${version}, description: Reusable ${name} ve
 spec:
   kind: command
   command: { executable: ${definition.command.executable}, args: [${definition.command.args.join(", ")}], timeoutMs: ${definition.command.timeoutMs} }
+`),
+    },
+  };
+}
+
+function toolPackageInput(name: string, version: string): ToolPackageSnapshotInput {
+  const definition: ToolPackageSnapshotInput["definition"] = {
+    tool: {
+      name: "create_project_report",
+      description: "Print a selected report subject.",
+      inputs: [{ name: "subject", description: "Report subject.", type: "string" }],
+    },
+    driver: {
+      kind: "command",
+      version: "v1",
+      profile: "posix-printf-v1",
+      executable: "/usr/bin/printf",
+      args: ["%s", "{input:subject}"],
+      timeoutMs: 10_000,
+    },
+    permissions: ["process.execute"],
+  };
+  return {
+    kind: "tool-package",
+    apiVersion: "flow.synapti.ai/v1alpha1",
+    name,
+    version,
+    description: `Reusable ${name} tool.`,
+    trust: "project-explicit",
+    provenance: `.flow/tools/${name}`,
+    definition,
+    manifest: {
+      content: Buffer.from(`apiVersion: flow.synapti.ai/v1alpha1
+kind: ToolPackage
+metadata: { name: ${name}, version: ${version}, description: Reusable ${name} tool. }
+spec:
+  tool:
+    name: create_project_report
+    description: Print a selected report subject.
+    inputs:
+      - { name: subject, description: Report subject., type: string }
+  driver:
+    kind: command
+    version: v1
+    profile: posix-printf-v1
+    executable: /usr/bin/printf
+    args: ["%s", "{input:subject}"]
+    timeoutMs: 10000
+  permissions: [process.execute]
 `),
     },
   };
