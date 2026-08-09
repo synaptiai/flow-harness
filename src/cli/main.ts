@@ -22,10 +22,19 @@ import type {
 } from "../application/ports.js";
 import { RunRecoveryError, resumeWorkflow, runWorkflow } from "../application/run-workflow.js";
 import {
+  admitWorkflowPackages,
+  compileWorkflowFromSnapshot,
+} from "../application/workflow-package-admission.js";
+import {
   type CapabilitySnapshot,
   combineCapabilitySnapshots,
 } from "../domain/capability/agent-skills.js";
 import { assertCapabilityBundleSha256 } from "../domain/capability/capability-bundles.js";
+import {
+  parseWorkflowPackageLocator,
+  type WorkflowPackageSnapshot,
+  workflowPackageSource,
+} from "../domain/capability/workflow-packages.js";
 import {
   collectWorkflowAgentSkillNames,
   collectWorkflowToolPackageReferences,
@@ -38,7 +47,11 @@ import {
   FlowConfigError,
 } from "../domain/config/resolver.js";
 import { type RunStatus, reduceRunEvents } from "../domain/run/events.js";
-import { compileWorkflowText, WorkflowCompilationError } from "../domain/workflow/compiler.js";
+import {
+  type WorkflowPackageReference,
+  WorkflowCompilationError,
+} from "../domain/workflow/compiler.js";
+import type { CompiledWorkflow } from "../domain/workflow/types.js";
 import {
   type FlowConfigLocationOptions,
   FlowConfigStoreError,
@@ -80,6 +93,11 @@ import {
   snapshotSelectedVerifierPackages,
   VerifierPackageCatalogError,
 } from "../infrastructure/fs/local-verifier-package-catalog.js";
+import {
+  type ProjectWorkflowPackageCatalog,
+  snapshotSelectedWorkflowPackages,
+  WorkflowPackageCatalogError,
+} from "../infrastructure/fs/local-workflow-package-catalog.js";
 import { discoverProjectCapabilityCatalogs } from "../infrastructure/fs/project-capability-catalog.js";
 import { createProductionCapabilityBundleFetcher } from "../infrastructure/http/node-https-capability-bundle-transport.js";
 import {
@@ -118,15 +136,18 @@ Usage:
   flow tools list
   flow tools inspect <name> --version <exact>
   flow tools validate
+  flow workflows list
+  flow workflows inspect <name> --version <exact>
+  flow workflows validate
   flow packages install <https-url> --sha256 <64-lowercase-hex>
   flow packages pack <source-directory> --output <bundle.flowpkg>
   flow packages list
   flow packages inspect <name> --version <exact>
   flow packages verify
   flow packages remove <name> --version <exact>
-  flow validate <workflow.yaml>
-  flow run <workflow.yaml> [--detach] [--command-id <uuid>] [--run-id <id>] [--runs-dir <path>] [--cwd <path>]
-  flow resume <workflow.yaml> --run-id <id> [--detach] [--command-id <uuid>] [--runs-dir <path>] [--cwd <path>]
+  flow validate <workflow.yaml|workflow:name@version>
+  flow run <workflow.yaml|workflow:name@version> [--detach] [--command-id <uuid>] [--run-id <id>] [--runs-dir <path>] [--cwd <path>]
+  flow resume <workflow.yaml|workflow:name@version> --run-id <id> [--detach] [--command-id <uuid>] [--runs-dir <path>] [--cwd <path>]
   flow approve <run-id> <request-id> --actor <label> [--runs-dir <path>]
   flow deny <run-id> <request-id> --actor <label> [--reason <text>] [--runs-dir <path>]
   flow cancel <run-id> --actor <label> [--reason <text>] [--command-id <uuid>] [--runs-dir <path>]
@@ -201,6 +222,8 @@ export async function main(
         return await verifiersCommand(args.slice(1), io, dependencyOverrides);
       case "tools":
         return await toolsCommand(args.slice(1), io, dependencyOverrides);
+      case "workflows":
+        return await workflowsCommand(args.slice(1), io, dependencyOverrides);
       case "packages":
         return await packagesCommand(args.slice(1), io, dependencyOverrides);
       case "validate":
@@ -260,6 +283,7 @@ export async function main(
     if (
       error instanceof VerifierPackageCatalogError ||
       error instanceof ToolPackageCatalogError ||
+      error instanceof WorkflowPackageCatalogError ||
       error instanceof WorkflowCapabilityError
     ) {
       io.stderr(`${error.code}: ${error.message}`);
@@ -563,6 +587,80 @@ async function toolsCommand(
   return 0;
 }
 
+async function workflowsCommand(
+  args: readonly string[],
+  io: CliIo,
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  const { positionals, values } = parseCommandArgs(args, {
+    version: { type: "string" },
+  });
+  const subcommand = positionals[0];
+  if (
+    (subcommand !== "list" && subcommand !== "validate" && subcommand !== "inspect") ||
+    (subcommand === "inspect" ? positionals.length !== 2 : positionals.length !== 1) ||
+    (subcommand === "inspect" ? values.version === undefined : values.version !== undefined)
+  ) {
+    throw new CliUsageError(
+      "workflows requires list, validate, or inspect <name> --version <exact>",
+    );
+  }
+  const dependencies = configDependenciesFrom(overrides);
+  const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
+  const catalog = await discoverConfiguredWorkflowPackages(config);
+
+  if (subcommand === "list") {
+    io.stdout(
+      JSON.stringify(
+        {
+          root: catalog.root,
+          packages: catalog.packages.map(({ directory: _directory, ...item }) => item),
+        },
+        null,
+        2,
+      ),
+    );
+    return 0;
+  }
+
+  if (subcommand === "inspect") {
+    const name = positionals[1];
+    const version = values.version;
+    if (name === undefined || version === undefined) {
+      throw new CliUsageError("workflows inspect requires <name> --version <exact>");
+    }
+    const snapshot = await snapshotSelectedWorkflowPackages(catalog, [{ name, version }]);
+    const selected = snapshot.packages.find((item) => item.kind === "workflow-package");
+    if (selected === undefined) {
+      throw new WorkflowPackageCatalogError(
+        "missing_package",
+        `workflow package "${name}" version "${version}" was not captured`,
+      );
+    }
+    const { contentBase64: _contentBase64, ...manifest } = selected.manifest;
+    io.stdout(JSON.stringify({ ...selected, manifest }, null, 2));
+    return 0;
+  }
+
+  const loadPackage = workflowPackageLoader(catalog);
+  for (const item of catalog.packages) {
+    const snapshot = await loadPackage({ name: item.name, version: item.version });
+    await admitWorkflowPackages({ source: { kind: "package", snapshot }, loadPackage });
+  }
+  io.stdout(
+    JSON.stringify(
+      {
+        valid: true,
+        root: catalog.root,
+        packages: catalog.packages.map((item) => `${item.name}@${item.version}`),
+      },
+      null,
+      2,
+    ),
+  );
+  return 0;
+}
+
 async function packagesCommand(
   args: readonly string[],
   io: CliIo,
@@ -826,17 +924,22 @@ async function resumeCommand(
   });
   const workflowArgument = requireSinglePositional(
     positionals,
-    "resume requires one workflow path",
+    "resume requires one workflow path or exact workflow: locator",
   );
   const runId = requireStringOption(values["run-id"], "resume requires --run-id <id>");
   const dependencies = dependenciesFrom(overrides);
   const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
-  const workflowPath = resolve(dependencies.cwd, workflowArgument);
-
-  // Compilation intentionally precedes store construction and ownership acquisition.
-  const workflowSource = await dependencies.readTextFile(workflowPath);
-  const workflow = compileWorkflowText(workflowSource, workflowPath);
   const runsDirectory = resolveRunsDirectory(dependencies.cwd, values["runs-dir"], config);
+  const store = dependencies.createStore(runsDirectory);
+  // Durable history is read without claiming ownership so package bytes can be reconstructed
+  // before recovery performs its authoritative claim and compatibility checks.
+  const durableState = reduceRunEvents(await store.read(runId));
+  const capabilitySnapshot = durableState.capabilitySnapshot ?? undefined;
+  const admitted = await admitResumeWorkflowArgument(
+    workflowArgument,
+    capabilitySnapshot,
+    dependencies,
+  );
   const executionCwd = resolve(dependencies.cwd, values.cwd ?? ".");
   const commandId = detachedCommandId(values["command-id"], detached.enabled);
   if (detached.enabled) {
@@ -847,25 +950,27 @@ async function resumeCommand(
         commandId: commandId ?? randomUUID(),
         mode: "resume",
         runId,
-        sourceName: workflowPath,
-        workflowSource,
+        sourceName: admitted.sourceName,
+        workflowSource: admitted.source,
         cwd: executionCwd,
+        ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
       },
       runsDirectory,
       config,
       io,
     );
   }
-  const state = await resumeWorkflow(workflow, {
+  const state = await resumeWorkflow(admitted.workflow, {
     cwd: executionCwd,
     protectedPaths: [runsDirectory],
     runId,
-    store: dependencies.createStore(runsDirectory),
+    store,
     workspaceIsolator: dependencies.createWorkspaceIsolator(runsDirectory),
     executor: dependencies.executor,
     effectReconciler: dependencies.effectReconciler,
     agentCommandApprovalDecisions: dependencies.createAgentCommandApprovalChannel(runsDirectory),
     ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
+    ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
   });
 
   io.stdout(JSON.stringify(state, null, 2));
@@ -880,22 +985,27 @@ async function validateCommand(
   const { positionals } = parseCommandArgs(args, {});
   const workflowArgument = requireSinglePositional(
     positionals,
-    "validate requires one workflow path",
+    "validate requires one workflow path or exact workflow: locator",
   );
   const dependencies = dependenciesFrom(overrides);
-  const workflowPath = resolve(dependencies.cwd, workflowArgument);
-  const workflow = await compileWorkflowFile(workflowPath, dependencies.readTextFile);
   const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
-  const capabilitySnapshot = await resolveWorkflowCapabilitySnapshot(workflow, config);
+  const admitted = await admitWorkflowArgument(workflowArgument, config, dependencies);
+  const supplementalSnapshot = await resolveWorkflowCapabilitySnapshot(admitted.workflow, config);
+  const capabilitySnapshot = combineOptionalCapabilitySnapshots([
+    admitted.capabilitySnapshot,
+    supplementalSnapshot,
+  ]);
   const skillCount =
     capabilitySnapshot?.packages.filter((item) => item.kind === "agent-skill").length ?? 0;
   const verifierPackageCount =
     capabilitySnapshot?.packages.filter((item) => item.kind === "verifier-package").length ?? 0;
   const toolPackageCount =
     capabilitySnapshot?.packages.filter((item) => item.kind === "tool-package").length ?? 0;
+  const workflowPackageCount =
+    capabilitySnapshot?.packages.filter((item) => item.kind === "workflow-package").length ?? 0;
 
   io.stdout(
-    `Workflow "${workflow.id}" is valid (nodes: ${workflow.nodes.length}, criteria: ${workflow.goal?.criteria.length ?? 0}, skills: ${skillCount}, verifier packages: ${verifierPackageCount}, tool packages: ${toolPackageCount}).`,
+    `Workflow "${admitted.workflow.id}" is valid (nodes: ${admitted.workflow.nodes.length}, criteria: ${admitted.workflow.goal?.criteria.length ?? 0}, skills: ${skillCount}, verifier packages: ${verifierPackageCount}, tool packages: ${toolPackageCount}, workflow packages: ${workflowPackageCount}).`,
   );
   return 0;
 }
@@ -912,15 +1022,19 @@ async function runCommand(
     "runs-dir": { type: "string" },
     cwd: { type: "string" },
   });
-  const workflowArgument = requireSinglePositional(positionals, "run requires one workflow path");
+  const workflowArgument = requireSinglePositional(
+    positionals,
+    "run requires one workflow path or exact workflow: locator",
+  );
   const dependencies = dependenciesFrom(overrides);
   const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
-  const workflowPath = resolve(dependencies.cwd, workflowArgument);
-
-  // Compilation intentionally precedes construction of the run store or invocation of an executor.
-  const workflowSource = await dependencies.readTextFile(workflowPath);
-  const workflow = compileWorkflowText(workflowSource, workflowPath);
-  const capabilitySnapshot = await resolveWorkflowCapabilitySnapshot(workflow, config);
+  // Admission and immutable compilation precede run-store construction and executor invocation.
+  const admitted = await admitWorkflowArgument(workflowArgument, config, dependencies);
+  const supplementalSnapshot = await resolveWorkflowCapabilitySnapshot(admitted.workflow, config);
+  const capabilitySnapshot = combineOptionalCapabilitySnapshots([
+    admitted.capabilitySnapshot,
+    supplementalSnapshot,
+  ]);
   const runsDirectory = resolveRunsDirectory(dependencies.cwd, values["runs-dir"], config);
   const executionCwd = resolve(dependencies.cwd, values.cwd ?? ".");
   const runId = values["run-id"] ?? randomUUID();
@@ -933,8 +1047,8 @@ async function runCommand(
         commandId: commandId ?? randomUUID(),
         mode: "run",
         runId,
-        sourceName: workflowPath,
-        workflowSource,
+        sourceName: admitted.sourceName,
+        workflowSource: admitted.source,
         cwd: executionCwd,
         ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
       },
@@ -943,7 +1057,7 @@ async function runCommand(
       io,
     );
   }
-  const state = await runWorkflow(workflow, {
+  const state = await runWorkflow(admitted.workflow, {
     cwd: executionCwd,
     protectedPaths: [runsDirectory],
     store: dependencies.createStore(runsDirectory),
@@ -1341,16 +1455,8 @@ function requireStringOption(value: string | undefined, message: string): string
   return value;
 }
 
-async function compileWorkflowFile(
-  workflowPath: string,
-  readTextFile: (path: string) => Promise<string>,
-) {
-  const source = await readTextFile(workflowPath);
-  return compileWorkflowText(source, workflowPath);
-}
-
 async function resolveWorkflowCapabilitySnapshot(
-  workflow: ReturnType<typeof compileWorkflowText>,
+  workflow: CompiledWorkflow,
   config: EffectiveFlowConfig,
 ): Promise<CapabilitySnapshot | undefined> {
   const names = collectWorkflowAgentSkillNames(workflow);
@@ -1391,6 +1497,93 @@ async function resolveWorkflowCapabilitySnapshot(
   return combineCapabilitySnapshots(snapshots);
 }
 
+async function admitWorkflowArgument(
+  argument: string,
+  config: EffectiveFlowConfig,
+  dependencies: Pick<CliDependencies, "cwd" | "readTextFile">,
+) {
+  let catalogPromise: Promise<ProjectWorkflowPackageCatalog> | undefined;
+  const loadPackage = async (reference: WorkflowPackageReference) => {
+    if (config.projectRoot === null) {
+      throw new WorkflowPackageCatalogError(
+        "missing_package",
+        "workflow packages require a Flow project root containing .flow/workflows",
+      );
+    }
+    catalogPromise ??= discoverProjectCapabilityCatalogs(config.projectRoot).then(
+      (catalogs) => catalogs.workflows,
+    );
+    return await workflowPackageLoader(await catalogPromise)(reference);
+  };
+  const locator = parseWorkflowLocator(argument);
+  if (locator !== null) {
+    const snapshot = await loadPackage(locator);
+    return await admitWorkflowPackages({ source: { kind: "package", snapshot }, loadPackage });
+  }
+  const sourceName = resolve(dependencies.cwd, argument);
+  const content = await dependencies.readTextFile(sourceName);
+  return await admitWorkflowPackages({
+    source: { kind: "inline", content, sourceName },
+    loadPackage,
+  });
+}
+
+function parseWorkflowLocator(value: string): WorkflowPackageReference | null {
+  try {
+    return parseWorkflowPackageLocator(value);
+  } catch {
+    throw new CliUsageError(
+      'workflow locators must use "workflow:<name>@<exact-semantic-version>"',
+    );
+  }
+}
+
+async function admitResumeWorkflowArgument(
+  argument: string,
+  capabilitySnapshot: CapabilitySnapshot | undefined,
+  dependencies: Pick<CliDependencies, "cwd" | "readTextFile">,
+) {
+  const locator = parseWorkflowLocator(argument);
+  let source: string;
+  let sourceName: string;
+  if (locator === null) {
+    sourceName = resolve(dependencies.cwd, argument);
+    source = await dependencies.readTextFile(sourceName);
+  } else {
+    const selected = capabilitySnapshot?.packages.find(
+      (item): item is WorkflowPackageSnapshot =>
+        item.kind === "workflow-package" &&
+        item.name === locator.name &&
+        item.version === locator.version,
+    );
+    if (selected === undefined) {
+      throw new RunRecoveryError(
+        "workflow_mismatch",
+        `durable run history does not contain workflow package "${locator.name}@${locator.version}"`,
+      );
+    }
+    sourceName = `workflow:${locator.name}@${locator.version}`;
+    source = workflowPackageSource(selected);
+  }
+  return Object.freeze({
+    source,
+    sourceName,
+    workflow: compileWorkflowFromSnapshot({
+      source,
+      sourceName,
+      ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
+    }),
+  });
+}
+
+function combineOptionalCapabilitySnapshots(
+  snapshots: readonly (CapabilitySnapshot | undefined)[],
+): CapabilitySnapshot | undefined {
+  return combineCapabilitySnapshots(
+    snapshots.filter((snapshot): snapshot is CapabilitySnapshot => snapshot !== undefined),
+  );
+}
+
 async function discoverConfiguredAgentSkills(
   config: EffectiveFlowConfig,
 ): Promise<ProjectAgentSkillCatalog> {
@@ -1425,6 +1618,36 @@ async function discoverConfiguredToolPackages(
     );
   }
   return (await discoverProjectCapabilityCatalogs(config.projectRoot)).tools;
+}
+
+async function discoverConfiguredWorkflowPackages(
+  config: EffectiveFlowConfig,
+): Promise<ProjectWorkflowPackageCatalog> {
+  if (config.projectRoot === null) {
+    throw new WorkflowPackageCatalogError(
+      "missing_package",
+      "workflow packages require a Flow project root containing .flow/workflows",
+    );
+  }
+  return (await discoverProjectCapabilityCatalogs(config.projectRoot)).workflows;
+}
+
+function workflowPackageLoader(
+  catalog: ProjectWorkflowPackageCatalog,
+): (reference: WorkflowPackageReference) => Promise<WorkflowPackageSnapshot> {
+  return async (reference) => {
+    const snapshot = await snapshotSelectedWorkflowPackages(catalog, [reference]);
+    const selected = snapshot.packages.find(
+      (item): item is WorkflowPackageSnapshot => item.kind === "workflow-package",
+    );
+    if (selected === undefined) {
+      throw new WorkflowPackageCatalogError(
+        "missing_package",
+        `workflow package "${reference.name}@${reference.version}" was not captured`,
+      );
+    }
+    return selected;
+  };
 }
 
 function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies {

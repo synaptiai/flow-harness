@@ -19,6 +19,10 @@ import {
 import { LocalCapabilityPackageStore } from "../../../src/infrastructure/fs/local-capability-package-store.js";
 import { snapshotSelectedToolPackages } from "../../../src/infrastructure/fs/local-tool-package-catalog.js";
 import { snapshotSelectedVerifierPackages } from "../../../src/infrastructure/fs/local-verifier-package-catalog.js";
+import {
+  snapshotSelectedWorkflowPackages,
+  WorkflowPackageCatalogError,
+} from "../../../src/infrastructure/fs/local-workflow-package-catalog.js";
 import { discoverProjectCapabilityCatalogs } from "../../../src/infrastructure/fs/project-capability-catalog.js";
 
 const temporaryDirectories: string[] = [];
@@ -56,6 +60,7 @@ Review the evidence.
           manifest: Buffer.from(toolManifest("git-status", "status_report")),
         },
         { kind: "verifier-package", manifest: Buffer.from(verifierManifest()) },
+        { kind: "workflow-package", manifest: Buffer.from(workflowManifest()) },
       ],
     });
     const sha256 = created.bundle.digest.slice("sha256:".length);
@@ -89,6 +94,13 @@ Review the evidence.
         provenance: `.flow/packages/sha256/${sha256}/tool-package/git-status`,
       },
     ]);
+    expect(catalogs.workflows.packages).toMatchObject([
+      {
+        name: "release-check",
+        version: "1.0.0",
+        provenance: `.flow/packages/sha256/${sha256}/workflow-package/release-check`,
+      },
+    ]);
 
     const agentSnapshot = await snapshotSelectedAgentSkills(catalogs.agentSkills, ["review"]);
     const verifierSnapshot = await snapshotSelectedVerifierPackages(catalogs.verifiers, [
@@ -96,6 +108,9 @@ Review the evidence.
     ]);
     const toolSnapshot = await snapshotSelectedToolPackages(catalogs.tools, [
       { name: "git-status", version: "1.0.0" },
+    ]);
+    const workflowSnapshot = await snapshotSelectedWorkflowPackages(catalogs.workflows, [
+      { name: "release-check", version: "1.0.0" },
     ]);
     expect(agentSnapshot.packages[0]).toMatchObject({
       provenance: `.flow/packages/sha256/${sha256}/agent-skill/review`,
@@ -106,6 +121,9 @@ Review the evidence.
     });
     expect(toolSnapshot.packages[0]).toMatchObject({
       provenance: `.flow/packages/sha256/${sha256}/tool-package/git-status`,
+    });
+    expect(workflowSnapshot.packages[0]).toMatchObject({
+      provenance: `.flow/packages/sha256/${sha256}/workflow-package/release-check`,
     });
 
     const output = captureIo();
@@ -124,6 +142,37 @@ Review the evidence.
       ],
     });
     expect(output.stdout.join("\n")).not.toContain("Review the evidence");
+
+    const workflowList = captureIo();
+    const workflowInspect = captureIo();
+    const cliDependencies = {
+      cwd: project,
+      loadConfig: async () => effectiveConfig(project),
+    };
+    expect(await main(["workflows", "list"], workflowList.io, cliDependencies)).toBe(0);
+    expect(
+      await main(
+        ["workflows", "inspect", "release-check", "--version", "1.0.0"],
+        workflowInspect.io,
+        cliDependencies,
+      ),
+    ).toBe(0);
+    expect(JSON.parse(workflowList.stdout[0] ?? "null")).toMatchObject({
+      packages: [
+        {
+          name: "release-check",
+          version: "1.0.0",
+          provenance: `.flow/packages/sha256/${sha256}/workflow-package/release-check`,
+        },
+      ],
+    });
+    expect(JSON.parse(workflowInspect.stdout[0] ?? "null")).toMatchObject({
+      name: "release-check",
+      version: "1.0.0",
+      manifest: { sha256: expect.stringMatching(/^[a-f0-9]{64}$/) },
+      workflow: { sha256: expect.stringMatching(/^[a-f0-9]{64}$/) },
+    });
+    expect(workflowInspect.stdout.join("\n")).not.toMatch(/contentBase64|kind: Workflow/i);
   });
 
   it("rejects a local and installed Agent Skill name collision", async () => {
@@ -155,6 +204,29 @@ Review.
     await expect(discoverProjectCapabilityCatalogs(project)).rejects.toSatisfy(
       (error: unknown) =>
         error instanceof AgentSkillCatalogError && error.code === "duplicate_skill",
+    );
+  });
+
+  it("rejects a local and installed workflow package name collision", async () => {
+    const project = await projectDirectory();
+    const created = createCapabilityBundleSource({
+      name: "workflow-suite",
+      version: "1.0.0",
+      description: "Workflow capabilities.",
+      packages: [{ kind: "workflow-package", manifest: Buffer.from(workflowManifest()) }],
+    });
+    await new LocalCapabilityPackageStore(project).install({
+      source: "https://packages.example.test/workflow-suite-1.0.0.flowpkg",
+      expectedSha256: created.bundle.digest.slice("sha256:".length),
+      content: created.content,
+    });
+    const localDirectory = join(project, ".flow", "workflows", "release-check");
+    await mkdir(localDirectory, { recursive: true });
+    await writeFile(join(localDirectory, "WORKFLOW.yaml"), workflowManifest());
+
+    await expect(discoverProjectCapabilityCatalogs(project)).rejects.toSatisfy(
+      (error: unknown) =>
+        error instanceof WorkflowPackageCatalogError && error.code === "duplicate_package",
     );
   });
 
@@ -222,6 +294,33 @@ spec:
     args: [--no-optional-locks, -c, core.fsmonitor=false, -c, core.untrackedCache=false, status, --short, --untracked-files=normal, --ignore-submodules=all]
     timeoutMs: 10000
   permissions: [process.execute]
+`;
+}
+
+function workflowManifest(): string {
+  return `apiVersion: flow.synapti.ai/v1alpha1
+kind: WorkflowPackage
+metadata:
+  name: release-check
+  version: 1.0.0
+  description: Run a bounded reusable flow.
+spec:
+  workflow: |-
+    apiVersion: flow.synapti.ai/v1alpha1
+    kind: Workflow
+    metadata: { id: release-check }
+    budget:
+      maxNodeStarts: 1
+      maxModelTokens: 0
+      maxCostUsdMicros: 0
+      maxExecutionMs: 1000
+      maxArtifactBytes: 1024
+    nodes:
+      - id: done
+        type: command
+        command:
+          executable: /usr/bin/true
+          args: []
 `;
 }
 

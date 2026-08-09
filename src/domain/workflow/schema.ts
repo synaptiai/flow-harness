@@ -5,6 +5,10 @@ import {
   verifierPackageNameSchema,
   verifierPackageVersionSchema,
 } from "../capability/verifier-packages.js";
+import {
+  workflowPackageNameSchema,
+  workflowPackageVersionSchema,
+} from "../capability/workflow-packages.js";
 import { goalContractSchema } from "../goal/schema.js";
 import {
   type CompiledResultSchema,
@@ -145,6 +149,13 @@ const toolPackageReferenceSchema = z
   .object({
     name: toolPackageNameSchema,
     version: toolPackageVersionSchema,
+  })
+  .strict();
+
+const workflowPackageReferenceSchema = z
+  .object({
+    name: workflowPackageNameSchema,
+    version: workflowPackageVersionSchema,
   })
   .strict();
 
@@ -438,19 +449,27 @@ const resultNodeSchema = z
   })
   .strict();
 
-const childDefinitionSchema = z
-  .object({
-    resultNodeId: identifierSchema,
-    workflow: z
-      .string()
-      .refine(
-        (value) =>
-          value.trim().length > 0 &&
-          Buffer.byteLength(value, "utf8") <= MAX_CHILD_WORKFLOW_SOURCE_BYTES,
-        `embedded child workflow must be non-empty and not exceed ${MAX_CHILD_WORKFLOW_SOURCE_BYTES} UTF-8 bytes`,
-      ),
-  })
-  .strict();
+const childDefinitionSchema = z.union([
+  z
+    .object({
+      resultNodeId: identifierSchema,
+      workflow: z
+        .string()
+        .refine(
+          (value) =>
+            value.trim().length > 0 &&
+            Buffer.byteLength(value, "utf8") <= MAX_CHILD_WORKFLOW_SOURCE_BYTES,
+          `embedded child workflow must be non-empty and not exceed ${MAX_CHILD_WORKFLOW_SOURCE_BYTES} UTF-8 bytes`,
+        ),
+    })
+    .strict(),
+  z
+    .object({
+      resultNodeId: identifierSchema,
+      package: workflowPackageReferenceSchema,
+    })
+    .strict(),
+]);
 
 const childNodeSchema = z
   .object({

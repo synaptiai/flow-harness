@@ -91,8 +91,15 @@ The embedded Pi runtime runs with the invoking user's operating-system permissio
   cwd, shell text, network, hooks, providers, middleware, graph changes, or policy. Workflows and
   manifests remain trusted local configuration; command output and arguments may contain sensitive
   data and are persisted in the run ledger.
-- Remote capability bundles contain only the same Agent Skill, verifier, and declarative command
-  tool ABIs. `flow packages install` is the only network operation: it requires one canonical
+- A `WorkflowPackage` is strict project-local `WORKFLOW.yaml` data containing bounded ordinary Flow
+  workflow source. Admission snapshots exact local or installed bytes and recompiles roots and
+  children with a closed snapshot-only resolver. Package cycles, source drift, digest mismatch,
+  ambiguous versions, and replay substitution fail closed. A `WorkflowPackage` cannot register
+  executable modules, hooks, tools, drivers, providers, credentials, policy, or sandbox authority;
+  every selected node remains subject to the standard compiler, scheduler, approvals, containment,
+  evidence, budgets, and child isolation.
+- Remote capability bundles contain only the same Agent Skill, verifier, declarative command tool,
+  and inert workflow source ABIs. `flow packages install` is the only network operation: it requires one canonical
   public HTTPS URL and caller-supplied lowercase SHA-256, follows no redirect, sends no ambient
   credentials, pins a validated public DNS answer into the TLS connection, and bounds the whole
   request. The digest is checked before strict JSON and package parsing. Installation runs no

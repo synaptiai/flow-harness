@@ -9,6 +9,10 @@ import {
   verifierPackageVersionSchema,
 } from "./verifier-packages.js";
 import { MAX_TOOL_PACKAGE_MANIFEST_BYTES, parseToolPackageManifest } from "./tool-packages.js";
+import {
+  MAX_WORKFLOW_PACKAGE_MANIFEST_BYTES,
+  parseWorkflowPackageManifest,
+} from "./workflow-packages.js";
 import { parseStrictJson, StrictJsonError } from "../strict-json.js";
 import {
   MAX_AGENT_SKILL_FILE_BYTES,
@@ -40,6 +44,15 @@ const toolEntrySchema = z
       .max(Math.ceil((MAX_TOOL_PACKAGE_MANIFEST_BYTES * 4) / 3) + 4),
   })
   .strict();
+const workflowEntrySchema = z
+  .object({
+    kind: z.literal("workflow-package"),
+    manifestBase64: z
+      .string()
+      .min(1)
+      .max(Math.ceil((MAX_WORKFLOW_PACKAGE_MANIFEST_BYTES * 4) / 3) + 4),
+  })
+  .strict();
 const agentSkillEntrySchema = z
   .object({
     kind: z.literal("agent-skill"),
@@ -60,6 +73,7 @@ const bundleEntrySchema = z.discriminatedUnion("kind", [
   agentSkillEntrySchema,
   verifierEntrySchema,
   toolEntrySchema,
+  workflowEntrySchema,
 ]);
 const bundleMetadataSchema = z
   .object({
@@ -98,6 +112,13 @@ export interface CapabilityBundleToolPackage {
   readonly manifestBase64: string;
 }
 
+export interface CapabilityBundleWorkflowPackage {
+  readonly kind: "workflow-package";
+  readonly name: string;
+  readonly version: string;
+  readonly manifestBase64: string;
+}
+
 export interface CapabilityBundleAgentSkillPackage {
   readonly kind: "agent-skill";
   readonly name: string;
@@ -115,7 +136,8 @@ export interface CapabilityBundleAgentSkillPackage {
 export type CapabilityBundlePackage =
   | CapabilityBundleAgentSkillPackage
   | CapabilityBundleVerifierPackage
-  | CapabilityBundleToolPackage;
+  | CapabilityBundleToolPackage
+  | CapabilityBundleWorkflowPackage;
 
 export interface CapabilityBundle {
   readonly apiVersion: typeof CAPABILITY_BUNDLE_API_VERSION;
@@ -139,7 +161,8 @@ export type CapabilityBundleSourcePackage =
       }[];
     }
   | { readonly kind: "verifier-package"; readonly manifest: Uint8Array }
-  | { readonly kind: "tool-package"; readonly manifest: Uint8Array };
+  | { readonly kind: "tool-package"; readonly manifest: Uint8Array }
+  | { readonly kind: "workflow-package"; readonly manifest: Uint8Array };
 
 export interface CapabilityBundleSourceInput {
   readonly name: string;
@@ -310,6 +333,20 @@ function parseBundlePackageEntry(entry: EncodedCapabilityBundleEntry): Capabilit
       "bundled verifier package manifest",
     );
     const definition = parseVerifierPackageManifest(manifest, "bundled verifier package manifest");
+    return Object.freeze({
+      kind: entry.kind,
+      name: definition.metadata.name,
+      version: definition.metadata.version,
+      manifestBase64: entry.manifestBase64,
+    });
+  }
+  if (entry.kind === "workflow-package") {
+    const manifest = decodeCanonicalBase64(
+      entry.manifestBase64,
+      MAX_WORKFLOW_PACKAGE_MANIFEST_BYTES,
+      "bundled workflow package manifest",
+    );
+    const definition = parseWorkflowPackageManifest(manifest, "bundled workflow package manifest");
     return Object.freeze({
       kind: entry.kind,
       name: definition.metadata.name,

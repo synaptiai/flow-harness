@@ -162,6 +162,7 @@ describe("capability package CLI", () => {
     const project = await projectDirectory();
     const source = join(project, "review-source");
     await writeBundleSource(source);
+    await writeWorkflowBundlePackage(source);
     const first = join(project, "review-a.flowpkg");
     const second = join(project, "review-b.flowpkg");
     const firstOutput = captureIo();
@@ -188,7 +189,10 @@ describe("capability package CLI", () => {
     expect(parseCapabilityBundle(firstBytes)).toMatchObject({
       name: "review-suite",
       version: "1.0.0",
-      packages: [{ kind: "verifier-package", name: "evidence-review", version: "1.2.0" }],
+      packages: [
+        { kind: "verifier-package", name: "evidence-review", version: "1.2.0" },
+        { kind: "workflow-package", name: "release-check", version: "1.0.0" },
+      ],
     });
     expect(JSON.parse(firstOutput.stdout[0] ?? "null")).toMatchObject({
       status: "packed",
@@ -404,6 +408,30 @@ async function writeSkillBundleSource(source: string): Promise<void> {
   await writeFile(
     join(skillRoot, "SKILL.md"),
     "---\nname: review-skill\ndescription: Review evidence.\n---\n\n# Review\n",
+  );
+}
+
+async function writeWorkflowBundlePackage(source: string): Promise<void> {
+  const workflowRoot = join(source, "workflows", "release-check");
+  await mkdir(workflowRoot, { recursive: true });
+  await writeFile(
+    join(workflowRoot, "WORKFLOW.yaml"),
+    `apiVersion: flow.synapti.ai/v1alpha1
+kind: WorkflowPackage
+metadata:
+  name: release-check
+  version: 1.0.0
+  description: Run the release gate.
+spec:
+  workflow: |-
+    apiVersion: flow.synapti.ai/v1alpha1
+    kind: Workflow
+    metadata: { id: release-check }
+    nodes:
+      - id: check
+        type: command
+        command: { executable: /usr/bin/true }
+`,
   );
 }
 

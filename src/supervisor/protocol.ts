@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { MAX_ACTIVE_WORKERS, MAX_QUEUED_JOBS } from "../domain/config/resolver.js";
 import { persistedCapabilitySnapshotSchema } from "../domain/capability/agent-skills.js";
+import { parseWorkflowPackageLocator } from "../domain/capability/workflow-packages.js";
 import { runEventSchema, type RunEvent, type RunStatus } from "../domain/run/events.js";
 
 export const SUPERVISOR_PROTOCOL_VERSION = 2 as const;
@@ -17,6 +18,11 @@ const absolutePathSchema = z
   .min(1)
   .max(4096)
   .refine((value) => isAbsolute(value), "must be an absolute path");
+const workflowSourceNameSchema = z
+  .string()
+  .min(1)
+  .max(4096)
+  .refine(isWorkflowSourceName, "must be an absolute path or exact workflow package locator");
 const actorSchema = z
   .string()
   .min(1)
@@ -41,21 +47,23 @@ const submitCommandSchema = z
     commandId: uuidSchema,
     mode: z.enum(["run", "resume"]),
     runId: runIdSchema,
-    sourceName: absolutePathSchema,
+    sourceName: workflowSourceNameSchema,
     workflowSource: z.string().min(1).max(MAX_WORKFLOW_SOURCE_CHARACTERS),
     cwd: absolutePathSchema,
     capabilitySnapshot: persistedCapabilitySnapshotSchema.optional(),
   })
-  .strict()
-  .superRefine((command, context) => {
-    if (command.mode === "resume" && command.capabilitySnapshot !== undefined) {
-      context.addIssue({
-        code: "custom",
-        path: ["capabilitySnapshot"],
-        message: "resume submissions must obtain the capability snapshot from durable run history",
-      });
-    }
-  });
+  .strict();
+
+function isWorkflowSourceName(value: string): boolean {
+  if (isAbsolute(value)) {
+    return true;
+  }
+  try {
+    return parseWorkflowPackageLocator(value) !== null;
+  } catch {
+    return false;
+  }
+}
 
 const cancelCommandSchema = z
   .object({

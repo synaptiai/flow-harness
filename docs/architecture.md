@@ -17,9 +17,9 @@ durable budgets, detachable waits, and bounded authenticated local supervision. 
 results and verifiers, replay-safe conditions, joins, concurrency, bounded loops and optimization,
 evidence-bound graph approvals, isolated child workflows, and candidate promotion. Gate 6 adds
 strict local and digest-pinned installed Agent Skills, versioned verifier packages, declarative
-command tool packages, deterministic inert bundle distribution, a content-addressed project store,
+command tool packages, inert versioned workflow source packages, deterministic bundle distribution, a content-addressed project store,
 and immutable capability snapshots. A
-TUI, signed registries, executable extensions, other package types, opaque Pi session
+TUI, signed registries, executable extensions, policy/UI package types, opaque Pi session
 continuation, general failure/fallback retries, broader configurable policy, model network tools,
 arbitrary evaluator runtimes, and stronger VM or managed sandbox backends remain later work.
 
@@ -222,6 +222,26 @@ This is intentionally narrower than Pi or OMP in-process extensions and Prime-st
 Package code cannot enter the host runtime, intercept results, add hooks, mutate the graph, select a
 provider, or widen policy. Digest-pinned remote acquisition has its own transport and installation
 trust boundary. Future executable drivers require a separate out-of-process containment design.
+
+### Versioned workflow packages
+
+The workflow package catalog treats `.flow/workflows/**/WORKFLOW.yaml` as inert source data with an
+exact SemVer identity. A root locator or child reference selects an exact package; admission
+discovers the bounded transitive set and then performs the authoritative compile through a closed
+immutable snapshot and the standard workflow compiler. No filesystem, bundle lock, URL, provider,
+or package hook is available to that final resolver.
+
+Compiled packaged workflows retain `{name, version, digest}` provenance. Capability binding,
+`run_started` requirements, the projected control graph, detached job digests, child ledgers, and
+recovery reconcile that identity with the exact manifest and embedded workflow hashes. Inline roots
+and embedded children retain their existing structures and digests because provenance is absent
+unless a package was explicitly selected.
+
+This is composition, not a second runtime. Package source remains subject to the ordinary compiler,
+scheduler, budgets, approvals, child isolation, policy, containment, evidence, and replay rules.
+Packages cannot load executable modules, register hooks or tools, choose providers, add credentials,
+or widen policy. Parameterized templates, compatibility solving, and policy/UI packages require
+separate public contracts.
 
 ### Tool broker
 
@@ -624,6 +644,9 @@ Approval remains separate from containment. OMP-style allow/prompt/deny rules ca
 | Failure | Required behavior |
 | --- | --- |
 | Invalid workflow or configuration | Reject with path-specific diagnostics before creating side effects |
+| Workflow package locator, identity, manifest, or exact version is invalid or unavailable | Reject admission before constructing a run ledger or invoking an executor; never select a range, tag, or implicit latest version |
+| Workflow package changes during capture or disagrees with its durable snapshot | Stop the bounded capture or reject the mismatch; never fall back to live source |
+| Workflow package cycle, expansion limit, or undeclared replay package is observed | Reject compilation or replay before any affected node starts |
 | Result JSON is malformed, duplicated-key, non-I-JSON, oversized, too complex, truncated, or schema-incompatible | Record the exact typed side-effect-free control failure and start no dependent work |
 | Result publication identity, schema, canonical value, or hash is forged | Reject replay before advancing or executing another node |
 | Child source, nesting, result, wait, budget, or tree bound is invalid | Reject the root workflow before creating its ledger or workspace |

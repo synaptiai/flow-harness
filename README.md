@@ -35,10 +35,11 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Portable Agent Skills packages with progressive disclosure | Implemented for strict local or digest-pinned installed packages, explicit workflow selection, immutable run snapshots, and digest-bound read evidence |
 | Versioned verifier packages | Implemented for strict local or digest-pinned installed command/model manifests, exact workflow selection, immutable run snapshots, and digest-bound verdict evidence |
 | Versioned command tool packages | Implemented for strict local or digest-pinned installed declarative manifests, exact per-agent selection, deterministic argv rendering, and the existing policy/approval/sandbox/journal boundary |
+| Versioned workflow packages | Implemented for strict local or digest-pinned installed inert source manifests, exact packaged roots and children, closed snapshot-only compilation, and durable replay identity |
 | Remote capability bundle distribution | Implemented with deterministic inert `.flowpkg` files, explicit public HTTPS plus SHA-256 installation, a content-addressed project store, deterministic lock, local audit/removal commands, and offline execution/recovery |
 | Proof-safe fresh recovery of interrupted agent attempts | Implemented as explicit opt-in for read-only attempts and edit attempts proven not applied |
 | Fail-closed sandboxed command isolation | Filesystem/network isolation is implemented on Linux and macOS; strict agent-command descendant lifecycle containment is currently Linux-only |
-| Signed registries, automatic updates, other package kinds, and model network tools | Planned |
+| Signed registries, automatic updates, policy/UI packages, and model network tools | Planned |
 | VM-grade isolation of the host-side agent runtime | Planned |
 
 The executable format is `flow.synapti.ai/v1alpha1`. There is no compatibility or migration
@@ -217,18 +218,59 @@ result through the same `process.execute` policy, optional live approval, sandbo
 command journal, cancellation, output, budget, and replay path as `flow_exec`. Queued workers,
 child runs, and recovery consume the immutable snapshot rather than reloading `.flow/tools`.
 
+### Use a versioned workflow package
+
+Flow discovers strict inert `WorkflowPackage` manifests below the project-owned
+`.flow/workflows` directory. Install the credential-free example explicitly, then validate its
+metadata and the parent workflow that selects its exact version:
+
+```sh
+mkdir -p .flow/workflows
+cp -R examples/workflow-packages/release-check .flow/workflows/
+node dist/cli/main.js workflows validate
+node dist/cli/main.js workflows list
+node dist/cli/main.js workflows inspect release-check --version 1.0.0
+node dist/cli/main.js validate examples/versioned-workflow-package.workflow.yaml
+node dist/cli/main.js run examples/versioned-workflow-package.workflow.yaml \
+  --run-id workflow-child-demo
+```
+
+The parent uses `child.package: { name: release-check, version: 1.0.0 }`; Flow compiles the
+package's embedded ordinary workflow through the same recursive compiler, child isolation, budget,
+typed-result, evidence, and recovery rules as an embedded child. A package may also be the root:
+
+```sh
+node dist/cli/main.js validate workflow:release-check@1.0.0
+node dist/cli/main.js run workflow:release-check@1.0.0 --run-id workflow-root-demo
+# For an interrupted, nonterminal run:
+node dist/cli/main.js resume workflow:release-check@1.0.0 --run-id interrupted-root-demo
+```
+
+The locator requires an exact SemVer; ranges, tags, and implicit latest selection are rejected.
+Admission captures the packaged root plus every transitively selected workflow package, then
+performs the authoritative compile with a closed resolver over those immutable bytes. Detached
+workers and resume use the durable snapshot even if `.flow/workflows` or an installed bundle is
+changed or removed. Package cycles, multiple versions of one name, missing exact versions, source
+races, and snapshot mismatches fail closed.
+
+`WorkflowPackage` contains only bounded workflow source. It cannot register code, hooks, drivers,
+providers, credentials, policy, sandbox permissions, or dynamic graph factories. It has exactly
+the authority of the ordinary workflow nodes an operator explicitly selects. Template inputs,
+version solving, executable extensions, and policy/UI packages remain unsupported.
+
 ### Distribute digest-pinned capability bundles
 
-Flow can pack the three existing inert package ABIs into one deterministic strict-JSON `.flowpkg`.
-The checked-in source example contains `BUNDLE.json` plus a conventional `verifiers/` tree:
+Flow can pack the four existing inert package ABIs into one deterministic strict-JSON `.flowpkg`.
+Bundle sources contain `BUNDLE.json` plus any of the conventional `skills/`, `verifiers/`, `tools/`,
+or `workflows/` trees:
 
 ```sh
 node dist/cli/main.js packages pack examples/capability-bundle-source \
   --output /tmp/review-suite-1.0.0.flowpkg
 ```
 
-The command refuses symlinks, special or unknown files, executable payloads, extra verifier/tool
-files, unsafe paths, source races, and an existing output. It reports the exact byte count and
+The command refuses symlinks, special or unknown files, executable payloads, extra
+verifier/tool/workflow files, unsafe paths, source races, and an existing output. It reports the exact byte count and
 `sha256:<hex>` digest. Publish the unchanged file over public HTTPS and communicate its digest over
 a channel the operator trusts. If packing reports `commit_uncertain`, inspect and verify the exact
 requested output path; the final file is already visible and a blind retry will return
@@ -738,7 +780,9 @@ built-in edit semantics, and executable-downloading helpers are disabled. Explic
 Agent Skills instead use immutable provider-neutral snapshots and bounded `skill://` reads; they
 grant no filesystem or execution authority. Verifier packages are inert manifests captured in the
 same snapshot; they execute only by resolving to the existing command or zero-tool model verifier
-boundary and cannot widen either driver's authority.
+boundary and cannot widen either driver's authority. Workflow packages are inert source manifests;
+the closed snapshot resolver feeds them back through the standard compiler and they cannot add
+hooks, policy, providers, or sandbox authority.
 
 Supervisor control state is stored in an owner-only directory under the selected run root. Its
 Unix-domain sockets use a short owner-only temporary path so valid deep project paths also work on

@@ -722,8 +722,8 @@ verifier are not part of this contract.
 
 ## Installed capability bundles
 
-Workflow syntax is independent of package transport. The same `skills`, packaged verifier, and
-`toolPackages` selections resolve against one project catalog composed from strict local roots and
+Workflow syntax is independent of package transport. The same `skills`, packaged verifier,
+`toolPackages`, and workflow-package selections resolve against one project catalog composed from strict local roots and
 the digest-pinned entries in `.flow/packages.lock.json`. Flow reopens every referenced
 content-addressed blob, checks byte count and SHA-256, re-parses every contained package, and
 re-derives bundle name/version before catalog admission. Local and installed package-name
@@ -736,6 +736,78 @@ replay never use the lock's source URL or load the current lock/blob. Bundle pro
 `.flow/packages/sha256/<digest>/<kind>/<name>`, so run evidence identifies exact content without
 carrying a network instruction. SHA-256 is content identity, not publisher authentication or
 freshness.
+
+## Versioned workflow packages
+
+A reusable workflow may be selected as an exact packaged root:
+
+```sh
+flow validate workflow:release-check@1.0.0
+flow run workflow:release-check@1.0.0 --run-id release-check
+# Resume only an interrupted, nonterminal run.
+flow resume workflow:release-check@1.0.0 --run-id interrupted-release-check
+```
+
+or as an exact child instead of an embedded `child.workflow`:
+
+```yaml
+- id: release-check
+  type: child
+  child:
+    package: { name: release-check, version: 1.0.0 }
+    resultNodeId: publish
+```
+
+`child` contains exactly one of `workflow` or `package`. Package references contain only a
+lowercase kebab-case name and exact SemVer; ranges, tags, implicit latest selection, and two
+versions of one name in a workflow tree are rejected. The packaged source is compiled recursively
+through the ordinary child compiler, including result-node, complete-budget, depth, run-tree,
+cycle, approval, isolation, evidence, and typed-result rules. Existing embedded children and their
+digests are unchanged when no package is selected.
+
+Packages are discovered below `.flow/workflows/<path>/<name>/WORKFLOW.yaml`. Each directory contains
+only that regular UTF-8 manifest:
+
+```yaml
+apiVersion: flow.synapti.ai/v1alpha1
+kind: WorkflowPackage
+metadata:
+  name: release-check
+  version: 1.0.0
+  description: Run the release gate.
+  license: Apache-2.0
+  compatibility: Flow v1alpha1 workflow compiler
+spec:
+  workflow: |-
+    apiVersion: flow.synapti.ai/v1alpha1
+    kind: Workflow
+    metadata: { id: release-check }
+    nodes:
+      - id: verify
+        type: command
+        command: { executable: npm, args: [test] }
+```
+
+Unknown or duplicate fields, YAML aliases, malformed identity, symlinks, special or extra entries,
+source races, and unsafe paths fail closed. The manifest and embedded workflow are each at most
+128 KiB. A composed catalog and immutable snapshot retain the existing 32-package and 512 KiB
+aggregate bounds.
+
+Admission first resolves a bounded exact transitive set from the race-detecting local/installed
+catalog. It then performs the authoritative compile with a closed resolver over the captured
+snapshot only. Each compiled packaged root or child records name, version, and package digest;
+`run_started` records the sorted exact requirements plus the full immutable snapshot. The control
+graph, reducer, detached job digest, worker, child ledger, replay, and recovery reconcile those
+requirements without filesystem or network fallback. A locator-named root must exactly match the
+workflow bytes in its captured manifest.
+
+`flow workflows list`, `inspect <name> --version <exact>`, and `validate` execute nothing.
+Inspection reports bounded metadata, provenance, manifest/workflow byte counts and hashes, and
+package digest while omitting raw manifest base64 and embedded source. A workflow package cannot
+contribute executable modules, hooks, tools, drivers, providers, credentials, configuration,
+policy, environment, or sandbox permissions. It can describe only ordinary nodes already admitted
+by the Flow workflow language. Parameters, interpolation, secrets, outputs as template inputs,
+version solving, and executable extensions are unsupported.
 
 ## Versioned verifier packages
 

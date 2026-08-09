@@ -126,6 +126,17 @@ not by themselves claim remote acquisition, arbitrary executable package-code co
 correctness, provider correctness, macOS agent-command support, or hostile-workload isolation; the
 bundle-distribution suite separately covers acquisition of the inert ABI.
 
+The credential-free workflow-package smoke path installs
+`examples/workflow-packages/release-check/WORKFLOW.yaml`, runs `flow workflows validate`, lists and
+inspects exact metadata, validates `examples/versioned-workflow-package.workflow.yaml`, and validates
+or runs the packaged root locator `workflow:release-check@1.0.0`. Focused tests prove strict YAML and
+SemVer bounds, no-follow discovery and source-race refusal, local/installed collision handling,
+transitive snapshot capture, cycle/depth failure, unchanged inline digests, ordinary child
+compilation, typed package requirements and control-graph reconciliation, attached and detached
+execution, live-catalog removal immunity, and snapshot-only resume/replay. These tests do not claim
+template parameters, version solving, executable extension containment, policy/UI packages, or
+benchmark superiority.
+
 The credential-free bundle-distribution suite proves deterministic packing, strict content parsing,
 public-HTTPS-only digest-before-parse acquisition, DNS rebinding defenses, redirect refusal,
 pre-abort and in-flight DNS cancellation, content-addressed activation, parent-synced store

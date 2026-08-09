@@ -17,6 +17,14 @@ import {
   verifierPackageIdentityKey,
   verifierPackageSnapshotSchema,
 } from "./verifier-packages.js";
+import {
+  createWorkflowPackageSnapshot,
+  type WorkflowPackageSnapshot,
+  type WorkflowPackageSnapshotInput,
+  validateWorkflowPackageSnapshot,
+  workflowPackageIdentityKey,
+  workflowPackageSnapshotSchema,
+} from "./workflow-packages.js";
 
 export const MAX_AGENT_SKILL_PACKAGES = 32;
 export const MAX_AGENT_SKILL_FILES = 128;
@@ -80,7 +88,8 @@ export interface AgentSkillPackageSnapshot {
 export type CapabilityPackageSnapshot =
   | AgentSkillPackageSnapshot
   | VerifierPackageSnapshot
-  | ToolPackageSnapshot;
+  | ToolPackageSnapshot
+  | WorkflowPackageSnapshot;
 
 export interface CapabilitySnapshot {
   readonly version: 1;
@@ -98,6 +107,10 @@ export interface VerifierPackageCapabilitySnapshot extends CapabilitySnapshot {
 
 export interface ToolPackageCapabilitySnapshot extends CapabilitySnapshot {
   readonly packages: readonly ToolPackageSnapshot[];
+}
+
+export interface WorkflowPackageCapabilitySnapshot extends CapabilitySnapshot {
+  readonly packages: readonly WorkflowPackageSnapshot[];
 }
 
 export interface AgentSkillPackageSnapshotInput
@@ -164,6 +177,7 @@ const capabilitySnapshotSchema = z
           packageSnapshotSchema,
           verifierPackageSnapshotSchema,
           toolPackageSnapshotSchema,
+          workflowPackageSnapshotSchema,
         ]),
       )
       .min(1)
@@ -228,16 +242,24 @@ export function createCapabilitySnapshot(
   toolInputs: readonly ToolPackageSnapshotInput[],
 ): ToolPackageCapabilitySnapshot;
 export function createCapabilitySnapshot(
+  inputs: readonly [],
+  verifierInputs: readonly [],
+  toolInputs: readonly [],
+  workflowInputs: readonly WorkflowPackageSnapshotInput[],
+): WorkflowPackageCapabilitySnapshot;
+export function createCapabilitySnapshot(
   inputs: readonly AgentSkillPackageSnapshotInput[],
   verifierInputs: readonly VerifierPackageSnapshotInput[],
   toolInputs?: readonly ToolPackageSnapshotInput[],
+  workflowInputs?: readonly WorkflowPackageSnapshotInput[],
 ): CapabilitySnapshot;
 export function createCapabilitySnapshot(
   inputs: readonly AgentSkillPackageSnapshotInput[],
   verifierInputs: readonly VerifierPackageSnapshotInput[] = [],
   toolInputs: readonly ToolPackageSnapshotInput[] = [],
+  workflowInputs: readonly WorkflowPackageSnapshotInput[] = [],
 ): CapabilitySnapshot {
-  if (inputs.length + verifierInputs.length + toolInputs.length === 0) {
+  if (inputs.length + verifierInputs.length + toolInputs.length + workflowInputs.length === 0) {
     throw new RangeError("a capability snapshot requires at least one selected package");
   }
   const skills = inputs
@@ -279,6 +301,7 @@ export function createCapabilitySnapshot(
     ...skills,
     ...verifierInputs.map(createVerifierPackageSnapshot),
     ...toolInputs.map(createToolPackageSnapshot),
+    ...workflowInputs.map(createWorkflowPackageSnapshot),
   ].sort((left, right) => compareStrings(capabilityPackageKey(left), capabilityPackageKey(right)));
   const candidate = {
     version: 1 as const,
@@ -298,6 +321,10 @@ export function validateCapabilitySnapshot(input: unknown): CapabilitySnapshot {
     }
     if (capability.kind === "tool-package") {
       validateToolPackageSnapshot(capability);
+      continue;
+    }
+    if (capability.kind === "workflow-package") {
+      validateWorkflowPackageSnapshot(capability);
       continue;
     }
     const skill = capability;
@@ -431,9 +458,12 @@ function capabilityPackageKey(value: CapabilityPackageSnapshot): string {
   if (value.kind === "agent-skill") {
     return `agent-skill\0${value.name}`;
   }
-  return value.kind === "verifier-package"
-    ? verifierPackageIdentityKey(value)
-    : toolPackageIdentityKey(value);
+  if (value.kind === "verifier-package") {
+    return verifierPackageIdentityKey(value);
+  }
+  return value.kind === "tool-package"
+    ? toolPackageIdentityKey(value)
+    : workflowPackageIdentityKey(value);
 }
 
 export function createAgentCapabilityEvidence(

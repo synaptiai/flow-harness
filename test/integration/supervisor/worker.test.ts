@@ -7,10 +7,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import { trySubmitAgentCommandApprovalDecision } from "../../../src/application/command-approval.js";
 import type { CommandSandbox } from "../../../src/application/command-sandbox.js";
 import { NodeExecutorRouter } from "../../../src/application/node-executor-router.js";
+import { runWorkflow } from "../../../src/application/run-workflow.js";
+import { compileWorkflowFromSnapshot } from "../../../src/application/workflow-package-admission.js";
 import type {
   AgentExecutor,
   CommandExecutor,
   NodeExecutor,
+  RecoverableRunEventStore,
 } from "../../../src/application/ports.js";
 import {
   calculateAgentCommandDigest,
@@ -22,6 +25,7 @@ import {
 } from "../../../src/domain/capability/agent-skills.js";
 import type { ToolPackageSnapshotInput } from "../../../src/domain/capability/tool-packages.js";
 import type { VerifierPackageSnapshotInput } from "../../../src/domain/capability/verifier-packages.js";
+import type { WorkflowPackageSnapshotInput } from "../../../src/domain/capability/workflow-packages.js";
 import { reduceRunEvents } from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { JsonlRunStore, RunStoreError } from "../../../src/infrastructure/fs/jsonl-run-store.js";
@@ -44,6 +48,184 @@ afterEach(async () => {
 });
 
 describe("detached run worker", () => {
+  it("executes a packaged root entirely from the frozen detached snapshot", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-worker-workflow-package-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    const store = new LocalSupervisorStore(runsDirectory);
+    await store.initialize();
+    const source = workflowSource().trim();
+    const capabilitySnapshot = createCapabilitySnapshot(
+      [],
+      [],
+      [],
+      [workflowPackageInput("worker-root", source)],
+    );
+    const rootPackage = capabilitySnapshot.packages[0];
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "worker-workflow-package",
+      mode: "run",
+      sourceName: "workflow:worker-root@1.0.0",
+      workflowSource: source,
+      cwd: directory,
+      token: "7".repeat(64),
+      createdAt: "2026-08-08T12:10:00.000Z",
+      capabilitySnapshot,
+    });
+    await store.reserveSubmission(
+      job,
+      createActiveRunClaim({
+        runId: job.runId,
+        jobId: job.jobId,
+        workerId: job.workerId,
+        claimedAt: job.createdAt,
+      }),
+    );
+
+    const worker = executeWorkerJob(job.jobId, {
+      store,
+      executor: {
+        async execute(node) {
+          return { status: "succeeded", evidence: successfulCommandEvidence(node.id) };
+        },
+      },
+      effectReconciler: createProductionNodeEffectReconciler(),
+      createRunStore: (root) => new JsonlRunStore(root),
+      pid: 4329,
+    });
+    const descriptor = await waitForDescriptor(store, job.workerId);
+    await expect(requestWorker(descriptor, { type: "identify" })).resolves.toMatchObject({
+      ok: true,
+      result: { runId: job.runId, status: "running" },
+    });
+
+    await expect(worker).resolves.toBe(0);
+    const events = await new JsonlRunStore(runsDirectory).read(job.runId);
+    expect(events[0]).toMatchObject({
+      type: "run_started",
+      capabilitySnapshot: { digest: capabilitySnapshot.digest },
+      workflowPackageRequirements: [
+        {
+          name: "worker-root",
+          version: "1.0.0",
+          digest: rootPackage?.digest,
+        },
+      ],
+    });
+    expect(reduceRunEvents(events).status).toBe("succeeded");
+  });
+
+  it("resumes a packaged root worker from durable snapshot bytes after live source disappears", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-worker-workflow-resume-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    const supervisorStore = new LocalSupervisorStore(runsDirectory);
+    await supervisorStore.initialize();
+    const source = workflowSource().trim();
+    const capabilitySnapshot = createCapabilitySnapshot(
+      [],
+      [],
+      [],
+      [workflowPackageInput("resume-root", source)],
+    );
+    const compiled = compileWorkflowFromSnapshot({
+      source,
+      sourceName: "workflow:resume-root@1.0.0",
+      capabilitySnapshot,
+    });
+    const durableStore = new JsonlRunStore(runsDirectory);
+    let crashBeforeNodeStart = true;
+    const crashStore: RecoverableRunEventStore = {
+      async append(event) {
+        if (event.type === "node_started" && crashBeforeNodeStart) {
+          crashBeforeNodeStart = false;
+          throw new Error("simulated crash before packaged node start");
+        }
+        await durableStore.append(event);
+      },
+      async read(runId) {
+        return await durableStore.read(runId);
+      },
+      async claim(runId) {
+        return await durableStore.claim(runId);
+      },
+      async release(runId) {
+        await durableStore.release(runId);
+      },
+    };
+    await expect(
+      runWorkflow(compiled, {
+        runId: "worker-workflow-resume",
+        cwd: directory,
+        protectedPaths: [runsDirectory],
+        store: crashStore,
+        executor: {
+          async execute() {
+            throw new Error("executor must not run before the simulated crash");
+          },
+        },
+        capabilitySnapshot,
+      }),
+    ).rejects.toThrow(/simulated crash/i);
+
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "worker-workflow-resume",
+      mode: "resume",
+      sourceName: "workflow:resume-root@1.0.0",
+      workflowSource: source,
+      cwd: directory,
+      token: "6".repeat(64),
+      createdAt: "2026-08-08T12:11:00.000Z",
+      capabilitySnapshot,
+    });
+    await supervisorStore.reserveSubmission(
+      job,
+      createActiveRunClaim({
+        runId: job.runId,
+        jobId: job.jobId,
+        workerId: job.workerId,
+        claimedAt: job.createdAt,
+      }),
+    );
+    const worker = executeWorkerJob(job.jobId, {
+      store: supervisorStore,
+      executor: {
+        async execute(node) {
+          return { status: "succeeded", evidence: successfulCommandEvidence(node.id) };
+        },
+      },
+      effectReconciler: createProductionNodeEffectReconciler(),
+      createRunStore: (root) => new JsonlRunStore(root),
+      pid: 4330,
+    });
+    const descriptor = await waitForDescriptor(supervisorStore, job.workerId);
+    await expect(requestWorker(descriptor, { type: "identify" })).resolves.toMatchObject({
+      ok: true,
+      result: { runId: job.runId, status: "running" },
+    });
+
+    await expect(worker).resolves.toBe(0);
+    const events = await durableStore.read(job.runId);
+    expect(events.map((event) => event.type)).toEqual([
+      "run_started",
+      "run_resumed",
+      "node_started",
+      "node_succeeded",
+      "run_succeeded",
+    ]);
+    expect(reduceRunEvents(events)).toMatchObject({
+      status: "succeeded",
+      capabilitySnapshot: { digest: capabilitySnapshot.digest },
+      workflowPackageRequirements: [
+        { name: "resume-root", version: "1.0.0", digest: capabilitySnapshot.packages[0]?.digest },
+      ],
+    });
+  });
+
   it("persists and replays a durable agent command through a detached worker", async () => {
     const directory = await mkdtemp(join(tmpdir(), "flow-worker-agent-command-"));
     temporaryDirectories.push(directory);
@@ -1426,6 +1608,30 @@ nodes:
       args: [--version]
       timeoutMs: 10000
 `;
+}
+
+function workflowPackageInput(name: string, workflow: string): WorkflowPackageSnapshotInput {
+  const indented = workflow
+    .split("\n")
+    .map((line) => `    ${line}`)
+    .join("\n");
+  return {
+    kind: "workflow-package",
+    trust: "project-explicit",
+    provenance: `.flow/workflows/${name}`,
+    manifest: {
+      content: Buffer.from(`apiVersion: flow.synapti.ai/v1alpha1
+kind: WorkflowPackage
+metadata:
+  name: ${name}
+  version: 1.0.0
+  description: Detached worker workflow.
+spec:
+  workflow: |-
+${indented}
+`),
+    },
+  };
 }
 
 function verifierWorkflowSource(): string {

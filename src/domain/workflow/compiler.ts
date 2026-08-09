@@ -1,5 +1,9 @@
 import { parseDocument } from "yaml";
 
+import {
+  workflowPackageNameSchema,
+  workflowPackageVersionSchema,
+} from "../capability/workflow-packages.js";
 import type { GoalContractSource } from "../goal/schema.js";
 import type { CompiledGoal } from "../goal/types.js";
 import {
@@ -28,7 +32,9 @@ import {
   type CompiledVerifierNode,
   type CompiledWorkflow,
   type CompiledWorkflowConcurrency,
+  type CompiledWorkflowPackageReference,
   MAX_CHILD_WORKFLOW_DEPTH,
+  MAX_CHILD_WORKFLOW_SOURCE_BYTES,
   MAX_COMPILED_WORKFLOW_NODES,
   MAX_CONTROL_GRAPH_SERIALIZED_BYTES,
   MAX_RUN_TREE_NODES,
@@ -53,6 +59,8 @@ export interface WorkflowDiagnostic {
     | "child_result_not_unconditional"
     | "child_tree_too_large"
     | "child_wait_unsupported"
+    | "workflow_package_cycle"
+    | "workflow_package_unresolved"
     | "approval_source_field_mismatch"
     | "approval_source_requires_dependency"
     | "approval_source_self"
@@ -122,16 +130,50 @@ export class WorkflowCompilationError extends Error {
   }
 }
 
-export function compileWorkflowText(source: string, sourceName = "workflow"): CompiledWorkflow {
+export interface WorkflowPackageReference {
+  readonly name: string;
+  readonly version: string;
+}
+
+export interface ResolvedWorkflowPackage extends WorkflowPackageReference {
+  readonly digest: string;
+  readonly source: string;
+}
+
+export interface WorkflowPackageResolver {
+  resolve(reference: WorkflowPackageReference): ResolvedWorkflowPackage;
+}
+
+export interface CompileWorkflowOptions {
+  readonly packageResolver?: WorkflowPackageResolver;
+  readonly sourcePackage?: CompiledWorkflowPackageReference;
+}
+
+export function compileWorkflowText(
+  source: string,
+  sourceName = "workflow",
+  options: CompileWorkflowOptions = {},
+): CompiledWorkflow {
+  const sourcePackage =
+    options.sourcePackage === undefined
+      ? undefined
+      : freezeWorkflowPackageReference(options.sourcePackage, sourceName);
   return compileWorkflowTextInternal(source, sourceName, {
     depth: 0,
     nodeCount: { value: 0 },
+    ...(options.packageResolver === undefined ? {} : { packageResolver: options.packageResolver }),
+    packageStack:
+      sourcePackage === undefined ? Object.freeze([]) : Object.freeze([packageKey(sourcePackage)]),
+    ...(sourcePackage === undefined ? {} : { sourcePackage }),
   });
 }
 
 interface CompilationContext {
   readonly depth: number;
   readonly nodeCount: { value: number };
+  readonly packageResolver?: WorkflowPackageResolver;
+  readonly packageStack: readonly string[];
+  readonly sourcePackage?: CompiledWorkflowPackageReference;
 }
 
 function compileWorkflowTextInternal(
@@ -1348,6 +1390,7 @@ function freezeWorkflow(source: WorkflowSource, context: CompilationContext): Co
     ...(source.metadata.description === undefined
       ? {}
       : { description: source.metadata.description }),
+    ...(context.sourcePackage === undefined ? {} : { sourcePackage: context.sourcePackage }),
     ...(source.goal === undefined ? {} : { goal: freezeGoal(source.goal) }),
     ...(source.budget === undefined ? {} : { budget: freezeBudget(source.budget) }),
     ...(source.concurrency === undefined
@@ -1984,10 +2027,11 @@ function freezeLoopBodyNode(
 
 function freezeChildDefinition(
   nodeId: string,
-  source: { readonly workflow: string; readonly resultNodeId: string },
+  source: Extract<SourceNode, { readonly type: "child" }>["child"],
   context: CompilationContext,
 ): CompiledChildNode["child"] {
-  const sourceName = `${nodeId}.child.workflow`;
+  const resolved = resolveChildWorkflow(nodeId, source, context);
+  const sourceName = resolved.sourceName;
   if (context.depth >= MAX_CHILD_WORKFLOW_DEPTH) {
     throw new WorkflowCompilationError(
       sourceName,
@@ -2000,9 +2044,12 @@ function freezeChildDefinition(
       ]),
     );
   }
-  const workflow = compileWorkflowTextInternal(source.workflow, sourceName, {
+  const workflow = compileWorkflowTextInternal(resolved.source, sourceName, {
     depth: context.depth + 1,
     nodeCount: context.nodeCount,
+    ...(context.packageResolver === undefined ? {} : { packageResolver: context.packageResolver }),
+    packageStack: resolved.packageStack,
+    ...(resolved.sourcePackage === undefined ? {} : { sourcePackage: resolved.sourcePackage }),
   });
   if (
     workflow.budget?.maxNodeStarts === undefined ||
@@ -2090,6 +2137,135 @@ function freezeChildDefinition(
     resultSchema: result.result.schema,
     resultSchemaDigest: result.result.schemaDigest,
   });
+}
+
+function resolveChildWorkflow(
+  nodeId: string,
+  source: Extract<SourceNode, { readonly type: "child" }>["child"],
+  context: CompilationContext,
+): {
+  readonly source: string;
+  readonly sourceName: string;
+  readonly packageStack: readonly string[];
+  readonly sourcePackage?: CompiledWorkflowPackageReference;
+} {
+  if ("workflow" in source) {
+    return {
+      source: source.workflow,
+      sourceName: `${nodeId}.child.workflow`,
+      packageStack: context.packageStack,
+    };
+  }
+  const reference = source.package;
+  const key = packageKey(reference);
+  const sourceName = `workflow:${reference.name}@${reference.version}`;
+  if (context.packageStack.includes(key)) {
+    throw new WorkflowCompilationError(
+      sourceName,
+      Object.freeze([
+        {
+          code: "workflow_package_cycle",
+          path: "child.package",
+          message: `workflow package cycle detected: ${[...context.packageStack, key].join(" -> ")}`,
+        },
+      ]),
+    );
+  }
+  if (context.packageResolver === undefined) {
+    throw unresolvedWorkflowPackage(
+      sourceName,
+      reference,
+      "no immutable package resolver was supplied",
+    );
+  }
+  let resolved: ResolvedWorkflowPackage;
+  try {
+    resolved = context.packageResolver.resolve(reference);
+  } catch (error) {
+    throw unresolvedWorkflowPackage(
+      sourceName,
+      reference,
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+  if (
+    resolved.name !== reference.name ||
+    resolved.version !== reference.version ||
+    !/^[a-f0-9]{64}$/.test(resolved.digest) ||
+    resolved.source.trim().length === 0 ||
+    Buffer.byteLength(resolved.source, "utf8") > MAX_CHILD_WORKFLOW_SOURCE_BYTES
+  ) {
+    throw unresolvedWorkflowPackage(
+      sourceName,
+      reference,
+      "the resolver returned mismatched or invalid package content",
+    );
+  }
+  const sourcePackage = Object.freeze({
+    name: resolved.name,
+    version: resolved.version,
+    digest: resolved.digest,
+  });
+  return {
+    source: resolved.source,
+    sourceName,
+    packageStack: Object.freeze([...context.packageStack, key]),
+    sourcePackage,
+  };
+}
+
+function unresolvedWorkflowPackage(
+  sourceName: string,
+  reference: WorkflowPackageReference,
+  detail: string,
+): WorkflowCompilationError {
+  const prefix = `workflow package "${reference.name}@${reference.version}" could not be resolved exactly: `;
+  return new WorkflowCompilationError(
+    sourceName,
+    Object.freeze([
+      {
+        code: "workflow_package_unresolved",
+        path: "child.package",
+        message: boundedUtf8(`${prefix}${detail}`, 4_096),
+      },
+    ]),
+  );
+}
+
+function freezeWorkflowPackageReference(
+  reference: CompiledWorkflowPackageReference,
+  sourceName: string,
+): CompiledWorkflowPackageReference {
+  if (
+    !workflowPackageNameSchema.safeParse(reference.name).success ||
+    !workflowPackageVersionSchema.safeParse(reference.version).success ||
+    !/^[a-f0-9]{64}$/.test(reference.digest)
+  ) {
+    throw unresolvedWorkflowPackage(
+      sourceName,
+      reference,
+      "the source package identity is invalid",
+    );
+  }
+  return Object.freeze({ ...reference });
+}
+
+function packageKey(reference: WorkflowPackageReference): string {
+  return `${reference.name}@${reference.version}`;
+}
+
+function boundedUtf8(value: string, maxBytes: number): string {
+  const bytes = Buffer.from(value, "utf8");
+  if (bytes.byteLength <= maxBytes) {
+    return value;
+  }
+  const suffix = "… [truncated]";
+  const suffixBytes = Buffer.byteLength(suffix, "utf8");
+  let end = maxBytes - suffixBytes;
+  while (end > 0 && (bytes[end] ?? 0) >> 6 === 2) {
+    end -= 1;
+  }
+  return `${bytes.subarray(0, end).toString("utf8")}${suffix}`;
 }
 
 function freezeResultNode(input: {

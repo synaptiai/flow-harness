@@ -5,9 +5,11 @@ import {
   createCapabilitySnapshot,
 } from "../../../src/domain/capability/agent-skills.js";
 import type { VerifierPackageSnapshotInput } from "../../../src/domain/capability/verifier-packages.js";
+import type { WorkflowPackageSnapshotInput } from "../../../src/domain/capability/workflow-packages.js";
 import {
   bindWorkflowCapabilities,
   collectWorkflowAgentSkillNames,
+  collectWorkflowPackageReferences,
   collectWorkflowVerifierPackageReferences,
   resolveVerifierPackageNode,
   type WorkflowCapabilityError,
@@ -78,6 +80,42 @@ describe("workflow capability binding", () => {
     const workflow = skilledWorkflow([]);
 
     expect(bindWorkflowCapabilities(workflow)).toBeUndefined();
+  });
+
+  it("collects and digest-binds a packaged root to its immutable snapshot", () => {
+    const input = workflowPackage("release-check", "1.0.0");
+    const snapshot = createCapabilitySnapshot([], [], [], [input]);
+    const selected = snapshot.packages[0];
+    if (selected?.kind !== "workflow-package") {
+      throw new Error("workflow package fixture was not created");
+    }
+    const workflow = compileWorkflowText(
+      workflowSource("release-check", terminalCommand()),
+      "workflow",
+      {
+        sourcePackage: {
+          name: selected.name,
+          version: selected.version,
+          digest: selected.digest,
+        },
+      },
+    );
+
+    expect(collectWorkflowPackageReferences(workflow)).toEqual([
+      { name: "release-check", version: "1.0.0", digest: selected.digest },
+    ]);
+    expect(bindWorkflowCapabilities(workflow, snapshot)).toEqual(snapshot);
+
+    const forged = compileWorkflowText(
+      workflowSource("release-check", terminalCommand()),
+      "workflow",
+      {
+        sourcePackage: { name: "release-check", version: "1.0.0", digest: "0".repeat(64) },
+      },
+    );
+    expect(() => bindWorkflowCapabilities(forged, snapshot)).toThrowError(
+      expect.objectContaining<Partial<WorkflowCapabilityError>>({ code: "digest_mismatch" }),
+    );
   });
 
   it("classifies an unselected verifier package as an unexpected package", () => {
@@ -381,6 +419,37 @@ spec:
 `),
     },
   };
+}
+
+function workflowPackage(name: string, version: string): WorkflowPackageSnapshotInput {
+  const workflow = workflowSource(name, terminalCommand());
+  const indented = workflow
+    .trim()
+    .split("\n")
+    .map((line) => `    ${line}`)
+    .join("\n");
+  return {
+    kind: "workflow-package",
+    trust: "project-explicit",
+    provenance: `.flow/workflows/${name}`,
+    manifest: {
+      content: Buffer.from(`apiVersion: flow.synapti.ai/v1alpha1
+kind: WorkflowPackage
+metadata: { name: ${name}, version: ${version}, description: Reusable ${name} workflow. }
+spec:
+  workflow: |-
+${indented}
+`),
+    },
+  };
+}
+
+function terminalCommand(): string {
+  return `
+  - id: finish
+    type: command
+    command: { executable: /usr/bin/true }
+`;
 }
 
 function packagedModelWorkflow(version: string) {

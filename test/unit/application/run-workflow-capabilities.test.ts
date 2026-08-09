@@ -15,7 +15,7 @@ import {
   createCapabilitySnapshot,
 } from "../../../src/domain/capability/agent-skills.js";
 import type { ToolPackageSnapshotInput } from "../../../src/domain/capability/tool-packages.js";
-import type { RunEvent } from "../../../src/domain/run/events.js";
+import { calculateChildRunId, type RunEvent } from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 
 describe("run workflow capability snapshots", () => {
@@ -97,13 +97,14 @@ describe("run workflow capability snapshots", () => {
   it("binds a child workflow to its subset while preserving the parent snapshot identity", async () => {
     const store = new MemoryStore();
     const parentSnapshot = createCapabilitySnapshot([skill("review"), skill("unused")]);
+    const childRunId = calculateChildRunId("parent-run", "delegate", 1);
 
     const state = await runWorkflow(skilledWorkflow(), {
       ...options(
         store,
         executorFrom((_node, context) => agentSuccess(context.capabilitySnapshot)),
       ),
-      runId: "child-capability-run",
+      runId: childRunId,
       capabilitySnapshot: parentSnapshot,
       executionWorkspace: {
         backend: "reflink-copy-v1",

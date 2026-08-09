@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 
+import { compileWorkflowFromSnapshot } from "../application/workflow-package-admission.js";
 import { reduceRunEvents, type RunEvent, type RunStatus } from "../domain/run/events.js";
-import { compileWorkflowText } from "../domain/workflow/compiler.js";
 import { bindWorkflowCapabilities } from "../domain/capability/workflow-capabilities.js";
 import { JsonlRunStore, RunStoreError } from "../infrastructure/fs/jsonl-run-store.js";
 import type { JsonlAdmissionStore } from "../infrastructure/fs/jsonl-admission-store.js";
@@ -143,7 +143,13 @@ export class LocalSupervisorService {
 
   async #submitOnce(command: SubmitCommand): Promise<SubmissionResult> {
     // Compilation must precede every durable reservation and worker launch.
-    const workflow = compileWorkflowText(command.workflowSource, command.sourceName);
+    const workflow = compileWorkflowFromSnapshot({
+      source: command.workflowSource,
+      sourceName: command.sourceName,
+      ...(command.capabilitySnapshot === undefined
+        ? {}
+        : { capabilitySnapshot: command.capabilitySnapshot }),
+    });
     bindWorkflowCapabilities(workflow, command.capabilitySnapshot);
 
     let journal: SubmissionCommandRecord;
