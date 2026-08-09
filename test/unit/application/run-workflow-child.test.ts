@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import { NodeExecutorRouter } from "../../../src/application/node-executor-router.js";
+import { admitWorkflowPackages } from "../../../src/application/workflow-package-admission.js";
 import type {
   AgentExecutor,
   CommandExecutor,
@@ -15,6 +16,10 @@ import type {
 } from "../../../src/application/ports.js";
 import { resumeWorkflow, runWorkflow } from "../../../src/application/run-workflow.js";
 import { createCapabilitySnapshot } from "../../../src/domain/capability/agent-skills.js";
+import {
+  createWorkflowPackageSnapshot,
+  type WorkflowPackageSnapshot,
+} from "../../../src/domain/capability/workflow-packages.js";
 import type { ToolPackageSnapshotInput } from "../../../src/domain/capability/tool-packages.js";
 import type { VerifierPackageSnapshotInput } from "../../../src/domain/capability/verifier-packages.js";
 import {
@@ -27,6 +32,63 @@ import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import type { CompiledNode } from "../../../src/domain/workflow/types.js";
 
 describe("child workflow execution", () => {
+  it("runs a package-selected child through the ordinary isolated child lifecycle", async () => {
+    const store = new TreeMemoryStore();
+    const isolator = new MemoryWorkspaceIsolator();
+    const executor = new ChildCommandExecutor();
+    const childPackage = workflowPackageSnapshot("release-check", childWorkflowSource());
+    const admitted = await admitWorkflowPackages({
+      source: {
+        kind: "inline",
+        content: packagedParentWorkflow(),
+        sourceName: "packaged-parent.workflow.yaml",
+      },
+      loadPackage: async (reference) => {
+        expect(reference).toEqual({ name: "release-check", version: "1.0.0" });
+        return childPackage;
+      },
+    });
+    const capabilitySnapshot = admitted.capabilitySnapshot;
+    if (capabilitySnapshot === undefined) {
+      throw new Error("package-selected child admission must produce a capability snapshot");
+    }
+
+    const state = await runWorkflow(admitted.workflow, {
+      runId: "parent-packaged-workflow",
+      cwd: "/workspace",
+      protectedPaths: ["/state/runs"],
+      store,
+      executor,
+      workspaceIsolator: isolator,
+      capabilitySnapshot,
+      now: clock(),
+    });
+
+    const childRunId = calculateChildRunId("parent-packaged-workflow", "delegate", 1);
+    expect(state).toMatchObject({
+      status: "succeeded",
+      workflowPackageRequirements: [
+        { name: "release-check", version: "1.0.0", digest: childPackage.digest },
+      ],
+      nodes: {
+        delegate: {
+          childRun: { runId: childRunId },
+          evidence: { kind: "child", result: { canonicalValue: "true" } },
+        },
+      },
+    });
+    expect(reduceRunEvents(await store.read(childRunId))).toMatchObject({
+      status: "succeeded",
+      workflowPackageRequirements: [
+        { name: "release-check", version: "1.0.0", digest: childPackage.digest },
+      ],
+    });
+    expect(executor.calls).toEqual([
+      expect.objectContaining({ nodeId: "produce", cwd: `/isolated/${childRunId}` }),
+    ]);
+    expect(isolator.cleaned).toEqual([childRunId]);
+  });
+
   it("runs a separately-ledgered child in an isolated workspace and imports its result", async () => {
     const store = new TreeMemoryStore();
     const isolator = new MemoryWorkspaceIsolator();
@@ -1163,6 +1225,49 @@ budget:
 nodes:
 ${childNode("delegate", child)}
 `;
+}
+
+function packagedParentWorkflow(): string {
+  return `apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: packaged-parent-workflow }
+budget:
+  maxNodeStarts: 32
+  maxModelTokens: 10000
+  maxCostUsd: 2
+  maxExecutionMs: 300000
+  maxArtifactBytes: 1000000
+nodes:
+  - id: delegate
+    type: child
+    child:
+      package: { name: release-check, version: 1.0.0 }
+      resultNodeId: publish
+`;
+}
+
+function workflowPackageSnapshot(name: string, workflow: string): WorkflowPackageSnapshot {
+  const indented = workflow
+    .split("\n")
+    .map((line) => `    ${line}`)
+    .join("\n");
+  return createWorkflowPackageSnapshot({
+    kind: "workflow-package",
+    trust: "project-explicit",
+    provenance: `.flow/workflows/${name}`,
+    manifest: {
+      content: Buffer.from(`apiVersion: flow.synapti.ai/v1alpha1
+kind: WorkflowPackage
+metadata:
+  name: ${name}
+  version: 1.0.0
+  description: Reusable child workflow.
+spec:
+  workflow: |-
+${indented}
+`),
+    },
+  });
 }
 
 function nestedParentWorkflow(): string {

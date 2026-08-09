@@ -58,7 +58,7 @@ describe("supervisor protocol", () => {
     });
   });
 
-  it("carries a validated immutable capability snapshot only for detached new runs", () => {
+  it("carries a validated immutable capability snapshot for detached run and resume", () => {
     const capabilitySnapshot = testCapabilitySnapshot();
     const command = {
       type: "submit",
@@ -85,15 +85,15 @@ describe("supervisor protocol", () => {
       type: "submit",
       capabilitySnapshot: { digest: capabilitySnapshot.digest },
     });
-    expect(() =>
+    expect(
       parseSupervisorRequestFrame(
         encodeSupervisorMessage({
           version: SUPERVISOR_PROTOCOL_VERSION,
           requestId: randomUUID(),
           command: { ...command, mode: "resume" },
         }),
-      ),
-    ).toThrow(/resume.*capability snapshot/i);
+      ).command,
+    ).toMatchObject({ mode: "resume", capabilitySnapshot: { digest: capabilitySnapshot.digest } });
     expect(() =>
       parseSupervisorRequestFrame(
         encodeSupervisorMessage({
@@ -106,6 +106,38 @@ describe("supervisor protocol", () => {
         }),
       ),
     ).toThrow();
+  });
+
+  it("accepts only exact workflow package locators as non-path source identities", () => {
+    const command = {
+      type: "submit",
+      policyDigest: "a".repeat(64),
+      commandId: randomUUID(),
+      mode: "run",
+      runId: "packaged-root",
+      sourceName: "workflow:release-check@1.0.0",
+      workflowSource: "apiVersion: flow.synapti.ai/v1alpha1\nkind: Workflow\n",
+      cwd: "/workspace",
+    } as const;
+
+    expect(
+      parseSupervisorRequestFrame(
+        encodeSupervisorMessage({
+          version: SUPERVISOR_PROTOCOL_VERSION,
+          requestId: randomUUID(),
+          command,
+        }),
+      ).command,
+    ).toMatchObject({ sourceName: "workflow:release-check@1.0.0" });
+    expect(() =>
+      parseSupervisorRequestFrame(
+        encodeSupervisorMessage({
+          version: SUPERVISOR_PROTOCOL_VERSION,
+          requestId: randomUUID(),
+          command: { ...command, sourceName: "workflow:release-check@latest" },
+        }),
+      ),
+    ).toThrow(/sourceName|exact|semantic/i);
   });
 
   it("parses bounded cursor replay and attributable cancellation commands", () => {

@@ -46,6 +46,10 @@ import {
   verifierPackageVersionSchema,
 } from "../capability/verifier-packages.js";
 import {
+  workflowPackageNameSchema,
+  workflowPackageVersionSchema,
+} from "../capability/workflow-packages.js";
+import {
   acceptGoal,
   createGoalRunState,
   GoalEvaluationError,
@@ -280,6 +284,7 @@ export interface RunStartedEvent extends RunEventBase {
   readonly capabilityRequirements?: readonly AgentCapabilityRequirement[];
   readonly verifierPackageRequirements?: readonly VerifierPackageRequirement[];
   readonly toolPackageRequirements?: readonly ToolPackageRequirement[];
+  readonly workflowPackageRequirements?: readonly WorkflowPackageRequirement[];
   readonly budget?: CompiledRunBudget;
   readonly concurrency?: CompiledWorkflowConcurrency;
   readonly goal?: CompiledGoal;
@@ -517,6 +522,7 @@ export type ControlGraphNode =
   | ControlGraphOptimizationNode;
 
 export interface ControlGraph {
+  readonly workflowPackages?: readonly WorkflowPackageRequirement[];
   readonly nodes: readonly ControlGraphNode[];
 }
 
@@ -964,6 +970,12 @@ export interface ToolPackageRequirement {
   }[];
 }
 
+export interface WorkflowPackageRequirement {
+  readonly name: string;
+  readonly version: string;
+  readonly digest: string;
+}
+
 export interface CommandApprovalRequestedEvent extends RunEventBase {
   readonly type: "command_approval_requested";
   readonly nodeId: string;
@@ -1376,6 +1388,7 @@ export interface RunState {
       }
     >
   >;
+  readonly workflowPackageRequirements: readonly WorkflowPackageRequirement[];
   readonly executionCwd: string | null;
   readonly executionWorkspace: ExecutionWorkspaceProvenance | null;
   readonly approvalRequirements: Readonly<
@@ -2313,6 +2326,18 @@ const controlGraphNodeSchema = z.discriminatedUnion("type", [
 
 const controlGraphSchema = z
   .object({
+    workflowPackages: z
+      .array(
+        z
+          .object({
+            name: workflowPackageNameSchema,
+            version: workflowPackageVersionSchema,
+            digest: sha256Schema,
+          })
+          .strict(),
+      )
+      .max(MAX_AGENT_SKILL_PACKAGES)
+      .optional(),
     nodes: z
       .array(controlGraphNodeSchema)
       .min(1)
@@ -2468,6 +2493,18 @@ export const runEventSchema = z.discriminatedUnion("type", [
             .strict(),
         )
         .max(MAX_COMPILED_WORKFLOW_NODES)
+        .optional(),
+      workflowPackageRequirements: z
+        .array(
+          z
+            .object({
+              name: workflowPackageNameSchema,
+              version: workflowPackageVersionSchema,
+              digest: sha256Schema,
+            })
+            .strict(),
+        )
+        .max(MAX_AGENT_SKILL_PACKAGES)
         .optional(),
       budget: runBudgetLimitsSchema.optional(),
       concurrency: z
@@ -3523,6 +3560,84 @@ export function appendRunEvent(
         }),
       ]),
     );
+    const workflowPackageRequirements = event.workflowPackageRequirements ?? [];
+    for (let index = 0; index < workflowPackageRequirements.length; index += 1) {
+      const current = workflowPackageRequirements[index];
+      const previous = workflowPackageRequirements[index - 1];
+      if (current === undefined || (previous !== undefined && previous.name >= current.name)) {
+        throw new RunReplayError(
+          eventIndex,
+          "workflow package requirements must be strictly sorted and unique by name",
+        );
+      }
+    }
+    if (workflowPackageRequirements.length > 0 && event.capabilitySnapshot === undefined) {
+      throw new RunReplayError(
+        eventIndex,
+        "workflow package requirements require a durable capability snapshot",
+      );
+    }
+    if (
+      JSON.stringify(controlGraph?.workflowPackages ?? []) !==
+      JSON.stringify(workflowPackageRequirements)
+    ) {
+      throw new RunReplayError(
+        eventIndex,
+        "workflow package requirements do not match the control graph",
+      );
+    }
+    for (const requirement of workflowPackageRequirements) {
+      const selected = event.capabilitySnapshot?.packages.find(
+        (item) =>
+          item.kind === "workflow-package" &&
+          item.name === requirement.name &&
+          item.version === requirement.version,
+      );
+      if (selected?.kind !== "workflow-package" || selected.digest !== requirement.digest) {
+        throw new RunReplayError(
+          eventIndex,
+          `workflow package requirement "${requirement.name}@${requirement.version}" does not match the durable snapshot`,
+        );
+      }
+    }
+    if (
+      event.executionWorkspace !== undefined &&
+      event.runId !==
+        calculateChildRunId(
+          event.executionWorkspace.parentRunId,
+          event.executionWorkspace.parentNodeId,
+          event.executionWorkspace.parentAttempt,
+        )
+    ) {
+      throw new RunReplayError(
+        eventIndex,
+        "child workspace provenance does not match the deterministic child run identity",
+      );
+    }
+    if (event.executionWorkspace === undefined) {
+      const selectedWorkflowPackages =
+        event.capabilitySnapshot?.packages.filter((item) => item.kind === "workflow-package") ?? [];
+      if (
+        selectedWorkflowPackages.length !== workflowPackageRequirements.length ||
+        selectedWorkflowPackages.some(
+          (selected) =>
+            !workflowPackageRequirements.some(
+              (requirement) =>
+                requirement.name === selected.name &&
+                requirement.version === selected.version &&
+                requirement.digest === selected.digest,
+            ),
+        )
+      ) {
+        throw new RunReplayError(
+          eventIndex,
+          "root capability snapshot contains an undeclared workflow package",
+        );
+      }
+    }
+    const durableWorkflowPackageRequirements = Object.freeze(
+      workflowPackageRequirements.map((requirement) => Object.freeze({ ...requirement })),
+    );
     const concurrency = Object.freeze({ maxNodes: event.concurrency?.maxNodes ?? 1 });
     if (concurrency.maxNodes > 1 && controlGraph === null) {
       throw new RunReplayError(
@@ -3543,6 +3658,7 @@ export function appendRunEvent(
       capabilityRequirements: Object.freeze(capabilityRequirementsByNode),
       verifierPackageRequirements: Object.freeze(verifierPackageRequirementsByNode),
       toolPackageRequirements: Object.freeze(toolPackageRequirementsByNode),
+      workflowPackageRequirements: durableWorkflowPackageRequirements,
       executionCwd: event.executionCwd ?? null,
       executionWorkspace:
         event.executionWorkspace === undefined
@@ -5834,6 +5950,7 @@ export function appendRunEvent(
     capabilityRequirements: currentState.capabilityRequirements,
     verifierPackageRequirements: currentState.verifierPackageRequirements,
     toolPackageRequirements: currentState.toolPackageRequirements,
+    workflowPackageRequirements: currentState.workflowPackageRequirements,
     executionCwd: currentState.executionCwd,
     executionWorkspace: currentState.executionWorkspace,
     approvalRequirements: currentState.approvalRequirements,

@@ -96,6 +96,21 @@ describe("supervisor durable records", () => {
       }),
     ).toThrow();
     expect(calculateJobDigest({ ...job, capabilitySnapshot: undefined })).not.toBe(job.digest);
+
+    const resumeJob = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "run-with-capabilities",
+      mode: "resume",
+      sourceName: "workflow:release-check@1.0.0",
+      workflowSource: "kind: Workflow\n",
+      cwd: "/workspace",
+      token: "d".repeat(64),
+      createdAt: "2026-08-08T12:01:00.000Z",
+      capabilitySnapshot,
+    });
+    expect(parseJobRecord(structuredClone(resumeJob))).toEqual(resumeJob);
+    expect(calculateJobDigest(resumeJob)).toBe(resumeJob.digest);
   });
 
   it("binds an active run claim to one job and worker", () => {

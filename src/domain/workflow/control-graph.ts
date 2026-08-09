@@ -8,6 +8,7 @@ import type {
   CompiledToolPackageReference,
   CompiledVerifierConfig,
   CompiledWorkflow,
+  CompiledWorkflowPackageReference,
   ConditionSourceField,
 } from "./types.js";
 
@@ -117,12 +118,14 @@ type ProjectedControlGraphNode =
     });
 
 export interface ProjectedControlGraph {
+  readonly workflowPackages?: readonly CompiledWorkflowPackageReference[];
   readonly nodes: readonly ProjectedControlGraphNode[];
 }
 
 export function workflowRequiresControlGraph(workflow: CompiledWorkflow): boolean {
   return (
     (workflow.concurrency?.maxNodes ?? 1) > 1 ||
+    collectWorkflowPackages(workflow).length > 0 ||
     workflow.nodes.some(
       (node) =>
         (node.type === "agent" && node.agent.toolPackages.length > 0) ||
@@ -232,7 +235,33 @@ export function projectCompiledControlGraph(workflow: CompiledWorkflow): Project
       ...(node.when === undefined ? {} : { when: node.when }),
     };
   });
-  return Object.freeze({ nodes: Object.freeze(nodes) });
+  const workflowPackages = collectWorkflowPackages(workflow);
+  return Object.freeze({
+    ...(workflowPackages.length === 0 ? {} : { workflowPackages }),
+    nodes: Object.freeze(nodes),
+  });
+}
+
+function collectWorkflowPackages(
+  workflow: CompiledWorkflow,
+): readonly CompiledWorkflowPackageReference[] {
+  const packages = new Map<string, CompiledWorkflowPackageReference>();
+  const visit = (current: CompiledWorkflow): void => {
+    if (current.sourcePackage !== undefined) {
+      packages.set(current.sourcePackage.name, current.sourcePackage);
+    }
+    for (const node of current.nodes) {
+      if (node.type === "child") {
+        visit(node.child.workflow);
+      }
+    }
+  };
+  visit(workflow);
+  return Object.freeze(
+    [...packages.values()].sort((left, right) =>
+      left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
+    ),
+  );
 }
 
 function projectChild(node: CompiledChildNode) {

@@ -16,8 +16,8 @@ import {
   resumeWorkflow,
   runWorkflow,
 } from "../application/run-workflow.js";
+import { compileWorkflowFromSnapshot } from "../application/workflow-package-admission.js";
 import { type RunState, reduceRunEvents } from "../domain/run/events.js";
-import { compileWorkflowText } from "../domain/workflow/compiler.js";
 import { LocalAgentCommandApprovalChannel } from "../infrastructure/fs/local-agent-command-approval-channel.js";
 import type { LocalSupervisorStore } from "../infrastructure/fs/local-supervisor-store.js";
 import { createProductionWorkspaceIsolator } from "../infrastructure/runtime/production-workspace-isolator.js";
@@ -63,7 +63,11 @@ export async function executeWorkerJob(
   options: ExecuteWorkerJobOptions,
 ): Promise<number> {
   const job = await options.store.readJob(jobId);
-  const workflow = compileWorkflowText(job.workflowSource, job.sourceName);
+  const workflow = compileWorkflowFromSnapshot({
+    source: job.workflowSource,
+    sourceName: job.sourceName,
+    ...(job.capabilitySnapshot === undefined ? {} : { capabilitySnapshot: job.capabilitySnapshot }),
+  });
   const pid = options.pid ?? process.pid;
   const now = options.now ?? (() => new Date());
   const startedAt = now().toISOString();
@@ -230,7 +234,13 @@ export async function executeWorkerJob(
                 ? {}
                 : { capabilitySnapshot: job.capabilitySnapshot }),
             })
-          : resumeWorkflow(workflow, { ...runOptions, runId: job.runId })
+          : resumeWorkflow(workflow, {
+              ...runOptions,
+              runId: job.runId,
+              ...(job.capabilitySnapshot === undefined
+                ? {}
+                : { capabilitySnapshot: job.capabilitySnapshot }),
+            })
       ).then(
         (state) => ({ state }),
         async (error: unknown): Promise<WorkerCompletion> => {

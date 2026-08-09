@@ -17,7 +17,7 @@ flow inspect <run-id> [--runs-dir <path>]
 Resume with the exact workflow definition that started the run:
 
 ```sh
-flow resume <workflow.yaml> --run-id <run-id> [--runs-dir <path>] [--cwd <path>]
+flow resume <workflow.yaml|workflow:name@version> --run-id <run-id> [--runs-dir <path>] [--cwd <path>]
 ```
 
 Flow compiles the workflow before claiming the run. It then acquires exclusive local ownership,
@@ -29,7 +29,8 @@ Pending nodes retain their normal dependency order and use the lesser of their d
 and remaining active-execution budget. The command prints the same JSON `RunState` shape as
 `flow run` when recovery can continue.
 
-A run that selects Agent Skills, versioned verifiers, or versioned command tools persists one
+A run that selects Agent Skills, versioned verifiers, versioned command tools, or versioned
+workflows persists one
 durable capability snapshot in
 `run_started`. For a verifier package, replay reparses the captured manifest and reconciles its
 name, exact version, driver kind, definition, manifest hash, package digest, compiled control-graph
@@ -41,6 +42,12 @@ or contacts the recorded source URL. The lock and blob are admission inputs only
 the recovery authority.
 The same rule applies inside a child ledger, which may carry the parent snapshot but can bind only
 its own compiled selections.
+
+For a workflow package, resume accepts `workflow:<name>@<exact-version>` and reconstructs the root
+and every transitive packaged child from the durable snapshot before claiming the run. It verifies
+manifest/source hashes, package digest, compiled source-package identity, run-start requirements,
+and control graph. It never reads `.flow/workflows` or substitutes the live catalog; a changed,
+removed, missing, or extra package fails with `workflow_mismatch` before an executor starts.
 
 For a command tool package, replay reparses the durable command tool package snapshot and
 reconciles its name, exact version, definition, manifest hash, package digest, compiled node
@@ -78,8 +85,8 @@ and appends only the missing parent outcome.
 To submit either operation to the local supervisor, add `--detach`:
 
 ```sh
-flow run <workflow.yaml> --detach --run-id <run-id> [--command-id <uuid>]
-flow resume <workflow.yaml> --detach --run-id <run-id> [--command-id <uuid>]
+flow run <workflow.yaml|workflow:name@version> --detach --run-id <run-id> [--command-id <uuid>]
+flow resume <workflow.yaml|workflow:name@version> --detach --run-id <run-id> [--command-id <uuid>]
 flow supervisor status
 flow events <run-id> --after 0 --follow
 ```
@@ -149,7 +156,7 @@ with `uncertain_operation`. A sidecar without an owner-appended decision never g
 | An unconfigured `node_started` has no matching outcome | Preserve any reconciliation prefix, refuse with `uncertain_operation`, and append no retry disposition or `run_resumed` |
 | Run is `succeeded`, `failed`, `cancelled`, or `resource_exhausted` | Refuse with `terminal_run` |
 | Workflow identity, version, digest, budget, node set, persisted control graph, or committed transition order differs | Refuse with `workflow_mismatch` |
-| Durable capability snapshot; skill, verifier, or command-tool requirement; exact version/kind; or package-use evidence differs | Refuse with `workflow_mismatch`; do not read or substitute the live package catalog |
+| Durable capability snapshot; skill, verifier, command-tool, or workflow-package requirement; exact version/kind; or package-use evidence differs | Refuse with `workflow_mismatch`; do not read or substitute the live package catalog |
 | A new run is resumed with a different normalized execution directory | Refuse with `execution_context_mismatch` |
 | No child event is durable, but a stale deterministic child workspace exists | Discard the uncommitted workspace, recreate it from the parent, and start the child once |
 | A child ledger is nonterminal and its exact manifest, snapshot digest, or workspace is missing or divergent | Refuse with `child_recovery_ineligible`; do not create a replacement child or repeat uncertain work |

@@ -1,0 +1,15 @@
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: reusable-release-check }
+budget:
+  maxNodeStarts: 4
+  maxModelTokens: 10
+  maxCostUsd: 1
+  maxExecutionMs: 30000
+  maxArtifactBytes: 4096
+nodes:
+  - id: release-check
+    type: child
+    child:
+      package: { name: release-check, version: 1.0.0 }
+      resultNodeId: publish

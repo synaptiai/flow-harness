@@ -6,9 +6,11 @@ import type {
 import { type CapabilitySnapshot, validateCapabilitySnapshot } from "./agent-skills.js";
 import type { ToolPackageSnapshot } from "./tool-packages.js";
 import type { VerifierPackageSnapshot, VerifierPackageUseEvidence } from "./verifier-packages.js";
+import type { WorkflowPackageSnapshot } from "./workflow-packages.js";
 
 export type WorkflowCapabilityErrorCode =
   | "conflicting_package"
+  | "digest_mismatch"
   | "invalid_snapshot"
   | "missing_package"
   | "missing_skill"
@@ -48,6 +50,12 @@ export interface WorkflowToolPackageReference {
   readonly version: string;
 }
 
+export interface WorkflowPackageReference {
+  readonly name: string;
+  readonly version: string;
+  readonly digest: string;
+}
+
 type InlineVerifierConfig = Extract<
   CompiledVerifierNode["verifier"],
   { readonly kind: "command" | "model" }
@@ -82,6 +90,16 @@ export function collectWorkflowToolPackageReferences(
   );
 }
 
+export function collectWorkflowPackageReferences(
+  workflow: CompiledWorkflow,
+): readonly WorkflowPackageReference[] {
+  const references = new Map<string, WorkflowPackageReference>();
+  collectWorkflowPackages(workflow, references);
+  return Object.freeze(
+    [...references.values()].sort((left, right) => compareStrings(left.name, right.name)),
+  );
+}
+
 export function bindWorkflowCapabilities(
   workflow: CompiledWorkflow,
   snapshot?: CapabilitySnapshot,
@@ -90,8 +108,15 @@ export function bindWorkflowCapabilities(
   const requiredSkills = collectWorkflowAgentSkillNames(workflow);
   const requiredVerifiers = collectWorkflowVerifierPackageReferences(workflow);
   const requiredTools = collectWorkflowToolPackageReferences(workflow);
+  const requiredWorkflows = collectWorkflowPackageReferences(workflow);
   const boundSnapshot = validateWorkflowCapabilitySnapshot(snapshot);
-  if (requiredSkills.length + requiredVerifiers.length + requiredTools.length === 0) {
+  if (
+    requiredSkills.length +
+      requiredVerifiers.length +
+      requiredTools.length +
+      requiredWorkflows.length ===
+    0
+  ) {
     if (boundSnapshot !== undefined && options.allowUnexpected !== true) {
       const unexpectedSkill = boundSnapshot.packages.find((item) => item.kind === "agent-skill");
       if (unexpectedSkill !== undefined) {
@@ -118,6 +143,15 @@ export function bindWorkflowCapabilities(
           `capability snapshot contains tool package "${unexpectedTool.name}" version "${unexpectedTool.version}" that workflow "${workflow.id}" does not select`,
         );
       }
+      const unexpectedWorkflow = boundSnapshot.packages.find(
+        (item): item is WorkflowPackageSnapshot => item.kind === "workflow-package",
+      );
+      if (unexpectedWorkflow !== undefined) {
+        throw new WorkflowCapabilityError(
+          "unexpected_package",
+          `capability snapshot contains workflow package "${unexpectedWorkflow.name}" version "${unexpectedWorkflow.version}" that workflow "${workflow.id}" does not select`,
+        );
+      }
       throw new WorkflowCapabilityError(
         "invalid_snapshot",
         "capability snapshot contains no recognized package",
@@ -128,7 +162,7 @@ export function bindWorkflowCapabilities(
   if (boundSnapshot === undefined) {
     throw new WorkflowCapabilityError(
       "missing_snapshot",
-      `workflow "${workflow.id}" selects ${capabilitySelectionLabel(requiredSkills, requiredVerifiers, requiredTools)} but has no immutable capability snapshot`,
+      `workflow "${workflow.id}" selects ${capabilitySelectionLabel(requiredSkills, requiredVerifiers, requiredTools, requiredWorkflows)} but has no immutable capability snapshot`,
     );
   }
   const availableSkills = boundSnapshot.packages.filter((item) => item.kind === "agent-skill");
@@ -193,6 +227,35 @@ export function bindWorkflowCapabilities(
       );
     }
   }
+  const availableWorkflows = boundSnapshot.packages.filter(
+    (item): item is WorkflowPackageSnapshot => item.kind === "workflow-package",
+  );
+  for (const required of requiredWorkflows) {
+    const selected = availableWorkflows.find(
+      (item) => item.name === required.name && item.version === required.version,
+    );
+    if (selected === undefined) {
+      const otherVersions = availableWorkflows
+        .filter((item) => item.name === required.name)
+        .map((item) => item.version);
+      if (otherVersions.length > 0) {
+        throw new WorkflowCapabilityError(
+          "version_mismatch",
+          `workflow "${workflow.id}" selects workflow package "${required.name}" version "${required.version}" but the snapshot contains ${formatVersions(otherVersions)}`,
+        );
+      }
+      throw new WorkflowCapabilityError(
+        "missing_package",
+        `workflow "${workflow.id}" selects workflow package "${required.name}" but the snapshot does not contain it`,
+      );
+    }
+    if (selected.digest !== required.digest) {
+      throw new WorkflowCapabilityError(
+        "digest_mismatch",
+        `workflow "${workflow.id}" selects workflow package "${required.name}@${required.version}" digest "${required.digest}" but the snapshot contains "${selected.digest}"`,
+      );
+    }
+  }
   assertAgentToolNames(workflow, availableTools);
   const unexpected = availableSkills.find((skill) => !requiredSkills.includes(skill.name));
   if (unexpected !== undefined && options.allowUnexpected !== true) {
@@ -223,6 +286,21 @@ export function bindWorkflowCapabilities(
     throw new WorkflowCapabilityError(
       "unexpected_package",
       `capability snapshot contains tool package "${unexpectedTool.name}" version "${unexpectedTool.version}" that workflow "${workflow.id}" does not select`,
+    );
+  }
+  const unexpectedWorkflow = availableWorkflows.find(
+    (item) =>
+      !requiredWorkflows.some(
+        (required) =>
+          required.name === item.name &&
+          required.version === item.version &&
+          required.digest === item.digest,
+      ),
+  );
+  if (unexpectedWorkflow !== undefined && options.allowUnexpected !== true) {
+    throw new WorkflowCapabilityError(
+      "unexpected_package",
+      `capability snapshot contains workflow package "${unexpectedWorkflow.name}" version "${unexpectedWorkflow.version}" that workflow "${workflow.id}" does not select`,
     );
   }
   return boundSnapshot;
@@ -414,6 +492,31 @@ function collectToolPackages(
   }
 }
 
+function collectWorkflowPackages(
+  workflow: CompiledWorkflow,
+  references: Map<string, WorkflowPackageReference>,
+): void {
+  if (workflow.sourcePackage !== undefined) {
+    const existing = references.get(workflow.sourcePackage.name);
+    if (
+      existing !== undefined &&
+      (existing.version !== workflow.sourcePackage.version ||
+        existing.digest !== workflow.sourcePackage.digest)
+    ) {
+      throw new WorkflowCapabilityError(
+        "conflicting_package",
+        `workflow "${workflow.id}" selects incompatible identities for workflow package "${workflow.sourcePackage.name}"`,
+      );
+    }
+    references.set(workflow.sourcePackage.name, workflow.sourcePackage);
+  }
+  for (const node of workflow.nodes) {
+    if (node.type === "child") {
+      collectWorkflowPackages(node.child.workflow, references);
+    }
+  }
+}
+
 function assertAgentToolNames(
   workflow: CompiledWorkflow,
   available: readonly ToolPackageSnapshot[],
@@ -482,11 +585,13 @@ function capabilitySelectionLabel(
   skills: readonly string[],
   verifiers: readonly WorkflowVerifierPackageReference[],
   tools: readonly WorkflowToolPackageReference[],
+  workflows: readonly WorkflowPackageReference[],
 ): string {
   const selected = [
     ...(skills.length > 0 ? ["Agent Skills"] : []),
     ...(verifiers.length > 0 ? ["verifier packages"] : []),
     ...(tools.length > 0 ? ["tool packages"] : []),
+    ...(workflows.length > 0 ? ["workflow packages"] : []),
   ];
   return selected.length === 1
     ? (selected[0] ?? "capabilities")

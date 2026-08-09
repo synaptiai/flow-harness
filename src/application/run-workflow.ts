@@ -22,6 +22,7 @@ import {
 import type { VerifierPackageUseEvidence } from "../domain/capability/verifier-packages.js";
 import {
   bindWorkflowCapabilities,
+  collectWorkflowPackageReferences,
   resolveVerifierPackageNode,
 } from "../domain/capability/workflow-capabilities.js";
 import type { PolicyDecision } from "../domain/policy/types.js";
@@ -68,6 +69,7 @@ import {
   reduceRunEvents,
   type ToolPackageRequirement,
   type VerifierPackageRequirement,
+  type WorkflowPackageRequirement,
 } from "../domain/run/events.js";
 import {
   projectCompiledControlGraph,
@@ -150,6 +152,7 @@ export async function runWorkflow(
     const capabilityRequirements = agentCapabilityRequirements(workflow);
     const verifierPackageRequirements = workflowVerifierPackageRequirements(workflow);
     const toolPackageRequirements = workflowToolPackageRequirements(workflow);
+    const workflowPackageRequirements = collectWorkflowPackageReferences(workflow);
     const recoveryRequirements = agentRecoveryRequirements(workflow);
     const controlGraph = workflowControlGraph(workflow);
     const started: RunStartedEvent = {
@@ -172,6 +175,7 @@ export async function runWorkflow(
       ...(capabilityRequirements.length === 0 ? {} : { capabilityRequirements }),
       ...(verifierPackageRequirements.length === 0 ? {} : { verifierPackageRequirements }),
       ...(toolPackageRequirements.length === 0 ? {} : { toolPackageRequirements }),
+      ...(workflowPackageRequirements.length === 0 ? {} : { workflowPackageRequirements }),
       ...(recoveryRequirements.length === 0 ? {} : { recoveryRequirements }),
       ...(controlGraph === undefined ? {} : { controlGraph }),
       ...(workflow.goal === undefined ? {} : { goal: workflow.goal }),
@@ -1587,6 +1591,19 @@ function validateRecoveryCompatibility(
     );
   }
 
+  const expectedWorkflowPackageRequirements = collectWorkflowPackageReferences(workflow);
+  if (
+    !sameWorkflowPackageRequirements(
+      state.workflowPackageRequirements,
+      expectedWorkflowPackageRequirements,
+    )
+  ) {
+    throw new RunRecoveryError(
+      "workflow_mismatch",
+      `run "${runId}" workflow package requirements do not match the compiled workflow`,
+    );
+  }
+
   const expectedRecoveryRequirements = agentRecoveryRequirements(workflow);
   const recoveredRecoveryRequirements = Object.entries(state.recoveryRequirements).map(
     ([nodeId, requirement]) => ({ nodeId, ...requirement }),
@@ -2242,6 +2259,21 @@ function sameToolPackageRequirements(
             item.name === right[index]?.packages[packageIndex]?.name &&
             item.version === right[index]?.packages[packageIndex]?.version,
         ),
+    )
+  );
+}
+
+function sameWorkflowPackageRequirements(
+  left: readonly WorkflowPackageRequirement[],
+  right: readonly WorkflowPackageRequirement[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every(
+      (requirement, index) =>
+        requirement.name === right[index]?.name &&
+        requirement.version === right[index]?.version &&
+        requirement.digest === right[index]?.digest,
     )
   );
 }

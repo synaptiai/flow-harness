@@ -1,0 +1,31 @@
+apiVersion: flow.synapti.ai/v1alpha1
+kind: WorkflowPackage
+metadata:
+  name: release-check
+  version: 1.0.0
+  description: Run a bounded credential-free release check.
+  license: Apache-2.0
+  compatibility: Flow v1alpha1 workflow compiler
+spec:
+  workflow: |-
+    apiVersion: flow.synapti.ai/v1alpha1
+    kind: Workflow
+    metadata: { id: release-check }
+    budget:
+      maxNodeStarts: 2
+      maxModelTokens: 1
+      maxCostUsd: 1
+      maxExecutionMs: 10000
+      maxArtifactBytes: 1024
+    nodes:
+      - id: produce
+        type: command
+        command:
+          executable: /usr/bin/printf
+          args: ["true"]
+      - id: publish
+        type: result
+        dependsOn: [produce]
+        result:
+          source: { nodeId: produce, field: command.stdout }
+          schema: { type: boolean }

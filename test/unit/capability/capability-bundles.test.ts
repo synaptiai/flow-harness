@@ -68,6 +68,26 @@ describe("capability bundles", () => {
     ]);
   });
 
+  it("round-trips an inert workflow package through canonical bundle bytes", () => {
+    const workflow = Buffer.from(workflowManifest());
+    const created = createCapabilityBundleSource({
+      name: "workflow-suite",
+      version: "1.0.0",
+      description: "Reusable Flow workflows.",
+      packages: [{ kind: "workflow-package", manifest: workflow }],
+    });
+
+    expect(created.bundle.packages).toEqual([
+      {
+        kind: "workflow-package",
+        name: "release-check",
+        version: "1.2.3",
+        manifestBase64: workflow.toString("base64"),
+      },
+    ]);
+    expect(parseCapabilityBundle(created.content)).toEqual(created.bundle);
+  });
+
   it("derives Agent Skill metadata and requested tools from canonical package files", () => {
     const skill = `---
 name: review
@@ -378,5 +398,32 @@ spec:
     args: [--no-optional-locks, -c, core.fsmonitor=false, -c, core.untrackedCache=false, status, --short, --untracked-files=normal, --ignore-submodules=all]
     timeoutMs: 10000
   permissions: [process.execute]
+`;
+}
+
+function workflowManifest(): string {
+  return `apiVersion: flow.synapti.ai/v1alpha1
+kind: WorkflowPackage
+metadata:
+  name: release-check
+  version: 1.2.3
+  description: Run a bounded reusable flow.
+spec:
+  workflow: |-
+    apiVersion: flow.synapti.ai/v1alpha1
+    kind: Workflow
+    metadata: { id: release-check }
+    budget:
+      maxNodeStarts: 1
+      maxModelTokens: 0
+      maxCostUsdMicros: 0
+      maxExecutionMs: 1000
+      maxArtifactBytes: 1024
+    nodes:
+      - id: done
+        type: command
+        command:
+          executable: /usr/bin/true
+          args: []
 `;
 }

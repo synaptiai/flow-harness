@@ -5,6 +5,7 @@ import { parse } from "yaml";
 
 import { parseToolPackageManifest } from "../../src/domain/capability/tool-packages.js";
 import { parseVerifierPackageManifest } from "../../src/domain/capability/verifier-packages.js";
+import { parseWorkflowPackageManifest } from "../../src/domain/capability/workflow-packages.js";
 import { compileWorkflowText } from "../../src/domain/workflow/compiler.js";
 
 const rootUrl = new URL("../../", import.meta.url);
@@ -644,7 +645,7 @@ describe("public repository contracts", () => {
     expect(sourcing).toContain("https://theupdateframework.github.io/specification/");
     expect(roadmap).toMatch(/Deterministic inert bundles.*implemented/is);
     expect(security).toMatch(
-      /Remote capability bundles contain only.*Agent Skill.*verifier.*command\s+tool ABIs/is,
+      /Remote capability bundles contain only.*Agent Skill.*verifier.*command tool.*workflow source ABIs/is,
     );
     expect(testing).toContain("packages pack examples/capability-bundle-source");
     expect(contributing).toMatch(/capability-bundle format.*adversarial regression/is);
@@ -668,6 +669,72 @@ describe("public repository contracts", () => {
     ).toMatchObject({
       metadata: { name: "release-tests", version: "1.0.0" },
       spec: { kind: "command", command: { executable: "node", args: ["--version"] } },
+    });
+  });
+
+  it("documents versioned workflow packages with valid root and child examples", async () => {
+    const [
+      readme,
+      architecture,
+      workflowSpec,
+      recovery,
+      sourcing,
+      roadmap,
+      security,
+      testing,
+      manifestSource,
+      parentSource,
+    ] = await Promise.all([
+      readText("README.md"),
+      readText("docs/architecture.md"),
+      readText("docs/workflow-spec.md"),
+      readText("docs/recovery.md"),
+      readText("docs/capability-sourcing.md"),
+      readText("docs/roadmap.md"),
+      readText("SECURITY.md"),
+      readText("docs/testing-and-evaluation.md"),
+      readText("examples/workflow-packages/release-check/WORKFLOW.yaml"),
+      readText("examples/versioned-workflow-package.workflow.yaml"),
+    ]);
+
+    expect(readme).toMatch(/Use a versioned workflow package/i);
+    expect(readme).toContain("workflow:release-check@1.0.0");
+    expect(architecture).toMatch(/closed\s+immutable snapshot.*standard workflow compiler/is);
+    expect(workflowSpec).toContain("## Versioned workflow packages");
+    expect(recovery).toMatch(/workflow package.*durable snapshot.*live catalog/is);
+    expect(sourcing).toMatch(/workflow packages.*inert.*source/is);
+    expect(roadmap).toMatch(/Workflow.*contributions.*Implemented/is);
+    expect(security).toMatch(/WorkflowPackage.*cannot.*hooks.*policy/is);
+    expect(testing).toContain("examples/versioned-workflow-package.workflow.yaml");
+
+    const manifest = parseWorkflowPackageManifest(
+      Buffer.from(manifestSource),
+      "examples/workflow-packages/release-check/WORKFLOW.yaml",
+    );
+    expect(manifest.metadata).toMatchObject({ name: "release-check", version: "1.0.0" });
+    const compiled = compileWorkflowText(
+      parentSource,
+      "examples/versioned-workflow-package.workflow.yaml",
+      {
+        packageResolver: {
+          resolve(reference) {
+            expect(reference).toEqual({ name: "release-check", version: "1.0.0" });
+            return {
+              ...reference,
+              digest: "a".repeat(64),
+              source: manifest.spec.workflow,
+            };
+          },
+        },
+      },
+    );
+    expect(compiled.nodes[0]).toMatchObject({
+      type: "child",
+      child: {
+        workflow: {
+          sourcePackage: { name: "release-check", version: "1.0.0" },
+        },
+      },
     });
   });
 

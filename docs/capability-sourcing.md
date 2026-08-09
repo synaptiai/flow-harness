@@ -200,7 +200,7 @@ and digest; replay cross-checks that identity with the compiled control graph an
 requirement. Listing, inspection, and validation invoke no verifier, and inspection omits a model
 rubric.
 
-Executable extensions and workflow/policy/UI package manifests remain later Gate 6 work. Evaluator
+Executable extensions and policy/UI package manifests remain later Gate 6 work. Evaluator
 manifests are implemented only for the current command/model verifier
 drivers; arbitrary evaluator code and reward environments remain out of scope.
 
@@ -236,12 +236,32 @@ Python, Wasm, native payloads, hooks, providers, result middleware, graph nodes,
 network grants, environment variables, or policy. Executable drivers remain future work behind a
 separate containment contract.
 
+## Workflow packages
+
+**Implemented for strict local and digest-pinned installed inert workflow source.** Flow discovers
+one `WORKFLOW.yaml` below each `.flow/workflows/<path>/<name>` package, validates exact SemVer identity and
+bounded ordinary Flow workflow source, and executes no package code during discovery, inspection,
+packing, or compilation. A root uses `workflow:<name>@<exact-version>`; a child uses an exact
+`child.package` reference instead of embedding its source.
+
+Admission discovers a bounded transitive package set, snapshots exact manifest bytes, provenance,
+workflow hash, and package digest, then recompiles through the standard workflow compiler with a
+closed immutable snapshot resolver. That second compile is authoritative. It preserves existing
+graph, child isolation, budget, typed-result, approval, evidence, policy, sandbox, and recovery
+semantics rather than creating a package scheduler. `run_started`, detached jobs, child ledgers,
+and resume carry exact package requirements and reject live-catalog substitution.
+
+Workflow packages are inert source capabilities, not Pi/OMP-style executable extensions. They
+cannot register hooks, tools, drivers, providers, credentials, policies, sandbox profiles, or
+dynamic graph factories. Exact source reuse is the initial ABI; parameters, version ranges,
+dependency solving, compatibility negotiation, and policy/UI packages remain separate designs.
+
 ## Digest-pinned bundle distribution
 
-**Implemented for the three existing inert package ABIs.** `flow packages pack` reads one strict
-`BUNDLE.json` plus optional `skills/`, `verifiers/`, and `tools/` source roots. It rejects unknown
-top-level entries, symlinks, special files, unsafe paths, source races, and extra verifier/tool
-payloads, then emits canonical strict JSON with bounded canonical base64 content. There is no tar,
+**Implemented for the four existing inert package ABIs.** `flow packages pack` reads one strict
+`BUNDLE.json` plus optional `skills/`, `verifiers/`, `tools/`, and `workflows/` source roots. It rejects unknown
+top-level entries, symlinks, special files, unsafe paths, source races, and extra verifier, tool, or
+workflow payloads, then emits canonical strict JSON with bounded canonical base64 content. There is no tar,
 zip, dependency graph, executable extension, hook, or install script. Rebuilding the same source
 produces the same bytes and SHA-256.
 

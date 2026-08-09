@@ -10,6 +10,7 @@ import {
   type CapabilitySnapshot,
   persistedCapabilitySnapshotSchema,
 } from "../domain/capability/agent-skills.js";
+import { parseWorkflowPackageLocator } from "../domain/capability/workflow-packages.js";
 
 const uuidSchema = z.uuid();
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
@@ -20,6 +21,11 @@ const absolutePathSchema = z
   .min(1)
   .max(4096)
   .refine((value) => isAbsolute(value), "must be an absolute path");
+const workflowSourceNameSchema = z
+  .string()
+  .min(1)
+  .max(4096)
+  .refine(isWorkflowSourceName, "must be an absolute path or exact workflow package locator");
 const timestampSchema = z.iso.datetime({ offset: true });
 const actorSchema = z
   .string()
@@ -158,7 +164,7 @@ const jobRecordShape = {
   workerId: uuidSchema,
   runId: runIdSchema,
   mode: z.enum(["run", "resume"]),
-  sourceName: absolutePathSchema,
+  sourceName: workflowSourceNameSchema,
   workflowSource: z.string().min(1).max(20_000_000),
   cwd: absolutePathSchema,
   capabilitySnapshot: persistedCapabilitySnapshotSchema.optional(),
@@ -172,19 +178,21 @@ const jobRecordSchema: z.ZodType<JobRecord> = z
     digest: sha256Schema,
   })
   .strict()
-  .superRefine((record, context) => {
-    if (record.mode === "resume" && record.capabilitySnapshot !== undefined) {
-      context.addIssue({
-        code: "custom",
-        path: ["capabilitySnapshot"],
-        message: "resume jobs must obtain capabilities from durable run history",
-      });
-    }
-  })
   .refine((record) => calculateJobDigest(record) === record.digest, {
     message: "job digest does not match its immutable snapshot",
     path: ["digest"],
   });
+
+function isWorkflowSourceName(value: string): boolean {
+  if (isAbsolute(value)) {
+    return true;
+  }
+  try {
+    return parseWorkflowPackageLocator(value) !== null;
+  } catch {
+    return false;
+  }
+}
 
 const activeRunClaimSchema = z
   .object({
@@ -360,7 +368,7 @@ const submissionCommandBaseShape = {
   policyDigest: sha256Schema,
   runId: runIdSchema,
   mode: z.enum(["run", "resume"]),
-  sourceName: absolutePathSchema,
+  sourceName: workflowSourceNameSchema,
   workflowSourceDigest: sha256Schema,
   capabilitySnapshotDigest: sha256Schema.optional(),
   cwd: absolutePathSchema,

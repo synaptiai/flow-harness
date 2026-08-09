@@ -21,6 +21,7 @@ import {
   parseAgentSkillManifest,
 } from "../../domain/capability/agent-skill-manifest.js";
 import { MAX_TOOL_PACKAGE_MANIFEST_BYTES } from "../../domain/capability/tool-packages.js";
+import { MAX_WORKFLOW_PACKAGE_MANIFEST_BYTES } from "../../domain/capability/workflow-packages.js";
 import {
   MAX_VERIFIER_PACKAGE_MANIFEST_BYTES,
   verifierPackageNameSchema,
@@ -94,7 +95,7 @@ export async function packCapabilityBundleDirectory(
   };
   const entries = await readDirectory(sourceRoot, budget);
   for (const entry of entries) {
-    if (![SOURCE_MANIFEST_NAME, "skills", "verifiers", "tools"].includes(entry.name)) {
+    if (![SOURCE_MANIFEST_NAME, "skills", "verifiers", "tools", "workflows"].includes(entry.name)) {
       throw unsafeError(`unsupported capability bundle source entry "${entry.name}"`);
     }
     if (entry.isSymbolicLink()) {
@@ -119,6 +120,17 @@ export async function packCapabilityBundleDirectory(
     "VERIFIER.yaml",
     "verifier-package",
     MAX_VERIFIER_PACKAGE_MANIFEST_BYTES,
+    packages,
+    budget,
+    hooks,
+  );
+  await collectManifestPackages(
+    sourceRoot,
+    entries,
+    "workflows",
+    "WORKFLOW.yaml",
+    "workflow-package",
+    MAX_WORKFLOW_PACKAGE_MANIFEST_BYTES,
     packages,
     budget,
     hooks,
@@ -283,9 +295,9 @@ async function collectSkillFiles(
 async function collectManifestPackages(
   sourceRoot: string,
   rootEntries: readonly Dirent[],
-  rootName: "verifiers" | "tools",
-  manifestName: "VERIFIER.yaml" | "TOOL.yaml",
-  kind: "verifier-package" | "tool-package",
+  rootName: "verifiers" | "tools" | "workflows",
+  manifestName: "VERIFIER.yaml" | "TOOL.yaml" | "WORKFLOW.yaml",
+  kind: "verifier-package" | "tool-package" | "workflow-package",
   maximumBytes: number,
   packages: CapabilityBundleSourcePackage[],
   budget: SourceTraversalBudget,

@@ -45,10 +45,17 @@ export interface CompiledWorkflow {
   readonly apiVersion: typeof FLOW_WORKFLOW_API_VERSION;
   readonly id: string;
   readonly description?: string;
+  readonly sourcePackage?: CompiledWorkflowPackageReference;
   readonly goal?: CompiledGoal;
   readonly budget?: CompiledRunBudget;
   readonly concurrency?: CompiledWorkflowConcurrency;
   readonly nodes: readonly CompiledNode[];
+}
+
+export interface CompiledWorkflowPackageReference {
+  readonly name: string;
+  readonly version: string;
+  readonly digest: string;
 }
 
 export interface CompiledNodeBase {

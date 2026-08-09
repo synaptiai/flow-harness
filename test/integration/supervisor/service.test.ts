@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { NodeExecutor } from "../../../src/application/ports.js";
 import { runWorkflow } from "../../../src/application/run-workflow.js";
+import { createCapabilitySnapshot } from "../../../src/domain/capability/agent-skills.js";
+import type { WorkflowPackageSnapshotInput } from "../../../src/domain/capability/workflow-packages.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { JsonlRunStore } from "../../../src/infrastructure/fs/jsonl-run-store.js";
 import { JsonlAdmissionStore } from "../../../src/infrastructure/fs/jsonl-admission-store.js";
@@ -52,6 +54,33 @@ afterEach(async () => {
 });
 
 describe("LocalSupervisorService", () => {
+  it("admits a packaged root from the submitted immutable snapshot", async () => {
+    const harness = await createHarness();
+    const source = workflowSource().trim();
+    const capabilitySnapshot = createCapabilitySnapshot(
+      [],
+      [],
+      [],
+      [workflowPackageInput("service-root", source)],
+    );
+    const command = {
+      ...submitCommand(randomUUID(), harness.directory, "packaged-service-run"),
+      sourceName: "workflow:service-root@1.0.0",
+      workflowSource: source,
+      capabilitySnapshot,
+    };
+
+    await expect(harness.service.submit(command)).resolves.toMatchObject({
+      type: "accepted",
+      runId: "packaged-service-run",
+    });
+    expect(harness.launcher.jobs).toHaveLength(1);
+    expect(harness.launcher.jobs[0]).toMatchObject({
+      sourceName: "workflow:service-root@1.0.0",
+      capabilitySnapshot: { digest: capabilitySnapshot.digest },
+    });
+  });
+
   it("validates before mutation and durably deduplicates exact submissions", async () => {
     const harness = await createHarness();
     const commandId = randomUUID();
@@ -1178,4 +1207,28 @@ nodes:
       args: [--version]
       timeoutMs: 10000
 `;
+}
+
+function workflowPackageInput(name: string, workflow: string): WorkflowPackageSnapshotInput {
+  const indented = workflow
+    .split("\n")
+    .map((line) => `    ${line}`)
+    .join("\n");
+  return {
+    kind: "workflow-package",
+    trust: "project-explicit",
+    provenance: `.flow/workflows/${name}`,
+    manifest: {
+      content: Buffer.from(`apiVersion: flow.synapti.ai/v1alpha1
+kind: WorkflowPackage
+metadata:
+  name: ${name}
+  version: 1.0.0
+  description: Detached service workflow.
+spec:
+  workflow: |-
+${indented}
+`),
+    },
+  };
 }

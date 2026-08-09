@@ -16,7 +16,12 @@ import {
   createCapabilitySnapshot,
 } from "../../../src/domain/capability/agent-skills.js";
 import type { VerifierPackageSnapshotInput } from "../../../src/domain/capability/verifier-packages.js";
-import type { AgentEvidence, CommandEvidence, RunEvent } from "../../../src/domain/run/events.js";
+import {
+  type AgentEvidence,
+  calculateChildRunId,
+  type CommandEvidence,
+  type RunEvent,
+} from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 
 describe("runWorkflow verifier packages", () => {
@@ -63,11 +68,12 @@ describe("runWorkflow verifier packages", () => {
       return commandSuccess(node.id, "v22.0.0");
     });
     const store = new MemoryStore();
+    const childRunId = calculateChildRunId("parent-run", "delegate", 1);
 
     const state = await runWorkflow(packagedCommandWorkflow(), {
       cwd: process.cwd(),
       protectedPaths: [],
-      runId: "multi-version-package-snapshot",
+      runId: childRunId,
       store,
       executor: new NodeExecutorRouter(command, fakeAgentExecutor()),
       capabilitySnapshot: snapshot,
