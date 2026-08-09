@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { agentSkillNameSchema, MAX_AGENT_SKILL_PACKAGES } from "../capability/agent-skills.js";
+import {
+  agentSkillNameSchema,
+  MAX_AGENT_SKILL_PACKAGES,
+} from "../capability/agent-skill-contract.js";
 import { toolPackageNameSchema, toolPackageVersionSchema } from "../capability/tool-packages.js";
 import {
   verifierPackageNameSchema,

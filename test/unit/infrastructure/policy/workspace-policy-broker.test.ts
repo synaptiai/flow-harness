@@ -167,6 +167,59 @@ describe("WorkspacePolicyBroker", () => {
     });
   });
 
+  it("denies reads and lists of Flow state and caller-protected state", async () => {
+    const root = await createTemporaryDirectory();
+    const activation = join(root, ".flow", "activations", "index.json");
+    const runStore = join(root, "private-runs");
+    const run = join(runStore, "run-1", "events.jsonl");
+    await mkdir(dirname(activation), { recursive: true });
+    await mkdir(dirname(run), { recursive: true });
+    await writeFile(activation, "private activation", "utf8");
+    await writeFile(run, "private run", "utf8");
+    const policy = new PolicyBroker(attribution, ["filesystem.read", "filesystem.list"]);
+    const workspace = await createWorkspacePolicyBroker(root, policy, [runStore]);
+    const effect = vi.fn(async () => undefined);
+
+    await expect(workspace.execute("filesystem.read", activation, effect)).rejects.toThrowError(
+      PolicyDeniedError,
+    );
+    await expect(workspace.execute("filesystem.list", runStore, effect)).rejects.toThrowError(
+      PolicyDeniedError,
+    );
+    expect(effect).not.toHaveBeenCalled();
+    expect(policy.snapshot()).toEqual([
+      expect.objectContaining({ action: "filesystem.read", reason: "target_protected" }),
+      expect.objectContaining({ action: "filesystem.list", reason: "target_protected" }),
+    ]);
+  });
+
+  it.each([".flow-workspaces", ".other-project.flow-workspaces"])(
+    "denies reads and writes in Flow workspace collection %s",
+    async (collectionName) => {
+      const root = await createTemporaryDirectory();
+      const target = join(root, "nested", collectionName, "child", "secret.txt");
+      await mkdir(dirname(target), { recursive: true });
+      await writeFile(target, "private child state", "utf8");
+      const policy = new PolicyBroker(attribution, ["filesystem.read", "filesystem.write"]);
+      const workspace = await createWorkspacePolicyBroker(root, policy);
+      const effect = vi.fn(async () => undefined);
+
+      await expect(workspace.execute("filesystem.read", target, effect)).rejects.toThrowError(
+        PolicyDeniedError,
+      );
+      await expect(
+        workspace.execute("filesystem.write", target, effect, {
+          operationDigest: "a".repeat(64),
+        }),
+      ).rejects.toThrowError(PolicyDeniedError);
+      expect(effect).not.toHaveBeenCalled();
+      expect(policy.snapshot()).toEqual([
+        expect.objectContaining({ outcome: "denied", reason: "target_protected" }),
+        expect.objectContaining({ outcome: "denied", reason: "target_protected" }),
+      ]);
+    },
+  );
+
   it.each([
     ".flow/state.json",
     ".git/config",

@@ -1,15 +1,24 @@
-import { once } from "node:events";
 import { spawn } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
-
-import { MAX_RUN_EVENT_BYTES, type RunEvent } from "../../../src/domain/run/events.js";
+import {
+  createPromptActivationSnapshot,
+  MAX_PROMPT_ACTIVATION_SOURCE_BYTES,
+} from "../../../src/domain/adaptation/prompt-activation.js";
+import {
+  calculateCapabilitySnapshotDigest,
+  MAX_CAPABILITY_SNAPSHOT_SERIALIZED_BYTES,
+  validateCapabilitySnapshot,
+} from "../../../src/domain/capability/agent-skills.js";
 import { PolicyBroker } from "../../../src/domain/policy/broker.js";
+import { MAX_RUN_EVENT_BYTES, type RunEvent } from "../../../src/domain/run/events.js";
 import { JsonlRunStore, RunStoreError } from "../../../src/infrastructure/fs/jsonl-run-store.js";
+import { promptActivationInput } from "../../fixtures/prompt-activation.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -22,6 +31,39 @@ afterEach(async () => {
 });
 
 describe("JsonlRunStore", () => {
+  it("reserves the documented envelope for a complete activation snapshot", () => {
+    expect(MAX_RUN_EVENT_BYTES).toBe(20 * 1024 * 1024);
+  });
+
+  it("persists a maximum-source activation inside the production event envelope", async () => {
+    const root = await createTemporaryDirectory();
+    const store = new JsonlRunStore(root);
+    const activation = createPromptActivationSnapshot(
+      promptActivationInput({ sourceBytes: MAX_PROMPT_ACTIVATION_SOURCE_BYTES }),
+    );
+    const packages: never[] = [];
+    const activations = [activation];
+    const capabilitySnapshot = validateCapabilitySnapshot({
+      version: 1,
+      packages,
+      activations,
+      digest: calculateCapabilitySnapshotDigest(packages, activations),
+    });
+    const event: RunEvent = {
+      ...runStarted(),
+      workflowId: activation.workflowId,
+      workflowDigest: activation.candidate.projectedWorkflow.workflowDigest,
+      capabilitySnapshot,
+    };
+    const capabilityBytes = Buffer.byteLength(JSON.stringify(capabilitySnapshot), "utf8");
+    const eventBytes = Buffer.byteLength(`${JSON.stringify(event)}\n`, "utf8");
+
+    expect(capabilityBytes).toBeLessThanOrEqual(MAX_CAPABILITY_SNAPSHOT_SERIALIZED_BYTES);
+    expect(eventBytes).toBeLessThanOrEqual(MAX_RUN_EVENT_BYTES);
+    await store.append(event);
+    await expect(store.read("run-1")).resolves.toEqual([event]);
+  });
+
   it("durably appends and reads ordered events", async () => {
     const root = await createTemporaryDirectory();
     const store = new JsonlRunStore(root);
@@ -428,7 +470,7 @@ async function writeOwner(root: string, pid: number): Promise<void> {
   );
 }
 
-function runStarted(): RunEvent {
+function runStarted(): Extract<RunEvent, { readonly type: "run_started" }> {
   return {
     ...base(1),
     type: "run_started",

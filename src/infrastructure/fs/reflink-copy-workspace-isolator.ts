@@ -93,6 +93,7 @@ export interface WorkspaceSnapshotRequest {
   readonly workspaceId: string;
   readonly sourceCwd: string;
   readonly excludedPaths?: readonly string[];
+  readonly legacySourceCwd?: string;
 }
 
 interface SnapshotLimits {
@@ -238,7 +239,9 @@ export class ReflinkCopyWorkspaceIsolator implements WorkspaceIsolator, Candidat
     if (
       !parsed.success ||
       parsed.data.workspaceId !== workspaceId ||
-      parsed.data.sourceCwd !== sourceCwd ||
+      (parsed.data.sourceCwd !== sourceCwd &&
+        parsed.data.sourceCwd !==
+          (request.legacySourceCwd === undefined ? undefined : resolve(request.legacySourceCwd))) ||
       !sameStrings(parsed.data.excludedPaths, excludedPaths)
     ) {
       throw new WorkspaceIsolationError(
@@ -260,6 +263,7 @@ export class ReflinkCopyWorkspaceIsolator implements WorkspaceIsolator, Candidat
     readonly sourceCwd: string;
     readonly expectedSnapshotDigest: string;
     readonly excludedPaths?: readonly string[];
+    readonly legacySourceCwd?: string;
   }): Promise<CandidateDelta> {
     const workspace = await this.reopen(request);
     if (workspace.snapshotDigest !== request.expectedSnapshotDigest) {
@@ -373,6 +377,9 @@ export class ReflinkCopyWorkspaceIsolator implements WorkspaceIsolator, Candidat
       workspaceId,
       sourceCwd,
       excludedPaths: request.excludedPaths ?? [],
+      ...(request.legacySourceCwd === undefined
+        ? {}
+        : { legacySourceCwd: request.legacySourceCwd }),
     });
     return await promoteCapturedCandidate(
       {
@@ -394,6 +401,9 @@ export class ReflinkCopyWorkspaceIsolator implements WorkspaceIsolator, Candidat
       workspaceId,
       sourceCwd,
       excludedPaths: request.excludedPaths ?? [],
+      ...(request.legacySourceCwd === undefined
+        ? {}
+        : { legacySourceCwd: request.legacySourceCwd }),
     });
     return await reconcileCapturedCandidatePromotion({
       identityDirectory: this.#identityDirectory(workspaceId),
@@ -496,7 +506,7 @@ async function copyDirectory(
   const directory = await opendir(sourceDirectory);
   const entries = [];
   for await (const entry of directory) {
-    if (entry.name !== ".flow") {
+    if (entry.name !== ".flow" && !isFlowWorkspaceCollectionName(entry.name)) {
       entries.push(entry.name);
     }
   }
@@ -581,6 +591,13 @@ async function copyDirectory(
     );
     state.digest.update(`file\0${relativePath}\0${mode}\0${before.size}\0${sourceHash}\0`);
   }
+}
+
+function isFlowWorkspaceCollectionName(name: string): boolean {
+  return (
+    name === ".flow-workspaces" ||
+    (name.startsWith(".") && name.endsWith(".flow-workspaces") && name.length > 17)
+  );
 }
 
 async function cloneOrCopyFile(source: string, target: string): Promise<void> {

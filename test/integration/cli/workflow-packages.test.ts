@@ -24,15 +24,14 @@ afterEach(async () => {
 });
 
 describe("workflow package CLI", () => {
-  it("advertises exact package locators for validate, run, and resume", async () => {
+  it("advertises file, exact package, and active locators", async () => {
     const output = captureIo();
+    const locator = "<workflow.yaml|workflow:name@version|activation:workflow-id>";
 
     expect(await main(["--help"], output.io)).toBe(0);
-    expect(output.stdout.join("\n")).toContain(
-      "flow validate <workflow.yaml|workflow:name@version>",
-    );
-    expect(output.stdout.join("\n")).toContain("flow run <workflow.yaml|workflow:name@version>");
-    expect(output.stdout.join("\n")).toContain("flow resume <workflow.yaml|workflow:name@version>");
+    expect(output.stdout.join("\n")).toContain(`flow validate ${locator}`);
+    expect(output.stdout.join("\n")).toContain(`flow run ${locator}`);
+    expect(output.stdout.join("\n")).toContain(`flow resume ${locator}`);
   });
 
   it("lists, inspects an exact version, and validates inert manifests without execution", async () => {

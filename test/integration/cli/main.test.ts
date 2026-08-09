@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -200,6 +200,54 @@ nodes:
     expect(JSON.parse(inspectCapture.stdout.join("\n"))).toEqual(
       JSON.parse(runCapture.stdout.join("\n")),
     );
+  });
+
+  it("protects project Flow state when execution uses a nested directory", async () => {
+    const project = await createTemporaryDirectory();
+    const canonicalProject = await realpath(project);
+    const workspace = join(project, "workspace");
+    const flowDirectory = join(project, ".flow");
+    await mkdir(workspace);
+    await mkdir(flowDirectory);
+    await writeFile(
+      join(flowDirectory, "config.yaml"),
+      "apiVersion: flow.synapti.ai/v1alpha1\nkind: FlowProjectConfig\n",
+      "utf8",
+    );
+    const workflowPath = join(workspace, "protected.workflow.yaml");
+    await writeFile(
+      workflowPath,
+      `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: protected-project-state }
+nodes:
+  - id: verify
+    type: command
+    command: { executable: ${JSON.stringify(process.execPath)}, args: [--version] }
+`,
+      "utf8",
+    );
+    let protectedPaths: readonly string[] = [];
+    const executor: NodeExecutor = {
+      async execute(node, context) {
+        protectedPaths = context.protectedPaths;
+        return { status: "succeeded", evidence: commandEvidence(node.id) };
+      },
+    };
+    const capture = createCapture();
+
+    const exitCode = await main(
+      ["run", workflowPath, "--run-id", "protected-state", "--cwd", workspace],
+      capture.io,
+      { cwd: workspace, executor },
+    );
+
+    expect(exitCode, [...capture.stderr, ...capture.stdout].join("\n")).toBe(0);
+    expect(protectedPaths).toEqual([
+      join(canonicalProject, ".flow", "runs"),
+      join(canonicalProject, ".flow"),
+    ]);
   });
 
   it("runs an isolated child through the attached production composition", async () => {

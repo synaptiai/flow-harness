@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_PROMPT_CANDIDATE_CHANGES,
   MAX_PROMPT_CANDIDATE_EVIDENCE,
+  MAX_PROMPT_CANDIDATE_PROJECTED_WORKFLOW_BYTES,
   PromptCandidateError,
   parsePromptCandidateText,
   projectPromptCandidate,
@@ -54,6 +55,50 @@ const baselineText = JSON.stringify({
 });
 
 describe("prompt candidates", () => {
+  it("uses the activation source limit for projected workflows", () => {
+    expect(MAX_PROMPT_CANDIDATE_PROJECTED_WORKFLOW_BYTES).toBe(8 * 1024 * 1024);
+    expect(
+      Buffer.byteLength(projectPromptCandidate(projectionContext()).workflow.source, "utf8"),
+    ).toBeLessThan(MAX_PROMPT_CANDIDATE_PROJECTED_WORKFLOW_BYTES);
+
+    const exact = structuredClone(projectionContext()) as MutableProjectionContext;
+    const nodes = exact.baseline.source.nodes as unknown as Array<Record<string, unknown>>;
+    let predecessor = "implement";
+    for (let index = 0; index < 31; index += 1) {
+      nodes.push(paddingAgentNode(index, predecessor, "x".repeat(262_144)));
+      predecessor = `padding-${index}`;
+    }
+    nodes.push(paddingAgentNode(31, predecessor, "x"));
+    const publish = nodes.find((node) => node.id === "publish");
+    if (publish === undefined) {
+      throw new Error("projected workflow boundary fixture has no publish node");
+    }
+    publish.dependsOn = ["implement", "padding-31"];
+    const baseBytes = Buffer.byteLength(projectPromptCandidate(exact).workflow.source, "utf8");
+    const remaining = MAX_PROMPT_CANDIDATE_PROJECTED_WORKFLOW_BYTES - baseBytes;
+    const finalNode = nodes.at(-1) as { agent?: { prompt?: string } } | undefined;
+    if (finalNode?.agent?.prompt === undefined) {
+      throw new Error("projected workflow boundary fixture has no final prompt");
+    }
+    finalNode.agent.prompt += "x".repeat(remaining);
+    expect(Buffer.byteLength(projectPromptCandidate(exact).workflow.source, "utf8")).toBe(
+      MAX_PROMPT_CANDIDATE_PROJECTED_WORKFLOW_BYTES,
+    );
+
+    const oversized = structuredClone(exact) as MutableProjectionContext;
+    const oversizedNodes = oversized.baseline.source.nodes as unknown as Array<{
+      agent?: { prompt?: string };
+    }>;
+    const oversizedPrompt = oversizedNodes.at(-1)?.agent;
+    if (oversizedPrompt?.prompt === undefined) {
+      throw new Error("projected workflow boundary fixture has no oversized prompt");
+    }
+    oversizedPrompt.prompt += "x";
+    expect(() => projectPromptCandidate(oversized)).toThrowError(
+      expect.objectContaining({ code: "limit_exceeded" }),
+    );
+  });
+
   it("parses a strict versioned prompt-only source", () => {
     const source = parsePromptCandidateText(candidateText(), "candidate.yaml");
 
@@ -394,6 +439,26 @@ function tuningEvidence(workflowDigest: string) {
     schedule,
     records,
   });
+}
+
+function paddingAgentNode(
+  index: number,
+  predecessor: string,
+  prompt: string,
+): Record<string, unknown> {
+  return {
+    id: `padding-${index}`,
+    type: "agent",
+    dependsOn: [predecessor],
+    agent: {
+      prompt,
+      model: { provider: "test", id: "deterministic", thinking: "medium" },
+      tools: [],
+      skills: [],
+      toolPackages: [],
+      timeoutMs: 300_000,
+    },
+  };
 }
 
 function sha256(value: string): string {

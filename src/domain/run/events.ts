@@ -247,7 +247,7 @@ export interface ChildEvidence {
 
 export const MAX_AGENT_EFFECT_RECEIPTS = 32;
 export const MAX_AGENT_COMMANDS_PER_ATTEMPT = 32;
-export const MAX_RUN_EVENT_BYTES = 2_097_152;
+export const MAX_RUN_EVENT_BYTES = 20 * 1024 * 1024;
 export const DURABLE_EFFECT_PROTOCOL = "flow.effects/v1" as const;
 
 export interface AgentEffectReceipt {
@@ -305,6 +305,10 @@ export interface RunStartedEvent extends RunEventBase {
 
 export interface RunResumedEvent extends RunEventBase {
   readonly type: "run_resumed";
+  readonly workspaceRelocation?: {
+    readonly fromCwd: string;
+    readonly toCwd: string;
+  };
 }
 
 export interface NodeStartedEvent extends RunEventBase {
@@ -2560,6 +2564,11 @@ export const runEventSchema = z.discriminatedUnion("type", [
     .object({
       ...eventBaseShape,
       type: z.literal("run_resumed"),
+      workspaceRelocation: z
+        .object({ fromCwd: absolutePathSchema, toCwd: absolutePathSchema })
+        .strict()
+        .refine((item) => item.fromCwd !== item.toCwd, "workspace relocation paths must differ")
+        .optional(),
     })
     .strict(),
   z
@@ -3737,16 +3746,30 @@ export function appendRunEvent(
   let failureReason: string | null = currentState.failureReason;
   let goal = currentState.goal;
   let resources = currentState.resources;
+  let executionCwd = currentState.executionCwd;
 
   switch (event.type) {
     case "run_resumed": {
       const openAttempt = Object.entries(nodes).find(([, node]) => node.status === "running");
-      if (openAttempt !== undefined) {
+      if (openAttempt !== undefined && event.workspaceRelocation === undefined) {
         const [nodeId, node] = openAttempt;
         throw new RunReplayError(
           eventIndex,
           `run cannot resume while node "${nodeId}" attempt ${node.attempt} remains running`,
         );
+      }
+      if (event.workspaceRelocation !== undefined) {
+        if (
+          currentState.executionWorkspace === null ||
+          executionCwd === null ||
+          event.workspaceRelocation.fromCwd !== executionCwd
+        ) {
+          throw new RunReplayError(
+            eventIndex,
+            "workspace relocation does not match the durable child execution context",
+          );
+        }
+        executionCwd = event.workspaceRelocation.toCwd;
       }
       break;
     }
@@ -5969,7 +5992,7 @@ export function appendRunEvent(
     verifierPackageRequirements: currentState.verifierPackageRequirements,
     toolPackageRequirements: currentState.toolPackageRequirements,
     workflowPackageRequirements: currentState.workflowPackageRequirements,
-    executionCwd: currentState.executionCwd,
+    executionCwd,
     executionWorkspace: currentState.executionWorkspace,
     approvalRequirements: currentState.approvalRequirements,
     agentCommandApprovalRequirements: currentState.agentCommandApprovalRequirements,

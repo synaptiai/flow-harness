@@ -1,5 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -7,21 +17,27 @@ import { afterEach, describe, expect, it } from "vitest";
 import { trySubmitAgentCommandApprovalDecision } from "../../../src/application/command-approval.js";
 import type { CommandSandbox } from "../../../src/application/command-sandbox.js";
 import { NodeExecutorRouter } from "../../../src/application/node-executor-router.js";
-import { runWorkflow } from "../../../src/application/run-workflow.js";
-import { compileWorkflowFromSnapshot } from "../../../src/application/workflow-package-admission.js";
 import type {
   AgentExecutor,
   CommandExecutor,
   NodeExecutor,
   RecoverableRunEventStore,
 } from "../../../src/application/ports.js";
+import { runWorkflow } from "../../../src/application/run-workflow.js";
+import { compileWorkflowFromSnapshot } from "../../../src/application/workflow-package-admission.js";
+import {
+  createPromptActivationSnapshot,
+  promptActivationSource,
+} from "../../../src/domain/adaptation/prompt-activation.js";
 import {
   calculateAgentCommandDigest,
   normalizeAgentCommandRequest,
 } from "../../../src/domain/agent-command.js";
 import {
+  calculateCapabilitySnapshotDigest,
   createAgentCapabilityEvidence,
   createCapabilitySnapshot,
+  validateCapabilitySnapshot,
 } from "../../../src/domain/capability/agent-skills.js";
 import type { ToolPackageSnapshotInput } from "../../../src/domain/capability/tool-packages.js";
 import type { VerifierPackageSnapshotInput } from "../../../src/domain/capability/verifier-packages.js";
@@ -34,8 +50,10 @@ import { LocalSupervisorStore } from "../../../src/infrastructure/fs/local-super
 import { PiAgentExecutor } from "../../../src/infrastructure/pi/pi-agent-executor.js";
 import { CommandNodeExecutor } from "../../../src/infrastructure/process/command-node-executor.js";
 import { createProductionNodeEffectReconciler } from "../../../src/infrastructure/runtime/production-effect-reconciler.js";
+import { createProductionWorkspaceIsolator } from "../../../src/infrastructure/runtime/production-workspace-isolator.js";
 import { createActiveRunClaim, createJobRecord } from "../../../src/supervisor/records.js";
 import { executeWorkerJob, requestWorker } from "../../../src/supervisor/worker.js";
+import { promptActivationInput } from "../../fixtures/prompt-activation.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -48,6 +66,261 @@ afterEach(async () => {
 });
 
 describe("detached run worker", () => {
+  it("rejects changed active-root source bytes before worker execution", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-worker-activation-tamper-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    const store = new LocalSupervisorStore(runsDirectory);
+    await store.initialize();
+    const activation = createPromptActivationSnapshot(promptActivationInput());
+    const packages: never[] = [];
+    const activations = [activation];
+    const capabilitySnapshot = validateCapabilitySnapshot({
+      version: 1,
+      packages,
+      activations,
+      digest: calculateCapabilitySnapshotDigest(packages, activations),
+    });
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "worker-activation-tamper",
+      mode: "run",
+      sourceName: "activation:adaptive-workflow",
+      workflowSource: promptActivationSource(activation).replace("verify", "publish"),
+      cwd: directory,
+      token: "6".repeat(64),
+      createdAt: "2026-08-09T11:59:00.000Z",
+      capabilitySnapshot,
+    });
+    await store.reserveSubmission(
+      job,
+      createActiveRunClaim({
+        runId: job.runId,
+        jobId: job.jobId,
+        workerId: job.workerId,
+        claimedAt: job.createdAt,
+      }),
+    );
+
+    await expect(
+      executeWorkerJob(job.jobId, {
+        store,
+        executor: {
+          async execute() {
+            throw new Error("executor must not run");
+          },
+        },
+        effectReconciler: createProductionNodeEffectReconciler(),
+        createRunStore: (root) => new JsonlRunStore(root),
+        pid: 4330,
+      }),
+    ).rejects.toThrow(/source does not match/i);
+    await expect(store.listWorkerDescriptors()).resolves.toEqual([]);
+  });
+
+  it("executes an active root from the frozen detached snapshot", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-worker-activation-"));
+    temporaryDirectories.push(directory);
+    const projectRoot = join(directory, "project-root");
+    await mkdir(projectRoot);
+    const runsDirectory = join(directory, "runs");
+    const store = new LocalSupervisorStore(runsDirectory);
+    await store.initialize();
+    const activation = createPromptActivationSnapshot(promptActivationInput());
+    const packages: never[] = [];
+    const activations = [activation];
+    const capabilitySnapshot = validateCapabilitySnapshot({
+      version: 1,
+      packages,
+      activations,
+      digest: calculateCapabilitySnapshotDigest(packages, activations),
+    });
+    const protectedPaths = [join(directory, ".flow")];
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "worker-activation",
+      mode: "run",
+      sourceName: "activation:adaptive-workflow",
+      workflowSource: promptActivationSource(activation),
+      cwd: directory,
+      projectRoot,
+      protectedPaths,
+      token: "5".repeat(64),
+      createdAt: "2026-08-09T12:00:00.000Z",
+      capabilitySnapshot,
+    });
+    let observedProtectedPaths: readonly string[] = [];
+    let observedProjectRoot: string | undefined;
+    await store.reserveSubmission(
+      job,
+      createActiveRunClaim({
+        runId: job.runId,
+        jobId: job.jobId,
+        workerId: job.workerId,
+        claimedAt: job.createdAt,
+      }),
+    );
+
+    const worker = executeWorkerJob(job.jobId, {
+      store,
+      executor: {
+        async execute(node, context) {
+          observedProtectedPaths = context.protectedPaths;
+          if (node.type !== "agent") {
+            throw new Error("active root executed an unexpected node");
+          }
+          return { status: "succeeded", evidence: successfulAgentEvidence() };
+        },
+      },
+      effectReconciler: createProductionNodeEffectReconciler(),
+      createRunStore: (root) => new JsonlRunStore(root),
+      createWorkspaceIsolator(root, paths, executionRoot, selectedProjectRoot) {
+        observedProjectRoot = selectedProjectRoot;
+        return createProductionWorkspaceIsolator(root, paths, executionRoot, selectedProjectRoot);
+      },
+      pid: 4331,
+    });
+    const descriptor = await waitForDescriptor(store, job.workerId);
+    await expect(requestWorker(descriptor, { type: "identify" })).resolves.toMatchObject({
+      ok: true,
+      result: { runId: job.runId, status: "running" },
+    });
+
+    const exitCode = await worker;
+    const finalDescriptor = await store.readWorkerDescriptor(job.workerId);
+    expect(exitCode, JSON.stringify(finalDescriptor)).toBe(0);
+    expect(observedProtectedPaths).toEqual([runsDirectory, ...protectedPaths]);
+    expect(observedProjectRoot).toBe(projectRoot);
+    const events = await new JsonlRunStore(runsDirectory).read(job.runId);
+    expect(events[0]).toMatchObject({
+      type: "run_started",
+      capabilitySnapshot: {
+        activations: [{ activationDigest: activation.activationDigest }],
+      },
+    });
+    expect(reduceRunEvents(events).status).toBe("succeeded");
+  });
+
+  it("resumes an active root worker from its durable activation snapshot", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-worker-activation-resume-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    const supervisorStore = new LocalSupervisorStore(runsDirectory);
+    await supervisorStore.initialize();
+    const activation = createPromptActivationSnapshot(promptActivationInput());
+    const packages: never[] = [];
+    const activations = [activation];
+    const capabilitySnapshot = validateCapabilitySnapshot({
+      version: 1,
+      packages,
+      activations,
+      digest: calculateCapabilitySnapshotDigest(packages, activations),
+    });
+    const source = promptActivationSource(activation);
+    const sourceName = "activation:adaptive-workflow";
+    const compiled = compileWorkflowFromSnapshot({
+      source,
+      sourceName,
+      capabilitySnapshot,
+    });
+    const durableStore = new JsonlRunStore(runsDirectory);
+    let stopBeforeNodeStart = true;
+    const crashStore: RecoverableRunEventStore = {
+      async append(event) {
+        if (event.type === "node_started" && stopBeforeNodeStart) {
+          stopBeforeNodeStart = false;
+          throw new Error("simulated crash before active node start");
+        }
+        await durableStore.append(event);
+      },
+      async read(runId) {
+        return await durableStore.read(runId);
+      },
+      async claim(runId) {
+        return await durableStore.claim(runId);
+      },
+      async release(runId) {
+        await durableStore.release(runId);
+      },
+    };
+    await expect(
+      runWorkflow(compiled, {
+        runId: "worker-activation-resume",
+        cwd: directory,
+        protectedPaths: [runsDirectory],
+        store: crashStore,
+        executor: {
+          async execute() {
+            throw new Error("executor must not run before the simulated crash");
+          },
+        },
+        capabilitySnapshot,
+      }),
+    ).rejects.toThrow(/simulated crash/i);
+
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "worker-activation-resume",
+      mode: "resume",
+      sourceName,
+      workflowSource: source,
+      cwd: directory,
+      token: "4".repeat(64),
+      createdAt: "2026-08-09T12:01:00.000Z",
+      capabilitySnapshot,
+    });
+    await supervisorStore.reserveSubmission(
+      job,
+      createActiveRunClaim({
+        runId: job.runId,
+        jobId: job.jobId,
+        workerId: job.workerId,
+        claimedAt: job.createdAt,
+      }),
+    );
+    const worker = executeWorkerJob(job.jobId, {
+      store: supervisorStore,
+      executor: {
+        async execute(node) {
+          if (node.type !== "agent") {
+            throw new Error("active root executed an unexpected node");
+          }
+          return { status: "succeeded", evidence: successfulAgentEvidence() };
+        },
+      },
+      effectReconciler: createProductionNodeEffectReconciler(),
+      createRunStore: (root) => new JsonlRunStore(root),
+      pid: 4332,
+    });
+    const descriptor = await waitForDescriptor(supervisorStore, job.workerId);
+    await expect(requestWorker(descriptor, { type: "identify" })).resolves.toMatchObject({
+      ok: true,
+      result: { runId: job.runId, status: "running" },
+    });
+
+    const exitCode = await worker;
+    const finalDescriptor = await supervisorStore.readWorkerDescriptor(job.workerId);
+    expect(exitCode, JSON.stringify(finalDescriptor)).toBe(0);
+    const events = await durableStore.read(job.runId);
+    expect(events.map((event) => event.type)).toEqual([
+      "run_started",
+      "run_resumed",
+      "node_started",
+      "node_succeeded",
+      "node_result_published",
+      "run_succeeded",
+    ]);
+    expect(reduceRunEvents(events)).toMatchObject({
+      status: "succeeded",
+      capabilitySnapshot: {
+        activations: [{ activationDigest: activation.activationDigest }],
+      },
+    });
+  });
+
   it("executes a packaged root entirely from the frozen detached snapshot", async () => {
     const directory = await mkdtemp(join(tmpdir(), "flow-worker-workflow-package-"));
     temporaryDirectories.push(directory);
@@ -878,9 +1151,19 @@ spec:
   });
 
   it("runs a separately-ledgered isolated child through a detached worker", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "flow-worker-child-"));
-    temporaryDirectories.push(directory);
-    const runsDirectory = join(directory, "runs");
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-worker-child-")));
+    temporaryDirectories.push(root);
+    const project = join(root, "project");
+    const directory = join(project, "src");
+    const projectAlias = join(root, "project-alias");
+    const aliasDirectory = join(projectAlias, "src");
+    const flowDirectory = join(project, ".flow");
+    const runsDirectory = join(flowDirectory, "runs");
+    await Promise.all([
+      mkdir(directory, { recursive: true }),
+      mkdir(runsDirectory, { recursive: true }),
+    ]);
+    await symlink(project, projectAlias, "dir");
     const store = new LocalSupervisorStore(runsDirectory);
     await store.initialize();
     const job = createJobRecord({
@@ -888,9 +1171,9 @@ spec:
       workerId: randomUUID(),
       runId: "worker-child",
       mode: "run",
-      sourceName: join(directory, "workflow.yaml"),
+      sourceName: join(aliasDirectory, "workflow.yaml"),
       workflowSource: childWorkflowSource(),
-      cwd: directory,
+      cwd: aliasDirectory,
       token: "a".repeat(64),
       createdAt: "2026-08-08T12:30:00.000Z",
     });
@@ -904,10 +1187,11 @@ spec:
       }),
     );
     const executor: NodeExecutor = {
-      async execute(node) {
+      async execute(node, context) {
         if (node.type !== "command") {
           throw new Error(`unexpected worker child node "${node.type}"`);
         }
+        expect(context.projectRoot).toBe(project);
         const stdout = '"ok"';
         return {
           status: "succeeded",
@@ -932,10 +1216,11 @@ spec:
       ok: true,
       result: { runId: job.runId, status: "running" },
     });
-    await expect(worker).resolves.toBe(0);
-
+    const exitCode = await worker;
+    const finalDescriptor = await store.readWorkerDescriptor(job.workerId);
     const runStore = new JsonlRunStore(runsDirectory);
     const parentState = reduceRunEvents(await runStore.read(job.runId));
+    expect(exitCode, JSON.stringify({ finalDescriptor, parentState })).toBe(0);
     const childRunId = parentState.nodes.delegate?.childRun?.runId;
     expect(childRunId).toMatch(/^child-[a-f0-9]{48}$/);
     if (childRunId === undefined) {
@@ -956,6 +1241,12 @@ spec:
     });
     expect(reduceRunEvents(await runStore.read(childRunId)).status).toBe("succeeded");
     await expect(stat(join(runsDirectory, ".workspaces", childRunId))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(stat(join(root, ".project.flow-workspaces"))).resolves.toMatchObject({
+      mode: expect.any(Number),
+    });
+    await expect(stat(join(project, ".src.flow-workspaces"))).rejects.toMatchObject({
       code: "ENOENT",
     });
     await expect(store.readWorkerDescriptor(job.workerId)).resolves.toMatchObject({
@@ -1004,10 +1295,11 @@ spec:
       ok: true,
       result: { runId: job.runId, status: "running" },
     });
-    await expect(worker).resolves.toBe(0);
-
+    const exitCode = await worker;
+    const finalDescriptor = await store.readWorkerDescriptor(job.workerId);
     const runStore = new JsonlRunStore(runsDirectory);
     const state = reduceRunEvents(await runStore.read(job.runId));
+    expect(exitCode, JSON.stringify({ finalDescriptor, state })).toBe(0);
     const candidateRunId = state.nodes["optimize--c1--candidate"]?.childRun?.runId;
     expect(candidateRunId).toMatch(/^child-[a-f0-9]{48}$/);
     if (candidateRunId === undefined) {
@@ -2026,6 +2318,21 @@ function successfulCommandEvidence(nodeId: string) {
     stderrTruncated: false,
     timedOut: false,
     durationMs: 1,
+  };
+}
+
+function successfulAgentEvidence() {
+  const text = JSON.stringify("done");
+  return {
+    kind: "agent" as const,
+    provider: "test",
+    model: "deterministic",
+    text,
+    textHash: sha256(text),
+    textTruncated: false,
+    durationMs: 1,
+    policyDecisions: [],
+    effectReceipts: [],
   };
 }
 

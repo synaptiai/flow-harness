@@ -79,6 +79,10 @@ trial record. The final workspace is then discarded. A resumed owner idempotentl
 for committed trials and for the next uncommitted trial before creating a fresh copy; cleanup failure
 stops the evaluation rather than reusing partial output.
 
+New evaluations use an explicit named private collection below the evaluation directory. Flow
+continues to protect the historical `.flow-workspaces` name. It does not create a new unnamed
+collection.
+
 ## Evidence and outcomes
 
 `plan.json` is a redacted public header: it contains source digests and portable provenance, not
@@ -202,16 +206,30 @@ profiles:
   - { id: candidate, adapter: flow-workflow-v1, candidate: better.prompt-candidate.yaml }
 ```
 
-Candidate admission verifies the exact manifest, baseline, evidence packets, current prompt hashes,
-and projected workflow. The candidate must be selected as the declared comparison candidate and its
-embedded baseline must exactly match the comparison baseline profile. Candidate and projected identities enter the plan digest, deterministic
-schedule, public header, resume checks, inspect output, and export. Runtime fairness controls are
-unchanged because the projection still executes as `flow-workflow-v1`. The baseline file is never
-modified. A comparison verdict does not activate the candidate; automatic activation and rollback
-remain unavailable.
+Candidate admission verifies the manifest, baseline, evidence packets, prompt hashes, and projected
+workflow. The candidate must be the declared comparison candidate. Its embedded baseline must match
+the comparison baseline profile.
 
-The public header stores the complete prompt-free candidate identity and recomputes its independent
-digest during replay. Its baseline and projected source/workflow hashes must match the surrounding
-comparison profiles even if an outer plan digest and schedule were recomputed. Direct workflow
-profiles omit the projection source discriminator, preserving existing version-1 plan digests and
-incomplete-run resume compatibility.
+Candidate identity enters the plan digest, schedule, public header, resume checks, inspect output,
+and export. The projection still uses `flow-workflow-v1`. Evaluation never changes the baseline.
+
+The public header stores the complete prompt-free candidate identity. Replay recalculates its digest.
+The baseline and projected identities must match both comparison profiles. Direct workflow profiles
+omit the projection discriminator. This omission preserves existing version-1 plan digests.
+
+## Activation gate
+
+Activation requires a complete evaluation with the `superior` verdict. Flow recalculates the report
+from the stored schedule and record chain. All declared safety constraints must pass. Missing,
+corrupt, or unavailable comparison evidence stops activation.
+
+The evaluation candidate must match the live candidate identity. The evaluation baseline and
+projected workflow must also match the live candidate. Flow stores the plan digest, terminal record
+digest, report digest, release criteria, and aggregate comparison result.
+
+The activation proof contains no task text, fixture path, assertion, holdout identity, trial record,
+or run identifier. It contains aggregate comparison values only.
+
+Preview is read-only. It binds the current activation head, candidate artifact, baseline artifact,
+actor, and reason to one proposal digest. Apply requires that exact digest. A source or head change
+makes the proposal stale.

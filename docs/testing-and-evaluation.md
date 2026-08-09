@@ -200,20 +200,53 @@ incomplete safety evidence, and constraint/verdict gates.
 Adapter telemetry tests also execute a child-only profile and require unprojected child activity,
 policy, intervention, and recovery measurements to remain unavailable.
 
-Evidence-bound adaptation tests cover strict tuning-only projection, deterministic packet digests,
-forbidden regression/holdout/verifier/run-handle fields, incomplete and contradictory ledgers,
-internally contradictory outcomes/recovery metrics, duplicate pairs, maximum-size exports, bounded
-diagnostics, impossible seed/repetition mappings and declared totals, strict prompt-candidate
-schemas and bounds, exact prompt whitespace, stale
-baseline/evidence/prompt identities, unrelated evidence, invalid targets, stable no-follow local
-admission, candidate-root and nested-path symbolic-link races, path escapes, invalid UTF-8,
-oversized and malformed evidence, exact comparison-baseline binding, generated-source provenance,
-legacy direct-plan resume, and internally redigested durable candidate-identity refusal.
-`test/integration/cli/prompt-candidate.test.ts` runs the credential-free vertical slice: complete
-mixed-partition evaluation, tuning-only export and no-overwrite refusal, candidate validation,
-candidate-plan admission, exact projected execution, offline inspect/export, candidate-drift resume
-refusal, public-header tamper refusal, durable candidate identity, and unchanged baseline source.
-These tests do not claim model-driven generation or activation; both remain future gates.
+Adaptation tests cover tuning-only projection, packet digests, omitted private fields, contradictory
+records, incomplete pairs, export limits, bounded errors, and impossible schedules. Candidate tests
+cover strict schemas, prompt whitespace, stale identities, unrelated evidence, invalid targets, and
+source limits.
+
+Filesystem tests cover no-follow reads, root and ancestor races, path escape, invalid UTF-8, and
+malformed evidence. Plan tests cover exact baseline binding, generated-source provenance, legacy
+resume, and durable identity tampering.
+
+Activation tests cover complete superior admission, incomplete evaluations, losing evaluations, exact profile identity, and source drift.
+They also cover proposal drift, version conflicts, concurrent writers, and rollback.
+Store tests cover candidate artifacts, baseline artifacts, linked paths, invalid UTF-8, changed blobs, and rollback target checks.
+They cover publication cleanup, uncertain commits, dead-lock recovery, and empty or partial lock recovery.
+They cover pre-link, post-link, and maximum-source blob recovery.
+They reject 129 index, lock, or blob temporary files.
+They reject aggregate temporary bytes above each index and blob limit.
+They reject a blob temporary file that is one byte above its per-file limit.
+They also cover history tampering, source bounds, resource bounds, transition limits, and unknown rollback targets.
+
+Run tests cover durable activation replay, source loss, live-head changes, detached execution, and resume.
+Detached admission tests reject activation locators with missing evidence or changed source bytes.
+Model-context tests reject candidate, evaluation, activation, and source data in the model system prompt.
+Policy and sandbox tests deny direct reads of Flow and protected run state.
+Runtime tests use nested root and child execution directories.
+They deny reads of the canonical project `.flow` directory, activation state, and a sibling run ledger.
+They deny child reads from sibling workspaces in the nearest and outer private collections.
+They deny a root command that tries to create a named or historical private collection.
+They also deny reads and writes for each existing collection inside a broad execution root.
+Sandbox unit tests bind each discovered collection to a literal protected path and its descendants.
+They prove that Linux uses the explicit project root and does not treat a custom `.flow` run store
+as a project root.
+Workspace tests cover deep run-store paths, explicit project-root routing, planted collection links,
+nested legacy source translation, candidate capture and promotion after relocation, and legacy
+relocation before recovery activity. They cover a bounded and verified cross-filesystem staging
+copy. They also reopen one workspace through two filesystem aliases for the same run store. Replay
+tests bind the old and new child paths to one `run_resumed.workspaceRelocation` event
+and reject relocation for a root run. A three-level test records each relocation before grandchild
+command recovery. Detached tests bind the configured project root to the command, job, worker, and
+digest. They also recover an old job that has no project-root or protected-path fields.
+
+The CLI integration covers tuning export, candidate evaluation, activation preview, exact apply,
+active execution, inspect, source removal, and baseline rollback. It proves that a new run uses the
+stored baseline artifact after rollback. It also proves that the baseline file remains unchanged.
+These tests do not claim automatic model generation.
+
+`test/integration/cli/prompt-candidate.test.ts` covers the complete evaluation and activation path.
+`test/integration/cli/prompt-activation.test.ts` covers durable active-run and resume behavior.
 
 The production CLI integration runs the complete composition with a deterministic fake executor, so
 unit and integration suites need no provider credentials or network. Live provider comparisons are

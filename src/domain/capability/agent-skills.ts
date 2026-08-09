@@ -2,6 +2,11 @@ import { createHash } from "node:crypto";
 
 import { z } from "zod";
 import {
+  type PromptActivationSnapshot,
+  parsePromptActivationSnapshot,
+} from "../adaptation/prompt-activation.js";
+import { agentSkillNameSchema, MAX_AGENT_SKILL_PACKAGES } from "./agent-skill-contract.js";
+import {
   createToolPackageSnapshot,
   type ToolPackageSnapshot,
   type ToolPackageSnapshotInput,
@@ -19,29 +24,26 @@ import {
 } from "./verifier-packages.js";
 import {
   createWorkflowPackageSnapshot,
+  validateWorkflowPackageSnapshot,
   type WorkflowPackageSnapshot,
   type WorkflowPackageSnapshotInput,
-  validateWorkflowPackageSnapshot,
   workflowPackageIdentityKey,
   workflowPackageSnapshotSchema,
 } from "./workflow-packages.js";
 
-export const MAX_AGENT_SKILL_PACKAGES = 32;
+export { agentSkillNameSchema, MAX_AGENT_SKILL_PACKAGES } from "./agent-skill-contract.js";
 export const MAX_AGENT_SKILL_FILES = 128;
 export const MAX_AGENT_SKILL_FILE_BYTES = 128 * 1024;
 export const MAX_AGENT_SKILL_PACKAGE_BYTES = 256 * 1024;
 export const MAX_AGENT_SKILL_METADATA_ENTRIES = 64;
 export const MAX_AGENT_SKILL_METADATA_BYTES = 16 * 1024;
 export const MAX_AGENT_SKILL_REQUESTED_TOOLS = 64;
-export const MAX_CAPABILITY_SNAPSHOT_SERIALIZED_BYTES = 512 * 1024;
+export const MAX_CAPABILITY_PACKAGE_SNAPSHOT_SERIALIZED_BYTES = 512 * 1024;
+export const MAX_CAPABILITY_SNAPSHOT_SERIALIZED_BYTES = 16 * 1024 * 1024;
+export const MAX_PROMPT_ACTIVATIONS_PER_SNAPSHOT = 1;
 export const MAX_CAPABILITY_READ_RECEIPTS = 128;
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
-export const agentSkillNameSchema = z
-  .string()
-  .min(1)
-  .max(64)
-  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
 const portablePathSchema = z
   .string()
   .min(1)
@@ -94,6 +96,7 @@ export type CapabilityPackageSnapshot =
 export interface CapabilitySnapshot {
   readonly version: 1;
   readonly packages: readonly CapabilityPackageSnapshot[];
+  readonly activations?: readonly PromptActivationSnapshot[];
   readonly digest: string;
 }
 
@@ -180,11 +183,16 @@ const capabilitySnapshotSchema = z
           workflowPackageSnapshotSchema,
         ]),
       )
-      .min(1)
       .max(MAX_AGENT_SKILL_PACKAGES),
+    activations: z.array(z.unknown()).min(1).max(MAX_PROMPT_ACTIVATIONS_PER_SNAPSHOT).optional(),
     digest: sha256Schema,
   })
-  .strict();
+  .strict()
+  .superRefine((snapshot, context) => {
+    if (snapshot.packages.length === 0 && snapshot.activations === undefined) {
+      context.addIssue({ code: "custom", message: "capability snapshot cannot be empty" });
+    }
+  });
 
 export const persistedCapabilitySnapshotSchema: z.ZodType<CapabilitySnapshot> = z
   .unknown()
@@ -313,7 +321,9 @@ export function createCapabilitySnapshot(
 
 export function validateCapabilitySnapshot(input: unknown): CapabilitySnapshot {
   const parsed = capabilitySnapshotSchema.parse(input);
+  const activations = (parsed.activations ?? []).map(parsePromptActivationSnapshot);
   assertSortedUnique(parsed.packages.map(capabilityPackageKey), "capability package identities");
+  assertSortedUnique(activations.map(promptActivationKey), "prompt activation identities");
   for (const capability of parsed.packages) {
     if (capability.kind === "verifier-package") {
       validateVerifierPackageSnapshot(capability);
@@ -360,8 +370,22 @@ export function validateCapabilitySnapshot(input: unknown): CapabilitySnapshot {
       throw new Error(`skill "${skill.name}" package digest does not match`);
     }
   }
-  if (calculateCapabilitySnapshotDigest(parsed.packages) !== parsed.digest) {
+  if (calculateCapabilitySnapshotDigest(parsed.packages, activations) !== parsed.digest) {
     throw new Error("capability snapshot digest does not match");
+  }
+  if (
+    Buffer.byteLength(
+      JSON.stringify({
+        version: 1,
+        packages: parsed.packages,
+        digest: calculateCapabilitySnapshotDigest(parsed.packages),
+      }),
+      "utf8",
+    ) > MAX_CAPABILITY_PACKAGE_SNAPSHOT_SERIALIZED_BYTES
+  ) {
+    throw new Error(
+      `serialized capability packages exceed ${MAX_CAPABILITY_PACKAGE_SNAPSHOT_SERIALIZED_BYTES} UTF-8 bytes`,
+    );
   }
   if (
     Buffer.byteLength(JSON.stringify(parsed), "utf8") > MAX_CAPABILITY_SNAPSHOT_SERIALIZED_BYTES
@@ -370,7 +394,12 @@ export function validateCapabilitySnapshot(input: unknown): CapabilitySnapshot {
       `serialized capability snapshot exceeds ${MAX_CAPABILITY_SNAPSHOT_SERIALIZED_BYTES} UTF-8 bytes`,
     );
   }
-  return deepFreeze(parsed);
+  return deepFreeze({
+    version: parsed.version,
+    packages: parsed.packages,
+    ...(activations.length === 0 ? {} : { activations }),
+    digest: parsed.digest,
+  });
 }
 
 export function calculateAgentSkillPackageDigest(
@@ -397,6 +426,7 @@ export function calculateAgentSkillPackageDigest(
 
 export function calculateCapabilitySnapshotDigest(
   packages: readonly CapabilityPackageSnapshot[],
+  activations: readonly PromptActivationSnapshot[] = [],
 ): string {
   return sha256(
     JSON.stringify({
@@ -411,6 +441,16 @@ export function calculateCapabilitySnapshotDigest(
               digest: capability.digest,
             },
       ),
+      ...(activations.length === 0
+        ? {}
+        : {
+            activations: activations.map((activation) => ({
+              workflowId: activation.workflowId,
+              candidateId: activation.candidateId,
+              candidateVersion: activation.candidateVersion,
+              digest: activation.activationDigest,
+            })),
+          }),
     }),
   );
 }
@@ -427,10 +467,14 @@ export function combineCapabilitySnapshots(
   const packages = snapshots
     .flatMap((snapshot) => snapshot.packages)
     .sort((left, right) => compareStrings(capabilityPackageKey(left), capabilityPackageKey(right)));
+  const activations = snapshots
+    .flatMap((snapshot) => snapshot.activations ?? [])
+    .sort((left, right) => compareStrings(promptActivationKey(left), promptActivationKey(right)));
   return validateCapabilitySnapshot({
     version: 1,
     packages,
-    digest: calculateCapabilitySnapshotDigest(packages),
+    ...(activations.length === 0 ? {} : { activations }),
+    digest: calculateCapabilitySnapshotDigest(packages, activations),
   });
 }
 
@@ -464,6 +508,10 @@ function capabilityPackageKey(value: CapabilityPackageSnapshot): string {
   return value.kind === "tool-package"
     ? toolPackageIdentityKey(value)
     : workflowPackageIdentityKey(value);
+}
+
+function promptActivationKey(value: PromptActivationSnapshot): string {
+  return `${value.workflowId}\0${value.candidateId}\0${value.candidateVersion}`;
 }
 
 export function createAgentCapabilityEvidence(

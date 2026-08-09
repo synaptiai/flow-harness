@@ -1,3 +1,4 @@
+import { calculateWorkflowDigest } from "../workflow/digest.js";
 import type {
   CompiledAgentNode,
   CompiledVerifierNode,
@@ -17,6 +18,7 @@ export type WorkflowCapabilityErrorCode =
   | "missing_snapshot"
   | "package_kind_mismatch"
   | "tool_name_collision"
+  | "unexpected_activation"
   | "unexpected_package"
   | "unexpected_skill"
   | "version_mismatch";
@@ -110,6 +112,7 @@ export function bindWorkflowCapabilities(
   const requiredTools = collectWorkflowToolPackageReferences(workflow);
   const requiredWorkflows = collectWorkflowPackageReferences(workflow);
   const boundSnapshot = validateWorkflowCapabilitySnapshot(snapshot);
+  assertPromptActivationBinding(workflow, boundSnapshot, options.allowUnexpected === true);
   if (
     requiredSkills.length +
       requiredVerifiers.length +
@@ -152,10 +155,12 @@ export function bindWorkflowCapabilities(
           `capability snapshot contains workflow package "${unexpectedWorkflow.name}" version "${unexpectedWorkflow.version}" that workflow "${workflow.id}" does not select`,
         );
       }
-      throw new WorkflowCapabilityError(
-        "invalid_snapshot",
-        "capability snapshot contains no recognized package",
-      );
+      if ((boundSnapshot.activations?.length ?? 0) === 0) {
+        throw new WorkflowCapabilityError(
+          "invalid_snapshot",
+          "capability snapshot contains no recognized package or activation",
+        );
+      }
     }
     return boundSnapshot;
   }
@@ -304,6 +309,37 @@ export function bindWorkflowCapabilities(
     );
   }
   return boundSnapshot;
+}
+
+function assertPromptActivationBinding(
+  workflow: CompiledWorkflow,
+  snapshot: CapabilitySnapshot | undefined,
+  allowUnexpected: boolean,
+): void {
+  const activation = snapshot?.activations?.[0];
+  if (activation === undefined) {
+    return;
+  }
+  if (activation.workflowId !== workflow.id) {
+    if (allowUnexpected) {
+      return;
+    }
+    throw new WorkflowCapabilityError(
+      "unexpected_activation",
+      `capability snapshot contains activation for workflow "${activation.workflowId}", not "${workflow.id}"`,
+    );
+  }
+  const workflowDigest = calculateWorkflowDigest(workflow);
+  const expectedWorkflowDigest =
+    activation.selection === "candidate"
+      ? activation.candidate.projectedWorkflow.workflowDigest
+      : activation.candidate.baseline.workflowDigest;
+  if (expectedWorkflowDigest !== workflowDigest) {
+    throw new WorkflowCapabilityError(
+      "digest_mismatch",
+      `workflow "${workflow.id}" does not match activation digest "${activation.activationDigest}"`,
+    );
+  }
 }
 
 export function resolveAgentToolPackages(

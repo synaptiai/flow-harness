@@ -121,6 +121,25 @@ describe("reflink-copy workspace isolation", () => {
     ).rejects.toMatchObject({ code: "workspace_mismatch" });
   });
 
+  it.each([".flow-workspaces", ".other-project.flow-workspaces"])(
+    "excludes Flow workspace collection %s from a broader source root",
+    async (collectionName) => {
+      const fixture = await workspaceFixture();
+      const collection = join(fixture.source, "nested", collectionName);
+      await mkdir(collection, { recursive: true });
+      await writeFile(join(collection, "private-workspace.txt"), "private");
+
+      const created = await fixture.isolator.create({
+        workspaceId: "child-broad-root",
+        sourceCwd: fixture.source,
+      });
+
+      await expect(lstat(join(created.cwd, "nested", collectionName))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    },
+  );
+
   it("fails closed on special files and removes the partial materialization", async () => {
     const fixture = await workspaceFixture();
     await execFileAsync("mkfifo", [join(fixture.source, "blocked.fifo")]);

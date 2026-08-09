@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { access, mkdtemp, realpath, rm, stat } from "node:fs/promises";
+import { access, lstat, mkdtemp, opendir, realpath, rm, stat } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, sep } from "node:path";
 
@@ -27,6 +27,9 @@ const SAFE_ENVIRONMENT_NAMES = Object.freeze([
   "GITHUB_ACTIONS",
 ]);
 
+const FLOW_WORKSPACE_COLLECTION_SUFFIX = ".flow-workspaces";
+const MAX_COLLECTION_DISCOVERY_ENTRIES = 200_000;
+
 const SEMANTIC_POLICY = Object.freeze({
   version: 1,
   profile: FLOW_SANDBOX_PROFILE,
@@ -38,6 +41,7 @@ const SEMANTIC_POLICY = Object.freeze({
     runtimeSupport: "read-only",
     runStore: "deny-write",
     flowState: "deny-write",
+    workspaceCollections: "deny-existing",
     gitState: "deny-write",
     sensitiveFiles: "deny-write",
   }),
@@ -108,6 +112,10 @@ export interface SrtCommandSandboxOptions {
   readonly canonicalize?: (path: string) => Promise<string>;
   readonly createTemporaryDirectory?: () => Promise<string>;
   readonly removeTemporaryDirectory?: (path: string) => Promise<void>;
+  readonly discoverPrivateWorkspaceCollections?: (workspace: string) => Promise<readonly string[]>;
+  readonly discoverPrivateWorkspaceCollectionAncestors?: (
+    workspace: string,
+  ) => Promise<readonly string[]>;
   readonly cleanupTimeoutMs?: number;
   readonly seccompApplyPath?: string;
   readonly resolveTrustedBwrapPath?: (workspace: string) => Promise<string>;
@@ -119,6 +127,10 @@ export class SrtCommandSandbox implements CommandSandbox {
   readonly #cleanupTimeoutMs: number;
   readonly #createTemporaryDirectory: () => Promise<string>;
   readonly #environment: NodeJS.ProcessEnv;
+  readonly #discoverPrivateWorkspaceCollections: (workspace: string) => Promise<readonly string[]>;
+  readonly #discoverPrivateWorkspaceCollectionAncestors: (
+    workspace: string,
+  ) => Promise<readonly string[]>;
   readonly #homeDirectory: string;
   readonly #manager: SrtSandboxManager;
   readonly #platform: NodeJS.Platform;
@@ -141,6 +153,11 @@ export class SrtCommandSandbox implements CommandSandbox {
     this.#removeTemporaryDirectory =
       options.removeTemporaryDirectory ??
       ((path) => rm(path, { recursive: true, force: true, maxRetries: 2 }));
+    this.#discoverPrivateWorkspaceCollections =
+      options.discoverPrivateWorkspaceCollections ?? discoverPrivateWorkspaceCollections;
+    this.#discoverPrivateWorkspaceCollectionAncestors =
+      options.discoverPrivateWorkspaceCollectionAncestors ??
+      discoverPrivateWorkspaceCollectionAncestors;
     this.#cleanupTimeoutMs = options.cleanupTimeoutMs ?? 5_000;
     this.#seccompApplyPath = options.seccompApplyPath;
     this.#resolveTrustedBwrapPath =
@@ -170,13 +187,32 @@ export class SrtCommandSandbox implements CommandSandbox {
     let wrapped = false;
     try {
       const canonicalWorkspace = await this.#canonicalize(request.cwd);
+      const canonicalProjectRoot =
+        request.projectRoot === undefined
+          ? undefined
+          : await this.#canonicalize(request.projectRoot);
       const trustedBwrapPath =
         this.#platform === "linux"
           ? await this.#resolveTrustedBwrapPath(canonicalWorkspace)
           : undefined;
-      const canonicalProtectedPaths = await Promise.all(
-        request.protectedPaths.map((path) => this.#canonicalize(path)),
+      const privateWorkspaceCollections =
+        await this.#discoverPrivateWorkspaceCollections(canonicalWorkspace);
+      const privateWorkspaceCollectionAncestors =
+        await this.#discoverPrivateWorkspaceCollectionAncestors(canonicalWorkspace);
+      const canonicalWriteProtectedPaths = await Promise.all(
+        [...new Set([...request.protectedPaths, ...privateWorkspaceCollections])].map((path) =>
+          this.#canonicalize(path),
+        ),
       );
+      const canonicalReadProtectedPaths = Object.freeze([
+        ...canonicalWriteProtectedPaths,
+        ...(await Promise.all(
+          privateWorkspaceCollectionAncestors.map((path) => this.#canonicalize(path)),
+        )),
+      ]);
+      if (this.#platform === "linux" && canonicalProjectRoot !== undefined) {
+        assertLinuxProjectBoundary(canonicalWorkspace, canonicalProjectRoot);
+      }
       const canonicalSeccompApplyPath =
         this.#seccompApplyPath === undefined
           ? undefined
@@ -192,7 +228,8 @@ export class SrtCommandSandbox implements CommandSandbox {
       const config = createRuntimeConfig(
         canonicalWorkspace,
         privateTemporaryDirectory,
-        canonicalProtectedPaths,
+        canonicalReadProtectedPaths,
+        canonicalWriteProtectedPaths,
         this.#homeDirectory,
         canonicalSeccompApplyPath,
         trustedBwrapPath,
@@ -200,7 +237,8 @@ export class SrtCommandSandbox implements CommandSandbox {
       const sessionKey = sandboxSessionKey(
         this.#platform,
         canonicalWorkspace,
-        canonicalProtectedPaths,
+        canonicalReadProtectedPaths,
+        canonicalWriteProtectedPaths,
         this.#homeDirectory,
         canonicalSeccompApplyPath,
         trustedBwrapPath,
@@ -437,7 +475,8 @@ async function waitForSessionCompletion(
 function sandboxSessionKey(
   platform: NodeJS.Platform,
   workspace: string,
-  protectedPaths: readonly string[],
+  readProtectedPaths: readonly string[],
+  writeProtectedPaths: readonly string[],
   homeDirectory: string,
   seccompApplyPath: string | undefined,
   trustedBwrapPath: string | undefined,
@@ -447,7 +486,8 @@ function sandboxSessionKey(
       JSON.stringify({
         platform,
         workspace,
-        protectedPaths,
+        readProtectedPaths,
+        writeProtectedPaths,
         homeDirectory,
         seccompApplyPath: seccompApplyPath ?? null,
         trustedBwrapPath: trustedBwrapPath ?? null,
@@ -459,7 +499,8 @@ function sandboxSessionKey(
 function createRuntimeConfig(
   workspace: string,
   privateTemporaryDirectory: string,
-  protectedPaths: readonly string[],
+  readProtectedPaths: readonly string[],
+  writeProtectedPaths: readonly string[],
   homeDirectory: string,
   seccompApplyPath: string | undefined,
   trustedBwrapPath: string | undefined,
@@ -483,13 +524,39 @@ function createRuntimeConfig(
       allowLocalBinding: false,
     }),
     filesystem: Object.freeze({
-      denyRead: Object.freeze([homeDirectory]),
+      denyRead: Object.freeze([
+        ...new Set([
+          homeDirectory,
+          ...readProtectedPaths,
+          join(workspace, ".flow"),
+          join(workspace, ".flow-workspaces"),
+          join(workspace, ".flow-workspaces/**"),
+          join(workspace, ".*.flow-workspaces"),
+          join(workspace, ".*.flow-workspaces/**"),
+          join(workspace, "**/.flow-workspaces"),
+          join(workspace, "**/.flow-workspaces/**"),
+          join(workspace, "**/.*.flow-workspaces"),
+          join(workspace, "**/.*.flow-workspaces/**"),
+          join(workspace, ".env"),
+          join(workspace, ".env.*"),
+          join(workspace, "**/*.pem"),
+          join(workspace, "**/*.key"),
+        ]),
+      ]),
       allowRead: Object.freeze(allowRead),
       allowWrite: Object.freeze([workspace, privateTemporaryDirectory]),
       denyWrite: Object.freeze([
         ...new Set([
-          ...protectedPaths,
+          ...writeProtectedPaths,
           join(workspace, ".flow"),
+          join(workspace, ".flow-workspaces"),
+          join(workspace, ".flow-workspaces/**"),
+          join(workspace, ".*.flow-workspaces"),
+          join(workspace, ".*.flow-workspaces/**"),
+          join(workspace, "**/.flow-workspaces"),
+          join(workspace, "**/.flow-workspaces/**"),
+          join(workspace, "**/.*.flow-workspaces"),
+          join(workspace, "**/.*.flow-workspaces/**"),
           join(workspace, ".git"),
           join(workspace, ".env"),
           join(workspace, ".env.*"),
@@ -507,6 +574,73 @@ function createRuntimeConfig(
       ? {}
       : { seccomp: Object.freeze({ applyPath: seccompApplyPath }) }),
   });
+}
+
+async function discoverPrivateWorkspaceCollections(workspace: string): Promise<readonly string[]> {
+  const pending = [workspace];
+  const collections: string[] = [];
+  let observedEntries = 0;
+  while (pending.length > 0) {
+    const directory = pending.pop() as string;
+    const entries = await opendir(directory);
+    for await (const entry of entries) {
+      observedEntries += 1;
+      if (observedEntries > MAX_COLLECTION_DISCOVERY_ENTRIES) {
+        throw new Error(
+          `command workspace collection scan exceeds ${MAX_COLLECTION_DISCOVERY_ENTRIES} entries`,
+        );
+      }
+      const candidate = join(directory, entry.name);
+      if (isFlowWorkspaceCollectionName(entry.name)) {
+        const [metadata, canonical] = await Promise.all([lstat(candidate), realpath(candidate)]);
+        if (metadata.isSymbolicLink() || !metadata.isDirectory() || canonical !== candidate) {
+          throw new Error(`Flow workspace collection is not a direct directory: ${candidate}`);
+        }
+        collections.push(canonical);
+        continue;
+      }
+      if (entry.isDirectory()) {
+        pending.push(candidate);
+      }
+    }
+  }
+  return Object.freeze(collections.sort());
+}
+
+async function discoverPrivateWorkspaceCollectionAncestors(
+  workspace: string,
+): Promise<readonly string[]> {
+  const collections: string[] = [];
+  let current = dirname(workspace);
+  for (;;) {
+    if (isFlowWorkspaceCollectionName(current.split(sep).at(-1) ?? "")) {
+      const [metadata, canonical] = await Promise.all([lstat(current), realpath(current)]);
+      if (metadata.isSymbolicLink() || !metadata.isDirectory() || canonical !== current) {
+        throw new Error(`Flow workspace collection is not a direct directory: ${current}`);
+      }
+      collections.push(canonical);
+    }
+    const parent = dirname(current);
+    if (parent === current) {
+      return Object.freeze(collections);
+    }
+    current = parent;
+  }
+}
+
+function isFlowWorkspaceCollectionName(name: string): boolean {
+  return (
+    name === FLOW_WORKSPACE_COLLECTION_SUFFIX ||
+    (name.startsWith(".") &&
+      name.endsWith(FLOW_WORKSPACE_COLLECTION_SUFFIX) &&
+      name.length > FLOW_WORKSPACE_COLLECTION_SUFFIX.length + 1)
+  );
+}
+
+function assertLinuxProjectBoundary(workspace: string, projectRoot: string): void {
+  if (projectRoot !== workspace && isAtOrWithin(projectRoot, workspace)) {
+    throw new Error("Linux command workspace must not contain the configured Flow project root");
+  }
 }
 
 function isAtOrWithin(path: string, directory: string): boolean {

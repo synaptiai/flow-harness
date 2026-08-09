@@ -2,18 +2,51 @@ import { createHash } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
+import { createPromptActivationSnapshot } from "../../../src/domain/adaptation/prompt-activation.js";
 import {
   type CapabilitySnapshot,
+  calculateCapabilitySnapshotDigest,
   createAgentCapabilityEvidence,
   createCapabilitySnapshot,
+  validateCapabilitySnapshot,
 } from "../../../src/domain/capability/agent-skills.js";
 import {
   parseRunEvent,
   type RunStartedEvent,
   reduceRunEvents,
 } from "../../../src/domain/run/events.js";
+import { promptActivationInput } from "../../fixtures/prompt-activation.js";
 
 describe("capability run history", () => {
+  it("replays one exact activation snapshot and rejects changed source bytes", () => {
+    const activation = createPromptActivationSnapshot(promptActivationInput());
+    const packages: never[] = [];
+    const activations = [activation];
+    const capabilitySnapshot = validateCapabilitySnapshot({
+      version: 1,
+      packages,
+      activations,
+      digest: calculateCapabilitySnapshotDigest(packages, activations),
+    });
+    const { capabilityRequirements: _capabilityRequirements, ...started } = runStarted();
+    const event = {
+      ...started,
+      workflowId: activation.workflowId,
+      workflowDigest: activation.candidate.projectedWorkflow.workflowDigest,
+      capabilitySnapshot,
+    };
+
+    expect(reduceRunEvents([event]).capabilitySnapshot).toEqual(capabilitySnapshot);
+
+    const changed = structuredClone(capabilitySnapshot);
+    const selected = changed.activations?.[0];
+    if (selected === undefined) {
+      throw new Error("activation snapshot fixture is missing");
+    }
+    (selected as { source: { contentBase64: string } }).source.contentBase64 = "e30=";
+    expect(() => parseRunEvent({ ...event, capabilitySnapshot: changed })).toThrow();
+  });
+
   it("replays an immutable provider-neutral capability snapshot", () => {
     const event = runStarted();
 

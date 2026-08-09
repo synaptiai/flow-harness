@@ -160,6 +160,7 @@ with `uncertain_operation`. A sidecar without an owner-appended decision never g
 | A new run is resumed with a different normalized execution directory | Refuse with `execution_context_mismatch` |
 | No child event is durable, but a stale deterministic child workspace exists | Discard the uncommitted workspace, recreate it from the parent, and start the child once |
 | A child ledger is nonterminal and its exact manifest, snapshot digest, or workspace is missing or divergent | Refuse with `child_recovery_ineligible`; do not create a replacement child or repeat uncertain work |
+| A valid nonterminal child workspace is in the old run-store location | Validate the old exclusion identity, translate a nested parent path when necessary, and move and sync the complete identity directory to the private project-sibling collection. Across filesystems, use a bounded verified staging copy. Reopen it, record `run_resumed.workspaceRelocation`, and then continue recovery. |
 | A child ledger is terminal but its parent outcome is absent | Treat the child ledger as authoritative, idempotently confirm workspace discard, verify its linked typed result and resources, and append only the parent outcome |
 | A parent child outcome is durable but the parent run is nonterminal | Re-reduce every settled child ledger recursively and compare its link, terminal sequence, outcome, typed result, duration, workspace provenance, and all five resource totals with the imported projection; refuse divergence with `child_recovery_ineligible` before appending `run_resumed` |
 | An optimization candidate succeeded but no evaluation is durable | Append `run_resumed`, recompute metric/invariants from its canonical child result, reopen an exact durable capture or capture the same bounded delta, and record one evaluation; a partial or divergent capture fails closed |
@@ -354,21 +355,52 @@ JSONL records are committed only when newline-terminated. Recovery ignores a fin
 fragment and truncates it immediately before the next append. An invalid earlier record, mismatched
 run directory, or corrupt owner record fails closed and is preserved for diagnosis.
 
-## Prompt candidate and evaluation recovery
+## Prompt candidate, activation, and evaluation recovery
 
-A prompt candidate has no mutable runtime or activation journal to recover. Candidate admission is a
-read-only, all-or-nothing observation of the manifest, baseline workflow, and tuning evidence. If a
-source changes during admission, no evaluation header or trial is created; the operator must review
-the new bytes and validate again. Candidate validation does not modify the baseline, and a favorable
-evaluation does not grant activation authority.
+Candidate admission is a read-only, complete observation of the manifest, baseline, and tuning
+evidence. A source change stops admission. The operator must inspect and validate the new bytes.
+Candidate validation never changes the baseline.
 
-Once an evaluation starts, the public header binds the candidate source hash, candidate digest,
-baseline workflow digest, evidence digests, prompt before/after hashes, and projected workflow
-digest. Resume re-admits the supplied plan and refuses candidate removal, replacement, or source
-drift through the existing plan-identity check. Committed trial recovery remains exact-suffix
-evaluation recovery; it never regenerates a candidate, re-exports evidence, edits the baseline, or
-activates the projection. Tuning-evidence export is a separate atomic no-overwrite operation and is
-safe to retry only with a different absent output path or after confirming the first output.
+An evaluation header binds the candidate, baseline, evidence, prompt changes, and projected workflow.
+Evaluation resume re-admits the supplied plan. It rejects candidate removal, replacement, and source
+changes. It continues only the missing schedule suffix.
+
+For a child in an old workspace location, Flow first validates and moves the workspace. The first
+recovery event is `run_resumed.workspaceRelocation`. A parent writes this child event before it
+starts recovery in the child. Nested recovery applies the same order at each level.
+
+The activation store validates the complete next index and physical store limits first. It then
+writes the immutable candidate and baseline artifacts before it writes the selecting index. A known
+failure before index replacement removes new unindexed artifacts and keeps the old head. A failure
+after replacement but before directory sync returns `commit_uncertain`. The operator must inspect
+the index before retry.
+
+The mutation lock identifies its host, process, and random token. Flow retires it only after the
+same host reports that the process does not exist. A live, foreign, changed, or invalid lock owner
+fails closed.
+
+Flow removes old index and blob temporary files while it holds the mutation lock.
+It checks each strict name, file type, size, and stable identity before removal.
+A file that another process removes before observation needs no recovery action.
+A new lock temporary name contains the host and process identity.
+
+Flow can remove an empty or partial file when its name identifies a dead process on this host.
+Flow removes a complete legacy lock temporary file only when its valid content identifies a dead process on this host.
+Temporary state has count and byte limits.
+State above a count, per-file, or aggregate byte limit fails closed.
+Blob recovery permits the complete maximum-source activation artifact.
+
+The index contains a hash-chained transition history. Store admission rejects malformed indexes,
+missing selected artifacts, changed artifacts, invalid UTF-8, symbolic links, and exceeded limits.
+An exact retry after an uncertain commit returns the current selected state.
+
+Each run saves the complete activation snapshot in its `run_started` event. Recovery uses that
+snapshot after the live index changes or disappears. Detached workers also receive the saved
+snapshot. Replay rejects changed snapshot bytes or digests.
+
+Rollback changes only the live head for future runs. It selects a verified candidate or baseline
+artifact. It does not change an existing run or delete its source artifact. Tuning-evidence export
+remains an atomic no-overwrite operation.
 
 ## Error codes and outcomes
 

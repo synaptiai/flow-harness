@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { resolve } from "node:path";
 import { AGENT_COMMAND_PROTOCOL, type AgentCommandRequest } from "../domain/agent-command.js";
 import {
   agentCommandApprovalRequestId,
@@ -117,6 +117,7 @@ import { AgentCommandApprovalDecisionSourceError } from "./ports.js";
 
 export interface RunWorkflowOptions {
   readonly cwd: string;
+  readonly projectRoot?: string;
   readonly protectedPaths: readonly string[];
   readonly capabilitySnapshot?: CapabilitySnapshot;
   readonly store: RunEventStore;
@@ -199,6 +200,19 @@ export async function resumeWorkflow(
   workflow: CompiledWorkflow,
   options: ResumeWorkflowOptions,
 ): Promise<RunState> {
+  return await resumeWorkflowWithRelocation(workflow, options);
+}
+
+interface RecoveryWorkspaceRelocation {
+  readonly fromCwd: string;
+  readonly toCwd: string;
+}
+
+async function resumeWorkflowWithRelocation(
+  workflow: CompiledWorkflow,
+  options: ResumeWorkflowOptions,
+  workspaceRelocation?: RecoveryWorkspaceRelocation,
+): Promise<RunState> {
   assertNotAborted(options.signal);
 
   const events = await options.store.claim(options.runId);
@@ -244,9 +258,19 @@ export async function resumeWorkflow(
       options.runId,
       executionCwd,
       options.executionWorkspace,
+      workspaceRelocation,
       state,
       events,
     );
+    if (state.executionCwd !== executionCwd && workspaceRelocation !== undefined) {
+      const relocated: RunResumedEvent = {
+        ...eventBase(workflow, options.runId, state.lastSequence + 1, now),
+        type: "run_resumed",
+        workspaceRelocation,
+      };
+      await options.store.append(relocated);
+      state = appendRunEvent(state, relocated);
+    }
     await validateRecoveredChildTrees(workflow, effectiveOptions, state);
     state = await reconcileOpenEffects(workflow, effectiveOptions, state, now);
     assertNotAborted(options.signal);
@@ -576,6 +600,9 @@ async function continueWorkflow(
                     workflowId: workflow.id,
                     attempt,
                     cwd: options.cwd,
+                    ...(options.projectRoot === undefined
+                      ? {}
+                      : { projectRoot: options.projectRoot }),
                     protectedPaths: options.protectedPaths,
                     ...(options.capabilitySnapshot === undefined
                       ? {}
@@ -1483,6 +1510,7 @@ function validateRecoveryCompatibility(
   runId: string,
   executionCwd: string,
   executionWorkspace: ExecutionWorkspaceProvenance | undefined,
+  workspaceRelocation: RecoveryWorkspaceRelocation | undefined,
   state: RunState,
   events: readonly RunEvent[],
 ): void {
@@ -1493,7 +1521,11 @@ function validateRecoveryCompatibility(
     );
   }
 
-  if (state.executionCwd !== null && state.executionCwd !== executionCwd) {
+  const validRelocation =
+    state.executionWorkspace !== null &&
+    workspaceRelocation?.fromCwd === state.executionCwd &&
+    resolve(workspaceRelocation.toCwd) === executionCwd;
+  if (state.executionCwd !== null && state.executionCwd !== executionCwd && !validRelocation) {
     throw new RunRecoveryError(
       "execution_context_mismatch",
       `run "${runId}" was started in "${state.executionCwd}" and cannot resume in "${executionCwd}"`,
@@ -3639,11 +3671,11 @@ async function executeChildNode(
     parentNodeId: node.id,
     parentAttempt: context.attempt,
   });
-  const protectedPaths = childExecutionProtectedPaths(workspace.cwd, context.protectedPaths);
   const childState = await runWorkflow(node.child.workflow, {
     runId: link.runId,
     cwd: workspace.cwd,
-    protectedPaths,
+    ...(options.projectRoot === undefined ? {} : { projectRoot: options.projectRoot }),
+    protectedPaths: context.protectedPaths,
     store,
     executor: options.executor,
     ...(options.workspaceIsolator === undefined
@@ -3685,6 +3717,7 @@ async function recoverChildNode(
         workflowId: node.child.workflow.id,
         attempt,
         cwd: resolve(options.cwd),
+        ...(options.projectRoot === undefined ? {} : { projectRoot: options.projectRoot }),
         protectedPaths: options.protectedPaths,
         ...(options.capabilitySnapshot === undefined
           ? {}
@@ -3712,46 +3745,35 @@ async function recoverChildNode(
     ) {
       throw new Error(`child run "${link.runId}" workspace provenance has diverged`);
     }
-    childState = await resumeWorkflow(node.child.workflow, {
-      runId: link.runId,
-      cwd: workspace.cwd,
-      protectedPaths: childExecutionProtectedPaths(workspace.cwd, options.protectedPaths),
-      store,
-      executor: options.executor,
-      workspaceIsolator: options.workspaceIsolator,
-      executionWorkspace: provenance,
-      ...(options.capabilitySnapshot === undefined
-        ? {}
-        : { capabilitySnapshot: options.capabilitySnapshot }),
-      ...(options.effectReconciler === undefined
-        ? {}
-        : { effectReconciler: options.effectReconciler }),
-      now,
-      ...(options.signal === undefined ? {} : { signal: options.signal }),
-      ...(options.agentCommandApprovalDecisions === undefined
-        ? {}
-        : { agentCommandApprovalDecisions: options.agentCommandApprovalDecisions }),
-    });
+    childState = await resumeWorkflowWithRelocation(
+      node.child.workflow,
+      {
+        runId: link.runId,
+        cwd: workspace.cwd,
+        ...(options.projectRoot === undefined ? {} : { projectRoot: options.projectRoot }),
+        protectedPaths: options.protectedPaths,
+        store,
+        executor: options.executor,
+        workspaceIsolator: options.workspaceIsolator,
+        executionWorkspace: provenance,
+        ...(options.capabilitySnapshot === undefined
+          ? {}
+          : { capabilitySnapshot: options.capabilitySnapshot }),
+        ...(options.effectReconciler === undefined
+          ? {}
+          : { effectReconciler: options.effectReconciler }),
+        now,
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+        ...(options.agentCommandApprovalDecisions === undefined
+          ? {}
+          : { agentCommandApprovalDecisions: options.agentCommandApprovalDecisions }),
+      },
+      workspace.relocatedFromCwd === undefined
+        ? undefined
+        : { fromCwd: workspace.relocatedFromCwd, toCwd: workspace.cwd },
+    );
   }
   return await settleChildState(node, childState, options.workspaceIsolator);
-}
-
-function childExecutionProtectedPaths(
-  workspaceCwd: string,
-  protectedPaths: readonly string[],
-): readonly string[] {
-  const workspace = resolve(workspaceCwd);
-  return Object.freeze(
-    protectedPaths.filter((protectedPath) => !isPathAtOrWithin(workspace, resolve(protectedPath))),
-  );
-}
-
-function isPathAtOrWithin(path: string, directory: string): boolean {
-  const fromDirectory = relative(directory, path);
-  return (
-    fromDirectory === "" ||
-    (fromDirectory !== ".." && !fromDirectory.startsWith(`..${sep}`) && !isAbsolute(fromDirectory))
-  );
 }
 
 function validateRecoveredChildIdentity(

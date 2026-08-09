@@ -38,6 +38,7 @@ export interface IsolatedWorkspace {
   readonly cwd: string;
   readonly backend: "reflink-copy-v1";
   readonly snapshotDigest: string;
+  readonly relocatedFromCwd?: string;
 }
 
 export interface WorkspaceIsolator {
@@ -88,6 +89,7 @@ export interface CandidatePromotionRequest {
   readonly sourceCwd: string;
   readonly deltaDigest: string;
   readonly excludedPaths?: readonly string[];
+  readonly legacySourceCwd?: string;
 }
 
 export interface CandidatePromotionBoundary {
@@ -119,6 +121,7 @@ export interface CandidateWorkspaceManager {
     readonly sourceCwd: string;
     readonly expectedSnapshotDigest: string;
     readonly excludedPaths?: readonly string[];
+    readonly legacySourceCwd?: string;
   }): Promise<CandidateDelta>;
   promoteCandidateDelta(
     request: CandidatePromotionRequest,
@@ -134,6 +137,7 @@ export interface NodeExecutionContext {
   readonly workflowId: string;
   readonly attempt: number;
   readonly cwd: string;
+  readonly projectRoot?: string;
   readonly protectedPaths: readonly string[];
   readonly capabilitySnapshot?: CapabilitySnapshot;
   readonly effectJournal?: NodeEffectJournal;

@@ -37,6 +37,8 @@ describe("supervisor protocol", () => {
           workflowSource:
             "apiVersion: flow.synapti.ai/v1alpha1\nkind: Workflow\nmetadata: { id: detached }\nnodes: []\n",
           cwd: "/workspace",
+          projectRoot: "/workspace",
+          protectedPaths: ["/workspace/.flow/runs", "/workspace/.flow"],
         },
       }),
     );
@@ -54,6 +56,8 @@ describe("supervisor protocol", () => {
         workflowSource:
           "apiVersion: flow.synapti.ai/v1alpha1\nkind: Workflow\nmetadata: { id: detached }\nnodes: []\n",
         cwd: "/workspace",
+        projectRoot: "/workspace",
+        protectedPaths: ["/workspace/.flow/runs", "/workspace/.flow"],
       },
     });
   });
@@ -138,6 +142,38 @@ describe("supervisor protocol", () => {
         }),
       ),
     ).toThrow(/sourceName|exact|semantic/i);
+  });
+
+  it("accepts only exact activation locators as active source identities", () => {
+    const command = {
+      type: "submit",
+      policyDigest: "a".repeat(64),
+      commandId: randomUUID(),
+      mode: "run",
+      runId: "active-root",
+      sourceName: "activation:adaptive-workflow",
+      workflowSource: "apiVersion: flow.synapti.ai/v1alpha1\nkind: Workflow\n",
+      cwd: "/workspace",
+    } as const;
+
+    expect(
+      parseSupervisorRequestFrame(
+        encodeSupervisorMessage({
+          version: SUPERVISOR_PROTOCOL_VERSION,
+          requestId: randomUUID(),
+          command,
+        }),
+      ).command,
+    ).toMatchObject({ sourceName: "activation:adaptive-workflow" });
+    expect(() =>
+      parseSupervisorRequestFrame(
+        encodeSupervisorMessage({
+          version: SUPERVISOR_PROTOCOL_VERSION,
+          requestId: randomUUID(),
+          command: { ...command, sourceName: "activation:Adaptive@latest" },
+        }),
+      ),
+    ).toThrow(/sourceName|activation/i);
   });
 
   it("parses bounded cursor replay and attributable cancellation commands", () => {

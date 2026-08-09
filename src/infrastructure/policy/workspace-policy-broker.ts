@@ -23,13 +23,13 @@ export class WorkspacePolicyBroker {
     const resolved = await resolveWorkspaceTarget(this.canonicalRoot, inputPath);
     const boundary =
       resolved.boundary === "inside" &&
-      isWriteAction(action) &&
-      (isProtectedWriteTarget(
+      (isProtectedTarget(
         this.canonicalRoot,
         resolved.lexicalTarget,
         this.protectedWritePaths,
+        action,
       ) ||
-        isProtectedWriteTarget(this.canonicalRoot, resolved.target, this.protectedWritePaths))
+        isProtectedTarget(this.canonicalRoot, resolved.target, this.protectedWritePaths, action))
         ? "protected"
         : resolved.boundary;
     if (action === "filesystem.write") {
@@ -127,17 +127,22 @@ function isWriteAction(action: PolicyAction): boolean {
   return action === "filesystem.write" || action === "filesystem.delete";
 }
 
-function isProtectedWriteTarget(
+function isProtectedTarget(
   root: string,
   target: string,
   protectedWritePaths: readonly string[],
+  action: WorkspacePolicyAction,
 ): boolean {
   if (protectedWritePaths.some((protectedPath) => isAtOrWithin(target, protectedPath))) {
     return true;
   }
   const fromRoot = relative(root, target);
   const segments = fromRoot.split(sep);
-  if (segments.includes(".flow") || segments.includes(".git")) {
+  if (
+    segments.includes(".flow") ||
+    segments.some(isFlowWorkspaceCollectionName) ||
+    (segments.includes(".git") && isWriteAction(action))
+  ) {
     return true;
   }
   const targetName = basename(target).toLowerCase();
@@ -151,6 +156,13 @@ function isProtectedWriteTarget(
     targetName.endsWith(".key") ||
     targetName.endsWith(".p12") ||
     targetName.endsWith(".pfx")
+  );
+}
+
+function isFlowWorkspaceCollectionName(name: string): boolean {
+  return (
+    name === ".flow-workspaces" ||
+    (name.startsWith(".") && name.endsWith(".flow-workspaces") && name.length > 17)
   );
 }
 

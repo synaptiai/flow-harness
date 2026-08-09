@@ -253,11 +253,35 @@ For `exec`, the broker binds `process.execute` authorization to the normalized e
 
 Every command executor depends on a Flow-owned `CommandSandbox` port. The production composition uses Anthropic Sandbox Runtime (SRT) with a fixed, versioned profile: workspace and private-temp writes are allowed; network, home-directory reads, ambient credentials, run-store writes, and writes to sensitive project state are denied. Sandbox dependency errors and degraded-security warnings fail before spawn. Same-policy concurrent commands share one process-global SRT session while each wrap receives its own private temporary directory and complete per-exec filesystem configuration. A reference-counted Flow coordinator serializes initialization and teardown, queues an incompatible workspace or policy until the active session resets, invokes SRT's per-command cleanup once per wrap, honors cancellation while queued, and resets only after the final compatible command releases. Cleanup must complete before a node can succeed.
 
-Isolated child directories are owned beneath the run-store workspace area. For a child command,
-Flow removes a protected-path deny only when that path is an ancestor of the command's own isolated
-workspace; SRT still grants writes solely to that canonical workspace and its private temporary
-directory. Run ledgers, ownership records, and sibling workspaces therefore remain outside the
-write allowlist. Fresh child execution and child recovery derive the same policy.
+Flow creates new isolated child directories in an owner-only project-sibling collection. The
+collection name is `.<project-name>.flow-workspaces`. A hash of the canonical physical run-store
+path separates workspace groups. Filesystem aliases for one run store select one group. The project
+workspace, the protected project `.flow` directory, and
+the configured run store do not contain the collection. Flow rejects a linked collection or owner
+directory. Attached runs use the canonical configured project root. Detached job records save the
+same optional root and bind it to the job digest. For an old job without these fields, the worker
+can infer the root from the durable `.flow/runs` ancestor. It accepts the root only when the job
+directory is in that project.
+
+Flow gives every child command the complete protected-path read and write deny list. Flow also
+protects the `.flow` path in the child workspace. The broker denies each historical
+`.flow-workspaces` or named `.<name>.flow-workspaces` path segment. Before command spawn, SRT scans
+at most 200,000 execution-root entries and adds each existing private collection as a literal
+protected path. It rejects linked or indirect collections. For a child, SRT denies reads from every
+ancestor collection but permits writes in the selected workspace. Thus, a child cannot read a
+sibling workspace at any nesting level. The snapshot copier omits these collections. A root command cannot read or write
+an existing private workspace collection. On Linux, Flow rejects a command root that strictly
+contains the configured project root. Linux SRT cannot protect a matching path that does not exist
+when the sandbox starts.
+
+Recovery can find a workspace in the old run-store location. Flow validates the old manifest with
+its old exclusion identity. For a nested child, Flow translates the new parent path to its old
+parent path. Flow then moves and syncs the complete workspace identity directory to the
+project-sibling collection. Across filesystems, Flow uses a bounded, verified, and synced staging
+copy. It publishes the copy with one rename and removes the old identity last. Flow reopens the
+moved workspace. Its first recovery event records the old and new paths in
+`run_resumed.workspaceRelocation`. A parent records this event before it starts recovery in that
+child. Flow does not create new workspaces in the old location.
 
 The port isolates Flow from the backend. Pi's official SRT and Gondolin examples validate this tool-routing seam; Flow imports SRT as a containment primitive but owns policy, lifecycle, evidence, and failure semantics. The pinned SRT Linux implementation already tracks concurrent active sandbox wraps so mount-point cleanup waits for the last command; Flow's coordinator preserves that backend contract. A future Gondolin, OpenShell, or container adapter can implement the same port without changing workflow or ledger contracts.
 
@@ -735,36 +759,44 @@ It does not make task selection representative, control provider stochasticity t
 seed, or turn a bootstrap interval into a universal performance claim. See
 [Reproducible harness evaluation](evaluation.md).
 
-## Adaptive prompt candidate layer
+## Adaptive prompt candidate and activation layer
 
-The first Gate 7 slice sits above evaluation rather than inside a running model session. A complete
-evaluation can be projected into a canonical tuning-only evidence packet. The projection is a
-closed allowlist: it retains tuning classifications, bounded outcomes, available metrics, and exact
-profile/source identity while omitting regression and holdout material, verifier evidence, run
-handles, and schedule positions. Bounded reasons retain an explicit truncation bit, and packet
-admission rejects contradictory classifications, outcomes, recovery metrics, or paired tuples.
-It also requires the scheduler's one-to-one seed/repetition mapping, contiguous repetitions, and a
-declared total implying an integral bounded source-task count.
+Gate 7 sits above evaluation. A complete evaluation can produce a canonical tuning-only evidence
+packet. The packet omits regression data, holdout data, verifier evidence, run handles, and schedule
+positions. Admission rejects contradictory outcomes, incomplete pairs, and impossible schedules.
 
-A `PromptCandidate` is inert supplemental state. It binds an exact baseline source and compiled
-workflow digest, exact tuning-evidence packets, a workflow scope, and prompt replacements for
-existing root agent nodes. Admission performs stable no-follow reads, revalidates candidate-root,
-ancestor, and final
-identities, verifies every declared hash, requires the evidence to cover the baseline workflow,
-checks the current prompt hash, and constructs the projection by changing only those prompt leaves.
-The candidate profile must overlay the exact declared comparison baseline. The result then passes through the ordinary
-workflow compiler and the existing `flow-workflow-v1` evaluation adapter. There is no adaptive
-compiler, scheduler, tool broker, or executor.
+A `PromptCandidate` is inert supplemental state. It binds an exact baseline, exact tuning evidence,
+a workflow scope, and prompt replacements for existing root agent nodes. Admission performs stable
+no-follow reads and verifies each declared hash. It changes only the declared prompt fields.
 
-The manifest hash proves what was proposed; the independently recomputed candidate digest binds the
-complete public baseline, evidence, target, and projected identities; the projected workflow digest
-proves what the scheduler will execute. The complete candidate identity enters the evaluation
-plan/header without persisting prompt bodies and is cross-checked against both surrounding workflow
-profiles during replay. A generated candidate projection carries an explicit source discriminator;
-ordinary file-backed workflows omit it to preserve version-1 plan digests and legacy resume. A candidate
-cannot change graph structure, tools, skills, packages, policy, approvals, budgets, verifier
-definitions, retry behavior, or model routing. Candidate validation and evaluation do not mutate the
-baseline. Automatic proposal, activation, rollout, and rollback remain future reviewed boundaries.
+The standard compiler creates the projected workflow. The `flow-workflow-v1` adapter evaluates that
+projection against the exact declared baseline. The evaluation header stores the complete public
+candidate identity without prompt bodies.
+
+An operator can activate only a complete superior evaluation. Preview creates a deterministic
+proposal from the current head, target, actor, and reason. Apply holds one cross-process mutation
+lock and requires the exact proposal digest.
+
+The activation store contains immutable content-addressed artifacts, one atomic index, and a
+hash-chained transition history. Each approval stores one candidate artifact and its exact baseline
+artifact. The index selects one exact artifact for each workflow. The store validates limits before
+it publishes both artifacts and replaces the index.
+
+New runs can use `activation:<workflow-id>`. Run admission validates the selected artifact and
+requires one matching activation in the capability snapshot. It verifies the exact decoded source
+bytes and compiles the saved source. The run then stores the exact artifact in its capability
+snapshot. Detached execution and resume use that saved snapshot, not the current index.
+
+Attached execution protects the canonical project `.flow` directory. A detached job stores the same
+protected path in its immutable record. The worker gives the saved path to each node executor.
+
+Rollback changes the index head for future runs. It selects an earlier candidate artifact or the
+stored baseline artifact for the current lineage. It does not change active runs, rewrite the
+baseline file, or delete artifacts.
+
+A candidate cannot change graphs, tools, skills, packages, models, policy, approvals, budgets,
+verifiers, retries, or routing. Automatic candidate generation and model-authorized activation
+remain unavailable.
 
 ## Non-goals
 
@@ -777,8 +809,7 @@ baseline. Automatic proposal, activation, rollout, and rollback remain future re
 - Flow does not guarantee exactly-once behavior for arbitrary external side effects.
 - Flow does not guarantee prepaid or invoice-authoritative model-cost caps, currency conversion, or distributed quota reservation.
 - Flow does not autonomously merge, release, deploy, or weaken its safety floor.
-- Flow does not automatically activate an adaptive prompt candidate; a favorable evaluation is
-  evidence, not mutation authority.
+- Flow does not let a model activate an adaptive prompt candidate.
 - Flow does not permit live mutation of policy, evaluator definitions, or graph semantics.
 - Flow does not make a Python or JavaScript kernel a mandatory core primitive.
 - Flow does not treat process or worktree isolation as a security sandbox.
