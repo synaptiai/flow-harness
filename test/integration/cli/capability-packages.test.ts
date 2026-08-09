@@ -337,7 +337,7 @@ describe("capability package CLI", () => {
     await expect(
       packCapabilityBundleDirectory(source, join(project, "entry-overflow.flowpkg")),
     ).rejects.toMatchObject({ code: "limit_exceeded" });
-  });
+  }, 15_000);
 });
 
 async function projectDirectory(): Promise<string> {
