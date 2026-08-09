@@ -84,9 +84,11 @@ import {
   calculateRunBudgetState,
   committedDurationMs,
   emptyRunResources,
+  RUN_BUDGET_DIMENSIONS,
   type RunBudgetExhaustion,
   type RunBudgetState,
   type RunResourceConsumption,
+  retainedArtifactBytes,
   runBudgetExhaustionSchema,
   runBudgetLimitsSchema,
   sameBudgetExhaustions,
@@ -1542,6 +1544,7 @@ const childResourceSchema = z
     modelTokens: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
     modelCostUsdMicros: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
     executionMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    artifactBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).default(0),
   })
   .strict();
 
@@ -2759,7 +2762,7 @@ export const runEventSchema = z.discriminatedUnion("type", [
     .object({
       ...eventBaseShape,
       type: z.literal("run_budget_exhausted"),
-      exhausted: z.array(runBudgetExhaustionSchema).min(1).max(4),
+      exhausted: z.array(runBudgetExhaustionSchema).min(1).max(RUN_BUDGET_DIMENSIONS.length),
     })
     .strict(),
 ]);
@@ -6730,6 +6733,7 @@ function addResourcesForEvidence(
     }
     return addRunResources(resources, {
       executionMs: committedDurationMs(evidence.durationMs),
+      artifactBytes: artifactBytesForEvidence(evidence),
       ...((evidence.kind === "agent" ||
         (evidence.kind === "verifier" && evidence.driver === "model")) &&
       evidence.usage !== undefined
@@ -6741,6 +6745,22 @@ function addResourcesForEvidence(
     });
   } catch (error) {
     throw resourceReplayError(eventIndex, error);
+  }
+}
+
+function artifactBytesForEvidence(evidence: Exclude<NodeEvidence, ChildEvidence>): number {
+  switch (evidence.kind) {
+    case "command":
+      return retainedArtifactBytes([evidence.stdout, evidence.stderr]);
+    case "agent":
+      return retainedArtifactBytes([evidence.text]);
+    case "verifier":
+      if (evidence.driver === "model") {
+        return retainedArtifactBytes([evidence.raw]);
+      }
+      return evidence.command === null
+        ? 0
+        : retainedArtifactBytes([evidence.command.stdout, evidence.command.stderr]);
   }
 }
 

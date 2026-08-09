@@ -11,6 +11,7 @@ export const runBudgetLimitsSchema = z
     maxModelTokens: positiveSafeIntegerSchema.optional(),
     maxCostUsdMicros: positiveSafeIntegerSchema.optional(),
     maxExecutionMs: positiveSafeIntegerSchema.optional(),
+    maxArtifactBytes: positiveSafeIntegerSchema.optional(),
   })
   .strict()
   .refine((budget) => Object.values(budget).some((value) => value !== undefined), {
@@ -27,11 +28,15 @@ export const agentModelUsageSchema = z
   })
   .strict();
 
-export type RunBudgetDimension =
-  | "nodeStarts"
-  | "modelTokens"
-  | "modelCostUsdMicros"
-  | "executionMs";
+export const RUN_BUDGET_DIMENSIONS = Object.freeze([
+  "nodeStarts",
+  "modelTokens",
+  "modelCostUsdMicros",
+  "executionMs",
+  "artifactBytes",
+] as const);
+
+export type RunBudgetDimension = (typeof RUN_BUDGET_DIMENSIONS)[number];
 
 export interface AgentModelUsage {
   readonly inputTokens: number;
@@ -46,6 +51,7 @@ export interface RunResourceConsumption {
   readonly modelTokens: number;
   readonly modelCostUsdMicros: number;
   readonly executionMs: number;
+  readonly artifactBytes: number;
 }
 
 export interface RunBudgetRemaining {
@@ -53,6 +59,7 @@ export interface RunBudgetRemaining {
   readonly modelTokens?: number;
   readonly modelCostUsdMicros?: number;
   readonly executionMs?: number;
+  readonly artifactBytes?: number;
 }
 
 export interface RunBudgetExhaustion {
@@ -69,7 +76,7 @@ export interface RunBudgetState {
 
 export const runBudgetExhaustionSchema = z
   .object({
-    dimension: z.enum(["nodeStarts", "modelTokens", "modelCostUsdMicros", "executionMs"]),
+    dimension: z.enum(RUN_BUDGET_DIMENSIONS),
     limit: positiveSafeIntegerSchema,
     consumed: nonNegativeSafeIntegerSchema,
   })
@@ -81,6 +88,7 @@ export function emptyRunResources(): RunResourceConsumption {
     modelTokens: 0,
     modelCostUsdMicros: 0,
     executionMs: 0,
+    artifactBytes: 0,
   });
 }
 
@@ -97,6 +105,7 @@ export function addRunResources(
       "modelCostUsdMicros",
     ),
     executionMs: checkedAdd(current.executionMs, delta.executionMs ?? 0, "executionMs"),
+    artifactBytes: checkedAdd(current.artifactBytes, delta.artifactBytes ?? 0, "artifactBytes"),
   });
 }
 
@@ -114,6 +123,13 @@ export function committedDurationMs(durationMs: number): number {
     throw new RangeError("executionMs must remain a non-negative safe integer");
   }
   return rounded;
+}
+
+export function retainedArtifactBytes(values: readonly string[]): number {
+  return values.reduce(
+    (total, value) => checkedAdd(total, Buffer.byteLength(value, "utf8"), "artifactBytes"),
+    0,
+  );
 }
 
 export function calculateRunBudgetState(
@@ -139,6 +155,9 @@ export function calculateRunBudgetState(
     ...(limits.maxExecutionMs === undefined
       ? {}
       : { executionMs: available(limits.maxExecutionMs, resources.executionMs) }),
+    ...(limits.maxArtifactBytes === undefined
+      ? {}
+      : { artifactBytes: available(limits.maxArtifactBytes, resources.artifactBytes) }),
   });
   const exhausted = Object.freeze(
     dimensionValues(limits, resources)
@@ -232,6 +251,15 @@ function dimensionValues(
             dimension: "executionMs" as const,
             limit: limits.maxExecutionMs,
             consumed: resources.executionMs,
+          },
+        ]),
+    ...(limits.maxArtifactBytes === undefined
+      ? []
+      : [
+          {
+            dimension: "artifactBytes" as const,
+            limit: limits.maxArtifactBytes,
+            consumed: resources.artifactBytes,
           },
         ]),
   ];

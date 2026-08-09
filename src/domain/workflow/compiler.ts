@@ -1372,6 +1372,7 @@ function freezeBudget(source: NonNullable<WorkflowSource["budget"]>): CompiledRu
       ? {}
       : { maxCostUsdMicros: Math.round(source.maxCostUsd * 1_000_000) }),
     ...(source.maxExecutionMs === undefined ? {} : { maxExecutionMs: source.maxExecutionMs }),
+    ...(source.maxArtifactBytes === undefined ? {} : { maxArtifactBytes: source.maxArtifactBytes }),
   });
 }
 
@@ -1987,7 +1988,8 @@ function freezeChildDefinition(
     workflow.budget?.maxNodeStarts === undefined ||
     workflow.budget.maxModelTokens === undefined ||
     workflow.budget.maxCostUsdMicros === undefined ||
-    workflow.budget.maxExecutionMs === undefined
+    workflow.budget.maxExecutionMs === undefined ||
+    workflow.budget.maxArtifactBytes === undefined
   ) {
     throw new WorkflowCompilationError(
       sourceName,
@@ -1996,7 +1998,7 @@ function freezeChildDefinition(
           code: "child_budget_required",
           path: "budget",
           message:
-            "child workflow must declare node-start, model-token, cost, and execution ceilings",
+            "child workflow must declare node-start, model-token, cost, execution, and artifact ceilings",
         },
       ]),
     );

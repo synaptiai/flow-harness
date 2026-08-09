@@ -153,29 +153,62 @@ describe("public repository contracts", () => {
   });
 
   it("documents durable run budgets with a valid credential-free example", async () => {
-    const [readme, architecture, workflowSpec, recovery, roadmap, exampleSource] =
-      await Promise.all([
-        readText("README.md"),
-        readText("docs/architecture.md"),
-        readText("docs/workflow-spec.md"),
-        readText("docs/recovery.md"),
-        readText("docs/roadmap.md"),
-        readText("examples/budgeted-foundation.workflow.yaml"),
-      ]);
+    const [
+      readme,
+      architecture,
+      workflowSpec,
+      recovery,
+      roadmap,
+      testing,
+      exampleSource,
+      childExampleSource,
+      optimizationExampleSource,
+    ] = await Promise.all([
+      readText("README.md"),
+      readText("docs/architecture.md"),
+      readText("docs/workflow-spec.md"),
+      readText("docs/recovery.md"),
+      readText("docs/roadmap.md"),
+      readText("docs/testing-and-evaluation.md"),
+      readText("examples/budgeted-foundation.workflow.yaml"),
+      readText("examples/isolated-child.workflow.yaml"),
+      readText("examples/bounded-optimization.workflow.yaml"),
+    ]);
 
     expect(readme).toContain("resource_exhausted");
+    expect(readme).toContain("maxArtifactBytes");
+    expect(readme).toMatch(/artifactBytes.*UTF-8.*stdout \+ stderr/is);
+    expect(readme).toMatch(/does not yet.*artifact store/is);
     expect(readme).toMatch(/reported-cost.*hard billing cap/is);
     expect(architecture).toMatch(/durable resource accounting/i);
+    expect(architecture).toMatch(/recursively re-reduces every settled child\s+ledger/i);
     expect(workflowSpec).toContain("maxCostUsd");
+    expect(workflowSpec).toContain("maxArtifactBytes");
+    expect(workflowSpec).toMatch(/terminal primary executor payloads.*command.*agent.*verifier/is);
     expect(workflowSpec).toMatch(/micro-USD/i);
     expect(recovery).toContain("run_budget_exhausted");
-    expect(roadmap).toMatch(/model tokens.*reported cost.*active execution time.*Implemented/is);
+    expect(recovery).toMatch(/parent child outcome.*all five resource totals/is);
+    expect(roadmap).toMatch(
+      /model tokens.*reported cost.*active execution time.*retained executor-output artifacts.*Implemented/is,
+    );
+    expect(testing).toMatch(/Focused artifact-budget tests.*multibyte UTF-8 accounting/is);
+    expect(testing).toMatch(/do not claim an artifact store.*physical disk quota/is);
+    expect(childExampleSource.match(/maxArtifactBytes:/g)).toHaveLength(2);
+    expect(optimizationExampleSource.match(/maxArtifactBytes:/g)).toHaveLength(2);
 
     const example = parse(exampleSource) as {
-      readonly budget?: { readonly maxNodeStarts?: number; readonly maxExecutionMs?: number };
+      readonly budget?: {
+        readonly maxNodeStarts?: number;
+        readonly maxExecutionMs?: number;
+        readonly maxArtifactBytes?: number;
+      };
       readonly nodes: readonly unknown[];
     };
-    expect(example.budget).toEqual({ maxNodeStarts: 2, maxExecutionMs: 130000 });
+    expect(example.budget).toEqual({
+      maxNodeStarts: 2,
+      maxExecutionMs: 130000,
+      maxArtifactBytes: 1048576,
+    });
     expect(example.nodes).toHaveLength(2);
   });
 

@@ -50,6 +50,7 @@ describe("child workflow execution", () => {
         modelTokens: 0,
         modelCostUsdMicros: 0,
         executionMs: 5,
+        artifactBytes: 4,
       },
       nodes: {
         delegate: {
@@ -58,7 +59,7 @@ describe("child workflow execution", () => {
             kind: "child",
             childRunId,
             result: { canonicalValue: "true", valueHash: sha256("true") },
-            resources: { nodeStarts: 1, executionMs: 5 },
+            resources: { nodeStarts: 1, executionMs: 5, artifactBytes: 4 },
             workspace: {
               snapshotDigest: "a".repeat(64),
               disposition: "discarded",
@@ -72,6 +73,37 @@ describe("child workflow execution", () => {
       expect.objectContaining({ nodeId: "produce", cwd: `/isolated/${childRunId}` }),
     ]);
     expect(isolator.cleaned).toEqual([childRunId]);
+  });
+
+  it("charges a child's bounded artifact overshoot to its parent exactly once", async () => {
+    const store = new TreeMemoryStore();
+    const isolator = new MemoryWorkspaceIsolator();
+    const workflow = compileWorkflowText(parentWorkflow(2));
+
+    const state = await runWorkflow(workflow, {
+      runId: "parent-child-artifact-overshoot",
+      cwd: "/workspace",
+      protectedPaths: ["/state/runs"],
+      store,
+      executor: new ChildCommandExecutor(),
+      workspaceIsolator: isolator,
+      now: clock(),
+    });
+
+    expect(state).toMatchObject({
+      status: "failed",
+      resources: { artifactBytes: 4 },
+      nodes: {
+        delegate: {
+          error: { code: "child_run_resource_exhausted" },
+          evidence: {
+            kind: "child",
+            outcome: "resource_exhausted",
+            resources: { artifactBytes: 4 },
+          },
+        },
+      },
+    });
   });
 
   it("binds a nested verifier to the parent's frozen package snapshot", async () => {
@@ -199,6 +231,175 @@ describe("child workflow execution", () => {
     ).toHaveLength(2);
   });
 
+  it("revalidates a settled child tree before recovering the parent terminal event", async () => {
+    const store = new TreeMemoryStore();
+    const isolator = new MemoryWorkspaceIsolator();
+    const executor = new ChildCommandExecutor();
+    const workflow = compileWorkflowText(parentWorkflow());
+    store.rejectNextParentSuccess = true;
+
+    await expect(
+      runWorkflow(workflow, {
+        runId: "parent-settled-child-recovery",
+        cwd: "/workspace",
+        protectedPaths: ["/state/runs"],
+        store,
+        executor,
+        workspaceIsolator: isolator,
+        now: clock(),
+      }),
+    ).rejects.toThrow(/simulated parent success crash/i);
+
+    const resumed = await resumeWorkflow(workflow, {
+      runId: "parent-settled-child-recovery",
+      cwd: "/workspace",
+      protectedPaths: ["/state/runs"],
+      store,
+      executor,
+      workspaceIsolator: isolator,
+      now: clock(20),
+    });
+
+    expect(resumed).toMatchObject({ status: "succeeded", resources: { artifactBytes: 4 } });
+    expect(executor.calls).toHaveLength(1);
+  });
+
+  it("rejects a settled child artifact total that diverges from its child ledger", async () => {
+    const store = new TreeMemoryStore();
+    const isolator = new MemoryWorkspaceIsolator();
+    const executor = new ChildCommandExecutor();
+    const workflow = compileWorkflowText(parentWorkflow());
+    const runId = "parent-forged-child-artifacts";
+    store.rejectNextParentSuccess = true;
+
+    await expect(
+      runWorkflow(workflow, {
+        runId,
+        cwd: "/workspace",
+        protectedPaths: ["/state/runs"],
+        store,
+        executor,
+        workspaceIsolator: isolator,
+        now: clock(),
+      }),
+    ).rejects.toThrow(/simulated parent success crash/i);
+
+    rewriteChildArtifactTotal(store, runId, 1);
+
+    await expect(
+      resumeWorkflow(workflow, {
+        runId,
+        cwd: "/workspace",
+        protectedPaths: ["/state/runs"],
+        store,
+        executor,
+        workspaceIsolator: isolator,
+        now: clock(20),
+      }),
+    ).rejects.toMatchObject({ code: "child_recovery_ineligible" });
+  });
+
+  it("recursively rejects a forged grandchild total hidden by a matching parent projection", async () => {
+    const store = new TreeMemoryStore();
+    const isolator = new MemoryWorkspaceIsolator();
+    const executor = new ChildCommandExecutor();
+    const workflow = compileWorkflowText(nestedParentWorkflow());
+    const runId = "parent-forged-grandchild-artifacts";
+    store.rejectNextParentSuccess = true;
+
+    await expect(
+      runWorkflow(workflow, {
+        runId,
+        cwd: "/workspace",
+        protectedPaths: ["/state/runs"],
+        store,
+        executor,
+        workspaceIsolator: isolator,
+        now: clock(),
+      }),
+    ).rejects.toThrow(/simulated parent success crash/i);
+
+    const childRunId = calculateChildRunId(runId, "delegate", 1);
+    rewriteChildArtifactTotal(store, childRunId, 1);
+    rewriteChildArtifactTotal(store, runId, 1);
+
+    await expect(
+      resumeWorkflow(workflow, {
+        runId,
+        cwd: "/workspace",
+        protectedPaths: ["/state/runs"],
+        store,
+        executor,
+        workspaceIsolator: isolator,
+        now: clock(30),
+      }),
+    ).rejects.toMatchObject({ code: "child_recovery_ineligible" });
+  });
+
+  it("cannot forge legacy status to hide a current child's artifact total", async () => {
+    const store = new TreeMemoryStore();
+    const isolator = new MemoryWorkspaceIsolator();
+    const executor = new ChildCommandExecutor();
+    const workflow = compileWorkflowText(parentWorkflow());
+    const runId = "parent-forged-child-budget";
+    store.rejectNextParentSuccess = true;
+
+    await expect(
+      runWorkflow(workflow, {
+        runId,
+        cwd: "/workspace",
+        protectedPaths: ["/state/runs"],
+        store,
+        executor,
+        workspaceIsolator: isolator,
+        now: clock(),
+      }),
+    ).rejects.toThrow(/simulated parent success crash/i);
+
+    const childRunId = calculateChildRunId(runId, "delegate", 1);
+    const childEvents = store.events.get(childRunId);
+    if (childEvents === undefined) {
+      throw new Error("expected child events");
+    }
+    store.events.set(
+      childRunId,
+      childEvents.map((event) =>
+        event.type === "run_started" && event.budget !== undefined
+          ? {
+              ...event,
+              budget: {
+                ...(event.budget.maxNodeStarts === undefined
+                  ? {}
+                  : { maxNodeStarts: event.budget.maxNodeStarts }),
+                ...(event.budget.maxModelTokens === undefined
+                  ? {}
+                  : { maxModelTokens: event.budget.maxModelTokens }),
+                ...(event.budget.maxCostUsdMicros === undefined
+                  ? {}
+                  : { maxCostUsdMicros: event.budget.maxCostUsdMicros }),
+                ...(event.budget.maxExecutionMs === undefined
+                  ? {}
+                  : { maxExecutionMs: event.budget.maxExecutionMs }),
+              },
+            }
+          : event,
+      ),
+    );
+    rewriteChildArtifactTotal(store, runId, 0);
+
+    await expect(
+      resumeWorkflow(workflow, {
+        runId,
+        cwd: "/workspace",
+        protectedPaths: ["/state/runs"],
+        store,
+        executor,
+        workspaceIsolator: isolator,
+        now: clock(30),
+      }),
+    ).rejects.toMatchObject({ code: "child_recovery_ineligible" });
+  });
+
   it("does not materialize a child whose ceiling exceeds the parent remaining budget", async () => {
     const store = new TreeMemoryStore();
     const isolator = new MemoryWorkspaceIsolator();
@@ -221,6 +422,38 @@ describe("child workflow execution", () => {
       nodes: {
         delegate: {
           error: { code: "child_budget_unavailable", sideEffectStatus: "none" },
+          evidence: null,
+        },
+      },
+    });
+    expect(isolator.created).toEqual([]);
+  });
+
+  it("does not materialize a child whose artifact ceiling exceeds parent capacity", async () => {
+    const store = new TreeMemoryStore();
+    const isolator = new MemoryWorkspaceIsolator();
+    const workflow = compileWorkflowText(
+      parentWorkflow().replace("maxArtifactBytes: 1000000", "maxArtifactBytes: 99999"),
+    );
+
+    const state = await runWorkflow(workflow, {
+      runId: "parent-artifact-budget",
+      cwd: "/workspace",
+      protectedPaths: ["/state/runs"],
+      store,
+      executor: new ChildCommandExecutor(),
+      workspaceIsolator: isolator,
+      now: clock(),
+    });
+
+    expect(state).toMatchObject({
+      status: "failed",
+      nodes: {
+        delegate: {
+          error: {
+            code: "child_budget_unavailable",
+            message: expect.stringMatching(/artifactBytes/),
+          },
           evidence: null,
         },
       },
@@ -405,6 +638,34 @@ describe("child workflow execution", () => {
     expect(isolator.created).toHaveLength(1);
   });
 
+  it("reserves concurrent sibling artifact ceilings without overcommit", async () => {
+    const store = new TreeMemoryStore();
+    const isolator = new MemoryWorkspaceIsolator();
+    const workflow = compileWorkflowText(
+      parentWorkflowWithTwoChildren(64).replace(
+        "maxArtifactBytes: 1000000",
+        "maxArtifactBytes: 150000",
+      ),
+    );
+
+    const state = await runWorkflow(workflow, {
+      runId: "parent-sibling-artifact-budget",
+      cwd: "/workspace",
+      protectedPaths: ["/state/runs"],
+      store,
+      executor: new ChildCommandExecutor(),
+      workspaceIsolator: isolator,
+      now: clock(),
+    });
+
+    expect(state.status).toBe("failed");
+    expect(state.nodes["delegate-b"]?.error).toMatchObject({
+      code: "child_budget_unavailable",
+      message: expect.stringMatching(/artifactBytes/),
+    });
+    expect(isolator.created).toHaveLength(1);
+  });
+
   it("recreates a stale pre-ledger workspace after an interrupted child start", async () => {
     const store = new TreeMemoryStore();
     const isolator = new MemoryWorkspaceIsolator();
@@ -548,6 +809,7 @@ class TreeMemoryStore implements RecoverableRunEventStore {
   readonly events = new Map<string, RunEvent[]>();
   abortOnParentChildStart: AbortController | undefined;
   rejectNextParentOutcome = false;
+  rejectNextParentSuccess = false;
   rejectNextChildRunStart = false;
   rejectNextChildOutcome = false;
 
@@ -561,6 +823,14 @@ class TreeMemoryStore implements RecoverableRunEventStore {
     ) {
       this.rejectNextParentOutcome = false;
       throw new Error("simulated parent outcome crash");
+    }
+    if (
+      this.rejectNextParentSuccess &&
+      event.runId.startsWith("parent-") &&
+      event.type === "run_succeeded"
+    ) {
+      this.rejectNextParentSuccess = false;
+      throw new Error("simulated parent success crash");
     }
     if (
       this.rejectNextChildRunStart &&
@@ -813,8 +1083,8 @@ class ChildResultVerifierExecutor extends ChildCommandExecutor {
   }
 }
 
-function parentWorkflow(): string {
-  const child = childWorkflowSource();
+function parentWorkflow(childMaxArtifactBytes = 100000): string {
+  const child = childWorkflowSource(childMaxArtifactBytes);
   return `
 apiVersion: flow.synapti.ai/v1alpha1
 kind: Workflow
@@ -824,8 +1094,44 @@ budget:
   maxModelTokens: 10000
   maxCostUsd: 2
   maxExecutionMs: 300000
+  maxArtifactBytes: 1000000
 nodes:
 ${childNode("delegate", child)}
+`;
+}
+
+function nestedParentWorkflow(): string {
+  const leaf = childWorkflowSource();
+  const middle = `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: middle-child-analysis }
+budget:
+  maxNodeStarts: 16
+  maxModelTokens: 2000
+  maxCostUsd: 0.5
+  maxExecutionMs: 120000
+  maxArtifactBytes: 200000
+nodes:
+${childNode("nested", leaf)}  - id: publish
+    type: result
+    dependsOn: [nested]
+    result:
+      source: { nodeId: nested, field: result.value }
+      schema: { type: boolean }
+`.trim();
+  return `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: nested-parent-workflow }
+budget:
+  maxNodeStarts: 32
+  maxModelTokens: 10000
+  maxCostUsd: 2
+  maxExecutionMs: 300000
+  maxArtifactBytes: 1000000
+nodes:
+${childNode("delegate", middle)}
 `;
 }
 
@@ -840,6 +1146,7 @@ budget:
   maxModelTokens: 10000
   maxCostUsd: 2
   maxExecutionMs: 300000
+  maxArtifactBytes: 1000000
 concurrency: { maxNodes: 2 }
 nodes:
   - id: bootstrap
@@ -860,6 +1167,7 @@ budget:
   maxModelTokens: 100
   maxCostUsd: 0.01
   maxExecutionMs: 10000
+  maxArtifactBytes: 100000
 nodes:
   - id: verify
     type: verifier
@@ -886,7 +1194,7 @@ ${childNode("delegate", child)}
 `;
 }
 
-function childWorkflowSource(): string {
+function childWorkflowSource(maxArtifactBytes = 100000): string {
   return `
 apiVersion: flow.synapti.ai/v1alpha1
 kind: Workflow
@@ -896,6 +1204,7 @@ budget:
   maxModelTokens: 1000
   maxCostUsd: 0.25
   maxExecutionMs: 60000
+  maxArtifactBytes: ${maxArtifactBytes}
 nodes:
   - id: produce
     type: command
@@ -920,6 +1229,28 @@ ${child
   .map((line) => `        ${line}`)
   .join("\n")}
 `;
+}
+
+function rewriteChildArtifactTotal(store: TreeMemoryStore, runId: string, artifactBytes: number) {
+  const events = store.events.get(runId);
+  if (events === undefined) {
+    throw new Error(`expected events for run "${runId}"`);
+  }
+  store.events.set(
+    runId,
+    events.map((event) =>
+      (event.type === "node_succeeded" || event.type === "node_failed") &&
+      event.evidence?.kind === "child"
+        ? {
+            ...event,
+            evidence: {
+              ...event.evidence,
+              resources: { ...event.evidence.resources, artifactBytes },
+            },
+          }
+        : event,
+    ),
+  );
 }
 
 function clock(start = 0): () => Date {

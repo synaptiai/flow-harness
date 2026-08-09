@@ -3,10 +3,10 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import {
-  calculateCommandApprovalOperationDigest,
   type CommandApprovalOperation,
+  calculateCommandApprovalOperationDigest,
 } from "../../../src/domain/approval/command-approval.js";
-import { reduceRunEvents, type RunEvent } from "../../../src/domain/run/events.js";
+import { type RunEvent, reduceRunEvents } from "../../../src/domain/run/events.js";
 
 describe("run resource and budget replay", () => {
   it("keeps legacy runs unbudgeted while reconstructing durable resources", () => {
@@ -66,6 +66,7 @@ describe("run resource and budget replay", () => {
       modelTokens: 10,
       modelCostUsdMicros: 7,
       executionMs: 32,
+      artifactBytes: 11,
     });
     expect(state.budget).toEqual({
       limits: {

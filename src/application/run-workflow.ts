@@ -221,6 +221,7 @@ export async function resumeWorkflow(
       state,
       events,
     );
+    await validateRecoveredChildTrees(workflow, effectiveOptions, state);
     state = await reconcileOpenEffects(workflow, effectiveOptions, state, now);
     assertNotAborted(options.signal);
     state = await disposeProofSafeInterruptedAttempt(workflow, effectiveOptions, state, now);
@@ -333,6 +334,7 @@ async function continueWorkflow(
       modelTokens: 0,
       modelCostUsdMicros: 0,
       executionMs: 0,
+      artifactBytes: 0,
     };
 
     while (admitted.length < state.concurrency.maxNodes) {
@@ -972,6 +974,7 @@ interface ChildBudgetReservation {
   modelTokens: number;
   modelCostUsdMicros: number;
   executionMs: number;
+  artifactBytes: number;
 }
 
 function childBudgetPreflight(
@@ -1002,6 +1005,10 @@ function childBudgetPreflight(
     reserved.executionMs + requireBudgetLimit(child.maxExecutionMs) > remaining.executionMs
       ? "executionMs"
       : null,
+    remaining.artifactBytes !== undefined &&
+    reserved.artifactBytes + requireBudgetLimit(child.maxArtifactBytes) > remaining.artifactBytes
+      ? "artifactBytes"
+      : null,
   ].filter((value): value is string => value !== null);
   return unavailable.length === 0
     ? undefined
@@ -1031,6 +1038,10 @@ function reserveChildBudget(node: CompiledChildNode, reserved: ChildBudgetReserv
   reserved.executionMs = saturatingAdd(
     reserved.executionMs,
     requireBudgetLimit(budget.maxExecutionMs),
+  );
+  reserved.artifactBytes = saturatingAdd(
+    reserved.artifactBytes,
+    requireBudgetLimit(budget.maxArtifactBytes),
   );
 }
 
@@ -1389,6 +1400,50 @@ async function recoverOpenChildAttempts(
     state = nextState;
   }
   return state;
+}
+
+async function validateRecoveredChildTrees(
+  workflow: CompiledWorkflow,
+  options: ResumeWorkflowOptions,
+  state: RunState,
+): Promise<void> {
+  try {
+    await validateRecoveredChildTree(workflow, options.store, state);
+  } catch (error) {
+    throw new RunRecoveryError(
+      "child_recovery_ineligible",
+      `run "${options.runId}" cannot verify its settled child tree: ${boundedFailureMessage(error instanceof Error ? error.message : String(error))}`,
+    );
+  }
+}
+
+async function validateRecoveredChildTree(
+  workflow: CompiledWorkflow,
+  store: RecoverableRunEventStore,
+  state: RunState,
+): Promise<void> {
+  const nodeById = new Map(workflow.nodes.map((node) => [node.id, node]));
+  for (const [nodeId, nodeState] of Object.entries(state.nodes)) {
+    const node = nodeById.get(nodeId);
+    const evidence = nodeState.evidence;
+    if (node?.type !== "child" || evidence?.kind !== "child") {
+      continue;
+    }
+    const link = nodeState.childRun;
+    if (link === null) {
+      throw new Error(`settled child node "${nodeId}" has no durable child link`);
+    }
+    const childState = reduceRunEvents(await store.read(evidence.childRunId));
+    validateRecoveredChildIdentity(link, node, state.runId, nodeState.attempt, childState);
+    if (!runStateIsTerminal(childState)) {
+      throw new Error(`settled child run "${evidence.childRunId}" is not terminal`);
+    }
+    const expected = childEvidence(node, childState, evidence.workspace.disposition);
+    if (!sameChildEvidenceProjection(evidence, expected)) {
+      throw new Error(`settled child evidence for "${nodeId}" diverges from its child ledger`);
+    }
+    await validateRecoveredChildTree(node.child.workflow, store, childState);
+  }
 }
 
 function rejectOpenAttempt(runId: string, state: RunState): void {
@@ -1757,7 +1812,8 @@ function sameRunBudget(
     left?.maxNodeStarts === right?.maxNodeStarts &&
     left?.maxModelTokens === right?.maxModelTokens &&
     left?.maxCostUsdMicros === right?.maxCostUsdMicros &&
-    left?.maxExecutionMs === right?.maxExecutionMs
+    left?.maxExecutionMs === right?.maxExecutionMs &&
+    left?.maxArtifactBytes === right?.maxArtifactBytes
   );
 }
 
@@ -3214,6 +3270,7 @@ function validateRecoveredChildIdentity(
     state.runId !== link.runId ||
     state.workflowId !== link.workflowId ||
     state.workflowDigest !== link.workflowDigest ||
+    !sameRunBudget(state.budget?.limits, node.child.workflow.budget) ||
     provenance === null ||
     provenance.parentRunId !== parentRunId ||
     provenance.parentNodeId !== node.id ||
@@ -3307,6 +3364,38 @@ function childEvidence(
       disposition,
     }),
   });
+}
+
+function sameChildEvidenceProjection(actual: ChildEvidence, expected: ChildEvidence): boolean {
+  return (
+    actual.childRunId === expected.childRunId &&
+    actual.workflowId === expected.workflowId &&
+    actual.workflowDigest === expected.workflowDigest &&
+    actual.terminalSequence === expected.terminalSequence &&
+    actual.outcome === expected.outcome &&
+    sameChildResult(actual.result, expected.result) &&
+    actual.resources.nodeStarts === expected.resources.nodeStarts &&
+    actual.resources.modelTokens === expected.resources.modelTokens &&
+    actual.resources.modelCostUsdMicros === expected.resources.modelCostUsdMicros &&
+    actual.resources.executionMs === expected.resources.executionMs &&
+    actual.resources.artifactBytes === expected.resources.artifactBytes &&
+    actual.durationMs === expected.durationMs &&
+    actual.workspace.backend === expected.workspace.backend &&
+    actual.workspace.snapshotDigest === expected.workspace.snapshotDigest &&
+    actual.workspace.disposition === expected.workspace.disposition
+  );
+}
+
+function sameChildResult(left: ChildEvidence["result"], right: ChildEvidence["result"]): boolean {
+  if (left === null || right === null) {
+    return left === right;
+  }
+  return (
+    left.nodeId === right.nodeId &&
+    left.schemaDigest === right.schemaDigest &&
+    left.canonicalValue === right.canonicalValue &&
+    left.valueHash === right.valueHash
+  );
 }
 
 function requireChildTerminalStatus(status: RunState["status"]): ChildEvidence["outcome"] {

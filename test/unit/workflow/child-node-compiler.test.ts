@@ -23,6 +23,7 @@ describe("child node compilation", () => {
             maxModelTokens: 1000,
             maxCostUsdMicros: 250_000,
             maxExecutionMs: 60_000,
+            maxArtifactBytes: 100_000,
           },
         },
         workflowDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
@@ -72,8 +73,8 @@ describe("child node compilation", () => {
 
   it.each([
     [
-      "a complete four-dimensional budget",
-      childWorkflow().replace("  maxCostUsd: 0.25\n", ""),
+      "a complete five-dimensional budget",
+      childWorkflow().replace("  maxArtifactBytes: 100000\n", ""),
       "child_budget_required",
     ],
     ["an unconditional result", childWithConditionalResult(), "child_result_not_unconditional"],
@@ -163,6 +164,7 @@ budget:
   maxModelTokens: 1000
   maxCostUsd: 0.25
   maxExecutionMs: 60000
+  maxArtifactBytes: 100000
 nodes:
   - id: produce
     type: command
@@ -240,6 +242,7 @@ budget:
   maxModelTokens: 10000
   maxCostUsd: 1
   maxExecutionMs: 300000
+  maxArtifactBytes: 1000000
 nodes:
   - id: nested-child
     type: child
@@ -273,6 +276,7 @@ budget:
   maxModelTokens: 1000
   maxCostUsd: 0.25
   maxExecutionMs: 60000
+  maxArtifactBytes: 100000
 nodes:
 ${commands}
   - id: publish
