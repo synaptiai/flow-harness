@@ -65,6 +65,7 @@ describe("compiled Flow process", () => {
           prompt: "Never settles.",
           model: { provider: "test", id: "hung", thinking: "off" },
           tools: [],
+          skills: [],
           timeoutMs: 10
         }
       };

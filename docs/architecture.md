@@ -6,7 +6,7 @@ Flow turns a collection of useful software-development practices into an enforce
 
 The standalone harness reverses that relationship. Flow owns workflow execution and delegates only bounded node work to an embedded agent runtime.
 
-This document describes the target architecture unless a section is explicitly labeled as the current executable slice. The delivery roadmap is the source of truth for implementation status. Gates 1 and 2 currently provide `validate`, `run`, `inspect`, optional versioned goal contracts, command-bound criterion evaluation, command and bounded Pi agent nodes, cancellation, and replayable local event ledgers. Gate 3 now includes a runtime-neutral policy broker for model-requested reads, lists, and hash-anchored single-file edits, a fail-closed native sandbox for every command node, and exact expiring pre-start approval for deterministic commands. Gate 4 adds `resume` at committed node boundaries, exclusive same-host process ownership, write-ahead durable evidence and typed recovery observation for each workspace edit, opt-in proof-safe fresh recovery for interrupted agent attempts, approval waits that survive client detachment, durable resource accounting with run-wide start, model-token, reported-cost, and active-execution limits, project initialization and monotonic capacity configuration, plus a bounded local supervisor with authenticated detached workers, durable FIFO admission, status, event replay, cancellation, and restart adoption. Gate 5 adds replay-safe exact-output conditions, guarded branches, first-class omission, explicit joins, bounded deterministic static-DAG concurrency, finite replay-safe bounded and accept-best optimization loops, evidence-bound graph approval nodes, replay-verified typed result publication, first-class typed verifier nodes with sandboxed command and evidence-isolated zero-tool model drivers, independently-ledgered child workflows, and write-ahead candidate promotion in isolated reflink-or-copy workspaces. A TUI, opaque Pi session continuation, general failure/fallback retries, broader configurable policy, dynamic agent-tool approval, execute/network model tools, external verifier packages, and stronger VM or managed sandbox backends remain later work.
+This document describes the target architecture unless a section is explicitly labeled as the current executable slice. The delivery roadmap is the source of truth for implementation status. Gates 1 and 2 currently provide `validate`, `run`, `inspect`, optional versioned goal contracts, command-bound criterion evaluation, command and bounded Pi agent nodes, cancellation, and replayable local event ledgers. Gate 3 now includes a runtime-neutral policy broker for model-requested reads, lists, and hash-anchored single-file edits, a fail-closed native sandbox for every command node, and exact expiring pre-start approval for deterministic commands. Gate 4 adds `resume` at committed node boundaries, exclusive same-host process ownership, write-ahead durable evidence and typed recovery observation for each workspace edit, opt-in proof-safe fresh recovery for interrupted agent attempts, approval waits that survive client detachment, durable resource accounting with run-wide start, model-token, reported-cost, and active-execution limits, project initialization and monotonic capacity configuration, plus a bounded local supervisor with authenticated detached workers, durable FIFO admission, status, event replay, cancellation, and restart adoption. Gate 5 adds replay-safe exact-output conditions, guarded branches, first-class omission, explicit joins, bounded deterministic static-DAG concurrency, finite replay-safe bounded and accept-best optimization loops, evidence-bound graph approval nodes, replay-verified typed result publication, first-class typed verifier nodes with sandboxed command and evidence-isolated zero-tool model drivers, independently-ledgered child workflows, and write-ahead candidate promotion in isolated reflink-or-copy workspaces. Gate 6 now begins with strict local portable Agent Skills, explicit node selection, progressive disclosure, immutable run snapshots, and provider-neutral use evidence. A TUI, remote package installation, other capability package types, opaque Pi session continuation, general failure/fallback retries, broader configurable policy, dynamic agent-tool approval, execute/network model tools, external verifier packages, and stronger VM or managed sandbox backends remain later work.
 
 ## Target flows
 
@@ -97,6 +97,25 @@ and result, condition, join, loop-check, optimization-check, and controller node
 ### Pi runtime
 
 Implements one Flow-owned `AgentExecutor` port. It creates node-scoped in-memory sessions, selects models and tools, streams events, supports cancellation, supplies an attempt-scoped Flow policy broker, and translates all Pi values into Flow contracts. Flow explicitly disables Pi assistant-turn and provider retry layers; the adapter executes one Flow attempt, while durable Flow policy alone can authorize a later fresh attempt.
+
+### Portable Agent Skills
+
+The infrastructure scanner discovers strict local Agent Skills metadata below `.flow/skills`, but
+the workflow—not discovery—selects capability. Before admission the application collects root and
+child selections and creates one bounded immutable capability snapshot containing canonical
+metadata, exact file bytes, provenance, trust state, permission requests, and nested SHA-256
+identities. The `run_started` event is the replay boundary; attached execution, the detached job,
+child ledgers, and recovery receive that same content identity rather than reopening mutable package
+paths.
+
+Pi's ambient skill discovery remains disabled. The adapter injects a metadata-only catalog into the
+locked Flow system prompt and routes `skill://` reads through a snapshot-backed session inside the
+Flow-owned `flow_read` tool. The session checks node selection and resource identity but never adds
+workspace, execute, network, or policy authority. Agent evidence projects selected package digests
+and exact observed resource reads back into the provider-neutral ledger. Domain replay validates
+receipts against frozen bytes; workflow recovery additionally validates each selection against the
+compiled node. A future non-Pi executor can implement the same contract without changing workflow
+or history formats.
 
 ### Tool broker
 
@@ -499,6 +518,9 @@ Approval remains separate from containment. OMP-style allow/prompt/deny rules ca
 | Resource exhaustion | Preserve the full committed observation, append explicit exhaustion, start no downstream work, and never infer success |
 | Approval grant expires unused | Execute nothing, record expiry, and return to a fresh durable request; never infer consent |
 | Incompatible package | Reject or quarantine it without changing active runs |
+| Agent Skill is missing, duplicated, unsafe, oversized, or changes while being snapshotted | Reject before ledger creation or detached reservation; never fall back to partial or live content |
+| Agent Skill source changes after submission | Continue from the immutable submitted snapshot; do not absorb the changed source into attached, queued, child, or resumed work |
+| Agent reports an undeclared selection or forged resource read | Fail the node before persisting success, or reject replay/recovery before later work starts |
 
 ## Non-goals
 

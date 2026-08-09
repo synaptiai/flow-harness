@@ -1,0 +1,23 @@
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata:
+  id: portable-agent-skill
+  description: Review a repository with an explicitly selected portable Agent Skill.
+nodes:
+  - id: review
+    type: agent
+    agent:
+      prompt: Review this repository. Load and follow the selected review skill before responding.
+      model:
+        provider: anthropic
+        id: claude-sonnet-4-6
+        thinking: medium
+      tools: [read]
+      skills: [review]
+      timeoutMs: 300000
+  - id: publish
+    type: result
+    dependsOn: [review]
+    result:
+      source: { nodeId: review, field: agent.text }
+      schema: { type: string, maxLength: 65536 }

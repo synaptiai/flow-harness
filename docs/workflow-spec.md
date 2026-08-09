@@ -721,6 +721,61 @@ the four token components and reported cost into the Flow-owned usage shape. It 
 usage on successful, terminal-error, timeout, and cancellation outcomes. A failure before a session
 or provider observation records no invented usage. Invalid statistics fail before persistence.
 
+## Portable Agent Skills
+
+An agent node may explicitly select local packages that follow the open Agent Skills manifest
+shape:
+
+```yaml
+- id: review
+  type: agent
+  agent:
+    prompt: Review the repository using the selected package.
+    model: { provider: anthropic, id: claude-sonnet-4-6 }
+    tools: [read]
+    skills: [review]
+```
+
+`skills` is optional. Omission compiles to an empty frozen list and preserves ordinary agent
+behavior. A selection contains 1–32 unique lowercase kebab-case names and requires the node to
+declare the Flow `read` tool, because selected instructions remain progressively disclosed through
+`flow_read`. A package cannot select itself, change dependencies, advance the graph, or define an
+evaluator.
+
+Flow discovers packages recursively below the nearest project root's `.flow/skills`. Every package
+directory contains a regular UTF-8 `SKILL.md` whose strict YAML frontmatter has required `name` and
+`description`, optional `license` and `compatibility`, bounded string metadata, and optional
+whitespace-separated `allowed-tools`. The name must match its immediate directory. Unknown fields,
+duplicate names, aliases, symbolic links, special files, source-identity changes, traversal, and
+limit violations fail before a run starts. Discovery is bounded to 32 packages, depth 6, and 2,000
+entries. Each selected package is bounded to 128 regular files, 128 KiB per file, 256 KiB total,
+and the complete serialized run capability snapshot is bounded to 512 KiB.
+
+`allowed-tools` is a permission request and audit field, not authorization. It never adds a Flow
+tool, policy action, environment value, command, extension, or provider capability. Only the
+compiled `agent.tools` list and Flow policy authorize model operations. Package resources are inert
+bytes; Flow never runs package scripts automatically. Binary resources may be preserved in the
+snapshot, but `flow_read` rejects a selected resource that is not valid UTF-8.
+
+Compilation recursively collects the exact union selected by root and child nodes. Before an
+attached or detached run is admitted, Flow snapshots canonical package metadata and bytes, sorts
+them lexically, and binds file, package, and aggregate SHA-256 digests. `run_started` persists that
+provider-neutral immutable capability snapshot. A child ledger receives the same parent snapshot
+but may read only packages declared by its own node. Resume uses durable history and refuses a
+caller-supplied mismatch; it never rediscovers live package sources. Detached command identity and
+the durable job record include the snapshot digest and bytes, so queue delay cannot introduce
+source drift.
+
+At Pi session startup Flow adds only selected package metadata, digests, requested tools, and
+`skill://<name>/<path>` addresses to the locked system prompt. Pi's ambient skill discovery,
+extensions, prompt templates, themes, context files, and project discovery remain empty. Exact
+resource reads go through the Flow-owned `flow_read` tool, reject encoded or literal traversal,
+query/fragment ambiguity, unselected packages, and missing content, and return bytes from the
+frozen snapshot rather than the live filesystem. Agent evidence records every selected package
+digest plus deduplicated file-read receipts containing resource URI, package digest, file digest,
+and byte count. Live execution, replay, and recovery independently reconcile that evidence against
+both the immutable bytes and the node's compiled selection.
+
 ## Run ledger
 
 Each run is stored at:

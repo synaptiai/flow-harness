@@ -31,6 +31,7 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Bounded detached supervisor, durable FIFO queue, authenticated workers, cancellation, and event replay | Implemented on Linux and macOS |
 | First-class typed verifier nodes | Implemented for sandboxed command and evidence-isolated zero-tool Pi model drivers |
 | Bounded Pi agent nodes with Flow-owned `read`, `ls`, and hash-anchored `edit` tools | Implemented |
+| Portable Agent Skills packages with progressive disclosure | Implemented for strict local project packages, explicit workflow selection, immutable run snapshots, and digest-bound read evidence |
 | Proof-safe fresh recovery of interrupted agent attempts | Implemented as explicit opt-in for read-only attempts and edit attempts proven not applied |
 | Fail-closed sandboxed command process trees | Implemented on Linux and macOS |
 | Dynamic agent-tool approval, external verifier packages, and broader model tools | Planned |
@@ -113,6 +114,37 @@ accepted. Authoritative events are written to:
 
 The inspected result identifies graph state, criterion decisions, bounded command output and
 hashes, plus the sandbox backend, exact version, profile, and semantic policy digest.
+
+### Use a portable Agent Skill
+
+Flow discovers local [Agent Skills](https://agentskills.io/specification) below the project-owned
+`.flow/skills` directory. The repository includes a review package outside that active directory so
+installing it remains an explicit local choice:
+
+```sh
+mkdir -p .flow/skills
+cp -R examples/agent-skills/review .flow/skills/
+node dist/cli/main.js skills validate
+node dist/cli/main.js skills list
+node dist/cli/main.js skills inspect review
+node dist/cli/main.js validate examples/portable-agent-skill.workflow.yaml
+```
+
+The published workflow selects `skills: [review]` and grants only the Flow `read` tool. Running it
+also requires a configured Pi provider and model credentials:
+
+```sh
+node dist/cli/main.js run examples/portable-agent-skill.workflow.yaml --run-id skill-demo
+node dist/cli/main.js inspect skill-demo
+```
+
+Discovery loads bounded manifest metadata. At run submission Flow snapshots the exact selected
+package bytes and records the snapshot in `run_started`; queued, child, and resumed execution use
+those bytes even if `.flow/skills` later changes. The model receives metadata and `skill://`
+resource addresses at startup, then uses `flow_read` to load instructions or resources on demand.
+`allowed-tools` in a package is an auditable request, not authorization: only the workflow's
+`agent.tools` list and Flow policy can grant an operation. Package files are data and are never
+executed automatically.
 
 To exercise the first-class verifier contract without model credentials:
 
@@ -457,8 +489,10 @@ target. Directory
 listings consume one logical policy authorization rather than one decision per entry. Create,
 delete, rename, shell, and network
 tools are not exposed. Filesystem operations are canonically resolved and authorized by the Flow
-policy broker. Pi's ambient tools, extensions, skills, templates, context discovery, built-in edit
-semantics, and executable-downloading helpers are disabled.
+policy broker. Pi's ambient tools, extensions, skill discovery, templates, context discovery,
+built-in edit semantics, and executable-downloading helpers are disabled. Explicit Flow-selected
+Agent Skills instead use immutable provider-neutral snapshots and bounded `skill://` reads; they
+grant no filesystem or execution authority.
 
 Supervisor control state is stored in an owner-only directory under the selected run root. Its
 Unix-domain sockets use a short owner-only temporary path so valid deep project paths also work on

@@ -157,6 +157,7 @@ export class VerifierNodeExecutor implements VerifierExecutor {
         prompt: rendered,
         model: verifier.model,
         tools: Object.freeze([]),
+        skills: Object.freeze([]),
         timeoutMs: verifier.timeoutMs,
       },
     };

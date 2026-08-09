@@ -131,6 +131,7 @@ function agentNode(): CompiledAgentNode {
       prompt: "Analyze.",
       model: { provider: "anthropic", id: "claude-sonnet-4-5", thinking: "medium" },
       tools: [],
+      skills: [],
       timeoutMs: 300_000,
     },
   };

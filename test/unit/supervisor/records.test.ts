@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
+import { createCapabilitySnapshot } from "../../../src/domain/capability/agent-skills.js";
 
 import {
   calculateJobDigest,
@@ -59,6 +60,42 @@ describe("supervisor durable records", () => {
 
     expect(() => parseJobRecord({ ...job, cwd: "/other" })).toThrow(/digest/i);
     expect(() => parseJobRecord({ ...job, extra: true })).toThrow(/unrecognized/i);
+  });
+
+  it("binds detached capability bytes into the immutable job digest", () => {
+    const capabilitySnapshot = createCapabilitySnapshot([
+      {
+        kind: "agent-skill",
+        name: "review",
+        description: "Review code when selected.",
+        metadata: {},
+        requestedTools: [],
+        trust: "project-explicit",
+        provenance: ".flow/skills/review",
+        files: [{ path: "SKILL.md", content: Buffer.from("# Review\n") }],
+      },
+    ]);
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "run-with-capabilities",
+      mode: "run",
+      sourceName: "/workspace/workflow.yaml",
+      workflowSource: "kind: Workflow\n",
+      cwd: "/workspace",
+      token: "c".repeat(64),
+      createdAt: "2026-08-08T12:00:00.000Z",
+      capabilitySnapshot,
+    });
+
+    expect(job.capabilitySnapshot).toEqual(capabilitySnapshot);
+    expect(() =>
+      parseJobRecord({
+        ...job,
+        capabilitySnapshot: { ...capabilitySnapshot, digest: "f".repeat(64) },
+      }),
+    ).toThrow();
+    expect(calculateJobDigest({ ...job, capabilitySnapshot: undefined })).not.toBe(job.digest);
   });
 
   it("binds an active run claim to one job and worker", () => {

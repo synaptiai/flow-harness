@@ -2,6 +2,15 @@ import { createHash } from "node:crypto";
 import { isAbsolute, normalize } from "node:path";
 import { z } from "zod";
 import {
+  type AgentCapabilityEvidence,
+  type CapabilitySnapshot,
+  agentSkillNameSchema,
+  agentCapabilityEvidenceSchema,
+  createAgentCapabilityEvidence,
+  MAX_AGENT_SKILL_PACKAGES,
+  persistedCapabilitySnapshotSchema,
+} from "../capability/agent-skills.js";
+import {
   type CommandApprovalOperation,
   calculateCommandApprovalOperationDigest,
   commandApprovalRequestId,
@@ -113,6 +122,7 @@ export interface AgentEvidence {
   readonly usage?: AgentModelUsage;
   readonly policyDecisions: readonly PolicyDecision[];
   readonly effectReceipts: readonly AgentEffectReceipt[];
+  readonly capabilities?: AgentCapabilityEvidence;
 }
 
 export type VerifierVerdict = "accepted" | "rejected" | "inconclusive";
@@ -234,6 +244,8 @@ export interface RunStartedEvent extends RunEventBase {
   readonly nodeIds: readonly string[];
   readonly workflowApiVersion: "flow.synapti.ai/v1alpha1";
   readonly workflowDigest: string;
+  readonly capabilitySnapshot?: CapabilitySnapshot;
+  readonly capabilityRequirements?: readonly AgentCapabilityRequirement[];
   readonly budget?: CompiledRunBudget;
   readonly concurrency?: CompiledWorkflowConcurrency;
   readonly goal?: CompiledGoal;
@@ -785,6 +797,11 @@ export interface AgentRecoveryRequirement {
   readonly effectProtocol: "none" | typeof DURABLE_EFFECT_PROTOCOL;
 }
 
+export interface AgentCapabilityRequirement {
+  readonly nodeId: string;
+  readonly skills: readonly string[];
+}
+
 export interface CommandApprovalRequestedEvent extends RunEventBase {
   readonly type: "command_approval_requested";
   readonly nodeId: string;
@@ -1127,6 +1144,8 @@ export interface RunState {
   readonly workflowId: string;
   readonly workflowApiVersion: "flow.synapti.ai/v1alpha1";
   readonly workflowDigest: string;
+  readonly capabilitySnapshot: CapabilitySnapshot | null;
+  readonly capabilityRequirements: Readonly<Record<string, readonly string[]>>;
   readonly executionCwd: string | null;
   readonly executionWorkspace: ExecutionWorkspaceProvenance | null;
   readonly approvalRequirements: Readonly<
@@ -1400,6 +1419,7 @@ const agentEvidenceSchema = z
       )
       .max(MAX_AGENT_EFFECT_RECEIPTS)
       .default([]),
+    capabilities: agentCapabilityEvidenceSchema.optional(),
   })
   .strict();
 
@@ -2037,6 +2057,25 @@ export const runEventSchema = z.discriminatedUnion("type", [
         .refine((items) => new Set(items).size === items.length, "node ids must be unique"),
       workflowApiVersion: z.literal("flow.synapti.ai/v1alpha1"),
       workflowDigest: sha256Schema,
+      capabilitySnapshot: persistedCapabilitySnapshotSchema.optional(),
+      capabilityRequirements: z
+        .array(
+          z
+            .object({
+              nodeId: identifierSchema,
+              skills: z
+                .array(agentSkillNameSchema)
+                .min(1)
+                .max(MAX_AGENT_SKILL_PACKAGES)
+                .refine(
+                  (items) => new Set(items).size === items.length,
+                  "selected Agent Skills must be unique",
+                ),
+            })
+            .strict(),
+        )
+        .max(MAX_COMPILED_WORKFLOW_NODES)
+        .optional(),
       budget: runBudgetLimitsSchema.optional(),
       concurrency: z
         .object({ maxNodes: z.number().int().min(1).max(MAX_CONCURRENT_NODES) })
@@ -2728,6 +2767,43 @@ export function appendRunEvent(
         Object.freeze({ grantTtlMs: requirement.grantTtlMs }),
       ]),
     );
+    const capabilityRequirements = event.capabilityRequirements ?? [];
+    if (
+      new Set(capabilityRequirements.map((requirement) => requirement.nodeId)).size !==
+      capabilityRequirements.length
+    ) {
+      throw new RunReplayError(eventIndex, "capability requirements must have unique node ids");
+    }
+    if (capabilityRequirements.some((requirement) => !event.nodeIds.includes(requirement.nodeId))) {
+      throw new RunReplayError(
+        eventIndex,
+        "capability requirement references a node outside the run node set",
+      );
+    }
+    if (capabilityRequirements.length > 0 && event.capabilitySnapshot === undefined) {
+      throw new RunReplayError(
+        eventIndex,
+        "capability requirements require a durable run capability snapshot",
+      );
+    }
+    const availableCapabilityNames = new Set(
+      event.capabilitySnapshot?.packages.map((skill) => skill.name) ?? [],
+    );
+    const missingRequiredCapability = capabilityRequirements
+      .flatMap((requirement) => requirement.skills)
+      .find((name) => !availableCapabilityNames.has(name));
+    if (missingRequiredCapability !== undefined) {
+      throw new RunReplayError(
+        eventIndex,
+        `capability requirement references missing Agent Skill "${missingRequiredCapability}"`,
+      );
+    }
+    const capabilityRequirementsByNode = Object.fromEntries(
+      capabilityRequirements.map((requirement) => [
+        requirement.nodeId,
+        Object.freeze([...requirement.skills]),
+      ]),
+    );
     const recoveryRequirements = event.recoveryRequirements ?? [];
     if (
       new Set(recoveryRequirements.map((requirement) => requirement.nodeId)).size !==
@@ -2768,6 +2844,11 @@ export function appendRunEvent(
       workflowId: event.workflowId,
       workflowApiVersion: event.workflowApiVersion,
       workflowDigest: event.workflowDigest,
+      capabilitySnapshot:
+        event.capabilitySnapshot === undefined
+          ? null
+          : deepFreeze(structuredClone(event.capabilitySnapshot)),
+      capabilityRequirements: Object.freeze(capabilityRequirementsByNode),
       executionCwd: event.executionCwd ?? null,
       executionWorkspace:
         event.executionWorkspace === undefined
@@ -4404,6 +4485,12 @@ export function appendRunEvent(
       const current = requireRunningAttempt(nodes, event.nodeId, event.attempt, eventIndex);
       validateDurableEffectProjection(current, event.evidence, event, eventIndex);
       validateEvidenceIntegrity(event.evidence, event, eventIndex, current.effectProtocol === null);
+      validateAgentCapabilityEvidenceProjection(
+        currentState.capabilitySnapshot,
+        currentState.capabilityRequirements[event.nodeId],
+        event.evidence,
+        eventIndex,
+      );
       validateSucceededEvidence(event.evidence, eventIndex);
       validateVerifierEvidenceProjection(
         currentState.controlGraph,
@@ -4455,6 +4542,12 @@ export function appendRunEvent(
           event,
           eventIndex,
           current.effectProtocol === null,
+        );
+        validateAgentCapabilityEvidenceProjection(
+          currentState.capabilitySnapshot,
+          currentState.capabilityRequirements[event.nodeId],
+          event.evidence,
+          eventIndex,
         );
       }
       validateVerifierEvidenceProjection(
@@ -4638,6 +4731,8 @@ export function appendRunEvent(
     workflowId: currentState.workflowId,
     workflowApiVersion: currentState.workflowApiVersion,
     workflowDigest: currentState.workflowDigest,
+    capabilitySnapshot: currentState.capabilitySnapshot,
+    capabilityRequirements: currentState.capabilityRequirements,
     executionCwd: currentState.executionCwd,
     executionWorkspace: currentState.executionWorkspace,
     approvalRequirements: currentState.approvalRequirements,
@@ -7397,6 +7492,41 @@ function requireNode(
     throw new RunReplayError(eventIndex, `event references unknown node "${nodeId}"`);
   }
   return node;
+}
+
+function validateAgentCapabilityEvidenceProjection(
+  snapshot: CapabilitySnapshot | null,
+  declaredSkills: readonly string[] | undefined,
+  evidence: NodeEvidence,
+  eventIndex: number,
+): void {
+  const capabilities = evidence.kind === "agent" ? evidence.capabilities : undefined;
+  if (declaredSkills === undefined) {
+    if (capabilities !== undefined) {
+      throw new RunReplayError(
+        eventIndex,
+        "agent capability evidence is not declared for this node",
+      );
+    }
+    return;
+  }
+  if (snapshot === null || capabilities === undefined) {
+    throw new RunReplayError(
+      eventIndex,
+      "declared Agent Skills require capability evidence bound to the durable run snapshot",
+    );
+  }
+  try {
+    const expected = createAgentCapabilityEvidence(snapshot, declaredSkills, capabilities.reads);
+    if (JSON.stringify(expected) !== JSON.stringify(capabilities)) {
+      throw new Error("selected package evidence does not match the durable node declaration");
+    }
+  } catch (error) {
+    throw new RunReplayError(
+      eventIndex,
+      `agent capability evidence is not bound to durable content: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }
 
 function requireRunningAttempt(
