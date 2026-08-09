@@ -1,0 +1,53 @@
+apiVersion: flow.synapti.ai/v1alpha1
+kind: EvaluationPlan
+metadata:
+  id: harness-comparison
+suite:
+  id: public-example
+  version: 1.0.0
+  tasks:
+    - id: create-result
+      partition: holdout
+      fixture: fixture
+      instruction: TASK.md
+      verifier:
+        kind: filesystem-v1
+        assertions:
+          - kind: sha256
+            path: RESULT.md
+            value: 81e533b9cd5c5eef0f7525ece82115d9794d68549df93f875f99f9a78d72edc9
+profiles:
+  - id: baseline
+    adapter: flow-workflow-v1
+    workflow: baseline.workflow.yaml
+  - id: candidate
+    adapter: flow-workflow-v1
+    workflow: candidate.workflow.yaml
+controls:
+  model:
+    provider: anthropic
+    id: claude-sonnet-4-5
+    thinking: medium
+  budget:
+    maxNodeStarts: 2
+    maxModelTokens: 10000
+    maxCostUsdMicros: 1000000
+    maxExecutionMs: 300000
+    maxArtifactBytes: 1048576
+  network: deny
+  retry:
+    providerRetries: 0
+    harnessRetries: 0
+seeds:
+  - 11
+  - 29
+order: paired-alternating-v1
+comparison:
+  baselineProfileId: baseline
+  candidateProfileId: candidate
+  minimumPairedTrials: 2
+  confidenceLevel: 0.95
+  minimumEffect: 0
+  maxFalseCompletionRate: 0
+  maxPolicyViolations: 0
+  maxVerifiedSuccessRegression: 0

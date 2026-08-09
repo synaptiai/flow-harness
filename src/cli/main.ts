@@ -3,7 +3,8 @@
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { createRequire } from "node:module";
+import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -13,6 +14,7 @@ import {
   decideApproval,
   trySubmitAgentCommandApprovalDecision,
 } from "../application/command-approval.js";
+import { FlowWorkflowEvaluationAdapter } from "../application/evaluation-adapter.js";
 import type {
   AgentCommandApprovalDecisionChannel,
   NodeEffectReconciler,
@@ -20,6 +22,7 @@ import type {
   RecoverableRunEventStore,
   WorkspaceIsolator,
 } from "../application/ports.js";
+import { runEvaluationTrials } from "../application/run-evaluation.js";
 import { RunRecoveryError, resumeWorkflow, runWorkflow } from "../application/run-workflow.js";
 import {
   admitWorkflowPackages,
@@ -31,27 +34,39 @@ import {
 } from "../domain/capability/agent-skills.js";
 import { assertCapabilityBundleSha256 } from "../domain/capability/capability-bundles.js";
 import {
-  parseWorkflowPackageLocator,
-  type WorkflowPackageSnapshot,
-  workflowPackageSource,
-} from "../domain/capability/workflow-packages.js";
-import {
   collectWorkflowAgentSkillNames,
   collectWorkflowToolPackageReferences,
   collectWorkflowVerifierPackageReferences,
   WorkflowCapabilityError,
 } from "../domain/capability/workflow-capabilities.js";
 import {
+  parseWorkflowPackageLocator,
+  type WorkflowPackageSnapshot,
+  workflowPackageSource,
+} from "../domain/capability/workflow-packages.js";
+import {
   calculateFlowPolicyDigest,
   type EffectiveFlowConfig,
   FlowConfigError,
 } from "../domain/config/resolver.js";
+import { aggregateEvaluation, EvaluationAggregationError } from "../domain/evaluation/aggregate.js";
+import { verifyEvaluationWorkspace } from "../domain/evaluation/filesystem-verifier.js";
+import { EvaluationPlanError } from "../domain/evaluation/plan.js";
+import { EvaluationRecordError } from "../domain/evaluation/records.js";
 import { type RunStatus, reduceRunEvents } from "../domain/run/events.js";
 import {
-  type WorkflowPackageReference,
   WorkflowCompilationError,
+  type WorkflowPackageReference,
 } from "../domain/workflow/compiler.js";
 import type { CompiledWorkflow } from "../domain/workflow/types.js";
+import {
+  CapabilityBundlePackError,
+  packCapabilityBundleDirectory,
+} from "../infrastructure/fs/capability-bundle-packer.js";
+import {
+  EvaluationExportError,
+  writeCanonicalEvaluationExport,
+} from "../infrastructure/fs/evaluation-report-exporter.js";
 import {
   type FlowConfigLocationOptions,
   FlowConfigStoreError,
@@ -72,17 +87,25 @@ import {
   snapshotSelectedAgentSkills,
 } from "../infrastructure/fs/local-agent-skill-catalog.js";
 import {
-  LocalSupervisorStore,
-  LocalSupervisorStoreError,
-} from "../infrastructure/fs/local-supervisor-store.js";
-import {
   CapabilityPackageStoreError,
   LocalCapabilityPackageStore,
 } from "../infrastructure/fs/local-capability-package-store.js";
 import {
-  CapabilityBundlePackError,
-  packCapabilityBundleDirectory,
-} from "../infrastructure/fs/capability-bundle-packer.js";
+  admitLocalEvaluationPlan,
+  EvaluationAdmissionError,
+  observeEvaluationFixture,
+} from "../infrastructure/fs/local-evaluation-plan.js";
+import {
+  createPublicEvaluationHeader,
+  EvaluationStoreError,
+  evaluationReportInput,
+  LocalEvaluationStore,
+  type StoredEvaluation,
+} from "../infrastructure/fs/local-evaluation-store.js";
+import {
+  LocalSupervisorStore,
+  LocalSupervisorStoreError,
+} from "../infrastructure/fs/local-supervisor-store.js";
 import {
   type ProjectToolPackageCatalog,
   snapshotSelectedToolPackages,
@@ -145,6 +168,10 @@ Usage:
   flow packages inspect <name> --version <exact>
   flow packages verify
   flow packages remove <name> --version <exact>
+  flow eval validate <plan.yaml>
+  flow eval run <plan.yaml> [--evaluation-id <id>] [--evaluations-dir <path>]
+  flow eval inspect <evaluation-id> [--evaluations-dir <path>]
+  flow eval export <evaluation-id> --output <path> [--evaluations-dir <path>]
   flow validate <workflow.yaml|workflow:name@version>
   flow run <workflow.yaml|workflow:name@version> [--detach] [--command-id <uuid>] [--run-id <id>] [--runs-dir <path>] [--cwd <path>]
   flow resume <workflow.yaml|workflow:name@version> --run-id <id> [--detach] [--command-id <uuid>] [--runs-dir <path>] [--cwd <path>]
@@ -157,6 +184,38 @@ Usage:
   flow supervisor shutdown [--runs-dir <path>]
   flow --help
 `;
+
+const installedPackageMetadata = createRequire(import.meta.url)("../../package.json") as unknown;
+const installedFlowVersion = parseInstalledFlowVersion(installedPackageMetadata);
+
+export function createEvaluationEnvironment(
+  input: {
+    readonly platform?: string;
+    readonly architecture?: string;
+    readonly nodeVersion?: string;
+  } = {},
+) {
+  const platform = input.platform ?? process.platform;
+  if (platform !== "darwin" && platform !== "linux") {
+    throw new Error(`evaluation is unsupported on platform "${platform.slice(0, 64)}"`);
+  }
+  const architecture = input.architecture ?? process.arch;
+  const nodeVersion = input.nodeVersion ?? process.version;
+  if (
+    architecture.length === 0 ||
+    architecture.length > 64 ||
+    nodeVersion.length === 0 ||
+    nodeVersion.length > 64
+  ) {
+    throw new Error("evaluation environment identity exceeds its bounds");
+  }
+  return Object.freeze({
+    platform,
+    architecture,
+    nodeVersion,
+    flowVersion: installedFlowVersion,
+  });
+}
 
 export interface CliIo {
   readonly stdout: (text: string) => void;
@@ -226,6 +285,8 @@ export async function main(
         return await workflowsCommand(args.slice(1), io, dependencyOverrides);
       case "packages":
         return await packagesCommand(args.slice(1), io, dependencyOverrides);
+      case "eval":
+        return await evaluationCommand(args.slice(1), io, dependencyOverrides);
       case "validate":
         return await validateCommand(args.slice(1), io, dependencyOverrides);
       case "run":
@@ -315,6 +376,22 @@ export async function main(
     }
     if (error instanceof ApprovalDecisionError) {
       io.stderr(`${error.code}: ${error.message}`);
+      return 1;
+    }
+    if (error instanceof EvaluationPlanError) {
+      io.stderr(`${error.code}: ${error.message}`);
+      return 2;
+    }
+    if (
+      error instanceof EvaluationAdmissionError ||
+      error instanceof EvaluationStoreError ||
+      error instanceof EvaluationExportError
+    ) {
+      io.stderr(`${error.code}: ${error.message}`);
+      return 1;
+    }
+    if (error instanceof EvaluationAggregationError || error instanceof EvaluationRecordError) {
+      io.stderr(error.message);
       return 1;
     }
 
@@ -853,6 +930,170 @@ function capabilityBundlePackageSummary(
     kind: item.kind,
     name: item.name,
     ...(item.kind === "agent-skill" ? {} : { version: item.version }),
+  });
+}
+
+async function evaluationCommand(
+  args: readonly string[],
+  io: CliIo,
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  const subcommand = args[0];
+  if (subcommand === "validate") {
+    const { positionals } = parseCommandArgs(args.slice(1), {});
+    const planArgument = requireSinglePositional(
+      positionals,
+      "eval validate requires one evaluation plan path",
+    );
+    const cwd = overrides.cwd ?? process.cwd();
+    const admitted = await admitLocalEvaluationPlan(resolve(cwd, planArgument));
+    io.stdout(
+      JSON.stringify(
+        {
+          valid: true,
+          id: admitted.id,
+          planDigest: admitted.planDigest,
+          suite: { id: admitted.suite.id, version: admitted.suite.version },
+          tasks: admitted.suite.tasks.map((task) => ({
+            id: task.id,
+            partition: task.partition,
+          })),
+          profiles: admitted.profiles.map((profile) => ({
+            id: profile.id,
+            adapter: profile.adapter,
+            workflowDigest: profile.workflow.workflowDigest,
+          })),
+          scheduledTrials: admitted.schedule.length,
+        },
+        null,
+        2,
+      ),
+    );
+    return 0;
+  }
+
+  if (subcommand === "run") {
+    const { positionals, values } = parseCommandArgs(args.slice(1), {
+      "evaluation-id": { type: "string" },
+      "evaluations-dir": { type: "string" },
+    });
+    const planArgument = requireSinglePositional(
+      positionals,
+      "eval run requires one evaluation plan path",
+    );
+    const dependencies = dependenciesFrom(overrides);
+    const admitted = await admitLocalEvaluationPlan(resolve(dependencies.cwd, planArgument));
+    const evaluationsDirectory = await resolveEvaluationsDirectory(
+      dependencies,
+      values["evaluations-dir"],
+    );
+    const evaluationId = values["evaluation-id"] ?? admitted.id;
+    const store = new LocalEvaluationStore(evaluationsDirectory);
+    const header = createPublicEvaluationHeader(admitted, evaluationId);
+    try {
+      await store.read(evaluationId);
+    } catch (error) {
+      if (!(error instanceof EvaluationStoreError && error.code === "not_found")) {
+        throw error;
+      }
+      await store.create(header);
+    }
+    const claimed = await store.claim(evaluationId, admitted.planDigest);
+    const evaluationRuntime = join(evaluationsDirectory, evaluationId, "runtime");
+    const runStoreDirectory = join(evaluationsDirectory, evaluationId, "runs");
+    const workspaceIsolator = dependencies.createWorkspaceIsolator(evaluationRuntime);
+    const adapters = new Map<string, FlowWorkflowEvaluationAdapter>();
+    try {
+      await runEvaluationTrials({
+        plan: {
+          planDigest: admitted.planDigest,
+          schedule: admitted.schedule,
+          controls: admitted.controls,
+          tasks: admitted.suite.tasks.map((task) => ({
+            id: task.id,
+            fixture: {
+              sourceCwd: task.fixture.sourceCwd,
+              digest: task.fixture.digest,
+              entryCount: task.fixture.entryCount,
+              logicalBytes: task.fixture.logicalBytes,
+              instructionPath: task.fixture.instructionPath,
+              instructionSha256: task.fixture.instructionSha256,
+            },
+            verifier: task.verifier,
+          })),
+          profiles: admitted.profiles.map((profile) => ({
+            id: profile.id,
+            adapter: profile.adapter,
+          })),
+        },
+        committedRecords: claimed.records,
+        append: (record) => store.append(evaluationId, record),
+        workspaceIsolator,
+        observeFixture: observeEvaluationFixture,
+        resolveAdapter: (profileId, adapterKind) => {
+          const existing = adapters.get(profileId);
+          if (existing !== undefined) {
+            return existing;
+          }
+          const profile = admitted.profiles.find((item) => item.id === profileId);
+          if (profile === undefined || profile.adapter !== adapterKind) {
+            throw new Error(`evaluation profile "${profileId}" is unavailable`);
+          }
+          const adapter = new FlowWorkflowEvaluationAdapter(profile, {
+            executor: dependencies.executor,
+            createStore: () => dependencies.createStore(runStoreDirectory),
+            workspaceIsolator,
+            ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
+          });
+          adapters.set(profileId, adapter);
+          return adapter;
+        },
+        verifyWorkspace: verifyEvaluationWorkspace,
+        environment: createEvaluationEnvironment(),
+      });
+    } finally {
+      await store.release(evaluationId);
+    }
+    io.stdout(JSON.stringify(evaluationEvidence(await store.read(evaluationId)), null, 2));
+    return 0;
+  }
+
+  if (subcommand === "inspect" || subcommand === "export") {
+    const { positionals, values } = parseCommandArgs(args.slice(1), {
+      "evaluations-dir": { type: "string" },
+      ...(subcommand === "export" ? { output: { type: "string" as const } } : {}),
+    });
+    const evaluationId = requireSinglePositional(
+      positionals,
+      `eval ${subcommand} requires one evaluation id`,
+    );
+    const dependencies = configDependenciesFrom(overrides);
+    const evaluationsDirectory = await resolveEvaluationsDirectory(
+      dependencies,
+      values["evaluations-dir"],
+    );
+    const evidence = evaluationEvidence(
+      await new LocalEvaluationStore(evaluationsDirectory).read(evaluationId),
+    );
+    if (subcommand === "inspect") {
+      io.stdout(JSON.stringify(evidence, null, 2));
+      return 0;
+    }
+    const output = requireStringOption(values.output, "eval export requires --output <path>");
+    const outputPath = resolve(dependencies.cwd, output);
+    await writeCanonicalEvaluationExport(outputPath, evidence);
+    io.stdout(JSON.stringify({ exported: true, evaluationId, output: outputPath }, null, 2));
+    return 0;
+  }
+
+  throw new CliUsageError("eval requires validate, run, inspect, or export");
+}
+
+function evaluationEvidence(stored: StoredEvaluation) {
+  return Object.freeze({
+    header: stored.header,
+    records: stored.records,
+    report: aggregateEvaluation(evaluationReportInput(stored.header), stored.records),
   });
 }
 
@@ -1711,6 +1952,17 @@ function resolveRunsDirectory(
   return resolve(config.projectRoot ?? invocationDirectory, ".flow/runs");
 }
 
+async function resolveEvaluationsDirectory(
+  dependencies: Pick<CliDependencies, "cwd" | "loadConfig">,
+  explicitEvaluationsDirectory: string | undefined,
+): Promise<string> {
+  if (explicitEvaluationsDirectory !== undefined) {
+    return resolve(dependencies.cwd, explicitEvaluationsDirectory);
+  }
+  const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
+  return resolve(config.projectRoot ?? dependencies.cwd, ".flow/evaluations");
+}
+
 function formatCompilationError(error: WorkflowCompilationError): string {
   return [
     `Workflow compilation failed for ${error.sourceName}:`,
@@ -1718,6 +1970,24 @@ function formatCompilationError(error: WorkflowCompilationError): string {
       (diagnostic) => `- ${diagnostic.path} [${diagnostic.code}] ${diagnostic.message}`,
     ),
   ].join("\n");
+}
+
+function parseInstalledFlowVersion(input: unknown): string {
+  const version =
+    typeof input === "object" && input !== null && "version" in input
+      ? (input as { readonly version?: unknown }).version
+      : undefined;
+  if (
+    typeof version !== "string" ||
+    version.length === 0 ||
+    version.length > 64 ||
+    !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(
+      version,
+    )
+  ) {
+    throw new Error("installed Flow package metadata has an invalid version");
+  }
+  return version;
 }
 
 class CliUsageError extends Error {

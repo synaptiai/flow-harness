@@ -186,6 +186,30 @@ Live tests are opt-in and excluded from `npm test`. Run them with both `FLOW_LIV
 
 ## Product evaluation
 
-Flow should be compared with the legacy plugin on held-out repository tasks using equivalent model settings. A benchmark records verified task success, false completion, cost, context volume, tool failures, duration, human intervention, policy violations, and crash/replay behavior.
+Flow now has a provider-neutral evaluation layer for reproducible paired harness comparisons. The
+example at `examples/evaluation/harness-comparison.evaluation.yaml` validates without credentials;
+running it requires the declared provider. Focused tests cover strict plan parsing, portable source
+identity, profile/control drift, deterministic alternating schedules, fresh workspace isolation,
+private verifier non-disclosure, terminal failure recording, metric availability, scheduled
+denominators, deterministic heterogeneous bootstrap output, safety constraints, single-writer
+ownership, torn-tail repair, tamper/relabel/intermediate-symlink attacks, fatal UTF-8 rejection,
+resume from the exact committed suffix, and semantically identical offline inspect/export evidence.
+Verifier tests include wrong re-digested identities, contradictory assertion outcomes, and
+actionable error reasons; comparison tests include holdout partitioning, environment mismatch,
+incomplete safety evidence, and constraint/verdict gates.
+Adapter telemetry tests also execute a child-only profile and require unprojected child activity,
+policy, intervention, and recovery measurements to remain unavailable.
+
+The production CLI integration runs the complete composition with a deterministic fake executor, so
+unit and integration suites need no provider credentials or network. Live provider comparisons are
+operator-run evidence and are not part of `npm test`.
+
+Flow should be compared with the legacy plugin on held-out repository tasks using equivalent model,
+thinking, budget, retry, network, fixture, verifier, seed, and order settings. A benchmark records
+verified task success, false completion, cost, context volume, turns, tool failures, duration, human
+intervention, policy violations, and recovery behavior when those metrics are available. Missing
+records remain in the denominator and unavailable telemetry is never imputed as zero. Cost per
+accepted result is emitted only from a complete profile schedule with cost available for every trial
+and uses verifier-accepted results as its denominator.
 
 Deterministic held-out checks are preferred. An LLM judge may supplement evidence but cannot override a failing command or missing artifact. Claims that the standalone harness beats the plugin require recorded benchmark results rather than architectural inference.

@@ -174,3 +174,25 @@ permissions and authority of the invoking local account are the administrative b
 expose the run directory or approval CLI to untrusted users.
 
 Command output, agent text, verifier reasons and raw model responses, executable arguments, and failure messages are persisted in the run ledger as evidence. They can contain secrets emitted by tools or providers. Keep `.flow/runs` private, apply repository ignore rules, and redact sensitive output at its source.
+
+An evaluation fixture is untrusted workload input. Flow admits only bounded regular files and
+directories, rejects links, special entries and `.flow`, copies each trial into a fresh isolated
+workspace, and rechecks its identity before execution. The built-in evaluator receives no adapter
+output other than the final workspace and exposes no private assertion body to the evaluated
+profile. These controls do not contain the host-side Pi process or a hostile same-user process and
+do not make native isolation equivalent to a VM. Run adversarial fixtures under a dedicated OS
+identity or stronger boundary.
+
+Private verifier transport does not prevent author-side holdout contamination. Expected answers,
+hashes, hidden checks, evaluator logic, or prior result-bearing history placed in a fixture,
+instruction, profile prompt, package, or model-visible repository file are available to the harness.
+Review provenance, separate tuning from holdout tasks, and rotate exposed tasks. Content digests prove
+the admitted bytes, not that those bytes were previously confidential or statistically independent.
+
+Evaluation headers intentionally omit absolute source paths, workflow bodies, prompts, and verifier
+assertions, retaining only verifier digests and assertion counts, but trial ledgers and exports expose
+assertion paths, observed file hashes, bounded failure reasons, provider-derived usage, and run
+identifiers. Store `.flow/evaluations` with the same privacy as `.flow/runs`. Digest chaining,
+single-writer ownership, fatal UTF-8 decoding, direct-directory and no-follow file checks, and
+offline replay detect many local substitutions;
+they are not signatures and cannot defend state from root or the same trusted account.

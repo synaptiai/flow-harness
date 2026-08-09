@@ -1,0 +1,200 @@
+import { describe, expect, it } from "vitest";
+
+import { createEvaluationSchedule } from "../../../src/domain/evaluation/plan.js";
+import {
+  createEvaluationTrialRecord,
+  parseEvaluationTrialRecord,
+  unavailableEvaluationMetrics,
+} from "../../../src/domain/evaluation/records.js";
+
+const planDigest = "a".repeat(64);
+const schedule = createEvaluationSchedule(planDigest, ["task"], ["baseline", "candidate"], [11]);
+
+describe("evaluation trial records", () => {
+  it("classifies every terminal harness and verifier outcome without dropping failures", () => {
+    const accepted = record(
+      { outcome: "completed", runId: "run-accepted", reason: null },
+      {
+        outcome: "accepted",
+        verifierDigest: "b".repeat(64),
+        assertions: [{ kind: "exists", path: "RESULT.md", outcome: true }],
+      },
+    );
+    expect(accepted.classification).toBe("verified_success");
+
+    const rejected = record(
+      { outcome: "completed", runId: "run-rejected", reason: null },
+      {
+        outcome: "rejected",
+        verifierDigest: "b".repeat(64),
+        assertions: [{ kind: "exists", path: "RESULT.md", outcome: false }],
+      },
+    );
+    expect(rejected.classification).toBe("false_completion");
+
+    const verifierError = record(
+      { outcome: "completed", runId: "run-verifier-error", reason: null },
+      {
+        outcome: "error",
+        verifierDigest: "b".repeat(64),
+        assertions: [],
+        reason: "workspace identity mismatch",
+      },
+    );
+    expect(verifierError.classification).toBe("verifier_error");
+
+    for (const outcome of [
+      "failed",
+      "timed_out",
+      "crashed",
+      "cancelled",
+      "malformed_output",
+      "missing_output",
+    ] as const) {
+      expect(
+        record(
+          { outcome, runId: null, reason: `${outcome} evidence` },
+          { outcome: "not_run", verifierDigest: "b".repeat(64), assertions: [] },
+        ),
+      ).toMatchObject({ classification: "harness_failure", harness: { outcome } });
+    }
+  });
+
+  it("rejects contradictory, temporally invalid, and tampered evidence", () => {
+    expect(() =>
+      record(
+        { outcome: "completed", runId: "run-empty-accepted", reason: null },
+        { outcome: "accepted", verifierDigest: "b".repeat(64), assertions: [] },
+      ),
+    ).toThrow(/accepted.*assertion|assertion.*accepted/i);
+    expect(() =>
+      record(
+        { outcome: "completed", runId: "run-false-accepted", reason: null },
+        {
+          outcome: "accepted",
+          verifierDigest: "b".repeat(64),
+          assertions: [{ kind: "exists", path: "RESULT.md", outcome: false }],
+        },
+      ),
+    ).toThrow(/accepted.*pass|pass.*accepted/i);
+    expect(() =>
+      record(
+        { outcome: "completed", runId: "run-empty-rejected", reason: null },
+        { outcome: "rejected", verifierDigest: "b".repeat(64), assertions: [] },
+      ),
+    ).toThrow(/rejected.*assertion|assertion.*rejected/i);
+    expect(() =>
+      record(
+        { outcome: "completed", runId: "run-unexplained-error", reason: null },
+        { outcome: "error", verifierDigest: "b".repeat(64), assertions: [] },
+      ),
+    ).toThrow(/error.*reason|reason.*error/i);
+    expect(() =>
+      record(
+        { outcome: "completed", runId: null, reason: null },
+        { outcome: "accepted", verifierDigest: "b".repeat(64), assertions: [] },
+      ),
+    ).toThrow(/run id/i);
+    expect(() =>
+      record(
+        { outcome: "failed", runId: null, reason: "failed" },
+        { outcome: "accepted", verifierDigest: "b".repeat(64), assertions: [] },
+      ),
+    ).toThrow(/not-run/i);
+
+    const valid = record(
+      { outcome: "completed", runId: "run-valid", reason: null },
+      {
+        outcome: "accepted",
+        verifierDigest: "b".repeat(64),
+        assertions: [{ kind: "exists", path: "RESULT.md", outcome: true }],
+      },
+    );
+    expect(() => parseEvaluationTrialRecord({ ...valid, recordDigest: "c".repeat(64) })).toThrow(
+      /digest/i,
+    );
+    expect(() =>
+      createEvaluationTrialRecord({
+        ...recordInput(),
+        startedAt: "2026-08-09T10:00:02.000Z",
+        completedAt: "2026-08-09T10:00:01.000Z",
+        harness: { outcome: "failed", runId: null, reason: "failed" },
+        verification: { outcome: "not_run", verifierDigest: "b".repeat(64), assertions: [] },
+      }),
+    ).toThrow(/precedes/i);
+    expect(() =>
+      createEvaluationTrialRecord({
+        ...recordInput(),
+        harness: { outcome: "failed", runId: null, reason: "failed" },
+        verification: { outcome: "not_run", verifierDigest: "b".repeat(64), assertions: [] },
+        metrics: { ...unavailableEvaluationMetrics(), toolCalls: 1, toolErrors: 2 },
+      }),
+    ).toThrow(/tool errors/i);
+    expect(() =>
+      createEvaluationTrialRecord({
+        ...recordInput(),
+        harness: { outcome: "failed", runId: null, reason: "failed" },
+        verification: { outcome: "not_run", verifierDigest: "b".repeat(64), assertions: [] },
+        metrics: {
+          ...unavailableEvaluationMetrics(),
+          recoveryAttempts: 0,
+          recoveryOutcome: "succeeded",
+        },
+      }),
+    ).toThrow(/recovery/i);
+    expect(() =>
+      createEvaluationTrialRecord({
+        ...recordInput(),
+        harness: { outcome: "failed", runId: null, reason: "failed" },
+        verification: { outcome: "not_run", verifierDigest: "b".repeat(64), assertions: [] },
+        metrics: {
+          ...unavailableEvaluationMetrics(),
+          recoveryAttempts: 1,
+          recoveryOutcome: "not_attempted",
+        },
+      }),
+    ).toThrow(/recovery/i);
+    expect(() =>
+      createEvaluationTrialRecord({
+        ...recordInput(),
+        environment: { ...recordInput().environment, workspaceSnapshotDigest: null },
+        harness: { outcome: "completed", runId: "run-without-snapshot", reason: null },
+        verification: {
+          outcome: "accepted",
+          verifierDigest: "b".repeat(64),
+          assertions: [{ kind: "exists", path: "RESULT.md", outcome: true }],
+        },
+      }),
+    ).toThrow(/workspace.*snapshot|snapshot.*completed/i);
+  });
+});
+
+function record(
+  harness: Parameters<typeof createEvaluationTrialRecord>[0]["harness"],
+  verification: Parameters<typeof createEvaluationTrialRecord>[0]["verification"],
+) {
+  return createEvaluationTrialRecord({ ...recordInput(), harness, verification });
+}
+
+function recordInput() {
+  const item = schedule[0];
+  if (item === undefined) {
+    throw new Error("missing test schedule");
+  }
+  return {
+    schedule: item,
+    planDigest,
+    previousDigest: null,
+    startedAt: "2026-08-09T10:00:00.000Z",
+    completedAt: "2026-08-09T10:00:01.000Z",
+    environment: {
+      platform: "linux" as const,
+      architecture: "x64",
+      nodeVersion: "v22.19.0",
+      flowVersion: "0.0.0",
+      workspaceBackend: "reflink-copy-v1" as const,
+      workspaceSnapshotDigest: "d".repeat(64),
+    },
+    metrics: unavailableEvaluationMetrics(),
+  };
+}

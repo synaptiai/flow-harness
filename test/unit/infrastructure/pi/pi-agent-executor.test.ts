@@ -241,6 +241,28 @@ describe("PiAgentExecutor", () => {
     });
   });
 
+  it("preserves optional agent activity telemetry from the runner", async () => {
+    const runner: PiAgentRunner = {
+      async run() {
+        return {
+          text: "Completed with tools.",
+          stopReason: "stop",
+          activity: { turns: 3, toolCalls: 4, toolErrors: 1 },
+        };
+      },
+    };
+
+    const outcome = await new PiAgentExecutor(runner, () => 100).execute(agentNode(), context);
+
+    expect(outcome).toMatchObject({
+      status: "succeeded",
+      evidence: {
+        kind: "agent",
+        activity: { turns: 3, toolCalls: 4, toolErrors: 1 },
+      },
+    });
+  });
+
   it("passes selected immutable skills and records exact observed resource reads", async () => {
     const snapshot = createCapabilitySnapshot([
       {
@@ -844,6 +866,43 @@ describe("PiAgentExecutor", () => {
 });
 
 describe("EmbeddedPiAgentRunner", () => {
+  it("counts turns, tool calls, and tool errors from one settled session", async () => {
+    const messages: Array<Record<string, unknown>> = [];
+    let listener: ((event: Record<string, unknown>) => void) | undefined;
+    const fakeSession = {
+      state: { messages },
+      subscribe: (input: (event: Record<string, unknown>) => void) => {
+        listener = input;
+        return () => undefined;
+      },
+      prompt: async () => {
+        listener?.({ type: "turn_start" });
+        listener?.({ type: "tool_execution_end", isError: false });
+        listener?.({ type: "tool_execution_end", isError: true });
+        messages.push({ role: "assistant", stopReason: "stop" });
+      },
+      abort: async () => undefined,
+      getSessionStats: () => ({
+        ...sessionStats(),
+        assistantMessages: 1,
+        toolCalls: 2,
+        toolResults: 2,
+      }),
+      dispose: () => undefined,
+    };
+    const createSession = (async () => ({
+      session: fakeSession,
+    })) as unknown as typeof createAgentSession;
+    const runner = new EmbeddedPiAgentRunner(
+      async () => ({ getModel: () => ({}) }) as never,
+      createSession,
+    );
+
+    const result = await runner.run(agentRequest());
+
+    expect(result.activity).toEqual({ turns: 1, toolCalls: 2, toolErrors: 1 });
+  });
+
   it("returns a Flow approval denial to the production Pi loop as a model-visible tool error", async () => {
     const faux = createFauxCore({
       provider: "flow-test",
@@ -1070,6 +1129,7 @@ describe("EmbeddedPiAgentRunner", () => {
       text: "",
       textHash: createHash("sha256").update("").digest("hex"),
       textTruncated: false,
+      activity: { turns: 1, toolCalls: 0, toolErrors: 0 },
       stopReason: "error",
       errorMessage: "provider stream failed",
       usage: {

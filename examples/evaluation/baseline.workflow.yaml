@@ -1,0 +1,35 @@
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata:
+  id: evaluation-baseline
+  description: Baseline harness profile for the reproducible evaluation example.
+budget:
+  maxNodeStarts: 2
+  maxModelTokens: 10000
+  maxCostUsd: 1
+  maxExecutionMs: 300000
+  maxArtifactBytes: 1048576
+nodes:
+  - id: implement
+    type: agent
+    agent:
+      prompt: Read TASK.md and implement exactly what it requests.
+      model:
+        provider: anthropic
+        id: claude-sonnet-4-5
+        thinking: medium
+      tools:
+        - read
+        - edit
+      timeoutMs: 300000
+  - id: publish
+    type: result
+    dependsOn:
+      - implement
+    result:
+      source:
+        nodeId: implement
+        field: agent.text
+      schema:
+        type: string
+        maxLength: 4096

@@ -703,6 +703,38 @@ Approval remains separate from containment. OMP-style allow/prompt/deny rules ca
 | Live verifier manifest changes after submission | Continue from the immutable submitted snapshot; bind no live replacement during attached, queued, child, or resumed work |
 | Verifier evidence reports the wrong package identity | Fail before persistence or reject replay; never infer identity from a successful driver result |
 
+## Evaluation layer
+
+Harness evaluation is an application layer above ordinary workflow execution. An ordinary run
+ledger remains authoritative for one profile trial; a separate evaluation ledger owns the admitted
+plan identity, deterministic paired schedule, terminal trial classifications, cross-run metrics,
+and comparison verdict. Neither reducer imports the other's event vocabulary.
+
+The `HarnessEvaluationAdapter` port receives one fresh workspace, a task instruction, public trial
+identity, the selected profile, and frozen fairness controls. It receives no verifier body and no
+evaluation-store authority. The initial `flow-workflow-v1` adapter executes the already compiled
+workflow through the ordinary scheduler and reduces its durable run state into a provider-neutral
+trial result. Pi is therefore an implementation dependency below that adapter, not part of the
+evaluation evidence schema. An OMP- or Prime-native adapter can later implement the same port
+without changing plan, record, report, or verifier contracts.
+
+Admission hashes portable fixture content, the instruction, workflow source and compiled graph,
+private verifier identity and assertion count, controls, suite version, profiles, and seeds. The plan digest derives an
+alternating paired schedule. Every trial receives a fresh reflink-or-copy workspace and a second
+fixture observation before adapter execution. The private Flow-owned filesystem verifier runs only
+after adapter settlement. A trial record is then appended to a separate digest chain under a
+single-writer owner, after which the ephemeral workspace is discarded. Resume removes deterministic
+committed or uncommitted workspace residue before starting the missing suffix. Offline inspection
+reproduces the report from the redacted header and committed records without consulting live source
+files or a provider.
+
+Offline replay reconciles each record to the admitted verifier digest and assertion count. Comparative
+inference uses only complete holdout pairs whose runtime environment and starting snapshot match.
+This separation makes missing trials, crashes, false completion, and unavailable metrics explicit.
+It does not make task selection representative, control provider stochasticity through the schedule
+seed, or turn a bootstrap interval into a universal performance claim. See
+[Reproducible harness evaluation](evaluation.md).
+
 ## Non-goals
 
 - Flow does not retain Claude Code plugin compatibility.

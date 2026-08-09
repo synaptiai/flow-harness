@@ -1,0 +1,330 @@
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  FlowWorkflowEvaluationAdapter,
+  type HarnessEvaluationRequest,
+} from "../../../src/application/evaluation-adapter.js";
+import type { NodeExecutor } from "../../../src/application/ports.js";
+import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
+import { calculateWorkflowDigest } from "../../../src/domain/workflow/digest.js";
+import { JsonlRunStore } from "../../../src/infrastructure/fs/jsonl-run-store.js";
+import { ReflinkCopyWorkspaceIsolator } from "../../../src/infrastructure/fs/reflink-copy-workspace-isolator.js";
+
+const temporaryDirectories: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(
+    temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true })),
+  );
+});
+
+describe("Flow workflow evaluation adapter", () => {
+  it("runs a public trial without verifier authority and translates durable telemetry", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-evaluation-adapter-")));
+    temporaryDirectories.push(root);
+    await writeFile(join(root, "TASK.md"), "Create RESULT.md.\n");
+    const workflow = compiledWorkflow();
+    const request = publicRequest(root);
+    expect("verifier" in request).toBe(false);
+    const clock = [100, 125];
+    const adapter = new FlowWorkflowEvaluationAdapter(
+      {
+        id: "candidate",
+        adapter: "flow-workflow-v1",
+        workflow: { compiled: workflow, workflowDigest: calculateWorkflowDigest(workflow) },
+      },
+      {
+        executor: successfulExecutor(),
+        createStore: () => new JsonlRunStore(join(root, "runs")),
+        clockMs: () => clock.shift() ?? 125,
+      },
+    );
+
+    const result = await adapter.run(request);
+
+    expect(result).toEqual({
+      harness: {
+        outcome: "completed",
+        runId: `eval-${request.trial.trialId}`,
+        reason: null,
+      },
+      metrics: {
+        costUsdMicros: 17,
+        inputTokens: 3,
+        cacheReadTokens: 1,
+        cacheWriteTokens: 2,
+        outputTokens: 5,
+        turns: 2,
+        toolCalls: 1,
+        toolErrors: 0,
+        wallTimeMs: 25,
+        activeTimeMs: 4,
+        interventions: 0,
+        policyViolations: 0,
+        recoveryAttempts: 0,
+        recoveryOutcome: "not_attempted",
+      },
+    });
+    await expect(
+      new JsonlRunStore(join(root, "runs")).read(`eval-${request.trial.trialId}`),
+    ).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: "run_succeeded" })]),
+    );
+  });
+
+  it("converts workflow failure into a typed harness failure without inventing telemetry", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-evaluation-adapter-")));
+    temporaryDirectories.push(root);
+    await writeFile(join(root, "TASK.md"), "Create RESULT.md.\n");
+    const workflow = compiledWorkflow();
+    const adapter = new FlowWorkflowEvaluationAdapter(
+      {
+        id: "candidate",
+        adapter: "flow-workflow-v1",
+        workflow: { compiled: workflow, workflowDigest: calculateWorkflowDigest(workflow) },
+      },
+      {
+        executor: {
+          execute: async () => ({
+            status: "failed",
+            error: {
+              code: "model_failed",
+              message: "provider unavailable",
+              retryable: false,
+              sideEffectStatus: "none",
+            },
+            evidence: null,
+          }),
+        },
+        createStore: () => new JsonlRunStore(join(root, "runs")),
+      },
+    );
+
+    await expect(adapter.run(publicRequest(root))).resolves.toMatchObject({
+      harness: { outcome: "failed", reason: "provider unavailable" },
+      metrics: {
+        costUsdMicros: null,
+        inputTokens: null,
+        turns: null,
+        toolCalls: null,
+        toolErrors: null,
+        activeTimeMs: null,
+      },
+    });
+  });
+
+  it("does not invoke the provider again when an uncommitted trial run already exists", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-evaluation-adapter-")));
+    temporaryDirectories.push(root);
+    await writeFile(join(root, "TASK.md"), "Edit RESULT.md.\n");
+    const workflow = compiledWorkflow();
+    const executor = successfulExecutor();
+    const execute = vi.spyOn(executor, "execute");
+    const adapter = new FlowWorkflowEvaluationAdapter(
+      {
+        id: "candidate",
+        adapter: "flow-workflow-v1",
+        workflow: { compiled: workflow, workflowDigest: calculateWorkflowDigest(workflow) },
+      },
+      {
+        executor,
+        createStore: () => new JsonlRunStore(join(root, "runs")),
+      },
+    );
+    const request = publicRequest(root);
+
+    await expect(adapter.run(request)).resolves.toMatchObject({
+      harness: { outcome: "completed" },
+    });
+    await expect(adapter.run(request)).resolves.toMatchObject({
+      harness: { outcome: "crashed", reason: expect.stringMatching(/exists/i) },
+      metrics: { costUsdMicros: null },
+    });
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps child-only activity, policy, intervention, and recovery telemetry unavailable", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-evaluation-adapter-")));
+    temporaryDirectories.push(root);
+    const workspace = join(root, "workspace");
+    await mkdir(workspace);
+    await writeFile(join(workspace, "TASK.md"), "Complete the child task.\n");
+    const workflow = compiledChildWorkflow();
+    const adapter = new FlowWorkflowEvaluationAdapter(
+      {
+        id: "candidate",
+        adapter: "flow-workflow-v1",
+        workflow: { compiled: workflow, workflowDigest: calculateWorkflowDigest(workflow) },
+      },
+      {
+        executor: successfulExecutor(),
+        createStore: () => new JsonlRunStore(join(root, "runs")),
+        workspaceIsolator: new ReflinkCopyWorkspaceIsolator(join(root, "isolated")),
+      },
+    );
+
+    await expect(adapter.run(publicRequest(workspace))).resolves.toMatchObject({
+      harness: { outcome: "completed" },
+      metrics: {
+        inputTokens: null,
+        cacheReadTokens: null,
+        cacheWriteTokens: null,
+        outputTokens: null,
+        turns: null,
+        toolCalls: null,
+        toolErrors: null,
+        interventions: null,
+        policyViolations: null,
+        recoveryAttempts: null,
+        recoveryOutcome: null,
+      },
+    });
+  });
+});
+
+function compiledWorkflow() {
+  return compileWorkflowText(`apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: evaluated-profile }
+budget:
+  maxNodeStarts: 8
+  maxModelTokens: 10000
+  maxCostUsd: 1
+  maxExecutionMs: 300000
+  maxArtifactBytes: 1048576
+nodes:
+  - id: implement
+    type: agent
+    agent:
+      prompt: Follow TASK.md.
+      model: { provider: test, id: deterministic }
+      tools: [read, edit]
+  - id: publish
+    type: result
+    dependsOn: [implement]
+    result:
+      source: { nodeId: implement, field: agent.text }
+      schema: { type: string, maxLength: 1024 }
+`);
+}
+
+function compiledChildWorkflow() {
+  return compileWorkflowText(`apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: evaluated-child-profile }
+budget:
+  maxNodeStarts: 8
+  maxModelTokens: 10000
+  maxCostUsd: 1
+  maxExecutionMs: 300000
+  maxArtifactBytes: 1048576
+nodes:
+  - id: delegate
+    type: child
+    child:
+      resultNodeId: publish
+      workflow: |
+        apiVersion: flow.synapti.ai/v1alpha1
+        kind: Workflow
+        metadata: { id: evaluated-child }
+        budget:
+          maxNodeStarts: 4
+          maxModelTokens: 1000
+          maxCostUsd: 0.1
+          maxExecutionMs: 60000
+          maxArtifactBytes: 524288
+        nodes:
+          - id: implement
+            type: agent
+            agent:
+              prompt: Follow TASK.md.
+              model: { provider: test, id: deterministic }
+              tools: [read, edit]
+          - id: publish
+            type: result
+            dependsOn: [implement]
+            result:
+              source: { nodeId: implement, field: agent.text }
+              schema: { type: string, maxLength: 1024 }
+  - id: publish
+    type: result
+    dependsOn: [delegate]
+    result:
+      source: { nodeId: delegate, field: result.value }
+      schema: { type: string, maxLength: 1024 }
+`);
+}
+
+function publicRequest(cwd: string): HarnessEvaluationRequest {
+  return Object.freeze({
+    planDigest: "a".repeat(64),
+    trial: Object.freeze({
+      trialId: `trial-${"b".repeat(48)}`,
+      position: 1,
+      taskId: "edit-readme",
+      profileId: "candidate",
+      seed: 11,
+      repetition: 1,
+    }),
+    workspace: Object.freeze({
+      workspaceId: "evaluation-workspace",
+      cwd,
+      backend: "reflink-copy-v1",
+      snapshotDigest: "c".repeat(64),
+    }),
+    instruction: Object.freeze({ path: "TASK.md", sha256: sha256("Create RESULT.md.\n") }),
+    controls: Object.freeze({
+      model: Object.freeze({ provider: "test", id: "deterministic", thinking: "medium" }),
+      budget: Object.freeze({
+        maxNodeStarts: 8,
+        maxModelTokens: 10_000,
+        maxCostUsdMicros: 1_000_000,
+        maxExecutionMs: 300_000,
+        maxArtifactBytes: 1_048_576,
+      }),
+      network: "deny" as const,
+      retry: Object.freeze({ providerRetries: 0 as const, harnessRetries: 0 as const }),
+    }),
+  });
+}
+
+function successfulExecutor(): NodeExecutor {
+  return {
+    execute: async (node, context) => {
+      if (node.type !== "agent") {
+        throw new Error("unexpected executable node");
+      }
+      await writeFile(join(context.cwd, "RESULT.md"), "complete\n");
+      return {
+        status: "succeeded",
+        evidence: {
+          kind: "agent",
+          provider: "test",
+          model: "deterministic",
+          text: '"complete"',
+          textHash: sha256('"complete"'),
+          textTruncated: false,
+          durationMs: 4,
+          usage: {
+            inputTokens: 3,
+            cacheReadTokens: 1,
+            cacheWriteTokens: 2,
+            outputTokens: 5,
+            costUsdMicros: 17,
+          },
+          activity: { turns: 2, toolCalls: 1, toolErrors: 0 },
+          policyDecisions: [],
+          effectReceipts: [],
+        },
+      };
+    },
+  };
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}

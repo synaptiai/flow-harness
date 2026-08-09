@@ -1,14 +1,46 @@
-import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { armForcedExit, isDirectEntry, main, resolveDirectExitCode } from "../../src/cli/main.js";
+import {
+  armForcedExit,
+  createEvaluationEnvironment,
+  isDirectEntry,
+  main,
+  resolveDirectExitCode,
+} from "../../src/cli/main.js";
 import { resolveFlowConfig } from "../../src/domain/config/resolver.js";
 
 describe("flow CLI", () => {
+  it("captures supported evaluation environments from installed package metadata", async () => {
+    const packageMetadata = JSON.parse(
+      await readFile(new URL("../../package.json", import.meta.url), "utf8"),
+    ) as { readonly version: string };
+
+    expect(
+      createEvaluationEnvironment({
+        platform: "linux",
+        architecture: "x64",
+        nodeVersion: "v22.19.0",
+      }),
+    ).toEqual({
+      platform: "linux",
+      architecture: "x64",
+      nodeVersion: "v22.19.0",
+      flowVersion: packageMetadata.version,
+    });
+    expect(() =>
+      createEvaluationEnvironment({
+        platform: "freebsd",
+        architecture: "x64",
+        nodeVersion: "v22.19.0",
+      }),
+    ).toThrow(/unsupported.*platform|platform.*unsupported/i);
+  });
+
   it("prints resume help without requiring provider configuration", async () => {
     const output: string[] = [];
 
@@ -22,6 +54,10 @@ describe("flow CLI", () => {
     expect(output.join("\n")).toContain("flow validate");
     expect(output.join("\n")).toContain("flow init");
     expect(output.join("\n")).toContain("flow config show");
+    expect(output.join("\n")).toContain("flow eval validate");
+    expect(output.join("\n")).toContain("flow eval run");
+    expect(output.join("\n")).toContain("flow eval inspect");
+    expect(output.join("\n")).toContain("flow eval export");
     expect(output.join("\n")).toContain("flow run");
     expect(output.join("\n")).toContain("flow resume");
     expect(output.join("\n")).toContain("flow inspect");

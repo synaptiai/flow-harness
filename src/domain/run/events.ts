@@ -154,9 +154,16 @@ export interface AgentEvidence {
   readonly textTruncated: boolean;
   readonly durationMs: number;
   readonly usage?: AgentModelUsage;
+  readonly activity?: AgentActivity;
   readonly policyDecisions: readonly PolicyDecision[];
   readonly effectReceipts: readonly AgentEffectReceipt[];
   readonly capabilities?: AgentCapabilityEvidence;
+}
+
+export interface AgentActivity {
+  readonly turns: number;
+  readonly toolCalls: number;
+  readonly toolErrors: number;
 }
 
 export type VerifierVerdict = "accepted" | "rejected" | "inconclusive";
@@ -1692,6 +1699,17 @@ const agentEvidenceSchema = z
     textTruncated: z.boolean(),
     durationMs: z.number().nonnegative().max(Number.MAX_SAFE_INTEGER),
     usage: agentModelUsageSchema.optional(),
+    activity: z
+      .object({
+        turns: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+        toolCalls: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+        toolErrors: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+      })
+      .strict()
+      .refine((activity) => activity.toolErrors <= activity.toolCalls, {
+        message: "agent tool errors cannot exceed tool calls",
+      })
+      .optional(),
     policyDecisions: z.array(policyDecisionSchema).max(MAX_POLICY_DECISIONS).default([]),
     effectReceipts: z
       .array(
