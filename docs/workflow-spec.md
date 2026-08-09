@@ -720,9 +720,26 @@ make a probabilistic verifier prompt-injection-proof or equivalent to hidden det
 Command-verifier approval, remediation edges, fallback, and automatic retry of an interrupted
 verifier are not part of this contract.
 
+## Installed capability bundles
+
+Workflow syntax is independent of package transport. The same `skills`, packaged verifier, and
+`toolPackages` selections resolve against one project catalog composed from strict local roots and
+the digest-pinned entries in `.flow/packages.lock.json`. Flow reopens every referenced
+content-addressed blob, checks byte count and SHA-256, re-parses every contained package, and
+re-derives bundle name/version before catalog admission. Local and installed package-name
+collisions, and provider-facing tool-name collisions, reject the whole composed catalog; there is
+no source precedence.
+
+Only `flow packages install` uses the network. Workflow validation and run admission are local;
+detached jobs persist the selected immutable capability snapshot. Child execution, resume, and
+replay never use the lock's source URL or load the current lock/blob. Bundle provenance is
+`.flow/packages/sha256/<digest>/<kind>/<name>`, so run evidence identifies exact content without
+carrying a network instruction. SHA-256 is content identity, not publisher authentication or
+freshness.
+
 ## Versioned verifier packages
 
-Workflows may select one exact project-local package instead of repeating an inline verifier
+Workflows may select one exact project-catalog package instead of repeating an inline verifier
 definition:
 
 ```yaml
@@ -789,12 +806,12 @@ selection. Detached and resumed execution never reload the live catalog.
 `flow verifiers list`, `inspect <name>`, and `validate` are metadata-only operations and execute no
 driver. Inspection reports identity, provenance, and hashes but omits manifest content and the
 parsed definition so a model rubric is not printed. Packages cannot contribute executable files,
-hooks, tools, models, evidence, graph edges, policy, credentials, or network authority. Remote
-installation, version solving, arbitrary evaluator code, and reward environments are unsupported.
+hooks, tools, models, evidence, graph edges, policy, credentials, or network authority. Version
+solving, arbitrary evaluator code, and reward environments are unsupported.
 
 ## Versioned command tool packages
 
-An agent may select exact project-local command tools without enabling unrestricted `exec`:
+An agent may select exact project-catalog command tools without enabling unrestricted `exec`:
 
 ```yaml
 - id: inspect
@@ -894,8 +911,8 @@ Replay independently rerenders every sourced command from its durable typed inpu
 definition. It reconciles package name/version/digest, model tool name, input digest, executable,
 argv, timeout, compiled node selection, control graph, policy decision, approval, preparation, and
 settlement. A package-only agent rejects source-free commands. An interrupted command-capable agent
-attempt is never fresh-retried. Remote acquisition, dependency installation, signatures, version
-solving, executable package code, and non-command drivers are unsupported.
+attempt is never fresh-retried. Dependency installation, publisher signatures, version solving,
+executable package code, and non-command drivers are unsupported.
 
 Every command node and descendant runs through Flow's required SRT adapter. The fixed `workspace-write-network-deny-v1` profile allows the selected workflow directory and a private temporary directory, denies network and undeclared Unix sockets, omits ambient credentials and injection variables from the child environment, and denies writes to the actual run store, `.flow`, `.git`, environment files, and key files. Concurrent same-policy commands share one initialized SRT session but receive distinct temporary directories, environment values, and per-command filesystem configurations. Flow reference-counts wraps, queues a different concurrent workspace or policy until the active session resets, honors cancellation while queued, and resets SRT only after the last compatible command releases. On Linux, Flow resolves SRT's packaged seccomp helper canonically, passes it as the explicit SRT apply path, and re-exposes only that file read-only when the Flow installation lies outside the workflow directory. If SRT is missing, unsupported, degraded, or cannot initialize, the node fails before spawn; Flow has no unsandboxed command fallback.
 
@@ -1012,7 +1029,7 @@ or provider observation records no invented usage. Invalid statistics fail befor
 
 ## Portable Agent Skills
 
-An agent node may explicitly select local packages that follow the open Agent Skills manifest
+An agent node may explicitly select project-catalog packages that follow the open Agent Skills manifest
 shape:
 
 ```yaml

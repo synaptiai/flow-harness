@@ -91,6 +91,23 @@ The embedded Pi runtime runs with the invoking user's operating-system permissio
   cwd, shell text, network, hooks, providers, middleware, graph changes, or policy. Workflows and
   manifests remain trusted local configuration; command output and arguments may contain sensitive
   data and are persisted in the run ledger.
+- Remote capability bundles contain only the same Agent Skill, verifier, and declarative command
+  tool ABIs. `flow packages install` is the only network operation: it requires one canonical
+  public HTTPS URL and caller-supplied lowercase SHA-256, follows no redirect, sends no ambient
+  credentials, pins a validated public DNS answer into the TLS connection, and bounds the whole
+  request. The digest is checked before strict JSON and package parsing. Installation runs no
+  package code, dependency manager, hook, or driver.
+- Installed bytes are stored once at `.flow/packages/sha256/<digest>.flowpkg`; activation is the
+  deterministic `.flow/packages.lock.json` entry published last under an owner-checked local lock.
+  Missing, corrupt, replaced, symlinked, identity-inconsistent, or colliding state fails closed.
+  Mutation locks are never reaped automatically: an operator must verify that no mutation is active
+  before removing an exited owner's exact lock. A `commit_uncertain` result requires local lock/blob
+  inspection and verification before retry. New store-directory entries are parent-synced before a
+  lock can reference them; bounded reads and traversal budgets remain enforced during source races.
+  Local inspection/removal and workflow execution never fetch the recorded source. A digest proves
+  byte identity, not publisher identity, freshness, revocation, or rollback protection. Treat the
+  URL, digest, lock, and package content as trusted project configuration and review them before
+  selecting a package.
 - Run budgets persist checked start, token, reported-cost, and active-time accounting and can reduce
   node timeouts before execution. They are scheduler controls, not provider-side billing
   reservations, account quotas, CPU/memory limits, or a substitute for containment. One in-flight

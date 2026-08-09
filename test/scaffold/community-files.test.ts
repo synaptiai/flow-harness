@@ -602,6 +602,75 @@ describe("public repository contracts", () => {
     });
   });
 
+  it("documents digest-pinned remote capability bundles with a valid source example", async () => {
+    const [
+      readme,
+      architecture,
+      workflowSpec,
+      recovery,
+      sourcing,
+      roadmap,
+      security,
+      testing,
+      contributing,
+      bundleSource,
+      verifierManifest,
+    ] = await Promise.all([
+      readText("README.md"),
+      readText("docs/architecture.md"),
+      readText("docs/workflow-spec.md"),
+      readText("docs/recovery.md"),
+      readText("docs/capability-sourcing.md"),
+      readText("docs/roadmap.md"),
+      readText("SECURITY.md"),
+      readText("docs/testing-and-evaluation.md"),
+      readText("CONTRIBUTING.md"),
+      readText("examples/capability-bundle-source/BUNDLE.json"),
+      readText("examples/capability-bundle-source/verifiers/release-tests/VERIFIER.yaml"),
+    ]);
+
+    expect(readme).toMatch(/Distribute digest-pinned capability bundles/i);
+    expect(readme).toContain("packages install");
+    expect(readme).toMatch(/digest identifies bytes.*does not authenticate a publisher/is);
+    expect(architecture).toMatch(/digest-pinned remote acquisition.*transport.*installation/is);
+    expect(workflowSpec).toContain("## Installed capability bundles");
+    expect(workflowSpec).toMatch(/Child execution, resume, and\s+replay never use.*source URL/is);
+    expect(recovery).toMatch(
+      /never reads `\.flow\/packages\.lock\.json`.*contacts the recorded source URL/is,
+    );
+    expect(sourcing).toContain(
+      "https://github.com/opencontainers/image-spec/blob/main/descriptor.md",
+    );
+    expect(sourcing).toContain("https://theupdateframework.github.io/specification/");
+    expect(roadmap).toMatch(/Deterministic inert bundles.*implemented/is);
+    expect(security).toMatch(
+      /Remote capability bundles contain only.*Agent Skill.*verifier.*command\s+tool ABIs/is,
+    );
+    expect(testing).toContain("packages pack examples/capability-bundle-source");
+    expect(contributing).toMatch(/capability-bundle format.*adversarial regression/is);
+
+    expect(JSON.parse(bundleSource)).toEqual({
+      apiVersion: "flow.synapti.ai/v1alpha1",
+      kind: "CapabilityBundleSource",
+      metadata: {
+        name: "review-suite",
+        version: "1.0.0",
+        description: "Credential-free release verification capabilities.",
+        license: "Apache-2.0",
+        compatibility: "Flow v1alpha1 capability ABIs",
+      },
+    });
+    expect(
+      parseVerifierPackageManifest(
+        Buffer.from(verifierManifest),
+        "examples/capability-bundle-source/verifiers/release-tests/VERIFIER.yaml",
+      ),
+    ).toMatchObject({
+      metadata: { name: "release-tests", version: "1.0.0" },
+      spec: { kind: "command", command: { executable: "node", args: ["--version"] } },
+    });
+  });
+
   it("documents live agent command approval with a valid provider-neutral example", async () => {
     const [readme, architecture, workflowSpec, recovery, roadmap, security, testing, source] =
       await Promise.all([

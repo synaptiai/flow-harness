@@ -14,11 +14,13 @@ import {
   type ToolPackageManifest,
   type ToolPackageSnapshotInput,
 } from "../../domain/capability/tool-packages.js";
+import type { CapabilityBundleToolPackage } from "../../domain/capability/capability-bundles.js";
 
 const MAX_DISCOVERY_DEPTH = 6;
 const MAX_DISCOVERY_ENTRIES = 2_000;
-const MAX_TOOL_PACKAGES = 32;
+export const MAX_TOOL_PACKAGES = 32;
 const MANIFEST_NAME = "TOOL.yaml";
+const installedToolSources = new WeakMap<DiscoveredToolPackage, string>();
 
 export type ToolPackageCatalogErrorCode =
   | "duplicate_package"
@@ -66,6 +68,28 @@ export interface ProjectToolPackageCatalog {
   readonly projectRoot: string;
   readonly root: string;
   readonly packages: readonly DiscoveredToolPackage[];
+}
+
+export function createInstalledDiscoveredToolPackage(input: {
+  readonly projectRoot: string;
+  readonly bundleDigest: string;
+  readonly package: CapabilityBundleToolPackage;
+}): DiscoveredToolPackage {
+  const digest = requireBundleDigest(input.bundleDigest);
+  const directory = join(
+    input.projectRoot,
+    ".flow",
+    "packages",
+    "sha256",
+    digest,
+    "tool-package",
+    input.package.name,
+  );
+  const source = Buffer.from(input.package.manifestBase64, "base64");
+  const manifest = parseManifest(source, `${directory}/${MANIFEST_NAME}`);
+  const discovered = discoveredPackage(input.projectRoot, directory, source, manifest);
+  installedToolSources.set(discovered, input.package.manifestBase64);
+  return discovered;
 }
 
 interface ScanBudget {
@@ -254,6 +278,26 @@ async function snapshotPackage(
   catalog: ProjectToolPackageCatalog,
   discovered: DiscoveredToolPackage,
 ): Promise<ToolPackageSnapshotInput> {
+  const installedSource = installedToolSources.get(discovered);
+  if (installedSource !== undefined) {
+    const source = Buffer.from(installedSource, "base64");
+    const manifest = parseManifest(source, `${discovered.directory}/${MANIFEST_NAME}`);
+    return {
+      kind: "tool-package",
+      apiVersion: manifest.apiVersion,
+      name: discovered.name,
+      version: discovered.version,
+      description: discovered.description,
+      ...(discovered.license === undefined ? {} : { license: discovered.license }),
+      ...(discovered.compatibility === undefined
+        ? {}
+        : { compatibility: discovered.compatibility }),
+      trust: discovered.trust,
+      provenance: discovered.provenance,
+      definition: discovered.definition,
+      manifest: { content: source },
+    };
+  }
   const directoryMetadata = await lstatSafe(discovered.directory);
   assertRealDirectory(directoryMetadata, discovered.directory);
   const canonicalDirectoryPath = await realpath(discovered.directory);
@@ -474,6 +518,17 @@ function sha256(value: Uint8Array): string {
 
 function compareStrings(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function requireBundleDigest(value: string): string {
+  const match = /^sha256:([a-f0-9]{64})$/.exec(value);
+  if (match?.[1] === undefined) {
+    throw new ToolPackageCatalogError(
+      "invalid_package",
+      "installed tool package bundle digest is invalid",
+    );
+  }
+  return match[1];
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {

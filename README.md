@@ -32,12 +32,13 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Bounded detached supervisor, durable FIFO queue, authenticated workers, cancellation, and event replay | Implemented on Linux and macOS |
 | First-class typed verifier nodes | Implemented for sandboxed command and evidence-isolated zero-tool Pi model drivers |
 | Bounded Pi agent nodes with Flow-owned `read`, `ls`, hash-anchored `edit`, and sandboxed argv-only `exec` tools | Implemented; `exec` currently requires Linux PID-namespace containment |
-| Portable Agent Skills packages with progressive disclosure | Implemented for strict local project packages, explicit workflow selection, immutable run snapshots, and digest-bound read evidence |
-| Versioned verifier packages | Implemented for strict local command/model manifests, exact workflow selection, immutable run snapshots, and digest-bound verdict evidence |
-| Versioned command tool packages | Implemented for strict local declarative manifests, exact per-agent selection, deterministic argv rendering, and the existing policy/approval/sandbox/journal boundary |
+| Portable Agent Skills packages with progressive disclosure | Implemented for strict local or digest-pinned installed packages, explicit workflow selection, immutable run snapshots, and digest-bound read evidence |
+| Versioned verifier packages | Implemented for strict local or digest-pinned installed command/model manifests, exact workflow selection, immutable run snapshots, and digest-bound verdict evidence |
+| Versioned command tool packages | Implemented for strict local or digest-pinned installed declarative manifests, exact per-agent selection, deterministic argv rendering, and the existing policy/approval/sandbox/journal boundary |
+| Remote capability bundle distribution | Implemented with deterministic inert `.flowpkg` files, explicit public HTTPS plus SHA-256 installation, a content-addressed project store, deterministic lock, local audit/removal commands, and offline execution/recovery |
 | Proof-safe fresh recovery of interrupted agent attempts | Implemented as explicit opt-in for read-only attempts and edit attempts proven not applied |
 | Fail-closed sandboxed command isolation | Filesystem/network isolation is implemented on Linux and macOS; strict agent-command descendant lifecycle containment is currently Linux-only |
-| Remote package installation, other package kinds, and model network tools | Planned |
+| Signed registries, automatic updates, other package kinds, and model network tools | Planned |
 | VM-grade isolation of the host-side agent runtime | Planned |
 
 The executable format is `flow.synapti.ai/v1alpha1`. There is no compatibility or migration
@@ -176,7 +177,7 @@ snapshot even if the live manifest changes.
 Command packages own an argv-only command declaration. Model packages own only a bounded rubric;
 the workflow still owns evidence order, provider/model selection, thinking level, and timeout.
 Packages cannot add tools, credentials, network access, graph transitions, policy, hooks, or
-executable extension code. Remote installation and arbitrary evaluator runtimes remain unsupported.
+executable extension code. Arbitrary evaluator runtimes remain unsupported.
 
 ### Use a versioned command tool package
 
@@ -215,6 +216,60 @@ packages explicitly selected by that agent, renders typed inputs deterministical
 result through the same `process.execute` policy, optional live approval, sandbox, write-ahead
 command journal, cancellation, output, budget, and replay path as `flow_exec`. Queued workers,
 child runs, and recovery consume the immutable snapshot rather than reloading `.flow/tools`.
+
+### Distribute digest-pinned capability bundles
+
+Flow can pack the three existing inert package ABIs into one deterministic strict-JSON `.flowpkg`.
+The checked-in source example contains `BUNDLE.json` plus a conventional `verifiers/` tree:
+
+```sh
+node dist/cli/main.js packages pack examples/capability-bundle-source \
+  --output /tmp/review-suite-1.0.0.flowpkg
+```
+
+The command refuses symlinks, special or unknown files, executable payloads, extra verifier/tool
+files, unsafe paths, source races, and an existing output. It reports the exact byte count and
+`sha256:<hex>` digest. Publish the unchanged file over public HTTPS and communicate its digest over
+a channel the operator trusts. If packing reports `commit_uncertain`, inspect and verify the exact
+requested output path; the final file is already visible and a blind retry will return
+`output_exists`. Install requires both values explicitly:
+
+```sh
+node dist/cli/main.js packages install \
+  https://packages.example.test/review-suite-1.0.0.flowpkg \
+  --sha256 <64-lowercase-hex>
+node dist/cli/main.js packages list
+node dist/cli/main.js packages inspect review-suite --version 1.0.0
+node dist/cli/main.js packages verify
+node dist/cli/main.js packages remove review-suite --version 1.0.0
+```
+
+Install is the only network operation. It accepts canonical HTTPS without credentials, query,
+fragment, or redirects; resolves and pins public IP addresses; sends no ambient authentication;
+and applies one deadline and byte ceiling. Flow verifies the exact SHA-256 before parsing, reuses
+the existing package validators, publishes an immutable blob below `.flow/packages/sha256/`, and
+atomically updates `.flow/packages.lock.json` last. Orphan blobs are inactive. Local and installed
+name/tool collisions fail instead of applying precedence.
+
+Upgrades are explicit and are not atomic in v1. Pause new admissions, retain the old bundle URL and
+digest, install a new exact bundle version, then remove the old exact version and run `packages
+verify` before resuming. If both versions contribute the same package or provider-facing tool name,
+catalog discovery fails closed between install and removal; unrelated packages may coexist. Flow
+never replaces different bytes at the same bundle name/version. Rollback repeats the procedure with
+the retained old URL and digest, then removes the newer version. There is no automatic update
+discovery, rollback, or garbage collection.
+
+An existing `.flow/packages.mutation.lock` always blocks mutation, even if its recorded same-host
+process has exited. After verifying that no package mutation is active, an operator may remove that
+exact stale lock manually. A `commit_uncertain` error means the lock-file replacement or mutation
+completed but durability or cleanup could not be confirmed: inspect `packages list`, run `packages
+verify`, and reconcile the exact installed versions before retrying.
+
+The digest identifies bytes; it does not authenticate a publisher, prove freshness, or prevent
+rollback. Review the source and digest. Installation executes nothing, but a later explicitly
+selected Skill or model rubric can influence a model, and a selected command package retains its
+documented sandboxed command authority. Runs snapshot selected content; detached work, children,
+resume, and replay never fetch a URL or consult the live package lock.
 
 To exercise the first-class verifier contract without model credentials:
 

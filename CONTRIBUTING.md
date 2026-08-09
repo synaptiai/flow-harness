@@ -32,6 +32,8 @@ Use `npm install` only when intentionally changing dependencies. Commit the resu
 5. Update the workflow specification when an executable contract changes.
 6. Record copied or substantially adapted upstream code in `THIRD_PARTY_NOTICES.md` with its commit and license.
 7. Run the complete local quality and package gates.
+8. When changing capability-bundle format, acquisition, or storage behavior, update the architecture,
+   security, recovery, sourcing, and workflow contracts together and add an adversarial regression.
 
 Production modules may not contain mock executors, fake providers, fallback successes, placeholder results, or hidden network calls. Tests may use explicit test doubles at Flow-owned ports.
 

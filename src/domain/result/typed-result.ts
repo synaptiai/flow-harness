@@ -5,6 +5,12 @@ import {
   MAX_RESULT_VALUE_NODES,
   type CompiledResultSchema,
 } from "../workflow/types.js";
+import {
+  parseStrictJson,
+  StrictJsonError,
+  type StrictJsonObject as JsonObject,
+  type StrictJsonValue as JsonValue,
+} from "../strict-json.js";
 
 const MAX_RESULT_VALUE_DEPTH = 64;
 
@@ -39,16 +45,23 @@ export function resultSourceTruncationMessage(resultNodeId: string, sourceField:
   return `result "${resultNodeId}" source ${sourceField} is truncated`;
 }
 
-type JsonValue = null | boolean | number | string | JsonValue[] | JsonObject;
-interface JsonObject {
-  readonly [key: string]: JsonValue;
-}
-
 export function evaluateTypedResult(
   source: string,
   schema: CompiledResultSchema,
 ): EvaluatedTypedResult {
-  const value = new StrictJsonParser(source).parse();
+  let value: JsonValue;
+  try {
+    value = parseStrictJson(source, {
+      maxDepth: MAX_RESULT_VALUE_DEPTH,
+      maxNodes: MAX_RESULT_VALUE_NODES,
+      valueLabel: "result value",
+    });
+  } catch (error) {
+    if (error instanceof StrictJsonError) {
+      throw new TypedResultError(strictJsonResultCode(error.code), error.message);
+    }
+    throw error;
+  }
   validateValue(value, schema, "$", 1);
   const canonicalValue = canonicalize(value);
   if (Buffer.byteLength(canonicalValue, "utf8") > MAX_RESULT_VALUE_BYTES) {
@@ -63,220 +76,11 @@ export function evaluateTypedResult(
   });
 }
 
-class StrictJsonParser {
-  private index = 0;
-  private nodes = 0;
-
-  constructor(private readonly source: string) {}
-
-  parse(): JsonValue {
-    this.skipWhitespace();
-    if (this.index === this.source.length) {
-      this.invalid("JSON input is empty");
-    }
-    const value = this.parseValue(1);
-    this.skipWhitespace();
-    if (this.index !== this.source.length) {
-      this.invalid(`unexpected trailing input at offset ${this.index}`);
-    }
-    return value;
+function strictJsonResultCode(code: StrictJsonError["code"]): TypedResultErrorCode {
+  if (code === "invalid_json") {
+    return "result_invalid_json";
   }
-
-  private parseValue(depth: number): JsonValue {
-    if (depth > MAX_RESULT_VALUE_DEPTH) {
-      throw new TypedResultError(
-        "result_value_too_complex",
-        `result value depth must not exceed ${MAX_RESULT_VALUE_DEPTH}`,
-      );
-    }
-    this.nodes += 1;
-    if (this.nodes > MAX_RESULT_VALUE_NODES) {
-      throw new TypedResultError(
-        "result_value_too_complex",
-        `result value nodes must not exceed ${MAX_RESULT_VALUE_NODES}`,
-      );
-    }
-
-    const token = this.source[this.index];
-    if (token === '"') {
-      return this.parseString();
-    }
-    if (token === "{") {
-      return this.parseObject(depth);
-    }
-    if (token === "[") {
-      return this.parseArray(depth);
-    }
-    if (token === "t") {
-      this.consumeLiteral("true");
-      return true;
-    }
-    if (token === "f") {
-      this.consumeLiteral("false");
-      return false;
-    }
-    if (token === "n") {
-      this.consumeLiteral("null");
-      return null;
-    }
-    if (token === "-" || isDigit(token)) {
-      return this.parseNumber();
-    }
-    this.invalid(`unexpected token at offset ${this.index}`);
-  }
-
-  private parseObject(depth: number): JsonObject {
-    this.index += 1;
-    this.skipWhitespace();
-    const value = Object.create(null) as JsonObject;
-    const keys = new Set<string>();
-    if (this.source[this.index] === "}") {
-      this.index += 1;
-      return value;
-    }
-    while (this.index < this.source.length) {
-      if (this.source[this.index] !== '"') {
-        this.invalid(`object key must be a JSON string at offset ${this.index}`);
-      }
-      const key = this.parseString();
-      if (keys.has(key)) {
-        this.invalid(`duplicate object key ${describeJsonKey(key)}`);
-      }
-      keys.add(key);
-      this.skipWhitespace();
-      if (this.source[this.index] !== ":") {
-        this.invalid(`expected ':' after object key at offset ${this.index}`);
-      }
-      this.index += 1;
-      this.skipWhitespace();
-      const item = this.parseValue(depth + 1);
-      Object.defineProperty(value, key, {
-        configurable: false,
-        enumerable: true,
-        value: item,
-        writable: false,
-      });
-      this.skipWhitespace();
-      const delimiter = this.source[this.index];
-      if (delimiter === "}") {
-        this.index += 1;
-        return value;
-      }
-      if (delimiter !== ",") {
-        this.invalid(`expected ',' or '}' at offset ${this.index}`);
-      }
-      this.index += 1;
-      this.skipWhitespace();
-    }
-    this.invalid("unterminated object");
-  }
-
-  private parseArray(depth: number): JsonValue[] {
-    this.index += 1;
-    this.skipWhitespace();
-    const value: JsonValue[] = [];
-    if (this.source[this.index] === "]") {
-      this.index += 1;
-      return value;
-    }
-    while (this.index < this.source.length) {
-      value.push(this.parseValue(depth + 1));
-      this.skipWhitespace();
-      const delimiter = this.source[this.index];
-      if (delimiter === "]") {
-        this.index += 1;
-        return value;
-      }
-      if (delimiter !== ",") {
-        this.invalid(`expected ',' or ']' at offset ${this.index}`);
-      }
-      this.index += 1;
-      this.skipWhitespace();
-    }
-    this.invalid("unterminated array");
-  }
-
-  private parseString(): string {
-    const start = this.index;
-    this.index += 1;
-    while (this.index < this.source.length) {
-      const character = this.source[this.index];
-      if (character === '"') {
-        this.index += 1;
-        let value: unknown;
-        try {
-          value = JSON.parse(this.source.slice(start, this.index));
-        } catch {
-          this.invalid(`invalid JSON string at offset ${start}`);
-        }
-        if (typeof value !== "string") {
-          this.invalid(`invalid JSON string at offset ${start}`);
-        }
-        requireValidUnicode(value);
-        return value;
-      }
-      if (character === "\\") {
-        const escapeCode = this.source[this.index + 1];
-        if (escapeCode === "u") {
-          const code = this.source.slice(this.index + 2, this.index + 6);
-          if (!/^[a-fA-F0-9]{4}$/.test(code)) {
-            this.invalid(`invalid Unicode escape at offset ${this.index}`);
-          }
-          this.index += 6;
-          continue;
-        }
-        if (escapeCode === undefined || !'"\\/bfnrt'.includes(escapeCode)) {
-          this.invalid(`invalid string escape at offset ${this.index}`);
-        }
-        this.index += 2;
-        continue;
-      }
-      if (character === undefined || character.charCodeAt(0) < 0x20) {
-        this.invalid(`unescaped control character at offset ${this.index}`);
-      }
-      this.index += 1;
-    }
-    this.invalid(`unterminated string at offset ${start}`);
-  }
-
-  private parseNumber(): number {
-    const match = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/.exec(
-      this.source.slice(this.index),
-    );
-    if (match === null) {
-      this.invalid(`invalid number at offset ${this.index}`);
-    }
-    this.index += match[0].length;
-    const value = Number(match[0]);
-    if (!Number.isFinite(value)) {
-      throw new TypedResultError(
-        "result_invalid_i_json",
-        `JSON number at offset ${this.index - match[0].length} is not finite IEEE-754`,
-      );
-    }
-    return value;
-  }
-
-  private consumeLiteral(literal: "true" | "false" | "null"): void {
-    if (!this.source.startsWith(literal, this.index)) {
-      this.invalid(`invalid literal at offset ${this.index}`);
-    }
-    this.index += literal.length;
-  }
-
-  private skipWhitespace(): void {
-    while (this.index < this.source.length) {
-      const character = this.source[this.index];
-      if (character !== " " && character !== "\t" && character !== "\r" && character !== "\n") {
-        break;
-      }
-      this.index += 1;
-    }
-  }
-
-  private invalid(message: string): never {
-    throw new TypedResultError("result_invalid_json", message);
-  }
+  return code === "invalid_i_json" ? "result_invalid_i_json" : "result_value_too_complex";
 }
 
 function validateValue(
@@ -399,29 +203,6 @@ function describeJsonKey(key: string): string {
   return `${JSON.stringify(characters.slice(0, 96).join(""))}… (sha256:${sha256(key)})`;
 }
 
-function requireValidUnicode(value: string): void {
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code >= 0xd800 && code <= 0xdbff) {
-      const next = value.charCodeAt(index + 1);
-      if (!Number.isInteger(next) || next < 0xdc00 || next > 0xdfff) {
-        throw new TypedResultError(
-          "result_invalid_i_json",
-          "JSON string contains an unpaired high surrogate",
-        );
-      }
-      index += 1;
-      continue;
-    }
-    if (code >= 0xdc00 && code <= 0xdfff) {
-      throw new TypedResultError(
-        "result_invalid_i_json",
-        "JSON string contains an unpaired low surrogate",
-      );
-    }
-  }
-}
-
 function canonicalize(value: JsonValue): string {
   if (value === null || typeof value === "boolean" || typeof value === "number") {
     return JSON.stringify(value);
@@ -463,10 +244,6 @@ function canonicalResultSchema(schema: CompiledResultSchema): string {
         )
         .join(",")}},"required":${JSON.stringify([...schema.required].sort())}}`;
   }
-}
-
-function isDigit(value: string | undefined): boolean {
-  return value !== undefined && value >= "0" && value <= "9";
 }
 
 function sha256(value: string): string {

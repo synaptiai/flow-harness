@@ -1,0 +1,11 @@
+{
+  "apiVersion": "flow.synapti.ai/v1alpha1",
+  "kind": "CapabilityBundleSource",
+  "metadata": {
+    "name": "review-suite",
+    "version": "1.0.0",
+    "description": "Credential-free release verification capabilities.",
+    "license": "Apache-2.0",
+    "compatibility": "Flow v1alpha1 capability ABIs"
+  }
+}

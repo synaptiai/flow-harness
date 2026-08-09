@@ -14,11 +14,13 @@ import {
   type VerifierPackageManifest,
   type VerifierPackageSnapshotInput,
 } from "../../domain/capability/verifier-packages.js";
+import type { CapabilityBundleVerifierPackage } from "../../domain/capability/capability-bundles.js";
 
 const MAX_DISCOVERY_DEPTH = 6;
 const MAX_DISCOVERY_ENTRIES = 2_000;
-const MAX_VERIFIER_PACKAGES = 32;
+export const MAX_VERIFIER_PACKAGES = 32;
 const MANIFEST_NAME = "VERIFIER.yaml";
+const installedVerifierSources = new WeakMap<DiscoveredVerifierPackage, string>();
 
 export type VerifierPackageCatalogErrorCode =
   | "duplicate_package"
@@ -64,6 +66,28 @@ export interface ProjectVerifierPackageCatalog {
   readonly projectRoot: string;
   readonly root: string;
   readonly packages: readonly DiscoveredVerifierPackage[];
+}
+
+export function createInstalledDiscoveredVerifierPackage(input: {
+  readonly projectRoot: string;
+  readonly bundleDigest: string;
+  readonly package: CapabilityBundleVerifierPackage;
+}): DiscoveredVerifierPackage {
+  const digest = requireBundleDigest(input.bundleDigest);
+  const directory = join(
+    input.projectRoot,
+    ".flow",
+    "packages",
+    "sha256",
+    digest,
+    "verifier-package",
+    input.package.name,
+  );
+  const source = Buffer.from(input.package.manifestBase64, "base64");
+  const manifest = parseManifest(source, `${directory}/${MANIFEST_NAME}`);
+  const discovered = discoveredPackage(input.projectRoot, directory, source, manifest);
+  installedVerifierSources.set(discovered, input.package.manifestBase64);
+  return discovered;
 }
 
 interface ScanBudget {
@@ -250,6 +274,26 @@ async function snapshotPackage(
   catalog: ProjectVerifierPackageCatalog,
   discovered: DiscoveredVerifierPackage,
 ): Promise<VerifierPackageSnapshotInput> {
+  const installedSource = installedVerifierSources.get(discovered);
+  if (installedSource !== undefined) {
+    const source = Buffer.from(installedSource, "base64");
+    const manifest = parseManifest(source, `${discovered.directory}/${MANIFEST_NAME}`);
+    return {
+      kind: "verifier-package",
+      apiVersion: manifest.apiVersion,
+      name: discovered.name,
+      version: discovered.version,
+      description: discovered.description,
+      ...(discovered.license === undefined ? {} : { license: discovered.license }),
+      ...(discovered.compatibility === undefined
+        ? {}
+        : { compatibility: discovered.compatibility }),
+      trust: discovered.trust,
+      provenance: discovered.provenance,
+      definition: discovered.definition,
+      manifest: { content: source },
+    };
+  }
   const directoryMetadata = await lstatSafe(discovered.directory);
   assertRealDirectory(directoryMetadata, discovered.directory);
   const canonicalDirectoryPath = await realpath(discovered.directory);
@@ -481,6 +525,17 @@ function sha256(value: Uint8Array): string {
 
 function compareStrings(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function requireBundleDigest(value: string): string {
+  const match = /^sha256:([a-f0-9]{64})$/.exec(value);
+  if (match?.[1] === undefined) {
+    throw new VerifierPackageCatalogError(
+      "invalid_package",
+      "installed verifier package bundle digest is invalid",
+    );
+  }
+  return match[1];
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {

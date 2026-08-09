@@ -60,6 +60,9 @@ node dist/cli/main.js verifiers inspect release-tests
 node dist/cli/main.js validate examples/versioned-verifier-package.workflow.yaml
 node dist/cli/main.js run examples/versioned-verifier-package.workflow.yaml --run-id package-smoke
 node dist/cli/main.js inspect package-smoke
+node dist/cli/main.js packages pack examples/capability-bundle-source --output /tmp/review-suite.flowpkg
+node dist/cli/main.js packages list
+node dist/cli/main.js packages verify
 node dist/cli/main.js validate examples/agent-command-approval.workflow.yaml
 node dist/cli/main.js validate examples/verify-foundation.workflow.yaml
 node dist/cli/main.js run examples/verify-foundation.workflow.yaml --run-id smoke
@@ -103,8 +106,9 @@ executes its argv-only definition through the production sandboxed command-verif
 tests prove strict SemVer and manifest parsing, inert manifest-only directories, symlink and source
 race refusal, aggregate bounds, exact version/kind binding, command/model driver reuse, redacted
 metadata operations, requirement/snapshot/control-graph/evidence replay reconciliation, live-source
-drift immunity, and attached, detached, child, and recovery transport. They do not claim remote
-installation, arbitrary evaluator-code isolation, provider correctness, or model-rubric safety.
+drift immunity, and attached, detached, child, and recovery transport. Those ABI-specific tests do
+not by themselves claim remote installation, arbitrary evaluator-code isolation, provider
+correctness, or model-rubric safety; the bundle-distribution suite separately covers installation.
 
 The credential-free command-tool smoke path installs
 `examples/tool-packages/git-status/TOOL.yaml`, runs `flow tools validate`, lists metadata, inspects
@@ -117,9 +121,19 @@ immunity, child subset binding, and recovery from the durable snapshot alone. A 
 session also discovers a local package, calls it from a package-only agent, obtains required live
 approval, settles the command, publishes a typed result, and replays the ledger. Adversarial tests
 reject interpreter/dispatcher/path identities, unsafe profile argument roles, runtime-envelope
-overflow, reordered input-digest ambiguity, and forged raw-exec authority. These tests do not claim
-remote acquisition, arbitrary executable package-code containment, command correctness, provider
-correctness, macOS agent-command support, or hostile-workload isolation.
+overflow, reordered input-digest ambiguity, and forged raw-exec authority. Those tool-ABI tests do
+not by themselves claim remote acquisition, arbitrary executable package-code containment, command
+correctness, provider correctness, macOS agent-command support, or hostile-workload isolation; the
+bundle-distribution suite separately covers acquisition of the inert ABI.
+
+The credential-free bundle-distribution suite proves deterministic packing, strict content parsing,
+public-HTTPS-only digest-before-parse acquisition, DNS rebinding defenses, redirect refusal,
+pre-abort and in-flight DNS cancellation, content-addressed activation, parent-synced store
+creation, crash-boundary commit-uncertain reporting, fail-closed stale locks, collision handling,
+bounded source traversal/read races, local inspection and removal, installed-catalog composition,
+and network-free recovery. It does not claim publisher
+identity, freshness, revocation, rollback protection, automatic updates, or safe executable package
+payloads.
 
 Validating `examples/agent-command-approval.workflow.yaml` is credential-free. Running it requires
 a configured model provider and a second local client to approve or deny each exact `flow_exec`
