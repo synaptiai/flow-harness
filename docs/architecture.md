@@ -6,7 +6,20 @@ Flow turns a collection of useful software-development practices into an enforce
 
 The standalone harness reverses that relationship. Flow owns workflow execution and delegates only bounded node work to an embedded agent runtime.
 
-This document describes the target architecture unless a section is explicitly labeled as the current executable slice. The delivery roadmap is the source of truth for implementation status. Gates 1 and 2 currently provide `validate`, `run`, `inspect`, optional versioned goal contracts, command-bound criterion evaluation, command and bounded Pi agent nodes, cancellation, and replayable local event ledgers. Gate 3 now includes a runtime-neutral policy broker for model-requested reads, lists, hash-anchored single-file edits, and argv-only agent commands, a fail-closed native sandbox shared by command nodes and agent commands, and exact expiring pre-start approval for deterministic commands. Gate 4 adds `resume` at committed node boundaries, exclusive same-host process ownership, write-ahead durable evidence and typed recovery observation for each workspace edit, opt-in proof-safe fresh recovery for interrupted agent attempts, approval waits that survive client detachment, durable resource accounting with run-wide start, model-token, reported-cost, and active-execution limits, project initialization and monotonic capacity configuration, plus a bounded local supervisor with authenticated detached workers, durable FIFO admission, status, event replay, cancellation, and restart adoption. Gate 5 adds replay-safe exact-output conditions, guarded branches, first-class omission, explicit joins, bounded deterministic static-DAG concurrency, finite replay-safe bounded and accept-best optimization loops, evidence-bound graph approval nodes, replay-verified typed result publication, first-class typed verifier nodes with sandboxed command and evidence-isolated zero-tool model drivers, independently-ledgered child workflows, and write-ahead candidate promotion in isolated reflink-or-copy workspaces. Gate 6 now includes strict local portable Agent Skills plus versioned command/model verifier packages, explicit workflow selection, immutable run snapshots, and provider-neutral use evidence. A TUI, remote package installation, executable extensions, other capability package types, opaque Pi session continuation, general failure/fallback retries, broader configurable policy, dynamic agent-tool approval, model network tools, arbitrary evaluator runtimes, and stronger VM or managed sandbox backends remain later work.
+This document describes the target architecture unless a section is explicitly labeled as the
+current executable slice. The delivery roadmap is the source of truth for implementation status.
+Gates 1 and 2 provide compiled graphs, evidence-based completion, bounded Pi agent nodes,
+cancellation, and replayable local ledgers. Gate 3 adds the Flow policy broker, hash-anchored edits,
+argv-only agent commands, fail-closed native command containment, exact deterministic-command
+approval, and exact per-call approval for live agent `exec` tools. Gate 4 adds committed-boundary
+recovery, exclusive local ownership, typed edit reconciliation, proof-safe fresh agent attempts,
+durable budgets, detachable waits, and bounded authenticated local supervision. Gate 5 adds typed
+results and verifiers, replay-safe conditions, joins, concurrency, bounded loops and optimization,
+evidence-bound graph approvals, isolated child workflows, and candidate promotion. Gate 6 adds
+strict local Agent Skills and versioned verifier packages with immutable capability snapshots. A
+TUI, remote package installation, executable extensions, other package types, opaque Pi session
+continuation, general failure/fallback retries, broader configurable policy, model network tools,
+arbitrary evaluator runtimes, and stronger VM or managed sandbox backends remain later work.
 
 ## Target flows
 
@@ -96,7 +109,27 @@ and result, condition, join, loop-check, optimization-check, and controller node
 
 ### Pi runtime
 
-Implements one Flow-owned `AgentExecutor` port. It creates node-scoped in-memory sessions, selects models and tools, streams events, supports cancellation, supplies an attempt-scoped Flow policy broker, and translates all Pi values into Flow contracts. The optional `flow_exec` tool delegates exact argv requests to the same production SRT executor as command nodes, but adds a stricter pre-spawn capability gate. Linux preparation resolves a canonical root-owned Bubblewrap executable outside the workspace, configures SRT with that absolute path, and accepts only SRT's canonical outer-shell descriptor with the same executable and position-checked secure lifecycle tail. Flow parses every prior option through an explicit arity allowlist and rejects unknown options; process-group-only macOS preparation is released and denied. The deadline races sandbox preparation and is checked against an absolute monotonic expiry at the spawn boundary. Unconfirmed descendant termination is attempt-fatal: the command settles durably, later runtime and replay preparations are denied, the Pi session is aborted, and terminal success is rejected by runtime and replay. Flow explicitly disables Pi assistant-turn and provider retry layers; the adapter executes one Flow attempt, while durable Flow policy alone can authorize a later fresh attempt.
+Implements one Flow-owned `AgentExecutor` port. It creates node-scoped in-memory sessions, selects
+models and tools, streams events, supports cancellation, supplies an attempt-scoped Flow policy
+broker, and translates Pi values into Flow contracts. The optional `flow_exec` tool delegates exact
+argv requests to the production SRT executor used by command nodes. A compiled
+`toolApproval.exec` declaration inserts a provider-neutral live promise gate between policy
+allowance and durable command preparation. The application writes the exact request, waits on a
+decision-source port, validates run/workflow/node/attempt/cwd/argv/timeout/digest identity, and lets
+the sole run owner append the decision. The port distinguishes invalid input from transient
+unavailability: the application audits the former and retries the latter with bounded abortable
+backoff under the node signal. Denial returns a bounded tool error to Pi; grant consumption and
+command preparation are one reducer transition. A run-scoped queue serializes pending human
+decisions across concurrent agent nodes, while already granted commands remain free to prepare.
+
+Linux preparation resolves a canonical root-owned Bubblewrap executable outside the workspace,
+configures SRT with that absolute path, and accepts only SRT's canonical outer-shell descriptor with
+the same executable and position-checked secure lifecycle tail. Flow rejects unknown options;
+process-group-only macOS preparation is released and denied. The deadline covers sandbox
+preparation and is checked again at spawn. Unconfirmed descendant termination is attempt-fatal:
+the command settles durably, later command preparations are denied, Pi is aborted, and terminal
+success is rejected. Flow disables Pi assistant-turn and provider retry layers; the adapter executes
+one Flow attempt, while durable Flow policy alone can authorize a later fresh attempt.
 
 ### Portable Agent Skills
 
@@ -260,6 +293,28 @@ workspaces wait for reset and reinitialization. This serializes those command ph
 changing graph admission or rejecting the second child. A backend with independent sessions can
 provide full command overlap without changing domain or application contracts.
 
+### Live agent-command decision transport
+
+The application owns a provider-neutral decision-source port. The local implementation stores one
+owner-only JSON receipt below
+`.flow/runs/<run-id>/agent-command-approvals/<request-id>.decision.json`. Submission writes and
+syncs a temporary file, then atomically hard-links it into the final no-overwrite path. Attached and
+detached execution use this same mechanism; no supervisor-only RPC is required. The owner opens the
+receipt non-blocking and no-follow, requires a regular file, and reads at most 16 KiB through a
+fatal UTF-8 decoder before strict JSON validation.
+
+The receipt is transport evidence, not execution authority. The CLI derives its fields from the
+current read-only ledger projection and cannot append while the live owner holds the run. The owner
+revalidates every identity field before appending `agent_command_approval_granted` or
+`agent_command_approval_denied`. Invalid, broken, or aborted waits append a typed cancellation and
+never prepare a process. Receipts remain immutable for audit. Reducer state makes grants expiring
+and single-use and rejects dangling grants at node settlement.
+
+This design intentionally does not solve remote or multi-user approval. Actor labels are local
+attribution, not authenticated identities, and a same-user writer to the run directory is inside the
+administrative trust boundary. A process crash while Pi has an open tool call remains an opaque
+session-continuation problem and fails closed on recovery.
+
 ### Event and evidence store
 
 Persists transitions before the scheduler advances. Model transcripts are optional diagnostic
@@ -373,9 +428,21 @@ a side-effect-free committed node failure and terminal run. The same owner recor
 decision-versus-decision and decision-versus-resume races.
 
 The actor label is asserted local audit metadata, not authenticated identity. Request ids are
-sequence-derived locators rather than bearer secrets. Remote callbacks and dynamic Pi tool-call
-suspension remain separate capabilities. The latter requires persisted opaque session continuation
-so prior model effects are not replayed.
+sequence-derived locators rather than bearer secrets. Remote callbacks remain separate.
+
+### Live agent-command approval
+
+An agent `toolApproval.exec` rule is an in-session barrier over a single Flow-owned tool call. The
+active owner persists the complete request and suspends the Pi tool promise. A second local CLI
+process reads that projection and publishes one immutable decision sidecar without claiming the
+ledger. The owner validates the exact context and appends the authoritative decision. Grant
+consumption and command preparation are atomic; denial returns to Pi as a tool error. The same
+decision-source port and filesystem channel serve attached and detached execution.
+
+This capability does not imply opaque recovery. If the owner dies with Pi suspended, Flow keeps the
+request inspectable but cannot recreate the transcript or promise and refuses resume. Remote
+callbacks, authenticated multi-user decisions, and persisted Pi session continuation remain
+separate capabilities.
 
 ### Durable graph approval
 

@@ -523,6 +523,38 @@ describe("public repository contracts", () => {
       spec: { kind: "command", command: { executable: "node", args: ["--version"] } },
     });
   });
+
+  it("documents live agent command approval with a valid provider-neutral example", async () => {
+    const [readme, architecture, workflowSpec, recovery, roadmap, security, testing, source] =
+      await Promise.all([
+        readText("README.md"),
+        readText("docs/architecture.md"),
+        readText("docs/workflow-spec.md"),
+        readText("docs/recovery.md"),
+        readText("docs/roadmap.md"),
+        readText("SECURITY.md"),
+        readText("docs/testing-and-evaluation.md"),
+        readText("examples/agent-command-approval.workflow.yaml"),
+      ]);
+
+    expect(readme).toContain("examples/agent-command-approval.workflow.yaml");
+    expect(architecture).toMatch(/run owner.*decision.*command preparation/is);
+    expect(workflowSpec).toContain("### Live agent `exec` approval");
+    expect(workflowSpec).toMatch(/denial.*bounded tool error.*does not.*fail.*node/is);
+    expect(recovery).toMatch(/owner process\s+dies.*refuses recovery/is);
+    expect(roadmap).toMatch(/per-call human approval.*Implemented/is);
+    expect(security).toMatch(/actor label.*not authenticated/is);
+    expect(testing).toContain("examples/agent-command-approval.workflow.yaml");
+
+    const workflow = compileWorkflowText(source, "examples/agent-command-approval.workflow.yaml");
+    expect(workflow.nodes[0]).toMatchObject({
+      type: "agent",
+      agent: {
+        tools: ["read", "ls", "edit", "exec"],
+        toolApproval: { exec: { mode: "required", grantTtlMs: 300000 } },
+      },
+    });
+  });
 });
 
 async function readText(path: string): Promise<string> {

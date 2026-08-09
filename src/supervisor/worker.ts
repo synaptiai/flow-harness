@@ -4,6 +4,7 @@ import { createServer, type Socket } from "node:net";
 import { basename, join } from "node:path";
 
 import type {
+  AgentCommandApprovalDecisionChannel,
   NodeEffectReconciler,
   NodeExecutor,
   RecoverableRunEventStore,
@@ -15,8 +16,9 @@ import {
   resumeWorkflow,
   runWorkflow,
 } from "../application/run-workflow.js";
-import { reduceRunEvents, type RunState } from "../domain/run/events.js";
+import { type RunState, reduceRunEvents } from "../domain/run/events.js";
 import { compileWorkflowText } from "../domain/workflow/compiler.js";
+import { LocalAgentCommandApprovalChannel } from "../infrastructure/fs/local-agent-command-approval-channel.js";
 import type { LocalSupervisorStore } from "../infrastructure/fs/local-supervisor-store.js";
 import { createProductionWorkspaceIsolator } from "../infrastructure/runtime/production-workspace-isolator.js";
 import {
@@ -28,7 +30,7 @@ import {
   type WorkerRequest,
   type WorkerResponse,
 } from "./protocol.js";
-import { parseWorkerDescriptor, workerSocketPath, type WorkerDescriptor } from "./records.js";
+import { parseWorkerDescriptor, type WorkerDescriptor, workerSocketPath } from "./records.js";
 import { closeServer, exchangeFrame, listen, readFrame } from "./socket-transport.js";
 
 const CONTROL_TIMEOUT_MS = 5_000;
@@ -39,6 +41,9 @@ export interface ExecuteWorkerJobOptions {
   readonly executor: NodeExecutor;
   readonly effectReconciler: NodeEffectReconciler;
   readonly createRunStore: (rootDirectory: string) => RecoverableRunEventStore;
+  readonly createAgentCommandApprovalChannel?: (
+    rootDirectory: string,
+  ) => AgentCommandApprovalDecisionChannel;
   readonly createWorkspaceIsolator?: (runsDirectory: string) => WorkspaceIsolator;
   readonly pid?: number;
   readonly now?: () => Date;
@@ -209,6 +214,10 @@ export async function executeWorkerJob(
         workspaceIsolator: (options.createWorkspaceIsolator ?? createProductionWorkspaceIsolator)(
           options.store.runsDirectory,
         ),
+        agentCommandApprovalDecisions: (
+          options.createAgentCommandApprovalChannel ??
+          ((rootDirectory: string) => new LocalAgentCommandApprovalChannel(rootDirectory))
+        )(options.store.runsDirectory),
         signal: controller.signal,
         now,
       } as const;

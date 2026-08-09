@@ -102,6 +102,14 @@ Command approval does not execute; resume separately consumes a still-valid gran
 immediately completes the pure control node, but downstream work still requires an explicit resume.
 The actor label is caller-supplied audit attribution rather than authenticated identity.
 
+Live agent-command approval uses the same CLI but a different ownership path. The attached process
+or detached worker keeps the Pi tool promise open and remains the only ledger writer. A decision
+client publishes an immutable sidecar; the owner validates it and appends the decision before one
+matching command preparation. Ordinary approval therefore needs no `resume`. If the owner process
+dies while the tool call is suspended, the pending request remains inspectable but is not a safe
+committed boundary: Flow cannot reconstruct Pi's opaque transcript or promise and refuses recovery
+with `uncertain_operation`. A sidecar without an owner-appended decision never grants authority.
+
 ## Recovery boundaries
 
 | Last committed state | Recovery behavior |
@@ -117,6 +125,8 @@ The actor label is caller-supplied audit attribution rather than authenticated i
 | `command_approval_granted` is unexpired | Append `run_resumed`, consume the exact grant in `node_started`, and execute once |
 | `command_approval_granted` has expired unused | Append `run_resumed`, record expiry, create a fresh request, and execute nothing |
 | `command_approval_denied` is durable but `run_failed` is absent | Append `run_resumed`, append `run_failed`, and execute nothing |
+| A live `agent_command_approval_requested` has no terminal decision because its owner died | Preserve the exact request, refuse with `uncertain_operation`, and do not synthesize a Pi tool continuation or command preparation |
+| An agent-command grant was committed but not consumed before its owner died | Preserve the unconsumed authority, refuse with `uncertain_operation`, and execute nothing |
 | `workflow_approval_requested` is pending | Append `run_resumed`, retain the exact request and `waiting_for_approval`, and execute nothing |
 | `workflow_approval_approved` is durable | Append `run_resumed` and apply only the next graph-declared transition |
 | `workflow_approval_denied` is durable but `run_failed` is absent | Append `run_resumed`, append `run_failed`, and execute nothing |

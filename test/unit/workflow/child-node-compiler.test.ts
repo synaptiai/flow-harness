@@ -86,6 +86,21 @@ describe("child node compilation", () => {
     );
   });
 
+  it("rejects an interactive agent command approval wait inside a child workflow", () => {
+    const child = childAgentWorkflow("[read, exec]").replace(
+      "      tools: [read, exec]",
+      `      tools: [read, exec]
+      toolApproval:
+        exec: { mode: required }`,
+    );
+
+    const error = captureCompilationError(parentWorkflow(child));
+
+    expect(error.diagnostics).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: "child_wait_unsupported" })]),
+    );
+  });
+
   it.each([
     [
       "a complete five-dimensional budget",

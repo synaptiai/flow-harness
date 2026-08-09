@@ -50,7 +50,13 @@ export class AgentCommandRecorder {
     this.#inFlight += 1;
     let executionStarted = false;
     try {
-      const prepared = await this.journal.prepare({ request, operationDigest, decision });
+      const approval = await this.context.agentCommandApprovalGate?.authorize(request, signal);
+      const prepared = await this.journal.prepare({
+        request,
+        operationDigest,
+        decision,
+        ...(approval === undefined ? {} : { approval }),
+      });
       executionStarted = true;
       const outcome = await this.executor.executeAgentCommand(
         request,

@@ -149,6 +149,12 @@ const commandNodeSchema = z
   })
   .strict();
 
+const agentToolApprovalSchema = z
+  .object({
+    exec: commandApprovalSchema,
+  })
+  .strict();
+
 const agentConfigSchema = z
   .object({
     prompt: z.string().trim().min(1).max(262_144),
@@ -163,6 +169,7 @@ const agentConfigSchema = z
       .max(MAX_AGENT_SKILL_PACKAGES)
       .refine((skills) => new Set(skills).size === skills.length, "agent skills must be unique")
       .default([]),
+    toolApproval: agentToolApprovalSchema.optional(),
     recovery: agentRecoverySchema.optional(),
     timeoutMs: z.number().int().positive().max(86_400_000).default(300_000),
   })
@@ -180,6 +187,13 @@ const agentConfigSchema = z
         code: "custom",
         path: ["recovery"],
         message: "fresh agent recovery is not supported with arbitrary command execution",
+      });
+    }
+    if (agent.toolApproval !== undefined && !agent.tools.includes("exec")) {
+      context.addIssue({
+        code: "custom",
+        path: ["toolApproval"],
+        message: "agent exec approval requires the declared exec tool",
       });
     }
   });
