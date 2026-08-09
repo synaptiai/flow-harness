@@ -61,6 +61,14 @@ The embedded Pi runtime runs with the invoking user's operating-system permissio
   evidence may still influence the evaluator. Use sandboxed command verifiers and hidden checks for
   release authority. A command verifier inherits the normal command sandbox and conservative
   side-effect classification.
+- Versioned verifier packages are strict project-local `VERIFIER.yaml` data, not executable plugin
+  bundles. Discovery refuses symlinks, special or extra entries, duplicate identities, source
+  races, malformed exact versions, and size overflow. Admission snapshots the exact manifest and
+  binds its digest to the compiled node and verdict evidence; detached, child, and resumed work does
+  not reload a changed live source. A command package still runs only through SRT, and a model
+  package supplies only a rubric to the zero-tool verifier. Packages cannot add hooks, tools,
+  credentials, network, provider choice, graph edges, or policy. Workflows and package manifests
+  remain trusted local configuration and must be reviewed before execution.
 - Run budgets persist checked start, token, reported-cost, and active-time accounting and can reduce
   node timeouts before execution. They are scheduler controls, not provider-side billing
   reservations, account quotas, CPU/memory limits, or a substitute for containment. One in-flight

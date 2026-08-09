@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  createCapabilitySnapshot,
   type AgentSkillPackageSnapshotInput,
+  createCapabilitySnapshot,
 } from "../../../src/domain/capability/agent-skills.js";
+import type { VerifierPackageSnapshotInput } from "../../../src/domain/capability/verifier-packages.js";
 import {
   bindWorkflowCapabilities,
   collectWorkflowAgentSkillNames,
+  collectWorkflowVerifierPackageReferences,
+  resolveVerifierPackageNode,
   type WorkflowCapabilityError,
 } from "../../../src/domain/capability/workflow-capabilities.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
@@ -59,14 +62,14 @@ describe("workflow capability binding", () => {
     const workflow = skilledWorkflow(["review", "testing"]);
     const snapshot = createCapabilitySnapshot([skill("testing"), skill("review")]);
 
-    expect(bindWorkflowCapabilities(workflow, snapshot)).toBe(snapshot);
+    expect(bindWorkflowCapabilities(workflow, snapshot)).toEqual(snapshot);
   });
 
   it("allows a child workflow to bind its declared subset from the parent snapshot", () => {
     const child = skilledWorkflow(["testing"]);
     const parentSnapshot = createCapabilitySnapshot([skill("review"), skill("testing")]);
 
-    expect(bindWorkflowCapabilities(child, parentSnapshot, { allowUnexpected: true })).toBe(
+    expect(bindWorkflowCapabilities(child, parentSnapshot, { allowUnexpected: true })).toEqual(
       parentSnapshot,
     );
   });
@@ -75,6 +78,33 @@ describe("workflow capability binding", () => {
     const workflow = skilledWorkflow([]);
 
     expect(bindWorkflowCapabilities(workflow)).toBeUndefined();
+  });
+
+  it("classifies an unselected verifier package as an unexpected package", () => {
+    const workflow = skilledWorkflow([]);
+    const snapshot = createCapabilitySnapshot(
+      [],
+      [
+        verifierPackage("release-tests", "1.0.0", {
+          kind: "command",
+          command: { executable: "node", args: ["--version"], timeoutMs: 30_000 },
+        }),
+      ],
+    );
+
+    expect(() => bindWorkflowCapabilities(workflow, snapshot)).toThrowError(
+      expect.objectContaining<Partial<WorkflowCapabilityError>>({ code: "unexpected_package" }),
+    );
+  });
+
+  it("rejects an invalid snapshot before capability selection", () => {
+    const workflow = skilledWorkflow(["review"]);
+    const snapshot = createCapabilitySnapshot([skill("review")]);
+    const invalid = { ...snapshot, digest: "0".repeat(64) };
+
+    expect(() => bindWorkflowCapabilities(workflow, invalid)).toThrowError(
+      expect.objectContaining<Partial<WorkflowCapabilityError>>({ code: "invalid_snapshot" }),
+    );
   });
 
   it.each([
@@ -95,6 +125,189 @@ describe("workflow capability binding", () => {
     },
   ])("fails closed for a $label", ({ snapshot, code }) => {
     const workflow = skilledWorkflow(["review", "testing"]);
+
+    expect(() => bindWorkflowCapabilities(workflow, snapshot)).toThrowError(
+      expect.objectContaining<Partial<WorkflowCapabilityError>>({ code }),
+    );
+  });
+
+  it("collects exact verifier references recursively and binds a mixed capability snapshot", () => {
+    const childSource = workflowSource(
+      "package-child",
+      `
+  - id: verify-child
+    type: verifier
+    verifier:
+      kind: packaged-command
+      package: { name: release-tests, version: 1.0.0 }
+  - id: publish
+    type: result
+    dependsOn: [verify-child]
+    result:
+      source: { nodeId: verify-child, field: verifier.reason }
+      schema: { type: string, maxLength: 1024 }
+`,
+    );
+    const workflow = compileWorkflowText(
+      workflowSource(
+        "package-root",
+        `
+  - id: prepare
+    type: command
+    command: { executable: node }
+  - id: review
+    type: verifier
+    dependsOn: [prepare]
+    verifier:
+      kind: packaged-model
+      package: { name: evidence-review, version: 1.2.0 }
+      evidence: [{ nodeId: prepare, field: command.stdout }]
+      model: { provider: test, id: deterministic }
+  - id: child
+    type: child
+    dependsOn: [review]
+    child:
+      resultNodeId: publish
+      workflow: |${indent(childSource, 8)}
+`,
+      ),
+    );
+    const snapshot = createCapabilitySnapshot(
+      [],
+      [
+        verifierPackage("release-tests", "1.0.0", {
+          kind: "command",
+          command: { executable: "node", args: ["--version"], timeoutMs: 30_000 },
+        }),
+        verifierPackage("evidence-review", "1.2.0", {
+          kind: "model",
+          prompt: "Reject unsupported claims.",
+        }),
+      ],
+    );
+
+    expect(collectWorkflowVerifierPackageReferences(workflow)).toEqual([
+      { name: "evidence-review", version: "1.2.0", kind: "model" },
+      { name: "release-tests", version: "1.0.0", kind: "command" },
+    ]);
+    expect(bindWorkflowCapabilities(workflow, snapshot)).toEqual(snapshot);
+  });
+
+  it("resolves a packaged model into the ordinary verifier driver and exact use evidence", () => {
+    const workflow = compileWorkflowText(
+      workflowSource(
+        "resolve-package",
+        `
+  - id: prepare
+    type: command
+    command: { executable: node }
+  - id: review
+    type: verifier
+    dependsOn: [prepare]
+    verifier:
+      kind: packaged-model
+      package: { name: evidence-review, version: 1.2.0 }
+      evidence: [{ nodeId: prepare, field: command.stdout }]
+      model: { provider: test, id: deterministic }
+      timeoutMs: 120000
+`,
+      ),
+    );
+    const snapshot = createCapabilitySnapshot(
+      [],
+      [
+        verifierPackage("evidence-review", "1.2.0", {
+          kind: "model",
+          prompt: "Reject unsupported claims.",
+        }),
+      ],
+    );
+    const node = workflow.nodes.find((item) => item.id === "review");
+    if (node?.type !== "verifier") {
+      throw new Error("verifier fixture was not compiled");
+    }
+
+    const resolved = resolveVerifierPackageNode(node, snapshot);
+
+    expect(resolved.node.verifier).toEqual({
+      kind: "model",
+      prompt: "Reject unsupported claims.",
+      evidence: [{ nodeId: "prepare", field: "command.stdout" }],
+      model: { provider: "test", id: "deterministic", thinking: "medium" },
+      timeoutMs: 120_000,
+    });
+    expect(resolved.package).toEqual({
+      name: "evidence-review",
+      version: "1.2.0",
+      digest: snapshot.packages[0]?.digest,
+    });
+  });
+
+  it("resolves the exact verifier version when a parent snapshot carries another version", () => {
+    const workflow = packagedModelWorkflow("1.3.0");
+    const snapshot = createCapabilitySnapshot(
+      [],
+      [
+        verifierPackage("evidence-review", "1.2.0", {
+          kind: "model",
+          prompt: "Review using the old rubric.",
+        }),
+        verifierPackage("evidence-review", "1.3.0", {
+          kind: "model",
+          prompt: "Review using the selected rubric.",
+        }),
+      ],
+    );
+    const bound = bindWorkflowCapabilities(workflow, snapshot, { allowUnexpected: true });
+    const node = workflow.nodes.find((item) => item.id === "review");
+    if (node?.type !== "verifier") {
+      throw new Error("verifier fixture was not compiled");
+    }
+
+    const resolved = resolveVerifierPackageNode(node, bound);
+
+    expect(resolved.node.verifier).toMatchObject({
+      kind: "model",
+      prompt: "Review using the selected rubric.",
+    });
+    expect(resolved.package).toMatchObject({ name: "evidence-review", version: "1.3.0" });
+  });
+
+  it.each([
+    {
+      label: "missing package",
+      workflowVersion: "1.2.0",
+      input: [] as VerifierPackageSnapshotInput[],
+      code: "missing_package" as const,
+    },
+    {
+      label: "version mismatch",
+      workflowVersion: "1.2.0",
+      input: [
+        verifierPackage("evidence-review", "1.3.0", {
+          kind: "model",
+          prompt: "Review.",
+        }),
+      ],
+      code: "version_mismatch" as const,
+    },
+    {
+      label: "kind mismatch",
+      workflowVersion: "1.2.0",
+      input: [
+        verifierPackage("evidence-review", "1.2.0", {
+          kind: "command",
+          command: { executable: "node", args: [], timeoutMs: 30_000 },
+        }),
+      ],
+      code: "package_kind_mismatch" as const,
+    },
+  ])("rejects a verifier $label before execution", ({ workflowVersion, input, code }) => {
+    const workflow = packagedModelWorkflow(workflowVersion);
+    const snapshot =
+      input.length === 0
+        ? createCapabilitySnapshot([skill("unrelated")])
+        : createCapabilitySnapshot([], input);
 
     expect(() => bindWorkflowCapabilities(workflow, snapshot)).toThrowError(
       expect.objectContaining<Partial<WorkflowCapabilityError>>({ code }),
@@ -134,6 +347,61 @@ function skill(name: string): AgentSkillPackageSnapshotInput {
     provenance: `.flow/skills/${name}`,
     files: [{ path: "SKILL.md", content: Buffer.from(`# ${name}\n`) }],
   };
+}
+
+function verifierPackage(
+  name: string,
+  version: string,
+  definition: VerifierPackageSnapshotInput["definition"],
+): VerifierPackageSnapshotInput {
+  const spec =
+    definition.kind === "command"
+      ? `kind: command
+  command:
+    executable: ${definition.command.executable}
+    args: [${definition.command.args.join(", ")}]
+    timeoutMs: ${definition.command.timeoutMs}`
+      : `kind: model
+  prompt: ${definition.prompt}`;
+  return {
+    kind: "verifier-package",
+    apiVersion: "flow.synapti.ai/v1alpha1",
+    name,
+    version,
+    description: `Reusable ${name} verifier.`,
+    trust: "project-explicit",
+    provenance: `.flow/verifiers/${name}`,
+    definition,
+    manifest: {
+      content: Buffer.from(`apiVersion: flow.synapti.ai/v1alpha1
+kind: VerifierPackage
+metadata: { name: ${name}, version: ${version}, description: Reusable ${name} verifier. }
+spec:
+  ${spec}
+`),
+    },
+  };
+}
+
+function packagedModelWorkflow(version: string) {
+  return compileWorkflowText(
+    workflowSource(
+      "package-binding",
+      `
+  - id: prepare
+    type: command
+    command: { executable: node }
+  - id: review
+    type: verifier
+    dependsOn: [prepare]
+    verifier:
+      kind: packaged-model
+      package: { name: evidence-review, version: ${version} }
+      evidence: [{ nodeId: prepare, field: command.stdout }]
+      model: { provider: test, id: deterministic }
+`,
+    ),
+  );
 }
 
 function workflowSource(id: string, nodes: string): string {

@@ -1,0 +1,21 @@
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata:
+  id: versioned-verifier-package
+  description: Run an exact local verifier package through the normal command-verifier boundary.
+goal:
+  apiVersion: flow.synapti.ai/v1alpha1
+  kind: Goal
+  metadata:
+    id: packaged-node-runtime-available
+  outcome: The configured Node.js runtime executes successfully.
+  criteria:
+    - id: packaged-version-command-passes
+      description: The exact versioned release-tests package accepts the Node.js runtime.
+      verifier: { nodeId: verify-release }
+nodes:
+  - id: verify-release
+    type: verifier
+    verifier:
+      kind: packaged-command
+      package: { name: release-tests, version: 1.0.0 }

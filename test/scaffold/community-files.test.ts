@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
+import { parseVerifierPackageManifest } from "../../src/domain/capability/verifier-packages.js";
 import { compileWorkflowText } from "../../src/domain/workflow/compiler.js";
 
 const rootUrl = new URL("../../", import.meta.url);
@@ -430,6 +431,63 @@ describe("public repository contracts", () => {
     expect(workflow.nodes[0]).toMatchObject({
       type: "agent",
       agent: { tools: ["read"], skills: ["review"] },
+    });
+  });
+
+  it("documents versioned verifier packages with a valid credential-free example", async () => {
+    const [
+      readme,
+      architecture,
+      workflowSpec,
+      sourcing,
+      recovery,
+      roadmap,
+      testing,
+      source,
+      manifest,
+    ] = await Promise.all([
+      readText("README.md"),
+      readText("docs/architecture.md"),
+      readText("docs/workflow-spec.md"),
+      readText("docs/capability-sourcing.md"),
+      readText("docs/recovery.md"),
+      readText("docs/roadmap.md"),
+      readText("docs/testing-and-evaluation.md"),
+      readText("examples/versioned-verifier-package.workflow.yaml"),
+      readText("examples/verifier-packages/release-tests/VERIFIER.yaml"),
+    ]);
+
+    expect(readme).toMatch(/Versioned verifier packages.*Implemented/is);
+    expect(readme).toContain("verifiers validate");
+    expect(readme).toContain("examples/versioned-verifier-package.workflow.yaml");
+    expect(architecture).toMatch(/verifier package.*immutable capability snapshot/is);
+    expect(workflowSpec).toContain("## Versioned verifier packages");
+    expect(sourcing).toMatch(/Verifier packages.*Implemented/is);
+    expect(recovery).toMatch(/durable verifier package snapshot/i);
+    expect(roadmap).toMatch(/evaluator.*versioned manifests.*Implemented/is);
+    expect(testing).toContain("examples/versioned-verifier-package.workflow.yaml");
+
+    const workflow = compileWorkflowText(
+      source,
+      "examples/versioned-verifier-package.workflow.yaml",
+    );
+    expect(workflow.nodes[0]).toMatchObject({
+      type: "verifier",
+      verifier: {
+        kind: "packaged-command",
+        package: { name: "release-tests", version: "1.0.0" },
+      },
+    });
+    expect(
+      parseVerifierPackageManifest(
+        Buffer.from(manifest),
+        "examples/verifier-packages/release-tests/VERIFIER.yaml",
+      ),
+    ).toMatchObject({
+      apiVersion: "flow.synapti.ai/v1alpha1",
+      kind: "VerifierPackage",
+      metadata: { name: "release-tests", version: "1.0.0" },
+      spec: { kind: "command", command: { executable: "node", args: ["--version"] } },
     });
   });
 });

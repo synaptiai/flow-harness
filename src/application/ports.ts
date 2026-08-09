@@ -1,4 +1,5 @@
 import type { CapabilitySnapshot } from "../domain/capability/agent-skills.js";
+import type { VerifierPackageUseEvidence } from "../domain/capability/verifier-packages.js";
 import type {
   AgentEffectReceipt,
   FilesystemEditEffectDescriptor,
@@ -132,6 +133,7 @@ export interface NodeExecutionContext {
   readonly capabilitySnapshot?: CapabilitySnapshot;
   readonly effectJournal?: NodeEffectJournal;
   readonly verifierSources?: readonly VerifierSourceInput[];
+  readonly verifierPackage?: VerifierPackageUseEvidence;
   readonly agentSystemPrompt?: string;
   readonly agentMaxOutputBytes?: number;
   readonly signal?: AbortSignal;

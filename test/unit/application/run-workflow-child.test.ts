@@ -2,7 +2,10 @@ import { createHash } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
+import { NodeExecutorRouter } from "../../../src/application/node-executor-router.js";
 import type {
+  AgentExecutor,
+  CommandExecutor,
   IsolatedWorkspace,
   NodeExecutionContext,
   NodeExecutionOutcome,
@@ -11,11 +14,13 @@ import type {
   WorkspaceIsolator,
 } from "../../../src/application/ports.js";
 import { resumeWorkflow, runWorkflow } from "../../../src/application/run-workflow.js";
+import { createCapabilitySnapshot } from "../../../src/domain/capability/agent-skills.js";
+import type { VerifierPackageSnapshotInput } from "../../../src/domain/capability/verifier-packages.js";
 import {
   calculateChildRunId,
   parseRunEvent,
-  reduceRunEvents,
   type RunEvent,
+  reduceRunEvents,
 } from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import type { CompiledNode } from "../../../src/domain/workflow/types.js";
@@ -67,6 +72,95 @@ describe("child workflow execution", () => {
       expect.objectContaining({ nodeId: "produce", cwd: `/isolated/${childRunId}` }),
     ]);
     expect(isolator.cleaned).toEqual([childRunId]);
+  });
+
+  it("binds a nested verifier to the parent's frozen package snapshot", async () => {
+    const store = new TreeMemoryStore();
+    const isolator = new MemoryWorkspaceIsolator();
+    const snapshot = createCapabilitySnapshot(
+      [],
+      [
+        verifierPackageInput("release-tests", "1.0.0", {
+          kind: "command",
+          command: { executable: "node", args: ["--version"], timeoutMs: 30_000 },
+        }),
+      ],
+    );
+    const command: CommandExecutor = {
+      async execute(node, context) {
+        const isVerifier = node.id === "verify";
+        if (isVerifier) {
+          expect(node.command.args).toEqual(["--version"]);
+          expect(context.verifierPackage).toEqual({
+            name: "release-tests",
+            version: "1.0.0",
+            digest: snapshot.packages[0]?.digest,
+          });
+        } else {
+          expect(node.id).toBe("produce");
+          expect(context.verifierPackage).toBeUndefined();
+        }
+        const stdout = isVerifier ? "verified" : '"verified"';
+        return {
+          status: "succeeded",
+          evidence: {
+            kind: "command",
+            executable: node.command.executable,
+            args: node.command.args,
+            exitCode: 0,
+            signal: null,
+            stdout,
+            stderr: "",
+            stdoutHash: sha256(stdout),
+            stderrHash: sha256(""),
+            stdoutTruncated: false,
+            stderrTruncated: false,
+            timedOut: false,
+            durationMs: 1,
+          },
+        };
+      },
+    };
+    const agent: AgentExecutor = {
+      async execute() {
+        throw new Error("nested command verifier unexpectedly invoked a model");
+      },
+    };
+    const workflow = compileWorkflowText(parentPackagedVerifierWorkflow());
+
+    const state = await runWorkflow(workflow, {
+      runId: "parent-packaged-verifier",
+      cwd: "/workspace",
+      protectedPaths: ["/state/runs"],
+      store,
+      executor: new NodeExecutorRouter(command, agent),
+      workspaceIsolator: isolator,
+      capabilitySnapshot: snapshot,
+      now: clock(),
+    });
+
+    const childRunId = calculateChildRunId("parent-packaged-verifier", "delegate", 1);
+    const childState = reduceRunEvents(await store.read(childRunId));
+    expect(state.status).toBe("succeeded");
+    expect(childState).toMatchObject({
+      status: "succeeded",
+      capabilitySnapshot: { digest: snapshot.digest },
+      verifierPackageRequirements: {
+        verify: { name: "release-tests", version: "1.0.0", kind: "command" },
+      },
+      nodes: {
+        verify: {
+          evidence: {
+            kind: "verifier",
+            package: {
+              name: "release-tests",
+              version: "1.0.0",
+              digest: snapshot.packages[0]?.digest,
+            },
+          },
+        },
+      },
+    });
   });
 
   it("recovers a terminal child after a crash before the parent outcome append", async () => {
@@ -756,6 +850,42 @@ ${childNode("delegate-b", child, ["bootstrap"])}
 `;
 }
 
+function parentPackagedVerifierWorkflow(): string {
+  const child = `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: packaged-verifier-child }
+budget:
+  maxNodeStarts: 4
+  maxModelTokens: 100
+  maxCostUsd: 0.01
+  maxExecutionMs: 10000
+nodes:
+  - id: verify
+    type: verifier
+    verifier:
+      kind: packaged-command
+      package: { name: release-tests, version: 1.0.0 }
+  - id: produce
+    type: command
+    dependsOn: [verify]
+    command: { executable: node, args: [produce] }
+  - id: publish
+    type: result
+    dependsOn: [produce]
+    result:
+      source: { nodeId: produce, field: command.stdout }
+      schema: { type: string, maxLength: 1024 }
+`.trim();
+  return `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: parent-packaged-verifier }
+nodes:
+${childNode("delegate", child)}
+`;
+}
+
 function childWorkflowSource(): string {
   return `
 apiVersion: flow.synapti.ai/v1alpha1
@@ -797,6 +927,35 @@ function clock(start = 0): () => Date {
   return () => {
     seconds += 1;
     return new Date(`2026-08-08T00:00:${String(seconds).padStart(2, "0")}.000Z`);
+  };
+}
+
+function verifierPackageInput(
+  name: string,
+  version: string,
+  definition: VerifierPackageSnapshotInput["definition"],
+): VerifierPackageSnapshotInput {
+  if (definition.kind !== "command") {
+    throw new Error("child verifier fixture requires a command package");
+  }
+  return {
+    kind: "verifier-package",
+    apiVersion: "flow.synapti.ai/v1alpha1",
+    name,
+    version,
+    description: `Reusable ${name} verifier.`,
+    trust: "project-explicit",
+    provenance: `.flow/verifiers/${name}`,
+    definition,
+    manifest: {
+      content: Buffer.from(`apiVersion: flow.synapti.ai/v1alpha1
+kind: VerifierPackage
+metadata: { name: ${name}, version: ${version}, description: Reusable ${name} verifier. }
+spec:
+  kind: command
+  command: { executable: ${definition.command.executable}, args: [${definition.command.args.join(", ")}], timeoutMs: ${definition.command.timeoutMs} }
+`),
+    },
   };
 }
 

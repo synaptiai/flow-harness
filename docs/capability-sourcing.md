@@ -171,8 +171,32 @@ natively: Flow's custom `flow_read`, durable snapshot, child-run, detached-worke
 contracts must remain identical across providers and future executor adapters. Pi receives only a
 Flow-generated metadata catalog and resolves content through Flow-owned immutable sessions.
 
-Remote installation, executable extensions, and tool/evaluator/workflow/policy/UI package
-manifests remain later Gate 6 work.
+## Verifier packages
+
+**Implemented for strict local declarative command and model packages.** Flow discovers
+`VERIFIER.yaml` below `.flow/verifiers`, validates an exact SemVer identity, and snapshots the exact
+manifest only when a workflow selects its name and version. A command package contributes the
+existing argv-only verifier command. A model package contributes only a bounded rubric; evidence,
+provider/model selection, thinking, and timeout remain explicit workflow authority.
+
+The implementation intentionally reuses neither Pi's in-process extension loader nor OMP custom
+tools. Those mechanisms are useful for trusted interactive customization but can execute host code
+with runtime-specific authority. Flow package directories contain only one inert manifest. Package
+resolution feeds the existing sandboxed command or zero-tool model verifier, so it cannot bypass
+the scheduler, policy, containment, evidence, or replay boundary. Prime Verifiers environments may
+be integrated later behind an explicit adapter; they are not a core dependency or executable
+package payload.
+
+Package metadata, exact manifest bytes, definition, provenance, trust state, version, and nested
+digests share the provider-neutral capability snapshot with Agent Skills. `run_started`, detached
+jobs, child ledgers, and recovery carry that exact snapshot. Verdict evidence records name, version,
+and digest; replay cross-checks that identity with the compiled control graph and persisted node
+requirement. Listing, inspection, and validation invoke no verifier, and inspection omits a model
+rubric.
+
+Remote installation, executable extensions, and tool/workflow/policy/UI package manifests remain
+later Gate 6 work. Evaluator manifests are implemented only for the current command/model verifier
+drivers; arbitrary evaluator code and reward environments remain out of scope.
 
 ## Coupling rules
 

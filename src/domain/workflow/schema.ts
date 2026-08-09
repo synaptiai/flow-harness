@@ -1,7 +1,10 @@
 import { z } from "zod";
-
-import { goalContractSchema } from "../goal/schema.js";
 import { agentSkillNameSchema, MAX_AGENT_SKILL_PACKAGES } from "../capability/agent-skills.js";
+import {
+  verifierPackageNameSchema,
+  verifierPackageVersionSchema,
+} from "../capability/verifier-packages.js";
+import { goalContractSchema } from "../goal/schema.js";
 import {
   type CompiledResultSchema,
   FLOW_WORKFLOW_API_VERSION,
@@ -129,6 +132,13 @@ const evidenceSourceSchema = z
   })
   .strict();
 
+const verifierPackageReferenceSchema = z
+  .object({
+    name: verifierPackageNameSchema,
+    version: verifierPackageVersionSchema,
+  })
+  .strict();
+
 const commandNodeSchema = z
   .object({
     ...guardedNodeShape,
@@ -225,6 +235,30 @@ const verifierNodeSchema = z
         .object({
           kind: z.literal("model"),
           prompt: z.string().trim().min(1).max(16_384),
+          evidence: z
+            .array(evidenceSourceSchema)
+            .min(1)
+            .max(16)
+            .refine(
+              (evidence) =>
+                new Set(evidence.map((source) => `${source.nodeId}\0${source.field}`)).size ===
+                evidence.length,
+              "verifier evidence declarations must be unique",
+            ),
+          model: modelSchema,
+          timeoutMs: z.number().int().positive().max(86_400_000).default(300_000),
+        })
+        .strict(),
+      z
+        .object({
+          kind: z.literal("packaged-command"),
+          package: verifierPackageReferenceSchema,
+        })
+        .strict(),
+      z
+        .object({
+          kind: z.literal("packaged-model"),
+          package: verifierPackageReferenceSchema,
           evidence: z
             .array(evidenceSourceSchema)
             .min(1)

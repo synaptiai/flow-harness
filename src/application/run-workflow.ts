@@ -1,11 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import {
-  createAgentCapabilityEvidence,
-  type CapabilitySnapshot,
-} from "../domain/capability/agent-skills.js";
-import { bindWorkflowCapabilities } from "../domain/capability/workflow-capabilities.js";
-import {
   calculateCommandApprovalOperationDigest,
   commandApprovalRequestId,
   createCommandApprovalOperation,
@@ -16,6 +11,15 @@ import {
   workflowApprovalRequestId,
 } from "../domain/approval/workflow-approval.js";
 import {
+  type CapabilitySnapshot,
+  createAgentCapabilityEvidence,
+} from "../domain/capability/agent-skills.js";
+import type { VerifierPackageUseEvidence } from "../domain/capability/verifier-packages.js";
+import {
+  bindWorkflowCapabilities,
+  resolveVerifierPackageNode,
+} from "../domain/capability/workflow-capabilities.js";
+import {
   evaluateOptimizationBaseline,
   evaluateOptimizationCandidate,
 } from "../domain/result/optimization-result.js";
@@ -25,8 +29,8 @@ import {
   TypedResultError,
 } from "../domain/result/typed-result.js";
 import {
-  type AgentEffectReceipt,
   type AgentCapabilityRequirement,
+  type AgentEffectReceipt,
   type AgentRecoveryRequirement,
   appendRunEvent,
   type ChildEvidence,
@@ -54,13 +58,13 @@ import {
   type RunStartedEvent,
   type RunState,
   reduceRunEvents,
+  type VerifierPackageRequirement,
 } from "../domain/run/events.js";
 import {
   projectCompiledControlGraph,
   workflowRequiresControlGraph,
 } from "../domain/workflow/control-graph.js";
 import { calculateWorkflowDigest } from "../domain/workflow/digest.js";
-import { MAX_OPTIMIZATION_DELTA_EVIDENCE_BYTES } from "../domain/workflow/types.js";
 import type {
   CompiledAgentNode,
   CompiledApprovalNode,
@@ -78,6 +82,7 @@ import type {
   CompiledWorkflow,
   EvidenceSourceField,
 } from "../domain/workflow/types.js";
+import { MAX_OPTIMIZATION_DELTA_EVIDENCE_BYTES } from "../domain/workflow/types.js";
 import type {
   CandidatePromotionRequest,
   CandidatePromotionSettlement,
@@ -126,6 +131,7 @@ export async function runWorkflow(
   return await releaseAfter(options.store, runId, async () => {
     const approvalRequirements = commandApprovalRequirements(workflow);
     const capabilityRequirements = agentCapabilityRequirements(workflow);
+    const verifierPackageRequirements = workflowVerifierPackageRequirements(workflow);
     const recoveryRequirements = agentRecoveryRequirements(workflow);
     const controlGraph = workflowControlGraph(workflow);
     const started: RunStartedEvent = {
@@ -143,6 +149,7 @@ export async function runWorkflow(
       ...(workflow.concurrency === undefined ? {} : { concurrency: workflow.concurrency }),
       ...(approvalRequirements.length === 0 ? {} : { approvalRequirements }),
       ...(capabilityRequirements.length === 0 ? {} : { capabilityRequirements }),
+      ...(verifierPackageRequirements.length === 0 ? {} : { verifierPackageRequirements }),
       ...(recoveryRequirements.length === 0 ? {} : { recoveryRequirements }),
       ...(controlGraph === undefined ? {} : { controlGraph }),
       ...(workflow.goal === undefined ? {} : { goal: workflow.goal }),
@@ -318,6 +325,7 @@ async function continueWorkflow(
       readonly attempt: number;
       readonly effectJournal?: NodeEffectJournal;
       readonly verifierSources?: readonly VerifierSourceInput[];
+      readonly verifierPackage?: VerifierPackageUseEvidence;
       readonly preflightOutcome?: NodeExecutionOutcome;
     }> = [];
     const childBudgetReservations = {
@@ -384,7 +392,11 @@ async function continueWorkflow(
       if (admitted.length > 0 && (node.type === "child") !== (admitted[0]?.node.type === "child")) {
         break;
       }
-      const executionNode = boundNodeTimeout(node, state);
+      const verifierResolution =
+        node.type === "verifier"
+          ? resolveVerifierPackageNode(node, options.capabilitySnapshot)
+          : undefined;
+      const executionNode = boundNodeTimeout(verifierResolution?.node ?? node, state);
       const attempt = (state.nodes[node.id]?.attempt ?? 0) + 1;
       const verifierSources = verifierExecutionSources(executionNode, state);
       const preflightOutcome =
@@ -481,6 +493,9 @@ async function continueWorkflow(
         attempt,
         ...(effectJournal === undefined ? {} : { effectJournal }),
         ...(verifierSources === undefined ? {} : { verifierSources }),
+        ...(verifierResolution?.package === undefined
+          ? {}
+          : { verifierPackage: verifierResolution.package }),
         ...(preflightOutcome === undefined ? {} : { preflightOutcome }),
       });
       if (executionNode.type === "child" && preflightOutcome === undefined) {
@@ -496,7 +511,14 @@ async function continueWorkflow(
 
     const settlements = await Promise.all(
       admitted.map(
-        async ({ executionNode, attempt, effectJournal, verifierSources, preflightOutcome }) => {
+        async ({
+          executionNode,
+          attempt,
+          effectJournal,
+          verifierSources,
+          verifierPackage,
+          preflightOutcome,
+        }) => {
           const abortedBeforeExecution = isAborted(options.signal);
           const outcome = abortedBeforeExecution
             ? executionNode.type === "child"
@@ -518,6 +540,7 @@ async function continueWorkflow(
                       : { capabilitySnapshot: options.capabilitySnapshot }),
                     ...(effectJournal === undefined ? {} : { effectJournal }),
                     ...(verifierSources === undefined ? {} : { verifierSources }),
+                    ...(verifierPackage === undefined ? {} : { verifierPackage }),
                     ...(options.signal === undefined ? {} : { signal: options.signal }),
                   },
                   options,
@@ -1137,6 +1160,22 @@ function validateRecoveryCompatibility(
     );
   }
 
+  const expectedVerifierPackageRequirements = workflowVerifierPackageRequirements(workflow);
+  const recoveredVerifierPackageRequirements = Object.entries(
+    state.verifierPackageRequirements,
+  ).map(([nodeId, requirement]) => ({ nodeId, ...requirement }));
+  if (
+    !sameVerifierPackageRequirements(
+      recoveredVerifierPackageRequirements,
+      expectedVerifierPackageRequirements,
+    )
+  ) {
+    throw new RunRecoveryError(
+      "workflow_mismatch",
+      `run "${runId}" verifier package requirements do not match the compiled workflow`,
+    );
+  }
+
   const expectedRecoveryRequirements = agentRecoveryRequirements(workflow);
   const recoveredRecoveryRequirements = Object.entries(state.recoveryRequirements).map(
     ([nodeId, requirement]) => ({ nodeId, ...requirement }),
@@ -1597,6 +1636,29 @@ function agentCapabilityRequirements(
   );
 }
 
+function workflowVerifierPackageRequirements(
+  workflow: CompiledWorkflow,
+): readonly VerifierPackageRequirement[] {
+  return Object.freeze(
+    workflow.nodes.flatMap((node) => {
+      if (
+        node.type !== "verifier" ||
+        (node.verifier.kind !== "packaged-command" && node.verifier.kind !== "packaged-model")
+      ) {
+        return [];
+      }
+      return [
+        Object.freeze({
+          nodeId: node.id,
+          name: node.verifier.package.name,
+          version: node.verifier.package.version,
+          kind: node.verifier.kind === "packaged-command" ? "command" : "model",
+        }),
+      ];
+    }),
+  );
+}
+
 function agentRecoveryRequirements(
   workflow: CompiledWorkflow,
 ): readonly AgentRecoveryRequirement[] {
@@ -1651,6 +1713,22 @@ function sameCapabilityRequirements(
       (requirement, index) =>
         requirement.nodeId === right[index]?.nodeId &&
         sameStrings(requirement.skills, right[index]?.skills ?? []),
+    )
+  );
+}
+
+function sameVerifierPackageRequirements(
+  left: readonly VerifierPackageRequirement[],
+  right: readonly VerifierPackageRequirement[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every(
+      (requirement, index) =>
+        requirement.nodeId === right[index]?.nodeId &&
+        requirement.name === right[index]?.name &&
+        requirement.version === right[index]?.version &&
+        requirement.kind === right[index]?.kind,
     )
   );
 }
@@ -2885,6 +2963,9 @@ function boundNodeTimeout(node: CompiledNode, state: RunState): CompiledNode {
     });
   }
   if (node.type === "verifier") {
+    if (node.verifier.kind === "packaged-command" || node.verifier.kind === "packaged-model") {
+      throw new Error(`verifier node "${node.id}" package was not resolved before timeout binding`);
+    }
     const timeoutMs =
       node.verifier.kind === "command" ? node.verifier.command.timeoutMs : node.verifier.timeoutMs;
     if (timeoutMs <= remaining) {
