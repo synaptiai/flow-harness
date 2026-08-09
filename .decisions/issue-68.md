@@ -327,6 +327,10 @@ Before command spawn, SRT scans at most 200,000 execution-root entries.
 It adds each existing private collection as a literal protected path.
 It rejects linked or indirect collections.
 
+On Linux, SRT can hide a read-denied directory with an ephemeral mask. A write call in that mask can
+report success, but it cannot change the host path. macOS rejects the same write call. Native tests
+check the host path after the command.
+
 For a child, SRT denies reads from every ancestor collection but permits writes in the selected
 workspace. Thus, a child cannot read a sibling workspace at any nesting level.
 The snapshot copier omits these collections.

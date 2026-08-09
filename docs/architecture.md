@@ -253,6 +253,10 @@ For `exec`, the broker binds `process.execute` authorization to the normalized e
 
 Every command executor depends on a Flow-owned `CommandSandbox` port. The production composition uses Anthropic Sandbox Runtime (SRT) with a fixed, versioned profile: workspace and private-temp writes are allowed; network, home-directory reads, ambient credentials, run-store writes, and writes to sensitive project state are denied. Sandbox dependency errors and degraded-security warnings fail before spawn. Same-policy concurrent commands share one process-global SRT session while each wrap receives its own private temporary directory and complete per-exec filesystem configuration. A reference-counted Flow coordinator serializes initialization and teardown, queues an incompatible workspace or policy until the active session resets, invokes SRT's per-command cleanup once per wrap, honors cancellation while queued, and resets only after the final compatible command releases. Cleanup must complete before a node can succeed.
 
+On Linux, SRT can hide a read-denied directory with an ephemeral mask. A write call in that mask can
+report success. The write changes only the mask and cannot change the host path. macOS rejects the
+same write call. Flow tests the host path after each native command.
+
 Flow creates new isolated child directories in an owner-only project-sibling collection. The
 collection name is `.<project-name>.flow-workspaces`. A hash of the canonical physical run-store
 path separates workspace groups. Filesystem aliases for one run store select one group. The project

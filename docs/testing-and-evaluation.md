@@ -227,7 +227,9 @@ Runtime tests use nested root and child execution directories.
 They deny reads of the canonical project `.flow` directory, activation state, and a sibling run ledger.
 They deny child reads from sibling workspaces in the nearest and outer private collections.
 They deny a root command that tries to create a named or historical private collection.
-They also deny reads and writes for each existing collection inside a broad execution root.
+They also deny reads and prevent host changes for each existing collection inside a broad execution root.
+On Linux, a protected write call can succeed in an ephemeral mask. The runtime tests prove that the
+host path does not change. On macOS, the same call fails.
 Sandbox unit tests bind each discovered collection to a literal protected path and its descendants.
 They prove that Linux uses the explicit project root and does not treat a custom `.flow` run store
 as a project root.

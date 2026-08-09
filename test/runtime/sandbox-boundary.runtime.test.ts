@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -54,16 +54,21 @@ describe("compiled command sandbox boundary", () => {
     expect(execution.code, `${execution.stderr}\n${execution.stdout}`).toBe(0);
     const state = JSON.parse(execution.stdout);
     const commandOutput = JSON.parse(state.nodes.execute.evidence.stdout);
+    const linuxEphemeralMask = process.platform === "linux";
     expect(commandOutput).toEqual({
       workspaceWrite: true,
-      workspaceCollectionWrite: false,
+      workspaceCollectionWrite: linuxEphemeralMask,
       siblingRead: false,
-      runStoreWrite: false,
+      runStoreWrite: linuxEphemeralMask,
       gitWrite: false,
-      flowWrite: false,
+      flowWrite: linuxEphemeralMask,
       leaked: null,
     });
     await expect(readFile(workspaceOutput, "utf8")).resolves.toBe("allowed");
+    await expect(lstat(workspaceCollection)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(runsDirectory, "tampered.txt"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
     await expect(readFile(gitWrite, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readFile(flowWrite, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     expect(state.nodes.execute.evidence.sandbox).toMatchObject({
@@ -179,11 +184,12 @@ describe("compiled command sandbox boundary", () => {
 
     expect(execution.code, `${execution.stderr}\n${execution.stdout}`).toBe(0);
     const state = JSON.parse(execution.stdout);
+    const linuxEphemeralMask = process.platform === "linux";
     expect(JSON.parse(state.nodes.execute.evidence.stdout)).toEqual({
       read: false,
-      write: false,
+      write: linuxEphemeralMask,
       legacyRead: false,
-      legacyWrite: false,
+      legacyWrite: linuxEphemeralMask,
     });
     await expect(readFile(attemptedWrite, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readFile(legacyAttemptedWrite, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
