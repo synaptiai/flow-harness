@@ -218,7 +218,7 @@ async function writeExclusiveDurableFile(path: string, bytes: Buffer): Promise<v
   const handle = await open(
     path,
     constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-    0o600,
+    0o660,
   );
   try {
     let offset = 0;
@@ -229,6 +229,7 @@ async function writeExclusiveDurableFile(path: string, bytes: Buffer): Promise<v
       }
       offset += bytesWritten;
     }
+    await handle.chmod(0o660);
     await handle.sync();
   } finally {
     await handle.close();

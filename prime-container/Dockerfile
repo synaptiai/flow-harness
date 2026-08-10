@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.17.1
+# syntax=docker/dockerfile:1.17.1@sha256:38387523653efa0039f8e1c89bb74a30504e76ee9f565e25c9a09841f9427b05
 
 ARG GO_IMAGE=golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651
 ARG NODE_IMAGE=node:22.19.0-bookworm-slim@sha256:4a4884e8a44826194dff92ba316264f392056cbe243dcc9fd3551e71cea02b90
@@ -35,14 +35,16 @@ COPY --from=python-build /opt/flow/python /opt/flow/python
 COPY --from=native-build /out/flow-prime-supervisor /opt/flow/bin/flow-prime-supervisor
 COPY --from=native-build /out/flow-prime-kernel-proxy /opt/flow/bin/flow-prime-kernel-proxy
 COPY --from=native-build /out/flow-prime-python /opt/flow/bin/flow-prime-python
+COPY image-probe.mjs /opt/flow/bin/flow-prime-image-probe.mjs
 COPY --from=node-build /opt/flow/node/node_modules /opt/flow/node/node_modules
 COPY flow-dist /opt/flow/node/flow-dist
 RUN groupadd --gid 10001 flow-node \
-    && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /run/flow-node flow-node \
+    && useradd --uid 10001 --gid 10001 --no-create-home --no-log-init --home-dir /run/flow-node flow-node \
     && groupadd --gid 10002 flow-python \
-    && useradd --uid 10002 --gid 10002 --no-create-home --home-dir /run/flow-python/home flow-python \
+    && useradd --uid 10002 --gid 10002 --no-create-home --no-log-init --home-dir /run/flow-python/home flow-python \
     && groupadd --gid 10003 flow-shared \
-    && chmod 0555 /opt/flow/bin/flow-prime-supervisor /opt/flow/bin/flow-prime-kernel-proxy /opt/flow/bin/flow-prime-python \
+    && chmod 0555 /opt/flow/bin/flow-prime-supervisor /opt/flow/bin/flow-prime-kernel-proxy /opt/flow/bin/flow-prime-python /opt/flow/bin/flow-prime-image-probe.mjs \
+    && touch --date="@${SOURCE_DATE_EPOCH}" /etc/passwd /etc/group /etc/shadow /etc/gshadow \
     && find /opt/flow -xdev -exec touch --date="@${SOURCE_DATE_EPOCH}" {} +
 USER 0:10003
 WORKDIR /workspace

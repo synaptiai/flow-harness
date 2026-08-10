@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -26,6 +26,7 @@ describe("local Prime global slot store", () => {
     };
 
     await fixture.store.writeIntent(intent);
+    expect((await stat(fixture.leasePath)).mode & 0o777).toBe(0o660);
     await expect(fixture.store.read()).resolves.toEqual(intent);
     await fixture.store.writeOwned(owned);
     await expect(fixture.store.read()).resolves.toEqual(owned);

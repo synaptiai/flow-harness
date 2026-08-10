@@ -180,6 +180,7 @@ import {
   BuiltInExternalHarnessRegistry,
   type ExternalHarnessRegistry,
 } from "../infrastructure/process/built-in-external-harness-registry.js";
+import type { PrimeOciPreparationResult } from "../infrastructure/oci/prime-oci-preparation.js";
 import { createProductionNodeEffectReconciler } from "../infrastructure/runtime/production-effect-reconciler.js";
 import { createProductionNodeExecutor } from "../infrastructure/runtime/production-node-executor.js";
 import { createProductionWorkspaceIsolator } from "../infrastructure/runtime/production-workspace-isolator.js";
@@ -232,6 +233,7 @@ Usage:
   flow eval inspect <evaluation-id> [--evaluations-dir <path>]
   flow eval export <evaluation-id> --output <path> [--evaluations-dir <path>]
   flow eval tuning-evidence <evaluation-id> --output <path> [--evaluations-dir <path>]
+  flow runtime prepare prime-agent
   flow validate <workflow.yaml|workflow:name@version|activation:workflow-id>
   flow run <workflow.yaml|workflow:name@version|activation:workflow-id> [--detach] [--command-id <uuid>] [--run-id <id>] [--runs-dir <path>] [--cwd <path>]
   flow resume <workflow.yaml|workflow:name@version|activation:workflow-id> --run-id <id> [--detach] [--command-id <uuid>] [--runs-dir <path>] [--cwd <path>]
@@ -305,6 +307,10 @@ export interface CliDependencies {
   readonly capabilityBundleFetcher: CapabilityBundleFetcher;
   readonly externalHarnessRegistry: ExternalHarnessRegistry;
   readonly externalHarnessRuntime: ExternalHarnessRuntime;
+  readonly preparePrimeRuntime?: (input: {
+    readonly cwd: string;
+    readonly signal: AbortSignal | undefined;
+  }) => Promise<PrimeOciPreparationResult>;
   readonly signal?: AbortSignal;
 }
 
@@ -358,6 +364,8 @@ export async function main(
         return await activationCommand(args.slice(1), io, dependencyOverrides);
       case "eval":
         return await evaluationCommand(args.slice(1), io, dependencyOverrides);
+      case "runtime":
+        return await runtimeCommand(args.slice(1), io, dependencyOverrides);
       case "validate":
         return await validateCommand(args.slice(1), io, dependencyOverrides);
       case "run":
@@ -491,6 +499,33 @@ export async function main(
     io.stderr(error instanceof Error ? error.message : String(error));
     return 1;
   }
+}
+
+async function runtimeCommand(
+  args: readonly string[],
+  io: CliIo,
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  const { positionals } = parseCommandArgs(args, {});
+  if (
+    positionals.length !== 2 ||
+    positionals[0] !== "prepare" ||
+    positionals[1] !== "prime-agent"
+  ) {
+    throw new CliUsageError("runtime prepare requires prime-agent");
+  }
+  const cwd = overrides.cwd ?? process.cwd();
+  const preparePrimeRuntime =
+    overrides.preparePrimeRuntime ??
+    (async (input: { readonly cwd: string; readonly signal: AbortSignal | undefined }) => {
+      const { prepareProductionPrimeOciRuntime } = await import(
+        "../infrastructure/oci/production-prime-oci-preparation.js"
+      );
+      return prepareProductionPrimeOciRuntime(input);
+    });
+  const result = await preparePrimeRuntime({ cwd, signal: overrides.signal });
+  io.stdout(JSON.stringify({ prepared: true, ...result }, null, 2));
+  return 0;
 }
 
 async function initCommand(

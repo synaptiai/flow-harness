@@ -1,6 +1,7 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { type BigIntStats, constants } from "node:fs";
-import { lstat, open } from "node:fs/promises";
+import { lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 
 import { z } from "zod";
 
@@ -105,6 +106,8 @@ export interface LocalPrimeOciAttestation {
   assertCurrent(): Promise<void>;
 }
 
+export type PrimeOciAttestationDescriptor = z.infer<typeof descriptorSchema>;
+
 export interface LocalPrimeOciAttestationStoreOptions {
   readonly descriptorPath: string;
   readonly observeSocket?: (path: "/var/run/docker.sock") => Promise<PrimeOciSocketIdentity>;
@@ -179,6 +182,56 @@ export class LocalPrimeOciAttestationStore {
         }
       },
     });
+  }
+}
+
+export async function publishLocalPrimeOciAttestation(path: string, input: unknown): Promise<void> {
+  const parsed = descriptorSchema.safeParse(input);
+  if (!parsed.success) {
+    throw new Error("Prime OCI local attestation violates the closed schema", {
+      cause: parsed.error,
+    });
+  }
+  const content = Buffer.from(
+    `${canonicalize(parsed.data as unknown as StrictJsonValue)}\n`,
+    "utf8",
+  );
+  if (content.byteLength > MAX_ATTESTATION_BYTES) {
+    throw new Error(`Prime OCI local attestation exceeds ${MAX_ATTESTATION_BYTES} bytes`);
+  }
+
+  const target = resolve(path);
+  const directory = dirname(target);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  if ((await realpath(directory)) !== directory) {
+    throw new Error("Prime OCI local attestation directory is not canonical");
+  }
+  const temporary = join(directory, `.${basename(target)}.${randomUUID()}.tmp`);
+  try {
+    const handle = await open(
+      temporary,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      0o600,
+    );
+    try {
+      await handle.writeFile(content);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await rename(temporary, target);
+    const directoryHandle = await open(
+      directory,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+    try {
+      await directoryHandle.sync();
+    } finally {
+      await directoryHandle.close();
+    }
+  } catch (error) {
+    await unlink(temporary).catch(() => undefined);
+    throw error;
   }
 }
 

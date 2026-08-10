@@ -10,7 +10,8 @@
   "primeAgent": {
     "version": "0.7.1",
     "url": "https://github.com/PrimeIntellect-ai/prime-agent/releases/download/v0.7.1/prime-agent-0.7.1.tgz",
-    "sha256": "d68612c83239caafab72cc76c55ac572bfd07a059ea8fbd2a3ddbe1f2b55dcdb"
+    "sha256": "d68612c83239caafab72cc76c55ac572bfd07a059ea8fbd2a3ddbe1f2b55dcdb",
+    "integrity": "sha512-BOT+mqCYeDpKYabk3HVP5T7HomlBUWiQOXZGnX/DYZwT4xvdQSeF7itt/tCU8nv82/30N7VJw5YdXssEyD3qGQ=="
   },
   "locks": {
     "nodeSha256": "9337bd288359dfb5f5722859cec2b3ac98fdf1d707337da25fa16bd02347d364",

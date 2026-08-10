@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import { LocalPrimeOciAttestationStore } from "../../../../src/infrastructure/oci/local-prime-oci-attestation.js";
+import { publishLocalPrimeOciAttestation } from "../../../../src/infrastructure/oci/local-prime-oci-attestation.js";
 import { primeExternalHarnessIdentity } from "../../../fixtures/evaluation/prime-external-harness-identity.js";
 
 const temporaryDirectories: string[] = [];
@@ -105,6 +106,37 @@ describe("local Prime OCI attestation", () => {
         }).read(),
       ).rejects.toThrow(/image capacity.*below/i);
     }
+  });
+
+  it("publishes and replaces one complete canonical descriptor", async () => {
+    const root = await mkdtemp(join(tmpdir(), "flow-prime-attestation-"));
+    temporaryDirectories.push(root);
+    const descriptorPath = join(
+      await realpath(root),
+      "runtime",
+      "prime-agent",
+      "oci-attestation.json",
+    );
+    const identity = primeExternalHarnessIdentity();
+    const descriptor = descriptorFixture(identity);
+
+    await publishLocalPrimeOciAttestation(descriptorPath, descriptor);
+    await publishLocalPrimeOciAttestation(descriptorPath, {
+      ...descriptor,
+      daemonId: "replacement-daemon",
+    });
+
+    const content = await readFile(descriptorPath, "utf8");
+    expect(content.endsWith("\n")).toBe(true);
+    expect(JSON.parse(content)).toMatchObject({
+      version: 1,
+      daemonId: "replacement-daemon",
+    });
+    const stored = await new LocalPrimeOciAttestationStore({
+      descriptorPath,
+      observeSocket: async () => descriptor.local.socket,
+    }).read();
+    expect(stored.localRuntime.daemonId).toBe("replacement-daemon");
   });
 });
 
