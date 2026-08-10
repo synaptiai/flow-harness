@@ -1,11 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  ExternalHarnessProtocolSession,
+  signExternalHarnessParentFrame,
+} from "../../../../src/domain/evaluation/external-harness-protocol.js";
+import {
   createNativePrimeSdkSession,
   type NativePrimeSdkBindings,
   type NativePrimeSession,
   runNativePrimeEvaluationSession,
+  runNativePrimeDriverProtocol,
 } from "../../../../src/infrastructure/prime/native-prime-agent-evaluation-driver.js";
+
+const driverSessionId = "018f4ee8-9d67-7ca1-a31f-4f3f2388e934";
+const driverSecret = "1".repeat(64);
 
 describe("native Prime evaluation driver", () => {
   it("creates one closed IPython-only SDK session with in-memory services", async () => {
@@ -206,13 +214,96 @@ describe("native Prime evaluation driver", () => {
       harness: { outcome: "cancelled", runId: "prime-session", reason: "operator stop" },
     });
   });
+
+  it("uses one signed private channel for host inference", async () => {
+    const evaluation = evaluationInput();
+    const hello = signExternalHarnessParentFrame(
+      {
+        version: 1,
+        sequence: 1,
+        sessionId: driverSessionId,
+        type: "hello",
+        payload: {
+          secretHex: driverSecret,
+          trialId: `trial-${"b".repeat(48)}`,
+          identityDigest: "e".repeat(64),
+          evaluation,
+          instructionText: "Create RESULT.md.",
+        },
+      },
+      driverSecret,
+    );
+    const written: string[] = [];
+    const writtenTypes: string[] = [];
+    const verifier = new ExternalHarnessProtocolSession({
+      sessionId: driverSessionId,
+      secretHex: driverSecret,
+      trialId: `trial-${"b".repeat(48)}`,
+      identityDigest: "e".repeat(64),
+    });
+    let response: string | undefined;
+    const lines: AsyncIterator<string> = {
+      next: vi.fn(async () => {
+        if (written.length === 0) {
+          return { done: false as const, value: JSON.stringify(hello) };
+        }
+        if (response !== undefined) {
+          const value = response;
+          response = undefined;
+          return { done: false as const, value };
+        }
+        return { done: true as const, value: undefined };
+      }),
+    };
+    const createSession = vi.fn(async (input) => {
+      const session = fakeSession({
+        onPrompt: async () => {
+          await input.infer('{"version":1,"context":{"messages":[]}}');
+        },
+      });
+      return session;
+    });
+
+    await runNativePrimeDriverProtocol({
+      lines,
+      writeLine: async (line) => {
+        written.push(line);
+        const frame = verifier.acceptDriverLine(line);
+        writtenTypes.push(frame.type);
+        if (frame.type === "inference_request") {
+          response = JSON.stringify(
+            signExternalHarnessParentFrame(
+              {
+                version: 1,
+                sequence: 2,
+                sessionId: driverSessionId,
+                type: "inference_response",
+                payload: {
+                  requestId: frame.requestId,
+                  body: '{"message":"done"}',
+                  bodySha256: "2a3a04956a267fc530b0f7d2fa341408676db3eaeacbfccd2f1d1bf84971f21d",
+                },
+              },
+              driverSecret,
+            ),
+          );
+          verifier.completeInference(frame.requestId);
+        }
+      },
+      createSession,
+    });
+
+    expect(written).toHaveLength(3);
+    expect(writtenTypes).toEqual(["ready", "inference_request", "terminal"]);
+    expect(createSession).toHaveBeenCalledOnce();
+  });
 });
 
 function fakeSession(
   options: {
     readonly promptError?: Error;
     readonly toolError?: boolean;
-    readonly onPrompt?: () => void;
+    readonly onPrompt?: () => void | Promise<void>;
   } = {},
 ): NativePrimeSession & {
   readonly prompt: ReturnType<typeof vi.fn>;
@@ -224,7 +315,7 @@ function fakeSession(
     | undefined;
   return {
     prompt: vi.fn(async () => {
-      options.onPrompt?.();
+      await options.onPrompt?.();
       if (options.toolError === true) {
         listener?.({ type: "tool_execution_end", isError: true });
       }

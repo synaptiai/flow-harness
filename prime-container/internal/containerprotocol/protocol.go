@@ -160,12 +160,6 @@ func ParseManifestEntry(source []byte) (ManifestEntry, error) {
 	if err := decodeStrictJSON(source, &raw); err != nil {
 		return ManifestEntry{}, fmt.Errorf("parse Prime manifest entry: %w", err)
 	}
-	if err := validatePath(raw.Path); err != nil {
-		return ManifestEntry{}, err
-	}
-	if raw.Mode < 0 || raw.Mode > 0777 {
-		return ManifestEntry{}, errors.New("Prime manifest entry mode is outside 0000 through 0777")
-	}
 	entry := ManifestEntry{Path: raw.Path, Type: raw.Type, Mode: raw.Mode}
 	switch raw.Type {
 	case EntryDirectory:
@@ -183,6 +177,9 @@ func ParseManifestEntry(source []byte) (ManifestEntry, error) {
 		entry.SHA256 = *raw.SHA256
 	default:
 		return ManifestEntry{}, errors.New("Prime manifest entry type is invalid")
+	}
+	if err := validateManifestEntry(entry); err != nil {
+		return ManifestEntry{}, err
 	}
 	return entry, nil
 }
@@ -206,6 +203,31 @@ func ManifestSHA256(entries []ManifestEntry) (string, error) {
 		}
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func validateManifestEntry(entry ManifestEntry) error {
+	if err := validatePath(entry.Path); err != nil {
+		return err
+	}
+	if entry.Mode < 0 || entry.Mode > 0777 {
+		return errors.New("Prime manifest entry mode is outside 0000 through 0777")
+	}
+	switch entry.Type {
+	case EntryDirectory:
+		if entry.Size != 0 || entry.SHA256 != "" {
+			return errors.New("Prime directory entry contains file fields")
+		}
+	case EntryFile:
+		if entry.Size < 0 || entry.Size > MaxFileBytes {
+			return errors.New("Prime file entry size is invalid")
+		}
+		if !sha256Pattern.MatchString(entry.SHA256) {
+			return errors.New("Prime file entry SHA-256 is invalid")
+		}
+	default:
+		return errors.New("Prime manifest entry type is invalid")
+	}
+	return nil
 }
 
 func knownFrameType(frameType FrameType) bool {

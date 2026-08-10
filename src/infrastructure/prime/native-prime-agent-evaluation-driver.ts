@@ -1,10 +1,18 @@
+import { createHash, randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
+import { Socket } from "node:net";
+import { resolve } from "node:path";
+import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
 
 import { z } from "zod";
 
 import {
   type ExternalHarnessEvaluationInput,
+  type ExternalHarnessParentFrame,
   MAX_EXTERNAL_HARNESS_FRAME_BYTES,
+  parseExternalHarnessParentLine,
+  signExternalHarnessDriverFrame,
 } from "../../domain/evaluation/external-harness-protocol.js";
 import type {
   EvaluationHarnessOutcome,
@@ -180,6 +188,13 @@ export interface NativePrimeEvaluationSessionResult {
   readonly metrics: EvaluationMetrics;
 }
 
+export interface NativePrimeDriverProtocolInput {
+  readonly lines: AsyncIterator<string>;
+  readonly writeLine: (line: string) => Promise<void>;
+  readonly createSession?: NativePrimeSessionFactory;
+  readonly signal?: AbortSignal;
+}
+
 export async function runNativePrimeEvaluationSession(
   input: NativePrimeEvaluationSessionInput,
 ): Promise<NativePrimeEvaluationSessionResult> {
@@ -261,6 +276,96 @@ export async function runNativePrimeEvaluationSession(
     await abortPromise;
     unsubscribe();
     await session.dispose();
+  }
+}
+
+export async function runNativePrimeDriverProtocol(
+  input: NativePrimeDriverProtocolInput,
+): Promise<void> {
+  const first = await input.lines.next();
+  if (first.done === true) {
+    throw new Error("private supervisor channel closed before hello");
+  }
+  const hello = parseExternalHarnessParentLine(first.value);
+  if (hello.type !== "hello" || hello.sequence !== 1) {
+    throw new Error("first supervisor frame must be hello sequence 1");
+  }
+  const channel = new PrimeSupervisorProtocolChannel(hello, input.lines, input.writeLine);
+  await channel.sendReady();
+  const result = await runNativePrimeEvaluationSession({
+    evaluation: hello.payload.evaluation,
+    instructionText: hello.payload.instructionText,
+    infer: (body, signal) => channel.infer(body, signal),
+    ...(input.createSession === undefined ? {} : { createSession: input.createSession }),
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
+  });
+  await channel.sendTerminal(result);
+}
+
+class PrimeSupervisorProtocolChannel {
+  #driverSequence = 0;
+  #parentSequence = 1;
+
+  constructor(
+    readonly hello: Extract<ExternalHarnessParentFrame, { type: "hello" }>,
+    readonly lines: AsyncIterator<string>,
+    readonly writeLine: (line: string) => Promise<void>,
+  ) {}
+
+  async sendReady(): Promise<void> {
+    await this.#send("ready", {
+      trialId: this.hello.payload.trialId,
+      identityDigest: this.hello.payload.identityDigest,
+    });
+  }
+
+  async infer(body: string, signal?: AbortSignal): Promise<string> {
+    throwIfAborted(signal);
+    const requestId = randomUUID();
+    await this.#send("inference_request", {
+      requestId,
+      body,
+      bodySha256: sha256(body),
+    });
+    const next = await this.lines.next();
+    if (next.done === true) {
+      throw new Error("private supervisor channel closed during inference");
+    }
+    const frame = parseExternalHarnessParentLine(next.value, this.hello.payload.secretHex);
+    this.#parentSequence += 1;
+    if (
+      frame.sessionId !== this.hello.sessionId ||
+      frame.sequence !== this.#parentSequence ||
+      frame.type !== "inference_response" ||
+      frame.payload.requestId !== requestId
+    ) {
+      throw new Error("supervisor inference response contradicts the active request");
+    }
+    throwIfAborted(signal);
+    return frame.payload.body;
+  }
+
+  async sendTerminal(result: NativePrimeEvaluationSessionResult): Promise<void> {
+    await this.#send("terminal", result);
+  }
+
+  async #send(type: "ready" | "inference_request" | "terminal", payload: unknown): Promise<void> {
+    this.#driverSequence += 1;
+    const frame = signExternalHarnessDriverFrame(
+      {
+        version: 1,
+        sequence: this.#driverSequence,
+        sessionId: this.hello.sessionId,
+        type,
+        payload,
+      },
+      this.hello.payload.secretHex,
+    );
+    const line = JSON.stringify(frame);
+    if (Buffer.byteLength(line, "utf8") > MAX_EXTERNAL_HARNESS_FRAME_BYTES) {
+      throw new Error(`Prime driver frame exceeds ${MAX_EXTERNAL_HARNESS_FRAME_BYTES} bytes`);
+    }
+    await this.writeLine(line);
   }
 }
 
@@ -675,4 +780,53 @@ function boundedReason(error: unknown): string {
 function elapsedMs(started: bigint): number {
   const duration = Number((process.hrtime.bigint() - started) / 1_000_000n);
   return Number.isSafeInteger(duration) && duration >= 0 ? duration : 0;
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+async function runDriverProcess(): Promise<void> {
+  const socket = new Socket({ fd: 3, readable: true, writable: true });
+  const input = createInterface({ input: socket, crlfDelay: Number.POSITIVE_INFINITY });
+  const controller = new AbortController();
+  const abort = () => controller.abort(new Error("Prime driver was terminated"));
+  process.once("SIGTERM", abort);
+  process.once("SIGINT", abort);
+  try {
+    await runNativePrimeDriverProtocol({
+      lines: input[Symbol.asyncIterator](),
+      writeLine: (line) => writeSocketLine(socket, line),
+      signal: controller.signal,
+    });
+  } finally {
+    process.removeListener("SIGTERM", abort);
+    process.removeListener("SIGINT", abort);
+    input.close();
+    socket.end();
+  }
+}
+
+async function writeSocketLine(socket: Socket, line: string): Promise<void> {
+  await new Promise<void>((resolvePromise, reject) => {
+    socket.write(`${line}\n`, (error) => {
+      if (error === null || error === undefined) {
+        resolvePromise();
+      } else {
+        reject(error);
+      }
+    });
+  });
+}
+
+function isMainModule(): boolean {
+  const entry = process.argv[1];
+  return entry !== undefined && fileURLToPath(import.meta.url) === resolve(entry);
+}
+
+if (isMainModule()) {
+  void runDriverProcess().catch((error: unknown) => {
+    process.stderr.write(`${boundedReason(error)}\n`);
+    process.exitCode = 1;
+  });
 }
