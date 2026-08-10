@@ -1,0 +1,50 @@
+# syntax=docker/dockerfile:1.17.1
+
+ARG GO_IMAGE=golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651
+ARG NODE_IMAGE=node:22.19.0-bookworm-slim@sha256:4a4884e8a44826194dff92ba316264f392056cbe243dcc9fd3551e71cea02b90
+ARG PYTHON_IMAGE=python:3.11.15-slim-bookworm@sha256:b18992999dbe963a45a8a4da40ac2b1975be1a776d939d098c647482bcad5cba
+
+FROM ${GO_IMAGE} AS native-build
+WORKDIR /src
+COPY go.mod ./
+COPY internal ./internal
+COPY cmd ./cmd
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go test ./... \
+    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w -buildid=' -o /out/flow-prime-supervisor ./cmd/flow-prime-supervisor \
+    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w -buildid=' -o /out/flow-prime-kernel-proxy ./cmd/flow-prime-kernel-proxy \
+    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w -buildid=' -o /out/flow-prime-python ./cmd/flow-prime-python
+
+FROM ${NODE_IMAGE} AS node-build
+WORKDIR /opt/flow/node
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts --omit=dev --no-audit --no-fund
+
+FROM ${PYTHON_IMAGE} AS python-build
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1
+COPY python-requirements.lock /tmp/python-requirements.lock
+COPY --from=node-build /opt/flow/node/node_modules/prime-agent/dist/prime-agent-runtime /tmp/prime-agent-runtime
+RUN python -m venv /opt/flow/python \
+    && /opt/flow/python/bin/pip install --require-hashes --only-binary=:all: --requirement /tmp/python-requirements.lock \
+    && /opt/flow/python/bin/pip install --no-deps --no-build-isolation /tmp/prime-agent-runtime \
+    && /opt/flow/python/bin/python -I -c 'import bs4, dill, httpx, ipykernel, lxml, numpy, pandas, pydantic, requests, rlm, scipy, tyro, yaml'
+
+FROM ${NODE_IMAGE} AS runtime
+ARG SOURCE_DATE_EPOCH=1786127940
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8 NODE_ENV=production PRIME_AGENT_KERNEL_FORKSERVER=0
+COPY --from=python-build /opt/flow/python /opt/flow/python
+COPY --from=native-build /out/flow-prime-supervisor /opt/flow/bin/flow-prime-supervisor
+COPY --from=native-build /out/flow-prime-kernel-proxy /opt/flow/bin/flow-prime-kernel-proxy
+COPY --from=native-build /out/flow-prime-python /opt/flow/bin/flow-prime-python
+COPY --from=node-build /opt/flow/node/node_modules /opt/flow/node/node_modules
+COPY flow-dist /opt/flow/node/flow-dist
+RUN groupadd --gid 10001 flow-node \
+    && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /run/flow-node flow-node \
+    && groupadd --gid 10002 flow-python \
+    && useradd --uid 10002 --gid 10002 --no-create-home --home-dir /run/flow-python/home flow-python \
+    && groupadd --gid 10003 flow-shared \
+    && chmod 0555 /opt/flow/bin/flow-prime-supervisor /opt/flow/bin/flow-prime-kernel-proxy /opt/flow/bin/flow-prime-python \
+    && find /opt/flow -xdev -exec touch --date="@${SOURCE_DATE_EPOCH}" {} +
+USER 0:10003
+WORKDIR /workspace
+HEALTHCHECK NONE
+ENTRYPOINT ["/opt/flow/bin/flow-prime-supervisor"]

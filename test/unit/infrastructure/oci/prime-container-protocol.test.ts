@@ -179,6 +179,7 @@ describe("Prime container transfer", () => {
 describe("Prime container protocol sequence", () => {
   it("accepts the complete direction-aware sequence", () => {
     const sequence = new PrimeContainerProtocolSequence();
+    sequence.accept("host-to-container", PrimeContainerFrameType.AttestationChallenge);
     sequence.accept("container-to-host", PrimeContainerFrameType.Readiness);
     sequence.accept("host-to-container", PrimeContainerFrameType.FixtureStart);
     sequence.accept("host-to-container", PrimeContainerFrameType.FixtureEntry);
@@ -202,22 +203,25 @@ describe("Prime container protocol sequence", () => {
   it("rejects wrong directions, out-of-state frames, and early end-of-stream", () => {
     const wrongDirection = new PrimeContainerProtocolSequence();
     expect(() =>
-      wrongDirection.accept("host-to-container", PrimeContainerFrameType.Readiness),
+      wrongDirection.accept("container-to-host", PrimeContainerFrameType.AttestationChallenge),
     ).toThrow(/direction/i);
 
     const outOfState = new PrimeContainerProtocolSequence();
+    outOfState.accept("host-to-container", PrimeContainerFrameType.AttestationChallenge);
     outOfState.accept("container-to-host", PrimeContainerFrameType.Readiness);
     expect(() => outOfState.accept("host-to-container", PrimeContainerFrameType.Bootstrap)).toThrow(
       /state/i,
     );
 
     const partial = new PrimeContainerProtocolSequence();
+    partial.accept("host-to-container", PrimeContainerFrameType.AttestationChallenge);
     partial.accept("container-to-host", PrimeContainerFrameType.Readiness);
     expect(() => partial.finish()).toThrow(/incomplete/i);
   });
 
   it("enforces exact transfer limits", () => {
     const exact = new PrimeContainerProtocolSequence();
+    exact.accept("host-to-container", PrimeContainerFrameType.AttestationChallenge);
     exact.accept("container-to-host", PrimeContainerFrameType.Readiness);
     exact.accept("host-to-container", PrimeContainerFrameType.FixtureStart);
     for (let entry = 0; entry < 4_096; entry += 1) {
@@ -233,6 +237,7 @@ describe("Prime container protocol sequence", () => {
     ).not.toThrow();
 
     const tooManyTransferFrames = new PrimeContainerProtocolSequence();
+    tooManyTransferFrames.accept("host-to-container", PrimeContainerFrameType.AttestationChallenge);
     tooManyTransferFrames.accept("container-to-host", PrimeContainerFrameType.Readiness);
     tooManyTransferFrames.accept("host-to-container", PrimeContainerFrameType.FixtureStart);
     for (let frame = 1; frame < MAX_PRIME_CONTAINER_TRANSFER_FRAMES; frame += 1) {
@@ -243,6 +248,7 @@ describe("Prime container protocol sequence", () => {
     ).toThrow(/transfer.*frame/i);
 
     const tooManyDriverFrames = new PrimeContainerProtocolSequence();
+    tooManyDriverFrames.accept("host-to-container", PrimeContainerFrameType.AttestationChallenge);
     tooManyDriverFrames.accept("container-to-host", PrimeContainerFrameType.Readiness);
     tooManyDriverFrames.accept("host-to-container", PrimeContainerFrameType.FixtureStart);
     tooManyDriverFrames.accept("host-to-container", PrimeContainerFrameType.FixtureComplete);

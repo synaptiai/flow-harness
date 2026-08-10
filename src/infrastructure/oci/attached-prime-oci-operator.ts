@@ -9,6 +9,7 @@ import {
 import type { EvaluationHarnessOutcome } from "../../domain/evaluation/records.js";
 import { parseStrictJson } from "../../domain/strict-json.js";
 import {
+  createPrimeContainerReadinessChallenge,
   encodePrimeContainerFrame,
   type PrimeContainerFrame,
   PrimeContainerFrameDecoder,
@@ -117,6 +118,24 @@ export class AttachedPrimeOciOperator {
     let operationError: unknown;
 
     try {
+      await this.#send(
+        sequence,
+        input.transport,
+        PrimeContainerFrameType.AttestationChallenge,
+        Buffer.from(
+          JSON.stringify(
+            createPrimeContainerReadinessChallenge({
+              version: 1,
+              containerId: input.containerId,
+              trialId: input.request.evaluation.trial.trialId,
+              identityDigest: input.descriptor.identityDigest,
+              imageId: input.request.identity.image.id,
+              policyDigest: input.request.identity.runtime.policy.digest,
+            }),
+          ),
+        ),
+        input.signal,
+      );
       for await (const bytes of input.transport.output) {
         throwIfAborted(input.signal);
         for (const frame of decoder.push(bytes)) {

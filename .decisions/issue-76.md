@@ -442,8 +442,12 @@ that reserved top-level name in fixtures and omits it from results.
 Node and supervisor state use separate protected mounts. Python cannot write those mounts. It cannot
 write the read-only image or any container path outside the workspace.
 
-The supervisor reports readiness before it starts the driver. Flow sends one strict file manifest
-through the attached input stream. Bounded chunks carry the admitted fixture bytes.
+Flow first sends one public attestation challenge. It contains the container, trial, image, identity,
+and policy values. It does not contain the protocol secret.
+
+The supervisor measures its effective controls and reports readiness against that challenge before
+it starts the driver. Flow then sends one strict file manifest through the attached input stream.
+Bounded chunks carry the admitted fixture bytes.
 
 Each file and directory entry includes a normalized mode from `0o000` through `0o777`. Flow rejects
 special mode bits.
@@ -498,9 +502,9 @@ The outer supervisor protocol is `flow-prime-container-v1`. It wraps the signed 
 workspace manifests in distinct strict frames. The fixed limits cover frames, files, paths, and
 total bytes.
 
-The strict state sequence is readiness, fixture start, fixture entries, fixture completion, and
-bootstrap. Signed driver frames follow. Terminal, result start, result entries, result completion,
-and settlement finish the sequence.
+The strict state sequence is attestation challenge, readiness, fixture start, fixture entries,
+fixture completion, and bootstrap. Signed driver frames follow. Terminal, result start, result
+entries, result completion, and settlement finish the sequence.
 
 The decoder accepts fragmented headers, fragmented payloads, and multiple frames in one read. It
 rejects partial end-of-file, trailing bytes, and every undeclared frame type.

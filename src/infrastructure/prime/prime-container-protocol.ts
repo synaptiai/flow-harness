@@ -35,6 +35,7 @@ export enum PrimeContainerFrameType {
   ResultFileEnd = 13,
   ResultComplete = 14,
   Settlement = 15,
+  AttestationChallenge = 16,
 }
 
 const frameTypes = new Set<number>([
@@ -53,6 +54,7 @@ const frameTypes = new Set<number>([
   PrimeContainerFrameType.ResultFileEnd,
   PrimeContainerFrameType.ResultComplete,
   PrimeContainerFrameType.Settlement,
+  PrimeContainerFrameType.AttestationChallenge,
 ]);
 
 const chunkFrameTypes = new Set<PrimeContainerFrameType>([
@@ -92,9 +94,20 @@ const transferStartSchema = z
     manifestSha256: sha256Schema,
   })
   .strict();
+const readinessChallengeSchema = z
+  .object({
+    version: z.literal(1),
+    containerId: z.string().regex(/^[a-f0-9]{64}$/),
+    trialId: z.string().regex(/^trial-[a-f0-9]{48}$/),
+    identityDigest: sha256Schema,
+    imageId: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    policyDigest: sha256Schema,
+  })
+  .strict();
 
 export type PrimeContainerManifestEntry = z.infer<typeof manifestEntrySchema>;
 export type PrimeContainerTransferStart = z.infer<typeof transferStartSchema>;
+export type PrimeContainerReadinessChallenge = z.infer<typeof readinessChallengeSchema>;
 export type PrimeContainerFrameDirection = "host-to-container" | "container-to-host";
 
 export function encodePrimeContainerFrame(
@@ -340,7 +353,14 @@ export class PrimeContainerTransferValidator {
   }
 }
 
+export function createPrimeContainerReadinessChallenge(
+  input: PrimeContainerReadinessChallenge,
+): PrimeContainerReadinessChallenge {
+  return Object.freeze(readinessChallengeSchema.parse(input));
+}
+
 type ProtocolState =
+  | "challenge"
   | "readiness"
   | "fixture-start"
   | "fixture"
@@ -355,7 +375,7 @@ export class PrimeContainerProtocolSequence {
   #driverFrames = 0;
   #fixtureFrames = 0;
   #resultFrames = 0;
-  #state: ProtocolState = "readiness";
+  #state: ProtocolState = "challenge";
 
   accept(direction: PrimeContainerFrameDirection, type: PrimeContainerFrameType): void {
     assertKnownFrameType(type);
@@ -363,6 +383,9 @@ export class PrimeContainerProtocolSequence {
     this.#recordFrame(type);
 
     switch (this.#state) {
+      case "challenge":
+        this.#acceptExact(type, PrimeContainerFrameType.AttestationChallenge, "readiness");
+        return;
       case "readiness":
         this.#acceptExact(type, PrimeContainerFrameType.Readiness, "fixture-start");
         return;
@@ -547,9 +570,11 @@ function assertFrameDirection(
     type === PrimeContainerFrameType.ResultComplete ||
     type === PrimeContainerFrameType.Settlement
       ? "container-to-host"
-      : type === PrimeContainerFrameType.Driver
-        ? direction
-        : "host-to-container";
+      : type === PrimeContainerFrameType.AttestationChallenge
+        ? "host-to-container"
+        : type === PrimeContainerFrameType.Driver
+          ? direction
+          : "host-to-container";
   if (direction !== expected) {
     throw new Error(`Prime container frame type ${String(type)} has the wrong direction`);
   }

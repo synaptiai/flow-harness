@@ -84,6 +84,7 @@ describe("attached Prime OCI operator", () => {
     expect(resultSink.abort).not.toHaveBeenCalled();
     expect(transport.closeInput).toHaveBeenCalledOnce();
     expect(decodeTypes(writes)).toEqual([
+      PrimeContainerFrameType.AttestationChallenge,
       PrimeContainerFrameType.FixtureStart,
       PrimeContainerFrameType.FixtureEntry,
       PrimeContainerFrameType.FixtureChunk,
@@ -225,7 +226,9 @@ describe("attached Prime OCI operator", () => {
     await expect(
       operator.operate(operationInput(async () => undefined, transport)),
     ).rejects.toThrow(/policy changed/i);
-    expect(transport.write).not.toHaveBeenCalled();
+    expect(
+      decodeTypes((transport.write as ReturnType<typeof vi.fn>).mock.calls.map(([bytes]) => bytes)),
+    ).toEqual([PrimeContainerFrameType.AttestationChallenge]);
     expect(resultSink.abort).toHaveBeenCalledOnce();
   });
 

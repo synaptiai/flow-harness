@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "platform": "linux/amd64",
+  "sourceDateEpoch": 1786127940,
+  "baseImages": {
+    "golang": "golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651",
+    "node": "node:22.19.0-bookworm-slim@sha256:4a4884e8a44826194dff92ba316264f392056cbe243dcc9fd3551e71cea02b90",
+    "python": "python:3.11.15-slim-bookworm@sha256:b18992999dbe963a45a8a4da40ac2b1975be1a776d939d098c647482bcad5cba"
+  },
+  "primeAgent": {
+    "version": "0.7.1",
+    "url": "https://github.com/PrimeIntellect-ai/prime-agent/releases/download/v0.7.1/prime-agent-0.7.1.tgz",
+    "sha256": "d68612c83239caafab72cc76c55ac572bfd07a059ea8fbd2a3ddbe1f2b55dcdb"
+  },
+  "locks": {
+    "nodeSha256": "9337bd288359dfb5f5722859cec2b3ac98fdf1d707337da25fa16bd02347d364",
+    "pythonSha256": "b681f2b4beb29bdef7ce4a0b7fef2cf6f24a0ab5e9974614d46bb72ea8ae9376"
+  },
+  "seccomp": {
+    "base": "moby/profiles seccomp/v0.2.1",
+    "sha256": "208652fe94e2b103095c48ffe5d9c3e8066680d4d9581eaf94943d06e216324f"
+  }
+}
