@@ -34,6 +34,18 @@ node dist/cli/main.js eval validate examples/evaluation/native-pi-comparison.eva
 node dist/cli/main.js eval run examples/evaluation/native-pi-comparison.evaluation.yaml
 ```
 
+The native OMP example compares the native Pi and native OMP profiles:
+
+```sh
+node dist/cli/main.js eval validate examples/evaluation/native-omp-comparison.evaluation.yaml
+node dist/cli/main.js eval run examples/evaluation/native-omp-comparison.evaluation.yaml
+```
+
+The OMP example requires Linux and an attested official Bun 1.3.14 standard executable for x64 or
+arm64. It also requires the two optional OMP packages at version 17.2.12. Validation checks these
+local runtime identities. A run also needs the declared provider credentials in the Flow host.
+`FLOW_BUN_EXECUTABLE` can select another host path. It cannot add a release attestation.
+
 The default store is `.flow/evaluations/<evaluation-id>/`. `--evaluations-dir <path>` selects an
 explicit store for run, inspect, and export. `eval export` refuses to overwrite an existing file.
 
@@ -58,9 +70,10 @@ A profile selects one of these built-in adapters:
 
 - `flow-workflow-v1` selects one admitted workflow or prompt candidate.
 - `pi-native-v1` selects the fixed `pi-evaluation-v1` harness configuration.
+- `omp-native-v1` selects the fixed `omp-evaluation-v1` harness configuration.
 
 The plan cannot select an executable path, package version, driver path, or protocol version.
-Flow resolves these values from its trusted native Pi registry.
+Flow resolves these values from its trusted external harness registries.
 
 Paths are portable relative paths below the plan directory. Fixtures may contain only bounded
 regular files and directories: symbolic links, special files, `.flow`, path escapes, oversized
@@ -186,21 +199,29 @@ workflows, fixtures, provider configuration, or credentials.
 The provider-neutral application port is `HarnessEvaluationAdapter`.
 
 `flow-workflow-v1` executes a compiled Flow workflow. It derives metrics from the durable run
-state. `pi-native-v1` runs the pinned Pi SDK in a separate SRT process on Linux. Flow requires the
-verified Linux PID namespace. The child receives the task, trial identity, workspace identity,
+state. `pi-native-v1` and `omp-native-v1` run in separate SRT processes on Linux. Flow requires the
+verified Linux PID namespace. Each child receives the task, trial identity, workspace identity,
 model controls, and budgets. It does not receive verifier assertions, evaluation-store paths, or
 provider credentials.
 
 The host broker makes each model request. It enforces the admitted provider, model, thinking level,
-zero retries, and cumulative token and cost limits. The child can use only `read` and `edit`.
-Flow confines both tools to the canonical trial workspace.
+zero retries, and cumulative token and cost limits. Each child can use only `read` and `edit`.
+Flow confines both tools to the canonical trial workspace. The OMP profile disables ambient
+extensions, skills, rules, MCP, memory, LSP, project context, and session persistence.
 
-The public profile identity binds the adapter contract, protocol, driver artifact, local Flow
-dependency closure, Node executable, Pi coding-agent closure, Pi AI closure, SRT closure,
-configuration, sandbox policy, Linux platform, PID namespace, and broker contract. Any change
-creates a new plan digest. A resume operation rejects that change.
+The Pi profile identity binds the Node executable and both installed Pi package closures. The OMP
+profile identity binds an attested Linux Bun executable and both installed OMP package closures.
+The OMP closure includes runtime Markdown and the package-resolution graph. Flow also observes the
+directories that can change package resolution. Both identities bind the adapter contract,
+protocol, driver closure, local Flow closure, SRT closure, configuration, policy, platform,
+containment, and broker contract. Any change creates a new plan digest. A resume operation rejects
+that change.
 
-OMP and Prime can implement the same runtime port later. A new adapter must preserve the same data,
+The OMP child receives a canonical `NODE_PATH` for the selected package graph. SRT grants read
+access only to the exact package roots in that graph. An unselected package in the same search
+container stays private.
+
+Prime Agent can implement the same runtime port later. A new adapter must preserve the same data,
 authority, process, and evidence boundaries.
 
 Tuning-evidence export accepts only `flow-workflow-v1` profiles. It rejects an evaluation that uses

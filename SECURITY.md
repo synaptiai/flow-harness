@@ -185,7 +185,7 @@ profile. These controls do not contain the host-side Pi process or a hostile sam
 do not make native isolation equivalent to a VM. Run adversarial fixtures under a dedicated OS
 identity or stronger boundary.
 
-The native Pi evaluation profile runs in a separate SRT process on Linux. Flow requires the
+The native Pi and OMP evaluation profiles run in separate SRT processes on Linux. Flow requires the
 verified PID namespace. Flow protects the plan root, evaluation state root, configured project
 `.flow` root, private workspace collections, and provider credential locations. The child receives
 no provider credential. The host broker owns provider access.
@@ -198,9 +198,21 @@ The parent and child use private pipes with signed, ordered, bounded JSONL frame
 does not enter the plan, environment, command line, workspace, or model context. The parent owns
 process and termination evidence.
 
-Admission binds the Node executable and the installed runtime-code closures for Flow, Pi, Pi AI,
-and SRT. Flow checks observed file and directory identities before each later trial. A change causes
-a full digest rebuild and rejects the admitted identity.
+Pi admission binds Node and the installed closures for Flow, Pi, Pi AI, and SRT. OMP admission binds
+an official Bun executable through a built-in release attestation. It also binds the installed
+closures for Flow, OMP, OMP AI, and SRT. The OMP closure includes runtime Markdown and the exact
+package-resolution graph. Flow observes the directories that can change resolution. Flow checks
+observed file and directory identities before each later trial. A change rebuilds the digest and
+rejects the admitted identity.
+
+The OMP child receives a trusted `NODE_PATH` that names only search containers that selected a
+bound package. Ambient `NODE_PATH` does not enter the child. SRT grants read access to each exact
+selected package root. It does not grant read access to a search container or an unselected sibling
+package. Flow rejects admission if a selected package root contains an unselected nested package.
+
+Immediately before process start, Flow compares the prepared SRT evidence with the admitted
+runtime identity. The check covers containment, backend, version, profile, and policy digest. A
+difference stops the trial before process start.
 
 SRT is not a microVM. It cannot protect against a kernel defect, an SRT defect, root, or a process
 with the same trusted account authority. Use a stronger runtime for hostile or multi-tenant tasks.

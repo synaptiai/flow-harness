@@ -5,18 +5,21 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { CommandSandbox } from "../../../../src/application/command-sandbox.js";
+import type {
+  CommandSandbox,
+  PreparedCommand,
+} from "../../../../src/application/command-sandbox.js";
 import type { ExternalHarnessRuntimeRequest } from "../../../../src/application/external-harness-adapter.js";
 import type { HarnessEvaluationRequest } from "../../../../src/application/evaluation-adapter.js";
 import type { ExternalHarnessIdentity } from "../../../../src/domain/evaluation/external-harness.js";
 import { externalHarnessIdentityDigest } from "../../../../src/domain/evaluation/external-harness.js";
-import type { NativePiHarnessDescriptor } from "../../../../src/infrastructure/pi/native-pi-harness-registry.js";
 import {
   LocalExternalHarnessRuntime,
   MAX_EXTERNAL_HARNESS_STDERR_BYTES,
   type ExternalHarnessDescriptorRegistry,
   type ExternalHarnessInferenceBroker,
 } from "../../../../src/infrastructure/process/local-external-harness-runtime.js";
+import type { ExternalHarnessDescriptor } from "../../../../src/infrastructure/process/external-harness-descriptor.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -41,33 +44,34 @@ describe("local external harness runtime", () => {
     expect(fixture.prepare).not.toHaveBeenCalled();
   });
 
-  it("rejects process-group preparation before it starts the driver", async () => {
-    const fixture = await runtimeFixture("success");
-    fixture.prepare.mockResolvedValueOnce({
-      processContainment: "process-group",
-      launch: {
-        executable: process.execPath,
-        args: [fixture.driverPath],
-        env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
-      },
-      evidence: {
-        backend: "anthropic-sandbox-runtime",
-        backendVersion: "0.0.70",
-        profile: "workspace-write-network-deny-v1",
-        policyDigest: fixture.request.identity.runtime.policyDigest,
-      },
-      release: fixture.release,
-    });
-    const runtime = new LocalExternalHarnessRuntime({
-      registry: fixture.registry,
-      sandbox: fixture.sandbox,
-      inferenceBroker: { infer: vi.fn() },
-      platform: "linux",
-    });
+  it.each(runtimeContractMutationCases())(
+    "rejects %s execution when prepared %s differs from the admitted runtime",
+    async (_, _field, identity, processContainment, evidence, expectedError) => {
+      const fixture = await runtimeFixture("success", identity);
+      fixture.prepare.mockResolvedValueOnce({
+        processContainment,
+        launch: {
+          executable: process.execPath,
+          args: [fixture.driverPath],
+          env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+        },
+        evidence,
+        release: fixture.release,
+      });
+      const beforeHelloWrite = vi.fn();
+      const runtime = new LocalExternalHarnessRuntime({
+        registry: fixture.registry,
+        sandbox: fixture.sandbox,
+        inferenceBroker: { infer: vi.fn() },
+        platform: "linux",
+        beforeHelloWrite,
+      });
 
-    await expect(runtime.execute(fixture.request)).rejects.toThrow(/PID namespace/i);
-    expect(fixture.release).toHaveBeenCalledTimes(1);
-  });
+      await expect(runtime.execute(fixture.request)).rejects.toThrow(expectedError);
+      expect(beforeHelloWrite).not.toHaveBeenCalled();
+      expect(fixture.release).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("checks the admitted artifacts after sandbox preparation and before process start", async () => {
     const fixture = await runtimeFixture("success");
@@ -386,6 +390,65 @@ describe("local external harness runtime", () => {
   });
 });
 
+type RuntimeContractMutationCase = readonly [
+  adapter: string,
+  field: string,
+  identity: ExternalHarnessIdentity,
+  processContainment: PreparedCommand["processContainment"],
+  evidence: PreparedCommand["evidence"],
+  expectedError: RegExp,
+];
+
+function runtimeContractMutationCases(): readonly RuntimeContractMutationCase[] {
+  const identities: readonly (readonly [string, ExternalHarnessIdentity])[] = [
+    ["Pi", externalIdentity()],
+    ["OMP", ompExternalIdentity()],
+  ];
+  return identities.flatMap(([adapter, identity]) => {
+    const correctEvidence: PreparedCommand["evidence"] = {
+      backend: "anthropic-sandbox-runtime",
+      backendVersion: identity.runtime.version,
+      profile: "workspace-write-network-deny-v1",
+      policyDigest: identity.runtime.policyDigest,
+    };
+    return [
+      [adapter, "containment", identity, "process-group", correctEvidence, /PID namespace/i],
+      [
+        adapter,
+        "backend",
+        identity,
+        "linux-pid-namespace",
+        { ...correctEvidence, backend: "unexpected-sandbox" },
+        /sandbox evidence.*backend/i,
+      ],
+      [
+        adapter,
+        "backend version",
+        identity,
+        "linux-pid-namespace",
+        { ...correctEvidence, backendVersion: "0.0.0" },
+        /sandbox evidence.*backend version/i,
+      ],
+      [
+        adapter,
+        "profile",
+        identity,
+        "linux-pid-namespace",
+        { ...correctEvidence, profile: "unexpected-profile" },
+        /sandbox evidence.*profile/i,
+      ],
+      [
+        adapter,
+        "policy digest",
+        identity,
+        "linux-pid-namespace",
+        { ...correctEvidence, policyDigest: "f".repeat(64) },
+        /sandbox evidence.*policy digest/i,
+      ],
+    ] satisfies readonly RuntimeContractMutationCase[];
+  });
+}
+
 async function runtimeFixture(
   mode:
     | "success"
@@ -395,6 +458,7 @@ async function runtimeFixture(
     | "descendant"
     | "stderr-exact"
     | "stderr-over",
+  identity: ExternalHarnessIdentity = externalIdentity(),
 ) {
   const root = await temporaryDirectory();
   const workspace = join(root, "workspace");
@@ -402,7 +466,6 @@ async function runtimeFixture(
   await import("node:fs/promises").then(({ mkdir }) => mkdir(workspace));
   await writeFile(join(workspace, "TASK.md"), "Create RESULT.md.\n", "utf8");
   await writeFile(driverPath, fakeDriverSource(mode), "utf8");
-  const identity = externalIdentity();
   const assertCurrent = vi.fn<() => Promise<void>>(async () => undefined);
   const descriptor = {
     identity,
@@ -413,7 +476,7 @@ async function runtimeFixture(
       runtimeSupportPaths: [root],
     },
     assertCurrent,
-  } as NativePiHarnessDescriptor & { readonly assertCurrent: () => Promise<void> };
+  } as ExternalHarnessDescriptor & { readonly assertCurrent: () => Promise<void> };
   const registry: ExternalHarnessDescriptorRegistry = {
     resolveAdmitted: async () => descriptor,
   };
@@ -530,6 +593,37 @@ function externalIdentity(): ExternalHarnessIdentity {
       package: "@earendil-works/pi-ai",
       packageVersion: "0.84.0",
       packageIntegrity: `sha512-${"B".repeat(86)}==`,
+      packageContentSha256: "5".repeat(64),
+    },
+  };
+}
+
+function ompExternalIdentity(): ExternalHarnessIdentity {
+  const pi = externalIdentity();
+  return {
+    ...pi,
+    adapter: "omp-native-v1",
+    runtime: { ...pi.runtime, policyDigest: "6".repeat(64) },
+    driver: {
+      id: "native-omp-evaluation-v1",
+      artifactSha256: "3".repeat(64),
+      dependencyClosureSha256: "3".repeat(64),
+      bun: { version: "1.3.14", executableSha256: "3".repeat(64) },
+    },
+    harness: {
+      package: "@oh-my-pi/pi-coding-agent",
+      version: "17.2.12",
+      integrity: `sha512-${"A".repeat(86)}==`,
+      packageContentSha256: "4".repeat(64),
+      dependencyClosureSha256: "4".repeat(64),
+      config: "omp-evaluation-v1",
+      configDigest: "4".repeat(64),
+    },
+    inference: {
+      id: "flow-omp-inference-v1",
+      version: 1,
+      package: "@oh-my-pi/pi-ai",
+      packageVersion: "17.2.12",
       packageContentSha256: "5".repeat(64),
     },
   };

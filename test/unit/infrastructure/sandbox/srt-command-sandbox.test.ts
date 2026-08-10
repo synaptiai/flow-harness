@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  FLOW_NODE_PATH_SANDBOX_POLICY_DIGEST,
+  FLOW_SANDBOX_POLICY_DIGEST,
   FLOW_SANDBOX_PROFILE,
   SrtCommandSandbox,
   type SrtRuntimeConfig,
@@ -147,6 +149,42 @@ describe("SrtCommandSandbox", () => {
       expect.arrayContaining(runtimeSupportPaths),
     );
     await prepared.release();
+  });
+
+  it("adds only a trusted canonical NODE_PATH to the safe environment", async () => {
+    const manager = new FakeSrtManager();
+    const sandbox = createSandbox(manager);
+    const prepared = await sandbox.prepare({
+      executable: "/usr/bin/node",
+      args: [],
+      cwd: workspace,
+      protectedPaths: [],
+      runtimeEnvironment: { NODE_PATH: "/Users/alice/runtime/node_modules" },
+    });
+
+    expect(prepared.launch.env.NODE_PATH).toBe("/Users/alice/runtime/node_modules");
+    expect(prepared.evidence.policyDigest).toBe(FLOW_NODE_PATH_SANDBOX_POLICY_DIGEST);
+    expect(prepared.evidence.policyDigest).not.toBe(FLOW_SANDBOX_POLICY_DIGEST);
+    expect(manager.initializedConfig?.filesystem.allowRead).not.toContain(
+      "/Users/alice/runtime/node_modules",
+    );
+    await prepared.release();
+  });
+
+  it("rejects an unknown trusted runtime environment name", async () => {
+    const manager = new FakeSrtManager();
+
+    await expect(
+      createSandbox(manager).prepare({
+        executable: "/usr/bin/node",
+        args: [],
+        cwd: workspace,
+        protectedPaths: [],
+        runtimeEnvironment: { PROVIDER_API_KEY: "secret" },
+      }),
+    ).rejects.toThrow(/supports only NODE_PATH/i);
+
+    expect(manager.initializeCalls).toBe(0);
   });
 
   it("advertises verified Linux PID-namespace containment", async () => {

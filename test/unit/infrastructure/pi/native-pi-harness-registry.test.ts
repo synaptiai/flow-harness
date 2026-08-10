@@ -8,8 +8,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { externalHarnessIdentityDigest } from "../../../../src/domain/evaluation/external-harness.js";
 import { FLOW_SANDBOX_POLICY_DIGEST } from "../../../../src/infrastructure/sandbox/srt-command-sandbox.js";
 import {
+  ArtifactObservations,
   NativePiHarnessRegistry,
   type NativePiHarnessRegistryOptions,
+  readTrustedPackageClosure,
 } from "../../../../src/infrastructure/pi/native-pi-harness-registry.js";
 
 const temporaryDirectories: string[] = [];
@@ -21,6 +23,12 @@ afterEach(async () => {
 });
 
 describe("native Pi harness registry", () => {
+  it("admits the default pinned Pi installation", async () => {
+    const descriptor = await new NativePiHarnessRegistry().resolve(profile());
+
+    expect(descriptor.identity.adapter).toBe("pi-native-v1");
+  }, 20_000);
+
   it("binds the adapter to its executable dependency closure", async () => {
     const fixture = await registryFixture();
     const registry = new NativePiHarnessRegistry(fixture.options);
@@ -101,6 +109,40 @@ describe("native Pi harness registry", () => {
 
     await expect(registry.resolveAdmitted(admitted)).rejects.toThrow(/identity.*changed/i);
   });
+
+  it("checks the final dependency-resolution root and does not search above it", async () => {
+    const root = await temporaryDirectory();
+    const resolutionRoot = join(root, "resolution-root");
+    const packageRoot = join(resolutionRoot, "packages", "subject");
+    const outsideDependency = join(root, "node_modules", "shared");
+    await Promise.all([
+      writePackage(packageRoot, "subject", "1.0.0", { shared: "1.0.0" }),
+      writePackage(outsideDependency, "shared", "1.0.0"),
+    ]);
+
+    await expect(
+      readTrustedPackageClosure(
+        packageRoot,
+        "subject",
+        "1.0.0",
+        "test package closure",
+        new ArtifactObservations(),
+        { bindResolutionGraph: true, resolutionRoot },
+      ),
+    ).rejects.toThrow(/required package dependency shared is not installed/i);
+
+    await writePackage(join(resolutionRoot, "node_modules", "shared"), "shared", "1.0.0");
+    await expect(
+      readTrustedPackageClosure(
+        packageRoot,
+        "subject",
+        "1.0.0",
+        "test package closure",
+        new ArtifactObservations(),
+        { bindResolutionGraph: true, resolutionRoot },
+      ),
+    ).resolves.toMatchObject({ sha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
+  });
 });
 
 async function registryFixture() {
@@ -155,9 +197,19 @@ function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-async function writePackage(root: string, name: string, version: string): Promise<void> {
+async function writePackage(
+  root: string,
+  name: string,
+  version: string,
+  dependencies: Readonly<Record<string, string>> = {},
+): Promise<void> {
+  await mkdir(root, { recursive: true });
   await Promise.all([
-    writeFile(join(root, "package.json"), `${JSON.stringify({ name, version })}\n`, "utf8"),
+    writeFile(
+      join(root, "package.json"),
+      `${JSON.stringify({ name, version, dependencies })}\n`,
+      "utf8",
+    ),
     writeFile(join(root, "index.js"), `export const name = ${JSON.stringify(name)};\n`, "utf8"),
   ]);
 }

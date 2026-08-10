@@ -21,7 +21,7 @@ import {
   unavailableEvaluationMetrics,
 } from "../../domain/evaluation/records.js";
 import { MAX_EVALUATION_INSTRUCTION_BYTES } from "../../domain/evaluation/plan.js";
-import type { NativePiHarnessDescriptor } from "../pi/native-pi-harness-registry.js";
+import type { ExternalHarnessDescriptor } from "./external-harness-descriptor.js";
 import { type ProcessTreeExitResult, waitForProcessTreeExit } from "./command-node-executor.js";
 
 const MAX_EXTERNAL_HARNESS_EVENTS = 256;
@@ -31,7 +31,7 @@ export const MAX_EXTERNAL_HARNESS_STDERR_BYTES = 64 * 1_024;
 export interface ExternalHarnessDescriptorRegistry {
   resolveAdmitted(
     identity: ExternalHarnessRuntimeRequest["identity"],
-  ): Promise<NativePiHarnessDescriptor>;
+  ): Promise<ExternalHarnessDescriptor>;
 }
 
 export interface ExternalHarnessInferenceRequest {
@@ -126,6 +126,9 @@ export class LocalExternalHarnessRuntime implements ExternalHarnessRuntime {
           projectRoot: request.isolation.projectRoot,
           protectedPaths: [...new Set([...request.isolation.protectedPaths, instructionPath])],
           runtimeSupportPaths: descriptor.launch.runtimeSupportPaths,
+          ...(descriptor.launch.environment === undefined
+            ? {}
+            : { runtimeEnvironment: descriptor.launch.environment }),
           signal: operationSignal,
         });
         let prepared: PreparedCommand;
@@ -139,17 +142,15 @@ export class LocalExternalHarnessRuntime implements ExternalHarnessRuntime {
           }
           throw error;
         }
-        if (prepared.processContainment !== "linux-pid-namespace") {
-          const containmentError = new Error(
-            "external harness runtime requires Linux PID namespace containment",
-          );
+        const runtimeContractError = preparedRuntimeContractError(request.identity, prepared);
+        if (runtimeContractError !== undefined) {
           let releaseError: unknown;
           try {
             await prepared.release();
           } catch (error) {
             releaseError = error;
           }
-          throw combinedError(containmentError, releaseError);
+          throw combinedError(runtimeContractError, releaseError);
         }
 
         let result: HarnessEvaluationResult | undefined;
@@ -222,7 +223,7 @@ export class LocalExternalHarnessRuntime implements ExternalHarnessRuntime {
 
   async #runPrepared(
     request: ExternalHarnessRuntimeRequest,
-    descriptor: NativePiHarnessDescriptor,
+    descriptor: ExternalHarnessDescriptor,
     instructionText: string,
     prepared: PreparedCommand,
     deadline: ExternalHarnessExecutionDeadline,
@@ -380,7 +381,7 @@ export class LocalExternalHarnessRuntime implements ExternalHarnessRuntime {
     }
     protocolError ??= stderrError;
     const exit = await exitPromise;
-    const runtime = processEvidence(prepared, exit, deadline.expired);
+    const runtime = processEvidence(request.identity.adapter, prepared, exit, deadline.expired);
     if (exit.terminationIncomplete) {
       return failureResult(
         "crashed",
@@ -435,13 +436,41 @@ export class LocalExternalHarnessRuntime implements ExternalHarnessRuntime {
   }
 }
 
+function preparedRuntimeContractError(
+  identity: ExternalHarnessRuntimeRequest["identity"],
+  prepared: PreparedCommand,
+): Error | undefined {
+  const mismatches: string[] = [];
+  if (prepared.processContainment !== identity.runtime.containment) {
+    mismatches.push("PID namespace containment");
+  }
+  if (prepared.evidence.backend !== "anthropic-sandbox-runtime") {
+    mismatches.push("backend");
+  }
+  if (prepared.evidence.backendVersion !== identity.runtime.version) {
+    mismatches.push("backend version");
+  }
+  if (prepared.evidence.profile !== "workspace-write-network-deny-v1") {
+    mismatches.push("profile");
+  }
+  if (prepared.evidence.policyDigest !== identity.runtime.policyDigest) {
+    mismatches.push("policy digest");
+  }
+  return mismatches.length === 0
+    ? undefined
+    : new Error(
+        `external harness sandbox evidence does not match the admitted runtime policy: ${mismatches.join(", ")}`,
+      );
+}
+
 function processEvidence(
+  adapter: ExternalHarnessRuntimeRequest["identity"]["adapter"],
   prepared: PreparedCommand,
   exit: ProcessTreeExitResult,
   deadlineExpired: boolean,
 ): NonNullable<ReturnType<typeof parseEvaluationHarnessOutcome>["runtime"]> {
   return Object.freeze({
-    adapter: "pi-native-v1",
+    adapter,
     containment: prepared.processContainment,
     exitCode: exit.exitCode,
     signal: exit.signal,

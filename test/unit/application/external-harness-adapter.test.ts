@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  ExternalHarnessEvaluationAdapter,
   NativePiEvaluationAdapter,
   type ExternalHarnessRuntime,
 } from "../../../src/application/external-harness-adapter.js";
@@ -36,6 +37,33 @@ describe("external harness evaluation adapter", () => {
         isolation: { projectRoot: "/project", protectedPaths: ["/project", "/state"] },
       },
       controller.signal,
+    );
+  });
+
+  it("runs an admitted OMP identity through the same application boundary", async () => {
+    const identity = ompIdentity();
+    const request = evaluationRequest();
+    const execute = vi.fn<ExternalHarnessRuntime["execute"]>(async () => ({
+      harness: { outcome: "completed", runId: "omp-session", reason: null },
+      metrics: unavailableEvaluationMetrics(),
+    }));
+    const adapter = new ExternalHarnessEvaluationAdapter(
+      { id: "candidate", adapter: "omp-native-v1", harness: identity },
+      { execute },
+      { isolation: { projectRoot: "/project", protectedPaths: ["/project"] } },
+    );
+
+    await expect(adapter.run(request)).resolves.toMatchObject({
+      harness: { outcome: "completed", runId: "omp-session" },
+    });
+    expect(adapter.kind).toBe("omp-native-v1");
+    expect(execute).toHaveBeenCalledWith(
+      {
+        identity,
+        evaluation: request,
+        isolation: { projectRoot: "/project", protectedPaths: ["/project"] },
+      },
+      undefined,
     );
   });
 
@@ -82,7 +110,10 @@ describe("external harness evaluation adapter", () => {
   });
 });
 
-function externalIdentity(): ExternalHarnessIdentity {
+function externalIdentity(): Extract<
+  ExternalHarnessIdentity,
+  { readonly adapter: "pi-native-v1" }
+> {
   return {
     version: 1,
     adapter: "pi-native-v1",
@@ -121,6 +152,51 @@ function externalIdentity(): ExternalHarnessIdentity {
       package: "@earendil-works/pi-ai",
       packageVersion: "0.84.0",
       packageIntegrity: `sha512-${"B".repeat(86)}==`,
+      packageContentSha256: "e".repeat(64),
+    },
+  };
+}
+
+function ompIdentity(): Extract<ExternalHarnessIdentity, { readonly adapter: "omp-native-v1" }> {
+  return {
+    version: 1,
+    adapter: "omp-native-v1",
+    adapterContractVersion: "1.0.0",
+    protocol: {
+      id: "flow-external-harness-jsonl-v1",
+      maxFrameBytes: 1_048_576,
+      digest: "a".repeat(64),
+    },
+    runtime: {
+      id: "srt-process-v1",
+      package: "@anthropic-ai/sandbox-runtime",
+      version: "0.0.70",
+      packageContentSha256: "b".repeat(64),
+      policyDigest: "b".repeat(64),
+      platform: "linux",
+      containment: "linux-pid-namespace",
+    },
+    driver: {
+      id: "native-omp-evaluation-v1",
+      artifactSha256: "c".repeat(64),
+      dependencyClosureSha256: "c".repeat(64),
+      bun: { version: "1.3.14", executableSha256: "c".repeat(64) },
+    },
+    harness: {
+      package: "@oh-my-pi/pi-coding-agent",
+      version: "17.2.12",
+      integrity:
+        "sha512-+q+W4fyNQQ7xAKiN0mmOisWDDtKO0R/ZctTSsKqR4ulN3K1zfQ9HwiTxtg7HJHn5fwCy+X3BmUG72FatNUN8IA==",
+      packageContentSha256: "d".repeat(64),
+      dependencyClosureSha256: "d".repeat(64),
+      config: "omp-evaluation-v1",
+      configDigest: "d".repeat(64),
+    },
+    inference: {
+      id: "flow-omp-inference-v1",
+      version: 1,
+      package: "@oh-my-pi/pi-ai",
+      packageVersion: "17.2.12",
       packageContentSha256: "e".repeat(64),
     },
   };

@@ -26,6 +26,8 @@ const SAFE_ENVIRONMENT_NAMES = Object.freeze([
   "CI",
   "GITHUB_ACTIONS",
 ]);
+const TRUSTED_RUNTIME_ENVIRONMENT_NAMES = Object.freeze(["NODE_PATH"] as const);
+const MAX_TRUSTED_RUNTIME_ENVIRONMENT_BYTES = 128 * 1_024;
 
 const FLOW_WORKSPACE_COLLECTION_SUFFIX = ".flow-workspaces";
 const MAX_COLLECTION_DISCOVERY_ENTRIES = 200_000;
@@ -54,6 +56,17 @@ const SEMANTIC_POLICY = Object.freeze({
 
 export const FLOW_SANDBOX_POLICY_DIGEST = createHash("sha256")
   .update(JSON.stringify(SEMANTIC_POLICY))
+  .digest("hex");
+export const FLOW_NODE_PATH_SANDBOX_POLICY_DIGEST = createHash("sha256")
+  .update(
+    JSON.stringify({
+      ...SEMANTIC_POLICY,
+      environment: {
+        ...SEMANTIC_POLICY.environment,
+        trustedRuntimeNames: TRUSTED_RUNTIME_ENVIRONMENT_NAMES,
+      },
+    }),
+  )
   .digest("hex");
 
 interface ManagerRuntimeState {
@@ -219,6 +232,14 @@ export class SrtCommandSandbox implements CommandSandbox {
           [...new Set(request.runtimeSupportPaths ?? [])].map((path) => this.#canonicalize(path)),
         ),
       );
+      const canonicalRuntimeEnvironment = await canonicalizeRuntimeEnvironment(
+        request.runtimeEnvironment,
+        this.#canonicalize,
+      );
+      const policyDigest =
+        Object.keys(canonicalRuntimeEnvironment).length === 0
+          ? FLOW_SANDBOX_POLICY_DIGEST
+          : FLOW_NODE_PATH_SANDBOX_POLICY_DIGEST;
       if (this.#platform === "linux" && canonicalProjectRoot !== undefined) {
         assertLinuxProjectBoundary(canonicalWorkspace, canonicalProjectRoot);
       }
@@ -250,6 +271,7 @@ export class SrtCommandSandbox implements CommandSandbox {
         canonicalReadProtectedPaths,
         canonicalWriteProtectedPaths,
         canonicalRuntimeSupportPaths,
+        canonicalRuntimeEnvironment,
         this.#homeDirectory,
         canonicalSeccompApplyPath,
         trustedBwrapPath,
@@ -275,9 +297,13 @@ export class SrtCommandSandbox implements CommandSandbox {
       const launch = Object.freeze({
         executable: descriptor.argv[0] as string,
         args: Object.freeze(descriptor.argv.slice(1)),
-        env: buildSafeEnvironment(this.#environment, privateTemporaryDirectory),
+        env: buildSafeEnvironment(
+          this.#environment,
+          privateTemporaryDirectory,
+          canonicalRuntimeEnvironment,
+        ),
       });
-      const evidence = sandboxEvidence(this.#backendVersion);
+      const evidence = sandboxEvidence(this.#backendVersion, policyDigest);
       let released = false;
       return Object.freeze({
         processContainment,
@@ -489,6 +515,7 @@ function sandboxSessionKey(
   readProtectedPaths: readonly string[],
   writeProtectedPaths: readonly string[],
   runtimeSupportPaths: readonly string[],
+  runtimeEnvironment: Readonly<Record<string, string>>,
   homeDirectory: string,
   seccompApplyPath: string | undefined,
   trustedBwrapPath: string | undefined,
@@ -501,6 +528,7 @@ function sandboxSessionKey(
         readProtectedPaths,
         writeProtectedPaths,
         runtimeSupportPaths,
+        runtimeEnvironment,
         homeDirectory,
         seccompApplyPath: seccompApplyPath ?? null,
         trustedBwrapPath: trustedBwrapPath ?? null,
@@ -677,6 +705,7 @@ function isAtOrWithin(path: string, directory: string): boolean {
 function buildSafeEnvironment(
   source: NodeJS.ProcessEnv,
   privateTemporaryDirectory: string,
+  runtimeEnvironment: Readonly<Record<string, string>>,
 ): Readonly<Record<string, string>> {
   const environment: Record<string, string> = {};
   for (const name of SAFE_ENVIRONMENT_NAMES) {
@@ -688,15 +717,45 @@ function buildSafeEnvironment(
   environment.TMPDIR = privateTemporaryDirectory;
   environment.TMP = privateTemporaryDirectory;
   environment.TEMP = privateTemporaryDirectory;
+  Object.assign(environment, runtimeEnvironment);
   return Object.freeze(environment);
 }
 
-function sandboxEvidence(backendVersion: string): SandboxEvidence {
+async function canonicalizeRuntimeEnvironment(
+  value: Readonly<Record<string, string>> | undefined,
+  canonicalize: (path: string) => Promise<string>,
+): Promise<Readonly<Record<string, string>>> {
+  if (value === undefined) {
+    return Object.freeze({});
+  }
+  const names = Object.keys(value);
+  if (names.length !== 1 || names[0] !== "NODE_PATH") {
+    throw new Error("command sandbox runtime environment supports only NODE_PATH");
+  }
+  const nodePath = value.NODE_PATH;
+  if (
+    typeof nodePath !== "string" ||
+    nodePath === "" ||
+    Buffer.byteLength(nodePath, "utf8") > MAX_TRUSTED_RUNTIME_ENVIRONMENT_BYTES
+  ) {
+    throw new Error("command sandbox NODE_PATH is empty or exceeds its byte limit");
+  }
+  const entries = nodePath.split(delimiter);
+  if (entries.some((entry) => entry === "" || !isAbsolute(entry))) {
+    throw new Error("command sandbox NODE_PATH entries must be absolute paths");
+  }
+  const canonicalEntries = await Promise.all(
+    [...new Set(entries)].map((entry) => canonicalize(entry)),
+  );
+  return Object.freeze({ NODE_PATH: canonicalEntries.join(delimiter) });
+}
+
+function sandboxEvidence(backendVersion: string, policyDigest: string): SandboxEvidence {
   return Object.freeze({
     backend: "anthropic-sandbox-runtime",
     backendVersion,
     profile: FLOW_SANDBOX_PROFILE,
-    policyDigest: FLOW_SANDBOX_POLICY_DIGEST,
+    policyDigest,
   });
 }
 

@@ -210,15 +210,22 @@ durable adapter starts, cancellation, and process-tree termination. They also co
 model token and cost limits. Registry tests change an installed dependency after admission. Runtime
 tests cover a blocked inference call, a total standard-error overflow, and Linux-only containment.
 
+Native OMP tests cover strict profile identity, Bun release attestation, execute permission,
+installed dependency drift, and dependency-resolution drift. They also cover the signed protocol,
+the host inference bridge, tool confinement, and honest metrics. Credential-free tests run the real
+OMP session through a fake host broker. Linux runtime tests deny OMP access to project state,
+evaluation state, and sibling workspaces.
+
 Credential-free integration tests run the real Pi SDK through a fake host broker. Native runtime
 tests run the compiled driver through SRT. They deny access to project state, evaluation state,
 sibling workspaces, and process control input.
 
 The external CLI test runs a paired Flow and native Pi plan. It then inspects and exports the
-evidence without a live runtime. A separate import test blocks the production Pi runtime module and
-proves that offline inspection does not load it. The CLI test also protects the configured project
-`.flow` directory when the plan is in a different directory. It rejects prompt-tuning export for
-the external profile.
+evidence without a live runtime. A separate import test stores Pi and OMP evidence. It blocks the
+production runtime and both OMP packages. It proves that offline inspection and export do not load
+them. The CLI test also protects the
+configured project `.flow` directory when the plan is in a different directory. It rejects
+prompt-tuning export for the external profile.
 
 Adaptation tests cover tuning-only projection, packet digests, omitted private fields, contradictory
 records, incomplete pairs, export limits, bounded errors, and impossible schedules. Candidate tests

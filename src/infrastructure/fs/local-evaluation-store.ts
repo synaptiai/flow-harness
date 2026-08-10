@@ -165,14 +165,15 @@ const flowProfileSchema = z
   })
   .strict();
 
-const externalProfileSchema = z
+const piExternalProfileSchema = z
   .object({
     id: identifierSchema,
     adapter: z.literal("pi-native-v1"),
-    harness: z.custom<ReturnType<typeof parseExternalHarnessIdentity>>((value) => {
+    harness: z.custom<
+      Extract<ReturnType<typeof parseExternalHarnessIdentity>, { adapter: "pi-native-v1" }>
+    >((value) => {
       try {
-        parseExternalHarnessIdentity(value);
-        return true;
+        return parseExternalHarnessIdentity(value).adapter === "pi-native-v1";
       } catch {
         return false;
       }
@@ -180,7 +181,27 @@ const externalProfileSchema = z
   })
   .strict();
 
-const profileSchema = z.discriminatedUnion("adapter", [flowProfileSchema, externalProfileSchema]);
+const ompExternalProfileSchema = z
+  .object({
+    id: identifierSchema,
+    adapter: z.literal("omp-native-v1"),
+    harness: z.custom<
+      Extract<ReturnType<typeof parseExternalHarnessIdentity>, { adapter: "omp-native-v1" }>
+    >((value) => {
+      try {
+        return parseExternalHarnessIdentity(value).adapter === "omp-native-v1";
+      } catch {
+        return false;
+      }
+    }, "external harness identity is invalid"),
+  })
+  .strict();
+
+const profileSchema = z.discriminatedUnion("adapter", [
+  flowProfileSchema,
+  piExternalProfileSchema,
+  ompExternalProfileSchema,
+]);
 
 const scheduleItemSchema = z
   .object({
@@ -281,6 +302,15 @@ const publicHeaderSchema = z
     const projectionProfiles = flowProfiles.filter(
       (profile) => profile.workflow.sourceKind === "prompt-candidate-projection",
     );
+    for (const [index, profile] of header.profiles.entries()) {
+      if (profile.adapter !== "flow-workflow-v1" && profile.harness.adapter !== profile.adapter) {
+        context.addIssue({
+          code: "custom",
+          path: ["profiles", index, "harness", "adapter"],
+          message: "external harness identity must match the profile adapter",
+        });
+      }
+    }
     if (candidateProfiles.length > 0 || projectionProfiles.length > 0) {
       if (
         candidateProfiles.length !== 1 ||
@@ -404,27 +434,31 @@ export function createPublicEvaluationHeader(
         },
       })),
     },
-    profiles: admitted.profiles.map((profile) =>
-      profile.adapter === "pi-native-v1"
-        ? { id: profile.id, adapter: profile.adapter, harness: profile.harness }
-        : {
-            id: profile.id,
-            adapter: profile.adapter,
-            workflow: {
-              provenance: profile.workflow.provenance,
-              sourceSha256: profile.workflow.sourceSha256,
-              workflowDigest: profile.workflow.workflowDigest,
-              ...(profile.workflow.sourceKind === "prompt-candidate-projection"
-                ? { sourceKind: profile.workflow.sourceKind }
-                : {}),
-            },
-            ...(profile.candidate === undefined
-              ? {}
-              : {
-                  candidate: projectEvaluationCandidateIdentity(profile.candidate),
-                }),
-          },
-    ),
+    profiles: admitted.profiles.map((profile) => {
+      if (profile.adapter === "pi-native-v1") {
+        return { id: profile.id, adapter: profile.adapter, harness: profile.harness };
+      }
+      if (profile.adapter === "omp-native-v1") {
+        return { id: profile.id, adapter: profile.adapter, harness: profile.harness };
+      }
+      return {
+        id: profile.id,
+        adapter: profile.adapter,
+        workflow: {
+          provenance: profile.workflow.provenance,
+          sourceSha256: profile.workflow.sourceSha256,
+          workflowDigest: profile.workflow.workflowDigest,
+          ...(profile.workflow.sourceKind === "prompt-candidate-projection"
+            ? { sourceKind: profile.workflow.sourceKind }
+            : {}),
+        },
+        ...(profile.candidate === undefined
+          ? {}
+          : {
+              candidate: projectEvaluationCandidateIdentity(profile.candidate),
+            }),
+      };
+    }),
     controls: admitted.controls,
     seeds: admitted.seeds,
     order: admitted.order,
@@ -439,6 +473,9 @@ export function evaluationReportInput(header: PublicEvaluationHeader): Evaluatio
     planDigest: header.planDigest,
     schedule: header.schedule,
     profileIds: Object.freeze(profileIds),
+    profileAdapters: Object.freeze(
+      Object.fromEntries(header.profiles.map((profile) => [profile.id, profile.adapter])),
+    ),
     tasks: Object.freeze(
       header.suite.tasks.map((task) =>
         Object.freeze({
@@ -1201,23 +1238,27 @@ function headerIdentity(header: PublicEvaluationHeader): EvaluationPlanIdentity 
     apiVersion: header.apiVersion,
     id: header.planId,
     suite: header.suite,
-    profiles: header.profiles.map((profile) =>
-      profile.adapter === "pi-native-v1"
-        ? { id: profile.id, adapter: profile.adapter, harness: profile.harness }
-        : {
-            id: profile.id,
-            adapter: profile.adapter,
-            workflow: {
-              provenance: profile.workflow.provenance,
-              sourceSha256: profile.workflow.sourceSha256,
-              workflowDigest: profile.workflow.workflowDigest,
-              ...(profile.workflow.sourceKind === undefined
-                ? {}
-                : { sourceKind: profile.workflow.sourceKind }),
-            },
-            ...(profile.candidate === undefined ? {} : { candidate: profile.candidate }),
-          },
-    ),
+    profiles: header.profiles.map((profile) => {
+      if (profile.adapter === "pi-native-v1") {
+        return { id: profile.id, adapter: profile.adapter, harness: profile.harness };
+      }
+      if (profile.adapter === "omp-native-v1") {
+        return { id: profile.id, adapter: profile.adapter, harness: profile.harness };
+      }
+      return {
+        id: profile.id,
+        adapter: profile.adapter,
+        workflow: {
+          provenance: profile.workflow.provenance,
+          sourceSha256: profile.workflow.sourceSha256,
+          workflowDigest: profile.workflow.workflowDigest,
+          ...(profile.workflow.sourceKind === undefined
+            ? {}
+            : { sourceKind: profile.workflow.sourceKind }),
+        },
+        ...(profile.candidate === undefined ? {} : { candidate: profile.candidate }),
+      };
+    }),
     controls: header.controls,
     seeds: header.seeds,
     order: header.order,

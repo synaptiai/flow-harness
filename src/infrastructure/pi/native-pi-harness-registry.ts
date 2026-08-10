@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { type BigIntStats, constants, type Dirent } from "node:fs";
 import { type FileHandle, lstat, open, opendir, realpath } from "node:fs/promises";
-import { dirname, extname, join, parse, relative, resolve, sep } from "node:path";
+import { dirname, extname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -11,9 +11,13 @@ import {
 } from "../../domain/evaluation/external-harness.js";
 import type { EvaluationProfileSource } from "../../domain/evaluation/plan.js";
 import { FLOW_SANDBOX_POLICY_DIGEST } from "../sandbox/srt-command-sandbox.js";
+import type {
+  ExternalHarnessDescriptor,
+  ExternalHarnessLaunch,
+} from "../process/external-harness-descriptor.js";
 
 const MAX_TRUSTED_ARTIFACT_BYTES = 4 * 1_048_576;
-const MAX_NODE_EXECUTABLE_BYTES = 256 * 1_048_576;
+export const MAX_EXTERNAL_HARNESS_EXECUTABLE_BYTES = 256 * 1_048_576;
 const MAX_RUNTIME_TREE_BYTES = 512 * 1_048_576;
 const MAX_RUNTIME_TREE_ENTRIES = 50_000;
 const MAX_PACKAGE_CLOSURE_PACKAGES = 1_024;
@@ -42,19 +46,10 @@ export const NATIVE_PI_EVALUATION_CONFIG = Object.freeze({
 });
 
 type NativePiProfileSource = Extract<EvaluationProfileSource, { readonly adapter: "pi-native-v1" }>;
+type NativePiIdentity = Extract<ExternalHarnessIdentity, { readonly adapter: "pi-native-v1" }>;
 
-export interface NativePiHarnessLaunch {
-  readonly executable: string;
-  readonly args: readonly [string];
-  readonly runtimeSupportPaths: readonly string[];
-}
-
-export interface NativePiHarnessDescriptor {
-  readonly identity: ExternalHarnessIdentity;
-  readonly identityDigest: string;
-  readonly launch: NativePiHarnessLaunch;
-  assertCurrent(): Promise<void>;
-}
+export type NativePiHarnessLaunch = ExternalHarnessLaunch;
+export type NativePiHarnessDescriptor = ExternalHarnessDescriptor;
 
 export interface NativePiHarnessRegistryOptions {
   readonly driverPath?: string;
@@ -111,8 +106,12 @@ export class NativePiHarnessRegistry {
     return this.#currentDescriptor();
   }
 
-  async resolveIdentity(profile: NativePiProfileSource): Promise<ExternalHarnessIdentity> {
-    return (await this.resolve(profile)).identity;
+  async resolveIdentity(profile: NativePiProfileSource): Promise<NativePiIdentity> {
+    const identity = (await this.resolve(profile)).identity;
+    if (identity.adapter !== "pi-native-v1") {
+      throw new Error("native Pi registry produced the wrong adapter identity");
+    }
+    return identity;
   }
 
   async resolveAdmitted(identity: ExternalHarnessIdentity): Promise<NativePiHarnessDescriptor> {
@@ -177,7 +176,7 @@ export class NativePiHarnessRegistry {
         canonicalNodeExecutable,
         "Node executable",
         observations,
-        MAX_NODE_EXECUTABLE_BYTES,
+        MAX_EXTERNAL_HARNESS_EXECUTABLE_BYTES,
       ),
     ]);
     const identity = parseExternalHarnessIdentity({
@@ -248,14 +247,21 @@ interface TrustedArtifact {
   readonly sha256: string;
 }
 
+interface TrustedPackageClosure extends TrustedArtifact {
+  readonly moduleSearchPaths: readonly string[];
+  readonly runtimeSupportPaths: readonly string[];
+}
+
 interface PackageManifest {
   readonly name: string;
   readonly version: string;
   readonly dependencies: Readonly<Record<string, string>>;
   readonly optionalDependencies: Readonly<Record<string, string>>;
+  readonly peerDependencies: Readonly<Record<string, string>>;
+  readonly peerDependenciesMeta: Readonly<Record<string, { readonly optional: boolean }>>;
 }
 
-async function readTrustedArtifact(
+export async function readTrustedArtifact(
   path: string,
   label: string,
   observations: ArtifactObservations,
@@ -342,69 +348,303 @@ async function readTrustedText(
   }
 }
 
-async function readTrustedPackageClosure(
+export async function readTrustedPackageClosure(
   root: string,
   expectedName: string,
   expectedVersion: string,
   label: string,
   observations: ArtifactObservations,
-): Promise<TrustedArtifact> {
+  options: {
+    readonly bindResolutionGraph?: boolean;
+    readonly includeMarkdown?: boolean;
+    readonly includePeerDependencies?: boolean;
+    readonly rejectUnselectedNestedPackages?: boolean;
+    readonly resolutionRoot?: string;
+  } = {},
+): Promise<TrustedPackageClosure> {
   const packages = new Map<
     string,
-    { readonly name: string; readonly version: string; readonly sha256: string }
+    {
+      readonly nodeId: string;
+      readonly name: string;
+      readonly version: string;
+      readonly sha256: string;
+    }
   >();
+  const edges: Array<{
+    readonly from: string;
+    readonly dependency: string;
+    readonly kind: "required" | "optional" | "peer" | "optional-peer";
+    readonly to: string;
+  }> = [];
+  const moduleSearchPaths = new Set<string>();
+  const runtimeSupportPaths = new Set<string>();
+  const closureRoot = await realpath(root);
+  const resolutionRoot =
+    options.resolutionRoot === undefined
+      ? parse(closureRoot).root
+      : await realpath(options.resolutionRoot);
+  const pathFromResolutionRoot = relative(resolutionRoot, closureRoot);
+  if (
+    pathFromResolutionRoot === ".." ||
+    pathFromResolutionRoot.startsWith(`..${sep}`) ||
+    isAbsolute(pathFromResolutionRoot)
+  ) {
+    throw new Error(`${label} is outside its dependency-resolution root`);
+  }
+  const containingModuleRoot = containingNodeModulesRoot(closureRoot);
+  if (containingModuleRoot !== undefined) {
+    moduleSearchPaths.add(await realpath(containingModuleRoot));
+  }
 
   async function visit(packageRootPath: string, optional: boolean): Promise<void> {
-    let canonicalRoot: string;
+    let canonicalPackageRoot: string;
     try {
-      canonicalRoot = await realpath(packageRootPath);
+      canonicalPackageRoot = await realpath(packageRootPath);
     } catch (error) {
       if (optional) {
         return;
       }
       throw new Error(`${label} contains a missing dependency`, { cause: error });
     }
-    if (packages.has(canonicalRoot)) {
+    if (packages.has(canonicalPackageRoot)) {
       return;
     }
     if (packages.size >= MAX_PACKAGE_CLOSURE_PACKAGES) {
       throw new Error(`${label} exceeds ${MAX_PACKAGE_CLOSURE_PACKAGES} packages`);
     }
+    runtimeSupportPaths.add(canonicalPackageRoot);
     await observations.add(packageRootPath);
-    const manifest = await readPackageManifest(canonicalRoot, label, observations);
-    const tree = await readTrustedRuntimeTree(canonicalRoot, label, observations, true);
-    packages.set(canonicalRoot, {
+    const manifest = await readPackageManifest(canonicalPackageRoot, label, observations);
+    const tree = await readTrustedRuntimeTree(
+      canonicalPackageRoot,
+      label,
+      observations,
+      true,
+      options.includeMarkdown === true,
+    );
+    const nodeId = packageNodeId(closureRoot, canonicalPackageRoot);
+    packages.set(canonicalPackageRoot, {
+      nodeId,
       name: manifest.name,
       version: manifest.version,
       sha256: tree.sha256,
     });
     for (const dependency of Object.keys(manifest.dependencies).sort()) {
-      const dependencyRoot = await resolveDependencyRoot(canonicalRoot, dependency, false);
+      const dependencyRoot = await resolveDependencyRoot(
+        canonicalPackageRoot,
+        dependency,
+        false,
+        observations,
+        resolutionRoot,
+        moduleSearchPaths,
+      );
       if (dependencyRoot === null) {
         throw new Error(`required package dependency ${dependency} is not installed`);
       }
+      const canonicalDependencyRoot = await realpath(dependencyRoot);
+      edges.push({
+        from: nodeId,
+        dependency,
+        kind: "required",
+        to: packageNodeId(closureRoot, canonicalDependencyRoot),
+      });
       await visit(dependencyRoot, false);
     }
     for (const dependency of Object.keys(manifest.optionalDependencies).sort()) {
-      const dependencyRoot = await resolveDependencyRoot(canonicalRoot, dependency, true);
+      const dependencyRoot = await resolveDependencyRoot(
+        canonicalPackageRoot,
+        dependency,
+        true,
+        observations,
+        resolutionRoot,
+        moduleSearchPaths,
+      );
       if (dependencyRoot !== null) {
+        const canonicalDependencyRoot = await realpath(dependencyRoot);
+        edges.push({
+          from: nodeId,
+          dependency,
+          kind: "optional",
+          to: packageNodeId(closureRoot, canonicalDependencyRoot),
+        });
         await visit(dependencyRoot, true);
+      }
+    }
+    if (options.includePeerDependencies === true) {
+      for (const dependency of Object.keys(manifest.peerDependencies).sort()) {
+        const optional = manifest.peerDependenciesMeta[dependency]?.optional === true;
+        const dependencyRoot = await resolveDependencyRoot(
+          canonicalPackageRoot,
+          dependency,
+          optional,
+          observations,
+          resolutionRoot,
+          moduleSearchPaths,
+        );
+        if (dependencyRoot !== null) {
+          const canonicalDependencyRoot = await realpath(dependencyRoot);
+          edges.push({
+            from: nodeId,
+            dependency,
+            kind: optional ? "optional-peer" : "peer",
+            to: packageNodeId(closureRoot, canonicalDependencyRoot),
+          });
+          await visit(dependencyRoot, optional);
+        }
       }
     }
   }
 
-  const canonicalRoot = await realpath(root);
-  await visit(canonicalRoot, false);
-  const rootManifest = await readPackageManifest(canonicalRoot, label, observations);
+  await visit(closureRoot, false);
+  if (options.rejectUnselectedNestedPackages === true) {
+    await assertNoUnselectedNestedPackages(packages, label, observations);
+  }
+  const rootManifest = await readPackageManifest(closureRoot, label, observations);
   if (rootManifest.name !== expectedName || rootManifest.version !== expectedVersion) {
     throw new Error(`${label} does not match ${expectedName}@${expectedVersion}`);
   }
-  const records = [...packages.values()].sort((left, right) =>
-    `${left.name}@${left.version}:${left.sha256}`.localeCompare(
-      `${right.name}@${right.version}:${right.sha256}`,
-    ),
-  );
-  return Object.freeze({ path: canonicalRoot, sha256: sha256(JSON.stringify(records)) });
+  const records = options.bindResolutionGraph
+    ? {
+        packages: [...packages.values()].sort((left, right) =>
+          left.nodeId.localeCompare(right.nodeId),
+        ),
+        edges: edges.sort((left, right) =>
+          `${left.from}:${left.kind}:${left.dependency}:${left.to}`.localeCompare(
+            `${right.from}:${right.kind}:${right.dependency}:${right.to}`,
+          ),
+        ),
+      }
+    : [...packages.values()]
+        .map(({ name, version, sha256: digest }) => ({ name, version, sha256: digest }))
+        .sort((left, right) =>
+          `${left.name}@${left.version}:${left.sha256}`.localeCompare(
+            `${right.name}@${right.version}:${right.sha256}`,
+          ),
+        );
+  return Object.freeze({
+    path: closureRoot,
+    sha256: sha256(JSON.stringify(records)),
+    moduleSearchPaths: Object.freeze([...moduleSearchPaths]),
+    runtimeSupportPaths: Object.freeze([...runtimeSupportPaths].sort()),
+  });
+}
+
+async function assertNoUnselectedNestedPackages(
+  packages: ReadonlyMap<string, unknown>,
+  label: string,
+  observations: ArtifactObservations,
+): Promise<void> {
+  let inspectedEntries = 0;
+  for (const packagePath of packages.keys()) {
+    await scanDirectory(packagePath);
+  }
+
+  async function scanDirectory(directory: string): Promise<void> {
+    const before = await lstat(directory, { bigint: true });
+    if (!before.isDirectory()) {
+      throw new Error(`${label} contains an invalid package directory`);
+    }
+    observations.addObserved(directory, before);
+    const handle = await opendir(directory);
+    const children: Dirent<string>[] = [];
+    for await (const child of handle) {
+      children.push(child);
+    }
+    for (const child of children.sort((left, right) => left.name.localeCompare(right.name))) {
+      inspectedEntries += 1;
+      if (inspectedEntries > MAX_RUNTIME_OBSERVATIONS) {
+        throw new Error(`${label} exceeds ${MAX_RUNTIME_OBSERVATIONS} nested-layout entries`);
+      }
+      if (!child.isDirectory()) {
+        continue;
+      }
+      const childPath = join(directory, child.name);
+      if (child.name === "node_modules") {
+        await inspectPackageContainer(childPath);
+      } else {
+        await scanDirectory(childPath);
+      }
+    }
+    const after = await lstat(directory, { bigint: true });
+    if (!sameBigintFileIdentity(before, after)) {
+      throw new Error(`${label} package directory changed while Flow read it`);
+    }
+  }
+
+  async function inspectPackageContainer(container: string): Promise<void> {
+    const before = await lstat(container, { bigint: true });
+    if (!before.isDirectory()) {
+      throw new Error(`${label} contains an invalid nested package container`);
+    }
+    observations.addObserved(container, before);
+    const handle = await opendir(container);
+    const children: Dirent<string>[] = [];
+    for await (const child of handle) {
+      children.push(child);
+    }
+    for (const child of children.sort((left, right) => left.name.localeCompare(right.name))) {
+      inspectedEntries += 1;
+      if (inspectedEntries > MAX_RUNTIME_OBSERVATIONS) {
+        throw new Error(`${label} exceeds ${MAX_RUNTIME_OBSERVATIONS} nested-layout entries`);
+      }
+      const childPath = join(container, child.name);
+      if (child.name.startsWith("@")) {
+        if (!child.isDirectory()) {
+          throw new Error(`${label} contains an invalid nested package scope`);
+        }
+        await observations.add(childPath);
+        const scopeHandle = await opendir(childPath);
+        const scopeChildren: Dirent<string>[] = [];
+        for await (const scopeChild of scopeHandle) {
+          scopeChildren.push(scopeChild);
+        }
+        for (const scopeChild of scopeChildren.sort((left, right) =>
+          left.name.localeCompare(right.name),
+        )) {
+          inspectedEntries += 1;
+          if (inspectedEntries > MAX_RUNTIME_OBSERVATIONS) {
+            throw new Error(`${label} exceeds ${MAX_RUNTIME_OBSERVATIONS} nested-layout entries`);
+          }
+          await assertSelectedNestedPackage(
+            join(childPath, scopeChild.name),
+            packages,
+            label,
+            observations,
+          );
+        }
+        continue;
+      }
+      await assertSelectedNestedPackage(childPath, packages, label, observations);
+    }
+    const after = await lstat(container, { bigint: true });
+    if (!sameBigintFileIdentity(before, after)) {
+      throw new Error(`${label} nested package container changed while Flow read it`);
+    }
+  }
+}
+
+async function assertSelectedNestedPackage(
+  path: string,
+  packages: ReadonlyMap<string, unknown>,
+  label: string,
+  observations: ArtifactObservations,
+): Promise<void> {
+  await observations.add(path);
+  let canonicalPath: string;
+  try {
+    canonicalPath = await realpath(path);
+  } catch (error) {
+    throw new Error(`${label} contains an invalid nested package`, { cause: error });
+  }
+  if (!packages.has(canonicalPath)) {
+    throw new Error(`${label} contains an unselected nested package`);
+  }
+}
+
+function packageNodeId(root: string, packagePath: string): string {
+  const path = relative(root, packagePath).split(sep).join("/");
+  return path === "" ? "." : path;
 }
 
 async function readPackageManifest(
@@ -432,6 +672,8 @@ async function readPackageManifest(
     version: record.version,
     dependencies: stringRecord(record.dependencies),
     optionalDependencies: stringRecord(record.optionalDependencies),
+    peerDependencies: stringRecord(record.peerDependencies),
+    peerDependenciesMeta: peerDependencyMetaRecord(record.peerDependenciesMeta),
   });
 }
 
@@ -452,22 +694,52 @@ function stringRecord(value: unknown): Readonly<Record<string, string>> {
   return Object.freeze(result);
 }
 
+function peerDependencyMetaRecord(
+  value: unknown,
+): Readonly<Record<string, { readonly optional: boolean }>> {
+  if (value === undefined) {
+    return Object.freeze({});
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("package peer dependency metadata must be an object");
+  }
+  const result: Record<string, { readonly optional: boolean }> = {};
+  for (const [name, metadata] of Object.entries(value)) {
+    if (metadata === null || typeof metadata !== "object" || Array.isArray(metadata)) {
+      throw new Error("package peer dependency metadata entry must be an object");
+    }
+    const optional = (metadata as Record<string, unknown>).optional;
+    if (optional !== undefined && typeof optional !== "boolean") {
+      throw new Error("package peer dependency optional flag must be a boolean");
+    }
+    result[name] = Object.freeze({ optional: optional === true });
+  }
+  return Object.freeze(result);
+}
+
 async function resolveDependencyRoot(
   root: string,
   packageName: string,
   optional: boolean,
+  observations: ArtifactObservations,
+  resolutionRoot: string,
+  moduleSearchPaths: Set<string>,
 ): Promise<string | null> {
   let current = root;
-  const filesystemRoot = parse(current).root;
-  while (current !== filesystemRoot) {
+  for (;;) {
+    await observeDependencyResolutionContainers(current, packageName, observations);
     const candidate = join(current, "node_modules", ...packageName.split("/"));
     try {
       await realpath(candidate);
+      moduleSearchPaths.add(await realpath(join(current, "node_modules")));
       return candidate;
     } catch (error) {
       if (!isMissingPath(error)) {
         throw error;
       }
+    }
+    if (current === resolutionRoot) {
+      break;
     }
     current = dirname(current);
   }
@@ -475,6 +747,29 @@ async function resolveDependencyRoot(
     return null;
   }
   throw new Error(`required package dependency ${packageName} is not installed`);
+}
+
+async function observeDependencyResolutionContainers(
+  root: string,
+  packageName: string,
+  observations: ArtifactObservations,
+): Promise<void> {
+  let existing = root;
+  const containerSegments = ["node_modules", ...packageName.split("/").slice(0, -1)];
+  for (const segment of containerSegments) {
+    const candidate = join(existing, segment);
+    try {
+      const stat = await lstat(candidate, { bigint: true });
+      observations.addObserved(candidate, stat);
+      existing = candidate;
+    } catch (error) {
+      if (!isMissingPath(error)) {
+        throw error;
+      }
+      await observations.add(existing);
+      return;
+    }
+  }
 }
 
 function isMissingPath(error: unknown): boolean {
@@ -486,25 +781,40 @@ function isMissingPath(error: unknown): boolean {
   );
 }
 
-async function readTrustedRootSet(
+export async function readTrustedRootSet(
   roots: readonly string[],
   label: string,
   observations: ArtifactObservations,
-): Promise<TrustedArtifact> {
+  options: { readonly rejectUnselectedNestedPackages?: boolean } = {},
+): Promise<TrustedPackageClosure> {
   const records: string[] = [];
+  const moduleSearchPaths = new Set<string>();
+  const runtimeSupportPaths = new Set<string>();
   for (const root of roots) {
-    const tree = await readTrustedPackageClosureFromUnknownRoot(root, label, observations);
+    const tree = await readTrustedPackageClosureFromUnknownRoot(root, label, observations, options);
     records.push(tree.sha256);
+    tree.moduleSearchPaths.forEach((path) => {
+      moduleSearchPaths.add(path);
+    });
+    tree.runtimeSupportPaths.forEach((path) => {
+      runtimeSupportPaths.add(path);
+    });
   }
   records.sort();
-  return Object.freeze({ path: "", sha256: sha256(JSON.stringify(records)) });
+  return Object.freeze({
+    path: "",
+    sha256: sha256(JSON.stringify(records)),
+    moduleSearchPaths: Object.freeze([...moduleSearchPaths]),
+    runtimeSupportPaths: Object.freeze([...runtimeSupportPaths].sort()),
+  });
 }
 
 async function readTrustedPackageClosureFromUnknownRoot(
   root: string,
   label: string,
   observations: ArtifactObservations,
-): Promise<TrustedArtifact> {
+  options: { readonly rejectUnselectedNestedPackages?: boolean },
+): Promise<TrustedPackageClosure> {
   const canonicalRoot = await realpath(root);
   const manifest = await readPackageManifest(canonicalRoot, label, observations);
   return readTrustedPackageClosure(
@@ -513,14 +823,30 @@ async function readTrustedPackageClosureFromUnknownRoot(
     manifest.version,
     label,
     observations,
+    options,
   );
 }
 
-async function readTrustedRuntimeTree(
+function containingNodeModulesRoot(packageRootPath: string): string | undefined {
+  let current = dirname(packageRootPath);
+  const root = parse(current).root;
+  for (;;) {
+    if (current.endsWith(`${sep}node_modules`)) {
+      return current;
+    }
+    if (current === root) {
+      return undefined;
+    }
+    current = dirname(current);
+  }
+}
+
+export async function readTrustedRuntimeTree(
   root: string,
   label: string,
   observations: ArtifactObservations,
   omitNodeModules = false,
+  includeMarkdown = false,
 ): Promise<TrustedArtifact> {
   await observations.add(root);
   const canonicalRoot = await realpath(root);
@@ -563,7 +889,7 @@ async function readTrustedRuntimeTree(
         throw new Error(`${label} contains a special filesystem entry`);
       }
       const stat = await lstat(path, { bigint: true });
-      if (ignoredRuntimeFile(pathFromRoot)) {
+      if (ignoredRuntimeFile(pathFromRoot, includeMarkdown)) {
         continue;
       }
       const size = Number(stat.size);
@@ -601,18 +927,19 @@ function ignoredRuntimePath(path: string): boolean {
     .some((segment) => [".bin", "docs", "examples", "test", "tests"].includes(segment));
 }
 
-function ignoredRuntimeFile(path: string): boolean {
+function ignoredRuntimeFile(path: string, includeMarkdown: boolean): boolean {
   const name = path.split("/").at(-1) ?? path;
   return (
     name === "LICENSE" ||
     name.startsWith("README") ||
     name.startsWith("CHANGELOG") ||
     name.endsWith(".d.ts") ||
-    [".map", ".md"].includes(extname(name))
+    extname(name) === ".map" ||
+    (!includeMarkdown && extname(name) === ".md")
   );
 }
 
-class ArtifactObservations {
+export class ArtifactObservations {
   readonly #entries = new Map<string, BigIntStats>();
 
   async add(path: string): Promise<void> {
@@ -621,7 +948,7 @@ class ArtifactObservations {
 
   addObserved(path: string, stat: BigIntStats): void {
     if (!this.#entries.has(path) && this.#entries.size >= MAX_RUNTIME_OBSERVATIONS) {
-      throw new Error(`native Pi runtime exceeds ${MAX_RUNTIME_OBSERVATIONS} observations`);
+      throw new Error(`external harness runtime exceeds ${MAX_RUNTIME_OBSERVATIONS} observations`);
     }
     this.#entries.set(path, stat);
   }
@@ -694,7 +1021,7 @@ function defaultArtifactPaths(): {
   });
 }
 
-function packageRoot(path: string, packageName: string): string {
+export function packageRoot(path: string, packageName: string): string {
   const suffix = join(...packageName.split("/"));
   let current = dirname(path);
   const root = parse(current).root;
@@ -707,7 +1034,7 @@ function packageRoot(path: string, packageName: string): string {
   throw new Error(`${packageName} does not resolve from its package root`);
 }
 
-function nodeModulesRoot(path: string): string {
+export function nodeModulesRoot(path: string): string {
   let current = dirname(path);
   const root = parse(current).root;
   while (current !== root) {
@@ -719,6 +1046,6 @@ function nodeModulesRoot(path: string): string {
   throw new Error("Pi package does not resolve from a node_modules directory");
 }
 
-function sha256(value: string | Buffer): string {
+export function sha256(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
 }
