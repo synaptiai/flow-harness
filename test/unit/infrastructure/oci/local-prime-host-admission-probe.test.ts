@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { LocalPrimeHostAdmissionProbe } from "../../../../src/infrastructure/oci/local-prime-host-admission-probe.js";
+import {
+  LocalPrimeHostAdmissionProbe,
+  PrimeHostPolicyTerminationError,
+} from "../../../../src/infrastructure/oci/local-prime-host-admission-probe.js";
 import { validatePrimeHostAdmission } from "../../../../src/infrastructure/oci/prime-host-admission.js";
 import { primeExternalHarnessIdentity } from "../../../fixtures/evaluation/prime-external-harness-identity.js";
 
@@ -68,6 +71,32 @@ describe("local Prime host admission probe", () => {
         primeExternalHarnessIdentity().runtime.policy,
       ),
     ).rejects.toThrow(/cpu.max/i);
+  });
+
+  it("terminates after three consecutive slow runtime probes", async () => {
+    const latencies = [101, 101, 50, 101, 101, 101];
+    const measureRuntimeImageLatency = vi.fn(async () => latencies.shift() ?? 0);
+    const probe = new LocalPrimeHostAdmissionProbe({
+      measureRuntimeImageLatency,
+      waitForRuntimeProbe: vi.fn(async () => undefined),
+    });
+
+    await expect(
+      probe.monitorRuntime(
+        {
+          cgroupPath: "/sys/fs/cgroup/user.slice/flow.scope",
+          imageProbe: {
+            executablePath: "/usr/bin/dd",
+            executableSha256: "a".repeat(64),
+            readBytesPerSecond: 134_217_728,
+            readOperationsPerSecond: 8_192,
+          },
+          imageDevice: { path: "/dev/test-image", major: 8, minor: 1 },
+        },
+        primeExternalHarnessIdentity().runtime.policy,
+      ),
+    ).rejects.toBeInstanceOf(PrimeHostPolicyTerminationError);
+    expect(measureRuntimeImageLatency).toHaveBeenCalledTimes(6);
   });
 });
 

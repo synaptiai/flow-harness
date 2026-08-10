@@ -71,6 +71,16 @@ export function createProductionPrimeOciRuntime(
   return new LocalPrimeOciHarnessRuntime({
     registry: { resolveAdmitted: resolvePrimeAdmitted },
     globalAdmission: createProductionGlobalAdmission(),
+    monitorHost: (descriptor, signal) =>
+      new LocalPrimeHostAdmissionProbe().monitorRuntime(
+        {
+          cgroupPath: descriptor.localRuntime.cgroupPath,
+          imageProbe: descriptor.localRuntime.imageProbe,
+          imageDevice: descriptor.localRuntime.imageDevice,
+        },
+        descriptor.identity.runtime.policy,
+        signal,
+      ),
     createEngine: async (descriptor) => {
       const local = descriptor.localRuntime;
       return new LocalDockerPrimeOciEngine({

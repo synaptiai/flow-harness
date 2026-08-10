@@ -208,6 +208,45 @@ describe("local Prime OCI harness runtime", () => {
     expect(cleanupSignalFactory).toHaveBeenCalledWith(30_000);
   });
 
+  it("terminates a running container after the host monitor rejects its policy", async () => {
+    const descriptor = primeDescriptor();
+    const globalAdmission = fakeGlobalAdmission();
+    const runtime = new LocalPrimeOciHarnessRuntime({
+      registry: { resolveAdmitted: vi.fn(async () => descriptor) },
+      globalAdmission,
+      createEngine: vi.fn(async () => fakeEngine()),
+      createIntent: vi.fn(async (request) => intentLease(request.evaluation.trial.trialId)),
+      monitorHost: vi.fn(async () => {
+        throw new Error("Prime runtime image latency exceeded the admitted policy three times");
+      }),
+      operate: vi.fn(
+        async (input) =>
+          new Promise<never>((_resolve, reject) => {
+            const abort = () => reject(input.signal?.reason);
+            input.signal?.addEventListener("abort", abort, { once: true });
+          }),
+      ),
+      platform: "linux",
+      clockMs: () => 10,
+    });
+    const request = runtimeRequest(async () => undefined);
+
+    const result = await runtime.execute(request);
+
+    expect(result.harness).toMatchObject({
+      outcome: "crashed",
+      reason: "Prime runtime image latency exceeded the admitted policy three times",
+      runtime: {
+        adapter: "prime-agent-native-v1",
+        removal: "confirmed",
+        timedOut: false,
+        aborted: false,
+      },
+    });
+    expect(result.metrics).toMatchObject({ interventions: 1, policyViolations: null });
+    expect(globalAdmission.release).toHaveBeenCalledOnce();
+  });
+
   it("rejects a child outcome that contradicts trusted OCI settlement", async () => {
     const descriptor = primeDescriptor();
     const runtime = new LocalPrimeOciHarnessRuntime({

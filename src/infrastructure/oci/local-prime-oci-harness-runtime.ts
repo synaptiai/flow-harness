@@ -86,6 +86,10 @@ export interface LocalPrimeOciHarnessRuntimeOptions {
     descriptor: NativePrimeHarnessDescriptor,
     signal?: AbortSignal,
   ) => Promise<PrimeOciIntentLease>;
+  readonly monitorHost?: (
+    descriptor: NativePrimeHarnessDescriptor,
+    signal?: AbortSignal,
+  ) => Promise<void>;
   readonly operate: (input: PrimeOciOperationInput) => Promise<PrimeOciOperationEvidence>;
   readonly platform?: NodeJS.Platform;
   readonly clockMs?: () => number;
@@ -153,20 +157,52 @@ export class LocalPrimeOciHarnessRuntime implements ExternalHarnessRuntime {
 
         let evidence: PrimeOciOperationEvidence | undefined;
         let lifecycleError: unknown;
+        let policyTerminationError: unknown;
         try {
           await new PrimeOciContainerLifecycle(engine).run({
             intent: intent as PrimeOciIntentLease,
             update: durability.updateOciLease,
             assertCurrent: () => waitForAbortable(descriptor.assertCurrent(), operationSignal),
             operate: async (containerId, transport, checkpoint) => {
-              evidence = await this.options.operate({
-                request: primeRequest,
-                descriptor,
-                containerId,
-                transport,
-                checkpoint,
-                signal: operationSignal,
-              });
+              const stopMonitor = new AbortController();
+              const policyTermination = new AbortController();
+              const monitorSignal = AbortSignal.any([operationSignal, stopMonitor.signal]);
+              const monitoredOperationSignal = AbortSignal.any([
+                operationSignal,
+                policyTermination.signal,
+              ]);
+              const monitorPromise =
+                this.options.monitorHost === undefined
+                  ? Promise.resolve()
+                  : Promise.resolve()
+                      .then(() => this.options.monitorHost?.(descriptor, monitorSignal))
+                      .then(() => {
+                        if (!monitorSignal.aborted) {
+                          throw new Error("Prime host runtime monitor ended before the operation");
+                        }
+                      })
+                      .catch((error: unknown) => {
+                        if (!monitorSignal.aborted) {
+                          policyTerminationError = error;
+                          policyTermination.abort(error);
+                        }
+                      });
+              try {
+                evidence = await waitForAbortable(
+                  this.options.operate({
+                    request: primeRequest,
+                    descriptor,
+                    containerId,
+                    transport,
+                    checkpoint,
+                    signal: monitoredOperationSignal,
+                  }),
+                  monitoredOperationSignal,
+                );
+              } finally {
+                stopMonitor.abort(new Error("Prime host runtime monitor stopped"));
+                await waitForAbortable(monitorPromise, monitorSignal).catch(() => undefined);
+              }
             },
             operationSignal,
             createCleanupSignal: () =>
@@ -182,6 +218,15 @@ export class LocalPrimeOciHarnessRuntime implements ExternalHarnessRuntime {
         }
         const endedAtMs = clock();
         if (lifecycleError !== undefined) {
+          if (policyTerminationError !== undefined) {
+            return failureResult(
+              primeRequest,
+              "crashed",
+              boundedReason(policyTerminationError),
+              startedAtMs,
+              endedAtMs,
+            );
+          }
           if (deadline.expired) {
             return failureResult(
               primeRequest,
@@ -309,7 +354,7 @@ function runtimeEvidence(
 
 function failureResult(
   request: ExternalHarnessRuntimeRequest & { readonly identity: PrimeIdentity },
-  outcome: "timed_out" | "cancelled",
+  outcome: "timed_out" | "cancelled" | "crashed",
   reason: string,
   startedAtMs: number,
   endedAtMs: number,

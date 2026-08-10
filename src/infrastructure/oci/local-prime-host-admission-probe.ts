@@ -43,6 +43,16 @@ export interface LocalPrimeHostAdmissionProbeOptions {
     policy: PrimeRuntimePolicy,
     signal?: AbortSignal,
   ) => Promise<readonly number[]>;
+  readonly measureRuntimeImageLatency?: (
+    input: PrimeHostAdmissionLocalInput,
+    policy: PrimeRuntimePolicy,
+    signal?: AbortSignal,
+  ) => Promise<number>;
+  readonly waitForRuntimeProbe?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
+}
+
+export class PrimeHostPolicyTerminationError extends Error {
+  override readonly name = "PrimeHostPolicyTerminationError";
 }
 
 export class LocalPrimeHostAdmissionProbe {
@@ -50,14 +60,23 @@ export class LocalPrimeHostAdmissionProbe {
   readonly #measureImageLatency: NonNullable<
     LocalPrimeHostAdmissionProbeOptions["measureImageLatency"]
   >;
+  readonly #measureRuntimeImageLatency: NonNullable<
+    LocalPrimeHostAdmissionProbeOptions["measureRuntimeImageLatency"]
+  >;
   readonly #onlineCpuCount: () => number;
   readonly #readText: (path: string) => Promise<string>;
+  readonly #waitForRuntimeProbe: NonNullable<
+    LocalPrimeHostAdmissionProbeOptions["waitForRuntimeProbe"]
+  >;
 
   constructor(options: LocalPrimeHostAdmissionProbeOptions = {}) {
     this.#readText = options.readText ?? ((path) => readFile(path, "utf8"));
     this.#countHostPids = options.countHostPids ?? countHostPids;
     this.#onlineCpuCount = options.onlineCpuCount ?? (() => cpus().length);
     this.#measureImageLatency = options.measureImageLatency ?? measureImageLatency;
+    this.#measureRuntimeImageLatency =
+      options.measureRuntimeImageLatency ?? measureRuntimeImageLatency;
+    this.#waitForRuntimeProbe = options.waitForRuntimeProbe ?? waitForRuntimeProbe;
   }
 
   async observe(
@@ -126,6 +145,29 @@ export class LocalPrimeHostAdmissionProbe {
     };
     validatePrimeHostAdmission(observation, policy);
     return Object.freeze(observation);
+  }
+
+  async monitorRuntime(
+    input: PrimeHostAdmissionLocalInput,
+    policy: PrimeRuntimePolicy,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    let consecutiveSlowProbes = 0;
+    while (true) {
+      await this.#waitForRuntimeProbe(policy.runtimeProbeIntervalMs, signal);
+      const latencyMs = await this.#measureRuntimeImageLatency(input, policy, signal);
+      if (!Number.isFinite(latencyMs) || latencyMs < 0) {
+        throw new PrimeHostPolicyTerminationError(
+          "Prime runtime image latency probe returned an invalid duration",
+        );
+      }
+      consecutiveSlowProbes = latencyMs > policy.maxProbeLatencyMs ? consecutiveSlowProbes + 1 : 0;
+      if (consecutiveSlowProbes >= policy.maxConsecutiveSlowProbes) {
+        throw new PrimeHostPolicyTerminationError(
+          "Prime runtime image latency exceeded the admitted policy three times",
+        );
+      }
+    }
   }
 }
 
@@ -252,6 +294,39 @@ async function measureImageLatency(
     latencies.push(performance.now() - startedAt);
   }
   return Object.freeze(latencies);
+}
+
+async function measureRuntimeImageLatency(
+  input: PrimeHostAdmissionLocalInput,
+  policy: PrimeRuntimePolicy,
+  signal?: AbortSignal,
+): Promise<number> {
+  const startedAt = performance.now();
+  await runDirectRead(
+    input.imageProbe.executablePath,
+    input.imageDevice.path,
+    policy.probeBytes,
+    signal,
+  );
+  return performance.now() - startedAt;
+}
+
+async function waitForRuntimeProbe(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  throwIfAborted(signal);
+  await new Promise<void>((resolveWait, rejectWait) => {
+    const finish = () => {
+      signal?.removeEventListener("abort", abort);
+      resolveWait();
+    };
+    const timer = setTimeout(finish, milliseconds);
+    timer.unref?.();
+    const abort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      rejectWait(signal?.reason ?? new Error("Prime host probe aborted"));
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+  });
 }
 
 async function assertProbeExecutable(identity: PrimeImageAdmissionProbeIdentity): Promise<void> {
