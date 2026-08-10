@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { parseDocument } from "yaml";
 import { z } from "zod";
 import type { PromptCandidateIdentity } from "../adaptation/prompt-candidate.js";
+import type { ExternalHarnessIdentity } from "./external-harness.js";
 
 export const EVALUATION_PLAN_API_VERSION = "flow.synapti.ai/v1alpha1" as const;
 export const MAX_EVALUATION_TASKS = 64;
@@ -10,6 +11,7 @@ export const MAX_EVALUATION_SEEDS = 32;
 export const MAX_EVALUATION_TRIALS = 4_096;
 export const MAX_EVALUATION_ASSERTIONS = 16;
 export const MAX_EVALUATION_PLAN_BYTES = 1_048_576;
+export const MAX_EVALUATION_INSTRUCTION_BYTES = 256 * 1_024;
 
 const identifierSchema = z
   .string()
@@ -74,6 +76,13 @@ const profileSchema = z.union([
       id: identifierSchema,
       adapter: z.literal("flow-workflow-v1"),
       candidate: canonicalRelativePathSchema,
+    })
+    .strict(),
+  z
+    .object({
+      id: identifierSchema,
+      adapter: z.literal("pi-native-v1"),
+      harness: z.object({ config: z.literal("pi-evaluation-v1") }).strict(),
     })
     .strict(),
 ]);
@@ -221,25 +230,33 @@ export interface EvaluationPlanIdentity {
       };
     }[];
   };
-  readonly profiles: readonly {
-    readonly id: string;
-    readonly adapter: EvaluationProfileSource["adapter"];
-    readonly workflow: {
-      readonly sourceKind?: "prompt-candidate-projection";
-      readonly provenance: string;
-      readonly sourceSha256: string;
-      readonly workflowDigest: string;
-    };
-    readonly candidate?: {
-      readonly provenance: string;
-      readonly identity: PromptCandidateIdentity;
-    };
-  }[];
+  readonly profiles: readonly EvaluationProfileIdentity[];
   readonly controls: EvaluationPlanSource["controls"];
   readonly seeds: readonly number[];
   readonly order: EvaluationPlanSource["order"];
   readonly comparison: EvaluationPlanSource["comparison"];
 }
+
+export type EvaluationProfileIdentity =
+  | {
+      readonly id: string;
+      readonly adapter: "flow-workflow-v1";
+      readonly workflow: {
+        readonly sourceKind?: "prompt-candidate-projection";
+        readonly provenance: string;
+        readonly sourceSha256: string;
+        readonly workflowDigest: string;
+      };
+      readonly candidate?: {
+        readonly provenance: string;
+        readonly identity: PromptCandidateIdentity;
+      };
+    }
+  | {
+      readonly id: string;
+      readonly adapter: "pi-native-v1";
+      readonly harness: ExternalHarnessIdentity;
+    };
 
 export interface EvaluationTrialScheduleItem {
   readonly version: 1;

@@ -83,7 +83,12 @@ describe("prompt activation evaluation admission", () => {
     const stored = superiorStoredEvaluation(candidate);
     const baseline = stored.header.profiles[0];
     const selected = stored.header.profiles[1];
-    if (baseline === undefined || selected === undefined) {
+    if (
+      baseline === undefined ||
+      selected === undefined ||
+      baseline.adapter !== "flow-workflow-v1" ||
+      selected.adapter !== "flow-workflow-v1"
+    ) {
       throw new Error("evaluation profile fixture is incomplete");
     }
     const changed = {
@@ -264,5 +269,6 @@ function superiorStoredEvaluation(
       schedule: [...schedule],
     },
     records,
+    activeAttempt: null,
   };
 }

@@ -87,6 +87,30 @@ describe("evaluation plan", () => {
     ).toThrow(/invalid_schema|required|exactly one/i);
   });
 
+  it("parses only the built-in native Pi profile configuration", () => {
+    const external = validPlan().replace(
+      "  - id: candidate\n    adapter: flow-workflow-v1\n    workflow: candidate.workflow.yaml",
+      "  - id: candidate\n    adapter: pi-native-v1\n    harness:\n      config: pi-evaluation-v1",
+    );
+
+    expect(parseEvaluationPlanText(external).profiles[1]).toEqual({
+      id: "candidate",
+      adapter: "pi-native-v1",
+      harness: { config: "pi-evaluation-v1" },
+    });
+    expect(() =>
+      parseEvaluationPlanText(external.replace("pi-evaluation-v1", "operator-command")),
+    ).toThrow(/config|schema/i);
+    expect(() =>
+      parseEvaluationPlanText(
+        external.replace(
+          "      config: pi-evaluation-v1",
+          "      config: pi-evaluation-v1\n      executable: /usr/bin/pi",
+        ),
+      ),
+    ).toThrow(/executable|unrecognized|schema/i);
+  });
+
   it("rejects a comparison minimum that exceeds the holdout pair schedule", () => {
     const mixed = validPlan()
       .replace(

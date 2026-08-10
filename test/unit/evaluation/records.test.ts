@@ -167,6 +167,59 @@ describe("evaluation trial records", () => {
       }),
     ).toThrow(/workspace.*snapshot|snapshot.*completed/i);
   });
+
+  it("binds parent-observed external process termination evidence", () => {
+    const valid = record(
+      {
+        outcome: "completed",
+        runId: "pi-run",
+        reason: null,
+        runtime: {
+          adapter: "pi-native-v1",
+          containment: "linux-pid-namespace",
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          aborted: false,
+          treeTermination: "confirmed",
+        },
+      },
+      {
+        outcome: "accepted",
+        verifierDigest: "b".repeat(64),
+        assertions: [{ kind: "exists", path: "RESULT.md", outcome: true }],
+      },
+    );
+
+    expect(valid.harness.runtime).toMatchObject({
+      adapter: "pi-native-v1",
+      exitCode: 0,
+      treeTermination: "confirmed",
+    });
+    expect(() =>
+      record(
+        {
+          outcome: "completed",
+          runId: "pi-run",
+          reason: null,
+          runtime: {
+            adapter: "pi-native-v1",
+            containment: "process-group",
+            exitCode: null,
+            signal: "SIGKILL",
+            timedOut: true,
+            aborted: false,
+            treeTermination: "unconfirmed",
+          },
+        },
+        {
+          outcome: "accepted",
+          verifierDigest: "b".repeat(64),
+          assertions: [{ kind: "exists", path: "RESULT.md", outcome: true }],
+        },
+      ),
+    ).toThrow(/completed.*process|process.*completed|termination/i);
+  });
 });
 
 function record(

@@ -4,12 +4,18 @@ import { type FileHandle, lstat, open, opendir, realpath } from "node:fs/promise
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import type { PromptCandidateIdentity } from "../../domain/adaptation/prompt-candidate.js";
 import {
+  type ExternalHarnessIdentity,
+  parseExternalHarnessIdentity,
+} from "../../domain/evaluation/external-harness.js";
+import {
   calculateEvaluationPlanDigest,
   calculateEvaluationVerifierDigest,
   createEvaluationSchedule,
   type EvaluationFilesystemAssertion,
   type EvaluationPlanSource,
+  type EvaluationProfileSource,
   type EvaluationTrialScheduleItem,
+  MAX_EVALUATION_INSTRUCTION_BYTES,
   MAX_EVALUATION_PLAN_BYTES,
   parseEvaluationPlanText,
 } from "../../domain/evaluation/plan.js";
@@ -21,6 +27,7 @@ import { admitLocalPromptCandidate } from "./local-prompt-candidate.js";
 export const MAX_EVALUATION_FIXTURE_ENTRIES = 4_096;
 export const MAX_EVALUATION_FIXTURE_BYTES = 256 * 1024 * 1024;
 export const MAX_EVALUATION_WORKFLOW_BYTES = 1_048_576;
+export { MAX_EVALUATION_INSTRUCTION_BYTES } from "../../domain/evaluation/plan.js";
 
 export type EvaluationAdmissionErrorCode =
   | "invalid_path"
@@ -64,7 +71,7 @@ export interface AdmittedEvaluationTask {
   };
 }
 
-export interface AdmittedEvaluationProfile {
+export interface AdmittedFlowEvaluationProfile {
   readonly id: string;
   readonly adapter: "flow-workflow-v1";
   readonly workflow: {
@@ -78,6 +85,16 @@ export interface AdmittedEvaluationProfile {
   };
   readonly candidate?: PromptCandidateIdentity & { readonly selectionProvenance: string };
 }
+
+export interface AdmittedExternalEvaluationProfile {
+  readonly id: string;
+  readonly adapter: "pi-native-v1";
+  readonly harness: ExternalHarnessIdentity;
+}
+
+export type AdmittedEvaluationProfile =
+  | AdmittedFlowEvaluationProfile
+  | AdmittedExternalEvaluationProfile;
 
 export interface AdmittedEvaluationPlan {
   readonly apiVersion: EvaluationPlanSource["apiVersion"];
@@ -98,7 +115,7 @@ export interface AdmittedEvaluationPlan {
 }
 
 export function projectEvaluationCandidateIdentity(
-  candidate: NonNullable<AdmittedEvaluationProfile["candidate"]>,
+  candidate: NonNullable<AdmittedFlowEvaluationProfile["candidate"]>,
 ): { readonly provenance: string; readonly identity: PromptCandidateIdentity } {
   const { selectionProvenance, ...identity } = candidate;
   return Object.freeze({ provenance: selectionProvenance, identity: Object.freeze(identity) });
@@ -108,7 +125,7 @@ interface FixtureScanState {
   entryCount: number;
   logicalBytes: number;
   readonly digest: ReturnType<typeof createHash>;
-  readonly files: Map<string, string>;
+  readonly files: Map<string, { readonly sha256: string; readonly size: number }>;
 }
 
 interface StableFile {
@@ -116,7 +133,18 @@ interface StableFile {
   readonly sha256: string;
 }
 
-export async function admitLocalEvaluationPlan(planPath: string): Promise<AdmittedEvaluationPlan> {
+type ExternalProfileSource = Extract<EvaluationProfileSource, { readonly adapter: "pi-native-v1" }>;
+
+export interface LocalEvaluationPlanDependencies {
+  readonly resolveExternalHarnessIdentity: (
+    profile: ExternalProfileSource,
+  ) => Promise<ExternalHarnessIdentity>;
+}
+
+export async function admitLocalEvaluationPlan(
+  planPath: string,
+  dependencies?: Partial<LocalEvaluationPlanDependencies>,
+): Promise<AdmittedEvaluationPlan> {
   const absolutePlanPath = resolve(planPath);
   const planRoot = await realpath(dirname(absolutePlanPath));
   const canonicalPlanPath = join(planRoot, basename(absolutePlanPath));
@@ -154,6 +182,35 @@ export async function admitLocalEvaluationPlan(planPath: string): Promise<Admitt
 
   const admittedProfiles = await Promise.all(
     source.profiles.map(async (profile): Promise<AdmittedEvaluationProfile> => {
+      if (profile.adapter === "pi-native-v1") {
+        const resolver = dependencies?.resolveExternalHarnessIdentity;
+        if (resolver === undefined) {
+          throw new EvaluationAdmissionError(
+            "invalid_workflow",
+            `profile "${profile.id}" requires the trusted native Pi adapter registry`,
+          );
+        }
+        let harness: ExternalHarnessIdentity;
+        try {
+          harness = parseExternalHarnessIdentity(await resolver(profile));
+        } catch (error) {
+          throw new EvaluationAdmissionError(
+            "invalid_workflow",
+            `profile "${profile.id}" external harness identity is invalid: ${boundedMessage(error)}`,
+            { cause: error },
+          );
+        }
+        if (
+          harness.adapter !== profile.adapter ||
+          harness.harness.config !== profile.harness.config
+        ) {
+          throw new EvaluationAdmissionError(
+            "invalid_workflow",
+            `profile "${profile.id}" external harness identity contradicts its source selection`,
+          );
+        }
+        return Object.freeze({ id: profile.id, adapter: profile.adapter, harness });
+      }
       if ("workflow" in profile) {
         const workflowPath = await resolveAdmittedPath(planRoot, profile.workflow, "file");
         const workflowFile = await stableReadFile(
@@ -247,23 +304,27 @@ export async function admitLocalEvaluationPlan(planPath: string): Promise<Admitt
         },
       })),
     },
-    profiles: profiles.map((profile) => ({
-      id: profile.id,
-      adapter: profile.adapter,
-      workflow: {
-        provenance: profile.workflow.provenance,
-        sourceSha256: profile.workflow.sourceSha256,
-        workflowDigest: profile.workflow.workflowDigest,
-        ...(profile.workflow.sourceKind === "prompt-candidate-projection"
-          ? { sourceKind: profile.workflow.sourceKind }
-          : {}),
-      },
-      ...(profile.candidate === undefined
-        ? {}
+    profiles: profiles.map((profile) =>
+      profile.adapter === "pi-native-v1"
+        ? { id: profile.id, adapter: profile.adapter, harness: profile.harness }
         : {
-            candidate: projectEvaluationCandidateIdentity(profile.candidate),
-          }),
-    })),
+            id: profile.id,
+            adapter: profile.adapter,
+            workflow: {
+              provenance: profile.workflow.provenance,
+              sourceSha256: profile.workflow.sourceSha256,
+              workflowDigest: profile.workflow.workflowDigest,
+              ...(profile.workflow.sourceKind === "prompt-candidate-projection"
+                ? { sourceKind: profile.workflow.sourceKind }
+                : {}),
+            },
+            ...(profile.candidate === undefined
+              ? {}
+              : {
+                  candidate: projectEvaluationCandidateIdentity(profile.candidate),
+                }),
+          },
+    ),
     controls: source.controls,
     seeds: source.seeds,
     order: source.order,
@@ -314,11 +375,17 @@ export async function observeEvaluationFixture(
     files: new Map(),
   };
   await scanFixtureDirectory(root, "", state);
-  const instructionSha256 = state.files.get(instructionPath);
-  if (instructionSha256 === undefined) {
+  const instruction = state.files.get(instructionPath);
+  if (instruction === undefined) {
     throw new EvaluationAdmissionError(
       "invalid_source",
       `fixture instruction "${instructionPath}" is missing or is not a regular file`,
+    );
+  }
+  if (instruction.size > MAX_EVALUATION_INSTRUCTION_BYTES) {
+    throw new EvaluationAdmissionError(
+      "limit_exceeded",
+      `fixture instruction "${instructionPath}" exceeds ${MAX_EVALUATION_INSTRUCTION_BYTES} bytes`,
     );
   }
   return Object.freeze({
@@ -326,7 +393,7 @@ export async function observeEvaluationFixture(
     entryCount: state.entryCount,
     logicalBytes: state.logicalBytes,
     instructionPath,
-    instructionSha256,
+    instructionSha256: instruction.sha256,
   });
 }
 
@@ -381,7 +448,7 @@ async function scanFixtureDirectory(
       MAX_EVALUATION_FIXTURE_BYTES,
       `fixture entry "${relativePath}"`,
     );
-    state.files.set(relativePath, file.sha256);
+    state.files.set(relativePath, Object.freeze({ sha256: file.sha256, size: before.size }));
     state.digest.update(`file\0${relativePath}\0${mode}\0${before.size}\0${file.sha256}\0`);
   }
 
@@ -477,7 +544,10 @@ function assertCandidateComparison(
   profiles: readonly [AdmittedEvaluationProfile, AdmittedEvaluationProfile],
   comparison: EvaluationPlanSource["comparison"],
 ): void {
-  const candidateProfiles = profiles.filter((profile) => profile.candidate !== undefined);
+  const candidateProfiles = profiles.filter(
+    (profile): profile is AdmittedFlowEvaluationProfile =>
+      profile.adapter === "flow-workflow-v1" && profile.candidate !== undefined,
+  );
   if (candidateProfiles.length === 0) {
     return;
   }
@@ -487,6 +557,8 @@ function assertCandidateComparison(
     candidateProfiles.length !== 1 ||
     baseline === undefined ||
     candidate === undefined ||
+    baseline.adapter !== "flow-workflow-v1" ||
+    candidate.adapter !== "flow-workflow-v1" ||
     baseline.candidate !== undefined ||
     candidate.candidate === undefined
   ) {

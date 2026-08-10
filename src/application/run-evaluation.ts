@@ -1,6 +1,11 @@
 import type { VerifyEvaluationWorkspaceRequest } from "../domain/evaluation/filesystem-verifier.js";
+import {
+  parseEvaluationTrialAttempt,
+  type EvaluationTrialAttempt,
+} from "../domain/evaluation/attempt.js";
 import type {
   EvaluationFilesystemAssertion,
+  EvaluationProfileSource,
   EvaluationTrialScheduleItem,
 } from "../domain/evaluation/plan.js";
 import {
@@ -45,7 +50,7 @@ export interface EvaluationExecutionPlan {
   }[];
   readonly profiles: readonly {
     readonly id: string;
-    readonly adapter: "flow-workflow-v1";
+    readonly adapter: EvaluationProfileSource["adapter"];
   }[];
 }
 
@@ -60,6 +65,11 @@ export interface EvaluationFixtureObservation {
 export interface RunEvaluationTrialsInput {
   readonly plan: EvaluationExecutionPlan;
   readonly committedRecords: readonly EvaluationTrialRecord[];
+  readonly attempts: {
+    readonly active: EvaluationTrialAttempt | null;
+    readonly begin: (attempt: EvaluationTrialAttempt) => Promise<void>;
+    readonly complete: (attempt: EvaluationTrialAttempt) => Promise<void>;
+  };
   readonly append: (record: EvaluationTrialRecord) => Promise<void>;
   readonly workspaceIsolator: WorkspaceIsolator;
   readonly observeFixture: (
@@ -68,12 +78,13 @@ export interface RunEvaluationTrialsInput {
   ) => Promise<EvaluationFixtureObservation>;
   readonly resolveAdapter: (
     profileId: string,
-    adapter: "flow-workflow-v1",
+    adapter: EvaluationProfileSource["adapter"],
   ) => HarnessEvaluationAdapter;
   readonly verifyWorkspace: (
     request: VerifyEvaluationWorkspaceRequest,
   ) => Promise<EvaluationVerificationOutcome>;
   readonly environment: Omit<EvaluationEnvironment, "workspaceBackend" | "workspaceSnapshotDigest">;
+  readonly signal?: AbortSignal;
   readonly now?: () => Date;
 }
 
@@ -88,14 +99,49 @@ export async function runEvaluationTrials(
     await input.workspaceIsolator.cleanup(workspaceIdFor(record.trialId));
   }
 
+  if (input.attempts.active !== null) {
+    const attempt = reconcileActiveAttempt(input.plan, records, input.attempts.active);
+    const schedule = input.plan.schedule[records.length];
+    const task = input.plan.tasks.find((item) => item.id === schedule?.taskId);
+    if (schedule === undefined || task === undefined) {
+      throw new Error("active evaluation attempt references a missing scheduled trial");
+    }
+    const record = createEvaluationTrialRecord({
+      schedule,
+      planDigest: input.plan.planDigest,
+      previousDigest,
+      startedAt: attempt.startedAt,
+      completedAt: now().toISOString(),
+      environment: {
+        ...input.environment,
+        workspaceBackend: attempt.workspace.backend,
+        workspaceSnapshotDigest: attempt.workspace.snapshotDigest,
+      },
+      harness: {
+        outcome: "crashed",
+        runId: null,
+        reason: "adapter execution was interrupted after its durable start record",
+      },
+      verification: notRun(task.verifier.digest),
+      metrics: unavailableEvaluationMetrics(),
+    });
+    await input.append(record);
+    records.push(record);
+    previousDigest = record.recordDigest;
+    await input.attempts.complete(attempt);
+    await input.workspaceIsolator.cleanup(workspaceIdFor(attempt.trialId));
+  }
+
   for (const schedule of input.plan.schedule.slice(records.length)) {
+    if (isSignalAborted(input.signal)) {
+      break;
+    }
     const task = input.plan.tasks.find((item) => item.id === schedule.taskId);
     const profile = input.plan.profiles.find((item) => item.id === schedule.profileId);
     if (task === undefined || profile === undefined) {
       throw new Error(`evaluation schedule trial "${schedule.trialId}" references missing inputs`);
     }
     const workspaceId = workspaceIdFor(schedule.trialId);
-    await input.workspaceIsolator.cleanup(workspaceId);
     const startedAt = now().toISOString();
     let workspace: Awaited<ReturnType<WorkspaceIsolator["create"]>> | undefined;
     let harness: EvaluationHarnessOutcome = {
@@ -105,12 +151,16 @@ export async function runEvaluationTrials(
     };
     let metrics: EvaluationMetrics = unavailableEvaluationMetrics();
     let verification: EvaluationVerificationOutcome = notRun(task.verifier.digest);
+    let attempt: EvaluationTrialAttempt | undefined;
 
     try {
+      await input.workspaceIsolator.cleanup(workspaceId);
+      assertEvaluationActive(input.signal);
       const sourceObservation = await input.observeFixture(
         task.fixture.sourceCwd,
         task.fixture.instructionPath,
       );
+      assertEvaluationActive(input.signal);
       assertFixtureIdentity(
         task.fixture,
         sourceObservation,
@@ -120,11 +170,13 @@ export async function runEvaluationTrials(
         workspaceId,
         sourceCwd: task.fixture.sourceCwd,
       });
+      assertEvaluationActive(input.signal);
       workspace = Object.freeze({ ...createdWorkspace });
       const isolatedObservation = await input.observeFixture(
         workspace.cwd,
         task.fixture.instructionPath,
       );
+      assertEvaluationActive(input.signal);
       assertFixtureIdentity(
         task.fixture,
         isolatedObservation,
@@ -136,6 +188,27 @@ export async function runEvaluationTrials(
           `adapter "${adapter.kind}" cannot execute profile adapter "${profile.adapter}"`,
         );
       }
+      attempt = parseEvaluationTrialAttempt({
+        version: 1,
+        planDigest: input.plan.planDigest,
+        position: schedule.position,
+        trialId: schedule.trialId,
+        taskId: schedule.taskId,
+        profileId: schedule.profileId,
+        adapter: profile.adapter,
+        startedAt,
+        workspace: {
+          backend: workspace.backend,
+          snapshotDigest: workspace.snapshotDigest,
+        },
+      });
+      assertEvaluationActive(input.signal);
+      try {
+        await input.attempts.begin(attempt);
+      } catch (error) {
+        throw new EvaluationAttemptDurabilityError(error);
+      }
+      assertEvaluationActive(input.signal);
       let result: HarnessEvaluationResult | undefined;
       try {
         result = await adapter.run({
@@ -194,8 +267,22 @@ export async function runEvaluationTrials(
         }
       }
     } catch (error) {
+      if (error instanceof EvaluationAttemptDurabilityError) {
+        throw error.cause;
+      }
       harness = { outcome: "crashed", runId: null, reason: boundedReason(error) };
       metrics = unavailableEvaluationMetrics();
+    }
+
+    if (isSignalAborted(input.signal)) {
+      harness = {
+        outcome: "cancelled",
+        runId: harness.runId,
+        reason: boundedAbortReason(input.signal),
+        ...(harness.runtime === undefined ? {} : { runtime: harness.runtime }),
+      };
+      metrics = unavailableEvaluationMetrics();
+      verification = notRun(task.verifier.digest);
     }
 
     const completedAt = now().toISOString();
@@ -240,9 +327,62 @@ export async function runEvaluationTrials(
     await input.append(record);
     records.push(record);
     previousDigest = record.recordDigest;
+    if (attempt !== undefined) {
+      await input.attempts.complete(attempt);
+    }
     await input.workspaceIsolator.cleanup(workspaceId);
+    if (isSignalAborted(input.signal)) {
+      break;
+    }
   }
   return Object.freeze(records);
+}
+
+class EvaluationAttemptDurabilityError extends Error {
+  override readonly name = "EvaluationAttemptDurabilityError";
+
+  constructor(override readonly cause: unknown) {
+    super("evaluation adapter start record is not durable", { cause });
+  }
+}
+
+function reconcileActiveAttempt(
+  plan: EvaluationExecutionPlan,
+  records: readonly EvaluationTrialRecord[],
+  rawAttempt: EvaluationTrialAttempt,
+): EvaluationTrialAttempt {
+  const attempt = parseEvaluationTrialAttempt(rawAttempt);
+  const schedule = plan.schedule[records.length];
+  const profile = plan.profiles.find((item) => item.id === schedule?.profileId);
+  if (
+    schedule === undefined ||
+    profile === undefined ||
+    attempt.planDigest !== plan.planDigest ||
+    attempt.position !== schedule.position ||
+    attempt.trialId !== schedule.trialId ||
+    attempt.taskId !== schedule.taskId ||
+    attempt.profileId !== schedule.profileId ||
+    attempt.adapter !== profile.adapter
+  ) {
+    throw new Error("active evaluation attempt contradicts the next scheduled trial");
+  }
+  return attempt;
+}
+
+function boundedAbortReason(signal: AbortSignal | undefined): string {
+  const reason = signal?.reason;
+  const text = reason instanceof Error ? reason.message : String(reason ?? "evaluation cancelled");
+  return boundedReason(text);
+}
+
+function isSignalAborted(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true;
+}
+
+function assertEvaluationActive(signal: AbortSignal | undefined): void {
+  if (signal?.aborted === true) {
+    throw signal.reason instanceof Error ? signal.reason : new Error(boundedAbortReason(signal));
+  }
 }
 
 function workspaceIdFor(trialId: string): string {

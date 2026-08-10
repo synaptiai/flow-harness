@@ -9,7 +9,10 @@ import { createEvaluationTrialRecord } from "../../../../src/domain/evaluation/r
 import { createTuningEvidencePacket } from "../../../../src/domain/evaluation/tuning-evidence.js";
 import { compileWorkflowText } from "../../../../src/domain/workflow/compiler.js";
 import { calculateWorkflowDigest } from "../../../../src/domain/workflow/digest.js";
-import { admitLocalEvaluationPlan } from "../../../../src/infrastructure/fs/local-evaluation-plan.js";
+import {
+  admitLocalEvaluationPlan,
+  MAX_EVALUATION_INSTRUCTION_BYTES,
+} from "../../../../src/infrastructure/fs/local-evaluation-plan.js";
 import { createPublicEvaluationHeader } from "../../../../src/infrastructure/fs/local-evaluation-store.js";
 
 const temporaryDirectories: string[] = [];
@@ -100,9 +103,52 @@ describe("local evaluation plan admission", () => {
     const admitted = await admitLocalEvaluationPlan(join(project, "evaluation.yaml"));
     const header = createPublicEvaluationHeader(admitted, "direct-evaluation");
 
-    expect(header.profiles.every((profile) => profile.workflow.sourceKind === undefined)).toBe(
-      true,
+    expect(
+      header.profiles.every(
+        (profile) =>
+          profile.adapter === "flow-workflow-v1" && profile.workflow.sourceKind === undefined,
+      ),
+    ).toBe(true);
+  });
+
+  it("admits an external profile through one exact trusted harness identity", async () => {
+    const project = await evaluationProject();
+    const source = await readFile(join(project, "evaluation.yaml"), "utf8");
+    await writeFile(
+      join(project, "evaluation.yaml"),
+      source.replace(
+        "- { id: candidate, adapter: flow-workflow-v1, workflow: candidate.workflow.yaml }",
+        "- { id: candidate, adapter: pi-native-v1, harness: { config: pi-evaluation-v1 } }",
+      ),
     );
+    const identity = nativePiIdentity();
+
+    const admitted = await admitLocalEvaluationPlan(join(project, "evaluation.yaml"), {
+      resolveExternalHarnessIdentity: async (profile) => {
+        expect(profile).toEqual({
+          id: "candidate",
+          adapter: "pi-native-v1",
+          harness: { config: "pi-evaluation-v1" },
+        });
+        return identity;
+      },
+    });
+
+    expect(admitted.profiles[0]).toMatchObject({
+      id: "baseline",
+      adapter: "flow-workflow-v1",
+      workflow: { workflowDigest: expect.stringMatching(/^[a-f0-9]{64}$/) },
+    });
+    expect(admitted.profiles[1]).toEqual({
+      id: "candidate",
+      adapter: "pi-native-v1",
+      harness: identity,
+    });
+    expect(createPublicEvaluationHeader(admitted, "external-evaluation").profiles[1]).toEqual({
+      id: "candidate",
+      adapter: "pi-native-v1",
+      harness: identity,
+    });
   });
 
   it("admits a prompt-candidate profile as an exact projected workflow identity", async () => {
@@ -152,6 +198,9 @@ describe("local evaluation plan admission", () => {
 
     const admitted = await admitLocalEvaluationPlan(join(project, "evaluation.yaml"));
     const candidate = admitted.profiles[1];
+    if (candidate?.adapter !== "flow-workflow-v1") {
+      throw new Error("candidate profile fixture is not a Flow workflow");
+    }
     expect(candidate.candidate).toMatchObject({
       id: "better-instructions",
       candidateVersion: "1.0.0",
@@ -303,6 +352,19 @@ nodes:
 
     await expect(admitLocalEvaluationPlan(join(project, "evaluation.yaml"))).rejects.toThrow(
       /\.flow|isolation/i,
+    );
+  });
+
+  it("accepts the exact instruction limit and rejects one byte above it", async () => {
+    const project = await evaluationProject();
+    const instructionPath = join(project, "fixtures/edit-readme", "TASK.md");
+    await writeFile(instructionPath, "x".repeat(MAX_EVALUATION_INSTRUCTION_BYTES));
+
+    await expect(admitLocalEvaluationPlan(join(project, "evaluation.yaml"))).resolves.toBeDefined();
+
+    await writeFile(instructionPath, "x".repeat(MAX_EVALUATION_INSTRUCTION_BYTES + 1));
+    await expect(admitLocalEvaluationPlan(join(project, "evaluation.yaml"))).rejects.toThrow(
+      /instruction.*exceeds|limit/i,
     );
   });
 });
@@ -517,4 +579,49 @@ async function configureCandidateProfile(
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function nativePiIdentity() {
+  return Object.freeze({
+    version: 1 as const,
+    adapter: "pi-native-v1" as const,
+    adapterContractVersion: "1.0.0",
+    protocol: Object.freeze({
+      id: "flow-external-harness-jsonl-v1" as const,
+      maxFrameBytes: 1_048_576,
+      digest: "1".repeat(64),
+    }),
+    runtime: Object.freeze({
+      id: "srt-process-v1" as const,
+      package: "@anthropic-ai/sandbox-runtime",
+      version: "0.0.70",
+      packageContentSha256: "2".repeat(64),
+      policyDigest: "2".repeat(64),
+      platform: "linux" as const,
+      containment: "linux-pid-namespace" as const,
+    }),
+    driver: Object.freeze({
+      id: "native-pi-evaluation-v1" as const,
+      artifactSha256: "3".repeat(64),
+      dependencyClosureSha256: "3".repeat(64),
+      node: Object.freeze({ version: "22.19.0", executableSha256: "3".repeat(64) }),
+    }),
+    harness: Object.freeze({
+      package: "@earendil-works/pi-coding-agent" as const,
+      version: "0.84.0",
+      integrity:
+        "sha512-oxEU7BT9xuVT6UKNwUNDzNP5dVGb+DZRGfaEyMyAab8dRlqTSxxyhSlMAxmYsu//YOeasj9E8n2+px1BzIai0g==",
+      packageContentSha256: "4".repeat(64),
+      config: "pi-evaluation-v1" as const,
+      configDigest: "4".repeat(64),
+    }),
+    inference: Object.freeze({
+      id: "flow-pi-inference-v1" as const,
+      version: 1 as const,
+      package: "@earendil-works/pi-ai" as const,
+      packageVersion: "0.84.0",
+      packageIntegrity: `sha512-${"B".repeat(86)}==`,
+      packageContentSha256: "5".repeat(64),
+    }),
+  });
 }

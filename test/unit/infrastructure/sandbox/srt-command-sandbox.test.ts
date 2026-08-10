@@ -120,6 +120,35 @@ describe("SrtCommandSandbox", () => {
     expect(removeTemporaryDirectory).toHaveBeenCalledWith(privateTemp);
   });
 
+  it("mounts trusted runtime support paths as read-only inputs", async () => {
+    const manager = new FakeSrtManager();
+    const sandbox = createSandbox(manager);
+    const runtimeSupportPaths = [
+      "/Users/alice/flow-runtime/dist",
+      "/Users/alice/flow-runtime/node_modules",
+    ];
+
+    const prepared = await sandbox.prepare({
+      executable: "/usr/bin/node",
+      args: ["/Users/alice/flow-runtime/dist/native-pi-driver.js"],
+      cwd: workspace,
+      protectedPaths: [],
+      runtimeSupportPaths,
+    });
+
+    expect(manager.initializedConfig?.filesystem.allowRead).toEqual([
+      workspace,
+      privateTemp,
+      ...runtimeSupportPaths,
+      seccompApplyPath,
+    ]);
+    expect(manager.initializedConfig?.filesystem.allowWrite).toEqual([workspace, privateTemp]);
+    expect(manager.initializedConfig?.filesystem.denyWrite).toEqual(
+      expect.arrayContaining(runtimeSupportPaths),
+    );
+    await prepared.release();
+  });
+
   it("advertises verified Linux PID-namespace containment", async () => {
     const manager = new FakeSrtManager();
     manager.descriptor = [

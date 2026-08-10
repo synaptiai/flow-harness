@@ -54,7 +54,7 @@
     "lint": "biome lint .",
     "pack:check": "node scripts/verify-package.mjs",
     "test": "vitest run",
-    "test:coverage": "vitest run --coverage",
+    "test:coverage": "vitest run --coverage --maxWorkers=1",
     "test:live": "vitest run --config vitest.live.config.ts",
     "test:runtime": "vitest run --config vitest.runtime.config.ts",
     "typecheck": "tsc --noEmit"

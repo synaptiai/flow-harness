@@ -23,7 +23,7 @@ Gate 7 includes tuning-only prompt candidates, zero-tool model generation, exact
 paired evaluation, reviewed activation, durable run snapshots, and rollback.
 
 Remaining targets include executable extensions, signed registries, automatic updates, policy and
-UI packages, more evaluation adapters, external artifact storage, and stronger isolation.
+UI packages, OMP and Prime adapters, external artifact storage, and stronger isolation.
 
 ## Gate 0: Repository foundation
 
@@ -104,11 +104,14 @@ UI packages, more evaluation adapters, external artifact storage, and stronger i
 
 ## Product benchmark gate
 
-- Reproducible harness evaluation plans, paired scheduling, immutable trial evidence, offline
-  inspection/export, explicit missingness, and safety-constrained comparison are implemented for two
-  `flow-workflow-v1` profiles.
-- Native Pi, OMP, and Prime adapter implementations remain future work; the provider-neutral adapter
-  port and record/report contracts are implemented.
+- Reproducible harness evaluation is implemented for two Flow profiles. It includes paired
+  scheduling, immutable trial evidence, offline inspection and export, explicit missingness, and
+  constrained comparison.
+- A native Pi adapter also supports paired Flow-versus-Pi evaluation. It uses a pinned driver, SRT,
+  private host inference, durable adapter starts, installed-byte identity, Linux PID-namespace
+  containment, and parent-owned process evidence.
+- OMP and Prime adapter implementations remain future work. They can use the same runtime port and
+  evidence contracts.
 - A public claim that Flow beats the legacy plugin remains pending measured held-out evidence.
 
 The standalone harness is compared against the legacy plugin on held-out repository tasks using equivalent model configurations. Record:

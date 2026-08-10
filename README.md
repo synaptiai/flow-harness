@@ -37,7 +37,7 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Versioned command tool packages | Implemented for strict local or digest-pinned installed declarative manifests, exact per-agent selection, deterministic argv rendering, and the existing policy/approval/sandbox/journal boundary |
 | Versioned workflow packages | Implemented for strict local or digest-pinned installed inert source manifests, exact packaged roots and children, closed snapshot-only compilation, and durable replay identity |
 | Remote capability bundle distribution | Implemented with deterministic inert `.flowpkg` files, explicit public HTTPS plus SHA-256 installation, a content-addressed project store, deterministic lock, local audit/removal commands, and offline execution/recovery |
-| Reproducible harness evaluation | Implemented for paired `flow-workflow-v1` profiles, immutable task/workflow/verifier identity, fresh trial workspaces, private deterministic checks, digest-chained evidence, offline reports, and constrained paired comparison |
+| Reproducible harness evaluation | Implemented for paired Flow workflows and Flow-versus-native-Pi comparisons. Flow records exact identities, fresh workspaces, private checks, evidence, and constrained reports. |
 | Evidence-bound prompt candidates | Flow implements zero-tool model generation from tuning-only evidence, strict prompt overlays, paired evaluation, reviewed activation, durable run snapshots, and rollback |
 | Proof-safe fresh recovery of interrupted agent attempts | Implemented as explicit opt-in for read-only attempts and edit attempts proven not applied |
 | Fail-closed sandboxed command isolation | Flow implements filesystem and network isolation on Linux and macOS. Linux alone provides strict agent-command descendant lifecycle containment |
@@ -147,6 +147,18 @@ policy, zero-retry policy, fixtures, verifier identity, and seeds. Missing trial
 denominator and unavailable telemetry remains unavailable rather than becoming zero. See
 [Reproducible harness evaluation](docs/evaluation.md) for the plan contract, trust boundary,
 resume behavior, metrics, and comparison rules.
+
+The native Pi example compares one Flow workflow with the built-in Pi runtime:
+
+```sh
+node dist/cli/main.js eval validate examples/evaluation/native-pi-comparison.evaluation.yaml
+node dist/cli/main.js eval run examples/evaluation/native-pi-comparison.evaluation.yaml
+node dist/cli/main.js eval inspect native-pi-comparison
+```
+
+The native Pi driver runs in a separate SRT process on Linux. Flow requires the verified PID
+namespace. Flow keeps provider credentials in the host
+broker. Pi can use only workspace-confined `read` and `edit` tools in this profile.
 
 ### Evaluate an adaptive prompt candidate
 

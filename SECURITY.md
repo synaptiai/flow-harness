@@ -185,6 +185,26 @@ profile. These controls do not contain the host-side Pi process or a hostile sam
 do not make native isolation equivalent to a VM. Run adversarial fixtures under a dedicated OS
 identity or stronger boundary.
 
+The native Pi evaluation profile runs in a separate SRT process on Linux. Flow requires the
+verified PID namespace. Flow protects the plan root, evaluation state root, configured project
+`.flow` root, private workspace collections, and provider credential locations. The child receives
+no provider credential. The host broker owns provider access.
+
+The profile exposes only workspace-confined `read` and `edit` tools. Flow rejects absolute and
+relative paths that resolve outside the canonical trial workspace. The SRT policy supplies a
+second filesystem boundary and denies task network access.
+
+The parent and child use private pipes with signed, ordered, bounded JSONL frames. The session key
+does not enter the plan, environment, command line, workspace, or model context. The parent owns
+process and termination evidence.
+
+Admission binds the Node executable and the installed runtime-code closures for Flow, Pi, Pi AI,
+and SRT. Flow checks observed file and directory identities before each later trial. A change causes
+a full digest rebuild and rejects the admitted identity.
+
+SRT is not a microVM. It cannot protect against a kernel defect, an SRT defect, root, or a process
+with the same trusted account authority. Use a stronger runtime for hostile or multi-tenant tasks.
+
 Private verifier transport does not prevent author-side holdout contamination. Expected answers,
 hashes, hidden checks, evaluator logic, or prior result-bearing history placed in a fixture,
 instruction, profile prompt, package, or model-visible repository file are available to the harness.

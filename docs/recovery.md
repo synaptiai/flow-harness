@@ -365,6 +365,18 @@ An evaluation header binds the candidate, baseline, evidence, prompt changes, an
 Evaluation resume re-admits the supplied plan. It rejects candidate removal, replacement, and source
 changes. It continues only the missing schedule suffix.
 
+Each evaluation trial has one durable adapter-start record. Flow synchronizes this record before an
+adapter can contact a model or start an external harness. The record names the exact plan, schedule
+position, trial, profile, adapter, workspace snapshot, and start time.
+
+A terminal trial record retires the matching start record. If Flow restarts with an unresolved
+start, it records one interrupted harness failure. It does not call the adapter again. A conflicting
+start record makes the evaluation store corrupt.
+
+A native Pi resume also re-admits the complete external identity. A driver, local module, Node
+executable, Pi closure, Pi AI closure, SRT closure, protocol, configuration, sandbox policy,
+platform, containment, or broker-contract change rejects the old evaluation.
+
 For a child in an old workspace location, Flow first validates and moves the workspace. The first
 recovery event is `run_resumed.workspaceRelocation`. A parent writes this child event before it
 starts recovery in the child. Nested recovery applies the same order at each level.

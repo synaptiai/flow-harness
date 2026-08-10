@@ -52,6 +52,10 @@ const SEMANTIC_POLICY = Object.freeze({
   }),
 });
 
+export const FLOW_SANDBOX_POLICY_DIGEST = createHash("sha256")
+  .update(JSON.stringify(SEMANTIC_POLICY))
+  .digest("hex");
+
 interface ManagerRuntimeState {
   activeCommands: number;
   completeSession: (() => void) | undefined;
@@ -210,6 +214,11 @@ export class SrtCommandSandbox implements CommandSandbox {
           privateWorkspaceCollectionAncestors.map((path) => this.#canonicalize(path)),
         )),
       ]);
+      const canonicalRuntimeSupportPaths = Object.freeze(
+        await Promise.all(
+          [...new Set(request.runtimeSupportPaths ?? [])].map((path) => this.#canonicalize(path)),
+        ),
+      );
       if (this.#platform === "linux" && canonicalProjectRoot !== undefined) {
         assertLinuxProjectBoundary(canonicalWorkspace, canonicalProjectRoot);
       }
@@ -230,6 +239,7 @@ export class SrtCommandSandbox implements CommandSandbox {
         privateTemporaryDirectory,
         canonicalReadProtectedPaths,
         canonicalWriteProtectedPaths,
+        canonicalRuntimeSupportPaths,
         this.#homeDirectory,
         canonicalSeccompApplyPath,
         trustedBwrapPath,
@@ -239,6 +249,7 @@ export class SrtCommandSandbox implements CommandSandbox {
         canonicalWorkspace,
         canonicalReadProtectedPaths,
         canonicalWriteProtectedPaths,
+        canonicalRuntimeSupportPaths,
         this.#homeDirectory,
         canonicalSeccompApplyPath,
         trustedBwrapPath,
@@ -477,6 +488,7 @@ function sandboxSessionKey(
   workspace: string,
   readProtectedPaths: readonly string[],
   writeProtectedPaths: readonly string[],
+  runtimeSupportPaths: readonly string[],
   homeDirectory: string,
   seccompApplyPath: string | undefined,
   trustedBwrapPath: string | undefined,
@@ -488,6 +500,7 @@ function sandboxSessionKey(
         workspace,
         readProtectedPaths,
         writeProtectedPaths,
+        runtimeSupportPaths,
         homeDirectory,
         seccompApplyPath: seccompApplyPath ?? null,
         trustedBwrapPath: trustedBwrapPath ?? null,
@@ -501,11 +514,18 @@ function createRuntimeConfig(
   privateTemporaryDirectory: string,
   readProtectedPaths: readonly string[],
   writeProtectedPaths: readonly string[],
+  runtimeSupportPaths: readonly string[],
   homeDirectory: string,
   seccompApplyPath: string | undefined,
   trustedBwrapPath: string | undefined,
 ): SrtRuntimeConfig {
-  const allowRead = [workspace, privateTemporaryDirectory];
+  const allowRead = [
+    workspace,
+    privateTemporaryDirectory,
+    ...runtimeSupportPaths.filter(
+      (path) => !isAtOrWithin(path, workspace) && !isAtOrWithin(path, privateTemporaryDirectory),
+    ),
+  ];
   if (
     seccompApplyPath !== undefined &&
     !isAtOrWithin(seccompApplyPath, workspace) &&
@@ -548,6 +568,7 @@ function createRuntimeConfig(
       denyWrite: Object.freeze([
         ...new Set([
           ...writeProtectedPaths,
+          ...runtimeSupportPaths,
           join(workspace, ".flow"),
           join(workspace, ".flow-workspaces"),
           join(workspace, ".flow-workspaces/**"),
@@ -675,7 +696,7 @@ function sandboxEvidence(backendVersion: string): SandboxEvidence {
     backend: "anthropic-sandbox-runtime",
     backendVersion,
     profile: FLOW_SANDBOX_PROFILE,
-    policyDigest: createHash("sha256").update(JSON.stringify(SEMANTIC_POLICY)).digest("hex"),
+    policyDigest: FLOW_SANDBOX_POLICY_DIGEST,
   });
 }
 

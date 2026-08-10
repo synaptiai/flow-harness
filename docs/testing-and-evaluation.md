@@ -205,6 +205,21 @@ incomplete safety evidence, and constraint/verdict gates.
 Adapter telemetry tests also execute a child-only profile and require unprojected child activity,
 policy, intervention, and recovery measurements to remain unavailable.
 
+Native Pi tests cover the strict profile identity, registry drift, signed protocol, frame limits,
+durable adapter starts, cancellation, and process-tree termination. They also cover cumulative
+model token and cost limits. Registry tests change an installed dependency after admission. Runtime
+tests cover a blocked inference call, a total standard-error overflow, and Linux-only containment.
+
+Credential-free integration tests run the real Pi SDK through a fake host broker. Native runtime
+tests run the compiled driver through SRT. They deny access to project state, evaluation state,
+sibling workspaces, and process control input.
+
+The external CLI test runs a paired Flow and native Pi plan. It then inspects and exports the
+evidence without a live runtime. A separate import test blocks the production Pi runtime module and
+proves that offline inspection does not load it. The CLI test also protects the configured project
+`.flow` directory when the plan is in a different directory. It rejects prompt-tuning export for
+the external profile.
+
 Adaptation tests cover tuning-only projection, packet digests, omitted private fields, contradictory
 records, incomplete pairs, export limits, bounded errors, and impossible schedules. Candidate tests
 cover strict schemas, prompt whitespace, stale identities, unrelated evidence, invalid targets,
