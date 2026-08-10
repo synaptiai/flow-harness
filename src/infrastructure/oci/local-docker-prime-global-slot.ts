@@ -3,10 +3,10 @@ import { isDeepStrictEqual } from "node:util";
 import type { ExternalHarnessIdentity } from "../../domain/evaluation/external-harness.js";
 import type { DockerUnixApiClient } from "./docker-unix-api-client.js";
 import {
+  PrimeGlobalAdmissionUnsafeStateError,
   type PrimeGlobalSlotEngine,
   type PrimeGlobalSlotInspection,
   type PrimeGlobalSlotLease,
-  PrimeGlobalAdmissionUnsafeStateError,
 } from "./prime-global-admission.js";
 
 type PrimeIdentity = Extract<

@@ -17,7 +17,6 @@ import type {
 import { unavailableEvaluationMetrics } from "../../domain/evaluation/records.js";
 import type { NativePrimeHarnessDescriptor } from "../prime/native-prime-harness-registry.js";
 import type { PrimeOciAttachedTransport } from "./attached-prime-oci-operator.js";
-import type { PrimeGlobalSlotLease } from "./prime-global-admission.js";
 import {
   PrimeOciContainerLifecycle,
   type PrimeOciEngine,
@@ -25,6 +24,7 @@ import {
   type PrimeOciLifecycleCheckpoint,
   PrimeOciUnsafeStateError,
 } from "./prime-container-lifecycle.js";
+import type { PrimeGlobalSlotLease } from "./prime-global-admission.js";
 
 type PrimeIdentity = Extract<
   ExternalHarnessIdentity,
@@ -169,9 +169,10 @@ export class LocalPrimeOciHarnessRuntime implements ExternalHarnessRuntime {
               });
             },
             operationSignal,
-            cleanupSignal: (this.options.cleanupSignalFactory ?? createCleanupSignal)(
-              primeRequest.identity.runtime.policy.cleanupGraceMs,
-            ),
+            createCleanupSignal: () =>
+              (this.options.cleanupSignalFactory ?? createCleanupSignal)(
+                primeRequest.identity.runtime.policy.cleanupGraceMs,
+              ),
           });
         } catch (error) {
           if (error instanceof PrimeOciUnsafeStateError) {

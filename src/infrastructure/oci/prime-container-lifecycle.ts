@@ -38,7 +38,7 @@ export interface PrimeOciContainerLifecycleInput {
     checkpoint: (state: PrimeOciLifecycleCheckpoint) => Promise<void>,
   ) => Promise<void>;
   readonly operationSignal?: AbortSignal;
-  readonly cleanupSignal?: AbortSignal;
+  readonly createCleanupSignal?: () => AbortSignal | undefined;
 }
 
 export interface PrimeOciContainerRecoveryInput {
@@ -58,6 +58,7 @@ export class PrimeOciContainerLifecycle {
     let current: EvaluationOciLease = input.intent;
     let created: PrimeOciCreatedIdentity | undefined;
     let operationError: unknown;
+    const createCleanupSignal = memoizeSignal(input.createCleanupSignal);
 
     await input.update(current);
     try {
@@ -65,7 +66,7 @@ export class PrimeOciContainerLifecycle {
         created = await this.engine.create(input.intent, input.operationSignal);
       } catch (error) {
         operationError = error;
-        created = await this.#recoverLostCreate(input);
+        created = await this.#recoverLostCreate(input, createCleanupSignal);
       }
       if (created !== undefined) {
         current = await updateLease(input, {
@@ -105,7 +106,11 @@ export class PrimeOciContainerLifecycle {
     const cleanupError =
       created === undefined
         ? undefined
-        : await this.#cleanup(input, current, created.containerId).then(
+        : await this.#cleanup(
+            { update: input.update, createCleanupSignal },
+            current,
+            created.containerId,
+          ).then(
             () => undefined,
             (error: unknown) => error,
           );
@@ -146,7 +151,9 @@ export class PrimeOciContainerLifecycle {
       return this.#cleanup(
         {
           update: input.update,
-          ...(input.cleanupSignal === undefined ? {} : { cleanupSignal: input.cleanupSignal }),
+          ...(input.cleanupSignal === undefined
+            ? {}
+            : { createCleanupSignal: () => input.cleanupSignal as AbortSignal }),
         },
         current,
         created.containerId,
@@ -158,7 +165,9 @@ export class PrimeOciContainerLifecycle {
     return this.#cleanup(
       {
         update: input.update,
-        ...(input.cleanupSignal === undefined ? {} : { cleanupSignal: input.cleanupSignal }),
+        ...(input.cleanupSignal === undefined
+          ? {}
+          : { createCleanupSignal: () => input.cleanupSignal as AbortSignal }),
       },
       input.lease,
       input.lease.containerId,
@@ -167,9 +176,10 @@ export class PrimeOciContainerLifecycle {
 
   async #recoverLostCreate(
     input: PrimeOciContainerLifecycleInput,
+    createCleanupSignal: () => AbortSignal | undefined,
   ): Promise<PrimeOciCreatedIdentity | undefined> {
     try {
-      return (await this.engine.recoverIntent(input.intent, input.cleanupSignal)) ?? undefined;
+      return (await this.engine.recoverIntent(input.intent, createCleanupSignal())) ?? undefined;
     } catch (error) {
       throw new PrimeOciUnsafeStateError("Prime OCI create outcome cannot be recovered", {
         cause: error,
@@ -178,14 +188,15 @@ export class PrimeOciContainerLifecycle {
   }
 
   async #cleanup(
-    input: Pick<PrimeOciContainerLifecycleInput, "update" | "cleanupSignal">,
+    input: Pick<PrimeOciContainerLifecycleInput, "update" | "createCleanupSignal">,
     currentInput: EvaluationOciLease,
     containerId: string,
   ): Promise<EvaluationOciLease> {
     let current = currentInput;
+    const cleanupSignal = input.createCleanupSignal?.();
     let stopError: unknown;
     try {
-      await this.engine.stop(containerId, input.cleanupSignal);
+      await this.engine.stop(containerId, cleanupSignal);
       current = await updateLease(input, { ...current, state: "stopped" });
     } catch (error) {
       stopError = error;
@@ -193,14 +204,14 @@ export class PrimeOciContainerLifecycle {
 
     let removeError: unknown;
     try {
-      await this.engine.remove(containerId, input.cleanupSignal);
+      await this.engine.remove(containerId, cleanupSignal);
     } catch (error) {
       removeError = error;
     }
 
     let removed = false;
     try {
-      removed = await this.engine.confirmRemoved(containerId, input.cleanupSignal);
+      removed = await this.engine.confirmRemoved(containerId, cleanupSignal);
     } catch (error) {
       removeError = combineErrors(removeError, error);
     }
@@ -237,4 +248,14 @@ function combineErrors(primary: unknown, secondary: unknown): unknown {
     return primary;
   }
   return new AggregateError([primary, secondary], "Prime OCI operation and cleanup both failed");
+}
+
+function memoizeSignal(
+  factory: PrimeOciContainerLifecycleInput["createCleanupSignal"],
+): () => AbortSignal | undefined {
+  let signal: AbortSignal | undefined;
+  return () => {
+    signal ??= factory?.();
+    return signal;
+  };
 }

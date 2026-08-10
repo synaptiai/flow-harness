@@ -5,9 +5,10 @@ import type { ExternalHarnessIdentity } from "../../domain/evaluation/external-h
 import { AttachedPrimeOciOperator } from "../oci/attached-prime-oci-operator.js";
 import { DockerUnixApiClient } from "../oci/docker-unix-api-client.js";
 import { DurablePrimeWorkspacePublisher } from "../oci/durable-prime-workspace-publisher.js";
-import { LocalDockerPrimeOciEngine } from "../oci/local-docker-prime-oci-engine.js";
 import { LocalDockerPrimeGlobalSlotEngine } from "../oci/local-docker-prime-global-slot.js";
+import { LocalDockerPrimeOciEngine } from "../oci/local-docker-prime-oci-engine.js";
 import { LocalPrimeGlobalSlotStore } from "../oci/local-prime-global-slot-store.js";
+import { LocalPrimeHostAdmissionProbe } from "../oci/local-prime-host-admission-probe.js";
 import {
   LocalPrimeOciHarnessRuntime,
   type PrimeOciGlobalAdmission,
@@ -16,15 +17,15 @@ import {
   createLocalPrimeOciFixtureSource,
   StagedPrimeOciResultSink,
 } from "../oci/local-prime-workspace-transfer.js";
-import { createPrimeOciIntent } from "../oci/prime-oci-intent.js";
-import { validatePrimeOciReadiness } from "../oci/prime-oci-readiness.js";
 import {
   PrimeGlobalAdmissionController,
   PrimeGlobalAdmissionUnsafeStateError,
   type PrimeGlobalSlotLease,
 } from "../oci/prime-global-admission.js";
-import { NativePrimeHostInferenceBroker } from "../prime/native-prime-host-inference-broker.js";
+import { createPrimeOciIntent } from "../oci/prime-oci-intent.js";
+import { validatePrimeOciReadiness } from "../oci/prime-oci-readiness.js";
 import type { NativePrimeHarnessDescriptor } from "../prime/native-prime-harness-registry.js";
+import { NativePrimeHostInferenceBroker } from "../prime/native-prime-host-inference-broker.js";
 import { BuiltInExternalHarnessInferenceBroker } from "../process/built-in-external-harness-inference-broker.js";
 import { BuiltInExternalHarnessRuntime } from "../process/built-in-external-harness-runtime.js";
 import {
@@ -122,8 +123,18 @@ export function createProductionPrimeOciRuntime(
 
 function createProductionGlobalAdmission(): PrimeOciGlobalAdmission {
   const controllers = new Map<string, PrimeGlobalAdmissionController>();
+  const hostProbe = new LocalPrimeHostAdmissionProbe();
   const admission: PrimeOciGlobalAdmission = {
     acquire: async (_request, descriptor, signal) => {
+      await hostProbe.observe(
+        {
+          cgroupPath: descriptor.localRuntime.cgroupPath,
+          imageProbe: descriptor.localRuntime.imageProbe,
+          imageDevice: descriptor.localRuntime.imageDevice,
+        },
+        descriptor.identity.runtime.policy,
+        signal,
+      );
       const controller = createGlobalAdmissionController(descriptor);
       const lease = await controller.acquire(signal);
       if (controllers.has(lease.ownerNonce)) {

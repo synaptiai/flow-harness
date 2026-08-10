@@ -1,4 +1,4 @@
-import { constants, type BigIntStats } from "node:fs";
+import { type BigIntStats, constants } from "node:fs";
 import {
   type FileHandle,
   link,
@@ -13,10 +13,10 @@ import { basename, dirname, join, resolve } from "node:path";
 
 import { parseStrictJson } from "../../domain/strict-json.js";
 import {
-  parsePrimeGlobalSlotLease,
   PrimeGlobalAdmissionUnsafeStateError,
   type PrimeGlobalSlotLease,
   type PrimeGlobalSlotStore,
+  parsePrimeGlobalSlotLease,
 } from "./prime-global-admission.js";
 
 const MAX_LEASE_BYTES = 8_192;

@@ -161,6 +161,7 @@ describe("local Prime OCI harness runtime", () => {
       createEngine: vi.fn(async () => fakeEngine()),
       createIntent: vi.fn(async (request) => intentLease(request.evaluation.trial.trialId)),
       operate: vi.fn(async () => {
+        expect(cleanupSignalFactory).not.toHaveBeenCalled();
         const reason = new Error("Prime execution deadline expired");
         deadlineController.abort(reason);
         throw reason;
@@ -288,6 +289,12 @@ function primeDescriptor(): NativePrimeHarnessDescriptor & {
       corePattern: "core",
       globalLeasePath: "/var/lib/flow-prime/global-slot.json",
       imageDevice: { path: "/dev/test-image", major: 8, minor: 1 },
+      imageProbe: {
+        executablePath: "/usr/bin/dd",
+        executableSha256: "b".repeat(64),
+        readBytesPerSecond: 134_217_728,
+        readOperationsPerSecond: 8_192,
+      },
       leaseTarget: "flow-prime-global-v1",
       seccompProfile: { defaultAction: "SCMP_ACT_ERRNO", syscalls: [] },
     },

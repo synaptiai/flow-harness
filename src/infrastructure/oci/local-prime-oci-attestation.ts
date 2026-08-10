@@ -1,6 +1,6 @@
-import { constants, type BigIntStats } from "node:fs";
-import { lstat, open } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { type BigIntStats, constants } from "node:fs";
+import { lstat, open } from "node:fs/promises";
 
 import { z } from "zod";
 
@@ -56,6 +56,14 @@ const descriptorSchema = z
             minor: safeInteger,
           })
           .strict(),
+        imageProbe: z
+          .object({
+            executablePath: absolutePathSchema,
+            executableSha256: sha256Schema,
+            readBytesPerSecond: safeInteger,
+            readOperationsPerSecond: safeInteger,
+          })
+          .strict(),
         leaseTarget: z.literal("flow-prime-global-v1"),
         seccompProfile: z.record(z.string(), z.unknown()),
       })
@@ -77,6 +85,12 @@ export interface PrimeOciLocalRuntimeAttestation {
     readonly path: string;
     readonly major: number;
     readonly minor: number;
+  };
+  readonly imageProbe: {
+    readonly executablePath: string;
+    readonly executableSha256: string;
+    readonly readBytesPerSecond: number;
+    readonly readOperationsPerSecond: number;
   };
   readonly leaseTarget: "flow-prime-global-v1";
   readonly seccompProfile: Readonly<Record<string, unknown>>;
@@ -116,6 +130,14 @@ export class LocalPrimeOciAttestationStore {
     const image = parsePrimeOciImageIdentity(snapshot.descriptor.image);
     if (snapshot.descriptor.local.apiVersion !== runtime.engine.apiVersion) {
       throw new Error("Prime OCI Docker API version contradicts the public runtime identity");
+    }
+    if (
+      snapshot.descriptor.local.imageProbe.readBytesPerSecond <
+        runtime.policy.minImageReadBytesPerSecond ||
+      snapshot.descriptor.local.imageProbe.readOperationsPerSecond <
+        runtime.policy.minImageReadOperationsPerSecond
+    ) {
+      throw new Error("Prime OCI prepared image capacity is below the public runtime policy");
     }
     const seccompDigest = sha256(
       canonicalize(snapshot.descriptor.local.seccompProfile as StrictJsonValue),

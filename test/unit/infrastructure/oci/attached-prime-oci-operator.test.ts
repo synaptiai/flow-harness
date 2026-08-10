@@ -272,6 +272,42 @@ describe("attached Prime OCI operator", () => {
     expect(resultSink.commit).not.toHaveBeenCalled();
     expect(resultSink.abort).toHaveBeenCalledOnce();
   });
+
+  it("does not wait forever for a non-cooperative broker close after cancellation", async () => {
+    const controller = new AbortController();
+    const transport: PrimeOciAttachedTransport = {
+      output: outputFrames([]),
+      write: vi.fn(async () => undefined),
+      closeInput: vi.fn(async () => undefined),
+      release: vi.fn(async () => undefined),
+    };
+    const operator = new AttachedPrimeOciOperator({
+      fixture: fixture([], new Map()),
+      resultSink: sink(),
+      inferenceBroker: {
+        infer: vi.fn(),
+        close: vi.fn(() => {
+          controller.abort(new Error("Prime operation cancelled during broker close"));
+          return new Promise<void>(() => undefined);
+        }),
+      },
+      validateReadiness: vi.fn(async () => undefined),
+    });
+    const input = {
+      ...operationInput(async () => undefined, transport),
+      signal: controller.signal,
+    };
+
+    const outcome = await Promise.race([
+      operator.operate(input).then(
+        () => "resolved",
+        () => "rejected",
+      ),
+      new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 50)),
+    ]);
+
+    expect(outcome).toBe("rejected");
+  });
 });
 
 function operationInput(
@@ -327,6 +363,12 @@ function operationInput(
         corePattern: "core",
         globalLeasePath: "/var/lib/flow-prime/global-slot.json",
         imageDevice: { path: "/dev/test-image", major: 8, minor: 1 },
+        imageProbe: {
+          executablePath: "/usr/bin/dd",
+          executableSha256: "b".repeat(64),
+          readBytesPerSecond: 134_217_728,
+          readOperationsPerSecond: 8_192,
+        },
         leaseTarget: "flow-prime-global-v1",
         seccompProfile: { defaultAction: "SCMP_ACT_ERRNO", syscalls: [] },
       },

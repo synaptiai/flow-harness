@@ -272,7 +272,10 @@ export class AttachedPrimeOciOperator {
       cleanupError = combineErrors(cleanupError, error);
     }
     try {
-      await this.options.inferenceBroker.close?.(input.request.evaluation);
+      const closePromise = this.options.inferenceBroker.close?.(input.request.evaluation);
+      if (closePromise !== undefined) {
+        await waitForAbortable(closePromise, input.signal);
+      }
     } catch (error) {
       cleanupError = combineErrors(cleanupError, error);
     }
@@ -442,6 +445,27 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted === true) {
     throw signal.reason instanceof Error ? signal.reason : new Error("Prime OCI operation aborted");
   }
+}
+
+async function waitForAbortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (signal === undefined) {
+    return promise;
+  }
+  throwIfAborted(signal);
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason ?? new Error("Prime OCI operation aborted"));
+    signal.addEventListener("abort", abort, { once: true });
+    void promise.then(
+      (value) => {
+        signal.removeEventListener("abort", abort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", abort);
+        reject(error);
+      },
+    );
+  });
 }
 
 function combineErrors(primary: unknown, secondary: unknown): unknown {
