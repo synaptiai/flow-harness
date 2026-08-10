@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { ExternalHarnessIdentity } from "../../../../src/domain/evaluation/external-harness.js";
 import { BuiltInExternalHarnessRegistry } from "../../../../src/infrastructure/process/built-in-external-harness-registry.js";
+import type { NativePrimeHarnessDescriptor } from "../../../../src/infrastructure/prime/native-prime-harness-registry.js";
 import { primeExternalHarnessIdentity } from "../../../fixtures/evaluation/prime-external-harness-identity.js";
 
 describe("built-in external harness registry", () => {
@@ -18,9 +19,10 @@ describe("built-in external harness registry", () => {
       resolveAdmitted: vi.fn(),
     };
     const createOmp = vi.fn(() => omp);
+    const primeDescriptor = { identity: primeIdentity } as NativePrimeHarnessDescriptor;
     const prime = {
       resolveIdentity: vi.fn(async () => primeIdentity),
-      resolveAdmitted: vi.fn(),
+      resolveAdmitted: vi.fn(async () => primeDescriptor),
     };
     const createPrime = vi.fn(() => prime);
     const registry = new BuiltInExternalHarnessRegistry({ pi, createOmp, createPrime });
@@ -51,6 +53,7 @@ describe("built-in external harness registry", () => {
         harness: { config: "prime-agent-rlm-evaluation-v1" },
       }),
     ).resolves.toBe(primeIdentity);
+    await expect(registry.resolvePrimeAdmitted(primeIdentity)).resolves.toBe(primeDescriptor);
     expect(createPrime).toHaveBeenCalledOnce();
   });
 });

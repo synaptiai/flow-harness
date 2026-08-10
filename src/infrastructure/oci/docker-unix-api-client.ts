@@ -8,7 +8,7 @@ const DEFAULT_MAX_RESPONSE_BYTES = 1_048_576;
 const DEFAULT_MAX_ATTACH_STDERR_BYTES = 65_536;
 const DEFAULT_MAX_ATTACH_STDOUT_FRAME_BYTES = 1_048_581;
 const MAX_REQUEST_BYTES = 1_048_576;
-const containerReferencePattern = /^(?:[a-f0-9]{64}|flow-prime-[a-f0-9]{32})$/;
+const containerReferencePattern = /^(?:[a-f0-9]{64}|flow-prime-[a-f0-9]{32}|flow-prime-global-v1)$/;
 
 export interface DockerUnixApiRequest {
   readonly socketPath: string;

@@ -29,8 +29,10 @@ describe("local Prime OCI harness runtime", () => {
       return evidence;
     });
     const clockValues = [10.2, 25.8];
+    const globalAdmission = fakeGlobalAdmission();
     const runtime = new LocalPrimeOciHarnessRuntime({
       registry: { resolveAdmitted: vi.fn(async () => descriptor) },
+      globalAdmission,
       createEngine: vi.fn(async () => fakeEngine()),
       createIntent: vi.fn(async (request) => intentLease(request.evaluation.trial.trialId)),
       operate,
@@ -72,6 +74,8 @@ describe("local Prime OCI harness runtime", () => {
       "removed",
     ]);
     expect(descriptor.assertCurrent).toHaveBeenCalledTimes(1);
+    expect(globalAdmission.acquire).toHaveBeenCalledOnce();
+    expect(globalAdmission.release).toHaveBeenCalledOnce();
     expect(operate).toHaveBeenCalledTimes(1);
   });
 
@@ -79,6 +83,7 @@ describe("local Prime OCI harness runtime", () => {
     const createEngine = vi.fn(async () => fakeEngine());
     const runtime = new LocalPrimeOciHarnessRuntime({
       registry: { resolveAdmitted: vi.fn(async () => primeDescriptor()) },
+      globalAdmission: fakeGlobalAdmission(),
       createEngine,
       createIntent: vi.fn(),
       operate: vi.fn(),
@@ -91,6 +96,7 @@ describe("local Prime OCI harness runtime", () => {
     await expect(
       new LocalPrimeOciHarnessRuntime({
         registry: { resolveAdmitted: vi.fn(async () => primeDescriptor()) },
+        globalAdmission: fakeGlobalAdmission(),
         createEngine,
         createIntent: vi.fn(),
         operate: vi.fn(),
@@ -106,8 +112,10 @@ describe("local Prime OCI harness runtime", () => {
   it("recovers an intent that has no Docker object", async () => {
     const descriptor = primeDescriptor();
     const engine = fakeEngine({ recoveredIntent: null });
+    const globalAdmission = fakeGlobalAdmission();
     const runtime = new LocalPrimeOciHarnessRuntime({
       registry: { resolveAdmitted: vi.fn(async () => descriptor) },
+      globalAdmission,
       createEngine: vi.fn(async () => engine),
       createIntent: vi.fn(),
       operate: vi.fn(),
@@ -137,6 +145,7 @@ describe("local Prime OCI harness runtime", () => {
     });
 
     expect(recovered.ociLease?.state).toBe("absent");
+    expect(globalAdmission.recover).toHaveBeenCalledOnce();
     expect(updates.map((lease) => lease.state)).toEqual(["absent"]);
   });
 
@@ -148,6 +157,7 @@ describe("local Prime OCI harness runtime", () => {
     const clockValues = [10, 42];
     const runtime = new LocalPrimeOciHarnessRuntime({
       registry: { resolveAdmitted: vi.fn(async () => descriptor) },
+      globalAdmission: fakeGlobalAdmission(),
       createEngine: vi.fn(async () => fakeEngine()),
       createIntent: vi.fn(async (request) => intentLease(request.evaluation.trial.trialId)),
       operate: vi.fn(async () => {
@@ -201,9 +211,10 @@ describe("local Prime OCI harness runtime", () => {
     const descriptor = primeDescriptor();
     const runtime = new LocalPrimeOciHarnessRuntime({
       registry: { resolveAdmitted: vi.fn(async () => descriptor) },
+      globalAdmission: fakeGlobalAdmission(),
       createEngine: vi.fn(async () => fakeEngine()),
       createIntent: vi.fn(async (request) => intentLease(request.evaluation.trial.trialId)),
-      operate: vi.fn(async (input) => {
+      operate: vi.fn(async (input): Promise<PrimeOciOperationEvidence> => {
         await input.checkpoint("terminal");
         await input.checkpoint("exported");
         return {
@@ -268,6 +279,18 @@ function primeDescriptor(): NativePrimeHarnessDescriptor & {
   return {
     identity,
     identityDigest: "e".repeat(64),
+    localRuntime: {
+      daemonId: "daemon-test-id",
+      socketPath: "/var/run/docker.sock",
+      socket: { device: 1, inode: 2, uid: 0, gid: 999, mode: 0o660 },
+      apiVersion: "1.51",
+      cgroupPath: "/sys/fs/cgroup/flow-prime",
+      corePattern: "core",
+      globalLeasePath: "/var/lib/flow-prime/global-slot.json",
+      imageDevice: { path: "/dev/test-image", major: 8, minor: 1 },
+      leaseTarget: "flow-prime-global-v1",
+      seccompProfile: { defaultAction: "SCMP_ACT_ERRNO", syscalls: [] },
+    },
     assertCurrent: vi.fn(async () => undefined),
   };
 }
@@ -334,5 +357,22 @@ function completedEvidence(): PrimeOciOperationEvidence {
       ...unavailableEvaluationMetrics(),
       wallTimeMs: 16,
     })),
+  };
+}
+
+function fakeGlobalAdmission() {
+  const lease = {
+    version: 1 as const,
+    state: "owned" as const,
+    lockName: "flow-prime-global-v1" as const,
+    ownerNonce: "1".repeat(64),
+    policyDigest: "9".repeat(64),
+    daemonId: "daemon-test-id",
+    objectId: "2".repeat(64),
+  };
+  return {
+    acquire: vi.fn(async () => lease),
+    release: vi.fn(async () => undefined),
+    recover: vi.fn(async () => undefined),
   };
 }

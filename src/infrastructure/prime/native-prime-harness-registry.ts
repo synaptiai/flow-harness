@@ -12,6 +12,7 @@ import {
   readTrustedRuntimeTree,
   sha256,
 } from "../pi/native-pi-harness-registry.js";
+import type { PrimeOciLocalRuntimeAttestation } from "../oci/local-prime-oci-attestation.js";
 
 const NATIVE_PRIME_ADAPTER_CONTRACT_VERSION = "1.0.0";
 const PRIME_AGENT_VERSION = "0.7.1";
@@ -56,12 +57,14 @@ export interface PrimeOciIdentityAttestation {
   readonly image: NativePrimeIdentity["image"];
   readonly harnessPackageContentSha256: string;
   readonly harnessDependencyClosureSha256: string;
+  readonly localRuntime: PrimeOciLocalRuntimeAttestation;
   assertCurrent(): Promise<void>;
 }
 
 export interface NativePrimeHarnessDescriptor {
   readonly identity: NativePrimeIdentity;
   readonly identityDigest: string;
+  readonly localRuntime: PrimeOciLocalRuntimeAttestation;
   assertCurrent(): Promise<void>;
 }
 
@@ -75,6 +78,7 @@ export interface NativePrimeHarnessRegistryOptions {
   readonly noIoResourceLoaderPath?: string;
   readonly inferenceBrokerPath?: string;
   readonly sourceRoot?: string;
+  readonly attestationPath?: string;
   readonly resolveOciIdentity?: () => Promise<PrimeOciIdentityAttestation>;
 }
 
@@ -118,7 +122,10 @@ export class NativePrimeHarnessRegistry {
     });
     this.#resolveOciIdentity =
       options.resolveOciIdentity ??
-      (() => Promise.reject(new Error("Prime OCI identity attestation is not configured")));
+      createLocalAttestationResolver(
+        options.attestationPath ??
+          resolve(process.cwd(), ".flow", "runtime", "prime-agent", "oci-attestation.json"),
+      );
   }
 
   async resolve(profile: NativePrimeProfileSource): Promise<NativePrimeHarnessDescriptor> {
@@ -261,11 +268,19 @@ export class NativePrimeHarnessRegistry {
     const descriptor = Object.freeze({
       identity,
       identityDigest: externalHarnessIdentityDigest(identity),
+      localRuntime: attestation.localRuntime,
       assertCurrent,
     });
     this.#cached = Object.freeze({ descriptor, observations, attestation });
     return descriptor;
   }
+}
+
+function createLocalAttestationResolver(path: string): () => Promise<PrimeOciIdentityAttestation> {
+  return async () => {
+    const { LocalPrimeOciAttestationStore } = await import("../oci/local-prime-oci-attestation.js");
+    return new LocalPrimeOciAttestationStore({ descriptorPath: path }).read();
+  };
 }
 
 function defaultArtifactPaths(): PrimeArtifactPaths {

@@ -85,6 +85,15 @@ export class BuiltInExternalHarnessRegistry implements ExternalHarnessRegistry {
     throw new Error("Prime Agent does not use the local process descriptor registry");
   }
 
+  async resolvePrimeAdmitted(
+    identity: ExternalHarnessIdentity,
+  ): Promise<NativePrimeHarnessDescriptor> {
+    if (identity.adapter !== "prime-agent-native-v1") {
+      throw new Error("only Prime Agent can use the OCI descriptor registry");
+    }
+    return this.#primeRegistry().resolveAdmitted(identity);
+  }
+
   #ompRegistry(): OmpHarnessRegistry {
     this.#omp ??= this.#createOmp();
     return this.#omp;

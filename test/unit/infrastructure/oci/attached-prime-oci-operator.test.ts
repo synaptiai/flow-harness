@@ -318,6 +318,18 @@ function operationInput(
     descriptor: {
       identity,
       identityDigest,
+      localRuntime: {
+        daemonId: "daemon-test-id",
+        socketPath: "/var/run/docker.sock",
+        socket: { device: 1, inode: 2, uid: 0, gid: 999, mode: 0o660 },
+        apiVersion: "1.51",
+        cgroupPath: "/sys/fs/cgroup/flow-prime",
+        corePattern: "core",
+        globalLeasePath: "/var/lib/flow-prime/global-slot.json",
+        imageDevice: { path: "/dev/test-image", major: 8, minor: 1 },
+        leaseTarget: "flow-prime-global-v1",
+        seccompProfile: { defaultAction: "SCMP_ACT_ERRNO", syscalls: [] },
+      },
       assertCurrent: vi.fn(async () => undefined),
     },
     containerId: "f".repeat(64),

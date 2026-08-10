@@ -8,6 +8,22 @@ import {
 } from "../../../../src/infrastructure/oci/docker-unix-api-client.js";
 
 describe("Docker Unix API client", () => {
+  it("accepts the one fixed Prime global slot name", async () => {
+    const transport: DockerUnixApiTransport = {
+      request: vi.fn(async () => ({
+        statusCode: 201,
+        body: JSON.stringify({ Id: "a".repeat(64) }),
+      })),
+    };
+    const client = new DockerUnixApiClient({
+      socketPath: "/var/run/docker.sock",
+      apiVersion: "1.51",
+      transport,
+    });
+
+    await expect(client.createContainer("flow-prime-global-v1", {})).resolves.toBe("a".repeat(64));
+  });
+
   it("uses one fixed socket and versioned API paths", async () => {
     const containerName = `flow-prime-${"c".repeat(32)}`;
     const requests: Record<string, unknown>[] = [];

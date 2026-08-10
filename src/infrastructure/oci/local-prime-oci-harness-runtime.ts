@@ -17,6 +17,7 @@ import type {
 import { unavailableEvaluationMetrics } from "../../domain/evaluation/records.js";
 import type { NativePrimeHarnessDescriptor } from "../prime/native-prime-harness-registry.js";
 import type { PrimeOciAttachedTransport } from "./attached-prime-oci-operator.js";
+import type { PrimeGlobalSlotLease } from "./prime-global-admission.js";
 import {
   PrimeOciContainerLifecycle,
   type PrimeOciEngine,
@@ -32,6 +33,23 @@ type PrimeIdentity = Extract<
 
 export interface PrimeOciRuntimeRegistry {
   resolveAdmitted(identity: ExternalHarnessIdentity): Promise<NativePrimeHarnessDescriptor>;
+}
+
+export interface PrimeOciGlobalAdmission {
+  acquire(
+    request: ExternalHarnessRuntimeRequest & { readonly identity: PrimeIdentity },
+    descriptor: NativePrimeHarnessDescriptor,
+    signal?: AbortSignal,
+  ): Promise<PrimeGlobalSlotLease>;
+  release(lease: PrimeGlobalSlotLease, signal?: AbortSignal): Promise<void>;
+  recover(
+    request: {
+      readonly identity: PrimeIdentity;
+      readonly attempt: EvaluationTrialAttempt;
+    },
+    descriptor: NativePrimeHarnessDescriptor,
+    signal?: AbortSignal,
+  ): Promise<void>;
 }
 
 export interface PrimeOciOperationInput {
@@ -58,6 +76,7 @@ export interface PrimeOciOperationEvidence {
 
 export interface LocalPrimeOciHarnessRuntimeOptions {
   readonly registry: PrimeOciRuntimeRegistry;
+  readonly globalAdmission: PrimeOciGlobalAdmission;
   readonly createEngine: (
     descriptor: NativePrimeHarnessDescriptor,
     signal?: AbortSignal,
@@ -109,92 +128,111 @@ export class LocalPrimeOciHarnessRuntime implements ExternalHarnessRuntime {
         this.options.registry.resolveAdmitted(primeRequest.identity),
         operationSignal,
       );
-      const engine = await waitForAbortable(
-        this.options.createEngine(descriptor, operationSignal),
+      const globalLease = await waitForAbortable(
+        this.options.globalAdmission.acquire(primeRequest, descriptor, operationSignal),
         operationSignal,
       );
-      const intent = parseEvaluationOciLease(
-        await waitForAbortable(
-          this.options.createIntent(primeRequest, descriptor, operationSignal),
-          operationSignal,
-        ),
-      );
-      if (intent.state !== "intent") {
-        throw new Error("Prime OCI execution must start with an intent lease");
-      }
-      if (intent.labels.trialId !== primeRequest.evaluation.trial.trialId) {
-        throw new Error("Prime OCI intent lease contradicts the trial identity");
-      }
-
-      let evidence: PrimeOciOperationEvidence | undefined;
-      let lifecycleError: unknown;
+      let retainGlobalSlot = false;
       try {
-        await new PrimeOciContainerLifecycle(engine).run({
-          intent: intent as PrimeOciIntentLease,
-          update: durability.updateOciLease,
-          assertCurrent: () => waitForAbortable(descriptor.assertCurrent(), operationSignal),
-          operate: async (containerId, transport, checkpoint) => {
-            evidence = await this.options.operate({
-              request: primeRequest,
-              descriptor,
-              containerId,
-              transport,
-              checkpoint,
-              signal: operationSignal,
-            });
-          },
+        const engine = await waitForAbortable(
+          this.options.createEngine(descriptor, operationSignal),
           operationSignal,
-          cleanupSignal: (this.options.cleanupSignalFactory ?? createCleanupSignal)(
-            primeRequest.identity.runtime.policy.cleanupGraceMs,
+        );
+        const intent = parseEvaluationOciLease(
+          await waitForAbortable(
+            this.options.createIntent(primeRequest, descriptor, operationSignal),
+            operationSignal,
           ),
+        );
+        if (intent.state !== "intent") {
+          throw new Error("Prime OCI execution must start with an intent lease");
+        }
+        if (intent.labels.trialId !== primeRequest.evaluation.trial.trialId) {
+          throw new Error("Prime OCI intent lease contradicts the trial identity");
+        }
+
+        let evidence: PrimeOciOperationEvidence | undefined;
+        let lifecycleError: unknown;
+        try {
+          await new PrimeOciContainerLifecycle(engine).run({
+            intent: intent as PrimeOciIntentLease,
+            update: durability.updateOciLease,
+            assertCurrent: () => waitForAbortable(descriptor.assertCurrent(), operationSignal),
+            operate: async (containerId, transport, checkpoint) => {
+              evidence = await this.options.operate({
+                request: primeRequest,
+                descriptor,
+                containerId,
+                transport,
+                checkpoint,
+                signal: operationSignal,
+              });
+            },
+            operationSignal,
+            cleanupSignal: (this.options.cleanupSignalFactory ?? createCleanupSignal)(
+              primeRequest.identity.runtime.policy.cleanupGraceMs,
+            ),
+          });
+        } catch (error) {
+          if (error instanceof PrimeOciUnsafeStateError) {
+            throw error;
+          }
+          lifecycleError = error;
+        }
+        const endedAtMs = clock();
+        if (lifecycleError !== undefined) {
+          if (deadline.expired) {
+            return failureResult(
+              primeRequest,
+              "timed_out",
+              `Prime execution exceeded ${primeRequest.evaluation.controls.budget.maxExecutionMs}ms`,
+              startedAtMs,
+              endedAtMs,
+            );
+          }
+          if (signal?.aborted === true) {
+            return failureResult(
+              primeRequest,
+              "cancelled",
+              boundedReason(signal.reason ?? lifecycleError),
+              startedAtMs,
+              endedAtMs,
+            );
+          }
+          throw lifecycleError;
+        }
+        if (evidence === undefined) {
+          throw new Error("Prime OCI execution did not produce harness evidence");
+        }
+        if (evidence.settlement.timedOut && evidence.settlement.aborted) {
+          throw new Error("Prime OCI settlement cannot be both timed out and aborted");
+        }
+        if (
+          (evidence.harness.outcome === "timed_out") !== evidence.settlement.timedOut ||
+          (evidence.harness.outcome === "cancelled") !== evidence.settlement.aborted
+        ) {
+          throw new Error("Prime child outcome contradicts trusted OCI settlement evidence");
+        }
+        return Object.freeze({
+          harness: Object.freeze({
+            ...evidence.harness,
+            runtime: runtimeEvidence(primeRequest, evidence.settlement),
+          }),
+          metrics: evidence.finishMetrics({ startedAtMs, endedAtMs }),
         });
       } catch (error) {
-        if (error instanceof PrimeOciUnsafeStateError) {
-          throw error;
-        }
-        lifecycleError = error;
-      }
-      const endedAtMs = clock();
-      if (lifecycleError !== undefined) {
-        if (deadline.expired) {
-          return failureResult(
-            primeRequest,
-            "timed_out",
-            `Prime execution exceeded ${primeRequest.evaluation.controls.budget.maxExecutionMs}ms`,
-            startedAtMs,
-            endedAtMs,
+        retainGlobalSlot = error instanceof PrimeOciUnsafeStateError;
+        throw error;
+      } finally {
+        if (!retainGlobalSlot) {
+          await this.options.globalAdmission.release(
+            globalLease,
+            (this.options.cleanupSignalFactory ?? createCleanupSignal)(
+              primeRequest.identity.runtime.policy.cleanupGraceMs,
+            ),
           );
         }
-        if (signal?.aborted === true) {
-          return failureResult(
-            primeRequest,
-            "cancelled",
-            boundedReason(signal.reason ?? lifecycleError),
-            startedAtMs,
-            endedAtMs,
-          );
-        }
-        throw lifecycleError;
       }
-      if (evidence === undefined) {
-        throw new Error("Prime OCI execution did not produce harness evidence");
-      }
-      if (evidence.settlement.timedOut && evidence.settlement.aborted) {
-        throw new Error("Prime OCI settlement cannot be both timed out and aborted");
-      }
-      if (
-        (evidence.harness.outcome === "timed_out") !== evidence.settlement.timedOut ||
-        (evidence.harness.outcome === "cancelled") !== evidence.settlement.aborted
-      ) {
-        throw new Error("Prime child outcome contradicts trusted OCI settlement evidence");
-      }
-      return Object.freeze({
-        harness: Object.freeze({
-          ...evidence.harness,
-          runtime: runtimeEvidence(primeRequest, evidence.settlement),
-        }),
-        metrics: evidence.finishMetrics({ startedAtMs, endedAtMs }),
-      });
     } finally {
       deadline.dispose();
     }
@@ -224,7 +262,13 @@ export class LocalPrimeOciHarnessRuntime implements ExternalHarnessRuntime {
       update: request.updateOciLease,
       ...(signal === undefined ? {} : { cleanupSignal: signal }),
     });
-    return parseEvaluationTrialAttempt({ ...attempt, ociLease: lease });
+    const recovered = parseEvaluationTrialAttempt({ ...attempt, ociLease: lease });
+    await this.options.globalAdmission.recover(
+      { identity: request.identity, attempt: recovered },
+      descriptor,
+      signal,
+    );
+    return recovered;
   }
 
   #primeRequest(

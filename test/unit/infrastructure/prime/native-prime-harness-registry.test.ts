@@ -54,6 +54,7 @@ describe("native Prime harness registry", () => {
       },
     });
     expect(descriptor.identityDigest).toBe(externalHarnessIdentityDigest(descriptor.identity));
+    expect(descriptor.localRuntime).toBe(fixture.attestation.localRuntime);
     expect(Object.isFrozen(descriptor.identity)).toBe(true);
   });
 
@@ -130,6 +131,18 @@ async function registryFixture() {
     image: publicIdentity.image,
     harnessPackageContentSha256: publicIdentity.harness.packageContentSha256,
     harnessDependencyClosureSha256: publicIdentity.harness.dependencyClosureSha256,
+    localRuntime: {
+      daemonId: "daemon-test-id",
+      socketPath: "/var/run/docker.sock",
+      socket: { device: 1, inode: 2, uid: 0, gid: 999, mode: 0o660 },
+      apiVersion: "1.51",
+      cgroupPath: "/sys/fs/cgroup/flow-prime",
+      corePattern: "core",
+      globalLeasePath: "/var/lib/flow-prime/global-slot.json",
+      imageDevice: { path: "/dev/test-image", major: 8, minor: 1 },
+      leaseTarget: "flow-prime-global-v1",
+      seccompProfile: { defaultAction: "SCMP_ACT_ERRNO", syscalls: [] },
+    },
     assertCurrent,
   };
   return {

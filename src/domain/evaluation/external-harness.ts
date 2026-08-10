@@ -290,6 +290,10 @@ const externalHarnessIdentitySchema = z.discriminatedUnion("adapter", [
 ]);
 
 export type ExternalHarnessIdentity = z.infer<typeof externalHarnessIdentitySchema>;
+export type PrimeExternalHarnessIdentity = Extract<
+  ExternalHarnessIdentity,
+  { readonly adapter: "prime-agent-native-v1" }
+>;
 
 export function parseExternalHarnessIdentity(input: unknown): ExternalHarnessIdentity {
   const parsed = externalHarnessIdentitySchema.safeParse(input);
@@ -303,6 +307,24 @@ export function externalHarnessIdentityDigest(input: unknown): string {
   return createHash("sha256")
     .update(JSON.stringify(parseExternalHarnessIdentity(input)))
     .digest("hex");
+}
+
+export function parsePrimeOciRuntimeIdentity(
+  input: unknown,
+): PrimeExternalHarnessIdentity["runtime"] {
+  const parsed = primeExternalHarnessIdentitySchema.shape.runtime.safeParse(input);
+  if (!parsed.success) {
+    throw new Error("Prime OCI runtime identity is invalid", { cause: parsed.error });
+  }
+  return deepFreeze(parsed.data);
+}
+
+export function parsePrimeOciImageIdentity(input: unknown): PrimeExternalHarnessIdentity["image"] {
+  const parsed = primeExternalHarnessIdentitySchema.shape.image.safeParse(input);
+  if (!parsed.success) {
+    throw new Error("Prime OCI image identity is invalid", { cause: parsed.error });
+  }
+  return deepFreeze(parsed.data);
 }
 
 function deepFreeze<T>(value: T): T {
