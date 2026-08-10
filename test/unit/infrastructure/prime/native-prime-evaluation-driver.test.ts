@@ -1,0 +1,318 @@
+import { describe, expect, it, vi } from "vitest";
+
+import {
+  createNativePrimeSdkSession,
+  type NativePrimeSdkBindings,
+  type NativePrimeSession,
+  runNativePrimeEvaluationSession,
+} from "../../../../src/infrastructure/prime/native-prime-agent-evaluation-driver.js";
+
+describe("native Prime evaluation driver", () => {
+  it("creates one closed IPython-only SDK session with in-memory services", async () => {
+    const sdkSession = {
+      thinkingLevel: "off",
+      prompt: vi.fn(async () => undefined),
+      abort: vi.fn(async () => undefined),
+      disposeAsync: vi.fn(async () => undefined),
+      subscribe: vi.fn(() => () => undefined),
+      getSessionStats: () => ({
+        sessionId: "sdk-session",
+        assistantMessages: 1,
+        toolCalls: 1,
+      }),
+      state: { messages: [{ role: "assistant", stopReason: "stop" as const }] },
+    };
+    const calls: {
+      provider?: Record<string, unknown>;
+      settings?: Record<string, unknown>;
+      ipython?: { readonly cwd: string; readonly options: Record<string, unknown> };
+      session?: Record<string, unknown>;
+    } = {};
+    const model = { id: "flow-host-model", provider: "flow-host-broker" };
+    const authStorage = { close: vi.fn() };
+    const modelRegistry = {
+      registerProvider: vi.fn((_name: string, provider: Record<string, unknown>) => {
+        calls.provider = provider;
+      }),
+      find: vi.fn(() => model),
+      setOnOAuthProvidersReset: vi.fn(),
+    };
+    const bindings: NativePrimeSdkBindings = {
+      AuthStorage: { inMemory: vi.fn(() => authStorage) },
+      ModelRegistry: { inMemory: vi.fn(() => modelRegistry) },
+      SettingsManager: {
+        inMemory: vi.fn((settings: Record<string, unknown>) => {
+          calls.settings = settings;
+          return { kind: "settings" };
+        }),
+      },
+      SessionManager: { inMemory: vi.fn(() => ({ kind: "session-manager" })) },
+      createExtensionRuntime: vi.fn(() => ({ kind: "extension-runtime" })),
+      createIpythonToolDefinition: vi.fn((cwd: string, options: Record<string, unknown>) => {
+        calls.ipython = { cwd, options };
+        return { name: "ipython" };
+      }),
+      createAssistantMessageEventStream: vi.fn(),
+      createAgentSession: vi.fn(async (options: Record<string, unknown>) => {
+        calls.session = options;
+        return { session: sdkSession };
+      }),
+    };
+
+    const session = await createNativePrimeSdkSession({
+      evaluation: evaluationInput(),
+      workspace: process.cwd(),
+      infer: vi.fn(),
+      loadSdk: async () => bindings,
+    });
+
+    expect(calls.settings).toEqual({
+      compaction: { enabled: false, agentCallable: false },
+      autoRefine: { enabled: false },
+      retry: { enabled: false, maxRetries: 0, provider: { maxRetries: 0 } },
+      enableSkillCommands: false,
+      enableBuiltinSkills: false,
+      mcpServers: {},
+      packages: [],
+      extensions: [],
+      skills: [],
+      prompts: [],
+      themes: [],
+    });
+    expect(calls.ipython).toEqual({
+      cwd: process.cwd(),
+      options: { python: "/opt/flow/bin/flow-prime-kernel-proxy" },
+    });
+    expect(calls.session).toMatchObject({
+      cwd: process.cwd(),
+      agentDir: process.cwd(),
+      model,
+      thinkingLevel: "off",
+      noTools: "all",
+      tools: [],
+      customTools: [{ name: "ipython" }],
+      initialActiveToolNames: ["ipython"],
+      allowedToolNames: ["ipython"],
+      includeGoals: false,
+      includeCompactSkill: false,
+      rlmDepth: 0,
+      rlmMaxDepth: 0,
+      prewarmIpythonKernel: false,
+      serializedRefine: false,
+    });
+    expect(calls.session?.autonomous).toBeUndefined();
+    expect(calls.session?.agentMessageController).toBeUndefined();
+    expect(calls.session?.agentObserveController).toBeUndefined();
+    expect(calls.session?.subagentRuntimeHost).toBeUndefined();
+    expect(calls.provider).toMatchObject({
+      api: "flow-host-inference-v1",
+      baseUrl: "flow://host-inference",
+      apiKey: "flow-internal-broker",
+    });
+
+    await session.prompt("Complete the task.");
+    expect(sdkSession.prompt).toHaveBeenCalledWith("Complete the task.", {
+      expandPromptTemplates: false,
+      internalPrompt: true,
+      suppressAutonomousContinuation: true,
+    });
+    await session.dispose();
+    expect(sdkSession.disposeAsync).toHaveBeenCalledOnce();
+    expect(authStorage.close).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a Prime thinking-level clamp before the task starts", async () => {
+    const fixture = sdkFixture({ thinkingLevel: "off" });
+    const evaluation = evaluationInput("medium");
+
+    await expect(
+      createNativePrimeSdkSession({
+        evaluation,
+        workspace: process.cwd(),
+        infer: vi.fn(),
+        loadSdk: async () => fixture.bindings,
+      }),
+    ).rejects.toThrow(/thinking level.*off.*medium/i);
+
+    expect(fixture.session.prompt).not.toHaveBeenCalled();
+    expect(fixture.session.disposeAsync).toHaveBeenCalledOnce();
+    expect(fixture.authStorage.close).toHaveBeenCalledOnce();
+  });
+
+  it("runs one in-memory IPython-only session and records proven activity", async () => {
+    const session = fakeSession();
+    const createSession = vi.fn(async () => session);
+
+    const result = await runNativePrimeEvaluationSession({
+      evaluation: evaluationInput(),
+      instructionText: "Create RESULT.md with DONE.",
+      infer: vi.fn(),
+      createSession,
+    });
+
+    expect(createSession).toHaveBeenCalledOnce();
+    expect(session.prompt).toHaveBeenCalledWith(
+      expect.stringContaining("Create RESULT.md with DONE."),
+    );
+    expect(session.dispose).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({
+      harness: { outcome: "completed", runId: "prime-session", reason: null },
+      metrics: {
+        costUsdMicros: null,
+        inputTokens: null,
+        cacheReadTokens: null,
+        cacheWriteTokens: null,
+        outputTokens: null,
+        turns: 2,
+        toolCalls: 1,
+        toolErrors: 0,
+        wallTimeMs: expect.any(Number),
+        recoveryAttempts: 0,
+        recoveryOutcome: "not_attempted",
+      },
+    });
+  });
+
+  it("counts tool failures and keeps provider errors as harness failures", async () => {
+    const session = fakeSession({ promptError: new Error("provider failed"), toolError: true });
+
+    const result = await runNativePrimeEvaluationSession({
+      evaluation: evaluationInput(),
+      instructionText: "Complete the task.",
+      infer: vi.fn(),
+      createSession: async () => session,
+    });
+
+    expect(result).toMatchObject({
+      harness: { outcome: "failed", runId: "prime-session", reason: "provider failed" },
+      metrics: { toolErrors: 1 },
+    });
+  });
+
+  it("aborts the session and returns cancelled evidence", async () => {
+    const controller = new AbortController();
+    const session = fakeSession({ onPrompt: () => controller.abort(new Error("operator stop")) });
+
+    const result = await runNativePrimeEvaluationSession({
+      evaluation: evaluationInput(),
+      instructionText: "Complete the task.",
+      infer: vi.fn(),
+      signal: controller.signal,
+      createSession: async () => session,
+    });
+
+    expect(session.abort).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({
+      harness: { outcome: "cancelled", runId: "prime-session", reason: "operator stop" },
+    });
+  });
+});
+
+function fakeSession(
+  options: {
+    readonly promptError?: Error;
+    readonly toolError?: boolean;
+    readonly onPrompt?: () => void;
+  } = {},
+): NativePrimeSession & {
+  readonly prompt: ReturnType<typeof vi.fn>;
+  readonly abort: ReturnType<typeof vi.fn>;
+  readonly dispose: ReturnType<typeof vi.fn>;
+} {
+  let listener:
+    | ((event: { readonly type: string; readonly isError?: boolean }) => void)
+    | undefined;
+  return {
+    prompt: vi.fn(async () => {
+      options.onPrompt?.();
+      if (options.toolError === true) {
+        listener?.({ type: "tool_execution_end", isError: true });
+      }
+      if (options.promptError !== undefined) {
+        throw options.promptError;
+      }
+    }),
+    abort: vi.fn(async () => undefined),
+    dispose: vi.fn(async () => undefined),
+    subscribe: (next) => {
+      listener = next;
+      return () => {
+        listener = undefined;
+      };
+    },
+    getSessionStats: () => ({
+      sessionId: "prime-session",
+      assistantMessages: 2,
+      toolCalls: 1,
+    }),
+    lastAssistantMessage: () => ({ stopReason: "stop" }),
+  };
+}
+
+function sdkFixture(options: { readonly thinkingLevel: string }) {
+  const authStorage = { close: vi.fn() };
+  const session = {
+    thinkingLevel: options.thinkingLevel,
+    prompt: vi.fn(async () => undefined),
+    abort: vi.fn(async () => undefined),
+    disposeAsync: vi.fn(async () => undefined),
+    subscribe: vi.fn(() => () => undefined),
+    getSessionStats: () => ({
+      sessionId: "sdk-session",
+      assistantMessages: 0,
+      toolCalls: 0,
+    }),
+    state: { messages: [] },
+  };
+  const modelRegistry = {
+    registerProvider: vi.fn(),
+    find: vi.fn(() => ({ id: "flow-host-model", provider: "flow-host-broker" })),
+    setOnOAuthProvidersReset: vi.fn(),
+  };
+  const bindings: NativePrimeSdkBindings = {
+    AuthStorage: { inMemory: vi.fn(() => authStorage) },
+    ModelRegistry: { inMemory: vi.fn(() => modelRegistry) },
+    SettingsManager: { inMemory: vi.fn(() => ({})) },
+    SessionManager: { inMemory: vi.fn(() => ({})) },
+    createExtensionRuntime: vi.fn(() => ({})),
+    createIpythonToolDefinition: vi.fn(() => ({ name: "ipython" })),
+    createAssistantMessageEventStream: vi.fn(),
+    createAgentSession: vi.fn(async () => ({ session })),
+  };
+  return { authStorage, bindings, session };
+}
+
+function evaluationInput(
+  thinking: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" = "off",
+) {
+  return {
+    planDigest: "a".repeat(64),
+    trial: {
+      trialId: `trial-${"b".repeat(48)}`,
+      position: 1,
+      taskId: "task",
+      profileId: "prime",
+      seed: 7,
+      repetition: 1,
+    },
+    workspace: {
+      workspaceId: `workspace-trial-${"b".repeat(48)}`,
+      cwd: process.cwd(),
+      backend: "reflink-copy-v1" as const,
+      snapshotDigest: "c".repeat(64),
+    },
+    instruction: { path: "TASK.md", sha256: "d".repeat(64) },
+    controls: {
+      model: { provider: "test-provider", id: "test-model", thinking },
+      budget: {
+        maxNodeStarts: 8,
+        maxModelTokens: 4_096,
+        maxCostUsdMicros: 100_000,
+        maxExecutionMs: 30_000,
+        maxArtifactBytes: 1_048_576,
+      },
+      network: "deny" as const,
+      retry: { providerRetries: 0 as const, harnessRetries: 0 as const },
+    },
+  };
+}

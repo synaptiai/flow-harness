@@ -9,17 +9,17 @@ import type {
   CommandSandbox,
   PreparedCommand,
 } from "../../../../src/application/command-sandbox.js";
-import type { ExternalHarnessRuntimeRequest } from "../../../../src/application/external-harness-adapter.js";
 import type { HarnessEvaluationRequest } from "../../../../src/application/evaluation-adapter.js";
+import type { ExternalHarnessRuntimeRequest } from "../../../../src/application/external-harness-adapter.js";
 import type { ExternalHarnessIdentity } from "../../../../src/domain/evaluation/external-harness.js";
 import { externalHarnessIdentityDigest } from "../../../../src/domain/evaluation/external-harness.js";
+import type { ExternalHarnessDescriptor } from "../../../../src/infrastructure/process/external-harness-descriptor.js";
 import {
-  LocalExternalHarnessRuntime,
-  MAX_EXTERNAL_HARNESS_STDERR_BYTES,
   type ExternalHarnessDescriptorRegistry,
   type ExternalHarnessInferenceBroker,
+  LocalExternalHarnessRuntime,
+  MAX_EXTERNAL_HARNESS_STDERR_BYTES,
 } from "../../../../src/infrastructure/process/local-external-harness-runtime.js";
-import type { ExternalHarnessDescriptor } from "../../../../src/infrastructure/process/external-harness-descriptor.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -393,14 +393,17 @@ describe("local external harness runtime", () => {
 type RuntimeContractMutationCase = readonly [
   adapter: string,
   field: string,
-  identity: ExternalHarnessIdentity,
+  identity: Exclude<ExternalHarnessIdentity, { readonly adapter: "prime-agent-native-v1" }>,
   processContainment: PreparedCommand["processContainment"],
   evidence: PreparedCommand["evidence"],
   expectedError: RegExp,
 ];
 
 function runtimeContractMutationCases(): readonly RuntimeContractMutationCase[] {
-  const identities: readonly (readonly [string, ExternalHarnessIdentity])[] = [
+  const identities: readonly (readonly [
+    string,
+    Exclude<ExternalHarnessIdentity, { readonly adapter: "prime-agent-native-v1" }>,
+  ])[] = [
     ["Pi", externalIdentity()],
     ["OMP", ompExternalIdentity()],
   ];
@@ -458,7 +461,10 @@ async function runtimeFixture(
     | "descendant"
     | "stderr-exact"
     | "stderr-over",
-  identity: ExternalHarnessIdentity = externalIdentity(),
+  identity: Exclude<
+    ExternalHarnessIdentity,
+    { readonly adapter: "prime-agent-native-v1" }
+  > = externalIdentity(),
 ) {
   const root = await temporaryDirectory();
   const workspace = join(root, "workspace");
@@ -554,7 +560,10 @@ function evaluationRequest(workspace: string): HarnessEvaluationRequest {
   };
 }
 
-function externalIdentity(): ExternalHarnessIdentity {
+function externalIdentity(): Extract<
+  ExternalHarnessIdentity,
+  { readonly adapter: "pi-native-v1" }
+> {
   return {
     version: 1,
     adapter: "pi-native-v1",
@@ -598,7 +607,10 @@ function externalIdentity(): ExternalHarnessIdentity {
   };
 }
 
-function ompExternalIdentity(): ExternalHarnessIdentity {
+function ompExternalIdentity(): Extract<
+  ExternalHarnessIdentity,
+  { readonly adapter: "omp-native-v1" }
+> {
   const pi = externalIdentity();
   return {
     ...pi,

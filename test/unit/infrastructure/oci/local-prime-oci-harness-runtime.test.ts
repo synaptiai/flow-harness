@@ -1,0 +1,338 @@
+import { describe, expect, it, vi } from "vitest";
+import type { HarnessEvaluationResult } from "../../../../src/application/evaluation-adapter.js";
+import type { ExternalHarnessRuntimeRequest } from "../../../../src/application/external-harness-adapter.js";
+import type { EvaluationOciLease } from "../../../../src/domain/evaluation/attempt.js";
+import { unavailableEvaluationMetrics } from "../../../../src/domain/evaluation/records.js";
+import {
+  LocalPrimeOciHarnessRuntime,
+  type PrimeOciOperationEvidence,
+} from "../../../../src/infrastructure/oci/local-prime-oci-harness-runtime.js";
+import type { PrimeOciEngine } from "../../../../src/infrastructure/oci/prime-container-lifecycle.js";
+import type { NativePrimeHarnessDescriptor } from "../../../../src/infrastructure/prime/native-prime-harness-registry.js";
+import {
+  type PrimeExternalHarnessIdentity,
+  primeExternalHarnessIdentity,
+} from "../../../fixtures/evaluation/prime-external-harness-identity.js";
+
+type PrimeRuntimeRequest = ExternalHarnessRuntimeRequest & {
+  readonly identity: PrimeExternalHarnessIdentity;
+};
+
+describe("local Prime OCI harness runtime", () => {
+  it("runs one Prime trial and returns only after durable removal", async () => {
+    const updates: EvaluationOciLease[] = [];
+    const descriptor = primeDescriptor();
+    const evidence = completedEvidence();
+    const operate = vi.fn(async (input) => {
+      await input.checkpoint("terminal");
+      await input.checkpoint("exported");
+      return evidence;
+    });
+    const clockValues = [10.2, 25.8];
+    const runtime = new LocalPrimeOciHarnessRuntime({
+      registry: { resolveAdmitted: vi.fn(async () => descriptor) },
+      createEngine: vi.fn(async () => fakeEngine()),
+      createIntent: vi.fn(async (request) => intentLease(request.evaluation.trial.trialId)),
+      operate,
+      platform: "linux",
+      clockMs: () => clockValues.shift() ?? 25.8,
+    });
+    const request = runtimeRequest(async (lease) => {
+      updates.push(lease);
+    });
+
+    await expect(runtime.execute(request)).resolves.toEqual({
+      harness: {
+        outcome: "completed",
+        runId: "prime-session",
+        reason: null,
+        runtime: {
+          adapter: "prime-agent-native-v1",
+          containment: "docker-oci-v1",
+          engineStatus: "verified",
+          imageId: request.identity.image.id,
+          policyDigest: request.identity.runtime.policy.digest,
+          exitCode: 0,
+          timedOut: false,
+          aborted: false,
+          recoveryOutcome: "not_attempted",
+          removal: "confirmed",
+        },
+      },
+      metrics: { ...unavailableEvaluationMetrics(), wallTimeMs: 16 },
+    });
+    expect(evidence.finishMetrics).toHaveBeenCalledWith({ startedAtMs: 10.2, endedAtMs: 25.8 });
+    expect(updates.map((lease) => lease.state)).toEqual([
+      "intent",
+      "created",
+      "started",
+      "terminal",
+      "exported",
+      "stopped",
+      "removed",
+    ]);
+    expect(descriptor.assertCurrent).toHaveBeenCalledTimes(1);
+    expect(operate).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects missing durability and non-Linux execution before create", async () => {
+    const createEngine = vi.fn(async () => fakeEngine());
+    const runtime = new LocalPrimeOciHarnessRuntime({
+      registry: { resolveAdmitted: vi.fn(async () => primeDescriptor()) },
+      createEngine,
+      createIntent: vi.fn(),
+      operate: vi.fn(),
+      platform: "darwin",
+    });
+    const request = runtimeRequest(async () => undefined);
+    const { durability: _durability, ...evaluationWithoutDurability } = request.evaluation;
+
+    await expect(runtime.execute(request)).rejects.toThrow(/linux/i);
+    await expect(
+      new LocalPrimeOciHarnessRuntime({
+        registry: { resolveAdmitted: vi.fn(async () => primeDescriptor()) },
+        createEngine,
+        createIntent: vi.fn(),
+        operate: vi.fn(),
+        platform: "linux",
+      }).execute({
+        ...request,
+        evaluation: evaluationWithoutDurability,
+      }),
+    ).rejects.toThrow(/durable/i);
+    expect(createEngine).not.toHaveBeenCalled();
+  });
+
+  it("recovers an intent that has no Docker object", async () => {
+    const descriptor = primeDescriptor();
+    const engine = fakeEngine({ recoveredIntent: null });
+    const runtime = new LocalPrimeOciHarnessRuntime({
+      registry: { resolveAdmitted: vi.fn(async () => descriptor) },
+      createEngine: vi.fn(async () => engine),
+      createIntent: vi.fn(),
+      operate: vi.fn(),
+      platform: "linux",
+    });
+    const request = runtimeRequest(async () => undefined);
+    const attempt = {
+      version: 1 as const,
+      planDigest: request.evaluation.planDigest,
+      position: 1,
+      trialId: request.evaluation.trial.trialId,
+      taskId: "task",
+      profileId: "candidate",
+      adapter: "prime-agent-native-v1" as const,
+      startedAt: "2026-08-10T10:00:00.000Z",
+      workspace: { backend: "reflink-copy-v1" as const, snapshotDigest: "d".repeat(64) },
+      ociLease: intentLease(request.evaluation.trial.trialId),
+    };
+    const updates: EvaluationOciLease[] = [];
+
+    const recovered = await runtime.recoverAttempt({
+      identity: request.identity,
+      attempt,
+      updateOciLease: async (lease) => {
+        updates.push(lease);
+      },
+    });
+
+    expect(recovered.ociLease?.state).toBe("absent");
+    expect(updates.map((lease) => lease.state)).toEqual(["absent"]);
+  });
+
+  it("returns a typed timeout only after durable container removal", async () => {
+    const descriptor = primeDescriptor();
+    const deadlineController = new AbortController();
+    const cleanupController = new AbortController();
+    const cleanupSignalFactory = vi.fn(() => cleanupController.signal);
+    const clockValues = [10, 42];
+    const runtime = new LocalPrimeOciHarnessRuntime({
+      registry: { resolveAdmitted: vi.fn(async () => descriptor) },
+      createEngine: vi.fn(async () => fakeEngine()),
+      createIntent: vi.fn(async (request) => intentLease(request.evaluation.trial.trialId)),
+      operate: vi.fn(async () => {
+        const reason = new Error("Prime execution deadline expired");
+        deadlineController.abort(reason);
+        throw reason;
+      }),
+      platform: "linux",
+      clockMs: () => clockValues.shift() ?? 42,
+      deadlineFactory: () => ({
+        signal: deadlineController.signal,
+        get expired() {
+          return deadlineController.signal.aborted;
+        },
+        dispose: vi.fn(),
+      }),
+      cleanupSignalFactory,
+    });
+    const request = runtimeRequest(async () => undefined);
+
+    await expect(runtime.execute(request)).resolves.toEqual({
+      harness: {
+        outcome: "timed_out",
+        runId: null,
+        reason: "Prime execution exceeded 30000ms",
+        runtime: {
+          adapter: "prime-agent-native-v1",
+          containment: "docker-oci-v1",
+          engineStatus: "verified",
+          imageId: request.identity.image.id,
+          policyDigest: request.identity.runtime.policy.digest,
+          exitCode: null,
+          timedOut: true,
+          aborted: false,
+          recoveryOutcome: "not_attempted",
+          removal: "confirmed",
+        },
+      },
+      metrics: {
+        ...unavailableEvaluationMetrics(),
+        wallTimeMs: 32,
+        interventions: 1,
+        recoveryAttempts: 0,
+        recoveryOutcome: "not_attempted",
+      },
+    });
+    expect(cleanupSignalFactory).toHaveBeenCalledWith(30_000);
+  });
+
+  it("rejects a child outcome that contradicts trusted OCI settlement", async () => {
+    const descriptor = primeDescriptor();
+    const runtime = new LocalPrimeOciHarnessRuntime({
+      registry: { resolveAdmitted: vi.fn(async () => descriptor) },
+      createEngine: vi.fn(async () => fakeEngine()),
+      createIntent: vi.fn(async (request) => intentLease(request.evaluation.trial.trialId)),
+      operate: vi.fn(async (input) => {
+        await input.checkpoint("terminal");
+        await input.checkpoint("exported");
+        return {
+          harness: { outcome: "completed", runId: "prime-session", reason: null },
+          settlement: { exitCode: null, timedOut: true, aborted: false },
+          finishMetrics: () => unavailableEvaluationMetrics(),
+        };
+      }),
+      platform: "linux",
+    });
+
+    await expect(runtime.execute(runtimeRequest(async () => undefined))).rejects.toThrow(
+      /outcome.*settlement|settlement.*outcome/i,
+    );
+  });
+});
+
+function runtimeRequest(
+  updateOciLease: (lease: EvaluationOciLease) => Promise<void>,
+): PrimeRuntimeRequest {
+  return {
+    identity: primeExternalHarnessIdentity(),
+    evaluation: {
+      planDigest: "a".repeat(64),
+      trial: {
+        trialId: `trial-${"b".repeat(48)}`,
+        position: 1,
+        taskId: "task",
+        profileId: "candidate",
+        seed: 11,
+        repetition: 1,
+      },
+      workspace: {
+        workspaceId: `workspace-trial-${"b".repeat(48)}`,
+        cwd: "/workspace",
+        backend: "reflink-copy-v1",
+        snapshotDigest: "c".repeat(64),
+      },
+      instruction: { path: "TASK.md", sha256: "d".repeat(64) },
+      controls: {
+        model: { provider: "test", id: "model", thinking: "off" },
+        budget: {
+          maxNodeStarts: 8,
+          maxModelTokens: 4_096,
+          maxCostUsdMicros: 100_000,
+          maxExecutionMs: 30_000,
+          maxArtifactBytes: 1_048_576,
+        },
+        network: "deny",
+        retry: { providerRetries: 0, harnessRetries: 0 },
+      },
+      durability: { updateOciLease },
+    },
+    isolation: { projectRoot: "/project", protectedPaths: ["/project/.flow"] },
+  };
+}
+
+function primeDescriptor(): NativePrimeHarnessDescriptor & {
+  readonly assertCurrent: ReturnType<typeof vi.fn>;
+} {
+  const identity = primeExternalHarnessIdentity();
+  return {
+    identity,
+    identityDigest: "e".repeat(64),
+    assertCurrent: vi.fn(async () => undefined),
+  };
+}
+
+function fakeEngine(
+  options: { readonly recoveredIntent?: PrimeOciEngine extends never ? never : null } = {},
+): PrimeOciEngine {
+  const attached = {
+    output: (async function* () {})(),
+    write: vi.fn(async () => undefined),
+    closeInput: vi.fn(async () => undefined),
+    release: vi.fn(async () => undefined),
+  };
+  return {
+    create: vi.fn(async () => ({
+      containerId: "f".repeat(64),
+      inspectedPolicyDigest: "9".repeat(64),
+    })),
+    recoverIntent: vi.fn(async () => options.recoveredIntent ?? null),
+    attach: vi.fn(async () => attached),
+    start: vi.fn(async () => undefined),
+    stop: vi.fn(async () => undefined),
+    remove: vi.fn(async () => undefined),
+    confirmRemoved: vi.fn(async () => true),
+  };
+}
+
+function intentLease(trialId: string) {
+  const ownerNonce = "1".repeat(64);
+  const imageId = `sha256:${"2".repeat(64)}` as const;
+  const policyDigest = "9".repeat(64);
+  return {
+    version: 1 as const,
+    adapter: "prime-agent-native-v1" as const,
+    state: "intent" as const,
+    ownerNonce,
+    containerName: `flow-prime-${"3".repeat(32)}` as const,
+    labels: {
+      evaluationId: "evaluation-run",
+      trialId,
+      ownerNonce,
+      imageId,
+      policyDigest,
+    },
+    imageId,
+    policyDigest,
+    fixtureDigest: "4".repeat(64),
+    engineEndpoint: {
+      socketPath: "/var/run/docker.sock" as const,
+      device: 1,
+      inode: 2,
+      uid: 0,
+      gid: 999,
+      mode: 0o660,
+    },
+  };
+}
+
+function completedEvidence(): PrimeOciOperationEvidence {
+  return {
+    harness: { outcome: "completed", runId: "prime-session", reason: null },
+    settlement: { exitCode: 0, timedOut: false, aborted: false },
+    finishMetrics: vi.fn((): HarnessEvaluationResult["metrics"] => ({
+      ...unavailableEvaluationMetrics(),
+      wallTimeMs: 16,
+    })),
+  };
+}

@@ -15,6 +15,10 @@ import {
   trySubmitAgentCommandApprovalDecision,
 } from "../application/command-approval.js";
 import {
+  FlowWorkflowEvaluationAdapter,
+  type HarnessEvaluationAdapter,
+} from "../application/evaluation-adapter.js";
+import {
   ExternalHarnessEvaluationAdapter,
   type ExternalHarnessRuntime,
 } from "../application/external-harness-adapter.js";
@@ -22,10 +26,6 @@ import {
   generatePromptCandidate,
   PromptCandidateGenerationExecutionError,
 } from "../application/generate-prompt-candidate.js";
-import {
-  FlowWorkflowEvaluationAdapter,
-  type HarnessEvaluationAdapter,
-} from "../application/evaluation-adapter.js";
 import type {
   AgentCommandApprovalDecisionChannel,
   NodeEffectReconciler,
@@ -50,14 +50,14 @@ import {
   promptActivationSource,
 } from "../domain/adaptation/prompt-activation.js";
 import {
-  MAX_PROMPT_CANDIDATE_GENERATION_OUTPUT_TOKENS,
-  preparePromptCandidateGeneration,
-  PromptCandidateGenerationError,
-} from "../domain/adaptation/prompt-candidate-generation.js";
-import {
-  projectPromptCandidate,
   PromptCandidateError,
+  projectPromptCandidate,
 } from "../domain/adaptation/prompt-candidate.js";
+import {
+  MAX_PROMPT_CANDIDATE_GENERATION_OUTPUT_TOKENS,
+  PromptCandidateGenerationError,
+  preparePromptCandidateGeneration,
+} from "../domain/adaptation/prompt-candidate-generation.js";
 import {
   type CapabilitySnapshot,
   combineCapabilitySnapshots,
@@ -80,6 +80,7 @@ import {
   FlowConfigError,
 } from "../domain/config/resolver.js";
 import { aggregateEvaluation, EvaluationAggregationError } from "../domain/evaluation/aggregate.js";
+import { parseEvaluationTrialAttempt } from "../domain/evaluation/attempt.js";
 import { verifyEvaluationWorkspace } from "../domain/evaluation/filesystem-verifier.js";
 import { EvaluationPlanError } from "../domain/evaluation/plan.js";
 import { EvaluationRecordError } from "../domain/evaluation/records.js";
@@ -141,8 +142,8 @@ import {
   PromptActivationStoreError,
 } from "../infrastructure/fs/local-prompt-activation-store.js";
 import {
-  admitLocalPromptCandidateGenerationSources,
   admitLocalPromptCandidate,
+  admitLocalPromptCandidateGenerationSources,
   LocalPromptCandidateError,
 } from "../infrastructure/fs/local-prompt-candidate.js";
 import {
@@ -175,13 +176,13 @@ import {
   CapabilityBundleFetchError,
   type CapabilityBundleFetcher,
 } from "../infrastructure/http/strict-capability-bundle-fetcher.js";
-import { createProductionNodeEffectReconciler } from "../infrastructure/runtime/production-effect-reconciler.js";
-import { createProductionNodeExecutor } from "../infrastructure/runtime/production-node-executor.js";
-import { createProductionWorkspaceIsolator } from "../infrastructure/runtime/production-workspace-isolator.js";
 import {
   BuiltInExternalHarnessRegistry,
   type ExternalHarnessRegistry,
 } from "../infrastructure/process/built-in-external-harness-registry.js";
+import { createProductionNodeEffectReconciler } from "../infrastructure/runtime/production-effect-reconciler.js";
+import { createProductionNodeExecutor } from "../infrastructure/runtime/production-node-executor.js";
+import { createProductionWorkspaceIsolator } from "../infrastructure/runtime/production-workspace-isolator.js";
 import {
   ensureSupervisor,
   requestSupervisor,
@@ -1197,6 +1198,29 @@ async function evaluationCommand(
         attempts: {
           active: claimed.activeAttempt,
           begin: (attempt) => store.beginAttempt(evaluationId, attempt),
+          update: (attempt) => store.updateAttempt(evaluationId, attempt),
+          recover: async (attempt) => {
+            const profile = admitted.profiles.find((item) => item.id === attempt.profileId);
+            if (
+              profile?.adapter !== "prime-agent-native-v1" ||
+              dependencies.externalHarnessRuntime.recoverAttempt === undefined
+            ) {
+              throw new Error("Prime OCI attempt recovery is not available");
+            }
+            let current = attempt;
+            return dependencies.externalHarnessRuntime.recoverAttempt(
+              {
+                identity: profile.harness,
+                attempt,
+                updateOciLease: async (lease) => {
+                  const updated = parseEvaluationTrialAttempt({ ...current, ociLease: lease });
+                  await store.updateAttempt(evaluationId, updated);
+                  current = updated;
+                },
+              },
+              dependencies.signal,
+            );
+          },
           complete: (attempt) => store.completeAttempt(evaluationId, attempt),
         },
         append: (record) => store.append(evaluationId, record),
@@ -2672,6 +2696,20 @@ function createLazyProductionExternalHarnessRuntime(
           createProductionExternalHarnessRuntime(registry),
       );
       return (await runtime).execute(request, signal);
+    },
+    recoverAttempt: async (
+      request: Parameters<NonNullable<ExternalHarnessRuntime["recoverAttempt"]>>[0],
+      signal?: AbortSignal,
+    ) => {
+      runtime ??= import("../infrastructure/runtime/production-external-harness-runtime.js").then(
+        ({ createProductionExternalHarnessRuntime }) =>
+          createProductionExternalHarnessRuntime(registry),
+      );
+      const loaded = await runtime;
+      if (loaded.recoverAttempt === undefined) {
+        throw new Error("Prime OCI attempt recovery is not available");
+      }
+      return loaded.recoverAttempt(request, signal);
     },
   });
 }

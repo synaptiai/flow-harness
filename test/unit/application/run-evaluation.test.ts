@@ -3,10 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { HarnessEvaluationRequest } from "../../../src/application/evaluation-adapter.js";
 import {
-  runEvaluationTrials as runEvaluationTrialsApplication,
+  type HarnessEvaluationRequest,
+  HarnessUnsafeStateError,
+} from "../../../src/application/evaluation-adapter.js";
+import {
   type RunEvaluationTrialsInput,
+  runEvaluationTrials as runEvaluationTrialsApplication,
 } from "../../../src/application/run-evaluation.js";
 import { createEvaluationSchedule } from "../../../src/domain/evaluation/plan.js";
 import {
@@ -28,6 +31,37 @@ function runEvaluationTrials(
     },
     ...input,
   });
+}
+
+function primeOciLease(trialId: string) {
+  const ownerNonce = "a".repeat(64);
+  const imageId = `sha256:${"b".repeat(64)}` as const;
+  const policyDigest = "c".repeat(64);
+  return {
+    version: 1 as const,
+    adapter: "prime-agent-native-v1" as const,
+    state: "intent" as const,
+    ownerNonce,
+    containerName: `flow-prime-${"d".repeat(32)}` as const,
+    labels: {
+      evaluationId: "evaluation-run",
+      trialId,
+      ownerNonce,
+      imageId,
+      policyDigest,
+    },
+    imageId,
+    policyDigest,
+    fixtureDigest: "e".repeat(64),
+    engineEndpoint: {
+      socketPath: "/var/run/docker.sock" as const,
+      device: 1,
+      inode: 2,
+      uid: 0,
+      gid: 999,
+      mode: 0o660,
+    },
+  };
 }
 
 afterEach(async () => {
@@ -235,6 +269,101 @@ describe("evaluation trial runner", () => {
     ]);
   });
 
+  it("gives only a Prime adapter one durable OCI lease updater", async () => {
+    const root = await temporaryDirectory();
+    const base = executionPlan(root);
+    const plan: RunEvaluationTrialsInput["plan"] = {
+      ...base,
+      profiles: base.profiles.map((profile) => ({
+        ...profile,
+        adapter: "prime-agent-native-v1" as const,
+      })),
+    };
+    const updates: unknown[] = [];
+    const completions: unknown[] = [];
+
+    await runEvaluationTrials({
+      plan,
+      committedRecords: [],
+      attempts: {
+        active: null,
+        begin: async () => undefined,
+        update: async (attempt) => {
+          updates.push(attempt);
+        },
+        complete: async (attempt) => {
+          completions.push(attempt);
+        },
+      },
+      append: async () => undefined,
+      workspaceIsolator: isolator(root),
+      observeFixture: async () => fixtureSnapshot(),
+      resolveAdapter: () => ({
+        kind: "prime-agent-native-v1",
+        run: async (request) => {
+          expect(request.durability).toBeDefined();
+          await request.durability?.updateOciLease(primeOciLease(request.trial.trialId));
+          return {
+            harness: { outcome: "completed", runId: "prime-run", reason: null },
+            metrics: unavailableEvaluationMetrics(),
+          };
+        },
+      }),
+      verifyWorkspace: async (request) => ({
+        outcome: "accepted",
+        verifierDigest: request.verifier.digest,
+        assertions: [{ kind: "exists", path: "RESULT.md", outcome: true }],
+      }),
+      now: monotonicDates(),
+      environment: testEnvironment(),
+    });
+
+    expect(updates).toHaveLength(2);
+    expect(completions).toEqual(updates);
+  });
+
+  it("leaves an unsafe Prime attempt active without a terminal record", async () => {
+    const root = await temporaryDirectory();
+    const base = executionPlan(root);
+    const plan: RunEvaluationTrialsInput["plan"] = {
+      ...base,
+      profiles: base.profiles.map((profile) => ({
+        ...profile,
+        adapter: "prime-agent-native-v1" as const,
+      })),
+    };
+    const append = vi.fn();
+    const complete = vi.fn();
+
+    await expect(
+      runEvaluationTrials({
+        plan,
+        committedRecords: [],
+        attempts: {
+          active: null,
+          begin: vi.fn(async () => undefined),
+          update: vi.fn(async () => undefined),
+          complete,
+        },
+        append,
+        workspaceIsolator: isolator(root),
+        observeFixture: async () => fixtureSnapshot(),
+        resolveAdapter: () => ({
+          kind: "prime-agent-native-v1",
+          run: async () => {
+            throw new HarnessUnsafeStateError("container removal is not confirmed");
+          },
+        }),
+        verifyWorkspace: vi.fn(),
+        now: monotonicDates(),
+        environment: testEnvironment(),
+      }),
+    ).rejects.toThrow(/removal is not confirmed/i);
+
+    expect(append).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+  });
+
   it("converts an unresolved durable start into failure without a second adapter call", async () => {
     const root = await temporaryDirectory();
     const plan = executionPlan(root);
@@ -300,6 +429,143 @@ describe("evaluation trial runner", () => {
     expect(adapter).toHaveBeenCalledTimes(1);
     expect(began).toEqual([2]);
     expect(completed).toEqual([1, 2]);
+  });
+
+  it("recovers an active Prime OCI lease before it records interruption", async () => {
+    const root = await temporaryDirectory();
+    const base = executionPlan(root);
+    const plan: RunEvaluationTrialsInput["plan"] = {
+      ...base,
+      profiles: base.profiles.map((profile) => ({
+        ...profile,
+        adapter: "prime-agent-native-v1" as const,
+      })),
+    };
+    const schedule = plan.schedule[0];
+    if (schedule === undefined) {
+      throw new Error("missing active Prime schedule item");
+    }
+    const intent = primeOciLease(schedule.trialId);
+    const active = {
+      version: 1 as const,
+      planDigest: plan.planDigest,
+      position: schedule.position,
+      trialId: schedule.trialId,
+      taskId: schedule.taskId,
+      profileId: schedule.profileId,
+      adapter: "prime-agent-native-v1" as const,
+      startedAt: "2026-08-09T09:59:00.000Z",
+      workspace: {
+        backend: "reflink-copy-v1" as const,
+        snapshotDigest: "e".repeat(64),
+      },
+      ociLease: intent,
+    };
+    const removed = {
+      ...active,
+      ociLease: {
+        ...intent,
+        state: "removed" as const,
+        containerId: "f".repeat(64),
+        inspectedPolicyDigest: intent.policyDigest,
+      },
+    };
+    const events: string[] = [];
+
+    const records = await runEvaluationTrials({
+      plan,
+      committedRecords: [],
+      attempts: {
+        active,
+        begin: async () => undefined,
+        recover: async () => {
+          events.push("recover");
+          return removed;
+        },
+        complete: async (attempt) => {
+          events.push(`complete:${attempt.ociLease?.state}`);
+        },
+      },
+      append: async () => {
+        events.push("append");
+      },
+      workspaceIsolator: isolator(root),
+      observeFixture: async () => fixtureSnapshot(),
+      resolveAdapter: () => ({
+        kind: "prime-agent-native-v1",
+        run: async () => ({
+          harness: { outcome: "completed", runId: "next", reason: null },
+          metrics: unavailableEvaluationMetrics(),
+        }),
+      }),
+      verifyWorkspace: async (request) => ({
+        outcome: "accepted",
+        verifierDigest: request.verifier.digest,
+        assertions: [{ kind: "exists", path: "RESULT.md", outcome: true }],
+      }),
+      now: monotonicDates(),
+      environment: testEnvironment(),
+    });
+
+    expect(records[0]?.harness).toMatchObject({ outcome: "crashed" });
+    expect(events.slice(0, 3)).toEqual(["recover", "append", "complete:removed"]);
+  });
+
+  it("keeps an active Prime attempt when recovery is unsafe", async () => {
+    const root = await temporaryDirectory();
+    const base = executionPlan(root);
+    const plan: RunEvaluationTrialsInput["plan"] = {
+      ...base,
+      profiles: base.profiles.map((profile) => ({
+        ...profile,
+        adapter: "prime-agent-native-v1" as const,
+      })),
+    };
+    const schedule = plan.schedule[0];
+    if (schedule === undefined) {
+      throw new Error("missing active Prime schedule item");
+    }
+    const append = vi.fn();
+    const complete = vi.fn();
+
+    await expect(
+      runEvaluationTrials({
+        plan,
+        committedRecords: [],
+        attempts: {
+          active: {
+            version: 1,
+            planDigest: plan.planDigest,
+            position: schedule.position,
+            trialId: schedule.trialId,
+            taskId: schedule.taskId,
+            profileId: schedule.profileId,
+            adapter: "prime-agent-native-v1",
+            startedAt: "2026-08-09T09:59:00.000Z",
+            workspace: {
+              backend: "reflink-copy-v1",
+              snapshotDigest: "e".repeat(64),
+            },
+            ociLease: primeOciLease(schedule.trialId),
+          },
+          begin: async () => undefined,
+          recover: async () => {
+            throw new HarnessUnsafeStateError("container recovery is not confirmed");
+          },
+          complete,
+        },
+        append,
+        workspaceIsolator: isolator(root),
+        observeFixture: async () => fixtureSnapshot(),
+        resolveAdapter: vi.fn(),
+        verifyWorkspace: vi.fn(),
+        now: monotonicDates(),
+        environment: testEnvironment(),
+      }),
+    ).rejects.toThrow(/recovery is not confirmed/i);
+
+    expect(append).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
   });
 
   it("records only the active cancelled trial and leaves the schedule suffix unstarted", async () => {

@@ -220,6 +220,68 @@ describe("evaluation trial records", () => {
       ),
     ).toThrow(/completed.*process|process.*completed|termination/i);
   });
+
+  it("binds parent-observed Prime OCI settlement evidence", () => {
+    const valid = record(
+      {
+        outcome: "completed",
+        runId: "prime-run",
+        reason: null,
+        runtime: {
+          adapter: "prime-agent-native-v1",
+          containment: "docker-oci-v1",
+          engineStatus: "verified",
+          imageId: `sha256:${"c".repeat(64)}`,
+          policyDigest: "d".repeat(64),
+          exitCode: 0,
+          timedOut: false,
+          aborted: false,
+          recoveryOutcome: "not_attempted",
+          removal: "confirmed",
+        },
+      },
+      {
+        outcome: "accepted",
+        verifierDigest: "b".repeat(64),
+        assertions: [{ kind: "exists", path: "RESULT.md", outcome: true }],
+      },
+    );
+
+    expect(valid.harness.runtime).toMatchObject({
+      adapter: "prime-agent-native-v1",
+      containment: "docker-oci-v1",
+      engineStatus: "verified",
+      exitCode: 0,
+      recoveryOutcome: "not_attempted",
+      removal: "confirmed",
+    });
+    expect(() =>
+      record(
+        {
+          outcome: "completed",
+          runId: "prime-run",
+          reason: null,
+          runtime: {
+            adapter: "prime-agent-native-v1",
+            containment: "docker-oci-v1",
+            engineStatus: "verified",
+            imageId: `sha256:${"c".repeat(64)}`,
+            policyDigest: "d".repeat(64),
+            exitCode: 0,
+            timedOut: false,
+            aborted: false,
+            recoveryOutcome: "failed",
+            removal: "unconfirmed",
+          },
+        },
+        {
+          outcome: "accepted",
+          verifierDigest: "b".repeat(64),
+          assertions: [{ kind: "exists", path: "RESULT.md", outcome: true }],
+        },
+      ),
+    ).toThrow(/completed.*removal|removal.*completed/i);
+  });
 });
 
 function record(

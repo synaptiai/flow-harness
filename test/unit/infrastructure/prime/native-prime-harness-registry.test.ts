@@ -1,0 +1,144 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { externalHarnessIdentityDigest } from "../../../../src/domain/evaluation/external-harness.js";
+import {
+  NativePrimeHarnessRegistry,
+  type PrimeOciIdentityAttestation,
+} from "../../../../src/infrastructure/prime/native-prime-harness-registry.js";
+import { primeExternalHarnessIdentity } from "../../../fixtures/evaluation/prime-external-harness-identity.js";
+
+const temporaryDirectories: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(
+    temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true })),
+  );
+});
+
+describe("native Prime harness registry", () => {
+  it("binds the OCI attestation and every local adapter artifact", async () => {
+    const fixture = await registryFixture();
+    const descriptor = await fixture.registry.resolve(profile());
+
+    expect(descriptor.identity).toMatchObject({
+      version: 1,
+      adapter: "prime-agent-native-v1",
+      adapterContractVersion: "1.0.0",
+      runtime: fixture.attestation.runtime,
+      image: fixture.attestation.image,
+      driver: {
+        id: "native-prime-agent-evaluation-v1",
+        artifactSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        dependencyClosureSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        kernelProxySha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        pythonLauncherSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        noIoResourceLoaderSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        configDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+      harness: {
+        package: "prime-agent",
+        version: "0.7.1",
+        archiveSha256: "d68612c83239caafab72cc76c55ac572bfd07a059ea8fbd2a3ddbe1f2b55dcdb",
+        packageContentSha256: fixture.attestation.harnessPackageContentSha256,
+        dependencyClosureSha256: fixture.attestation.harnessDependencyClosureSha256,
+        config: "prime-agent-rlm-evaluation-v1",
+      },
+      inference: {
+        id: "flow-prime-inference-v1",
+        version: 1,
+        brokerSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+    });
+    expect(descriptor.identityDigest).toBe(externalHarnessIdentityDigest(descriptor.identity));
+    expect(Object.isFrozen(descriptor.identity)).toBe(true);
+  });
+
+  it("rejects the admitted identity after one local artifact changes", async () => {
+    const fixture = await registryFixture();
+    const admitted = await fixture.registry.resolveIdentity(profile());
+    await writeFile(fixture.driverPath, "export const primeDriver = 2;\n", "utf8");
+
+    await expect(fixture.registry.resolveAdmitted(admitted)).rejects.toThrow(/identity.*changed/i);
+  });
+
+  it("rejects the admitted identity after OCI attestation drift", async () => {
+    const fixture = await registryFixture();
+    const admitted = await fixture.registry.resolveIdentity(profile());
+    fixture.assertCurrent.mockRejectedValueOnce(new Error("OCI image changed"));
+
+    await expect(fixture.registry.resolveAdmitted(admitted)).rejects.toThrow(/OCI image changed/i);
+  });
+
+  it("rejects an unsupported profile and a different admitted adapter", async () => {
+    const fixture = await registryFixture();
+
+    await expect(
+      fixture.registry.resolve({
+        id: "prime",
+        adapter: "prime-agent-native-v1",
+        harness: { config: "wrong" as "prime-agent-rlm-evaluation-v1" },
+      }),
+    ).rejects.toThrow(/unsupported profile/i);
+    await expect(fixture.registry.resolveAdmitted(primeExternalHarnessIdentity())).rejects.toThrow(
+      /identity.*changed/i,
+    );
+  });
+});
+
+function profile() {
+  return {
+    id: "prime",
+    adapter: "prime-agent-native-v1" as const,
+    harness: { config: "prime-agent-rlm-evaluation-v1" as const },
+  };
+}
+
+async function registryFixture() {
+  const root = await mkdtemp(join(tmpdir(), "flow-prime-registry-"));
+  temporaryDirectories.push(root);
+  const paths = {
+    driverPath: join(root, "native-prime-agent-evaluation-driver.js"),
+    protocolPath: join(root, "external-harness-protocol.js"),
+    outerProtocolPath: join(root, "prime-container-protocol.js"),
+    supervisorPath: join(root, "flow-prime-supervisor"),
+    kernelProxyPath: join(root, "flow-prime-kernel-proxy"),
+    pythonLauncherPath: join(root, "flow-prime-python"),
+    noIoResourceLoaderPath: join(root, "no-io-resource-loader.js"),
+    inferenceBrokerPath: join(root, "native-prime-host-inference-broker.js"),
+    sourceRoot: join(root, "source"),
+  };
+  await mkdir(paths.sourceRoot);
+  await Promise.all([
+    writeFile(paths.driverPath, "export const primeDriver = 1;\n"),
+    writeFile(paths.protocolPath, "export const protocol = 1;\n"),
+    writeFile(paths.outerProtocolPath, "export const outerProtocol = 1;\n"),
+    writeFile(paths.supervisorPath, "trusted supervisor\n"),
+    writeFile(paths.kernelProxyPath, "trusted kernel proxy\n"),
+    writeFile(paths.pythonLauncherPath, "trusted Python launcher\n"),
+    writeFile(paths.noIoResourceLoaderPath, "export const resources = [];\n"),
+    writeFile(paths.inferenceBrokerPath, "export const broker = 1;\n"),
+    writeFile(join(paths.sourceRoot, "support.js"), "export const support = 1;\n"),
+  ]);
+  const publicIdentity = primeExternalHarnessIdentity();
+  const assertCurrent = vi.fn(async () => undefined);
+  const attestation: PrimeOciIdentityAttestation = {
+    runtime: publicIdentity.runtime,
+    image: publicIdentity.image,
+    harnessPackageContentSha256: publicIdentity.harness.packageContentSha256,
+    harnessDependencyClosureSha256: publicIdentity.harness.dependencyClosureSha256,
+    assertCurrent,
+  };
+  return {
+    ...paths,
+    assertCurrent,
+    attestation,
+    registry: new NativePrimeHarnessRegistry({
+      ...paths,
+      resolveOciIdentity: async () => attestation,
+    }),
+  };
+}

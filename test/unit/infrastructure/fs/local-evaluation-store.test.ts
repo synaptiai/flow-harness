@@ -3,8 +3,8 @@ import {
   appendFile,
   mkdir,
   mkdtemp,
-  readFile,
   readdir,
+  readFile,
   realpath,
   rename,
   rm,
@@ -16,13 +16,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import type { ExternalHarnessIdentity } from "../../../../src/domain/evaluation/external-harness.js";
 
 import {
   calculateEvaluationPlanDigest,
   createEvaluationSchedule,
   type EvaluationPlanIdentity,
 } from "../../../../src/domain/evaluation/plan.js";
-import type { ExternalHarnessIdentity } from "../../../../src/domain/evaluation/external-harness.js";
 import {
   createEvaluationTrialRecord,
   unavailableEvaluationMetrics,
@@ -34,6 +34,7 @@ import {
   LocalEvaluationStore,
   type PublicEvaluationHeader,
 } from "../../../../src/infrastructure/fs/local-evaluation-store.js";
+import { primeExternalHarnessIdentity } from "../../../fixtures/evaluation/prime-external-harness-identity.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -114,6 +115,52 @@ describe("local evaluation store", () => {
       activeAttempt: attempt,
     });
     await resumedStore.release("evaluation-run");
+  });
+
+  it("atomically persists monotonic Prime OCI lease states", async () => {
+    const { root, admitted } = await admittedExternalEvaluation(primeExternalHarnessIdentity());
+    const evaluations = join(root, "evaluations");
+    const store = new LocalEvaluationStore(evaluations);
+    await store.create(
+      createPublicEvaluationHeader(admitted, "evaluation-run", "2026-08-09T10:00:00.000Z"),
+    );
+    await store.claim("evaluation-run", admitted.planDigest);
+    const first = trialRecord(admitted, 0, null);
+    await store.append("evaluation-run", first);
+    const attempt = trialAttempt(admitted, 1);
+    await store.beginAttempt("evaluation-run", attempt);
+    const intent = primeOciLease(attempt.trialId, "intent");
+    const withIntent = Object.freeze({ ...attempt, ociLease: intent });
+
+    await store.updateAttempt("evaluation-run", withIntent);
+    const created = Object.freeze({
+      ...intent,
+      state: "created" as const,
+      containerId: "f".repeat(64),
+      inspectedPolicyDigest: intent.policyDigest,
+    });
+    const withCreated = Object.freeze({ ...attempt, ociLease: created });
+    await store.updateAttempt("evaluation-run", withCreated);
+    await expect(store.updateAttempt("evaluation-run", withIntent)).rejects.toThrow(
+      /transition|state|regress/i,
+    );
+    await expect(
+      store.updateAttempt("evaluation-run", {
+        ...attempt,
+        ociLease: {
+          ...created,
+          imageId: `sha256:${"e".repeat(64)}`,
+          labels: { ...created.labels, imageId: `sha256:${"e".repeat(64)}` },
+        },
+      }),
+    ).rejects.toThrow(/identity|immutable|lease/i);
+    await store.release("evaluation-run");
+
+    await expect(
+      new LocalEvaluationStore(evaluations).read("evaluation-run"),
+    ).resolves.toMatchObject({
+      activeAttempt: withCreated,
+    });
   });
 
   it("removes an unpublished adapter-start temporary before recovery", async () => {
@@ -938,7 +985,9 @@ async function admittedExternalEvaluation(identity: ExternalHarnessIdentity = na
       "- { id: candidate, adapter: flow-workflow-v1, workflow: candidate.workflow.yaml }",
       identity.adapter === "pi-native-v1"
         ? "- { id: candidate, adapter: pi-native-v1, harness: { config: pi-evaluation-v1 } }"
-        : "- { id: candidate, adapter: omp-native-v1, harness: { config: omp-evaluation-v1 } }",
+        : identity.adapter === "omp-native-v1"
+          ? "- { id: candidate, adapter: omp-native-v1, harness: { config: omp-evaluation-v1 } }"
+          : "- { id: candidate, adapter: prime-agent-native-v1, harness: { config: prime-agent-rlm-evaluation-v1 } }",
     ),
   );
   return {
@@ -966,6 +1015,13 @@ function replaceExternalHarnessIdentity(
         id: profile.id,
         adapter: profile.adapter,
         harness: harness.adapter === "omp-native-v1" ? harness : profile.harness,
+      };
+    }
+    if (profile.adapter === "prime-agent-native-v1") {
+      return {
+        id: profile.id,
+        adapter: profile.adapter,
+        harness: harness.adapter === "prime-agent-native-v1" ? harness : profile.harness,
       };
     }
     return {
@@ -1160,6 +1216,37 @@ function trialAttempt(
     workspace: Object.freeze({
       backend: "reflink-copy-v1" as const,
       snapshotDigest: "e".repeat(64),
+    }),
+  });
+}
+
+function primeOciLease(trialId: string, state: "intent") {
+  const ownerNonce = "a".repeat(64);
+  const imageId = `sha256:${"b".repeat(64)}` as const;
+  const policyDigest = "c".repeat(64);
+  return Object.freeze({
+    version: 1 as const,
+    adapter: "prime-agent-native-v1" as const,
+    state,
+    ownerNonce,
+    containerName: `flow-prime-${"d".repeat(32)}` as const,
+    labels: Object.freeze({
+      evaluationId: "evaluation-run",
+      trialId,
+      ownerNonce,
+      imageId,
+      policyDigest,
+    }),
+    imageId,
+    policyDigest,
+    fixtureDigest: "e".repeat(64),
+    engineEndpoint: Object.freeze({
+      socketPath: "/var/run/docker.sock" as const,
+      device: 1,
+      inode: 2,
+      uid: 0,
+      gid: 999,
+      mode: 0o660,
     }),
   });
 }

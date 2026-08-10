@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-
+import {
+  type HarnessEvaluationRequest,
+  HarnessUnsafeStateError,
+} from "../../../src/application/evaluation-adapter.js";
 import {
   ExternalHarnessEvaluationAdapter,
-  NativePiEvaluationAdapter,
   type ExternalHarnessRuntime,
+  NativePiEvaluationAdapter,
 } from "../../../src/application/external-harness-adapter.js";
-import type { HarnessEvaluationRequest } from "../../../src/application/evaluation-adapter.js";
 import type { ExternalHarnessIdentity } from "../../../src/domain/evaluation/external-harness.js";
 import { unavailableEvaluationMetrics } from "../../../src/domain/evaluation/records.js";
 
@@ -107,6 +109,18 @@ describe("external harness evaluation adapter", () => {
     expect(result.harness).toMatchObject({ outcome: "crashed", runId: null });
     expect(result.harness.reason?.length).toBeLessThanOrEqual(4_096);
     expect(result.metrics).toEqual({ ...unavailableEvaluationMetrics(), wallTimeMs: 7 });
+  });
+
+  it("does not convert an unresolved runtime state into terminal evidence", async () => {
+    const unsafe = new HarnessUnsafeStateError("container removal is not confirmed");
+    const execute = vi.fn<ExternalHarnessRuntime["execute"]>().mockRejectedValue(unsafe);
+    const adapter = new NativePiEvaluationAdapter(
+      { id: "candidate", adapter: "pi-native-v1", harness: externalIdentity() },
+      { execute },
+      { isolation: { projectRoot: "/project", protectedPaths: ["/project"] } },
+    );
+
+    await expect(adapter.run(evaluationRequest())).rejects.toBe(unsafe);
   });
 });
 

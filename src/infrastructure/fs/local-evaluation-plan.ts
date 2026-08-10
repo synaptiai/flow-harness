@@ -217,6 +217,9 @@ export async function admitLocalEvaluationPlan(
         if (harness.adapter === "pi-native-v1") {
           return Object.freeze({ id: profile.id, adapter: harness.adapter, harness });
         }
+        if (harness.adapter === "omp-native-v1") {
+          return Object.freeze({ id: profile.id, adapter: harness.adapter, harness });
+        }
         return Object.freeze({ id: profile.id, adapter: harness.adapter, harness });
       }
       if ("workflow" in profile) {
@@ -317,6 +320,9 @@ export async function admitLocalEvaluationPlan(
         return { id: profile.id, adapter: profile.adapter, harness: profile.harness };
       }
       if (profile.adapter === "omp-native-v1") {
+        return { id: profile.id, adapter: profile.adapter, harness: profile.harness };
+      }
+      if (profile.adapter === "prime-agent-native-v1") {
         return { id: profile.id, adapter: profile.adapter, harness: profile.harness };
       }
       return {

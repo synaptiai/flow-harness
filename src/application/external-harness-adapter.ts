@@ -1,10 +1,12 @@
+import type { EvaluationOciLease, EvaluationTrialAttempt } from "../domain/evaluation/attempt.js";
 import type { ExternalHarnessIdentity } from "../domain/evaluation/external-harness.js";
 import { parseExternalHarnessIdentity } from "../domain/evaluation/external-harness.js";
 import { unavailableEvaluationMetrics } from "../domain/evaluation/records.js";
-import type {
-  HarnessEvaluationAdapter,
-  HarnessEvaluationRequest,
-  HarnessEvaluationResult,
+import {
+  type HarnessEvaluationAdapter,
+  type HarnessEvaluationRequest,
+  type HarnessEvaluationResult,
+  HarnessUnsafeStateError,
 } from "./evaluation-adapter.js";
 
 export interface ExternalHarnessRuntimeRequest {
@@ -23,6 +25,14 @@ export interface ExternalHarnessRuntime {
     request: ExternalHarnessRuntimeRequest,
     signal?: AbortSignal,
   ): Promise<HarnessEvaluationResult>;
+  recoverAttempt?(
+    request: {
+      readonly identity: ExternalHarnessIdentity;
+      readonly attempt: EvaluationTrialAttempt;
+      readonly updateOciLease: (lease: EvaluationOciLease) => Promise<void>;
+    },
+    signal?: AbortSignal,
+  ): Promise<EvaluationTrialAttempt>;
 }
 
 export type ExternalHarnessEvaluationProfile = {
@@ -87,6 +97,9 @@ export class ExternalHarnessEvaluationAdapter implements HarnessEvaluationAdapte
         this.options.signal,
       );
     } catch (error) {
+      if (error instanceof HarnessUnsafeStateError) {
+        throw error;
+      }
       return crashedResult(boundedReason(error), elapsed(started, clock()));
     }
   }

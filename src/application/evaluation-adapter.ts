@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import type { EvaluationOciLease } from "../domain/evaluation/attempt.js";
 import type { EvaluationHarnessOutcome, EvaluationMetrics } from "../domain/evaluation/records.js";
 import { unavailableEvaluationMetrics } from "../domain/evaluation/records.js";
 import type { AgentModelUsage } from "../domain/run/budget.js";
@@ -43,11 +44,18 @@ export interface HarnessEvaluationRequest {
     readonly network: "deny";
     readonly retry: { readonly providerRetries: 0; readonly harnessRetries: 0 };
   };
+  readonly durability?: {
+    readonly updateOciLease: (lease: EvaluationOciLease) => Promise<void>;
+  };
 }
 
 export interface HarnessEvaluationResult {
   readonly harness: EvaluationHarnessOutcome;
   readonly metrics: EvaluationMetrics;
+}
+
+export class HarnessUnsafeStateError extends Error {
+  override readonly name: string = "HarnessUnsafeStateError";
 }
 
 export interface HarnessEvaluationAdapter {

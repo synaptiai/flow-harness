@@ -14,6 +14,7 @@ import {
   MAX_EVALUATION_INSTRUCTION_BYTES,
 } from "../../../../src/infrastructure/fs/local-evaluation-plan.js";
 import { createPublicEvaluationHeader } from "../../../../src/infrastructure/fs/local-evaluation-store.js";
+import { primeExternalHarnessIdentity } from "../../../fixtures/evaluation/prime-external-harness-identity.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -182,6 +183,41 @@ describe("local evaluation plan admission", () => {
     expect(createPublicEvaluationHeader(admitted, "omp-evaluation").profiles[1]).toEqual({
       id: "candidate",
       adapter: "omp-native-v1",
+      harness: identity,
+    });
+  });
+
+  it("admits a Prime profile through one exact OCI identity", async () => {
+    const project = await evaluationProject();
+    const source = await readFile(join(project, "evaluation.yaml"), "utf8");
+    await writeFile(
+      join(project, "evaluation.yaml"),
+      source.replace(
+        "- { id: candidate, adapter: flow-workflow-v1, workflow: candidate.workflow.yaml }",
+        "- { id: candidate, adapter: prime-agent-native-v1, harness: { config: prime-agent-rlm-evaluation-v1 } }",
+      ),
+    );
+    const identity = primeExternalHarnessIdentity();
+
+    const admitted = await admitLocalEvaluationPlan(join(project, "evaluation.yaml"), {
+      resolveExternalHarnessIdentity: async (profile) => {
+        expect(profile).toEqual({
+          id: "candidate",
+          adapter: "prime-agent-native-v1",
+          harness: { config: "prime-agent-rlm-evaluation-v1" },
+        });
+        return identity;
+      },
+    });
+
+    expect(admitted.profiles[1]).toEqual({
+      id: "candidate",
+      adapter: "prime-agent-native-v1",
+      harness: identity,
+    });
+    expect(createPublicEvaluationHeader(admitted, "prime-evaluation").profiles[1]).toEqual({
+      id: "candidate",
+      adapter: "prime-agent-native-v1",
       harness: identity,
     });
   });

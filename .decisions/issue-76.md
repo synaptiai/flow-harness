@@ -680,8 +680,8 @@ Flow starts and attaches with no terminal. The supervisor waits for fixture tran
 bootstrap frame before it starts the driver. The frame carries the protocol secret through standard
 input. It does not use the container environment.
 
-The lease state records `intent`, `created`, `started`, `terminal`, `exported`, `stopped`, and
-`removed`. Each change uses an atomic write and directory synchronization.
+The lease state records `intent`, `absent`, `created`, `started`, `terminal`, `exported`, `stopped`,
+and `removed`. Each change uses an atomic write and directory synchronization.
 
 Evaluation recovery owns the lease before it marks the trial crashed or removes its workspace.
 Recovery checks the exact ID, nonce, labels, image, and policy before it stops or removes anything.
@@ -689,10 +689,14 @@ Recovery checks the exact ID, nonce, labels, image, and policy before it stops o
 An `intent` lease has no container ID. Recovery resolves only its exact name on the stored daemon.
 It checks the nonce, labels, image, and full policy before it records the found ID and removes it.
 
+Recovery records `absent` when exact-name lookup proves that the intent created no object. The
+`absent` state has no container ID and permits safe attempt retirement.
+
 This rule also covers a crash after daemon-side create and before Flow receives the create response.
 Recovery never needs a label-only search.
 
-Each later lease state requires the stored full container ID. A name or label cannot replace it.
+Each state from `created` through `removed` requires the stored full container ID. A name or label
+cannot replace it.
 
 The evaluation store permits one lease owner. Recovery has count and time limits. A spoofed label or
 different identity is not enough to authorize removal.
