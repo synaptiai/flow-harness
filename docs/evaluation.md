@@ -27,6 +27,13 @@ node dist/cli/main.js eval inspect harness-comparison
 node dist/cli/main.js eval export harness-comparison --output harness-comparison.json
 ```
 
+The native Pi example uses one Flow workflow and one native Pi profile:
+
+```sh
+node dist/cli/main.js eval validate examples/evaluation/native-pi-comparison.evaluation.yaml
+node dist/cli/main.js eval run examples/evaluation/native-pi-comparison.evaluation.yaml
+```
+
 The default store is `.flow/evaluations/<evaluation-id>/`. `--evaluations-dir <path>` selects an
 explicit store for run, inspect, and export. `eval export` refuses to overwrite an existing file.
 
@@ -34,18 +41,26 @@ explicit store for run, inspect, and export. `eval export` refuses to overwrite 
 
 An `EvaluationPlan` contains:
 
-- a canonical plan id and a versioned suite;
-- one or more tasks partitioned as `tuning`, `regression`, or `holdout`;
-- exactly two `flow-workflow-v1` profiles in version 1;
-- one shared provider, model id, and `thinking` level;
-- one exact budget, denied workload-tool network, and zero provider/harness retries;
-- unique non-negative seeds and `paired-alternating-v1` order; and
-- comparison thresholds and safety constraints.
+- A canonical plan id and a versioned suite.
+- One or more tasks partitioned as `tuning`, `regression`, or `holdout`.
+- Exactly two profiles in version 1.
+- One shared provider, model id, and `thinking` level.
+- One exact budget, denied workload-tool network, and zero provider and harness retries.
+- Unique non-negative seeds and `paired-alternating-v1` order.
+- Comparison thresholds and safety constraints.
 
 The plan must schedule enough holdout pairs to satisfy its superiority threshold:
 `minimumPairedTrials` must be no greater than the number of holdout tasks multiplied by the
 number of seeds. Because the minimum is positive, every plan therefore needs at least one holdout
 task. Tuning and regression pairs do not count toward this threshold.
+
+A profile selects one of these built-in adapters:
+
+- `flow-workflow-v1` selects one admitted workflow or prompt candidate.
+- `pi-native-v1` selects the fixed `pi-evaluation-v1` harness configuration.
+
+The plan cannot select an executable path, package version, driver path, or protocol version.
+Flow resolves these values from its trusted native Pi registry.
 
 Paths are portable relative paths below the plan directory. Fixtures may contain only bounded
 regular files and directories: symbolic links, special files, `.flow`, path escapes, oversized
@@ -168,11 +183,28 @@ workflows, fixtures, provider configuration, or credentials.
 
 ## Current adapter boundary
 
-The provider-neutral application port is `HarnessEvaluationAdapter`. The first implementation,
-`flow-workflow-v1`, executes a compiled Flow workflow and derives outcomes and metrics from its
-durable run state. Future Pi-, OMP-, or Prime-native adapters can implement the same request/result
-contract, but they must not receive verifier definitions or evaluation-store authority and must
-preserve the plan's fairness controls. No adapter other than `flow-workflow-v1` is admitted today.
+The provider-neutral application port is `HarnessEvaluationAdapter`.
+
+`flow-workflow-v1` executes a compiled Flow workflow. It derives metrics from the durable run
+state. `pi-native-v1` runs the pinned Pi SDK in a separate SRT process on Linux. Flow requires the
+verified Linux PID namespace. The child receives the task, trial identity, workspace identity,
+model controls, and budgets. It does not receive verifier assertions, evaluation-store paths, or
+provider credentials.
+
+The host broker makes each model request. It enforces the admitted provider, model, thinking level,
+zero retries, and cumulative token and cost limits. The child can use only `read` and `edit`.
+Flow confines both tools to the canonical trial workspace.
+
+The public profile identity binds the adapter contract, protocol, driver artifact, local Flow
+dependency closure, Node executable, Pi coding-agent closure, Pi AI closure, SRT closure,
+configuration, sandbox policy, Linux platform, PID namespace, and broker contract. Any change
+creates a new plan digest. A resume operation rejects that change.
+
+OMP and Prime can implement the same runtime port later. A new adapter must preserve the same data,
+authority, process, and evidence boundaries.
+
+Tuning-evidence export accepts only `flow-workflow-v1` profiles. It rejects an evaluation that uses
+an external harness profile.
 
 ## Tuning-only evidence and prompt candidates
 

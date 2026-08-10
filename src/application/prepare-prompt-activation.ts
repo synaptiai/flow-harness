@@ -46,21 +46,29 @@ export interface PromptActivationStoredEvaluation {
         };
       }[];
     };
-    readonly profiles: readonly {
-      readonly id: string;
-      readonly workflow: {
-        readonly provenance: string;
-        readonly sourceSha256: string;
-        readonly workflowDigest: string;
-        readonly sourceKind?: "prompt-candidate-projection" | undefined;
-      };
-      readonly candidate?:
-        | {
+    readonly profiles: readonly (
+      | {
+          readonly id: string;
+          readonly adapter: "flow-workflow-v1";
+          readonly workflow: {
             readonly provenance: string;
-            readonly identity: unknown;
-          }
-        | undefined;
-    }[];
+            readonly sourceSha256: string;
+            readonly workflowDigest: string;
+            readonly sourceKind?: "prompt-candidate-projection" | undefined;
+          };
+          readonly candidate?:
+            | {
+                readonly provenance: string;
+                readonly identity: unknown;
+              }
+            | undefined;
+        }
+      | {
+          readonly id: string;
+          readonly adapter: "pi-native-v1";
+          readonly harness: unknown;
+        }
+    )[];
     readonly comparison: EvaluationReportInput["comparison"];
     readonly schedule: readonly EvaluationTrialScheduleItem[];
   };
@@ -234,8 +242,14 @@ function validateEvaluationProfiles(
   candidate: PromptCandidateIdentity,
   stored: PromptActivationStoredEvaluation,
 ): {
-  readonly baseline: PromptActivationStoredEvaluation["header"]["profiles"][number];
-  readonly candidate: PromptActivationStoredEvaluation["header"]["profiles"][number];
+  readonly baseline: Extract<
+    PromptActivationStoredEvaluation["header"]["profiles"][number],
+    { readonly adapter: "flow-workflow-v1" }
+  >;
+  readonly candidate: Extract<
+    PromptActivationStoredEvaluation["header"]["profiles"][number],
+    { readonly adapter: "flow-workflow-v1" }
+  >;
 } {
   const baseline = stored.header.profiles.find(
     (profile) => profile.id === stored.header.comparison.baselineProfileId,
@@ -243,7 +257,13 @@ function validateEvaluationProfiles(
   const selected = stored.header.profiles.find(
     (profile) => profile.id === stored.header.comparison.candidateProfileId,
   );
-  if (baseline === undefined || selected === undefined || selected.candidate === undefined) {
+  if (
+    baseline === undefined ||
+    selected === undefined ||
+    baseline.adapter !== "flow-workflow-v1" ||
+    selected.adapter !== "flow-workflow-v1" ||
+    selected.candidate === undefined
+  ) {
     throw new PromptActivationAdmissionError(
       "identity_mismatch",
       "the evaluation does not contain the selected candidate profiles",

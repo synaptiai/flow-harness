@@ -155,7 +155,7 @@ export class CommandNodeExecutor implements CommandExecutor, AgentCommandExecuto
 
     const remainingTimeoutMs = deadline.remainingMs();
     deadline.dispose();
-    const result = await waitForExit(
+    const result = await waitForProcessTreeExit(
       child,
       remainingTimeoutMs,
       this.#terminationGraceMs,
@@ -373,7 +373,7 @@ async function release(prepared: PreparedCommand): Promise<unknown | null> {
   }
 }
 
-interface ExitResult {
+export interface ProcessTreeExitResult {
   readonly exitCode: number | null;
   readonly signal: NodeJS.Signals | null;
   readonly timedOut: boolean;
@@ -384,23 +384,24 @@ interface ExitResult {
 
 const TERMINATION_POLL_MS = 10;
 
-function waitForExit(
+export function waitForProcessTreeExit(
   child: ChildProcess,
   timeoutMs: number,
   terminationGraceMs: number,
   signal?: AbortSignal,
   platform: NodeJS.Platform = process.platform,
   terminationConfirmationMs = 2_000,
-): Promise<ExitResult> {
+  confirmNormalTreeExit = false,
+): Promise<ProcessTreeExitResult> {
   return new Promise((resolve) => {
     let settled = false;
-    let terminationCause: "abort" | "timeout" | null = null;
-    let leaderResult: ExitResult | null = null;
+    let terminationCause: "abort" | "timeout" | "tree" | null = null;
+    let leaderResult: ProcessTreeExitResult | null = null;
     let killTimer: NodeJS.Timeout | undefined;
     let groupCheckTimer: NodeJS.Timeout | undefined;
     let confirmationDeadline = 0;
 
-    function finish(result: ExitResult): void {
+    function finish(result: ProcessTreeExitResult): void {
       if (settled) {
         return;
       }
@@ -441,7 +442,7 @@ function waitForExit(
       groupCheckTimer = setTimeout(confirmTermination, TERMINATION_POLL_MS);
     }
 
-    function beginTermination(reason: "abort" | "timeout"): void {
+    function beginTermination(reason: "abort" | "timeout" | "tree"): void {
       if (settled || terminationCause !== null) {
         return;
       }
@@ -482,6 +483,11 @@ function waitForExit(
         terminationIncomplete: false,
       };
       if (terminationCause === null) {
+        const pid = child.pid;
+        if (confirmNormalTreeExit && pid !== undefined && processGroupIsAlive(pid, platform)) {
+          beginTermination("tree");
+          return;
+        }
         finish(leaderResult);
         return;
       }

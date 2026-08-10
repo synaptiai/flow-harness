@@ -9,14 +9,18 @@ import {
 } from "../sandbox/anthropic-sandbox-runtime-manager.js";
 import { SrtCommandSandbox } from "../sandbox/srt-command-sandbox.js";
 
-export function createProductionNodeExecutor(): NodeExecutor {
+export function createProductionCommandSandbox(): SrtCommandSandbox {
   const seccompApplyPath = resolveAnthropicSandboxRuntimeSeccompPath();
+  return new SrtCommandSandbox(anthropicSandboxRuntimeManager, {
+    backendVersion: ANTHROPIC_SANDBOX_RUNTIME_VERSION,
+    ...(seccompApplyPath === undefined ? {} : { seccompApplyPath }),
+  });
+}
+
+export function createProductionNodeExecutor(): NodeExecutor {
   return new NodeExecutorRouter(
     new CommandNodeExecutor({
-      sandbox: new SrtCommandSandbox(anthropicSandboxRuntimeManager, {
-        backendVersion: ANTHROPIC_SANDBOX_RUNTIME_VERSION,
-        ...(seccompApplyPath === undefined ? {} : { seccompApplyPath }),
-      }),
+      sandbox: createProductionCommandSandbox(),
     }),
     new PiAgentExecutor(),
   );

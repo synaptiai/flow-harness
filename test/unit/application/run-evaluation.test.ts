@@ -4,7 +4,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { HarnessEvaluationRequest } from "../../../src/application/evaluation-adapter.js";
-import { runEvaluationTrials } from "../../../src/application/run-evaluation.js";
+import {
+  runEvaluationTrials as runEvaluationTrialsApplication,
+  type RunEvaluationTrialsInput,
+} from "../../../src/application/run-evaluation.js";
 import { createEvaluationSchedule } from "../../../src/domain/evaluation/plan.js";
 import {
   type EvaluationTrialRecord,
@@ -12,6 +15,20 @@ import {
 } from "../../../src/domain/evaluation/records.js";
 
 const temporaryDirectories: string[] = [];
+
+function runEvaluationTrials(
+  input: Omit<RunEvaluationTrialsInput, "attempts"> &
+    Partial<Pick<RunEvaluationTrialsInput, "attempts">>,
+) {
+  return runEvaluationTrialsApplication({
+    attempts: {
+      active: null,
+      begin: async () => undefined,
+      complete: async () => undefined,
+    },
+    ...input,
+  });
+}
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -162,6 +179,368 @@ describe("evaluation trial runner", () => {
       [`workspace-${plan.schedule[1]?.trialId}`],
       [`workspace-${plan.schedule[1]?.trialId}`],
     ]);
+  });
+
+  it("writes durable adapter start before execution and retires it after terminal append", async () => {
+    const root = await temporaryDirectory();
+    const plan = executionPlan(root);
+    const events: string[] = [];
+
+    const records = await runEvaluationTrials({
+      plan,
+      committedRecords: [],
+      attempts: {
+        active: null,
+        begin: async (attempt) => {
+          events.push(`begin:${attempt.position}`);
+        },
+        complete: async (attempt) => {
+          events.push(`complete:${attempt.position}`);
+        },
+      },
+      append: async (record) => {
+        events.push(`append:${record.position}`);
+      },
+      workspaceIsolator: isolator(root),
+      observeFixture: async () => fixtureSnapshot(),
+      resolveAdapter: () => ({
+        kind: "flow-workflow-v1",
+        run: async (request) => {
+          events.push(`adapter:${request.trial.position}`);
+          return {
+            harness: { outcome: "completed", runId: "durable-run", reason: null },
+            metrics: unavailableEvaluationMetrics(),
+          };
+        },
+      }),
+      verifyWorkspace: async (request) => ({
+        outcome: "accepted",
+        verifierDigest: request.verifier.digest,
+        assertions: [{ kind: "exists", path: "RESULT.md", outcome: true }],
+      }),
+      now: monotonicDates(),
+      environment: testEnvironment(),
+    });
+
+    expect(records).toHaveLength(2);
+    expect(events).toEqual([
+      "begin:1",
+      "adapter:1",
+      "append:1",
+      "complete:1",
+      "begin:2",
+      "adapter:2",
+      "append:2",
+      "complete:2",
+    ]);
+  });
+
+  it("converts an unresolved durable start into failure without a second adapter call", async () => {
+    const root = await temporaryDirectory();
+    const plan = executionPlan(root);
+    const activeSchedule = plan.schedule[0];
+    if (activeSchedule === undefined) {
+      throw new Error("missing active schedule item");
+    }
+    const adapter = vi.fn(async () => ({
+      harness: { outcome: "completed" as const, runId: "second-trial", reason: null },
+      metrics: unavailableEvaluationMetrics(),
+    }));
+    const began: number[] = [];
+    const completed: number[] = [];
+
+    const records = await runEvaluationTrials({
+      plan,
+      committedRecords: [],
+      attempts: {
+        active: {
+          version: 1,
+          planDigest: plan.planDigest,
+          position: activeSchedule.position,
+          trialId: activeSchedule.trialId,
+          taskId: activeSchedule.taskId,
+          profileId: activeSchedule.profileId,
+          adapter: "flow-workflow-v1",
+          startedAt: "2026-08-09T09:59:00.000Z",
+          workspace: {
+            backend: "reflink-copy-v1",
+            snapshotDigest: "e".repeat(64),
+          },
+        },
+        begin: async (attempt) => {
+          began.push(attempt.position);
+        },
+        complete: async (attempt) => {
+          completed.push(attempt.position);
+        },
+      },
+      append: async () => undefined,
+      workspaceIsolator: isolator(root),
+      observeFixture: async () => fixtureSnapshot(),
+      resolveAdapter: () => ({ kind: "flow-workflow-v1", run: adapter }),
+      verifyWorkspace: async (request) => ({
+        outcome: "accepted",
+        verifierDigest: request.verifier.digest,
+        assertions: [{ kind: "exists", path: "RESULT.md", outcome: true }],
+      }),
+      now: monotonicDates(),
+      environment: testEnvironment(),
+    });
+
+    expect(records).toHaveLength(2);
+    expect(records[0]).toMatchObject({
+      startedAt: "2026-08-09T09:59:00.000Z",
+      classification: "harness_failure",
+      harness: {
+        outcome: "crashed",
+        reason: expect.stringMatching(/interrupted.*durable.*start/i),
+      },
+      environment: { workspaceSnapshotDigest: "e".repeat(64) },
+    });
+    expect(adapter).toHaveBeenCalledTimes(1);
+    expect(began).toEqual([2]);
+    expect(completed).toEqual([1, 2]);
+  });
+
+  it("records only the active cancelled trial and leaves the schedule suffix unstarted", async () => {
+    const root = await temporaryDirectory();
+    const plan = executionPlan(root);
+    const controller = new AbortController();
+    const adapter = vi.fn(async () => {
+      controller.abort(new Error("operator cancelled evaluation"));
+      return {
+        harness: { outcome: "cancelled" as const, runId: "cancelled-run", reason: "cancelled" },
+        metrics: unavailableEvaluationMetrics(),
+      };
+    });
+    const began: number[] = [];
+    const completed: number[] = [];
+
+    const records = await runEvaluationTrials({
+      plan,
+      committedRecords: [],
+      attempts: {
+        active: null,
+        begin: async (attempt) => {
+          began.push(attempt.position);
+        },
+        complete: async (attempt) => {
+          completed.push(attempt.position);
+        },
+      },
+      append: async () => undefined,
+      workspaceIsolator: isolator(root),
+      observeFixture: async () => fixtureSnapshot(),
+      resolveAdapter: () => ({ kind: "flow-workflow-v1", run: adapter }),
+      verifyWorkspace: vi.fn(),
+      signal: controller.signal,
+      now: monotonicDates(),
+      environment: testEnvironment(),
+    });
+
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      position: 1,
+      classification: "harness_failure",
+      harness: { outcome: "cancelled" },
+    });
+    expect(adapter).toHaveBeenCalledTimes(1);
+    expect(began).toEqual([1]);
+    expect(completed).toEqual([1]);
+  });
+
+  it.each(["source observation", "workspace creation", "isolated observation"] as const)(
+    "records cancellation during %s and does not start the adapter",
+    async (stage) => {
+      const root = await temporaryDirectory();
+      const plan = executionPlan(root);
+      const controller = new AbortController();
+      const workspaceIsolator = isolator(root);
+      if (stage === "workspace creation") {
+        workspaceIsolator.create.mockImplementationOnce(async () => {
+          controller.abort(new Error("operator cancelled evaluation"));
+          throw controller.signal.reason;
+        });
+      }
+      let observations = 0;
+      const observeFixture = async () => {
+        observations += 1;
+        if (
+          (stage === "source observation" && observations === 1) ||
+          (stage === "isolated observation" && observations === 2)
+        ) {
+          controller.abort(new Error("operator cancelled evaluation"));
+          throw controller.signal.reason;
+        }
+        return fixtureSnapshot();
+      };
+      const adapter = vi.fn();
+      const begin = vi.fn();
+
+      const records = await runEvaluationTrials({
+        plan,
+        committedRecords: [],
+        attempts: { active: null, begin, complete: vi.fn() },
+        append: async () => undefined,
+        workspaceIsolator,
+        observeFixture,
+        resolveAdapter: () => ({ kind: "flow-workflow-v1", run: adapter }),
+        verifyWorkspace: vi.fn(),
+        signal: controller.signal,
+        now: monotonicDates(),
+        environment: testEnvironment(),
+      });
+
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({
+        position: 1,
+        classification: "harness_failure",
+        harness: { outcome: "cancelled", reason: "operator cancelled evaluation" },
+      });
+      expect(adapter).not.toHaveBeenCalled();
+      expect(begin).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    "workspace cleanup",
+    "source observation",
+    "workspace creation",
+    "isolated observation",
+    "durable start",
+  ] as const)(
+    "does not call the adapter when cancellation arrives during successful %s",
+    async (stage) => {
+      const root = await temporaryDirectory();
+      const plan = executionPlan(root);
+      const controller = new AbortController();
+      const workspaceIsolator = isolator(root);
+      if (stage === "workspace cleanup") {
+        workspaceIsolator.cleanup.mockImplementationOnce(async () => {
+          controller.abort(new Error("operator cancelled evaluation"));
+          return "discarded";
+        });
+      }
+      if (stage === "workspace creation") {
+        workspaceIsolator.create.mockImplementationOnce(async ({ workspaceId }) => {
+          controller.abort(new Error("operator cancelled evaluation"));
+          return {
+            workspaceId,
+            cwd: join(root, workspaceId),
+            backend: "reflink-copy-v1" as const,
+            snapshotDigest: "e".repeat(64),
+          };
+        });
+      }
+      let observations = 0;
+      const observeFixture = async () => {
+        observations += 1;
+        if (
+          (stage === "source observation" && observations === 1) ||
+          (stage === "isolated observation" && observations === 2)
+        ) {
+          controller.abort(new Error("operator cancelled evaluation"));
+        }
+        return fixtureSnapshot();
+      };
+      const begin = vi.fn(async () => {
+        if (stage === "durable start") {
+          controller.abort(new Error("operator cancelled evaluation"));
+        }
+      });
+      const complete = vi.fn(async () => undefined);
+      const adapter = vi.fn(async () => ({
+        harness: { outcome: "completed" as const, runId: "must-not-run", reason: null },
+        metrics: unavailableEvaluationMetrics(),
+      }));
+
+      const records = await runEvaluationTrials({
+        plan,
+        committedRecords: [],
+        attempts: { active: null, begin, complete },
+        append: async () => undefined,
+        workspaceIsolator,
+        observeFixture,
+        resolveAdapter: () => ({ kind: "flow-workflow-v1", run: adapter }),
+        verifyWorkspace: vi.fn(),
+        signal: controller.signal,
+        now: monotonicDates(),
+        environment: testEnvironment(),
+      });
+
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({
+        position: 1,
+        classification: "harness_failure",
+        harness: { outcome: "cancelled", reason: "operator cancelled evaluation" },
+      });
+      expect(adapter).not.toHaveBeenCalled();
+      if (stage === "durable start") {
+        expect(begin).toHaveBeenCalledTimes(1);
+        expect(complete).toHaveBeenCalledTimes(1);
+      } else {
+        expect(begin).not.toHaveBeenCalled();
+        expect(complete).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("keeps external process evidence when cancellation stops the active trial", async () => {
+    const root = await temporaryDirectory();
+    const sourcePlan = executionPlan(root);
+    const plan = {
+      ...sourcePlan,
+      profiles: sourcePlan.profiles.map((profile) => ({
+        ...profile,
+        adapter: "pi-native-v1" as const,
+      })),
+    };
+    const controller = new AbortController();
+
+    const records = await runEvaluationTrials({
+      plan,
+      committedRecords: [],
+      append: async () => undefined,
+      workspaceIsolator: isolator(root),
+      observeFixture: async () => fixtureSnapshot(),
+      resolveAdapter: () => ({
+        kind: "pi-native-v1",
+        run: async () => {
+          controller.abort(new Error("operator cancelled evaluation"));
+          return {
+            harness: {
+              outcome: "cancelled",
+              runId: "pi-run",
+              reason: "cancelled",
+              runtime: {
+                adapter: "pi-native-v1",
+                containment: "process-group",
+                exitCode: null,
+                signal: "SIGTERM",
+                timedOut: false,
+                aborted: true,
+                treeTermination: "confirmed",
+              },
+            },
+            metrics: unavailableEvaluationMetrics(),
+          };
+        },
+      }),
+      verifyWorkspace: vi.fn(),
+      signal: controller.signal,
+      now: monotonicDates(),
+      environment: testEnvironment(),
+    });
+
+    expect(records).toHaveLength(1);
+    expect(records[0]?.harness).toMatchObject({
+      outcome: "cancelled",
+      runtime: {
+        adapter: "pi-native-v1",
+        aborted: true,
+        treeTermination: "confirmed",
+      },
+    });
   });
 
   it("records source drift and adapter exceptions without dropping scheduled trials", async () => {

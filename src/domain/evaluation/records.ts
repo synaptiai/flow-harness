@@ -103,6 +103,34 @@ const assertionEvidenceSchema = z
   })
   .strict();
 
+const externalRuntimeEvidenceSchema = z
+  .object({
+    adapter: z.literal("pi-native-v1"),
+    containment: z.enum(["linux-pid-namespace", "process-group"]),
+    exitCode: z.number().int().min(0).max(255).nullable(),
+    signal: z.string().min(1).max(32).nullable(),
+    timedOut: z.boolean(),
+    aborted: z.boolean(),
+    treeTermination: z.enum(["confirmed", "unconfirmed"]),
+  })
+  .strict()
+  .superRefine((runtime, context) => {
+    if (runtime.exitCode !== null && runtime.signal !== null) {
+      context.addIssue({
+        code: "custom",
+        path: ["signal"],
+        message: "external process evidence cannot contain both an exit code and a signal",
+      });
+    }
+    if (runtime.timedOut && runtime.aborted) {
+      context.addIssue({
+        code: "custom",
+        path: ["aborted"],
+        message: "external process evidence cannot be both timed out and aborted",
+      });
+    }
+  });
+
 const harnessOutcomeSchema = z
   .object({
     outcome: z.enum([
@@ -116,8 +144,28 @@ const harnessOutcomeSchema = z
     ]),
     runId: z.string().min(1).max(128).nullable(),
     reason: boundedTextSchema.nullable(),
+    runtime: externalRuntimeEvidenceSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((harness, context) => {
+    const runtime = harness.runtime;
+    if (runtime === undefined || harness.outcome !== "completed") {
+      return;
+    }
+    if (
+      runtime.exitCode !== 0 ||
+      runtime.signal !== null ||
+      runtime.timedOut ||
+      runtime.aborted ||
+      runtime.treeTermination !== "confirmed"
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["runtime"],
+        message: "completed harness evidence requires a confirmed successful external process",
+      });
+    }
+  });
 
 const verificationOutcomeSchema = z
   .object({

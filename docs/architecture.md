@@ -738,13 +738,31 @@ ledger remains authoritative for one profile trial; a separate evaluation ledger
 plan identity, deterministic paired schedule, terminal trial classifications, cross-run metrics,
 and comparison verdict. Neither reducer imports the other's event vocabulary.
 
-The `HarnessEvaluationAdapter` port receives one fresh workspace, a task instruction, public trial
-identity, the selected profile, and frozen fairness controls. It receives no verifier body and no
-evaluation-store authority. The initial `flow-workflow-v1` adapter executes the already compiled
-workflow through the ordinary scheduler and reduces its durable run state into a provider-neutral
-trial result. Pi is therefore an implementation dependency below that adapter, not part of the
-evaluation evidence schema. An OMP- or Prime-native adapter can later implement the same port
-without changing plan, record, report, or verifier contracts.
+The `HarnessEvaluationAdapter` port receives one fresh workspace and one task instruction. It also
+receives public trial identity and fixed controls. It receives no verifier body or store authority.
+
+The `flow-workflow-v1` adapter executes an admitted workflow through the Flow scheduler. The
+`pi-native-v1` adapter uses a separate process runtime. Both adapters return the same trial result
+contract.
+
+The native Pi runtime has three parts:
+
+1. A trusted registry verifies the driver, Node executable, local modules, Pi closures, and SRT closure.
+2. Linux SRT starts the driver in a verified PID namespace with protected host paths and no task network.
+3. A host broker makes model requests without giving credentials to the child.
+
+Two private pipes carry strict signed JSONL frames. The parent owns timeout, cancellation, process
+termination, and process evidence. The driver owns Pi session translation and bounded metrics. The
+model can use only workspace-confined `read` and `edit` tools.
+
+The application stores a durable adapter-start record before it calls either adapter. A restart
+converts an unresolved start to one interrupted failure. It does not repeat the adapter call.
+
+The native external runtime fails before spawn on macOS and Windows. Process-group cleanup does not
+prove full descendant termination.
+
+OMP or Prime can implement the same runtime port later. They do not require a plan, record, report,
+or verifier schema change.
 
 Admission hashes portable fixture content, the instruction, workflow source and compiled graph,
 private verifier identity and assertion count, controls, suite version, profiles, and seeds. The plan digest derives an

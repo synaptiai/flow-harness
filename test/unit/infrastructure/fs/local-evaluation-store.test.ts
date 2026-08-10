@@ -4,6 +4,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   realpath,
   rename,
   rm,
@@ -21,6 +22,7 @@ import {
   createEvaluationSchedule,
   type EvaluationPlanIdentity,
 } from "../../../../src/domain/evaluation/plan.js";
+import type { ExternalHarnessIdentity } from "../../../../src/domain/evaluation/external-harness.js";
 import {
   createEvaluationTrialRecord,
   unavailableEvaluationMetrics,
@@ -30,6 +32,7 @@ import {
   createPublicEvaluationHeader,
   EvaluationStoreError,
   LocalEvaluationStore,
+  type PublicEvaluationHeader,
 } from "../../../../src/infrastructure/fs/local-evaluation-store.js";
 
 const temporaryDirectories: string[] = [];
@@ -86,6 +89,93 @@ describe("local evaluation store", () => {
     await stores[0].release("evaluation-run");
 
     await expect(stores[0].read("evaluation-run")).resolves.toMatchObject({ records: [first] });
+  });
+
+  it("persists an unresolved adapter start across ownership changes", async () => {
+    const { root, admitted } = await admittedEvaluation();
+    const evaluations = join(root, "evaluations");
+    const firstStore = new LocalEvaluationStore(evaluations);
+    await firstStore.create(
+      createPublicEvaluationHeader(admitted, "evaluation-run", "2026-08-09T10:00:00.000Z"),
+    );
+    await firstStore.claim("evaluation-run", admitted.planDigest);
+    const attempt = trialAttempt(admitted, 0);
+    await firstStore.beginAttempt("evaluation-run", attempt);
+    await firstStore.release("evaluation-run");
+
+    await expect(firstStore.read("evaluation-run")).resolves.toMatchObject({
+      records: [],
+      activeAttempt: attempt,
+    });
+
+    const resumedStore = new LocalEvaluationStore(evaluations);
+    await expect(resumedStore.claim("evaluation-run", admitted.planDigest)).resolves.toMatchObject({
+      records: [],
+      activeAttempt: attempt,
+    });
+    await resumedStore.release("evaluation-run");
+  });
+
+  it("removes an unpublished adapter-start temporary before recovery", async () => {
+    const { root, admitted } = await admittedEvaluation();
+    const evaluations = join(root, "evaluations");
+    const store = new LocalEvaluationStore(evaluations);
+    await store.create(
+      createPublicEvaluationHeader(admitted, "evaluation-run", "2026-08-09T10:00:00.000Z"),
+    );
+    const directory = join(evaluations, "evaluation-run");
+    const temporaryName = `.active-attempt.${"1".repeat(8)}-${"1".repeat(4)}-4${"1".repeat(3)}-8${"1".repeat(3)}-${"1".repeat(12)}.tmp`;
+    await writeFile(join(directory, temporaryName), '{"version":1', { mode: 0o600 });
+
+    await expect(store.claim("evaluation-run", admitted.planDigest)).resolves.toMatchObject({
+      records: [],
+      activeAttempt: null,
+    });
+    expect(await readdir(directory)).not.toContain(temporaryName);
+    await store.release("evaluation-run");
+  });
+
+  it("retires a completed adapter start before it returns a resumed claim", async () => {
+    const { root, admitted } = await admittedEvaluation();
+    const evaluations = join(root, "evaluations");
+    const firstStore = new LocalEvaluationStore(evaluations);
+    await firstStore.create(
+      createPublicEvaluationHeader(admitted, "evaluation-run", "2026-08-09T10:00:00.000Z"),
+    );
+    await firstStore.claim("evaluation-run", admitted.planDigest);
+    const attempt = trialAttempt(admitted, 0);
+    const first = trialRecord(admitted, 0, null);
+    await firstStore.beginAttempt("evaluation-run", attempt);
+    await firstStore.append("evaluation-run", first);
+    await firstStore.release("evaluation-run");
+
+    const resumedStore = new LocalEvaluationStore(evaluations);
+    await expect(resumedStore.claim("evaluation-run", admitted.planDigest)).resolves.toMatchObject({
+      records: [first],
+      activeAttempt: null,
+    });
+    await expect(
+      readFile(join(evaluations, "evaluation-run", "active-attempt.json"), "utf8"),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    await resumedStore.release("evaluation-run");
+  });
+
+  it("rejects an adapter start that contradicts the next scheduled trial", async () => {
+    const { root, admitted } = await admittedEvaluation();
+    const evaluations = join(root, "evaluations");
+    const store = new LocalEvaluationStore(evaluations);
+    await store.create(
+      createPublicEvaluationHeader(admitted, "evaluation-run", "2026-08-09T10:00:00.000Z"),
+    );
+    await store.claim("evaluation-run", admitted.planDigest);
+    await store.beginAttempt("evaluation-run", trialAttempt(admitted, 0));
+    await store.release("evaluation-run");
+    const attemptPath = join(evaluations, "evaluation-run", "active-attempt.json");
+    const invalid = JSON.parse(await readFile(attemptPath, "utf8")) as Record<string, unknown>;
+    invalid.profileId = "candidate";
+    await writeFile(attemptPath, `${JSON.stringify(invalid)}\n`);
+
+    await expect(store.read("evaluation-run")).rejects.toThrow(/attempt|corrupt|schedule/i);
   });
 
   it("ignores and repairs a torn tail, then rejects committed tampering", async () => {
@@ -241,6 +331,7 @@ describe("local evaluation store", () => {
       "2026-08-09T10:00:00.000Z",
     );
     await store.create(header);
+    const headerBaseline = flowProfile(header.profiles[0]);
 
     const misplacedIdentityWithoutDigest = {
       version: 1 as const,
@@ -252,9 +343,9 @@ describe("local evaluation store", () => {
         sourceSha256: "a".repeat(64),
       },
       baseline: {
-        provenance: header.profiles[0]?.workflow.provenance ?? "baseline.workflow.yaml",
-        sourceSha256: header.profiles[0]?.workflow.sourceSha256 ?? "b".repeat(64),
-        workflowDigest: header.profiles[0]?.workflow.workflowDigest ?? "c".repeat(64),
+        provenance: headerBaseline.workflow.provenance,
+        sourceSha256: headerBaseline.workflow.sourceSha256,
+        workflowDigest: headerBaseline.workflow.workflowDigest,
       },
       evidence: [
         {
@@ -272,8 +363,8 @@ describe("local evaluation store", () => {
         },
       ],
       projectedWorkflow: {
-        sourceSha256: header.profiles[0]?.workflow.sourceSha256 ?? "3".repeat(64),
-        workflowDigest: header.profiles[0]?.workflow.workflowDigest ?? "4".repeat(64),
+        sourceSha256: headerBaseline.workflow.sourceSha256,
+        workflowDigest: headerBaseline.workflow.workflowDigest,
       },
     };
     const candidate = {
@@ -283,7 +374,7 @@ describe("local evaluation store", () => {
         candidateDigest: sha256Canonical(misplacedIdentityWithoutDigest),
       },
     };
-    const profiles = header.profiles.map((profile, index) => ({
+    const profiles = flowProfiles(header).map((profile, index) => ({
       id: profile.id,
       adapter: profile.adapter,
       workflow: {
@@ -342,7 +433,7 @@ describe("local evaluation store", () => {
       "evaluation-run",
       "2026-08-09T10:00:00.000Z",
     );
-    const profiles = current.profiles.map((profile) => ({
+    const profiles = flowProfiles(current).map((profile) => ({
       id: profile.id,
       adapter: profile.adapter,
       workflow: {
@@ -378,9 +469,93 @@ describe("local evaluation store", () => {
     });
 
     expect(admitted.planDigest).toBe(planDigest);
+    expect(planDigest).toBe("2c7b5aef0105c0dbe921123e2f6a6e163582d4d000f452edc22a11e35ddcead0");
     await expect(store.claim("evaluation-run", admitted.planDigest)).resolves.toMatchObject({
       records: [],
     });
+  });
+
+  it("rejects each redigested external identity change on resume", async () => {
+    const baseIdentity = nativePiIdentity();
+    const changedIdentities: ExternalHarnessIdentity[] = [
+      { ...baseIdentity, adapterContractVersion: "1.0.1" },
+      {
+        ...baseIdentity,
+        protocol: { ...baseIdentity.protocol, digest: "5".repeat(64) },
+      },
+      {
+        ...baseIdentity,
+        runtime: { ...baseIdentity.runtime, version: "0.0.71" },
+      },
+      {
+        ...baseIdentity,
+        runtime: { ...baseIdentity.runtime, policyDigest: "6".repeat(64) },
+      },
+      {
+        ...baseIdentity,
+        driver: { ...baseIdentity.driver, artifactSha256: "7".repeat(64) },
+      },
+      {
+        ...baseIdentity,
+        harness: { ...baseIdentity.harness, version: "0.84.1" },
+      },
+      {
+        ...baseIdentity,
+        harness: { ...baseIdentity.harness, integrity: `sha512-${"B".repeat(86)}==` },
+      },
+      {
+        ...baseIdentity,
+        harness: { ...baseIdentity.harness, configDigest: "8".repeat(64) },
+      },
+    ];
+
+    for (const [index, changedIdentity] of changedIdentities.entries()) {
+      const { root, admitted } = await admittedExternalEvaluation(baseIdentity);
+      const evaluations = join(root, "evaluations");
+      const store = new LocalEvaluationStore(evaluations);
+      const evaluationId = `external-identity-${String(index)}`;
+      const header = createPublicEvaluationHeader(
+        admitted,
+        evaluationId,
+        "2026-08-09T10:00:00.000Z",
+      );
+      await store.create(header);
+      const changedHeader = replaceExternalHarnessIdentity(header, changedIdentity);
+      await writeFile(
+        join(evaluations, evaluationId, "plan.json"),
+        `${JSON.stringify(changedHeader)}\n`,
+      );
+
+      await expect(
+        new LocalEvaluationStore(evaluations).claim(evaluationId, admitted.planDigest),
+      ).rejects.toThrow(/plan|identity|changed/i);
+    }
+  });
+
+  it("rejects a durable external profile that omits an identity field", async () => {
+    const { root, admitted } = await admittedExternalEvaluation();
+    const evaluations = join(root, "evaluations");
+    const store = new LocalEvaluationStore(evaluations);
+    const header = createPublicEvaluationHeader(
+      admitted,
+      "external-missing-field",
+      "2026-08-09T10:00:00.000Z",
+    );
+    await store.create(header);
+    const changed = JSON.parse(JSON.stringify(header)) as {
+      profiles: { adapter: string; harness?: { driver?: unknown } }[];
+    };
+    const external = changed.profiles.find((profile) => profile.adapter === "pi-native-v1");
+    if (external?.harness === undefined) {
+      throw new Error("test header has no external profile");
+    }
+    delete external.harness.driver;
+    await writeFile(
+      join(evaluations, "external-missing-field", "plan.json"),
+      `${JSON.stringify(changed)}\n`,
+    );
+
+    await expect(store.read("external-missing-field")).rejects.toThrow(/header|corrupt/i);
   });
 
   it("rejects the non-canonical explicit file source kind in a redigested public header", async () => {
@@ -391,7 +566,7 @@ describe("local evaluation store", () => {
       "evaluation-run",
       "2026-08-09T10:00:00.000Z",
     );
-    const profiles = header.profiles.map((profile) => ({
+    const profiles = flowProfiles(header).map((profile) => ({
       ...profile,
       workflow: { ...profile.workflow, sourceKind: "file" as const },
     }));
@@ -434,11 +609,8 @@ describe("local evaluation store", () => {
       "evaluation-run",
       "2026-08-09T10:00:00.000Z",
     );
-    const baseline = direct.profiles[0];
-    const selected = direct.profiles[1];
-    if (baseline === undefined || selected === undefined) {
-      throw new Error("fixture profiles are missing");
-    }
+    const baseline = flowProfile(direct.profiles[0]);
+    const selected = flowProfile(direct.profiles[1]);
     const identityWithoutDigest = {
       version: 1 as const,
       id: "better-instructions",
@@ -664,6 +836,118 @@ comparison:
   return { root, admitted: await admitLocalEvaluationPlan(join(root, "evaluation.yaml")) };
 }
 
+async function admittedExternalEvaluation(identity = nativePiIdentity()) {
+  const { root } = await admittedEvaluation();
+  const planPath = join(root, "evaluation.yaml");
+  const source = await readFile(planPath, "utf8");
+  await writeFile(
+    planPath,
+    source.replace(
+      "- { id: candidate, adapter: flow-workflow-v1, workflow: candidate.workflow.yaml }",
+      "- { id: candidate, adapter: pi-native-v1, harness: { config: pi-evaluation-v1 } }",
+    ),
+  );
+  return {
+    root,
+    admitted: await admitLocalEvaluationPlan(planPath, {
+      resolveExternalHarnessIdentity: async () => identity,
+    }),
+  };
+}
+
+function replaceExternalHarnessIdentity(
+  header: PublicEvaluationHeader,
+  harness: ExternalHarnessIdentity,
+): PublicEvaluationHeader {
+  const profiles: EvaluationPlanIdentity["profiles"] = header.profiles.map((profile) =>
+    profile.adapter === "pi-native-v1"
+      ? { id: profile.id, adapter: profile.adapter, harness }
+      : {
+          id: profile.id,
+          adapter: profile.adapter,
+          workflow: {
+            provenance: profile.workflow.provenance,
+            sourceSha256: profile.workflow.sourceSha256,
+            workflowDigest: profile.workflow.workflowDigest,
+            ...(profile.workflow.sourceKind === undefined
+              ? {}
+              : { sourceKind: profile.workflow.sourceKind }),
+          },
+          ...(profile.candidate === undefined ? {} : { candidate: profile.candidate }),
+        },
+  );
+  const identity: EvaluationPlanIdentity = {
+    version: 1,
+    apiVersion: header.apiVersion,
+    id: header.planId,
+    suite: header.suite,
+    profiles: [...profiles],
+    controls: header.controls,
+    seeds: header.seeds,
+    order: header.order,
+    comparison: header.comparison,
+  };
+  const planDigest = calculateEvaluationPlanDigest(identity);
+  return {
+    ...header,
+    planDigest,
+    profiles: [...profiles],
+    schedule: [
+      ...createEvaluationSchedule(
+        planDigest,
+        header.suite.tasks.map((task) => task.id),
+        profiles.map((profile) => profile.id),
+        header.seeds,
+      ),
+    ],
+  };
+}
+
+function nativePiIdentity(): ExternalHarnessIdentity {
+  return {
+    version: 1,
+    adapter: "pi-native-v1",
+    adapterContractVersion: "1.0.0",
+    protocol: {
+      id: "flow-external-harness-jsonl-v1",
+      maxFrameBytes: 1_048_576,
+      digest: "1".repeat(64),
+    },
+    runtime: {
+      id: "srt-process-v1",
+      package: "@anthropic-ai/sandbox-runtime",
+      version: "0.0.70",
+      packageContentSha256: "2".repeat(64),
+      policyDigest: "2".repeat(64),
+      platform: "linux",
+      containment: "linux-pid-namespace",
+    },
+    driver: {
+      id: "native-pi-evaluation-v1",
+      artifactSha256: "3".repeat(64),
+      dependencyClosureSha256: "3".repeat(64),
+      node: { version: "22.19.0", executableSha256: "3".repeat(64) },
+    },
+    harness: {
+      package: "@earendil-works/pi-coding-agent",
+      version: "0.84.0",
+      integrity:
+        "sha512-oxEU7BT9xuVT6UKNwUNDzNP5dVGb+DZRGfaEyMyAab8dRlqTSxxyhSlMAxmYsu//YOeasj9E8n2+px1BzIai0g==",
+      packageContentSha256: "4".repeat(64),
+      config: "pi-evaluation-v1",
+      configDigest: "4".repeat(64),
+    },
+    inference: {
+      id: "flow-pi-inference-v1",
+      version: 1,
+      package: "@earendil-works/pi-ai",
+      packageVersion: "0.84.0",
+      packageIntegrity: `sha512-${"B".repeat(86)}==`,
+      packageContentSha256: "5".repeat(64),
+    },
+  };
+}
+
 function trialRecord(
   admitted: Awaited<ReturnType<typeof admitLocalEvaluationPlan>>,
   index: number,
@@ -696,6 +980,49 @@ function trialRecord(
     },
     metrics: unavailableEvaluationMetrics(),
   });
+}
+
+function trialAttempt(
+  admitted: Awaited<ReturnType<typeof admittedEvaluation>>["admitted"],
+  index: number,
+) {
+  const schedule = admitted.schedule[index];
+  const profile = admitted.profiles.find((item) => item.id === schedule?.profileId);
+  if (schedule === undefined || profile === undefined) {
+    throw new Error("missing trial attempt inputs");
+  }
+  return Object.freeze({
+    version: 1 as const,
+    planDigest: admitted.planDigest,
+    position: schedule.position,
+    trialId: schedule.trialId,
+    taskId: schedule.taskId,
+    profileId: schedule.profileId,
+    adapter: profile.adapter,
+    startedAt: "2026-08-09T10:00:00.000Z",
+    workspace: Object.freeze({
+      backend: "reflink-copy-v1" as const,
+      snapshotDigest: "e".repeat(64),
+    }),
+  });
+}
+
+type FlowPublicProfile = Extract<
+  PublicEvaluationHeader["profiles"][number],
+  { readonly adapter: "flow-workflow-v1" }
+>;
+
+function flowProfile(
+  profile: PublicEvaluationHeader["profiles"][number] | undefined,
+): FlowPublicProfile {
+  if (profile?.adapter !== "flow-workflow-v1") {
+    throw new Error("evaluation fixture profile is not a Flow workflow");
+  }
+  return profile;
+}
+
+function flowProfiles(header: PublicEvaluationHeader): readonly FlowPublicProfile[] {
+  return header.profiles.map((profile) => flowProfile(profile));
 }
 
 function invalidUtf8At(contents: Buffer, marker: string): Buffer {

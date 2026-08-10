@@ -4,6 +4,7 @@ export default defineConfig({
   test: {
     include: ["test/**/*.test.ts"],
     exclude: ["test/live/**", "test/runtime/**"],
+    maxWorkers: 4,
     coverage: {
       provider: "v8",
       reporter: ["text", "json", "lcov"],

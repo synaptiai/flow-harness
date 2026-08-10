@@ -2,9 +2,9 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -15,10 +15,17 @@ import {
   trySubmitAgentCommandApprovalDecision,
 } from "../application/command-approval.js";
 import {
+  type ExternalHarnessRuntime,
+  NativePiEvaluationAdapter,
+} from "../application/external-harness-adapter.js";
+import {
   generatePromptCandidate,
   PromptCandidateGenerationExecutionError,
 } from "../application/generate-prompt-candidate.js";
-import { FlowWorkflowEvaluationAdapter } from "../application/evaluation-adapter.js";
+import {
+  FlowWorkflowEvaluationAdapter,
+  type HarnessEvaluationAdapter,
+} from "../application/evaluation-adapter.js";
 import type {
   AgentCommandApprovalDecisionChannel,
   NodeEffectReconciler,
@@ -171,6 +178,7 @@ import {
 import { createProductionNodeEffectReconciler } from "../infrastructure/runtime/production-effect-reconciler.js";
 import { createProductionNodeExecutor } from "../infrastructure/runtime/production-node-executor.js";
 import { createProductionWorkspaceIsolator } from "../infrastructure/runtime/production-workspace-isolator.js";
+import { NativePiHarnessRegistry } from "../infrastructure/pi/native-pi-harness-registry.js";
 import {
   ensureSupervisor,
   requestSupervisor,
@@ -291,6 +299,8 @@ export interface CliDependencies {
   ) => Promise<InitializedFlowProject>;
   readonly loadConfig: (options?: FlowConfigLocationOptions) => Promise<EffectiveFlowConfig>;
   readonly capabilityBundleFetcher: CapabilityBundleFetcher;
+  readonly externalHarnessRegistry: NativePiHarnessRegistry;
+  readonly externalHarnessRuntime: ExternalHarnessRuntime;
   readonly signal?: AbortSignal;
 }
 
@@ -1025,7 +1035,10 @@ async function evaluationCommand(
       "eval validate requires one evaluation plan path",
     );
     const cwd = overrides.cwd ?? process.cwd();
-    const admitted = await admitLocalEvaluationPlan(resolve(cwd, planArgument));
+    const registry = overrides.externalHarnessRegistry ?? new NativePiHarnessRegistry();
+    const admitted = await admitLocalEvaluationPlan(resolve(cwd, planArgument), {
+      resolveExternalHarnessIdentity: (profile) => registry.resolveIdentity(profile),
+    });
     io.stdout(
       JSON.stringify(
         {
@@ -1037,14 +1050,22 @@ async function evaluationCommand(
             id: task.id,
             partition: task.partition,
           })),
-          profiles: admitted.profiles.map((profile) => ({
-            id: profile.id,
-            adapter: profile.adapter,
-            workflowDigest: profile.workflow.workflowDigest,
-            ...(profile.candidate === undefined
-              ? {}
-              : { candidateDigest: profile.candidate.candidateDigest }),
-          })),
+          profiles: admitted.profiles.map((profile) =>
+            profile.adapter === "pi-native-v1"
+              ? {
+                  id: profile.id,
+                  adapter: profile.adapter,
+                  driverArtifactSha256: profile.harness.driver.artifactSha256,
+                }
+              : {
+                  id: profile.id,
+                  adapter: profile.adapter,
+                  workflowDigest: profile.workflow.workflowDigest,
+                  ...(profile.candidate === undefined
+                    ? {}
+                    : { candidateDigest: profile.candidate.candidateDigest }),
+                },
+          ),
           scheduledTrials: admitted.schedule.length,
         },
         null,
@@ -1101,11 +1122,24 @@ async function evaluationCommand(
       "eval run requires one evaluation plan path",
     );
     const dependencies = dependenciesFrom(overrides);
-    const admitted = await admitLocalEvaluationPlan(resolve(dependencies.cwd, planArgument));
-    const evaluationsDirectory = await resolveEvaluationsDirectory(
+    const admitted = await admitLocalEvaluationPlan(resolve(dependencies.cwd, planArgument), {
+      resolveExternalHarnessIdentity: (profile) =>
+        dependencies.externalHarnessRegistry.resolveIdentity(profile),
+    });
+    const evaluationLocation = await resolveEvaluationLocation(
       dependencies,
       values["evaluations-dir"],
     );
+    const evaluationsDirectory = evaluationLocation.directory;
+    const hasExternalProfile = admitted.profiles.some(
+      (profile) => profile.adapter === "pi-native-v1",
+    );
+    if (hasExternalProfile && evaluationLocation.projectRoot === null) {
+      throw new CliUsageError(
+        "eval run requires a configured Flow project root for an external harness profile",
+      );
+    }
+    const projectRoot = evaluationLocation.projectRoot ?? (await realpath(dependencies.cwd));
     const evaluationId = values["evaluation-id"] ?? admitted.id;
     const store = new LocalEvaluationStore(evaluationsDirectory);
     const header = createPublicEvaluationHeader(admitted, evaluationId);
@@ -1123,11 +1157,16 @@ async function evaluationCommand(
     const evaluationRoot = join(evaluationsDirectory, evaluationId);
     const workspaceIsolator = dependencies.createWorkspaceIsolator(
       evaluationRuntime,
-      [evaluationRuntime],
+      [
+        evaluationRuntime,
+        ...(evaluationLocation.projectRoot === null
+          ? []
+          : [join(evaluationLocation.projectRoot, ".flow")]),
+      ],
       evaluationRuntime,
-      evaluationRoot,
+      projectRoot,
     );
-    const adapters = new Map<string, FlowWorkflowEvaluationAdapter>();
+    const adapters = new Map<string, HarnessEvaluationAdapter>();
     try {
       await runEvaluationTrials({
         plan: {
@@ -1152,6 +1191,11 @@ async function evaluationCommand(
           })),
         },
         committedRecords: claimed.records,
+        attempts: {
+          active: claimed.activeAttempt,
+          begin: (attempt) => store.beginAttempt(evaluationId, attempt),
+          complete: (attempt) => store.completeAttempt(evaluationId, attempt),
+        },
         append: (record) => store.append(evaluationId, record),
         workspaceIsolator,
         observeFixture: observeEvaluationFixture,
@@ -1164,16 +1208,30 @@ async function evaluationCommand(
           if (profile === undefined || profile.adapter !== adapterKind) {
             throw new Error(`evaluation profile "${profileId}" is unavailable`);
           }
-          const adapter = new FlowWorkflowEvaluationAdapter(profile, {
-            executor: dependencies.executor,
-            createStore: () => dependencies.createStore(runStoreDirectory),
-            workspaceIsolator,
-            ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
-          });
+          const adapter =
+            profile.adapter === "flow-workflow-v1"
+              ? new FlowWorkflowEvaluationAdapter(profile, {
+                  executor: dependencies.executor,
+                  createStore: () => dependencies.createStore(runStoreDirectory),
+                  workspaceIsolator,
+                  ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
+                })
+              : new NativePiEvaluationAdapter(profile, dependencies.externalHarnessRuntime, {
+                  isolation: {
+                    projectRoot,
+                    protectedPaths: [
+                      dirname(admitted.sourcePath),
+                      evaluationRoot,
+                      join(projectRoot, ".flow"),
+                    ],
+                  },
+                  ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
+                });
           adapters.set(profileId, adapter);
           return adapter;
         },
         verifyWorkspace: verifyEvaluationWorkspace,
+        ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
         environment: createEvaluationEnvironment(),
       });
     } finally {
@@ -1571,6 +1629,17 @@ function parseRollbackSelection(value: string) {
 }
 
 function tuningEvidence(stored: StoredEvaluation) {
+  const flowProfiles = stored.header.profiles.filter(
+    (
+      profile,
+    ): profile is Extract<
+      StoredEvaluation["header"]["profiles"][number],
+      { readonly adapter: "flow-workflow-v1" }
+    > => profile.adapter === "flow-workflow-v1",
+  );
+  if (flowProfiles.length !== stored.header.profiles.length) {
+    throw new CliUsageError("tuning evidence does not support external harness profiles");
+  }
   return createTuningEvidencePacket({
     evaluationId: stored.header.evaluationId,
     planDigest: stored.header.planDigest,
@@ -1579,7 +1648,7 @@ function tuningEvidence(stored: StoredEvaluation) {
       id: task.id,
       partition: task.partition,
     })),
-    profiles: stored.header.profiles.map((profile) => ({
+    profiles: flowProfiles.map((profile) => ({
       id: profile.id,
       adapter: profile.adapter,
       workflowDigest: profile.workflow.workflowDigest,
@@ -2487,6 +2556,8 @@ function workflowPackageLoader(
 function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies {
   const storageDependencies = storageDependenciesFrom(overrides);
   const configDependencies = configDependenciesFrom(overrides);
+  const externalHarnessRegistry =
+    overrides.externalHarnessRegistry ?? new NativePiHarnessRegistry();
   return {
     ...storageDependencies,
     ...configDependencies,
@@ -2496,6 +2567,10 @@ function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies 
     readTextFile: overrides.readTextFile ?? ((path) => readFile(path, "utf8")),
     capabilityBundleFetcher:
       overrides.capabilityBundleFetcher ?? createProductionCapabilityBundleFetcher(),
+    externalHarnessRegistry,
+    externalHarnessRuntime:
+      overrides.externalHarnessRuntime ??
+      createLazyProductionExternalHarnessRuntime(externalHarnessRegistry),
     ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
   };
 }
@@ -2562,11 +2637,40 @@ async function resolveEvaluationsDirectory(
   dependencies: Pick<CliDependencies, "cwd" | "loadConfig">,
   explicitEvaluationsDirectory: string | undefined,
 ): Promise<string> {
-  if (explicitEvaluationsDirectory !== undefined) {
-    return resolve(dependencies.cwd, explicitEvaluationsDirectory);
-  }
+  return (await resolveEvaluationLocation(dependencies, explicitEvaluationsDirectory)).directory;
+}
+
+async function resolveEvaluationLocation(
+  dependencies: Pick<CliDependencies, "cwd" | "loadConfig">,
+  explicitEvaluationsDirectory: string | undefined,
+): Promise<{ readonly directory: string; readonly projectRoot: string | null }> {
   const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
-  return resolve(config.projectRoot ?? dependencies.cwd, ".flow/evaluations");
+  const projectRoot = config.projectRoot === null ? null : await realpath(config.projectRoot);
+  return Object.freeze({
+    directory:
+      explicitEvaluationsDirectory === undefined
+        ? resolve(projectRoot ?? dependencies.cwd, ".flow/evaluations")
+        : resolve(dependencies.cwd, explicitEvaluationsDirectory),
+    projectRoot,
+  });
+}
+
+function createLazyProductionExternalHarnessRuntime(
+  registry: NativePiHarnessRegistry,
+): ExternalHarnessRuntime {
+  let runtime: Promise<ExternalHarnessRuntime> | undefined;
+  return Object.freeze({
+    execute: async (
+      request: Parameters<ExternalHarnessRuntime["execute"]>[0],
+      signal?: AbortSignal,
+    ) => {
+      runtime ??= import("../infrastructure/runtime/production-external-harness-runtime.js").then(
+        ({ createProductionExternalHarnessRuntime }) =>
+          createProductionExternalHarnessRuntime(registry),
+      );
+      return (await runtime).execute(request, signal);
+    },
+  });
 }
 
 function formatCompilationError(error: WorkflowCompilationError): string {

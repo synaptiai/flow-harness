@@ -1135,6 +1135,31 @@ publishing validated operational data.
 
 Provider credentials remain outside workflow files and use Pi's configured credential runtime. Provider and model identifiers are execution configuration; no Pi type appears in the compiled or persisted Flow contracts.
 
+## External evaluation profiles
+
+An evaluation plan can select `pi-native-v1` for one profile. The profile can select only the fixed
+`pi-evaluation-v1` configuration. The plan cannot select a command, path, package, or endpoint.
+
+Flow binds the exact adapter, protocol, driver, local dependency closure, Node executable, Pi
+coding-agent closure, Pi AI closure, SRT closure, SRT policy, Linux platform, PID namespace,
+configuration, and broker contract to the plan digest. The version-one Flow-only identity format
+does not change.
+
+Before each trial, Flow writes one durable adapter-start record. Flow then starts the compiled Pi
+driver in SRT. The child has no provider credentials and no general network route. A private signed
+JSONL channel sends model requests to the host broker.
+
+The native Pi profile has only `read` and `edit`. Both tools accept only existing files in the
+canonical trial workspace. The profile loads no skills, extensions, templates, themes, context
+files, or project configuration. It uses an in-memory session and zero retries.
+
+The parent records the process exit, signal, timeout, cancellation, containment, and tree
+termination. The child cannot assert these values. Missing, forged, repeated, oversized, or
+out-of-order frames fail the trial.
+
+Version 1 external harness execution requires Linux. Flow rejects macOS and Windows before it loads
+the driver. Flow also rejects a Linux sandbox that does not prove PID-namespace containment.
+
 The Pi adapter calls the pinned session's `getSessionStats()` after prompt settlement and translates
 the four token components and reported cost into the Flow-owned usage shape. It preserves available
 usage on successful, terminal-error, timeout, and cancellation outcomes. A failure before a session
@@ -1296,12 +1321,12 @@ An evaluation plan is a separate `flow.synapti.ai/v1alpha1` document with
 authoring contract and example are in [Reproducible harness evaluation](evaluation.md) and
 `examples/evaluation/harness-comparison.evaluation.yaml`.
 
-Version 1 admits exactly two `flow-workflow-v1` profiles. Each plan declares a versioned suite of
-bounded tasks, portable fixture and instruction paths, a private `filesystem-v1` verifier, one
-shared provider/model/`thinking` tuple, an exact run budget, `network: deny`, zero provider and
-harness retries, unique seeds, `paired-alternating-v1`, and fixed comparison constraints. Both
-compiled workflows must contain at least one model-bearing node and match the declared model and
-budget recursively.
+Version 1 admits exactly two built-in profiles. A profile uses `flow-workflow-v1` or
+`pi-native-v1`. Each plan declares a versioned suite of bounded tasks, portable fixture and
+instruction paths, a private `filesystem-v1` verifier, one shared provider, model, and `thinking`
+tuple, an exact run budget, `network: deny`, zero provider and harness retries, unique seeds,
+`paired-alternating-v1`, and fixed comparison constraints. Each Flow workflow must contain at least
+one model-bearing node. It must match the declared model and budget at each graph level.
 
 Evaluation admission rejects unknown fields, non-canonical identifiers and paths, duplicate task,
 profile, verifier, or seed identities, excess schedule size, symbolic links, special fixture entries,

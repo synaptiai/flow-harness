@@ -1,6 +1,17 @@
 import { randomUUID } from "node:crypto";
-import { constants, type Stats } from "node:fs";
-import { type FileHandle, lstat, mkdir, open, realpath, rename, rm } from "node:fs/promises";
+import { constants, type Dirent, type Stats } from "node:fs";
+import {
+  type FileHandle,
+  link,
+  lstat,
+  mkdir,
+  open,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  unlink,
+} from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import { z } from "zod";
@@ -9,6 +20,11 @@ import {
   type PromptCandidateIdentity,
   parsePromptCandidateIdentity,
 } from "../../domain/adaptation/prompt-candidate.js";
+import {
+  type EvaluationTrialAttempt,
+  parseEvaluationTrialAttempt,
+} from "../../domain/evaluation/attempt.js";
+import { parseExternalHarnessIdentity } from "../../domain/evaluation/external-harness.js";
 import {
   type EvaluationReportInput,
   validateCommittedEvaluationPrefix,
@@ -33,9 +49,13 @@ import {
 
 export const MAX_EVALUATION_HEADER_BYTES = 2 * 1024 * 1024;
 export const MAX_EVALUATION_TRIAL_RECORD_BYTES = 64 * 1024;
+export const MAX_EVALUATION_TRIAL_ATTEMPT_BYTES = 4 * 1024;
 export const MAX_EVALUATION_LEDGER_BYTES =
   MAX_EVALUATION_TRIALS * MAX_EVALUATION_TRIAL_RECORD_BYTES;
 const fatalUtf8Decoder = new TextDecoder("utf-8", { fatal: true });
+const MAX_EVALUATION_ATTEMPT_TEMPORARIES = 16;
+const attemptTemporaryNamePattern =
+  /^\.active-attempt\.[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}\.tmp$/;
 
 export type EvaluationStoreErrorCode =
   | "complete"
@@ -129,7 +149,7 @@ const candidateIdentitySchema = z
   })
   .strict();
 
-const profileSchema = z
+const flowProfileSchema = z
   .object({
     id: identifierSchema,
     adapter: z.literal("flow-workflow-v1"),
@@ -144,6 +164,23 @@ const profileSchema = z
     candidate: candidateIdentitySchema.optional(),
   })
   .strict();
+
+const externalProfileSchema = z
+  .object({
+    id: identifierSchema,
+    adapter: z.literal("pi-native-v1"),
+    harness: z.custom<ReturnType<typeof parseExternalHarnessIdentity>>((value) => {
+      try {
+        parseExternalHarnessIdentity(value);
+        return true;
+      } catch {
+        return false;
+      }
+    }, "external harness identity is invalid"),
+  })
+  .strict();
+
+const profileSchema = z.discriminatedUnion("adapter", [flowProfileSchema, externalProfileSchema]);
 
 const scheduleItemSchema = z
   .object({
@@ -236,8 +273,12 @@ const publicHeaderSchema = z
     const candidate = header.profiles.find(
       (profile) => profile.id === header.comparison.candidateProfileId,
     );
-    const candidateProfiles = header.profiles.filter((profile) => profile.candidate !== undefined);
-    const projectionProfiles = header.profiles.filter(
+    const flowProfiles = header.profiles.filter(
+      (profile): profile is z.infer<typeof flowProfileSchema> =>
+        profile.adapter === "flow-workflow-v1",
+    );
+    const candidateProfiles = flowProfiles.filter((profile) => profile.candidate !== undefined);
+    const projectionProfiles = flowProfiles.filter(
       (profile) => profile.workflow.sourceKind === "prompt-candidate-projection",
     );
     if (candidateProfiles.length > 0 || projectionProfiles.length > 0) {
@@ -246,6 +287,8 @@ const publicHeaderSchema = z
         projectionProfiles.length !== 1 ||
         baseline === undefined ||
         candidate === undefined ||
+        baseline.adapter !== "flow-workflow-v1" ||
+        candidate.adapter !== "flow-workflow-v1" ||
         baseline.candidate !== undefined ||
         baseline.workflow.sourceKind === "prompt-candidate-projection" ||
         candidate.candidate === undefined ||
@@ -292,6 +335,7 @@ export type PublicEvaluationHeader = z.infer<typeof publicHeaderSchema>;
 export interface StoredEvaluation {
   readonly header: PublicEvaluationHeader;
   readonly records: readonly EvaluationTrialRecord[];
+  readonly activeAttempt: EvaluationTrialAttempt | null;
 }
 
 interface LedgerRead {
@@ -312,6 +356,12 @@ interface OwnedEvaluation {
   readonly inode: number;
   readonly mtimeMs: number;
   readonly token: string;
+  readonly activeAttempt: EvaluationTrialAttempt | null;
+}
+
+interface AttemptRead {
+  readonly attempt: EvaluationTrialAttempt | null;
+  readonly completed: boolean;
 }
 
 interface BoundedFileSnapshot {
@@ -354,23 +404,27 @@ export function createPublicEvaluationHeader(
         },
       })),
     },
-    profiles: admitted.profiles.map((profile) => ({
-      id: profile.id,
-      adapter: profile.adapter,
-      workflow: {
-        provenance: profile.workflow.provenance,
-        sourceSha256: profile.workflow.sourceSha256,
-        workflowDigest: profile.workflow.workflowDigest,
-        ...(profile.workflow.sourceKind === "prompt-candidate-projection"
-          ? { sourceKind: profile.workflow.sourceKind }
-          : {}),
-      },
-      ...(profile.candidate === undefined
-        ? {}
+    profiles: admitted.profiles.map((profile) =>
+      profile.adapter === "pi-native-v1"
+        ? { id: profile.id, adapter: profile.adapter, harness: profile.harness }
         : {
-            candidate: projectEvaluationCandidateIdentity(profile.candidate),
-          }),
-    })),
+            id: profile.id,
+            adapter: profile.adapter,
+            workflow: {
+              provenance: profile.workflow.provenance,
+              sourceSha256: profile.workflow.sourceSha256,
+              workflowDigest: profile.workflow.workflowDigest,
+              ...(profile.workflow.sourceKind === "prompt-candidate-projection"
+                ? { sourceKind: profile.workflow.sourceKind }
+                : {}),
+            },
+            ...(profile.candidate === undefined
+              ? {}
+              : {
+                  candidate: projectEvaluationCandidateIdentity(profile.candidate),
+                }),
+          },
+    ),
     controls: admitted.controls,
     seeds: admitted.seeds,
     order: admitted.order,
@@ -444,7 +498,12 @@ export class LocalEvaluationStore {
     await (this.#appendTails.get(evaluationId) ?? Promise.resolve());
     const header = await this.#readHeader(evaluationId);
     const ledger = await this.#readLedger(header);
-    return deepFreeze({ header, records: [...ledger.records] });
+    const active = await this.#readAttempt(header, ledger.records);
+    return deepFreeze({
+      header,
+      records: [...ledger.records],
+      activeAttempt: active.completed ? null : active.attempt,
+    });
   }
 
   async claim(evaluationIdInput: string, planDigest: string): Promise<StoredEvaluation> {
@@ -464,12 +523,18 @@ export class LocalEvaluationStore {
     }
     const token = await this.#acquireOwner(evaluationId);
     try {
+      await this.#recoverAttemptTemporaries(evaluationId);
       const ledger = await this.#readLedger(header);
+      const active = await this.#readAttempt(header, ledger.records);
+      if (active.completed && active.attempt !== null) {
+        await this.#retireAttempt(evaluationId, active.attempt);
+      }
       if (ledger.records.length === header.schedule.length) {
         throw new EvaluationStoreError("complete", `evaluation "${evaluationId}" is complete`);
       }
-      this.#owned.set(evaluationId, { header, ...ledger, token });
-      return deepFreeze({ header, records: [...ledger.records] });
+      const activeAttempt = active.completed ? null : active.attempt;
+      this.#owned.set(evaluationId, { header, ...ledger, token, activeAttempt });
+      return deepFreeze({ header, records: [...ledger.records], activeAttempt });
     } catch (error) {
       await this.#releaseOwner(evaluationId, token).catch(() => undefined);
       throw error;
@@ -485,6 +550,82 @@ export class LocalEvaluationStore {
       next.catch(() => undefined),
     );
     return next;
+  }
+
+  async beginAttempt(evaluationIdInput: string, rawAttempt: EvaluationTrialAttempt): Promise<void> {
+    const evaluationId = validateEvaluationId(evaluationIdInput);
+    await (this.#appendTails.get(evaluationId) ?? Promise.resolve());
+    const owned = this.#owned.get(evaluationId);
+    if (owned === undefined) {
+      throw new EvaluationStoreError(
+        "not_owner",
+        `claim evaluation "${evaluationId}" before starting an adapter`,
+      );
+    }
+    if (owned.activeAttempt !== null) {
+      throw new EvaluationStoreError(
+        "sequence",
+        `evaluation "${evaluationId}" already has an active adapter attempt`,
+      );
+    }
+    const attempt = parseAttemptForStore(rawAttempt, evaluationId);
+    reconcileAttempt(owned.header, owned.records, attempt);
+    const contents = `${JSON.stringify(attempt)}\n`;
+    if (Buffer.byteLength(contents, "utf8") > MAX_EVALUATION_TRIAL_ATTEMPT_BYTES) {
+      throw new EvaluationStoreError(
+        "limit_exceeded",
+        `evaluation adapter start exceeds ${MAX_EVALUATION_TRIAL_ATTEMPT_BYTES} bytes`,
+      );
+    }
+    const directory = this.#evaluationDirectory(evaluationId);
+    try {
+      await this.#assertEvaluationDirectory(evaluationId);
+      await writeDurableFileAtomicExclusive(directory, "active-attempt.json", contents);
+      this.#owned.set(evaluationId, { ...owned, activeAttempt: attempt });
+    } catch (error) {
+      if (error instanceof EvaluationStoreError) {
+        throw error;
+      }
+      throw new EvaluationStoreError(
+        "io",
+        `failed to store adapter start for evaluation "${evaluationId}"`,
+        { cause: error },
+      );
+    }
+  }
+
+  async completeAttempt(
+    evaluationIdInput: string,
+    rawAttempt: EvaluationTrialAttempt,
+  ): Promise<void> {
+    const evaluationId = validateEvaluationId(evaluationIdInput);
+    await (this.#appendTails.get(evaluationId) ?? Promise.resolve());
+    const owned = this.#owned.get(evaluationId);
+    if (owned === undefined) {
+      throw new EvaluationStoreError(
+        "not_owner",
+        `claim evaluation "${evaluationId}" before completing an adapter`,
+      );
+    }
+    const attempt = parseAttemptForStore(rawAttempt, evaluationId);
+    if (
+      owned.activeAttempt === null ||
+      JSON.stringify(owned.activeAttempt) !== JSON.stringify(attempt)
+    ) {
+      throw new EvaluationStoreError(
+        "sequence",
+        `evaluation "${evaluationId}" adapter completion does not match its active attempt`,
+      );
+    }
+    const terminal = owned.records.at(-1);
+    if (terminal?.position !== attempt.position || terminal.trialId !== attempt.trialId) {
+      throw new EvaluationStoreError(
+        "sequence",
+        `evaluation "${evaluationId}" adapter attempt has no durable terminal record`,
+      );
+    }
+    await this.#retireAttempt(evaluationId, attempt);
+    this.#owned.set(evaluationId, { ...owned, activeAttempt: null });
   }
 
   async release(evaluationIdInput: string): Promise<void> {
@@ -699,6 +840,139 @@ export class LocalEvaluationStore {
     });
   }
 
+  async #readAttempt(
+    header: PublicEvaluationHeader,
+    records: readonly EvaluationTrialRecord[],
+  ): Promise<AttemptRead> {
+    let contents: Buffer;
+    try {
+      contents = await readBoundedFile(
+        join(this.#evaluationDirectory(header.evaluationId), "active-attempt.json"),
+        MAX_EVALUATION_TRIAL_ATTEMPT_BYTES,
+      );
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        return Object.freeze({ attempt: null, completed: false });
+      }
+      if (error instanceof EvaluationStoreError) {
+        throw error;
+      }
+      throw new EvaluationStoreError(
+        "io",
+        `failed to read adapter start for evaluation "${header.evaluationId}"`,
+        { cause: error },
+      );
+    }
+    let attempt: EvaluationTrialAttempt;
+    try {
+      attempt = parseAttemptForStore(
+        parseStrictJson(decodeStrictUtf8(contents, "evaluation adapter start"), {
+          maxDepth: 16,
+          maxNodes: 64,
+          valueLabel: "evaluation adapter start",
+        }),
+        header.evaluationId,
+      );
+    } catch (error) {
+      if (error instanceof EvaluationStoreError) {
+        throw error;
+      }
+      throw new EvaluationStoreError(
+        "corrupt",
+        `evaluation "${header.evaluationId}" has an invalid adapter start`,
+        { cause: error },
+      );
+    }
+    const completed = reconcileAttempt(header, records, attempt);
+    return Object.freeze({ attempt, completed });
+  }
+
+  async #retireAttempt(evaluationId: string, expected: EvaluationTrialAttempt): Promise<void> {
+    const path = join(this.#evaluationDirectory(evaluationId), "active-attempt.json");
+    let observed: EvaluationTrialAttempt;
+    try {
+      observed = parseAttemptForStore(
+        parseStrictJson(
+          decodeStrictUtf8(
+            await readBoundedFile(path, MAX_EVALUATION_TRIAL_ATTEMPT_BYTES),
+            "evaluation adapter start",
+          ),
+          { maxDepth: 16, maxNodes: 64, valueLabel: "evaluation adapter start" },
+        ),
+        evaluationId,
+      );
+      if (JSON.stringify(observed) !== JSON.stringify(expected)) {
+        throw new EvaluationStoreError(
+          "corrupt",
+          `evaluation "${evaluationId}" adapter start changed before retirement`,
+        );
+      }
+      await rm(path);
+      await syncDirectory(this.#evaluationDirectory(evaluationId));
+    } catch (error) {
+      if (error instanceof EvaluationStoreError) {
+        throw error;
+      }
+      throw new EvaluationStoreError(
+        "io",
+        `failed to retire adapter start for evaluation "${evaluationId}"`,
+        { cause: error },
+      );
+    }
+  }
+
+  async #recoverAttemptTemporaries(evaluationId: string): Promise<void> {
+    const directory = this.#evaluationDirectory(evaluationId);
+    let entries: Dirent<string>[];
+    try {
+      entries = await readdir(directory, { withFileTypes: true, encoding: "utf8" });
+    } catch (error) {
+      throw new EvaluationStoreError(
+        "io",
+        `failed to inspect adapter-start temporaries for evaluation "${evaluationId}"`,
+        { cause: error },
+      );
+    }
+    const temporaries = entries.filter((entry) => attemptTemporaryNamePattern.test(entry.name));
+    if (temporaries.length > MAX_EVALUATION_ATTEMPT_TEMPORARIES) {
+      throw new EvaluationStoreError(
+        "limit_exceeded",
+        `evaluation "${evaluationId}" has too many adapter-start temporaries`,
+      );
+    }
+    try {
+      for (const entry of temporaries) {
+        const path = join(directory, entry.name);
+        const observed = await lstat(path);
+        if (observed.isSymbolicLink() || !observed.isFile()) {
+          throw new EvaluationStoreError(
+            "corrupt",
+            `evaluation "${evaluationId}" has an invalid adapter-start temporary`,
+          );
+        }
+        if (observed.size > MAX_EVALUATION_TRIAL_ATTEMPT_BYTES) {
+          throw new EvaluationStoreError(
+            "limit_exceeded",
+            `evaluation "${evaluationId}" adapter-start temporary exceeds its byte limit`,
+          );
+        }
+        await unlink(path);
+      }
+      if (temporaries.length > 0) {
+        await syncDirectory(directory);
+      }
+    } catch (error) {
+      if (error instanceof EvaluationStoreError) {
+        throw error;
+      }
+      throw new EvaluationStoreError(
+        "io",
+        `failed to retire adapter-start temporaries for evaluation "${evaluationId}"`,
+        { cause: error },
+      );
+    }
+  }
+
   async #acquireOwner(evaluationId: string): Promise<string> {
     await this.#assertEvaluationDirectory(evaluationId);
     const directory = this.#evaluationDirectory(evaluationId);
@@ -870,25 +1144,80 @@ function parsePublicHeader(input: unknown): PublicEvaluationHeader {
   return deepFreeze(parsed.data);
 }
 
+function parseAttemptForStore(input: unknown, evaluationId: string): EvaluationTrialAttempt {
+  try {
+    return parseEvaluationTrialAttempt(input);
+  } catch (error) {
+    throw new EvaluationStoreError(
+      "corrupt",
+      `evaluation "${evaluationId}" has invalid adapter-start evidence`,
+      { cause: error },
+    );
+  }
+}
+
+function reconcileAttempt(
+  header: PublicEvaluationHeader,
+  records: readonly EvaluationTrialRecord[],
+  attempt: EvaluationTrialAttempt,
+): boolean {
+  const schedule = header.schedule[attempt.position - 1];
+  const profile = header.profiles.find((item) => item.id === attempt.profileId);
+  if (
+    schedule === undefined ||
+    profile === undefined ||
+    attempt.planDigest !== header.planDigest ||
+    attempt.position !== schedule.position ||
+    attempt.trialId !== schedule.trialId ||
+    attempt.taskId !== schedule.taskId ||
+    attempt.profileId !== schedule.profileId ||
+    attempt.adapter !== profile.adapter
+  ) {
+    throw new EvaluationStoreError(
+      "corrupt",
+      `evaluation "${header.evaluationId}" adapter start contradicts its public schedule`,
+    );
+  }
+  if (attempt.position === records.length + 1) {
+    return false;
+  }
+  const terminal = records.at(-1);
+  if (
+    attempt.position === records.length &&
+    terminal?.position === attempt.position &&
+    terminal.trialId === attempt.trialId
+  ) {
+    return true;
+  }
+  throw new EvaluationStoreError(
+    "corrupt",
+    `evaluation "${header.evaluationId}" adapter start contradicts its committed ledger`,
+  );
+}
+
 function headerIdentity(header: PublicEvaluationHeader): EvaluationPlanIdentity {
   return {
     version: 1,
     apiVersion: header.apiVersion,
     id: header.planId,
     suite: header.suite,
-    profiles: header.profiles.map((profile) => ({
-      id: profile.id,
-      adapter: profile.adapter,
-      workflow: {
-        provenance: profile.workflow.provenance,
-        sourceSha256: profile.workflow.sourceSha256,
-        workflowDigest: profile.workflow.workflowDigest,
-        ...(profile.workflow.sourceKind === undefined
-          ? {}
-          : { sourceKind: profile.workflow.sourceKind }),
-      },
-      ...(profile.candidate === undefined ? {} : { candidate: profile.candidate }),
-    })),
+    profiles: header.profiles.map((profile) =>
+      profile.adapter === "pi-native-v1"
+        ? { id: profile.id, adapter: profile.adapter, harness: profile.harness }
+        : {
+            id: profile.id,
+            adapter: profile.adapter,
+            workflow: {
+              provenance: profile.workflow.provenance,
+              sourceSha256: profile.workflow.sourceSha256,
+              workflowDigest: profile.workflow.workflowDigest,
+              ...(profile.workflow.sourceKind === undefined
+                ? {}
+                : { sourceKind: profile.workflow.sourceKind }),
+            },
+            ...(profile.candidate === undefined ? {} : { candidate: profile.candidate }),
+          },
+    ),
     controls: header.controls,
     seeds: header.seeds,
     order: header.order,
@@ -961,6 +1290,25 @@ async function writeDurableFile(path: string, contents: string): Promise<void> {
     await handle.sync();
   } finally {
     await handle.close();
+  }
+}
+
+async function writeDurableFileAtomicExclusive(
+  directory: string,
+  finalName: string,
+  contents: string,
+): Promise<void> {
+  const temporary = join(directory, `.active-attempt.${randomUUID()}.tmp`);
+  try {
+    await writeDurableFile(temporary, contents);
+    await link(temporary, join(directory, finalName));
+    await syncDirectory(directory);
+    await unlink(temporary);
+    await syncDirectory(directory);
+  } catch (error) {
+    await unlink(temporary).catch(() => undefined);
+    await syncDirectory(directory).catch(() => undefined);
+    throw error;
   }
 }
 
