@@ -89,6 +89,9 @@ func run() error {
 	if err := <-kernelErrors; err != nil && !errors.Is(err, net.ErrClosed) {
 		return err
 	}
+	if err := supervisor.TerminatePythonProcesses(); err != nil {
+		return err
+	}
 	exported, err := containerprotocol.CaptureWorkspace(workspacePath)
 	if err != nil {
 		return err
