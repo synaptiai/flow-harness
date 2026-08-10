@@ -27,13 +27,13 @@ func main() {
 		request.ConnectionPath,
 	}
 	environment := []string{
-		"HOME=/run/flow-python/home",
+		"HOME=/workspace/.flow-prime/home",
 		"LANG=C.UTF-8",
 		"LC_ALL=C.UTF-8",
 		"PATH=/opt/flow/python/bin:/usr/bin:/bin",
 		"PYTHONNOUSERSITE=1",
 		"PYTHONHASHSEED=0",
-		"TMPDIR=/run/flow-python/tmp",
+		"TMPDIR=/workspace/.flow-prime/tmp",
 	}
 	if err := syscall.Exec(pythonExecutable, args, environment); err != nil {
 		fail(fmt.Errorf("start the fixed Python kernel: %w", err))

@@ -92,6 +92,7 @@ var (
 	sha256Pattern  = regexp.MustCompile(`^[a-f0-9]{64}$`)
 	trialIDPattern = regexp.MustCompile(`^trial-[a-f0-9]{48}$`)
 	imageIDPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
+	uuidPattern    = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$`)
 )
 
 func EncodeFrame(frameType FrameType, payload []byte) ([]byte, error) {

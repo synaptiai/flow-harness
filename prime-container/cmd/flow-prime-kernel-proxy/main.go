@@ -12,7 +12,7 @@ import (
 	"github.com/synaptiai/flow-harness/prime-container/internal/kernelcontract"
 )
 
-const supervisorSocket = "/run/flow-supervisor/kernel.sock"
+const supervisorSocket = "/workspace/.flow-prime/control/kernel.sock"
 
 func main() {
 	request, err := kernelcontract.RequestFromArgs(os.Args[1:])

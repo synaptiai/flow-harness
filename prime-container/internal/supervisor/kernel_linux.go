@@ -73,12 +73,12 @@ func RunKernel(request kernelcontract.Request) (int, string) {
 	)
 	command.Dir = "/workspace"
 	command.Env = []string{
-		"HOME=/run/flow-python/home",
+		"HOME=/workspace/.flow-prime/home",
 		"LANG=C.UTF-8",
 		"LC_ALL=C.UTF-8",
 		"PATH=/opt/flow/bin:/opt/flow/python/bin:/usr/bin:/bin",
 		"PRIME_AGENT_KERNEL_FORKSERVER=0",
-		"TMPDIR=/run/flow-python/tmp",
+		"TMPDIR=/workspace/.flow-prime/tmp",
 	}
 	command.Stdin = nil
 	command.Stdout = nil

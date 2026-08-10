@@ -1,19 +1,24 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"os"
-	"os/signal"
 	"path/filepath"
-	"syscall"
 
+	"github.com/synaptiai/flow-harness/prime-container/internal/containerprotocol"
 	"github.com/synaptiai/flow-harness/prime-container/internal/kernelcontract"
 	"github.com/synaptiai/flow-harness/prime-container/internal/supervisor"
 )
 
-const kernelSocket = "/run/flow-supervisor/kernel.sock"
+const (
+	kernelSocket  = "/workspace/.flow-prime/control/kernel.sock"
+	nodePath      = "/usr/local/bin/node"
+	driverPath    = "/opt/flow/node/flow-dist/infrastructure/prime/native-prime-agent-evaluation-driver.js"
+	workspacePath = "/workspace"
+)
 
 func main() {
 	if err := run(); err != nil {
@@ -26,30 +31,139 @@ func run() error {
 	if os.Geteuid() != 0 {
 		return errors.New("Prime supervisor must start as the fixed container supervisor user")
 	}
+	if err := supervisor.HardenSupervisor(); err != nil {
+		return err
+	}
+	if err := preparePrivatePaths(); err != nil {
+		return err
+	}
+	listener, err := createKernelListener()
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+	kernelErrors := make(chan error, 1)
+	go func() {
+		kernelErrors <- serveKernels(listener)
+	}()
+	prepared, err := containerprotocol.ReceivePreparation(containerprotocol.PreparationInput{
+		Reader: os.Stdin, Writer: os.Stdout, WorkspacePath: workspacePath,
+		Ownership: containerprotocol.WorkspaceOwnership{
+			EntryUID: supervisor.PythonUID, EntryGID: supervisor.PythonUID,
+			RootUID: supervisor.PythonUID, RootGID: supervisor.SharedGID, RootMode: 0710,
+		},
+		Readiness: func(challenge containerprotocol.ReadinessChallenge) ([]byte, error) {
+			measurement, err := supervisor.MeasureReadiness()
+			if err != nil {
+				return nil, err
+			}
+			return supervisor.BuildReadiness(challenge, measurement)
+		},
+	})
+	if err != nil {
+		return err
+	}
+	driverResult, err := supervisor.RunDriverProcess(
+		os.Stdin,
+		os.Stdout,
+		prepared.Bootstrap,
+		supervisor.DriverProcessOptions{
+			Executable: nodePath,
+			Arguments:  []string{"--no-addons", driverPath},
+			Environment: []string{
+				"HOME=/run/flow-node", "LANG=C.UTF-8", "LC_ALL=C.UTF-8",
+				"NODE_ENV=production", "PATH=/usr/local/bin:/usr/bin:/bin",
+				"PRIME_AGENT_KERNEL_FORKSERVER=0", "TMPDIR=/run/flow-node",
+			},
+			WorkingDirectory: workspacePath,
+			UID:              supervisor.NodeUID, GID: supervisor.NodeUID, Groups: []int{supervisor.SharedGID},
+			MaxDiagnosticBytes: 65536,
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("run Prime driver: %w", err)
+	}
+	if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		return fmt.Errorf("close kernel supervisor listener: %w", err)
+	}
+	if err := <-kernelErrors; err != nil && !errors.Is(err, net.ErrClosed) {
+		return err
+	}
+	exported, err := containerprotocol.CaptureWorkspace(workspacePath)
+	if err != nil {
+		return err
+	}
+	if err := exported.WriteResultFrames(os.Stdout); err != nil {
+		return err
+	}
+	settlement, err := json.Marshal(map[string]any{
+		"exitCode":         driverResult.ExitCode,
+		"timedOut":         false,
+		"aborted":          false,
+		"activeTimeMicros": nil,
+	})
+	if err != nil {
+		return errors.New("encode Prime settlement")
+	}
+	return containerprotocol.WriteFrame(os.Stdout, containerprotocol.FrameSettlement, settlement)
+}
+
+func preparePrivatePaths() error {
+	paths := []struct {
+		path string
+		mode os.FileMode
+		uid  int
+		gid  int
+	}{
+		{"/run/flow-node", 0700, supervisor.NodeUID, supervisor.NodeUID},
+		{"/workspace/.flow-prime", 0710, supervisor.PythonUID, supervisor.SharedGID},
+		{"/workspace/.flow-prime/home", 0700, supervisor.PythonUID, supervisor.PythonUID},
+		{"/workspace/.flow-prime/tmp", 0700, supervisor.PythonUID, supervisor.PythonUID},
+		{"/workspace/.flow-prime/control", 0770, supervisor.NodeUID, supervisor.SharedGID},
+	}
+	for _, item := range paths {
+		if err := os.MkdirAll(item.path, item.mode); err != nil {
+			return fmt.Errorf("create Prime private path %s: %w", item.path, err)
+		}
+		if err := os.Chown(item.path, item.uid, item.gid); err != nil {
+			return fmt.Errorf("set Prime private path owner %s: %w", item.path, err)
+		}
+		if err := os.Chmod(item.path, item.mode); err != nil {
+			return fmt.Errorf("set Prime private path mode %s: %w", item.path, err)
+		}
+	}
+	return nil
+}
+
+func createKernelListener() (*net.UnixListener, error) {
 	if err := os.MkdirAll(filepath.Dir(kernelSocket), 0700); err != nil {
-		return fmt.Errorf("create kernel supervisor directory: %w", err)
+		return nil, fmt.Errorf("create kernel supervisor directory: %w", err)
 	}
 	if err := os.Remove(kernelSocket); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove stale kernel supervisor socket: %w", err)
+		return nil, fmt.Errorf("remove stale kernel supervisor socket: %w", err)
 	}
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: kernelSocket, Net: "unix"})
 	if err != nil {
-		return fmt.Errorf("listen on kernel supervisor socket: %w", err)
+		return nil, fmt.Errorf("listen on kernel supervisor socket: %w", err)
 	}
-	defer listener.Close()
 	if err := os.Chown(kernelSocket, supervisor.NodeUID, supervisor.SharedGID); err != nil {
-		return fmt.Errorf("set kernel supervisor socket owner: %w", err)
+		listener.Close()
+		return nil, fmt.Errorf("set kernel supervisor socket owner: %w", err)
 	}
 	if err := os.Chmod(kernelSocket, 0660); err != nil {
-		return fmt.Errorf("set kernel supervisor socket mode: %w", err)
+		listener.Close()
+		return nil, fmt.Errorf("set kernel supervisor socket mode: %w", err)
 	}
+	return listener, nil
+}
 
-	termination := make(chan os.Signal, 1)
-	signal.Notify(termination, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(termination)
+func serveKernels(listener *net.UnixListener) error {
 	for {
 		connection, err := listener.AcceptUnix()
 		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return nil
+			}
 			return fmt.Errorf("accept kernel proxy request: %w", err)
 		}
 		if err := handle(connection); err != nil {
@@ -57,11 +171,6 @@ func run() error {
 			return err
 		}
 		connection.Close()
-		select {
-		case <-termination:
-			return nil
-		default:
-		}
 	}
 }
 

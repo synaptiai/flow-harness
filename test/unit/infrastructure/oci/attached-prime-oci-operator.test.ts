@@ -92,6 +92,12 @@ describe("attached Prime OCI operator", () => {
       PrimeContainerFrameType.FixtureComplete,
       PrimeContainerFrameType.Bootstrap,
     ]);
+    const bootstrap = decodeFrames(writes).find(
+      (item) => item.type === PrimeContainerFrameType.Bootstrap,
+    );
+    expect(
+      parseExternalHarnessParentLine(bootstrap?.payload.toString("utf8") ?? "").payload,
+    ).toMatchObject({ evaluation: { workspace: { cwd: "/workspace" } } });
     expect(evidence.harness).toEqual({
       outcome: "completed",
       runId: "prime-session",
@@ -333,7 +339,7 @@ function operationInput(
         },
         workspace: {
           workspaceId: `workspace-${trialId}`,
-          cwd: "/workspace",
+          cwd: "/host/private/evaluations/workspace",
           backend: "reflink-copy-v1",
           snapshotDigest: "c".repeat(64),
         },

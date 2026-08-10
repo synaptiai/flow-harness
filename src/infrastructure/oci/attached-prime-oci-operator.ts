@@ -383,6 +383,13 @@ export class AttachedPrimeOciOperator {
     parentSequence: number,
   ): Promise<void> {
     const { durability: _durability, ...evaluation } = input.request.evaluation;
+    const containerEvaluation = {
+      ...evaluation,
+      workspace: {
+        ...evaluation.workspace,
+        cwd: "/workspace",
+      },
+    };
     const hello = signExternalHarnessParentFrame(
       {
         version: 1,
@@ -393,7 +400,7 @@ export class AttachedPrimeOciOperator {
           secretHex,
           trialId: input.request.evaluation.trial.trialId,
           identityDigest: input.descriptor.identityDigest,
-          evaluation,
+          evaluation: containerEvaluation,
           instructionText: this.options.fixture.instructionText,
         },
       },
