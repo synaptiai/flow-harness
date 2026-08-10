@@ -225,7 +225,7 @@ describe("compiled external harness boundary", () => {
 
       const result = await runtime.execute({
         identity,
-        evaluation: evaluationRequest(workspace),
+        evaluation: evaluationRequest(workspace, "Inspect the declared private paths.\n"),
         isolation: { projectRoot: project, protectedPaths: [project, state] },
       });
 
@@ -380,8 +380,10 @@ function directSandbox(): CommandSandbox {
   };
 }
 
-function evaluationRequest(workspace: string): HarnessEvaluationRequest {
-  const instruction = "Replace PENDING with DONE in RESULT.md.\n";
+function evaluationRequest(
+  workspace: string,
+  instruction = "Replace PENDING with DONE in RESULT.md.\n",
+): HarnessEvaluationRequest {
   return {
     planDigest: "a".repeat(64),
     trial: {
