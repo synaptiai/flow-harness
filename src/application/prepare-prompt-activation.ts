@@ -65,7 +65,7 @@ export interface PromptActivationStoredEvaluation {
         }
       | {
           readonly id: string;
-          readonly adapter: "pi-native-v1";
+          readonly adapter: "pi-native-v1" | "omp-native-v1";
           readonly harness: unknown;
         }
     )[];
@@ -212,6 +212,10 @@ function reportInput(stored: PromptActivationStoredEvaluation): EvaluationReport
     planDigest: stored.header.planDigest,
     schedule: stored.header.schedule,
     profileIds: [firstProfile.id, secondProfile.id],
+    profileAdapters: Object.freeze({
+      [firstProfile.id]: firstProfile.adapter,
+      [secondProfile.id]: secondProfile.adapter,
+    }),
     tasks: stored.header.suite.tasks.map((task) => ({
       id: task.id,
       partition: task.partition,

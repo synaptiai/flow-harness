@@ -25,46 +25,59 @@ export interface ExternalHarnessRuntime {
   ): Promise<HarnessEvaluationResult>;
 }
 
-export interface NativePiEvaluationProfile {
-  readonly id: string;
-  readonly adapter: "pi-native-v1";
-  readonly harness: ExternalHarnessIdentity;
-}
+export type ExternalHarnessEvaluationProfile = {
+  [Adapter in ExternalHarnessIdentity["adapter"]]: {
+    readonly id: string;
+    readonly adapter: Adapter;
+    readonly harness: Extract<ExternalHarnessIdentity, { readonly adapter: Adapter }>;
+  };
+}[ExternalHarnessIdentity["adapter"]];
 
-export interface NativePiEvaluationAdapterOptions {
+export type NativePiEvaluationProfile = Extract<
+  ExternalHarnessEvaluationProfile,
+  { readonly adapter: "pi-native-v1" }
+>;
+
+export interface ExternalHarnessEvaluationAdapterOptions {
   readonly isolation: ExternalHarnessRuntimeIsolation;
   readonly signal?: AbortSignal;
   readonly clockMs?: () => number;
 }
 
-export class NativePiEvaluationAdapter implements HarnessEvaluationAdapter {
-  readonly kind = "pi-native-v1";
-  readonly #profile: NativePiEvaluationProfile;
+export type NativePiEvaluationAdapterOptions = ExternalHarnessEvaluationAdapterOptions;
+
+export class ExternalHarnessEvaluationAdapter implements HarnessEvaluationAdapter {
+  readonly kind: ExternalHarnessIdentity["adapter"];
+  readonly #identity: ExternalHarnessIdentity;
+  readonly #profileId: string;
 
   constructor(
-    profile: NativePiEvaluationProfile,
+    profile: ExternalHarnessEvaluationProfile,
     private readonly runtime: ExternalHarnessRuntime,
-    private readonly options: NativePiEvaluationAdapterOptions,
+    private readonly options: ExternalHarnessEvaluationAdapterOptions,
   ) {
-    this.#profile = Object.freeze({
-      ...profile,
-      harness: parseExternalHarnessIdentity(profile.harness),
-    });
+    const identity = parseExternalHarnessIdentity(profile.harness);
+    if (identity.adapter !== profile.adapter) {
+      throw new Error("external harness profile contradicts its admitted identity");
+    }
+    this.kind = identity.adapter;
+    this.#identity = identity;
+    this.#profileId = profile.id;
   }
 
   async run(request: HarnessEvaluationRequest): Promise<HarnessEvaluationResult> {
     const clock = this.options.clockMs ?? Date.now;
     const started = clock();
-    if (request.trial.profileId !== this.#profile.id) {
+    if (request.trial.profileId !== this.#profileId) {
       return crashedResult(
-        `adapter profile "${this.#profile.id}" cannot run trial profile "${request.trial.profileId}"`,
+        `adapter profile "${this.#profileId}" cannot run trial profile "${request.trial.profileId}"`,
         elapsed(started, clock()),
       );
     }
     try {
       return await this.runtime.execute(
         Object.freeze({
-          identity: this.#profile.harness,
+          identity: this.#identity,
           evaluation: request,
           isolation: Object.freeze({
             projectRoot: this.options.isolation.projectRoot,
@@ -76,6 +89,16 @@ export class NativePiEvaluationAdapter implements HarnessEvaluationAdapter {
     } catch (error) {
       return crashedResult(boundedReason(error), elapsed(started, clock()));
     }
+  }
+}
+
+export class NativePiEvaluationAdapter extends ExternalHarnessEvaluationAdapter {
+  constructor(
+    profile: NativePiEvaluationProfile,
+    runtime: ExternalHarnessRuntime,
+    options: NativePiEvaluationAdapterOptions,
+  ) {
+    super(profile, runtime, options);
   }
 }
 

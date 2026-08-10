@@ -2,7 +2,7 @@
 
 ## Decision
 
-Flow owns every semantic that determines whether work is allowed, contained, complete, recoverable, or correct. Pi initially supplies the model-facing machinery. Anthropic Sandbox Runtime (SRT) supplies the first command-containment primitive behind a Flow-owned port. OMP and Prime Agent are reference implementations and possible sources for carefully isolated future capability packages.
+Flow owns every semantic that determines whether work is allowed, contained, complete, recoverable, or correct. Pi supplies the default model-facing machinery. Anthropic Sandbox Runtime (SRT) supplies the first command-containment primitive behind a Flow-owned port. OMP supplies one optional external evaluation profile. Prime Agent remains a reference for a later profile.
 
 The first runtime embeds [`@earendil-works/pi-coding-agent`](https://pi.dev/docs/latest/sdk) behind a narrow Flow-owned executor. The package is pinned exactly and all events are translated before persistence.
 
@@ -68,9 +68,15 @@ The first adapter pins [`@anthropic-ai/sandbox-runtime`](https://github.com/anth
 
 SRT is a beta native sandbox, so it is not the final answer for hostile multi-tenant work. The `CommandSandbox` port preserves a path to [Gondolin](https://github.com/earendil-works/gondolin), OpenShell, containers, or remote sandboxes when a VM-grade or centrally managed boundary is required.
 
-## Learned or selectively ported from OMP
+## Imported and learned from OMP
 
-OMP is a Pi fork with a broad TypeScript, Bun, and Rust-native product surface. Importing it alongside upstream Pi would create two diverging copies of the same agent abstractions. Flow will not depend on OMP initially.
+OMP is a Pi fork with a TypeScript, Bun, and Rust-native product surface. Flow installs the two OMP
+packages as development dependencies. It exposes them as optional peer dependencies for users. The
+packages load only for the native OMP evaluation path.
+
+Flow runs a pinned OMP agent session in a separate Bun process under Linux SRT. The session uses a
+Flow-owned provider stream. Provider credentials stay in the Flow host. The profile exposes wrapped
+OMP `read` and `edit` tools for the trial workspace only.
 
 | Capability | Treatment |
 | --- | --- |
@@ -327,4 +333,4 @@ delegation, and automatic update discovery require a future
 - No package increases its own authority.
 - No executor declares its output accepted.
 - No retry repeats an unresolved consequential side effect.
-- Only infrastructure adapters and composition code may import Pi or sandbox-runtime packages.
+- Only infrastructure adapters and composition code may import Pi, OMP, or sandbox-runtime packages.

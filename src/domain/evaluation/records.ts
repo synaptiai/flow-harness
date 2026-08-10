@@ -105,7 +105,7 @@ const assertionEvidenceSchema = z
 
 const externalRuntimeEvidenceSchema = z
   .object({
-    adapter: z.literal("pi-native-v1"),
+    adapter: z.enum(["pi-native-v1", "omp-native-v1"]),
     containment: z.enum(["linux-pid-namespace", "process-group"]),
     exitCode: z.number().int().min(0).max(255).nullable(),
     signal: z.string().min(1).max(32).nullable(),

@@ -373,9 +373,11 @@ A terminal trial record retires the matching start record. If Flow restarts with
 start, it records one interrupted harness failure. It does not call the adapter again. A conflicting
 start record makes the evaluation store corrupt.
 
-A native Pi resume also re-admits the complete external identity. A driver, local module, Node
-executable, Pi closure, Pi AI closure, SRT closure, protocol, configuration, sandbox policy,
-platform, containment, or broker-contract change rejects the old evaluation.
+A native external resume also re-admits the complete external identity. Pi identity includes Node
+and both Pi package closures. OMP identity includes an attested Bun executable, both OMP package
+closures, runtime Markdown, and the dependency-resolution graph. A change to the driver, local
+closure, SRT closure, protocol, configuration, policy, platform, containment, or broker contract
+rejects the old evaluation.
 
 For a child in an old workspace location, Flow first validates and moves the workspace. The first
 recovery event is `run_resumed.workspaceRelocation`. A parent writes this child event before it

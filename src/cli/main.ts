@@ -15,8 +15,8 @@ import {
   trySubmitAgentCommandApprovalDecision,
 } from "../application/command-approval.js";
 import {
+  ExternalHarnessEvaluationAdapter,
   type ExternalHarnessRuntime,
-  NativePiEvaluationAdapter,
 } from "../application/external-harness-adapter.js";
 import {
   generatePromptCandidate,
@@ -178,7 +178,10 @@ import {
 import { createProductionNodeEffectReconciler } from "../infrastructure/runtime/production-effect-reconciler.js";
 import { createProductionNodeExecutor } from "../infrastructure/runtime/production-node-executor.js";
 import { createProductionWorkspaceIsolator } from "../infrastructure/runtime/production-workspace-isolator.js";
-import { NativePiHarnessRegistry } from "../infrastructure/pi/native-pi-harness-registry.js";
+import {
+  BuiltInExternalHarnessRegistry,
+  type ExternalHarnessRegistry,
+} from "../infrastructure/process/built-in-external-harness-registry.js";
 import {
   ensureSupervisor,
   requestSupervisor,
@@ -299,7 +302,7 @@ export interface CliDependencies {
   ) => Promise<InitializedFlowProject>;
   readonly loadConfig: (options?: FlowConfigLocationOptions) => Promise<EffectiveFlowConfig>;
   readonly capabilityBundleFetcher: CapabilityBundleFetcher;
-  readonly externalHarnessRegistry: NativePiHarnessRegistry;
+  readonly externalHarnessRegistry: ExternalHarnessRegistry;
   readonly externalHarnessRuntime: ExternalHarnessRuntime;
   readonly signal?: AbortSignal;
 }
@@ -1035,7 +1038,7 @@ async function evaluationCommand(
       "eval validate requires one evaluation plan path",
     );
     const cwd = overrides.cwd ?? process.cwd();
-    const registry = overrides.externalHarnessRegistry ?? new NativePiHarnessRegistry();
+    const registry = overrides.externalHarnessRegistry ?? new BuiltInExternalHarnessRegistry();
     const admitted = await admitLocalEvaluationPlan(resolve(cwd, planArgument), {
       resolveExternalHarnessIdentity: (profile) => registry.resolveIdentity(profile),
     });
@@ -1051,7 +1054,7 @@ async function evaluationCommand(
             partition: task.partition,
           })),
           profiles: admitted.profiles.map((profile) =>
-            profile.adapter === "pi-native-v1"
+            profile.adapter !== "flow-workflow-v1"
               ? {
                   id: profile.id,
                   adapter: profile.adapter,
@@ -1132,7 +1135,7 @@ async function evaluationCommand(
     );
     const evaluationsDirectory = evaluationLocation.directory;
     const hasExternalProfile = admitted.profiles.some(
-      (profile) => profile.adapter === "pi-native-v1",
+      (profile) => profile.adapter !== "flow-workflow-v1",
     );
     if (hasExternalProfile && evaluationLocation.projectRoot === null) {
       throw new CliUsageError(
@@ -1216,7 +1219,7 @@ async function evaluationCommand(
                   workspaceIsolator,
                   ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
                 })
-              : new NativePiEvaluationAdapter(profile, dependencies.externalHarnessRuntime, {
+              : new ExternalHarnessEvaluationAdapter(profile, dependencies.externalHarnessRuntime, {
                   isolation: {
                     projectRoot,
                     protectedPaths: [
@@ -2557,7 +2560,7 @@ function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies 
   const storageDependencies = storageDependenciesFrom(overrides);
   const configDependencies = configDependenciesFrom(overrides);
   const externalHarnessRegistry =
-    overrides.externalHarnessRegistry ?? new NativePiHarnessRegistry();
+    overrides.externalHarnessRegistry ?? new BuiltInExternalHarnessRegistry();
   return {
     ...storageDependencies,
     ...configDependencies,
@@ -2656,7 +2659,7 @@ async function resolveEvaluationLocation(
 }
 
 function createLazyProductionExternalHarnessRuntime(
-  registry: NativePiHarnessRegistry,
+  registry: ExternalHarnessRegistry,
 ): ExternalHarnessRuntime {
   let runtime: Promise<ExternalHarnessRuntime> | undefined;
   return Object.freeze({

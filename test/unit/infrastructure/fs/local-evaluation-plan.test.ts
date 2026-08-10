@@ -151,6 +151,41 @@ describe("local evaluation plan admission", () => {
     });
   });
 
+  it("admits an OMP profile through the generic external harness resolver", async () => {
+    const project = await evaluationProject();
+    const source = await readFile(join(project, "evaluation.yaml"), "utf8");
+    await writeFile(
+      join(project, "evaluation.yaml"),
+      source.replace(
+        "- { id: candidate, adapter: flow-workflow-v1, workflow: candidate.workflow.yaml }",
+        "- { id: candidate, adapter: omp-native-v1, harness: { config: omp-evaluation-v1 } }",
+      ),
+    );
+    const identity = nativeOmpIdentity();
+
+    const admitted = await admitLocalEvaluationPlan(join(project, "evaluation.yaml"), {
+      resolveExternalHarnessIdentity: async (profile) => {
+        expect(profile).toEqual({
+          id: "candidate",
+          adapter: "omp-native-v1",
+          harness: { config: "omp-evaluation-v1" },
+        });
+        return identity;
+      },
+    });
+
+    expect(admitted.profiles[1]).toEqual({
+      id: "candidate",
+      adapter: "omp-native-v1",
+      harness: identity,
+    });
+    expect(createPublicEvaluationHeader(admitted, "omp-evaluation").profiles[1]).toEqual({
+      id: "candidate",
+      adapter: "omp-native-v1",
+      harness: identity,
+    });
+  });
+
   it("admits a prompt-candidate profile as an exact projected workflow identity", async () => {
     const project = await evaluationProject();
     const baselineText = await readFile(join(project, "baseline.workflow.yaml"), "utf8");
@@ -621,6 +656,51 @@ function nativePiIdentity() {
       package: "@earendil-works/pi-ai" as const,
       packageVersion: "0.84.0",
       packageIntegrity: `sha512-${"B".repeat(86)}==`,
+      packageContentSha256: "5".repeat(64),
+    }),
+  });
+}
+
+function nativeOmpIdentity() {
+  return Object.freeze({
+    version: 1 as const,
+    adapter: "omp-native-v1" as const,
+    adapterContractVersion: "1.0.0",
+    protocol: Object.freeze({
+      id: "flow-external-harness-jsonl-v1" as const,
+      maxFrameBytes: 1_048_576 as const,
+      digest: "1".repeat(64),
+    }),
+    runtime: Object.freeze({
+      id: "srt-process-v1" as const,
+      package: "@anthropic-ai/sandbox-runtime" as const,
+      version: "0.0.70",
+      packageContentSha256: "2".repeat(64),
+      policyDigest: "2".repeat(64),
+      platform: "linux" as const,
+      containment: "linux-pid-namespace" as const,
+    }),
+    driver: Object.freeze({
+      id: "native-omp-evaluation-v1" as const,
+      artifactSha256: "3".repeat(64),
+      dependencyClosureSha256: "3".repeat(64),
+      bun: Object.freeze({ version: "1.3.14", executableSha256: "3".repeat(64) }),
+    }),
+    harness: Object.freeze({
+      package: "@oh-my-pi/pi-coding-agent" as const,
+      version: "17.2.12",
+      integrity:
+        "sha512-+q+W4fyNQQ7xAKiN0mmOisWDDtKO0R/ZctTSsKqR4ulN3K1zfQ9HwiTxtg7HJHn5fwCy+X3BmUG72FatNUN8IA==",
+      packageContentSha256: "4".repeat(64),
+      dependencyClosureSha256: "4".repeat(64),
+      config: "omp-evaluation-v1" as const,
+      configDigest: "4".repeat(64),
+    }),
+    inference: Object.freeze({
+      id: "flow-omp-inference-v1" as const,
+      version: 1 as const,
+      package: "@oh-my-pi/pi-ai" as const,
+      packageVersion: "17.2.12",
       packageContentSha256: "5".repeat(64),
     }),
   });

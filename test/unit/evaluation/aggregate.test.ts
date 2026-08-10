@@ -192,6 +192,89 @@ describe("evaluation aggregation", () => {
     );
   });
 
+  it("rejects re-digested runtime evidence for the wrong profile adapter", () => {
+    const schedule = createEvaluationSchedule(
+      planDigest,
+      ["task-a"],
+      ["baseline", "candidate"],
+      [11],
+    );
+    const scheduled = schedule[0];
+    if (scheduled === undefined) {
+      throw new Error("test schedule is incomplete");
+    }
+    const base = trial(scheduled, "accepted");
+    const wrongRuntime = createEvaluationTrialRecord({
+      schedule: scheduled,
+      planDigest,
+      previousDigest: null,
+      startedAt: base.startedAt,
+      completedAt: base.completedAt,
+      environment: base.environment,
+      harness: {
+        ...base.harness,
+        runtime: {
+          adapter: "pi-native-v1",
+          containment: "linux-pid-namespace",
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          aborted: false,
+          treeTermination: "confirmed",
+        },
+      },
+      verification: base.verification,
+      metrics: base.metrics,
+    });
+    const input = {
+      ...reportInput(schedule, 1),
+      profileAdapters: {
+        baseline: "omp-native-v1" as const,
+        candidate: "flow-workflow-v1" as const,
+      },
+    };
+
+    expect(() => aggregateEvaluation(input, [wrongRuntime])).toThrow(/profile adapter/i);
+  });
+
+  it("rejects a completed external trial without runtime evidence", () => {
+    const schedule = createEvaluationSchedule(
+      planDigest,
+      ["task-a"],
+      ["baseline", "candidate"],
+      [11],
+    );
+    const scheduled = schedule[0];
+    if (scheduled === undefined) {
+      throw new Error("test schedule is incomplete");
+    }
+    const base = trial(scheduled, "accepted");
+    const missingRuntime = createEvaluationTrialRecord({
+      schedule: scheduled,
+      planDigest,
+      previousDigest: null,
+      startedAt: base.startedAt,
+      completedAt: base.completedAt,
+      environment: base.environment,
+      harness: {
+        outcome: "completed",
+        runId: base.harness.runId,
+        reason: null,
+      },
+      verification: base.verification,
+      metrics: base.metrics,
+    });
+    const input = {
+      ...reportInput(schedule, 1),
+      profileAdapters: {
+        baseline: "omp-native-v1" as const,
+        candidate: "flow-workflow-v1" as const,
+      },
+    };
+
+    expect(() => aggregateEvaluation(input, [missingRuntime])).toThrow(/profile adapter/i);
+  });
+
   it("refuses superiority when paired runtime environments differ", () => {
     const schedule = createEvaluationSchedule(
       planDigest,
@@ -493,6 +576,10 @@ function reportInput(
     planDigest,
     schedule,
     profileIds: ["baseline", "candidate"] as const,
+    profileAdapters: {
+      baseline: "flow-workflow-v1" as const,
+      candidate: "flow-workflow-v1" as const,
+    },
     tasks: [{ id: "task-a", partition, verifierDigest: "c".repeat(64), assertionCount: 1 }],
     comparison: {
       baselineProfileId: "baseline",

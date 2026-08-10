@@ -477,7 +477,10 @@ describe("local evaluation store", () => {
 
   it("rejects each redigested external identity change on resume", async () => {
     const baseIdentity = nativePiIdentity();
-    const changedIdentities: ExternalHarnessIdentity[] = [
+    const changedIdentities: Extract<
+      ExternalHarnessIdentity,
+      { readonly adapter: "pi-native-v1" }
+    >[] = [
       { ...baseIdentity, adapterContractVersion: "1.0.1" },
       {
         ...baseIdentity,
@@ -514,6 +517,95 @@ describe("local evaluation store", () => {
       const evaluations = join(root, "evaluations");
       const store = new LocalEvaluationStore(evaluations);
       const evaluationId = `external-identity-${String(index)}`;
+      const header = createPublicEvaluationHeader(
+        admitted,
+        evaluationId,
+        "2026-08-09T10:00:00.000Z",
+      );
+      await store.create(header);
+      const changedHeader = replaceExternalHarnessIdentity(header, changedIdentity);
+      await writeFile(
+        join(evaluations, evaluationId, "plan.json"),
+        `${JSON.stringify(changedHeader)}\n`,
+      );
+
+      await expect(
+        new LocalEvaluationStore(evaluations).claim(evaluationId, admitted.planDigest),
+      ).rejects.toThrow(/plan|identity|changed/i);
+    }
+  });
+
+  it("rejects each redigested OMP identity change on resume", async () => {
+    const baseIdentity = nativeOmpIdentity();
+    const changedIdentities: Extract<
+      ExternalHarnessIdentity,
+      { readonly adapter: "omp-native-v1" }
+    >[] = [
+      { ...baseIdentity, adapterContractVersion: "1.0.1" },
+      { ...baseIdentity, protocol: { ...baseIdentity.protocol, digest: "4".repeat(64) } },
+      { ...baseIdentity, runtime: { ...baseIdentity.runtime, version: "0.0.71" } },
+      {
+        ...baseIdentity,
+        runtime: { ...baseIdentity.runtime, packageContentSha256: "5".repeat(64) },
+      },
+      {
+        ...baseIdentity,
+        runtime: { ...baseIdentity.runtime, policyDigest: "6".repeat(64) },
+      },
+      {
+        ...baseIdentity,
+        driver: { ...baseIdentity.driver, artifactSha256: "7".repeat(64) },
+      },
+      {
+        ...baseIdentity,
+        driver: { ...baseIdentity.driver, dependencyClosureSha256: "8".repeat(64) },
+      },
+      {
+        ...baseIdentity,
+        driver: {
+          ...baseIdentity.driver,
+          bun: { ...baseIdentity.driver.bun, version: "1.3.15" },
+        },
+      },
+      {
+        ...baseIdentity,
+        driver: {
+          ...baseIdentity.driver,
+          bun: { ...baseIdentity.driver.bun, executableSha256: "9".repeat(64) },
+        },
+      },
+      { ...baseIdentity, harness: { ...baseIdentity.harness, version: "17.2.13" } },
+      {
+        ...baseIdentity,
+        harness: { ...baseIdentity.harness, integrity: `sha512-${"C".repeat(86)}==` },
+      },
+      {
+        ...baseIdentity,
+        harness: { ...baseIdentity.harness, packageContentSha256: "a".repeat(64) },
+      },
+      {
+        ...baseIdentity,
+        harness: { ...baseIdentity.harness, dependencyClosureSha256: "b".repeat(64) },
+      },
+      {
+        ...baseIdentity,
+        harness: { ...baseIdentity.harness, configDigest: "c".repeat(64) },
+      },
+      {
+        ...baseIdentity,
+        inference: { ...baseIdentity.inference, packageVersion: "17.2.13" },
+      },
+      {
+        ...baseIdentity,
+        inference: { ...baseIdentity.inference, packageContentSha256: "d".repeat(64) },
+      },
+    ];
+
+    for (const [index, changedIdentity] of changedIdentities.entries()) {
+      const { root, admitted } = await admittedExternalEvaluation(baseIdentity);
+      const evaluations = join(root, "evaluations");
+      const store = new LocalEvaluationStore(evaluations);
+      const evaluationId = `omp-identity-${String(index)}`;
       const header = createPublicEvaluationHeader(
         admitted,
         evaluationId,
@@ -836,7 +928,7 @@ comparison:
   return { root, admitted: await admitLocalEvaluationPlan(join(root, "evaluation.yaml")) };
 }
 
-async function admittedExternalEvaluation(identity = nativePiIdentity()) {
+async function admittedExternalEvaluation(identity: ExternalHarnessIdentity = nativePiIdentity()) {
   const { root } = await admittedEvaluation();
   const planPath = join(root, "evaluation.yaml");
   const source = await readFile(planPath, "utf8");
@@ -844,7 +936,9 @@ async function admittedExternalEvaluation(identity = nativePiIdentity()) {
     planPath,
     source.replace(
       "- { id: candidate, adapter: flow-workflow-v1, workflow: candidate.workflow.yaml }",
-      "- { id: candidate, adapter: pi-native-v1, harness: { config: pi-evaluation-v1 } }",
+      identity.adapter === "pi-native-v1"
+        ? "- { id: candidate, adapter: pi-native-v1, harness: { config: pi-evaluation-v1 } }"
+        : "- { id: candidate, adapter: omp-native-v1, harness: { config: omp-evaluation-v1 } }",
     ),
   );
   return {
@@ -859,23 +953,35 @@ function replaceExternalHarnessIdentity(
   header: PublicEvaluationHeader,
   harness: ExternalHarnessIdentity,
 ): PublicEvaluationHeader {
-  const profiles: EvaluationPlanIdentity["profiles"] = header.profiles.map((profile) =>
-    profile.adapter === "pi-native-v1"
-      ? { id: profile.id, adapter: profile.adapter, harness }
-      : {
-          id: profile.id,
-          adapter: profile.adapter,
-          workflow: {
-            provenance: profile.workflow.provenance,
-            sourceSha256: profile.workflow.sourceSha256,
-            workflowDigest: profile.workflow.workflowDigest,
-            ...(profile.workflow.sourceKind === undefined
-              ? {}
-              : { sourceKind: profile.workflow.sourceKind }),
-          },
-          ...(profile.candidate === undefined ? {} : { candidate: profile.candidate }),
-        },
-  );
+  const profiles: EvaluationPlanIdentity["profiles"] = header.profiles.map((profile) => {
+    if (profile.adapter === "pi-native-v1") {
+      return {
+        id: profile.id,
+        adapter: profile.adapter,
+        harness: harness.adapter === "pi-native-v1" ? harness : profile.harness,
+      };
+    }
+    if (profile.adapter === "omp-native-v1") {
+      return {
+        id: profile.id,
+        adapter: profile.adapter,
+        harness: harness.adapter === "omp-native-v1" ? harness : profile.harness,
+      };
+    }
+    return {
+      id: profile.id,
+      adapter: profile.adapter,
+      workflow: {
+        provenance: profile.workflow.provenance,
+        sourceSha256: profile.workflow.sourceSha256,
+        workflowDigest: profile.workflow.workflowDigest,
+        ...(profile.workflow.sourceKind === undefined
+          ? {}
+          : { sourceKind: profile.workflow.sourceKind }),
+      },
+      ...(profile.candidate === undefined ? {} : { candidate: profile.candidate }),
+    };
+  });
   const identity: EvaluationPlanIdentity = {
     version: 1,
     apiVersion: header.apiVersion,
@@ -903,7 +1009,10 @@ function replaceExternalHarnessIdentity(
   };
 }
 
-function nativePiIdentity(): ExternalHarnessIdentity {
+function nativePiIdentity(): Extract<
+  ExternalHarnessIdentity,
+  { readonly adapter: "pi-native-v1" }
+> {
   return {
     version: 1,
     adapter: "pi-native-v1",
@@ -944,6 +1053,54 @@ function nativePiIdentity(): ExternalHarnessIdentity {
       packageVersion: "0.84.0",
       packageIntegrity: `sha512-${"B".repeat(86)}==`,
       packageContentSha256: "5".repeat(64),
+    },
+  };
+}
+
+function nativeOmpIdentity(): Extract<
+  ExternalHarnessIdentity,
+  { readonly adapter: "omp-native-v1" }
+> {
+  return {
+    version: 1,
+    adapter: "omp-native-v1",
+    adapterContractVersion: "1.0.0",
+    protocol: {
+      id: "flow-external-harness-jsonl-v1",
+      maxFrameBytes: 1_048_576,
+      digest: "1".repeat(64),
+    },
+    runtime: {
+      id: "srt-process-v1",
+      package: "@anthropic-ai/sandbox-runtime",
+      version: "0.0.70",
+      packageContentSha256: "2".repeat(64),
+      policyDigest: "3".repeat(64),
+      platform: "linux",
+      containment: "linux-pid-namespace",
+    },
+    driver: {
+      id: "native-omp-evaluation-v1",
+      artifactSha256: "4".repeat(64),
+      dependencyClosureSha256: "5".repeat(64),
+      bun: { version: "1.3.14", executableSha256: "6".repeat(64) },
+    },
+    harness: {
+      package: "@oh-my-pi/pi-coding-agent",
+      version: "17.2.12",
+      integrity:
+        "sha512-+q+W4fyNQQ7xAKiN0mmOisWDDtKO0R/ZctTSsKqR4ulN3K1zfQ9HwiTxtg7HJHn5fwCy+X3BmUG72FatNUN8IA==",
+      packageContentSha256: "7".repeat(64),
+      dependencyClosureSha256: "8".repeat(64),
+      config: "omp-evaluation-v1",
+      configDigest: "9".repeat(64),
+    },
+    inference: {
+      id: "flow-omp-inference-v1",
+      version: 1,
+      package: "@oh-my-pi/pi-ai",
+      packageVersion: "17.2.12",
+      packageContentSha256: "a".repeat(64),
     },
   };
 }

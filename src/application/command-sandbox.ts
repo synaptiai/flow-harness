@@ -7,6 +7,7 @@ export interface CommandSandboxRequest {
   readonly projectRoot?: string;
   readonly protectedPaths: readonly string[];
   readonly runtimeSupportPaths?: readonly string[];
+  readonly runtimeEnvironment?: Readonly<Record<string, string>>;
   readonly signal?: AbortSignal;
 }
 

@@ -8,29 +8,33 @@ const semanticVersionSchema = z
     /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/,
   );
 
-const externalHarnessIdentitySchema = z
+const protocolSchema = z
+  .object({
+    id: z.literal("flow-external-harness-jsonl-v1"),
+    maxFrameBytes: z.literal(1_048_576),
+    digest: sha256Schema,
+  })
+  .strict();
+
+const runtimeSchema = z
+  .object({
+    id: z.literal("srt-process-v1"),
+    package: z.literal("@anthropic-ai/sandbox-runtime"),
+    version: semanticVersionSchema,
+    packageContentSha256: sha256Schema,
+    policyDigest: sha256Schema,
+    platform: z.literal("linux"),
+    containment: z.literal("linux-pid-namespace"),
+  })
+  .strict();
+
+const piExternalHarnessIdentitySchema = z
   .object({
     version: z.literal(1),
     adapter: z.literal("pi-native-v1"),
     adapterContractVersion: semanticVersionSchema,
-    protocol: z
-      .object({
-        id: z.literal("flow-external-harness-jsonl-v1"),
-        maxFrameBytes: z.literal(1_048_576),
-        digest: sha256Schema,
-      })
-      .strict(),
-    runtime: z
-      .object({
-        id: z.literal("srt-process-v1"),
-        package: z.literal("@anthropic-ai/sandbox-runtime"),
-        version: semanticVersionSchema,
-        packageContentSha256: sha256Schema,
-        policyDigest: sha256Schema,
-        platform: z.literal("linux"),
-        containment: z.literal("linux-pid-namespace"),
-      })
-      .strict(),
+    protocol: protocolSchema,
+    runtime: runtimeSchema,
     driver: z
       .object({
         id: z.literal("native-pi-evaluation-v1"),
@@ -66,6 +70,54 @@ const externalHarnessIdentitySchema = z
       .strict(),
   })
   .strict();
+
+const ompExternalHarnessIdentitySchema = z
+  .object({
+    version: z.literal(1),
+    adapter: z.literal("omp-native-v1"),
+    adapterContractVersion: semanticVersionSchema,
+    protocol: protocolSchema,
+    runtime: runtimeSchema,
+    driver: z
+      .object({
+        id: z.literal("native-omp-evaluation-v1"),
+        artifactSha256: sha256Schema,
+        dependencyClosureSha256: sha256Schema,
+        bun: z
+          .object({
+            version: semanticVersionSchema,
+            executableSha256: sha256Schema,
+          })
+          .strict(),
+      })
+      .strict(),
+    harness: z
+      .object({
+        package: z.literal("@oh-my-pi/pi-coding-agent"),
+        version: semanticVersionSchema,
+        integrity: z.string().regex(/^sha512-[A-Za-z0-9+/]+={0,2}$/),
+        packageContentSha256: sha256Schema,
+        dependencyClosureSha256: sha256Schema,
+        config: z.literal("omp-evaluation-v1"),
+        configDigest: sha256Schema,
+      })
+      .strict(),
+    inference: z
+      .object({
+        id: z.literal("flow-omp-inference-v1"),
+        version: z.literal(1),
+        package: z.literal("@oh-my-pi/pi-ai"),
+        packageVersion: semanticVersionSchema,
+        packageContentSha256: sha256Schema,
+      })
+      .strict(),
+  })
+  .strict();
+
+const externalHarnessIdentitySchema = z.discriminatedUnion("adapter", [
+  piExternalHarnessIdentitySchema,
+  ompExternalHarnessIdentitySchema,
+]);
 
 export type ExternalHarnessIdentity = z.infer<typeof externalHarnessIdentitySchema>;
 

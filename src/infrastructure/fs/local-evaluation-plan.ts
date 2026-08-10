@@ -86,11 +86,13 @@ export interface AdmittedFlowEvaluationProfile {
   readonly candidate?: PromptCandidateIdentity & { readonly selectionProvenance: string };
 }
 
-export interface AdmittedExternalEvaluationProfile {
-  readonly id: string;
-  readonly adapter: "pi-native-v1";
-  readonly harness: ExternalHarnessIdentity;
-}
+export type AdmittedExternalEvaluationProfile = {
+  [Adapter in ExternalHarnessIdentity["adapter"]]: {
+    readonly id: string;
+    readonly adapter: Adapter;
+    readonly harness: Extract<ExternalHarnessIdentity, { readonly adapter: Adapter }>;
+  };
+}[ExternalHarnessIdentity["adapter"]];
 
 export type AdmittedEvaluationProfile =
   | AdmittedFlowEvaluationProfile
@@ -133,7 +135,10 @@ interface StableFile {
   readonly sha256: string;
 }
 
-type ExternalProfileSource = Extract<EvaluationProfileSource, { readonly adapter: "pi-native-v1" }>;
+type ExternalProfileSource = Exclude<
+  EvaluationProfileSource,
+  { readonly adapter: "flow-workflow-v1" }
+>;
 
 export interface LocalEvaluationPlanDependencies {
   readonly resolveExternalHarnessIdentity: (
@@ -182,12 +187,12 @@ export async function admitLocalEvaluationPlan(
 
   const admittedProfiles = await Promise.all(
     source.profiles.map(async (profile): Promise<AdmittedEvaluationProfile> => {
-      if (profile.adapter === "pi-native-v1") {
+      if (profile.adapter !== "flow-workflow-v1") {
         const resolver = dependencies?.resolveExternalHarnessIdentity;
         if (resolver === undefined) {
           throw new EvaluationAdmissionError(
             "invalid_workflow",
-            `profile "${profile.id}" requires the trusted native Pi adapter registry`,
+            `profile "${profile.id}" requires a trusted external harness registry`,
           );
         }
         let harness: ExternalHarnessIdentity;
@@ -209,7 +214,10 @@ export async function admitLocalEvaluationPlan(
             `profile "${profile.id}" external harness identity contradicts its source selection`,
           );
         }
-        return Object.freeze({ id: profile.id, adapter: profile.adapter, harness });
+        if (harness.adapter === "pi-native-v1") {
+          return Object.freeze({ id: profile.id, adapter: harness.adapter, harness });
+        }
+        return Object.freeze({ id: profile.id, adapter: harness.adapter, harness });
       }
       if ("workflow" in profile) {
         const workflowPath = await resolveAdmittedPath(planRoot, profile.workflow, "file");
@@ -304,27 +312,31 @@ export async function admitLocalEvaluationPlan(
         },
       })),
     },
-    profiles: profiles.map((profile) =>
-      profile.adapter === "pi-native-v1"
-        ? { id: profile.id, adapter: profile.adapter, harness: profile.harness }
-        : {
-            id: profile.id,
-            adapter: profile.adapter,
-            workflow: {
-              provenance: profile.workflow.provenance,
-              sourceSha256: profile.workflow.sourceSha256,
-              workflowDigest: profile.workflow.workflowDigest,
-              ...(profile.workflow.sourceKind === "prompt-candidate-projection"
-                ? { sourceKind: profile.workflow.sourceKind }
-                : {}),
-            },
-            ...(profile.candidate === undefined
-              ? {}
-              : {
-                  candidate: projectEvaluationCandidateIdentity(profile.candidate),
-                }),
-          },
-    ),
+    profiles: profiles.map((profile) => {
+      if (profile.adapter === "pi-native-v1") {
+        return { id: profile.id, adapter: profile.adapter, harness: profile.harness };
+      }
+      if (profile.adapter === "omp-native-v1") {
+        return { id: profile.id, adapter: profile.adapter, harness: profile.harness };
+      }
+      return {
+        id: profile.id,
+        adapter: profile.adapter,
+        workflow: {
+          provenance: profile.workflow.provenance,
+          sourceSha256: profile.workflow.sourceSha256,
+          workflowDigest: profile.workflow.workflowDigest,
+          ...(profile.workflow.sourceKind === "prompt-candidate-projection"
+            ? { sourceKind: profile.workflow.sourceKind }
+            : {}),
+        },
+        ...(profile.candidate === undefined
+          ? {}
+          : {
+              candidate: projectEvaluationCandidateIdentity(profile.candidate),
+            }),
+      };
+    }),
     controls: source.controls,
     seeds: source.seeds,
     order: source.order,

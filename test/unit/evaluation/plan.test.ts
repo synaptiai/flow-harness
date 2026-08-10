@@ -87,7 +87,7 @@ describe("evaluation plan", () => {
     ).toThrow(/invalid_schema|required|exactly one/i);
   });
 
-  it("parses only the built-in native Pi profile configuration", () => {
+  it("parses only fixed built-in external profile configurations", () => {
     const external = validPlan().replace(
       "  - id: candidate\n    adapter: flow-workflow-v1\n    workflow: candidate.workflow.yaml",
       "  - id: candidate\n    adapter: pi-native-v1\n    harness:\n      config: pi-evaluation-v1",
@@ -106,6 +106,28 @@ describe("evaluation plan", () => {
         external.replace(
           "      config: pi-evaluation-v1",
           "      config: pi-evaluation-v1\n      executable: /usr/bin/pi",
+        ),
+      ),
+    ).toThrow(/executable|unrecognized|schema/i);
+
+    const omp = validPlan().replace(
+      "  - id: candidate\n    adapter: flow-workflow-v1\n    workflow: candidate.workflow.yaml",
+      "  - id: candidate\n    adapter: omp-native-v1\n    harness:\n      config: omp-evaluation-v1",
+    );
+
+    expect(parseEvaluationPlanText(omp).profiles[1]).toEqual({
+      id: "candidate",
+      adapter: "omp-native-v1",
+      harness: { config: "omp-evaluation-v1" },
+    });
+    expect(() =>
+      parseEvaluationPlanText(omp.replace("omp-evaluation-v1", "operator-command")),
+    ).toThrow(/config|schema/i);
+    expect(() =>
+      parseEvaluationPlanText(
+        omp.replace(
+          "      config: omp-evaluation-v1",
+          "      config: omp-evaluation-v1\n      executable: /usr/bin/omp",
         ),
       ),
     ).toThrow(/executable|unrecognized|schema/i);

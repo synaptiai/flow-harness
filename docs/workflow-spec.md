@@ -1137,21 +1137,39 @@ Provider credentials remain outside workflow files and use Pi's configured crede
 
 ## External evaluation profiles
 
-An evaluation plan can select `pi-native-v1` for one profile. The profile can select only the fixed
-`pi-evaluation-v1` configuration. The plan cannot select a command, path, package, or endpoint.
+An evaluation plan can select `pi-native-v1` or `omp-native-v1` for one profile. Each adapter can
+select only its fixed evaluation configuration. The plan cannot select a command, path, package, or
+endpoint.
 
-Flow binds the exact adapter, protocol, driver, local dependency closure, Node executable, Pi
-coding-agent closure, Pi AI closure, SRT closure, SRT policy, Linux platform, PID namespace,
-configuration, and broker contract to the plan digest. The version-one Flow-only identity format
-does not change.
+Flow binds the exact adapter, protocol, driver, local dependency closure, harness package closures,
+SRT closure, SRT policy, Linux platform, PID namespace, configuration, and broker contract to the
+plan digest. Pi identity also binds Node. OMP identity also binds Bun. The version-one Flow-only
+identity format does not change.
 
-Before each trial, Flow writes one durable adapter-start record. Flow then starts the compiled Pi
+OMP admission accepts only an official Bun 1.3.14 standard Linux executable whose complete SHA-256
+matches the built-in x64 or arm64 attestation. `FLOW_BUN_EXECUTABLE` can select a path, but it cannot
+change the trust list. The OMP closure includes runtime Markdown, package instances, dependency
+edges, and the directories that control package resolution.
+
+The OMP descriptor supplies a canonical `NODE_PATH` that contains only search containers that
+selected a bound package. Ambient `NODE_PATH` is not used. SRT grants read access only to each exact
+selected package root. It does not grant read access to a search container or an unselected sibling
+package. Flow rejects admission if a selected package root contains an unselected nested package.
+The OMP policy digest binds this trusted environment rule.
+
+Immediately before process start, Flow compares the prepared SRT containment, backend, version,
+profile, and policy digest with the admitted runtime identity. Flow releases the sandbox and stops
+the trial if a value differs.
+
+Before each trial, Flow writes one durable adapter-start record. Flow then starts the selected
 driver in SRT. The child has no provider credentials and no general network route. A private signed
 JSONL channel sends model requests to the host broker.
 
-The native Pi profile has only `read` and `edit`. Both tools accept only existing files in the
-canonical trial workspace. The profile loads no skills, extensions, templates, themes, context
-files, or project configuration. It uses an in-memory session and zero retries.
+Both native profiles have only `read` and `edit`. Both tools accept only existing files in the
+canonical trial workspace. The profiles use in-memory sessions and zero retries. The OMP profile
+also disables rules, MCP, memory, LSP, IRC, project context, and ambient discovery.
+Bun starts with environment-file loading, automatic installation, and workspace configuration
+disabled.
 
 The parent records the process exit, signal, timeout, cancellation, containment, and tree
 termination. The child cannot assert these values. Missing, forged, repeated, oversized, or
@@ -1160,10 +1178,11 @@ out-of-order frames fail the trial.
 Version 1 external harness execution requires Linux. Flow rejects macOS and Windows before it loads
 the driver. Flow also rejects a Linux sandbox that does not prove PID-namespace containment.
 
-The Pi adapter calls the pinned session's `getSessionStats()` after prompt settlement and translates
-the four token components and reported cost into the Flow-owned usage shape. It preserves available
-usage on successful, terminal-error, timeout, and cancellation outcomes. A failure before a session
-or provider observation records no invented usage. Invalid statistics fail before persistence.
+Each driver reads the pinned session statistics after prompt settlement. It translates the four
+token components and reported cost into the Flow-owned usage shape. A settled child result preserves
+available usage. A parent-classified timeout or cancellation records unavailable usage because the
+parent cannot trust an incomplete terminal metric frame. A failure before a session or provider
+observation also records no invented usage. Invalid statistics fail before persistence.
 
 ## Portable Agent Skills
 
@@ -1321,8 +1340,8 @@ An evaluation plan is a separate `flow.synapti.ai/v1alpha1` document with
 authoring contract and example are in [Reproducible harness evaluation](evaluation.md) and
 `examples/evaluation/harness-comparison.evaluation.yaml`.
 
-Version 1 admits exactly two built-in profiles. A profile uses `flow-workflow-v1` or
-`pi-native-v1`. Each plan declares a versioned suite of bounded tasks, portable fixture and
+Version 1 admits exactly two built-in profiles. A profile uses `flow-workflow-v1`,
+`pi-native-v1`, or `omp-native-v1`. Each plan declares a versioned suite of bounded tasks, portable fixture and
 instruction paths, a private `filesystem-v1` verifier, one shared provider, model, and `thinking`
 tuple, an exact run budget, `network: deny`, zero provider and harness retries, unique seeds,
 `paired-alternating-v1`, and fixed comparison constraints. Each Flow workflow must contain at least

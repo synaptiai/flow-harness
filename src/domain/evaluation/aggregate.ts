@@ -1,4 +1,4 @@
-import type { EvaluationTrialScheduleItem } from "./plan.js";
+import type { EvaluationProfileIdentity, EvaluationTrialScheduleItem } from "./plan.js";
 import {
   EVALUATION_NUMERIC_METRICS,
   type EvaluationNumericMetric,
@@ -12,6 +12,7 @@ export interface EvaluationReportInput {
   readonly planDigest: string;
   readonly schedule: readonly EvaluationTrialScheduleItem[];
   readonly profileIds: readonly [string, string];
+  readonly profileAdapters: Readonly<Record<string, EvaluationProfileIdentity["adapter"]>>;
   readonly tasks: readonly {
     readonly id: string;
     readonly partition: "tuning" | "regression" | "holdout";
@@ -132,6 +133,11 @@ export function validateCommittedEvaluationPrefix(
   if (rawRecords.length > input.schedule.length) {
     throw new EvaluationAggregationError("evaluation has more records than scheduled trials");
   }
+  for (const profileId of input.profileIds) {
+    if (input.profileAdapters[profileId] === undefined) {
+      throw new EvaluationAggregationError("evaluation profile adapter evidence is incomplete");
+    }
+  }
   let previousDigest: string | null = null;
   const records: EvaluationTrialRecord[] = [];
   for (const [index, raw] of rawRecords.entries()) {
@@ -150,6 +156,23 @@ export function validateCommittedEvaluationPrefix(
     ) {
       throw new EvaluationAggregationError(
         `evaluation trial record ${index + 1} contradicts the admitted schedule`,
+      );
+    }
+    const profileAdapter = input.profileAdapters[record.profileId];
+    const runtimeAdapter = record.harness.runtime?.adapter;
+    const completedExternalWithoutRuntime =
+      profileAdapter !== undefined &&
+      profileAdapter !== "flow-workflow-v1" &&
+      record.harness.outcome === "completed" &&
+      runtimeAdapter === undefined;
+    if (
+      profileAdapter === undefined ||
+      (profileAdapter === "flow-workflow-v1" && runtimeAdapter !== undefined) ||
+      completedExternalWithoutRuntime ||
+      (runtimeAdapter !== undefined && runtimeAdapter !== profileAdapter)
+    ) {
+      throw new EvaluationAggregationError(
+        `evaluation trial record ${index + 1} contradicts its profile adapter`,
       );
     }
     const task = input.tasks.find((item) => item.id === record.taskId);

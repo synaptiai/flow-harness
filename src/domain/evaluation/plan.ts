@@ -85,6 +85,13 @@ const profileSchema = z.union([
       harness: z.object({ config: z.literal("pi-evaluation-v1") }).strict(),
     })
     .strict(),
+  z
+    .object({
+      id: identifierSchema,
+      adapter: z.literal("omp-native-v1"),
+      harness: z.object({ config: z.literal("omp-evaluation-v1") }).strict(),
+    })
+    .strict(),
 ]);
 
 const budgetSchema = z
@@ -237,6 +244,14 @@ export interface EvaluationPlanIdentity {
   readonly comparison: EvaluationPlanSource["comparison"];
 }
 
+type ExternalEvaluationProfileIdentity = {
+  [Adapter in ExternalHarnessIdentity["adapter"]]: {
+    readonly id: string;
+    readonly adapter: Adapter;
+    readonly harness: Extract<ExternalHarnessIdentity, { readonly adapter: Adapter }>;
+  };
+}[ExternalHarnessIdentity["adapter"]];
+
 export type EvaluationProfileIdentity =
   | {
       readonly id: string;
@@ -252,11 +267,7 @@ export type EvaluationProfileIdentity =
         readonly identity: PromptCandidateIdentity;
       };
     }
-  | {
-      readonly id: string;
-      readonly adapter: "pi-native-v1";
-      readonly harness: ExternalHarnessIdentity;
-    };
+  | ExternalEvaluationProfileIdentity;
 
 export interface EvaluationTrialScheduleItem {
   readonly version: 1;

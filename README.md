@@ -7,9 +7,10 @@ evidence, and fail-closed sandboxed command execution.
 > `@synaptiai/flow-harness` is not published to npm. Build and run it from a reviewed source
 > checkout. Do not use it as a security boundary for hostile or multi-tenant workloads.
 
-Flow is a standalone product. It does not depend on Claude Code and does not preserve
-compatibility with the earlier Flow plugin. Pi supplies the initial model-facing agent loop;
-Flow owns scheduling, policy, containment, evidence, and completion.
+Flow is a standalone product. It does not depend on Claude Code. It does not preserve
+compatibility with the earlier Flow plugin. Pi supplies the default model-facing agent loop.
+Flow owns scheduling, policy, containment, evidence, and completion. Flow can also evaluate OMP
+through an optional external profile.
 
 ## What works today
 
@@ -37,7 +38,7 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Versioned command tool packages | Implemented for strict local or digest-pinned installed declarative manifests, exact per-agent selection, deterministic argv rendering, and the existing policy/approval/sandbox/journal boundary |
 | Versioned workflow packages | Implemented for strict local or digest-pinned installed inert source manifests, exact packaged roots and children, closed snapshot-only compilation, and durable replay identity |
 | Remote capability bundle distribution | Implemented with deterministic inert `.flowpkg` files, explicit public HTTPS plus SHA-256 installation, a content-addressed project store, deterministic lock, local audit/removal commands, and offline execution/recovery |
-| Reproducible harness evaluation | Implemented for paired Flow workflows and Flow-versus-native-Pi comparisons. Flow records exact identities, fresh workspaces, private checks, evidence, and constrained reports. |
+| Reproducible harness evaluation | Implemented for paired Flow, native Pi, and native OMP profiles. Flow records exact identities, fresh workspaces, private checks, evidence, and constrained reports. |
 | Evidence-bound prompt candidates | Flow implements zero-tool model generation from tuning-only evidence, strict prompt overlays, paired evaluation, reviewed activation, durable run snapshots, and rollback |
 | Proof-safe fresh recovery of interrupted agent attempts | Implemented as explicit opt-in for read-only attempts and edit attempts proven not applied |
 | Fail-closed sandboxed command isolation | Flow implements filesystem and network isolation on Linux and macOS. Linux alone provides strict agent-command descendant lifecycle containment |
@@ -55,6 +56,18 @@ promise before the first stable release.
 - Node.js 22.19 or newer
 - npm with lockfile support
 - Linux or macOS
+
+The native OMP evaluation profile has additional requirements:
+
+- Linux with the verified SRT PID namespace.
+- The official Bun 1.3.14 standard Linux executable for x64 or arm64.
+- `@oh-my-pi/pi-coding-agent` 17.2.12.
+- `@oh-my-pi/pi-ai` 17.2.12.
+
+Normal Flow runs and offline evaluation inspection do not load these optional OMP packages.
+Flow verifies the complete Bun executable against its built-in release attestations. You can use
+`FLOW_BUN_EXECUTABLE` to select another host path. The selected file must still match an attested
+official release.
 
 On Ubuntu or Debian, install the native sandbox dependencies:
 
@@ -159,6 +172,18 @@ node dist/cli/main.js eval inspect native-pi-comparison
 The native Pi driver runs in a separate SRT process on Linux. Flow requires the verified PID
 namespace. Flow keeps provider credentials in the host
 broker. Pi can use only workspace-confined `read` and `edit` tools in this profile.
+
+The native OMP example compares the native Pi and native OMP agent loops:
+
+```sh
+node dist/cli/main.js eval validate examples/evaluation/native-omp-comparison.evaluation.yaml
+node dist/cli/main.js eval run examples/evaluation/native-omp-comparison.evaluation.yaml
+node dist/cli/main.js eval inspect native-omp-comparison
+```
+
+Flow starts OMP in a separate Bun process under the same Linux SRT boundary. The child has no
+provider credentials or task network. OMP can use only workspace-confined `read` and `edit` tools.
+This example does not claim that either harness is better.
 
 ### Evaluate an adaptive prompt candidate
 

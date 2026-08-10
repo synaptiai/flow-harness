@@ -49,11 +49,21 @@ Sandbox Runtime and its dependency packages retain their own license metadata in
 ## OMP
 
 - Project: [can1357/oh-my-pi](https://github.com/can1357/oh-my-pi)
+- Packages: `@oh-my-pi/pi-coding-agent` 17.2.12 and `@oh-my-pi/pi-ai` 17.2.12
 - License: MIT
-- Use: architecture and capability reference only
+- Use: optional runtime dependencies for the native OMP evaluation adapter
 - Copied source: none
 
-Any future source port must record its upstream commit and preserve the applicable Pi and OMP copyright and license notices.
+OMP dependency packages retain their license metadata in the installed dependency tree. A Flow
+distribution that bundles these packages must preserve all applicable notices.
+
+## Bun
+
+- Project: [oven-sh/bun](https://github.com/oven-sh/bun)
+- Required version: attested official Linux 1.3.14 for the native OMP evaluation adapter
+- License: MIT
+- Use: external executable for the optional native OMP evaluation adapter
+- Copied source: none
 
 ## Prime Agent
 

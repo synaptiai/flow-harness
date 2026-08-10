@@ -741,19 +741,38 @@ and comparison verdict. Neither reducer imports the other's event vocabulary.
 The `HarnessEvaluationAdapter` port receives one fresh workspace and one task instruction. It also
 receives public trial identity and fixed controls. It receives no verifier body or store authority.
 
-The `flow-workflow-v1` adapter executes an admitted workflow through the Flow scheduler. The
-`pi-native-v1` adapter uses a separate process runtime. Both adapters return the same trial result
-contract.
+The `flow-workflow-v1` adapter executes an admitted workflow through the Flow scheduler.
+`pi-native-v1` and `omp-native-v1` use the same separate process runtime. All three adapters return
+the same trial result contract.
 
-The native Pi runtime has three parts:
+The native external runtime has three parts:
 
-1. A trusted registry verifies the driver, Node executable, local modules, Pi closures, and SRT closure.
+1. A trusted registry verifies the driver, executable, local modules, harness closures, and SRT
+   closure.
 2. Linux SRT starts the driver in a verified PID namespace with protected host paths and no task network.
 3. A host broker makes model requests without giving credentials to the child.
 
 Two private pipes carry strict signed JSONL frames. The parent owns timeout, cancellation, process
-termination, and process evidence. The driver owns Pi session translation and bounded metrics. The
-model can use only workspace-confined `read` and `edit` tools.
+termination, and process evidence. Each driver owns its harness translation and bounded metrics.
+The model can use only workspace-confined `read` and `edit` tools.
+
+The Pi driver runs the pinned Pi SDK under Node.js. The OMP driver runs the pinned OMP SDK under
+Bun. The OMP session disables ambient extensions, skills, rules, MCP, memory, LSP, project context,
+and persistence. Its custom provider sends bounded model context to the Flow host broker.
+
+The OMP registry accepts only complete executable hashes from the built-in official Bun release
+attestations. It hashes runtime Markdown and the package-resolution graph. It observes each
+directory that can change dependency resolution. Bun starts without environment-file loading,
+automatic installation, or workspace configuration.
+
+The OMP descriptor supplies a canonical `NODE_PATH` for selected package resolution. This value is
+trusted search metadata. SRT grants read access only to the exact selected package roots. It keeps
+each search container and each unselected sibling package denied. Flow rejects a package root that
+contains an unselected nested package.
+
+Immediately before process start, the external runtime compares the prepared SRT containment,
+backend, version, profile, and policy digest with the admitted runtime identity. It releases the
+sandbox and rejects the trial if a value differs.
 
 The application stores a durable adapter-start record before it calls either adapter. A restart
 converts an unresolved start to one interrupted failure. It does not repeat the adapter call.
@@ -761,7 +780,7 @@ converts an unresolved start to one interrupted failure. It does not repeat the 
 The native external runtime fails before spawn on macOS and Windows. Process-group cleanup does not
 prove full descendant termination.
 
-OMP or Prime can implement the same runtime port later. They do not require a plan, record, report,
+Prime Agent can implement the same runtime port later. It does not require a plan, record, report,
 or verifier schema change.
 
 Admission hashes portable fixture content, the instruction, workflow source and compiled graph,
@@ -834,7 +853,7 @@ verifiers, retries, or routing. Model-authorized evaluation and activation remai
 ## Non-goals
 
 - Flow does not retain Claude Code plugin compatibility.
-- Flow does not act as a common adapter over Claude Code, OMP, and Prime Agent.
+- Flow does not provide a general compatibility layer for Claude Code, OMP, and Prime Agent.
 - Flow does not fork or rebrand Pi, OMP, or Prime Agent.
 - Flow does not reproduce OMP's full tool surface in the initial release.
 - Flow does not make Markdown an executable orchestration language.
