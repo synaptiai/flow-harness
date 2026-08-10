@@ -187,6 +187,76 @@ describe("embedded Pi SDK integration", () => {
     expect(await readFile(target, "utf8")).toBe(after);
   });
 
+  it("applies the requested output-token limit to the selected Pi model", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "flow-pi-token-limit-"));
+    temporaryDirectories.push(cwd);
+    const runtime = await ModelRuntime.create({
+      allowModelNetwork: false,
+      credentials: new InMemoryCredentialStore(),
+      modelsPath: null,
+    });
+    let observedMaxTokens: number | undefined;
+    runtime.registerProvider("flow-test", {
+      name: "Flow token limit test provider",
+      api: "openai-completions",
+      baseUrl: "https://flow.test.invalid/v1",
+      apiKey: "test-only-key",
+      models: [
+        {
+          id: "deterministic",
+          name: "Deterministic",
+          api: "openai-completions",
+          reasoning: false,
+          input: ["text"],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 4_096,
+          maxTokens: 256,
+        },
+      ],
+      streamSimple: (model) => {
+        observedMaxTokens = model.maxTokens;
+        const stream = createAssistantMessageEventStream();
+        const message: AssistantMessage = {
+          role: "assistant",
+          content: [{ type: "text", text: "LIMIT_OK" }],
+          api: model.api,
+          provider: model.provider,
+          model: model.id,
+          usage: {
+            input: 1,
+            output: 1,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 2,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          },
+          stopReason: "stop",
+          timestamp: Date.now(),
+        };
+        queueMicrotask(() => {
+          stream.push({ type: "start", partial: message });
+          stream.push({ type: "done", reason: "stop", message });
+          stream.end();
+        });
+        return stream;
+      },
+    });
+    const executor = new PiAgentExecutor(new EmbeddedPiAgentRunner(async () => runtime));
+
+    const outcome = await executor.execute(agentNode(), {
+      runId: "sdk-token-limit",
+      workflowId: "sdk-token-limit",
+      attempt: 1,
+      cwd,
+      protectedPaths: [],
+      effectJournal: testEffectJournal(),
+      agentMaxOutputTokens: 17,
+    });
+
+    expect(outcome.status, JSON.stringify(outcome)).toBe("succeeded");
+    expect(observedMaxTokens).toBe(17);
+  });
+
   it("discovers, approves, executes, and replays a package-only tool through real Pi", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "flow-pi-package-sdk-"));
     temporaryDirectories.push(cwd);

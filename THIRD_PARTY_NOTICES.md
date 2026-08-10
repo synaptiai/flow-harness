@@ -5,9 +5,9 @@ Flow is licensed under the Apache License 2.0. It depends on or studies the foll
 ## Pi
 
 - Project: [earendil-works/pi](https://github.com/earendil-works/pi)
-- Packages: `@earendil-works/pi-coding-agent` 0.84.0 and test-only `@earendil-works/pi-ai` 0.84.0
+- Packages: `@earendil-works/pi-coding-agent` 0.84.0 and `@earendil-works/pi-ai` 0.84.0
 - License: MIT
-- Use: direct runtime dependency behind Flow's agent-executor adapter
+- Use: direct runtime dependencies behind Flow's agent-executor adapter
 - Copied source: none
 
 Pi's dependency packages retain their own license metadata in the installed dependency tree. A Flow distribution that bundles dependency source or binaries must preserve all applicable notices.
@@ -20,7 +20,7 @@ Pi's dependency packages retain their own license metadata in the installed depe
 - Use: direct runtime dependency behind Flow's command-sandbox adapter
 - Copied source: none
 
-Sandbox Runtime and its dependency packages retain their own license metadata in the installed dependency tree. Flow's profile and adapter are independently implemented; Pi's example extension was used as an architecture reference only.
+Sandbox Runtime and its dependency packages retain their own license metadata in the installed dependency tree. Flow's profile and adapter are independently implemented. Pi's example extension was used as an architecture reference only.
 
 ## YAML
 

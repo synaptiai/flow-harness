@@ -8,6 +8,7 @@ import {
   type SessionStats,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 
 import type {
   AgentExecutor,
@@ -54,6 +55,8 @@ export interface PiAgentRunRequest {
   readonly tools: readonly AgentToolName[];
   readonly toolPackages?: readonly ToolPackageSnapshot[];
   readonly maxOutputBytes: number;
+  readonly maxOutputTokens?: number;
+  readonly exactModelSettings?: boolean;
   readonly systemPrompt?: string;
   readonly policyBroker: PolicyBroker;
   readonly protectedPaths: readonly string[];
@@ -120,6 +123,18 @@ export class PiAgentExecutor implements AgentExecutor {
       return agentFailure(
         "pi_output_limit_invalid",
         `agent output limit must be between 1 and ${this.maxOutputBytes} bytes`,
+      );
+    }
+    const maxOutputTokens = context.agentMaxOutputTokens;
+    if (
+      maxOutputTokens !== undefined &&
+      (!Number.isSafeInteger(maxOutputTokens) ||
+        maxOutputTokens <= 0 ||
+        maxOutputTokens > 1_000_000)
+    ) {
+      return agentFailure(
+        "pi_output_token_limit_invalid",
+        "agent output-token limit must be between 1 and 1000000",
       );
     }
     if (isAborted(context.signal)) {
@@ -294,6 +309,8 @@ export class PiAgentExecutor implements AgentExecutor {
           tools: node.agent.tools,
           toolPackages,
           maxOutputBytes,
+          ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
+          ...(context.agentExactModelSettings === true ? { exactModelSettings: true } : {}),
           ...(context.agentSystemPrompt === undefined
             ? {}
             : { systemPrompt: context.agentSystemPrompt }),
@@ -681,10 +698,35 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
 
     const modelRuntime = await this.createModelRuntime(request.signal);
     throwIfAborted(request.signal);
-    const model = modelRuntime.getModel(request.provider, request.model);
-    if (model === undefined) {
+    const selectedModel = modelRuntime.getModel(request.provider, request.model);
+    if (selectedModel === undefined) {
       throw new Error(`Pi model "${request.provider}/${request.model}" is not available`);
     }
+    if (request.exactModelSettings === true) {
+      if (request.maxOutputTokens === undefined) {
+        throw new Error("exact Pi model settings require an output-token limit");
+      }
+      if (selectedModel.maxTokens < request.maxOutputTokens) {
+        throw new Error(
+          `requested output-token limit ${request.maxOutputTokens} exceeds the selected model limit ${selectedModel.maxTokens}`,
+        );
+      }
+      if (!getSupportedThinkingLevels(selectedModel).includes(request.thinking)) {
+        throw new Error(
+          `requested thinking level "${request.thinking}" is not supported by the selected model`,
+        );
+      }
+    }
+    const model =
+      request.maxOutputTokens === undefined
+        ? selectedModel
+        : {
+            ...selectedModel,
+            maxTokens:
+              request.exactModelSettings === true
+                ? request.maxOutputTokens
+                : Math.min(selectedModel.maxTokens, request.maxOutputTokens),
+          };
 
     const capabilitySession =
       request.capabilities === undefined
@@ -719,6 +761,7 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
       resourceLoader,
       sessionManager: SessionManager.inMemory(request.cwd),
       settingsManager: SettingsManager.inMemory({
+        ...(request.exactModelSettings === true ? { compaction: { enabled: false } } : {}),
         retry: {
           enabled: false,
           maxRetries: 0,
@@ -726,6 +769,13 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
         },
       }),
     });
+
+    if (request.exactModelSettings === true && session.thinkingLevel !== request.thinking) {
+      session.dispose();
+      throw new Error(
+        `Pi applied thinking level "${session.thinkingLevel}" instead of "${request.thinking}"`,
+      );
+    }
 
     if (isAborted(request.signal)) {
       await session.abort().catch(() => undefined);

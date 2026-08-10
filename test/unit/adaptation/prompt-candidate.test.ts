@@ -2,11 +2,20 @@ import { createHash } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
+import { completePromptCandidateGeneration } from "../../../src/domain/adaptation/prompt-candidate-generation.js";
+import {
+  MAX_PROMPT_CANDIDATE_GENERATION_INPUT_BYTES,
+  MAX_PROMPT_CANDIDATE_GENERATION_OUTPUT_BYTES,
+  calculatePromptCandidateGenerationRequestDigest,
+  calculatePromptCandidateGenerationResponseDigest,
+  renderPromptCandidateGenerationRequest,
+} from "../../../src/domain/adaptation/prompt-candidate-generation-contract.js";
 import {
   MAX_PROMPT_CANDIDATE_CHANGES,
   MAX_PROMPT_CANDIDATE_EVIDENCE,
   MAX_PROMPT_CANDIDATE_PROJECTED_WORKFLOW_BYTES,
   PromptCandidateError,
+  parsePromptCandidateIdentity,
   parsePromptCandidateText,
   projectPromptCandidate,
 } from "../../../src/domain/adaptation/prompt-candidate.js";
@@ -16,6 +25,7 @@ import { createTuningEvidencePacket } from "../../../src/domain/evaluation/tunin
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { calculateWorkflowDigest } from "../../../src/domain/workflow/digest.js";
 import { workflowSourceSchema } from "../../../src/domain/workflow/schema.js";
+import { promptCandidateGenerationFixture } from "../../fixtures/prompt-candidate-generation.js";
 
 const baselineText = JSON.stringify({
   apiVersion: "flow.synapti.ai/v1alpha1",
@@ -130,6 +140,131 @@ describe("prompt candidates", () => {
     candidate.changes.prompts[0].value = " \n\t ";
     expect(() => parsePromptCandidateText(JSON.stringify(candidate))).toThrowError(
       /invalid_schema/,
+    );
+  });
+
+  it("rejects generation provenance that contradicts the version-one contract", () => {
+    const generated = generatedCandidate();
+    expect(parsePromptCandidateText(JSON.stringify(generated))).toEqual(generated);
+
+    const wrongSystemPrompt = structuredClone(generated);
+    requiredGeneration(wrongSystemPrompt).systemPromptSha256 = "f".repeat(64);
+    expect(() => parsePromptCandidateText(JSON.stringify(wrongSystemPrompt))).toThrowError(
+      /invalid_schema/,
+    );
+
+    const wrongInputLimit = structuredClone(generated);
+    requiredGeneration(wrongInputLimit).limits.maxInputBytes += 1;
+    expect(() => parsePromptCandidateText(JSON.stringify(wrongInputLimit))).toThrowError(
+      /invalid_schema/,
+    );
+
+    const wrongOutputLimit = structuredClone(generated);
+    requiredGeneration(wrongOutputLimit).limits.maxOutputBytes += 1;
+    expect(() => parsePromptCandidateText(JSON.stringify(wrongOutputLimit))).toThrowError(
+      /invalid_schema/,
+    );
+
+    const wrongTokenLimit = structuredClone(generated);
+    requiredGeneration(wrongTokenLimit).limits.maxOutputTokens = 8_193;
+    expect(() => parsePromptCandidateText(JSON.stringify(wrongTokenLimit))).toThrowError(
+      /invalid_schema/,
+    );
+
+    const impossibleUsage = structuredClone(generated);
+    requiredGeneration(impossibleUsage).limits.maxOutputTokens = 1;
+    requiredGeneration(impossibleUsage).usage.outputTokens = 2;
+    expect(() => parsePromptCandidateText(JSON.stringify(impossibleUsage))).toThrowError(
+      /invalid_schema/,
+    );
+
+    const wrongTarget = structuredClone(generatedProjectionContext()) as DeepMutable<
+      ReturnType<typeof generatedProjectionContext>
+    >;
+    const wrongTargetGeneration = wrongTarget.source.generation;
+    if (wrongTargetGeneration === undefined) {
+      throw new Error("generated projection fixture has no generation provenance");
+    }
+    wrongTargetGeneration.targets[0] = {
+      nodeId: "private-review",
+      expectedSha256: sha256("Review the private result."),
+    };
+    refreshCandidateSourceHash(wrongTarget);
+    expect(() => projectPromptCandidate(wrongTarget)).toThrowError(/generation target/i);
+
+    const wrongRequest = structuredClone(generatedProjectionContext()) as DeepMutable<
+      ReturnType<typeof generatedProjectionContext>
+    >;
+    const wrongRequestGeneration = wrongRequest.source.generation;
+    if (wrongRequestGeneration === undefined) {
+      throw new Error("generated projection fixture has no generation provenance");
+    }
+    wrongRequestGeneration.requestDigest = "f".repeat(64);
+    refreshCandidateSourceHash(wrongRequest);
+    expect(() => projectPromptCandidate(wrongRequest)).toThrowError(/generation request digest/i);
+
+    const wrongResponse = structuredClone(generatedProjectionContext()) as DeepMutable<
+      ReturnType<typeof generatedProjectionContext>
+    >;
+    const wrongResponseGeneration = wrongResponse.source.generation;
+    if (wrongResponseGeneration === undefined) {
+      throw new Error("generated projection fixture has no generation provenance");
+    }
+    wrongResponseGeneration.responseDigest = "f".repeat(64);
+    refreshCandidateSourceHash(wrongResponse);
+    expect(() => projectPromptCandidate(wrongResponse)).toThrowError(/generation response digest/i);
+  });
+
+  it("rejects padded model provenance in source and durable identity", () => {
+    const paddedSource = structuredClone(generatedCandidate());
+    const sourceGeneration = requiredGeneration(paddedSource);
+    sourceGeneration.model = ` ${sourceGeneration.model} `;
+    expect(() => parsePromptCandidateText(JSON.stringify(paddedSource))).toThrowError(
+      /invalid_schema/,
+    );
+
+    const identity = structuredClone(projectPromptCandidate(generatedProjectionContext()).identity);
+    if (identity.generation === undefined) {
+      throw new Error("generated identity fixture has no generation provenance");
+    }
+    identity.generation.model = ` ${identity.generation.model} `;
+    expect(() => parsePromptCandidateIdentity(identity)).toThrowError(/identity_mismatch/);
+  });
+
+  it("rejects replay provenance above the request and response byte limits", () => {
+    const oversizedResponse = structuredClone(generatedProjectionContext()) as DeepMutable<
+      ReturnType<typeof generatedProjectionContext>
+    >;
+    const responseChange = requiredFirst(
+      oversizedResponse.source.changes.prompts,
+      "generated response change",
+    );
+    const responseGeneration = oversizedResponse.source.generation;
+    if (responseGeneration === undefined) {
+      throw new Error("generated response fixture has no generation provenance");
+    }
+    const emptyResponseBytes = Buffer.byteLength(
+      JSON.stringify({ changes: [{ nodeId: responseChange.nodeId, value: "" }] }),
+      "utf8",
+    );
+    responseChange.value = "x".repeat(
+      MAX_PROMPT_CANDIDATE_GENERATION_OUTPUT_BYTES - emptyResponseBytes + 1,
+    );
+    const responseChanges = [{ nodeId: responseChange.nodeId, value: responseChange.value }];
+    expect(Buffer.byteLength(JSON.stringify({ changes: responseChanges }), "utf8")).toBe(
+      MAX_PROMPT_CANDIDATE_GENERATION_OUTPUT_BYTES + 1,
+    );
+    responseGeneration.responseDigest =
+      calculatePromptCandidateGenerationResponseDigest(responseChanges);
+    refreshCandidateSourceHash(oversizedResponse);
+    expect(() => projectPromptCandidate(oversizedResponse)).toThrowError(
+      /generation response.*byte limit/i,
+    );
+
+    const oversizedRequest = oversizedGenerationRequestContext();
+    expect(oversizedRequest.requestBytes).toBe(MAX_PROMPT_CANDIDATE_GENERATION_INPUT_BYTES + 1);
+    expect(() => projectPromptCandidate(oversizedRequest.context)).toThrowError(
+      /generation request.*byte limit/i,
     );
   });
 
@@ -350,6 +485,169 @@ function candidateText(): string {
       ],
     },
   });
+}
+
+function generatedCandidate() {
+  const { prepared } = promptCandidateGenerationFixture();
+  return completePromptCandidateGeneration(
+    prepared,
+    JSON.stringify({
+      changes: [{ nodeId: "implement", value: "Read TASK.md and verify the result." }],
+    }),
+    {
+      inputTokens: 10,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 1,
+      costUsdMicros: 1,
+    },
+  );
+}
+
+function generatedProjectionContext() {
+  const fixture = promptCandidateGenerationFixture();
+  const source = generatedCandidate();
+  const text = JSON.stringify(source);
+  return {
+    manifestProvenance: "generated-candidate.yaml",
+    source,
+    sourceSha256: sha256(text),
+    baseline: {
+      provenance: fixture.input.baseline.provenance,
+      source: fixture.input.baseline.source,
+      sourceSha256: fixture.input.baseline.sourceSha256,
+      compiled: fixture.input.baseline.compiled,
+    },
+    evidence: fixture.input.evidence.map((item) => ({
+      provenance: item.provenance,
+      sourceSha256: item.sourceSha256,
+      packet: item.packet,
+    })),
+  };
+}
+
+function oversizedGenerationRequestContext() {
+  const prompts = ["x".repeat(262_144), "x".repeat(262_144), "x".repeat(262_144), "x"];
+  const build = (values: readonly string[]) => {
+    const agentIds = values.map((_value, index) => `implement-${index}`);
+    const baselineSource = {
+      apiVersion: "flow.synapti.ai/v1alpha1" as const,
+      kind: "Workflow" as const,
+      metadata: { id: "adaptive-workflow" },
+      nodes: [
+        ...values.map((prompt, index) => ({
+          id: agentIds[index],
+          type: "agent" as const,
+          ...(index === 0 ? {} : { dependsOn: [agentIds[index - 1] as string] }),
+          agent: {
+            prompt,
+            model: { provider: "test", id: "deterministic", thinking: "medium" as const },
+            tools: ["read" as const],
+            skills: [],
+            toolPackages: [],
+            timeoutMs: 300_000,
+          },
+        })),
+        {
+          id: "publish",
+          type: "result" as const,
+          dependsOn: [agentIds.at(-1) as string],
+          result: {
+            source: { nodeId: agentIds.at(-1) as string, field: "agent.text" as const },
+            schema: { type: "string" as const, maxLength: 1_024 },
+          },
+        },
+      ],
+    };
+    const baselineText = JSON.stringify(baselineSource);
+    const compiled = compileWorkflowText(baselineText);
+    const workflowDigest = calculateWorkflowDigest(compiled);
+    const evidence = tuningEvidence(workflowDigest);
+    const targets = values.map((prompt, index) => ({
+      nodeId: agentIds[index] as string,
+      prompt,
+      promptSha256: sha256(prompt),
+    }));
+    const request = {
+      baseline: {
+        workflowId: compiled.id,
+        sourceSha256: sha256(baselineText),
+        workflowDigest,
+      },
+      targets,
+      evidence: [{ sourceSha256: sha256(JSON.stringify(evidence)), packet: evidence }],
+      model: { provider: "test", id: "deterministic", thinking: "medium" as const },
+      limits: { timeoutMs: 300_000, maxOutputTokens: 8_192 },
+    };
+    return { agentIds, baselineSource, baselineText, compiled, evidence, request };
+  };
+
+  const initial = build(prompts);
+  const initialBytes = Buffer.byteLength(renderPromptCandidateGenerationRequest(initial.request));
+  prompts[3] = "x".repeat(1 + MAX_PROMPT_CANDIDATE_GENERATION_INPUT_BYTES + 1 - initialBytes);
+  const fixture = build(prompts);
+  const requestBytes = Buffer.byteLength(renderPromptCandidateGenerationRequest(fixture.request));
+  const source = structuredClone(generatedCandidate()) as DeepMutable<
+    ReturnType<typeof generatedCandidate>
+  >;
+  const generation = requiredGeneration(source);
+  const firstTarget = requiredFirst(fixture.request.targets, "oversized request target");
+  const replacement = { nodeId: firstTarget.nodeId, value: "Use the accepted task result." };
+  source.baseline.sourceSha256 = fixture.request.baseline.sourceSha256;
+  source.baseline.workflowDigest = fixture.request.baseline.workflowDigest;
+  source.evidence = [
+    {
+      path: "tuning-evidence.json",
+      sourceSha256: fixture.request.evidence[0]?.sourceSha256 as string,
+      evidenceDigest: fixture.evidence.evidenceDigest,
+      planDigest: fixture.evidence.evaluation.planDigest,
+    },
+  ];
+  source.changes.prompts = [
+    {
+      nodeId: replacement.nodeId,
+      expectedSha256: firstTarget.promptSha256,
+      value: replacement.value,
+    },
+  ];
+  generation.targets = fixture.request.targets.map((target) => ({
+    nodeId: target.nodeId,
+    expectedSha256: target.promptSha256,
+  }));
+  generation.requestDigest = calculatePromptCandidateGenerationRequestDigest(fixture.request);
+  generation.responseDigest = calculatePromptCandidateGenerationResponseDigest([replacement]);
+  const context = {
+    manifestProvenance: "generated-candidate.yaml",
+    source,
+    sourceSha256: sha256(JSON.stringify(source)),
+    baseline: {
+      provenance: "baseline.workflow.yaml",
+      source: workflowSourceSchema.parse(fixture.baselineSource),
+      sourceSha256: fixture.request.baseline.sourceSha256,
+      compiled: fixture.compiled,
+    },
+    evidence: [
+      {
+        provenance: "tuning-evidence.json",
+        sourceSha256: fixture.request.evidence[0]?.sourceSha256 as string,
+        packet: fixture.evidence,
+      },
+    ],
+  };
+  return { context, requestBytes };
+}
+
+function refreshCandidateSourceHash(
+  context: DeepMutable<ReturnType<typeof generatedProjectionContext>>,
+): void {
+  context.sourceSha256 = sha256(JSON.stringify(context.source));
+}
+
+function requiredGeneration(candidate: ReturnType<typeof generatedCandidate>) {
+  if (candidate.generation === undefined) {
+    throw new Error("generated candidate fixture has no generation provenance");
+  }
+  return candidate.generation;
 }
 
 function projectionContext() {

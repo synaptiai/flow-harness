@@ -7,8 +7,6 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { NodeExecutor } from "../../../src/application/ports.js";
 import { type CliIo, main } from "../../../src/cli/main.js";
-import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
-import { calculateWorkflowDigest } from "../../../src/domain/workflow/digest.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -81,38 +79,35 @@ describe("prompt candidate CLI", () => {
     expect(await readFile(evidencePath, "utf8")).toBe(evidenceText);
 
     const baselineText = await readFile(join(project, "baseline.workflow.yaml"), "utf8");
-    const baselineDigest = calculateWorkflowDigest(compileWorkflowText(baselineText));
     const candidatePath = join(project, "better.prompt-candidate.yaml");
-    const candidateSource = {
-      apiVersion: "flow.synapti.ai/v1alpha1",
-      kind: "PromptCandidate",
-      metadata: { id: "better-instructions", version: "1.0.0" },
-      scope: { kind: "workflow", workflowId: "evaluated-profile" },
-      baseline: {
-        workflow: "baseline.workflow.yaml",
-        sourceSha256: sha256(baselineText),
-        workflowDigest: baselineDigest,
-      },
-      evidence: [
-        {
-          path: "tuning-evidence.json",
-          sourceSha256: sha256(evidenceText),
-          evidenceDigest: evidence.evidenceDigest,
-          planDigest: evidence.evaluation.planDigest,
-        },
-      ],
-      changes: {
-        prompts: [
-          {
-            nodeId: "implement",
-            expectedSha256: sha256("Follow TASK.md exactly."),
-            value: "Read TASK.md, implement exactly what it asks, then verify the result.",
-          },
+    const generation = capture();
+    expect(
+      await main(
+        [
+          "candidate",
+          "generate",
+          join(project, "baseline.workflow.yaml"),
+          evidencePath,
+          "--output",
+          candidatePath,
+          "--id",
+          "better-instructions",
+          "--version",
+          "1.0.0",
+          "--allow-nodes",
+          "implement",
+          "--provider",
+          "test",
+          "--model",
+          "deterministic",
         ],
-      },
-    };
-    const candidateText = JSON.stringify(candidateSource);
-    await writeFile(candidatePath, candidateText);
+        generation.io,
+        { cwd: project, executor: candidateGenerationExecutor() },
+      ),
+      generation.stderr.join("\n"),
+    ).toBe(0);
+    const candidateText = await readFile(candidatePath, "utf8");
+    const candidateSource = JSON.parse(candidateText);
 
     const validation = capture();
     expect(
@@ -125,6 +120,12 @@ describe("prompt candidate CLI", () => {
         id: "better-instructions",
         candidateDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
         changes: [{ nodeId: "implement" }],
+        generation: {
+          provider: "test",
+          model: "deterministic",
+          requestDigest: candidateSource.generation.requestDigest,
+          responseDigest: candidateSource.generation.responseDigest,
+        },
       },
     });
     expect(validation.stdout.join("\n")).not.toContain("Read TASK.md, implement exactly");
@@ -170,7 +171,13 @@ describe("prompt candidate CLI", () => {
     );
     expect(JSON.parse(candidateRun.stdout.join("\n")).header.profiles[1]).toMatchObject({
       candidate: {
-        identity: { candidateDigest: validatedCandidate.candidate.candidateDigest },
+        identity: {
+          candidateDigest: validatedCandidate.candidate.candidateDigest,
+          generation: {
+            requestDigest: candidateSource.generation.requestDigest,
+            responseDigest: candidateSource.generation.responseDigest,
+          },
+        },
       },
     });
     expect(await readFile(join(project, "baseline.workflow.yaml"), "utf8")).toBe(baselineText);
@@ -185,7 +192,13 @@ describe("prompt candidate CLI", () => {
     ).toBe(0);
     expect(JSON.parse(inspected.stdout.join("\n")).header.profiles[1]).toMatchObject({
       candidate: {
-        identity: { candidateDigest: validatedCandidate.candidate.candidateDigest },
+        identity: {
+          candidateDigest: validatedCandidate.candidate.candidateDigest,
+          generation: {
+            requestDigest: candidateSource.generation.requestDigest,
+            responseDigest: candidateSource.generation.responseDigest,
+          },
+        },
       },
     });
 
@@ -208,7 +221,13 @@ describe("prompt candidate CLI", () => {
     ).toBe(0);
     expect(JSON.parse(await readFile(offlineExportPath, "utf8")).header.profiles[1]).toMatchObject({
       candidate: {
-        identity: { candidateDigest: validatedCandidate.candidate.candidateDigest },
+        identity: {
+          candidateDigest: validatedCandidate.candidate.candidateDigest,
+          generation: {
+            requestDigest: candidateSource.generation.requestDigest,
+            responseDigest: candidateSource.generation.responseDigest,
+          },
+        },
       },
     });
 
@@ -564,6 +583,46 @@ nodes:
       source: { nodeId: implement, field: agent.text }
       schema: { type: string, maxLength: 1024 }
 `;
+}
+
+function candidateGenerationExecutor(): NodeExecutor {
+  const text = JSON.stringify({
+    changes: [
+      {
+        nodeId: "implement",
+        value: "Read TASK.md, implement exactly what it asks, then verify the result.",
+      },
+    ],
+  });
+  return {
+    execute: async (node) => {
+      if (node.type !== "agent" || node.agent.tools.length !== 0) {
+        throw new Error("candidate generation must use one zero-tool agent node");
+      }
+      return {
+        status: "succeeded",
+        evidence: {
+          kind: "agent",
+          provider: "test",
+          model: "deterministic",
+          text,
+          textHash: sha256(text),
+          textTruncated: false,
+          durationMs: 1,
+          usage: {
+            inputTokens: 1,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+            outputTokens: 1,
+            costUsdMicros: 1,
+          },
+          activity: { turns: 1, toolCalls: 0, toolErrors: 0 },
+          policyDecisions: [],
+          effectReceipts: [],
+        },
+      };
+    },
+  };
 }
 
 function evaluationExecutor(

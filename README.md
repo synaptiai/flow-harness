@@ -38,7 +38,7 @@ Flow owns scheduling, policy, containment, evidence, and completion.
 | Versioned workflow packages | Implemented for strict local or digest-pinned installed inert source manifests, exact packaged roots and children, closed snapshot-only compilation, and durable replay identity |
 | Remote capability bundle distribution | Implemented with deterministic inert `.flowpkg` files, explicit public HTTPS plus SHA-256 installation, a content-addressed project store, deterministic lock, local audit/removal commands, and offline execution/recovery |
 | Reproducible harness evaluation | Implemented for paired `flow-workflow-v1` profiles, immutable task/workflow/verifier identity, fresh trial workspaces, private deterministic checks, digest-chained evidence, offline reports, and constrained paired comparison |
-| Evidence-bound prompt candidates | Flow implements tuning evidence, strict prompt overlays, paired evaluation, reviewed activation, durable run snapshots, and rollback. Automatic generation remains unavailable |
+| Evidence-bound prompt candidates | Flow implements zero-tool model generation from tuning-only evidence, strict prompt overlays, paired evaluation, reviewed activation, durable run snapshots, and rollback |
 | Proof-safe fresh recovery of interrupted agent attempts | Implemented as explicit opt-in for read-only attempts and edit attempts proven not applied |
 | Fail-closed sandboxed command isolation | Flow implements filesystem and network isolation on Linux and macOS. Linux alone provides strict agent-command descendant lifecycle containment |
 | Signed registries, automatic updates, policy/UI packages, and model network tools | Planned |
@@ -165,6 +165,25 @@ contiguous repetitions, complete profile pairs, and a feasible declared total ta
 Regression and holdout task ids, records, outcomes, metrics, reasons, verifier material, run ids,
 and schedule positions are omitted completely.
 
+Flow can use the exact baseline and evidence packet to generate one prompt candidate:
+
+```sh
+node dist/cli/main.js candidate generate baseline.workflow.yaml tuning-evidence.json \
+  --output better.prompt-candidate.yaml \
+  --id clearer-implementation-prompt --version 1.0.0 \
+  --allow-nodes implement --provider provider-name --model model-name \
+  --thinking medium
+```
+
+The command sends only the selected root-agent prompts and tuning packets to one model turn. The
+model gets no tools, skills, packages, or workspace access. Flow checks the sources again after the
+model call. Flow then validates the candidate and publishes one new file. The command does not
+replace an existing file. It does not run an evaluation or activate the candidate.
+
+The generated candidate records the provider, model, thinking level, limits, request digest,
+response digest, selected targets, and reported usage. These values support an audit. They do not
+prove that the candidate is better.
+
 A `PromptCandidate` manifest binds an exact baseline workflow, one through sixteen exact evidence
 packets, and one through sixteen prompt replacements on existing root agent nodes:
 
@@ -242,7 +261,7 @@ node dist/cli/main.js activation rollback evaluated-profile \
   --to baseline --actor operator:test --expected-digest <proposal-sha256>
 ```
 
-Automatic candidate generation and model-authorized activation remain unavailable.
+Model-authorized evaluation and activation remain unavailable.
 
 ### Use a portable Agent Skill
 

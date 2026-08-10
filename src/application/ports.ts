@@ -147,7 +147,9 @@ export interface NodeExecutionContext {
   readonly verifierSources?: readonly VerifierSourceInput[];
   readonly verifierPackage?: VerifierPackageUseEvidence;
   readonly agentSystemPrompt?: string;
+  readonly agentExactModelSettings?: boolean;
   readonly agentMaxOutputBytes?: number;
+  readonly agentMaxOutputTokens?: number;
   readonly signal?: AbortSignal;
 }
 

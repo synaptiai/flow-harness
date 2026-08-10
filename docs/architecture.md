@@ -773,6 +773,18 @@ A `PromptCandidate` is inert supplemental state. It binds an exact baseline, exa
 a workflow scope, and prompt replacements for existing root agent nodes. Admission performs stable
 no-follow reads and verifies each declared hash. It changes only the declared prompt fields.
 
+The generation service uses the provider-neutral `AgentExecutor` port. The Pi adapter is the first
+implementation. Flow creates one agent request with no tools, skills, or packages. The request
+contains only selected root-agent prompts and tuning-only packets. A future model adapter can use
+the same application port and domain contract.
+
+The model returns one strict prompt-replacement object. Flow adds trusted source hashes and
+generation provenance. Flow checks all source identities again, validates the projected workflow,
+and publishes through a same-directory no-replace operation. A failure before the hard-link commit
+leaves no final candidate file. A failure after the commit returns `publication_uncertain`. One
+complete final file can exist in this state. A pre-commit failure with an unsettled lock returns
+`cleanup_uncertain`. No candidate commits in that state, but the lock can block another publication.
+
 The standard compiler creates the projected workflow. The `flow-workflow-v1` adapter evaluates that
 projection against the exact declared baseline. The evaluation header stores the complete public
 candidate identity without prompt bodies.
@@ -799,8 +811,7 @@ stored baseline artifact for the current lineage. It does not change active runs
 baseline file, or delete artifacts.
 
 A candidate cannot change graphs, tools, skills, packages, models, policy, approvals, budgets,
-verifiers, retries, or routing. Automatic candidate generation and model-authorized activation
-remain unavailable.
+verifiers, retries, or routing. Model-authorized evaluation and activation remain unavailable.
 
 ## Non-goals
 

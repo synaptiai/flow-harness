@@ -1097,6 +1097,84 @@ describe("EmbeddedPiAgentRunner", () => {
     });
   });
 
+  it("rejects model settings that Pi cannot apply exactly before session creation", async () => {
+    let createSessionCalls = 0;
+    const createSession = (async () => {
+      createSessionCalls += 1;
+      throw new Error("session must not be created");
+    }) as unknown as typeof createAgentSession;
+    const smallModelRunner = new EmbeddedPiAgentRunner(
+      async () =>
+        ({
+          getModel: () => ({ maxTokens: 16, reasoning: true }),
+        }) as never,
+      createSession,
+    );
+
+    await expect(
+      smallModelRunner.run({
+        ...agentRequest(),
+        thinking: "off",
+        maxOutputTokens: 17,
+        exactModelSettings: true,
+      }),
+    ).rejects.toThrowError(/17.*model.*16|model.*16.*17/i);
+
+    const nonReasoningRunner = new EmbeddedPiAgentRunner(
+      async () =>
+        ({
+          getModel: () => ({ maxTokens: 32, reasoning: false }),
+        }) as never,
+      createSession,
+    );
+    await expect(
+      nonReasoningRunner.run({
+        ...agentRequest(),
+        thinking: "medium",
+        maxOutputTokens: 17,
+        exactModelSettings: true,
+      }),
+    ).rejects.toThrowError(/thinking.*medium.*not supported/i);
+    expect(createSessionCalls).toBe(0);
+  });
+
+  it("applies supported exact model settings without compaction", async () => {
+    let sessionOptions: Parameters<typeof createAgentSession>[0];
+    const messages: Array<Record<string, unknown>> = [];
+    const fakeSession = {
+      thinkingLevel: "medium",
+      state: { messages },
+      subscribe: () => () => undefined,
+      prompt: async () => {
+        messages.push({ role: "assistant", stopReason: "stop" });
+      },
+      abort: async () => undefined,
+      getSessionStats: () => sessionStats(),
+      dispose: () => undefined,
+    };
+    const createSession = (async (options: Parameters<typeof createAgentSession>[0]) => {
+      sessionOptions = options;
+      return { session: fakeSession };
+    }) as unknown as typeof createAgentSession;
+    const runner = new EmbeddedPiAgentRunner(
+      async () =>
+        ({
+          getModel: () => ({ maxTokens: 32, reasoning: true }),
+        }) as never,
+      createSession,
+    );
+
+    await runner.run({
+      ...agentRequest(),
+      maxOutputTokens: 17,
+      exactModelSettings: true,
+    });
+
+    expect(sessionOptions?.model?.maxTokens).toBe(17);
+    expect(sessionOptions?.thinkingLevel).toBe("medium");
+    expect(sessionOptions?.settingsManager?.getCompactionEnabled()).toBe(false);
+  });
+
   it("reads the SDK terminal message and disables ambient Pi resources", async () => {
     let sessionOptions: Parameters<typeof createAgentSession>[0];
     let disposed = false;
