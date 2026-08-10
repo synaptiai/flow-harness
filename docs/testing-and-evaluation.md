@@ -182,7 +182,12 @@ Runtime sandbox tests require the host capabilities listed in the README. A sand
 
 ## Live Pi test policy
 
-Live tests are opt-in and excluded from `npm test`. Run them with both `FLOW_LIVE_PI_PROVIDER` and `FLOW_LIVE_PI_MODEL`; the live command fails rather than skips when either is absent. They incur no hidden fallback and fail clearly when provider configuration or credentials are invalid. Unit and integration tests never consume provider credentials. Provider-cost assertions use deterministic session-stat fakes; no local test claims correspondence with an external invoice.
+Live tests are opt-in and excluded from `npm test`. Run them with both `FLOW_LIVE_PI_PROVIDER` and
+`FLOW_LIVE_PI_MODEL`. The live suite reports an explicit skip when a setting or configured
+authentication is absent. It uses no hidden fallback. It fails when the selected model is invalid.
+It also fails when configured authentication is invalid or the provider call fails. Unit and
+integration tests do not consume provider credentials. Provider-cost assertions use deterministic
+session-stat fakes. No local test claims correspondence with an external invoice.
 
 ## Product evaluation
 
@@ -202,12 +207,14 @@ policy, intervention, and recovery measurements to remain unavailable.
 
 Adaptation tests cover tuning-only projection, packet digests, omitted private fields, contradictory
 records, incomplete pairs, export limits, bounded errors, and impossible schedules. Candidate tests
-cover strict schemas, prompt whitespace, stale identities, unrelated evidence, invalid targets, and
-source limits.
+cover strict schemas, prompt whitespace, stale identities, unrelated evidence, invalid targets,
+source limits, zero-tool model generation, exact output limits, and generation provenance.
 
 Filesystem tests cover no-follow reads, root and ancestor races, path escape, invalid UTF-8, and
-malformed evidence. Plan tests cover exact baseline binding, generated-source provenance, legacy
-resume, and durable identity tampering.
+malformed evidence. Generation tests also cover source drift, output collision, temporary-file
+limits, interrupted publication, private-data omission, and no automatic activation. Plan tests
+cover exact baseline binding, generated-source provenance, legacy resume, and durable identity
+tampering.
 
 Activation tests cover complete superior admission, incomplete evaluations, losing evaluations, exact profile identity, and source drift.
 They also cover proposal drift, version conflicts, concurrent writers, and rollback.
@@ -242,11 +249,12 @@ and reject relocation for a root run. A three-level test records each relocation
 command recovery. Detached tests bind the configured project root to the command, job, worker, and
 digest. They also recover an old job that has no project-root or protected-path fields.
 
-The CLI integration covers tuning export, candidate evaluation, activation preview, exact apply,
-active execution, inspect, source removal, and baseline rollback. It proves that a new run uses the
-stored baseline artifact after rollback. It also proves that the baseline file remains unchanged.
-These tests do not claim automatic model generation.
+The CLI integration covers model generation, tuning export, candidate evaluation, activation
+preview, exact apply, active execution, inspect, source removal, and baseline rollback. It proves
+that a new run uses the stored baseline artifact after rollback. It also proves that the baseline
+file remains unchanged. These tests do not claim candidate superiority.
 
+`test/integration/cli/prompt-candidate-generation.test.ts` covers the zero-tool generation path.
 `test/integration/cli/prompt-candidate.test.ts` covers the complete evaluation and activation path.
 `test/integration/cli/prompt-activation.test.ts` covers durable active-run and resume behavior.
 

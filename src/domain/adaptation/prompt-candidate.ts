@@ -4,6 +4,16 @@ import { parseDocument } from "yaml";
 import { z } from "zod";
 
 import {
+  MAX_PROMPT_CANDIDATE_GENERATION_INPUT_BYTES,
+  MAX_PROMPT_CANDIDATE_GENERATION_OUTPUT_BYTES,
+  MAX_PROMPT_CANDIDATE_GENERATION_OUTPUT_TOKENS,
+  PROMPT_CANDIDATE_GENERATION_SYSTEM_PROMPT,
+  calculatePromptCandidateGenerationRequestDigest,
+  calculatePromptCandidateGenerationResponseDigest,
+  renderPromptCandidateGenerationRequest,
+  renderPromptCandidateGenerationResponse,
+} from "./prompt-candidate-generation-contract.js";
+import {
   parseTuningEvidencePacket,
   type TuningEvidencePacket,
 } from "../evaluation/tuning-evidence.js";
@@ -35,6 +45,67 @@ const portableRelativePathSchema = z
   .min(1)
   .max(1_024)
   .refine(isPortableRelativePath, "must be a canonical portable relative path");
+
+const generationUsageSchema = z
+  .object({
+    inputTokens: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    cacheReadTokens: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    cacheWriteTokens: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    outputTokens: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    costUsdMicros: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  })
+  .strict();
+
+const promptCandidateGenerationSchema = z
+  .object({
+    version: z.literal(1),
+    kind: z.literal("model"),
+    provider: identifierSchema,
+    model: z
+      .string()
+      .min(1)
+      .max(256)
+      .refine((value) => value === value.trim(), "model must not contain outer whitespace"),
+    thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
+    systemPromptSha256: z.literal(sha256(PROMPT_CANDIDATE_GENERATION_SYSTEM_PROMPT)),
+    requestDigest: sha256Schema,
+    responseDigest: sha256Schema,
+    limits: z
+      .object({
+        candidates: z.literal(1),
+        turns: z.literal(1),
+        maxInputBytes: z.literal(MAX_PROMPT_CANDIDATE_GENERATION_INPUT_BYTES),
+        maxOutputBytes: z.literal(MAX_PROMPT_CANDIDATE_GENERATION_OUTPUT_BYTES),
+        maxOutputTokens: z
+          .number()
+          .int()
+          .positive()
+          .max(MAX_PROMPT_CANDIDATE_GENERATION_OUTPUT_TOKENS),
+        timeoutMs: z.number().int().positive().max(86_400_000),
+      })
+      .strict(),
+    targets: z
+      .array(z.object({ nodeId: identifierSchema, expectedSha256: sha256Schema }).strict())
+      .min(1)
+      .max(MAX_PROMPT_CANDIDATE_CHANGES)
+      .refine(
+        (targets) => new Set(targets.map((target) => target.nodeId)).size === targets.length,
+        "generation targets must be unique",
+      ),
+    usage: generationUsageSchema,
+  })
+  .strict()
+  .superRefine((generation, context) => {
+    if (generation.usage.outputTokens > generation.limits.maxOutputTokens) {
+      context.addIssue({
+        code: "custom",
+        path: ["usage", "outputTokens"],
+        message: "reported output tokens cannot exceed the generation output-token limit",
+      });
+    }
+  });
+
+export type PromptCandidateGenerationProvenance = z.infer<typeof promptCandidateGenerationSchema>;
 
 const promptCandidateSourceSchema = z
   .object({
@@ -121,6 +192,7 @@ const promptCandidateSourceSchema = z
           }),
       })
       .strict(),
+    generation: promptCandidateGenerationSchema.optional(),
   })
   .strict();
 
@@ -152,6 +224,7 @@ export interface PromptCandidateIdentity {
     readonly sourceSha256: string;
     readonly workflowDigest: string;
   };
+  readonly generation?: PromptCandidateGenerationProvenance | undefined;
   readonly candidateDigest: string;
 }
 
@@ -199,6 +272,7 @@ const promptCandidateIdentitySchema: z.ZodType<PromptCandidateIdentity> = z
     projectedWorkflow: z
       .object({ sourceSha256: sha256Schema, workflowDigest: sha256Schema })
       .strict(),
+    generation: promptCandidateGenerationSchema.optional(),
     candidateDigest: sha256Schema,
   })
   .strict()
@@ -402,6 +476,8 @@ export function projectPromptCandidate(
     };
   });
 
+  validateGenerationProvenance(input, baselineDigest);
+
   const projectedSource = structuredClone(input.baseline.source);
   const projectedNodes = projectedSource.nodes as Array<WorkflowSource["nodes"][number]>;
   const changes = input.source.changes.prompts.map((change) => {
@@ -470,6 +546,7 @@ export function projectPromptCandidate(
     evidence: admittedEvidence,
     changes,
     projectedWorkflow,
+    ...(input.source.generation === undefined ? {} : { generation: input.source.generation }),
   };
   const identity = {
     ...identityWithoutDigest,
@@ -484,6 +561,98 @@ export function projectPromptCandidate(
       workflowDigest: projectedWorkflow.workflowDigest,
     },
   });
+}
+
+function validateGenerationProvenance(
+  input: PromptCandidateProjectionInput,
+  baselineDigest: string,
+): void {
+  const generation = input.source.generation;
+  if (generation === undefined) {
+    return;
+  }
+  const targets = generation.targets.map((target) => {
+    const node = input.baseline.source.nodes.find((item) => item.id === target.nodeId);
+    if (
+      node === undefined ||
+      node.type !== "agent" ||
+      sha256(node.agent.prompt) !== target.expectedSha256
+    ) {
+      throw new PromptCandidateError(
+        "identity_mismatch",
+        `generation target "${target.nodeId}" does not match the admitted baseline`,
+      );
+    }
+    return {
+      nodeId: target.nodeId,
+      prompt: node.agent.prompt,
+      promptSha256: target.expectedSha256,
+    };
+  });
+  const targetDigests = new Map(
+    generation.targets.map((target) => [target.nodeId, target.expectedSha256]),
+  );
+  for (const change of input.source.changes.prompts) {
+    if (targetDigests.get(change.nodeId) !== change.expectedSha256) {
+      throw new PromptCandidateError(
+        "identity_mismatch",
+        `prompt change "${change.nodeId}" does not match a generation target`,
+      );
+    }
+  }
+  const generationRequest = {
+    baseline: {
+      workflowId: input.baseline.compiled.id,
+      sourceSha256: input.baseline.sourceSha256,
+      workflowDigest: baselineDigest,
+    },
+    targets,
+    evidence: input.evidence.map((item) => ({
+      sourceSha256: item.sourceSha256,
+      packet: item.packet,
+    })),
+    model: {
+      provider: generation.provider,
+      id: generation.model,
+      thinking: generation.thinking,
+    },
+    limits: {
+      timeoutMs: generation.limits.timeoutMs,
+      maxOutputTokens: generation.limits.maxOutputTokens,
+    },
+  };
+  const renderedRequest = renderPromptCandidateGenerationRequest(generationRequest);
+  if (Buffer.byteLength(renderedRequest, "utf8") > generation.limits.maxInputBytes) {
+    throw new PromptCandidateError(
+      "identity_mismatch",
+      "generation request exceeds its recorded byte limit",
+    );
+  }
+  const requestDigest = calculatePromptCandidateGenerationRequestDigest(generationRequest);
+  if (requestDigest !== generation.requestDigest) {
+    throw new PromptCandidateError(
+      "identity_mismatch",
+      "generation request digest does not match the admitted baseline and evidence",
+    );
+  }
+  const generationResponse = input.source.changes.prompts.map((change) => ({
+    nodeId: change.nodeId,
+    value: change.value,
+  }));
+  const renderedResponse = renderPromptCandidateGenerationResponse(generationResponse);
+  if (Buffer.byteLength(renderedResponse, "utf8") > generation.limits.maxOutputBytes) {
+    throw new PromptCandidateError(
+      "identity_mismatch",
+      "generation response exceeds its recorded byte limit",
+    );
+  }
+  const responseDigest = calculatePromptCandidateGenerationResponseDigest(generationResponse);
+  if (responseDigest !== generation.responseDigest) {
+    throw new PromptCandidateError(
+      "identity_mismatch",
+      "generation response digest does not match the accepted prompt changes",
+    );
+  }
 }
 
 function refineUnique(values: readonly string[], label: string, context: z.RefinementCtx): void {

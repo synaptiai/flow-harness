@@ -19,8 +19,8 @@ Deterministic inert bundles and content-addressed installation are implemented.
 Flow supports paired harness evaluation with fixed controls, fresh fixtures, private verification,
 digest-chained evidence, offline reports, and constrained comparison.
 
-Gate 7 includes tuning-only prompt candidates, exact prompt overlays, paired evaluation, reviewed
-activation, durable run snapshots, and rollback. Automatic candidate generation remains open.
+Gate 7 includes tuning-only prompt candidates, zero-tool model generation, exact prompt overlays,
+paired evaluation, reviewed activation, durable run snapshots, and rollback.
 
 Remaining targets include executable extensions, signed registries, automatic updates, policy and
 UI packages, more evaluation adapters, external artifact storage, and stronger isolation.
@@ -96,7 +96,8 @@ UI packages, more evaluation adapters, external artifact storage, and stronger i
 
 ## Gate 7: Adaptive harness
 
-- Evidence-bound prompt candidates can be produced from canonical tuning-only evaluation evidence. *(Implemented for explicit prompt-only manifests over exact baseline workflows; automatic model generation plus skill, memory, sub-agent, and routing candidates remain.)*
+- Flow can produce evidence-bound prompt candidates from canonical tuning-only evaluation evidence. *(Implemented for exact prompt-only manifests and zero-tool model generation.)*
+- Skill, memory, sub-agent, and routing candidates remain planned.
 - Prompt candidates use the paired held-out and regression evaluation gate. *(Implemented.)*
 - Activation is versioned, reviewable, scoped, and rollbackable. *(Implemented with operator preview, exact apply, paired candidate and baseline artifacts, and baseline or version rollback.)*
 - Base safety, workflow semantics, and evaluator definitions remain immutable during a candidate run. *(Implemented for prompt projection: graph, models, tools, skills, packages, policy, approvals, budgets, verifiers, retry behavior, and runtime semantics cannot be changed by the candidate.)*

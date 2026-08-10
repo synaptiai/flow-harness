@@ -1346,6 +1346,32 @@ changes:
       value: Read the task, implement it carefully, and verify the result.
 ```
 
+Flow can create this document with one provider-neutral model call:
+
+```text
+flow candidate generate <baseline> <evidence>... --output <candidate.yaml> \
+  --id <id> --version <semver> --allow-nodes <id,...> \
+  --provider <provider> --model <model> \
+  [--thinking <level>] [--timeout-ms <count>] [--max-output-tokens <count>]
+```
+
+The command requires 1 through 16 evidence files and 1 through 16 unique root-agent targets. The
+default timeout is 300000 ms. The maximum timeout is 86400000 ms. The default and maximum model
+output limit is 8192 tokens. The rendered model input is at most 1 MiB. The raw model output is at
+most 64 KiB.
+
+The model request contains the exact workflow identity, each selected current prompt and its hash,
+and the parsed tuning packets. The request does not contain other workflow prompts, regression or
+holdout records, verifier data, workspace data, activation state, tools, skills, or packages. The
+model must return one strict JSON object with a `changes` array. Each item contains only `nodeId` and
+`value`.
+
+Flow adds an optional `generation` object to a generated candidate. It records version `1`, kind
+`model`, the provider, model, thinking level, system-prompt hash, request digest, response digest,
+limits, target hashes, and reported usage. A hand-written candidate can omit this object. The
+candidate identity includes it when it is present. The response digest identifies the canonical
+validated `changes` object. It does not identify or retain the raw provider transcript.
+
 Candidate source is at most 1 MiB. The projected workflow is at most 8 MiB. Identifiers and semantic versions are canonical. Baseline and
 evidence paths are portable relative paths below the candidate directory and must resolve through
 direct regular no-follow files. A candidate declares 1–16 unique evidence paths/digests and 1–16
@@ -1373,9 +1399,9 @@ model routing, tool, skill, package, policy, approval, budget, verifier, retry, 
 `flow candidate validate <candidate.yaml>` is read-only and credential-free. An evaluation plan
 selects a candidate with `candidate: <path>` instead of `workflow: <path>` while retaining
 `adapter: flow-workflow-v1`. It must be the declared comparison candidate and must overlay the exact
-declared comparison baseline. Public headers distinguish generated candidate projections from
-file-backed workflow sources; direct file sources omit the discriminator to preserve version-1 plan
-digests and legacy resume. Automatic generation remains unavailable.
+declared comparison baseline. Public headers distinguish prompt-candidate projections from
+file-backed workflow sources. Direct file sources omit the discriminator to preserve version-1 plan
+digests and legacy resume. Generation does not evaluate or activate the candidate.
 
 ### Prompt activation
 

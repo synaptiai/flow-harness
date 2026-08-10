@@ -198,6 +198,32 @@ are absent rather than replaced by redaction markers. The packet has its own can
 `evidenceDigest`; editing any retained value invalidates it. A SHA-256 digest proves exact bytes, not
 who authored them or that the underlying tasks were independent.
 
+An operator can generate one prompt candidate from an exact baseline and one or more tuning
+packets:
+
+```text
+flow candidate generate <baseline> <evidence>... --output <candidate.yaml> \
+  --id <id> --version <semver> --allow-nodes <id,...> \
+  --provider <provider> --model <model> [--thinking <level>]
+```
+
+Flow admits stable local files before the model call. It sends only the permitted root-agent
+prompts and the parsed tuning packets to one zero-tool model turn. It does not send regression or
+holdout records, verifier data, workspace paths, activation state, or other project files. Flow
+checks every admitted source again after the model call.
+
+The model returns prompt replacements only. Flow adds exact hashes and generation provenance. The
+response digest identifies the canonical accepted replacements, not a provider transcript. Flow
+validates the normal candidate projection before it publishes a new file. It does not replace an
+existing path. Generation does not run the evaluation and does not activate the candidate.
+
+A pre-commit failure leaves no candidate. A post-commit cleanup failure returns
+`publication_uncertain`, and a complete candidate can exist. A pre-commit lock-cleanup failure
+returns `cleanup_uncertain`. The lock can block another publication until safe recovery.
+If a process exits after commit, the next publication attempt keeps the complete final file. It
+removes a dead same-host lock and a temporary link only when that link has the final file inode.
+The command then returns `output_exists`.
+
 An evaluation profile may select exactly one `workflow` or `candidate` source:
 
 ```yaml

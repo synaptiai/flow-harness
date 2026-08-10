@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -14,6 +14,10 @@ import {
   decideApproval,
   trySubmitAgentCommandApprovalDecision,
 } from "../application/command-approval.js";
+import {
+  generatePromptCandidate,
+  PromptCandidateGenerationExecutionError,
+} from "../application/generate-prompt-candidate.js";
 import { FlowWorkflowEvaluationAdapter } from "../application/evaluation-adapter.js";
 import type {
   AgentCommandApprovalDecisionChannel,
@@ -38,7 +42,15 @@ import {
   parsePromptActivationLocator,
   promptActivationSource,
 } from "../domain/adaptation/prompt-activation.js";
-import { PromptCandidateError } from "../domain/adaptation/prompt-candidate.js";
+import {
+  MAX_PROMPT_CANDIDATE_GENERATION_OUTPUT_TOKENS,
+  preparePromptCandidateGeneration,
+  PromptCandidateGenerationError,
+} from "../domain/adaptation/prompt-candidate-generation.js";
+import {
+  projectPromptCandidate,
+  PromptCandidateError,
+} from "../domain/adaptation/prompt-candidate.js";
 import {
   type CapabilitySnapshot,
   combineCapabilitySnapshots,
@@ -73,7 +85,7 @@ import {
   WorkflowCompilationError,
   type WorkflowPackageReference,
 } from "../domain/workflow/compiler.js";
-import type { CompiledWorkflow } from "../domain/workflow/types.js";
+import type { CompiledWorkflow, ThinkingLevel } from "../domain/workflow/types.js";
 import {
   CapabilityBundlePackError,
   packCapabilityBundleDirectory,
@@ -122,9 +134,15 @@ import {
   PromptActivationStoreError,
 } from "../infrastructure/fs/local-prompt-activation-store.js";
 import {
+  admitLocalPromptCandidateGenerationSources,
   admitLocalPromptCandidate,
   LocalPromptCandidateError,
 } from "../infrastructure/fs/local-prompt-candidate.js";
+import {
+  assertLocalPromptCandidateOutputAvailable,
+  LocalPromptCandidatePublisherError,
+  publishLocalPromptCandidate,
+} from "../infrastructure/fs/local-prompt-candidate-publisher.js";
 import {
   LocalSupervisorStore,
   LocalSupervisorStoreError,
@@ -191,6 +209,7 @@ Usage:
   flow packages inspect <name> --version <exact>
   flow packages verify
   flow packages remove <name> --version <exact>
+  flow candidate generate <baseline> <evidence>... --output <candidate.yaml> --id <id> --version <semver> --allow-nodes <id,...> --provider <provider> --model <model> [--thinking <level>] [--timeout-ms <count>] [--max-output-tokens <count>]
   flow candidate validate <candidate.yaml>
   flow candidate activate <candidate.yaml> --evaluation <id> --actor <label> [--reason <text>] [--evaluations-dir <path>] <--dry-run|--expected-digest <sha256>>
   flow activation list
@@ -432,7 +451,13 @@ export async function main(
       io.stderr(error.message);
       return 1;
     }
-    if (error instanceof PromptCandidateError || error instanceof LocalPromptCandidateError) {
+    if (
+      error instanceof PromptCandidateError ||
+      error instanceof PromptCandidateGenerationError ||
+      error instanceof PromptCandidateGenerationExecutionError ||
+      error instanceof LocalPromptCandidateError ||
+      error instanceof LocalPromptCandidatePublisherError
+    ) {
       io.stderr(boundedCliDiagnostic(error.message));
       return 1;
     }
@@ -1195,6 +1220,142 @@ async function candidateCommand(
   overrides: Partial<CliDependencies>,
 ): Promise<number> {
   const subcommand = args[0];
+  if (subcommand === "generate") {
+    const { positionals, values } = parseCommandArgs(args.slice(1), {
+      "allow-nodes": { type: "string" },
+      "max-output-tokens": { type: "string" },
+      id: { type: "string" },
+      model: { type: "string" },
+      output: { type: "string" },
+      provider: { type: "string" },
+      thinking: { type: "string" },
+      "timeout-ms": { type: "string" },
+      version: { type: "string" },
+    });
+    if (positionals.length < 2) {
+      throw new CliUsageError(
+        "candidate generate requires one baseline path and at least one evidence path",
+      );
+    }
+    const [baseline, ...evidence] = positionals;
+    if (baseline === undefined) {
+      throw new CliUsageError("candidate generate requires one baseline path");
+    }
+    const dependencies = dependenciesFrom(overrides);
+    const outputPath = resolve(
+      dependencies.cwd,
+      requireStringOption(values.output, "candidate generate requires --output <path>"),
+    );
+    await assertLocalPromptCandidateOutputAvailable(outputPath);
+    const admitted = await admitLocalPromptCandidateGenerationSources(
+      outputPath,
+      resolve(dependencies.cwd, baseline),
+      evidence.map((path) => resolve(dependencies.cwd, path)),
+    );
+    const prepared = preparePromptCandidateGeneration({
+      candidate: {
+        id: requireStringOption(values.id, "candidate generate requires --id <id>"),
+        version: requireStringOption(
+          values.version,
+          "candidate generate requires --version <semver>",
+        ),
+      },
+      baseline: {
+        provenance: admitted.baseline.provenance,
+        sourceSha256: admitted.baseline.sourceSha256,
+        workflowDigest: admitted.baseline.workflowDigest,
+        source: admitted.baseline.source,
+        compiled: admitted.baseline.compiled,
+      },
+      evidence: admitted.evidence.map((item) => ({
+        provenance: item.provenance,
+        sourceSha256: item.sourceSha256,
+        packet: item.packet,
+      })),
+      allowedNodeIds: requireStringOption(
+        values["allow-nodes"],
+        "candidate generate requires --allow-nodes <id,...>",
+      )
+        .split(",")
+        .map((nodeId) => nodeId.trim()),
+      model: {
+        provider: requireStringOption(
+          values.provider,
+          "candidate generate requires --provider <provider>",
+        ),
+        id: requireStringOption(values.model, "candidate generate requires --model <model>"),
+        thinking: parseThinkingLevel(values.thinking),
+      },
+      limits: {
+        timeoutMs: parsePositiveIntegerOption(values["timeout-ms"], "--timeout-ms", 300_000),
+        maxOutputTokens: parsePositiveIntegerOption(
+          values["max-output-tokens"],
+          "--max-output-tokens",
+          MAX_PROMPT_CANDIDATE_GENERATION_OUTPUT_TOKENS,
+        ),
+      },
+    });
+    const source = await generatePromptCandidate(
+      {
+        prepared,
+        cwd: admitted.root,
+        projectRoot: admitted.root,
+        protectedPaths: [],
+        ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
+      },
+      dependencies.executor,
+    );
+    throwIfAborted(dependencies.signal, "candidate generation was cancelled");
+    await admitted.revalidate();
+    throwIfAborted(dependencies.signal, "candidate generation was cancelled");
+    const sourceText = `${JSON.stringify(source, null, 2)}\n`;
+    const projected = projectPromptCandidate({
+      manifestProvenance: basename(admitted.outputPath),
+      source,
+      sourceSha256: sha256Text(sourceText),
+      baseline: {
+        provenance: admitted.baseline.provenance,
+        source: admitted.baseline.source,
+        sourceSha256: admitted.baseline.sourceSha256,
+        compiled: admitted.baseline.compiled,
+      },
+      evidence: admitted.evidence.map((item) => ({
+        provenance: item.provenance,
+        sourceSha256: item.sourceSha256,
+        packet: item.packet,
+      })),
+    });
+    await admitted.revalidate();
+    throwIfAborted(dependencies.signal, "candidate generation was cancelled");
+    await publishLocalPromptCandidate(admitted.outputPath, sourceText, {
+      ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
+      beforePublish: async () => {
+        await admitted.revalidate();
+        throwIfAborted(dependencies.signal, "candidate generation was cancelled");
+      },
+    });
+    io.stdout(
+      JSON.stringify(
+        {
+          generated: true,
+          output: admitted.outputPath,
+          candidate: {
+            id: projected.identity.id,
+            version: projected.identity.candidateVersion,
+            provider: projected.identity.generation?.provider,
+            model: projected.identity.generation?.model,
+            requestDigest: projected.identity.generation?.requestDigest,
+            responseDigest: projected.identity.generation?.responseDigest,
+            candidateDigest: projected.identity.candidateDigest,
+            changes: projected.identity.changes.map((change) => change.nodeId),
+          },
+        },
+        null,
+        2,
+      ),
+    );
+    return 0;
+  }
   if (subcommand === "validate") {
     const { positionals } = parseCommandArgs(args.slice(1), {});
     const candidatePath = requireSinglePositional(
@@ -1270,7 +1431,7 @@ async function candidateCommand(
     );
     return 0;
   }
-  throw new CliUsageError("candidate requires validate or activate");
+  throw new CliUsageError("candidate requires generate, validate, or activate");
 }
 
 async function activationCommand(
@@ -1999,6 +2160,25 @@ function parsePositiveIntegerOption(
   return parsed;
 }
 
+function parseThinkingLevel(value: string | undefined): ThinkingLevel {
+  const thinking = value ?? "medium";
+  if (
+    thinking !== "off" &&
+    thinking !== "minimal" &&
+    thinking !== "low" &&
+    thinking !== "medium" &&
+    thinking !== "high" &&
+    thinking !== "xhigh"
+  ) {
+    throw new CliUsageError("--thinking requires off, minimal, low, medium, high, or xhigh");
+  }
+  return thinking;
+}
+
+function sha256Text(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 function detachedCommandId(value: string | undefined, detached: boolean): string | undefined {
   if (value !== undefined && !detached) {
     throw new CliUsageError("--command-id requires --detach for run and resume");
@@ -2414,6 +2594,12 @@ function parseInstalledFlowVersion(input: unknown): string {
     throw new Error("installed Flow package metadata has an invalid version");
   }
   return version;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined, message: string): void {
+  if (signal?.aborted === true) {
+    throw signal.reason ?? new Error(message);
+  }
 }
 
 class CliUsageError extends Error {

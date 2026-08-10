@@ -207,6 +207,19 @@ A candidate cannot change tools, skills, packages, graph edges, models, policy, 
 verifiers, retries, credentials, network access, or executables. A candidate cannot authorize its
 activation. It never edits the baseline.
 
+Prompt candidate generation uses one model turn with no tools, skills, packages, or workspace
+access. The selected provider receives the permitted current prompts and tuning-only packets. It
+does not receive omitted regression records, holdout records, verifier data, trial workspaces, or
+activation state through this command. Treat the provider as an external data recipient.
+
+Flow treats the model response as untrusted input. It accepts prompt replacements only. It checks
+the baseline and evidence file identities again, validates every hash, compiles the projected
+workflow, and uses a no-replace publication step. An invalid response, changed source, collision,
+timeout, pre-commit cancellation, or interrupted pre-publication write creates no final candidate
+file. A cancellation observed after the hard-link commit returns `publication_uncertain`. One
+complete final candidate can exist. Generation does not start an evaluation and cannot activate a
+candidate.
+
 Activation requires an operator command and a complete superior evaluation. Preview binds the
 candidate, evaluation proof, current head, actor, and reason to one proposal digest. Apply holds a
 cross-process lock and requires that exact digest.

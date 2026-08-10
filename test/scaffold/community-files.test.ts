@@ -848,7 +848,7 @@ describe("public repository contracts", () => {
     }
   });
 
-  it("documents reviewed prompt activation without claiming model authority", async () => {
+  it("documents model generation and reviewed activation without model authority", async () => {
     const [
       readme,
       architecture,
@@ -872,6 +872,7 @@ describe("public repository contracts", () => {
     ]);
 
     expect(readme).toMatch(/(?:flow|main\.js) candidate validate/);
+    expect(readme).toMatch(/(?:flow|main\.js) candidate generate/);
     expect(readme).toMatch(/(?:flow|main\.js) eval tuning-evidence/);
     expect(readme).toMatch(/(?:flow|main\.js) candidate activate/);
     expect(readme).toMatch(/(?:flow|main\.js) activation rollback/);
@@ -883,12 +884,14 @@ describe("public repository contracts", () => {
     expect(recovery).toContain("run_started");
     expect(recovery).toMatch(/live index changes.*saved\s+snapshot/is);
     expect(roadmap).toMatch(/Activation is versioned.*Implemented/is);
+    expect(roadmap).toMatch(/zero-tool model generation.*Implemented/is);
     expect(security).toMatch(/operator command.*complete superior evaluation/is);
     expect(security).toMatch(/candidate cannot authorize.*activation/is);
     expect(testing).toContain("test/integration/cli/prompt-candidate.test.ts");
+    expect(testing).toContain("prompt-candidate-generation.test.ts");
     expect(testing).toMatch(/Activation tests cover.*rollback/is);
-    expect(readme).toMatch(/model-authorized activation remain unavailable/is);
-    expect(architecture).toMatch(/model-authorized activation.*unavailable/is);
+    expect(readme).toMatch(/model-authorized evaluation and activation remain unavailable/is);
+    expect(architecture).toMatch(/model-authorized evaluation and activation remain unavailable/is);
   });
 });
 
