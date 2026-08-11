@@ -46,6 +46,18 @@ arm64. It also requires the two optional OMP packages at version 17.2.12. Valida
 local runtime identities. A run also needs the declared provider credentials in the Flow host.
 `FLOW_BUN_EXECUTABLE` can select another host path. It cannot add a release attestation.
 
+The Prime Agent example compares one Flow workflow with one fixed Prime profile:
+
+```sh
+node dist/cli/main.js runtime prepare prime-agent
+node dist/cli/main.js eval validate examples/evaluation/native-prime-agent-comparison.evaluation.yaml
+node dist/cli/main.js eval run examples/evaluation/native-prime-agent-comparison.evaluation.yaml
+```
+
+Prime Agent requires Linux x64, Docker API 1.51, cgroup v2, and the fixed local image.
+Preparation builds the image twice. Flow rejects different image, package, closure, or SBOM
+identities. A run never builds, pulls, or updates the image.
+
 The default store is `.flow/evaluations/<evaluation-id>/`. `--evaluations-dir <path>` selects an
 explicit store for run, inspect, and export. `eval export` refuses to overwrite an existing file.
 
@@ -200,13 +212,17 @@ The provider-neutral application port is `HarnessEvaluationAdapter`.
 
 `flow-workflow-v1` executes a compiled Flow workflow. It derives metrics from the durable run
 state. `pi-native-v1` and `omp-native-v1` run in separate SRT processes on Linux. Flow requires the
-verified Linux PID namespace. Each child receives the task, trial identity, workspace identity,
-model controls, and budgets. It does not receive verifier assertions, evaluation-store paths, or
-provider credentials.
+verified Linux PID namespace.
+
+`prime-agent-native-v1` runs in one fixed Docker OCI image on Linux x64. It uses a persistent
+IPython session for the trial. The image has no external network route or daemon log.
+
+Each child receives the task, trial identity, workspace identity, model controls, and budgets. It
+does not receive verifier assertions, evaluation-store paths, or provider credentials.
 
 The host broker makes each model request. It enforces the admitted provider, model, thinking level,
 zero retries, and cumulative token and cost limits. Each child can use only `read` and `edit`.
-Flow confines both tools to the canonical trial workspace. The OMP profile disables ambient
+Flow confines the Pi and OMP tools to the canonical trial workspace. The OMP profile disables ambient
 extensions, skills, rules, MCP, memory, LSP, project context, and session persistence.
 
 The Pi profile identity binds the Node executable and both installed Pi package closures. The OMP
@@ -221,8 +237,18 @@ The OMP child receives a canonical `NODE_PATH` for the selected package graph. S
 access only to the exact package roots in that graph. An unselected package in the same search
 container stays private.
 
-Prime Agent can implement the same runtime port later. A new adapter must preserve the same data,
-authority, process, and evidence boundaries.
+The Prime identity binds the Docker runtime, fixed policy, image, Node closure, Python closure,
+Prime package, driver configuration, broker, and transfer protocol. Local attestation also binds
+the Docker socket, daemon, cgroup, image device, and global lease target.
+
+Only the public identity enters the evaluation header. Inspect and export do not load Docker,
+Prime Agent, Python, or the local attestation. Raw host identifiers stay outside public evidence.
+
+Flow permits one active Prime container per Docker daemon. It checks host capacity before create
+and while the trial runs. A policy failure stops and removes the container.
+
+Flow stores an OCI lease before container start. Recovery reconciles the exact name, nonce, image,
+policy, and full container ID. Flow does not start another trial while removal stays uncertain.
 
 Tuning-evidence export accepts only `flow-workflow-v1` profiles. It rejects an evaluation that uses
 an external harness profile.

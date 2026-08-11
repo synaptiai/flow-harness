@@ -38,7 +38,7 @@ through an optional external profile.
 | Versioned command tool packages | Implemented for strict local or digest-pinned installed declarative manifests, exact per-agent selection, deterministic argv rendering, and the existing policy/approval/sandbox/journal boundary |
 | Versioned workflow packages | Implemented for strict local or digest-pinned installed inert source manifests, exact packaged roots and children, closed snapshot-only compilation, and durable replay identity |
 | Remote capability bundle distribution | Implemented with deterministic inert `.flowpkg` files, explicit public HTTPS plus SHA-256 installation, a content-addressed project store, deterministic lock, local audit/removal commands, and offline execution/recovery |
-| Reproducible harness evaluation | Implemented for paired Flow, native Pi, and native OMP profiles. Flow records exact identities, fresh workspaces, private checks, evidence, and constrained reports. |
+| Reproducible harness evaluation | Implemented for paired Flow, native Pi, native OMP, and Prime Agent profiles. Flow records exact identities, fresh workspaces, private checks, evidence, and constrained reports. |
 | Evidence-bound prompt candidates | Flow implements zero-tool model generation from tuning-only evidence, strict prompt overlays, paired evaluation, reviewed activation, durable run snapshots, and rollback |
 | Proof-safe fresh recovery of interrupted agent attempts | Implemented as explicit opt-in for read-only attempts and edit attempts proven not applied |
 | Fail-closed sandboxed command isolation | Flow implements filesystem and network isolation on Linux and macOS. Linux alone provides strict agent-command descendant lifecycle containment |
@@ -68,6 +68,22 @@ Normal Flow runs and offline evaluation inspection do not load these optional OM
 Flow verifies the complete Bun executable against its built-in release attestations. You can use
 `FLOW_BUN_EXECUTABLE` to select another host path. The selected file must still match an attested
 official release.
+
+The Prime Agent evaluation profile has additional requirements:
+
+- Linux x64 with Docker Engine and cgroup v2.
+- Docker API 1.51 with the systemd cgroup driver.
+- A local Docker socket at `/var/run/docker.sock`.
+- Enough host capacity for the fixed Prime resource policy.
+
+Prepare the fixed image and local runtime evidence before plan validation:
+
+```sh
+node dist/cli/main.js runtime prepare prime-agent
+```
+
+Preparation builds the image twice and compares both identities. It stores local host evidence
+under the configured project `.flow` directory. Evaluation does not build or pull an image.
 
 On Ubuntu or Debian, install the native sandbox dependencies:
 
@@ -184,6 +200,18 @@ node dist/cli/main.js eval inspect native-omp-comparison
 Flow starts OMP in a separate Bun process under the same Linux SRT boundary. The child has no
 provider credentials or task network. OMP can use only workspace-confined `read` and `edit` tools.
 This example does not claim that either harness is better.
+
+The Prime Agent example compares one Flow workflow with the fixed persistent IPython profile:
+
+```sh
+node dist/cli/main.js eval validate examples/evaluation/native-prime-agent-comparison.evaluation.yaml
+node dist/cli/main.js eval run examples/evaluation/native-prime-agent-comparison.evaluation.yaml
+node dist/cli/main.js eval inspect native-prime-agent-comparison
+```
+
+Prime Agent runs in one fixed OCI image on Linux x64. Python has no provider credential or external
+network route. The host broker makes each model request. Flow removes the container before it
+accepts a terminal result.
 
 ### Evaluate an adaptive prompt candidate
 

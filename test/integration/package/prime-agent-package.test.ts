@@ -3,6 +3,9 @@ import { resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { admitLocalEvaluationPlan } from "../../../src/infrastructure/fs/local-evaluation-plan.js";
+import { primeExternalHarnessIdentity } from "../../fixtures/evaluation/prime-external-harness-identity.js";
+
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
 
 describe("Prime Agent package boundary", () => {
@@ -25,6 +28,7 @@ describe("Prime Agent package boundary", () => {
       "prime-container/cmd/flow-prime-kernel-proxy/main.go",
       "prime-container/cmd/flow-prime-python/main.go",
       "prime-container/cmd/flow-prime-supervisor/main.go",
+      "examples/evaluation/native-prime-agent-comparison.evaluation.yaml",
     ]) {
       await expect(access(resolve(repositoryRoot, path))).resolves.toBeUndefined();
     }
@@ -143,6 +147,7 @@ describe("Prime Agent package boundary", () => {
       resolve(repositoryRoot, "prime-container/Dockerfile"),
       "utf8",
     );
+    const sourceDateEpoch = ["$", "{SOURCE_DATE_EPOCH}"].join("");
     expect(dockerfile).toMatch(
       /^# syntax=docker\/dockerfile:1\.17\.1@sha256:38387523653efa0039f8e1c89bb74a30504e76ee9f565e25c9a09841f9427b05$/m,
     );
@@ -152,6 +157,19 @@ describe("Prime Agent package boundary", () => {
     expect(dockerfile).toContain(
       "pip install --no-deps --no-build-isolation /tmp/prime-agent-runtime",
     );
+    expect(dockerfile).toContain("python -m venv --copies /opt/flow/python");
+    expect(dockerfile).toMatch(
+      /FROM \$\{PYTHON_IMAGE\} AS python-build\nARG SOURCE_DATE_EPOCH\nENV [^\n]*PYTHONHASHSEED=0 [^\n]*SOURCE_DATE_EPOCH=\$\{SOURCE_DATE_EPOCH\}/,
+    );
+    expect(dockerfile).toContain(
+      `touch --date="@${sourceDateEpoch}" /out/flow-prime-supervisor /out/flow-prime-kernel-proxy /out/flow-prime-python`,
+    );
+    expect(dockerfile).toContain(
+      `find /opt/flow/node -xdev -exec touch --date="@${sourceDateEpoch}" {} +`,
+    );
+    expect(dockerfile).toContain(
+      `find /opt/flow/python -xdev -exec touch --date="@${sourceDateEpoch}" {} +`,
+    );
     expect(dockerfile).toContain("--no-log-init");
     expect(dockerfile).toContain(
       [
@@ -160,5 +178,48 @@ describe("Prime Agent package boundary", () => {
         '{SOURCE_DATE_EPOCH}" /etc/passwd /etc/group /etc/shadow /etc/gshadow',
       ].join(""),
     );
+  });
+
+  it("publishes one local command for each Prime release gate", async () => {
+    const packageJson = JSON.parse(
+      await readFile(resolve(repositoryRoot, "package.json"), "utf8"),
+    ) as { readonly scripts?: Readonly<Record<string, string>> };
+
+    expect(packageJson.scripts).toMatchObject({
+      "prime:image:verify": "npm run build && node scripts/verify-prime-image.mjs",
+      "docs:ste": "node scripts/check-docs-ste.mjs --changed",
+      "ci:local": "node scripts/ci-local.mjs",
+    });
+  });
+
+  it("admits the public Prime comparison through the fixed profile", async () => {
+    const admitted = await admitLocalEvaluationPlan(
+      resolve(repositoryRoot, "examples/evaluation/native-prime-agent-comparison.evaluation.yaml"),
+      {
+        resolveExternalHarnessIdentity: async () => primeExternalHarnessIdentity(),
+      },
+    );
+
+    expect(admitted.profiles.map((profile) => profile.adapter)).toEqual([
+      "flow-workflow-v1",
+      "prime-agent-native-v1",
+    ]);
+    expect(admitted.schedule).toHaveLength(4);
+  });
+
+  it("checks the public Prime example through the packed CLI", async () => {
+    const verifier = await readFile(resolve(repositoryRoot, "scripts/verify-package.mjs"), "utf8");
+
+    expect(verifier).toContain("native-prime-agent-comparison.evaluation.yaml");
+    expect(verifier).toContain('["eval", "validate"');
+  });
+
+  it("pins Buildx and runs the shared local CI command", async () => {
+    const workflow = await readFile(resolve(repositoryRoot, ".github/workflows/ci.yml"), "utf8");
+
+    expect(workflow).toContain(
+      "docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c",
+    );
+    expect(workflow).toContain("run: npm run ci:local");
   });
 });

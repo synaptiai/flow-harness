@@ -1,15 +1,45 @@
 import { createHash } from "node:crypto";
-import { access, mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
+import {
+  access,
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { LocalPrimeImageBuilder } from "../../../../src/infrastructure/oci/local-prime-image-builder.js";
+import {
+  LocalPrimeImageBuilder,
+  runLocalDockerCommand,
+} from "../../../../src/infrastructure/oci/local-prime-image-builder.js";
 
 describe("local Prime image builder", () => {
+  it("bounds a Docker command that does not settle", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-prime-docker-timeout-")));
+    const executable = join(root, "docker");
+    await writeFile(executable, "#!/bin/sh\nsleep 10\n");
+    await chmod(executable, 0o700);
+
+    await expect(runLocalDockerCommand(executable, [], root, undefined, 20)).rejects.toMatchObject({
+      killed: true,
+    });
+  });
+
   it("uses an allowlisted context and derives identity from the built image", async () => {
     const fixture = await buildFixture();
+    const dockerExecutable = join(fixture, "host-tools", "docker");
+    const dockerBuildxExecutable = join(fixture, "host-tools", "docker-buildx");
+    await mkdir(join(fixture, "host-tools"));
+    await writeFile(dockerExecutable, "docker-client\n");
+    await writeFile(dockerBuildxExecutable, "verified-buildx-plugin\n");
+    await chmod(dockerExecutable, 0o700);
+    await chmod(dockerBuildxExecutable, 0o700);
     const imageId = `sha256:${"a".repeat(64)}`;
     const sbom = {
       node: [{ name: "prime-agent", version: "0.7.1" }],
@@ -19,9 +49,12 @@ describe("local Prime image builder", () => {
     const calls: readonly string[][] = [];
     const mutableCalls = calls as string[][];
     let contextWasAllowlisted = false;
-    const run = vi.fn(async (args: readonly string[]) => {
+    const run = vi.fn(async (args: readonly string[], options: { environmentRoot: string }) => {
       mutableCalls.push([...args]);
-      if (args[0] === "build") {
+      if (args[0] === "buildx" && args[1] === "build") {
+        await expect(
+          readFile(join(options.environmentRoot, "cli-plugins", "docker-buildx"), "utf8"),
+        ).resolves.toBe("verified-buildx-plugin\n");
         const iidFile = args[args.indexOf("--iidfile") + 1];
         const metadataFile = args[args.indexOf("--metadata-file") + 1];
         if (iidFile === undefined || metadataFile === undefined) {
@@ -39,6 +72,7 @@ describe("local Prime image builder", () => {
         if (context === undefined) {
           throw new Error("missing build context");
         }
+        expect((await stat(join(context, "Dockerfile"))).mtimeMs).toBe(1_786_127_940_000);
         await expect(access(join(context, "secret.txt"))).rejects.toMatchObject({ code: "ENOENT" });
         contextWasAllowlisted = true;
         return "";
@@ -75,7 +109,8 @@ describe("local Prime image builder", () => {
     });
     const builder = new LocalPrimeImageBuilder({
       packageRoot: fixture,
-      dockerExecutable: "/usr/bin/docker",
+      dockerExecutable,
+      dockerBuildxExecutable,
       temporaryRoot: await realpath(tmpdir()),
       run,
       nonce: () => "0123456789abcdef0123456789abcdef",
@@ -99,9 +134,10 @@ describe("local Prime image builder", () => {
     expect(result.image.ociManifestSha256).toBe("f".repeat(64));
     expect(result.image.platformConfigSha256).toBe("a".repeat(64));
 
-    const build = mutableCalls.find((args) => args[0] === "build");
+    const build = mutableCalls.find((args) => args[0] === "buildx" && args[1] === "build");
     expect(build).toEqual(
       expect.arrayContaining([
+        "buildx",
         "build",
         "--pull=false",
         "--no-cache",
@@ -110,9 +146,12 @@ describe("local Prime image builder", () => {
         "--sbom=false",
         "--platform",
         "linux/amd64",
+        "--build-arg",
+        "BUILDKIT_MULTI_PLATFORM=1",
         "--iidfile",
       ]),
     );
+    expect(build?.some((argument) => argument.startsWith("--output="))).toBe(false);
     expect(contextWasAllowlisted).toBe(true);
 
     const probe = mutableCalls.find((args) => args[0] === "run");

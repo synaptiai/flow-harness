@@ -68,8 +68,10 @@ distribution that bundles these packages must preserve all applicable notices.
 ## Prime Agent
 
 - Project: [PrimeIntellect-ai/prime-agent](https://github.com/PrimeIntellect-ai/prime-agent)
+- Package: `prime-agent` 0.7.1 from the official release archive
 - License: MIT
-- Use: architecture and capability reference only
+- Use: optional runtime dependency inside the native Prime Agent OCI evaluation image
 - Copied source: none
 
-Any future source port must record its upstream commit and preserve the applicable Pi and Prime Agent copyright and license notices.
+The OCI image keeps the package license metadata. A distribution that ships the image must preserve
+all applicable Prime Agent and transitive dependency notices.

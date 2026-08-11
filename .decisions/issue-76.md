@@ -632,8 +632,8 @@ Prime profile when the engine cannot enforce and report one value.
 Version one uses the canonical local Docker Engine Unix socket. Flow ignores Docker contexts,
 `DOCKER_HOST`, TLS, proxy, credential-helper, and client-configuration variables.
 
-The public engine identity binds client and server builds, API version, kernel, containerd, runc,
-cgroup driver, storage driver, rootless state, security options, and the policy digest.
+The public engine identity binds client and server builds, API version, kernel, containerd, and runc.
+It also binds cgroups, storage, rootless state, security options, and the policy digest.
 
 Protected local attestation binds the canonical socket identity, owner, mode, daemon ID, cgroup
 path, image backing device, and effective engine settings. These values do not enter public records.
@@ -802,8 +802,8 @@ _Captured by specification-capture on 2026-08-10. Source: Issue #76 and upstream
 - `ExternalHarnessIdentity` adds one strict version 1 variant. It binds protocol, adapter contract,
   OCI runtime, resource policy, trusted image, and broker.
 
-- The OCI runtime variant binds Docker builds, API, kernel, low-level runtimes, cgroups, storage,
-  rootless state, security options, and the complete policy digest.
+- The OCI runtime variant binds Docker builds, API, kernel, and low-level runtimes. It also binds
+  cgroups, storage, rootless state, security options, and the complete policy digest.
 
 - Protected local attestation binds the Docker executable, socket, daemon ID, backing device,
   cgroup path, and exact lease target. Public identity and evidence omit these raw values.
@@ -814,14 +814,14 @@ _Captured by specification-capture on 2026-08-10. Source: Issue #76 and upstream
 - The image build binds package `prime-agent`, version `0.7.1`, and the official release archive
   SHA-256.
 
-- The image also binds Node, Python, IPython, pyzmq, Prime runtime, native libraries, the supervisor,
-  kernel proxy, isolated Python launcher, no-I/O resource loader, and Flow driver.
+- The image also binds Node, Python, IPython, pyzmq, Prime runtime, and native libraries. It binds
+  the supervisor, kernel proxy, isolated Python launcher, no-I/O resource loader, and Flow driver.
 
-- The fixed resource policy binds PID, memory, swap, CPU, image I/O, descriptors, processes, file
-  and core size, workspace quotas, output, users, health, IPC, seccomp, logging, and network values.
+- The fixed resource policy binds PID, memory, swap, CPU, image I/O, descriptors, and processes. It
+  also binds file size, core size, workspace quotas, output, users, health, IPC, seccomp, logs, and network.
 
-- The driver configuration digest binds every empty service, disabled ambient feature, model
-  registration field, session option, IPython-only tool setting, and turn limit.
+- The driver configuration digest binds every empty service and disabled ambient feature. It also
+  binds model registration, session options, the IPython-only tool setting, and the turn limit.
 
 - The driver uses `flow-external-harness-jsonl-v1`. No Prime RPC or SDK type becomes a durable Flow
   type.

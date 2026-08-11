@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { type BigIntStats, constants } from "node:fs";
 import {
+  access,
   chmod,
   copyFile,
   lstat,
@@ -12,6 +13,7 @@ import {
   readdir,
   realpath,
   rm,
+  utimes,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
@@ -26,6 +28,8 @@ const executeFile = promisify(execFile);
 const MAX_CONTEXT_ENTRIES = 131_072;
 const MAX_CONTEXT_BYTES = 2_147_483_648;
 const MAX_DOCKER_OUTPUT_BYTES = 16_777_216;
+const MAX_DOCKER_COMMAND_MS = 1_800_000;
+const FIXED_BUILD_TIME = new Date(1_786_127_940_000);
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const imageDigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const buildMetadataSchema = z
@@ -109,12 +113,14 @@ export interface PrimeDockerCommandOptions {
 export interface LocalPrimeImageBuilderOptions {
   readonly packageRoot: string;
   readonly dockerExecutable: string;
+  readonly dockerBuildxExecutable: string;
   readonly temporaryRoot?: string;
   readonly run?: (args: readonly string[], options: PrimeDockerCommandOptions) => Promise<string>;
   readonly nonce?: () => string;
 }
 
 export class LocalPrimeImageBuilder {
+  readonly #dockerBuildxExecutable: string;
   readonly #dockerExecutable: string;
   readonly #nonce: () => string;
   readonly #packageRoot: string;
@@ -124,6 +130,7 @@ export class LocalPrimeImageBuilder {
   constructor(options: LocalPrimeImageBuilderOptions) {
     this.#packageRoot = resolve(options.packageRoot);
     this.#dockerExecutable = resolve(options.dockerExecutable);
+    this.#dockerBuildxExecutable = resolve(options.dockerBuildxExecutable);
     this.#temporaryRoot = resolve(options.temporaryRoot ?? tmpdir());
     this.#run =
       options.run ??
@@ -141,6 +148,7 @@ export class LocalPrimeImageBuilder {
       const environmentRoot = join(operationRoot, "docker-environment");
       await mkdir(contextRoot, { mode: 0o700 });
       await mkdir(environmentRoot, { mode: 0o700 });
+      await stageDockerBuildxPlugin(this.#dockerBuildxExecutable, environmentRoot);
       const inputs = await stageBuildContext(this.#packageRoot, contextRoot);
       const buildInputSha256 = await hashTree(contextRoot);
       const iidFile = join(operationRoot, "image-id");
@@ -148,6 +156,7 @@ export class LocalPrimeImageBuilder {
       const tag = `flow-prime-runtime:preparation-${buildNumber}-${this.#nonce()}`;
       await this.#run(
         [
+          "buildx",
           "build",
           "--pull=false",
           "--no-cache",
@@ -156,6 +165,8 @@ export class LocalPrimeImageBuilder {
           "--sbom=false",
           "--platform",
           inputs.platform,
+          "--build-arg",
+          "BUILDKIT_MULTI_PLATFORM=1",
           "--build-arg",
           `SOURCE_DATE_EPOCH=${inputs.sourceDateEpoch}`,
           "--iidfile",
@@ -221,6 +232,17 @@ export class LocalPrimeImageBuilder {
   }
 }
 
+async function stageDockerBuildxPlugin(source: string, environmentRoot: string): Promise<void> {
+  const canonicalSource = await realpath(source);
+  if (canonicalSource !== source) {
+    throw new Error("Docker Buildx executable is not canonical");
+  }
+  await access(canonicalSource, constants.X_OK);
+  const target = join(environmentRoot, "cli-plugins", "docker-buildx");
+  await copyRegularFile(canonicalSource, target);
+  await access(target, constants.X_OK);
+}
+
 async function stageBuildContext(packageRoot: string, contextRoot: string) {
   const canonicalPackageRoot = await realpath(packageRoot);
   if (canonicalPackageRoot !== packageRoot) {
@@ -256,6 +278,7 @@ async function stageBuildContext(packageRoot: string, contextRoot: string) {
     inputs.seccomp.sha256,
     "Prime seccomp profile",
   );
+  await utimes(contextRoot, FIXED_BUILD_TIME, FIXED_BUILD_TIME);
   return inputs;
 }
 
@@ -309,6 +332,7 @@ async function copyTree(source: string, target: string): Promise<void> {
       throw new Error("Prime build context contains a link or special file");
     }
   }
+  await utimes(target, FIXED_BUILD_TIME, FIXED_BUILD_TIME);
 }
 
 async function copyRegularFile(source: string, target: string): Promise<void> {
@@ -319,6 +343,7 @@ async function copyRegularFile(source: string, target: string): Promise<void> {
   await mkdir(dirname(target), { recursive: true, mode: 0o700 });
   await copyFile(source, target, constants.COPYFILE_EXCL);
   await chmod(target, Number(before.mode & 0o777n));
+  await utimes(target, FIXED_BUILD_TIME, FIXED_BUILD_TIME);
   const after = await lstat(source, { bigint: true });
   if (
     before.dev !== after.dev ||
@@ -441,6 +466,7 @@ export async function runLocalDockerCommand(
   args: readonly string[],
   environmentRoot: string,
   signal?: AbortSignal,
+  timeoutMs = MAX_DOCKER_COMMAND_MS,
 ): Promise<string> {
   const result = await executeFile(dockerExecutable, [...args], {
     encoding: "utf8",
@@ -453,6 +479,8 @@ export async function runLocalDockerCommand(
       DOCKER_BUILDKIT: "1",
       SOURCE_DATE_EPOCH: "1786127940",
     },
+    timeout: timeoutMs,
+    killSignal: "SIGKILL",
     ...(signal === undefined ? {} : { signal }),
   });
   return result.stdout;

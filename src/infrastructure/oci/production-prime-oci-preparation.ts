@@ -73,6 +73,7 @@ export async function prepareProductionPrimeOciRuntime(input: {
   const projectRoot = await realpath(configuration.projectRoot);
   const packageRoot = await realpath(resolve(dirname(fileURLToPath(import.meta.url)), "../../.."));
   const dockerExecutable = await resolveDockerExecutable();
+  const dockerBuildxExecutable = await resolveDockerBuildxExecutable();
   const dockerExecutableSha256 = await hashStableRegularFile(
     dockerExecutable,
     MAX_EXECUTABLE_BYTES,
@@ -87,7 +88,9 @@ export async function prepareProductionPrimeOciRuntime(input: {
     const builder = new LocalPrimeImageBuilder({
       packageRoot,
       dockerExecutable,
-      run: (args) => run(args),
+      dockerBuildxExecutable,
+      run: (args, options) =>
+        runLocalDockerCommand(dockerExecutable, args, options.environmentRoot, input.signal),
     });
     const inspector = new LocalPrimeOciRuntimeInspector({
       run,
@@ -198,6 +201,17 @@ async function observeLocalRuntime(input: {
 
 async function resolveDockerExecutable(): Promise<string> {
   return resolveFixedExecutable(["/usr/bin/docker", "/usr/local/bin/docker"], "Docker");
+}
+
+async function resolveDockerBuildxExecutable(): Promise<string> {
+  return resolveFixedExecutable(
+    [
+      "/usr/libexec/docker/cli-plugins/docker-buildx",
+      "/usr/lib/docker/cli-plugins/docker-buildx",
+      "/usr/local/lib/docker/cli-plugins/docker-buildx",
+    ],
+    "Docker Buildx",
+  );
 }
 
 async function resolveFixedExecutable(

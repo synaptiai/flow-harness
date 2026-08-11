@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -44,6 +44,25 @@ try {
   assert.deepEqual(effective.supervisor, { maxActiveWorkers: 1, maxQueuedJobs: 32 });
   assert.equal(effective.projectRoot, await realpath(projectRoot));
 
+  const installedPackageRoot = join(consumerRoot, "node_modules", "@synaptiai", "flow-harness");
+  const primeExample = join(
+    installedPackageRoot,
+    "examples",
+    "evaluation",
+    "native-prime-agent-comparison.evaluation.yaml",
+  );
+  await access(primeExample);
+  const primeValidation = await runExpectFailure(
+    flowBinary,
+    ["eval", "validate", primeExample],
+    projectRoot,
+  );
+  assert.match(
+    `${primeValidation.stdout}\n${primeValidation.stderr}`,
+    /Prime|oci-attestation|ENOENT/i,
+    "the installed CLI did not reach the Prime runtime preparation boundary",
+  );
+
   process.stdout.write(
     `Verified clean installation and CLI execution from ${tarballName} (${effective.policyDigest}).\n`,
   );
@@ -58,4 +77,18 @@ async function run(command, args, cwd) {
     env: { ...process.env, npm_config_cache: join(verificationRoot, "npm-cache") },
     maxBuffer: 16 * 1024 * 1024,
   });
+}
+
+async function runExpectFailure(command, args, cwd) {
+  try {
+    await run(command, args, cwd);
+  } catch (error) {
+    assert.equal(typeof error, "object");
+    assert(error !== null);
+    return {
+      stdout: typeof error.stdout === "string" ? error.stdout : "",
+      stderr: typeof error.stderr === "string" ? error.stderr : "",
+    };
+  }
+  assert.fail(`${command} ${args.join(" ")} unexpectedly succeeded`);
 }

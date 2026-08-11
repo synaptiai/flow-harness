@@ -242,13 +242,11 @@ export class StagedPrimeOciResultSink implements PrimeOciResultSink {
     if (JSON.stringify(entries) !== JSON.stringify(this.#entries)) {
       throw new Error("Prime result sink entries contradict the validated transfer");
     }
-    for (const directory of [...this.#directoryModes].reverse()) {
-      await chmod(directory.path, directory.mode);
-    }
     await syncDirectoryTree(
       stagingRoot,
       this.#directoryModes.map((item) => item.path),
     );
+    await applyFinalDirectoryModes(this.#directoryModes);
     await this.#publish({
       targetRoot: this.#targetRoot,
       stagingRoot,
@@ -536,6 +534,29 @@ async function syncDirectoryTree(root: string, directories: readonly string[]): 
     await rootHandle.sync();
   } finally {
     await rootHandle.close();
+  }
+}
+
+async function applyFinalDirectoryModes(
+  directories: readonly { readonly path: string; readonly mode: number }[],
+): Promise<void> {
+  const opened: { readonly handle: FileHandle; readonly mode: number }[] = [];
+  try {
+    for (const directory of directories) {
+      opened.push({
+        handle: await open(directory.path, constants.O_RDONLY | constants.O_NOFOLLOW),
+        mode: directory.mode,
+      });
+    }
+    for (const directory of [...opened].reverse()) {
+      await directory.handle.chmod(directory.mode);
+      await directory.handle.sync();
+    }
+  } catch (error) {
+    await Promise.allSettled(opened.map((directory) => directory.handle.chmod(0o700)));
+    throw error;
+  } finally {
+    await Promise.allSettled(opened.map((directory) => directory.handle.close()));
   }
 }
 
