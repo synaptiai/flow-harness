@@ -54,10 +54,13 @@ export interface NativePrimeHarnessDescriptor {
 }
 
 export interface NativePrimeHarnessRegistryOptions {
+  readonly cwd?: string;
   readonly protocolPath?: string;
   readonly outerProtocolPath?: string;
   readonly inferenceBrokerPath?: string;
   readonly sourceRoot?: string;
+  readonly hostOciRoot?: string;
+  readonly productionRuntimePath?: string;
   readonly attestationPath?: string;
   readonly resolveOciIdentity?: () => Promise<PrimeOciIdentityAttestation>;
 }
@@ -67,6 +70,8 @@ interface PrimeArtifactPaths {
   readonly outerProtocolPath: string;
   readonly inferenceBrokerPath: string;
   readonly sourceRoot: string;
+  readonly hostOciRoot: string;
+  readonly productionRuntimePath: string;
 }
 
 export class NativePrimeHarnessRegistry {
@@ -87,13 +92,14 @@ export class NativePrimeHarnessRegistry {
       outerProtocolPath: options.outerProtocolPath ?? defaults.outerProtocolPath,
       inferenceBrokerPath: options.inferenceBrokerPath ?? defaults.inferenceBrokerPath,
       sourceRoot: options.sourceRoot ?? defaults.sourceRoot,
+      hostOciRoot: options.hostOciRoot ?? defaults.hostOciRoot,
+      productionRuntimePath: options.productionRuntimePath ?? defaults.productionRuntimePath,
     });
     this.#resolveOciIdentity =
       options.resolveOciIdentity ??
-      createLocalAttestationResolver(
-        options.attestationPath ??
-          resolve(process.cwd(), ".flow", "runtime", "prime-agent", "oci-attestation.json"),
-      );
+      (options.attestationPath === undefined
+        ? createProjectAttestationResolver(options.cwd ?? process.cwd())
+        : createLocalAttestationResolver(options.attestationPath));
   }
 
   async resolve(profile: NativePrimeProfileSource): Promise<NativePrimeHarnessDescriptor> {
@@ -129,21 +135,36 @@ export class NativePrimeHarnessRegistry {
     }
 
     const observations = new ArtifactObservations();
-    const [protocol, outerProtocol, broker, source, attestation] = await Promise.all([
-      readTrustedArtifact(this.#paths.protocolPath, "external harness protocol", observations),
-      readTrustedArtifact(
-        this.#paths.outerProtocolPath,
-        "Prime outer protocol parser",
-        observations,
-      ),
-      readTrustedArtifact(this.#paths.inferenceBrokerPath, "Prime inference broker", observations),
-      readTrustedRuntimeTree(
-        this.#paths.sourceRoot,
-        "native Prime local source closure",
-        observations,
-      ),
-      this.#resolveOciIdentity(),
-    ]);
+    const [protocol, outerProtocol, broker, source, hostOci, productionRuntime, attestation] =
+      await Promise.all([
+        readTrustedArtifact(this.#paths.protocolPath, "external harness protocol", observations),
+        readTrustedArtifact(
+          this.#paths.outerProtocolPath,
+          "Prime outer protocol parser",
+          observations,
+        ),
+        readTrustedArtifact(
+          this.#paths.inferenceBrokerPath,
+          "Prime inference broker",
+          observations,
+        ),
+        readTrustedRuntimeTree(
+          this.#paths.sourceRoot,
+          "native Prime local source closure",
+          observations,
+        ),
+        readTrustedRuntimeTree(
+          this.#paths.hostOciRoot,
+          "native Prime host OCI closure",
+          observations,
+        ),
+        readTrustedArtifact(
+          this.#paths.productionRuntimePath,
+          "Prime production runtime router",
+          observations,
+        ),
+        this.#resolveOciIdentity(),
+      ]);
 
     const identity = parseExternalHarnessIdentity({
       version: 1,
@@ -181,7 +202,14 @@ export class NativePrimeHarnessRegistry {
       driver: {
         id: "native-prime-agent-evaluation-v1",
         artifactSha256: attestation.artifacts.driverSha256,
-        dependencyClosureSha256: sha256(`${attestation.artifacts.flowDistSha256}:${source.sha256}`),
+        dependencyClosureSha256: sha256(
+          [
+            attestation.artifacts.flowDistSha256,
+            source.sha256,
+            hostOci.sha256,
+            productionRuntime.sha256,
+          ].join(":"),
+        ),
         kernelProxySha256: attestation.artifacts.kernelProxySha256,
         pythonLauncherSha256: attestation.artifacts.pythonLauncherSha256,
         noIoResourceLoaderSha256: attestation.artifacts.noIoResourceLoaderSha256,
@@ -229,6 +257,25 @@ function createLocalAttestationResolver(path: string): () => Promise<PrimeOciIde
   };
 }
 
+function createProjectAttestationResolver(cwd: string): () => Promise<PrimeOciIdentityAttestation> {
+  return async () => createLocalAttestationResolver(await resolvePrimeOciAttestationPath(cwd))();
+}
+
+export async function resolvePrimeOciAttestationPath(cwd: string): Promise<string> {
+  const { loadEffectiveFlowConfig } = await import("../fs/flow-config-store.js");
+  const configuration = await loadEffectiveFlowConfig({ cwd });
+  if (configuration.projectRoot === null) {
+    throw new Error("Prime OCI attestation requires a configured Flow project root");
+  }
+  return resolve(
+    configuration.projectRoot,
+    ".flow",
+    "runtime",
+    "prime-agent",
+    "oci-attestation.json",
+  );
+}
+
 function defaultArtifactPaths(): PrimeArtifactPaths {
   const sourceRoot = resolve(import.meta.dirname);
   return {
@@ -236,5 +283,7 @@ function defaultArtifactPaths(): PrimeArtifactPaths {
     outerProtocolPath: join(sourceRoot, "prime-container-protocol.js"),
     inferenceBrokerPath: join(sourceRoot, "native-prime-host-inference-broker.js"),
     sourceRoot,
+    hostOciRoot: resolve(sourceRoot, "../oci"),
+    productionRuntimePath: resolve(sourceRoot, "../runtime/production-external-harness-runtime.js"),
   };
 }

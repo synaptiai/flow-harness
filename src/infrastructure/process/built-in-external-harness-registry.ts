@@ -47,22 +47,25 @@ export interface PrimeHarnessRegistry {
 }
 
 export interface BuiltInExternalHarnessRegistryOptions {
+  readonly cwd?: string;
   readonly pi?: PiHarnessRegistry;
   readonly createOmp?: () => OmpHarnessRegistry;
-  readonly createPrime?: () => PrimeHarnessRegistry;
+  readonly createPrime?: (cwd: string) => PrimeHarnessRegistry;
 }
 
 export class BuiltInExternalHarnessRegistry implements ExternalHarnessRegistry {
   readonly #createOmp: () => OmpHarnessRegistry;
-  readonly #createPrime: () => PrimeHarnessRegistry;
+  readonly #createPrime: (cwd: string) => PrimeHarnessRegistry;
+  readonly #cwd: string;
   #omp: OmpHarnessRegistry | undefined;
   #prime: PrimeHarnessRegistry | undefined;
   readonly #pi: PiHarnessRegistry;
 
   constructor(options: BuiltInExternalHarnessRegistryOptions = {}) {
+    this.#cwd = options.cwd ?? process.cwd();
     this.#pi = options.pi ?? new NativePiHarnessRegistry();
     this.#createOmp = options.createOmp ?? (() => new NativeOmpHarnessRegistry());
-    this.#createPrime = options.createPrime ?? (() => new LazyNativePrimeHarnessRegistry());
+    this.#createPrime = options.createPrime ?? ((cwd) => new LazyNativePrimeHarnessRegistry(cwd));
   }
 
   async resolveIdentity(profile: ExternalProfileSource): Promise<ExternalHarnessIdentity> {
@@ -100,13 +103,15 @@ export class BuiltInExternalHarnessRegistry implements ExternalHarnessRegistry {
   }
 
   #primeRegistry(): PrimeHarnessRegistry {
-    this.#prime ??= this.#createPrime();
+    this.#prime ??= this.#createPrime(this.#cwd);
     return this.#prime;
   }
 }
 
 class LazyNativePrimeHarnessRegistry implements PrimeHarnessRegistry {
   #registry: Promise<NativePrimeHarnessRegistry> | undefined;
+
+  constructor(private readonly cwd: string) {}
 
   async resolveIdentity(profile: PrimeProfileSource): Promise<PrimeIdentity> {
     return (await this.#get()).resolveIdentity(profile);
@@ -118,7 +123,7 @@ class LazyNativePrimeHarnessRegistry implements PrimeHarnessRegistry {
 
   #get(): Promise<NativePrimeHarnessRegistry> {
     this.#registry ??= import("../prime/native-prime-harness-registry.js").then(
-      ({ NativePrimeHarnessRegistry }) => new NativePrimeHarnessRegistry(),
+      ({ NativePrimeHarnessRegistry }) => new NativePrimeHarnessRegistry({ cwd: this.cwd }),
     );
     return this.#registry;
   }

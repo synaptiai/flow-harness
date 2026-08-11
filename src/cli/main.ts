@@ -1074,7 +1074,8 @@ async function evaluationCommand(
       "eval validate requires one evaluation plan path",
     );
     const cwd = overrides.cwd ?? process.cwd();
-    const registry = overrides.externalHarnessRegistry ?? new BuiltInExternalHarnessRegistry();
+    const registry =
+      overrides.externalHarnessRegistry ?? new BuiltInExternalHarnessRegistry({ cwd });
     const admitted = await admitLocalEvaluationPlan(resolve(cwd, planArgument), {
       resolveExternalHarnessIdentity: (profile) => registry.resolveIdentity(profile),
     });
@@ -2620,7 +2621,8 @@ function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies 
   const storageDependencies = storageDependenciesFrom(overrides);
   const configDependencies = configDependenciesFrom(overrides);
   const externalHarnessRegistry =
-    overrides.externalHarnessRegistry ?? new BuiltInExternalHarnessRegistry();
+    overrides.externalHarnessRegistry ??
+    new BuiltInExternalHarnessRegistry({ cwd: storageDependencies.cwd });
   return {
     ...storageDependencies,
     ...configDependencies,

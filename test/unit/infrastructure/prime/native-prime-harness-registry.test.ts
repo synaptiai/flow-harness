@@ -1,13 +1,15 @@
-import { mkdir, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { externalHarnessIdentityDigest } from "../../../../src/domain/evaluation/external-harness.js";
+import { initializeFlowProject } from "../../../../src/infrastructure/fs/flow-config-store.js";
 import {
   NativePrimeHarnessRegistry,
   type PrimeOciIdentityAttestation,
+  resolvePrimeOciAttestationPath,
 } from "../../../../src/infrastructure/prime/native-prime-harness-registry.js";
 import { primeExternalHarnessIdentity } from "../../../fixtures/evaluation/prime-external-harness-identity.js";
 
@@ -20,6 +22,18 @@ afterEach(async () => {
 });
 
 describe("native Prime harness registry", () => {
+  it("resolves the project attestation from a nested working directory", async () => {
+    const root = await mkdtemp(join(tmpdir(), "flow-prime-project-root-"));
+    temporaryDirectories.push(root);
+    await initializeFlowProject(root);
+    const nested = join(root, "plans", "nested");
+    await mkdir(nested, { recursive: true });
+
+    await expect(resolvePrimeOciAttestationPath(nested)).resolves.toBe(
+      join(await realpath(root), ".flow", "runtime", "prime-agent", "oci-attestation.json"),
+    );
+  });
+
   it("binds the OCI attestation and every local adapter artifact", async () => {
     const fixture = await registryFixture();
     const descriptor = await fixture.registry.resolve(profile());
@@ -87,6 +101,14 @@ describe("native Prime harness registry", () => {
     await expect(fixture.registry.resolveAdmitted(admitted)).rejects.toThrow(/identity.*changed/i);
   });
 
+  it("rejects the admitted identity after host OCI orchestration changes", async () => {
+    const fixture = await registryFixture();
+    const admitted = await fixture.registry.resolveIdentity(profile());
+    await writeFile(join(fixture.hostOciRoot, "lifecycle.js"), "export const lifecycle = 2;\n");
+
+    await expect(fixture.registry.resolveAdmitted(admitted)).rejects.toThrow(/identity.*changed/i);
+  });
+
   it("rejects the admitted identity after OCI attestation drift", async () => {
     const fixture = await registryFixture();
     const admitted = await fixture.registry.resolveIdentity(profile());
@@ -132,8 +154,10 @@ async function registryFixture() {
     noIoResourceLoaderPath: join(root, "no-io-resource-loader.js"),
     inferenceBrokerPath: join(root, "native-prime-host-inference-broker.js"),
     sourceRoot: join(root, "source"),
+    hostOciRoot: join(root, "oci"),
+    productionRuntimePath: join(root, "production-external-harness-runtime.js"),
   };
-  await mkdir(paths.sourceRoot);
+  await Promise.all([mkdir(paths.sourceRoot), mkdir(paths.hostOciRoot)]);
   await Promise.all([
     writeFile(paths.driverPath, "export const primeDriver = 1;\n"),
     writeFile(paths.protocolPath, "export const protocol = 1;\n"),
@@ -144,6 +168,8 @@ async function registryFixture() {
     writeFile(paths.noIoResourceLoaderPath, "export const resources = [];\n"),
     writeFile(paths.inferenceBrokerPath, "export const broker = 1;\n"),
     writeFile(join(paths.sourceRoot, "support.js"), "export const support = 1;\n"),
+    writeFile(join(paths.hostOciRoot, "lifecycle.js"), "export const lifecycle = 1;\n"),
+    writeFile(paths.productionRuntimePath, "export const productionRuntime = 1;\n"),
   ]);
   const publicIdentity = primeExternalHarnessIdentity();
   const assertCurrent = vi.fn(async () => undefined);
