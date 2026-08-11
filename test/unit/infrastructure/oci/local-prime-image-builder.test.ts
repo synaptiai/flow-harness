@@ -475,10 +475,9 @@ process.exit(2);
         "--sbom=false",
         "--platform",
         "linux/amd64",
-        "--build-arg",
-        "BUILDKIT_MULTI_PLATFORM=1",
       ]),
     );
+    expect(build).not.toContain("BUILDKIT_MULTI_PLATFORM=1");
     expect(build).not.toContain("--iidfile");
     expect(mutableCalls).toContainEqual([
       "image",

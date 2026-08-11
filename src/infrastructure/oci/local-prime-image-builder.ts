@@ -441,8 +441,6 @@ export class LocalPrimeImageBuilder {
         "--platform",
         inputs.platform,
         "--build-arg",
-        "BUILDKIT_MULTI_PLATFORM=1",
-        "--build-arg",
         `SOURCE_DATE_EPOCH=${inputs.sourceDateEpoch}`,
         "--metadata-file",
         metadataFile,
