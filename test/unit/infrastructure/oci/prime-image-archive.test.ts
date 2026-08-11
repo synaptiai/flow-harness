@@ -64,6 +64,53 @@ describe("Prime image archive", () => {
     });
   });
 
+  it("allows only the canonical AWS documentation access key example", async () => {
+    const documentedExample = dockerArchive([
+      layerTar({
+        "opt/flow/node/node_modules/aws-example/index.d.ts": 'AccessKeyId: "AKIAIOSFODNN7EXAMPLE"',
+      }),
+    ]);
+    const documentedExamplePath = await writeArchive(documentedExample.bytes);
+
+    await expect(
+      inspectPrimeImageArchive({
+        archivePath: documentedExamplePath,
+        imageId: documentedExample.imageId,
+      }),
+    ).resolves.toMatchObject({ archiveSha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
+
+    const otherAccessKey = dockerArchive([
+      layerTar({
+        "opt/flow/node/node_modules/other-key/index.d.ts": 'AccessKeyId: "AKIA000000000EXAMPLE"',
+      }),
+    ]);
+    const otherAccessKeyPath = await writeArchive(otherAccessKey.bytes);
+
+    await expect(
+      inspectPrimeImageArchive({
+        archivePath: otherAccessKeyPath,
+        imageId: otherAccessKey.imageId,
+      }),
+    ).rejects.toMatchObject({
+      stage: "scan image archive layers",
+      cause: expect.objectContaining({ message: expect.stringMatching(/secret/i) }),
+    });
+
+    const mixedBoundaryKeys = dockerArchive([
+      layerTar({
+        "opt/flow/node/node_modules/mixed-keys/index.d.ts": `AKIAIOSFODNN7EXAMPLE\n${"x".repeat(65_511)}AKIA1234567890ABCDEF`,
+      }),
+    ]);
+    const mixedBoundaryKeysPath = await writeArchive(mixedBoundaryKeys.bytes);
+
+    await expect(
+      inspectPrimeImageArchive({
+        archivePath: mixedBoundaryKeysPath,
+        imageId: mixedBoundaryKeys.imageId,
+      }),
+    ).rejects.toMatchObject({ stage: "scan image archive layers" });
+  });
+
   it("rejects an archive whose configuration bytes do not match the image ID", async () => {
     const archive = dockerArchive([layerTar({})]);
     const archivePath = await writeArchive(archive.bytes);

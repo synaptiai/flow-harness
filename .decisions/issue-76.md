@@ -277,6 +277,9 @@ It performs two clean builds and requires the same platform manifest and config 
 
 The build creates an external SBOM from the final image. It scans each saved layer for secret
 patterns. A separate release gate audits the locked Node and Python dependencies.
+The AWS access-key check permits only the
+[canonical non-working example](https://docs.aws.amazon.com/AmazonS3/latest/developerguide/RESTAuthentication.html)
+identifier. It rejects every other match.
 
 The SBOM generator removes timestamps, serial values, and host paths. Both clean builds must produce
 the same canonical SBOM digest.
@@ -918,7 +921,7 @@ user before it runs the setup.
 |---|---|---|---|---|
 | Admit the fixed Prime profile | Contract | `npx vitest run test/unit/evaluation/plan.test.ts test/unit/infrastructure/fs/local-evaluation-plan.test.ts` | Fixed config passes. Unknown config and authority fields fail. | Prime availability on all hosts |
 | Bind the Prime OCI identity | Contract | `npx vitest run test/unit/infrastructure/prime/native-prime-harness-registry.test.ts` | Prepared identity binds engine, image, build, package, and policy values. Local adapter, host OCI, attestation, and admitted-identity drift reject. | Host signatures or hostile engine protection |
-| Build the exact Prime image | Supply chain | `npm run prime:image:verify` | Two clean builds match. Archive, lock, layer, SBOM, and secret gates pass. | Registry publication |
+| Build the exact Prime image | Supply chain | `npx vitest run test/unit/infrastructure/oci/prime-image-archive.test.ts && npm run prime:image:verify` | Exact archive bounds and secret cases pass. Two clean builds match. Archive, lock, layer, SBOM, and secret gates pass. | Registry publication |
 | Audit locked runtime dependencies | Supply chain | `npm run build && node scripts/audit-prime-dependencies.mjs` | The exact Prime Node and Python locks pass the fixed audit policy. | Future dependency versions |
 | Run a real persistent IPython session | Integration | `npx vitest run test/integration/prime/native-prime-agent-evaluation.test.ts` | One session keeps state across two turns. It uses one accepted kernel request. | Live provider quality |
 | Exchange signed process frames | Integration | `npx vitest run test/integration/prime/native-prime-agent-driver-protocol.test.ts` | The compiled driver completes one signed tool exchange through fake inference. | Provider quality |

@@ -13,10 +13,11 @@ const MAX_METADATA_BYTES = 1_048_576;
 const MAX_MANIFEST_BYTES = 1_048_576;
 const MAX_PATH_BYTES = 4_095;
 const SECRET_SCAN_OVERLAP_BYTES = 128;
+const AWS_DOCUMENTATION_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE";
 const imageDigestPattern = /^sha256:[a-f0-9]{64}$/;
+const awsAccessKeyPattern = /AKIA[0-9A-Z]{16}/g;
 const forbiddenSecretPatterns = Object.freeze([
   /-----BEGIN (?:EC |OPENSSH |RSA )?PRIVATE KEY-----/,
-  /AKIA[0-9A-Z]{16}/,
   /ghp_[A-Za-z0-9]{36}/,
   /npm_[A-Za-z0-9]{36}/,
   /FLOW_PRIME_FORBIDDEN_SECRET_[A-Za-z0-9_-]*/,
@@ -550,6 +551,11 @@ async function containsForbiddenSecret(
     const source = `${overlap}${(await readRange(handle, position + offset, length)).toString("latin1")}`;
     if (forbiddenSecretPatterns.some((pattern) => pattern.test(source))) {
       return true;
+    }
+    for (const match of source.matchAll(awsAccessKeyPattern)) {
+      if (match[0] !== AWS_DOCUMENTATION_ACCESS_KEY_ID) {
+        return true;
+      }
     }
     overlap = source.slice(-SECRET_SCAN_OVERLAP_BYTES);
     offset += length;
