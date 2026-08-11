@@ -92,6 +92,18 @@ describe("local Prime OCI currentness", () => {
       }),
     ).rejects.toThrow(/dockerd.*path/i);
 
+    await expect(
+      assertPrimeOciRuntimeCurrent({
+        ...input,
+        resolveRuntimeExecutables: async () => ({
+          containerd: local.executables.containerd.path,
+          dockerd: local.executables.dockerd.path,
+          containerdSha256: "8".repeat(64),
+          dockerdSha256: local.executables.dockerd.sha256,
+        }),
+      }),
+    ).rejects.toThrow(/containerd.*executable.*changed/i);
+
     serverCommit = "changed-dockerd-commit";
     await expect(assertPrimeOciRuntimeCurrent(input)).rejects.toThrow(/runtime.*changed/i);
     serverCommit = "dockerd-commit";

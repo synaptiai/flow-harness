@@ -120,6 +120,7 @@ sudo install --directory /etc/systemd/system/docker.service.d
 printf '[Unit]\nRequires=\n[Service]\nExecStart=\nExecStart=/usr/bin/dockerd --host=unix:///var/run/docker.sock\n' | sudo tee /etc/systemd/system/docker.service.d/flow-prime.conf
 sudo systemctl daemon-reload
 sudo systemctl start docker.service
+sudo chmod 0711 /run/docker/containerd
 ```
 
 To roll back this setup, recreate the runner from its trusted base image. Version one does not
@@ -131,6 +132,27 @@ Verify that Docker owns the managed containerd process:
 docker_pid="$(cat /run/docker.pid)"
 containerd_pid="$(cat /run/docker/containerd/containerd.pid)"
 test "$(ps --no-headers --pid "$containerd_pid" --format ppid | xargs)" = "$docker_pid"
+```
+
+Publish the protected runtime observation that non-root Flow uses. The file binds the two live
+processes to their canonical executable paths and hashes.
+
+```sh
+containerd_executable="$(sudo readlink --canonicalize "/proc/${containerd_pid}/exe")"
+dockerd_executable="$(sudo readlink --canonicalize "/proc/${docker_pid}/exe")"
+containerd_sha256="$(sudo sha256sum "/proc/${containerd_pid}/exe" | cut --delimiter=' ' --fields=1)"
+dockerd_sha256="$(sudo sha256sum "/proc/${docker_pid}/exe" | cut --delimiter=' ' --fields=1)"
+jq --null-input \
+  --argjson dockerPid "$docker_pid" \
+  --argjson containerdPid "$containerd_pid" \
+  --arg dockerdPath "$dockerd_executable" \
+  --arg dockerdSha256 "$dockerd_sha256" \
+  --arg containerdPath "$containerd_executable" \
+  --arg containerdSha256 "$containerd_sha256" \
+  '{version:1,dockerPid:$dockerPid,containerdPid:$containerdPid,dockerd:{path:$dockerdPath,sha256:$dockerdSha256},containerd:{path:$containerdPath,sha256:$containerdSha256}}' \
+  > /tmp/flow-prime-runtime-v1.json
+sudo install --owner=root --group=root --mode=0444 \
+  /tmp/flow-prime-runtime-v1.json /run/flow-prime-runtime-v1.json
 ```
 
 Prepare the fixed image and local runtime evidence before plan validation:

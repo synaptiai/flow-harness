@@ -1,8 +1,59 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveDockerManagedContainerdExecutable } from "../../../../src/infrastructure/oci/prime-oci-runtime-executables.js";
+import {
+  resolveDockerManagedContainerdExecutable,
+  resolveDockerManagedRuntimeExecutables,
+} from "../../../../src/infrastructure/oci/prime-oci-runtime-executables.js";
 
 describe("Prime OCI runtime executable resolution", () => {
+  it("uses the protected root observation for root-owned daemon executables", async () => {
+    const result = await resolveDockerManagedRuntimeExecutables({
+      pidPaths: ["/run/docker/containerd/containerd.pid"],
+      readPidRecord: async () => 41,
+      readDockerDaemonPid: async () => 17,
+      readParentPid: async () => 17,
+      readProcessArguments: async () => ["/usr/bin/dockerd", "--host=unix:///var/run/docker.sock"],
+      readDockerDaemonConfiguration: async () => null,
+      readRuntimeObservation: async () => ({
+        version: 1,
+        dockerPid: 17,
+        containerdPid: 41,
+        dockerd: { path: "/usr/bin/dockerd", sha256: "d".repeat(64) },
+        containerd: { path: "/usr/bin/containerd", sha256: "c".repeat(64) },
+      }),
+    });
+
+    expect(result).toEqual({
+      containerd: "/usr/bin/containerd",
+      dockerd: "/usr/bin/dockerd",
+      containerdSha256: "c".repeat(64),
+      dockerdSha256: "d".repeat(64),
+    });
+  });
+
+  it("rejects a protected observation for another daemon process", async () => {
+    await expect(
+      resolveDockerManagedContainerdExecutable({
+        pidPaths: ["/run/docker/containerd/containerd.pid"],
+        readPidRecord: async () => 41,
+        readDockerDaemonPid: async () => 17,
+        readParentPid: async () => 17,
+        readProcessArguments: async () => [
+          "/usr/bin/dockerd",
+          "--host=unix:///var/run/docker.sock",
+        ],
+        readDockerDaemonConfiguration: async () => null,
+        readRuntimeObservation: async () => ({
+          version: 1,
+          dockerPid: 18,
+          containerdPid: 41,
+          dockerd: { path: "/usr/bin/dockerd", sha256: "d".repeat(64) },
+          containerd: { path: "/usr/bin/containerd", sha256: "c".repeat(64) },
+        }),
+      }),
+    ).rejects.toThrow(/Docker-managed containerd.*resolved/i);
+  });
+
   it("binds a containerd process that is a direct child of the admitted Docker daemon", async () => {
     await expect(
       resolveDockerManagedContainerdExecutable({

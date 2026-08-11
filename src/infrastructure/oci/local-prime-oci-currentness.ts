@@ -9,7 +9,10 @@ import type { PrimeExternalHarnessIdentity } from "../../domain/evaluation/exter
 import { DockerUnixApiClient } from "./docker-unix-api-client.js";
 import type { PrimeOciLocalRuntimeAttestation } from "./local-prime-oci-attestation.js";
 import { LocalPrimeOciRuntimeInspector } from "./local-prime-oci-runtime-inspector.js";
-import { resolveDockerManagedRuntimeExecutables } from "./prime-oci-runtime-executables.js";
+import {
+  type DockerManagedRuntimeExecutables,
+  resolveDockerManagedRuntimeExecutables,
+} from "./prime-oci-runtime-executables.js";
 
 const CORE_PATTERN_PATH = "/proc/sys/kernel/core_pattern";
 const MAX_CORE_PATTERN_BYTES = 4_096;
@@ -33,10 +36,7 @@ export async function assertPrimeOciRuntimeCurrent(input: {
   readonly resolveImageDevice?: (
     dockerRoot: string,
   ) => Promise<PrimeOciLocalRuntimeAttestation["imageDevice"]>;
-  readonly resolveRuntimeExecutables?: () => Promise<{
-    readonly containerd: string;
-    readonly dockerd: string;
-  }>;
+  readonly resolveRuntimeExecutables?: () => Promise<DockerManagedRuntimeExecutables>;
   readonly signal?: AbortSignal;
 }): Promise<void> {
   const client =
@@ -75,6 +75,18 @@ export async function assertPrimeOciRuntimeCurrent(input: {
   }
   if (runtimeExecutables.dockerd !== input.local.executables.dockerd.path) {
     throw new Error("Prime OCI dockerd executable path changed after admission");
+  }
+  if (
+    runtimeExecutables.containerdSha256 !== undefined &&
+    runtimeExecutables.containerdSha256 !== input.local.executables.containerd.sha256
+  ) {
+    throw new Error("Prime OCI containerd executable changed after admission");
+  }
+  if (
+    runtimeExecutables.dockerdSha256 !== undefined &&
+    runtimeExecutables.dockerdSha256 !== input.local.executables.dockerd.sha256
+  ) {
+    throw new Error("Prime OCI dockerd executable changed after admission");
   }
   const currentInfo = currentInfoSchema.parse(
     JSON.parse(observedInfoSource ?? (await client.readInfo(input.signal))),

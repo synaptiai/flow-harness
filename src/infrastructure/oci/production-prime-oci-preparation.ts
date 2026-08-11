@@ -121,6 +121,14 @@ export async function prepareProductionPrimeOciRuntime(input: {
       MAX_EXECUTABLE_BYTES,
       "containerd executable",
     );
+    if (
+      runtimeExecutables.dockerdSha256 === undefined ||
+      runtimeExecutables.dockerdSha256 !== dockerdExecutableSha256 ||
+      runtimeExecutables.containerdSha256 === undefined ||
+      runtimeExecutables.containerdSha256 !== containerdExecutableSha256
+    ) {
+      throw new Error("Prime OCI protected runtime executable observation changed");
+    }
     const runcExecutableSha256 = await hashStableRegularFile(
       runcExecutable,
       MAX_EXECUTABLE_BYTES,

@@ -117,24 +117,41 @@ jobs:
             sudo journalctl --unit=docker.service --no-pager --lines=200 || true
             exit 1
           fi
+          sudo chmod 0711 /run/docker/containerd
           test "$(docker version --format '{{.Server.APIVersion}}')" = '1.51'
           test "$(docker version --format '{{.Server.Version}}')" = '28.3.3'
           test "$(docker info --format '{{.DefaultRuntime}}')" = 'flow-prime-runc'
           docker info --format '{{json .Runtimes}}' | \
             jq --exit-status --arg path "$runtime_path" \
               '.["flow-prime-runc"].path == $path and ((.["flow-prime-runc"].runtimeArgs // []) | length == 0)'
-          sudo test -r /run/docker/containerd/containerd.pid
-          sudo test -r /run/docker.pid
-          containerd_pid="$(sudo cat /run/docker/containerd/containerd.pid)"
-          docker_pid="$(sudo cat /run/docker.pid)"
+          test -r /run/docker/containerd/containerd.pid
+          test -r /run/docker.pid
+          containerd_pid="$(cat /run/docker/containerd/containerd.pid)"
+          docker_pid="$(cat /run/docker.pid)"
           containerd_parent_pid="$(ps --no-headers --pid "$containerd_pid" --format ppid | xargs)"
           containerd_executable="$(sudo readlink --canonicalize "/proc/${containerd_pid}/exe")"
+          dockerd_executable="$(sudo readlink --canonicalize "/proc/${docker_pid}/exe")"
           expected_containerd_executable="$(readlink --canonicalize "$(command -v containerd)")"
+          expected_dockerd_executable="$(readlink --canonicalize "$(command -v dockerd)")"
           printf 'DOCKER_PID=%s\nCONTAINERD_PID=%s\nCONTAINERD_PARENT_PID=%s\nCONTAINERD_EXECUTABLE=%s\nEXPECTED_CONTAINERD_EXECUTABLE=%s\n' \
             "$docker_pid" "$containerd_pid" "$containerd_parent_pid" "$containerd_executable" \
             "$expected_containerd_executable"
           test "$containerd_parent_pid" = "$docker_pid"
           test "$containerd_executable" = "$expected_containerd_executable"
+          test "$dockerd_executable" = "$expected_dockerd_executable"
+          containerd_sha256="$(sudo sha256sum "/proc/${containerd_pid}/exe" | cut --delimiter=' ' --fields=1)"
+          dockerd_sha256="$(sudo sha256sum "/proc/${docker_pid}/exe" | cut --delimiter=' ' --fields=1)"
+          jq --null-input \
+            --argjson dockerPid "$docker_pid" \
+            --argjson containerdPid "$containerd_pid" \
+            --arg dockerdPath "$dockerd_executable" \
+            --arg dockerdSha256 "$dockerd_sha256" \
+            --arg containerdPath "$containerd_executable" \
+            --arg containerdSha256 "$containerd_sha256" \
+            '{version:1,dockerPid:$dockerPid,containerdPid:$containerdPid,dockerd:{path:$dockerdPath,sha256:$dockerdSha256},containerd:{path:$containerdPath,sha256:$containerdSha256}}' \
+            > /tmp/flow-prime-runtime-v1.json
+          sudo install --owner=root --group=root --mode=0444 \
+            /tmp/flow-prime-runtime-v1.json /run/flow-prime-runtime-v1.json
 
       - name: Run local release gates
         run: npm run ci:local

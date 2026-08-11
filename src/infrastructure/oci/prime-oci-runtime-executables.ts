@@ -1,6 +1,8 @@
 import { constants } from "node:fs";
-import { access, type FileHandle, lstat, open, realpath } from "node:fs/promises";
+import { type FileHandle, open } from "node:fs/promises";
 import { basename } from "node:path";
+
+import { z } from "zod";
 
 const CONTAINERD_PID_PATHS = [
   "/run/docker/containerd/containerd.pid",
@@ -8,11 +10,41 @@ const CONTAINERD_PID_PATHS = [
 ] as const;
 const DOCKER_DAEMON_PID_PATHS = ["/run/docker.pid", "/var/run/docker.pid"] as const;
 const DOCKER_DAEMON_CONFIGURATION_PATH = "/etc/docker/daemon.json";
+const DOCKER_RUNTIME_OBSERVATION_PATH = "/run/flow-prime-runtime-v1.json";
 const MAX_DOCKER_CONFIGURATION_BYTES = 1_048_576;
+const MAX_RUNTIME_OBSERVATION_BYTES = 4_096;
 const MAX_PID_FILE_BYTES = 32;
 const MAX_PROCESS_ARGUMENT_BYTES = 65_536;
 const MAX_PROCESS_ARGUMENT_COUNT = 128;
 const MAX_PROCESS_STAT_BYTES = 4_096;
+const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
+const absolutePathSchema = z
+  .string()
+  .min(1)
+  .max(4_095)
+  .refine((value) => value.startsWith("/"), "must be an absolute path")
+  .refine(
+    (value) => !value.split("/").some((segment) => segment === "." || segment === ".."),
+    "must be a normalized path",
+  );
+const runtimeObservationSchema = z
+  .object({
+    version: z.literal(1),
+    dockerPid: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    containerdPid: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    dockerd: z.object({ path: absolutePathSchema, sha256: sha256Schema }).strict(),
+    containerd: z.object({ path: absolutePathSchema, sha256: sha256Schema }).strict(),
+  })
+  .strict();
+
+export type DockerManagedRuntimeObservation = z.infer<typeof runtimeObservationSchema>;
+
+export interface DockerManagedRuntimeExecutables {
+  readonly containerd: string;
+  readonly dockerd: string;
+  readonly containerdSha256?: string;
+  readonly dockerdSha256?: string;
+}
 
 export interface DockerManagedContainerdResolverOptions {
   readonly pidPaths?: readonly string[];
@@ -22,6 +54,7 @@ export interface DockerManagedContainerdResolverOptions {
   readonly readParentPid?: (pid: number) => Promise<number>;
   readonly resolveProcessExecutable?: (pid: number) => Promise<string>;
   readonly readProcessArguments?: (pid: number) => Promise<readonly string[]>;
+  readonly readRuntimeObservation?: () => Promise<DockerManagedRuntimeObservation>;
 }
 
 export async function resolveDockerManagedContainerdExecutable(
@@ -32,28 +65,47 @@ export async function resolveDockerManagedContainerdExecutable(
 
 export async function resolveDockerManagedRuntimeExecutables(
   options: DockerManagedContainerdResolverOptions = {},
-): Promise<{ readonly containerd: string; readonly dockerd: string }> {
+): Promise<DockerManagedRuntimeExecutables> {
   const readPidRecord = options.readPidRecord ?? readContainerdPid;
   const readDockerDaemonPid =
     options.readDockerDaemonPid ?? (() => readFirstPidRecord(DOCKER_DAEMON_PID_PATHS));
   const readDockerDaemonConfiguration =
     options.readDockerDaemonConfiguration ?? readDefaultDockerDaemonConfiguration;
   const readParentPid = options.readParentPid ?? readProcessParentPid;
-  const resolveProcessExecutable = options.resolveProcessExecutable ?? resolveExecutableForProcess;
+  const resolveProcessExecutable = options.resolveProcessExecutable;
   const readProcessArguments = options.readProcessArguments ?? readProcessArgumentsFromProc;
+  const runtimeObservation =
+    resolveProcessExecutable === undefined
+      ? (options.readRuntimeObservation ?? readProtectedRuntimeObservation)()
+      : undefined;
   let lastError: unknown;
   for (const pidPath of options.pidPaths ?? CONTAINERD_PID_PATHS) {
     try {
       const pid = await readPidRecord(pidPath);
       const parentPid = await readParentPid(pid);
-      const [executable, parentExecutable, parentArguments, dockerDaemonPid, daemonConfiguration] =
+      const [parentArguments, dockerDaemonPid, daemonConfiguration, observation] =
         await Promise.all([
-          resolveProcessExecutable(pid),
-          resolveProcessExecutable(parentPid),
           readProcessArguments(parentPid),
           readDockerDaemonPid(),
           readDockerDaemonConfiguration(),
+          runtimeObservation,
         ]);
+      if (
+        observation !== undefined &&
+        (observation.containerdPid !== pid || observation.dockerPid !== dockerDaemonPid)
+      ) {
+        throw new Error("Prime OCI runtime observation names another daemon process");
+      }
+      const [executable, parentExecutable] =
+        observation === undefined
+          ? await Promise.all([
+              resolveProcessExecutable?.(pid),
+              resolveProcessExecutable?.(parentPid),
+            ])
+          : [observation.containerd.path, observation.dockerd.path];
+      if (executable === undefined || parentExecutable === undefined) {
+        throw new Error("Prime OCI runtime executable observation is incomplete");
+      }
       if (parentPid !== dockerDaemonPid) {
         throw new Error(
           "Docker-managed containerd parent differs from the canonical Docker daemon",
@@ -64,7 +116,16 @@ export async function resolveDockerManagedRuntimeExecutables(
       }
       assertFixedDockerDaemonArguments(parentArguments);
       assertFixedDockerDaemonConfiguration(daemonConfiguration);
-      return Object.freeze({ containerd: executable, dockerd: parentExecutable });
+      return Object.freeze({
+        containerd: executable,
+        dockerd: parentExecutable,
+        ...(observation === undefined
+          ? {}
+          : {
+              containerdSha256: observation.containerd.sha256,
+              dockerdSha256: observation.dockerd.sha256,
+            }),
+      });
     } catch (error) {
       lastError = error;
     }
@@ -72,6 +133,29 @@ export async function resolveDockerManagedRuntimeExecutables(
   throw new Error("Docker-managed containerd executable cannot be resolved", {
     cause: lastError,
   });
+}
+
+async function readProtectedRuntimeObservation(): Promise<DockerManagedRuntimeObservation> {
+  const handle = await open(
+    DOCKER_RUNTIME_OBSERVATION_PATH,
+    constants.O_RDONLY | constants.O_NOFOLLOW,
+  );
+  try {
+    const metadata = await handle.stat();
+    if (
+      !metadata.isFile() ||
+      metadata.uid !== 0 ||
+      metadata.gid !== 0 ||
+      (metadata.mode & 0o777) !== 0o444 ||
+      metadata.size < 2 ||
+      metadata.size > MAX_RUNTIME_OBSERVATION_BYTES
+    ) {
+      throw new Error("Prime OCI runtime observation is not one protected bounded file");
+    }
+    return runtimeObservationSchema.parse(JSON.parse(await handle.readFile("utf8")));
+  } finally {
+    await handle.close();
+  }
 }
 
 async function readFirstPidRecord(paths: readonly string[]): Promise<number> {
@@ -84,15 +168,6 @@ async function readFirstPidRecord(paths: readonly string[]): Promise<number> {
     }
   }
   throw new Error("Docker daemon PID record cannot be resolved", { cause: lastError });
-}
-
-async function resolveExecutableForProcess(pid: number): Promise<string> {
-  const executable = await realpath(`/proc/${pid}/exe`);
-  await access(executable, constants.X_OK);
-  if (!(await lstat(executable)).isFile()) {
-    throw new Error("Prime OCI runtime executable is not one regular file");
-  }
-  return executable;
 }
 
 async function readContainerdPid(path: string): Promise<number> {
