@@ -58,6 +58,7 @@ describe("Prime container workspace replacement", () => {
       }
     }
     await sink.commit(entries);
+    await sink.publishResult();
 
     await expect(readFile(join(targetRoot, "DELETE.md"), "utf8")).rejects.toMatchObject({
       code: "ENOENT",

@@ -29,6 +29,7 @@ export interface ExternalHarnessRuntime {
     request: {
       readonly identity: ExternalHarnessIdentity;
       readonly attempt: EvaluationTrialAttempt;
+      readonly workspaceRoot: string;
       readonly updateOciLease: (lease: EvaluationOciLease) => Promise<void>;
     },
     signal?: AbortSignal,

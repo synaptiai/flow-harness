@@ -67,6 +67,7 @@ export interface PrimeOciResultSink {
   addChunk(bytes: Uint8Array, signal?: AbortSignal): Promise<void>;
   endFile(signal?: AbortSignal): Promise<void>;
   commit(entries: readonly PrimeContainerManifestEntry[], signal?: AbortSignal): Promise<void>;
+  publishResult(signal?: AbortSignal): Promise<void>;
   abort(error: unknown): Promise<void>;
 }
 
@@ -317,6 +318,8 @@ export class AttachedPrimeOciOperator {
     return Object.freeze({
       harness: Object.freeze(completedTerminal),
       settlement: Object.freeze(completedSettlement),
+      publishResult: (signal?: AbortSignal) => this.options.resultSink.publishResult(signal),
+      abortResult: (error: unknown) => this.options.resultSink.abort(error),
       finishMetrics: ({
         startedAtMs,
         endedAtMs,

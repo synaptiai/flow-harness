@@ -37,6 +37,7 @@ export class BuiltInExternalHarnessRuntime implements ExternalHarnessRuntime {
     request: {
       readonly identity: ExternalHarnessIdentity;
       readonly attempt: EvaluationTrialAttempt;
+      readonly workspaceRoot: string;
       readonly updateOciLease: (lease: EvaluationOciLease) => Promise<void>;
     },
     signal?: AbortSignal,

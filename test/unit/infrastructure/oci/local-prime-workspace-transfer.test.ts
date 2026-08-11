@@ -97,18 +97,22 @@ describe("staged Prime workspace result sink", () => {
     const targetRoot = join(parent, "workspace");
     await mkdir(targetRoot);
     const entry = fileEntry("RESULT.md", "DONE\n", 0o640);
+    const prepareStaging = vi.fn(async (input) => {
+      await expect(lstat(input.stagingRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    });
     const publish = vi.fn(async (input) => {
       expect(input.targetRoot).toBe(targetRoot);
       expect(await readFile(join(input.stagingRoot, "RESULT.md"), "utf8")).toBe("DONE\n");
-      expect((await lstat(join(input.stagingRoot, "RESULT.md"))).mode & 0o777).toBe(0o640);
+      expect((await lstat(join(input.stagingRoot, "RESULT.md"))).mode & 0o777).toBe(0o600);
     });
-    const sink = new StagedPrimeOciResultSink({ targetRoot, publish });
+    const sink = new StagedPrimeOciResultSink({ targetRoot, prepareStaging, publish });
 
     await sink.begin({
       entryCount: 1,
       totalBytes: 5,
       manifestSha256: createPrimeContainerManifestSha256([entry]),
     });
+    expect(prepareStaging).toHaveBeenCalledOnce();
     await sink.addEntry(entry);
     await sink.addChunk(Buffer.from("DONE\n"));
     await sink.endFile();
@@ -116,6 +120,8 @@ describe("staged Prime workspace result sink", () => {
 
     await sink.commit([entry]);
 
+    expect(publish).not.toHaveBeenCalled();
+    await sink.publishResult();
     expect(publish).toHaveBeenCalledOnce();
   });
 

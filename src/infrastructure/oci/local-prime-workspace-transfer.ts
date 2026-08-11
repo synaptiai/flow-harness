@@ -1,11 +1,10 @@
-import { createHash, type Hash } from "node:crypto";
+import { createHash, type Hash, randomUUID } from "node:crypto";
 import { type BigIntStats, constants } from "node:fs";
 import {
   chmod,
   type FileHandle,
   lstat,
   mkdir,
-  mkdtemp,
   open,
   opendir,
   realpath,
@@ -130,10 +129,18 @@ export interface PrimeWorkspaceResultPublishInput {
 export interface StagedPrimeOciResultSinkOptions {
   readonly targetRoot: string;
   readonly publish: (input: PrimeWorkspaceResultPublishInput) => Promise<void>;
+  readonly prepareStaging?: (input: {
+    readonly targetRoot: string;
+    readonly stagingRoot: string;
+    readonly manifestSha256: string;
+  }) => Promise<void>;
+  readonly abortStaging?: (targetRoot: string) => Promise<void>;
 }
 
 export class StagedPrimeOciResultSink implements PrimeOciResultSink {
   readonly #publish: StagedPrimeOciResultSinkOptions["publish"];
+  readonly #prepareStaging: StagedPrimeOciResultSinkOptions["prepareStaging"];
+  readonly #abortStaging: StagedPrimeOciResultSinkOptions["abortStaging"];
   readonly #targetRoot: string;
   readonly #entries: PrimeContainerManifestEntry[] = [];
   readonly #directoryModes: { readonly path: string; readonly mode: number }[] = [];
@@ -146,12 +153,15 @@ export class StagedPrimeOciResultSink implements PrimeOciResultSink {
       }
     | undefined;
   #expected: PrimeContainerTransferStart | undefined;
+  #publication: PrimeWorkspaceResultPublishInput | undefined;
   #stagingRoot: string | undefined;
   #committed = false;
 
   constructor(options: StagedPrimeOciResultSinkOptions) {
     this.#targetRoot = resolve(options.targetRoot);
     this.#publish = options.publish;
+    this.#prepareStaging = options.prepareStaging;
+    this.#abortStaging = options.abortStaging;
   }
 
   get stagingRoot(): string | undefined {
@@ -167,10 +177,23 @@ export class StagedPrimeOciResultSink implements PrimeOciResultSink {
       throw new Error("Prime result target must be one no-follow directory");
     }
     this.#expected = Object.freeze({ ...start });
-    this.#stagingRoot = await mkdtemp(
-      join(dirname(this.#targetRoot), `.${basename(this.#targetRoot)}.prime-result.`),
+    this.#stagingRoot = join(
+      dirname(this.#targetRoot),
+      `.${basename(this.#targetRoot)}.prime-result.${randomUUID()}`,
     );
-    await chmod(this.#stagingRoot, 0o700);
+    try {
+      await this.#prepareStaging?.({
+        targetRoot: this.#targetRoot,
+        stagingRoot: this.#stagingRoot,
+        manifestSha256: start.manifestSha256,
+      });
+      await mkdir(this.#stagingRoot, { mode: 0o700 });
+      await chmod(this.#stagingRoot, 0o700);
+    } catch (error) {
+      await this.#abortStaging?.(this.#targetRoot).catch(() => undefined);
+      this.#stagingRoot = undefined;
+      throw error;
+    }
   }
 
   async addEntry(entry: PrimeContainerManifestEntry): Promise<void> {
@@ -226,8 +249,6 @@ export class StagedPrimeOciResultSink implements PrimeOciResultSink {
         throw new Error("Prime staged result file contradicts its manifest entry");
       }
       await current.handle.sync();
-      await current.handle.chmod(current.entry.mode);
-      await current.handle.sync();
     } finally {
       await current.handle.close();
     }
@@ -246,14 +267,22 @@ export class StagedPrimeOciResultSink implements PrimeOciResultSink {
       stagingRoot,
       this.#directoryModes.map((item) => item.path),
     );
-    await applyFinalDirectoryModes(this.#directoryModes);
-    await this.#publish({
+    this.#publication = Object.freeze({
       targetRoot: this.#targetRoot,
       stagingRoot,
       entries: Object.freeze([...this.#entries]),
       manifestSha256: expected.manifestSha256,
     });
     this.#committed = true;
+  }
+
+  async publishResult(): Promise<void> {
+    const publication = this.#publication;
+    if (!this.#committed || publication === undefined) {
+      throw new Error("Prime result sink has no complete staging tree to publish");
+    }
+    await this.#publish(publication);
+    this.#publication = undefined;
     this.#stagingRoot = undefined;
   }
 
@@ -264,10 +293,12 @@ export class StagedPrimeOciResultSink implements PrimeOciResultSink {
       await current.handle.close().catch(() => undefined);
     }
     const stagingRoot = this.#stagingRoot;
+    this.#publication = undefined;
     this.#stagingRoot = undefined;
     if (stagingRoot !== undefined) {
       await rm(stagingRoot, { recursive: true, force: true });
     }
+    await this.#abortStaging?.(this.#targetRoot);
   }
 
   #requireStaging(): string {
@@ -534,29 +565,6 @@ async function syncDirectoryTree(root: string, directories: readonly string[]): 
     await rootHandle.sync();
   } finally {
     await rootHandle.close();
-  }
-}
-
-async function applyFinalDirectoryModes(
-  directories: readonly { readonly path: string; readonly mode: number }[],
-): Promise<void> {
-  const opened: { readonly handle: FileHandle; readonly mode: number }[] = [];
-  try {
-    for (const directory of directories) {
-      opened.push({
-        handle: await open(directory.path, constants.O_RDONLY | constants.O_NOFOLLOW),
-        mode: directory.mode,
-      });
-    }
-    for (const directory of [...opened].reverse()) {
-      await directory.handle.chmod(directory.mode);
-      await directory.handle.sync();
-    }
-  } catch (error) {
-    await Promise.allSettled(opened.map((directory) => directory.handle.chmod(0o700)));
-    throw error;
-  } finally {
-    await Promise.allSettled(opened.map((directory) => directory.handle.close()));
   }
 }
 

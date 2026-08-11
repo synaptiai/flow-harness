@@ -40,6 +40,7 @@ describe("built-in external harness runtime", () => {
     await builtIn.recoverAttempt({
       identity: request.identity,
       attempt,
+      workspaceRoot: "/evaluation/workspace",
       updateOciLease: vi.fn(async () => undefined),
     });
 
@@ -71,6 +72,7 @@ describe("built-in external harness runtime", () => {
       builtIn.recoverAttempt({
         identity: runtimeRequest("pi-native-v1").identity,
         attempt,
+        workspaceRoot: "/evaluation/workspace",
         updateOciLease: vi.fn(async () => undefined),
       }),
     ).rejects.toThrow(/Prime/i);
@@ -78,6 +80,7 @@ describe("built-in external harness runtime", () => {
       builtIn.recoverAttempt({
         identity: primeExternalHarnessIdentity(),
         attempt,
+        workspaceRoot: "/evaluation/workspace",
         updateOciLease: vi.fn(async () => undefined),
       }),
     ).rejects.toThrow(/recovery.*available/i);

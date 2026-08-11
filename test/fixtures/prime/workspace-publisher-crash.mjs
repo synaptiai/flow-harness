@@ -1,4 +1,5 @@
 import { DurablePrimeWorkspacePublisher } from "../../../dist/infrastructure/oci/durable-prime-workspace-publisher.js";
+import { createPrimeContainerManifestSha256 } from "../../../dist/infrastructure/prime/prime-container-protocol.js";
 
 const [checkpoint, targetRoot, stagingRoot] = process.argv.slice(2);
 if (checkpoint === undefined || targetRoot === undefined || stagingRoot === undefined) {
@@ -13,17 +14,19 @@ const publisher = new DurablePrimeWorkspacePublisher({
   ...(checkpoint === "target-switched" ? { afterTargetSwitched: crash } : {}),
   ...(checkpoint === "retired-removed" ? { afterRetiredRemoved: crash } : {}),
 });
+const entries = [
+  {
+    path: "RESULT.md",
+    type: "file",
+    mode: 0o644,
+    size: 5,
+    sha256: "8221ac66be71558c921fb44cfb66f7997699aea754d917763882d6d9eddc836e",
+  },
+];
+
 await publisher.publish({
   targetRoot,
   stagingRoot,
-  entries: [
-    {
-      path: "RESULT.md",
-      type: "file",
-      mode: 0o644,
-      size: 5,
-      sha256: "8221ac66be71558c921fb44cfb66f7997699aea754d917763882d6d9eddc836e",
-    },
-  ],
-  manifestSha256: "a".repeat(64),
+  entries,
+  manifestSha256: createPrimeContainerManifestSha256(entries),
 });

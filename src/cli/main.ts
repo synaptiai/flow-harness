@@ -176,11 +176,11 @@ import {
   CapabilityBundleFetchError,
   type CapabilityBundleFetcher,
 } from "../infrastructure/http/strict-capability-bundle-fetcher.js";
+import type { PrimeOciPreparationResult } from "../infrastructure/oci/prime-oci-preparation.js";
 import {
   BuiltInExternalHarnessRegistry,
   type ExternalHarnessRegistry,
 } from "../infrastructure/process/built-in-external-harness-registry.js";
-import type { PrimeOciPreparationResult } from "../infrastructure/oci/prime-oci-preparation.js";
 import { createProductionNodeEffectReconciler } from "../infrastructure/runtime/production-effect-reconciler.js";
 import { createProductionNodeExecutor } from "../infrastructure/runtime/production-node-executor.js";
 import { createProductionWorkspaceIsolator } from "../infrastructure/runtime/production-workspace-isolator.js";
@@ -1247,6 +1247,7 @@ async function evaluationCommand(
               {
                 identity: profile.harness,
                 attempt,
+                workspaceRoot: join(evaluationRuntime, `workspace-${attempt.trialId}`, "workspace"),
                 updateOciLease: async (lease) => {
                   const updated = parseEvaluationTrialAttempt({ ...current, ociLease: lease });
                   await store.updateAttempt(evaluationId, updated);

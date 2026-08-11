@@ -26,6 +26,9 @@ describe("local Prime OCI harness runtime", () => {
     const updates: EvaluationOciLease[] = [];
     const descriptor = primeDescriptor();
     const evidence = completedEvidence();
+    vi.mocked(evidence.publishResult).mockImplementation(async () => {
+      expect(updates.at(-1)?.state).toBe("removed");
+    });
     const operate = vi.fn(async (input) => {
       await input.checkpoint("terminal");
       await input.checkpoint("exported");
@@ -73,6 +76,7 @@ describe("local Prime OCI harness runtime", () => {
       metrics: { ...unavailableEvaluationMetrics(), wallTimeMs: 16 },
     });
     expect(evidence.finishMetrics).toHaveBeenCalledWith({ startedAtMs: 10.2, endedAtMs: 25.8 });
+    expect(evidence.publishResult).toHaveBeenCalledOnce();
     expect(updates.map((lease) => lease.state)).toEqual([
       "intent",
       "created",
@@ -128,6 +132,7 @@ describe("local Prime OCI harness runtime", () => {
       createEngine: vi.fn(async () => engine),
       createIntent: vi.fn(),
       operate: vi.fn(),
+      recoverWorkspace: vi.fn(async () => undefined),
       platform: "linux",
     });
     const request = runtimeRequest(async () => undefined);
@@ -148,6 +153,7 @@ describe("local Prime OCI harness runtime", () => {
     const recovered = await runtime.recoverAttempt({
       identity: request.identity,
       attempt,
+      workspaceRoot: request.evaluation.workspace.cwd,
       updateOciLease: async (lease) => {
         updates.push(lease);
       },
@@ -161,12 +167,14 @@ describe("local Prime OCI harness runtime", () => {
   it("recovers global admission before an OCI intent exists", async () => {
     const descriptor = primeDescriptor();
     const globalAdmission = fakeGlobalAdmission();
+    const recoverWorkspace = vi.fn(async () => undefined);
     const runtime = new LocalPrimeOciHarnessRuntime({
       registry: { resolveAdmitted: vi.fn(async () => descriptor) },
       globalAdmission,
       createEngine: vi.fn(async () => fakeEngine()),
       createIntent: vi.fn(),
       operate: vi.fn(),
+      recoverWorkspace,
       platform: "linux",
     });
     const request = runtimeRequest(async () => undefined);
@@ -184,9 +192,15 @@ describe("local Prime OCI harness runtime", () => {
     const updateOciLease = vi.fn();
 
     await expect(
-      runtime.recoverAttempt({ identity: request.identity, attempt, updateOciLease }),
+      runtime.recoverAttempt({
+        identity: request.identity,
+        attempt,
+        workspaceRoot: request.evaluation.workspace.cwd,
+        updateOciLease,
+      }),
     ).resolves.toEqual(attempt);
     expect(globalAdmission.recover).toHaveBeenCalledOnce();
+    expect(recoverWorkspace).toHaveBeenCalledWith(request.evaluation.workspace.cwd, undefined);
     expect(updateOciLease).not.toHaveBeenCalled();
   });
 
@@ -306,6 +320,8 @@ describe("local Prime OCI harness runtime", () => {
             aborted: false,
             kernelRequests: 1,
           },
+          publishResult: vi.fn(async () => undefined),
+          abortResult: vi.fn(async () => undefined),
           finishMetrics: () => unavailableEvaluationMetrics(),
         };
       }),
@@ -435,10 +451,15 @@ function intentLease(trialId: string) {
   };
 }
 
-function completedEvidence(): PrimeOciOperationEvidence {
+function completedEvidence(): PrimeOciOperationEvidence & {
+  readonly publishResult: ReturnType<typeof vi.fn>;
+  readonly abortResult: ReturnType<typeof vi.fn>;
+} {
   return {
     harness: { outcome: "completed", runId: "prime-session", reason: null },
     settlement: { exitCode: 0, timedOut: false, aborted: false, kernelRequests: 1 },
+    publishResult: vi.fn(async () => undefined),
+    abortResult: vi.fn(async () => undefined),
     finishMetrics: vi.fn((): HarnessEvaluationResult["metrics"] => ({
       ...unavailableEvaluationMetrics(),
       wallTimeMs: 16,

@@ -82,6 +82,7 @@ describe("attached Prime OCI operator", () => {
     expect(readiness).toHaveBeenCalledOnce();
     expect(checkpoints).toEqual(["terminal", "exported"]);
     expect(resultSink.commit).toHaveBeenCalledWith([resultEntry], undefined);
+    expect(resultSink.publishResult).not.toHaveBeenCalled();
     expect(resultSink.abort).not.toHaveBeenCalled();
     expect(transport.closeInput).toHaveBeenCalledOnce();
     expect(decodeTypes(writes)).toEqual([
@@ -110,6 +111,8 @@ describe("attached Prime OCI operator", () => {
       aborted: false,
       kernelRequests: 1,
     });
+    await evidence.publishResult();
+    expect(resultSink.publishResult).toHaveBeenCalledOnce();
     expect(evidence.finishMetrics({ startedAtMs: 10.2, endedAtMs: 25.8 })).toEqual({
       ...unavailableEvaluationMetrics(),
       costUsdMicros: 0,
@@ -425,6 +428,7 @@ function fixture(
 
 function sink(): PrimeOciResultSink & {
   readonly commit: ReturnType<typeof vi.fn>;
+  readonly publishResult: ReturnType<typeof vi.fn>;
   readonly abort: ReturnType<typeof vi.fn>;
 } {
   return {
@@ -433,6 +437,7 @@ function sink(): PrimeOciResultSink & {
     addChunk: vi.fn(async () => undefined),
     endFile: vi.fn(async () => undefined),
     commit: vi.fn(async () => undefined),
+    publishResult: vi.fn(async () => undefined),
     abort: vi.fn(async () => undefined),
   };
 }

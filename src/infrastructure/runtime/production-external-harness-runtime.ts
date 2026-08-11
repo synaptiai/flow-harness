@@ -95,6 +95,9 @@ export function createProductionPrimeOciRuntime(
         socketPath: descriptor.localRuntime.socketPath,
         ...descriptor.localRuntime.socket,
       }),
+    recoverWorkspace: async (workspaceRoot) => {
+      await new DurablePrimeWorkspacePublisher().recover(workspaceRoot);
+    },
     operate: async (input) => {
       const workspaceRoot = input.request.evaluation.workspace.cwd;
       const publisher = new DurablePrimeWorkspacePublisher();
@@ -109,6 +112,8 @@ export function createProductionPrimeOciRuntime(
       });
       const resultSink = new StagedPrimeOciResultSink({
         targetRoot: workspaceRoot,
+        prepareStaging: (stage) => publisher.prepareStaging(stage),
+        abortStaging: (targetRoot) => publisher.abortStaging(targetRoot),
         publish: (publication) => publisher.publish(publication),
       });
       return new AttachedPrimeOciOperator({

@@ -69,6 +69,8 @@ export interface PrimeOciOperationEvidence {
     readonly aborted: boolean;
     readonly kernelRequests: number;
   };
+  readonly publishResult: (signal?: AbortSignal) => Promise<void>;
+  readonly abortResult: (error: unknown) => Promise<void>;
   readonly finishMetrics: (input: {
     readonly startedAtMs: number;
     readonly endedAtMs: number;
@@ -92,6 +94,7 @@ export interface LocalPrimeOciHarnessRuntimeOptions {
     signal?: AbortSignal,
   ) => Promise<void>;
   readonly operate: (input: PrimeOciOperationInput) => Promise<PrimeOciOperationEvidence>;
+  readonly recoverWorkspace?: (workspaceRoot: string, signal?: AbortSignal) => Promise<void>;
   readonly platform?: NodeJS.Platform;
   readonly clockMs?: () => number;
   readonly deadlineFactory?: (maxMs: number) => PrimeOciExecutionDeadline;
@@ -214,9 +217,13 @@ export class LocalPrimeOciHarnessRuntime implements ExternalHarnessRuntime {
           });
         } catch (error) {
           if (error instanceof PrimeOciUnsafeStateError) {
+            await evidence?.abortResult(error).catch(() => undefined);
             throw error;
           }
           lifecycleError = error;
+        }
+        if (lifecycleError !== undefined && evidence !== undefined) {
+          await evidence.abortResult(lifecycleError);
         }
         if (lifecycleError !== undefined) {
           if (policyTerminationError !== undefined) {
@@ -269,6 +276,11 @@ export class LocalPrimeOciHarnessRuntime implements ExternalHarnessRuntime {
           ) {
             throw new Error("Prime child outcome contradicts trusted OCI settlement evidence");
           }
+          await evidence.publishResult(
+            (this.options.cleanupSignalFactory ?? createCleanupSignal)(
+              primeRequest.identity.runtime.policy.cleanupGraceMs,
+            ),
+          );
           const completedEvidence = evidence;
           finishResult = (endedAtMs) =>
             Object.freeze({
@@ -305,6 +317,7 @@ export class LocalPrimeOciHarnessRuntime implements ExternalHarnessRuntime {
     request: {
       readonly identity: ExternalHarnessIdentity;
       readonly attempt: EvaluationTrialAttempt;
+      readonly workspaceRoot: string;
       readonly updateOciLease: (lease: EvaluationOciLease) => Promise<void>;
     },
     signal?: AbortSignal,
@@ -334,6 +347,10 @@ export class LocalPrimeOciHarnessRuntime implements ExternalHarnessRuntime {
       descriptor,
       signal,
     );
+    if (this.options.recoverWorkspace === undefined) {
+      throw new Error("Prime workspace recovery is not available");
+    }
+    await this.options.recoverWorkspace(request.workspaceRoot, signal);
     return recovered;
   }
 

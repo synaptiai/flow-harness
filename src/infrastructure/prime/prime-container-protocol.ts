@@ -185,6 +185,10 @@ export function parsePrimeContainerManifestEntryPayload(
   payload: Uint8Array,
 ): PrimeContainerManifestEntry {
   const input = parsePayload(payload, "manifest entry");
+  return parsePrimeContainerManifestEntry(input);
+}
+
+export function parsePrimeContainerManifestEntry(input: unknown): PrimeContainerManifestEntry {
   const parsed = manifestEntrySchema.safeParse(input);
   if (!parsed.success) {
     throw new Error(`Invalid Prime container manifest entry: ${parsed.error.message}`);
