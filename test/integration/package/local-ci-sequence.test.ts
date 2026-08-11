@@ -39,6 +39,7 @@ describe("local CI sequence", () => {
             readonly command: string;
             readonly args: readonly string[];
             readonly imageId: string | null;
+            readonly imageResultPath: string | null;
           },
       );
     const imageBuildIndex = commands.findIndex(
@@ -56,6 +57,8 @@ describe("local CI sequence", () => {
     expect(runtimeIndex).toBeGreaterThan(imageBuildIndex);
     expect(commands[coverageIndex]?.imageId).toBe(`sha256:${"a".repeat(64)}`);
     expect(commands[runtimeIndex]?.imageId).toBe(`sha256:${"a".repeat(64)}`);
+    expect(commands[coverageIndex]?.imageResultPath).toMatch(/image-result\.json$/);
+    expect(commands[runtimeIndex]?.imageResultPath).toBe(commands[coverageIndex]?.imageResultPath);
   });
 });
 
@@ -72,6 +75,7 @@ appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({
   command: ${JSON.stringify(command)},
   args,
   imageId: process.env.FLOW_PRIME_TEST_IMAGE_ID ?? null,
+  imageResultPath: process.env.FLOW_PRIME_TEST_IMAGE_RESULT ?? null,
 }) + "\\n");
 if (${JSON.stringify(handlesImageOutput)} && args[0] === "scripts/verify-prime-image.mjs") {
   const outputIndex = args.indexOf("--output");

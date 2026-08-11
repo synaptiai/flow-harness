@@ -27,7 +27,11 @@ try {
   const imageResultPath = join(temporaryRoot, "image-result.json");
   await run("node", ["scripts/verify-prime-image.mjs", "--output", imageResultPath], process.env);
   const imageId = parseImageId(await readFile(imageResultPath, "utf8"));
-  const verifiedEnvironment = { ...process.env, FLOW_PRIME_TEST_IMAGE_ID: imageId };
+  const verifiedEnvironment = {
+    ...process.env,
+    FLOW_PRIME_TEST_IMAGE_ID: imageId,
+    FLOW_PRIME_TEST_IMAGE_RESULT: imageResultPath,
+  };
   for (const [command, args] of verifiedGates) {
     await run(command, args, verifiedEnvironment);
   }
