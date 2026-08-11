@@ -83,5 +83,11 @@ jobs:
       - name: Install exact dependencies
         run: npm ci --ignore-scripts
 
+      - name: Build the Prime audit client
+        run: npm run build
+
+      - name: Audit Prime runtime dependencies
+        run: node scripts/audit-prime-dependencies.mjs
+
       - name: Audit runtime dependencies
         run: npm audit --omit=dev --audit-level=low

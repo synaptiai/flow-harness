@@ -51,10 +51,15 @@ describe("local CI sequence", () => {
     const runtimeIndex = commands.findIndex(
       ({ command, args }) => command === "npm" && args.join(" ") === "run test:runtime",
     );
+    const primeAuditIndex = commands.findIndex(
+      ({ command, args }) =>
+        command === "node" && args.join(" ") === "scripts/audit-prime-dependencies.mjs",
+    );
 
     expect(imageBuildIndex).toBeGreaterThan(-1);
     expect(coverageIndex).toBeGreaterThan(imageBuildIndex);
     expect(runtimeIndex).toBeGreaterThan(imageBuildIndex);
+    expect(primeAuditIndex).toBeGreaterThan(imageBuildIndex);
     expect(commands[coverageIndex]?.imageId).toBe(`sha256:${"a".repeat(64)}`);
     expect(commands[runtimeIndex]?.imageId).toBe(`sha256:${"a".repeat(64)}`);
     expect(commands[coverageIndex]?.imageResultPath).toMatch(/image-result\.json$/);

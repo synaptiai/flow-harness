@@ -10,6 +10,7 @@ const preliminaryGates = [
   ["npm", ["run", "build"]],
 ];
 const verifiedGates = [
+  ["node", ["scripts/audit-prime-dependencies.mjs"]],
   ["npm", ["run", "test:coverage"]],
   ["npm", ["run", "test:runtime"]],
   ["node", ["scripts/smoke-compiled.mjs"]],
