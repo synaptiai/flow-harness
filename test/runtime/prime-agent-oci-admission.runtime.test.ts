@@ -89,6 +89,26 @@ describe.skipIf(!linux)("Prime OCI daemon-global admission", () => {
     const holderExit = await waitForExit(holder);
     expect(holderExit).toEqual({ code: 0, signal: null });
   }, 120_000);
+
+  it.each(["crash-intent", "crash-create", "crash-owned"] as const)(
+    "recovers the durable global slot after %s",
+    async (mode) => {
+      const fixture = await createAdmissionFixture();
+      const crashed = await runWorker([fixture.configPath, mode]);
+      expect(crashed).toMatchObject({ code: null, signal: "SIGKILL" });
+
+      const recovered = await runWorker([fixture.configPath, "recover"]);
+      expect(recovered).toMatchObject({ code: 0, signal: null });
+      await expect(lstat(fixture.leasePath)).rejects.toMatchObject({ code: "ENOENT" });
+      const inspection = await run(
+        fixture.docker,
+        ["inspect", "flow-prime-global-v1"],
+        fixture.environment,
+      );
+      expect(inspection.code).not.toBe(0);
+    },
+    120_000,
+  );
 });
 
 describe("Prime host headroom intersection", () => {
@@ -213,6 +233,35 @@ function dockerEnvironment(root: string) {
   };
 }
 
+async function createAdmissionFixture() {
+  const image = readVerifiedImage();
+  const root = await mkdtemp(join(tmpdir(), "flow-prime-admission-recovery-"));
+  temporaryDirectories.push(root);
+  const socket = await lstat("/var/run/docker.sock");
+  const leasePath = join(root, "global-slot.json");
+  const configPath = join(root, "config.json");
+  const docker = process.env.FLOW_DOCKER_EXECUTABLE ?? "/usr/bin/docker";
+  const environment = dockerEnvironment(root);
+  const [daemonId, apiVersion] = await Promise.all([
+    executeFile(docker, ["info", "--format", "{{.ID}}"], {
+      encoding: "utf8",
+      env: environment,
+    }).then((value) => value.stdout.trim()),
+    executeFile(docker, ["version", "--format", "{{.Server.APIVersion}}"], {
+      encoding: "utf8",
+      env: environment,
+    }).then((value) => value.stdout.trim()),
+  ]);
+  const identity = { ...primeExternalHarnessIdentity(), image };
+  await writeFile(
+    configPath,
+    `${JSON.stringify({ identity, daemonId, apiVersion, leasePath })}\n`,
+    { mode: 0o640 },
+  );
+  await chown(configPath, process.getuid?.() ?? socket.uid, socket.gid);
+  return { apiVersion, configPath, docker, environment, leasePath, root };
+}
+
 function startWorker(args: readonly string[]): ChildProcess {
   return spawn(process.execPath, [workerPath, ...args], {
     cwd: repositoryRoot,
@@ -226,21 +275,23 @@ async function runWorker(args: readonly string[]) {
 }
 
 async function run(command: string, args: readonly string[], env: NodeJS.ProcessEnv) {
-  return await new Promise<{ readonly code: number | null; readonly stderr: string }>(
-    (resolveRun, rejectRun) => {
-      const errors: Buffer[] = [];
-      const child = spawn(command, [...args], {
-        cwd: repositoryRoot,
-        env,
-        stdio: ["ignore", "ignore", "pipe"],
-      });
-      child.stderr.on("data", (chunk: Buffer) => errors.push(chunk));
-      child.once("error", rejectRun);
-      child.once("exit", (code) =>
-        resolveRun({ code, stderr: Buffer.concat(errors).toString("utf8") }),
-      );
-    },
-  );
+  return await new Promise<{
+    readonly code: number | null;
+    readonly signal: NodeJS.Signals | null;
+    readonly stderr: string;
+  }>((resolveRun, rejectRun) => {
+    const errors: Buffer[] = [];
+    const child = spawn(command, [...args], {
+      cwd: repositoryRoot,
+      env,
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    child.stderr.on("data", (chunk: Buffer) => errors.push(chunk));
+    child.once("error", rejectRun);
+    child.once("exit", (code, signal) =>
+      resolveRun({ code, signal, stderr: Buffer.concat(errors).toString("utf8") }),
+    );
+  });
 }
 
 async function waitForFile(path: string): Promise<void> {

@@ -5,28 +5,67 @@ import { parseExternalHarnessIdentity } from "../../../dist/domain/evaluation/ex
 import { DockerUnixApiClient } from "../../../dist/infrastructure/oci/docker-unix-api-client.js";
 import { LocalDockerPrimeGlobalSlotEngine } from "../../../dist/infrastructure/oci/local-docker-prime-global-slot.js";
 import { LocalPrimeGlobalSlotStore } from "../../../dist/infrastructure/oci/local-prime-global-slot-store.js";
-import { PrimeGlobalAdmissionController } from "../../../dist/infrastructure/oci/prime-global-admission.js";
+import {
+  PrimeGlobalAdmissionController,
+  parsePrimeGlobalSlotLease,
+} from "../../../dist/infrastructure/oci/prime-global-admission.js";
 
 const [configPath, mode, readyPath, releasePath] = process.argv.slice(2);
-if (configPath === undefined || (mode !== "hold" && mode !== "attempt")) {
+const modes = new Set([
+  "attempt",
+  "crash-create",
+  "crash-intent",
+  "crash-owned",
+  "hold",
+  "recover",
+]);
+if (configPath === undefined || mode === undefined || !modes.has(mode)) {
   throw new Error("Prime admission worker arguments are invalid");
 }
 
 const config = parseConfig(JSON.parse(await readFile(configPath, "utf8")));
-const controller = new PrimeGlobalAdmissionController({
-  store: new LocalPrimeGlobalSlotStore({ leasePath: config.leasePath }),
-  engine: new LocalDockerPrimeGlobalSlotEngine({
-    api: new DockerUnixApiClient({
-      socketPath: "/var/run/docker.sock",
-      apiVersion: config.apiVersion,
-    }),
-    identity: config.identity,
-    daemonId: config.daemonId,
+const store = new LocalPrimeGlobalSlotStore({ leasePath: config.leasePath });
+const engine = new LocalDockerPrimeGlobalSlotEngine({
+  api: new DockerUnixApiClient({
+    socketPath: "/var/run/docker.sock",
+    apiVersion: config.apiVersion,
   }),
+  identity: config.identity,
+  daemonId: config.daemonId,
+});
+const controller = new PrimeGlobalAdmissionController({
+  store,
+  engine,
   daemonId: config.daemonId,
   policyDigest: config.identity.runtime.policy.digest,
   ownerNonce: () => randomBytes(32).toString("hex"),
 });
+
+if (mode === "recover") {
+  await controller.recover();
+  process.exit(0);
+}
+
+if (mode === "crash-intent" || mode === "crash-create") {
+  const intent = parsePrimeGlobalSlotLease({
+    version: 1,
+    state: "intent",
+    lockName: "flow-prime-global-v1",
+    ownerNonce: randomBytes(32).toString("hex"),
+    policyDigest: config.identity.runtime.policy.digest,
+    daemonId: config.daemonId,
+  });
+  await store.writeIntent(intent);
+  if (mode === "crash-create") {
+    await engine.create(intent);
+  }
+  process.kill(process.pid, "SIGKILL");
+}
+
+if (mode === "crash-owned") {
+  await controller.acquire();
+  process.kill(process.pid, "SIGKILL");
+}
 
 if (mode === "attempt") {
   const lease = await controller.acquire();
