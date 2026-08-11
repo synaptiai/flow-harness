@@ -123,6 +123,9 @@ describe("local Prime image builder", () => {
         archiveFailure = error;
       }
     }
+    if (archiveFailure === undefined) {
+      throw new Error("Expected the real archive parser to reject the missing archive");
+    }
     expect(archiveFailure).toMatchObject({ stage: "open image archive" });
     const { builder } = await createBuildHarness({ archiveInspectionError: archiveFailure });
 
