@@ -19,6 +19,7 @@ import type {
   EvaluationMetrics,
 } from "../../domain/evaluation/records.js";
 import { parseStrictJson } from "../../domain/strict-json.js";
+import { NATIVE_PRIME_EVALUATION_CONFIG } from "./native-prime-evaluation-config.js";
 import { createNoIoPrimeResourceLoader } from "./no-io-resource-loader.js";
 
 const BROKER_PROVIDER = "flow-host-broker";
@@ -392,19 +393,7 @@ export async function createNativePrimeSdkSession(
       throw new Error("native Prime broker model is unavailable after registration");
     }
 
-    const settingsManager = sdk.SettingsManager.inMemory({
-      compaction: { enabled: false, agentCallable: false },
-      autoRefine: { enabled: false },
-      retry: { enabled: false, maxRetries: 0, provider: { maxRetries: 0 } },
-      enableSkillCommands: false,
-      enableBuiltinSkills: false,
-      mcpServers: {},
-      packages: [],
-      extensions: [],
-      skills: [],
-      prompts: [],
-      themes: [],
-    });
+    const settingsManager = sdk.SettingsManager.inMemory(NATIVE_PRIME_EVALUATION_CONFIG.settings);
     const resourceLoader = createNoIoPrimeResourceLoader(sdk.createExtensionRuntime(), {
       systemPrompt: lockedSystemPrompt(),
     });
@@ -423,17 +412,8 @@ export async function createNativePrimeSdkSession(
       sessionManager: sdk.SessionManager.inMemory(input.workspace),
       resourceLoader,
       mcpManager,
-      noTools: "all",
-      tools: [],
       customTools: [ipython],
-      initialActiveToolNames: ["ipython"],
-      allowedToolNames: ["ipython"],
-      includeGoals: false,
-      includeCompactSkill: false,
-      rlmDepth: 0,
-      rlmMaxDepth: 0,
-      prewarmIpythonKernel: false,
-      serializedRefine: false,
+      ...NATIVE_PRIME_EVALUATION_CONFIG.sessionOptions,
     });
     if (session.thinkingLevel !== input.evaluation.controls.model.thinking) {
       await session.disposeAsync();

@@ -13,35 +13,12 @@ import {
   readTrustedRuntimeTree,
   sha256,
 } from "../pi/native-pi-harness-registry.js";
+import { NATIVE_PRIME_EVALUATION_CONFIG } from "./native-prime-evaluation-config.js";
 
 const NATIVE_PRIME_ADAPTER_CONTRACT_VERSION = "1.0.0";
 const PRIME_AGENT_VERSION = "0.7.1";
 const PRIME_AGENT_ARCHIVE_SHA256 =
   "d68612c83239caafab72cc76c55ac572bfd07a059ea8fbd2a3ddbe1f2b55dcdb";
-
-export const NATIVE_PRIME_EVALUATION_CONFIG = Object.freeze({
-  version: 1,
-  id: "prime-agent-rlm-evaluation-v1",
-  tools: Object.freeze(["ipython"]),
-  session: "memory",
-  settings: "memory",
-  resourceLoader: "no-io",
-  includeGoals: false,
-  extensions: "deny",
-  skills: "deny",
-  schedules: "deny",
-  mcp: "deny",
-  rules: "deny",
-  promptTemplates: "deny",
-  agentStorage: "memory",
-  autonomousMode: "off",
-  prewarm: false,
-  forkserver: "off",
-  retry: 0,
-  compaction: "off",
-  rlmDepth: 0,
-  maxModelTurns: 64,
-});
 
 type NativePrimeProfileSource = Extract<
   EvaluationProfileSource,
