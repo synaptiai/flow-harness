@@ -215,7 +215,8 @@ state. `pi-native-v1` and `omp-native-v1` run in separate SRT processes on Linux
 verified Linux PID namespace.
 
 `prime-agent-native-v1` runs in one fixed Docker OCI image on Linux x64. It uses a persistent
-IPython session for the trial. The image has no external network route or daemon log.
+IPython session for the trial. The trusted settlement records zero or one kernel request. A second
+kernel request fails the trial. The image has no external network route or daemon log.
 
 Each child receives the task, trial identity, workspace identity, model controls, and budgets. It
 does not receive verifier assertions, evaluation-store paths, or provider credentials.

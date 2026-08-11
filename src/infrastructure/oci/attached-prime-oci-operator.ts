@@ -34,6 +34,7 @@ const settlementSchema = z
     timedOut: z.boolean(),
     aborted: z.boolean(),
     activeTimeMicros: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable(),
+    kernelRequests: z.number().int().min(0).max(1),
   })
   .strict()
   .superRefine((settlement, context) => {
@@ -113,6 +114,7 @@ export class AttachedPrimeOciOperator {
           readonly exitCode: number | null;
           readonly timedOut: boolean;
           readonly aborted: boolean;
+          readonly kernelRequests: number;
         }
       | undefined;
     let operationError: unknown;
@@ -258,6 +260,7 @@ export class AttachedPrimeOciOperator {
                 exitCode: parsed.data.exitCode,
                 timedOut: parsed.data.timedOut,
                 aborted: parsed.data.aborted,
+                kernelRequests: parsed.data.kernelRequests,
               };
               break;
             }

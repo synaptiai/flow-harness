@@ -259,7 +259,12 @@ describe("local Prime OCI harness runtime", () => {
         await input.checkpoint("exported");
         return {
           harness: { outcome: "completed", runId: "prime-session", reason: null },
-          settlement: { exitCode: null, timedOut: true, aborted: false },
+          settlement: {
+            exitCode: null,
+            timedOut: true,
+            aborted: false,
+            kernelRequests: 1,
+          },
           finishMetrics: () => unavailableEvaluationMetrics(),
         };
       }),
@@ -398,7 +403,7 @@ function intentLease(trialId: string) {
 function completedEvidence(): PrimeOciOperationEvidence {
   return {
     harness: { outcome: "completed", runId: "prime-session", reason: null },
-    settlement: { exitCode: 0, timedOut: false, aborted: false },
+    settlement: { exitCode: 0, timedOut: false, aborted: false, kernelRequests: 1 },
     finishMetrics: vi.fn((): HarnessEvaluationResult["metrics"] => ({
       ...unavailableEvaluationMetrics(),
       wallTimeMs: 16,

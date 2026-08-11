@@ -55,6 +55,7 @@ describe("attached Prime OCI operator", () => {
           timedOut: false,
           aborted: false,
           activeTimeMicros: 1_234,
+          kernelRequests: 1,
         }),
       ]),
       write: vi.fn(async (bytes) => {
@@ -103,7 +104,12 @@ describe("attached Prime OCI operator", () => {
       runId: "prime-session",
       reason: null,
     });
-    expect(evidence.settlement).toEqual({ exitCode: 0, timedOut: false, aborted: false });
+    expect(evidence.settlement).toEqual({
+      exitCode: 0,
+      timedOut: false,
+      aborted: false,
+      kernelRequests: 1,
+    });
     expect(evidence.finishMetrics({ startedAtMs: 10.2, endedAtMs: 25.8 })).toEqual({
       ...unavailableEvaluationMetrics(),
       costUsdMicros: 0,
@@ -168,6 +174,7 @@ describe("attached Prime OCI operator", () => {
           timedOut: false,
           aborted: false,
           activeTimeMicros: null,
+          kernelRequests: 1,
         }),
       ]),
       write: vi.fn(async (bytes) => {

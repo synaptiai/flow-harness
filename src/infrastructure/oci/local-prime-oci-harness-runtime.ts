@@ -67,6 +67,7 @@ export interface PrimeOciOperationEvidence {
     readonly exitCode: number | null;
     readonly timedOut: boolean;
     readonly aborted: boolean;
+    readonly kernelRequests: number;
   };
   readonly finishMetrics: (input: {
     readonly startedAtMs: number;
@@ -254,6 +255,13 @@ export class LocalPrimeOciHarnessRuntime implements ExternalHarnessRuntime {
           throw new Error("Prime OCI settlement cannot be both timed out and aborted");
         }
         if (
+          !Number.isInteger(evidence.settlement.kernelRequests) ||
+          evidence.settlement.kernelRequests < 0 ||
+          evidence.settlement.kernelRequests > 1
+        ) {
+          throw new Error("Prime OCI settlement has an invalid kernel request count");
+        }
+        if (
           (evidence.harness.outcome === "timed_out") !== evidence.settlement.timedOut ||
           (evidence.harness.outcome === "cancelled") !== evidence.settlement.aborted
         ) {
@@ -369,6 +377,7 @@ function failureResult(
         exitCode: null,
         timedOut: outcome === "timed_out",
         aborted: outcome === "cancelled",
+        kernelRequests: 0,
       }),
     }),
     metrics: Object.freeze({

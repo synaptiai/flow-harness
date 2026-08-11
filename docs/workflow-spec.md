@@ -1177,6 +1177,9 @@ result tree. Both trees bind file types, modes, sizes, paths, and content hashes
 The container uses a private loopback network namespace only for the persistent IPython kernel.
 The Python process cannot reach the host loopback address or an external address.
 
+The trusted supervisor records zero or one kernel request in the outer settlement. It rejects a
+second kernel request. Multiple IPython tool calls must use the first persistent kernel.
+
 Flow stores the OCI lease before start. Recovery settles the exact owned container before Flow
 records interruption or removes the isolated trial workspace.
 

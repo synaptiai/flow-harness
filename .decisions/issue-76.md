@@ -721,7 +721,8 @@ The driver closes its session and kernel before it sends the terminal frame. The
 and reaps every user 10002 process, including detached process groups.
 
 The supervisor proves that no user 10002 process remains. It closes new kernel requests before it
-walks the stable workspace. The driver waits for export before it exits.
+walks the stable workspace. The settlement gives the trusted kernel-request count. A second kernel
+request fails the trial. The driver waits for export before it exits.
 
 After export, Flow sends one settlement frame. The driver and supervisor exit. Flow then inspects and
 removes the container before it applies the validated result directory.

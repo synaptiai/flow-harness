@@ -42,9 +42,14 @@ func run() error {
 		return err
 	}
 	defer listener.Close()
-	kernelErrors := make(chan error, 1)
+	type kernelServiceResult struct {
+		requests int
+		err      error
+	}
+	kernelResults := make(chan kernelServiceResult, 1)
 	go func() {
-		kernelErrors <- serveKernels(listener)
+		requests, serveError := serveKernels(listener)
+		kernelResults <- kernelServiceResult{requests: requests, err: serveError}
 	}()
 	prepared, err := containerprotocol.ReceivePreparation(containerprotocol.PreparationInput{
 		Reader: os.Stdin, Writer: os.Stdout, WorkspacePath: workspacePath,
@@ -86,8 +91,9 @@ func run() error {
 	if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 		return fmt.Errorf("close kernel supervisor listener: %w", err)
 	}
-	if err := <-kernelErrors; err != nil && !errors.Is(err, net.ErrClosed) {
-		return err
+	kernelResult := <-kernelResults
+	if kernelResult.err != nil && !errors.Is(kernelResult.err, net.ErrClosed) {
+		return kernelResult.err
 	}
 	if err := supervisor.TerminatePythonProcesses(); err != nil {
 		return err
@@ -104,6 +110,7 @@ func run() error {
 		"timedOut":         false,
 		"aborted":          false,
 		"activeTimeMicros": nil,
+		"kernelRequests":   kernelResult.requests,
 	})
 	if err != nil {
 		return errors.New("encode Prime settlement")
@@ -160,20 +167,26 @@ func createKernelListener() (*net.UnixListener, error) {
 	return listener, nil
 }
 
-func serveKernels(listener *net.UnixListener) error {
+func serveKernels(listener *net.UnixListener) (int, error) {
+	requests := 0
 	for {
 		connection, err := listener.AcceptUnix()
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
-				return nil
+				return requests, nil
 			}
-			return fmt.Errorf("accept kernel proxy request: %w", err)
+			return requests, fmt.Errorf("accept kernel proxy request: %w", err)
+		}
+		if requests >= 1 {
+			connection.Close()
+			return requests, errors.New("Prime session requested more than one Python kernel")
 		}
 		if err := handle(connection); err != nil {
 			connection.Close()
-			return err
+			return requests, err
 		}
 		connection.Close()
+		requests += 1
 	}
 }
 
