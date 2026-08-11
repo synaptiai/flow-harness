@@ -178,7 +178,6 @@ export type PrimeImageBuildStage =
   | "inspect image references"
   | "load OCI image"
   | "inspect loaded image"
-  | "export loaded image"
   | "inspect image archive"
   | "probe built image"
   | "finalize image identity"
@@ -220,9 +219,6 @@ export function primeImageBuildStageForDockerCommand(
   }
   if (resource === "image" && operation === "inspect") {
     return "inspect loaded image";
-  }
-  if (resource === "image" && operation === "save") {
-    return "export loaded image";
   }
   if (resource === "run") {
     return "probe built image";
@@ -454,6 +450,13 @@ export class LocalPrimeImageBuilder {
       if (!imageDigestSchema.safeParse(imageId).success) {
         throw new Error("Prime image build returned an invalid image ID");
       }
+      throwIfAborted(signal);
+      stage = "inspect image archive";
+      const externalInventory = await this.#inspectImageArchive({
+        archivePath: loadArchivePath,
+        imageId,
+      });
+      throwIfAborted(signal);
       const canonicalReference = canonicalPrimeImageReference(imageId);
       const existingReferences = parseImageReferenceList(
         await runBuildCommand(["image", "ls", "--quiet", "--no-trunc", canonicalReference]),
@@ -471,15 +474,6 @@ export class LocalPrimeImageBuilder {
       await writeRecoveryJournal(operationRoot, journal, false);
       await runBuildCommand(["image", "load", "--input", loadArchivePath]);
       parseImageInspection(await runBuildCommand(["image", "inspect", imageId]), imageId);
-      const imageArchivePath = join(operationRoot, "prime-image.tar");
-      await runBuildCommand(["image", "save", "--output", imageArchivePath, imageId]);
-      throwIfAborted(signal);
-      stage = "inspect image archive";
-      const externalInventory = await this.#inspectImageArchive({
-        archivePath: imageArchivePath,
-        imageId,
-      });
-      throwIfAborted(signal);
       const probe = parseProbe(
         await runBuildCommand([
           "run",

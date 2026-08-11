@@ -36,7 +36,6 @@ describe("local Prime image builder", () => {
     [["image", "ls"], "inspect image references"],
     [["image", "load"], "load OCI image"],
     [["image", "inspect"], "inspect loaded image"],
-    [["image", "save"], "export loaded image"],
     [["run"], "probe built image"],
     [["image", "tag"], "tag canonical image"],
   ] as const)("assigns Docker command %j to stage %s", (command, expectedStage) => {
@@ -69,7 +68,6 @@ describe("local Prime image builder", () => {
     [["image", "ls"], "inspect image references"],
     [["image", "load"], "load OCI image"],
     [["image", "inspect"], "inspect loaded image"],
-    [["image", "save"], "export loaded image"],
     [["run"], "probe built image"],
     [["image", "tag"], "tag canonical image"],
   ] as const)("reports builder command %j at stage %s", async (command, expectedStage) => {
@@ -423,7 +421,8 @@ process.exit(2);
       run,
       nonce: () => "0123456789abcdef0123456789abcdef",
       verifyPrimeArchive: vi.fn(async () => undefined),
-      inspectImageArchive: vi.fn(async ({ imageId: inspectedImageId }) => {
+      inspectImageArchive: vi.fn(async ({ archivePath, imageId: inspectedImageId }) => {
+        expect(archivePath).toMatch(/prime-image\.docker\.tar$/);
         expect(inspectedImageId).toBe(imageId);
         return {
           archiveSha256: "7".repeat(64),
@@ -485,6 +484,7 @@ process.exit(2);
       "--input",
       expect.stringMatching(/prime-image\.docker\.tar$/),
     ]);
+    expect(mutableCalls.some((args) => args[0] === "image" && args[1] === "save")).toBe(false);
     expect(mutableCalls).toContainEqual([
       "image",
       "tag",
@@ -526,14 +526,6 @@ process.exit(2);
         "--read-only",
       ]),
     );
-    expect(mutableCalls).toContainEqual([
-      "image",
-      "save",
-      "--output",
-      expect.stringMatching(/prime-image\.tar$/),
-      imageId,
-    ]);
-
     await builder.retireCreatedImagesExcept();
     expect(mutableCalls).toContainEqual([
       "image",
