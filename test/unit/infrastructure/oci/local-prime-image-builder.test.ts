@@ -469,7 +469,7 @@ process.exit(2);
         "--pull=false",
         "--no-cache",
         expect.stringMatching(
-          /^--output=type=oci,dest=.+\/prime-image\.oci\.tar,tar=true,compression=uncompressed,force-compression=true,rewrite-timestamp=true$/,
+          /^--output=type=docker,dest=.+\/prime-image\.docker\.tar,tar=true,compression=uncompressed,force-compression=true,rewrite-timestamp=true,oci-mediatypes=true$/,
         ),
         "--provenance=false",
         "--sbom=false",
@@ -483,7 +483,7 @@ process.exit(2);
       "image",
       "load",
       "--input",
-      expect.stringMatching(/prime-image\.oci\.tar$/),
+      expect.stringMatching(/prime-image\.docker\.tar$/),
     ]);
     expect(mutableCalls).toContainEqual([
       "image",

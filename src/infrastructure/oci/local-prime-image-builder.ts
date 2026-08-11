@@ -427,7 +427,7 @@ export class LocalPrimeImageBuilder {
         }),
       );
       const metadataFile = join(operationRoot, "build-metadata.json");
-      const ociArchivePath = join(operationRoot, "prime-image.oci.tar");
+      const loadArchivePath = join(operationRoot, "prime-image.docker.tar");
       await runBuildCommand([
         "buildx",
         "build",
@@ -435,7 +435,7 @@ export class LocalPrimeImageBuilder {
         builderName,
         "--pull=false",
         "--no-cache",
-        `--output=type=oci,dest=${ociArchivePath},tar=true,compression=uncompressed,force-compression=true,rewrite-timestamp=true`,
+        `--output=type=docker,dest=${loadArchivePath},tar=true,compression=uncompressed,force-compression=true,rewrite-timestamp=true,oci-mediatypes=true`,
         "--provenance=false",
         "--sbom=false",
         "--platform",
@@ -469,7 +469,7 @@ export class LocalPrimeImageBuilder {
         canonicalReferenceExisted,
       });
       await writeRecoveryJournal(operationRoot, journal, false);
-      await runBuildCommand(["image", "load", "--input", ociArchivePath]);
+      await runBuildCommand(["image", "load", "--input", loadArchivePath]);
       parseImageInspection(await runBuildCommand(["image", "inspect", imageId]), imageId);
       const imageArchivePath = join(operationRoot, "prime-image.tar");
       await runBuildCommand(["image", "save", "--output", imageArchivePath, imageId]);
