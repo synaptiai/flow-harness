@@ -174,6 +174,17 @@ export class PrimeGlobalAdmissionController {
       );
     }
     if (lease.state === "owned") {
+      const exact = await this.options.engine.inspect(lease.objectId as string, signal);
+      if (exact === null) {
+        const byName = await this.options.engine.inspect(lease.lockName, signal);
+        if (byName !== null) {
+          throw new PrimeGlobalAdmissionUnsafeStateError(
+            "Prime global slot fixed name remains after exact object removal",
+          );
+        }
+        await this.options.store.remove(lease);
+        return;
+      }
       await this.release(lease, signal);
       return;
     }

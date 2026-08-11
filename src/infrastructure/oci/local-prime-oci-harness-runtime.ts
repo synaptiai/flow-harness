@@ -137,6 +137,7 @@ export class LocalPrimeOciHarnessRuntime implements ExternalHarnessRuntime {
         this.options.globalAdmission.acquire(primeRequest, descriptor, operationSignal),
         operationSignal,
       );
+      let finishResult: ((endedAtMs: number) => HarnessEvaluationResult) | undefined;
       let retainGlobalSlot = false;
       try {
         const engine = await waitForAbortable(
@@ -217,63 +218,67 @@ export class LocalPrimeOciHarnessRuntime implements ExternalHarnessRuntime {
           }
           lifecycleError = error;
         }
-        const endedAtMs = clock();
         if (lifecycleError !== undefined) {
           if (policyTerminationError !== undefined) {
-            return failureResult(
-              primeRequest,
-              "crashed",
-              boundedReason(policyTerminationError),
-              startedAtMs,
-              endedAtMs,
-            );
+            finishResult = (endedAtMs) =>
+              failureResult(
+                primeRequest,
+                "crashed",
+                boundedReason(policyTerminationError),
+                startedAtMs,
+                endedAtMs,
+              );
+          } else if (deadline.expired) {
+            finishResult = (endedAtMs) =>
+              failureResult(
+                primeRequest,
+                "timed_out",
+                `Prime execution exceeded ${primeRequest.evaluation.controls.budget.maxExecutionMs}ms`,
+                startedAtMs,
+                endedAtMs,
+              );
+          } else if (signal?.aborted === true) {
+            finishResult = (endedAtMs) =>
+              failureResult(
+                primeRequest,
+                "cancelled",
+                boundedReason(signal.reason ?? lifecycleError),
+                startedAtMs,
+                endedAtMs,
+              );
+          } else {
+            throw lifecycleError;
           }
-          if (deadline.expired) {
-            return failureResult(
-              primeRequest,
-              "timed_out",
-              `Prime execution exceeded ${primeRequest.evaluation.controls.budget.maxExecutionMs}ms`,
-              startedAtMs,
-              endedAtMs,
-            );
+        } else {
+          if (evidence === undefined) {
+            throw new Error("Prime OCI execution did not produce harness evidence");
           }
-          if (signal?.aborted === true) {
-            return failureResult(
-              primeRequest,
-              "cancelled",
-              boundedReason(signal.reason ?? lifecycleError),
-              startedAtMs,
-              endedAtMs,
-            );
+          if (evidence.settlement.timedOut && evidence.settlement.aborted) {
+            throw new Error("Prime OCI settlement cannot be both timed out and aborted");
           }
-          throw lifecycleError;
+          if (
+            !Number.isInteger(evidence.settlement.kernelRequests) ||
+            evidence.settlement.kernelRequests < 0 ||
+            evidence.settlement.kernelRequests > 1
+          ) {
+            throw new Error("Prime OCI settlement has an invalid kernel request count");
+          }
+          if (
+            (evidence.harness.outcome === "timed_out") !== evidence.settlement.timedOut ||
+            (evidence.harness.outcome === "cancelled") !== evidence.settlement.aborted
+          ) {
+            throw new Error("Prime child outcome contradicts trusted OCI settlement evidence");
+          }
+          const completedEvidence = evidence;
+          finishResult = (endedAtMs) =>
+            Object.freeze({
+              harness: Object.freeze({
+                ...completedEvidence.harness,
+                runtime: runtimeEvidence(primeRequest, completedEvidence.settlement),
+              }),
+              metrics: completedEvidence.finishMetrics({ startedAtMs, endedAtMs }),
+            });
         }
-        if (evidence === undefined) {
-          throw new Error("Prime OCI execution did not produce harness evidence");
-        }
-        if (evidence.settlement.timedOut && evidence.settlement.aborted) {
-          throw new Error("Prime OCI settlement cannot be both timed out and aborted");
-        }
-        if (
-          !Number.isInteger(evidence.settlement.kernelRequests) ||
-          evidence.settlement.kernelRequests < 0 ||
-          evidence.settlement.kernelRequests > 1
-        ) {
-          throw new Error("Prime OCI settlement has an invalid kernel request count");
-        }
-        if (
-          (evidence.harness.outcome === "timed_out") !== evidence.settlement.timedOut ||
-          (evidence.harness.outcome === "cancelled") !== evidence.settlement.aborted
-        ) {
-          throw new Error("Prime child outcome contradicts trusted OCI settlement evidence");
-        }
-        return Object.freeze({
-          harness: Object.freeze({
-            ...evidence.harness,
-            runtime: runtimeEvidence(primeRequest, evidence.settlement),
-          }),
-          metrics: evidence.finishMetrics({ startedAtMs, endedAtMs }),
-        });
       } catch (error) {
         retainGlobalSlot = error instanceof PrimeOciUnsafeStateError;
         throw error;
@@ -287,6 +292,10 @@ export class LocalPrimeOciHarnessRuntime implements ExternalHarnessRuntime {
           );
         }
       }
+      if (finishResult === undefined) {
+        throw new Error("Prime OCI execution did not produce a final result");
+      }
+      return finishResult(clock());
     } finally {
       deadline.dispose();
     }
@@ -305,18 +314,21 @@ export class LocalPrimeOciHarnessRuntime implements ExternalHarnessRuntime {
       throw new Error("Prime OCI recovery received a different adapter identity");
     }
     const attempt = parseEvaluationTrialAttempt(request.attempt);
-    if (attempt.adapter !== "prime-agent-native-v1" || attempt.ociLease === undefined) {
-      throw new Error("Prime OCI recovery requires one durable Prime lease");
+    if (attempt.adapter !== "prime-agent-native-v1") {
+      throw new Error("Prime OCI recovery requires one durable Prime attempt");
     }
     const descriptor = await this.options.registry.resolveAdmitted(request.identity);
-    const engine = await this.options.createEngine(descriptor, signal);
     await descriptor.assertCurrent();
-    const lease = await new PrimeOciContainerLifecycle(engine).recover({
-      lease: attempt.ociLease,
-      update: request.updateOciLease,
-      ...(signal === undefined ? {} : { cleanupSignal: signal }),
-    });
-    const recovered = parseEvaluationTrialAttempt({ ...attempt, ociLease: lease });
+    let recovered = attempt;
+    if (attempt.ociLease !== undefined) {
+      const engine = await this.options.createEngine(descriptor, signal);
+      const lease = await new PrimeOciContainerLifecycle(engine).recover({
+        lease: attempt.ociLease,
+        update: request.updateOciLease,
+        ...(signal === undefined ? {} : { cleanupSignal: signal }),
+      });
+      recovered = parseEvaluationTrialAttempt({ ...attempt, ociLease: lease });
+    }
     await this.options.globalAdmission.recover(
       { identity: request.identity, attempt: recovered },
       descriptor,

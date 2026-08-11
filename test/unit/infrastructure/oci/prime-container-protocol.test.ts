@@ -10,6 +10,8 @@ import {
   MAX_PRIME_CONTAINER_PATH_BYTES,
   MAX_PRIME_CONTAINER_PAYLOAD_BYTES,
   MAX_PRIME_CONTAINER_TRANSFER_FRAMES,
+  MAX_PRIME_CONTAINER_ENCODED_TRANSFER_BYTES,
+  MAX_PRIME_CONTAINER_DRIVER_BYTES,
   PrimeContainerFrameDecoder,
   PrimeContainerFrameType,
   PrimeContainerProtocolSequence,
@@ -259,6 +261,63 @@ describe("Prime container protocol sequence", () => {
     expect(() =>
       tooManyDriverFrames.accept("container-to-host", PrimeContainerFrameType.Driver),
     ).toThrow(/driver.*frame/i);
+  });
+
+  it("enforces exact encoded transfer and driver byte limits", () => {
+    const fullFrameBytes = MAX_PRIME_CONTAINER_PAYLOAD_BYTES + 5;
+    const exactTransfer = new PrimeContainerProtocolSequence();
+    exactTransfer.accept("host-to-container", PrimeContainerFrameType.AttestationChallenge);
+    exactTransfer.accept("container-to-host", PrimeContainerFrameType.Readiness);
+    exactTransfer.accept(
+      "host-to-container",
+      PrimeContainerFrameType.FixtureStart,
+      MAX_PRIME_CONTAINER_PAYLOAD_BYTES,
+    );
+    const fullTransferFrames = Math.floor(
+      MAX_PRIME_CONTAINER_ENCODED_TRANSFER_BYTES / fullFrameBytes,
+    );
+    for (let frame = 1; frame < fullTransferFrames; frame += 1) {
+      exactTransfer.accept(
+        "host-to-container",
+        PrimeContainerFrameType.FixtureEntry,
+        MAX_PRIME_CONTAINER_PAYLOAD_BYTES,
+      );
+    }
+    const finalTransferPayload =
+      MAX_PRIME_CONTAINER_ENCODED_TRANSFER_BYTES - fullTransferFrames * fullFrameBytes - 5;
+    expect(() =>
+      exactTransfer.accept(
+        "host-to-container",
+        PrimeContainerFrameType.FixtureEntry,
+        finalTransferPayload,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      exactTransfer.accept("host-to-container", PrimeContainerFrameType.FixtureComplete, 1),
+    ).toThrow(/fixture.*byte/i);
+
+    const exactDriver = new PrimeContainerProtocolSequence();
+    exactDriver.accept("host-to-container", PrimeContainerFrameType.AttestationChallenge);
+    exactDriver.accept("container-to-host", PrimeContainerFrameType.Readiness);
+    exactDriver.accept("host-to-container", PrimeContainerFrameType.FixtureStart);
+    exactDriver.accept("host-to-container", PrimeContainerFrameType.FixtureComplete);
+    exactDriver.accept("host-to-container", PrimeContainerFrameType.Bootstrap);
+    const fullDriverFrames = Math.floor(MAX_PRIME_CONTAINER_DRIVER_BYTES / fullFrameBytes);
+    for (let frame = 0; frame < fullDriverFrames; frame += 1) {
+      exactDriver.accept(
+        "container-to-host",
+        PrimeContainerFrameType.Driver,
+        MAX_PRIME_CONTAINER_PAYLOAD_BYTES,
+      );
+    }
+    const finalDriverPayload =
+      MAX_PRIME_CONTAINER_DRIVER_BYTES - fullDriverFrames * fullFrameBytes - 5;
+    expect(() =>
+      exactDriver.accept("container-to-host", PrimeContainerFrameType.Driver, finalDriverPayload),
+    ).not.toThrow();
+    expect(() =>
+      exactDriver.accept("host-to-container", PrimeContainerFrameType.Driver, 1),
+    ).toThrow(/driver.*byte/i);
   });
 });
 

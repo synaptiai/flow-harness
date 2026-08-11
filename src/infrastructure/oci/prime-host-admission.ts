@@ -54,8 +54,6 @@ const observationSchema = z
     cpusetCpuCount: positiveSafeInteger,
     cpuAncestors: z.array(cpuAncestorSchema).max(64),
     controllers: z.array(z.enum(["cpu", "io", "memory", "pids"])).max(4),
-    imageReadBytesPerSecond: finiteNonnegative,
-    imageReadOperationsPerSecond: finiteNonnegative,
     probeLatenciesMs: z.array(finiteNonnegative).max(64),
   })
   .strict()
@@ -82,8 +80,6 @@ export interface PrimeHostAdmissionEvidence {
   readonly effectiveMemoryHeadroomBytes: number;
   readonly effectivePidHeadroom: number;
   readonly effectiveCpuCapacity: number;
-  readonly imageReadBytesPerSecond: number;
-  readonly imageReadOperationsPerSecond: number;
   readonly probeP95LatencyMs: number;
 }
 
@@ -104,8 +100,8 @@ export function validatePrimeHostAdmission(
   ) {
     throw new Error("Prime host admission requires every cgroup version two controller");
   }
-  if (observation.probeLatenciesMs.length !== policy.preflightReadCount) {
-    throw new Error("Prime host admission has the wrong image latency probe count");
+  if (observation.probeLatenciesMs.length !== policy.preflightDaemonProbeCount) {
+    throw new Error("Prime host admission has the wrong Docker latency probe count");
   }
 
   const effectiveMemoryHeadroomBytes = Math.min(
@@ -138,26 +134,17 @@ export function validatePrimeHostAdmission(
   if (effectiveCpuCapacity < policy.minCpuCapacity) {
     throw new Error("Prime host CPU capacity is below the admitted minimum");
   }
-  if (observation.imageReadBytesPerSecond < policy.minImageReadBytesPerSecond) {
-    throw new Error("Prime image read-byte capacity is below the admitted minimum");
-  }
-  if (observation.imageReadOperationsPerSecond < policy.minImageReadOperationsPerSecond) {
-    throw new Error("Prime image read-operation capacity is below the admitted minimum");
-  }
-
   const sortedLatencies = [...observation.probeLatenciesMs].sort((left, right) => left - right);
   const p95Index = Math.ceil(sortedLatencies.length * 0.95) - 1;
   const probeP95LatencyMs = sortedLatencies[p95Index];
-  if (probeP95LatencyMs === undefined || probeP95LatencyMs > policy.maxProbeLatencyMs) {
-    throw new Error("Prime image read latency exceeds the admitted maximum");
+  if (probeP95LatencyMs === undefined || probeP95LatencyMs > policy.maxDaemonProbeLatencyMs) {
+    throw new Error("Prime Docker daemon latency exceeds the admitted maximum");
   }
 
   return Object.freeze({
     effectiveMemoryHeadroomBytes,
     effectivePidHeadroom,
     effectiveCpuCapacity,
-    imageReadBytesPerSecond: observation.imageReadBytesPerSecond,
-    imageReadOperationsPerSecond: observation.imageReadOperationsPerSecond,
     probeP95LatencyMs,
   });
 }

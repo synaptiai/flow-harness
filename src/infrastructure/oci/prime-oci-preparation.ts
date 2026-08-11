@@ -46,7 +46,11 @@ export interface PrimeOciAttestationDescriptor {
 export interface PrimeOciPreparationDependencies {
   readonly build: (buildNumber: 1 | 2) => Promise<PrimeOciPreparedBuild>;
   readonly inspectRuntime: () => Promise<PrimeOciRuntimeInspection>;
-  readonly publish: (path: string, descriptor: PrimeOciAttestationDescriptor) => Promise<void>;
+  readonly publish: (
+    path: string,
+    descriptor: PrimeOciAttestationDescriptor,
+    signal?: AbortSignal,
+  ) => Promise<void>;
 }
 
 export interface PrimeOciPreparationResult {
@@ -69,11 +73,14 @@ export class PrimeOciPreparationError extends Error {
 }
 
 export async function preparePrimeOciRuntime(
-  input: { readonly descriptorPath: string },
+  input: { readonly descriptorPath: string; readonly signal?: AbortSignal },
   dependencies: PrimeOciPreparationDependencies,
 ): Promise<PrimeOciPreparationResult> {
+  throwIfAborted(input.signal);
   const first = await runBuild(1, dependencies);
+  throwIfAborted(input.signal);
   const second = await runBuild(2, dependencies);
+  throwIfAborted(input.signal);
   if (!isDeepStrictEqual(first, second)) {
     throw new PrimeOciPreparationError(
       "non_reproducible",
@@ -84,6 +91,7 @@ export async function preparePrimeOciRuntime(
   let inspected: PrimeOciRuntimeInspection;
   try {
     inspected = normalizeInspection(await dependencies.inspectRuntime());
+    throwIfAborted(input.signal);
   } catch (error) {
     throw new PrimeOciPreparationError("inspection_failed", "Prime OCI runtime inspection failed", {
       cause: error,
@@ -101,7 +109,8 @@ export async function preparePrimeOciRuntime(
     local: inspected.local,
   });
   try {
-    await dependencies.publish(input.descriptorPath, descriptor);
+    throwIfAborted(input.signal);
+    await dependencies.publish(input.descriptorPath, descriptor, input.signal);
   } catch (error) {
     throw new PrimeOciPreparationError(
       "publish_failed",
@@ -116,6 +125,15 @@ export async function preparePrimeOciRuntime(
     imageManifestSha256: first.image.ociManifestSha256,
     sbomSha256: first.image.sbomSha256,
   });
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted !== true) {
+    return;
+  }
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : new Error("Prime OCI runtime preparation was cancelled");
 }
 
 async function runBuild(
@@ -166,12 +184,6 @@ function normalizeInspection(input: PrimeOciRuntimeInspection): PrimeOciRuntimeI
   }
   if (input.local.corePattern.trimStart().startsWith("|")) {
     throw new Error("Prime OCI host core pattern uses a piped handler");
-  }
-  if (
-    input.local.imageProbe.readBytesPerSecond < runtime.policy.minImageReadBytesPerSecond ||
-    input.local.imageProbe.readOperationsPerSecond < runtime.policy.minImageReadOperationsPerSecond
-  ) {
-    throw new Error("Prime OCI image capacity is below the runtime policy");
   }
   const seccompSha256 = createHash("sha256")
     .update(canonicalize(input.local.seccompProfile))

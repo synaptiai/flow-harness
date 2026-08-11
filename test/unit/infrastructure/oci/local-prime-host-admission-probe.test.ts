@@ -12,22 +12,14 @@ describe("local Prime host admission probe", () => {
     const files = linuxFiles();
     const probe = new LocalPrimeHostAdmissionProbe({
       readText: vi.fn(async (path) => files.get(path) ?? missing(path)),
-      countHostPids: vi.fn(async () => 1_000),
       onlineCpuCount: () => 8,
-      measureImageLatency: vi.fn(async () => Array.from({ length: 16 }, () => 50)),
+      measureDaemonLatency: vi.fn(async () => 50),
     });
     const identity = primeExternalHarnessIdentity();
 
     const observation = await probe.observe(
       {
         cgroupPath: "/sys/fs/cgroup/user.slice/flow.scope",
-        imageProbe: {
-          executablePath: "/usr/bin/dd",
-          executableSha256: "a".repeat(64),
-          readBytesPerSecond: 134_217_728,
-          readOperationsPerSecond: 8_192,
-        },
-        imageDevice: { path: "/dev/test-image", major: 8, minor: 1 },
       },
       identity.runtime.policy,
     );
@@ -43,6 +35,7 @@ describe("local Prime host admission probe", () => {
       { quotaMicros: null, periodMicros: 100_000 },
     ]);
     expect(observation.cpusetCpuCount).toBe(4);
+    expect(observation.hostPidCurrent).toBe(100);
     expect(() => validatePrimeHostAdmission(observation, identity.runtime.policy)).not.toThrow();
   });
 
@@ -51,22 +44,14 @@ describe("local Prime host admission probe", () => {
     files.set("/sys/fs/cgroup/user.slice/flow.scope/cpu.max", "broken\n");
     const probe = new LocalPrimeHostAdmissionProbe({
       readText: vi.fn(async (path) => files.get(path) ?? missing(path)),
-      countHostPids: vi.fn(async () => 1_000),
       onlineCpuCount: () => 8,
-      measureImageLatency: vi.fn(async () => Array.from({ length: 16 }, () => 50)),
+      measureDaemonLatency: vi.fn(async () => 50),
     });
 
     await expect(
       probe.observe(
         {
           cgroupPath: "/sys/fs/cgroup/user.slice/flow.scope",
-          imageProbe: {
-            executablePath: "/usr/bin/dd",
-            executableSha256: "a".repeat(64),
-            readBytesPerSecond: 134_217_728,
-            readOperationsPerSecond: 8_192,
-          },
-          imageDevice: { path: "/dev/test-image", major: 8, minor: 1 },
         },
         primeExternalHarnessIdentity().runtime.policy,
       ),
@@ -75,9 +60,9 @@ describe("local Prime host admission probe", () => {
 
   it("terminates after three consecutive slow runtime probes", async () => {
     const latencies = [101, 101, 50, 101, 101, 101];
-    const measureRuntimeImageLatency = vi.fn(async () => latencies.shift() ?? 0);
+    const measureDaemonLatency = vi.fn(async () => latencies.shift() ?? 0);
     const probe = new LocalPrimeHostAdmissionProbe({
-      measureRuntimeImageLatency,
+      measureDaemonLatency,
       waitForRuntimeProbe: vi.fn(async () => undefined),
     });
 
@@ -85,18 +70,11 @@ describe("local Prime host admission probe", () => {
       probe.monitorRuntime(
         {
           cgroupPath: "/sys/fs/cgroup/user.slice/flow.scope",
-          imageProbe: {
-            executablePath: "/usr/bin/dd",
-            executableSha256: "a".repeat(64),
-            readBytesPerSecond: 134_217_728,
-            readOperationsPerSecond: 8_192,
-          },
-          imageDevice: { path: "/dev/test-image", major: 8, minor: 1 },
         },
         primeExternalHarnessIdentity().runtime.policy,
       ),
     ).rejects.toBeInstanceOf(PrimeHostPolicyTerminationError);
-    expect(measureRuntimeImageLatency).toHaveBeenCalledTimes(6);
+    expect(measureDaemonLatency).toHaveBeenCalledTimes(6);
   });
 });
 

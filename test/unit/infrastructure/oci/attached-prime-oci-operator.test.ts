@@ -119,7 +119,7 @@ describe("attached Prime OCI operator", () => {
       outputTokens: 0,
       turns: 0,
       toolCalls: 0,
-      toolErrors: 0,
+      toolErrors: null,
       wallTimeMs: 16,
       activeTimeMs: 2,
       interventions: 0,
@@ -134,7 +134,14 @@ describe("attached Prime OCI operator", () => {
     const inferenceBody = JSON.stringify({ version: 1, context: { messages: [] } });
     const responseBody = JSON.stringify({
       role: "assistant",
-      content: [{ type: "text", text: "done" }],
+      content: [
+        {
+          type: "toolCall",
+          id: "call-1",
+          name: "ipython",
+          arguments: { code: "raise RuntimeError('expected')" },
+        },
+      ],
       api: "flow-host-inference-v1",
       provider: "flow-host-broker",
       model: "flow-host-model",
@@ -146,7 +153,7 @@ describe("attached Prime OCI operator", () => {
         totalTokens: 10,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.0000001 },
       },
-      stopReason: "stop",
+      stopReason: "toolUse",
       timestamp: 1,
     });
     const writes: Buffer[] = [];
@@ -161,7 +168,12 @@ describe("attached Prime OCI operator", () => {
         driverInferenceFrame(2, inferenceBody),
         driverFrame(3, "terminal", {
           harness: { outcome: "completed", runId: "prime-session", reason: null },
-          metrics: unavailableEvaluationMetrics(),
+          metrics: {
+            ...unavailableEvaluationMetrics(),
+            turns: 1,
+            toolCalls: 1,
+            toolErrors: 1,
+          },
         }),
         frame(PrimeContainerFrameType.Terminal),
         frame(PrimeContainerFrameType.ResultStart, transferStart([resultEntry])),
@@ -210,6 +222,8 @@ describe("attached Prime OCI operator", () => {
       cacheWriteTokens: 4,
       outputTokens: 2,
       turns: 1,
+      toolCalls: 1,
+      toolErrors: 1,
       wallTimeMs: 1,
     });
   });
@@ -379,12 +393,6 @@ function operationInput(
         corePattern: "core",
         globalLeasePath: "/var/lib/flow-prime/global-slot.json",
         imageDevice: { path: "/dev/test-image", major: 8, minor: 1 },
-        imageProbe: {
-          executablePath: "/usr/bin/dd",
-          executableSha256: "b".repeat(64),
-          readBytesPerSecond: 134_217_728,
-          readOperationsPerSecond: 8_192,
-        },
         leaseTarget: "flow-prime-global-v1",
         seccompProfile: { defaultAction: "SCMP_ACT_ERRNO", syscalls: [] },
       },

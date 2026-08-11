@@ -1,10 +1,6 @@
-import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
-import { constants } from "node:fs";
-import { open, opendir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { cpus } from "node:os";
 import { dirname, relative, resolve } from "node:path";
-import { performance } from "node:perf_hooks";
 
 import type { PrimeExternalHarnessIdentity } from "../../domain/evaluation/external-harness.js";
 import {
@@ -13,41 +9,16 @@ import {
 } from "./prime-host-admission.js";
 
 const CGROUP_ROOT = "/sys/fs/cgroup";
-const MAX_PROBE_EXECUTABLE_BYTES = 16_777_216;
-
 type PrimeRuntimePolicy = PrimeExternalHarnessIdentity["runtime"]["policy"];
-
-export interface PrimeImageAdmissionProbeIdentity {
-  readonly executablePath: string;
-  readonly executableSha256: string;
-  readonly readBytesPerSecond: number;
-  readonly readOperationsPerSecond: number;
-}
 
 export interface PrimeHostAdmissionLocalInput {
   readonly cgroupPath: string;
-  readonly imageProbe: PrimeImageAdmissionProbeIdentity;
-  readonly imageDevice: {
-    readonly path: string;
-    readonly major: number;
-    readonly minor: number;
-  };
 }
 
 export interface LocalPrimeHostAdmissionProbeOptions {
   readonly readText?: (path: string) => Promise<string>;
-  readonly countHostPids?: () => Promise<number>;
   readonly onlineCpuCount?: () => number;
-  readonly measureImageLatency?: (
-    input: PrimeHostAdmissionLocalInput,
-    policy: PrimeRuntimePolicy,
-    signal?: AbortSignal,
-  ) => Promise<readonly number[]>;
-  readonly measureRuntimeImageLatency?: (
-    input: PrimeHostAdmissionLocalInput,
-    policy: PrimeRuntimePolicy,
-    signal?: AbortSignal,
-  ) => Promise<number>;
+  readonly measureDaemonLatency?: (signal?: AbortSignal) => Promise<number>;
   readonly waitForRuntimeProbe?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
 }
 
@@ -56,12 +27,8 @@ export class PrimeHostPolicyTerminationError extends Error {
 }
 
 export class LocalPrimeHostAdmissionProbe {
-  readonly #countHostPids: () => Promise<number>;
-  readonly #measureImageLatency: NonNullable<
-    LocalPrimeHostAdmissionProbeOptions["measureImageLatency"]
-  >;
-  readonly #measureRuntimeImageLatency: NonNullable<
-    LocalPrimeHostAdmissionProbeOptions["measureRuntimeImageLatency"]
+  readonly #measureDaemonLatency: NonNullable<
+    LocalPrimeHostAdmissionProbeOptions["measureDaemonLatency"]
   >;
   readonly #onlineCpuCount: () => number;
   readonly #readText: (path: string) => Promise<string>;
@@ -71,11 +38,10 @@ export class LocalPrimeHostAdmissionProbe {
 
   constructor(options: LocalPrimeHostAdmissionProbeOptions = {}) {
     this.#readText = options.readText ?? ((path) => readFile(path, "utf8"));
-    this.#countHostPids = options.countHostPids ?? countHostPids;
     this.#onlineCpuCount = options.onlineCpuCount ?? (() => cpus().length);
-    this.#measureImageLatency = options.measureImageLatency ?? measureImageLatency;
-    this.#measureRuntimeImageLatency =
-      options.measureRuntimeImageLatency ?? measureRuntimeImageLatency;
+    this.#measureDaemonLatency =
+      options.measureDaemonLatency ??
+      (() => Promise.reject(new Error("Prime Docker daemon probe is not configured")));
     this.#waitForRuntimeProbe = options.waitForRuntimeProbe ?? waitForRuntimeProbe;
   }
 
@@ -91,29 +57,25 @@ export class LocalPrimeHostAdmissionProbe {
       throw new Error("Prime host cgroup path is outside the cgroup version two root");
     }
     const ancestors = cgroupAncestors(cgroupPath);
-    const [
-      meminfo,
-      pidLimitText,
-      hostPidCurrent,
-      controllerText,
-      cpusetText,
-      probeLatenciesMs,
-      ...ancestorValues
-    ] = await Promise.all([
-      this.#readText("/proc/meminfo"),
-      this.#readText("/proc/sys/kernel/pid_max"),
-      this.#countHostPids(),
-      this.#readText(`${CGROUP_ROOT}/cgroup.controllers`),
-      this.#readText(`${cgroupPath}/cpuset.cpus.effective`),
-      this.#measureImageLatency(input, policy, signal),
-      ...ancestors.flatMap((path) => [
-        this.#readText(`${path}/memory.max`),
-        this.#readText(`${path}/memory.current`),
-        this.#readText(`${path}/pids.max`),
-        this.#readText(`${path}/pids.current`),
-        this.#readText(`${path}/cpu.max`),
-      ]),
-    ]);
+    const [meminfo, pidLimitText, controllerText, cpusetText, probeLatenciesMs, ...ancestorValues] =
+      await Promise.all([
+        this.#readText("/proc/meminfo"),
+        this.#readText("/proc/sys/kernel/pid_max"),
+        this.#readText(`${CGROUP_ROOT}/cgroup.controllers`),
+        this.#readText(`${cgroupPath}/cpuset.cpus.effective`),
+        Promise.all(
+          Array.from({ length: policy.preflightDaemonProbeCount }, () =>
+            this.#measureDaemonLatency(signal),
+          ),
+        ),
+        ...ancestors.flatMap((path) => [
+          this.#readText(`${path}/memory.max`),
+          this.#readText(`${path}/memory.current`),
+          this.#readText(`${path}/pids.max`),
+          this.#readText(`${path}/pids.current`),
+          this.#readText(`${path}/cpu.max`),
+        ]),
+      ]);
     const memoryAncestors: { maxBytes: number | null; currentBytes: number }[] = [];
     const pidAncestors: { max: number | null; current: number }[] = [];
     const cpuAncestors: { quotaMicros: number | null; periodMicros: number }[] = [];
@@ -133,14 +95,12 @@ export class LocalPrimeHostAdmissionProbe {
       hostMemoryAvailableBytes: parseMemAvailable(meminfo),
       memoryAncestors,
       hostPidLimit: parseInteger(pidLimitText, "host PID limit"),
-      hostPidCurrent,
+      hostPidCurrent: requiredRootPidCurrent(pidAncestors),
       pidAncestors,
       onlineCpuCount: this.#onlineCpuCount(),
       cpusetCpuCount: parseCpuSet(cpusetText),
       cpuAncestors,
       controllers: parseControllers(controllerText),
-      imageReadBytesPerSecond: input.imageProbe.readBytesPerSecond,
-      imageReadOperationsPerSecond: input.imageProbe.readOperationsPerSecond,
       probeLatenciesMs: [...probeLatenciesMs],
     };
     validatePrimeHostAdmission(observation, policy);
@@ -148,23 +108,24 @@ export class LocalPrimeHostAdmissionProbe {
   }
 
   async monitorRuntime(
-    input: PrimeHostAdmissionLocalInput,
+    _input: PrimeHostAdmissionLocalInput,
     policy: PrimeRuntimePolicy,
     signal?: AbortSignal,
   ): Promise<void> {
     let consecutiveSlowProbes = 0;
     while (true) {
-      await this.#waitForRuntimeProbe(policy.runtimeProbeIntervalMs, signal);
-      const latencyMs = await this.#measureRuntimeImageLatency(input, policy, signal);
+      await this.#waitForRuntimeProbe(policy.daemonProbeIntervalMs, signal);
+      const latencyMs = await this.#measureDaemonLatency(signal);
       if (!Number.isFinite(latencyMs) || latencyMs < 0) {
         throw new PrimeHostPolicyTerminationError(
           "Prime runtime image latency probe returned an invalid duration",
         );
       }
-      consecutiveSlowProbes = latencyMs > policy.maxProbeLatencyMs ? consecutiveSlowProbes + 1 : 0;
-      if (consecutiveSlowProbes >= policy.maxConsecutiveSlowProbes) {
+      consecutiveSlowProbes =
+        latencyMs > policy.maxDaemonProbeLatencyMs ? consecutiveSlowProbes + 1 : 0;
+      if (consecutiveSlowProbes >= policy.maxConsecutiveSlowDaemonProbes) {
         throw new PrimeHostPolicyTerminationError(
-          "Prime runtime image latency exceeded the admitted policy three times",
+          "Prime Docker daemon latency exceeded the admitted policy three times",
         );
       }
     }
@@ -260,57 +221,6 @@ function parseControllers(value: string) {
   return [...required];
 }
 
-async function countHostPids(): Promise<number> {
-  const directory = await opendir("/proc");
-  let count = 0;
-  try {
-    for await (const entry of directory) {
-      if (entry.isDirectory() && /^(?:0|[1-9]\d*)$/.test(entry.name)) {
-        count += 1;
-      }
-    }
-  } finally {
-    await directory.close().catch(() => undefined);
-  }
-  return count;
-}
-
-async function measureImageLatency(
-  input: PrimeHostAdmissionLocalInput,
-  policy: PrimeRuntimePolicy,
-  signal?: AbortSignal,
-): Promise<readonly number[]> {
-  await assertProbeExecutable(input.imageProbe);
-  const latencies: number[] = [];
-  for (let index = 0; index < policy.preflightReadCount; index += 1) {
-    throwIfAborted(signal);
-    const startedAt = performance.now();
-    await runDirectRead(
-      input.imageProbe.executablePath,
-      input.imageDevice.path,
-      policy.probeBytes,
-      signal,
-    );
-    latencies.push(performance.now() - startedAt);
-  }
-  return Object.freeze(latencies);
-}
-
-async function measureRuntimeImageLatency(
-  input: PrimeHostAdmissionLocalInput,
-  policy: PrimeRuntimePolicy,
-  signal?: AbortSignal,
-): Promise<number> {
-  const startedAt = performance.now();
-  await runDirectRead(
-    input.imageProbe.executablePath,
-    input.imageDevice.path,
-    policy.probeBytes,
-    signal,
-  );
-  return performance.now() - startedAt;
-}
-
 async function waitForRuntimeProbe(milliseconds: number, signal?: AbortSignal): Promise<void> {
   throwIfAborted(signal);
   await new Promise<void>((resolveWait, rejectWait) => {
@@ -329,71 +239,14 @@ async function waitForRuntimeProbe(milliseconds: number, signal?: AbortSignal): 
   });
 }
 
-async function assertProbeExecutable(identity: PrimeImageAdmissionProbeIdentity): Promise<void> {
-  const handle = await open(identity.executablePath, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    const before = await handle.stat({ bigint: true });
-    if (!before.isFile() || before.size > BigInt(MAX_PROBE_EXECUTABLE_BYTES)) {
-      throw new Error("Prime image probe executable is not one bounded regular file");
-    }
-    const content = await handle.readFile();
-    const after = await handle.stat({ bigint: true });
-    if (
-      before.dev !== after.dev ||
-      before.ino !== after.ino ||
-      before.size !== after.size ||
-      before.ctimeNs !== after.ctimeNs ||
-      before.mtimeNs !== after.mtimeNs
-    ) {
-      throw new Error("Prime image probe executable changed while read");
-    }
-    if (createHash("sha256").update(content).digest("hex") !== identity.executableSha256) {
-      throw new Error("Prime image probe executable digest changed after preparation");
-    }
-  } finally {
-    await handle.close();
+function requiredRootPidCurrent(
+  ancestors: readonly { readonly max: number | null; readonly current: number }[],
+): number {
+  const root = ancestors.at(-1);
+  if (root === undefined) {
+    throw new Error("Prime host PID ancestors omit the cgroup root");
   }
-}
-
-async function runDirectRead(
-  executablePath: string,
-  imageDevicePath: string,
-  bytes: number,
-  signal?: AbortSignal,
-): Promise<void> {
-  const timeout = AbortSignal.timeout(5_000);
-  const combined = signal === undefined ? timeout : AbortSignal.any([signal, timeout]);
-  await new Promise<void>((resolveRun, rejectRun) => {
-    const child = spawn(
-      executablePath,
-      [
-        `if=${imageDevicePath}`,
-        "of=/dev/null",
-        `bs=${String(bytes)}`,
-        "count=1",
-        "iflag=direct",
-        "status=none",
-      ],
-      {
-        cwd: "/",
-        env: { LANG: "C", LC_ALL: "C", PATH: "/usr/bin:/bin" },
-        signal: combined,
-        stdio: "ignore",
-      },
-    );
-    child.once("error", rejectRun);
-    child.once("exit", (code, exitSignal) => {
-      if (code === 0 && exitSignal === null) {
-        resolveRun();
-      } else {
-        rejectRun(
-          new Error(
-            `Prime image read probe failed with code ${String(code)} and signal ${String(exitSignal)}`,
-          ),
-        );
-      }
-    });
-  });
+  return root.current;
 }
 
 function checkedMultiply(left: number, right: number, label: string): number {

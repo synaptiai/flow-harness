@@ -104,11 +104,7 @@ export async function runEvaluationTrials(
 
   if (input.attempts.active !== null) {
     let attempt = reconcileActiveAttempt(input.plan, records, input.attempts.active);
-    if (
-      attempt.ociLease !== undefined &&
-      attempt.ociLease.state !== "removed" &&
-      attempt.ociLease.state !== "absent"
-    ) {
+    if (attempt.adapter === "prime-agent-native-v1") {
       attempt = await recoverPrimeAttempt(attempt, input.attempts.recover);
     }
     const schedule = input.plan.schedule[records.length];
@@ -375,7 +371,11 @@ async function recoverPrimeAttempt(
   try {
     const recovered = parseEvaluationTrialAttempt(await recover(attempt));
     assertRecoveredAttemptIdentity(attempt, recovered);
-    if (recovered.ociLease?.state !== "removed" && recovered.ociLease?.state !== "absent") {
+    if (
+      recovered.ociLease !== undefined &&
+      recovered.ociLease.state !== "removed" &&
+      recovered.ociLease.state !== "absent"
+    ) {
       throw new Error("Prime OCI recovery did not prove container removal");
     }
     return recovered;
@@ -397,6 +397,9 @@ function assertRecoveredAttemptIdentity(
   const { ociLease: recoveredLease, ...recoveredBase } = recovered;
   if (JSON.stringify(previousBase) !== JSON.stringify(recoveredBase)) {
     throw new Error("Prime OCI recovery changed the durable attempt identity");
+  }
+  if (previousLease === undefined && recoveredLease === undefined) {
+    return;
   }
   if (previousLease === undefined || recoveredLease === undefined) {
     throw new Error("Prime OCI recovery removed the durable lease identity");

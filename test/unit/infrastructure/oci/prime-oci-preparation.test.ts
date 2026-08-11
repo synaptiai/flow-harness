@@ -6,9 +6,25 @@ import {
   type PrimeOciPreparationError,
   preparePrimeOciRuntime,
 } from "../../../../src/infrastructure/oci/prime-oci-preparation.js";
+import { globalLeaseDirectoryRepairs } from "../../../../src/infrastructure/oci/production-prime-oci-preparation.js";
 import { primeExternalHarnessIdentity } from "../../../fixtures/evaluation/prime-external-harness-identity.js";
 
 describe("Prime OCI runtime preparation", () => {
+  it("does not repair an exact shared global lease directory", () => {
+    expect(globalLeaseDirectoryRepairs({ gid: 999, mode: 0o2770 }, 999)).toEqual({
+      group: false,
+      mode: false,
+    });
+    expect(globalLeaseDirectoryRepairs({ gid: 998, mode: 0o2770 }, 999)).toEqual({
+      group: true,
+      mode: false,
+    });
+    expect(globalLeaseDirectoryRepairs({ gid: 999, mode: 0o770 }, 999)).toEqual({
+      group: false,
+      mode: true,
+    });
+  });
+
   it("publishes one descriptor after two identical builds", async () => {
     const identity = primeExternalHarnessIdentity();
     const seccompProfile = { defaultAction: "SCMP_ACT_ERRNO", syscalls: [] };
@@ -42,12 +58,6 @@ describe("Prime OCI runtime preparation", () => {
             corePattern: "core",
             globalLeasePath: "/var/lib/flow-prime/global-slot.json",
             imageDevice: { path: "/dev/test-image", major: 8, minor: 1 },
-            imageProbe: {
-              executablePath: "/usr/bin/dd",
-              executableSha256: "b".repeat(64),
-              readBytesPerSecond: runtime.policy.minImageReadBytesPerSecond,
-              readOperationsPerSecond: runtime.policy.minImageReadOperationsPerSecond,
-            },
             leaseTarget: "flow-prime-global-v1",
             seccompProfile,
           },
@@ -70,6 +80,7 @@ describe("Prime OCI runtime preparation", () => {
         artifacts: imageArtifacts(),
         daemonId: "daemon-test-id",
       }),
+      undefined,
     );
   });
 
@@ -133,6 +144,33 @@ describe("Prime OCI runtime preparation", () => {
       ),
     ).rejects.toMatchObject({ code: "non_reproducible" });
     expect(inspectRuntime).not.toHaveBeenCalled();
+  });
+
+  it("does not continue or publish after cancellation at a preparation boundary", async () => {
+    const identity = primeExternalHarnessIdentity();
+    const controller = new AbortController();
+    const publish = vi.fn(async () => undefined);
+    const build = vi.fn(async () => {
+      controller.abort(new Error("operator cancelled preparation"));
+      return {
+        image: identity.image,
+        artifacts: imageArtifacts(),
+        harnessPackageContentSha256: identity.harness.packageContentSha256,
+        harnessDependencyClosureSha256: identity.harness.dependencyClosureSha256,
+      };
+    });
+
+    await expect(
+      preparePrimeOciRuntime(
+        {
+          descriptorPath: "/project/.flow/runtime/prime-agent/oci-attestation.json",
+          signal: controller.signal,
+        },
+        { build, inspectRuntime: vi.fn(), publish },
+      ),
+    ).rejects.toThrow(/cancelled preparation/i);
+    expect(build).toHaveBeenCalledOnce();
+    expect(publish).not.toHaveBeenCalled();
   });
 });
 

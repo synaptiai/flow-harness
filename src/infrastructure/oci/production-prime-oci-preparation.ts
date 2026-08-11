@@ -1,4 +1,3 @@
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { type BigIntStats, constants } from "node:fs";
 import {
@@ -16,7 +15,6 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
 
 import { z } from "zod";
 
@@ -34,7 +32,6 @@ import {
   preparePrimeOciRuntime,
 } from "./prime-oci-preparation.js";
 
-const executeFile = promisify(execFile);
 const DOCKER_SOCKET = "/var/run/docker.sock" as const;
 const MAX_EXECUTABLE_BYTES = 268_435_456;
 const MAX_COMMAND_OUTPUT_BYTES = 1_048_576;
@@ -112,7 +109,7 @@ export async function prepareProductionPrimeOciRuntime(input: {
       "oci-attestation.json",
     );
     const result = await preparePrimeOciRuntime(
-      { descriptorPath },
+      { descriptorPath, ...(input.signal === undefined ? {} : { signal: input.signal }) },
       {
         build: (buildNumber) => builder.build(buildNumber),
         inspectRuntime: () => inspector.inspect(),
@@ -162,13 +159,6 @@ async function observeLocalRuntime(input: {
   });
   const globalLeasePath = await prepareGlobalLeaseDirectory(info.ID, socket.gid);
   const imageDevice = await resolvePrimeImageDevice(info.DockerRootDir);
-  const imageProbeExecutable = await resolveFixedExecutable(["/usr/bin/dd", "/bin/dd"], "dd");
-  const imageProbeExecutableSha256 = await hashStableRegularFile(
-    imageProbeExecutable,
-    16_777_216,
-    "Prime image probe executable",
-  );
-  const capacity = await measureImageCapacity(imageProbeExecutable, imageDevice.path, input.signal);
   let seccompProfile: Readonly<Record<string, unknown>>;
   try {
     const parsed = JSON.parse(seccompSource) as unknown;
@@ -188,12 +178,6 @@ async function observeLocalRuntime(input: {
     corePattern: corePattern.trim(),
     globalLeasePath,
     imageDevice,
-    imageProbe: Object.freeze({
-      executablePath: imageProbeExecutable,
-      executableSha256: imageProbeExecutableSha256,
-      readBytesPerSecond: capacity.readBytesPerSecond,
-      readOperationsPerSecond: capacity.readOperationsPerSecond,
-    }),
     leaseTarget: "flow-prime-global-v1",
     seccompProfile,
   });
@@ -246,14 +230,40 @@ async function prepareGlobalLeaseDirectory(daemonId: string, socketGid: number):
   if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
     throw new Error("Prime OCI global lease root is not one direct directory");
   }
-  if (safeNumber(metadata.gid, "Prime global lease group") !== socketGid) {
+  const repairs = globalLeaseDirectoryRepairs(
+    {
+      gid: safeNumber(metadata.gid, "Prime global lease group"),
+      mode: Number(metadata.mode & 0o7777n),
+    },
+    socketGid,
+  );
+  if (repairs.group) {
     await chown(directory, getuid(), socketGid);
   }
-  await chmod(directory, 0o2770);
+  if (repairs.mode) {
+    await chmod(directory, 0o2770);
+  }
   if ((await realpath(directory)) !== directory) {
     throw new Error("Prime OCI global lease root is not canonical");
   }
+  const settled = await lstat(directory, { bigint: true });
+  if (
+    safeNumber(settled.gid, "Prime global lease group") !== socketGid ||
+    Number(settled.mode & 0o7777n) !== 0o2770
+  ) {
+    throw new Error("Prime OCI global lease root has the wrong group or mode");
+  }
   return join(directory, "global-slot.json");
+}
+
+export function globalLeaseDirectoryRepairs(
+  input: { readonly gid: number; readonly mode: number },
+  expectedGid: number,
+): { readonly group: boolean; readonly mode: boolean } {
+  return Object.freeze({
+    group: input.gid !== expectedGid,
+    mode: input.mode !== 0o2770,
+  });
 }
 
 async function resolveCurrentCgroup(source: string): Promise<string> {
@@ -293,41 +303,6 @@ function decodeLinuxDevice(device: bigint): { readonly major: number; readonly m
     throw new Error("Prime OCI image device identity exceeds the integer range");
   }
   return Object.freeze({ major, minor });
-}
-
-async function measureImageCapacity(
-  executable: string,
-  devicePath: string,
-  signal: AbortSignal | undefined,
-) {
-  const operations = 8_192;
-  const bytesPerOperation = 4_096;
-  const started = process.hrtime.bigint();
-  await executeFile(
-    executable,
-    [
-      `if=${devicePath}`,
-      "of=/dev/null",
-      `bs=${bytesPerOperation}`,
-      `count=${operations}`,
-      "iflag=direct",
-      "status=none",
-    ],
-    {
-      encoding: "utf8",
-      maxBuffer: MAX_COMMAND_OUTPUT_BYTES,
-      env: { PATH: "/usr/bin:/bin" },
-      ...(signal === undefined ? {} : { signal }),
-    },
-  );
-  const elapsedSeconds = Number(process.hrtime.bigint() - started) / 1_000_000_000;
-  if (!Number.isFinite(elapsedSeconds) || elapsedSeconds <= 0) {
-    throw new Error("Prime OCI image capacity probe returned an invalid duration");
-  }
-  return Object.freeze({
-    readBytesPerSecond: Math.floor((operations * bytesPerOperation) / elapsedSeconds),
-    readOperationsPerSecond: Math.floor(operations / elapsedSeconds),
-  });
 }
 
 async function hashStableRegularFile(

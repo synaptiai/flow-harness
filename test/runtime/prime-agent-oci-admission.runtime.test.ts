@@ -125,9 +125,7 @@ describe("Prime host headroom intersection", () => {
       ["online CPU", (value) => (value.onlineCpuCount -= 1)],
       ["CPU set", (value) => (value.cpusetCpuCount -= 1)],
       ["ancestor CPU", decrementAncestorCpu],
-      ["read bytes", (value) => (value.imageReadBytesPerSecond -= 1)],
-      ["read operations", (value) => (value.imageReadOperationsPerSecond -= 1)],
-      ["latency", (value) => (value.probeLatenciesMs[15] = policy.maxProbeLatencyMs + 1)],
+      ["latency", (value) => (value.probeLatenciesMs[15] = policy.maxDaemonProbeLatencyMs + 1)],
     ];
     for (const [name, mutate] of cases) {
       const changed = structuredClone(base);
@@ -140,27 +138,15 @@ describe("Prime host headroom intersection", () => {
 
   it("terminates after three consecutive slow runtime probes", async () => {
     const policy = primeExternalHarnessIdentity().runtime.policy;
-    const measure = vi.fn(async () => policy.maxProbeLatencyMs + 1);
+    const measure = vi.fn(async () => policy.maxDaemonProbeLatencyMs + 1);
     const probe = new LocalPrimeHostAdmissionProbe({
-      measureRuntimeImageLatency: measure,
+      measureDaemonLatency: measure,
       waitForRuntimeProbe: async () => undefined,
     });
 
-    await expect(
-      probe.monitorRuntime(
-        {
-          cgroupPath: "/sys/fs/cgroup",
-          imageProbe: {
-            executablePath: "/usr/bin/dd",
-            executableSha256: "f".repeat(64),
-            readBytesPerSecond: policy.minImageReadBytesPerSecond,
-            readOperationsPerSecond: policy.minImageReadOperationsPerSecond,
-          },
-          imageDevice: { path: "/dev/null", major: 1, minor: 3 },
-        },
-        policy,
-      ),
-    ).rejects.toThrow(/three times/i);
+    await expect(probe.monitorRuntime({ cgroupPath: "/sys/fs/cgroup" }, policy)).rejects.toThrow(
+      /three times/i,
+    );
     expect(measure).toHaveBeenCalledTimes(3);
   });
 });
@@ -177,11 +163,9 @@ function headroomObservation(): PrimeHostAdmissionObservation {
     cpusetCpuCount: policy.minCpuCapacity,
     cpuAncestors: [{ quotaMicros: policy.minCpuCapacity * 100_000, periodMicros: 100_000 }],
     controllers: ["cpu", "io", "memory", "pids"] as ("cpu" | "io" | "memory" | "pids")[],
-    imageReadBytesPerSecond: policy.minImageReadBytesPerSecond,
-    imageReadOperationsPerSecond: policy.minImageReadOperationsPerSecond,
     probeLatenciesMs: Array.from(
-      { length: policy.preflightReadCount },
-      () => policy.maxProbeLatencyMs,
+      { length: policy.preflightDaemonProbeCount },
+      () => policy.maxDaemonProbeLatencyMs,
     ),
   };
 }

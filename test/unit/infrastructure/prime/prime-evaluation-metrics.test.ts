@@ -114,6 +114,38 @@ describe("Prime evaluation metrics", () => {
       overflow.recordBrokerResponse(assistantResponse({ input: 1, toolCalls: 0 })),
     ).toThrow(/safe integer|overflow/i);
   });
+
+  it("enforces model-turn and IPython-call limits before the next response is accepted", () => {
+    const turns = new PrimeEvaluationMetricsLedger({ maxModelTurns: 2, maxIpythonCalls: 2 });
+    turns.recordBrokerResponse(assistantResponse());
+    turns.recordBrokerResponse(assistantResponse());
+    expect(() => turns.recordBrokerResponse(assistantResponse())).toThrow(/model.*turn.*limit/i);
+
+    const calls = new PrimeEvaluationMetricsLedger({ maxModelTurns: 2, maxIpythonCalls: 2 });
+    calls.recordBrokerResponse(assistantResponse({ toolCalls: 2 }));
+    expect(() => calls.recordBrokerResponse(assistantResponse({ toolCalls: 1 }))).toThrow(
+      /IPython.*call.*limit/i,
+    );
+  });
+
+  it("uses the signed terminal tool-error count and checks related totals", () => {
+    const ledger = new PrimeEvaluationMetricsLedger({ maxModelTurns: 2, maxIpythonCalls: 2 });
+    ledger.recordBrokerResponse(assistantResponse({ toolCalls: 2 }));
+    ledger.reconcileTerminalMetrics({ turns: 1, toolCalls: 2, toolErrors: 1 });
+
+    expect(ledger.finish({ startedAtMs: 0, endedAtMs: 1, activeTimeMicros: null })).toMatchObject({
+      turns: 1,
+      toolCalls: 2,
+      toolErrors: 1,
+    });
+
+    expect(() =>
+      ledger.reconcileTerminalMetrics({ turns: 2, toolCalls: 2, toolErrors: 1 }),
+    ).toThrow(/turn/i);
+    expect(() =>
+      ledger.reconcileTerminalMetrics({ turns: 1, toolCalls: 2, toolErrors: 3 }),
+    ).toThrow(/tool-error/i);
+  });
 });
 
 function assistantResponse(

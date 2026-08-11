@@ -71,6 +71,11 @@ export type PrimeIntervention =
   | "policy-kill"
   | "recovery-termination";
 
+export interface PrimeEvaluationMetricsLimits {
+  readonly maxModelTurns: number;
+  readonly maxIpythonCalls: number;
+}
+
 export class PrimeEvaluationMetricsLedger {
   #activeTimeMicros: number | null = null;
   #cacheReadTokens = 0;
@@ -84,9 +89,17 @@ export class PrimeEvaluationMetricsLedger {
   #recoveryFailed = false;
   #toolCalls = 0;
   #toolErrors = 0;
+  #toolErrorsAvailable = true;
   #toolResults = 0;
   #transcriptComplete = true;
   #turns = 0;
+
+  constructor(
+    private readonly limits: PrimeEvaluationMetricsLimits = {
+      maxModelTurns: Number.MAX_SAFE_INTEGER,
+      maxIpythonCalls: Number.MAX_SAFE_INTEGER,
+    },
+  ) {}
 
   recordBrokerResponse(body: string): void {
     const parsed = responseSchema.safeParse(
@@ -100,6 +113,15 @@ export class PrimeEvaluationMetricsLedger {
       throw new Error("Prime assistant response is invalid", { cause: parsed.error });
     }
     const response = parsed.data;
+    const toolCalls = response.content.filter((content) => content.type === "toolCall").length;
+    const nextTurns = checkedAdd(this.#turns, 1, "Prime turn total");
+    const nextToolCalls = checkedAdd(this.#toolCalls, toolCalls, "Prime tool-call total");
+    if (nextTurns > this.limits.maxModelTurns) {
+      throw new Error("Prime model turn limit is exceeded");
+    }
+    if (nextToolCalls > this.limits.maxIpythonCalls) {
+      throw new Error("Prime IPython call limit is exceeded");
+    }
     this.#costUsdMicros = checkedAdd(
       this.#costUsdMicros,
       checkedCeil(response.usage.cost.total * 1_000_000, "Prime response cost"),
@@ -125,9 +147,32 @@ export class PrimeEvaluationMetricsLedger {
       response.usage.output,
       "Prime output token total",
     );
-    this.#turns = checkedAdd(this.#turns, 1, "Prime turn total");
-    const toolCalls = response.content.filter((content) => content.type === "toolCall").length;
-    this.#toolCalls = checkedAdd(this.#toolCalls, toolCalls, "Prime tool-call total");
+    this.#turns = nextTurns;
+    this.#toolCalls = nextToolCalls;
+  }
+
+  reconcileTerminalMetrics(input: {
+    readonly turns: number | null;
+    readonly toolCalls: number | null;
+    readonly toolErrors: number | null;
+  }): void {
+    if (input.turns !== null && input.turns !== this.#turns) {
+      throw new Error("Prime signed terminal turn total contradicts the host ledger");
+    }
+    if (input.toolCalls !== null && input.toolCalls !== this.#toolCalls) {
+      throw new Error("Prime signed terminal tool-call total contradicts the host ledger");
+    }
+    if (input.toolErrors === null) {
+      this.#toolErrorsAvailable = false;
+      return;
+    }
+    if (!Number.isSafeInteger(input.toolErrors) || input.toolErrors < 0) {
+      throw new Error("Prime signed terminal tool-error total is invalid");
+    }
+    if (input.toolErrors > this.#toolCalls) {
+      throw new Error("Prime signed terminal tool-error total exceeds the tool-call total");
+    }
+    this.#toolErrors = input.toolErrors;
   }
 
   recordIpythonResult(isError: boolean): void {
@@ -173,7 +218,7 @@ export class PrimeEvaluationMetricsLedger {
       outputTokens: transcript ? this.#outputTokens : null,
       turns: transcript ? this.#turns : null,
       toolCalls: transcript ? this.#toolCalls : null,
-      toolErrors: transcript ? this.#toolErrors : null,
+      toolErrors: transcript && this.#toolErrorsAvailable ? this.#toolErrors : null,
       wallTimeMs:
         lifecycle && input.startedAtMs !== null && input.endedAtMs !== null
           ? durationMs(input.startedAtMs, input.endedAtMs)

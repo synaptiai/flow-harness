@@ -41,12 +41,6 @@ describe("local Prime OCI attestation", () => {
       socketPath: "/var/run/docker.sock",
       apiVersion: "1.51",
       imageDevice: { path: "/dev/test-image", major: 8, minor: 1 },
-      imageProbe: {
-        executablePath: "/usr/bin/dd",
-        executableSha256: "b".repeat(64),
-        readBytesPerSecond: 134_217_728,
-        readOperationsPerSecond: 8_192,
-      },
     });
     await expect(admitted.assertCurrent()).resolves.toBeUndefined();
 
@@ -81,33 +75,6 @@ describe("local Prime OCI attestation", () => {
         observeSocket: async () => ({ ...descriptor.local.socket, inode: 99 }),
       }).read(),
     ).rejects.toThrow(/socket.*changed/i);
-  });
-
-  it("rejects prepared image capacity below either public minimum", async () => {
-    const root = await mkdtemp(join(tmpdir(), "flow-prime-attestation-"));
-    temporaryDirectories.push(root);
-    const descriptorPath = join(root, "oci-attestation.json");
-    const identity = primeExternalHarnessIdentity();
-    const descriptor = descriptorFixture(identity);
-
-    for (const imageProbe of [
-      { ...descriptor.local.imageProbe, readBytesPerSecond: 134_217_727 },
-      { ...descriptor.local.imageProbe, readOperationsPerSecond: 8_191 },
-    ]) {
-      await writeFile(
-        descriptorPath,
-        `${JSON.stringify({
-          ...descriptor,
-          local: { ...descriptor.local, imageProbe },
-        })}\n`,
-      );
-      await expect(
-        new LocalPrimeOciAttestationStore({
-          descriptorPath,
-          observeSocket: async () => descriptor.local.socket,
-        }).read(),
-      ).rejects.toThrow(/image capacity.*below/i);
-    }
   });
 
   it("publishes and replaces one complete canonical descriptor", async () => {
@@ -174,12 +141,6 @@ function descriptorFixture(identity: ReturnType<typeof primeExternalHarnessIdent
       corePattern: "core",
       globalLeasePath: "/var/lib/flow-prime/global-slot.json",
       imageDevice: { path: "/dev/test-image", major: 8, minor: 1 },
-      imageProbe: {
-        executablePath: "/usr/bin/dd",
-        executableSha256: "b".repeat(64),
-        readBytesPerSecond: 134_217_728,
-        readOperationsPerSecond: 8_192,
-      },
       leaseTarget: "flow-prime-global-v1",
       seccompProfile,
     },

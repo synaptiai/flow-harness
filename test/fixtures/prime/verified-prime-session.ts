@@ -269,12 +269,6 @@ function descriptorFor(identity: PrimeExternalHarnessIdentity): NativePrimeHarne
       corePattern: "core",
       globalLeasePath: "/var/tmp/flow-prime-test-slot.json",
       imageDevice: { path: "/dev/null", major: 1, minor: 3 },
-      imageProbe: {
-        executablePath: "/usr/bin/dd",
-        executableSha256: "f".repeat(64),
-        readBytesPerSecond: identity.runtime.policy.minImageReadBytesPerSecond,
-        readOperationsPerSecond: identity.runtime.policy.minImageReadOperationsPerSecond,
-      },
       leaseTarget: "flow-prime-global-v1",
       seccompProfile: {},
     },

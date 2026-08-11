@@ -4,6 +4,7 @@ import {
   PrimeGlobalAdmissionController,
   PrimeGlobalAdmissionUnsafeStateError,
   type PrimeGlobalSlotLease,
+  type PrimeGlobalSlotInspection,
 } from "../../../../src/infrastructure/oci/prime-global-admission.js";
 
 describe("Prime global admission", () => {
@@ -121,6 +122,28 @@ describe("Prime global admission", () => {
       "store:remove",
     ]);
   });
+
+  it("retires an owned lease after daemon-side removal completed", async () => {
+    const events: string[] = [];
+    const owned: PrimeGlobalSlotLease = {
+      version: 1,
+      state: "owned",
+      lockName: "flow-prime-global-v1",
+      ownerNonce: "a".repeat(64),
+      policyDigest: "b".repeat(64),
+      daemonId: "daemon-test-id",
+      objectId: "d".repeat(64),
+    };
+    const store = memoryStore(events, owned);
+    const engine = lockEngine(events);
+    engine.inspect.mockResolvedValue(null);
+
+    await controller(store, engine).recover();
+
+    expect(engine.inspect).toHaveBeenNthCalledWith(1, owned.objectId, undefined);
+    expect(engine.inspect).toHaveBeenNthCalledWith(2, owned.lockName, undefined);
+    expect(store.remove).toHaveBeenCalledWith(owned);
+  });
 });
 
 function controller(store: ReturnType<typeof memoryStore>, engine: ReturnType<typeof lockEngine>) {
@@ -167,17 +190,20 @@ function lockEngine(
     };
   } = {},
 ) {
-  let inspection = options.inspection ?? {
+  let inspection: PrimeGlobalSlotInspection | null = options.inspection ?? {
     objectId: "d".repeat(64),
     ownerNonce: "a".repeat(64),
     policyDigest: "b".repeat(64),
     daemonId: "daemon-test-id",
   };
   return {
-    create: vi.fn(async () => {
+    create: vi.fn(async (): Promise<PrimeGlobalSlotInspection> => {
       events.push("engine:create");
       if (options.createError !== undefined) {
         throw options.createError;
+      }
+      if (inspection === null) {
+        throw new Error("test global slot object is absent");
       }
       return inspection;
     }),
@@ -189,7 +215,7 @@ function lockEngine(
     }),
     remove: vi.fn(async () => {
       events.push("engine:remove");
-      inspection = null as never;
+      inspection = null;
     }),
     confirmRemoved: vi.fn(async () => {
       events.push("engine:confirm");

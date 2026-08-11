@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { performance } from "node:perf_hooks";
 
 import type { ExternalHarnessRuntime } from "../../application/external-harness-adapter.js";
 import type { ExternalHarnessIdentity } from "../../domain/evaluation/external-harness.js";
@@ -72,12 +73,8 @@ export function createProductionPrimeOciRuntime(
     registry: { resolveAdmitted: resolvePrimeAdmitted },
     globalAdmission: createProductionGlobalAdmission(),
     monitorHost: (descriptor, signal) =>
-      new LocalPrimeHostAdmissionProbe().monitorRuntime(
-        {
-          cgroupPath: descriptor.localRuntime.cgroupPath,
-          imageProbe: descriptor.localRuntime.imageProbe,
-          imageDevice: descriptor.localRuntime.imageDevice,
-        },
+      createDockerHostProbe(descriptor).monitorRuntime(
+        { cgroupPath: descriptor.localRuntime.cgroupPath },
         descriptor.identity.runtime.policy,
         signal,
       ),
@@ -133,15 +130,10 @@ export function createProductionPrimeOciRuntime(
 
 function createProductionGlobalAdmission(): PrimeOciGlobalAdmission {
   const controllers = new Map<string, PrimeGlobalAdmissionController>();
-  const hostProbe = new LocalPrimeHostAdmissionProbe();
   const admission: PrimeOciGlobalAdmission = {
     acquire: async (_request, descriptor, signal) => {
-      await hostProbe.observe(
-        {
-          cgroupPath: descriptor.localRuntime.cgroupPath,
-          imageProbe: descriptor.localRuntime.imageProbe,
-          imageDevice: descriptor.localRuntime.imageDevice,
-        },
+      await createDockerHostProbe(descriptor).observe(
+        { cgroupPath: descriptor.localRuntime.cgroupPath },
         descriptor.identity.runtime.policy,
         signal,
       );
@@ -170,6 +162,23 @@ function createProductionGlobalAdmission(): PrimeOciGlobalAdmission {
     },
   };
   return Object.freeze(admission);
+}
+
+function createDockerHostProbe(
+  descriptor: NativePrimeHarnessDescriptor,
+): LocalPrimeHostAdmissionProbe {
+  const local = descriptor.localRuntime;
+  const api = new DockerUnixApiClient({
+    socketPath: local.socketPath,
+    apiVersion: local.apiVersion,
+  });
+  return new LocalPrimeHostAdmissionProbe({
+    measureDaemonLatency: async (signal) => {
+      const startedAt = performance.now();
+      await api.ping(signal);
+      return performance.now() - startedAt;
+    },
+  });
 }
 
 function createGlobalAdmissionController(

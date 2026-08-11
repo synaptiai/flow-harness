@@ -15,7 +15,9 @@ export const MAX_PRIME_CONTAINER_FILE_BYTES = 268_435_456;
 export const MAX_PRIME_CONTAINER_TRANSFER_BYTES = 268_435_456;
 export const MAX_PRIME_CONTAINER_CHUNK_FRAMES = 8_191;
 export const MAX_PRIME_CONTAINER_TRANSFER_FRAMES = 16_385;
+export const MAX_PRIME_CONTAINER_ENCODED_TRANSFER_BYTES = 318_767_104;
 export const MAX_PRIME_CONTAINER_DRIVER_FRAMES = 512;
+export const MAX_PRIME_CONTAINER_DRIVER_BYTES = 138_412_032;
 
 const PRIME_CONTAINER_FRAME_HEADER_BYTES = 5;
 
@@ -372,15 +374,26 @@ type ProtocolState =
   | "complete";
 
 export class PrimeContainerProtocolSequence {
+  #driverBytes = 0;
   #driverFrames = 0;
+  #fixtureBytes = 0;
   #fixtureFrames = 0;
+  #resultBytes = 0;
   #resultFrames = 0;
   #state: ProtocolState = "challenge";
 
-  accept(direction: PrimeContainerFrameDirection, type: PrimeContainerFrameType): void {
+  accept(
+    direction: PrimeContainerFrameDirection,
+    type: PrimeContainerFrameType,
+    payloadBytes = 0,
+  ): void {
     assertKnownFrameType(type);
+    if (!Number.isSafeInteger(payloadBytes) || payloadBytes < 0) {
+      throw new Error("Prime container frame payload byte count is invalid");
+    }
+    assertPayloadLength(type, payloadBytes);
     assertFrameDirection(direction, type);
-    this.#recordFrame(type);
+    this.#recordFrame(type, PRIME_CONTAINER_FRAME_HEADER_BYTES + payloadBytes);
 
     switch (this.#state) {
       case "challenge":
@@ -451,7 +464,7 @@ export class PrimeContainerProtocolSequence {
     this.#state = next;
   }
 
-  #recordFrame(type: PrimeContainerFrameType): void {
+  #recordFrame(type: PrimeContainerFrameType, encodedBytes: number): void {
     if (
       type === PrimeContainerFrameType.FixtureStart ||
       type === PrimeContainerFrameType.FixtureEntry ||
@@ -462,6 +475,10 @@ export class PrimeContainerProtocolSequence {
       this.#fixtureFrames += 1;
       if (this.#fixtureFrames > MAX_PRIME_CONTAINER_TRANSFER_FRAMES) {
         throw new Error("Prime container fixture transfer exceeds the frame limit");
+      }
+      this.#fixtureBytes += encodedBytes;
+      if (this.#fixtureBytes > MAX_PRIME_CONTAINER_ENCODED_TRANSFER_BYTES) {
+        throw new Error("Prime container fixture transfer exceeds the encoded byte limit");
       }
       return;
     }
@@ -476,12 +493,20 @@ export class PrimeContainerProtocolSequence {
       if (this.#resultFrames > MAX_PRIME_CONTAINER_TRANSFER_FRAMES) {
         throw new Error("Prime container result transfer exceeds the frame limit");
       }
+      this.#resultBytes += encodedBytes;
+      if (this.#resultBytes > MAX_PRIME_CONTAINER_ENCODED_TRANSFER_BYTES) {
+        throw new Error("Prime container result transfer exceeds the encoded byte limit");
+      }
       return;
     }
     if (type === PrimeContainerFrameType.Driver) {
       this.#driverFrames += 1;
       if (this.#driverFrames > MAX_PRIME_CONTAINER_DRIVER_FRAMES) {
         throw new Error("Prime container driver traffic exceeds the frame limit");
+      }
+      this.#driverBytes += encodedBytes;
+      if (this.#driverBytes > MAX_PRIME_CONTAINER_DRIVER_BYTES) {
+        throw new Error("Prime container driver traffic exceeds the byte limit");
       }
     }
   }

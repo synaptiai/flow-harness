@@ -21,13 +21,11 @@ describe("Prime host admission", () => {
     ["online CPU", { onlineCpuCount: 3 }],
     ["CPU set", { cpusetCpuCount: 3 }],
     ["ancestor CPU quota", { cpuAncestors: [{ quotaMicros: 399_999, periodMicros: 100_000 }] }],
-    ["image byte rate", { imageReadBytesPerSecond: 134_217_727 }],
-    ["image operation rate", { imageReadOperationsPerSecond: 8_191 }],
   ])("rejects one-under %s capacity", (_label, change) => {
     const policy = primeExternalHarnessIdentity().runtime.policy;
 
     expect(() => validatePrimeHostAdmission({ ...exactObservation(), ...change }, policy)).toThrow(
-      /headroom|capacity|image/i,
+      /headroom|capacity/i,
     );
   });
 
@@ -83,8 +81,6 @@ function exactObservation() {
       { quotaMicros: 400_000, periodMicros: 100_000 },
     ],
     controllers: ["cpu", "io", "memory", "pids"],
-    imageReadBytesPerSecond: 134_217_728,
-    imageReadOperationsPerSecond: 8_192,
     probeLatenciesMs: Array.from({ length: 16 }, () => 100),
   } as const;
 }

@@ -169,12 +169,6 @@ async function registryFixture() {
       corePattern: "core",
       globalLeasePath: "/var/lib/flow-prime/global-slot.json",
       imageDevice: { path: "/dev/test-image", major: 8, minor: 1 },
-      imageProbe: {
-        executablePath: "/usr/bin/dd",
-        executableSha256: "b".repeat(64),
-        readBytesPerSecond: 134_217_728,
-        readOperationsPerSecond: 8_192,
-      },
       leaseTarget: "flow-prime-global-v1",
       seccompProfile: { defaultAction: "SCMP_ACT_ERRNO", syscalls: [] },
     },

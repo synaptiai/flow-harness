@@ -103,7 +103,10 @@ export class AttachedPrimeOciOperator {
     });
     const sequence = new PrimeContainerProtocolSequence();
     const decoder = new PrimeContainerFrameDecoder();
-    const ledger = new PrimeEvaluationMetricsLedger();
+    const ledger = new PrimeEvaluationMetricsLedger({
+      maxModelTurns: input.request.identity.outerProtocol.maxModelTurns,
+      maxIpythonCalls: input.request.identity.outerProtocol.maxIpythonCalls,
+    });
     let parentSequence = 1;
     let terminal: PrimeHarnessWithoutRuntime | undefined;
     let resultValidator: PrimeContainerTransferValidator | undefined;
@@ -141,7 +144,7 @@ export class AttachedPrimeOciOperator {
       for await (const bytes of input.transport.output) {
         throwIfAborted(input.signal);
         for (const frame of decoder.push(bytes)) {
-          sequence.accept("container-to-host", frame.type);
+          sequence.accept("container-to-host", frame.type, frame.payload.byteLength);
           switch (frame.type) {
             case PrimeContainerFrameType.Readiness:
               await this.options.validateReadiness(frame.payload, input);
@@ -201,6 +204,7 @@ export class AttachedPrimeOciOperator {
                 }
                 const { runtime: _runtime, ...harness } = event.harness;
                 terminal = harness as PrimeHarnessWithoutRuntime;
+                ledger.reconcileTerminalMetrics(event.metrics);
               }
               break;
             }
@@ -426,7 +430,7 @@ export class AttachedPrimeOciOperator {
     signal?: AbortSignal,
   ): Promise<void> {
     throwIfAborted(signal);
-    sequence.accept("host-to-container", type);
+    sequence.accept("host-to-container", type, payload.byteLength);
     await transport.write(encodePrimeContainerFrame(type, payload), signal);
   }
 }

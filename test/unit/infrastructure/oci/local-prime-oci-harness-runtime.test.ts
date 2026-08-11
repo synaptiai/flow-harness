@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import type { HarnessEvaluationResult } from "../../../../src/application/evaluation-adapter.js";
 import type { ExternalHarnessRuntimeRequest } from "../../../../src/application/external-harness-adapter.js";
-import type { EvaluationOciLease } from "../../../../src/domain/evaluation/attempt.js";
+import type {
+  EvaluationOciLease,
+  EvaluationTrialAttempt,
+} from "../../../../src/domain/evaluation/attempt.js";
 import { unavailableEvaluationMetrics } from "../../../../src/domain/evaluation/records.js";
 import {
   LocalPrimeOciHarnessRuntime,
@@ -28,8 +31,14 @@ describe("local Prime OCI harness runtime", () => {
       await input.checkpoint("exported");
       return evidence;
     });
-    const clockValues = [10.2, 25.8];
     const globalAdmission = fakeGlobalAdmission();
+    const clockMs = vi
+      .fn()
+      .mockReturnValueOnce(10.2)
+      .mockImplementationOnce(() => {
+        expect(globalAdmission.release).toHaveBeenCalledOnce();
+        return 25.8;
+      });
     const runtime = new LocalPrimeOciHarnessRuntime({
       registry: { resolveAdmitted: vi.fn(async () => descriptor) },
       globalAdmission,
@@ -37,7 +46,7 @@ describe("local Prime OCI harness runtime", () => {
       createIntent: vi.fn(async (request) => intentLease(request.evaluation.trial.trialId)),
       operate,
       platform: "linux",
-      clockMs: () => clockValues.shift() ?? 25.8,
+      clockMs,
     });
     const request = runtimeRequest(async (lease) => {
       updates.push(lease);
@@ -147,6 +156,38 @@ describe("local Prime OCI harness runtime", () => {
     expect(recovered.ociLease?.state).toBe("absent");
     expect(globalAdmission.recover).toHaveBeenCalledOnce();
     expect(updates.map((lease) => lease.state)).toEqual(["absent"]);
+  });
+
+  it("recovers global admission before an OCI intent exists", async () => {
+    const descriptor = primeDescriptor();
+    const globalAdmission = fakeGlobalAdmission();
+    const runtime = new LocalPrimeOciHarnessRuntime({
+      registry: { resolveAdmitted: vi.fn(async () => descriptor) },
+      globalAdmission,
+      createEngine: vi.fn(async () => fakeEngine()),
+      createIntent: vi.fn(),
+      operate: vi.fn(),
+      platform: "linux",
+    });
+    const request = runtimeRequest(async () => undefined);
+    const attempt: EvaluationTrialAttempt = {
+      version: 1,
+      planDigest: request.evaluation.planDigest,
+      position: request.evaluation.trial.position,
+      trialId: request.evaluation.trial.trialId,
+      taskId: request.evaluation.trial.taskId,
+      profileId: request.evaluation.trial.profileId,
+      adapter: "prime-agent-native-v1",
+      startedAt: "2026-08-10T10:00:00.000Z",
+      workspace: { backend: "reflink-copy-v1", snapshotDigest: "d".repeat(64) },
+    };
+    const updateOciLease = vi.fn();
+
+    await expect(
+      runtime.recoverAttempt({ identity: request.identity, attempt, updateOciLease }),
+    ).resolves.toEqual(attempt);
+    expect(globalAdmission.recover).toHaveBeenCalledOnce();
+    expect(updateOciLease).not.toHaveBeenCalled();
   });
 
   it("returns a typed timeout only after durable container removal", async () => {
@@ -333,12 +374,6 @@ function primeDescriptor(): NativePrimeHarnessDescriptor & {
       corePattern: "core",
       globalLeasePath: "/var/lib/flow-prime/global-slot.json",
       imageDevice: { path: "/dev/test-image", major: 8, minor: 1 },
-      imageProbe: {
-        executablePath: "/usr/bin/dd",
-        executableSha256: "b".repeat(64),
-        readBytesPerSecond: 134_217_728,
-        readOperationsPerSecond: 8_192,
-      },
       leaseTarget: "flow-prime-global-v1",
       seccompProfile: { defaultAction: "SCMP_ACT_ERRNO", syscalls: [] },
     },

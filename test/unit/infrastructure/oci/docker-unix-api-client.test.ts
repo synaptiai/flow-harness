@@ -8,6 +8,22 @@ import {
 } from "../../../../src/infrastructure/oci/docker-unix-api-client.js";
 
 describe("Docker Unix API client", () => {
+  it("uses the local daemon ping endpoint", async () => {
+    const transport = {
+      request: vi.fn(async () => ({ statusCode: 200, body: "OK" })),
+    };
+    const client = new DockerUnixApiClient({
+      socketPath: "/var/run/docker.sock",
+      apiVersion: "1.51",
+      transport,
+    });
+
+    await expect(client.ping()).resolves.toBeUndefined();
+    expect(transport.request).toHaveBeenCalledWith(
+      expect.objectContaining({ method: "GET", path: "/_ping" }),
+    );
+  });
+
   it("accepts the one fixed Prime global slot name", async () => {
     const transport: DockerUnixApiTransport = {
       request: vi.fn(async () => ({
@@ -75,7 +91,25 @@ describe("Docker Unix API client", () => {
     });
 
     await expect(client.inspectContainer(containerName)).resolves.toBeNull();
-    await expect(client.startContainer(containerName)).rejects.toThrow(/Docker.*404.*missing/i);
+    await expect(client.startContainer(containerName)).rejects.toThrow(/Docker.*start.*404/i);
+  });
+
+  it("does not expose Docker response bodies in public errors", async () => {
+    const privateMarker = "PRIVATE_DAEMON_PATH_/var/lib/docker/containers/secret";
+    const transport: DockerUnixApiTransport = {
+      request: vi.fn(async () => ({ statusCode: 500, body: privateMarker })),
+    };
+    const client = new DockerUnixApiClient({
+      socketPath: "/var/run/docker.sock",
+      apiVersion: "1.51",
+      transport,
+    });
+
+    const error = await client.startContainer("a".repeat(64)).catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/Docker.*start.*500/i);
+    expect((error as Error).message).not.toContain(privateMarker);
   });
 
   it("rejects malformed identities and oversized responses", async () => {

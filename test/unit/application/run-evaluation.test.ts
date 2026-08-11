@@ -511,6 +511,67 @@ describe("evaluation trial runner", () => {
     expect(events.slice(0, 3)).toEqual(["recover", "append", "complete:removed"]);
   });
 
+  it("recovers Prime global admission before an OCI lease exists", async () => {
+    const root = await temporaryDirectory();
+    const base = executionPlan(root);
+    const plan: RunEvaluationTrialsInput["plan"] = {
+      ...base,
+      profiles: base.profiles.map((profile) => ({
+        ...profile,
+        adapter: "prime-agent-native-v1" as const,
+      })),
+    };
+    const schedule = plan.schedule[0];
+    if (schedule === undefined) {
+      throw new Error("missing active Prime schedule item");
+    }
+    const active = {
+      version: 1 as const,
+      planDigest: plan.planDigest,
+      position: schedule.position,
+      trialId: schedule.trialId,
+      taskId: schedule.taskId,
+      profileId: schedule.profileId,
+      adapter: "prime-agent-native-v1" as const,
+      startedAt: "2026-08-09T09:59:00.000Z",
+      workspace: {
+        backend: "reflink-copy-v1" as const,
+        snapshotDigest: "e".repeat(64),
+      },
+    };
+    const recover = vi.fn(async () => active);
+
+    await runEvaluationTrials({
+      plan,
+      committedRecords: [],
+      attempts: {
+        active,
+        begin: vi.fn(async () => undefined),
+        recover,
+        complete: vi.fn(async () => undefined),
+      },
+      append: vi.fn(async () => undefined),
+      workspaceIsolator: isolator(root),
+      observeFixture: async () => fixtureSnapshot(),
+      resolveAdapter: () => ({
+        kind: "prime-agent-native-v1",
+        run: async () => ({
+          harness: { outcome: "completed", runId: "next", reason: null },
+          metrics: unavailableEvaluationMetrics(),
+        }),
+      }),
+      verifyWorkspace: async (request) => ({
+        outcome: "accepted",
+        verifierDigest: request.verifier.digest,
+        assertions: [{ kind: "exists", path: "RESULT.md", outcome: true }],
+      }),
+      now: monotonicDates(),
+      environment: testEnvironment(),
+    });
+
+    expect(recover).toHaveBeenCalledWith(active);
+  });
+
   it("keeps an active Prime attempt when recovery is unsafe", async () => {
     const root = await temporaryDirectory();
     const base = executionPlan(root);

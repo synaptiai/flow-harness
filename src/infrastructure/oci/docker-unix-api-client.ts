@@ -105,6 +105,13 @@ export class DockerUnixApiClient {
     return body.Id;
   }
 
+  async ping(signal?: AbortSignal): Promise<void> {
+    const response = await this.#request("GET", "/_ping", undefined, signal);
+    if (response.statusCode !== 200 || response.body !== "OK") {
+      throw new Error(`Docker ping returned status ${response.statusCode}`);
+    }
+  }
+
   async inspectContainer(
     reference: string,
     signal?: AbortSignal,
@@ -453,10 +460,7 @@ function assertStatus(
   operation: string,
 ): void {
   if (!accepted.includes(response.statusCode)) {
-    const diagnostic = response.body.slice(0, 4_096);
-    throw new Error(
-      `Docker ${operation} returned status ${response.statusCode}${diagnostic.length === 0 ? "" : `: ${diagnostic}`}`,
-    );
+    throw new Error(`Docker ${operation} returned status ${response.statusCode}`);
   }
 }
 
