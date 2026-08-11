@@ -165,6 +165,117 @@ export interface PrimeDockerCommandOptions {
   readonly signal?: AbortSignal;
 }
 
+export type PrimeImageBuildStage =
+  | "recover interrupted builds"
+  | "stage build context"
+  | "create BuildKit builder"
+  | "bootstrap BuildKit builder"
+  | "inspect BuildKit builder"
+  | "verify Prime archive"
+  | "hash build inputs"
+  | "build OCI image"
+  | "read build metadata"
+  | "inspect image references"
+  | "load OCI image"
+  | "inspect loaded image"
+  | "export loaded image"
+  | "inspect image archive"
+  | "probe built image"
+  | "finalize image identity"
+  | "tag canonical image"
+  | "clean build resources";
+
+export class PrimeImageBuildStageError extends Error {
+  override readonly name = "PrimeImageBuildStageError";
+
+  constructor(
+    readonly stage: PrimeImageBuildStage,
+    cause: unknown,
+  ) {
+    super(`Prime image build failed during ${stage}`, { cause });
+  }
+}
+
+export function primeImageBuildStageForDockerCommand(
+  args: readonly string[],
+): PrimeImageBuildStage {
+  const [resource, operation] = args;
+  if (resource === "buildx" && operation === "create") {
+    return "create BuildKit builder";
+  }
+  if (resource === "buildx" && operation === "inspect") {
+    return "bootstrap BuildKit builder";
+  }
+  if (resource === "container" && operation === "inspect") {
+    return "inspect BuildKit builder";
+  }
+  if (resource === "buildx" && operation === "build") {
+    return "build OCI image";
+  }
+  if (resource === "image" && operation === "ls") {
+    return "inspect image references";
+  }
+  if (resource === "image" && operation === "load") {
+    return "load OCI image";
+  }
+  if (resource === "image" && operation === "inspect") {
+    return "inspect loaded image";
+  }
+  if (resource === "image" && operation === "save") {
+    return "export loaded image";
+  }
+  if (resource === "run") {
+    return "probe built image";
+  }
+  if (resource === "image" && operation === "tag") {
+    return "tag canonical image";
+  }
+  throw new Error("Prime image build used an unclassified Docker command");
+}
+
+interface PrimeImageBuildOperation {
+  readonly operationRoot: string;
+  readonly builderName: string;
+  readonly builderContainerName: string;
+  readonly temporaryTag: string;
+  readonly probeContainerName: string;
+}
+
+async function createPrimeImageBuildOperation(
+  temporaryRoot: string,
+  buildNumber: 1 | 2,
+  nonce: () => string,
+): Promise<PrimeImageBuildOperation> {
+  let createdRoot: string | undefined;
+  try {
+    createdRoot = await mkdtemp(join(temporaryRoot, `flow-prime-image-${buildNumber}-`));
+    const operationRoot = await realpath(createdRoot);
+    const operationNonce = nonce();
+    const builderName = `flow-prime-builder-${buildNumber}-${operationNonce}`;
+    return Object.freeze({
+      operationRoot,
+      builderName,
+      builderContainerName: `buildx_buildkit_${builderName}0`,
+      temporaryTag: `flow-prime-runtime:preparation-${buildNumber}-${operationNonce}`,
+      probeContainerName: `flow-prime-probe-${buildNumber}-${operationNonce}`,
+    });
+  } catch (error) {
+    const primary = new PrimeImageBuildStageError("stage build context", error);
+    if (createdRoot === undefined) {
+      throw primary;
+    }
+    try {
+      await rm(createdRoot, { recursive: true, force: true });
+    } catch (cleanupError) {
+      throw new PrimeImageBuildStageError(
+        "clean build resources",
+        new AggregateError([primary, cleanupError], "Prime image build setup cleanup failed"),
+      );
+    }
+    throw primary;
+  }
+}
+
 export interface LocalPrimeImageBuilderOptions {
   readonly packageRoot: string;
   readonly dockerExecutable: string;
@@ -184,15 +295,18 @@ export interface LocalPrimeImageBuilderOptions {
   }) => Promise<void>;
   readonly inspectImageArchive?: typeof inspectPrimeImageArchive;
   readonly retainedImageId?: string;
+  readonly removePath?: typeof rm;
+}
+
+interface CompletedPrimeImageBuildOperation {
+  readonly reference: string;
+  readonly imageId: string;
+  readonly operationRoot: string;
+  readonly ownsReference: boolean;
 }
 
 export class LocalPrimeImageBuilder {
-  readonly #completedOperations: {
-    readonly reference: string;
-    readonly imageId: string;
-    readonly operationRoot: string;
-    readonly ownsReference: boolean;
-  }[] = [];
+  readonly #completedOperations: CompletedPrimeImageBuildOperation[] = [];
   readonly #dockerBuildxExecutable: string;
   readonly #dockerExecutable: string;
   readonly #nonce: () => string;
@@ -202,6 +316,7 @@ export class LocalPrimeImageBuilder {
   readonly #cleanupRun: NonNullable<LocalPrimeImageBuilderOptions["cleanupRun"]>;
   readonly #temporaryRoot: string;
   readonly #retainedImageId: string | undefined;
+  readonly #removePath: typeof rm;
   readonly #verifyPrimeArchive: NonNullable<LocalPrimeImageBuilderOptions["verifyPrimeArchive"]>;
 
   constructor(options: LocalPrimeImageBuilderOptions) {
@@ -210,6 +325,7 @@ export class LocalPrimeImageBuilder {
     this.#dockerBuildxExecutable = resolve(options.dockerBuildxExecutable);
     this.#temporaryRoot = resolve(options.temporaryRoot ?? tmpdir());
     this.#retainedImageId = options.retainedImageId;
+    this.#removePath = options.removePath ?? rm;
     this.#run =
       options.run ??
       ((args, commandOptions) =>
@@ -227,16 +343,19 @@ export class LocalPrimeImageBuilder {
 
   async build(buildNumber: 1 | 2, signal?: AbortSignal): Promise<PrimeOciPreparedBuild> {
     throwIfAborted(signal);
-    await this.recoverInterruptedBuilds();
+    try {
+      await this.recoverInterruptedBuilds();
+    } catch (error) {
+      throw new PrimeImageBuildStageError("recover interrupted builds", error);
+    }
     throwIfAborted(signal);
-    const operationRoot = await realpath(
-      await mkdtemp(join(this.#temporaryRoot, `flow-prime-image-${buildNumber}-`)),
+    const operation = await createPrimeImageBuildOperation(
+      this.#temporaryRoot,
+      buildNumber,
+      this.#nonce,
     );
-    const operationNonce = this.#nonce();
-    const builderName = `flow-prime-builder-${buildNumber}-${operationNonce}`;
-    const builderContainerName = `buildx_buildkit_${builderName}0`;
-    const temporaryTag = `flow-prime-runtime:preparation-${buildNumber}-${operationNonce}`;
-    const probeContainerName = `flow-prime-probe-${buildNumber}-${operationNonce}`;
+    const { operationRoot, builderName, builderContainerName, temporaryTag, probeContainerName } =
+      operation;
     const environmentRoot = join(operationRoot, "docker-environment");
     const operationOptions: PrimeDockerCommandOptions = {
       environmentRoot,
@@ -245,6 +364,12 @@ export class LocalPrimeImageBuilder {
     let buildResult: PrimeOciPreparedBuild | undefined;
     let buildError: unknown;
     let journal: RecoveryJournal | undefined;
+    let completedOperation: CompletedPrimeImageBuildOperation | undefined;
+    let stage: PrimeImageBuildStage = "stage build context";
+    const runBuildCommand = async (args: readonly string[]): Promise<string> => {
+      stage = primeImageBuildStageForDockerCommand(args);
+      return this.#run(args, operationOptions);
+    };
     try {
       const contextRoot = join(operationRoot, "context");
       await mkdir(contextRoot, { mode: 0o700 });
@@ -269,31 +394,28 @@ export class LocalPrimeImageBuilder {
         probeContainerName,
       });
       await writeRecoveryJournal(operationRoot, journal, true);
-      await this.#run(
-        [
-          "buildx",
-          "create",
-          "--driver",
-          "docker-container",
-          "--driver-opt",
-          `image=${inputs.buildkit.image}`,
-          "--name",
-          builderName,
-        ],
-        operationOptions,
-      );
-      await this.#run(["buildx", "inspect", "--bootstrap", builderName], operationOptions);
+      await runBuildCommand([
+        "buildx",
+        "create",
+        "--driver",
+        "docker-container",
+        "--driver-opt",
+        `image=${inputs.buildkit.image}`,
+        "--name",
+        builderName,
+      ]);
+      await runBuildCommand(["buildx", "inspect", "--bootstrap", builderName]);
       const builder = parseBuilderContainerInspection(
-        await this.#run(["container", "inspect", builderContainerName], {
-          ...operationOptions,
-        }),
+        await runBuildCommand(["container", "inspect", builderContainerName]),
         inputs.buildkit.image,
       );
+      stage = "verify Prime archive";
       await this.#verifyPrimeArchive({
         ...inputs.primeAgent,
         ...(signal === undefined ? {} : { signal }),
       });
       throwIfAborted(signal);
+      stage = "hash build inputs";
       const buildInputSha256 = sha256(
         canonicalize({
           contextSha256: await hashTree(contextRoot, signal),
@@ -306,31 +428,29 @@ export class LocalPrimeImageBuilder {
       );
       const metadataFile = join(operationRoot, "build-metadata.json");
       const ociArchivePath = join(operationRoot, "prime-image.oci.tar");
-      await this.#run(
-        [
-          "buildx",
-          "build",
-          "--builder",
-          builderName,
-          "--pull=false",
-          "--no-cache",
-          `--output=type=oci,dest=${ociArchivePath},tar=true,compression=uncompressed,force-compression=true,rewrite-timestamp=true`,
-          "--provenance=false",
-          "--sbom=false",
-          "--platform",
-          inputs.platform,
-          "--build-arg",
-          "BUILDKIT_MULTI_PLATFORM=1",
-          "--build-arg",
-          `SOURCE_DATE_EPOCH=${inputs.sourceDateEpoch}`,
-          "--metadata-file",
-          metadataFile,
-          "--tag",
-          temporaryTag,
-          contextRoot,
-        ],
-        operationOptions,
-      );
+      await runBuildCommand([
+        "buildx",
+        "build",
+        "--builder",
+        builderName,
+        "--pull=false",
+        "--no-cache",
+        `--output=type=oci,dest=${ociArchivePath},tar=true,compression=uncompressed,force-compression=true,rewrite-timestamp=true`,
+        "--provenance=false",
+        "--sbom=false",
+        "--platform",
+        inputs.platform,
+        "--build-arg",
+        "BUILDKIT_MULTI_PLATFORM=1",
+        "--build-arg",
+        `SOURCE_DATE_EPOCH=${inputs.sourceDateEpoch}`,
+        "--metadata-file",
+        metadataFile,
+        "--tag",
+        temporaryTag,
+        contextRoot,
+      ]);
+      stage = "read build metadata";
       const buildMetadata = parseBuildMetadata(await readFile(metadataFile, "utf8"));
       const imageId = buildMetadata["containerimage.config.digest"];
       if (!imageDigestSchema.safeParse(imageId).success) {
@@ -338,9 +458,7 @@ export class LocalPrimeImageBuilder {
       }
       const canonicalReference = canonicalPrimeImageReference(imageId);
       const existingReferences = parseImageReferenceList(
-        await this.#run(["image", "ls", "--quiet", "--no-trunc", canonicalReference], {
-          ...operationOptions,
-        }),
+        await runBuildCommand(["image", "ls", "--quiet", "--no-trunc", canonicalReference]),
       );
       if (existingReferences.some((reference) => reference !== imageId)) {
         throw new Error("Prime content-addressed image tag resolves to another image");
@@ -353,44 +471,40 @@ export class LocalPrimeImageBuilder {
         canonicalReferenceExisted,
       });
       await writeRecoveryJournal(operationRoot, journal, false);
-      await this.#run(["image", "load", "--input", ociArchivePath], operationOptions);
-      parseImageInspection(
-        await this.#run(["image", "inspect", imageId], operationOptions),
-        imageId,
-      );
+      await runBuildCommand(["image", "load", "--input", ociArchivePath]);
+      parseImageInspection(await runBuildCommand(["image", "inspect", imageId]), imageId);
       const imageArchivePath = join(operationRoot, "prime-image.tar");
-      await this.#run(["image", "save", "--output", imageArchivePath, imageId], operationOptions);
+      await runBuildCommand(["image", "save", "--output", imageArchivePath, imageId]);
       throwIfAborted(signal);
+      stage = "inspect image archive";
       const externalInventory = await this.#inspectImageArchive({
         archivePath: imageArchivePath,
         imageId,
       });
       throwIfAborted(signal);
       const probe = parseProbe(
-        await this.#run(
-          [
-            "run",
-            "--rm",
-            "--name",
-            probeContainerName,
-            "--pull=never",
-            "--network=none",
-            "--log-driver=none",
-            "--read-only",
-            "--cap-drop=ALL",
-            "--security-opt=no-new-privileges",
-            "--pids-limit=64",
-            "--memory=536870912",
-            "--entrypoint=/usr/local/bin/node",
-            imageId,
-            "/opt/flow/bin/flow-prime-image-probe.mjs",
-          ],
-          operationOptions,
-        ),
+        await runBuildCommand([
+          "run",
+          "--rm",
+          "--name",
+          probeContainerName,
+          "--pull=never",
+          "--network=none",
+          "--log-driver=none",
+          "--read-only",
+          "--cap-drop=ALL",
+          "--security-opt=no-new-privileges",
+          "--pids-limit=64",
+          "--memory=536870912",
+          "--entrypoint=/usr/local/bin/node",
+          imageId,
+          "/opt/flow/bin/flow-prime-image-probe.mjs",
+        ]),
       );
       if (externalInventory.sbomSha256 !== probe.sbomSha256) {
         throw new Error("Prime external and in-image package inventories do not match");
       }
+      stage = "finalize image identity";
       const baseImageDigest = digestFromReference(inputs.baseImages.node, "Prime Node base image");
       const image = parsePrimeOciImageIdentity({
         id: imageId,
@@ -404,7 +518,7 @@ export class LocalPrimeImageBuilder {
         pythonVersion: probe.pythonVersion,
         pythonClosureSha256: probe.pythonClosureSha256,
       });
-      await this.#run(["image", "tag", imageId, canonicalReference], operationOptions);
+      await runBuildCommand(["image", "tag", imageId, canonicalReference]);
       buildResult = Object.freeze({
         image,
         builder: Object.freeze({
@@ -417,14 +531,18 @@ export class LocalPrimeImageBuilder {
         harnessPackageContentSha256: probe.primePackageContentSha256,
         harnessDependencyClosureSha256: probe.nodeClosureSha256,
       });
-      this.#completedOperations.push({
+      completedOperation = {
         reference: canonicalReference,
         imageId,
         operationRoot,
         ownsReference: !canonicalReferenceExisted,
-      });
+      };
     } catch (error) {
-      buildError = error;
+      buildError = isPrimeImageBuildCancellation(error, signal)
+        ? signal?.reason instanceof Error
+          ? signal.reason
+          : new Error("Prime image build was cancelled")
+        : new PrimeImageBuildStageError(stage, error);
     }
 
     const cleanupErrors: unknown[] = [];
@@ -437,15 +555,18 @@ export class LocalPrimeImageBuilder {
     }
     if (cleanupErrors.length === 0 && buildResult === undefined) {
       try {
-        await rm(operationRoot, { recursive: true, force: true });
+        await this.#removePath(operationRoot, { recursive: true, force: true });
       } catch (error) {
         cleanupErrors.push(error);
       }
     }
     if (cleanupErrors.length > 0) {
-      throw new AggregateError(
-        buildError === undefined ? cleanupErrors : [buildError, ...cleanupErrors],
-        "Prime image build cleanup failed",
+      throw new PrimeImageBuildStageError(
+        "clean build resources",
+        new AggregateError(
+          buildError === undefined ? cleanupErrors : [buildError, ...cleanupErrors],
+          "Prime image build cleanup failed",
+        ),
       );
     }
     if (buildError !== undefined) {
@@ -454,6 +575,10 @@ export class LocalPrimeImageBuilder {
     if (buildResult === undefined) {
       throw new Error("Prime image build produced no result");
     }
+    if (completedOperation === undefined) {
+      throw new Error("Prime image build produced no completed operation");
+    }
+    this.#completedOperations.push(completedOperation);
     return buildResult;
   }
 
@@ -483,7 +608,7 @@ export class LocalPrimeImageBuilder {
         }
       }
       if (journal === undefined) {
-        await rm(operationRoot, { recursive: true, force: true });
+        await this.#removePath(operationRoot, { recursive: true, force: true });
         continue;
       }
       if (journal.hostname !== hostname()) {
@@ -498,7 +623,7 @@ export class LocalPrimeImageBuilder {
         environmentRoot,
         journal.imageId === this.#retainedImageId,
       );
-      await rm(operationRoot, { recursive: true, force: true });
+      await this.#removePath(operationRoot, { recursive: true, force: true });
     }
   }
 
@@ -601,6 +726,7 @@ export class LocalPrimeImageBuilder {
     const operationRoot = await realpath(
       await mkdtemp(join(this.#temporaryRoot, "flow-prime-image-retirement-")),
     );
+    let retirementError: unknown;
     try {
       for (const completed of this.#completedOperations) {
         if (completed.ownsReference && completed.imageId !== retainedImageId) {
@@ -608,11 +734,30 @@ export class LocalPrimeImageBuilder {
             environmentRoot: operationRoot,
           });
         }
-        await rm(completed.operationRoot, { recursive: true, force: true });
+        await this.#removePath(completed.operationRoot, { recursive: true, force: true });
       }
       this.#completedOperations.splice(0);
-    } finally {
-      await rm(operationRoot, { recursive: true, force: true });
+    } catch (error) {
+      retirementError = error;
+    }
+    let environmentCleanupError: unknown;
+    try {
+      await this.#removePath(operationRoot, { recursive: true, force: true });
+    } catch (error) {
+      environmentCleanupError = error;
+    }
+    if (retirementError !== undefined || environmentCleanupError !== undefined) {
+      throw new PrimeImageBuildStageError(
+        "clean build resources",
+        new AggregateError(
+          retirementError === undefined
+            ? [environmentCleanupError]
+            : environmentCleanupError === undefined
+              ? [retirementError]
+              : [retirementError, environmentCleanupError],
+          "Prime image retirement cleanup failed",
+        ),
+      );
     }
   }
 }
@@ -1282,13 +1427,29 @@ function terminatedCommandError(message: string): Error {
   return Object.assign(new Error(message), { killed: true, signal: "SIGKILL" });
 }
 
+class PrimeDockerCommandAbortError extends Error {
+  override readonly name = "AbortError";
+  readonly code = "ABORT_ERR";
+  readonly killed = true;
+  readonly signal = "SIGKILL";
+
+  constructor(reason: unknown) {
+    super("The Docker command was aborted", { cause: reason });
+  }
+}
+
 function abortError(reason: unknown): Error {
-  return Object.assign(new Error("The Docker command was aborted", { cause: reason }), {
-    name: "AbortError",
-    code: "ABORT_ERR",
-    killed: true,
-    signal: "SIGKILL",
-  });
+  return new PrimeDockerCommandAbortError(reason);
+}
+
+function isPrimeImageBuildCancellation(error: unknown, signal: AbortSignal | undefined): boolean {
+  if (signal?.aborted !== true) {
+    return false;
+  }
+  return (
+    error === signal.reason ||
+    (error instanceof PrimeDockerCommandAbortError && error.cause === signal.reason)
+  );
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {

@@ -6,6 +6,7 @@ import {
   parsePrimeOciImageIdentity,
   parsePrimeOciRuntimeIdentity,
 } from "../../domain/evaluation/external-harness.js";
+import { PrimeImageBuildStageError } from "./local-prime-image-builder.js";
 import type { PrimeOciLocalRuntimeAttestation } from "./local-prime-oci-attestation.js";
 
 const sha256Pattern = /^[a-f0-9]{64}$/;
@@ -86,9 +87,9 @@ export async function preparePrimeOciRuntime(
   dependencies: PrimeOciPreparationDependencies,
 ): Promise<PrimeOciPreparationResult> {
   throwIfAborted(input.signal);
-  const first = await runBuild(1, dependencies);
+  const first = await runBuild(1, dependencies, input.signal);
   throwIfAborted(input.signal);
-  const second = await runBuild(2, dependencies);
+  const second = await runBuild(2, dependencies, input.signal);
   throwIfAborted(input.signal);
   if (!isDeepStrictEqual(first, second)) {
     throw new PrimeOciPreparationError(
@@ -100,12 +101,15 @@ export async function preparePrimeOciRuntime(
   let inspected: PrimeOciRuntimeInspection;
   try {
     inspected = normalizeInspection(await dependencies.inspectRuntime());
-    throwIfAborted(input.signal);
   } catch (error) {
+    if (isExactCancellation(error, input.signal)) {
+      throw error;
+    }
     throw new PrimeOciPreparationError("inspection_failed", "Prime OCI runtime inspection failed", {
       cause: error,
     });
   }
+  throwIfAborted(input.signal);
 
   const descriptor = Object.freeze({
     version: 1 as const,
@@ -118,10 +122,13 @@ export async function preparePrimeOciRuntime(
     daemonId: inspected.daemonId,
     local: inspected.local,
   });
+  throwIfAborted(input.signal);
   try {
-    throwIfAborted(input.signal);
     await dependencies.publish(input.descriptorPath, descriptor, input.signal);
   } catch (error) {
+    if (isExactCancellation(error, input.signal)) {
+      throw error;
+    }
     throw new PrimeOciPreparationError(
       "publish_failed",
       "Prime OCI local attestation publication failed",
@@ -146,19 +153,29 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
     : new Error("Prime OCI runtime preparation was cancelled");
 }
 
+function isExactCancellation(error: unknown, signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true && error === signal.reason;
+}
+
 async function runBuild(
   buildNumber: 1 | 2,
   dependencies: PrimeOciPreparationDependencies,
+  signal: AbortSignal | undefined,
 ): Promise<PrimeOciPreparedBuild> {
   try {
     return normalizeBuild(await dependencies.build(buildNumber));
   } catch (error) {
+    if (isExactCancellation(error, signal)) {
+      throw error;
+    }
     if (error instanceof PrimeOciPreparationError) {
       throw error;
     }
     throw new PrimeOciPreparationError(
       "build_failed",
-      `Prime OCI clean build ${buildNumber} failed`,
+      `Prime OCI clean build ${buildNumber} failed${
+        error instanceof PrimeImageBuildStageError ? ` during ${error.stage}` : ""
+      }`,
       { cause: error },
     );
   }

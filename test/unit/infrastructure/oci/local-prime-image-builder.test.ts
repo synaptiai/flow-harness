@@ -4,8 +4,10 @@ import {
   chmod,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   realpath,
+  rm,
   stat,
   writeFile,
 } from "node:fs/promises";
@@ -16,6 +18,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   LocalPrimeImageBuilder,
+  primeImageBuildStageForDockerCommand,
   runLocalDockerCommand,
   verifyPrimeAgentArchiveBytes,
 } from "../../../../src/infrastructure/oci/local-prime-image-builder.js";
@@ -25,6 +28,157 @@ const BUILDKIT_IMAGE =
 const BUILDKIT_IMAGE_ID = `sha256:${"9".repeat(64)}`;
 
 describe("local Prime image builder", () => {
+  it.each([
+    [["buildx", "create"], "create BuildKit builder"],
+    [["buildx", "inspect"], "bootstrap BuildKit builder"],
+    [["container", "inspect"], "inspect BuildKit builder"],
+    [["buildx", "build"], "build OCI image"],
+    [["image", "ls"], "inspect image references"],
+    [["image", "load"], "load OCI image"],
+    [["image", "inspect"], "inspect loaded image"],
+    [["image", "save"], "export loaded image"],
+    [["run"], "probe built image"],
+    [["image", "tag"], "tag canonical image"],
+  ] as const)("assigns Docker command %j to stage %s", (command, expectedStage) => {
+    expect(primeImageBuildStageForDockerCommand(command)).toBe(expectedStage);
+  });
+
+  it("classifies setup failure and removes its unjournaled operation root", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-prime-build-setup-")));
+    const builder = new LocalPrimeImageBuilder({
+      packageRoot: root,
+      dockerExecutable: join(root, "docker"),
+      dockerBuildxExecutable: join(root, "docker-buildx"),
+      temporaryRoot: root,
+      nonce: () => {
+        throw new Error("private nonce source failed");
+      },
+    });
+
+    await expect(builder.build(1)).rejects.toMatchObject({ stage: "stage build context" });
+    expect((await readdir(root)).filter((entry) => entry.startsWith("flow-prime-image-"))).toEqual(
+      [],
+    );
+  });
+
+  it.each([
+    [["buildx", "create"], "create BuildKit builder"],
+    [["buildx", "inspect"], "bootstrap BuildKit builder"],
+    [["container", "inspect"], "inspect BuildKit builder"],
+    [["buildx", "build"], "build OCI image"],
+    [["image", "ls"], "inspect image references"],
+    [["image", "load"], "load OCI image"],
+    [["image", "inspect"], "inspect loaded image"],
+    [["image", "save"], "export loaded image"],
+    [["run"], "probe built image"],
+    [["image", "tag"], "tag canonical image"],
+  ] as const)("reports builder command %j at stage %s", async (command, expectedStage) => {
+    const { builder } = await createBuildHarness({ failCommand: command });
+
+    await expect(builder.build(1)).rejects.toMatchObject({ stage: expectedStage });
+  });
+
+  it("retains a successful-build journal until failed Docker cleanup is recovered", async () => {
+    const { builder, root, cleanupRun } = await createBuildHarness({
+      cleanupBuildxRemoveFailures: 1,
+    });
+
+    await expect(builder.build(1)).rejects.toMatchObject({ stage: "clean build resources" });
+    await builder.retireCreatedImagesExcept();
+    const [operationDirectory] = (await readdir(root)).filter((entry) =>
+      entry.startsWith("flow-prime-image-1-"),
+    );
+    expect(operationDirectory).toBeDefined();
+    const journalPath = join(root, operationDirectory as string, "recovery.json");
+    const journal = JSON.parse(await readFile(journalPath, "utf8")) as Record<string, unknown>;
+    await writeFile(journalPath, JSON.stringify({ ...journal, pid: 2_147_483_647 }));
+
+    await builder.recoverInterruptedBuilds();
+
+    expect(cleanupRun).toHaveBeenCalledWith(
+      ["buildx", "rm", "--force", "flow-prime-builder-1-0123456789abcdef0123456789abcdef"],
+      expect.any(Object),
+    );
+    expect(
+      (await readdir(root)).filter((entry) => entry.startsWith("flow-prime-image-1-")),
+    ).toEqual([]);
+  });
+
+  it("does not hide a distinct staged command failure after the signal aborts", async () => {
+    const controller = new AbortController();
+    const cancellation = new Error("operator cancelled image load");
+    const { builder } = await createBuildHarness({
+      failCommand: ["image", "load"],
+      abortCommand: { controller, reason: cancellation },
+    });
+
+    await expect(builder.build(1, controller.signal)).rejects.toMatchObject({
+      stage: "load OCI image",
+      cause: expect.objectContaining({ message: "private staged Docker command failed" }),
+    });
+  });
+
+  it("preserves cancellation from the production Docker command wrapper", async () => {
+    const root = await buildFixture();
+    const toolsRoot = join(root, "host-tools");
+    const dockerExecutable = join(toolsRoot, "docker");
+    const dockerBuildxExecutable = join(toolsRoot, "docker-buildx");
+    const commandMarker = join(root, "docker-command-started");
+    await mkdir(toolsRoot);
+    await writeFile(
+      dockerExecutable,
+      `#!${process.execPath}\nrequire("node:fs").writeFileSync(${JSON.stringify(commandMarker)}, "started"); setInterval(() => {}, 10_000);\n`,
+    );
+    await writeFile(dockerBuildxExecutable, "verified-buildx-plugin\n");
+    await chmod(dockerExecutable, 0o700);
+    await chmod(dockerBuildxExecutable, 0o700);
+    const controller = new AbortController();
+    const cancellation = new Error("operator cancelled production Docker command");
+    const builder = new LocalPrimeImageBuilder({
+      packageRoot: root,
+      dockerExecutable,
+      dockerBuildxExecutable,
+      temporaryRoot: root,
+      cleanupRun: vi.fn(async () => ""),
+      nonce: () => "0123456789abcdef0123456789abcdef",
+      verifyPrimeArchive: vi.fn(async () => undefined),
+    });
+    const build = builder.build(1, controller.signal);
+    await vi.waitFor(
+      async () => {
+        await expect(access(commandMarker)).resolves.toBeUndefined();
+      },
+      { timeout: 10_000, interval: 25 },
+    );
+    controller.abort(cancellation);
+
+    await expect(build).rejects.toBe(cancellation);
+  }, 15_000);
+
+  it("preserves image-retirement and retirement-environment cleanup failures", async () => {
+    const retirementCleanup = new Error("private retirement environment cleanup failed");
+    const { builder } = await createBuildHarness({
+      failRetirementImageRemove: true,
+      removePath: async (path, options) => {
+        if (String(path).includes("flow-prime-image-retirement-")) {
+          throw retirementCleanup;
+        }
+        await rm(path, options);
+      },
+    });
+    await builder.build(1);
+
+    await expect(builder.retireCreatedImagesExcept()).rejects.toMatchObject({
+      stage: "clean build resources",
+      cause: expect.objectContaining({
+        errors: [
+          expect.objectContaining({ message: "private image retirement failed" }),
+          retirementCleanup,
+        ],
+      }),
+    });
+  });
+
   it("verifies the Prime release archive with SHA-256 and npm integrity", () => {
     const archive = Buffer.from("fixed Prime archive\n");
     const identity = {
@@ -433,7 +587,7 @@ process.exit(2);
       verifyPrimeArchive: vi.fn(async () => undefined),
     });
 
-    await expect(builder.build(1)).rejects.toThrow(/operation cancelled/i);
+    await expect(builder.build(1)).rejects.toThrow(/create BuildKit builder/i);
 
     expect(cleanupCalls).toContainEqual([
       "buildx",
@@ -642,4 +796,132 @@ async function buildFixture(): Promise<string> {
     }),
   );
   return root;
+}
+
+async function createBuildHarness(
+  options: {
+    readonly failCommand?: readonly string[];
+    readonly abortCommand?: {
+      readonly controller: AbortController;
+      readonly reason: Error;
+    };
+    readonly cleanupBuildxRemoveFailures?: number;
+    readonly failRetirementImageRemove?: boolean;
+    readonly removePath?: typeof rm;
+  } = {},
+) {
+  const root = await buildFixture();
+  const toolsRoot = join(root, "host-tools");
+  const dockerExecutable = join(toolsRoot, "docker");
+  const dockerBuildxExecutable = join(toolsRoot, "docker-buildx");
+  await mkdir(toolsRoot);
+  await writeFile(dockerExecutable, "docker-client\n");
+  await writeFile(dockerBuildxExecutable, "verified-buildx-plugin\n");
+  await chmod(dockerExecutable, 0o700);
+  await chmod(dockerBuildxExecutable, 0o700);
+  const imageId = `sha256:${"a".repeat(64)}`;
+  const sbom = {
+    node: [{ name: "prime-agent", version: "0.7.1" }],
+    python: [{ name: "ipykernel", version: "6.30.1" }],
+  };
+  const sbomSha256 = createHash("sha256").update(JSON.stringify(sbom)).digest("hex");
+  let failCommand = options.failCommand;
+  let builderPresent = true;
+  const run = vi.fn(async (args: readonly string[]) => {
+    if (failCommand?.every((value, index) => args[index] === value)) {
+      failCommand = undefined;
+      options.abortCommand?.controller.abort(options.abortCommand.reason);
+      throw new Error("private staged Docker command failed");
+    }
+    if (args[0] === "buildx" && args[1] === "build") {
+      const metadataPath = args[args.indexOf("--metadata-file") + 1];
+      if (metadataPath === undefined) {
+        throw new Error("missing build metadata path");
+      }
+      await writeFile(
+        metadataPath,
+        JSON.stringify({
+          "containerimage.config.digest": imageId,
+          "containerimage.digest": `sha256:${"f".repeat(64)}`,
+        }),
+      );
+      return "";
+    }
+    if (args[0] === "container" && args[1] === "inspect") {
+      return JSON.stringify([{ Image: BUILDKIT_IMAGE_ID, Config: { Image: BUILDKIT_IMAGE } }]);
+    }
+    if (args[0] === "image" && args[1] === "ls") {
+      return "";
+    }
+    if (args[0] === "image" && args[1] === "inspect") {
+      return JSON.stringify([
+        {
+          Id: imageId,
+          Architecture: "amd64",
+          Os: "linux",
+          Config: {},
+          RootFS: { Type: "layers", Layers: [`sha256:${"b".repeat(64)}`] },
+        },
+      ]);
+    }
+    if (args[0] === "run") {
+      return JSON.stringify({
+        nodeVersion: "22.19.0",
+        pythonVersion: "3.11.15",
+        nodeClosureSha256: "c".repeat(64),
+        primePackageContentSha256: "d".repeat(64),
+        pythonClosureSha256: "e".repeat(64),
+        artifacts: imageArtifacts(),
+        sbom,
+        sbomSha256,
+      });
+    }
+    return "";
+  });
+  let cleanupBuildxRemoveFailures = options.cleanupBuildxRemoveFailures ?? 0;
+  const cleanupRun = vi.fn(async (args: readonly string[]) => {
+    if (args[0] === "container" && args[1] === "ls") {
+      return args.at(-1)?.includes("flow-prime-builder") === true && builderPresent
+        ? `${"7".repeat(64)}\n`
+        : "";
+    }
+    if (args[0] === "container" && args[1] === "inspect") {
+      return JSON.stringify([{ Image: BUILDKIT_IMAGE_ID, Config: { Image: BUILDKIT_IMAGE } }]);
+    }
+    if (args[0] === "buildx" && args[1] === "rm") {
+      if (cleanupBuildxRemoveFailures > 0) {
+        cleanupBuildxRemoveFailures -= 1;
+        throw new Error("private BuildKit cleanup failed");
+      }
+      builderPresent = false;
+      return "";
+    }
+    if (
+      options.failRetirementImageRemove === true &&
+      args[0] === "image" &&
+      args[1] === "rm" &&
+      args[3]?.startsWith("flow-prime-runtime:sha256-") === true
+    ) {
+      throw new Error("private image retirement failed");
+    }
+    return "";
+  });
+  const builder = new LocalPrimeImageBuilder({
+    packageRoot: root,
+    dockerExecutable,
+    dockerBuildxExecutable,
+    temporaryRoot: root,
+    run,
+    cleanupRun,
+    nonce: () => "0123456789abcdef0123456789abcdef",
+    verifyPrimeArchive: vi.fn(async () => undefined),
+    inspectImageArchive: vi.fn(async () => ({
+      archiveSha256: "7".repeat(64),
+      layerSha256: ["8".repeat(64)],
+      sbom,
+      sbomSha256,
+    })),
+    ...(options.removePath === undefined ? {} : { removePath: options.removePath }),
+  });
+  return { builder, root, cleanupRun };
 }

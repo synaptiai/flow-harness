@@ -20,7 +20,11 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 
 import { loadEffectiveFlowConfig } from "../fs/flow-config-store.js";
-import { LocalPrimeImageBuilder, runLocalDockerCommand } from "./local-prime-image-builder.js";
+import {
+  LocalPrimeImageBuilder,
+  PrimeImageBuildStageError,
+  runLocalDockerCommand,
+} from "./local-prime-image-builder.js";
 import {
   assertPrimeOciSocketPolicy,
   LocalPrimeOciAttestationStore,
@@ -95,116 +99,164 @@ export async function prepareProductionPrimeOciRuntime(input: {
   const environmentRoot = await realpath(
     await mkdtemp(join(tmpdir(), "flow-prime-preparation-environment-")),
   );
-  try {
-    const run = (args: readonly string[]) =>
-      runLocalDockerCommand(dockerExecutable, args, environmentRoot, input.signal);
-    const runtimeInfo = parseJson(
-      dockerInfoSchema,
-      await run(["info", "--format", "{{json .}}"]),
-      "Docker information",
-    );
-    const configuredRuncPath = runtimeInfo.Runtimes[PRIME_OCI_RUNTIME_NAME]?.path;
-    if (configuredRuncPath === undefined || !configuredRuncPath.startsWith("/")) {
-      throw new Error("Prime OCI runc runtime must use one absolute executable path");
-    }
-    const runcExecutable = await resolveConfiguredExecutable(configuredRuncPath, "runc");
-    const runtimeExecutables = await resolveDockerManagedRuntimeExecutables();
-    const containerdExecutable = runtimeExecutables.containerd;
-    const dockerdExecutable = runtimeExecutables.dockerd;
-    const dockerdExecutableSha256 = await hashStableRegularFile(
-      dockerdExecutable,
-      MAX_EXECUTABLE_BYTES,
-      "dockerd executable",
-    );
-    const containerdExecutableSha256 = await hashStableRegularFile(
-      containerdExecutable,
-      MAX_EXECUTABLE_BYTES,
-      "containerd executable",
-    );
-    if (
-      runtimeExecutables.dockerdSha256 === undefined ||
-      runtimeExecutables.dockerdSha256 !== dockerdExecutableSha256 ||
-      runtimeExecutables.containerdSha256 === undefined ||
-      runtimeExecutables.containerdSha256 !== containerdExecutableSha256
-    ) {
-      throw new Error("Prime OCI protected runtime executable observation changed");
-    }
-    const runcExecutableSha256 = await hashStableRegularFile(
-      runcExecutable,
-      MAX_EXECUTABLE_BYTES,
-      "runc executable",
-    );
-    const descriptorPath = join(
-      projectRoot,
-      ".flow",
-      "runtime",
-      "prime-agent",
-      "oci-attestation.json",
-    );
-    const preparationRoot = join(dirname(descriptorPath), "preparation");
-    await mkdir(preparationRoot, { recursive: true, mode: 0o700 });
-    await chmod(preparationRoot, 0o700);
-    const retainedImageId = await readExistingImageId(descriptorPath);
-    const builder = new LocalPrimeImageBuilder({
-      packageRoot,
-      dockerExecutable,
-      dockerBuildxExecutable,
-      temporaryRoot: await realpath(preparationRoot),
-      ...(retainedImageId === undefined ? {} : { retainedImageId }),
-      run: (args, options) =>
-        runLocalDockerCommand(dockerExecutable, args, options.environmentRoot, options.signal),
-      cleanupRun: (args, options) =>
-        runLocalDockerCommand(
-          dockerExecutable,
-          args,
-          options.environmentRoot,
-          AbortSignal.timeout(PREPARATION_CLEANUP_MS),
-          PREPARATION_CLEANUP_MS,
-        ),
-    });
-    const inspector = new LocalPrimeOciRuntimeInspector({
-      run,
-      local: () =>
-        observeLocalRuntime({
-          packageRoot,
-          projectRoot,
-          dockerExecutable,
-          dockerExecutableSha256,
-          dockerdExecutable,
-          dockerdExecutableSha256,
-          containerdExecutable,
-          containerdExecutableSha256,
-          runcExecutable,
-          runcExecutableSha256,
-          run,
-          signal: input.signal,
-        }),
-      dockerExecutableSha256,
-      dockerdExecutableSha256,
-      containerdExecutableSha256,
-      runcExecutableSha256,
-    });
-    let result: PrimeOciPreparationResult;
-    try {
-      result = await preparePrimeOciRuntime(
-        { descriptorPath, ...(input.signal === undefined ? {} : { signal: input.signal }) },
-        {
-          build: (buildNumber) => builder.build(buildNumber, input.signal),
-          inspectRuntime: () => inspector.inspect(),
-          publish: publishLocalPrimeOciAttestation,
+  return runPrimePreparationWithCleanup(
+    async () => {
+      const run = (args: readonly string[]) =>
+        runLocalDockerCommand(dockerExecutable, args, environmentRoot, input.signal);
+      const runtimeInfo = parseJson(
+        dockerInfoSchema,
+        await run(["info", "--format", "{{json .}}"]),
+        "Docker information",
+      );
+      const configuredRuncPath = runtimeInfo.Runtimes[PRIME_OCI_RUNTIME_NAME]?.path;
+      if (configuredRuncPath === undefined || !configuredRuncPath.startsWith("/")) {
+        throw new Error("Prime OCI runc runtime must use one absolute executable path");
+      }
+      const runcExecutable = await resolveConfiguredExecutable(configuredRuncPath, "runc");
+      const runtimeExecutables = await resolveDockerManagedRuntimeExecutables();
+      const containerdExecutable = runtimeExecutables.containerd;
+      const dockerdExecutable = runtimeExecutables.dockerd;
+      const dockerdExecutableSha256 = await hashStableRegularFile(
+        dockerdExecutable,
+        MAX_EXECUTABLE_BYTES,
+        "dockerd executable",
+      );
+      const containerdExecutableSha256 = await hashStableRegularFile(
+        containerdExecutable,
+        MAX_EXECUTABLE_BYTES,
+        "containerd executable",
+      );
+      if (
+        runtimeExecutables.dockerdSha256 === undefined ||
+        runtimeExecutables.dockerdSha256 !== dockerdExecutableSha256 ||
+        runtimeExecutables.containerdSha256 === undefined ||
+        runtimeExecutables.containerdSha256 !== containerdExecutableSha256
+      ) {
+        throw new Error("Prime OCI protected runtime executable observation changed");
+      }
+      const runcExecutableSha256 = await hashStableRegularFile(
+        runcExecutable,
+        MAX_EXECUTABLE_BYTES,
+        "runc executable",
+      );
+      const descriptorPath = join(
+        projectRoot,
+        ".flow",
+        "runtime",
+        "prime-agent",
+        "oci-attestation.json",
+      );
+      const preparationRoot = join(dirname(descriptorPath), "preparation");
+      await mkdir(preparationRoot, { recursive: true, mode: 0o700 });
+      await chmod(preparationRoot, 0o700);
+      const retainedImageId = await readExistingImageId(descriptorPath);
+      const builder = new LocalPrimeImageBuilder({
+        packageRoot,
+        dockerExecutable,
+        dockerBuildxExecutable,
+        temporaryRoot: await realpath(preparationRoot),
+        ...(retainedImageId === undefined ? {} : { retainedImageId }),
+        run: (args, options) =>
+          runLocalDockerCommand(dockerExecutable, args, options.environmentRoot, options.signal),
+        cleanupRun: (args, options) =>
+          runLocalDockerCommand(
+            dockerExecutable,
+            args,
+            options.environmentRoot,
+            AbortSignal.timeout(PREPARATION_CLEANUP_MS),
+            PREPARATION_CLEANUP_MS,
+          ),
+      });
+      const inspector = new LocalPrimeOciRuntimeInspector({
+        run,
+        local: () =>
+          observeLocalRuntime({
+            packageRoot,
+            projectRoot,
+            dockerExecutable,
+            dockerExecutableSha256,
+            dockerdExecutable,
+            dockerdExecutableSha256,
+            containerdExecutable,
+            containerdExecutableSha256,
+            runcExecutable,
+            runcExecutableSha256,
+            run,
+            signal: input.signal,
+          }),
+        dockerExecutableSha256,
+        dockerdExecutableSha256,
+        containerdExecutableSha256,
+        runcExecutableSha256,
+      });
+      const result = await runPrimePreparationWithCleanup(
+        () =>
+          preparePrimeOciRuntime(
+            { descriptorPath, ...(input.signal === undefined ? {} : { signal: input.signal }) },
+            {
+              build: (buildNumber) => builder.build(buildNumber, input.signal),
+              inspectRuntime: () => inspector.inspect(),
+              publish: publishLocalPrimeOciAttestation,
+            },
+          ),
+        async (prepared, primaryError) => {
+          await reconcilePrimePreparationImages({
+            ...(prepared === undefined ? {} : { preparedImageId: prepared.imageId }),
+            primaryError,
+            readVisibleImageId: () => readExistingImageId(descriptorPath),
+            retireExcept: (retainedImageId) => builder.retireCreatedImagesExcept(retainedImageId),
+          });
         },
       );
-    } catch (error) {
-      const visibleImageId = await readExistingImageId(descriptorPath).catch(() => undefined);
-      await builder.retireCreatedImagesExcept(visibleImageId);
-      throw error;
-    }
-    await builder.retireCreatedImagesExcept(result.imageId);
-    await new LocalPrimeOciAttestationStore({ descriptorPath }).read();
-    return result;
-  } finally {
-    await rm(environmentRoot, { recursive: true, force: true });
+      await new LocalPrimeOciAttestationStore({ descriptorPath }).read();
+      return result;
+    },
+    () => rm(environmentRoot, { recursive: true, force: true }),
+  );
+}
+
+export async function runPrimePreparationWithCleanup<T>(
+  operation: () => Promise<T>,
+  cleanup: (result: T | undefined, primaryError: unknown | undefined) => Promise<void>,
+): Promise<T> {
+  let result: T | undefined;
+  let primaryError: unknown;
+  let operationCompleted = false;
+  try {
+    result = await operation();
+    operationCompleted = true;
+  } catch (error) {
+    primaryError = error;
   }
+
+  try {
+    await cleanup(operationCompleted ? result : undefined, primaryError);
+  } catch (cleanupError) {
+    throw new PrimeImageBuildStageError(
+      "clean build resources",
+      new AggregateError(
+        operationCompleted ? [cleanupError] : [primaryError, cleanupError],
+        "Prime OCI preparation cleanup failed",
+      ),
+    );
+  }
+  if (!operationCompleted) {
+    throw primaryError;
+  }
+  return result as T;
+}
+
+export async function reconcilePrimePreparationImages(input: {
+  readonly preparedImageId?: string;
+  readonly primaryError: unknown | undefined;
+  readonly readVisibleImageId: () => Promise<string | undefined>;
+  readonly retireExcept: (retainedImageId: string | undefined) => Promise<void>;
+}): Promise<void> {
+  const retainedImageId =
+    input.primaryError === undefined && input.preparedImageId !== undefined
+      ? input.preparedImageId
+      : await input.readVisibleImageId();
+  await input.retireExcept(retainedImageId);
 }
 
 async function readExistingImageId(path: string): Promise<string | undefined> {

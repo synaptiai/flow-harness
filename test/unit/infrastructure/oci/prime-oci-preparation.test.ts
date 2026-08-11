@@ -1,15 +1,42 @@
 import { createHash } from "node:crypto";
 
 import { describe, expect, it, vi } from "vitest";
-
+import { PrimeImageBuildStageError } from "../../../../src/infrastructure/oci/local-prime-image-builder.js";
 import {
   type PrimeOciPreparationError,
+  type PrimeOciRuntimeInspection,
   preparePrimeOciRuntime,
 } from "../../../../src/infrastructure/oci/prime-oci-preparation.js";
-import { globalLeaseDirectoryRepairs } from "../../../../src/infrastructure/oci/production-prime-oci-preparation.js";
+import {
+  globalLeaseDirectoryRepairs,
+  reconcilePrimePreparationImages,
+  runPrimePreparationWithCleanup,
+} from "../../../../src/infrastructure/oci/production-prime-oci-preparation.js";
 import { primeExternalHarnessIdentity } from "../../../fixtures/evaluation/prime-external-harness-identity.js";
 
 describe("Prime OCI runtime preparation", () => {
+  it("reports one fixed image-build stage without exposing the nested failure", async () => {
+    const preparation = preparePrimeOciRuntime(
+      { descriptorPath: "/project/.flow/runtime/prime-agent/oci-attestation.json" },
+      {
+        build: async () => {
+          throw new PrimeImageBuildStageError(
+            "bootstrap BuildKit builder",
+            new Error("private Docker response body"),
+          );
+        },
+        inspectRuntime: vi.fn(),
+        publish: vi.fn(),
+      },
+    );
+
+    await expect(preparation).rejects.toMatchObject({
+      code: "build_failed",
+      message: "Prime OCI clean build 1 failed during bootstrap BuildKit builder",
+    });
+    await expect(preparation).rejects.not.toThrow(/private Docker response body/i);
+  });
+
   it("does not repair an exact shared global lease directory", () => {
     expect(globalLeaseDirectoryRepairs({ gid: 999, mode: 0o2770 }, 999)).toEqual({
       group: false,
@@ -186,6 +213,239 @@ describe("Prime OCI runtime preparation", () => {
     expect(build).toHaveBeenCalledOnce();
     expect(publish).not.toHaveBeenCalled();
   });
+
+  it("preserves cancellation raised while a clean build is blocked", async () => {
+    const controller = new AbortController();
+    const cancellation = new Error("operator cancelled blocked clean build");
+    let releaseBuild!: () => void;
+    const buildStarted = new Promise<void>((resolve) => {
+      releaseBuild = resolve;
+    });
+    const build = vi.fn(async (): Promise<never> => {
+      releaseBuild();
+      return await new Promise<never>((_resolve, reject) => {
+        controller.signal.addEventListener("abort", () => reject(controller.signal.reason), {
+          once: true,
+        });
+      });
+    });
+    const preparation = preparePrimeOciRuntime(
+      {
+        descriptorPath: "/project/.flow/runtime/prime-agent/oci-attestation.json",
+        signal: controller.signal,
+      },
+      { build, inspectRuntime: vi.fn(), publish: vi.fn() },
+    );
+    await buildStarted;
+    controller.abort(cancellation);
+
+    await expect(preparation).rejects.toBe(cancellation);
+  });
+
+  it("does not hide cleanup failure after a cancelled clean build", async () => {
+    const controller = new AbortController();
+    const cancellation = new Error("operator cancelled clean build");
+    const cleanup = new Error("private cleanup failure");
+    const cleanupFailure = new PrimeImageBuildStageError(
+      "clean build resources",
+      new AggregateError([cancellation, cleanup]),
+    );
+
+    const preparation = preparePrimeOciRuntime(
+      {
+        descriptorPath: "/project/.flow/runtime/prime-agent/oci-attestation.json",
+        signal: controller.signal,
+      },
+      {
+        build: async () => {
+          controller.abort(cancellation);
+          throw cleanupFailure;
+        },
+        inspectRuntime: vi.fn(),
+        publish: vi.fn(),
+      },
+    );
+
+    await expect(preparation).rejects.toMatchObject({
+      code: "build_failed",
+      message: "Prime OCI clean build 1 failed during clean build resources",
+      cause: cleanupFailure,
+    });
+  });
+
+  it("preserves exact cancellation raised during runtime inspection", async () => {
+    const controller = new AbortController();
+    const cancellation = new Error("operator cancelled blocked runtime inspection");
+    let releaseInspection!: () => void;
+    const inspectionStarted = new Promise<void>((resolve) => {
+      releaseInspection = resolve;
+    });
+    const preparation = preparePrimeOciRuntime(
+      {
+        descriptorPath: "/project/.flow/runtime/prime-agent/oci-attestation.json",
+        signal: controller.signal,
+      },
+      {
+        build: async () => preparedBuild(),
+        inspectRuntime: async (): Promise<never> => {
+          releaseInspection();
+          return await new Promise<never>((_resolve, reject) => {
+            controller.signal.addEventListener("abort", () => reject(controller.signal.reason), {
+              once: true,
+            });
+          });
+        },
+        publish: vi.fn(),
+      },
+    );
+    await inspectionStarted;
+    controller.abort(cancellation);
+
+    await expect(preparation).rejects.toBe(cancellation);
+  });
+
+  it("preserves cancellation observed after successful runtime inspection", async () => {
+    const controller = new AbortController();
+    const cancellation = new Error("operator cancelled before publication");
+
+    await expect(
+      preparePrimeOciRuntime(
+        {
+          descriptorPath: "/project/.flow/runtime/prime-agent/oci-attestation.json",
+          signal: controller.signal,
+        },
+        {
+          build: async () => preparedBuild(),
+          inspectRuntime: async () => {
+            controller.abort(cancellation);
+            return runtimeInspection();
+          },
+          publish: vi.fn(),
+        },
+      ),
+    ).rejects.toBe(cancellation);
+  });
+
+  it("preserves exact cancellation raised during publication", async () => {
+    const controller = new AbortController();
+    const cancellation = new Error("operator cancelled blocked publication");
+    let releasePublication!: () => void;
+    const publicationStarted = new Promise<void>((resolve) => {
+      releasePublication = resolve;
+    });
+    const preparation = preparePrimeOciRuntime(
+      {
+        descriptorPath: "/project/.flow/runtime/prime-agent/oci-attestation.json",
+        signal: controller.signal,
+      },
+      {
+        build: async () => preparedBuild(),
+        inspectRuntime: async () => runtimeInspection(),
+        publish: async (): Promise<never> => {
+          releasePublication();
+          return await new Promise<never>((_resolve, reject) => {
+            controller.signal.addEventListener("abort", () => reject(controller.signal.reason), {
+              once: true,
+            });
+          });
+        },
+      },
+    );
+    await publicationStarted;
+    controller.abort(cancellation);
+
+    await expect(preparation).rejects.toBe(cancellation);
+  });
+
+  it("does not hide a distinct publication failure after cancellation", async () => {
+    const controller = new AbortController();
+    const cancellation = new Error("operator cancelled publication");
+    const publicationFailure = new Error("private uncertain publication failure");
+
+    await expect(
+      preparePrimeOciRuntime(
+        {
+          descriptorPath: "/project/.flow/runtime/prime-agent/oci-attestation.json",
+          signal: controller.signal,
+        },
+        {
+          build: async () => preparedBuild(),
+          inspectRuntime: async () => runtimeInspection(),
+          publish: async () => {
+            controller.abort(cancellation);
+            throw publicationFailure;
+          },
+        },
+      ),
+    ).rejects.toMatchObject({
+      code: "publish_failed",
+      cause: publicationFailure,
+    });
+  });
+
+  it("preserves primary and cleanup failures under one fixed cleanup stage", async () => {
+    const primary = new PrimeImageBuildStageError(
+      "bootstrap BuildKit builder",
+      new Error("private primary detail"),
+    );
+    const cleanup = new Error("private cleanup detail");
+
+    await expect(
+      runPrimePreparationWithCleanup(
+        async () => {
+          throw primary;
+        },
+        async () => {
+          throw cleanup;
+        },
+      ),
+    ).rejects.toMatchObject({
+      stage: "clean build resources",
+      cause: expect.objectContaining({ errors: [primary, cleanup] }),
+    });
+  });
+
+  it("assigns successful-operation cleanup failure to the fixed cleanup stage", async () => {
+    const cleanup = new Error("private cleanup detail");
+
+    await expect(
+      runPrimePreparationWithCleanup(
+        async () => "prepared",
+        async () => {
+          throw cleanup;
+        },
+      ),
+    ).rejects.toMatchObject({
+      stage: "clean build resources",
+      cause: expect.objectContaining({ errors: [cleanup] }),
+    });
+  });
+
+  it("preserves new images when failed publication cannot reconcile the descriptor", async () => {
+    const primary = new Error("private uncertain publication failure");
+    const reconciliation = new Error("private descriptor reconciliation failure");
+    const retireExcept = vi.fn(async () => undefined);
+
+    await expect(
+      runPrimePreparationWithCleanup(
+        async () => {
+          throw primary;
+        },
+        async (_prepared, primaryError) =>
+          reconcilePrimePreparationImages({
+            primaryError,
+            readVisibleImageId: async () => {
+              throw reconciliation;
+            },
+            retireExcept,
+          }),
+      ),
+    ).rejects.toMatchObject({
+      stage: "clean build resources",
+      cause: expect.objectContaining({ errors: [primary, reconciliation] }),
+    });
+    expect(retireExcept).not.toHaveBeenCalled();
+  });
 });
 
 function imageArtifacts() {
@@ -206,5 +466,49 @@ function builderIdentity() {
     imageId: `sha256:${"9".repeat(64)}`,
     imageReference:
       "moby/buildkit:buildx-stable-1@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec",
+  };
+}
+
+function preparedBuild() {
+  const identity = primeExternalHarnessIdentity();
+  return {
+    image: identity.image,
+    builder: builderIdentity(),
+    artifacts: imageArtifacts(),
+    harnessPackageContentSha256: identity.harness.packageContentSha256,
+    harnessDependencyClosureSha256: identity.harness.dependencyClosureSha256,
+  };
+}
+
+function runtimeInspection(): PrimeOciRuntimeInspection {
+  const identity = primeExternalHarnessIdentity();
+  const seccompProfile = { defaultAction: "SCMP_ACT_ERRNO", syscalls: [] };
+  const runtime = {
+    ...identity.runtime,
+    policy: {
+      ...identity.runtime.policy,
+      seccompSha256: createHash("sha256").update(JSON.stringify(seccompProfile)).digest("hex"),
+    },
+  };
+  return {
+    runtime,
+    daemonId: "daemon-test-id",
+    local: {
+      socketPath: "/var/run/docker.sock" as const,
+      socket: { device: 1, inode: 2, uid: 0, gid: 999, mode: 0o660 },
+      apiVersion: runtime.engine.apiVersion,
+      cgroupPath: "/sys/fs/cgroup/flow-prime",
+      corePattern: "core",
+      globalLeasePath: "/var/lib/flow-prime/global-slot.json",
+      imageDevice: { path: "/dev/test-image", major: 8, minor: 1 },
+      executables: {
+        docker: { path: "/usr/bin/docker", sha256: runtime.client.executableSha256 },
+        dockerd: { path: "/usr/bin/dockerd", sha256: runtime.engine.dockerdSha256 },
+        containerd: { path: "/usr/bin/containerd", sha256: runtime.engine.containerdSha256 },
+        runc: { path: "/usr/bin/runc", sha256: runtime.engine.runcSha256 },
+      },
+      leaseTarget: "flow-prime-global-v1",
+      seccompProfile,
+    },
   };
 }
