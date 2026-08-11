@@ -88,6 +88,9 @@ describe("local Prime image builder", () => {
           throw new Error("missing build context");
         }
         expect((await stat(join(context, "Dockerfile"))).mtimeMs).toBe(1_786_127_940_000);
+        await expect(
+          readFile(join(context, "native", "node-hardening.c"), "utf8"),
+        ).resolves.toContain("PR_SET_DUMPABLE");
         await expect(access(join(context, "secret.txt"))).rejects.toMatchObject({ code: "ENOENT" });
         contextWasAllowlisted = true;
         return "";
@@ -231,6 +234,7 @@ async function buildFixture(): Promise<string> {
   const container = join(root, "prime-container");
   await mkdir(join(container, "cmd"), { recursive: true });
   await mkdir(join(container, "internal"), { recursive: true });
+  await mkdir(join(container, "native"), { recursive: true });
   await mkdir(join(root, "dist"), { recursive: true });
   const files: Record<string, string> = {
     Dockerfile: "FROM scratch\n",
@@ -252,6 +256,7 @@ async function buildFixture(): Promise<string> {
     "seccomp.json": '{"defaultAction":"SCMP_ACT_ERRNO"}\n',
     "cmd/main.go": "package main\n",
     "internal/value.go": "package internal\n",
+    "native/node-hardening.c": "#define PR_SET_DUMPABLE 4\n",
   };
   for (const [path, content] of Object.entries(files)) {
     await writeFile(join(container, path), content);

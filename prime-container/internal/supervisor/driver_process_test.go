@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/synaptiai/flow-harness/prime-container/internal/containerprotocol"
@@ -14,7 +15,7 @@ const processTestHello = `{"version":1,"sequence":1,"sessionId":"018f4ee8-9d67-7
 const processTestReady = `{"version":1,"sequence":1,"sessionId":"018f4ee8-9d67-7ca1-a31f-4f3f2388e934","type":"ready","payload":{"trialId":"trial-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","identityDigest":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},"mac":"d69b44e493b862e87787adc750fdefa7d11666002d3517ff66db3dc7fc9166f6"}`
 const processTestTerminal = `{"version":1,"sequence":2,"sessionId":"018f4ee8-9d67-7ca1-a31f-4f3f2388e934","type":"terminal","payload":{"harness":{"outcome":"completed","runId":"prime-test","reason":null},"metrics":{"costUsdMicros":null,"inputTokens":null,"cacheReadTokens":null,"cacheWriteTokens":null,"outputTokens":null,"turns":0,"toolCalls":0,"toolErrors":0,"wallTimeMs":0,"activeTimeMs":null,"interventions":null,"policyViolations":null,"recoveryAttempts":0,"recoveryOutcome":"not_attempted"}},"mac":"76895bab04b53254704d7a3d28dd4b95fb18c57f4d4cc33aa33fb41424ea0708"}`
 
-func TestRunDriverProcessUsesOnePrivateDescriptor(t *testing.T) {
+func TestRunDriverProcessUsesPrivateProtocolAndHardeningDescriptors(t *testing.T) {
 	var output bytes.Buffer
 	result, err := RunDriverProcess(
 		&bytes.Buffer{},
@@ -23,7 +24,7 @@ func TestRunDriverProcessUsesOnePrivateDescriptor(t *testing.T) {
 		DriverProcessOptions{
 			Executable:       os.Args[0],
 			Arguments:        []string{"-test.run=TestPrimeDriverHelperProcess", "--"},
-			Environment:      append(os.Environ(), "FLOW_PRIME_TEST_DRIVER=1"),
+			Environment:      append(os.Environ(), "FLOW_PRIME_TEST_DRIVER=1", "FLOW_PRIME_TEST_HARDENING=1"),
 			WorkingDirectory: t.TempDir(),
 			UID:              -1, GID: -1,
 			MaxDiagnosticBytes: 65536,
@@ -50,9 +51,46 @@ func TestRunDriverProcessUsesOnePrivateDescriptor(t *testing.T) {
 	}
 }
 
+func TestRunDriverProcessRejectsMissingHardeningProof(t *testing.T) {
+	var output bytes.Buffer
+	_, err := RunDriverProcess(
+		&bytes.Buffer{},
+		&output,
+		[]byte(processTestHello),
+		DriverProcessOptions{
+			Executable:       os.Args[0],
+			Arguments:        []string{"-test.run=TestPrimeDriverHelperProcess", "--"},
+			Environment:      append(os.Environ(), "FLOW_PRIME_TEST_DRIVER=1"),
+			WorkingDirectory: t.TempDir(),
+			UID:              -1, GID: -1,
+			MaxDiagnosticBytes: 65536,
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "hardening proof") {
+		t.Fatalf("missing hardening proof was not rejected: %v", err)
+	}
+}
+
 func TestPrimeDriverHelperProcess(t *testing.T) {
 	if os.Getenv("FLOW_PRIME_TEST_DRIVER") != "1" {
 		return
+	}
+	if os.Getenv("FLOW_PRIME_TEST_HARDENING") == "1" {
+		hardening := os.NewFile(4, "flow-prime-test-hardening")
+		if hardening == nil {
+			os.Exit(120)
+		}
+		if _, err := hardening.Write([]byte{1}); err != nil {
+			os.Exit(120)
+		}
+		if err := hardening.Close(); err != nil {
+			os.Exit(120)
+		}
+	} else {
+		hardening := os.NewFile(4, "flow-prime-test-hardening")
+		if hardening == nil || hardening.Close() != nil {
+			os.Exit(120)
+		}
 	}
 	socket := os.NewFile(3, "flow-prime-test-driver")
 	if socket == nil {

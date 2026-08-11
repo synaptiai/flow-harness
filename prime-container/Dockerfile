@@ -11,11 +11,13 @@ WORKDIR /src
 COPY go.mod ./
 COPY internal ./internal
 COPY cmd ./cmd
+COPY native ./native
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go test ./... \
     && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w -buildid=' -o /out/flow-prime-supervisor ./cmd/flow-prime-supervisor \
     && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w -buildid=' -o /out/flow-prime-kernel-proxy ./cmd/flow-prime-kernel-proxy \
     && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w -buildid=' -o /out/flow-prime-python ./cmd/flow-prime-python \
-    && touch --date="@${SOURCE_DATE_EPOCH}" /out/flow-prime-supervisor /out/flow-prime-kernel-proxy /out/flow-prime-python
+    && cc -std=c11 -Wall -Wextra -Werror -O2 -fPIC -shared -Wl,-z,relro,-z,now -Wl,--build-id=none -o /out/flow-prime-node-hardening.so native/node-hardening.c \
+    && touch --date="@${SOURCE_DATE_EPOCH}" /out/flow-prime-supervisor /out/flow-prime-kernel-proxy /out/flow-prime-python /out/flow-prime-node-hardening.so
 
 FROM ${NODE_IMAGE} AS node-build
 ARG SOURCE_DATE_EPOCH
@@ -42,6 +44,7 @@ COPY --from=python-build /opt/flow/python /opt/flow/python
 COPY --from=native-build /out/flow-prime-supervisor /opt/flow/bin/flow-prime-supervisor
 COPY --from=native-build /out/flow-prime-kernel-proxy /opt/flow/bin/flow-prime-kernel-proxy
 COPY --from=native-build /out/flow-prime-python /opt/flow/bin/flow-prime-python
+COPY --from=native-build /out/flow-prime-node-hardening.so /opt/flow/lib/flow-prime-node-hardening.so
 COPY image-probe.mjs /opt/flow/bin/flow-prime-image-probe.mjs
 COPY --from=node-build /opt/flow/node/node_modules /opt/flow/node/node_modules
 COPY flow-dist /opt/flow/node/flow-dist
@@ -50,7 +53,7 @@ RUN groupadd --gid 10001 flow-node \
     && groupadd --gid 10002 flow-python \
     && useradd --uid 10002 --gid 10002 --no-create-home --no-log-init --home-dir /run/flow-python/home flow-python \
     && groupadd --gid 10003 flow-shared \
-    && chmod 0555 /opt/flow/bin/flow-prime-supervisor /opt/flow/bin/flow-prime-kernel-proxy /opt/flow/bin/flow-prime-python /opt/flow/bin/flow-prime-image-probe.mjs \
+    && chmod 0555 /opt/flow/bin/flow-prime-supervisor /opt/flow/bin/flow-prime-kernel-proxy /opt/flow/bin/flow-prime-python /opt/flow/bin/flow-prime-image-probe.mjs /opt/flow/lib/flow-prime-node-hardening.so \
     && touch --date="@${SOURCE_DATE_EPOCH}" /etc/passwd /etc/group /etc/shadow /etc/gshadow /etc/subuid /etc/subgid \
     && find /opt/flow -xdev -exec touch --date="@${SOURCE_DATE_EPOCH}" {} +
 USER 0:10003

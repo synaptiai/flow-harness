@@ -117,7 +117,7 @@ const CONTEXT_FILES = Object.freeze([
   "python-requirements.lock",
   "seccomp.json",
 ]);
-const CONTEXT_DIRECTORIES = Object.freeze(["cmd", "internal"]);
+const CONTEXT_DIRECTORIES = Object.freeze(["cmd", "internal", "native"]);
 
 export interface PrimeDockerCommandOptions {
   readonly environmentRoot: string;

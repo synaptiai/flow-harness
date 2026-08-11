@@ -9,9 +9,12 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+	"time"
 
 	"github.com/synaptiai/flow-harness/prime-container/internal/containerprotocol"
 )
+
+const driverHardeningProofTimeout = 5 * time.Second
 
 type DriverProcessOptions struct {
 	Executable         string
@@ -55,6 +58,12 @@ func RunDriverProcess(
 	}
 	defer supervisorSocket.Close()
 	defer driverSocket.Close()
+	hardeningReader, hardeningWriter, err := os.Pipe()
+	if err != nil {
+		return DriverProcessResult{}, fmt.Errorf("create Prime driver hardening pipe: %w", err)
+	}
+	defer hardeningReader.Close()
+	defer hardeningWriter.Close()
 	null, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if err != nil {
 		return DriverProcessResult{}, fmt.Errorf("open null device for Prime driver: %w", err)
@@ -65,7 +74,7 @@ func RunDriverProcess(
 	command.Env = append([]string(nil), options.Environment...)
 	command.Stdin = null
 	command.Stdout = null
-	command.ExtraFiles = []*os.File{driverSocket}
+	command.ExtraFiles = []*os.File{driverSocket, hardeningWriter}
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if options.UID >= 0 || options.GID >= 0 {
 		if options.UID < 0 || options.GID < 0 {
@@ -89,11 +98,6 @@ func RunDriverProcess(
 	if err := command.Start(); err != nil {
 		return DriverProcessResult{}, fmt.Errorf("start Prime driver: %w", err)
 	}
-	if err := driverSocket.Close(); err != nil {
-		_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
-		_ = command.Wait()
-		return DriverProcessResult{}, fmt.Errorf("close parent copy of Prime driver socket: %w", err)
-	}
 	type diagnosticResult struct {
 		value    []byte
 		overflow bool
@@ -106,12 +110,51 @@ func RunDriverProcess(
 			value: value, overflow: len(value) > options.MaxDiagnosticBytes, err: readError,
 		}
 	}()
+	if err := driverSocket.Close(); err != nil {
+		_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+		<-diagnostic
+		_ = command.Wait()
+		return DriverProcessResult{}, fmt.Errorf("close parent copy of Prime driver socket: %w", err)
+	}
+	if err := hardeningWriter.Close(); err != nil {
+		_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+		<-diagnostic
+		_ = command.Wait()
+		return DriverProcessResult{}, fmt.Errorf("close parent copy of Prime hardening pipe: %w", err)
+	}
+	hardeningProof := make(chan error, 1)
+	go func() {
+		value, readError := io.ReadAll(io.LimitReader(hardeningReader, 2))
+		if readError != nil {
+			hardeningProof <- readError
+			return
+		}
+		if len(value) != 1 || value[0] != 1 {
+			hardeningProof <- errors.New("Prime driver hardening proof is invalid")
+			return
+		}
+		hardeningProof <- nil
+	}()
+	select {
+	case proofError := <-hardeningProof:
+		if proofError != nil {
+			_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+			<-diagnostic
+			_ = command.Wait()
+			return DriverProcessResult{}, proofError
+		}
+	case <-time.After(driverHardeningProofTimeout):
+		_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+		<-diagnostic
+		_ = command.Wait()
+		return DriverProcessResult{}, errors.New("Prime driver hardening proof timed out")
+	}
 	relayError := containerprotocol.RelayDriver(hostReader, hostWriter, supervisorSocket, bootstrap)
 	if relayError != nil {
 		_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
 	}
-	waitError := command.Wait()
 	diagnosticValue := <-diagnostic
+	waitError := command.Wait()
 	if diagnosticValue.err != nil {
 		return DriverProcessResult{}, fmt.Errorf("read Prime driver diagnostic: %w", diagnosticValue.err)
 	}

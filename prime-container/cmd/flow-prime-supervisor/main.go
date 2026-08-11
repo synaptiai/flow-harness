@@ -77,7 +77,9 @@ func run() error {
 			Arguments:  []string{"--no-addons", driverPath},
 			Environment: []string{
 				"HOME=/run/flow-node", "LANG=C.UTF-8", "LC_ALL=C.UTF-8",
+				"LD_PRELOAD=/opt/flow/lib/flow-prime-node-hardening.so",
 				"NODE_ENV=production", "PATH=/usr/local/bin:/usr/bin:/bin",
+				"FLOW_PRIME_HARDENING_FD=4",
 				"PRIME_AGENT_KERNEL_FORKSERVER=0", "TMPDIR=/run/flow-node",
 			},
 			WorkingDirectory: workspacePath,
