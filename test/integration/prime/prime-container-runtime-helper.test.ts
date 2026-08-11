@@ -36,6 +36,7 @@ describe("verified Prime container runtime helper", () => {
 
     const transport = await startVerifiedPrimeContainer(`sha256:${"b".repeat(64)}`, {
       dockerExecutable: executable,
+      imageDevicePath: "/dev/test-image",
       seccompPath: join(root, "seccomp.json"),
       temporaryRoot: root,
     });
@@ -48,6 +49,8 @@ describe("verified Prime container runtime helper", () => {
     expect(args).toContain("--network=none");
     expect(args).toContain("--log-driver=none");
     expect(args).toContain("--no-healthcheck");
+    expect(args).toContain("--device-read-bps=/dev/test-image:67108864");
+    expect(args).toContain("--device-read-iops=/dev/test-image:4096");
     expect(args).toContain(`--security-opt=seccomp=${join(root, "seccomp.json")}`);
   });
 });

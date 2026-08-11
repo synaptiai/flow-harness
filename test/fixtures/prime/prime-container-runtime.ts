@@ -1,12 +1,16 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { promisify } from "node:util";
 
 import type { PrimeOciAttachedTransport } from "../../../src/infrastructure/oci/attached-prime-oci-operator.js";
+import { resolvePrimeImageDevice } from "../../../src/infrastructure/oci/production-prime-oci-preparation.js";
+import { primeExternalHarnessIdentity } from "../evaluation/prime-external-harness-identity.js";
 
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
+const executeFile = promisify(execFile);
 
 export interface VerifiedPrimeContainerTransport extends PrimeOciAttachedTransport {
   readonly containerId: string;
@@ -16,6 +20,7 @@ export interface VerifiedPrimeContainerTransport extends PrimeOciAttachedTranspo
 
 export interface VerifiedPrimeContainerOptions {
   readonly dockerExecutable?: string;
+  readonly imageDevicePath?: string;
   readonly seccompPath?: string;
   readonly temporaryRoot?: string;
 }
@@ -42,6 +47,18 @@ export async function startVerifiedPrimeContainer(
     DOCKER_HOST: "unix:///var/run/docker.sock",
     DOCKER_CONFIG: operationRoot,
   };
+  let imageDevicePath: string;
+  try {
+    imageDevicePath =
+      options.imageDevicePath ?? (await resolveDockerImageDevicePath(docker, environment));
+    if (!/^\/dev\/[a-zA-Z0-9._/-]+$/.test(imageDevicePath)) {
+      throw new Error("verified Prime container received an invalid image device path");
+    }
+  } catch (error) {
+    await rm(operationRoot, { recursive: true, force: true });
+    throw error;
+  }
+  const policy = primeExternalHarnessIdentity().runtime.policy;
   const child = spawn(
     docker,
     [
@@ -63,6 +80,8 @@ export async function startVerifiedPrimeContainer(
       "--memory-swap=2147483648",
       "--cpu-period=100000",
       "--cpu-quota=200000",
+      `--device-read-bps=${imageDevicePath}:${String(policy.imageReadBytesPerSecond)}`,
+      `--device-read-iops=${imageDevicePath}:${String(policy.imageReadOperationsPerSecond)}`,
       "--cap-drop=ALL",
       "--cap-add=CHOWN",
       "--cap-add=DAC_READ_SEARCH",
@@ -153,6 +172,23 @@ export async function startVerifiedPrimeContainer(
       released = true;
     },
   };
+}
+
+async function resolveDockerImageDevicePath(
+  dockerExecutable: string,
+  environment: NodeJS.ProcessEnv,
+): Promise<string> {
+  const { stdout } = await executeFile(dockerExecutable, ["info", "--format={{.DockerRootDir}}"], {
+    encoding: "utf8",
+    env: environment,
+    maxBuffer: 4_096,
+    timeout: 10_000,
+  });
+  const dockerRoot = stdout.trim();
+  if (!dockerRoot.startsWith("/") || Buffer.byteLength(dockerRoot, "utf8") > 4_095) {
+    throw new Error("Docker returned an invalid storage root");
+  }
+  return (await resolvePrimeImageDevice(dockerRoot)).path;
 }
 
 async function waitForContainerId(

@@ -29,9 +29,9 @@ import {
 } from "./local-prime-oci-attestation.js";
 import { LocalPrimeOciRuntimeInspector } from "./local-prime-oci-runtime-inspector.js";
 import {
-  preparePrimeOciRuntime,
   PrimeOciPreparationError,
   type PrimeOciPreparationResult,
+  preparePrimeOciRuntime,
 } from "./prime-oci-preparation.js";
 
 const executeFile = promisify(execFile);
@@ -161,7 +161,7 @@ async function observeLocalRuntime(input: {
     mode: Number(socketMetadata.mode & 0o777n),
   });
   const globalLeasePath = await prepareGlobalLeaseDirectory(info.ID, socket.gid);
-  const imageDevice = await resolveImageDevice(info.DockerRootDir);
+  const imageDevice = await resolvePrimeImageDevice(info.DockerRootDir);
   const imageProbeExecutable = await resolveFixedExecutable(["/usr/bin/dd", "/bin/dd"], "dd");
   const imageProbeExecutableSha256 = await hashStableRegularFile(
     imageProbeExecutable,
@@ -275,7 +275,7 @@ async function resolveCurrentCgroup(source: string): Promise<string> {
   return path;
 }
 
-async function resolveImageDevice(dockerRoot: string) {
+export async function resolvePrimeImageDevice(dockerRoot: string) {
   const canonicalRoot = await realpath(dockerRoot);
   const metadata = await lstat(canonicalRoot, { bigint: true });
   const { major, minor } = decodeLinuxDevice(metadata.dev);
