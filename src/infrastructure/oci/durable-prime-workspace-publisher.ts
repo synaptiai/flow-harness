@@ -36,8 +36,11 @@ export type PrimeWorkspaceRecoveryOutcome = "none" | "rolled_back" | "committed"
 
 export interface DurablePrimeWorkspacePublisherOptions {
   readonly afterJournalPrepared?: () => void | Promise<void>;
+  readonly afterTargetRenamed?: () => void | Promise<void>;
   readonly afterTargetRetired?: () => void | Promise<void>;
+  readonly afterStagingRenamed?: () => void | Promise<void>;
   readonly afterTargetSwitched?: () => void | Promise<void>;
+  readonly afterRetiredRemoved?: () => void | Promise<void>;
 }
 
 export class DurablePrimeWorkspacePublisher {
@@ -71,11 +74,13 @@ export class DurablePrimeWorkspacePublisher {
     await this.options.afterJournalPrepared?.();
 
     await rename(targetRoot, retiredRoot);
+    await this.options.afterTargetRenamed?.();
     await syncDirectory(parent);
     await writeJournal(journalPath, { ...journal, phase: "retired" }, false);
     await this.options.afterTargetRetired?.();
 
     await rename(stagingRoot, targetRoot);
+    await this.options.afterStagingRenamed?.();
     await syncDirectory(parent);
     await writeJournal(journalPath, { ...journal, phase: "switched" }, false);
     await this.options.afterTargetSwitched?.();
@@ -83,6 +88,7 @@ export class DurablePrimeWorkspacePublisher {
     await assertDirectoryIdentity(targetRoot, stagingIdentity, "published target");
     await assertDirectoryIdentity(retiredRoot, targetIdentity, "retired target");
     await rm(retiredRoot, { recursive: true });
+    await this.options.afterRetiredRemoved?.();
     await syncDirectory(parent);
     await unlink(journalPath);
     await syncDirectory(parent);
@@ -100,9 +106,14 @@ export class DurablePrimeWorkspacePublisher {
 
     if (journal.phase === "switched") {
       await assertDirectoryIdentity(targetRoot, journal.stagingIdentity, "published target");
-      await assertDirectoryIdentity(journal.retiredRoot, journal.targetIdentity, "retired target");
-      await rm(journal.retiredRoot, { recursive: true });
-      await syncDirectory(parent);
+      const retired = await optionalDirectoryIdentity(journal.retiredRoot);
+      if (retired !== undefined) {
+        if (!sameIdentity(retired, journal.targetIdentity)) {
+          throw new Error("Prime workspace retired target identity changed");
+        }
+        await rm(journal.retiredRoot, { recursive: true });
+        await syncDirectory(parent);
+      }
       await unlink(journalPath);
       await syncDirectory(parent);
       return "committed";

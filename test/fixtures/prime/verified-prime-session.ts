@@ -31,6 +31,11 @@ import { startVerifiedPrimeContainer } from "./prime-container-runtime.js";
 export interface VerifiedPrimeSessionInput {
   readonly instruction: string;
   readonly responses: readonly Record<string, unknown>[];
+  readonly onInferenceRequest?: (input: {
+    readonly body: string;
+    readonly containerId: string;
+    readonly containerName: string;
+  }) => Promise<void>;
 }
 
 export interface VerifiedPrimeSessionResult {
@@ -73,10 +78,16 @@ export async function runVerifiedPrimeSession(
   const hostRequests: string[] = [];
   const checkpoints: string[] = [];
   const responses = [...input.responses];
+  const transport = await startVerifiedPrimeContainer(image.id);
   const broker = new NativePrimeHostInferenceBroker({
     delegate: {
       infer: async ({ body }: { readonly body: string }) => {
         hostRequests.push(body);
+        await input.onInferenceRequest?.({
+          body,
+          containerId: transport.containerId,
+          containerName: transport.containerName,
+        });
         const response = responses.shift();
         if (response === undefined) {
           throw new Error("verified Prime session requested an unexpected model turn");
@@ -85,7 +96,6 @@ export async function runVerifiedPrimeSession(
       },
     },
   });
-  const transport = await startVerifiedPrimeContainer(image.id);
   const controller = new AbortController();
   const timeout = setTimeout(
     () => controller.abort(new Error("verified Prime session exceeded 90 seconds")),
