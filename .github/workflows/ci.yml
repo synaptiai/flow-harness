@@ -110,7 +110,11 @@ jobs:
           printf '[Unit]\nRequires=\n[Service]\nExecStart=\nExecStart=/usr/bin/dockerd --host=unix:///var/run/docker.sock\n' | \
             sudo tee /etc/systemd/system/docker.service.d/flow-prime.conf > /dev/null
           sudo systemctl daemon-reload
-          sudo systemctl start docker.service
+          if ! sudo systemctl start docker.service; then
+            sudo systemctl status docker.service --no-pager --full || true
+            sudo journalctl --unit=docker.service --no-pager --lines=200 || true
+            exit 1
+          fi
           test "$(docker version --format '{{.Server.APIVersion}}')" = '1.51'
           test "$(docker version --format '{{.Server.Version}}')" = '28.3.3'
           docker info --format '{{json .Runtimes.runc}}' | \
