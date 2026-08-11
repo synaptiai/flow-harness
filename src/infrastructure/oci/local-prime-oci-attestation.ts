@@ -39,6 +39,16 @@ const descriptorSchema = z
     version: z.literal(1),
     runtime: z.unknown(),
     image: z.unknown(),
+    artifacts: z
+      .object({
+        driverSha256: sha256Schema,
+        flowDistSha256: sha256Schema,
+        kernelProxySha256: sha256Schema,
+        noIoResourceLoaderSha256: sha256Schema,
+        pythonLauncherSha256: sha256Schema,
+        supervisorSha256: sha256Schema,
+      })
+      .strict(),
     harnessPackageContentSha256: sha256Schema,
     harnessDependencyClosureSha256: sha256Schema,
     daemonId: z.string().min(1).max(256),
@@ -100,6 +110,7 @@ export interface PrimeOciLocalRuntimeAttestation {
 export interface LocalPrimeOciAttestation {
   readonly runtime: PrimeExternalHarnessIdentity["runtime"];
   readonly image: PrimeExternalHarnessIdentity["image"];
+  readonly artifacts: z.infer<typeof descriptorSchema>["artifacts"];
   readonly harnessPackageContentSha256: string;
   readonly harnessDependencyClosureSha256: string;
   readonly localRuntime: PrimeOciLocalRuntimeAttestation;
@@ -166,6 +177,7 @@ export class LocalPrimeOciAttestationStore {
     return deepFreeze({
       runtime,
       image,
+      artifacts: snapshot.descriptor.artifacts,
       harnessPackageContentSha256: snapshot.descriptor.harnessPackageContentSha256,
       harnessDependencyClosureSha256: snapshot.descriptor.harnessDependencyClosureSha256,
       localRuntime,

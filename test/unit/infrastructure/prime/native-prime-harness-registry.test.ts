@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -34,8 +34,8 @@ describe("native Prime harness registry", () => {
         id: "native-prime-agent-evaluation-v1",
         artifactSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
         dependencyClosureSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
-        kernelProxySha256: expect.stringMatching(/^[a-f0-9]{64}$/),
-        pythonLauncherSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        kernelProxySha256: fixture.attestation.artifacts.kernelProxySha256,
+        pythonLauncherSha256: fixture.attestation.artifacts.pythonLauncherSha256,
         noIoResourceLoaderSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
         configDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
       },
@@ -58,10 +58,31 @@ describe("native Prime harness registry", () => {
     expect(Object.isFrozen(descriptor.identity)).toBe(true);
   });
 
+  it("uses image-attested executable hashes without host binary copies", async () => {
+    const fixture = await registryFixture();
+    await Promise.all([
+      unlink(fixture.supervisorPath),
+      unlink(fixture.kernelProxyPath),
+      unlink(fixture.pythonLauncherPath),
+    ]);
+
+    const descriptor = await fixture.registry.resolve(profile());
+
+    expect(descriptor.identity.outerProtocol.supervisorSha256).toBe(
+      fixture.attestation.artifacts.supervisorSha256,
+    );
+    expect(descriptor.identity.driver.kernelProxySha256).toBe(
+      fixture.attestation.artifacts.kernelProxySha256,
+    );
+    expect(descriptor.identity.driver.pythonLauncherSha256).toBe(
+      fixture.attestation.artifacts.pythonLauncherSha256,
+    );
+  });
+
   it("rejects the admitted identity after one local artifact changes", async () => {
     const fixture = await registryFixture();
     const admitted = await fixture.registry.resolveIdentity(profile());
-    await writeFile(fixture.driverPath, "export const primeDriver = 2;\n", "utf8");
+    await writeFile(join(fixture.sourceRoot, "support.js"), "export const support = 2;\n", "utf8");
 
     await expect(fixture.registry.resolveAdmitted(admitted)).rejects.toThrow(/identity.*changed/i);
   });
@@ -126,9 +147,17 @@ async function registryFixture() {
   ]);
   const publicIdentity = primeExternalHarnessIdentity();
   const assertCurrent = vi.fn(async () => undefined);
-  const attestation: PrimeOciIdentityAttestation = {
+  const attestation = {
     runtime: publicIdentity.runtime,
     image: publicIdentity.image,
+    artifacts: {
+      driverSha256: "4".repeat(64),
+      flowDistSha256: "5".repeat(64),
+      supervisorSha256: "1".repeat(64),
+      kernelProxySha256: "2".repeat(64),
+      noIoResourceLoaderSha256: "6".repeat(64),
+      pythonLauncherSha256: "3".repeat(64),
+    },
     harnessPackageContentSha256: publicIdentity.harness.packageContentSha256,
     harnessDependencyClosureSha256: publicIdentity.harness.dependencyClosureSha256,
     localRuntime: {
@@ -150,7 +179,7 @@ async function registryFixture() {
       seccompProfile: { defaultAction: "SCMP_ACT_ERRNO", syscalls: [] },
     },
     assertCurrent,
-  };
+  } satisfies PrimeOciIdentityAttestation;
   return {
     ...paths,
     assertCurrent,

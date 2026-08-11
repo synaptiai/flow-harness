@@ -4,9 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
-
-import { LocalPrimeOciAttestationStore } from "../../../../src/infrastructure/oci/local-prime-oci-attestation.js";
-import { publishLocalPrimeOciAttestation } from "../../../../src/infrastructure/oci/local-prime-oci-attestation.js";
+import {
+  LocalPrimeOciAttestationStore,
+  publishLocalPrimeOciAttestation,
+} from "../../../../src/infrastructure/oci/local-prime-oci-attestation.js";
 import { primeExternalHarnessIdentity } from "../../../fixtures/evaluation/prime-external-harness-identity.js";
 
 const temporaryDirectories: string[] = [];
@@ -35,6 +36,7 @@ describe("local Prime OCI attestation", () => {
 
     expect(admitted.runtime).toEqual(descriptor.runtime);
     expect(admitted.image).toEqual(identity.image);
+    expect(admitted.artifacts).toEqual(descriptor.artifacts);
     expect(admitted.localRuntime).toMatchObject({
       socketPath: "/var/run/docker.sock",
       apiVersion: "1.51",
@@ -153,6 +155,14 @@ function descriptorFixture(identity: ReturnType<typeof primeExternalHarnessIdent
     version: 1,
     runtime,
     image: identity.image,
+    artifacts: {
+      driverSha256: "1".repeat(64),
+      flowDistSha256: "2".repeat(64),
+      kernelProxySha256: "3".repeat(64),
+      noIoResourceLoaderSha256: "4".repeat(64),
+      pythonLauncherSha256: "5".repeat(64),
+      supervisorSha256: "6".repeat(64),
+    },
     harnessPackageContentSha256: identity.harness.packageContentSha256,
     harnessDependencyClosureSha256: identity.harness.dependencyClosureSha256,
     daemonId: "daemon-test-id",

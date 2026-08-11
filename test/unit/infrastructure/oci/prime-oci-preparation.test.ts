@@ -3,8 +3,8 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  preparePrimeOciRuntime,
   type PrimeOciPreparationError,
+  preparePrimeOciRuntime,
 } from "../../../../src/infrastructure/oci/prime-oci-preparation.js";
 import { primeExternalHarnessIdentity } from "../../../fixtures/evaluation/prime-external-harness-identity.js";
 
@@ -21,6 +21,7 @@ describe("Prime OCI runtime preparation", () => {
     };
     const build = vi.fn(async () => ({
       image: identity.image,
+      artifacts: imageArtifacts(),
       harnessPackageContentSha256: identity.harness.packageContentSha256,
       harnessDependencyClosureSha256: identity.harness.dependencyClosureSha256,
     }));
@@ -66,6 +67,7 @@ describe("Prime OCI runtime preparation", () => {
         version: 1,
         runtime,
         image: identity.image,
+        artifacts: imageArtifacts(),
         daemonId: "daemon-test-id",
       }),
     );
@@ -87,6 +89,7 @@ describe("Prime OCI runtime preparation", () => {
                 ...identity.image,
                 sbomSha256: (buildNumber === 1 ? "1" : "2").repeat(64),
               },
+              artifacts: imageArtifacts(),
               harnessPackageContentSha256: identity.harness.packageContentSha256,
               harnessDependencyClosureSha256: identity.harness.dependencyClosureSha256,
             };
@@ -102,4 +105,44 @@ describe("Prime OCI runtime preparation", () => {
     } satisfies Partial<PrimeOciPreparationError>);
     expect(publish).not.toHaveBeenCalled();
   });
+
+  it("rejects one executable hash difference before runtime inspection", async () => {
+    const identity = primeExternalHarnessIdentity();
+    let buildNumber = 0;
+    const inspectRuntime = vi.fn();
+
+    await expect(
+      preparePrimeOciRuntime(
+        { descriptorPath: "/project/.flow/runtime/prime-agent/oci-attestation.json" },
+        {
+          build: async () => {
+            buildNumber += 1;
+            return {
+              image: identity.image,
+              artifacts: {
+                ...imageArtifacts(),
+                supervisorSha256: (buildNumber === 1 ? "6" : "7").repeat(64),
+              },
+              harnessPackageContentSha256: identity.harness.packageContentSha256,
+              harnessDependencyClosureSha256: identity.harness.dependencyClosureSha256,
+            };
+          },
+          inspectRuntime,
+          publish: vi.fn(),
+        },
+      ),
+    ).rejects.toMatchObject({ code: "non_reproducible" });
+    expect(inspectRuntime).not.toHaveBeenCalled();
+  });
 });
+
+function imageArtifacts() {
+  return {
+    driverSha256: "1".repeat(64),
+    flowDistSha256: "2".repeat(64),
+    kernelProxySha256: "3".repeat(64),
+    noIoResourceLoaderSha256: "4".repeat(64),
+    pythonLauncherSha256: "5".repeat(64),
+    supervisorSha256: "6".repeat(64),
+  };
+}

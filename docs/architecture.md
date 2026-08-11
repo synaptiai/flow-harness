@@ -786,6 +786,9 @@ plan, record, report, and verifier contracts stay Flow-owned.
 The adapter builds one fixed image twice during explicit preparation. It binds both OCI digests,
 the software inventory, Node, Python, Prime Agent, the supervisor, and the driver.
 
+One final-image probe hashes the Flow driver closure and each native executable. The protected
+attestation stores these values. Plan admission does not look for container binaries on the host.
+
 Each trial gets one durable container lease and one daemon-global slot. The host broker owns model
 access. A signed inner protocol and a bounded outer protocol keep the container untrusted.
 

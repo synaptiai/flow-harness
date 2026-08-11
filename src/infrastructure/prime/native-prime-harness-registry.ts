@@ -1,4 +1,4 @@
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 import {
   type ExternalHarnessIdentity,
@@ -6,13 +6,13 @@ import {
   parseExternalHarnessIdentity,
 } from "../../domain/evaluation/external-harness.js";
 import type { EvaluationProfileSource } from "../../domain/evaluation/plan.js";
+import type { PrimeOciLocalRuntimeAttestation } from "../oci/local-prime-oci-attestation.js";
 import {
   ArtifactObservations,
   readTrustedArtifact,
   readTrustedRuntimeTree,
   sha256,
 } from "../pi/native-pi-harness-registry.js";
-import type { PrimeOciLocalRuntimeAttestation } from "../oci/local-prime-oci-attestation.js";
 
 const NATIVE_PRIME_ADAPTER_CONTRACT_VERSION = "1.0.0";
 const PRIME_AGENT_VERSION = "0.7.1";
@@ -55,6 +55,14 @@ type NativePrimeIdentity = Extract<
 export interface PrimeOciIdentityAttestation {
   readonly runtime: NativePrimeIdentity["runtime"];
   readonly image: NativePrimeIdentity["image"];
+  readonly artifacts: {
+    readonly driverSha256: string;
+    readonly flowDistSha256: string;
+    readonly kernelProxySha256: string;
+    readonly noIoResourceLoaderSha256: string;
+    readonly pythonLauncherSha256: string;
+    readonly supervisorSha256: string;
+  };
   readonly harnessPackageContentSha256: string;
   readonly harnessDependencyClosureSha256: string;
   readonly localRuntime: PrimeOciLocalRuntimeAttestation;
@@ -69,13 +77,8 @@ export interface NativePrimeHarnessDescriptor {
 }
 
 export interface NativePrimeHarnessRegistryOptions {
-  readonly driverPath?: string;
   readonly protocolPath?: string;
   readonly outerProtocolPath?: string;
-  readonly supervisorPath?: string;
-  readonly kernelProxyPath?: string;
-  readonly pythonLauncherPath?: string;
-  readonly noIoResourceLoaderPath?: string;
   readonly inferenceBrokerPath?: string;
   readonly sourceRoot?: string;
   readonly attestationPath?: string;
@@ -83,13 +86,8 @@ export interface NativePrimeHarnessRegistryOptions {
 }
 
 interface PrimeArtifactPaths {
-  readonly driverPath: string;
   readonly protocolPath: string;
   readonly outerProtocolPath: string;
-  readonly supervisorPath: string;
-  readonly kernelProxyPath: string;
-  readonly pythonLauncherPath: string;
-  readonly noIoResourceLoaderPath: string;
   readonly inferenceBrokerPath: string;
   readonly sourceRoot: string;
 }
@@ -108,17 +106,10 @@ export class NativePrimeHarnessRegistry {
   constructor(options: NativePrimeHarnessRegistryOptions = {}) {
     const defaults = defaultArtifactPaths();
     this.#paths = Object.freeze({
-      driverPath: options.driverPath ?? defaults.driverPath,
       protocolPath: options.protocolPath ?? defaults.protocolPath,
       outerProtocolPath: options.outerProtocolPath ?? defaults.outerProtocolPath,
-      supervisorPath: options.supervisorPath ?? defaults.supervisorPath,
-      kernelProxyPath: options.kernelProxyPath ?? defaults.kernelProxyPath,
-      pythonLauncherPath: options.pythonLauncherPath ?? defaults.pythonLauncherPath,
-      noIoResourceLoaderPath: options.noIoResourceLoaderPath ?? defaults.noIoResourceLoaderPath,
       inferenceBrokerPath: options.inferenceBrokerPath ?? defaults.inferenceBrokerPath,
-      sourceRoot:
-        options.sourceRoot ??
-        (options.driverPath === undefined ? defaults.sourceRoot : dirname(options.driverPath)),
+      sourceRoot: options.sourceRoot ?? defaults.sourceRoot,
     });
     this.#resolveOciIdentity =
       options.resolveOciIdentity ??
@@ -161,31 +152,11 @@ export class NativePrimeHarnessRegistry {
     }
 
     const observations = new ArtifactObservations();
-    const [
-      driver,
-      protocol,
-      outerProtocol,
-      supervisor,
-      kernelProxy,
-      pythonLauncher,
-      loader,
-      broker,
-      source,
-      attestation,
-    ] = await Promise.all([
-      readTrustedArtifact(this.#paths.driverPath, "native Prime driver", observations),
+    const [protocol, outerProtocol, broker, source, attestation] = await Promise.all([
       readTrustedArtifact(this.#paths.protocolPath, "external harness protocol", observations),
       readTrustedArtifact(
         this.#paths.outerProtocolPath,
         "Prime outer protocol parser",
-        observations,
-      ),
-      readTrustedArtifact(this.#paths.supervisorPath, "Prime supervisor", observations),
-      readTrustedArtifact(this.#paths.kernelProxyPath, "Prime kernel proxy", observations),
-      readTrustedArtifact(this.#paths.pythonLauncherPath, "Prime Python launcher", observations),
-      readTrustedArtifact(
-        this.#paths.noIoResourceLoaderPath,
-        "Prime no-I/O resource loader",
         observations,
       ),
       readTrustedArtifact(this.#paths.inferenceBrokerPath, "Prime inference broker", observations),
@@ -226,19 +197,17 @@ export class NativePrimeHarnessRegistry {
         maxModelTurns: 64,
         maxIpythonCalls: 64,
         hostParserSha256: outerProtocol.sha256,
-        supervisorSha256: supervisor.sha256,
+        supervisorSha256: attestation.artifacts.supervisorSha256,
       },
       runtime: attestation.runtime,
       image: attestation.image,
       driver: {
         id: "native-prime-agent-evaluation-v1",
-        artifactSha256: driver.sha256,
-        dependencyClosureSha256: sha256(
-          `${source.sha256}:${protocol.sha256}:${outerProtocol.sha256}`,
-        ),
-        kernelProxySha256: kernelProxy.sha256,
-        pythonLauncherSha256: pythonLauncher.sha256,
-        noIoResourceLoaderSha256: loader.sha256,
+        artifactSha256: attestation.artifacts.driverSha256,
+        dependencyClosureSha256: sha256(`${attestation.artifacts.flowDistSha256}:${source.sha256}`),
+        kernelProxySha256: attestation.artifacts.kernelProxySha256,
+        pythonLauncherSha256: attestation.artifacts.pythonLauncherSha256,
+        noIoResourceLoaderSha256: attestation.artifacts.noIoResourceLoaderSha256,
         configDigest: sha256(JSON.stringify(NATIVE_PRIME_EVALUATION_CONFIG)),
       },
       harness: {
@@ -285,15 +254,9 @@ function createLocalAttestationResolver(path: string): () => Promise<PrimeOciIde
 
 function defaultArtifactPaths(): PrimeArtifactPaths {
   const sourceRoot = resolve(import.meta.dirname);
-  const packageRoot = resolve(sourceRoot, "../../..");
   return {
-    driverPath: join(sourceRoot, "native-prime-agent-evaluation-driver.js"),
     protocolPath: join(sourceRoot, "../../domain/evaluation/external-harness-protocol.js"),
     outerProtocolPath: join(sourceRoot, "prime-container-protocol.js"),
-    supervisorPath: join(packageRoot, "prime-container", "flow-prime-supervisor"),
-    kernelProxyPath: join(packageRoot, "prime-container", "flow-prime-kernel-proxy"),
-    pythonLauncherPath: join(packageRoot, "prime-container", "flow-prime-python"),
-    noIoResourceLoaderPath: join(sourceRoot, "no-io-resource-loader.js"),
     inferenceBrokerPath: join(sourceRoot, "native-prime-host-inference-broker.js"),
     sourceRoot,
   };

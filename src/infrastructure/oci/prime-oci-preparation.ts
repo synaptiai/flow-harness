@@ -10,8 +10,18 @@ import type { PrimeOciLocalRuntimeAttestation } from "./local-prime-oci-attestat
 
 const sha256Pattern = /^[a-f0-9]{64}$/;
 
+export interface PrimeOciImageArtifacts {
+  readonly driverSha256: string;
+  readonly flowDistSha256: string;
+  readonly kernelProxySha256: string;
+  readonly noIoResourceLoaderSha256: string;
+  readonly pythonLauncherSha256: string;
+  readonly supervisorSha256: string;
+}
+
 export interface PrimeOciPreparedBuild {
   readonly image: PrimeExternalHarnessIdentity["image"];
+  readonly artifacts: PrimeOciImageArtifacts;
   readonly harnessPackageContentSha256: string;
   readonly harnessDependencyClosureSha256: string;
 }
@@ -26,6 +36,7 @@ export interface PrimeOciAttestationDescriptor {
   readonly version: 1;
   readonly runtime: PrimeExternalHarnessIdentity["runtime"];
   readonly image: PrimeExternalHarnessIdentity["image"];
+  readonly artifacts: PrimeOciImageArtifacts;
   readonly harnessPackageContentSha256: string;
   readonly harnessDependencyClosureSha256: string;
   readonly daemonId: string;
@@ -83,6 +94,7 @@ export async function preparePrimeOciRuntime(
     version: 1 as const,
     runtime: inspected.runtime,
     image: first.image,
+    artifacts: first.artifacts,
     harnessPackageContentSha256: first.harnessPackageContentSha256,
     harnessDependencyClosureSha256: first.harnessDependencyClosureSha256,
     daemonId: inspected.daemonId,
@@ -126,13 +138,22 @@ async function runBuild(
 
 function normalizeBuild(input: PrimeOciPreparedBuild): PrimeOciPreparedBuild {
   const image = parsePrimeOciImageIdentity(input.image);
+  const artifacts = normalizeImageArtifacts(input.artifacts);
   assertSha256(input.harnessPackageContentSha256, "Prime package content digest");
   assertSha256(input.harnessDependencyClosureSha256, "Prime dependency closure digest");
   return Object.freeze({
     image,
+    artifacts,
     harnessPackageContentSha256: input.harnessPackageContentSha256,
     harnessDependencyClosureSha256: input.harnessDependencyClosureSha256,
   });
+}
+
+function normalizeImageArtifacts(input: PrimeOciImageArtifacts): PrimeOciImageArtifacts {
+  for (const [name, value] of Object.entries(input)) {
+    assertSha256(value, `Prime image artifact ${name}`);
+  }
+  return Object.freeze({ ...input });
 }
 
 function normalizeInspection(input: PrimeOciRuntimeInspection): PrimeOciRuntimeInspection {

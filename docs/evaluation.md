@@ -241,6 +241,9 @@ The Prime identity binds the Docker runtime, fixed policy, image, Node closure, 
 Prime package, driver configuration, broker, and transfer protocol. Local attestation also binds
 the Docker socket, daemon, cgroup, image device, and global lease target.
 
+The final-image probe hashes the driver closure, supervisor, kernel proxy, and Python launcher. The
+protected attestation stores these hashes. The host package does not contain these image binaries.
+
 Only the public identity enters the evaluation header. Inspect and export do not load Docker,
 Prime Agent, Python, or the local attestation. Raw host identifiers stay outside public evidence.
 

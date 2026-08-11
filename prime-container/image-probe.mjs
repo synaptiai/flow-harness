@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, open, readFile, readdir, readlink, realpath } from "node:fs/promises";
+import { lstat, open, readdir, readFile, readlink, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -13,6 +13,15 @@ export async function createRuntimeInventory(input) {
   const node = await scanTree(input.nodeRoot);
   const prime = await scanTree(input.primeRoot);
   const python = await scanTree(input.pythonRoot);
+  const flowDist = await scanTree(input.flowDistRoot);
+  const artifacts = Object.freeze({
+    driverSha256: await hashRegularFile(input.artifacts.driver),
+    flowDistSha256: flowDist.sha256,
+    kernelProxySha256: await hashRegularFile(input.artifacts.kernelProxy),
+    noIoResourceLoaderSha256: await hashRegularFile(input.artifacts.noIoResourceLoader),
+    pythonLauncherSha256: await hashRegularFile(input.artifacts.pythonLauncher),
+    supervisorSha256: await hashRegularFile(input.artifacts.supervisor),
+  });
   const sbom = Object.freeze({
     node: await nodePackageInventory(input.nodeRoot, node.files),
     python: await pythonPackageInventory(input.pythonRoot, python.files),
@@ -23,9 +32,18 @@ export async function createRuntimeInventory(input) {
     nodeClosureSha256: node.sha256,
     primePackageContentSha256: prime.sha256,
     pythonClosureSha256: python.sha256,
+    artifacts,
     sbom,
     sbomSha256: sha256(canonicalize(sbom)),
   });
+}
+
+async function hashRegularFile(path) {
+  const metadata = await lstat(path, { bigint: true });
+  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > BigInt(MAX_FILE_BYTES)) {
+    throw new Error("Prime image artifact is not one bounded regular file");
+  }
+  return sha256(await readStableFile(path, metadata));
 }
 
 async function scanTree(inputRoot) {
@@ -225,6 +243,15 @@ if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === resolve(
     nodeRoot: "/opt/flow/node/node_modules",
     primeRoot: "/opt/flow/node/node_modules/prime-agent",
     pythonRoot: "/opt/flow/python",
+    flowDistRoot: "/opt/flow/node/flow-dist",
+    artifacts: {
+      driver:
+        "/opt/flow/node/flow-dist/infrastructure/prime/native-prime-agent-evaluation-driver.js",
+      kernelProxy: "/opt/flow/bin/flow-prime-kernel-proxy",
+      noIoResourceLoader: "/opt/flow/node/flow-dist/infrastructure/prime/no-io-resource-loader.js",
+      pythonLauncher: "/opt/flow/bin/flow-prime-python",
+      supervisor: "/opt/flow/bin/flow-prime-supervisor",
+    },
   });
   process.stdout.write(`${canonicalize(inventory)}\n`);
 }

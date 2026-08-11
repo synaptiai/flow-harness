@@ -9,8 +9,8 @@ import {
   mkdir,
   mkdtemp,
   open,
-  readFile,
   readdir,
+  readFile,
   realpath,
   rm,
   utimes,
@@ -83,6 +83,16 @@ const probeSchema = z
     nodeClosureSha256: sha256Schema,
     primePackageContentSha256: sha256Schema,
     pythonClosureSha256: sha256Schema,
+    artifacts: z
+      .object({
+        driverSha256: sha256Schema,
+        flowDistSha256: sha256Schema,
+        kernelProxySha256: sha256Schema,
+        noIoResourceLoaderSha256: sha256Schema,
+        pythonLauncherSha256: sha256Schema,
+        supervisorSha256: sha256Schema,
+      })
+      .strict(),
     sbom: z
       .object({
         node: z.array(packageSchema).max(8_192),
@@ -223,6 +233,7 @@ export class LocalPrimeImageBuilder {
       });
       return Object.freeze({
         image,
+        artifacts: probe.artifacts,
         harnessPackageContentSha256: probe.primePackageContentSha256,
         harnessDependencyClosureSha256: probe.nodeClosureSha256,
       });

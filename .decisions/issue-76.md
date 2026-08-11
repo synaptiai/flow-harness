@@ -285,6 +285,9 @@ The command writes a strict local runtime descriptor under trusted Flow state. T
 the image ID, OCI manifest digest, platform config digest, SBOM digest, build-input digest, and
 policy digest.
 
+The final-image probe also hashes the Flow driver closure and each native executable. The protected
+descriptor stores these hashes. The host registry does not require container binaries on the host.
+
 The command never stores a provider credential. Evaluation uses `--pull=never` and rejects a missing
 image. A later release can publish the same image. Version one does not require a registry.
 
@@ -885,7 +888,7 @@ work are not interventions. The metric test covers each included and excluded ev
 | Criterion | Type | Verification command | Expected evidence | Does not promise |
 |---|---|---|---|---|
 | Admit the fixed Prime profile | Contract | `npx vitest run test/unit/evaluation/plan.test.ts test/unit/infrastructure/fs/local-evaluation-plan.test.ts` | Fixed config passes. Unknown config and authority fields fail. | Prime availability on all hosts |
-| Bind the Prime OCI identity | Contract | `npx vitest run test/unit/infrastructure/prime/native-prime-agent-harness-registry.test.ts` | Engine, image, build, package, policy, and drift mutations fail closed. | Host signatures or hostile engine protection |
+| Bind the Prime OCI identity | Contract | `npx vitest run test/unit/infrastructure/prime/native-prime-harness-registry.test.ts` | Engine, image, build, package, policy, and drift mutations fail closed. | Host signatures or hostile engine protection |
 | Build the exact Prime image | Supply chain | `npm run prime:image:verify` | Two clean builds match. Archive, lock, layer, SBOM, secret, and dependency gates pass. Runtime tests receive that image ID. | Registry publication |
 | Run a real persistent IPython session | Integration | `npx vitest run test/integration/prime/native-prime-agent-evaluation.test.ts` | One session keeps state across two turns. It uses one proxy request and no probe or fork-server process. | Live provider quality |
 | Exchange signed process frames | Integration | `npx vitest run test/integration/prime/native-prime-agent-driver-protocol.test.ts` | The compiled driver completes one signed tool exchange through fake inference. | Provider quality |
@@ -906,7 +909,7 @@ work are not interventions. The metric test covers each included and excluded ev
 | Recover result replacement | Recovery | `npm run build && npm run test:runtime -- test/runtime/prime-result-replacement.runtime.test.ts` | Process crashes around each journal write, tree sync, parent sync, and rename recover one exact tree. | Recovery of foreign trees |
 | Disable health and core output | Security | `npm run build && npm run test:runtime -- test/runtime/prime-agent-oci-startup.runtime.test.ts -t "health and core"` | Health execs never start. Piped core handlers reject. Native crashes produce no core or host dump marker. | Host process tracing |
 | Reject replay identity drift | Data | `npx vitest run test/unit/infrastructure/fs/local-evaluation-store-prime.test.ts` | Every Prime and OCI identity leaf and each adapter mismatch fails after re-digest. | Signed evidence |
-| Fail closed on OCI runtime faults | Error handling | `npx vitest run test/unit/infrastructure/oci/local-oci-external-harness-runtime.test.ts test/unit/application/run-evaluation.test.ts` | Every engine boundary, timeout, cancellation, malformed value, and cleanup error fails closed. | Provider uptime |
+| Fail closed on OCI runtime faults | Error handling | `npx vitest run test/unit/infrastructure/oci/local-prime-oci-harness-runtime.test.ts test/unit/application/run-evaluation.test.ts` | Every engine boundary, timeout, cancellation, malformed value, and cleanup error fails closed. | Provider uptime |
 | Settle native timeout and cancellation | Recovery | `npm run build && npm run test:runtime -- test/runtime/prime-agent-oci-settlement.runtime.test.ts` | Timeout and cancellation give typed evidence. The container is removed. No Node or Python process remains. | Recovery of foreign containers |
 | Recover every container transition | Recovery | `npm run build && npm run test:runtime -- test/runtime/prime-agent-oci-recovery.runtime.test.ts` | Crashes around global lock and container transitions settle exact leases. Create-response loss uses the exact name. | Recovery of foreign containers |
 | Record honest metrics | Data | `npx vitest run test/unit/infrastructure/prime/prime-evaluation-metrics.test.ts test/integration/prime/native-prime-agent-evaluation.test.ts` | Each field and conversion passes. Tests include admission time and every included and excluded intervention event. | Metrics that Prime does not expose |

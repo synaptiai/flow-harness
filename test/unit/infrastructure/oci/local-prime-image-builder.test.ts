@@ -98,6 +98,7 @@ describe("local Prime image builder", () => {
           nodeClosureSha256: "c".repeat(64),
           primePackageContentSha256: "d".repeat(64),
           pythonClosureSha256: "e".repeat(64),
+          artifacts: imageArtifacts(),
           sbom,
           sbomSha256,
         });
@@ -129,6 +130,7 @@ describe("local Prime image builder", () => {
       },
       harnessPackageContentSha256: "d".repeat(64),
       harnessDependencyClosureSha256: "c".repeat(64),
+      artifacts: imageArtifacts(),
     });
     expect(result.image.buildInputSha256).toMatch(/^[a-f0-9]{64}$/);
     expect(result.image.ociManifestSha256).toBe("f".repeat(64));
@@ -167,6 +169,17 @@ describe("local Prime image builder", () => {
     );
   });
 });
+
+function imageArtifacts() {
+  return {
+    driverSha256: "1".repeat(64),
+    flowDistSha256: "2".repeat(64),
+    kernelProxySha256: "3".repeat(64),
+    noIoResourceLoaderSha256: "4".repeat(64),
+    pythonLauncherSha256: "5".repeat(64),
+    supervisorSha256: "6".repeat(64),
+  };
+}
 
 async function buildFixture(): Promise<string> {
   const root = await realpath(await mkdtemp(join(tmpdir(), "flow-prime-builder-")));
