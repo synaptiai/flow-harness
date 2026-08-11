@@ -1,11 +1,14 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, realpath, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { inspectPrimeImageArchive } from "../../../../src/infrastructure/oci/prime-image-archive.js";
+import {
+  inspectPrimeImageArchive,
+  PrimeImageArchiveInspectionError,
+} from "../../../../src/infrastructure/oci/prime-image-archive.js";
 
 describe("Prime image archive", () => {
   it("creates an external package inventory from ordered image layers", async () => {
@@ -54,7 +57,11 @@ describe("Prime image archive", () => {
 
     await expect(
       inspectPrimeImageArchive({ archivePath, imageId: archive.imageId }),
-    ).rejects.toThrow(/secret/i);
+    ).rejects.toMatchObject({
+      name: "PrimeImageArchiveInspectionError",
+      stage: "scan image archive layers",
+      cause: expect.objectContaining({ message: expect.stringMatching(/secret/i) }),
+    });
   });
 
   it("rejects an archive whose configuration bytes do not match the image ID", async () => {
@@ -63,7 +70,113 @@ describe("Prime image archive", () => {
 
     await expect(
       inspectPrimeImageArchive({ archivePath, imageId: `sha256:${"f".repeat(64)}` }),
-    ).rejects.toThrow(/configuration.*digest/i);
+    ).rejects.toMatchObject({
+      name: "PrimeImageArchiveInspectionError",
+      stage: "verify image archive configuration",
+      cause: expect.objectContaining({ message: expect.stringMatching(/configuration.*digest/i) }),
+    });
+  });
+
+  it("classifies noncanonical archive input", async () => {
+    const archive = dockerArchive([layerTar({})]);
+    const archivePath = await writeArchive(archive.bytes);
+
+    await expect(
+      inspectPrimeImageArchive({ archivePath, imageId: "invalid" }),
+    ).rejects.toMatchObject({ stage: "open image archive" });
+  });
+
+  it("classifies a missing Docker archive manifest", async () => {
+    const archivePath = await writeArchive(tar({ "other.json": Buffer.from("{}\n") }));
+
+    await expect(
+      inspectPrimeImageArchive({ archivePath, imageId: `sha256:${"a".repeat(64)}` }),
+    ).rejects.toMatchObject({ stage: "read image archive manifest" });
+  });
+
+  it("classifies invalid package inventory metadata", async () => {
+    const archive = dockerArchive([
+      layerTar({ "opt/flow/node/node_modules/invalid/package.json": "{" }),
+    ]);
+    const archivePath = await writeArchive(archive.bytes);
+
+    await expect(
+      inspectPrimeImageArchive({ archivePath, imageId: archive.imageId }),
+    ).rejects.toMatchObject({ stage: "inventory image archive packages" });
+  });
+
+  it("classifies archive mutation during the final stability observation", async () => {
+    const archive = dockerArchive([layerTar({})]);
+    const archivePath = await writeArchive(archive.bytes);
+
+    await expect(
+      inspectPrimeImageArchive(
+        { archivePath, imageId: archive.imageId },
+        {
+          beforeStabilityObservation: async () => {
+            await appendFile(archivePath, Buffer.from("changed"));
+          },
+        },
+      ),
+    ).rejects.toMatchObject({
+      stage: "verify image archive stability",
+      cause: expect.objectContaining({ message: "Prime image archive changed while inspected" }),
+    });
+  });
+
+  it("classifies a close failure as archive stability evidence", async () => {
+    const archive = dockerArchive([layerTar({})]);
+    const archivePath = await writeArchive(archive.bytes);
+    const closeFailure = new Error("private delayed close failure");
+
+    await expect(
+      inspectPrimeImageArchive(
+        { archivePath, imageId: archive.imageId },
+        {
+          closeArchive: async (handle) => {
+            await handle.close();
+            throw closeFailure;
+          },
+        },
+      ),
+    ).rejects.toMatchObject({
+      stage: "verify image archive stability",
+      cause: closeFailure,
+    });
+  });
+
+  it("preserves a primary phase when archive close also fails", async () => {
+    const archive = dockerArchive([
+      layerTar({ "run/private-token": "-----BEGIN PRIVATE KEY-----\nprivate\n" }),
+    ]);
+    const archivePath = await writeArchive(archive.bytes);
+    const closeFailure = new Error("private close failure after scan failure");
+
+    await expect(
+      inspectPrimeImageArchive(
+        { archivePath, imageId: archive.imageId },
+        {
+          closeArchive: async (handle) => {
+            await handle.close();
+            throw closeFailure;
+          },
+        },
+      ),
+    ).rejects.toMatchObject({
+      stage: "scan image archive layers",
+      cause: expect.objectContaining({
+        errors: [expect.objectContaining({ stage: "scan image archive layers" }), closeFailure],
+      }),
+    });
+  });
+
+  it("uses a closed public diagnostic for archive inspection failures", () => {
+    expect(
+      new PrimeImageArchiveInspectionError("read image archive manifest", new Error("private")),
+    ).toMatchObject({
+      message: "Prime image archive inspection failed during read image archive manifest",
+      stage: "read image archive manifest",
+    });
   });
 });
 

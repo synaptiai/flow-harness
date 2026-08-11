@@ -39,6 +39,30 @@ export interface PrimeImageArchiveInspection {
   readonly sbomSha256: string;
 }
 
+export type PrimeImageArchiveInspectionStage =
+  | "open image archive"
+  | "read image archive manifest"
+  | "verify image archive configuration"
+  | "scan image archive layers"
+  | "inventory image archive packages"
+  | "verify image archive stability";
+
+export class PrimeImageArchiveInspectionError extends Error {
+  override readonly name = "PrimeImageArchiveInspectionError";
+
+  constructor(
+    readonly stage: PrimeImageArchiveInspectionStage,
+    cause: unknown,
+  ) {
+    super(`Prime image archive inspection failed during ${stage}`, { cause });
+  }
+}
+
+export interface PrimeImageArchiveInspectionHooks {
+  readonly beforeStabilityObservation?: () => Promise<void>;
+  readonly closeArchive?: (handle: Awaited<ReturnType<typeof open>>) => Promise<void>;
+}
+
 interface TarEntry {
   readonly dataOffset: number;
   readonly path: string;
@@ -51,59 +75,139 @@ interface DockerSaveManifest {
   readonly Layers: readonly string[];
 }
 
-export async function inspectPrimeImageArchive(input: {
-  readonly archivePath: string;
-  readonly imageId: string;
-}): Promise<PrimeImageArchiveInspection> {
+export async function inspectPrimeImageArchive(
+  input: {
+    readonly archivePath: string;
+    readonly imageId: string;
+  },
+  hooks: PrimeImageArchiveInspectionHooks = {},
+): Promise<PrimeImageArchiveInspection> {
   const requestedPath = resolve(input.archivePath);
-  if (
-    (await realpath(requestedPath)) !== requestedPath ||
-    !imageDigestPattern.test(input.imageId)
-  ) {
-    throw new Error("Prime image archive input is not canonical");
-  }
-  const handle = await open(requestedPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const handle = await inspectArchiveStage("open image archive", async () => {
+    if (
+      (await realpath(requestedPath)) !== requestedPath ||
+      !imageDigestPattern.test(input.imageId)
+    ) {
+      throw new Error("Prime image archive input is not canonical");
+    }
+    return open(requestedPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  });
+  let inspection: PrimeImageArchiveInspection | undefined;
+  let inspectionFailed = false;
+  let primaryError: unknown;
   try {
-    const before = await handle.stat({ bigint: true });
-    if (!before.isFile() || before.size > BigInt(MAX_ARCHIVE_BYTES)) {
-      throw new Error("Prime image archive is not one bounded regular file");
-    }
+    const before = await inspectArchiveStage("open image archive", async () => {
+      const metadata = await handle.stat({ bigint: true });
+      if (!metadata.isFile() || metadata.size > BigInt(MAX_ARCHIVE_BYTES)) {
+        throw new Error("Prime image archive is not one bounded regular file");
+      }
+      return metadata;
+    });
     const archiveBytes = Number(before.size);
-    const outerEntries = await readTarEntries(handle, 0, archiveBytes, MAX_OUTER_ENTRIES);
-    const byPath = new Map(outerEntries.map((entry) => [entry.path, entry]));
-    const manifestEntry = requireRegularEntry(byPath, "manifest.json", MAX_MANIFEST_BYTES);
-    const manifest = parseDockerSaveManifest(
-      await readEntryBytes(handle, manifestEntry, MAX_MANIFEST_BYTES),
+    const { byPath, manifest } = await inspectArchiveStage(
+      "read image archive manifest",
+      async () => {
+        const outerEntries = await readTarEntries(handle, 0, archiveBytes, MAX_OUTER_ENTRIES);
+        const entriesByPath = new Map(outerEntries.map((entry) => [entry.path, entry]));
+        const manifestEntry = requireRegularEntry(
+          entriesByPath,
+          "manifest.json",
+          MAX_MANIFEST_BYTES,
+        );
+        return {
+          byPath: entriesByPath,
+          manifest: parseDockerSaveManifest(
+            await readEntryBytes(handle, manifestEntry, MAX_MANIFEST_BYTES),
+          ),
+        };
+      },
     );
-    const configurationEntry = requireRegularEntry(byPath, manifest.Config, MAX_MANIFEST_BYTES);
-    const configuration = await readEntryBytes(handle, configurationEntry, MAX_MANIFEST_BYTES);
-    if (`sha256:${sha256(configuration)}` !== input.imageId) {
-      throw new Error("Prime image configuration digest does not match the image ID");
-    }
+    await inspectArchiveStage("verify image archive configuration", async () => {
+      const configurationEntry = requireRegularEntry(byPath, manifest.Config, MAX_MANIFEST_BYTES);
+      const configuration = await readEntryBytes(handle, configurationEntry, MAX_MANIFEST_BYTES);
+      if (`sha256:${sha256(configuration)}` !== input.imageId) {
+        throw new Error("Prime image configuration digest does not match the image ID");
+      }
+    });
 
     const metadata = new Map<string, Buffer>();
-    const layerSha256: string[] = [];
-    for (const layerPath of manifest.Layers) {
-      const layer = requireRegularEntry(byPath, layerPath, MAX_ARCHIVE_BYTES);
-      layerSha256.push(await hashRange(handle, layer.dataOffset, layer.size));
-      await inspectLayer(handle, layer, metadata);
-    }
-    const sbom = Object.freeze({
-      node: packageInventory(metadata, "node"),
-      python: packageInventory(metadata, "python"),
+    const layerSha256 = await inspectArchiveStage("scan image archive layers", async () => {
+      const layerDigests: string[] = [];
+      for (const layerPath of manifest.Layers) {
+        const layer = requireRegularEntry(byPath, layerPath, MAX_ARCHIVE_BYTES);
+        layerDigests.push(await hashRange(handle, layer.dataOffset, layer.size));
+        await inspectLayer(handle, layer, metadata);
+      }
+      return Object.freeze(layerDigests);
     });
-    const after = await handle.stat({ bigint: true });
-    if (!sameFileIdentity(before, after)) {
-      throw new Error("Prime image archive changed while inspected");
-    }
-    return Object.freeze({
-      archiveSha256: await hashRange(handle, 0, archiveBytes),
-      layerSha256: Object.freeze(layerSha256),
-      sbom,
-      sbomSha256: sha256(canonicalize(sbom)),
+    const { sbom, sbomSha256 } = await inspectArchiveStage(
+      "inventory image archive packages",
+      async () => {
+        const inventory = Object.freeze({
+          node: packageInventory(metadata, "node"),
+          python: packageInventory(metadata, "python"),
+        });
+        return { sbom: inventory, sbomSha256: sha256(canonicalize(inventory)) };
+      },
+    );
+    inspection = await inspectArchiveStage("verify image archive stability", async () => {
+      await hooks.beforeStabilityObservation?.();
+      const archiveSha256 = await hashRange(handle, 0, archiveBytes);
+      const after = await handle.stat({ bigint: true });
+      if (!sameFileIdentity(before, after)) {
+        throw new Error("Prime image archive changed while inspected");
+      }
+      return Object.freeze({ archiveSha256, layerSha256, sbom, sbomSha256 });
     });
-  } finally {
-    await handle.close();
+  } catch (error) {
+    inspectionFailed = true;
+    primaryError = error;
+  }
+
+  try {
+    await (hooks.closeArchive ?? closeArchive)(handle);
+  } catch (closeError) {
+    const stage =
+      primaryError instanceof PrimeImageArchiveInspectionError
+        ? primaryError.stage
+        : "verify image archive stability";
+    throw new PrimeImageArchiveInspectionError(
+      stage,
+      inspectionFailed
+        ? new AggregateError(
+            [primaryError, closeError],
+            "Prime image archive inspection and close both failed",
+          )
+        : closeError,
+    );
+  }
+  if (inspectionFailed) {
+    throw primaryError;
+  }
+  if (inspection === undefined) {
+    throw new PrimeImageArchiveInspectionError(
+      "verify image archive stability",
+      new Error("Prime image archive inspection produced no evidence"),
+    );
+  }
+  return inspection;
+}
+
+async function closeArchive(handle: Awaited<ReturnType<typeof open>>): Promise<void> {
+  await handle.close();
+}
+
+async function inspectArchiveStage<T>(
+  stage: PrimeImageArchiveInspectionStage,
+  operation: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof PrimeImageArchiveInspectionError) {
+      throw error;
+    }
+    throw new PrimeImageArchiveInspectionError(stage, error);
   }
 }
 

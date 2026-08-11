@@ -24,7 +24,11 @@ import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 
 import { parsePrimeOciImageIdentity } from "../../domain/evaluation/external-harness.js";
-import { inspectPrimeImageArchive } from "./prime-image-archive.js";
+import {
+  inspectPrimeImageArchive,
+  PrimeImageArchiveInspectionError,
+  type PrimeImageArchiveInspectionStage,
+} from "./prime-image-archive.js";
 import type { PrimeOciPreparedBuild } from "./prime-oci-preparation.js";
 
 const MAX_CONTEXT_ENTRIES = 131_072;
@@ -166,6 +170,7 @@ export interface PrimeDockerCommandOptions {
 }
 
 export type PrimeImageBuildStage =
+  | PrimeImageArchiveInspectionStage
   | "recover interrupted builds"
   | "stage build context"
   | "create BuildKit builder"
@@ -530,6 +535,9 @@ export class LocalPrimeImageBuilder {
         ownsReference: !canonicalReferenceExisted,
       };
     } catch (error) {
+      if (error instanceof PrimeImageArchiveInspectionError) {
+        stage = error.stage;
+      }
       buildError = isPrimeImageBuildCancellation(error, signal)
         ? signal?.reason instanceof Error
           ? signal.reason

@@ -22,6 +22,10 @@ import {
   runLocalDockerCommand,
   verifyPrimeAgentArchiveBytes,
 } from "../../../../src/infrastructure/oci/local-prime-image-builder.js";
+import {
+  inspectPrimeImageArchive,
+  PrimeImageArchiveInspectionError,
+} from "../../../../src/infrastructure/oci/prime-image-archive.js";
 
 const BUILDKIT_IMAGE =
   "moby/buildkit:buildx-stable-1@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec";
@@ -70,11 +74,15 @@ describe("local Prime image builder", () => {
     [["image", "inspect"], "inspect loaded image"],
     [["run"], "probe built image"],
     [["image", "tag"], "tag canonical image"],
-  ] as const)("reports builder command %j at stage %s", async (command, expectedStage) => {
-    const { builder } = await createBuildHarness({ failCommand: command });
+  ] as const)(
+    "reports builder command %j at stage %s",
+    async (command, expectedStage) => {
+      const { builder } = await createBuildHarness({ failCommand: command });
 
-    await expect(builder.build(1)).rejects.toMatchObject({ stage: expectedStage });
-  });
+      await expect(builder.build(1)).rejects.toMatchObject({ stage: expectedStage });
+    },
+    15_000,
+  );
 
   it("retains a successful-build journal until failed Docker cleanup is recovered", async () => {
     const { builder, root, cleanupRun } = await createBuildHarness({
@@ -100,6 +108,28 @@ describe("local Prime image builder", () => {
     expect(
       (await readdir(root)).filter((entry) => entry.startsWith("flow-prime-image-1-")),
     ).toEqual([]);
+  });
+
+  it("promotes a closed archive phase into the public build stage", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-prime-missing-archive-")));
+    let archiveFailure: PrimeImageArchiveInspectionError | undefined;
+    try {
+      await inspectPrimeImageArchive({
+        archivePath: join(root, "missing.tar"),
+        imageId: `sha256:${"a".repeat(64)}`,
+      });
+    } catch (error) {
+      if (error instanceof PrimeImageArchiveInspectionError) {
+        archiveFailure = error;
+      }
+    }
+    expect(archiveFailure).toMatchObject({ stage: "open image archive" });
+    const { builder } = await createBuildHarness({ archiveInspectionError: archiveFailure });
+
+    await expect(builder.build(1)).rejects.toMatchObject({
+      stage: "open image archive",
+      cause: archiveFailure,
+    });
   });
 
   it("does not hide a distinct staged command failure after the signal aborts", async () => {
@@ -799,6 +829,7 @@ async function createBuildHarness(
     readonly cleanupBuildxRemoveFailures?: number;
     readonly failRetirementImageRemove?: boolean;
     readonly removePath?: typeof rm;
+    readonly archiveInspectionError?: Error;
   } = {},
 ) {
   const root = await buildFixture();
@@ -906,12 +937,17 @@ async function createBuildHarness(
     cleanupRun,
     nonce: () => "0123456789abcdef0123456789abcdef",
     verifyPrimeArchive: vi.fn(async () => undefined),
-    inspectImageArchive: vi.fn(async () => ({
-      archiveSha256: "7".repeat(64),
-      layerSha256: ["8".repeat(64)],
-      sbom,
-      sbomSha256,
-    })),
+    inspectImageArchive: vi.fn(async () => {
+      if (options.archiveInspectionError !== undefined) {
+        throw options.archiveInspectionError;
+      }
+      return {
+        archiveSha256: "7".repeat(64),
+        layerSha256: ["8".repeat(64)],
+        sbom,
+        sbomSha256,
+      };
+    }),
     ...(options.removePath === undefined ? {} : { removePath: options.removePath }),
   });
   return { builder, root, cleanupRun };
