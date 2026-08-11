@@ -44,22 +44,21 @@ describe("Prime durable result replacement", () => {
       await expect(new DurablePrimeWorkspacePublisher().recover(targetRoot)).resolves.toBe(
         expectedOutcome,
       );
-      await expect(readFile(join(targetRoot, expectedFile), "utf8")).resolves.toBe(
-        expectedContent,
-      );
+      await expect(readFile(join(targetRoot, expectedFile), "utf8")).resolves.toBe(expectedContent);
     },
   );
 });
 
 async function runCrashFixture(checkpoint: string, targetRoot: string, stagingRoot: string) {
-  return await new Promise<{ readonly code: number | null; readonly signal: NodeJS.Signals | null }>(
-    (resolveRun, rejectRun) => {
-      const child = spawn(process.execPath, [crashFixture, checkpoint, targetRoot, stagingRoot], {
-        cwd: repositoryRoot,
-        stdio: "ignore",
-      });
-      child.once("error", rejectRun);
-      child.once("exit", (code, signal) => resolveRun({ code, signal }));
-    },
-  );
+  return await new Promise<{
+    readonly code: number | null;
+    readonly signal: NodeJS.Signals | null;
+  }>((resolveRun, rejectRun) => {
+    const child = spawn(process.execPath, [crashFixture, checkpoint, targetRoot, stagingRoot], {
+      cwd: repositoryRoot,
+      stdio: "ignore",
+    });
+    child.once("error", rejectRun);
+    child.once("exit", (code, signal) => resolveRun({ code, signal }));
+  });
 }
