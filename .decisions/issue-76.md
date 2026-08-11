@@ -643,8 +643,8 @@ Unix socket and its canonical daemon PID record.
 Flow rejects socket activation and authority-moving daemon options. It also rejects those options
 in the default daemon configuration. The Docker-managed `containerd` must be a direct daemon child.
 
-The dedicated-runner setup gives non-root Flow traverse-only access to the managed containerd state
-directory. Root also publishes `/run/flow-prime-runtime-v1.json` with mode `0444`. This strict file
+The dedicated-runner setup gives non-root Flow traverse-only access to the managed Docker state
+directories. Root also publishes `/run/flow-prime-runtime-v1.json` with mode `0444`. This strict file
 binds the canonical Docker and containerd PIDs, executable paths, and live executable hashes. Flow
 rechecks the PID records, direct-parent relation, file protection, paths, and hashes before use.
 

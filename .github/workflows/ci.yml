@@ -117,7 +117,7 @@ jobs:
             sudo journalctl --unit=docker.service --no-pager --lines=200 || true
             exit 1
           fi
-          sudo chmod 0711 /run/docker/containerd
+          sudo chmod 0711 /run/docker /run/docker/containerd
           test "$(docker version --format '{{.Server.APIVersion}}')" = '1.51'
           test "$(docker version --format '{{.Server.Version}}')" = '28.3.3'
           test "$(docker info --format '{{.DefaultRuntime}}')" = 'flow-prime-runc'

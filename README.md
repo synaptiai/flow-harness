@@ -120,7 +120,7 @@ sudo install --directory /etc/systemd/system/docker.service.d
 printf '[Unit]\nRequires=\n[Service]\nExecStart=\nExecStart=/usr/bin/dockerd --host=unix:///var/run/docker.sock\n' | sudo tee /etc/systemd/system/docker.service.d/flow-prime.conf
 sudo systemctl daemon-reload
 sudo systemctl start docker.service
-sudo chmod 0711 /run/docker/containerd
+sudo chmod 0711 /run/docker /run/docker/containerd
 ```
 
 To roll back this setup, recreate the runner from its trusted base image. Version one does not

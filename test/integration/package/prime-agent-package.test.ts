@@ -230,7 +230,7 @@ describe("Prime Agent package boundary", () => {
     expect(workflow).toContain("systemctl stop docker.service docker.socket containerd.service");
     expect(workflow).toContain("systemctl mask containerd.service");
     expect(workflow).toContain("rm --force -- /run/containerd/containerd.sock");
-    expect(workflow).toContain("chmod 0711 /run/docker/containerd");
+    expect(workflow).toContain("chmod 0711 /run/docker /run/docker/containerd");
     expect(workflow).toContain("/run/flow-prime-runtime-v1.json");
     expect(workflow).toContain('ps --no-headers --pid "$containerd_pid" --format ppid');
     expect(workflow).not.toContain('ps --no-headers --ppid "$docker_pid" --format pid');
@@ -242,7 +242,7 @@ describe("Prime Agent package boundary", () => {
     expect(workflow).toContain("useradd --create-home --groups docker flow-prime-peer");
     expect(workflow).toContain("FLOW_PRIME_TEST_SECOND_USER=flow-prime-peer");
     expect(readme).toContain("dedicated, reprovisionable Prime runner");
-    expect(readme).toContain("chmod 0711 /run/docker/containerd");
+    expect(readme).toContain("chmod 0711 /run/docker /run/docker/containerd");
     expect(readme).toContain("/run/flow-prime-runtime-v1.json");
     expect(readme).toContain('ps --no-headers --pid "$containerd_pid" --format ppid');
     expect(readme).not.toContain('ps --no-headers --ppid "$docker_pid" --format pid');
