@@ -1,7 +1,5 @@
 import { createHash } from "node:crypto";
-import { appendFile, mkdtemp, realpath, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { appendFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 
@@ -9,6 +7,12 @@ import {
   inspectPrimeImageArchive,
   PrimeImageArchiveInspectionError,
 } from "../../../../src/infrastructure/oci/prime-image-archive.js";
+import {
+  createTarArchive,
+  createDockerImageArchive as dockerArchive,
+  createDockerLayerTar as layerTar,
+  writeDockerArchiveFixture as writeArchive,
+} from "../../../fixtures/prime/docker-image-archive.js";
 
 describe("Prime image archive", () => {
   it("creates an external package inventory from ordered image layers", async () => {
@@ -59,9 +63,26 @@ describe("Prime image archive", () => {
       inspectPrimeImageArchive({ archivePath, imageId: archive.imageId }),
     ).rejects.toMatchObject({
       name: "PrimeImageArchiveInspectionError",
-      stage: "scan image archive layers",
+      stage: "scan image archive private keys",
       cause: expect.objectContaining({ message: expect.stringMatching(/secret/i) }),
     });
+  });
+
+  it.each([
+    ["GitHub", `ghp_${"g".repeat(36)}`, "scan image archive GitHub tokens"],
+    ["npm", `npm_${"n".repeat(36)}`, "scan image archive npm tokens"],
+    [
+      "synthetic sentinel",
+      "FLOW_PRIME_FORBIDDEN_SECRET_fixture",
+      "scan image archive synthetic secrets",
+    ],
+  ] as const)("classifies %s secret patterns", async (_label, token, stage) => {
+    const archive = dockerArchive([layerTar({ "opt/flow/fixture.txt": token })]);
+    const archivePath = await writeArchive(archive.bytes);
+
+    await expect(
+      inspectPrimeImageArchive({ archivePath, imageId: archive.imageId }),
+    ).rejects.toMatchObject({ stage });
   });
 
   it("allows only the canonical AWS documentation access key example", async () => {
@@ -92,7 +113,7 @@ describe("Prime image archive", () => {
         imageId: otherAccessKey.imageId,
       }),
     ).rejects.toMatchObject({
-      stage: "scan image archive layers",
+      stage: "scan image archive AWS access keys",
       cause: expect.objectContaining({ message: expect.stringMatching(/secret/i) }),
     });
 
@@ -108,7 +129,7 @@ describe("Prime image archive", () => {
         archivePath: mixedBoundaryKeysPath,
         imageId: mixedBoundaryKeys.imageId,
       }),
-    ).rejects.toMatchObject({ stage: "scan image archive layers" });
+    ).rejects.toMatchObject({ stage: "scan image archive AWS access keys" });
   });
 
   it("rejects an archive whose configuration bytes do not match the image ID", async () => {
@@ -134,7 +155,7 @@ describe("Prime image archive", () => {
   });
 
   it("classifies a missing Docker archive manifest", async () => {
-    const archivePath = await writeArchive(tar({ "other.json": Buffer.from("{}\n") }));
+    const archivePath = await writeArchive(createTarArchive({ "other.json": Buffer.from("{}\n") }));
 
     await expect(
       inspectPrimeImageArchive({ archivePath, imageId: `sha256:${"a".repeat(64)}` }),
@@ -210,9 +231,12 @@ describe("Prime image archive", () => {
         },
       ),
     ).rejects.toMatchObject({
-      stage: "scan image archive layers",
+      stage: "scan image archive private keys",
       cause: expect.objectContaining({
-        errors: [expect.objectContaining({ stage: "scan image archive layers" }), closeFailure],
+        errors: [
+          expect.objectContaining({ stage: "scan image archive private keys" }),
+          closeFailure,
+        ],
       }),
     });
   });
@@ -226,80 +250,6 @@ describe("Prime image archive", () => {
     });
   });
 });
-
-async function writeArchive(bytes: Buffer): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), "flow-prime-image-archive-"));
-  const path = join(root, "image.tar");
-  await writeFile(path, bytes);
-  return realpath(path);
-}
-
-function dockerArchive(layers: readonly Buffer[]): { bytes: Buffer; imageId: string } {
-  const configuration = Buffer.from('{"architecture":"amd64","os":"linux"}\n');
-  const configurationSha256 = sha256(configuration);
-  const layerEntries = Object.fromEntries(
-    layers.map((layer, index) => [`layer-${index}/layer.tar`, layer]),
-  );
-  const manifest = Buffer.from(
-    `${JSON.stringify([
-      {
-        Config: `${configurationSha256}.json`,
-        RepoTags: null,
-        Layers: Object.keys(layerEntries),
-      },
-    ])}\n`,
-  );
-  return {
-    bytes: tar({
-      [`${configurationSha256}.json`]: configuration,
-      "manifest.json": manifest,
-      ...layerEntries,
-    }),
-    imageId: `sha256:${configurationSha256}`,
-  };
-}
-
-function layerTar(
-  entries: Readonly<Record<string, string>>,
-  directories: readonly string[] = [],
-): Buffer {
-  return tar(
-    Object.fromEntries([
-      ...directories.map((path) => [`${path}/`, { content: Buffer.alloc(0), type: "5" }] as const),
-      ...Object.entries(entries).map(([path, value]) => [path, Buffer.from(value)] as const),
-    ]),
-  );
-}
-
-function tar(
-  entries: Readonly<Record<string, Buffer | { readonly content: Buffer; readonly type: string }>>,
-): Buffer {
-  const parts: Buffer[] = [];
-  for (const [path, fixture] of Object.entries(entries)) {
-    const content = Buffer.isBuffer(fixture) ? fixture : fixture.content;
-    const type = Buffer.isBuffer(fixture) ? "0" : fixture.type;
-    const header = Buffer.alloc(512);
-    header.write(path, 0, 100, "utf8");
-    writeOctal(header, 100, 8, 0o644);
-    writeOctal(header, 108, 8, 0);
-    writeOctal(header, 116, 8, 0);
-    writeOctal(header, 124, 12, content.byteLength);
-    writeOctal(header, 136, 12, 0);
-    header.fill(0x20, 148, 156);
-    header.write(type, 156, 1, "ascii");
-    header.write("ustar\0", 257, 6, "binary");
-    header.write("00", 263, 2, "ascii");
-    const checksum = header.reduce((sum, byte) => sum + byte, 0);
-    header.write(`${checksum.toString(8).padStart(6, "0")}\0 `, 148, 8, "ascii");
-    parts.push(header, content, Buffer.alloc((512 - (content.byteLength % 512)) % 512));
-  }
-  parts.push(Buffer.alloc(1_024));
-  return Buffer.concat(parts);
-}
-
-function writeOctal(target: Buffer, offset: number, length: number, value: number): void {
-  target.write(`${value.toString(8).padStart(length - 1, "0")}\0`, offset, length, "ascii");
-}
 
 function canonicalize(value: unknown): string {
   if (value === null || typeof value === "boolean" || typeof value === "number") {

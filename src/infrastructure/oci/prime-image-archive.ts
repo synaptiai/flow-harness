@@ -16,11 +16,20 @@ const SECRET_SCAN_OVERLAP_BYTES = 128;
 const AWS_DOCUMENTATION_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE";
 const imageDigestPattern = /^sha256:[a-f0-9]{64}$/;
 const awsAccessKeyPattern = /AKIA[0-9A-Z]{16}/g;
-const forbiddenSecretPatterns = Object.freeze([
-  /-----BEGIN (?:EC |OPENSSH |RSA )?PRIVATE KEY-----/,
-  /ghp_[A-Za-z0-9]{36}/,
-  /npm_[A-Za-z0-9]{36}/,
-  /FLOW_PRIME_FORBIDDEN_SECRET_[A-Za-z0-9_-]*/,
+const forbiddenSecretPatterns: readonly Readonly<{
+  pattern: RegExp;
+  stage: PrimeImageArchiveSecretStage;
+}>[] = Object.freeze([
+  {
+    pattern: /-----BEGIN (?:EC |OPENSSH |RSA )?PRIVATE KEY-----/,
+    stage: "scan image archive private keys",
+  },
+  { pattern: /ghp_[A-Za-z0-9]{36}/, stage: "scan image archive GitHub tokens" },
+  { pattern: /npm_[A-Za-z0-9]{36}/, stage: "scan image archive npm tokens" },
+  {
+    pattern: /FLOW_PRIME_FORBIDDEN_SECRET_[A-Za-z0-9_-]*/,
+    stage: "scan image archive synthetic secrets",
+  },
 ]);
 
 export interface PrimeImagePackageIdentity {
@@ -40,11 +49,19 @@ export interface PrimeImageArchiveInspection {
   readonly sbomSha256: string;
 }
 
+export type PrimeImageArchiveSecretStage =
+  | "scan image archive private keys"
+  | "scan image archive AWS access keys"
+  | "scan image archive GitHub tokens"
+  | "scan image archive npm tokens"
+  | "scan image archive synthetic secrets";
+
 export type PrimeImageArchiveInspectionStage =
   | "open image archive"
   | "read image archive manifest"
   | "verify image archive configuration"
   | "scan image archive layers"
+  | PrimeImageArchiveSecretStage
   | "inventory image archive packages"
   | "verify image archive stability";
 
@@ -223,8 +240,12 @@ async function inspectLayer(
     if (entry.type !== "0" && entry.type !== "\0") {
       continue;
     }
-    if (await containsForbiddenSecret(handle, entry.dataOffset, entry.size)) {
-      throw new Error("Prime image layer contains a prohibited secret pattern");
+    const secretStage = await findForbiddenSecretStage(handle, entry.dataOffset, entry.size);
+    if (secretStage !== undefined) {
+      throw new PrimeImageArchiveInspectionError(
+        secretStage,
+        new Error("Prime image layer contains a prohibited secret pattern"),
+      );
     }
     if (!isPackageMetadata(entry.path)) {
       continue;
@@ -539,28 +560,30 @@ async function hashRange(
   return hash.digest("hex");
 }
 
-async function containsForbiddenSecret(
+async function findForbiddenSecretStage(
   handle: Awaited<ReturnType<typeof open>>,
   position: number,
   bytes: number,
-): Promise<boolean> {
+): Promise<PrimeImageArchiveSecretStage | undefined> {
   let offset = 0;
   let overlap = "";
   while (offset < bytes) {
     const length = Math.min(READ_CHUNK_BYTES, bytes - offset);
     const source = `${overlap}${(await readRange(handle, position + offset, length)).toString("latin1")}`;
-    if (forbiddenSecretPatterns.some((pattern) => pattern.test(source))) {
-      return true;
+    for (const secret of forbiddenSecretPatterns) {
+      if (secret.pattern.test(source)) {
+        return secret.stage;
+      }
     }
     for (const match of source.matchAll(awsAccessKeyPattern)) {
       if (match[0] !== AWS_DOCUMENTATION_ACCESS_KEY_ID) {
-        return true;
+        return "scan image archive AWS access keys";
       }
     }
     overlap = source.slice(-SECRET_SCAN_OVERLAP_BYTES);
     offset += length;
   }
-  return false;
+  return undefined;
 }
 
 function parseJsonObject(bytes: Buffer, label: string): Record<string, unknown> {

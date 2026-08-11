@@ -15,27 +15,33 @@ import {
 import { primeExternalHarnessIdentity } from "../../../fixtures/evaluation/prime-external-harness-identity.js";
 
 describe("Prime OCI runtime preparation", () => {
-  it("reports one fixed image-build stage without exposing the nested failure", async () => {
-    const preparation = preparePrimeOciRuntime(
-      { descriptorPath: "/project/.flow/runtime/prime-agent/oci-attestation.json" },
-      {
-        build: async () => {
-          throw new PrimeImageBuildStageError(
-            "bootstrap BuildKit builder",
-            new Error("private Docker response body"),
-          );
+  it.each([
+    [
+      "bootstrap BuildKit builder",
+      "Prime OCI clean build 1 failed during bootstrap BuildKit builder",
+    ],
+    [
+      "scan image archive AWS access keys",
+      "Prime OCI clean build 1 failed during scan image archive AWS access keys",
+    ],
+  ] as const)(
+    "reports fixed image-build stage %s without exposing the nested failure",
+    async (stage, message) => {
+      const preparation = preparePrimeOciRuntime(
+        { descriptorPath: "/project/.flow/runtime/prime-agent/oci-attestation.json" },
+        {
+          build: async () => {
+            throw new PrimeImageBuildStageError(stage, new Error("private Docker response body"));
+          },
+          inspectRuntime: vi.fn(),
+          publish: vi.fn(),
         },
-        inspectRuntime: vi.fn(),
-        publish: vi.fn(),
-      },
-    );
+      );
 
-    await expect(preparation).rejects.toMatchObject({
-      code: "build_failed",
-      message: "Prime OCI clean build 1 failed during bootstrap BuildKit builder",
-    });
-    await expect(preparation).rejects.not.toThrow(/private Docker response body/i);
-  });
+      await expect(preparation).rejects.toMatchObject({ code: "build_failed", message });
+      await expect(preparation).rejects.not.toThrow(/private Docker response body/i);
+    },
+  );
 
   it("does not repair an exact shared global lease directory", () => {
     expect(globalLeaseDirectoryRepairs({ gid: 999, mode: 0o2770 }, 999)).toEqual({

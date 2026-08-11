@@ -26,6 +26,11 @@ import {
   inspectPrimeImageArchive,
   PrimeImageArchiveInspectionError,
 } from "../../../../src/infrastructure/oci/prime-image-archive.js";
+import {
+  createDockerImageArchive,
+  createDockerLayerTar,
+  writeDockerArchiveFixture,
+} from "../../../fixtures/prime/docker-image-archive.js";
 
 const BUILDKIT_IMAGE =
   "moby/buildkit:buildx-stable-1@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec";
@@ -112,25 +117,33 @@ describe("local Prime image builder", () => {
 
   it("promotes a closed archive phase into the public build stage", async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "flow-prime-missing-archive-")));
-    let archiveFailure: PrimeImageArchiveInspectionError | undefined;
-    try {
-      await inspectPrimeImageArchive({
-        archivePath: join(root, "missing.tar"),
-        imageId: `sha256:${"a".repeat(64)}`,
-      });
-    } catch (error) {
-      if (error instanceof PrimeImageArchiveInspectionError) {
-        archiveFailure = error;
-      }
-    }
-    if (archiveFailure === undefined) {
-      throw new Error("Expected the real archive parser to reject the missing archive");
-    }
+    const archiveFailure = await captureArchiveInspectionError({
+      archivePath: join(root, "missing.tar"),
+      imageId: `sha256:${"a".repeat(64)}`,
+    });
     expect(archiveFailure).toMatchObject({ stage: "open image archive" });
     const { builder } = await createBuildHarness({ archiveInspectionError: archiveFailure });
 
     await expect(builder.build(1)).rejects.toMatchObject({
       stage: "open image archive",
+      cause: archiveFailure,
+    });
+  });
+
+  it("promotes a real credential-family phase into the public build stage", async () => {
+    const archive = createDockerImageArchive([
+      createDockerLayerTar({ "opt/flow/fixture.txt": "AKIA000000000EXAMPLE" }),
+    ]);
+    const archivePath = await writeDockerArchiveFixture(archive.bytes);
+    const archiveFailure = await captureArchiveInspectionError({
+      archivePath,
+      imageId: archive.imageId,
+    });
+    expect(archiveFailure).toMatchObject({ stage: "scan image archive AWS access keys" });
+    const { builder } = await createBuildHarness({ archiveInspectionError: archiveFailure });
+
+    await expect(builder.build(1)).rejects.toMatchObject({
+      stage: "scan image archive AWS access keys",
       cause: archiveFailure,
     });
   });
@@ -820,6 +833,22 @@ async function buildFixture(): Promise<string> {
     }),
   );
   return root;
+}
+
+async function captureArchiveInspectionError(
+  input: Parameters<typeof inspectPrimeImageArchive>[0],
+): Promise<PrimeImageArchiveInspectionError> {
+  try {
+    await inspectPrimeImageArchive(input);
+  } catch (error) {
+    if (error instanceof PrimeImageArchiveInspectionError) {
+      return error;
+    }
+    throw new Error("Expected the archive parser to return one typed inspection error", {
+      cause: error,
+    });
+  }
+  throw new Error("Expected the archive parser to reject the fixture");
 }
 
 async function createBuildHarness(
