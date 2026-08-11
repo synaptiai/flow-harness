@@ -71,10 +71,22 @@ export async function prepareProductionPrimeOciRuntime(input: {
   const packageRoot = await realpath(resolve(dirname(fileURLToPath(import.meta.url)), "../../.."));
   const dockerExecutable = await resolveDockerExecutable();
   const dockerBuildxExecutable = await resolveDockerBuildxExecutable();
+  const containerdExecutable = await resolveContainerdExecutable();
+  const runcExecutable = await resolveRuncExecutable();
   const dockerExecutableSha256 = await hashStableRegularFile(
     dockerExecutable,
     MAX_EXECUTABLE_BYTES,
     "Docker executable",
+  );
+  const containerdExecutableSha256 = await hashStableRegularFile(
+    containerdExecutable,
+    MAX_EXECUTABLE_BYTES,
+    "containerd executable",
+  );
+  const runcExecutableSha256 = await hashStableRegularFile(
+    runcExecutable,
+    MAX_EXECUTABLE_BYTES,
+    "runc executable",
   );
   const environmentRoot = await realpath(
     await mkdtemp(join(tmpdir(), "flow-prime-preparation-environment-")),
@@ -96,10 +108,17 @@ export async function prepareProductionPrimeOciRuntime(input: {
           packageRoot,
           projectRoot,
           dockerExecutable,
+          dockerExecutableSha256,
+          containerdExecutable,
+          containerdExecutableSha256,
+          runcExecutable,
+          runcExecutableSha256,
           run,
           signal: input.signal,
         }),
       dockerExecutableSha256,
+      containerdExecutableSha256,
+      runcExecutableSha256,
     });
     const descriptorPath = join(
       projectRoot,
@@ -127,6 +146,11 @@ async function observeLocalRuntime(input: {
   readonly packageRoot: string;
   readonly projectRoot: string;
   readonly dockerExecutable: string;
+  readonly dockerExecutableSha256: string;
+  readonly containerdExecutable: string;
+  readonly containerdExecutableSha256: string;
+  readonly runcExecutable: string;
+  readonly runcExecutableSha256: string;
   readonly run: (args: readonly string[]) => Promise<string>;
   readonly signal: AbortSignal | undefined;
 }): Promise<PrimeOciLocalRuntimeAttestation> {
@@ -178,6 +202,14 @@ async function observeLocalRuntime(input: {
     corePattern: corePattern.trim(),
     globalLeasePath,
     imageDevice,
+    executables: {
+      docker: { path: input.dockerExecutable, sha256: input.dockerExecutableSha256 },
+      containerd: {
+        path: input.containerdExecutable,
+        sha256: input.containerdExecutableSha256,
+      },
+      runc: { path: input.runcExecutable, sha256: input.runcExecutableSha256 },
+    },
     leaseTarget: "flow-prime-global-v1",
     seccompProfile,
   });
@@ -196,6 +228,14 @@ async function resolveDockerBuildxExecutable(): Promise<string> {
     ],
     "Docker Buildx",
   );
+}
+
+async function resolveContainerdExecutable(): Promise<string> {
+  return resolveFixedExecutable(["/usr/bin/containerd", "/usr/local/bin/containerd"], "containerd");
+}
+
+async function resolveRuncExecutable(): Promise<string> {
+  return resolveFixedExecutable(["/usr/bin/runc", "/usr/local/bin/runc"], "runc");
 }
 
 async function resolveFixedExecutable(

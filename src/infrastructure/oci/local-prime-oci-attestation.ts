@@ -13,6 +13,7 @@ import {
 import { parseStrictJson, type StrictJsonValue } from "../../domain/strict-json.js";
 
 const MAX_ATTESTATION_BYTES = 1_048_576;
+const MAX_EXECUTABLE_BYTES = 268_435_456;
 const READ_CHUNK_BYTES = 65_536;
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const safeInteger = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
@@ -32,6 +33,12 @@ const socketIdentitySchema = z
     uid: safeInteger,
     gid: safeInteger,
     mode: z.number().int().min(0).max(0o777),
+  })
+  .strict();
+const executableIdentitySchema = z
+  .object({
+    path: absolutePathSchema,
+    sha256: sha256Schema,
   })
   .strict();
 const descriptorSchema = z
@@ -67,6 +74,13 @@ const descriptorSchema = z
             minor: safeInteger,
           })
           .strict(),
+        executables: z
+          .object({
+            docker: executableIdentitySchema,
+            containerd: executableIdentitySchema,
+            runc: executableIdentitySchema,
+          })
+          .strict(),
         leaseTarget: z.literal("flow-prime-global-v1"),
         seccompProfile: z.record(z.string(), z.unknown()),
       })
@@ -89,6 +103,11 @@ export interface PrimeOciLocalRuntimeAttestation {
     readonly major: number;
     readonly minor: number;
   };
+  readonly executables: {
+    readonly docker: z.infer<typeof executableIdentitySchema>;
+    readonly containerd: z.infer<typeof executableIdentitySchema>;
+    readonly runc: z.infer<typeof executableIdentitySchema>;
+  };
   readonly leaseTarget: "flow-prime-global-v1";
   readonly seccompProfile: Readonly<Record<string, unknown>>;
 }
@@ -108,6 +127,7 @@ export type PrimeOciAttestationDescriptor = z.infer<typeof descriptorSchema>;
 export interface LocalPrimeOciAttestationStoreOptions {
   readonly descriptorPath: string;
   readonly observeSocket?: (path: "/var/run/docker.sock") => Promise<PrimeOciSocketIdentity>;
+  readonly observeExecutable?: (path: string) => Promise<string>;
 }
 
 interface AttestationSnapshot {
@@ -117,10 +137,12 @@ interface AttestationSnapshot {
 
 export class LocalPrimeOciAttestationStore {
   readonly #descriptorPath: string;
+  readonly #observeExecutable: (path: string) => Promise<string>;
   readonly #observeSocket: (path: "/var/run/docker.sock") => Promise<PrimeOciSocketIdentity>;
 
   constructor(options: LocalPrimeOciAttestationStoreOptions) {
     this.#descriptorPath = options.descriptorPath;
+    this.#observeExecutable = options.observeExecutable ?? observeExecutable;
     this.#observeSocket = options.observeSocket ?? observeDockerSocket;
   }
 
@@ -131,6 +153,7 @@ export class LocalPrimeOciAttestationStore {
     if (snapshot.descriptor.local.apiVersion !== runtime.engine.apiVersion) {
       throw new Error("Prime OCI Docker API version contradicts the public runtime identity");
     }
+    assertExecutableClaims(snapshot.descriptor.local.executables, runtime);
     const seccompDigest = sha256(
       canonicalize(snapshot.descriptor.local.seccompProfile as StrictJsonValue),
     );
@@ -146,6 +169,7 @@ export class LocalPrimeOciAttestationStore {
     if (!sameSocketIdentity(observedSocket, snapshot.descriptor.local.socket)) {
       throw new Error("Prime OCI Docker socket identity changed before admission");
     }
+    await this.#assertExecutablesCurrent(snapshot.descriptor.local.executables);
 
     const localRuntime = deepFreeze({
       daemonId: snapshot.descriptor.daemonId,
@@ -170,8 +194,53 @@ export class LocalPrimeOciAttestationStore {
         if (!sameSocketIdentity(currentSocket, snapshot.descriptor.local.socket)) {
           throw new Error("Prime OCI Docker socket changed after admission");
         }
+        await this.#assertExecutablesCurrent(snapshot.descriptor.local.executables);
       },
     });
+  }
+
+  async #assertExecutablesCurrent(
+    executables: z.infer<typeof descriptorSchema>["local"]["executables"],
+  ): Promise<void> {
+    for (const executable of Object.values(executables)) {
+      if ((await this.#observeExecutable(executable.path)) !== executable.sha256) {
+        throw new Error("Prime OCI executable changed after admission");
+      }
+    }
+  }
+}
+
+function assertExecutableClaims(
+  executables: z.infer<typeof descriptorSchema>["local"]["executables"],
+  runtime: PrimeExternalHarnessIdentity["runtime"],
+): void {
+  if (
+    executables.docker.sha256 !== runtime.client.executableSha256 ||
+    executables.containerd.sha256 !== runtime.engine.containerdSha256 ||
+    executables.runc.sha256 !== runtime.engine.runcSha256
+  ) {
+    throw new Error("Prime OCI executable identity contradicts the public runtime identity");
+  }
+}
+
+async function observeExecutable(path: string): Promise<string> {
+  if ((await realpath(path)) !== path) {
+    throw new Error("Prime OCI executable path is not canonical");
+  }
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile() || before.size > BigInt(MAX_EXECUTABLE_BYTES)) {
+      throw new Error("Prime OCI executable is not one bounded regular file");
+    }
+    const bytes = await readBounded(handle, MAX_EXECUTABLE_BYTES);
+    const after = await handle.stat({ bigint: true });
+    if (!sameFileIdentity(before, after) || BigInt(bytes.byteLength) !== after.size) {
+      throw new Error("Prime OCI executable changed while read");
+    }
+    return sha256(bytes);
+  } finally {
+    await handle.close();
   }
 }
 

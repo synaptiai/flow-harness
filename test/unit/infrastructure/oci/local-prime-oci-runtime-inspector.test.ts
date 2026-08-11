@@ -20,6 +20,8 @@ describe("local Prime OCI runtime inspector", () => {
       },
       local: async () => localObservation(seccompProfile),
       dockerExecutableSha256: "a".repeat(64),
+      containerdExecutableSha256: "b".repeat(64),
+      runcExecutableSha256: "c".repeat(64),
     });
 
     const result = await inspector.inspect();
@@ -34,7 +36,9 @@ describe("local Prime OCI runtime inspector", () => {
         apiVersion: "1.51",
         kernelRelease: "6.11.0-1018-azure",
         containerdVersion: "1.7.27",
+        containerdSha256: "b".repeat(64),
         runcVersion: "1.2.6",
+        runcSha256: "c".repeat(64),
         cgroupVersion: 2,
         cgroupDriver: "systemd",
         storageDriver: "overlay2",
@@ -52,6 +56,8 @@ describe("local Prime OCI runtime inspector", () => {
       run: async (args) => (args[0] === "version" ? versionOutput() : infoOutput("cgroupfs")),
       local: async () => localObservation(seccompProfile),
       dockerExecutableSha256: "a".repeat(64),
+      containerdExecutableSha256: "b".repeat(64),
+      runcExecutableSha256: "c".repeat(64),
     });
 
     await expect(inspector.inspect()).rejects.toThrow(/cgroup driver/i);
@@ -101,6 +107,11 @@ function localObservation(seccompProfile: Record<string, unknown>) {
     corePattern: "core",
     globalLeasePath: "/var/lib/flow-prime/global-slot.json",
     imageDevice: { path: "/dev/test-image", major: 8, minor: 1 },
+    executables: {
+      docker: { path: "/usr/bin/docker", sha256: "a".repeat(64) },
+      containerd: { path: "/usr/bin/containerd", sha256: "b".repeat(64) },
+      runc: { path: "/usr/bin/runc", sha256: "c".repeat(64) },
+    },
     leaseTarget: "flow-prime-global-v1" as const,
     seccompProfile,
   };

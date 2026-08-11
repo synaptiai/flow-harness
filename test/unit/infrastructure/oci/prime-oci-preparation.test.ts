@@ -58,6 +58,14 @@ describe("Prime OCI runtime preparation", () => {
             corePattern: "core",
             globalLeasePath: "/var/lib/flow-prime/global-slot.json",
             imageDevice: { path: "/dev/test-image", major: 8, minor: 1 },
+            executables: {
+              docker: { path: "/usr/bin/docker", sha256: runtime.client.executableSha256 },
+              containerd: {
+                path: "/usr/bin/containerd",
+                sha256: runtime.engine.containerdSha256,
+              },
+              runc: { path: "/usr/bin/runc", sha256: runtime.engine.runcSha256 },
+            },
             leaseTarget: "flow-prime-global-v1",
             seccompProfile,
           },

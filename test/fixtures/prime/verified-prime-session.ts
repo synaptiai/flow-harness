@@ -269,10 +269,22 @@ function descriptorFor(identity: PrimeExternalHarnessIdentity): NativePrimeHarne
       corePattern: "core",
       globalLeasePath: "/var/tmp/flow-prime-test-slot.json",
       imageDevice: { path: "/dev/null", major: 1, minor: 3 },
+      executables: executableIdentities(identity),
       leaseTarget: "flow-prime-global-v1",
       seccompProfile: {},
     },
     assertCurrent: async () => undefined,
+  };
+}
+
+function executableIdentities(identity: PrimeExternalHarnessIdentity) {
+  return {
+    docker: { path: "/usr/bin/docker", sha256: identity.runtime.client.executableSha256 },
+    containerd: {
+      path: "/usr/bin/containerd",
+      sha256: identity.runtime.engine.containerdSha256,
+    },
+    runc: { path: "/usr/bin/runc", sha256: identity.runtime.engine.runcSha256 },
   };
 }
 

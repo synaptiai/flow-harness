@@ -30,6 +30,7 @@ describe("local Prime OCI attestation", () => {
     const store = new LocalPrimeOciAttestationStore({
       descriptorPath,
       observeSocket: async () => descriptor.local.socket,
+      observeExecutable: async (path) => executableDigest(descriptor, path),
     });
 
     const admitted = await store.read();
@@ -65,6 +66,7 @@ describe("local Prime OCI attestation", () => {
       new LocalPrimeOciAttestationStore({
         descriptorPath,
         observeSocket: async () => descriptor.local.socket,
+        observeExecutable: async (path) => executableDigest(descriptor, path),
       }).read(),
     ).rejects.toThrow(/seccomp/i);
 
@@ -73,6 +75,7 @@ describe("local Prime OCI attestation", () => {
       new LocalPrimeOciAttestationStore({
         descriptorPath,
         observeSocket: async () => ({ ...descriptor.local.socket, inode: 99 }),
+        observeExecutable: async (path) => executableDigest(descriptor, path),
       }).read(),
     ).rejects.toThrow(/socket.*changed/i);
   });
@@ -104,8 +107,30 @@ describe("local Prime OCI attestation", () => {
     const stored = await new LocalPrimeOciAttestationStore({
       descriptorPath,
       observeSocket: async () => descriptor.local.socket,
+      observeExecutable: async (path) => executableDigest(descriptor, path),
     }).read();
     expect(stored.localRuntime.daemonId).toBe("replacement-daemon");
+  });
+
+  it("rejects a changed OCI executable with stable reported versions", async () => {
+    const root = await mkdtemp(join(tmpdir(), "flow-prime-attestation-"));
+    temporaryDirectories.push(root);
+    const descriptorPath = join(root, "oci-attestation.json");
+    const descriptor = descriptorFixture(primeExternalHarnessIdentity());
+    await writeFile(descriptorPath, `${JSON.stringify(descriptor)}\n`);
+    let changed = false;
+    const admitted = await new LocalPrimeOciAttestationStore({
+      descriptorPath,
+      observeSocket: async () => descriptor.local.socket,
+      observeExecutable: async (path) =>
+        changed && path === descriptor.local.executables.runc.path
+          ? "0".repeat(64)
+          : executableDigest(descriptor, path),
+    }).read();
+
+    changed = true;
+
+    await expect(admitted.assertCurrent()).rejects.toThrow(/executable.*changed/i);
   });
 });
 
@@ -141,8 +166,23 @@ function descriptorFixture(identity: ReturnType<typeof primeExternalHarnessIdent
       corePattern: "core",
       globalLeasePath: "/var/lib/flow-prime/global-slot.json",
       imageDevice: { path: "/dev/test-image", major: 8, minor: 1 },
+      executables: {
+        docker: { path: "/usr/bin/docker", sha256: runtime.client.executableSha256 },
+        containerd: { path: "/usr/bin/containerd", sha256: runtime.engine.containerdSha256 },
+        runc: { path: "/usr/bin/runc", sha256: runtime.engine.runcSha256 },
+      },
       leaseTarget: "flow-prime-global-v1",
       seccompProfile,
     },
   };
+}
+
+function executableDigest(descriptor: ReturnType<typeof descriptorFixture>, path: string): string {
+  const executable = Object.values(descriptor.local.executables).find(
+    (candidate) => candidate.path === path,
+  );
+  if (executable === undefined) {
+    throw new Error("unexpected executable path");
+  }
+  return executable.sha256;
 }

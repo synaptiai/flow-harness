@@ -122,7 +122,7 @@ describe("local Prime OCI harness runtime", () => {
     expect(createEngine).not.toHaveBeenCalled();
   });
 
-  it("recovers an intent that has no Docker object", async () => {
+  it("creates and removes the exact object after an intent lookup miss", async () => {
     const descriptor = primeDescriptor();
     const engine = fakeEngine({ recoveredIntent: null });
     const globalAdmission = fakeGlobalAdmission();
@@ -159,9 +159,9 @@ describe("local Prime OCI harness runtime", () => {
       },
     });
 
-    expect(recovered.ociLease?.state).toBe("absent");
+    expect(recovered.ociLease?.state).toBe("removed");
     expect(globalAdmission.recover).toHaveBeenCalledOnce();
-    expect(updates.map((lease) => lease.state)).toEqual(["absent"]);
+    expect(updates.map((lease) => lease.state)).toEqual(["created", "stopped", "removed"]);
   });
 
   it("recovers global admission before an OCI intent exists", async () => {
@@ -390,6 +390,14 @@ function primeDescriptor(): NativePrimeHarnessDescriptor & {
       corePattern: "core",
       globalLeasePath: "/var/lib/flow-prime/global-slot.json",
       imageDevice: { path: "/dev/test-image", major: 8, minor: 1 },
+      executables: {
+        docker: { path: "/usr/bin/docker", sha256: identity.runtime.client.executableSha256 },
+        containerd: {
+          path: "/usr/bin/containerd",
+          sha256: identity.runtime.engine.containerdSha256,
+        },
+        runc: { path: "/usr/bin/runc", sha256: identity.runtime.engine.runcSha256 },
+      },
       leaseTarget: "flow-prime-global-v1",
       seccompProfile: { defaultAction: "SCMP_ACT_ERRNO", syscalls: [] },
     },

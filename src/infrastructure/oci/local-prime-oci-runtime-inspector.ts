@@ -4,8 +4,8 @@ import { z } from "zod";
 
 import { parsePrimeOciRuntimeIdentity } from "../../domain/evaluation/external-harness.js";
 import type { PrimeOciLocalRuntimeAttestation } from "./local-prime-oci-attestation.js";
-import type { PrimeOciRuntimeInspection } from "./prime-oci-preparation.js";
 import { createPrimeOciRuntimePolicy } from "./prime-oci-policy.js";
+import type { PrimeOciRuntimeInspection } from "./prime-oci-preparation.js";
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const componentSchema = z
@@ -57,15 +57,21 @@ export interface LocalPrimeOciRuntimeInspectorOptions {
   readonly run: (args: readonly string[]) => Promise<string>;
   readonly local: () => Promise<PrimeOciLocalRuntimeAttestation>;
   readonly dockerExecutableSha256: string;
+  readonly containerdExecutableSha256: string;
+  readonly runcExecutableSha256: string;
 }
 
 export class LocalPrimeOciRuntimeInspector {
   readonly #dockerExecutableSha256: string;
+  readonly #containerdExecutableSha256: string;
   readonly #local: () => Promise<PrimeOciLocalRuntimeAttestation>;
   readonly #run: (args: readonly string[]) => Promise<string>;
+  readonly #runcExecutableSha256: string;
 
   constructor(options: LocalPrimeOciRuntimeInspectorOptions) {
     this.#dockerExecutableSha256 = sha256Schema.parse(options.dockerExecutableSha256);
+    this.#containerdExecutableSha256 = sha256Schema.parse(options.containerdExecutableSha256);
+    this.#runcExecutableSha256 = sha256Schema.parse(options.runcExecutableSha256);
     this.#local = options.local;
     this.#run = options.run;
   }
@@ -119,9 +125,9 @@ export class LocalPrimeOciRuntimeInspector {
           canonicalize({ kernelRelease: version.Server.KernelVersion, securityOptions }),
         ),
         containerdVersion: normalizeVersion(containerd.Version, "containerd"),
-        containerdSha256: sha256(canonicalize({ version: containerd.Version, containerdCommit })),
+        containerdSha256: this.#containerdExecutableSha256,
         runcVersion: normalizeVersion(runc.Version, "runc"),
-        runcSha256: sha256(canonicalize({ version: runc.Version, runcCommit })),
+        runcSha256: this.#runcExecutableSha256,
         cgroupVersion: 2,
         cgroupDriver: "systemd",
         storageDriver: info.Driver,
