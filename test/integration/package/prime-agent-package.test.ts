@@ -221,5 +221,7 @@ describe("Prime Agent package boundary", () => {
       "docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c",
     );
     expect(workflow).toContain("run: npm run ci:local");
+    expect(workflow).toContain("useradd --create-home --groups docker flow-prime-peer");
+    expect(workflow).toContain("FLOW_PRIME_TEST_SECOND_USER=flow-prime-peer");
   });
 });
