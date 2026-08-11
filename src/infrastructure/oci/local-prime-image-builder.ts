@@ -22,6 +22,7 @@ import { promisify } from "node:util";
 import { z } from "zod";
 
 import { parsePrimeOciImageIdentity } from "../../domain/evaluation/external-harness.js";
+import { inspectPrimeImageArchive } from "./prime-image-archive.js";
 import type { PrimeOciPreparedBuild } from "./prime-oci-preparation.js";
 
 const executeFile = promisify(execFile);
@@ -134,6 +135,7 @@ export interface LocalPrimeImageBuilderOptions {
     readonly sha256: string;
     readonly integrity: string;
   }) => Promise<void>;
+  readonly inspectImageArchive?: typeof inspectPrimeImageArchive;
 }
 
 export class LocalPrimeImageBuilder {
@@ -141,6 +143,7 @@ export class LocalPrimeImageBuilder {
   readonly #dockerExecutable: string;
   readonly #nonce: () => string;
   readonly #packageRoot: string;
+  readonly #inspectImageArchive: typeof inspectPrimeImageArchive;
   readonly #run: NonNullable<LocalPrimeImageBuilderOptions["run"]>;
   readonly #temporaryRoot: string;
   readonly #verifyPrimeArchive: NonNullable<LocalPrimeImageBuilderOptions["verifyPrimeArchive"]>;
@@ -156,6 +159,7 @@ export class LocalPrimeImageBuilder {
         runLocalDockerCommand(this.#dockerExecutable, args, commandOptions.environmentRoot));
     this.#nonce = options.nonce ?? (() => randomUUID().replaceAll("-", ""));
     this.#verifyPrimeArchive = options.verifyPrimeArchive ?? downloadAndVerifyPrimeAgentArchive;
+    this.#inspectImageArchive = options.inspectImageArchive ?? inspectPrimeImageArchive;
   }
 
   async build(buildNumber: 1 | 2): Promise<PrimeOciPreparedBuild> {
@@ -171,8 +175,8 @@ export class LocalPrimeImageBuilder {
       const inputs = await stageBuildContext(this.#packageRoot, contextRoot);
       await this.#verifyPrimeArchive(inputs.primeAgent);
       const buildInputSha256 = await hashTree(contextRoot);
-      const iidFile = join(operationRoot, "image-id");
       const metadataFile = join(operationRoot, "build-metadata.json");
+      const ociArchivePath = join(operationRoot, "prime-image.oci.tar");
       const tag = `flow-prime-runtime:preparation-${buildNumber}-${this.#nonce()}`;
       await this.#run(
         [
@@ -180,7 +184,7 @@ export class LocalPrimeImageBuilder {
           "build",
           "--pull=false",
           "--no-cache",
-          "--output=type=docker,rewrite-timestamp=true",
+          `--output=type=oci,dest=${ociArchivePath},tar=true,compression=uncompressed,force-compression=true,rewrite-timestamp=true`,
           "--provenance=false",
           "--sbom=false",
           "--platform",
@@ -189,8 +193,6 @@ export class LocalPrimeImageBuilder {
           "BUILDKIT_MULTI_PLATFORM=1",
           "--build-arg",
           `SOURCE_DATE_EPOCH=${inputs.sourceDateEpoch}`,
-          "--iidfile",
-          iidFile,
           "--metadata-file",
           metadataFile,
           "--tag",
@@ -199,15 +201,24 @@ export class LocalPrimeImageBuilder {
         ],
         { environmentRoot },
       );
-      const imageId = (await readFile(iidFile, "utf8")).trim();
+      const buildMetadata = parseBuildMetadata(await readFile(metadataFile, "utf8"));
+      const imageId = buildMetadata["containerimage.config.digest"];
       if (!imageDigestSchema.safeParse(imageId).success) {
         throw new Error("Prime image build returned an invalid image ID");
       }
+      await this.#run(["image", "load", "--input", ociArchivePath], { environmentRoot });
       parseImageInspection(
         await this.#run(["image", "inspect", imageId], { environmentRoot }),
         imageId,
       );
-      const buildMetadata = parseBuildMetadata(await readFile(metadataFile, "utf8"), imageId);
+      const imageArchivePath = join(operationRoot, "prime-image.tar");
+      await this.#run(["image", "save", "--output", imageArchivePath, imageId], {
+        environmentRoot,
+      });
+      const externalInventory = await this.#inspectImageArchive({
+        archivePath: imageArchivePath,
+        imageId,
+      });
       const probe = parseProbe(
         await this.#run(
           [
@@ -228,13 +239,16 @@ export class LocalPrimeImageBuilder {
           { environmentRoot },
         ),
       );
+      if (externalInventory.sbomSha256 !== probe.sbomSha256) {
+        throw new Error("Prime external and in-image package inventories do not match");
+      }
       const baseImageDigest = digestFromReference(inputs.baseImages.node, "Prime Node base image");
       const image = parsePrimeOciImageIdentity({
         id: imageId,
         ociManifestSha256: buildMetadata["containerimage.digest"].slice("sha256:".length),
         platformConfigSha256: buildMetadata["containerimage.config.digest"].slice("sha256:".length),
         buildInputSha256,
-        sbomSha256: probe.sbomSha256,
+        sbomSha256: externalInventory.sbomSha256,
         baseImageDigest,
         nodeVersion: probe.nodeVersion,
         nodeClosureSha256: probe.nodeClosureSha256,
@@ -517,15 +531,12 @@ function parseImageInspection(source: string, imageId: string) {
   return parsed.data[0];
 }
 
-function parseBuildMetadata(source: string, imageId: string) {
+function parseBuildMetadata(source: string) {
   const parsed = buildMetadataSchema.safeParse(JSON.parse(source));
   if (!parsed.success) {
     throw new Error("Prime image build metadata violates the closed schema", {
       cause: parsed.error,
     });
-  }
-  if (parsed.data["containerimage.config.digest"] !== imageId) {
-    throw new Error("Prime image build metadata contradicts the loaded image ID");
   }
   return parsed.data;
 }

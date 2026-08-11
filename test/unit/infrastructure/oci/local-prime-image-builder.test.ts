@@ -72,12 +72,10 @@ describe("local Prime image builder", () => {
         await expect(
           readFile(join(options.environmentRoot, "cli-plugins", "docker-buildx"), "utf8"),
         ).resolves.toBe("verified-buildx-plugin\n");
-        const iidFile = args[args.indexOf("--iidfile") + 1];
         const metadataFile = args[args.indexOf("--metadata-file") + 1];
-        if (iidFile === undefined || metadataFile === undefined) {
+        if (metadataFile === undefined) {
           throw new Error("missing build output file");
         }
-        await writeFile(iidFile, `${imageId}\n`);
         await writeFile(
           metadataFile,
           JSON.stringify({
@@ -94,6 +92,9 @@ describe("local Prime image builder", () => {
         contextWasAllowlisted = true;
         return "";
       }
+      if (args[0] === "image" && args[1] === "load") {
+        return "Loaded image\n";
+      }
       if (args[0] === "image" && args[1] === "inspect") {
         return JSON.stringify([
           {
@@ -107,6 +108,9 @@ describe("local Prime image builder", () => {
             RootFS: { Type: "layers", Layers: [`sha256:${"b".repeat(64)}`] },
           },
         ]);
+      }
+      if (args[0] === "image" && args[1] === "save") {
+        return "";
       }
       if (args[0] === "run") {
         return JSON.stringify({
@@ -133,6 +137,15 @@ describe("local Prime image builder", () => {
       run,
       nonce: () => "0123456789abcdef0123456789abcdef",
       verifyPrimeArchive: vi.fn(async () => undefined),
+      inspectImageArchive: vi.fn(async ({ imageId: inspectedImageId }) => {
+        expect(inspectedImageId).toBe(imageId);
+        return {
+          archiveSha256: "7".repeat(64),
+          layerSha256: ["8".repeat(64)],
+          sbom,
+          sbomSha256,
+        };
+      }),
     });
 
     const result = await builder.build(1);
@@ -161,17 +174,24 @@ describe("local Prime image builder", () => {
         "build",
         "--pull=false",
         "--no-cache",
-        "--output=type=docker,rewrite-timestamp=true",
+        expect.stringMatching(
+          /^--output=type=oci,dest=.+\/prime-image\.oci\.tar,tar=true,compression=uncompressed,force-compression=true,rewrite-timestamp=true$/,
+        ),
         "--provenance=false",
         "--sbom=false",
         "--platform",
         "linux/amd64",
         "--build-arg",
         "BUILDKIT_MULTI_PLATFORM=1",
-        "--iidfile",
       ]),
     );
-    expect(build).not.toContain("--load");
+    expect(build).not.toContain("--iidfile");
+    expect(mutableCalls).toContainEqual([
+      "image",
+      "load",
+      "--input",
+      expect.stringMatching(/prime-image\.oci\.tar$/),
+    ]);
     expect(contextWasAllowlisted).toBe(true);
 
     const probe = mutableCalls.find((args) => args[0] === "run");
@@ -185,6 +205,13 @@ describe("local Prime image builder", () => {
         "--read-only",
       ]),
     );
+    expect(mutableCalls).toContainEqual([
+      "image",
+      "save",
+      "--output",
+      expect.stringMatching(/prime-image\.tar$/),
+      imageId,
+    ]);
   });
 });
 
