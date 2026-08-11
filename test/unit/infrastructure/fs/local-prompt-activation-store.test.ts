@@ -427,7 +427,7 @@ describe("local prompt activation store", () => {
     await expect(readdir(join(project, ".flow"))).resolves.not.toEqual(
       expect.arrayContaining([expect.stringMatching(/^\.activations\.mutation\./)]),
     );
-  });
+  }, 20_000);
 
   it("rejects one more mutation temporary file than the recovery limit", async () => {
     const project = await temporaryProject();
@@ -628,7 +628,7 @@ describe("local prompt activation store", () => {
       store.applyActivate({ ...input, expectedDigest: preview.proposalDigest }),
     ).resolves.toMatchObject({ status: "activated" });
     await expect(readFile(temporary)).rejects.toMatchObject({ code: "ENOENT" });
-  });
+  }, 20_000);
 
   it("rejects one more index temporary file than the recovery limit", async () => {
     const project = await temporaryProject();

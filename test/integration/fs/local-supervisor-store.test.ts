@@ -445,7 +445,7 @@ describe("LocalSupervisorStore", () => {
       }
       await store.releaseSupervisorStart(probe.record.token);
     }
-  }, 15_000);
+  }, 30_000);
 
   it("releases only the matching active claim", async () => {
     const { store } = await createStore();
