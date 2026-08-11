@@ -35,6 +35,7 @@ describe("local Docker Prime OCI engine", () => {
         HostConfig: expect.objectContaining({
           NetworkMode: "none",
           IpcMode: "none",
+          Runtime: "runc",
           ReadonlyRootfs: true,
           LogConfig: { Type: "none", Config: {} },
           RestartPolicy: { Name: "no", MaximumRetryCount: 0 },
@@ -65,6 +66,11 @@ describe("local Docker Prime OCI engine", () => {
       "network",
       (value: Record<string, unknown>) =>
         ((value.HostConfig as Record<string, unknown>).NetworkMode = "bridge"),
+    ],
+    [
+      "runtime",
+      (value: Record<string, unknown>) =>
+        ((value.HostConfig as Record<string, unknown>).Runtime = "alternate"),
     ],
     [
       "log",
@@ -230,6 +236,7 @@ function inspectionFor(
     HostConfig: {
       NetworkMode: "none",
       IpcMode: "none",
+      Runtime: "runc",
       ReadonlyRootfs: true,
       LogConfig: { Type: "none", Config: {} },
       RestartPolicy: { Name: "no", MaximumRetryCount: 0 },

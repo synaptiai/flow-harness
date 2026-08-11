@@ -179,6 +179,7 @@ export class LocalDockerPrimeOciEngine implements PrimeOciEngine {
     return {
       NetworkMode: "none",
       IpcMode: "none",
+      Runtime: "runc",
       ReadonlyRootfs: true,
       LogConfig: { Type: "none", Config: {} },
       RestartPolicy: { Name: "no", MaximumRetryCount: 0 },
@@ -273,6 +274,7 @@ function selectHostConfig(configuration: Record<string, unknown>): Record<string
   const keys = [
     "NetworkMode",
     "IpcMode",
+    "Runtime",
     "ReadonlyRootfs",
     "LogConfig",
     "RestartPolicy",
