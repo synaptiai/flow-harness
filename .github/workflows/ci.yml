@@ -127,9 +127,14 @@ jobs:
           sudo test -r /run/docker.pid
           containerd_pid="$(sudo cat /run/docker/containerd/containerd.pid)"
           docker_pid="$(sudo cat /run/docker.pid)"
-          test "$(ps --no-headers --pid "$containerd_pid" --format ppid | xargs)" = "$docker_pid"
-          sudo test "$(readlink --canonicalize "/proc/${containerd_pid}/exe")" = \
-            "$(readlink --canonicalize "$(command -v containerd)")"
+          containerd_parent_pid="$(ps --no-headers --pid "$containerd_pid" --format ppid | xargs)"
+          containerd_executable="$(sudo readlink --canonicalize "/proc/${containerd_pid}/exe")"
+          expected_containerd_executable="$(readlink --canonicalize "$(command -v containerd)")"
+          printf 'DOCKER_PID=%s\nCONTAINERD_PID=%s\nCONTAINERD_PARENT_PID=%s\nCONTAINERD_EXECUTABLE=%s\nEXPECTED_CONTAINERD_EXECUTABLE=%s\n' \
+            "$docker_pid" "$containerd_pid" "$containerd_parent_pid" "$containerd_executable" \
+            "$expected_containerd_executable"
+          test "$containerd_parent_pid" = "$docker_pid"
+          test "$containerd_executable" = "$expected_containerd_executable"
 
       - name: Run local release gates
         run: npm run ci:local
