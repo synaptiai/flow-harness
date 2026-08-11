@@ -35,7 +35,13 @@ export interface VerifiedPrimeSessionInput {
     readonly body: string;
     readonly containerId: string;
     readonly containerName: string;
+    readonly signal?: AbortSignal;
   }) => Promise<void>;
+  readonly onContainerStarted?: (input: {
+    readonly containerId: string;
+    readonly containerName: string;
+  }) => void | Promise<void>;
+  readonly signal?: AbortSignal;
 }
 
 export interface VerifiedPrimeSessionResult {
@@ -79,14 +85,19 @@ export async function runVerifiedPrimeSession(
   const checkpoints: string[] = [];
   const responses = [...input.responses];
   const transport = await startVerifiedPrimeContainer(image.id);
+  await input.onContainerStarted?.({
+    containerId: transport.containerId,
+    containerName: transport.containerName,
+  });
   const broker = new NativePrimeHostInferenceBroker({
     delegate: {
-      infer: async ({ body }: { readonly body: string }) => {
+      infer: async ({ body }: { readonly body: string }, signal?: AbortSignal) => {
         hostRequests.push(body);
         await input.onInferenceRequest?.({
           body,
           containerId: transport.containerId,
           containerName: transport.containerName,
+          ...(signal === undefined ? {} : { signal }),
         });
         const response = responses.shift();
         if (response === undefined) {
@@ -102,6 +113,10 @@ export async function runVerifiedPrimeSession(
     90_000,
   );
   timeout.unref?.();
+  const operationSignal =
+    input.signal === undefined
+      ? controller.signal
+      : AbortSignal.any([controller.signal, input.signal]);
   let released = false;
   try {
     const evidence = await new AttachedPrimeOciOperator({
@@ -124,7 +139,7 @@ export async function runVerifiedPrimeSession(
       checkpoint: async (checkpoint) => {
         checkpoints.push(checkpoint);
       },
-      signal: controller.signal,
+      signal: operationSignal,
     });
     await transport.release();
     released = true;
