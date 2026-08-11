@@ -170,7 +170,7 @@ export class LocalPrimeImageBuilder {
           "build",
           "--pull=false",
           "--no-cache",
-          "--load",
+          "--output=type=docker,rewrite-timestamp=true",
           "--provenance=false",
           "--sbom=false",
           "--platform",

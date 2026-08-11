@@ -143,7 +143,7 @@ describe("local Prime image builder", () => {
         "build",
         "--pull=false",
         "--no-cache",
-        "--load",
+        "--output=type=docker,rewrite-timestamp=true",
         "--provenance=false",
         "--sbom=false",
         "--platform",
@@ -153,7 +153,7 @@ describe("local Prime image builder", () => {
         "--iidfile",
       ]),
     );
-    expect(build?.some((argument) => argument.startsWith("--output="))).toBe(false);
+    expect(build).not.toContain("--load");
     expect(contextWasAllowlisted).toBe(true);
 
     const probe = mutableCalls.find((args) => args[0] === "run");
