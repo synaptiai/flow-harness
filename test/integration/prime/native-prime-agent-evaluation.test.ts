@@ -1,5 +1,4 @@
-import { spawn } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -8,10 +7,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { parsePrimeOciImageIdentity } from "../../../src/domain/evaluation/external-harness.js";
-import {
-  AttachedPrimeOciOperator,
-  type PrimeOciAttachedTransport,
-} from "../../../src/infrastructure/oci/attached-prime-oci-operator.js";
+import { AttachedPrimeOciOperator } from "../../../src/infrastructure/oci/attached-prime-oci-operator.js";
 import { DurablePrimeWorkspacePublisher } from "../../../src/infrastructure/oci/durable-prime-workspace-publisher.js";
 import type { PrimeOciOperationInput } from "../../../src/infrastructure/oci/local-prime-oci-harness-runtime.js";
 import {
@@ -25,6 +21,7 @@ import {
   type PrimeContainerManifestEntry,
 } from "../../../src/infrastructure/prime/prime-container-protocol.js";
 import { primeExternalHarnessIdentity } from "../../fixtures/evaluation/prime-external-harness-identity.js";
+import { startVerifiedPrimeContainer } from "../../fixtures/prime/prime-container-runtime.js";
 
 const linux = process.platform === "linux" && process.arch === "x64";
 const instruction = "Use IPython twice. Keep state. Write the final value to RESULT.md.\n";
@@ -87,7 +84,7 @@ describe.skipIf(!linux)("real native Prime Agent evaluation", () => {
       }),
     };
     const broker = new NativePrimeHostInferenceBroker({ delegate });
-    const transport = startPrimeContainer(image.id);
+    const transport = await startVerifiedPrimeContainer(image.id);
     const checkpoints: string[] = [];
     const controller = new AbortController();
     const timeout = setTimeout(
@@ -105,7 +102,7 @@ describe.skipIf(!linux)("real native Prime Agent evaluation", () => {
       }).operate({
         request,
         descriptor,
-        containerId: transport.containerName,
+        containerId: transport.containerId,
         transport,
         checkpoint: async (checkpoint) => {
           checkpoints.push(checkpoint);
@@ -226,97 +223,6 @@ function descriptorFor(
   };
 }
 
-function startPrimeContainer(imageId: string): PrimeOciAttachedTransport & {
-  readonly containerName: string;
-  forceRemove(): Promise<void>;
-} {
-  const docker = process.env.FLOW_DOCKER_EXECUTABLE ?? "/usr/bin/docker";
-  const containerName = `flow-prime-real-${randomUUID()}`;
-  const child = spawn(
-    docker,
-    [
-      "run",
-      "--rm",
-      "--interactive",
-      "--pull=never",
-      "--platform=linux/amd64",
-      `--name=${containerName}`,
-      "--user=0:10003",
-      "--network=none",
-      "--ipc=none",
-      "--read-only",
-      "--log-driver=none",
-      "--no-healthcheck",
-      "--pids-limit=64",
-      "--memory=2147483648",
-      "--memory-swap=2147483648",
-      "--cpu-period=100000",
-      "--cpu-quota=200000",
-      "--cap-drop=ALL",
-      "--cap-add=CHOWN",
-      "--cap-add=DAC_READ_SEARCH",
-      "--cap-add=FOWNER",
-      "--cap-add=KILL",
-      "--cap-add=SETGID",
-      "--cap-add=SETUID",
-      "--security-opt=no-new-privileges",
-      "--ulimit=nofile=256:256",
-      "--ulimit=nproc=64:64",
-      "--ulimit=fsize=268435456:268435456",
-      "--ulimit=core=0:0",
-      "--tmpfs=/workspace:rw,nosuid,nodev,noexec,size=536870912,nr_inodes=8192,mode=0710",
-      "--tmpfs=/run/flow-node:rw,nosuid,nodev,noexec,size=16777216,nr_inodes=256,mode=0700",
-      "--tmpfs=/run/flow-supervisor:rw,nosuid,nodev,noexec,size=16777216,nr_inodes=256,mode=0700",
-      imageId,
-    ],
-    { stdio: ["pipe", "pipe", "pipe"], env: { PATH: "/usr/bin:/bin" } },
-  );
-  const errors: Buffer[] = [];
-  child.stderr.on("data", (chunk: Buffer) => errors.push(chunk));
-  const exited = new Promise<number | null>((resolveExit, rejectExit) => {
-    child.once("error", rejectExit);
-    child.once("exit", resolveExit);
-  });
-  return {
-    containerName,
-    output: child.stdout,
-    write: async (bytes, signal) => {
-      throwIfAborted(signal);
-      await new Promise<void>((resolveWrite, rejectWrite) => {
-        child.stdin.write(Buffer.from(bytes), (error) => {
-          if (error === null || error === undefined) {
-            resolveWrite();
-          } else {
-            rejectWrite(error);
-          }
-        });
-      });
-    },
-    closeInput: async () => {
-      if (!child.stdin.destroyed) {
-        child.stdin.end();
-      }
-    },
-    release: async () => {
-      const code = await exited;
-      if (code !== 0) {
-        throw new Error(
-          `real Prime container exited with ${String(code)}: ${Buffer.concat(errors).toString("utf8")}`,
-        );
-      }
-    },
-    forceRemove: async () => {
-      if (child.exitCode === null && child.signalCode === null) {
-        const cleanup = spawn(docker, ["rm", "--force", containerName], {
-          stdio: "ignore",
-          env: { PATH: "/usr/bin:/bin" },
-        });
-        await new Promise<void>((resolveCleanup) => cleanup.once("exit", () => resolveCleanup()));
-      }
-    },
-  };
-}
-
 function assistantToolCall(id: string, code: string, responseId: string, timestamp: number) {
   return assistantMessage(
     [{ type: "toolCall", id, name: "ipython", arguments: { code } }],
@@ -358,10 +264,4 @@ function assistantMessage(
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
-}
-
-function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (signal?.aborted === true) {
-    throw signal.reason instanceof Error ? signal.reason : new Error("Prime test aborted");
-  }
 }
