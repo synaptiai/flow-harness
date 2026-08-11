@@ -86,7 +86,7 @@ describe("local Prime OCI harness runtime", () => {
       "stopped",
       "removed",
     ]);
-    expect(descriptor.assertCurrent).toHaveBeenCalledTimes(1);
+    expect(descriptor.assertCurrent).toHaveBeenCalledTimes(2);
     expect(globalAdmission.acquire).toHaveBeenCalledOnce();
     expect(globalAdmission.release).toHaveBeenCalledOnce();
     expect(operate).toHaveBeenCalledTimes(1);

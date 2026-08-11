@@ -9,6 +9,7 @@ const DEFAULT_MAX_ATTACH_STDERR_BYTES = 65_536;
 const DEFAULT_MAX_ATTACH_STDOUT_FRAME_BYTES = 1_048_581;
 const MAX_REQUEST_BYTES = 1_048_576;
 const containerReferencePattern = /^(?:[a-f0-9]{64}|flow-prime-[a-f0-9]{32}|flow-prime-global-v1)$/;
+const imageReferencePattern = /^sha256:[a-f0-9]{64}$/;
 
 export interface DockerUnixApiRequest {
   readonly socketPath: string;
@@ -110,6 +111,38 @@ export class DockerUnixApiClient {
     if (response.statusCode !== 200 || response.body !== "OK") {
       throw new Error(`Docker ping returned status ${response.statusCode}`);
     }
+  }
+
+  async readVersion(signal?: AbortSignal): Promise<string> {
+    const response = await this.#request("GET", `${this.#apiPrefix}/version`, undefined, signal);
+    assertStatus(response, [200], "version");
+    return response.body;
+  }
+
+  async readInfo(signal?: AbortSignal): Promise<string> {
+    const response = await this.#request("GET", `${this.#apiPrefix}/info`, undefined, signal);
+    assertStatus(response, [200], "information");
+    return response.body;
+  }
+
+  async inspectImage(
+    reference: string,
+    signal?: AbortSignal,
+  ): Promise<Record<string, unknown> | null> {
+    if (!imageReferencePattern.test(reference)) {
+      throw new Error("Docker image reference is invalid");
+    }
+    const response = await this.#request(
+      "GET",
+      `${this.#apiPrefix}/images/${encodeURIComponent(reference)}/json`,
+      undefined,
+      signal,
+    );
+    if (response.statusCode === 404) {
+      return null;
+    }
+    assertStatus(response, [200], "image inspect");
+    return parseObject(response.body, "Docker image inspect response");
   }
 
   async inspectContainer(

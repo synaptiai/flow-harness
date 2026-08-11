@@ -24,6 +24,30 @@ describe("Docker Unix API client", () => {
     );
   });
 
+  it("reads bounded engine and image state from the local daemon", async () => {
+    const imageId = `sha256:${"b".repeat(64)}`;
+    const transport: DockerUnixApiTransport = {
+      request: vi.fn(async (request) => ({
+        statusCode: 200,
+        body: JSON.stringify({ path: request.path, Id: imageId }),
+      })),
+    };
+    const client = new DockerUnixApiClient({
+      socketPath: "/var/run/docker.sock",
+      apiVersion: "1.51",
+      transport,
+    });
+
+    await expect(client.readVersion()).resolves.toContain("/v1.51/version");
+    await expect(client.readInfo()).resolves.toContain("/v1.51/info");
+    await expect(client.inspectImage(imageId)).resolves.toMatchObject({ Id: imageId });
+    expect(vi.mocked(transport.request).mock.calls.map(([request]) => request.path)).toEqual([
+      "/v1.51/version",
+      "/v1.51/info",
+      `/v1.51/images/${encodeURIComponent(imageId)}/json`,
+    ]);
+  });
+
   it("accepts the one fixed Prime global slot name", async () => {
     const transport: DockerUnixApiTransport = {
       request: vi.fn(async () => ({

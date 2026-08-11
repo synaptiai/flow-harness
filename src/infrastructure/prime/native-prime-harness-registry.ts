@@ -43,14 +43,14 @@ export interface PrimeOciIdentityAttestation {
   readonly harnessPackageContentSha256: string;
   readonly harnessDependencyClosureSha256: string;
   readonly localRuntime: PrimeOciLocalRuntimeAttestation;
-  assertCurrent(): Promise<void>;
+  assertCurrent(signal?: AbortSignal): Promise<void>;
 }
 
 export interface NativePrimeHarnessDescriptor {
   readonly identity: NativePrimeIdentity;
   readonly identityDigest: string;
   readonly localRuntime: PrimeOciLocalRuntimeAttestation;
-  assertCurrent(): Promise<void>;
+  assertCurrent(signal?: AbortSignal): Promise<void>;
 }
 
 export interface NativePrimeHarnessRegistryOptions {
@@ -233,11 +233,11 @@ export class NativePrimeHarnessRegistry {
       throw new Error("native Prime registry produced the wrong identity variant");
     }
 
-    const assertCurrent = async () => {
+    const assertCurrent = async (signal?: AbortSignal) => {
       if (!(await observations.isCurrent())) {
         throw new Error("external harness identity changed after evaluation plan admission");
       }
-      await attestation.assertCurrent();
+      await attestation.assertCurrent(signal);
     };
     const descriptor = Object.freeze({
       identity,

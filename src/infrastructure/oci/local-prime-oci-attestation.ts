@@ -11,6 +11,7 @@ import {
   parsePrimeOciRuntimeIdentity,
 } from "../../domain/evaluation/external-harness.js";
 import { parseStrictJson, type StrictJsonValue } from "../../domain/strict-json.js";
+import { assertPrimeOciRuntimeCurrent } from "./local-prime-oci-currentness.js";
 
 const MAX_ATTESTATION_BYTES = 1_048_576;
 const MAX_EXECUTABLE_BYTES = 268_435_456;
@@ -119,7 +120,7 @@ export interface LocalPrimeOciAttestation {
   readonly harnessPackageContentSha256: string;
   readonly harnessDependencyClosureSha256: string;
   readonly localRuntime: PrimeOciLocalRuntimeAttestation;
-  assertCurrent(): Promise<void>;
+  assertCurrent(signal?: AbortSignal): Promise<void>;
 }
 
 export type PrimeOciAttestationDescriptor = z.infer<typeof descriptorSchema>;
@@ -128,6 +129,7 @@ export interface LocalPrimeOciAttestationStoreOptions {
   readonly descriptorPath: string;
   readonly observeSocket?: (path: "/var/run/docker.sock") => Promise<PrimeOciSocketIdentity>;
   readonly observeExecutable?: (path: string) => Promise<string>;
+  readonly assertRuntimeCurrent?: typeof assertPrimeOciRuntimeCurrent;
 }
 
 interface AttestationSnapshot {
@@ -137,11 +139,13 @@ interface AttestationSnapshot {
 
 export class LocalPrimeOciAttestationStore {
   readonly #descriptorPath: string;
+  readonly #assertRuntimeCurrent: typeof assertPrimeOciRuntimeCurrent;
   readonly #observeExecutable: (path: string) => Promise<string>;
   readonly #observeSocket: (path: "/var/run/docker.sock") => Promise<PrimeOciSocketIdentity>;
 
   constructor(options: LocalPrimeOciAttestationStoreOptions) {
     this.#descriptorPath = options.descriptorPath;
+    this.#assertRuntimeCurrent = options.assertRuntimeCurrent ?? assertPrimeOciRuntimeCurrent;
     this.#observeExecutable = options.observeExecutable ?? observeExecutable;
     this.#observeSocket = options.observeSocket ?? observeDockerSocket;
   }
@@ -176,6 +180,7 @@ export class LocalPrimeOciAttestationStore {
       ...snapshot.descriptor.local,
       socket: observedSocket,
     });
+    await this.#assertRuntimeCurrent({ runtime, image, local: localRuntime });
     return deepFreeze({
       runtime,
       image,
@@ -183,7 +188,7 @@ export class LocalPrimeOciAttestationStore {
       harnessPackageContentSha256: snapshot.descriptor.harnessPackageContentSha256,
       harnessDependencyClosureSha256: snapshot.descriptor.harnessDependencyClosureSha256,
       localRuntime,
-      assertCurrent: async () => {
+      assertCurrent: async (signal?: AbortSignal) => {
         const current = await readSnapshot(this.#descriptorPath);
         if (current.digest !== snapshot.digest) {
           throw new Error("Prime OCI local attestation changed after admission");
@@ -195,6 +200,12 @@ export class LocalPrimeOciAttestationStore {
           throw new Error("Prime OCI Docker socket changed after admission");
         }
         await this.#assertExecutablesCurrent(snapshot.descriptor.local.executables);
+        await this.#assertRuntimeCurrent({
+          runtime,
+          image,
+          local: localRuntime,
+          ...(signal === undefined ? {} : { signal }),
+        });
       },
     });
   }

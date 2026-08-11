@@ -34,10 +34,11 @@ describe("Prime OCI container lifecycle", () => {
 
     expect(events).toEqual([
       "update:intent",
+      "assert-current",
       "create",
       "update:created",
-      "assert-current",
       "attach",
+      "assert-current",
       "start",
       "update:started",
       "operate",
@@ -50,6 +51,40 @@ describe("Prime OCI container lifecycle", () => {
       "update:removed",
     ]);
     expect(updates.at(-1)?.state).toBe("removed");
+  });
+
+  it("does not create or start after adjacent identity drift", async () => {
+    const beforeCreateEvents: string[] = [];
+    await expect(
+      new PrimeOciContainerLifecycle(fakeEngine(beforeCreateEvents)).run({
+        intent: intentLease(),
+        update: vi.fn(async () => undefined),
+        assertCurrent: async () => {
+          throw new Error("identity drift before create");
+        },
+        operate: vi.fn(),
+      }),
+    ).rejects.toThrow(/before create/i);
+    expect(beforeCreateEvents).not.toContain("create");
+
+    const beforeStartEvents: string[] = [];
+    let checks = 0;
+    await expect(
+      new PrimeOciContainerLifecycle(fakeEngine(beforeStartEvents)).run({
+        intent: intentLease(),
+        update: vi.fn(async () => undefined),
+        assertCurrent: async () => {
+          checks += 1;
+          if (checks === 2) {
+            throw new Error("identity drift before start");
+          }
+        },
+        operate: vi.fn(),
+      }),
+    ).rejects.toThrow(/before start/i);
+    expect(beforeStartEvents).toContain("attach");
+    expect(beforeStartEvents).not.toContain("start");
+    expect(beforeStartEvents).toContain("remove");
   });
 
   it("does not start when the created lease is not durable", async () => {

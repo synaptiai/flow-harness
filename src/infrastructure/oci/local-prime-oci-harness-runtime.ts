@@ -167,7 +167,8 @@ export class LocalPrimeOciHarnessRuntime implements ExternalHarnessRuntime {
           await new PrimeOciContainerLifecycle(engine).run({
             intent: intent as PrimeOciIntentLease,
             update: durability.updateOciLease,
-            assertCurrent: () => waitForAbortable(descriptor.assertCurrent(), operationSignal),
+            assertCurrent: () =>
+              waitForAbortable(descriptor.assertCurrent(operationSignal), operationSignal),
             operate: async (containerId, transport, checkpoint) => {
               const stopMonitor = new AbortController();
               const policyTermination = new AbortController();
@@ -331,7 +332,7 @@ export class LocalPrimeOciHarnessRuntime implements ExternalHarnessRuntime {
       throw new Error("Prime OCI recovery requires one durable Prime attempt");
     }
     const descriptor = await this.options.registry.resolveAdmitted(request.identity);
-    await descriptor.assertCurrent();
+    await descriptor.assertCurrent(signal);
     let recovered = attempt;
     if (attempt.ociLease !== undefined) {
       const engine = await this.options.createEngine(descriptor, signal);

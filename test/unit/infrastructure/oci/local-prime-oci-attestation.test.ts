@@ -31,6 +31,7 @@ describe("local Prime OCI attestation", () => {
       descriptorPath,
       observeSocket: async () => descriptor.local.socket,
       observeExecutable: async (path) => executableDigest(descriptor, path),
+      assertRuntimeCurrent: async () => undefined,
     });
 
     const admitted = await store.read();
@@ -67,6 +68,7 @@ describe("local Prime OCI attestation", () => {
         descriptorPath,
         observeSocket: async () => descriptor.local.socket,
         observeExecutable: async (path) => executableDigest(descriptor, path),
+        assertRuntimeCurrent: async () => undefined,
       }).read(),
     ).rejects.toThrow(/seccomp/i);
 
@@ -76,6 +78,7 @@ describe("local Prime OCI attestation", () => {
         descriptorPath,
         observeSocket: async () => ({ ...descriptor.local.socket, inode: 99 }),
         observeExecutable: async (path) => executableDigest(descriptor, path),
+        assertRuntimeCurrent: async () => undefined,
       }).read(),
     ).rejects.toThrow(/socket.*changed/i);
   });
@@ -108,6 +111,7 @@ describe("local Prime OCI attestation", () => {
       descriptorPath,
       observeSocket: async () => descriptor.local.socket,
       observeExecutable: async (path) => executableDigest(descriptor, path),
+      assertRuntimeCurrent: async () => undefined,
     }).read();
     expect(stored.localRuntime.daemonId).toBe("replacement-daemon");
   });
@@ -126,6 +130,7 @@ describe("local Prime OCI attestation", () => {
         changed && path === descriptor.local.executables.runc.path
           ? "0".repeat(64)
           : executableDigest(descriptor, path),
+      assertRuntimeCurrent: async () => undefined,
     }).read();
 
     changed = true;

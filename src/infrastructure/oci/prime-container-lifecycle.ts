@@ -62,6 +62,7 @@ export class PrimeOciContainerLifecycle {
 
     await input.update(current);
     try {
+      await input.assertCurrent();
       try {
         created = await this.engine.create(input.intent, input.operationSignal);
       } catch (error) {
@@ -78,8 +79,8 @@ export class PrimeOciContainerLifecycle {
       }
 
       if (operationError === undefined && created !== undefined) {
-        await input.assertCurrent();
         const attachment = await this.engine.attach(created.containerId, input.operationSignal);
+        await input.assertCurrent();
         await this.engine.start(created.containerId, input.operationSignal);
         current = await updateLease(input, { ...current, state: "started" });
         await input.operate(created.containerId, attachment, async (checkpoint) => {
