@@ -104,8 +104,10 @@ jobs:
             'del(.containerd, .["containerd-namespace"], .["containerd-plugins-namespace"], .["exec-root"], .hosts, .pidfile) | . + {"default-runtime":"flow-prime-runc","runtimes":((.runtimes // {}) + {"flow-prime-runc":{"path":$path,"runtimeArgs":[]}})}' \
             /tmp/flow-prime-daemon.json > /tmp/flow-prime-daemon.updated.json
           sudo install --mode=0644 /tmp/flow-prime-daemon.updated.json /etc/docker/daemon.json
-          sudo systemctl stop docker.service docker.socket
+          sudo systemctl stop docker.service docker.socket containerd.service
           sudo systemctl disable docker.socket
+          sudo systemctl mask containerd.service
+          sudo rm --force -- /run/containerd/containerd.sock
           sudo mkdir --parents /etc/systemd/system/docker.service.d
           printf '[Unit]\nRequires=\n[Service]\nExecStart=\nExecStart=/usr/bin/dockerd --host=unix:///var/run/docker.sock\n' | \
             sudo tee /etc/systemd/system/docker.service.d/flow-prime.conf > /dev/null

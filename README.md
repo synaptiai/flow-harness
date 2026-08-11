@@ -80,6 +80,7 @@ The Prime runtime identity has these additional requirements:
 
 - Docker uses its canonical daemon PID record.
 - The `flow-prime-runc` runtime uses one canonical `runc` executable path and no arguments.
+- Docker supervises its own `containerd` child.
 - Docker publishes its managed `containerd` PID record under `/run/docker/containerd`.
 - Enough host capacity for the fixed Prime resource policy.
 
@@ -103,16 +104,26 @@ The default daemon configuration must not set `containerd`, `containerd-namespac
 `containerd-plugins-namespace`, `hosts`, `exec-root`, or `pidfile`. Flow rejects custom
 configuration-file paths and related command options.
 
-For systemd, disable socket activation and use the exact Unix endpoint:
+Use this profile only on a dedicated, reprovisionable Prime runner. Do not use this setup on a
+shared development host or on a host that serves Kubernetes or other `containerd` clients. The
+commands below stop the separate service and replace the Docker service start command.
+
+For systemd, disable Docker socket activation and the separate `containerd` service. Remove its
+stale socket before Docker starts. Docker then starts the managed child that Flow admits.
 
 ```sh
-sudo systemctl stop docker.service docker.socket
+sudo systemctl stop docker.service docker.socket containerd.service
 sudo systemctl disable docker.socket
+sudo systemctl mask containerd.service
+sudo rm --force -- /run/containerd/containerd.sock
 sudo install --directory /etc/systemd/system/docker.service.d
 printf '[Unit]\nRequires=\n[Service]\nExecStart=\nExecStart=/usr/bin/dockerd --host=unix:///var/run/docker.sock\n' | sudo tee /etc/systemd/system/docker.service.d/flow-prime.conf
 sudo systemctl daemon-reload
 sudo systemctl start docker.service
 ```
+
+To roll back this setup, recreate the runner from its trusted base image. Version one does not
+support in-place restoration because Flow does not record the prior Docker and systemd states.
 
 Verify that Docker owns the managed containerd process:
 

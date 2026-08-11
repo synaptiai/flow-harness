@@ -217,6 +217,7 @@ describe("Prime Agent package boundary", () => {
   it("pins the Docker toolchain and runs the shared local CI command", async () => {
     const workflow = await readFile(resolve(repositoryRoot, ".github/workflows/ci.yml"), "utf8");
     const localCi = await readFile(resolve(repositoryRoot, "scripts/ci-local.mjs"), "utf8");
+    const readme = await readFile(resolve(repositoryRoot, "README.md"), "utf8");
 
     expect(workflow).toContain("docker_version='5:28.3.3-1~ubuntu.24.04~noble'");
     expect(workflow).toContain("containerd.io='1.7.27-1'");
@@ -226,6 +227,9 @@ describe("Prime Agent package boundary", () => {
     expect(workflow).not.toContain("docker/setup-buildx-action");
     expect(workflow).toContain("run: npm run ci:local");
     expect(workflow).toContain("ExecStart=/usr/bin/dockerd --host=unix:///var/run/docker.sock");
+    expect(workflow).toContain("systemctl stop docker.service docker.socket containerd.service");
+    expect(workflow).toContain("systemctl mask containerd.service");
+    expect(workflow).toContain("rm --force -- /run/containerd/containerd.sock");
     expect(workflow).toContain('"default-runtime":"flow-prime-runc"');
     expect(workflow).toContain('"flow-prime-runc":{"path":$path,"runtimeArgs":[]}');
     expect(workflow).not.toContain("-H fd://");
@@ -233,5 +237,10 @@ describe("Prime Agent package boundary", () => {
     expect(localCi).toContain("FLOW_PRIME_PREPARED_ATTESTATION");
     expect(workflow).toContain("useradd --create-home --groups docker flow-prime-peer");
     expect(workflow).toContain("FLOW_PRIME_TEST_SECOND_USER=flow-prime-peer");
+    expect(readme).toContain("dedicated, reprovisionable Prime runner");
+    expect(readme).toMatch(
+      /Do not use this setup on a\s+shared development host or on a host that serves Kubernetes or other `containerd` clients/,
+    );
+    expect(readme).toContain("recreate the runner from its trusted base image");
   });
 });
