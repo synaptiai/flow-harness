@@ -22,41 +22,54 @@ afterEach(async () => {
 });
 
 describe.skipIf(!linux)("Prime OCI native settlement", () => {
-  it.each([
-    ["cancellation", () => new AbortController(), "native Prime cancellation"],
-    ["timeout", () => new AbortController(), "native Prime timeout"],
-  ] as const)(
-    "removes the full process tree after %s",
-    async (_name, createController, reason) => {
-      const controller = createController();
-      let containerId: string | undefined;
-      let inferenceStarted: (() => void) | undefined;
-      const brokerReady = new Promise<void>((resolveReady) => {
-        inferenceStarted = resolveReady;
-      });
-      const execution = runVerifiedPrimeSession({
-        instruction: "Start one model turn and wait for host settlement.",
-        responses: [primeAssistantToolCall("settlement-call", "1 + 1", 1)],
-        signal: controller.signal,
-        onContainerStarted: (container) => {
-          containerId = container.containerId;
-        },
-        onInferenceRequest: async ({ signal }) => {
-          inferenceStarted?.();
-          await waitForAbort(signal);
-        },
-      });
+  it("removes the full process tree after cancellation", async () => {
+    const controller = new AbortController();
+    const session = startBlockedSession({ signal: controller.signal });
 
-      await brokerReady;
-      controller.abort(new Error(reason));
-      await expect(execution).rejects.toThrow(reason);
+    await session.brokerReady;
+    controller.abort(new Error("native Prime cancellation"));
+    await expect(session.execution).rejects.toThrow("native Prime cancellation");
 
-      expect(containerId).toMatch(/^[a-f0-9]{64}$/);
-      await expectDockerObjectAbsent(requireContainerId(containerId));
-    },
-    120_000,
-  );
+    await expectDockerObjectAbsent(requireContainerId(session.containerId()));
+  }, 120_000);
+
+  it("removes the full process tree after the elapsed deadline", async () => {
+    const session = startBlockedSession({ maxExecutionMs: 2_000 });
+
+    await session.brokerReady;
+    await expect(session.execution).rejects.toThrow("verified Prime session exceeded 2000ms");
+
+    await expectDockerObjectAbsent(requireContainerId(session.containerId()));
+  }, 120_000);
 });
+
+function startBlockedSession(input: {
+  readonly maxExecutionMs?: number;
+  readonly signal?: AbortSignal;
+}) {
+  let containerId: string | undefined;
+  let inferenceStarted: (() => void) | undefined;
+  const brokerReady = new Promise<void>((resolveReady) => {
+    inferenceStarted = resolveReady;
+  });
+  const execution = runVerifiedPrimeSession({
+    instruction: "Start one model turn and wait for host settlement.",
+    responses: [primeAssistantToolCall("settlement-call", "1 + 1", 1)],
+    ...input,
+    onContainerStarted: (container) => {
+      containerId = container.containerId;
+    },
+    onInferenceRequest: async ({ signal }) => {
+      inferenceStarted?.();
+      await waitForAbort(signal);
+    },
+  });
+  return {
+    brokerReady,
+    execution,
+    containerId: () => containerId,
+  };
+}
 
 async function waitForAbort(signal: AbortSignal | undefined): Promise<never> {
   if (signal === undefined) {

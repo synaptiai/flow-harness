@@ -19,8 +19,16 @@ export interface PrimeOciImageArtifacts {
   readonly supervisorSha256: string;
 }
 
+export interface PrimeOciBuilderIdentity {
+  readonly clientPath: string;
+  readonly clientSha256: string;
+  readonly imageId: string;
+  readonly imageReference: string;
+}
+
 export interface PrimeOciPreparedBuild {
   readonly image: PrimeExternalHarnessIdentity["image"];
+  readonly builder: PrimeOciBuilderIdentity;
   readonly artifacts: PrimeOciImageArtifacts;
   readonly harnessPackageContentSha256: string;
   readonly harnessDependencyClosureSha256: string;
@@ -36,6 +44,7 @@ export interface PrimeOciAttestationDescriptor {
   readonly version: 1;
   readonly runtime: PrimeExternalHarnessIdentity["runtime"];
   readonly image: PrimeExternalHarnessIdentity["image"];
+  readonly builder: PrimeOciBuilderIdentity;
   readonly artifacts: PrimeOciImageArtifacts;
   readonly harnessPackageContentSha256: string;
   readonly harnessDependencyClosureSha256: string;
@@ -102,6 +111,7 @@ export async function preparePrimeOciRuntime(
     version: 1 as const,
     runtime: inspected.runtime,
     image: first.image,
+    builder: first.builder,
     artifacts: first.artifacts,
     harnessPackageContentSha256: first.harnessPackageContentSha256,
     harnessDependencyClosureSha256: first.harnessDependencyClosureSha256,
@@ -156,15 +166,33 @@ async function runBuild(
 
 function normalizeBuild(input: PrimeOciPreparedBuild): PrimeOciPreparedBuild {
   const image = parsePrimeOciImageIdentity(input.image);
+  const builder = normalizeBuilderIdentity(input.builder);
   const artifacts = normalizeImageArtifacts(input.artifacts);
   assertSha256(input.harnessPackageContentSha256, "Prime package content digest");
   assertSha256(input.harnessDependencyClosureSha256, "Prime dependency closure digest");
   return Object.freeze({
     image,
+    builder,
     artifacts,
     harnessPackageContentSha256: input.harnessPackageContentSha256,
     harnessDependencyClosureSha256: input.harnessDependencyClosureSha256,
   });
+}
+
+function normalizeBuilderIdentity(input: PrimeOciBuilderIdentity): PrimeOciBuilderIdentity {
+  if (!input.clientPath.startsWith("/") || input.clientPath.length > 4_095) {
+    throw new Error("Prime Buildx client path is not one bounded absolute path");
+  }
+  if (!/^[a-f0-9]{64}$/.test(input.clientSha256)) {
+    throw new Error("Prime Buildx client digest is not a SHA-256 digest");
+  }
+  if (!/^sha256:[a-f0-9]{64}$/.test(input.imageId)) {
+    throw new Error("Prime BuildKit image ID is not a SHA-256 digest");
+  }
+  if (!/^moby\/buildkit:[a-z0-9.-]+@sha256:[a-f0-9]{64}$/.test(input.imageReference)) {
+    throw new Error("Prime BuildKit image reference is not digest-pinned");
+  }
+  return Object.freeze({ ...input });
 }
 
 function normalizeImageArtifacts(input: PrimeOciImageArtifacts): PrimeOciImageArtifacts {

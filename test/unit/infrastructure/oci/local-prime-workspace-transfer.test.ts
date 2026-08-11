@@ -147,6 +147,53 @@ describe("staged Prime workspace result sink", () => {
     await expect(lstat(stagingRoot ?? "")).rejects.toMatchObject({ code: "ENOENT" });
     expect(publish).not.toHaveBeenCalled();
   });
+
+  it("treats a successful publisher return as a committed result", async () => {
+    const parent = await temporaryDirectory();
+    const targetRoot = join(parent, "workspace");
+    await mkdir(targetRoot);
+    const entry = fileEntry("RESULT.md", "DONE\n", 0o640);
+    const controller = new AbortController();
+    const publish = vi.fn(async () => {
+      controller.abort(new Error("cleanup grace expired after durable publication"));
+    });
+    const sink = new StagedPrimeOciResultSink({ targetRoot, publish });
+    await sink.begin({
+      entryCount: 1,
+      totalBytes: 5,
+      manifestSha256: createPrimeContainerManifestSha256([entry]),
+    });
+    await sink.addEntry(entry);
+    await sink.addChunk(Buffer.from("DONE\n"));
+    await sink.endFile();
+    await sink.commit([entry]);
+
+    await expect(sink.publishResult(controller.signal)).resolves.toBeUndefined();
+
+    expect(publish).toHaveBeenCalledOnce();
+    expect(sink.stagingRoot).toBeUndefined();
+    await expect(sink.publishResult()).rejects.toThrow(/no complete staging tree/i);
+  });
+
+  it("does not commit a staging tree after cancellation", async () => {
+    const parent = await temporaryDirectory();
+    const targetRoot = join(parent, "workspace");
+    await mkdir(targetRoot);
+    const entry = fileEntry("RESULT.md", "DONE\n", 0o640);
+    const sink = new StagedPrimeOciResultSink({ targetRoot, publish: vi.fn() });
+    await sink.begin({
+      entryCount: 1,
+      totalBytes: 5,
+      manifestSha256: createPrimeContainerManifestSha256([entry]),
+    });
+    await sink.addEntry(entry);
+    await sink.addChunk(Buffer.from("DONE\n"));
+    await sink.endFile();
+    const controller = new AbortController();
+    controller.abort(new Error("result commit cancelled"));
+
+    await expect(sink.commit([entry], controller.signal)).rejects.toThrow(/commit cancelled/i);
+  });
 });
 
 async function temporaryDirectory(): Promise<string> {

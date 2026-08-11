@@ -33,7 +33,7 @@ const settlementSchema = z
     exitCode: z.number().int().min(0).max(255).nullable(),
     timedOut: z.boolean(),
     aborted: z.boolean(),
-    activeTimeMicros: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable(),
+    activeTimeMicros: z.null(),
     kernelRequests: z.number().int().min(0).max(1),
   })
   .strict()
@@ -112,7 +112,6 @@ export class AttachedPrimeOciOperator {
     let terminal: PrimeHarnessWithoutRuntime | undefined;
     let resultValidator: PrimeContainerTransferValidator | undefined;
     let resultCommitted = false;
-    let activeTimeMicros: number | null = null;
     let settlement:
       | {
           readonly exitCode: number | null;
@@ -137,6 +136,8 @@ export class AttachedPrimeOciOperator {
               identityDigest: input.descriptor.identityDigest,
               imageId: input.request.identity.image.id,
               policyDigest: input.request.identity.runtime.policy.digest,
+              imageDeviceMajor: input.descriptor.localRuntime.imageDevice.major,
+              imageDeviceMinor: input.descriptor.localRuntime.imageDevice.minor,
             }),
           ),
         ),
@@ -163,13 +164,16 @@ export class AttachedPrimeOciOperator {
             case PrimeContainerFrameType.Driver: {
               const event = session.acceptDriverLine(decodeUtf8(frame.payload, "driver frame"));
               if (event.type === "inference_request") {
-                const body = await this.options.inferenceBroker.infer(
-                  {
-                    identity: input.request.identity,
-                    evaluation: input.request.evaluation,
-                    requestId: event.requestId,
-                    body: event.body,
-                  },
+                const body = await waitForAbortable(
+                  this.options.inferenceBroker.infer(
+                    {
+                      identity: input.request.identity,
+                      evaluation: input.request.evaluation,
+                      requestId: event.requestId,
+                      body: event.body,
+                    },
+                    input.signal,
+                  ),
                   input.signal,
                 );
                 ledger.recordBrokerResponse(body);
@@ -260,7 +264,6 @@ export class AttachedPrimeOciOperator {
                   cause: parsed.error,
                 });
               }
-              activeTimeMicros = parsed.data.activeTimeMicros;
               settlement = {
                 exitCode: parsed.data.exitCode,
                 timedOut: parsed.data.timedOut,
@@ -326,7 +329,7 @@ export class AttachedPrimeOciOperator {
       }: {
         readonly startedAtMs: number;
         readonly endedAtMs: number;
-      }) => ledger.finish({ startedAtMs, endedAtMs, activeTimeMicros }),
+      }) => ledger.finish({ startedAtMs, endedAtMs, activeTimeMicros: null }),
     });
   }
 

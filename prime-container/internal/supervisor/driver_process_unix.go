@@ -106,8 +106,16 @@ func RunDriverProcess(
 	diagnostic := make(chan diagnosticResult, 1)
 	go func() {
 		value, readError := io.ReadAll(io.LimitReader(standardError, int64(options.MaxDiagnosticBytes)+1))
+		overflow := len(value) > options.MaxDiagnosticBytes
+		if overflow {
+			_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+			_, drainError := io.Copy(io.Discard, standardError)
+			if readError == nil {
+				readError = drainError
+			}
+		}
 		diagnostic <- diagnosticResult{
-			value: value, overflow: len(value) > options.MaxDiagnosticBytes, err: readError,
+			value: value, overflow: overflow, err: readError,
 		}
 	}()
 	if err := driverSocket.Close(); err != nil {

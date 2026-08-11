@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { EvaluationOciLease } from "../../../../src/domain/evaluation/attempt.js";
+import {
+  type EvaluationOciLease,
+  parseEvaluationOciLease,
+} from "../../../../src/domain/evaluation/attempt.js";
 import {
   PrimeOciContainerLifecycle,
   type PrimeOciEngine,
@@ -89,6 +92,7 @@ describe("Prime OCI container lifecycle", () => {
 
   it("does not start when the created lease is not durable", async () => {
     const events: string[] = [];
+    const accepted: EvaluationOciLease[] = [];
     const engine = fakeEngine(events);
     const lifecycle = new PrimeOciContainerLifecycle(engine);
 
@@ -96,10 +100,12 @@ describe("Prime OCI container lifecycle", () => {
       lifecycle.run({
         intent: intentLease(),
         update: async (lease) => {
+          const parsed = parseEvaluationOciLease(lease);
           events.push(`update:${lease.state}`);
           if (lease.state === "created") {
             throw new Error("durable write failed");
           }
+          accepted.push(parsed);
         },
         assertCurrent: vi.fn(),
         operate: vi.fn(),
@@ -109,6 +115,11 @@ describe("Prime OCI container lifecycle", () => {
     expect(events).not.toContain("start");
     expect(events).toContain("remove");
     expect(events).toContain("confirm-removed");
+    expect(accepted.at(-1)).toMatchObject({
+      state: "removed",
+      containerId: "f".repeat(64),
+      inspectedPolicyDigest: "c".repeat(64),
+    });
   });
 
   it("recovers an intent when create commits but its response is lost", async () => {
@@ -171,7 +182,7 @@ describe("Prime OCI container lifecycle", () => {
     ).rejects.toThrow(/checkpoint|terminal/i);
   });
 
-  it("creates and removes the exact named object after an initial recovery miss", async () => {
+  it("uses a stopped named-create fence after a restart lookup miss", async () => {
     const events: string[] = [];
     const lifecycle = new PrimeOciContainerLifecycle(
       fakeEngine(events, { recoveredIntentMissing: true }),
@@ -197,33 +208,6 @@ describe("Prime OCI container lifecycle", () => {
     ]);
   });
 
-  it("reconciles a delayed named object after the retry gets a conflict", async () => {
-    const events: string[] = [];
-    const base = fakeEngine(events);
-    const created = {
-      containerId: "f".repeat(64),
-      inspectedPolicyDigest: "c".repeat(64),
-    };
-    base.recoverIntent = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(created);
-    base.create = vi.fn(async () => {
-      events.push("create");
-      throw new Error("name conflict");
-    });
-
-    await expect(
-      new PrimeOciContainerLifecycle(base).recover({
-        lease: intentLease(),
-        update: async (lease) => {
-          events.push(`update:${lease.state}`);
-        },
-      }),
-    ).resolves.toMatchObject({ state: "removed" });
-
-    expect(base.recoverIntent).toHaveBeenCalledTimes(2);
-    expect(events).toContain("update:created");
-    expect(events).toContain("update:removed");
-  });
-
   it("settles and removes a durable started container during recovery", async () => {
     const events: string[] = [];
     const lifecycle = new PrimeOciContainerLifecycle(fakeEngine(events));
@@ -244,6 +228,7 @@ describe("Prime OCI container lifecycle", () => {
 
     expect(recovered.state).toBe("removed");
     expect(events).toEqual([
+      "recover-created",
       "stop",
       "update:stopped",
       "remove",
@@ -276,6 +261,10 @@ function fakeEngine(
     recoverIntent: async () => {
       events.push("recover-intent");
       return options.recoveredIntentMissing === true ? null : created;
+    },
+    recoverCreated: async () => {
+      events.push("recover-created");
+      return created;
     },
     attach: async () => {
       events.push("attach");

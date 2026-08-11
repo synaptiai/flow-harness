@@ -34,6 +34,7 @@ const readinessSchema = z
     policyDigest: sha256Schema,
     process: z
       .object({
+        supervisorPid: z.literal(1),
         supervisorUid: safeInteger,
         nodeUid: safeInteger,
         pythonUid: safeInteger,
@@ -55,6 +56,10 @@ const readinessSchema = z
         memorySwapMaxBytes: safeInteger,
         cpuQuotaMicros: safeInteger,
         cpuPeriodMicros: safeInteger,
+        imageDeviceMajor: safeInteger,
+        imageDeviceMinor: safeInteger,
+        imageReadBytesPerSecond: safeInteger,
+        imageReadOperationsPerSecond: safeInteger,
         openFilesSoft: safeInteger,
         openFilesHard: safeInteger,
         userProcessesSoft: safeInteger,
@@ -78,6 +83,20 @@ const readinessSchema = z
         routes: z.array(z.never()).length(0),
       })
       .strict(),
+    systemFiles: z
+      .object({
+        hostname: z.literal("flow-prime"),
+        hosts: z.tuple([
+          z.literal("127.0.0.1 localhost flow-prime"),
+          z.literal("::1 localhost ip6-localhost ip6-loopback"),
+        ]),
+        resolver: z.tuple([
+          z.literal("nameserver 127.0.0.1"),
+          z.literal("search ."),
+          z.literal("options ndots:0"),
+        ]),
+      })
+      .strict(),
     streams: z
       .object({
         stdinAttached: z.literal(true),
@@ -96,6 +115,10 @@ export interface PrimeOciReadinessExpectationInput {
   readonly identityDigest: string;
   readonly containerId: string;
   readonly trialId: string;
+  readonly imageDevice: {
+    readonly major: number;
+    readonly minor: number;
+  };
 }
 
 export type PrimeOciReadiness = z.infer<typeof readinessSchema>;
@@ -112,6 +135,7 @@ export function createExpectedPrimeOciReadiness(
     imageId: input.identity.image.id,
     policyDigest: policy.digest,
     process: {
+      supervisorPid: 1,
       supervisorUid: policy.supervisorUid,
       nodeUid: policy.nodeUid,
       pythonUid: policy.pythonUid,
@@ -131,6 +155,10 @@ export function createExpectedPrimeOciReadiness(
       memorySwapMaxBytes: policy.memorySwapMaxBytes,
       cpuQuotaMicros: policy.cpuQuotaMicros,
       cpuPeriodMicros: policy.cpuPeriodMicros,
+      imageDeviceMajor: input.imageDevice.major,
+      imageDeviceMinor: input.imageDevice.minor,
+      imageReadBytesPerSecond: policy.imageReadBytesPerSecond,
+      imageReadOperationsPerSecond: policy.imageReadOperationsPerSecond,
       openFilesSoft: policy.openFilesMax,
       openFilesHard: policy.openFilesMax,
       userProcessesSoft: policy.userProcessesMax,
@@ -152,6 +180,11 @@ export function createExpectedPrimeOciReadiness(
       namespace: "private" as const,
       interfaces: ["lo"],
       routes: [],
+    },
+    systemFiles: {
+      hostname: "flow-prime",
+      hosts: ["127.0.0.1 localhost flow-prime", "::1 localhost ip6-localhost ip6-loopback"],
+      resolver: ["nameserver 127.0.0.1", "search .", "options ndots:0"],
     },
     streams: {
       stdinAttached: true,

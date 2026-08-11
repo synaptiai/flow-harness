@@ -19,6 +19,10 @@ export interface PrimeOciEngine {
     intent: PrimeOciIntentLease,
     signal?: AbortSignal,
   ): Promise<PrimeOciCreatedIdentity | null>;
+  recoverCreated(
+    lease: Exclude<EvaluationOciLease, PrimeOciIntentLease>,
+    signal?: AbortSignal,
+  ): Promise<PrimeOciCreatedIdentity | null>;
   attach(containerId: string, signal?: AbortSignal): Promise<PrimeOciAttachedTransport>;
   start(containerId: string, signal?: AbortSignal): Promise<void>;
   stop(containerId: string, signal?: AbortSignal): Promise<void>;
@@ -70,12 +74,13 @@ export class PrimeOciContainerLifecycle {
         created = await this.#recoverLostCreate(input, createCleanupSignal);
       }
       if (created !== undefined) {
-        current = await updateLease(input, {
+        current = {
           ...input.intent,
           state: "created",
           containerId: created.containerId,
           inspectedPolicyDigest: created.inspectedPolicyDigest,
-        });
+        };
+        await input.update(current);
       }
 
       if (operationError === undefined && created !== undefined) {
@@ -130,10 +135,8 @@ export class PrimeOciContainerLifecycle {
       return input.lease;
     }
     if (input.lease.state === "intent") {
-      const created = await this.#settleIntent(
-        input.lease as PrimeOciIntentLease,
-        input.cleanupSignal,
-      );
+      const intent = input.lease as PrimeOciIntentLease;
+      const created = await this.#settleIntent(intent, input.cleanupSignal);
       const createdLease = {
         ...input.lease,
         state: "created" as const,
@@ -160,6 +163,19 @@ export class PrimeOciContainerLifecycle {
     if (input.lease.containerId === undefined) {
       throw new PrimeOciUnsafeStateError("Prime OCI recovery has no durable container ID");
     }
+    const reconciled = await this.engine.recoverCreated(
+      input.lease as Exclude<EvaluationOciLease, PrimeOciIntentLease>,
+      input.cleanupSignal,
+    );
+    if (reconciled === null) {
+      return updateRecoveryLease(input, { ...input.lease, state: "removed" });
+    }
+    if (
+      reconciled.containerId !== input.lease.containerId ||
+      reconciled.inspectedPolicyDigest !== input.lease.inspectedPolicyDigest
+    ) {
+      throw new PrimeOciUnsafeStateError("Prime OCI durable container identity changed");
+    }
     return this.#cleanup(
       {
         update: input.update,
@@ -168,7 +184,7 @@ export class PrimeOciContainerLifecycle {
           : { createCleanupSignal: () => input.cleanupSignal as AbortSignal }),
       },
       input.lease,
-      input.lease.containerId,
+      reconciled.containerId,
     );
   }
 

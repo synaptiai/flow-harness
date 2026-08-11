@@ -167,10 +167,23 @@ export class NativePrimeHostInferenceBroker implements ExternalHarnessInferenceB
     );
     const hostMessage = parseHostMessage(rawResponse);
     const response = JSON.stringify({
-      ...hostMessage,
+      role: hostMessage.role,
+      content: hostMessage.content,
       api: BROKER_API,
       provider: BROKER_PROVIDER,
       model: BROKER_MODEL,
+      ...(hostMessage.responseId === undefined ? {} : { responseId: hostMessage.responseId }),
+      usage: {
+        input: hostMessage.usage.input,
+        output: hostMessage.usage.output,
+        cacheRead: hostMessage.usage.cacheRead,
+        cacheWrite: hostMessage.usage.cacheWrite,
+        totalTokens: hostMessage.usage.totalTokens,
+        cost: hostMessage.usage.cost,
+      },
+      stopReason: hostMessage.stopReason,
+      ...(hostMessage.errorMessage === undefined ? {} : { errorMessage: hostMessage.errorMessage }),
+      timestamp: hostMessage.timestamp,
     });
     if (Buffer.byteLength(response, "utf8") > MAX_EXTERNAL_HARNESS_FRAME_BYTES) {
       throw new Error(`Prime host response exceeds ${MAX_EXTERNAL_HARNESS_FRAME_BYTES} bytes`);

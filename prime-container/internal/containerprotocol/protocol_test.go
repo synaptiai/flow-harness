@@ -30,7 +30,7 @@ func TestFrameCodecIsBoundedAndDirectionIndependent(t *testing.T) {
 }
 
 func TestChallengeAndEntriesUseStrictJSON(t *testing.T) {
-	challenge, err := ParseReadinessChallenge([]byte(`{"version":1,"containerId":"` + strings.Repeat("a", 64) + `","trialId":"trial-` + strings.Repeat("b", 48) + `","identityDigest":"` + strings.Repeat("c", 64) + `","imageId":"sha256:` + strings.Repeat("d", 64) + `","policyDigest":"` + strings.Repeat("e", 64) + `"}`))
+	challenge, err := ParseReadinessChallenge([]byte(`{"version":1,"containerId":"` + strings.Repeat("a", 64) + `","trialId":"trial-` + strings.Repeat("b", 48) + `","identityDigest":"` + strings.Repeat("c", 64) + `","imageId":"sha256:` + strings.Repeat("d", 64) + `","policyDigest":"` + strings.Repeat("e", 64) + `","imageDeviceMajor":8,"imageDeviceMinor":1}`))
 	if err != nil {
 		t.Fatalf("parse challenge: %v", err)
 	}

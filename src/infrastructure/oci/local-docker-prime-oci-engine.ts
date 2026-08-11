@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 
+import type { EvaluationOciLease } from "../../domain/evaluation/attempt.js";
 import type { ExternalHarnessIdentity } from "../../domain/evaluation/external-harness.js";
 import type { DockerUnixApiClient } from "./docker-unix-api-client.js";
 import type {
@@ -7,6 +8,33 @@ import type {
   PrimeOciEngine,
   PrimeOciIntentLease,
 } from "./prime-container-lifecycle.js";
+
+const PRIME_OCI_MASKED_PATHS = Object.freeze([
+  "/proc/acpi",
+  "/proc/asound",
+  "/proc/kcore",
+  "/proc/keys",
+  "/proc/latency_stats",
+  "/proc/timer_list",
+  "/proc/timer_stats",
+  "/proc/sched_debug",
+  "/proc/scsi",
+  "/proc/cmdline",
+  "/proc/sys",
+  "/sys/block",
+  "/sys/bus",
+  "/sys/class",
+  "/sys/class/dmi/id",
+  "/sys/dev",
+  "/sys/devices",
+  "/sys/devices/virtual/dmi/id",
+  "/sys/firmware",
+  "/sys/hypervisor",
+  "/sys/kernel",
+  "/sys/module",
+  "/sys/power",
+  "/sys/devices/virtual/powercap",
+]);
 
 type PrimeIdentity = Extract<
   ExternalHarnessIdentity,
@@ -95,6 +123,28 @@ export class LocalDockerPrimeOciEngine implements PrimeOciEngine {
     return this.#created(containerId);
   }
 
+  async recoverCreated(
+    lease: Exclude<EvaluationOciLease, PrimeOciIntentLease>,
+    signal?: AbortSignal,
+  ): Promise<PrimeOciCreatedIdentity | null> {
+    if (lease.containerId === undefined || lease.inspectedPolicyDigest === undefined) {
+      throw new Error("Prime OCI durable container lease is incomplete");
+    }
+    const intent = toIntentLease(lease);
+    this.#assertIntent(intent);
+    const inspection = await this.options.api.inspectContainer(lease.containerId, signal);
+    if (inspection === null) {
+      const byName = await this.options.api.inspectContainer(lease.containerName, signal);
+      if (byName !== null) {
+        throw new Error("Prime OCI durable container ID is absent but its fixed name is occupied");
+      }
+      return null;
+    }
+    this.#assertInspection(inspection, intent, lease.containerId);
+    this.#intents.set(lease.containerId, intent);
+    return this.#created(lease.containerId);
+  }
+
   async start(containerId: string, signal?: AbortSignal): Promise<void> {
     const intent = this.#intents.get(containerId);
     if (intent === undefined) {
@@ -158,6 +208,8 @@ export class LocalDockerPrimeOciEngine implements PrimeOciEngine {
     const policy = this.options.identity.runtime.policy;
     return {
       Image: intent.imageId,
+      Hostname: "flow-prime",
+      Domainname: "",
       User: `${policy.supervisorUid}:${policy.sharedGid}`,
       WorkingDir: "/workspace",
       Env: ["PRIME_AGENT_KERNEL_FORKSERVER=0"],
@@ -178,7 +230,12 @@ export class LocalDockerPrimeOciEngine implements PrimeOciEngine {
     const policy = this.options.identity.runtime.policy;
     return {
       NetworkMode: "none",
+      PidMode: "",
+      Dns: ["127.0.0.1"],
+      DnsSearch: ["."],
+      DnsOptions: ["ndots:0"],
       IpcMode: "none",
+      CgroupnsMode: "private",
       Runtime: "runc",
       ReadonlyRootfs: true,
       LogConfig: { Type: "none", Config: {} },
@@ -193,6 +250,7 @@ export class LocalDockerPrimeOciEngine implements PrimeOciEngine {
       CapAdd: [...policy.supervisorCapabilities],
       SecurityOpt: ["no-new-privileges", `seccomp=${this.#seccompJson}`],
       Binds: [],
+      MaskedPaths: [...PRIME_OCI_MASKED_PATHS],
       Tmpfs: {
         "/workspace": tmpfsOptions(policy.workspaceBytes, policy.workspaceInodes, "0710"),
         "/run/flow-node": tmpfsOptions(policy.nodeRuntimeBytes, policy.nodeRuntimeInodes, "0700"),
@@ -242,6 +300,13 @@ export class LocalDockerPrimeOciEngine implements PrimeOciEngine {
   }
 }
 
+function toIntentLease(
+  lease: Exclude<EvaluationOciLease, PrimeOciIntentLease>,
+): PrimeOciIntentLease {
+  const { containerId: _containerId, inspectedPolicyDigest: _digest, ...rest } = lease;
+  return { ...rest, state: "intent" } as PrimeOciIntentLease;
+}
+
 function dockerLabels(intent: PrimeOciIntentLease): Record<string, string> {
   return {
     "flow.evaluation-id": intent.labels.evaluationId,
@@ -255,6 +320,8 @@ function dockerLabels(intent: PrimeOciIntentLease): Record<string, string> {
 function selectConfig(configuration: Record<string, unknown>): Record<string, unknown> {
   return {
     Image: configuration.Image,
+    Hostname: configuration.Hostname,
+    Domainname: configuration.Domainname,
     User: configuration.User,
     WorkingDir: configuration.WorkingDir,
     Env: configuration.Env,
@@ -273,7 +340,12 @@ function selectConfig(configuration: Record<string, unknown>): Record<string, un
 function selectHostConfig(configuration: Record<string, unknown>): Record<string, unknown> {
   const keys = [
     "NetworkMode",
+    "PidMode",
+    "Dns",
+    "DnsSearch",
+    "DnsOptions",
     "IpcMode",
+    "CgroupnsMode",
     "Runtime",
     "ReadonlyRootfs",
     "LogConfig",
@@ -288,6 +360,7 @@ function selectHostConfig(configuration: Record<string, unknown>): Record<string
     "CapAdd",
     "SecurityOpt",
     "Binds",
+    "MaskedPaths",
     "Tmpfs",
     "Ulimits",
     "BlkioDeviceReadBps",

@@ -1,6 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
 import { type BigIntStats, constants } from "node:fs";
-import { type FileHandle, link, lstat, open, opendir, rename, rm, unlink } from "node:fs/promises";
+import {
+  chmod,
+  type FileHandle,
+  link,
+  lstat,
+  open,
+  opendir,
+  rename,
+  rm,
+  unlink,
+} from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
 import { z } from "zod";
@@ -15,8 +25,14 @@ import {
   parsePrimeContainerManifestEntry,
 } from "../prime/prime-container-protocol.js";
 import type { PrimeWorkspaceResultPublishInput } from "./local-prime-workspace-transfer.js";
+import { PrimeOciUnsafeStateError } from "./prime-container-lifecycle.js";
 
 const MAX_JOURNAL_BYTES = 24 * 1_024 * 1_024;
+const MAX_JOURNAL_TEMPORARIES = 4;
+const MAX_JOURNAL_TEMPORARY_BYTES = MAX_JOURNAL_BYTES * MAX_JOURNAL_TEMPORARIES;
+const LINUX_O_PATH = 0o10000000;
+const journalTemporaryToken =
+  /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const identitySchema = z
   .object({
@@ -92,6 +108,7 @@ export interface DurablePrimeWorkspacePublisherOptions {
   readonly afterStagingRenamed?: () => void | Promise<void>;
   readonly afterTargetSwitched?: () => void | Promise<void>;
   readonly afterRetiredRemoved?: () => void | Promise<void>;
+  readonly afterJournalRemoved?: () => void | Promise<void>;
 }
 
 export class DurablePrimeWorkspacePublisher {
@@ -107,6 +124,7 @@ export class DurablePrimeWorkspacePublisher {
     assertSiblingPaths(targetRoot, stagingRoot);
     await directoryIdentity(targetRoot, "target");
     const journalPath = journalPathFor(targetRoot);
+    await recoverJournalTemporaries(journalPath, targetRoot);
     if ((await readJournal(journalPath)) !== undefined) {
       throw new Error("Prime workspace has an unresolved replacement journal");
     }
@@ -124,6 +142,7 @@ export class DurablePrimeWorkspacePublisher {
   async abortStaging(targetInput: string): Promise<void> {
     const targetRoot = resolve(targetInput);
     const journalPath = journalPathFor(targetRoot);
+    await recoverJournalTemporaries(journalPath, targetRoot);
     const journal = await readJournal(journalPath);
     if (journal === undefined) {
       return;
@@ -141,7 +160,8 @@ export class DurablePrimeWorkspacePublisher {
     await syncDirectory(dirname(targetRoot));
   }
 
-  async publish(input: PrimeWorkspaceResultPublishInput): Promise<void> {
+  async publish(input: PrimeWorkspaceResultPublishInput, signal?: AbortSignal): Promise<void> {
+    throwIfAborted(signal);
     const targetRoot = resolve(input.targetRoot);
     const stagingRoot = resolve(input.stagingRoot);
     assertSiblingPaths(targetRoot, stagingRoot);
@@ -151,6 +171,7 @@ export class DurablePrimeWorkspacePublisher {
     }
 
     const journalPath = journalPathFor(targetRoot);
+    await recoverJournalTemporaries(journalPath, targetRoot, signal);
     const existing = await readJournal(journalPath);
     if (
       existing !== undefined &&
@@ -163,8 +184,8 @@ export class DurablePrimeWorkspacePublisher {
     }
     const targetIdentity = await directoryIdentity(targetRoot, "target");
     const stagingIdentity = await directoryIdentity(stagingRoot, "staging");
-    const targetSnapshot = await snapshotTree(targetRoot);
-    const stagingSnapshot = await snapshotTree(stagingRoot);
+    const targetSnapshot = await snapshotTree(targetRoot, signal);
+    const stagingSnapshot = await snapshotTree(stagingRoot, signal);
     assertExpectedContent(stagingSnapshot.entries, entries);
 
     const journal: ReplacementJournal = {
@@ -181,34 +202,65 @@ export class DurablePrimeWorkspacePublisher {
       entries: [...entries],
     };
     await writeJournal(journalPath, journal, existing === undefined);
+    throwIfAborted(signal);
     await this.options.afterJournalPrepared?.();
 
     const parent = dirname(targetRoot);
     await rename(targetRoot, journal.retiredRoot);
+    throwIfAborted(signal);
     await this.options.afterTargetRenamed?.();
     await syncDirectory(parent);
+    throwIfAborted(signal);
     await writeJournal(journalPath, { ...journal, phase: "retired" }, false);
+    throwIfAborted(signal);
     await this.options.afterTargetRetired?.();
 
     await rename(stagingRoot, targetRoot);
+    throwIfAborted(signal);
     await this.options.afterStagingRenamed?.();
     await syncDirectory(parent);
+    throwIfAborted(signal);
     await writeJournal(journalPath, { ...journal, phase: "switched" }, false);
+    throwIfAborted(signal);
     await this.options.afterTargetSwitched?.();
 
-    await assertStagingTree(targetRoot, journal);
-    await applyFinalModes(targetRoot, entries);
-    await assertOriginalTree(journal.retiredRoot, journal, "retired target");
+    await assertStagingTree(targetRoot, journal, signal);
+    await applyFinalModes(targetRoot, entries, signal);
+    await assertOriginalTree(journal.retiredRoot, journal, "retired target", signal);
+    throwIfAborted(signal);
     await rm(journal.retiredRoot, { recursive: true });
+    throwIfAborted(signal);
     await this.options.afterRetiredRemoved?.();
     await syncDirectory(parent);
+    throwIfAborted(signal);
     await unlink(journalPath);
-    await syncDirectory(parent);
+    try {
+      await this.options.afterJournalRemoved?.();
+      await syncDirectory(parent);
+    } catch (error) {
+      let markerError: unknown;
+      try {
+        await writeJournal(journalPath, { ...journal, phase: "switched" }, true);
+      } catch (recoveryError) {
+        markerError = recoveryError;
+      }
+      throw new PrimeOciUnsafeStateError("Prime workspace publication durability is not proved", {
+        cause:
+          markerError === undefined
+            ? error
+            : new AggregateError(
+                [error, markerError],
+                "Prime workspace publication and recovery marker both failed",
+              ),
+      });
+    }
   }
 
-  async recover(targetInput: string): Promise<PrimeWorkspaceRecoveryOutcome> {
+  async recover(targetInput: string, signal?: AbortSignal): Promise<PrimeWorkspaceRecoveryOutcome> {
+    throwIfAborted(signal);
     const targetRoot = resolve(targetInput);
     const journalPath = journalPathFor(targetRoot);
+    await recoverJournalTemporaries(journalPath, targetRoot, signal);
     const journal = await readJournal(journalPath);
     if (journal === undefined) {
       return "none";
@@ -219,6 +271,7 @@ export class DurablePrimeWorkspacePublisher {
     if (journal.phase === "staging") {
       const staging = await optionalDirectoryIdentity(journal.stagingRoot);
       if (staging !== undefined) {
+        throwIfAborted(signal);
         await rm(journal.stagingRoot, { recursive: true });
         await syncDirectory(parent);
       }
@@ -228,12 +281,13 @@ export class DurablePrimeWorkspacePublisher {
     }
 
     if (journal.phase === "switched") {
-      await restoreDirectorySearchAccess(targetRoot, journal.entries);
-      await assertStagingTree(targetRoot, journal);
-      await applyFinalModes(targetRoot, journal.entries);
+      await restoreDirectorySearchAccess(targetRoot, journal.entries, signal);
+      await assertStagingTree(targetRoot, journal, signal);
+      await applyFinalModes(targetRoot, journal.entries, signal);
       const retired = await optionalDirectoryIdentity(journal.retiredRoot);
       if (retired !== undefined) {
-        await assertOriginalTree(journal.retiredRoot, journal, "retired target");
+        await assertOriginalTree(journal.retiredRoot, journal, "retired target", signal);
+        throwIfAborted(signal);
         await rm(journal.retiredRoot, { recursive: true });
         await syncDirectory(parent);
       }
@@ -246,14 +300,15 @@ export class DurablePrimeWorkspacePublisher {
     const staging = await optionalDirectoryIdentity(journal.stagingRoot);
     const retired = await optionalDirectoryIdentity(journal.retiredRoot);
     if (target !== undefined && sameIdentity(target, journal.targetIdentity)) {
-      await assertOriginalTree(targetRoot, journal, "target");
+      await assertOriginalTree(targetRoot, journal, "target", signal);
       if (retired !== undefined) {
         throw new Error("Prime replacement has both the original target and a retired target");
       }
       if (staging === undefined || !sameIdentity(staging, journal.stagingIdentity)) {
         throw new Error("Prime replacement staging identity changed before recovery");
       }
-      await assertStagingTree(journal.stagingRoot, journal);
+      await assertStagingTree(journal.stagingRoot, journal, signal);
+      throwIfAborted(signal);
       await rm(journal.stagingRoot, { recursive: true });
     } else if (
       target === undefined &&
@@ -262,8 +317,9 @@ export class DurablePrimeWorkspacePublisher {
       retired !== undefined &&
       sameIdentity(retired, journal.targetIdentity)
     ) {
-      await assertStagingTree(journal.stagingRoot, journal);
-      await assertOriginalTree(journal.retiredRoot, journal, "retired target");
+      await assertStagingTree(journal.stagingRoot, journal, signal);
+      await assertOriginalTree(journal.retiredRoot, journal, "retired target", signal);
+      throwIfAborted(signal);
       await rename(journal.retiredRoot, targetRoot);
       await syncDirectory(parent);
       await rm(journal.stagingRoot, { recursive: true });
@@ -274,8 +330,9 @@ export class DurablePrimeWorkspacePublisher {
       retired !== undefined &&
       sameIdentity(retired, journal.targetIdentity)
     ) {
-      await assertStagingTree(targetRoot, journal);
-      await assertOriginalTree(journal.retiredRoot, journal, "retired target");
+      await assertStagingTree(targetRoot, journal, signal);
+      await assertOriginalTree(journal.retiredRoot, journal, "retired target", signal);
+      throwIfAborted(signal);
       await rename(targetRoot, journal.stagingRoot);
       await syncDirectory(parent);
       await rename(journal.retiredRoot, targetRoot);
@@ -347,7 +404,8 @@ function assertJournalPaths(journal: Journal, expectedTargetRoot: string): void 
   }
 }
 
-async function snapshotTree(root: string): Promise<TreeSnapshot> {
+async function snapshotTree(root: string, signal?: AbortSignal): Promise<TreeSnapshot> {
+  throwIfAborted(signal);
   await directoryIdentity(root, "tree root");
   const entries: PrimeContainerManifestEntry[] = [];
   const content = createHash("sha256");
@@ -366,6 +424,7 @@ async function snapshotTree(root: string): Promise<TreeSnapshot> {
     }
     names.sort(compareUtf8);
     for (const name of names) {
+      throwIfAborted(signal);
       const path = relativeDirectory.length === 0 ? name : `${relativeDirectory}/${name}`;
       const absolutePath = join(root, path);
       const metadata = await lstat(absolutePath, { bigint: true });
@@ -387,7 +446,7 @@ async function snapshotTree(root: string): Promise<TreeSnapshot> {
       if (!metadata.isFile()) {
         throw new Error("Prime workspace tree contains a special file");
       }
-      const captured = await captureFile(absolutePath, metadata);
+      const captured = await captureFile(absolutePath, metadata, signal);
       totalBytes += captured.size;
       const parsed = parsePrimeContainerManifestEntry({
         path,
@@ -417,6 +476,7 @@ async function snapshotTree(root: string): Promise<TreeSnapshot> {
 async function captureFile(
   path: string,
   initial: BigIntStats,
+  signal?: AbortSignal,
 ): Promise<{ readonly size: number; readonly sha256: string }> {
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
@@ -430,6 +490,7 @@ async function captureFile(
     const hash = createHash("sha256");
     let offset = 0;
     while (offset < Number(before.size)) {
+      throwIfAborted(signal);
       const chunk = Buffer.allocUnsafe(
         Math.min(MAX_PRIME_CONTAINER_FILE_CHUNK_BYTES, Number(before.size) - offset),
       );
@@ -478,28 +539,38 @@ async function assertOriginalTree(
   path: string,
   journal: ReplacementJournal,
   label: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   const identity = await directoryIdentity(path, label);
   if (!sameIdentity(identity, journal.targetIdentity)) {
     throw new Error(`Prime workspace ${label} identity changed`);
   }
-  await assertTreeManifest(path, journal.targetManifestSha256, label);
+  await assertTreeManifest(path, journal.targetManifestSha256, label, signal);
 }
 
-async function assertStagingTree(path: string, journal: ReplacementJournal): Promise<void> {
+async function assertStagingTree(
+  path: string,
+  journal: ReplacementJournal,
+  signal?: AbortSignal,
+): Promise<void> {
   const identity = await directoryIdentity(path, "staged result");
   if (!sameIdentity(identity, journal.stagingIdentity)) {
     throw new Error("Prime workspace staged result identity changed");
   }
-  const snapshot = await snapshotTree(path);
+  const snapshot = await snapshotTree(path, signal);
   if (snapshot.contentSha256 !== journal.stagingContentSha256) {
     throw new Error("Prime workspace staged result content changed");
   }
   assertExpectedContent(snapshot.entries, journal.entries);
 }
 
-async function assertTreeManifest(path: string, expected: string, label: string): Promise<void> {
-  if ((await snapshotTree(path)).manifestSha256 !== expected) {
+async function assertTreeManifest(
+  path: string,
+  expected: string,
+  label: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  if ((await snapshotTree(path, signal)).manifestSha256 !== expected) {
     throw new Error(`Prime workspace ${label} digest changed`);
   }
 }
@@ -507,63 +578,109 @@ async function assertTreeManifest(path: string, expected: string, label: string)
 async function applyFinalModes(
   root: string,
   entries: readonly PrimeContainerManifestEntry[],
+  signal?: AbortSignal,
 ): Promise<void> {
-  const opened: {
-    readonly entry: PrimeContainerManifestEntry;
-    readonly handle: FileHandle;
-  }[] = [];
-  try {
-    for (const entry of entries) {
-      opened.push({
-        entry,
-        handle: await open(
-          join(root, entry.path),
-          constants.O_RDONLY |
-            constants.O_NOFOLLOW |
-            (entry.type === "directory" ? constants.O_DIRECTORY : 0),
-        ),
-      });
+  const ordered = [...entries].sort((left, right) => {
+    if (left.type !== right.type) {
+      return left.type === "file" ? -1 : 1;
     }
-    const ordered = [...opened].sort((left, right) => {
-      if (left.entry.type !== right.entry.type) {
-        return left.entry.type === "file" ? -1 : 1;
-      }
-      return right.entry.path.split("/").length - left.entry.path.split("/").length;
-    });
-    for (const item of ordered) {
-      await item.handle.chmod(item.entry.mode);
-      const metadata = await item.handle.stat();
-      if ((metadata.mode & 0o777) !== item.entry.mode) {
+    return right.path.split("/").length - left.path.split("/").length;
+  });
+  for (const entry of ordered) {
+    throwIfAborted(signal);
+    const handle = await open(
+      join(root, entry.path),
+      constants.O_RDONLY |
+        constants.O_NOFOLLOW |
+        (entry.type === "directory" ? constants.O_DIRECTORY : 0),
+    );
+    try {
+      await handle.chmod(entry.mode);
+      throwIfAborted(signal);
+      const metadata = await handle.stat();
+      throwIfAborted(signal);
+      if ((metadata.mode & 0o777) !== entry.mode) {
         throw new Error("Prime workspace entry mode did not settle");
       }
-      await item.handle.sync();
+      await handle.sync();
+      throwIfAborted(signal);
+    } finally {
+      await handle.close();
     }
-  } finally {
-    await Promise.allSettled(opened.map((item) => item.handle.close()));
   }
 }
 
 async function restoreDirectorySearchAccess(
   root: string,
   entries: readonly PrimeContainerManifestEntry[],
+  signal?: AbortSignal,
 ): Promise<void> {
-  const directories = entries
-    .filter(
-      (entry): entry is Extract<PrimeContainerManifestEntry, { readonly type: "directory" }> =>
-        entry.type === "directory",
-    )
-    .sort((left, right) => left.path.split("/").length - right.path.split("/").length);
-  for (const entry of directories) {
+  const ordered = [...entries].sort((left, right) => {
+    const depth = left.path.split("/").length - right.path.split("/").length;
+    if (depth !== 0 || left.type === right.type) {
+      return depth;
+    }
+    return left.type === "directory" ? -1 : 1;
+  });
+  for (const entry of ordered) {
+    throwIfAborted(signal);
     const path = join(root, entry.path);
     const metadata = await lstat(path, { bigint: true });
-    if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
-      throw new Error("Prime workspace recovery directory changed type");
+    if (
+      metadata.isSymbolicLink() ||
+      (entry.type === "directory" ? !metadata.isDirectory() : !metadata.isFile())
+    ) {
+      throw new Error("Prime workspace recovery entry changed type");
     }
-    if ((metadata.mode & 0o700n) !== 0o700n) {
-      const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const requiredMode = entry.type === "directory" ? 0o700n : 0o400n;
+    if ((metadata.mode & requiredMode) !== requiredMode) {
+      const identity = { device: String(metadata.dev), inode: String(metadata.ino) };
+      if (process.platform !== "linux") {
+        throw new PrimeOciUnsafeStateError(
+          "Prime workspace recovery requires Linux descriptor-bound mode restoration",
+        );
+      }
+      const bound = await open(path, LINUX_O_PATH | constants.O_NOFOLLOW);
       try {
-        await handle.chmod(Number(metadata.mode & 0o777n) | 0o700);
+        const current = await bound.stat({ bigint: true });
+        if (
+          current.isSymbolicLink() ||
+          (entry.type === "directory" ? !current.isDirectory() : !current.isFile()) ||
+          String(current.dev) !== identity.device ||
+          String(current.ino) !== identity.inode
+        ) {
+          throw new PrimeOciUnsafeStateError(
+            "Prime workspace recovery entry changed before access restoration",
+          );
+        }
+        await chmod(
+          `/proc/self/fd/${bound.fd}`,
+          Number(metadata.mode & 0o777n) | Number(requiredMode),
+        );
+      } finally {
+        await bound.close();
+      }
+      const handle = await open(
+        path,
+        constants.O_RDONLY |
+          constants.O_NOFOLLOW |
+          (entry.type === "directory" ? constants.O_DIRECTORY : 0),
+      );
+      try {
+        const current = await handle.stat({ bigint: true });
+        if (
+          current.isSymbolicLink() ||
+          (entry.type === "directory" ? !current.isDirectory() : !current.isFile()) ||
+          String(current.dev) !== identity.device ||
+          String(current.ino) !== identity.inode
+        ) {
+          throw new PrimeOciUnsafeStateError(
+            "Prime workspace recovery entry changed during access restoration",
+          );
+        }
+        throwIfAborted(signal);
         await handle.sync();
+        throwIfAborted(signal);
       } finally {
         await handle.close();
       }
@@ -610,31 +727,105 @@ async function readJournal(path: string): Promise<Journal | undefined> {
     if (!metadata.isFile() || metadata.size < 1 || metadata.size > MAX_JOURNAL_BYTES) {
       throw new Error("Prime replacement journal is not one bounded regular file");
     }
-    const source = await handle.readFile("utf8");
-    const parsed = journalSchema.safeParse(
-      parseStrictJson(source, {
-        maxDepth: 8,
-        maxNodes: 64_000,
-        valueLabel: "Prime replacement journal",
-      }),
-    );
-    if (!parsed.success) {
-      throw new Error("Prime replacement journal violates the closed schema", {
-        cause: parsed.error,
-      });
-    }
-    if (parsed.data.phase !== "staging") {
-      for (const entry of parsed.data.entries) {
-        parsePrimeContainerManifestEntry(entry);
-      }
-      if (createPrimeContainerManifestSha256(parsed.data.entries) !== parsed.data.manifestSha256) {
-        throw new Error("Prime replacement journal manifest digest is invalid");
-      }
-    }
-    return Object.freeze(parsed.data);
+    return parseJournalSource(await handle.readFile("utf8"));
   } finally {
     await handle.close();
   }
+}
+
+async function recoverJournalTemporaries(
+  journalPath: string,
+  targetRoot: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  throwIfAborted(signal);
+  const parent = dirname(journalPath);
+  const prefix = `${basename(journalPath)}.`;
+  const names: string[] = [];
+  const directory = await opendir(parent);
+  for await (const entry of directory) {
+    if (!entry.name.startsWith(prefix) || !entry.name.endsWith(".tmp")) {
+      continue;
+    }
+    const token = entry.name.slice(prefix.length, -".tmp".length);
+    if (journalTemporaryToken.test(token)) {
+      names.push(entry.name);
+    }
+  }
+  names.sort(compareUtf8);
+  if (names.length > MAX_JOURNAL_TEMPORARIES) {
+    throw new Error("Prime replacement journal has too many recovery temporaries");
+  }
+
+  let totalBytes = 0;
+  const validated: string[] = [];
+  for (const name of names) {
+    throwIfAborted(signal);
+    const path = join(parent, name);
+    const metadata = await lstat(path, { bigint: true });
+    const currentUid =
+      typeof process.getuid === "function" ? BigInt(process.getuid()) : metadata.uid;
+    if (
+      !metadata.isFile() ||
+      metadata.isSymbolicLink() ||
+      (metadata.mode & 0o777n) !== 0o600n ||
+      metadata.uid !== currentUid ||
+      metadata.nlink < 1n ||
+      metadata.nlink > 2n ||
+      metadata.size < 1n ||
+      metadata.size > BigInt(MAX_JOURNAL_BYTES)
+    ) {
+      throw new Error("Prime replacement journal temporary is unsafe");
+    }
+    totalBytes += Number(metadata.size);
+    if (totalBytes > MAX_JOURNAL_TEMPORARY_BYTES) {
+      throw new Error("Prime replacement journal temporaries exceed the recovery byte limit");
+    }
+    const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const before = await handle.stat({ bigint: true });
+      const journal = parseJournalSource(await handle.readFile("utf8"));
+      const after = await handle.stat({ bigint: true });
+      if (!sameStableIdentity(metadata, before) || !sameStableIdentity(before, after)) {
+        throw new Error("Prime replacement journal temporary changed during recovery");
+      }
+      assertJournalPaths(journal, targetRoot);
+    } finally {
+      await handle.close();
+    }
+    validated.push(path);
+  }
+  for (const path of validated) {
+    throwIfAborted(signal);
+    await unlink(path);
+  }
+  if (validated.length > 0) {
+    await syncDirectory(parent);
+  }
+}
+
+function parseJournalSource(source: string): Journal {
+  const parsed = journalSchema.safeParse(
+    parseStrictJson(source, {
+      maxDepth: 8,
+      maxNodes: 64_000,
+      valueLabel: "Prime replacement journal",
+    }),
+  );
+  if (!parsed.success) {
+    throw new Error("Prime replacement journal violates the closed schema", {
+      cause: parsed.error,
+    });
+  }
+  if (parsed.data.phase !== "staging") {
+    for (const entry of parsed.data.entries) {
+      parsePrimeContainerManifestEntry(entry);
+    }
+    if (createPrimeContainerManifestSha256(parsed.data.entries) !== parsed.data.manifestSha256) {
+      throw new Error("Prime replacement journal manifest digest is invalid");
+    }
+  }
+  return Object.freeze(parsed.data);
 }
 
 async function writeJournal(path: string, journal: Journal, initial: boolean): Promise<void> {
@@ -676,6 +867,14 @@ async function syncDirectory(path: string): Promise<void> {
     await handle.sync();
   } finally {
     await handle.close();
+  }
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted === true) {
+    throw signal.reason instanceof Error
+      ? signal.reason
+      : new Error("Prime result publication aborted");
   }
 }
 

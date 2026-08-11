@@ -95,13 +95,13 @@ export function createProductionPrimeOciRuntime(
         socketPath: descriptor.localRuntime.socketPath,
         ...descriptor.localRuntime.socket,
       }),
-    recoverWorkspace: async (workspaceRoot) => {
-      await new DurablePrimeWorkspacePublisher().recover(workspaceRoot);
+    recoverWorkspace: async (workspaceRoot, signal) => {
+      await new DurablePrimeWorkspacePublisher().recover(workspaceRoot, signal);
     },
     operate: async (input) => {
       const workspaceRoot = input.request.evaluation.workspace.cwd;
       const publisher = new DurablePrimeWorkspacePublisher();
-      const recovered = await publisher.recover(workspaceRoot);
+      const recovered = await publisher.recover(workspaceRoot, input.signal);
       if (recovered !== "none") {
         throw new Error("Prime workspace required replacement recovery before trial execution");
       }
@@ -114,7 +114,7 @@ export function createProductionPrimeOciRuntime(
         targetRoot: workspaceRoot,
         prepareStaging: (stage) => publisher.prepareStaging(stage),
         abortStaging: (targetRoot) => publisher.abortStaging(targetRoot),
-        publish: (publication) => publisher.publish(publication),
+        publish: (publication, signal) => publisher.publish(publication, signal),
       });
       return new AttachedPrimeOciOperator({
         fixture,
@@ -126,6 +126,7 @@ export function createProductionPrimeOciRuntime(
             identityDigest: operation.descriptor.identityDigest,
             containerId: operation.containerId,
             trialId: operation.request.evaluation.trial.trialId,
+            imageDevice: operation.descriptor.localRuntime.imageDevice,
           });
         },
       }).operate(input);
@@ -204,5 +205,6 @@ function createGlobalAdmissionController(
     daemonId: local.daemonId,
     policyDigest: descriptor.identity.runtime.policy.digest,
     ownerNonce: () => randomBytes(32).toString("hex"),
+    cleanupSignal: () => AbortSignal.timeout(descriptor.identity.runtime.policy.cleanupGraceMs),
   });
 }

@@ -77,7 +77,7 @@ describe("Prime evaluation store replay", () => {
     const baseline = trialRecord(admitted, 0, null);
     await store.append(header.evaluationId, baseline);
 
-    for (const runtime of [piRuntime(), undefined] as const) {
+    for (const runtime of [piRuntime(), ompRuntime(), undefined] as const) {
       const candidate = trialRecord(admitted, 1, baseline.recordDigest, runtime);
       await expect(store.append(header.evaluationId, candidate)).rejects.toThrow(
         /adapter|runtime|profile|external/i,
@@ -220,7 +220,7 @@ function trialRecord(
   admitted: Awaited<ReturnType<typeof admitLocalEvaluationPlan>>,
   index: number,
   previousDigest: string | null,
-  runtime?: ReturnType<typeof piRuntime>,
+  runtime?: ReturnType<typeof piRuntime> | ReturnType<typeof ompRuntime>,
 ) {
   const schedule = admitted.schedule[index];
   if (schedule === undefined) {
@@ -264,6 +264,13 @@ function piRuntime() {
     timedOut: false,
     aborted: false,
     treeTermination: "confirmed" as const,
+  };
+}
+
+function ompRuntime() {
+  return {
+    ...piRuntime(),
+    adapter: "omp-native-v1" as const,
   };
 }
 

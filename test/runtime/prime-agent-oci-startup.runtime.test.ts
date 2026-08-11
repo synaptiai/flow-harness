@@ -19,6 +19,7 @@ describe("Prime OCI readiness mutation boundary", () => {
       identityDigest: "e".repeat(64),
       containerId: "f".repeat(64),
       trialId: `trial-${"b".repeat(48)}`,
+      imageDevice: { path: "/dev/test-image", major: 8, minor: 1 },
     };
     const expected = createExpectedPrimeOciReadiness(input);
     const leaves = leafPaths(expected);

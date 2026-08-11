@@ -37,6 +37,7 @@ describe("Prime OCI runtime preparation", () => {
     };
     const build = vi.fn(async () => ({
       image: identity.image,
+      builder: builderIdentity(),
       artifacts: imageArtifacts(),
       harnessPackageContentSha256: identity.harness.packageContentSha256,
       harnessDependencyClosureSha256: identity.harness.dependencyClosureSha256,
@@ -60,6 +61,7 @@ describe("Prime OCI runtime preparation", () => {
             imageDevice: { path: "/dev/test-image", major: 8, minor: 1 },
             executables: {
               docker: { path: "/usr/bin/docker", sha256: runtime.client.executableSha256 },
+              dockerd: { path: "/usr/bin/dockerd", sha256: runtime.engine.dockerdSha256 },
               containerd: {
                 path: "/usr/bin/containerd",
                 sha256: runtime.engine.containerdSha256,
@@ -85,6 +87,7 @@ describe("Prime OCI runtime preparation", () => {
         version: 1,
         runtime,
         image: identity.image,
+        builder: builderIdentity(),
         artifacts: imageArtifacts(),
         daemonId: "daemon-test-id",
       }),
@@ -108,6 +111,7 @@ describe("Prime OCI runtime preparation", () => {
                 ...identity.image,
                 sbomSha256: (buildNumber === 1 ? "1" : "2").repeat(64),
               },
+              builder: builderIdentity(),
               artifacts: imageArtifacts(),
               harnessPackageContentSha256: identity.harness.packageContentSha256,
               harnessDependencyClosureSha256: identity.harness.dependencyClosureSha256,
@@ -138,6 +142,7 @@ describe("Prime OCI runtime preparation", () => {
             buildNumber += 1;
             return {
               image: identity.image,
+              builder: builderIdentity(),
               artifacts: {
                 ...imageArtifacts(),
                 supervisorSha256: (buildNumber === 1 ? "6" : "7").repeat(64),
@@ -162,6 +167,7 @@ describe("Prime OCI runtime preparation", () => {
       controller.abort(new Error("operator cancelled preparation"));
       return {
         image: identity.image,
+        builder: builderIdentity(),
         artifacts: imageArtifacts(),
         harnessPackageContentSha256: identity.harness.packageContentSha256,
         harnessDependencyClosureSha256: identity.harness.dependencyClosureSha256,
@@ -190,5 +196,15 @@ function imageArtifacts() {
     noIoResourceLoaderSha256: "4".repeat(64),
     pythonLauncherSha256: "5".repeat(64),
     supervisorSha256: "6".repeat(64),
+  };
+}
+
+function builderIdentity() {
+  return {
+    clientPath: "/usr/libexec/docker/cli-plugins/docker-buildx",
+    clientSha256: "8".repeat(64),
+    imageId: `sha256:${"9".repeat(64)}`,
+    imageReference:
+      "moby/buildkit:buildx-stable-1@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec",
   };
 }

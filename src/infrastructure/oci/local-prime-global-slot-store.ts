@@ -120,6 +120,21 @@ export class LocalPrimeGlobalSlotStore implements PrimeGlobalSlotStore {
     }
   }
 
+  async confirmIntentDurable(leaseInput: PrimeGlobalSlotLease): Promise<void> {
+    const lease = parsePrimeGlobalSlotLease(leaseInput);
+    if (lease.state !== "intent") {
+      throw new Error("Prime global slot durability check requires intent state");
+    }
+    const path = await this.#canonicalPath();
+    await syncDirectory(dirname(path));
+    const current = await readLeaseSnapshot(path);
+    if (current === null || !current.bytes.equals(encodeLease(lease))) {
+      throw new PrimeGlobalAdmissionUnsafeStateError(
+        "Prime global slot intent changed during durability confirmation",
+      );
+    }
+  }
+
   async remove(leaseInput: PrimeGlobalSlotLease): Promise<void> {
     const lease = parsePrimeGlobalSlotLease(leaseInput);
     const path = await this.#canonicalPath();

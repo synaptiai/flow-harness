@@ -276,7 +276,7 @@ The preparation command sets `SOURCE_DATE_EPOCH`. It disables build data that co
 It performs two clean builds and requires the same platform manifest and config digests.
 
 The build creates an external SBOM from the final image. It scans each saved layer for secret
-patterns. It audits the locked Node and Python dependencies under one stated severity policy.
+patterns. A separate release gate audits the locked Node and Python dependencies.
 
 The SBOM generator removes timestamps, serial values, and host paths. Both clean builds must produce
 the same canonical SBOM digest.
@@ -402,8 +402,8 @@ descriptors. They also prevent Python from sending signals to the driver.
 The runtime tests attack `/proc`, process memory, inherited descriptors, and signals from Python.
 Any access to the broker secret fails.
 
-The tests also write forged outer frames through descriptors 0, 1, 2, and each observed inherited
-descriptor. No forged byte enters the supervisor output stream.
+The tests also write forged outer frames through descriptors 0, 1, and 2. No forged byte enters the
+supervisor output stream. The Python launcher closes every other inherited descriptor.
 
 ### Container resource decision
 
@@ -537,17 +537,20 @@ restores or retires the complete prior tree. It never exposes a mixed tree to th
 A strict replacement journal stores the trial, target, staged, and retired names. It stores each
 directory identity, the old snapshot digest, the result snapshot digest, and one phase.
 
-The phases are `prepared`, `switched`, and `committed`. Flow synchronizes each staged file, then each
+The phases are `prepared`, `retired`, and `switched`. Flow synchronizes each staged file, then each
 staged directory from leaves to root. It synchronizes the staged parent last.
 
 Flow writes and synchronizes `prepared` before the first rename. It renames the target to the retired
 name and synchronizes the parent. It then renames the staged tree to the target and synchronizes it.
 
-Flow writes and synchronizes `switched` after it verifies the new target identity and digest. It
-writes and synchronizes `committed` before it retires the old tree.
+Flow writes and synchronizes `retired` after the first rename and parent synchronization. It writes
+and synchronizes `switched` after the second rename and parent synchronization.
 
-Recovery compares all names, identities, and digests. A prepared change rolls back unless the new
-target is complete. A switched or committed change rolls forward and removes the retired tree.
+Flow then verifies the new target and applies final modes. It verifies the retired tree before it
+removes that tree. It synchronizes the parent after removal.
+
+Recovery compares all names, identities, and digests. A prepared or retired change can roll back.
+A complete switched change rolls forward and removes the retired tree.
 
 Recovery runs before verification and before active-attempt classification. It removes the journal
 only after final tree and parent synchronization.
@@ -612,17 +615,11 @@ Each finite ancestor contributes quota divided by period.
 An unbounded ancestor does not reduce the result. The minimum effective capacity must be at least
 four logical CPUs.
 
-Preparation proves at least 128 MiB per second and 8,192 read operations per second on the image
-backing device.
+Admission performs sixteen bounded Docker API probes before create. The 95th percentile must not
+exceed 100 milliseconds.
 
-Admission performs sixteen uncached 4 KiB reads before create. The 95th percentile must not exceed
-100 milliseconds.
-
-The container I/O limits reserve half of that proved device capacity for Flow, the broker, and
-cleanup. A failed headroom or latency check rejects the trial before create.
-
-During execution, the host repeats one uncached 4 KiB probe every 250 milliseconds. Three
-consecutive results above 100 milliseconds cause a typed policy termination and cleanup.
+During execution, the host repeats one bounded Docker API probe every 250 milliseconds. Three
+consecutive slow results cause a typed policy termination and cleanup.
 
 The public policy binds the one-container limit and each minimum headroom value. Raw parent-cgroup,
 device, and measurement data stays in protected local attestation.
@@ -636,7 +633,14 @@ Version one uses the canonical local Docker Engine Unix socket. Flow ignores Doc
 `DOCKER_HOST`, TLS, proxy, credential-helper, and client-configuration variables.
 
 The public engine identity binds client and server builds, API version, kernel, containerd, and runc.
-It also binds cgroups, storage, rootless state, security options, and the policy digest.
+The server build includes the reported commit and the canonical live `dockerd` file digest. The
+identity also binds cgroups, storage, rootless state, security options, and the policy digest.
+
+Docker must configure `runc` with one canonical absolute path and no arguments. Flow hashes that
+file. Docker must use the exact canonical Unix socket and its canonical daemon PID record.
+
+Flow rejects socket activation and authority-moving daemon options. It also rejects those options
+in the default daemon configuration. The Docker-managed `containerd` must be a direct daemon child.
 
 Protected local attestation binds the canonical socket identity, owner, mode, daemon ID, cgroup
 path, image backing device, and effective engine settings. These values do not enter public records.
@@ -687,20 +691,23 @@ Flow starts and attaches with no terminal. The supervisor waits for fixture tran
 bootstrap frame before it starts the driver. The frame carries the protocol secret through standard
 input. It does not use the container environment.
 
-The lease state records `intent`, `absent`, `created`, `started`, `terminal`, `exported`, `stopped`,
-and `removed`. Each change uses an atomic write and directory synchronization.
+The lease schema permits `intent`, `absent`, `created`, `started`, `terminal`, `exported`, `stopped`,
+and `removed`. New recovery retains `absent` only for version-one compatibility.
 
 Evaluation recovery owns the lease before it marks the trial crashed or removes its workspace.
 Recovery checks the exact ID, nonce, labels, image, and policy before it stops or removes anything.
 
-An `intent` lease has no container ID. Recovery resolves only its exact name on the stored daemon.
-It checks the nonce, labels, image, and full policy before it records the found ID and removes it.
+An `intent` lease has no container ID. Recovery first resolves only its exact name on the stored
+daemon. It verifies a found object's complete durable identity.
 
-Recovery records `absent` when exact-name lookup proves that the intent created no object. The
-`absent` state has no container ID and permits safe attempt retirement.
+One lookup miss cannot prove absence after an interrupted create. Recovery issues one create with
+the exact durable name and identity. This operation is a named-create fence.
 
-This rule also covers a crash after daemon-side create and before Flow receives the create response.
-Recovery never needs a label-only search.
+The fence returns the prior object or creates the exact intended object. Flow records its full ID,
+then stops and removes it. An unresolved fence produces a typed unsafe state.
+
+This rule covers a crash after daemon-side create and before Flow receives the response. Recovery
+never uses a label-only search.
 
 Each state from `created` through `removed` requires the stored full container ID. A name or label
 cannot replace it.
@@ -857,20 +864,20 @@ _Captured by specification-capture on 2026-08-10. Source: Issue #76 and upstream
 
 | Metric | Exact evidence rule | Missing evidence rule |
 |---|---|---|
-| `costUsdMicros` | Host broker applies `ceil(usd * 1,000,000)` to each response, then uses checked addition. | `null` if one completed response omits cost. |
-| `inputTokens` | Host broker uses checked addition for the class across all completed responses. | `null` if one response omits the class. |
-| `cacheReadTokens` | Host broker uses checked addition for the class across all completed responses. | `null` if one response omits the class. |
-| `cacheWriteTokens` | Host broker uses checked addition for the class across all completed responses. | `null` if one response omits the class. |
-| `outputTokens` | Host broker uses checked addition for the class across all completed responses. | `null` if one response omits the class. |
+| `costUsdMicros` | Host broker applies `ceil(usd * 1,000,000)` to each response, then uses checked addition. | A response without complete cost evidence is malformed. |
+| `inputTokens` | Host broker uses checked addition for the class across all completed responses. | A response without this class is malformed. |
+| `cacheReadTokens` | Host broker uses checked addition for the class across all completed responses. | A response without this class is malformed. |
+| `cacheWriteTokens` | Host broker uses checked addition for the class across all completed responses. | A response without this class is malformed. |
+| `outputTokens` | Host broker uses checked addition for the class across all completed responses. | A response without this class is malformed. |
 | `turns` | Count completed broker assistant responses. | `null` if the signed transcript is incomplete. |
 | `toolCalls` | Count accepted `ipython` calls in the signed transcript. | `null` if the transcript is incomplete. |
 | `toolErrors` | Count `ipython` results marked as error or aborted. | `null` if the transcript is incomplete. |
 | `wallTimeMs` | Host starts before global admission and ends after container and slot settlement. It applies `ceil(end - start)`. | `null` if either timestamp is unavailable. |
-| `activeTimeMs` | Host uses `ceil(usage_usec / 1,000)` from the settled cgroup. | `null` if settled cgroup data is unavailable. |
-| `interventions` | Count cancellation, timeout stop, policy kill, and recovery termination events once. | `null` if the ledger is incomplete. |
+| `activeTimeMs` | Version one does not retain a settled cgroup CPU source. | Always `null`. |
+| `interventions` | Count cancellation, timeout stop, and policy termination events once during a live trial. | `null` for recovered attempts or an incomplete live ledger. |
 | `policyViolations` | Version one cannot prove complete denial telemetry. | Always `null`. |
-| `recoveryAttempts` | Count lease-recovery ownership events in the complete private ledger. | `null` if the ledger is incomplete. |
-| `recoveryOutcome` | Derive `not_attempted`, `succeeded`, or `failed` from the complete lease ledger. | `null` if the ledger is incomplete. |
+| `recoveryAttempts` | A new live trial has zero recovery attempts. | `null` for an attempt that required recovery. |
+| `recoveryOutcome` | A new live trial has `not_attempted`. | `null` for an attempt that required recovery. |
 
 Prime session totals do not prove availability. The adapter does not use a Prime zero when the
 broker or runtime did not supply the source evidence.
@@ -882,38 +889,54 @@ An explicit complete zero stays zero. Tests cover fractional microdollars, per-r
 fractional milliseconds, multiple responses, unsafe values, missing values, and every metric field.
 
 Admission checks, slot operations, broker traffic, normal terminal stop, normal removal, and verifier
-work are not interventions. The metric test covers each included and excluded event.
+work are not interventions. Metric tests cover live conversion, explicit zero, and unavailable data.
 
 ## Acceptance criterion verification map
+
+Native runtime rows require one shared Linux setup. The setup must succeed before any native row is
+accepted as evidence. A platform skip is not evidence.
+
+```sh
+test "$(uname -s)" = Linux
+export FLOW_PRIME_TEST_SECOND_USER=flow-prime-peer
+FLOW_PRIME_TEST_RESULT_DIR="$(mktemp -d /tmp/flow-prime-image-result.XXXXXX)"
+export FLOW_PRIME_TEST_IMAGE_RESULT="$FLOW_PRIME_TEST_RESULT_DIR/result.json"
+trap 'rm -f "$FLOW_PRIME_TEST_IMAGE_RESULT"; rmdir "$FLOW_PRIME_TEST_RESULT_DIR"' EXIT
+npm run prime:image:verify -- --output "$FLOW_PRIME_TEST_IMAGE_RESULT"
+```
+
+The named second user must already exist and have Docker socket authority. Clean CI creates that
+user before it runs the setup.
 
 | Criterion | Type | Verification command | Expected evidence | Does not promise |
 |---|---|---|---|---|
 | Admit the fixed Prime profile | Contract | `npx vitest run test/unit/evaluation/plan.test.ts test/unit/infrastructure/fs/local-evaluation-plan.test.ts` | Fixed config passes. Unknown config and authority fields fail. | Prime availability on all hosts |
-| Bind the Prime OCI identity | Contract | `npx vitest run test/unit/infrastructure/prime/native-prime-harness-registry.test.ts` | Engine, image, build, package, policy, and drift mutations fail closed. | Host signatures or hostile engine protection |
-| Build the exact Prime image | Supply chain | `npm run prime:image:verify` | Two clean builds match. Archive, lock, layer, SBOM, secret, and dependency gates pass. Runtime tests receive that image ID. | Registry publication |
-| Run a real persistent IPython session | Integration | `npx vitest run test/integration/prime/native-prime-agent-evaluation.test.ts` | One session keeps state across two turns. It uses one proxy request and no probe or fork-server process. | Live provider quality |
+| Bind the Prime OCI identity | Contract | `npx vitest run test/unit/infrastructure/prime/native-prime-harness-registry.test.ts` | Prepared identity binds engine, image, build, package, and policy values. Local adapter, host OCI, attestation, and admitted-identity drift reject. | Host signatures or hostile engine protection |
+| Build the exact Prime image | Supply chain | `npm run prime:image:verify` | Two clean builds match. Archive, lock, layer, SBOM, and secret gates pass. | Registry publication |
+| Audit locked runtime dependencies | Supply chain | `npm run build && node scripts/audit-prime-dependencies.mjs` | The exact Prime Node and Python locks pass the fixed audit policy. | Future dependency versions |
+| Run a real persistent IPython session | Integration | `npx vitest run test/integration/prime/native-prime-agent-evaluation.test.ts` | One session keeps state across two turns. It uses one accepted kernel request. | Live provider quality |
 | Exchange signed process frames | Integration | `npx vitest run test/integration/prime/native-prime-agent-driver-protocol.test.ts` | The compiled driver completes one signed tool exchange through fake inference. | Provider quality |
-| Translate host inference | Contract | `npx vitest run test/unit/infrastructure/prime/native-prime-agent-host-inference-broker.test.ts` | The broker preserves bounded Prime continuity and rejects unsupported fields. | New provider authority |
+| Translate host inference | Contract | `npx vitest run test/unit/infrastructure/prime/native-prime-host-inference-broker.test.ts` | The broker preserves bounded Prime continuity and rejects unsupported fields. | New provider authority |
 | Disable ambient Prime features | Security | `npx vitest run test/integration/prime/native-prime-agent-ambient.test.ts` | Each resource, service, session, recursion, retry, compaction, goal, and refinement input stays disabled. | General Prime compatibility |
-| Protect the signed broker channel | Security | `npm run build && npm run test:runtime -- test/runtime/prime-agent-oci-process-boundary.runtime.test.ts` | Python cannot reach Node secrets or outer streams. Raw descriptor-frame injection fails. Mode `000` entries export. | Host-kernel compromise |
+| Protect the signed broker channel | Security | `npm run build && npm run test:runtime -- test/runtime/prime-agent-oci-process-boundary.runtime.test.ts` | Python cannot reach Node secrets or outer streams. Raw standard-descriptor injection fails. Mode `000` entries export. | Host-kernel compromise |
 | Keep private data out of the child | Security | `npm run build && npm run test:runtime -- test/runtime/prime-agent-oci.runtime.test.ts` | Private reads fail. Workspace writes pass. Writes to each other mount fail. Shared memory and message queues are absent. | Host-user isolation |
 | Keep internal data out of results | Security | `npm run build && npm run test:runtime -- test/runtime/prime-agent-oci.runtime.test.ts -t "reserved workspace data"` | Python can use reserved runtime paths. No reserved entry enters the validated result tree. | Retention of Prime runtime state |
 | Deny external network and keep private loopback | Security | `npm run build && npm run test:runtime -- test/runtime/prime-agent-oci-network.runtime.test.ts` | Jupyter loopback works. Host loopback and external network fail. | Unsupported platforms |
-| Reconcile effective controls | Security | `npm run build && npm run test:runtime -- test/runtime/prime-agent-oci-startup.runtime.test.ts` | Each readiness leaf matches the engine policy. Each changed leaf rejects before fixture or secret transfer. | Host-kernel compromise |
+| Reconcile effective controls | Security | `npm run build && npm run test:runtime -- test/runtime/prime-agent-oci-startup.runtime.test.ts && npx vitest run test/unit/infrastructure/oci/attached-prime-oci-operator.test.ts` | Each readiness leaf matches policy. Changed readiness rejects before fixture and secret transfer. | Host-kernel compromise |
 | Enforce global admission | Security | `npm run build && npm run test:runtime -- test/runtime/prime-agent-oci-admission.runtime.test.ts` | Independent processes and two required Docker-authorized users share one daemon slot. Setup failure fails the gate. | Multi-host cluster quotas |
-| Reserve host headroom | Security | `npm run build && npm run test:runtime -- test/runtime/prime-agent-oci-admission.runtime.test.ts -t "host headroom"` | Exact and one-under host and ancestor memory, PID, CPU, I/O, and three-sample latency cases follow policy. | Multi-host cluster quotas |
+| Reserve host headroom | Security | `npm run build && npm run test:runtime -- test/runtime/prime-agent-oci-admission.runtime.test.ts -t "host headroom"` | Exact and one-under host and ancestor memory, PID, and CPU cases follow policy. The three-sample latency case also passes. | Multi-host cluster quotas |
 | Enforce hard resource limits | Security | `npm run build && npm run test:runtime -- test/runtime/prime-agent-oci-limits.runtime.test.ts` | Cgroup-v2 PID, memory, swap, CPU, I/O, descriptor, file, core, byte, and inode boundaries match. | Multi-host cluster quotas |
-| Enforce exact transfer limits | Boundary | `npx vitest run test/unit/infrastructure/oci/prime-container-protocol.test.ts -t "exact transfer limits"` | Exact and one-over limits behave correctly. The worst many-small-plus-one-large distribution uses 16,385 frames. | Larger workspaces |
+| Enforce transfer limits | Boundary | `npx vitest run test/unit/infrastructure/oci/prime-container-protocol.test.ts` | Path-component, file, frame, encoded-transfer-byte, and driver-byte checks follow policy. The 16,385-frame distribution passes. | Larger workspaces |
 | Suppress daemon logs | Security | `npm run build && npm run test:runtime -- test/runtime/prime-agent-oci-logging.runtime.test.ts` | A noisy trial has log type `none`. Docker stores no protocol or tool bytes. | Host process tracing |
-| Enforce the outer protocol | Contract | `npx vitest run test/unit/infrastructure/oci/prime-container-protocol.test.ts` | Nested trees pass. File prefixes and protocol mutations fail. Modes, deletions, type changes, and recovery stay exact. | Protocol version two |
-| Import and replace exact trees | Integration | `npx vitest run test/integration/oci/prime-container-workspace.test.ts` | Path edges pass. Nested read-only trees import. Edit, delete, rename, ownership, mode, and type changes stay exact. | General archive compatibility |
-| Recover result replacement | Recovery | `npm run build && npm run test:runtime -- test/runtime/prime-result-replacement.runtime.test.ts` | Process crashes around each journal write, tree sync, parent sync, and rename recover one exact tree. | Recovery of foreign trees |
-| Disable health and core output | Security | `npm run build && npm run test:runtime -- test/runtime/prime-agent-oci-startup.runtime.test.ts -t "health and core"` | Health execs never start. Piped core handlers reject. Native crashes produce no core or host dump marker. | Host process tracing |
+| Enforce the outer protocol | Contract | `npx vitest run test/unit/infrastructure/oci/prime-container-protocol.test.ts` | Nested trees pass. File prefixes, frame order, path, mode, digest, and bound mutations fail. | Protocol version two |
+| Import and replace exact trees | Integration | `npx vitest run test/integration/oci/prime-container-workspace.test.ts` | Nested read-only trees import. Edit, delete, rename, ownership, mode, and type changes stay exact. | General archive compatibility |
+| Recover result replacement | Recovery | `npm run build && npm run test:runtime -- test/runtime/prime-result-replacement.runtime.test.ts` | Crashes at six named replacement checkpoints recover one exact tree. | Recovery of foreign trees |
+| Reconcile health and core controls | Security | `npm run build && npm run test:runtime -- test/runtime/prime-agent-oci-startup.runtime.test.ts` | Startup readiness proves no health check, zero core limits, and non-dumpable trusted processes. | Host process tracing |
 | Reject replay identity drift | Data | `npx vitest run test/unit/infrastructure/fs/local-evaluation-store-prime.test.ts` | Every Prime and OCI identity leaf and each adapter mismatch fails after re-digest. | Signed evidence |
-| Fail closed on OCI runtime faults | Error handling | `npx vitest run test/unit/infrastructure/oci/local-prime-oci-harness-runtime.test.ts test/unit/application/run-evaluation.test.ts` | Every engine boundary, timeout, cancellation, malformed value, and cleanup error fails closed. | Provider uptime |
-| Settle native timeout and cancellation | Recovery | `npm run build && npm run test:runtime -- test/runtime/prime-agent-oci-settlement.runtime.test.ts` | Timeout and cancellation give typed evidence. The container is removed. No Node or Python process remains. | Recovery of foreign containers |
-| Recover every container transition | Recovery | `npm run build && npm run test:runtime -- test/runtime/prime-agent-oci-recovery.runtime.test.ts` | Crashes around global lock and container transitions settle exact leases. Create-response loss uses the exact name. | Recovery of foreign containers |
-| Record honest metrics | Data | `npx vitest run test/unit/infrastructure/prime/prime-evaluation-metrics.test.ts test/integration/prime/native-prime-agent-evaluation.test.ts` | Each field and conversion passes. Tests include admission time and every included and excluded intervention event. | Metrics that Prime does not expose |
+| Fail closed on OCI runtime faults | Error handling | `npx vitest run test/unit/infrastructure/oci/local-prime-oci-harness-runtime.test.ts test/unit/infrastructure/oci/prime-container-lifecycle.test.ts test/unit/infrastructure/oci/local-docker-prime-oci-engine.test.ts test/unit/application/run-evaluation.test.ts` | Runtime, lifecycle, engine, timeout, cancellation, and cleanup faults fail closed. | Provider uptime |
+| Settle native timeout and cancellation | Recovery | `npx vitest run test/unit/infrastructure/oci/local-prime-oci-harness-runtime.test.ts && npm run build && npm run test:runtime -- test/runtime/prime-agent-oci-settlement.runtime.test.ts` | Unit evidence classifies timeout and cancellation. Native elapsed deadline and operator cancellation remove the container. | Recovery of foreign containers |
+| Recover every container transition | Recovery | `npm run build && npm run test:runtime -- test/runtime/prime-agent-oci-recovery.runtime.test.ts test/runtime/prime-agent-oci-admission.runtime.test.ts` | Crashes around global lock and container transitions settle exact leases. Create-response loss uses the exact name. | Recovery of foreign containers |
+| Record honest metrics | Data | `npx vitest run test/unit/infrastructure/prime/prime-evaluation-metrics.test.ts test/unit/infrastructure/oci/attached-prime-oci-operator.test.ts test/integration/prime/native-prime-agent-evaluation.test.ts` | Each live field and conversion passes. Unavailable active-time and recovery data stay `null`. | Metrics that Prime does not expose |
 | Keep inspect and export offline | Offline | `npx vitest run test/integration/cli/evaluation-offline-prime.test.ts` | Offline commands pass with runtime imports blocked. Unique socket, daemon, device, container, and lease markers stay private. | Offline trial execution |
 | Publish clear docs and example | Documentation | `npx vitest run test/integration/package/prime-agent-package.test.ts test/scaffold/community-files.test.ts && npm run docs:ste && npm run pack:check` | Packed CLI checks the example. Public docs cover authority, limits, recovery, and offline audit. Changed prose passes STE. | Cleanup of old prose debt |
 | Preserve existing adapters | Regression | `npx vitest run test/integration/cli/evaluation.test.ts test/integration/pi/native-pi-evaluation.test.ts test/integration/omp/native-omp-evaluation.test.ts` | Flow, Pi, and OMP integrations pass without changed authority. | Cross-profile quality equality |

@@ -48,7 +48,7 @@ describe.skipIf(!linux)("Prime OCI native crash recovery", () => {
       const finalLease = parseEvaluationOciLease(
         JSON.parse(await readFile(fixture.leasePath, "utf8")),
       );
-      expect(finalLease.state).toBe(crashPoint === "update-intent" ? "absent" : "removed");
+      expect(finalLease.state).toBe("removed");
       await expectDockerObjectAbsent(fixture.containerName, fixture.environment, fixture.docker);
     },
     120_000,

@@ -216,6 +216,8 @@ const primeExternalHarnessIdentitySchema = z
         engine: z
           .object({
             serverVersion: semanticVersionSchema,
+            serverCommit: z.string().min(1).max(128),
+            dockerdSha256: sha256Schema,
             apiVersion: z.string().regex(/^\d+\.\d+$/),
             kernelRelease: z.string().min(1).max(128),
             kernelSecurityConfigSha256: sha256Schema,

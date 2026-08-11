@@ -200,6 +200,10 @@ async function registryFixture() {
           path: "/usr/bin/docker",
           sha256: publicIdentity.runtime.client.executableSha256,
         },
+        dockerd: {
+          path: "/usr/bin/dockerd",
+          sha256: publicIdentity.runtime.engine.dockerdSha256,
+        },
         containerd: {
           path: "/usr/bin/containerd",
           sha256: publicIdentity.runtime.engine.containerdSha256,

@@ -1,3 +1,5 @@
+import { performance } from "node:perf_hooks";
+
 import type { HarnessEvaluationResult } from "../../application/evaluation-adapter.js";
 import type {
   ExternalHarnessRuntime,
@@ -118,7 +120,7 @@ export class LocalPrimeOciHarnessRuntime implements ExternalHarnessRuntime {
     request: ExternalHarnessRuntimeRequest,
     signal?: AbortSignal,
   ): Promise<HarnessEvaluationResult> {
-    const clock = this.options.clockMs ?? Date.now;
+    const clock = this.options.clockMs ?? (() => performance.now());
     const startedAtMs = clock();
     const primeRequest = this.#primeRequest(request);
     const deadline = (this.options.deadlineFactory ?? createDeadline)(
@@ -136,8 +138,9 @@ export class LocalPrimeOciHarnessRuntime implements ExternalHarnessRuntime {
         this.options.registry.resolveAdmitted(primeRequest.identity),
         operationSignal,
       );
-      const globalLease = await waitForAbortable(
-        this.options.globalAdmission.acquire(primeRequest, descriptor, operationSignal),
+      const globalLease = await this.options.globalAdmission.acquire(
+        primeRequest,
+        descriptor,
         operationSignal,
       );
       let finishResult: ((endedAtMs: number) => HarnessEvaluationResult) | undefined;
@@ -331,7 +334,11 @@ export class LocalPrimeOciHarnessRuntime implements ExternalHarnessRuntime {
     if (attempt.adapter !== "prime-agent-native-v1") {
       throw new Error("Prime OCI recovery requires one durable Prime attempt");
     }
-    const descriptor = await this.options.registry.resolveAdmitted(request.identity);
+    const descriptorPromise = this.options.registry.resolveAdmitted(request.identity);
+    const descriptor =
+      signal === undefined
+        ? await descriptorPromise
+        : await waitForAbortable(descriptorPromise, signal);
     await descriptor.assertCurrent(signal);
     let recovered = attempt;
     if (attempt.ociLease !== undefined) {

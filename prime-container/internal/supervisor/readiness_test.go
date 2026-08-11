@@ -11,12 +11,13 @@ import (
 
 func TestBuildReadinessBindsChallengeAndMeasuredControls(t *testing.T) {
 	challenge := containerprotocol.ReadinessChallenge{
-		Version:        1,
-		ContainerID:    strings.Repeat("a", 64),
-		TrialID:        "trial-" + strings.Repeat("b", 48),
-		IdentityDigest: strings.Repeat("c", 64),
-		ImageID:        "sha256:" + strings.Repeat("d", 64),
-		PolicyDigest:   strings.Repeat("e", 64),
+		Version:          1,
+		ContainerID:      strings.Repeat("a", 64),
+		TrialID:          "trial-" + strings.Repeat("b", 48),
+		IdentityDigest:   strings.Repeat("c", 64),
+		ImageID:          "sha256:" + strings.Repeat("d", 64),
+		PolicyDigest:     strings.Repeat("e", 64),
+		ImageDeviceMajor: 8, ImageDeviceMinor: 1,
 	}
 	measurement := fixedReadinessMeasurement()
 
@@ -39,18 +40,22 @@ func TestBuildReadinessBindsChallengeAndMeasuredControls(t *testing.T) {
 	if readiness.Filesystems.Workspace.Bytes != 536870912 || readiness.Network.Interfaces[0] != "lo" {
 		t.Fatalf("readiness boundary changed: %#v", readiness)
 	}
+	if readiness.SystemFiles.Hostname != "flow-prime" || len(readiness.SystemFiles.Resolver) != 3 {
+		t.Fatalf("readiness system files changed: %#v", readiness.SystemFiles)
+	}
 }
 
 func TestBuildReadinessRejectsAChangedFixedIdentity(t *testing.T) {
 	measurement := fixedReadinessMeasurement()
 	measurement.Process.NodeUID = 999
 	if _, err := BuildReadiness(containerprotocol.ReadinessChallenge{
-		Version:        1,
-		ContainerID:    strings.Repeat("a", 64),
-		TrialID:        "trial-" + strings.Repeat("b", 48),
-		IdentityDigest: strings.Repeat("c", 64),
-		ImageID:        "sha256:" + strings.Repeat("d", 64),
-		PolicyDigest:   strings.Repeat("e", 64),
+		Version:          1,
+		ContainerID:      strings.Repeat("a", 64),
+		TrialID:          "trial-" + strings.Repeat("b", 48),
+		IdentityDigest:   strings.Repeat("c", 64),
+		ImageID:          "sha256:" + strings.Repeat("d", 64),
+		PolicyDigest:     strings.Repeat("e", 64),
+		ImageDeviceMajor: 8, ImageDeviceMinor: 1,
 	}, measurement); err == nil {
 		t.Fatal("changed fixed Node identity passed readiness")
 	}
@@ -59,7 +64,7 @@ func TestBuildReadinessRejectsAChangedFixedIdentity(t *testing.T) {
 func fixedReadinessMeasurement() ReadinessMeasurement {
 	return ReadinessMeasurement{
 		Process: ProcessReadiness{
-			SupervisorUID: 0, NodeUID: NodeUID, PythonUID: PythonUID, SharedGID: SharedGID,
+			SupervisorPID: 1, SupervisorUID: 0, NodeUID: NodeUID, PythonUID: PythonUID, SharedGID: SharedGID,
 			SupplementaryGroups: []int{SharedGID},
 			Capabilities:        []string{"CHOWN", "DAC_READ_SEARCH", "FOWNER", "KILL", "SETGID", "SETUID"},
 			Dumpable:            false, NoNewPrivileges: true, SeccompMode: 2,
@@ -68,6 +73,8 @@ func fixedReadinessMeasurement() ReadinessMeasurement {
 		Limits: LimitReadiness{
 			CgroupVersion: 2, PidsMax: 64, MemoryMaxBytes: 2147483648, MemorySwapMaxBytes: 0,
 			CPUQuotaMicros: 200000, CPUPeriodMicros: 100000,
+			ImageDeviceMajor: 8, ImageDeviceMinor: 1,
+			ImageReadBPS: 67108864, ImageReadIOPS: 4096,
 			OpenFilesSoft: 256, OpenFilesHard: 256, UserProcessesSoft: 64, UserProcessesHard: 64,
 			FileSizeSoftBytes: 268435456, FileSizeHardBytes: 268435456,
 		},
@@ -77,7 +84,12 @@ func fixedReadinessMeasurement() ReadinessMeasurement {
 			NodeRuntime:       fixedFilesystem(16777216, 256, 0700),
 			SupervisorRuntime: fixedFilesystem(16777216, 256, 0700),
 		},
-		Network:   NetworkReadiness{Namespace: "private", Interfaces: []string{"lo"}, Routes: []string{}},
+		Network: NetworkReadiness{Namespace: "private", Interfaces: []string{"lo"}, Routes: []string{}},
+		SystemFiles: SystemFileReadiness{
+			Hostname: "flow-prime",
+			Hosts:    []string{"127.0.0.1 localhost flow-prime", "::1 localhost ip6-localhost ip6-loopback"},
+			Resolver: []string{"nameserver 127.0.0.1", "search .", "options ndots:0"},
+		},
 		Streams:   StreamReadiness{StdinAttached: true, StdoutAttached: true, StderrAttached: true, TTY: false},
 		LogDriver: "none", Healthcheck: "none",
 	}

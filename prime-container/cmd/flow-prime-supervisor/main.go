@@ -58,7 +58,9 @@ func run() error {
 			RootUID: supervisor.PythonUID, RootGID: supervisor.SharedGID, RootMode: 0710,
 		},
 		Readiness: func(challenge containerprotocol.ReadinessChallenge) ([]byte, error) {
-			measurement, err := supervisor.MeasureReadiness()
+			measurement, err := supervisor.MeasureReadiness(
+				challenge.ImageDeviceMajor, challenge.ImageDeviceMinor,
+			)
 			if err != nil {
 				return nil, err
 			}

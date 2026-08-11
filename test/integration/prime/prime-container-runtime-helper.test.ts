@@ -36,7 +36,7 @@ describe("verified Prime container runtime helper", () => {
 
     const transport = await startVerifiedPrimeContainer(`sha256:${"b".repeat(64)}`, {
       dockerExecutable: executable,
-      imageDevicePath: "/dev/test-image",
+      imageDevice: { path: "/dev/test-image", major: 8, minor: 1 },
       seccompPath: join(root, "seccomp.json"),
       temporaryRoot: root,
     });

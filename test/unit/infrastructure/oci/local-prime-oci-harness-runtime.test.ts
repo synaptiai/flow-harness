@@ -1,3 +1,5 @@
+import { performance } from "node:perf_hooks";
+
 import { describe, expect, it, vi } from "vitest";
 import type { HarnessEvaluationResult } from "../../../../src/application/evaluation-adapter.js";
 import type { ExternalHarnessRuntimeRequest } from "../../../../src/application/external-harness-adapter.js";
@@ -92,6 +94,44 @@ describe("local Prime OCI harness runtime", () => {
     expect(operate).toHaveBeenCalledTimes(1);
   });
 
+  it("uses monotonic elapsed time when the wall clock moves backward", async () => {
+    const dateNow = vi.spyOn(Date, "now").mockReturnValueOnce(100).mockReturnValueOnce(50);
+    const monotonic = vi
+      .spyOn(performance, "now")
+      .mockReturnValueOnce(10.2)
+      .mockReturnValueOnce(25.8);
+    const evidence = completedEvidence();
+    vi.mocked(evidence.finishMetrics).mockImplementation(({ startedAtMs, endedAtMs }) => {
+      if (endedAtMs < startedAtMs) {
+        throw new Error("elapsed clock moved backward");
+      }
+      return { ...unavailableEvaluationMetrics(), wallTimeMs: Math.ceil(endedAtMs - startedAtMs) };
+    });
+    const runtime = new LocalPrimeOciHarnessRuntime({
+      registry: { resolveAdmitted: vi.fn(async () => primeDescriptor()) },
+      globalAdmission: fakeGlobalAdmission(),
+      createEngine: vi.fn(async () => fakeEngine()),
+      createIntent: vi.fn(async (request) => intentLease(request.evaluation.trial.trialId)),
+      operate: vi.fn(async (input) => {
+        await input.checkpoint("terminal");
+        await input.checkpoint("exported");
+        return evidence;
+      }),
+      platform: "linux",
+    });
+
+    try {
+      await expect(runtime.execute(runtimeRequest(async () => undefined))).resolves.toMatchObject({
+        harness: { outcome: "completed" },
+        metrics: { wallTimeMs: 16 },
+      });
+      expect(evidence.finishMetrics).toHaveBeenCalledWith({ startedAtMs: 10.2, endedAtMs: 25.8 });
+    } finally {
+      dateNow.mockRestore();
+      monotonic.mockRestore();
+    }
+  });
+
   it("rejects missing durability and non-Linux execution before create", async () => {
     const createEngine = vi.fn(async () => fakeEngine());
     const runtime = new LocalPrimeOciHarnessRuntime({
@@ -122,7 +162,7 @@ describe("local Prime OCI harness runtime", () => {
     expect(createEngine).not.toHaveBeenCalled();
   });
 
-  it("creates and removes the exact object after an intent lookup miss", async () => {
+  it("uses a named-create fence after an intent lookup miss", async () => {
     const descriptor = primeDescriptor();
     const engine = fakeEngine({ recoveredIntent: null });
     const globalAdmission = fakeGlobalAdmission();
@@ -162,6 +202,8 @@ describe("local Prime OCI harness runtime", () => {
     expect(recovered.ociLease?.state).toBe("removed");
     expect(globalAdmission.recover).toHaveBeenCalledOnce();
     expect(updates.map((lease) => lease.state)).toEqual(["created", "stopped", "removed"]);
+    expect(engine.create).toHaveBeenCalledOnce();
+    expect(engine.remove).toHaveBeenCalledWith("f".repeat(64), undefined);
   });
 
   it("recovers global admission before an OCI intent exists", async () => {
@@ -202,6 +244,58 @@ describe("local Prime OCI harness runtime", () => {
     expect(globalAdmission.recover).toHaveBeenCalledOnce();
     expect(recoverWorkspace).toHaveBeenCalledWith(request.evaluation.workspace.cwd, undefined);
     expect(updateOciLease).not.toHaveBeenCalled();
+  });
+
+  it("does not resume recovery after cancellation during descriptor resolution", async () => {
+    const descriptor = primeDescriptor();
+    let resolveDescriptor!: (value: NativePrimeHarnessDescriptor) => void;
+    const resolveAdmitted = vi.fn(
+      async () =>
+        new Promise<NativePrimeHarnessDescriptor>((resolve) => {
+          resolveDescriptor = resolve;
+        }),
+    );
+    const globalAdmission = fakeGlobalAdmission();
+    const createEngine = vi.fn(async () => fakeEngine());
+    const recoverWorkspace = vi.fn(async () => undefined);
+    const runtime = new LocalPrimeOciHarnessRuntime({
+      registry: { resolveAdmitted },
+      globalAdmission,
+      createEngine,
+      createIntent: vi.fn(),
+      operate: vi.fn(),
+      recoverWorkspace,
+      platform: "linux",
+    });
+    const request = runtimeRequest(async () => undefined);
+    const controller = new AbortController();
+    const recovery = runtime.recoverAttempt(
+      {
+        identity: request.identity,
+        attempt: {
+          version: 1,
+          planDigest: request.evaluation.planDigest,
+          position: request.evaluation.trial.position,
+          trialId: request.evaluation.trial.trialId,
+          taskId: request.evaluation.trial.taskId,
+          profileId: request.evaluation.trial.profileId,
+          adapter: "prime-agent-native-v1",
+          startedAt: "2026-08-10T10:00:00.000Z",
+          workspace: { backend: "reflink-copy-v1", snapshotDigest: "d".repeat(64) },
+        },
+        workspaceRoot: request.evaluation.workspace.cwd,
+        updateOciLease: vi.fn(async () => undefined),
+      },
+      controller.signal,
+    );
+    await vi.waitFor(() => expect(resolveAdmitted).toHaveBeenCalledOnce());
+    controller.abort(new Error("operator cancelled recovery"));
+    resolveDescriptor(descriptor);
+
+    await expect(recovery).rejects.toThrow(/operator cancelled recovery/i);
+    expect(createEngine).not.toHaveBeenCalled();
+    expect(globalAdmission.recover).not.toHaveBeenCalled();
+    expect(recoverWorkspace).not.toHaveBeenCalled();
   });
 
   it("returns a typed timeout only after durable container removal", async () => {
@@ -392,6 +486,7 @@ function primeDescriptor(): NativePrimeHarnessDescriptor & {
       imageDevice: { path: "/dev/test-image", major: 8, minor: 1 },
       executables: {
         docker: { path: "/usr/bin/docker", sha256: identity.runtime.client.executableSha256 },
+        dockerd: { path: "/usr/bin/dockerd", sha256: identity.runtime.engine.dockerdSha256 },
         containerd: {
           path: "/usr/bin/containerd",
           sha256: identity.runtime.engine.containerdSha256,
@@ -420,6 +515,7 @@ function fakeEngine(
       inspectedPolicyDigest: "9".repeat(64),
     })),
     recoverIntent: vi.fn(async () => options.recoveredIntent ?? null),
+    recoverCreated: vi.fn(async () => null),
     attach: vi.fn(async () => attached),
     start: vi.fn(async () => undefined),
     stop: vi.fn(async () => undefined),

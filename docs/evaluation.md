@@ -54,7 +54,8 @@ node dist/cli/main.js eval validate examples/evaluation/native-prime-agent-compa
 node dist/cli/main.js eval run examples/evaluation/native-prime-agent-comparison.evaluation.yaml
 ```
 
-Prime Agent requires Linux x64, Docker API 1.51, cgroup v2, and the fixed local image.
+Prime Agent requires Linux x64, Docker API 1.51, cgroup v2, and the fixed local image. Docker must
+configure `runc` with one canonical absolute path and no arguments.
 Preparation builds the image twice. Flow rejects different image, package, closure, or SBOM
 identities. A run never builds, pulls, or updates the image.
 
@@ -248,8 +249,8 @@ protected attestation stores these hashes. The host package does not contain the
 Only the public identity enters the evaluation header. Inspect and export do not load Docker,
 Prime Agent, Python, or the local attestation. Raw host identifiers stay outside public evidence.
 
-Flow permits one active Prime container per Docker daemon. It checks host capacity before create
-and while the trial runs. A policy failure stops and removes the container.
+Flow permits one active Prime container per Docker daemon. It checks host capacity before create.
+During execution, Flow monitors bounded Docker response time. A policy failure removes the container.
 
 Flow stores an OCI lease before container start. Recovery reconciles the exact name, nonce, image,
 policy, and full container ID. Flow does not start another trial while removal stays uncertain.

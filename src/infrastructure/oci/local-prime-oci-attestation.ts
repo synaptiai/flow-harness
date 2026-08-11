@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { type BigIntStats, constants } from "node:fs";
-import { lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises";
+import { access, lstat, mkdir, open, opendir, realpath, rename, unlink } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
 import { z } from "zod";
@@ -16,6 +16,10 @@ import { assertPrimeOciRuntimeCurrent } from "./local-prime-oci-currentness.js";
 const MAX_ATTESTATION_BYTES = 1_048_576;
 const MAX_EXECUTABLE_BYTES = 268_435_456;
 const READ_CHUNK_BYTES = 65_536;
+const MAX_ATTESTATION_TEMPORARIES = 4;
+const MAX_ATTESTATION_TEMPORARY_BYTES = MAX_ATTESTATION_BYTES * MAX_ATTESTATION_TEMPORARIES;
+const attestationTemporaryToken =
+  /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const safeInteger = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const absolutePathSchema = z
@@ -42,11 +46,20 @@ const executableIdentitySchema = z
     sha256: sha256Schema,
   })
   .strict();
+const builderIdentitySchema = z
+  .object({
+    clientPath: absolutePathSchema,
+    clientSha256: sha256Schema,
+    imageId: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    imageReference: z.string().regex(/^moby\/buildkit:[a-z0-9.-]+@sha256:[a-f0-9]{64}$/),
+  })
+  .strict();
 const descriptorSchema = z
   .object({
     version: z.literal(1),
     runtime: z.unknown(),
     image: z.unknown(),
+    builder: builderIdentitySchema,
     artifacts: z
       .object({
         driverSha256: sha256Schema,
@@ -78,6 +91,7 @@ const descriptorSchema = z
         executables: z
           .object({
             docker: executableIdentitySchema,
+            dockerd: executableIdentitySchema,
             containerd: executableIdentitySchema,
             runc: executableIdentitySchema,
           })
@@ -106,6 +120,7 @@ export interface PrimeOciLocalRuntimeAttestation {
   };
   readonly executables: {
     readonly docker: z.infer<typeof executableIdentitySchema>;
+    readonly dockerd: z.infer<typeof executableIdentitySchema>;
     readonly containerd: z.infer<typeof executableIdentitySchema>;
     readonly runc: z.infer<typeof executableIdentitySchema>;
   };
@@ -116,6 +131,7 @@ export interface PrimeOciLocalRuntimeAttestation {
 export interface LocalPrimeOciAttestation {
   readonly runtime: PrimeExternalHarnessIdentity["runtime"];
   readonly image: PrimeExternalHarnessIdentity["image"];
+  readonly builder: z.infer<typeof builderIdentitySchema>;
   readonly artifacts: z.infer<typeof descriptorSchema>["artifacts"];
   readonly harnessPackageContentSha256: string;
   readonly harnessDependencyClosureSha256: string;
@@ -124,6 +140,17 @@ export interface LocalPrimeOciAttestation {
 }
 
 export type PrimeOciAttestationDescriptor = z.infer<typeof descriptorSchema>;
+
+export interface PrimeOciAttestationPublicationOptions {
+  readonly syncDirectory?: (path: string) => Promise<void>;
+}
+
+export class PrimeOciAttestationPublicationUncertainError extends Error {
+  constructor(cause: unknown) {
+    super("Prime OCI local attestation publication is uncertain", { cause });
+    this.name = "PrimeOciAttestationPublicationUncertainError";
+  }
+}
 
 export interface LocalPrimeOciAttestationStoreOptions {
   readonly descriptorPath: string;
@@ -146,7 +173,7 @@ export class LocalPrimeOciAttestationStore {
   constructor(options: LocalPrimeOciAttestationStoreOptions) {
     this.#descriptorPath = options.descriptorPath;
     this.#assertRuntimeCurrent = options.assertRuntimeCurrent ?? assertPrimeOciRuntimeCurrent;
-    this.#observeExecutable = options.observeExecutable ?? observeExecutable;
+    this.#observeExecutable = options.observeExecutable ?? observePrimeOciExecutable;
     this.#observeSocket = options.observeSocket ?? observeDockerSocket;
   }
 
@@ -170,6 +197,8 @@ export class LocalPrimeOciAttestationStore {
     const observedSocket = socketIdentitySchema.parse(
       await this.#observeSocket(snapshot.descriptor.local.socketPath),
     );
+    assertPrimeOciSocketPolicy(snapshot.descriptor.local.socket);
+    assertPrimeOciSocketPolicy(observedSocket);
     if (!sameSocketIdentity(observedSocket, snapshot.descriptor.local.socket)) {
       throw new Error("Prime OCI Docker socket identity changed before admission");
     }
@@ -184,6 +213,7 @@ export class LocalPrimeOciAttestationStore {
     return deepFreeze({
       runtime,
       image,
+      builder: snapshot.descriptor.builder,
       artifacts: snapshot.descriptor.artifacts,
       harnessPackageContentSha256: snapshot.descriptor.harnessPackageContentSha256,
       harnessDependencyClosureSha256: snapshot.descriptor.harnessDependencyClosureSha256,
@@ -221,12 +251,19 @@ export class LocalPrimeOciAttestationStore {
   }
 }
 
+export function assertPrimeOciSocketPolicy(socket: PrimeOciSocketIdentity): void {
+  if (socket.uid !== 0 || socket.mode !== 0o660) {
+    throw new Error("Prime OCI Docker socket does not meet the root-owned 0660 policy");
+  }
+}
+
 function assertExecutableClaims(
   executables: z.infer<typeof descriptorSchema>["local"]["executables"],
   runtime: PrimeExternalHarnessIdentity["runtime"],
 ): void {
   if (
     executables.docker.sha256 !== runtime.client.executableSha256 ||
+    executables.dockerd.sha256 !== runtime.engine.dockerdSha256 ||
     executables.containerd.sha256 !== runtime.engine.containerdSha256 ||
     executables.runc.sha256 !== runtime.engine.runcSha256
   ) {
@@ -234,10 +271,11 @@ function assertExecutableClaims(
   }
 }
 
-async function observeExecutable(path: string): Promise<string> {
+export async function observePrimeOciExecutable(path: string): Promise<string> {
   if ((await realpath(path)) !== path) {
     throw new Error("Prime OCI executable path is not canonical");
   }
+  await access(path, constants.X_OK);
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const before = await handle.stat({ bigint: true });
@@ -259,6 +297,7 @@ export async function publishLocalPrimeOciAttestation(
   path: string,
   input: unknown,
   signal?: AbortSignal,
+  options: PrimeOciAttestationPublicationOptions = {},
 ): Promise<void> {
   throwIfAborted(signal);
   const parsed = descriptorSchema.safeParse(input);
@@ -282,7 +321,12 @@ export async function publishLocalPrimeOciAttestation(
   if ((await realpath(directory)) !== directory) {
     throw new Error("Prime OCI local attestation directory is not canonical");
   }
+  const sync = options.syncDirectory ?? syncDirectory;
+  await recoverAttestationTemporaries(target, sync);
+  await recoverAttestationReplacement(target, sync);
   const temporary = join(directory, `.${basename(target)}.${randomUUID()}.tmp`);
+  const backup = attestationBackupPath(target);
+  const expectedDigest = sha256(content);
   try {
     const handle = await open(
       temporary,
@@ -296,18 +340,32 @@ export async function publishLocalPrimeOciAttestation(
       await handle.close();
     }
     throwIfAborted(signal);
+    if ((await optionalReadSnapshotDirect(target)) !== undefined) {
+      await rename(target, backup);
+      await sync(directory);
+    }
     await rename(temporary, target);
-    const directoryHandle = await open(
-      directory,
-      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-    );
-    try {
-      await directoryHandle.sync();
-    } finally {
-      await directoryHandle.close();
+    await sync(directory);
+    if ((await readSnapshotDirect(target)).digest !== expectedDigest) {
+      throw new Error("Prime OCI local attestation changed after publication");
+    }
+    if ((await optionalReadSnapshotDirect(backup)) !== undefined) {
+      await unlink(backup);
+      await sync(directory);
     }
   } catch (error) {
     await unlink(temporary).catch(() => undefined);
+    try {
+      await recoverAttestationReplacement(target, sync);
+      await sync(directory);
+      if ((await optionalReadSnapshotDirect(target))?.digest === expectedDigest) {
+        return;
+      }
+    } catch (recoveryError) {
+      throw new PrimeOciAttestationPublicationUncertainError(
+        new AggregateError([error, recoveryError], "Prime OCI attestation replacement failed"),
+      );
+    }
     throw error;
   }
 }
@@ -322,6 +380,12 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 }
 
 async function readSnapshot(path: string): Promise<AttestationSnapshot> {
+  const target = resolve(path);
+  await recoverAttestationReplacement(target, syncDirectory);
+  return readSnapshotDirect(path);
+}
+
+async function readSnapshotDirect(path: string): Promise<AttestationSnapshot> {
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const before = await handle.stat({ bigint: true });
@@ -359,6 +423,111 @@ async function readSnapshot(path: string): Promise<AttestationSnapshot> {
       digest: sha256(bytes),
       descriptor: parsed.data,
     });
+  } finally {
+    await handle.close();
+  }
+}
+
+async function optionalReadSnapshotDirect(path: string): Promise<AttestationSnapshot | undefined> {
+  try {
+    return await readSnapshotDirect(path);
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+async function recoverAttestationReplacement(
+  target: string,
+  sync: (path: string) => Promise<void>,
+): Promise<void> {
+  const backup = attestationBackupPath(target);
+  if ((await optionalReadSnapshotDirect(backup)) === undefined) {
+    return;
+  }
+  const directory = dirname(target);
+  if ((await optionalReadSnapshotDirect(target)) === undefined) {
+    await rename(backup, target);
+    await sync(directory);
+    return;
+  }
+  await sync(directory);
+  await unlink(backup);
+  await sync(directory);
+}
+
+async function recoverAttestationTemporaries(
+  target: string,
+  sync: (path: string) => Promise<void>,
+): Promise<void> {
+  const directoryPath = dirname(target);
+  const prefix = `.${basename(target)}.`;
+  const names: string[] = [];
+  const directory = await opendir(directoryPath);
+  for await (const entry of directory) {
+    if (!entry.name.startsWith(prefix) || !entry.name.endsWith(".tmp")) {
+      continue;
+    }
+    const token = entry.name.slice(prefix.length, -".tmp".length);
+    if (attestationTemporaryToken.test(token)) {
+      names.push(entry.name);
+    }
+  }
+  names.sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right)));
+  if (names.length > MAX_ATTESTATION_TEMPORARIES) {
+    throw new Error("Prime OCI local attestation has too many recovery temporaries");
+  }
+
+  let totalBytes = 0;
+  const validated: string[] = [];
+  for (const name of names) {
+    const path = join(directoryPath, name);
+    const before = await lstat(path, { bigint: true });
+    const currentUid = typeof process.getuid === "function" ? BigInt(process.getuid()) : before.uid;
+    if (
+      !before.isFile() ||
+      before.isSymbolicLink() ||
+      (before.mode & 0o777n) !== 0o600n ||
+      before.uid !== currentUid ||
+      before.nlink < 1n ||
+      before.nlink > 2n ||
+      before.size < 1n ||
+      before.size > BigInt(MAX_ATTESTATION_BYTES)
+    ) {
+      throw new Error("Prime OCI local attestation temporary is unsafe");
+    }
+    totalBytes += Number(before.size);
+    if (totalBytes > MAX_ATTESTATION_TEMPORARY_BYTES) {
+      throw new Error("Prime OCI local attestation temporaries exceed the recovery byte limit");
+    }
+    await readSnapshotDirect(path);
+    const after = await lstat(path, { bigint: true });
+    if (!sameFileIdentity(before, after)) {
+      throw new Error("Prime OCI local attestation temporary changed during recovery");
+    }
+    validated.push(path);
+  }
+  for (const path of validated) {
+    await unlink(path);
+  }
+  if (validated.length > 0) {
+    await sync(directoryPath);
+  }
+}
+
+function attestationBackupPath(target: string): string {
+  return join(dirname(target), `.${basename(target)}.prior-v1`);
+}
+
+async function syncDirectory(path: string): Promise<void> {
+  const handle = await open(
+    path,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+  );
+  try {
+    await handle.sync();
   } finally {
     await handle.close();
   }
@@ -408,6 +577,10 @@ function sameFileIdentity(left: BigIntStats, right: BigIntStats): boolean {
     left.ctimeNs === right.ctimeNs &&
     left.mtimeNs === right.mtimeNs
   );
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error;
 }
 
 function sameSocketIdentity(left: PrimeOciSocketIdentity, right: PrimeOciSocketIdentity): boolean {

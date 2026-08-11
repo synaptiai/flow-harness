@@ -15,12 +15,21 @@ const executeFile = promisify(execFile);
 export interface VerifiedPrimeContainerTransport extends PrimeOciAttachedTransport {
   readonly containerId: string;
   readonly containerName: string;
+  readonly imageDevice: {
+    readonly path: string;
+    readonly major: number;
+    readonly minor: number;
+  };
   forceRemove(): Promise<void>;
 }
 
 export interface VerifiedPrimeContainerOptions {
   readonly dockerExecutable?: string;
-  readonly imageDevicePath?: string;
+  readonly imageDevice?: {
+    readonly path: string;
+    readonly major: number;
+    readonly minor: number;
+  };
   readonly seccompPath?: string;
   readonly temporaryRoot?: string;
 }
@@ -47,11 +56,10 @@ export async function startVerifiedPrimeContainer(
     DOCKER_HOST: "unix:///var/run/docker.sock",
     DOCKER_CONFIG: operationRoot,
   };
-  let imageDevicePath: string;
+  let imageDevice: { readonly path: string; readonly major: number; readonly minor: number };
   try {
-    imageDevicePath =
-      options.imageDevicePath ?? (await resolveDockerImageDevicePath(docker, environment));
-    if (!/^\/dev\/[a-zA-Z0-9._/-]+$/.test(imageDevicePath)) {
+    imageDevice = options.imageDevice ?? (await resolveDockerImageDevice(docker, environment));
+    if (!/^\/dev\/[a-zA-Z0-9._/-]+$/.test(imageDevice.path)) {
       throw new Error("verified Prime container received an invalid image device path");
     }
   } catch (error) {
@@ -70,6 +78,10 @@ export async function startVerifiedPrimeContainer(
       `--name=${containerName}`,
       `--cidfile=${cidPath}`,
       "--user=0:10003",
+      "--hostname=flow-prime",
+      "--dns=127.0.0.1",
+      "--dns-search=.",
+      "--dns-option=ndots:0",
       "--network=none",
       "--ipc=none",
       "--read-only",
@@ -80,8 +92,8 @@ export async function startVerifiedPrimeContainer(
       "--memory-swap=2147483648",
       "--cpu-period=100000",
       "--cpu-quota=200000",
-      `--device-read-bps=${imageDevicePath}:${String(policy.imageReadBytesPerSecond)}`,
-      `--device-read-iops=${imageDevicePath}:${String(policy.imageReadOperationsPerSecond)}`,
+      `--device-read-bps=${imageDevice.path}:${String(policy.imageReadBytesPerSecond)}`,
+      `--device-read-iops=${imageDevice.path}:${String(policy.imageReadOperationsPerSecond)}`,
       "--cap-drop=ALL",
       "--cap-add=CHOWN",
       "--cap-add=DAC_READ_SEARCH",
@@ -90,6 +102,20 @@ export async function startVerifiedPrimeContainer(
       "--cap-add=SETGID",
       "--cap-add=SETUID",
       "--security-opt=no-new-privileges",
+      "--security-opt=mask=/proc/cmdline",
+      "--security-opt=mask=/proc/sys",
+      "--security-opt=mask=/sys/block",
+      "--security-opt=mask=/sys/bus",
+      "--security-opt=mask=/sys/class",
+      "--security-opt=mask=/sys/class/dmi/id",
+      "--security-opt=mask=/sys/dev",
+      "--security-opt=mask=/sys/devices",
+      "--security-opt=mask=/sys/devices/virtual/dmi/id",
+      "--security-opt=mask=/sys/firmware",
+      "--security-opt=mask=/sys/hypervisor",
+      "--security-opt=mask=/sys/kernel",
+      "--security-opt=mask=/sys/module",
+      "--security-opt=mask=/sys/power",
       `--security-opt=seccomp=${seccompPath}`,
       "--ulimit=nofile=256:256",
       "--ulimit=nproc=64:64",
@@ -137,6 +163,7 @@ export async function startVerifiedPrimeContainer(
   return {
     containerId,
     containerName,
+    imageDevice,
     output: child.stdout,
     write: async (bytes, signal) => {
       throwIfAborted(signal);
@@ -174,10 +201,10 @@ export async function startVerifiedPrimeContainer(
   };
 }
 
-async function resolveDockerImageDevicePath(
+async function resolveDockerImageDevice(
   dockerExecutable: string,
   environment: NodeJS.ProcessEnv,
-): Promise<string> {
+): Promise<{ readonly path: string; readonly major: number; readonly minor: number }> {
   const { stdout } = await executeFile(dockerExecutable, ["info", "--format={{.DockerRootDir}}"], {
     encoding: "utf8",
     env: environment,
@@ -188,7 +215,7 @@ async function resolveDockerImageDevicePath(
   if (!dockerRoot.startsWith("/") || Buffer.byteLength(dockerRoot, "utf8") > 4_095) {
     throw new Error("Docker returned an invalid storage root");
   }
-  return (await resolvePrimeImageDevice(dockerRoot)).path;
+  return resolvePrimeImageDevice(dockerRoot);
 }
 
 async function waitForContainerId(

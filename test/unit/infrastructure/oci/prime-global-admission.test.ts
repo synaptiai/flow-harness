@@ -75,6 +75,45 @@ describe("Prime global admission", () => {
     expect(events).toEqual(["store:intent", "engine:create", "engine:inspect:name", "store:owned"]);
   });
 
+  it("returns an owned slot when cancellation follows durable object creation", async () => {
+    const events: string[] = [];
+    const store = memoryStore(events);
+    const controllerSignal = new AbortController();
+    const inspection = {
+      objectId: "d".repeat(64),
+      ownerNonce: "a".repeat(64),
+      policyDigest: "b".repeat(64),
+      daemonId: "daemon-test-id",
+    };
+    const engine = lockEngine(events, { createError: new Error("request aborted") });
+    engine.create.mockImplementationOnce(async () => {
+      events.push("engine:create");
+      controllerSignal.abort(new Error("operator cancelled"));
+      throw new Error("request aborted");
+    });
+    engine.inspect.mockImplementationOnce(async () => inspection);
+
+    await expect(controller(store, engine).acquire(controllerSignal.signal)).resolves.toMatchObject(
+      { state: "owned", objectId: inspection.objectId },
+    );
+    expect(store.writeOwned).toHaveBeenCalledOnce();
+  });
+
+  it("reconciles an intent that committed before its sync error", async () => {
+    const events: string[] = [];
+    const store = memoryStore(events);
+    store.writeIntent.mockImplementationOnce(async (lease) => {
+      events.push("store:intent");
+      store.setCurrent(lease);
+      throw new Error("directory sync failed after intent link");
+    });
+    const admitted = controller(store, lockEngine(events));
+
+    await expect(admitted.acquire()).resolves.toMatchObject({ state: "owned" });
+    expect(store.read).toHaveBeenCalled();
+    expect(store.writeOwned).toHaveBeenCalledOnce();
+  });
+
   it("keeps the slot closed when release inspection changes", async () => {
     const events: string[] = [];
     const store = memoryStore(events);
@@ -230,10 +269,18 @@ function memoryStore(events: string[], initial: PrimeGlobalSlotLease | null = nu
       events.push("store:owned");
       current = lease;
     }),
+    confirmIntentDurable: vi.fn(async (lease: PrimeGlobalSlotLease) => {
+      if (current?.ownerNonce !== lease.ownerNonce) {
+        throw new Error("intent durability is not proved");
+      }
+    }),
     remove: vi.fn(async () => {
       events.push("store:remove");
       current = null;
     }),
+    setCurrent: (lease: PrimeGlobalSlotLease | null) => {
+      current = lease;
+    },
   };
 }
 

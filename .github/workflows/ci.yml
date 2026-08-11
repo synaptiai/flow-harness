@@ -46,10 +46,42 @@ jobs:
       - name: Install sandbox system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes bubblewrap socat ripgrep
+          sudo apt-get install --yes bubblewrap ca-certificates curl ripgrep socat
           # GitHub's ephemeral Ubuntu 24.04 runner otherwise strips the user-namespace
           # capabilities required by SRT's bubblewrap and seccomp layers.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Install the exact Docker Engine
+        run: |
+          conflicts=()
+          for package in containerd docker-compose docker-compose-v2 docker-doc docker.io podman-docker runc; do
+            if dpkg-query --show --showformat='${db:Status-Status}' "$package" 2>/dev/null | grep --quiet '^installed$'; then
+              conflicts+=("$package")
+            fi
+          done
+          if (( ${#conflicts[@]} > 0 )); then
+            sudo apt-get remove --yes "${conflicts[@]}"
+          fi
+          sudo install --mode=0755 --directory /etc/apt/keyrings
+          sudo curl --fail --silent --show-error --location \
+            https://download.docker.com/linux/ubuntu/gpg \
+            --output /etc/apt/keyrings/docker.asc
+          sudo chmod a+r /etc/apt/keyrings/docker.asc
+          printf '%s\n' \
+            'Types: deb' \
+            'URIs: https://download.docker.com/linux/ubuntu' \
+            'Suites: noble' \
+            'Components: stable' \
+            'Architectures: amd64' \
+            'Signed-By: /etc/apt/keyrings/docker.asc' | \
+            sudo tee /etc/apt/sources.list.d/docker.sources > /dev/null
+          sudo apt-get update
+          docker_version='5:28.3.3-1~ubuntu.24.04~noble'
+          sudo apt-get install --yes --allow-downgrades \
+            docker-ce="$docker_version" \
+            docker-ce-cli="$docker_version" \
+            containerd.io='1.7.27-1' \
+            docker-buildx-plugin='0.26.1-1~ubuntu.24.04~noble'
 
       - name: Install exact dependencies
         run: npm ci --ignore-scripts
@@ -59,8 +91,38 @@ jobs:
           sudo useradd --create-home --groups docker flow-prime-peer
           printf 'FLOW_PRIME_TEST_SECOND_USER=flow-prime-peer\n' >> "$GITHUB_ENV"
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - name: Configure the exact Prime runc runtime
+        run: |
+          runtime_path="$(readlink --canonicalize "$(command -v runc)")"
+          sudo mkdir --parents /etc/docker
+          if sudo test -f /etc/docker/daemon.json; then
+            sudo cat /etc/docker/daemon.json > /tmp/flow-prime-daemon.json
+          else
+            printf '{}\n' > /tmp/flow-prime-daemon.json
+          fi
+          jq --arg path "$runtime_path" \
+            'del(.containerd, .["containerd-namespace"], .["containerd-plugins-namespace"], .["exec-root"], .hosts, .pidfile) | . + {"default-runtime":"runc","runtimes":((.runtimes // {}) + {"runc":{"path":$path,"runtimeArgs":[]}})}' \
+            /tmp/flow-prime-daemon.json > /tmp/flow-prime-daemon.updated.json
+          sudo install --mode=0644 /tmp/flow-prime-daemon.updated.json /etc/docker/daemon.json
+          sudo systemctl stop docker.service docker.socket
+          sudo systemctl disable docker.socket
+          sudo mkdir --parents /etc/systemd/system/docker.service.d
+          printf '[Unit]\nRequires=\n[Service]\nExecStart=\nExecStart=/usr/bin/dockerd --host=unix:///var/run/docker.sock\n' | \
+            sudo tee /etc/systemd/system/docker.service.d/flow-prime.conf > /dev/null
+          sudo systemctl daemon-reload
+          sudo systemctl start docker.service
+          test "$(docker version --format '{{.Server.APIVersion}}')" = '1.51'
+          test "$(docker version --format '{{.Server.Version}}')" = '28.3.3'
+          docker info --format '{{json .Runtimes.runc}}' | \
+            jq --exit-status --arg path "$runtime_path" \
+              '.path == $path and ((.runtimeArgs // []) | length == 0)'
+          sudo test -r /run/docker/containerd/containerd.pid
+          sudo test -r /run/docker.pid
+          containerd_pid="$(sudo cat /run/docker/containerd/containerd.pid)"
+          docker_pid="$(sudo cat /run/docker.pid)"
+          test "$(ps --no-headers --ppid "$docker_pid" --format pid | xargs)" = "$containerd_pid"
+          sudo test "$(readlink --canonicalize "/proc/${containerd_pid}/exe")" = \
+            "$(readlink --canonicalize "$(command -v containerd)")"
 
       - name: Run local release gates
         run: npm run ci:local

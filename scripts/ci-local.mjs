@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -26,13 +26,31 @@ for (const [command, args] of preliminaryGates) {
 const temporaryRoot = await mkdtemp(join(tmpdir(), "flow-prime-ci-"));
 try {
   const imageResultPath = join(temporaryRoot, "image-result.json");
-  await run("node", ["scripts/verify-prime-image.mjs", "--output", imageResultPath], process.env);
+  const compiledCliPath = join(process.cwd(), "dist", "cli", "main.js");
+  await run("node", [compiledCliPath, "init", "."], process.env, temporaryRoot);
+  await run(
+    "node",
+    [compiledCliPath, "runtime", "prepare", "prime-agent"],
+    process.env,
+    temporaryRoot,
+  );
+  const generatedAttestation = join(
+    temporaryRoot,
+    ".flow",
+    "runtime",
+    "prime-agent",
+    "oci-attestation.json",
+  );
+  const source = await readFile(generatedAttestation, "utf8");
+  parseImageId(source);
+  await writeFile(imageResultPath, source, { encoding: "utf8", flag: "wx", mode: 0o600 });
   const imageId = parseImageId(await readFile(imageResultPath, "utf8"));
   const verifiedEnvironment = {
     ...process.env,
     FLOW_PRIME_TEST_IMAGE_ID: imageId,
     FLOW_PRIME_TEST_IMAGE_RESULT: imageResultPath,
   };
+  delete verifiedEnvironment.FLOW_PRIME_PREPARED_ATTESTATION;
   for (const [command, args] of verifiedGates) {
     await run(command, args, verifiedEnvironment);
   }
@@ -40,9 +58,9 @@ try {
   await rm(temporaryRoot, { recursive: true, force: true });
 }
 
-function run(command, args, env) {
+function run(command, args, env, cwd = undefined) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: "inherit", env });
+    const child = spawn(command, args, { stdio: "inherit", env, cwd });
     child.once("error", reject);
     child.once("exit", (code, signal) => {
       if (code === 0) {

@@ -214,13 +214,21 @@ describe("Prime Agent package boundary", () => {
     expect(verifier).toContain('["eval", "validate"');
   });
 
-  it("pins Buildx and runs the shared local CI command", async () => {
+  it("pins the Docker toolchain and runs the shared local CI command", async () => {
     const workflow = await readFile(resolve(repositoryRoot, ".github/workflows/ci.yml"), "utf8");
+    const localCi = await readFile(resolve(repositoryRoot, "scripts/ci-local.mjs"), "utf8");
 
-    expect(workflow).toContain(
-      "docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c",
-    );
+    expect(workflow).toContain("docker_version='5:28.3.3-1~ubuntu.24.04~noble'");
+    expect(workflow).toContain("containerd.io='1.7.27-1'");
+    expect(workflow).toContain("docker-buildx-plugin='0.26.1-1~ubuntu.24.04~noble'");
+    expect(workflow).toContain("{{.Server.APIVersion}}')\" = '1.51'");
+    expect(workflow).toContain("{{.Server.Version}}')\" = '28.3.3'");
+    expect(workflow).not.toContain("docker/setup-buildx-action");
     expect(workflow).toContain("run: npm run ci:local");
+    expect(workflow).toContain("ExecStart=/usr/bin/dockerd --host=unix:///var/run/docker.sock");
+    expect(workflow).not.toContain("-H fd://");
+    expect(localCi).toContain('[compiledCliPath, "runtime", "prepare", "prime-agent"]');
+    expect(localCi).toContain("FLOW_PRIME_PREPARED_ATTESTATION");
     expect(workflow).toContain("useradd --create-home --groups docker flow-prime-peer");
     expect(workflow).toContain("FLOW_PRIME_TEST_SECOND_USER=flow-prime-peer");
   });

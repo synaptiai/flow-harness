@@ -20,6 +20,10 @@ import {
   verifyPrimeAgentArchiveBytes,
 } from "../../../../src/infrastructure/oci/local-prime-image-builder.js";
 
+const BUILDKIT_IMAGE =
+  "moby/buildkit:buildx-stable-1@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec";
+const BUILDKIT_IMAGE_ID = `sha256:${"9".repeat(64)}`;
+
 describe("local Prime image builder", () => {
   it("verifies the Prime release archive with SHA-256 and npm integrity", () => {
     const archive = Buffer.from("fixed Prime archive\n");
@@ -40,13 +44,91 @@ describe("local Prime image builder", () => {
   it("bounds a Docker command that does not settle", async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "flow-prime-docker-timeout-")));
     const executable = join(root, "docker");
-    await writeFile(executable, "#!/bin/sh\nsleep 10\n");
+    await writeFile(executable, `#!${process.execPath}\nsetInterval(() => {}, 10_000);\n`);
     await chmod(executable, 0o700);
 
     await expect(runLocalDockerCommand(executable, [], root, undefined, 20)).rejects.toMatchObject({
       killed: true,
     });
   });
+
+  it.runIf(process.platform === "linux")(
+    "settles the complete Docker command process group before timeout rejection",
+    async () => {
+      const root = await realpath(await mkdtemp(join(tmpdir(), "flow-prime-docker-tree-timeout-")));
+      const executable = join(root, "docker");
+      const pidPath = join(root, "descendant.pid");
+      await writeFile(
+        executable,
+        `#!${process.execPath}
+const { spawn } = require("node:child_process");
+const { writeFileSync } = require("node:fs");
+const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 10_000)"], {
+  detached: false,
+  stdio: "ignore",
+});
+writeFileSync(${JSON.stringify(pidPath)}, String(child.pid));
+setInterval(() => {}, 10_000);
+`,
+      );
+      await chmod(executable, 0o700);
+      let descendantPid: number | undefined;
+
+      try {
+        await expect(
+          runLocalDockerCommand(executable, [], root, undefined, 500),
+        ).rejects.toMatchObject({ killed: true });
+        descendantPid = Number.parseInt(await readFile(pidPath, "utf8"), 10);
+        expect(() => process.kill(descendantPid as number, 0)).toThrow(/ESRCH/);
+      } finally {
+        if (descendantPid !== undefined) {
+          try {
+            process.kill(descendantPid, "SIGKILL");
+          } catch {
+            // The production process-group kill already settled the descendant.
+          }
+        }
+      }
+    },
+  );
+
+  it.runIf(process.platform === "linux")(
+    "settles the complete Docker command process group after a nonzero exit",
+    async () => {
+      const root = await realpath(await mkdtemp(join(tmpdir(), "flow-prime-docker-tree-error-")));
+      const executable = join(root, "docker");
+      const pidPath = join(root, "descendant.pid");
+      await writeFile(
+        executable,
+        `#!${process.execPath}
+const { spawn } = require("node:child_process");
+const { writeFileSync } = require("node:fs");
+const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 10_000)"], {
+  detached: false,
+  stdio: "inherit",
+});
+writeFileSync(${JSON.stringify(pidPath)}, String(child.pid));
+process.exit(2);
+`,
+      );
+      await chmod(executable, 0o700);
+      let descendantPid: number | undefined;
+
+      try {
+        await expect(runLocalDockerCommand(executable, [], root)).rejects.toThrow(/failed/i);
+        descendantPid = Number.parseInt(await readFile(pidPath, "utf8"), 10);
+        expect(() => process.kill(descendantPid as number, 0)).toThrow(/ESRCH/);
+      } finally {
+        if (descendantPid !== undefined) {
+          try {
+            process.kill(descendantPid, "SIGKILL");
+          } catch {
+            // The production process-group kill already settled the descendant.
+          }
+        }
+      }
+    },
+  );
 
   it("uses an allowlisted context and derives identity from the built image", async () => {
     const fixture = await buildFixture();
@@ -58,6 +140,7 @@ describe("local Prime image builder", () => {
     await chmod(dockerExecutable, 0o700);
     await chmod(dockerBuildxExecutable, 0o700);
     const imageId = `sha256:${"a".repeat(64)}`;
+    const buildxSha256 = createHash("sha256").update("verified-buildx-plugin\n").digest("hex");
     const sbom = {
       node: [{ name: "prime-agent", version: "0.7.1" }],
       python: [{ name: "ipykernel", version: "6.30.1" }],
@@ -66,8 +149,44 @@ describe("local Prime image builder", () => {
     const calls: readonly string[][] = [];
     const mutableCalls = calls as string[][];
     let contextWasAllowlisted = false;
+    let builderPresent = true;
     const run = vi.fn(async (args: readonly string[], options: { environmentRoot: string }) => {
       mutableCalls.push([...args]);
+      if (args[0] === "buildx" && args[1] === "create") {
+        expect(args).toEqual([
+          "buildx",
+          "create",
+          "--driver",
+          "docker-container",
+          "--driver-opt",
+          `image=${BUILDKIT_IMAGE}`,
+          "--name",
+          "flow-prime-builder-1-0123456789abcdef0123456789abcdef",
+        ]);
+        return "flow-prime-builder-1-0123456789abcdef0123456789abcdef\n";
+      }
+      if (args[0] === "buildx" && args[1] === "inspect") {
+        expect(args).toEqual([
+          "buildx",
+          "inspect",
+          "--bootstrap",
+          "flow-prime-builder-1-0123456789abcdef0123456789abcdef",
+        ]);
+        return "Name: flow-prime-builder-1-0123456789abcdef0123456789abcdef\n";
+      }
+      if (args[0] === "container" && args[1] === "ls") {
+        return args.at(-1)?.includes("flow-prime-builder") === true && builderPresent
+          ? `${"7".repeat(64)}\n`
+          : "";
+      }
+      if (args[0] === "container" && args[1] === "inspect") {
+        expect(args).toEqual([
+          "container",
+          "inspect",
+          "buildx_buildkit_flow-prime-builder-1-0123456789abcdef0123456789abcdef0",
+        ]);
+        return JSON.stringify([{ Image: BUILDKIT_IMAGE_ID, Config: { Image: BUILDKIT_IMAGE } }]);
+      }
       if (args[0] === "buildx" && args[1] === "build") {
         await expect(
           readFile(join(options.environmentRoot, "cli-plugins", "docker-buildx"), "utf8"),
@@ -97,6 +216,12 @@ describe("local Prime image builder", () => {
       }
       if (args[0] === "image" && args[1] === "load") {
         return "Loaded image\n";
+      }
+      if (args[0] === "image" && args[1] === "ls") {
+        return args.at(-1)?.includes("preparation") === true ? `${imageId}\n` : "";
+      }
+      if (args[0] === "image" && args[1] === "tag") {
+        return "";
       }
       if (args[0] === "image" && args[1] === "inspect") {
         return JSON.stringify([
@@ -130,13 +255,17 @@ describe("local Prime image builder", () => {
       if (args[0] === "image" && args[1] === "rm") {
         return "";
       }
+      if (args[0] === "buildx" && args[1] === "rm") {
+        builderPresent = false;
+        return "";
+      }
       throw new Error(`unexpected Docker command: ${args.join(" ")}`);
     });
     const builder = new LocalPrimeImageBuilder({
       packageRoot: fixture,
       dockerExecutable,
       dockerBuildxExecutable,
-      temporaryRoot: await realpath(tmpdir()),
+      temporaryRoot: fixture,
       run,
       nonce: () => "0123456789abcdef0123456789abcdef",
       verifyPrimeArchive: vi.fn(async () => undefined),
@@ -165,6 +294,12 @@ describe("local Prime image builder", () => {
       harnessPackageContentSha256: "d".repeat(64),
       harnessDependencyClosureSha256: "c".repeat(64),
       artifacts: imageArtifacts(),
+      builder: {
+        clientPath: dockerBuildxExecutable,
+        clientSha256: buildxSha256,
+        imageId: BUILDKIT_IMAGE_ID,
+        imageReference: BUILDKIT_IMAGE,
+      },
     });
     expect(result.image.buildInputSha256).toMatch(/^[a-f0-9]{64}$/);
     expect(result.image.ociManifestSha256).toBe("f".repeat(64));
@@ -175,6 +310,8 @@ describe("local Prime image builder", () => {
       expect.arrayContaining([
         "buildx",
         "build",
+        "--builder",
+        "flow-prime-builder-1-0123456789abcdef0123456789abcdef",
         "--pull=false",
         "--no-cache",
         expect.stringMatching(
@@ -195,7 +332,35 @@ describe("local Prime image builder", () => {
       "--input",
       expect.stringMatching(/prime-image\.oci\.tar$/),
     ]);
+    expect(mutableCalls).toContainEqual([
+      "image",
+      "tag",
+      imageId,
+      `flow-prime-runtime:sha256-${"a".repeat(64)}`,
+    ]);
+    expect(mutableCalls).toContainEqual([
+      "image",
+      "rm",
+      "--force",
+      "flow-prime-runtime:preparation-1-0123456789abcdef0123456789abcdef",
+    ]);
     expect(contextWasAllowlisted).toBe(true);
+    expect(mutableCalls.at(0)).toEqual([
+      "buildx",
+      "create",
+      "--driver",
+      "docker-container",
+      "--driver-opt",
+      `image=${BUILDKIT_IMAGE}`,
+      "--name",
+      "flow-prime-builder-1-0123456789abcdef0123456789abcdef",
+    ]);
+    expect(mutableCalls).toContainEqual([
+      "buildx",
+      "rm",
+      "--force",
+      "flow-prime-builder-1-0123456789abcdef0123456789abcdef",
+    ]);
 
     const probe = mutableCalls.find((args) => args[0] === "run");
     expect(probe).toEqual(
@@ -215,6 +380,187 @@ describe("local Prime image builder", () => {
       expect.stringMatching(/prime-image\.tar$/),
       imageId,
     ]);
+
+    await builder.retireCreatedImagesExcept();
+    expect(mutableCalls).toContainEqual([
+      "image",
+      "rm",
+      "--force",
+      `flow-prime-runtime:sha256-${"a".repeat(64)}`,
+    ]);
+  });
+
+  it("uses an independent cleanup runner after the operation is cancelled", async () => {
+    const fixture = await buildFixture();
+    const dockerExecutable = join(fixture, "host-tools", "docker");
+    const dockerBuildxExecutable = join(fixture, "host-tools", "docker-buildx");
+    await mkdir(join(fixture, "host-tools"));
+    await writeFile(dockerExecutable, "docker-client\n");
+    await writeFile(dockerBuildxExecutable, "verified-buildx-plugin\n");
+    await chmod(dockerExecutable, 0o700);
+    await chmod(dockerBuildxExecutable, 0o700);
+    const cleanupCalls: string[][] = [];
+    let builderPresent = true;
+    const operationRun = vi.fn(async (args: readonly string[]) => {
+      if (args[0] === "buildx" && args[1] === "create") {
+        throw new Error("operation cancelled after Docker created the builder");
+      }
+      throw new Error("operation cancelled");
+    });
+    const cleanupRun = vi.fn(async (args: readonly string[]) => {
+      cleanupCalls.push([...args]);
+      if (args[0] === "container" && args[1] === "ls") {
+        return args.at(-1)?.includes("flow-prime-builder") === true && builderPresent
+          ? `${"7".repeat(64)}\n`
+          : "";
+      }
+      if (args[0] === "container" && args[1] === "inspect") {
+        return JSON.stringify([{ Image: BUILDKIT_IMAGE_ID, Config: { Image: BUILDKIT_IMAGE } }]);
+      }
+      if (args[0] === "buildx" && args[1] === "rm") {
+        builderPresent = false;
+      }
+      return "";
+    });
+    const builder = new LocalPrimeImageBuilder({
+      packageRoot: fixture,
+      dockerExecutable,
+      dockerBuildxExecutable,
+      temporaryRoot: fixture,
+      run: operationRun,
+      cleanupRun,
+      nonce: () => "0123456789abcdef0123456789abcdef",
+      verifyPrimeArchive: vi.fn(async () => undefined),
+    });
+
+    await expect(builder.build(1)).rejects.toThrow(/operation cancelled/i);
+
+    expect(cleanupCalls).toContainEqual([
+      "buildx",
+      "rm",
+      "--force",
+      "flow-prime-builder-1-0123456789abcdef0123456789abcdef",
+    ]);
+  });
+
+  it("carries operator cancellation into a blocked Docker build command", async () => {
+    const fixture = await buildFixture();
+    const dockerExecutable = join(fixture, "host-tools", "docker");
+    const dockerBuildxExecutable = join(fixture, "host-tools", "docker-buildx");
+    await mkdir(join(fixture, "host-tools"));
+    await writeFile(dockerExecutable, "docker-client\n");
+    await writeFile(dockerBuildxExecutable, "verified-buildx-plugin\n");
+    await chmod(dockerExecutable, 0o700);
+    await chmod(dockerBuildxExecutable, 0o700);
+    const controller = new AbortController();
+    let releaseCommand!: () => void;
+    const commandStarted = new Promise<void>((resolve) => {
+      releaseCommand = resolve;
+    });
+    const operationRun = vi.fn(
+      async (
+        _args: readonly string[],
+        options: { readonly signal?: AbortSignal },
+      ): Promise<string> => {
+        releaseCommand();
+        if (!(options.signal instanceof AbortSignal)) {
+          throw new Error("operator signal is absent from Docker command");
+        }
+        const signal = options.signal;
+        await new Promise<never>((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+        return "";
+      },
+    );
+    const cleanupRun = vi.fn(async () => "");
+    const builder = new LocalPrimeImageBuilder({
+      packageRoot: fixture,
+      dockerExecutable,
+      dockerBuildxExecutable,
+      temporaryRoot: fixture,
+      run: operationRun,
+      cleanupRun,
+      nonce: () => "0123456789abcdef0123456789abcdef",
+      verifyPrimeArchive: vi.fn(async () => undefined),
+    });
+
+    const build = builder.build(1, controller.signal);
+    await commandStarted;
+    controller.abort(new Error("operator cancelled blocked Docker command"));
+
+    await expect(build).rejects.toThrow(/operator cancelled blocked Docker command/i);
+    expect(cleanupRun).toHaveBeenCalled();
+  });
+
+  it("cancels blocked archive verification with the operator signal", async () => {
+    const fixture = await buildFixture();
+    const dockerExecutable = join(fixture, "host-tools", "docker");
+    const dockerBuildxExecutable = join(fixture, "host-tools", "docker-buildx");
+    await mkdir(join(fixture, "host-tools"));
+    await writeFile(dockerExecutable, "docker-client\n");
+    await writeFile(dockerBuildxExecutable, "verified-buildx-plugin\n");
+    await chmod(dockerExecutable, 0o700);
+    await chmod(dockerBuildxExecutable, 0o700);
+    const controller = new AbortController();
+    let releaseVerification!: () => void;
+    const verificationStarted = new Promise<void>((resolve) => {
+      releaseVerification = resolve;
+    });
+    let builderPresent = true;
+    const operationRun = vi.fn(async (args: readonly string[]) => {
+      if (args[0] === "buildx" && args[1] === "create") {
+        return "";
+      }
+      if (args[0] === "buildx" && args[1] === "inspect") {
+        return "";
+      }
+      if (args[0] === "container" && args[1] === "inspect") {
+        return JSON.stringify([{ Image: BUILDKIT_IMAGE_ID, Config: { Image: BUILDKIT_IMAGE } }]);
+      }
+      throw new Error(`unexpected operation command: ${args.join(" ")}`);
+    });
+    const cleanupRun = vi.fn(async (args: readonly string[]) => {
+      if (args[0] === "container" && args[1] === "ls") {
+        return builderPresent ? `${"7".repeat(64)}\n` : "";
+      }
+      if (args[0] === "container" && args[1] === "inspect") {
+        return JSON.stringify([{ Image: BUILDKIT_IMAGE_ID, Config: { Image: BUILDKIT_IMAGE } }]);
+      }
+      if (args[0] === "buildx" && args[1] === "rm") {
+        builderPresent = false;
+      }
+      return "";
+    });
+    const builder = new LocalPrimeImageBuilder({
+      packageRoot: fixture,
+      dockerExecutable,
+      dockerBuildxExecutable,
+      temporaryRoot: fixture,
+      run: operationRun,
+      cleanupRun,
+      nonce: () => "0123456789abcdef0123456789abcdef",
+      verifyPrimeArchive: async (input) => {
+        releaseVerification();
+        if (!("signal" in input) || !(input.signal instanceof AbortSignal)) {
+          throw new Error("operator signal is absent from archive verification");
+        }
+        const signal = input.signal;
+        await new Promise<never>((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      },
+    });
+
+    const build = builder.build(1, controller.signal);
+    await verificationStarted;
+    controller.abort(new Error("operator cancellation reached archive verification"));
+
+    await expect(build).rejects.toThrow(/operator cancellation/i);
+    expect(cleanupRun).toHaveBeenCalledWith(
+      ["buildx", "rm", "--force", "flow-prime-builder-1-0123456789abcdef0123456789abcdef"],
+      expect.any(Object),
+    );
   });
 });
 
@@ -291,6 +637,7 @@ async function buildFixture(): Promise<string> {
           "sha512-BOT+mqCYeDpKYabk3HVP5T7HomlBUWiQOXZGnX/DYZwT4xvdQSeF7itt/tCU8nv82/30N7VJw5YdXssEyD3qGQ==",
       },
       locks: { nodeSha256, pythonSha256 },
+      buildkit: { image: BUILDKIT_IMAGE },
       seccomp: { base: "test", sha256: seccompSha256 },
     }),
   );

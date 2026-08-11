@@ -1,3 +1,8 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -5,9 +10,97 @@ import {
   DockerUnixApiClient,
   type DockerUnixApiTransport,
   type DockerUnixAttachTransport,
+  NodeDockerUnixApiTransport,
 } from "../../../../src/infrastructure/oci/docker-unix-api-client.js";
 
 describe("Docker Unix API client", () => {
+  it("bounds a daemon request that accepts the socket and never responds", async () => {
+    const root = await mkdtemp(join(tmpdir(), "flow-prime-docker-api-"));
+    const socketPath = join(root, "docker.sock");
+    const server = createServer((socket) => {
+      const fallback = setTimeout(() => socket.destroy(), 100);
+      fallback.unref();
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, resolve);
+    });
+    try {
+      await expect(
+        new NodeDockerUnixApiTransport({ requestTimeoutMs: 20 }).request({
+          socketPath,
+          method: "GET",
+          path: "/version",
+          maxResponseBytes: 1_024,
+        }),
+      ).rejects.toThrow(/Docker API request exceeded 20ms/i);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a daemon response that resets after a partial body", async () => {
+    const root = await mkdtemp(join(tmpdir(), "flow-prime-docker-api-"));
+    const socketPath = join(root, "docker.sock");
+    const server = createServer((socket) => {
+      socket.once("data", () => {
+        socket.write("HTTP/1.1 200 OK\r\nContent-Length: 16\r\n\r\nx");
+        socket.destroy();
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, resolve);
+    });
+    try {
+      const request = new NodeDockerUnixApiTransport({ requestTimeoutMs: 100 }).request({
+        socketPath,
+        method: "GET",
+        path: "/version",
+        maxResponseBytes: 1_024,
+      });
+      await expect(
+        Promise.race([
+          request,
+          new Promise<never>((_resolve, reject) =>
+            setTimeout(() => reject(new Error("partial-response test deadline expired")), 250),
+          ),
+        ]),
+      ).rejects.toThrow(/Docker API response.*(?:aborted|closed|error)/i);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects response overflow after headers arrive", async () => {
+    const root = await mkdtemp(join(tmpdir(), "flow-prime-docker-api-"));
+    const socketPath = join(root, "docker.sock");
+    const server = createServer((socket) => {
+      socket.once("data", () => {
+        socket.write("HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\n12345678");
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, resolve);
+    });
+    try {
+      await expect(
+        new NodeDockerUnixApiTransport({ requestTimeoutMs: 100 }).request({
+          socketPath,
+          method: "GET",
+          path: "/version",
+          maxResponseBytes: 4,
+        }),
+      ).rejects.toThrow(/exceeds 4 bytes/i);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("uses the local daemon ping endpoint", async () => {
     const transport = {
       request: vi.fn(async () => ({ statusCode: 200, body: "OK" })),

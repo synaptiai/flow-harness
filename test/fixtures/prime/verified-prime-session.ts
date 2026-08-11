@@ -30,6 +30,7 @@ import { startVerifiedPrimeContainer } from "./prime-container-runtime.js";
 
 export interface VerifiedPrimeSessionInput {
   readonly instruction: string;
+  readonly maxExecutionMs?: number;
   readonly responses: readonly Record<string, unknown>[];
   readonly onInferenceRequest?: (input: {
     readonly body: string;
@@ -69,8 +70,14 @@ export async function runVerifiedPrimeSession(
   };
   const snapshotDigest = createPrimeContainerManifestSha256([entry]);
   const identity = Object.freeze({ ...primeExternalHarnessIdentity(), image });
-  const descriptor = descriptorFor(identity);
-  const request = operationRequest(identity, workspace, snapshotDigest, input.instruction);
+  const maxExecutionMs = input.maxExecutionMs ?? 90_000;
+  const request = operationRequest(
+    identity,
+    workspace,
+    snapshotDigest,
+    input.instruction,
+    maxExecutionMs,
+  );
   const fixture = await createLocalPrimeOciFixtureSource({
     root: workspace,
     instructionPath: "TASK.md",
@@ -85,6 +92,7 @@ export async function runVerifiedPrimeSession(
   const checkpoints: string[] = [];
   const responses = [...input.responses];
   const transport = await startVerifiedPrimeContainer(image.id);
+  const descriptor = descriptorFor(identity, transport.imageDevice);
   await input.onContainerStarted?.({
     containerId: transport.containerId,
     containerName: transport.containerName,
@@ -109,8 +117,8 @@ export async function runVerifiedPrimeSession(
   });
   const controller = new AbortController();
   const timeout = setTimeout(
-    () => controller.abort(new Error("verified Prime session exceeded 90 seconds")),
-    90_000,
+    () => controller.abort(new Error(`verified Prime session exceeded ${maxExecutionMs}ms`)),
+    maxExecutionMs,
   );
   timeout.unref?.();
   const operationSignal =
@@ -129,6 +137,7 @@ export async function runVerifiedPrimeSession(
           identityDigest: operation.descriptor.identityDigest,
           containerId: operation.containerId,
           trialId: operation.request.evaluation.trial.trialId,
+          imageDevice: operation.descriptor.localRuntime.imageDevice,
         });
       },
     }).operate({
@@ -218,6 +227,7 @@ function operationRequest(
   workspace: string,
   snapshotDigest: string,
   instruction: string,
+  maxExecutionMs: number,
 ): PrimeOciOperationInput["request"] {
   const trialId = `trial-${"b".repeat(48)}`;
   return {
@@ -245,7 +255,7 @@ function operationRequest(
           maxNodeStarts: 8,
           maxModelTokens: 4_096,
           maxCostUsdMicros: 100_000,
-          maxExecutionMs: 90_000,
+          maxExecutionMs,
           maxArtifactBytes: 1_048_576,
         },
         network: "deny",
@@ -256,7 +266,10 @@ function operationRequest(
   };
 }
 
-function descriptorFor(identity: PrimeExternalHarnessIdentity): NativePrimeHarnessDescriptor {
+function descriptorFor(
+  identity: PrimeExternalHarnessIdentity,
+  imageDevice: { readonly path: string; readonly major: number; readonly minor: number },
+): NativePrimeHarnessDescriptor {
   return {
     identity,
     identityDigest: "e".repeat(64),
@@ -268,7 +281,7 @@ function descriptorFor(identity: PrimeExternalHarnessIdentity): NativePrimeHarne
       cgroupPath: "/sys/fs/cgroup",
       corePattern: "core",
       globalLeasePath: "/var/tmp/flow-prime-test-slot.json",
-      imageDevice: { path: "/dev/null", major: 1, minor: 3 },
+      imageDevice,
       executables: executableIdentities(identity),
       leaseTarget: "flow-prime-global-v1",
       seccompProfile: {},
@@ -280,6 +293,7 @@ function descriptorFor(identity: PrimeExternalHarnessIdentity): NativePrimeHarne
 function executableIdentities(identity: PrimeExternalHarnessIdentity) {
   return {
     docker: { path: "/usr/bin/docker", sha256: identity.runtime.client.executableSha256 },
+    dockerd: { path: "/usr/bin/dockerd", sha256: identity.runtime.engine.dockerdSha256 },
     containerd: {
       path: "/usr/bin/containerd",
       sha256: identity.runtime.engine.containerdSha256,

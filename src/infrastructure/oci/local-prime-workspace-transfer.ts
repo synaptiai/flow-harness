@@ -128,7 +128,10 @@ export interface PrimeWorkspaceResultPublishInput {
 
 export interface StagedPrimeOciResultSinkOptions {
   readonly targetRoot: string;
-  readonly publish: (input: PrimeWorkspaceResultPublishInput) => Promise<void>;
+  readonly publish: (
+    input: PrimeWorkspaceResultPublishInput,
+    signal?: AbortSignal,
+  ) => Promise<void>;
   readonly prepareStaging?: (input: {
     readonly targetRoot: string;
     readonly stagingRoot: string;
@@ -168,11 +171,13 @@ export class StagedPrimeOciResultSink implements PrimeOciResultSink {
     return this.#stagingRoot;
   }
 
-  async begin(start: PrimeContainerTransferStart): Promise<void> {
+  async begin(start: PrimeContainerTransferStart, signal?: AbortSignal): Promise<void> {
+    throwIfAborted(signal);
     if (this.#expected !== undefined || this.#committed) {
       throw new Error("Prime result sink is already active");
     }
     const target = await lstat(this.#targetRoot);
+    throwIfAborted(signal);
     if (!target.isDirectory() || target.isSymbolicLink()) {
       throw new Error("Prime result target must be one no-follow directory");
     }
@@ -187,8 +192,11 @@ export class StagedPrimeOciResultSink implements PrimeOciResultSink {
         stagingRoot: this.#stagingRoot,
         manifestSha256: start.manifestSha256,
       });
+      throwIfAborted(signal);
       await mkdir(this.#stagingRoot, { mode: 0o700 });
+      throwIfAborted(signal);
       await chmod(this.#stagingRoot, 0o700);
+      throwIfAborted(signal);
     } catch (error) {
       await this.#abortStaging?.(this.#targetRoot).catch(() => undefined);
       this.#stagingRoot = undefined;
@@ -196,7 +204,8 @@ export class StagedPrimeOciResultSink implements PrimeOciResultSink {
     }
   }
 
-  async addEntry(entry: PrimeContainerManifestEntry): Promise<void> {
+  async addEntry(entry: PrimeContainerManifestEntry, signal?: AbortSignal): Promise<void> {
+    throwIfAborted(signal);
     const stagingRoot = this.#requireStaging();
     if (this.#current !== undefined) {
       throw new Error("Prime result file must end before the next entry");
@@ -205,6 +214,7 @@ export class StagedPrimeOciResultSink implements PrimeOciResultSink {
     assertBeneath(stagingRoot, absolutePath);
     if (entry.type === "directory") {
       await mkdir(absolutePath, { mode: 0o700 });
+      throwIfAborted(signal);
       this.#directoryModes.push({ path: absolutePath, mode: entry.mode });
     } else {
       const handle = await open(
@@ -217,7 +227,8 @@ export class StagedPrimeOciResultSink implements PrimeOciResultSink {
     this.#entries.push(Object.freeze({ ...entry }));
   }
 
-  async addChunk(bytes: Uint8Array): Promise<void> {
+  async addChunk(bytes: Uint8Array, signal?: AbortSignal): Promise<void> {
+    throwIfAborted(signal);
     const current = this.#current;
     if (current === undefined) {
       throw new Error("Prime result chunk has no active file");
@@ -226,6 +237,7 @@ export class StagedPrimeOciResultSink implements PrimeOciResultSink {
     let offset = 0;
     while (offset < chunk.byteLength) {
       const written = await current.handle.write(chunk, offset, chunk.byteLength - offset);
+      throwIfAborted(signal);
       if (written.bytesWritten < 1) {
         throw new Error("Prime result file write made no progress");
       }
@@ -235,7 +247,8 @@ export class StagedPrimeOciResultSink implements PrimeOciResultSink {
     current.hash.update(chunk);
   }
 
-  async endFile(): Promise<void> {
+  async endFile(signal?: AbortSignal): Promise<void> {
+    throwIfAborted(signal);
     const current = this.#current;
     if (current === undefined) {
       throw new Error("Prime result file end has no active file");
@@ -249,12 +262,17 @@ export class StagedPrimeOciResultSink implements PrimeOciResultSink {
         throw new Error("Prime staged result file contradicts its manifest entry");
       }
       await current.handle.sync();
+      throwIfAborted(signal);
     } finally {
       await current.handle.close();
     }
   }
 
-  async commit(entries: readonly PrimeContainerManifestEntry[]): Promise<void> {
+  async commit(
+    entries: readonly PrimeContainerManifestEntry[],
+    signal?: AbortSignal,
+  ): Promise<void> {
+    throwIfAborted(signal);
     const stagingRoot = this.#requireStaging();
     const expected = this.#expected;
     if (expected === undefined || this.#current !== undefined || this.#committed) {
@@ -266,7 +284,9 @@ export class StagedPrimeOciResultSink implements PrimeOciResultSink {
     await syncDirectoryTree(
       stagingRoot,
       this.#directoryModes.map((item) => item.path),
+      signal,
     );
+    throwIfAborted(signal);
     this.#publication = Object.freeze({
       targetRoot: this.#targetRoot,
       stagingRoot,
@@ -276,12 +296,13 @@ export class StagedPrimeOciResultSink implements PrimeOciResultSink {
     this.#committed = true;
   }
 
-  async publishResult(): Promise<void> {
+  async publishResult(signal?: AbortSignal): Promise<void> {
     const publication = this.#publication;
     if (!this.#committed || publication === undefined) {
       throw new Error("Prime result sink has no complete staging tree to publish");
     }
-    await this.#publish(publication);
+    throwIfAborted(signal);
+    await this.#publish(publication, signal);
     this.#publication = undefined;
     this.#stagingRoot = undefined;
   }
@@ -551,11 +572,17 @@ function assertBeneath(root: string, path: string): void {
   }
 }
 
-async function syncDirectoryTree(root: string, directories: readonly string[]): Promise<void> {
+async function syncDirectoryTree(
+  root: string,
+  directories: readonly string[],
+  signal?: AbortSignal,
+): Promise<void> {
   for (const directory of [...directories].reverse()) {
+    throwIfAborted(signal);
     const handle = await open(directory, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
       await handle.sync();
+      throwIfAborted(signal);
     } finally {
       await handle.close();
     }
@@ -563,6 +590,7 @@ async function syncDirectoryTree(root: string, directories: readonly string[]): 
   const rootHandle = await open(root, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     await rootHandle.sync();
+    throwIfAborted(signal);
   } finally {
     await rootHandle.close();
   }

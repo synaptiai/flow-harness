@@ -74,7 +74,52 @@ The Prime Agent evaluation profile has additional requirements:
 - Linux x64 with Docker Engine and cgroup v2.
 - Docker API 1.51 with the systemd cgroup driver.
 - A local Docker socket at `/var/run/docker.sock`.
+- Docker uses that exact Unix endpoint without socket activation.
+
+The Prime runtime identity has these additional requirements:
+
+- Docker uses its canonical daemon PID record.
+- The `runc` runtime uses one canonical absolute executable path and no arguments.
+- Docker publishes its managed `containerd` PID record under `/run/docker/containerd`.
 - Enough host capacity for the fixed Prime resource policy.
+
+Configure the Docker daemon with the exact `runc` path. Replace the path when your system uses a
+different canonical location.
+
+```json
+{
+  "default-runtime": "runc",
+  "runtimes": {
+    "runc": {
+      "path": "/usr/bin/runc",
+      "runtimeArgs": []
+    }
+  }
+}
+```
+
+The default daemon configuration must not set `containerd`, `containerd-namespace`,
+`containerd-plugins-namespace`, `hosts`, `exec-root`, or `pidfile`. Flow rejects custom
+configuration-file paths and related command options.
+
+For systemd, disable socket activation and use the exact Unix endpoint:
+
+```sh
+sudo systemctl stop docker.service docker.socket
+sudo systemctl disable docker.socket
+sudo install --directory /etc/systemd/system/docker.service.d
+printf '[Unit]\nRequires=\n[Service]\nExecStart=\nExecStart=/usr/bin/dockerd --host=unix:///var/run/docker.sock\n' | sudo tee /etc/systemd/system/docker.service.d/flow-prime.conf
+sudo systemctl daemon-reload
+sudo systemctl start docker.service
+```
+
+Verify that Docker owns the managed containerd process:
+
+```sh
+docker_pid="$(cat /run/docker.pid)"
+containerd_pid="$(cat /run/docker/containerd/containerd.pid)"
+test "$(ps --no-headers --ppid "$docker_pid" --format pid | xargs)" = "$containerd_pid"
+```
 
 Prepare the fixed image and local runtime evidence before plan validation:
 
@@ -115,12 +160,16 @@ SRT's [platform-specific dependency guidance](https://github.com/anthropic-exper
 git clone https://github.com/synaptiai/flow-harness.git
 cd flow-harness
 npm ci --ignore-scripts
-npm run check
-npm run build
+sudo useradd --create-home --groups docker flow-prime-peer
+export FLOW_PRIME_TEST_SECOND_USER=flow-prime-peer
+npm run ci:local
 ```
 
 `npm ci --ignore-scripts` installs only the exact lockfile. Use `npm install` only when
 intentionally changing dependencies.
+
+The release gate builds and verifies the Prime image before it runs native tests. It also requires
+the named second user to prove daemon-wide admission across Docker-authorized users.
 
 ### Execute the example
 

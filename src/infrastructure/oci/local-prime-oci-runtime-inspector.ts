@@ -8,6 +8,16 @@ import { createPrimeOciRuntimePolicy } from "./prime-oci-policy.js";
 import type { PrimeOciRuntimeInspection } from "./prime-oci-preparation.js";
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
+const PRIME_DOCKER_API_VERSION = "1.51" as const;
+const absolutePathSchema = z
+  .string()
+  .min(1)
+  .max(4_095)
+  .refine((value) => value.startsWith("/"), "must be an absolute path")
+  .refine(
+    (value) => !value.split("/").some((segment) => segment === "." || segment === ".."),
+    "must be a normalized path",
+  );
 const componentSchema = z
   .object({
     Name: z.string().min(1).max(64),
@@ -28,6 +38,7 @@ const versionSchema = z
     Server: z
       .object({
         Version: z.string().min(1).max(64),
+        GitCommit: z.string().min(1).max(128),
         ApiVersion: z.string().regex(/^\d+\.\d+$/),
         Os: z.literal("linux"),
         Arch: z.enum(["amd64", "x86_64"]),
@@ -49,6 +60,18 @@ const infoSchema = z
     SecurityOptions: z.array(z.string().min(1).max(256)).max(64),
     ContainerdCommit: z.object({ ID: z.string().min(1).max(128) }).passthrough(),
     RuncCommit: z.object({ ID: z.string().min(1).max(128) }).passthrough(),
+    DefaultRuntime: z.literal("runc"),
+    Runtimes: z
+      .record(
+        z.string().min(1).max(128),
+        z
+          .object({
+            path: absolutePathSchema,
+            runtimeArgs: z.array(z.string().max(1_024)).max(0).optional(),
+          })
+          .passthrough(),
+      )
+      .refine((value) => value.runc !== undefined, "must contain runc"),
     Rootless: z.boolean().optional(),
   })
   .passthrough();
@@ -57,12 +80,14 @@ export interface LocalPrimeOciRuntimeInspectorOptions {
   readonly run: (args: readonly string[]) => Promise<string>;
   readonly local: () => Promise<PrimeOciLocalRuntimeAttestation>;
   readonly dockerExecutableSha256: string;
+  readonly dockerdExecutableSha256: string;
   readonly containerdExecutableSha256: string;
   readonly runcExecutableSha256: string;
 }
 
 export class LocalPrimeOciRuntimeInspector {
   readonly #dockerExecutableSha256: string;
+  readonly #dockerdExecutableSha256: string;
   readonly #containerdExecutableSha256: string;
   readonly #local: () => Promise<PrimeOciLocalRuntimeAttestation>;
   readonly #run: (args: readonly string[]) => Promise<string>;
@@ -70,6 +95,7 @@ export class LocalPrimeOciRuntimeInspector {
 
   constructor(options: LocalPrimeOciRuntimeInspectorOptions) {
     this.#dockerExecutableSha256 = sha256Schema.parse(options.dockerExecutableSha256);
+    this.#dockerdExecutableSha256 = sha256Schema.parse(options.dockerdExecutableSha256);
     this.#containerdExecutableSha256 = sha256Schema.parse(options.containerdExecutableSha256);
     this.#runcExecutableSha256 = sha256Schema.parse(options.runcExecutableSha256);
     this.#local = options.local;
@@ -90,6 +116,9 @@ export class LocalPrimeOciRuntimeInspector {
     ) {
       throw new Error("Prime OCI Docker API versions do not match");
     }
+    if (version.Server.ApiVersion !== PRIME_DOCKER_API_VERSION) {
+      throw new Error(`Prime OCI Docker API version must be ${PRIME_DOCKER_API_VERSION}`);
+    }
     if (version.Server.KernelVersion !== info.KernelVersion) {
       throw new Error("Prime OCI Docker kernel identities do not match");
     }
@@ -98,6 +127,9 @@ export class LocalPrimeOciRuntimeInspector {
     }
     if (info.CgroupDriver !== "systemd") {
       throw new Error("Prime OCI Docker cgroup driver must be systemd");
+    }
+    if (info.Runtimes.runc?.path !== local.executables.runc.path) {
+      throw new Error("Prime OCI selected runc path does not match the observed executable");
     }
     const containerd = requiredComponent(version.Server.Components, "containerd");
     const runc = requiredComponent(version.Server.Components, "runc");
@@ -119,6 +151,8 @@ export class LocalPrimeOciRuntimeInspector {
       },
       engine: {
         serverVersion: normalizeVersion(version.Server.Version, "Docker server"),
+        serverCommit: version.Server.GitCommit,
+        dockerdSha256: this.#dockerdExecutableSha256,
         apiVersion: version.Server.ApiVersion,
         kernelRelease: version.Server.KernelVersion,
         kernelSecurityConfigSha256: sha256(

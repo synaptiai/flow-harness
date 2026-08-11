@@ -38,6 +38,7 @@ export type PrimeGlobalSlotInspection = z.infer<typeof inspectionSchema>;
 export interface PrimeGlobalSlotStore {
   read(): Promise<PrimeGlobalSlotLease | null>;
   writeIntent(lease: PrimeGlobalSlotLease): Promise<void>;
+  confirmIntentDurable(lease: PrimeGlobalSlotLease): Promise<void>;
   writeOwned(lease: PrimeGlobalSlotLease): Promise<void>;
   remove(lease: PrimeGlobalSlotLease): Promise<void>;
 }
@@ -58,6 +59,7 @@ export interface PrimeGlobalAdmissionControllerOptions {
   readonly daemonId: string;
   readonly policyDigest: string;
   readonly ownerNonce: () => string;
+  readonly cleanupSignal?: () => AbortSignal | undefined;
 }
 
 export class PrimeGlobalAdmissionUnsafeStateError extends HarnessUnsafeStateError {
@@ -83,15 +85,44 @@ export class PrimeGlobalAdmissionController {
       policyDigest: this.options.policyDigest,
       daemonId: this.options.daemonId,
     });
-    await this.options.store.writeIntent(intent);
+    try {
+      await this.options.store.writeIntent(intent);
+    } catch (writeError) {
+      let recovered: PrimeGlobalSlotLease | null;
+      try {
+        recovered = await this.options.store.read();
+      } catch (readError) {
+        throw new PrimeGlobalAdmissionUnsafeStateError(
+          "Prime global slot intent publication cannot be reconciled",
+          { cause: new AggregateError([writeError, readError]) },
+        );
+      }
+      if (
+        recovered === null ||
+        !sameLeaseOwner(recovered, intent) ||
+        recovered.state !== "intent"
+      ) {
+        throw new PrimeGlobalAdmissionUnsafeStateError(
+          "Prime global slot intent publication cannot be reconciled",
+          { cause: writeError },
+        );
+      }
+      try {
+        await this.options.store.confirmIntentDurable(intent);
+      } catch (confirmError) {
+        throw new PrimeGlobalAdmissionUnsafeStateError(
+          "Prime global slot intent durability cannot be proved",
+          { cause: new AggregateError([writeError, confirmError]) },
+        );
+      }
+    }
 
     let inspection: PrimeGlobalSlotInspection | null;
     try {
       inspection = inspectionSchema.parse(await this.options.engine.create(intent, signal));
     } catch (createError) {
-      throwIfAborted(signal);
       try {
-        inspection = await this.#settleIntent(intent, signal);
+        inspection = await this.#settleIntent(intent, this.options.cleanupSignal?.());
       } catch (inspectError) {
         throw new PrimeGlobalAdmissionUnsafeStateError(
           "Prime global slot create outcome cannot be reconciled",
@@ -102,7 +133,14 @@ export class PrimeGlobalAdmissionController {
 
     const parsedInspection = inspectionSchema.parse(inspection);
     if (!matchesIntent(parsedInspection, intent)) {
-      await this.options.store.remove(intent).catch(() => undefined);
+      try {
+        await this.options.store.remove(intent);
+      } catch (cleanupError) {
+        throw new PrimeGlobalAdmissionUnsafeStateError(
+          "Prime global slot foreign-object cleanup is not proved",
+          { cause: cleanupError },
+        );
+      }
       throw new PrimeGlobalAdmissionUnsafeStateError(
         "Prime global slot is owned by a foreign or unverifiable object",
       );
@@ -130,23 +168,33 @@ export class PrimeGlobalAdmissionController {
         "Prime global slot release requires one owned object",
       );
     }
-    throwIfAborted(signal);
-    const inspection = await this.options.engine.inspect(lease.objectId, signal);
-    if (
-      inspection === null ||
-      !matchesOwned(inspectionSchema.parse(inspection), lease, lease.objectId)
-    ) {
+    try {
+      throwIfAborted(signal);
+      const inspection = await this.options.engine.inspect(lease.objectId, signal);
+      if (
+        inspection === null ||
+        !matchesOwned(inspectionSchema.parse(inspection), lease, lease.objectId)
+      ) {
+        throw new PrimeGlobalAdmissionUnsafeStateError(
+          "Prime global slot object changed before release",
+        );
+      }
+      await this.options.engine.remove(lease.objectId, signal);
+      if (!(await this.options.engine.confirmRemoved(lease.objectId, signal))) {
+        throw new PrimeGlobalAdmissionUnsafeStateError(
+          "Prime global slot object removal is not confirmed",
+        );
+      }
+      await this.options.store.remove(lease);
+    } catch (error) {
+      if (error instanceof PrimeGlobalAdmissionUnsafeStateError) {
+        throw error;
+      }
       throw new PrimeGlobalAdmissionUnsafeStateError(
-        "Prime global slot object changed before release",
+        "Prime global slot release outcome cannot be reconciled",
+        { cause: error },
       );
     }
-    await this.options.engine.remove(lease.objectId, signal);
-    if (!(await this.options.engine.confirmRemoved(lease.objectId, signal))) {
-      throw new PrimeGlobalAdmissionUnsafeStateError(
-        "Prime global slot object removal is not confirmed",
-      );
-    }
-    await this.options.store.remove(lease);
   }
 
   async recover(signal?: AbortSignal): Promise<void> {
@@ -253,6 +301,15 @@ function matchesOwned(
   objectId: string,
 ): boolean {
   return inspection.objectId === objectId && matchesIntent(inspection, lease);
+}
+
+function sameLeaseOwner(left: PrimeGlobalSlotLease, right: PrimeGlobalSlotLease): boolean {
+  return (
+    left.lockName === right.lockName &&
+    left.ownerNonce === right.ownerNonce &&
+    left.policyDigest === right.policyDigest &&
+    left.daemonId === right.daemonId
+  );
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {

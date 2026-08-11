@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { NativePrimeHostInferenceBroker } from "../../../../src/infrastructure/prime/native-prime-host-inference-broker.js";
+import { PrimeEvaluationMetricsLedger } from "../../../../src/infrastructure/prime/prime-evaluation-metrics.js";
 import type {
   ExternalHarnessInferenceBroker,
   ExternalHarnessInferenceRequest,
@@ -100,6 +101,33 @@ describe("native Prime host inference broker", () => {
         { type: "thinking", thinkingSignature: "opaque-reasoning", redacted: true },
       ],
     });
+  });
+
+  it("projects optional host metadata before the Prime metrics ledger", async () => {
+    const message = hostAssistantMessage();
+    const delegate: ExternalHarnessInferenceBroker = {
+      infer: vi.fn(async () =>
+        JSON.stringify({
+          ...message,
+          responseModel: "resolved-host-model",
+          rawStopReason: "tool_use",
+          usage: {
+            ...message.usage,
+            cacheWrite1h: 3,
+            reasoning: 5,
+          },
+        }),
+      ),
+    };
+    const broker = new NativePrimeHostInferenceBroker({ delegate });
+    const response = await broker.infer(inferenceRequest());
+    const parsed = JSON.parse(response) as Record<string, unknown>;
+
+    expect(parsed).not.toHaveProperty("responseModel");
+    expect(parsed).not.toHaveProperty("rawStopReason");
+    expect(parsed.usage).not.toHaveProperty("cacheWrite1h");
+    expect(parsed.usage).not.toHaveProperty("reasoning");
+    expect(() => new PrimeEvaluationMetricsLedger().recordBrokerResponse(response)).not.toThrow();
   });
 
   it("rejects other adapters, developer messages, and non-IPython tools", async () => {

@@ -47,6 +47,8 @@ export function primeExternalHarnessIdentity(): PrimeExternalHarnessIdentity {
       },
       engine: {
         serverVersion: "28.3.3",
+        serverCommit: "dockerd-commit",
+        dockerdSha256: "d".repeat(64),
         apiVersion: "1.51",
         kernelRelease: "6.11.0-1018-azure",
         kernelSecurityConfigSha256: "5".repeat(64),

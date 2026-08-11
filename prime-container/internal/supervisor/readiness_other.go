@@ -8,6 +8,6 @@ func HardenSupervisor() error {
 	return errors.New("Prime supervisor is supported only on Linux")
 }
 
-func MeasureReadiness() (ReadinessMeasurement, error) {
+func MeasureReadiness(int, int) (ReadinessMeasurement, error) {
 	return ReadinessMeasurement{}, errors.New("Prime readiness is supported only on Linux")
 }

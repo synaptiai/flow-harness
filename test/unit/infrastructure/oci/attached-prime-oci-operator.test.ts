@@ -54,7 +54,7 @@ describe("attached Prime OCI operator", () => {
           exitCode: 0,
           timedOut: false,
           aborted: false,
-          activeTimeMicros: 1_234,
+          activeTimeMicros: null,
           kernelRequests: 1,
         }),
       ]),
@@ -124,7 +124,7 @@ describe("attached Prime OCI operator", () => {
       toolCalls: 0,
       toolErrors: null,
       wallTimeMs: 16,
-      activeTimeMs: 2,
+      activeTimeMs: null,
       interventions: 0,
       recoveryAttempts: 0,
       recoveryOutcome: "not_attempted",
@@ -229,6 +229,44 @@ describe("attached Prime OCI operator", () => {
       toolErrors: 1,
       wallTimeMs: 1,
     });
+  });
+
+  it("rejects child-supplied active-time evidence in version one", async () => {
+    const transport: PrimeOciAttachedTransport = {
+      output: outputFrames([
+        frame(PrimeContainerFrameType.Readiness, { version: 1, status: "ready" }),
+        driverFrame(1, "ready", { trialId, identityDigest }),
+        driverFrame(2, "terminal", {
+          harness: { outcome: "completed", runId: "prime-session", reason: null },
+          metrics: unavailableEvaluationMetrics(),
+        }),
+        frame(PrimeContainerFrameType.Terminal),
+        frame(PrimeContainerFrameType.ResultStart, transferStart([])),
+        frame(PrimeContainerFrameType.ResultComplete),
+        frame(PrimeContainerFrameType.Settlement, {
+          exitCode: 0,
+          timedOut: false,
+          aborted: false,
+          activeTimeMicros: 1,
+          kernelRequests: 1,
+        }),
+      ]),
+      write: vi.fn(async () => undefined),
+      closeInput: vi.fn(async () => undefined),
+      release: vi.fn(async () => undefined),
+    };
+    const operator = new AttachedPrimeOciOperator({
+      fixture: fixture([], new Map()),
+      resultSink: sink(),
+      inferenceBroker: { infer: vi.fn() },
+      validateReadiness: vi.fn(async () => undefined),
+      sessionIdFactory: () => sessionId,
+      secretHexFactory: () => secretHex,
+    });
+
+    await expect(
+      operator.operate(operationInput(async () => undefined, transport)),
+    ).rejects.toThrow(/settlement.*closed schema/i);
   });
 
   it("does not send fixture bytes or the secret after readiness rejection", async () => {
@@ -341,6 +379,52 @@ describe("attached Prime OCI operator", () => {
 
     expect(outcome).toBe("rejected");
   });
+
+  it("does not wait forever for a non-cooperative inference after cancellation", async () => {
+    const controller = new AbortController();
+    const fixtureEntry = fileEntry("TASK.md", "Task\n");
+    const transport: PrimeOciAttachedTransport = {
+      output: outputFrames([
+        frame(PrimeContainerFrameType.Readiness, { version: 1, status: "ready" }),
+        driverFrame(1, "ready", { trialId, identityDigest }),
+        driverInferenceFrame(
+          2,
+          JSON.stringify({
+            version: 1,
+            model: { provider: "test", modelId: "test" },
+            messages: [],
+            settings: { maxTokens: 1, temperature: 0, thinkingLevel: "off" },
+            timestamp: 1,
+          }),
+        ),
+      ]),
+      write: vi.fn(async () => undefined),
+      closeInput: vi.fn(async () => undefined),
+      release: vi.fn(async () => undefined),
+    };
+    const resultSink = sink();
+    const operator = new AttachedPrimeOciOperator({
+      fixture: fixture([fixtureEntry], new Map([[fixtureEntry.path, Buffer.from("Task\n")]])),
+      resultSink,
+      inferenceBroker: {
+        infer: vi.fn(() => {
+          controller.abort(new Error("Prime inference cancelled"));
+          return new Promise<string>(() => undefined);
+        }),
+      },
+      validateReadiness: vi.fn(async () => undefined),
+      sessionIdFactory: () => sessionId,
+      secretHexFactory: () => secretHex,
+    });
+
+    await expect(
+      operator.operate({
+        ...operationInput(async () => undefined, transport),
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow(/inference cancelled/i);
+    expect(resultSink.abort).toHaveBeenCalledOnce();
+  });
 });
 
 function operationInput(
@@ -398,6 +482,7 @@ function operationInput(
         imageDevice: { path: "/dev/test-image", major: 8, minor: 1 },
         executables: {
           docker: { path: "/usr/bin/docker", sha256: identity.runtime.client.executableSha256 },
+          dockerd: { path: "/usr/bin/dockerd", sha256: identity.runtime.engine.dockerdSha256 },
           containerd: {
             path: "/usr/bin/containerd",
             sha256: identity.runtime.engine.containerdSha256,

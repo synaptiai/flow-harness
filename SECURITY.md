@@ -226,8 +226,9 @@ daemon-global slot prevents concurrent Prime containers. Host admission keeps ca
 the broker, and cleanup.
 
 Node and Python use different user identities. The fixed seccomp policy blocks cross-process memory
-access. The trusted supervisor signs protocol frames, owns the workspace transfer, and removes all
-Python processes before result export.
+access. The trusted Node driver signs protocol frames. The supervisor verifies and relays them.
+
+The supervisor also owns workspace transfer. It removes all Python processes before result export.
 
 Each Prime attempt stores one durable OCI lease. Recovery accepts only the exact nonce, name, image,
 policy, daemon endpoint, and full container ID. Uncertain removal blocks later Prime execution.

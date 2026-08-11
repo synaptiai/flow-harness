@@ -24,6 +24,8 @@ describe("local Docker Prime OCI engine", () => {
       fixture.intent.containerName,
       expect.objectContaining({
         Image: fixture.intent.imageId,
+        Hostname: "flow-prime",
+        Domainname: "",
         User: "0:10003",
         OpenStdin: true,
         StdinOnce: true,
@@ -34,7 +36,12 @@ describe("local Docker Prime OCI engine", () => {
         Healthcheck: { Test: ["NONE"] },
         HostConfig: expect.objectContaining({
           NetworkMode: "none",
+          PidMode: "",
+          Dns: ["127.0.0.1"],
+          DnsSearch: ["."],
+          DnsOptions: ["ndots:0"],
           IpcMode: "none",
+          CgroupnsMode: "private",
           Runtime: "runc",
           ReadonlyRootfs: true,
           LogConfig: { Type: "none", Config: {} },
@@ -48,6 +55,15 @@ describe("local Docker Prime OCI engine", () => {
           CapAdd: ["CHOWN", "DAC_READ_SEARCH", "FOWNER", "KILL", "SETGID", "SETUID"],
           SecurityOpt: ["no-new-privileges", expect.stringMatching(/^seccomp=/)],
           Binds: [],
+          MaskedPaths: expect.arrayContaining([
+            "/proc/cmdline",
+            "/proc/sys",
+            "/sys/block",
+            "/sys/class",
+            "/sys/class/dmi/id",
+            "/sys/devices",
+            "/sys/devices/virtual/dmi/id",
+          ]),
         }),
       }),
       undefined,
@@ -68,9 +84,34 @@ describe("local Docker Prime OCI engine", () => {
         ((value.HostConfig as Record<string, unknown>).NetworkMode = "bridge"),
     ],
     [
+      "PID namespace",
+      (value: Record<string, unknown>) =>
+        ((value.HostConfig as Record<string, unknown>).PidMode = "host"),
+    ],
+    [
+      "hostname",
+      (value: Record<string, unknown>) =>
+        ((value.Config as Record<string, unknown>).Hostname = "private-host"),
+    ],
+    [
+      "resolver",
+      (value: Record<string, unknown>) =>
+        ((value.HostConfig as Record<string, unknown>).DnsSearch = ["private.example"]),
+    ],
+    [
+      "cgroup namespace",
+      (value: Record<string, unknown>) =>
+        ((value.HostConfig as Record<string, unknown>).CgroupnsMode = "host"),
+    ],
+    [
       "runtime",
       (value: Record<string, unknown>) =>
         ((value.HostConfig as Record<string, unknown>).Runtime = "alternate"),
+    ],
+    [
+      "masked path",
+      (value: Record<string, unknown>) =>
+        ((value.HostConfig as Record<string, unknown>).MaskedPaths = []),
     ],
     [
       "log",
@@ -118,6 +159,33 @@ describe("local Docker Prime OCI engine", () => {
     };
     vi.mocked(fixture.api.inspectContainer).mockResolvedValueOnce(changed);
     await expect(engine.recoverIntent(fixture.intent)).rejects.toThrow(/label|policy/i);
+  });
+
+  it("reconciles the complete durable identity before recovery cleanup", async () => {
+    const fixture = engineFixture();
+    const engine = new LocalDockerPrimeOciEngine(fixture.options);
+    const lease = {
+      ...fixture.intent,
+      state: "started" as const,
+      containerId: fixture.containerId,
+      inspectedPolicyDigest: fixture.identity.runtime.policy.digest,
+    };
+
+    await expect(engine.recoverCreated(lease)).resolves.toEqual({
+      containerId: fixture.containerId,
+      inspectedPolicyDigest: fixture.identity.runtime.policy.digest,
+    });
+
+    const changed = structuredClone(fixture.inspection);
+    (changed.Config as Record<string, unknown>).Labels = {
+      ...((changed.Config as Record<string, unknown>).Labels as Record<string, string>),
+      "flow.owner-nonce": "0".repeat(64),
+    };
+    vi.mocked(fixture.api.inspectContainer).mockResolvedValueOnce(changed);
+
+    await expect(engine.recoverCreated(lease)).rejects.toThrow(/policy|control/i);
+    expect(fixture.api.stopContainer).not.toHaveBeenCalled();
+    expect(fixture.api.removeContainer).not.toHaveBeenCalled();
   });
 
   it("stops, removes, and confirms absence through the full ID", async () => {
@@ -214,6 +282,8 @@ function inspectionFor(
     Image: intent.imageId,
     Config: {
       Image: intent.imageId,
+      Hostname: "flow-prime",
+      Domainname: "",
       User: `${policy.supervisorUid}:${policy.sharedGid}`,
       WorkingDir: "/workspace",
       Env: ["PRIME_AGENT_KERNEL_FORKSERVER=0"],
@@ -235,7 +305,12 @@ function inspectionFor(
     },
     HostConfig: {
       NetworkMode: "none",
+      PidMode: "",
+      Dns: ["127.0.0.1"],
+      DnsSearch: ["."],
+      DnsOptions: ["ndots:0"],
       IpcMode: "none",
+      CgroupnsMode: "private",
       Runtime: "runc",
       ReadonlyRootfs: true,
       LogConfig: { Type: "none", Config: {} },
@@ -253,6 +328,32 @@ function inspectionFor(
         'seccomp={"defaultAction":"SCMP_ACT_ERRNO","syscalls":[]}',
       ],
       Binds: [],
+      MaskedPaths: [
+        "/proc/acpi",
+        "/proc/asound",
+        "/proc/kcore",
+        "/proc/keys",
+        "/proc/latency_stats",
+        "/proc/timer_list",
+        "/proc/timer_stats",
+        "/proc/sched_debug",
+        "/proc/scsi",
+        "/proc/cmdline",
+        "/proc/sys",
+        "/sys/block",
+        "/sys/bus",
+        "/sys/class",
+        "/sys/class/dmi/id",
+        "/sys/dev",
+        "/sys/devices",
+        "/sys/devices/virtual/dmi/id",
+        "/sys/firmware",
+        "/sys/hypervisor",
+        "/sys/kernel",
+        "/sys/module",
+        "/sys/power",
+        "/sys/devices/virtual/powercap",
+      ],
       Tmpfs: {
         "/workspace": `rw,nosuid,nodev,noexec,size=${policy.workspaceBytes},nr_inodes=${policy.workspaceInodes},mode=0710`,
         "/run/flow-node": `rw,nosuid,nodev,noexec,size=${policy.nodeRuntimeBytes},nr_inodes=${policy.nodeRuntimeInodes},mode=0700`,

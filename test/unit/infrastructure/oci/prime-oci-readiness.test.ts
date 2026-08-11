@@ -14,6 +14,16 @@ describe("Prime OCI readiness", () => {
       identityDigest: "e".repeat(64),
       containerId: "f".repeat(64),
       trialId: `trial-${"b".repeat(48)}`,
+      imageDevice: { major: 8, minor: 1 },
+    });
+
+    expect(expected).toMatchObject({
+      process: { supervisorPid: 1 },
+      systemFiles: {
+        hostname: "flow-prime",
+        hosts: ["127.0.0.1 localhost flow-prime", "::1 localhost ip6-localhost ip6-loopback"],
+        resolver: ["nameserver 127.0.0.1", "search .", "options ndots:0"],
+      },
     });
 
     expect(() =>
@@ -22,6 +32,7 @@ describe("Prime OCI readiness", () => {
         identityDigest: "e".repeat(64),
         containerId: "f".repeat(64),
         trialId: `trial-${"b".repeat(48)}`,
+        imageDevice: { major: 8, minor: 1 },
       }),
     ).not.toThrow();
   });
@@ -36,6 +47,11 @@ describe("Prime OCI readiness", () => {
         (((value.process as Record<string, unknown>).nodeUid as number) = 1),
     ],
     [
+      "supervisor PID",
+      (value: Record<string, unknown>) =>
+        (((value.process as Record<string, unknown>).supervisorPid as number) = 2),
+    ],
+    [
       "seccomp",
       (value: Record<string, unknown>) =>
         (((value.process as Record<string, unknown>).seccompMode as number) = 0),
@@ -44,6 +60,11 @@ describe("Prime OCI readiness", () => {
       "memory",
       (value: Record<string, unknown>) =>
         (((value.limits as Record<string, unknown>).memoryMaxBytes as number) = 1),
+    ],
+    [
+      "I/O limit",
+      (value: Record<string, unknown>) =>
+        (((value.limits as Record<string, unknown>).imageReadBytesPerSecond as number) = 1),
     ],
     [
       "workspace quota",
@@ -55,6 +76,13 @@ describe("Prime OCI readiness", () => {
       "network",
       (value: Record<string, unknown>) =>
         (((value.network as Record<string, unknown>).interfaces as string[]) = ["eth0"]),
+    ],
+    [
+      "resolver",
+      (value: Record<string, unknown>) =>
+        (((value.systemFiles as Record<string, unknown>).resolver as string[]) = [
+          "search private.example",
+        ]),
     ],
     [
       "stream",
@@ -69,6 +97,7 @@ describe("Prime OCI readiness", () => {
       identityDigest: "e".repeat(64),
       containerId: "f".repeat(64),
       trialId: `trial-${"b".repeat(48)}`,
+      imageDevice: { path: "/dev/test-image", major: 8, minor: 1 },
     };
     const changed = structuredClone(createExpectedPrimeOciReadiness(input)) as Record<
       string,

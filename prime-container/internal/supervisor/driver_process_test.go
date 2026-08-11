@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/synaptiai/flow-harness/prime-container/internal/containerprotocol"
 )
@@ -71,6 +72,34 @@ func TestRunDriverProcessRejectsMissingHardeningProof(t *testing.T) {
 	}
 }
 
+func TestRunDriverProcessTerminatesDiagnosticOverflow(t *testing.T) {
+	started := time.Now()
+	_, err := RunDriverProcess(
+		&bytes.Buffer{},
+		&bytes.Buffer{},
+		[]byte(processTestHello),
+		DriverProcessOptions{
+			Executable: os.Args[0],
+			Arguments:  []string{"-test.run=TestPrimeDriverHelperProcess", "--"},
+			Environment: append(
+				os.Environ(),
+				"FLOW_PRIME_TEST_DRIVER=1",
+				"FLOW_PRIME_TEST_HARDENING=1",
+				"FLOW_PRIME_TEST_DIAGNOSTIC_OVERFLOW=1",
+			),
+			WorkingDirectory: t.TempDir(),
+			UID:              -1, GID: -1,
+			MaxDiagnosticBytes: 1024,
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "diagnostic exceeds") {
+		t.Fatalf("diagnostic overflow was not rejected: %v", err)
+	}
+	if time.Since(started) > 5*time.Second {
+		t.Fatal("diagnostic overflow did not settle within five seconds")
+	}
+}
+
 func TestPrimeDriverHelperProcess(t *testing.T) {
 	if os.Getenv("FLOW_PRIME_TEST_DRIVER") != "1" {
 		return
@@ -90,6 +119,13 @@ func TestPrimeDriverHelperProcess(t *testing.T) {
 		hardening := os.NewFile(4, "flow-prime-test-hardening")
 		if hardening == nil || hardening.Close() != nil {
 			os.Exit(120)
+		}
+	}
+	if os.Getenv("FLOW_PRIME_TEST_DIAGNOSTIC_OVERFLOW") == "1" {
+		for {
+			if _, err := os.Stderr.Write(bytes.Repeat([]byte("x"), 65536)); err != nil {
+				os.Exit(0)
+			}
 		}
 	}
 	socket := os.NewFile(3, "flow-prime-test-driver")

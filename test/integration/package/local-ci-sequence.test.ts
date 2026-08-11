@@ -24,8 +24,9 @@ describe("local CI sequence", () => {
     await writeExecutable(join(binaryRoot, "npm"), fakeCommandSource("npm", logPath, false));
     await writeExecutable(join(binaryRoot, "node"), fakeCommandSource("node", logPath, true));
 
+    const { FLOW_PRIME_PREPARED_ATTESTATION: _prepared, ...cleanEnvironment } = process.env;
     const result = await run(process.execPath, ["scripts/ci-local.mjs"], {
-      ...process.env,
+      ...cleanEnvironment,
       PATH: `${binaryRoot}${delimiter}${process.env.PATH ?? ""}`,
     });
 
@@ -42,8 +43,9 @@ describe("local CI sequence", () => {
             readonly imageResultPath: string | null;
           },
       );
-    const imageBuildIndex = commands.findIndex(
-      ({ command, args }) => command === "node" && args[0] === "scripts/verify-prime-image.mjs",
+    const preparationIndex = commands.findIndex(
+      ({ command, args }) =>
+        command === "node" && args.slice(-3).join(" ") === "runtime prepare prime-agent",
     );
     const coverageIndex = commands.findIndex(
       ({ command, args }) => command === "npm" && args.join(" ") === "run test:coverage",
@@ -56,14 +58,56 @@ describe("local CI sequence", () => {
         command === "node" && args.join(" ") === "scripts/audit-prime-dependencies.mjs",
     );
 
-    expect(imageBuildIndex).toBeGreaterThan(-1);
-    expect(coverageIndex).toBeGreaterThan(imageBuildIndex);
-    expect(runtimeIndex).toBeGreaterThan(imageBuildIndex);
-    expect(primeAuditIndex).toBeGreaterThan(imageBuildIndex);
+    expect(preparationIndex).toBeGreaterThan(-1);
+    expect(coverageIndex).toBeGreaterThan(preparationIndex);
+    expect(runtimeIndex).toBeGreaterThan(preparationIndex);
+    expect(primeAuditIndex).toBeGreaterThan(preparationIndex);
     expect(commands[coverageIndex]?.imageId).toBe(`sha256:${"a".repeat(64)}`);
     expect(commands[runtimeIndex]?.imageId).toBe(`sha256:${"a".repeat(64)}`);
     expect(commands[coverageIndex]?.imageResultPath).toMatch(/image-result\.json$/);
     expect(commands[runtimeIndex]?.imageResultPath).toBe(commands[coverageIndex]?.imageResultPath);
+  });
+
+  it("ignores an ambient prepared attestation and strips it from verified gates", async () => {
+    const root = await mkdtemp(join(tmpdir(), "flow-local-ci-prepared-"));
+    temporaryDirectories.push(root);
+    const binaryRoot = join(root, "bin");
+    const logPath = join(root, "commands.jsonl");
+    const attestationPath = join(root, "attestation.json");
+    await mkdir(binaryRoot);
+    await writeFile(attestationPath, JSON.stringify({ image: { id: `sha256:${"b".repeat(64)}` } }));
+    await writeExecutable(join(binaryRoot, "npm"), fakeCommandSource("npm", logPath, false));
+    await writeExecutable(join(binaryRoot, "node"), fakeCommandSource("node", logPath, true));
+
+    const result = await run(process.execPath, ["scripts/ci-local.mjs"], {
+      ...process.env,
+      PATH: `${binaryRoot}${delimiter}${process.env.PATH ?? ""}`,
+      FLOW_PRIME_PREPARED_ATTESTATION: attestationPath,
+    });
+
+    expect(result).toEqual({ code: 0, stderr: "" });
+    const commands = (await readFile(logPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            readonly command: string;
+            readonly args: readonly string[];
+            readonly imageId: string | null;
+            readonly preparedAttestation: string | null;
+          },
+      );
+    expect(
+      commands.some(
+        ({ command, args }) =>
+          command === "node" && args.slice(-3).join(" ") === "runtime prepare prime-agent",
+      ),
+    ).toBe(true);
+    const verified = commands.filter(({ imageId }) => imageId !== null);
+    expect(verified.length).toBeGreaterThan(0);
+    expect(verified.every(({ imageId }) => imageId === `sha256:${"a".repeat(64)}`)).toBe(true);
+    expect(verified.every(({ preparedAttestation }) => preparedAttestation === null)).toBe(true);
   });
 });
 
@@ -74,18 +118,20 @@ async function writeExecutable(path: string, source: string): Promise<void> {
 
 function fakeCommandSource(command: string, logPath: string, handlesImageOutput: boolean): string {
   return `#!${process.execPath}
-const { appendFileSync, writeFileSync } = require("node:fs");
+const { appendFileSync, mkdirSync, writeFileSync } = require("node:fs");
+const { join } = require("node:path");
 const args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({
   command: ${JSON.stringify(command)},
   args,
   imageId: process.env.FLOW_PRIME_TEST_IMAGE_ID ?? null,
   imageResultPath: process.env.FLOW_PRIME_TEST_IMAGE_RESULT ?? null,
+  preparedAttestation: process.env.FLOW_PRIME_PREPARED_ATTESTATION ?? null,
 }) + "\\n");
-if (${JSON.stringify(handlesImageOutput)} && args[0] === "scripts/verify-prime-image.mjs") {
-  const outputIndex = args.indexOf("--output");
-  if (outputIndex < 0 || args[outputIndex + 1] === undefined) process.exit(2);
-  writeFileSync(args[outputIndex + 1], JSON.stringify({ image: { id: "sha256:${"a".repeat(64)}" } }));
+if (${JSON.stringify(handlesImageOutput)} && args.slice(-3).join(" ") === "runtime prepare prime-agent") {
+  const runtimeRoot = join(process.cwd(), ".flow", "runtime", "prime-agent");
+  mkdirSync(runtimeRoot, { recursive: true });
+  writeFileSync(join(runtimeRoot, "oci-attestation.json"), JSON.stringify({ image: { id: "sha256:${"a".repeat(64)}" } }));
 }
 `;
 }

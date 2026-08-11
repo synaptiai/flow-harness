@@ -1,20 +1,24 @@
 import { createHash } from "node:crypto";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   encodePrimeContainerFrame,
+  MAX_PRIME_CONTAINER_DRIVER_BYTES,
   MAX_PRIME_CONTAINER_DRIVER_FRAMES,
+  MAX_PRIME_CONTAINER_ENCODED_TRANSFER_BYTES,
+  MAX_PRIME_CONTAINER_ENTRIES,
   MAX_PRIME_CONTAINER_FILE_BYTES,
   MAX_PRIME_CONTAINER_FILE_CHUNK_BYTES,
   MAX_PRIME_CONTAINER_PATH_BYTES,
   MAX_PRIME_CONTAINER_PAYLOAD_BYTES,
+  MAX_PRIME_CONTAINER_STREAM_BYTES,
+  MAX_PRIME_CONTAINER_TRANSFER_BYTES,
   MAX_PRIME_CONTAINER_TRANSFER_FRAMES,
-  MAX_PRIME_CONTAINER_ENCODED_TRANSFER_BYTES,
-  MAX_PRIME_CONTAINER_DRIVER_BYTES,
   PrimeContainerFrameDecoder,
   PrimeContainerFrameType,
   PrimeContainerProtocolSequence,
+  PrimeContainerStreamByteBudget,
   PrimeContainerTransferValidator,
   parsePrimeContainerManifestEntryPayload,
   parsePrimeContainerTransferStartPayload,
@@ -88,6 +92,27 @@ describe("Prime container frame codec", () => {
     partialPayload.push(Buffer.from([PrimeContainerFrameType.Readiness, 0, 0, 0, 2, 1]));
     expect(() => partialPayload.finish()).toThrow(/partial/i);
   });
+
+  it("accepts the exact attached-stream limit and rejects one byte over", () => {
+    const budget = new PrimeContainerStreamByteBudget();
+
+    expect(() => budget.accept(MAX_PRIME_CONTAINER_STREAM_BYTES)).not.toThrow();
+    expect(() => budget.accept(1)).toThrow(/stream.*byte/i);
+  });
+
+  it("charges each decoder push to the attached-stream budget", () => {
+    const accept = vi.spyOn(PrimeContainerStreamByteBudget.prototype, "accept");
+    const frame = encodePrimeContainerFrame(PrimeContainerFrameType.Readiness, Buffer.from("one"));
+    try {
+      const decoder = new PrimeContainerFrameDecoder();
+
+      expect(decoder.push(frame)).toHaveLength(1);
+      expect(accept).toHaveBeenCalledOnce();
+      expect(accept).toHaveBeenCalledWith(frame.byteLength);
+    } finally {
+      accept.mockRestore();
+    }
+  });
 });
 
 describe("Prime container transfer", () => {
@@ -143,6 +168,14 @@ describe("Prime container transfer", () => {
       ),
     ).not.toThrow();
 
+    const overlongPath = Array.from({ length: 17 }, () => "a".repeat(240)).join("/");
+    expect(Buffer.byteLength(overlongPath)).toBe(MAX_PRIME_CONTAINER_PATH_BYTES + 1);
+    expect(() =>
+      parsePrimeContainerManifestEntryPayload(
+        json({ path: overlongPath, type: "directory", mode: 0o777 }),
+      ),
+    ).toThrow(/path.*byte/i);
+
     for (const path of [".flow-prime", ".flow-prime/private", "a//b", "a/../b", "a\\b"]) {
       expect(() =>
         parsePrimeContainerManifestEntryPayload(json({ path, type: "directory", mode: 0o755 })),
@@ -162,6 +195,17 @@ describe("Prime container transfer", () => {
           path: "a",
           type: "file",
           mode: 0o644,
+          size: MAX_PRIME_CONTAINER_FILE_BYTES,
+          sha256: emptySha256(),
+        }),
+      ),
+    ).not.toThrow();
+    expect(() =>
+      parsePrimeContainerManifestEntryPayload(
+        json({
+          path: "a",
+          type: "file",
+          mode: 0o644,
           size: MAX_PRIME_CONTAINER_FILE_BYTES + 1,
           sha256: emptySha256(),
         }),
@@ -175,6 +219,23 @@ describe("Prime container transfer", () => {
         Buffer.from('{"entryCount":1,"entryCount":2,"totalBytes":0,"manifestSha256":"x"}'),
       ),
     ).toThrow(/strict JSON/i);
+
+    const exactStart = {
+      entryCount: MAX_PRIME_CONTAINER_ENTRIES,
+      totalBytes: MAX_PRIME_CONTAINER_TRANSFER_BYTES,
+      manifestSha256: emptySha256(),
+    };
+    expect(() => parsePrimeContainerTransferStartPayload(json(exactStart))).not.toThrow();
+    expect(() =>
+      parsePrimeContainerTransferStartPayload(
+        json({ ...exactStart, entryCount: MAX_PRIME_CONTAINER_ENTRIES + 1 }),
+      ),
+    ).toThrow(/transfer start/i);
+    expect(() =>
+      parsePrimeContainerTransferStartPayload(
+        json({ ...exactStart, totalBytes: MAX_PRIME_CONTAINER_TRANSFER_BYTES + 1 }),
+      ),
+    ).toThrow(/transfer start/i);
   });
 });
 

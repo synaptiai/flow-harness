@@ -57,12 +57,14 @@ type Frame struct {
 }
 
 type ReadinessChallenge struct {
-	Version        int    `json:"version"`
-	ContainerID    string `json:"containerId"`
-	TrialID        string `json:"trialId"`
-	IdentityDigest string `json:"identityDigest"`
-	ImageID        string `json:"imageId"`
-	PolicyDigest   string `json:"policyDigest"`
+	Version          int    `json:"version"`
+	ContainerID      string `json:"containerId"`
+	TrialID          string `json:"trialId"`
+	IdentityDigest   string `json:"identityDigest"`
+	ImageID          string `json:"imageId"`
+	PolicyDigest     string `json:"policyDigest"`
+	ImageDeviceMajor int    `json:"imageDeviceMajor"`
+	ImageDeviceMinor int    `json:"imageDeviceMinor"`
 }
 
 type EntryType string
@@ -150,7 +152,8 @@ func ParseReadinessChallenge(source []byte) (ReadinessChallenge, error) {
 		!trialIDPattern.MatchString(challenge.TrialID) ||
 		!sha256Pattern.MatchString(challenge.IdentityDigest) ||
 		!imageIDPattern.MatchString(challenge.ImageID) ||
-		!sha256Pattern.MatchString(challenge.PolicyDigest) {
+		!sha256Pattern.MatchString(challenge.PolicyDigest) ||
+		challenge.ImageDeviceMajor <= 0 || challenge.ImageDeviceMinor < 0 {
 		return ReadinessChallenge{}, errors.New("Prime readiness challenge violates the closed schema")
 	}
 	return challenge, nil

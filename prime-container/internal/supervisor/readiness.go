@@ -8,7 +8,14 @@ import (
 	"github.com/synaptiai/flow-harness/prime-container/internal/containerprotocol"
 )
 
+const (
+	fixedHostnameSource = "flow-prime\n"
+	fixedHostsSource    = "127.0.0.1 localhost flow-prime\n::1 localhost ip6-localhost ip6-loopback\n"
+	fixedResolverSource = "nameserver 127.0.0.1\nsearch .\noptions ndots:0\n"
+)
+
 type ProcessReadiness struct {
+	SupervisorPID       int      `json:"supervisorPid"`
 	SupervisorUID       int      `json:"supervisorUid"`
 	NodeUID             int      `json:"nodeUid"`
 	PythonUID           int      `json:"pythonUid"`
@@ -29,6 +36,10 @@ type LimitReadiness struct {
 	MemorySwapMaxBytes int64  `json:"memorySwapMaxBytes"`
 	CPUQuotaMicros     int64  `json:"cpuQuotaMicros"`
 	CPUPeriodMicros    int64  `json:"cpuPeriodMicros"`
+	ImageDeviceMajor   int    `json:"imageDeviceMajor"`
+	ImageDeviceMinor   int    `json:"imageDeviceMinor"`
+	ImageReadBPS       int64  `json:"imageReadBytesPerSecond"`
+	ImageReadIOPS      int64  `json:"imageReadOperationsPerSecond"`
 	OpenFilesSoft      uint64 `json:"openFilesSoft"`
 	OpenFilesHard      uint64 `json:"openFilesHard"`
 	UserProcessesSoft  uint64 `json:"userProcessesSoft"`
@@ -60,6 +71,12 @@ type NetworkReadiness struct {
 	Routes     []string `json:"routes"`
 }
 
+type SystemFileReadiness struct {
+	Hostname string   `json:"hostname"`
+	Hosts    []string `json:"hosts"`
+	Resolver []string `json:"resolver"`
+}
+
 type StreamReadiness struct {
 	StdinAttached  bool `json:"stdinAttached"`
 	StdoutAttached bool `json:"stdoutAttached"`
@@ -72,6 +89,7 @@ type ReadinessMeasurement struct {
 	Limits      LimitReadiness      `json:"limits"`
 	Filesystems FilesystemReadiness `json:"filesystems"`
 	Network     NetworkReadiness    `json:"network"`
+	SystemFiles SystemFileReadiness `json:"systemFiles"`
 	Streams     StreamReadiness     `json:"streams"`
 	LogDriver   string              `json:"logDriver"`
 	Healthcheck string              `json:"healthcheck"`
@@ -91,7 +109,9 @@ func BuildReadiness(
 	challenge containerprotocol.ReadinessChallenge,
 	measurement ReadinessMeasurement,
 ) ([]byte, error) {
-	if !reflect.DeepEqual(measurement, expectedReadinessMeasurement()) {
+	if !reflect.DeepEqual(measurement, expectedReadinessMeasurement(
+		challenge.ImageDeviceMajor, challenge.ImageDeviceMinor,
+	)) {
 		return nil, errors.New("Prime effective controls contradict the fixed runtime policy")
 	}
 	payload, err := json.Marshal(Readiness{
@@ -105,10 +125,10 @@ func BuildReadiness(
 	return payload, nil
 }
 
-func expectedReadinessMeasurement() ReadinessMeasurement {
+func expectedReadinessMeasurement(imageDeviceMajor int, imageDeviceMinor int) ReadinessMeasurement {
 	return ReadinessMeasurement{
 		Process: ProcessReadiness{
-			SupervisorUID: 0, NodeUID: NodeUID, PythonUID: PythonUID, SharedGID: SharedGID,
+			SupervisorPID: 1, SupervisorUID: 0, NodeUID: NodeUID, PythonUID: PythonUID, SharedGID: SharedGID,
 			SupplementaryGroups: []int{SharedGID},
 			Capabilities:        []string{"CHOWN", "DAC_READ_SEARCH", "FOWNER", "KILL", "SETGID", "SETUID"},
 			Dumpable:            false, NoNewPrivileges: true, SeccompMode: 2,
@@ -117,6 +137,8 @@ func expectedReadinessMeasurement() ReadinessMeasurement {
 		Limits: LimitReadiness{
 			CgroupVersion: 2, PidsMax: 64, MemoryMaxBytes: 2147483648, MemorySwapMaxBytes: 0,
 			CPUQuotaMicros: 200000, CPUPeriodMicros: 100000,
+			ImageDeviceMajor: imageDeviceMajor, ImageDeviceMinor: imageDeviceMinor,
+			ImageReadBPS: 67108864, ImageReadIOPS: 4096,
 			OpenFilesSoft: 256, OpenFilesHard: 256,
 			UserProcessesSoft: 64, UserProcessesHard: 64,
 			FileSizeSoftBytes: 268435456, FileSizeHardBytes: 268435456,
@@ -128,6 +150,11 @@ func expectedReadinessMeasurement() ReadinessMeasurement {
 			SupervisorRuntime: fixedFilesystemControl(16777216, 256, 0700),
 		},
 		Network: NetworkReadiness{Namespace: "private", Interfaces: []string{"lo"}, Routes: []string{}},
+		SystemFiles: SystemFileReadiness{
+			Hostname: "flow-prime",
+			Hosts:    []string{"127.0.0.1 localhost flow-prime", "::1 localhost ip6-localhost ip6-loopback"},
+			Resolver: []string{"nameserver 127.0.0.1", "search .", "options ndots:0"},
+		},
 		Streams: StreamReadiness{
 			StdinAttached: true, StdoutAttached: true, StderrAttached: true, TTY: false,
 		},

@@ -104,6 +104,8 @@ const readinessChallengeSchema = z
     identityDigest: sha256Schema,
     imageId: z.string().regex(/^sha256:[a-f0-9]{64}$/),
     policyDigest: sha256Schema,
+    imageDeviceMajor: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    imageDeviceMinor: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   })
   .strict();
 
@@ -127,9 +129,23 @@ export function encodePrimeContainerFrame(
   return frame;
 }
 
+export class PrimeContainerStreamByteBudget {
+  #receivedBytes = 0;
+
+  accept(byteLength: number): void {
+    if (!Number.isSafeInteger(byteLength) || byteLength < 0) {
+      throw new Error("Prime container stream byte count is invalid");
+    }
+    if (byteLength > MAX_PRIME_CONTAINER_STREAM_BYTES - this.#receivedBytes) {
+      throw new Error("Prime container stream exceeds the byte limit");
+    }
+    this.#receivedBytes += byteLength;
+  }
+}
+
 export class PrimeContainerFrameDecoder {
   #pending = Buffer.alloc(0);
-  #receivedBytes = 0;
+  readonly #streamBudget = new PrimeContainerStreamByteBudget();
   #finished = false;
 
   push(bytes: Uint8Array): PrimeContainerFrame[] {
@@ -137,10 +153,7 @@ export class PrimeContainerFrameDecoder {
       throw new Error("Prime container frame decoder is already finished");
     }
 
-    this.#receivedBytes += bytes.byteLength;
-    if (this.#receivedBytes > MAX_PRIME_CONTAINER_STREAM_BYTES) {
-      throw new Error("Prime container stream exceeds the byte limit");
-    }
+    this.#streamBudget.accept(bytes.byteLength);
 
     if (bytes.byteLength > 0) {
       this.#pending = Buffer.concat([this.#pending, Buffer.from(bytes)]);

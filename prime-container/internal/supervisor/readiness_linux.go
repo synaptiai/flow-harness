@@ -3,8 +3,10 @@
 package supervisor
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"sort"
@@ -29,10 +31,10 @@ func HardenSupervisor() error {
 	if _, _, errno := syscall.Syscall6(syscall.SYS_PRCTL, prSetDumpable, 0, 0, 0, 0, 0); errno != 0 {
 		return fmt.Errorf("disable Prime supervisor dumpable state: %w", errno)
 	}
-	return nil
+	return replaceFixedSystemFiles()
 }
 
-func MeasureReadiness() (ReadinessMeasurement, error) {
+func MeasureReadiness(imageDeviceMajor int, imageDeviceMinor int) (ReadinessMeasurement, error) {
 	statusSource, err := os.ReadFile("/proc/self/status")
 	if err != nil {
 		return ReadinessMeasurement{}, fmt.Errorf("read Prime process status: %w", err)
@@ -54,7 +56,7 @@ func MeasureReadiness() (ReadinessMeasurement, error) {
 	if errno != 0 {
 		return ReadinessMeasurement{}, fmt.Errorf("read Prime seccomp state: %w", errno)
 	}
-	limits, err := measureLimits()
+	limits, err := measureLimits(imageDeviceMajor, imageDeviceMinor)
 	if err != nil {
 		return ReadinessMeasurement{}, err
 	}
@@ -66,9 +68,14 @@ func MeasureReadiness() (ReadinessMeasurement, error) {
 	if err != nil {
 		return ReadinessMeasurement{}, err
 	}
+	systemFiles, err := measureSystemFiles()
+	if err != nil {
+		return ReadinessMeasurement{}, err
+	}
 	return ReadinessMeasurement{
 		Process: ProcessReadiness{
-			SupervisorUID: os.Geteuid(), NodeUID: NodeUID, PythonUID: PythonUID, SharedGID: SharedGID,
+			SupervisorPID: os.Getpid(), SupervisorUID: os.Geteuid(),
+			NodeUID: NodeUID, PythonUID: PythonUID, SharedGID: SharedGID,
 			SupplementaryGroups: groups, Capabilities: status.Capabilities,
 			Dumpable: dumpable != 0, NoNewPrivileges: status.NoNewPrivileges,
 			SeccompMode: int(seccomp), CoreSoftBytes: limitsCore.Cur, CoreHardBytes: limitsCore.Max,
@@ -76,6 +83,7 @@ func MeasureReadiness() (ReadinessMeasurement, error) {
 		Limits:      limits,
 		Filesystems: filesystems,
 		Network:     network,
+		SystemFiles: systemFiles,
 		Streams: StreamReadiness{
 			StdinAttached: descriptorExists(0), StdoutAttached: descriptorExists(1),
 			StderrAttached: descriptorExists(2), TTY: descriptorIsTTY(0) || descriptorIsTTY(1) || descriptorIsTTY(2),
@@ -84,9 +92,90 @@ func MeasureReadiness() (ReadinessMeasurement, error) {
 	}, nil
 }
 
+func replaceFixedSystemFiles() error {
+	files := []struct {
+		path    string
+		content string
+	}{
+		{path: "/etc/hostname", content: fixedHostnameSource},
+		{path: "/etc/hosts", content: fixedHostsSource},
+		{path: "/etc/resolv.conf", content: fixedResolverSource},
+	}
+	for _, item := range files {
+		if err := replaceFixedSystemFile(item.path, item.content); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func replaceFixedSystemFile(path string, content string) error {
+	descriptor, err := syscall.Open(path, syscall.O_WRONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return fmt.Errorf("open fixed Prime system file %s: %w", path, err)
+	}
+	file := os.NewFile(uintptr(descriptor), path)
+	defer file.Close()
+	information, err := file.Stat()
+	if err != nil || !information.Mode().IsRegular() {
+		return fmt.Errorf("inspect fixed Prime system file %s: %w", path, err)
+	}
+	if err := file.Truncate(0); err != nil {
+		return fmt.Errorf("truncate fixed Prime system file %s: %w", path, err)
+	}
+	if _, err := file.WriteString(content); err != nil {
+		return fmt.Errorf("write fixed Prime system file %s: %w", path, err)
+	}
+	if err := file.Chmod(0444); err != nil {
+		return fmt.Errorf("set fixed Prime system file mode %s: %w", path, err)
+	}
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("synchronize fixed Prime system file %s: %w", path, err)
+	}
+	return nil
+}
+
+func measureSystemFiles() (SystemFileReadiness, error) {
+	if err := verifyFixedSystemFile("/etc/hostname", fixedHostnameSource); err != nil {
+		return SystemFileReadiness{}, err
+	}
+	if err := verifyFixedSystemFile("/etc/hosts", fixedHostsSource); err != nil {
+		return SystemFileReadiness{}, err
+	}
+	if err := verifyFixedSystemFile("/etc/resolv.conf", fixedResolverSource); err != nil {
+		return SystemFileReadiness{}, err
+	}
+	return SystemFileReadiness{
+		Hostname: "flow-prime",
+		Hosts:    []string{"127.0.0.1 localhost flow-prime", "::1 localhost ip6-localhost ip6-loopback"},
+		Resolver: []string{"nameserver 127.0.0.1", "search .", "options ndots:0"},
+	}, nil
+}
+
+func verifyFixedSystemFile(path string, expected string) error {
+	descriptor, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return fmt.Errorf("open fixed Prime system file %s: %w", path, err)
+	}
+	file := os.NewFile(uintptr(descriptor), path)
+	defer file.Close()
+	information, err := file.Stat()
+	if err != nil || !information.Mode().IsRegular() || information.Size() > 4096 {
+		return fmt.Errorf("inspect fixed Prime system file %s: %w", path, err)
+	}
+	content, err := io.ReadAll(io.LimitReader(file, 4097))
+	if err != nil {
+		return fmt.Errorf("read fixed Prime system file %s: %w", path, err)
+	}
+	if !bytes.Equal(content, []byte(expected)) {
+		return fmt.Errorf("fixed Prime system file %s contradicts the admitted content", path)
+	}
+	return nil
+}
+
 var limitsCore syscall.Rlimit
 
-func measureLimits() (LimitReadiness, error) {
+func measureLimits(imageDeviceMajor int, imageDeviceMinor int) (LimitReadiness, error) {
 	if _, err := os.Stat("/sys/fs/cgroup/cgroup.controllers"); err != nil {
 		return LimitReadiness{}, errors.New("Prime runtime does not use cgroup version two")
 	}
@@ -110,6 +199,10 @@ func measureLimits() (LimitReadiness, error) {
 	if err != nil {
 		return LimitReadiness{}, err
 	}
+	readBPS, readIOPS, err := readIOControl(imageDeviceMajor, imageDeviceMinor)
+	if err != nil {
+		return LimitReadiness{}, err
+	}
 	nofile, err := getRlimit(syscall.RLIMIT_NOFILE, "open files")
 	if err != nil {
 		return LimitReadiness{}, err
@@ -130,10 +223,48 @@ func measureLimits() (LimitReadiness, error) {
 	return LimitReadiness{
 		CgroupVersion: 2, PidsMax: pids, MemoryMaxBytes: memory, MemorySwapMaxBytes: swap,
 		CPUQuotaMicros: quota, CPUPeriodMicros: period,
+		ImageDeviceMajor: imageDeviceMajor, ImageDeviceMinor: imageDeviceMinor,
+		ImageReadBPS: readBPS, ImageReadIOPS: readIOPS,
 		OpenFilesSoft: nofile.Cur, OpenFilesHard: nofile.Max,
 		UserProcessesSoft: nproc.Cur, UserProcessesHard: nproc.Max,
 		FileSizeSoftBytes: fsize.Cur, FileSizeHardBytes: fsize.Max,
 	}, nil
+}
+
+func readIOControl(major int, minor int) (int64, int64, error) {
+	source, err := os.ReadFile("/sys/fs/cgroup/io.max")
+	if err != nil {
+		return 0, 0, fmt.Errorf("read Prime cgroup io.max: %w", err)
+	}
+	target := fmt.Sprintf("%d:%d", major, minor)
+	for _, line := range strings.Split(strings.TrimSpace(string(source)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || fields[0] != target {
+			continue
+		}
+		values := map[string]int64{}
+		for _, field := range fields[1:] {
+			parts := strings.SplitN(field, "=", 2)
+			if len(parts) != 2 || (parts[0] != "rbps" && parts[0] != "riops") {
+				continue
+			}
+			value, parseErr := strconv.ParseInt(parts[1], 10, 64)
+			if parseErr != nil || value < 0 {
+				return 0, 0, errors.New("Prime cgroup io.max contains an invalid read limit")
+			}
+			if _, exists := values[parts[0]]; exists {
+				return 0, 0, errors.New("Prime cgroup io.max contains a duplicate read limit")
+			}
+			values[parts[0]] = value
+		}
+		readBPS, hasBPS := values["rbps"]
+		readIOPS, hasIOPS := values["riops"]
+		if !hasBPS || !hasIOPS {
+			return 0, 0, errors.New("Prime cgroup io.max omits an admitted read limit")
+		}
+		return readBPS, readIOPS, nil
+	}
+	return 0, 0, errors.New("Prime cgroup io.max omits the admitted image device")
 }
 
 func readCgroupInteger(name string) (int64, error) {

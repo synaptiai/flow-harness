@@ -7,6 +7,7 @@ import type { PrimeOciAttachedTransport } from "./attached-prime-oci-operator.js
 const DEFAULT_MAX_RESPONSE_BYTES = 1_048_576;
 const DEFAULT_MAX_ATTACH_STDERR_BYTES = 65_536;
 const DEFAULT_MAX_ATTACH_STDOUT_FRAME_BYTES = 1_048_581;
+const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const MAX_REQUEST_BYTES = 1_048_576;
 const containerReferencePattern = /^(?:[a-f0-9]{64}|flow-prime-[a-f0-9]{32}|flow-prime-global-v1)$/;
 const imageReferencePattern = /^sha256:[a-f0-9]{64}$/;
@@ -39,6 +40,10 @@ export interface DockerUnixAttachRequest {
 
 export interface DockerUnixAttachTransport {
   attach(request: DockerUnixAttachRequest): Promise<PrimeOciAttachedTransport>;
+}
+
+export interface NodeDockerUnixTransportOptions {
+  readonly requestTimeoutMs?: number;
 }
 
 export interface DockerUnixApiClientOptions {
@@ -326,9 +331,30 @@ export class DockerRawStreamDecoder {
 }
 
 export class NodeDockerUnixApiTransport implements DockerUnixApiTransport {
+  readonly #requestTimeoutMs: number;
+
+  constructor(options: NodeDockerUnixTransportOptions = {}) {
+    this.#requestTimeoutMs = boundedPositiveInteger(
+      options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
+      "Docker API request timeout",
+    );
+  }
+
   request(input: DockerUnixApiRequest): Promise<DockerUnixApiResponse> {
     throwIfAborted(input.signal);
     return new Promise((resolve, reject) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const settle = <T>(callback: (value: T) => void, value: T) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (timer !== undefined) {
+          clearTimeout(timer);
+        }
+        callback(value);
+      };
       const request = httpRequest(
         {
           socketPath: input.socketPath,
@@ -350,22 +376,40 @@ export class NodeDockerUnixApiTransport implements DockerUnixApiTransport {
           response.on("data", (chunk: Buffer) => {
             size += chunk.byteLength;
             if (size > input.maxResponseBytes) {
-              request.destroy(
-                new Error(`Docker API response exceeds ${input.maxResponseBytes} bytes`),
+              const error = new Error(
+                `Docker API response exceeds ${input.maxResponseBytes} bytes`,
               );
+              settle(reject, error);
+              response.destroy();
+              request.destroy();
               return;
             }
             chunks.push(chunk);
           });
+          response.once("aborted", () => {
+            settle(reject, new Error("Docker API response was aborted"));
+          });
+          response.once("error", (error) => settle(reject, error));
+          response.once("close", () => {
+            if (!response.complete) {
+              settle(reject, new Error("Docker API response closed before completion"));
+            }
+          });
           response.on("end", () => {
-            resolve({
+            settle(resolve, {
               statusCode: response.statusCode ?? 0,
               body: Buffer.concat(chunks).toString("utf8"),
             });
           });
         },
       );
-      request.once("error", reject);
+      timer = setTimeout(() => {
+        const error = new Error(`Docker API request exceeded ${this.#requestTimeoutMs}ms`);
+        settle(reject, error);
+        request.destroy();
+      }, this.#requestTimeoutMs);
+      timer.unref();
+      request.once("error", (error) => settle(reject, error));
       if (input.body !== undefined) {
         request.write(input.body);
       }
@@ -375,9 +419,30 @@ export class NodeDockerUnixApiTransport implements DockerUnixApiTransport {
 }
 
 export class NodeDockerUnixAttachTransport implements DockerUnixAttachTransport {
+  readonly #requestTimeoutMs: number;
+
+  constructor(options: NodeDockerUnixTransportOptions = {}) {
+    this.#requestTimeoutMs = boundedPositiveInteger(
+      options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
+      "Docker attach request timeout",
+    );
+  }
+
   attach(input: DockerUnixAttachRequest): Promise<PrimeOciAttachedTransport> {
     throwIfAborted(input.signal);
     return new Promise((resolve, reject) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const settle = <T>(callback: (value: T) => void, value: T) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (timer !== undefined) {
+          clearTimeout(timer);
+        }
+        callback(value);
+      };
       const request = httpRequest({
         socketPath: input.socketPath,
         method: "POST",
@@ -386,13 +451,19 @@ export class NodeDockerUnixAttachTransport implements DockerUnixAttachTransport 
         signal: input.signal,
       });
       request.once("upgrade", (_response, socket, head) => {
-        resolve(new NodeDockerAttachedTransport(socket, head, input));
+        settle(resolve, new NodeDockerAttachedTransport(socket, head, input));
       });
       request.once("response", (response) => {
         response.resume();
-        reject(new Error(`Docker attach returned status ${response.statusCode ?? 0}`));
+        settle(reject, new Error(`Docker attach returned status ${response.statusCode ?? 0}`));
       });
-      request.once("error", reject);
+      timer = setTimeout(() => {
+        const error = new Error(`Docker attach request exceeded ${this.#requestTimeoutMs}ms`);
+        settle(reject, error);
+        request.destroy();
+      }, this.#requestTimeoutMs);
+      timer.unref();
+      request.once("error", (error) => settle(reject, error));
       request.end();
     });
   }

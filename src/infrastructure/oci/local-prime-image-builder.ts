@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { type BigIntStats, constants } from "node:fs";
 import {
@@ -12,12 +12,14 @@ import {
   readdir,
   readFile,
   realpath,
+  rename,
   rm,
   utimes,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
-import { promisify } from "node:util";
+import { performance } from "node:perf_hooks";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { z } from "zod";
 
@@ -25,16 +27,21 @@ import { parsePrimeOciImageIdentity } from "../../domain/evaluation/external-har
 import { inspectPrimeImageArchive } from "./prime-image-archive.js";
 import type { PrimeOciPreparedBuild } from "./prime-oci-preparation.js";
 
-const executeFile = promisify(execFile);
 const MAX_CONTEXT_ENTRIES = 131_072;
 const MAX_CONTEXT_BYTES = 2_147_483_648;
 const MAX_DOCKER_OUTPUT_BYTES = 16_777_216;
 const MAX_DOCKER_COMMAND_MS = 1_800_000;
 const MAX_PRIME_ARCHIVE_BYTES = 67_108_864;
 const MAX_PRIME_ARCHIVE_DOWNLOAD_MS = 60_000;
+const MAX_RECOVERY_OPERATIONS = 16;
+const MAX_RECOVERY_JOURNAL_BYTES = 8_192;
+const RECOVERY_JOURNAL = "recovery.json";
 const FIXED_BUILD_TIME = new Date(1_786_127_940_000);
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const imageDigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+const buildkitImageReferenceSchema = z
+  .string()
+  .regex(/^moby\/buildkit:[a-z0-9.-]+@sha256:[a-f0-9]{64}$/);
 const buildMetadataSchema = z
   .object({
     "containerimage.config.digest": imageDigestSchema,
@@ -46,6 +53,7 @@ const buildInputsSchema = z
     version: z.literal(1),
     platform: z.literal("linux/amd64"),
     sourceDateEpoch: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    buildkit: z.object({ image: buildkitImageReferenceSchema }).strict(),
     baseImages: z.object({ golang: z.string(), node: z.string(), python: z.string() }).strict(),
     primeAgent: z
       .object({
@@ -76,6 +84,39 @@ const inspectionSchema = z
       .passthrough(),
   )
   .length(1);
+const builderContainerInspectionSchema = z
+  .array(
+    z
+      .object({
+        Image: imageDigestSchema,
+        Config: z.object({ Image: buildkitImageReferenceSchema }).passthrough(),
+      })
+      .passthrough(),
+  )
+  .length(1);
+const recoveryJournalSchema = z
+  .object({
+    version: z.literal(1),
+    hostname: z.string().min(1).max(255),
+    pid: z.number().int().positive().max(2_147_483_647),
+    bootId: z.string().min(1).max(255),
+    processStartTicks: z.string().regex(/^\d+$/),
+    builderName: z.string().regex(/^flow-prime-builder-[12]-[a-f0-9]{32}$/),
+    builderContainerName: z
+      .string()
+      .regex(/^buildx_buildkit_flow-prime-builder-[12]-[a-f0-9]{32}0$/),
+    buildkitImageReference: buildkitImageReferenceSchema,
+    temporaryTag: z.string().regex(/^flow-prime-runtime:preparation-[12]-[a-f0-9]{32}$/),
+    probeContainerName: z.string().regex(/^flow-prime-probe-[12]-[a-f0-9]{32}$/),
+    imageId: imageDigestSchema.optional(),
+    canonicalReference: z
+      .string()
+      .regex(/^flow-prime-runtime:sha256-[a-f0-9]{64}$/)
+      .optional(),
+    canonicalReferenceExisted: z.boolean().optional(),
+  })
+  .strict();
+type RecoveryJournal = z.infer<typeof recoveryJournalSchema>;
 const packageSchema = z
   .object({ name: z.string().min(1).max(256), version: z.string().min(1).max(256) })
   .strict();
@@ -121,6 +162,7 @@ const CONTEXT_DIRECTORIES = Object.freeze(["cmd", "internal", "native"]);
 
 export interface PrimeDockerCommandOptions {
   readonly environmentRoot: string;
+  readonly signal?: AbortSignal;
 }
 
 export interface LocalPrimeImageBuilderOptions {
@@ -129,23 +171,37 @@ export interface LocalPrimeImageBuilderOptions {
   readonly dockerBuildxExecutable: string;
   readonly temporaryRoot?: string;
   readonly run?: (args: readonly string[], options: PrimeDockerCommandOptions) => Promise<string>;
+  readonly cleanupRun?: (
+    args: readonly string[],
+    options: PrimeDockerCommandOptions,
+  ) => Promise<string>;
   readonly nonce?: () => string;
   readonly verifyPrimeArchive?: (input: {
     readonly url: string;
     readonly sha256: string;
     readonly integrity: string;
+    readonly signal?: AbortSignal;
   }) => Promise<void>;
   readonly inspectImageArchive?: typeof inspectPrimeImageArchive;
+  readonly retainedImageId?: string;
 }
 
 export class LocalPrimeImageBuilder {
+  readonly #completedOperations: {
+    readonly reference: string;
+    readonly imageId: string;
+    readonly operationRoot: string;
+    readonly ownsReference: boolean;
+  }[] = [];
   readonly #dockerBuildxExecutable: string;
   readonly #dockerExecutable: string;
   readonly #nonce: () => string;
   readonly #packageRoot: string;
   readonly #inspectImageArchive: typeof inspectPrimeImageArchive;
   readonly #run: NonNullable<LocalPrimeImageBuilderOptions["run"]>;
+  readonly #cleanupRun: NonNullable<LocalPrimeImageBuilderOptions["cleanupRun"]>;
   readonly #temporaryRoot: string;
+  readonly #retainedImageId: string | undefined;
   readonly #verifyPrimeArchive: NonNullable<LocalPrimeImageBuilderOptions["verifyPrimeArchive"]>;
 
   constructor(options: LocalPrimeImageBuilderOptions) {
@@ -153,35 +209,109 @@ export class LocalPrimeImageBuilder {
     this.#dockerExecutable = resolve(options.dockerExecutable);
     this.#dockerBuildxExecutable = resolve(options.dockerBuildxExecutable);
     this.#temporaryRoot = resolve(options.temporaryRoot ?? tmpdir());
+    this.#retainedImageId = options.retainedImageId;
     this.#run =
       options.run ??
       ((args, commandOptions) =>
-        runLocalDockerCommand(this.#dockerExecutable, args, commandOptions.environmentRoot));
+        runLocalDockerCommand(
+          this.#dockerExecutable,
+          args,
+          commandOptions.environmentRoot,
+          commandOptions.signal,
+        ));
+    this.#cleanupRun = options.cleanupRun ?? this.#run;
     this.#nonce = options.nonce ?? (() => randomUUID().replaceAll("-", ""));
     this.#verifyPrimeArchive = options.verifyPrimeArchive ?? downloadAndVerifyPrimeAgentArchive;
     this.#inspectImageArchive = options.inspectImageArchive ?? inspectPrimeImageArchive;
   }
 
-  async build(buildNumber: 1 | 2): Promise<PrimeOciPreparedBuild> {
+  async build(buildNumber: 1 | 2, signal?: AbortSignal): Promise<PrimeOciPreparedBuild> {
+    throwIfAborted(signal);
+    await this.recoverInterruptedBuilds();
+    throwIfAborted(signal);
     const operationRoot = await realpath(
       await mkdtemp(join(this.#temporaryRoot, `flow-prime-image-${buildNumber}-`)),
     );
+    const operationNonce = this.#nonce();
+    const builderName = `flow-prime-builder-${buildNumber}-${operationNonce}`;
+    const builderContainerName = `buildx_buildkit_${builderName}0`;
+    const temporaryTag = `flow-prime-runtime:preparation-${buildNumber}-${operationNonce}`;
+    const probeContainerName = `flow-prime-probe-${buildNumber}-${operationNonce}`;
+    const environmentRoot = join(operationRoot, "docker-environment");
+    const operationOptions: PrimeDockerCommandOptions = {
+      environmentRoot,
+      ...(signal === undefined ? {} : { signal }),
+    };
+    let buildResult: PrimeOciPreparedBuild | undefined;
+    let buildError: unknown;
+    let journal: RecoveryJournal | undefined;
     try {
       const contextRoot = join(operationRoot, "context");
-      const environmentRoot = join(operationRoot, "docker-environment");
       await mkdir(contextRoot, { mode: 0o700 });
       await mkdir(environmentRoot, { mode: 0o700 });
-      await stageDockerBuildxPlugin(this.#dockerBuildxExecutable, environmentRoot);
-      const inputs = await stageBuildContext(this.#packageRoot, contextRoot);
-      await this.#verifyPrimeArchive(inputs.primeAgent);
-      const buildInputSha256 = await hashTree(contextRoot);
+      const buildx = await stageDockerBuildxPlugin(
+        this.#dockerBuildxExecutable,
+        environmentRoot,
+        signal,
+      );
+      const inputs = await stageBuildContext(this.#packageRoot, contextRoot, signal);
+      const processOwner = await observeProcessOwner(process.pid);
+      journal = recoveryJournalSchema.parse({
+        version: 1,
+        hostname: hostname(),
+        pid: process.pid,
+        bootId: processOwner.bootId,
+        processStartTicks: processOwner.startTicks,
+        builderName,
+        builderContainerName,
+        buildkitImageReference: inputs.buildkit.image,
+        temporaryTag,
+        probeContainerName,
+      });
+      await writeRecoveryJournal(operationRoot, journal, true);
+      await this.#run(
+        [
+          "buildx",
+          "create",
+          "--driver",
+          "docker-container",
+          "--driver-opt",
+          `image=${inputs.buildkit.image}`,
+          "--name",
+          builderName,
+        ],
+        operationOptions,
+      );
+      await this.#run(["buildx", "inspect", "--bootstrap", builderName], operationOptions);
+      const builder = parseBuilderContainerInspection(
+        await this.#run(["container", "inspect", builderContainerName], {
+          ...operationOptions,
+        }),
+        inputs.buildkit.image,
+      );
+      await this.#verifyPrimeArchive({
+        ...inputs.primeAgent,
+        ...(signal === undefined ? {} : { signal }),
+      });
+      throwIfAborted(signal);
+      const buildInputSha256 = sha256(
+        canonicalize({
+          contextSha256: await hashTree(contextRoot, signal),
+          builder: {
+            clientSha256: buildx.sha256,
+            imageId: builder.Image,
+            imageReference: builder.Config.Image,
+          },
+        }),
+      );
       const metadataFile = join(operationRoot, "build-metadata.json");
       const ociArchivePath = join(operationRoot, "prime-image.oci.tar");
-      const tag = `flow-prime-runtime:preparation-${buildNumber}-${this.#nonce()}`;
       await this.#run(
         [
           "buildx",
           "build",
+          "--builder",
+          builderName,
           "--pull=false",
           "--no-cache",
           `--output=type=oci,dest=${ociArchivePath},tar=true,compression=uncompressed,force-compression=true,rewrite-timestamp=true`,
@@ -196,34 +326,53 @@ export class LocalPrimeImageBuilder {
           "--metadata-file",
           metadataFile,
           "--tag",
-          tag,
+          temporaryTag,
           contextRoot,
         ],
-        { environmentRoot },
+        operationOptions,
       );
       const buildMetadata = parseBuildMetadata(await readFile(metadataFile, "utf8"));
       const imageId = buildMetadata["containerimage.config.digest"];
       if (!imageDigestSchema.safeParse(imageId).success) {
         throw new Error("Prime image build returned an invalid image ID");
       }
-      await this.#run(["image", "load", "--input", ociArchivePath], { environmentRoot });
+      const canonicalReference = canonicalPrimeImageReference(imageId);
+      const existingReferences = parseImageReferenceList(
+        await this.#run(["image", "ls", "--quiet", "--no-trunc", canonicalReference], {
+          ...operationOptions,
+        }),
+      );
+      if (existingReferences.some((reference) => reference !== imageId)) {
+        throw new Error("Prime content-addressed image tag resolves to another image");
+      }
+      const canonicalReferenceExisted = existingReferences.includes(imageId);
+      journal = recoveryJournalSchema.parse({
+        ...journal,
+        imageId,
+        canonicalReference,
+        canonicalReferenceExisted,
+      });
+      await writeRecoveryJournal(operationRoot, journal, false);
+      await this.#run(["image", "load", "--input", ociArchivePath], operationOptions);
       parseImageInspection(
-        await this.#run(["image", "inspect", imageId], { environmentRoot }),
+        await this.#run(["image", "inspect", imageId], operationOptions),
         imageId,
       );
       const imageArchivePath = join(operationRoot, "prime-image.tar");
-      await this.#run(["image", "save", "--output", imageArchivePath, imageId], {
-        environmentRoot,
-      });
+      await this.#run(["image", "save", "--output", imageArchivePath, imageId], operationOptions);
+      throwIfAborted(signal);
       const externalInventory = await this.#inspectImageArchive({
         archivePath: imageArchivePath,
         imageId,
       });
+      throwIfAborted(signal);
       const probe = parseProbe(
         await this.#run(
           [
             "run",
             "--rm",
+            "--name",
+            probeContainerName,
             "--pull=never",
             "--network=none",
             "--log-driver=none",
@@ -236,7 +385,7 @@ export class LocalPrimeImageBuilder {
             imageId,
             "/opt/flow/bin/flow-prime-image-probe.mjs",
           ],
-          { environmentRoot },
+          operationOptions,
         ),
       );
       if (externalInventory.sbomSha256 !== probe.sbomSha256) {
@@ -255,26 +404,405 @@ export class LocalPrimeImageBuilder {
         pythonVersion: probe.pythonVersion,
         pythonClosureSha256: probe.pythonClosureSha256,
       });
-      return Object.freeze({
+      await this.#run(["image", "tag", imageId, canonicalReference], operationOptions);
+      buildResult = Object.freeze({
         image,
+        builder: Object.freeze({
+          clientPath: buildx.path,
+          clientSha256: buildx.sha256,
+          imageId: builder.Image,
+          imageReference: builder.Config.Image,
+        }),
         artifacts: probe.artifacts,
         harnessPackageContentSha256: probe.primePackageContentSha256,
         harnessDependencyClosureSha256: probe.nodeClosureSha256,
       });
+      this.#completedOperations.push({
+        reference: canonicalReference,
+        imageId,
+        operationRoot,
+        ownsReference: !canonicalReferenceExisted,
+      });
+    } catch (error) {
+      buildError = error;
+    }
+
+    const cleanupErrors: unknown[] = [];
+    if (journal !== undefined) {
+      try {
+        await this.#cleanupOperation(journal, environmentRoot, buildResult !== undefined);
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (cleanupErrors.length === 0 && buildResult === undefined) {
+      try {
+        await rm(operationRoot, { recursive: true, force: true });
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(
+        buildError === undefined ? cleanupErrors : [buildError, ...cleanupErrors],
+        "Prime image build cleanup failed",
+      );
+    }
+    if (buildError !== undefined) {
+      throw buildError;
+    }
+    if (buildResult === undefined) {
+      throw new Error("Prime image build produced no result");
+    }
+    return buildResult;
+  }
+
+  async recoverInterruptedBuilds(): Promise<void> {
+    const entries = (await readdir(this.#temporaryRoot, { withFileTypes: true }))
+      .filter(
+        (entry) =>
+          entry.isDirectory() && /^flow-prime-image-[12]-[A-Za-z0-9_-]{6,64}$/.test(entry.name),
+      )
+      .sort((left, right) => left.name.localeCompare(right.name, "en"));
+    if (entries.length > MAX_RECOVERY_OPERATIONS) {
+      throw new Error("Prime image recovery operation count exceeds its limit");
+    }
+    for (const entry of entries) {
+      const operationRoot = join(this.#temporaryRoot, entry.name);
+      if (this.#completedOperations.some((created) => created.operationRoot === operationRoot)) {
+        continue;
+      }
+      await assertPrivateRecoveryDirectory(operationRoot);
+      const journalPath = join(operationRoot, RECOVERY_JOURNAL);
+      let journal: RecoveryJournal | undefined;
+      try {
+        journal = await readRecoveryJournal(journalPath);
+      } catch (error) {
+        if (!isMissingFileError(error)) {
+          throw error;
+        }
+      }
+      if (journal === undefined) {
+        await rm(operationRoot, { recursive: true, force: true });
+        continue;
+      }
+      if (journal.hostname !== hostname()) {
+        throw new Error("Prime image recovery journal belongs to another host");
+      }
+      if (await isRecoveryOwnerActive(journal)) {
+        throw new Error("Prime image preparation is already active");
+      }
+      const environmentRoot = join(operationRoot, "docker-environment");
+      await this.#cleanupOperation(
+        journal,
+        environmentRoot,
+        journal.imageId === this.#retainedImageId,
+      );
+      await rm(operationRoot, { recursive: true, force: true });
+    }
+  }
+
+  async #cleanupOperation(
+    journal: RecoveryJournal,
+    environmentRoot: string,
+    retainCanonicalReference: boolean,
+  ): Promise<void> {
+    await this.#removeNamedContainer(journal.probeContainerName, environmentRoot);
+    const builderIds = parseDockerIdList(
+      await this.#cleanupRun(
+        [
+          "container",
+          "ls",
+          "--all",
+          "--quiet",
+          "--no-trunc",
+          "--filter",
+          `name=^/${journal.builderContainerName}$`,
+        ],
+        { environmentRoot },
+      ),
+    );
+    if (builderIds.length > 0) {
+      parseBuilderContainerInspection(
+        await this.#cleanupRun(["container", "inspect", journal.builderContainerName], {
+          environmentRoot,
+        }),
+        journal.buildkitImageReference,
+      );
+      await this.#cleanupRun(["buildx", "rm", "--force", journal.builderName], {
+        environmentRoot,
+      });
+      const remaining = parseDockerIdList(
+        await this.#cleanupRun(
+          [
+            "container",
+            "ls",
+            "--all",
+            "--quiet",
+            "--no-trunc",
+            "--filter",
+            `name=^/${journal.builderContainerName}$`,
+          ],
+          { environmentRoot },
+        ),
+      );
+      if (remaining.length > 0) {
+        throw new Error("Prime BuildKit container remains after cleanup");
+      }
+    }
+    await this.#removeImageReference(journal.temporaryTag, undefined, environmentRoot);
+    if (
+      !retainCanonicalReference &&
+      journal.canonicalReferenceExisted === false &&
+      journal.canonicalReference !== undefined &&
+      journal.imageId !== undefined
+    ) {
+      await this.#removeImageReference(
+        journal.canonicalReference,
+        journal.imageId,
+        environmentRoot,
+      );
+    }
+  }
+
+  async #removeNamedContainer(name: string, environmentRoot: string): Promise<void> {
+    const ids = parseDockerIdList(
+      await this.#cleanupRun(
+        ["container", "ls", "--all", "--quiet", "--no-trunc", "--filter", `name=^/${name}$`],
+        { environmentRoot },
+      ),
+    );
+    if (ids.length === 0) {
+      return;
+    }
+    await this.#cleanupRun(["container", "rm", "--force", name], { environmentRoot });
+  }
+
+  async #removeImageReference(
+    reference: string,
+    expectedImageId: string | undefined,
+    environmentRoot: string,
+  ): Promise<void> {
+    const imageIds = parseImageReferenceList(
+      await this.#cleanupRun(["image", "ls", "--quiet", "--no-trunc", reference], {
+        environmentRoot,
+      }),
+    );
+    if (imageIds.length === 0) {
+      return;
+    }
+    if (expectedImageId !== undefined && imageIds[0] !== expectedImageId) {
+      throw new Error("Prime image cleanup reference resolves to another image");
+    }
+    await this.#cleanupRun(["image", "rm", "--force", reference], { environmentRoot });
+  }
+
+  async retireCreatedImagesExcept(retainedImageId?: string): Promise<void> {
+    const operationRoot = await realpath(
+      await mkdtemp(join(this.#temporaryRoot, "flow-prime-image-retirement-")),
+    );
+    try {
+      for (const completed of this.#completedOperations) {
+        if (completed.ownsReference && completed.imageId !== retainedImageId) {
+          await this.#cleanupRun(["image", "rm", "--force", completed.reference], {
+            environmentRoot: operationRoot,
+          });
+        }
+        await rm(completed.operationRoot, { recursive: true, force: true });
+      }
+      this.#completedOperations.splice(0);
     } finally {
       await rm(operationRoot, { recursive: true, force: true });
     }
   }
 }
 
+function canonicalPrimeImageReference(imageId: string): string {
+  return `flow-prime-runtime:sha256-${imageId.slice("sha256:".length)}`;
+}
+
+function parseImageReferenceList(source: string): readonly string[] {
+  if (Buffer.byteLength(source, "utf8") > MAX_DOCKER_OUTPUT_BYTES) {
+    throw new Error("Prime image reference list exceeds its byte limit");
+  }
+  const references = source.trim() === "" ? [] : source.trim().split("\n");
+  if (
+    references.length > 1 ||
+    references.some((value) => !imageDigestSchema.safeParse(value).success)
+  ) {
+    throw new Error("Prime image reference list is invalid");
+  }
+  return Object.freeze(references);
+}
+
+function parseDockerIdList(source: string): readonly string[] {
+  if (Buffer.byteLength(source, "utf8") > MAX_DOCKER_OUTPUT_BYTES) {
+    throw new Error("Prime Docker object list exceeds its byte limit");
+  }
+  const ids = source.trim() === "" ? [] : source.trim().split("\n");
+  if (ids.length > 1 || ids.some((value) => !/^[a-f0-9]{64}$/.test(value))) {
+    throw new Error("Prime Docker object list is invalid");
+  }
+  return Object.freeze(ids);
+}
+
+async function writeRecoveryJournal(
+  operationRoot: string,
+  journal: RecoveryJournal,
+  exclusive: boolean,
+): Promise<void> {
+  const journalPath = join(operationRoot, RECOVERY_JOURNAL);
+  const bytes = Buffer.from(`${JSON.stringify(recoveryJournalSchema.parse(journal))}\n`, "utf8");
+  if (bytes.byteLength > MAX_RECOVERY_JOURNAL_BYTES) {
+    throw new Error("Prime image recovery journal exceeds its byte limit");
+  }
+  if (exclusive) {
+    const handle = await open(
+      journalPath,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
+      0o600,
+    );
+    try {
+      await handle.writeFile(bytes);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  } else {
+    const temporaryPath = `${journalPath}.${randomUUID()}.tmp`;
+    const handle = await open(
+      temporaryPath,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
+      0o600,
+    );
+    try {
+      await handle.writeFile(bytes);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await rename(temporaryPath, journalPath);
+  }
+  await syncDirectory(operationRoot);
+}
+
+async function readRecoveryJournal(path: string): Promise<RecoveryJournal> {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const metadata = await handle.stat();
+    if (!metadata.isFile() || metadata.size > MAX_RECOVERY_JOURNAL_BYTES) {
+      throw new Error("Prime image recovery journal is invalid");
+    }
+    return recoveryJournalSchema.parse(JSON.parse(await handle.readFile("utf8")));
+  } finally {
+    await handle.close();
+  }
+}
+
+async function assertPrivateRecoveryDirectory(path: string): Promise<void> {
+  const metadata = await lstat(path);
+  if (
+    !metadata.isDirectory() ||
+    metadata.isSymbolicLink() ||
+    (typeof process.getuid === "function" && metadata.uid !== process.getuid()) ||
+    (metadata.mode & 0o077) !== 0
+  ) {
+    throw new Error("Prime image recovery directory is not private");
+  }
+}
+
+async function syncDirectory(path: string): Promise<void> {
+  const handle = await open(path, constants.O_RDONLY);
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function isRecoveryOwnerActive(journal: RecoveryJournal): Promise<boolean> {
+  try {
+    const owner = await observeProcessOwner(journal.pid);
+    return owner.bootId === journal.bootId && owner.startTicks === journal.processStartTicks;
+  } catch (error) {
+    if (isMissingFileError(error)) {
+      return false;
+    }
+    throw error;
+  }
+}
+
+async function observeProcessOwner(
+  pid: number,
+): Promise<{ readonly bootId: string; readonly startTicks: string }> {
+  if (process.platform !== "linux") {
+    if (pid !== process.pid) {
+      try {
+        process.kill(pid, 0);
+      } catch (error) {
+        if (
+          typeof error === "object" &&
+          error !== null &&
+          "code" in error &&
+          error.code === "ESRCH"
+        ) {
+          throw Object.assign(new Error("process is absent"), { code: "ENOENT" });
+        }
+        throw error;
+      }
+    }
+    return Object.freeze({
+      bootId: `${hostname()}:non-linux`,
+      startTicks: String(Math.trunc(performance.timeOrigin)),
+    });
+  }
+  const [bootIdSource, statSource] = await Promise.all([
+    readBoundedTextFile("/proc/sys/kernel/random/boot_id", 255),
+    readBoundedTextFile(`/proc/${pid}/stat`, 8_192),
+  ]);
+  const closingParenthesis = statSource.lastIndexOf(")");
+  const fields = statSource
+    .slice(closingParenthesis + 1)
+    .trim()
+    .split(/\s+/);
+  const startTicks = fields[19];
+  if (closingParenthesis < 1 || startTicks === undefined || !/^\d+$/.test(startTicks)) {
+    throw new Error("Prime image recovery process identity is invalid");
+  }
+  return Object.freeze({ bootId: bootIdSource.trim(), startTicks });
+}
+
+async function readBoundedTextFile(path: string, maxBytes: number): Promise<string> {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const bytes = Buffer.alloc(maxBytes + 1);
+    const result = await handle.read(bytes, 0, bytes.byteLength, null);
+    if (result.bytesRead < 1 || result.bytesRead > maxBytes) {
+      throw new Error("Prime image recovery identity exceeds its byte limit");
+    }
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, result.bytesRead));
+  } finally {
+    await handle.close();
+  }
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+}
+
 async function downloadAndVerifyPrimeAgentArchive(input: {
   readonly url: string;
   readonly sha256: string;
   readonly integrity: string;
+  readonly signal?: AbortSignal;
 }): Promise<void> {
+  throwIfAborted(input.signal);
+  const timeoutSignal = AbortSignal.timeout(MAX_PRIME_ARCHIVE_DOWNLOAD_MS);
+  const signal =
+    input.signal === undefined ? timeoutSignal : AbortSignal.any([input.signal, timeoutSignal]);
   const response = await fetch(input.url, {
     redirect: "follow",
-    signal: AbortSignal.timeout(MAX_PRIME_ARCHIVE_DOWNLOAD_MS),
+    signal,
   });
   if (!response.ok || response.body === null) {
     throw new Error(`Prime release archive download returned status ${response.status}`);
@@ -291,6 +819,7 @@ async function downloadAndVerifyPrimeAgentArchive(input: {
   let totalBytes = 0;
   const reader = response.body.getReader();
   for (;;) {
+    throwIfAborted(signal);
     const next = await reader.read();
     if (next.done) {
       break;
@@ -334,30 +863,46 @@ function assertPrimeAgentArchiveDigests(
   }
 }
 
-async function stageDockerBuildxPlugin(source: string, environmentRoot: string): Promise<void> {
+async function stageDockerBuildxPlugin(
+  source: string,
+  environmentRoot: string,
+  signal?: AbortSignal,
+): Promise<{ readonly path: string; readonly sha256: string }> {
+  throwIfAborted(signal);
   const canonicalSource = await realpath(source);
   if (canonicalSource !== source) {
     throw new Error("Docker Buildx executable is not canonical");
   }
   await access(canonicalSource, constants.X_OK);
   const target = join(environmentRoot, "cli-plugins", "docker-buildx");
-  await copyRegularFile(canonicalSource, target);
+  await copyRegularFile(canonicalSource, target, signal);
   await access(target, constants.X_OK);
+  const sourceMetadata = await lstat(canonicalSource, { bigint: true });
+  const targetMetadata = await lstat(target, { bigint: true });
+  const sourceSha256 = sha256(await readStableFile(canonicalSource, sourceMetadata));
+  const targetSha256 = sha256(await readStableFile(target, targetMetadata));
+  if (sourceSha256 !== targetSha256) {
+    throw new Error("Docker Buildx staging changed the verified client bytes");
+  }
+  return Object.freeze({ path: canonicalSource, sha256: sourceSha256 });
 }
 
-async function stageBuildContext(packageRoot: string, contextRoot: string) {
+async function stageBuildContext(packageRoot: string, contextRoot: string, signal?: AbortSignal) {
+  throwIfAborted(signal);
   const canonicalPackageRoot = await realpath(packageRoot);
   if (canonicalPackageRoot !== packageRoot) {
     throw new Error("Prime package root is not canonical");
   }
   const containerRoot = join(packageRoot, "prime-container");
   for (const path of CONTEXT_FILES) {
-    await copyRegularFile(join(containerRoot, path), join(contextRoot, path));
+    throwIfAborted(signal);
+    await copyRegularFile(join(containerRoot, path), join(contextRoot, path), signal);
   }
   for (const path of CONTEXT_DIRECTORIES) {
-    await copyTree(join(containerRoot, path), join(contextRoot, path));
+    throwIfAborted(signal);
+    await copyTree(join(containerRoot, path), join(contextRoot, path), signal);
   }
-  await copyTree(join(packageRoot, "dist"), join(contextRoot, "flow-dist"));
+  await copyTree(join(packageRoot, "dist"), join(contextRoot, "flow-dist"), signal);
   const inputs = buildInputsSchema.parse(
     JSON.parse(await readFile(join(contextRoot, "build-inputs.json"), "utf8")),
   );
@@ -415,7 +960,8 @@ function assertPrimeAgentLock(
   }
 }
 
-async function copyTree(source: string, target: string): Promise<void> {
+async function copyTree(source: string, target: string, signal?: AbortSignal): Promise<void> {
+  throwIfAborted(signal);
   const metadata = await lstat(source);
   if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
     throw new Error("Prime build context source is not one direct directory");
@@ -424,12 +970,13 @@ async function copyTree(source: string, target: string): Promise<void> {
   const entries = await readdir(source, { withFileTypes: true });
   entries.sort((left, right) => left.name.localeCompare(right.name, "en"));
   for (const entry of entries) {
+    throwIfAborted(signal);
     const sourcePath = join(source, entry.name);
     const targetPath = join(target, entry.name);
     if (entry.isDirectory()) {
-      await copyTree(sourcePath, targetPath);
+      await copyTree(sourcePath, targetPath, signal);
     } else if (entry.isFile()) {
-      await copyRegularFile(sourcePath, targetPath);
+      await copyRegularFile(sourcePath, targetPath, signal);
     } else {
       throw new Error("Prime build context contains a link or special file");
     }
@@ -437,13 +984,19 @@ async function copyTree(source: string, target: string): Promise<void> {
   await utimes(target, FIXED_BUILD_TIME, FIXED_BUILD_TIME);
 }
 
-async function copyRegularFile(source: string, target: string): Promise<void> {
+async function copyRegularFile(
+  source: string,
+  target: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  throwIfAborted(signal);
   const before = await lstat(source, { bigint: true });
   if (!before.isFile() || before.isSymbolicLink()) {
     throw new Error("Prime build context source is not one direct regular file");
   }
   await mkdir(dirname(target), { recursive: true, mode: 0o700 });
   await copyFile(source, target, constants.COPYFILE_EXCL);
+  throwIfAborted(signal);
   await chmod(target, Number(before.mode & 0o777n));
   await utimes(target, FIXED_BUILD_TIME, FIXED_BUILD_TIME);
   const after = await lstat(source, { bigint: true });
@@ -458,14 +1011,16 @@ async function copyRegularFile(source: string, target: string): Promise<void> {
   }
 }
 
-async function hashTree(root: string): Promise<string> {
+async function hashTree(root: string, signal?: AbortSignal): Promise<string> {
   const hash = createHash("sha256");
   let entries = 0;
   let logicalBytes = 0;
   async function walk(directory: string): Promise<void> {
+    throwIfAborted(signal);
     const children = await readdir(directory, { withFileTypes: true });
     children.sort((left, right) => left.name.localeCompare(right.name, "en"));
     for (const child of children) {
+      throwIfAborted(signal);
       entries += 1;
       if (entries > MAX_CONTEXT_ENTRIES) {
         throw new Error("Prime build context exceeds its entry limit");
@@ -531,6 +1086,16 @@ function parseImageInspection(source: string, imageId: string) {
   return parsed.data[0];
 }
 
+function parseBuilderContainerInspection(source: string, expectedReference: string) {
+  const parsed = builderContainerInspectionSchema.safeParse(JSON.parse(source));
+  if (!parsed.success || parsed.data[0]?.Config.Image !== expectedReference) {
+    throw new Error("Prime BuildKit container does not use the fixed image", {
+      cause: parsed.success ? undefined : parsed.error,
+    });
+  }
+  return parsed.data[0];
+}
+
 function parseBuildMetadata(source: string) {
   const parsed = buildMetadataSchema.safeParse(JSON.parse(source));
   if (!parsed.success) {
@@ -567,22 +1132,167 @@ export async function runLocalDockerCommand(
   signal?: AbortSignal,
   timeoutMs = MAX_DOCKER_COMMAND_MS,
 ): Promise<string> {
-  const result = await executeFile(dockerExecutable, [...args], {
-    encoding: "utf8",
-    maxBuffer: MAX_DOCKER_OUTPUT_BYTES,
-    env: {
-      HOME: environmentRoot,
-      PATH: "/usr/local/bin:/usr/bin:/bin",
-      DOCKER_HOST: "unix:///var/run/docker.sock",
-      DOCKER_CONFIG: environmentRoot,
-      DOCKER_BUILDKIT: "1",
-      SOURCE_DATE_EPOCH: "1786127940",
-    },
-    timeout: timeoutMs,
-    killSignal: "SIGKILL",
-    ...(signal === undefined ? {} : { signal }),
+  signal?.throwIfAborted();
+  return await new Promise((resolveCommand, rejectCommand) => {
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let timer: NodeJS.Timeout | undefined;
+    let settled = false;
+    let terminationStarted = false;
+    const child = spawn(dockerExecutable, [...args], {
+      detached: process.platform === "linux",
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        HOME: environmentRoot,
+        PATH: "/usr/local/bin:/usr/bin:/bin",
+        DOCKER_HOST: "unix:///var/run/docker.sock",
+        DOCKER_CONFIG: environmentRoot,
+        DOCKER_BUILDKIT: "1",
+        SOURCE_DATE_EPOCH: "1786127940",
+      },
+    });
+
+    const cleanup = (): void => {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const requestTermination = (reason: "abort" | "failure" | "timeout", failure?: Error): void => {
+      if (terminationStarted || settled) {
+        return;
+      }
+      terminationStarted = true;
+      cleanup();
+      terminateDockerCommandGroup(child.pid);
+      void waitForDockerCommandGroupExit(child.pid).then(
+        () => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          if (reason === "abort") {
+            rejectCommand(abortError(signal?.reason));
+          } else if (reason === "timeout") {
+            rejectCommand(terminatedCommandError("Docker command timed out"));
+          } else {
+            rejectCommand(failure ?? new Error("Docker command failed"));
+          }
+        },
+        (settlementError: unknown) => {
+          if (!settled) {
+            settled = true;
+            rejectCommand(settlementError);
+          }
+        },
+      );
+    };
+    const onAbort = (): void => requestTermination("abort");
+    signal?.addEventListener("abort", onAbort, { once: true });
+    timer = setTimeout(() => requestTermination("timeout"), timeoutMs);
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdoutBytes += chunk.byteLength;
+      if (stdoutBytes > MAX_DOCKER_OUTPUT_BYTES) {
+        requestTermination("failure", new Error("Docker command stdout exceeds its byte limit"));
+        return;
+      }
+      stdout.push(chunk);
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderrBytes += chunk.byteLength;
+      if (stderrBytes > MAX_DOCKER_OUTPUT_BYTES) {
+        requestTermination("failure", new Error("Docker command stderr exceeds its byte limit"));
+        return;
+      }
+      stderr.push(chunk);
+    });
+    child.once("error", (error) => requestTermination("failure", error));
+    child.once("exit", (code, childSignal) => {
+      if (code === 0 || terminationStarted || settled) {
+        return;
+      }
+      const diagnostic = Buffer.concat(stderr).toString("utf8").slice(0, 4_096);
+      requestTermination(
+        "failure",
+        new Error(
+          `Docker command failed with ${childSignal ?? String(code)}${
+            diagnostic.length === 0 ? "" : `: ${diagnostic}`
+          }`,
+        ),
+      );
+    });
+    child.once("close", (code, childSignal) => {
+      if (terminationStarted || settled) {
+        return;
+      }
+      if (code === 0) {
+        settled = true;
+        cleanup();
+        resolveCommand(Buffer.concat(stdout).toString("utf8"));
+        return;
+      }
+      const diagnostic = Buffer.concat(stderr).toString("utf8").slice(0, 4_096);
+      requestTermination(
+        "failure",
+        new Error(
+          `Docker command failed with ${childSignal ?? String(code)}${
+            diagnostic.length === 0 ? "" : `: ${diagnostic}`
+          }`,
+        ),
+      );
+    });
   });
-  return result.stdout;
+}
+
+function terminateDockerCommandGroup(pid: number | undefined): void {
+  if (pid === undefined) {
+    return;
+  }
+  try {
+    process.kill(process.platform === "linux" ? -pid : pid, "SIGKILL");
+  } catch (error) {
+    if (!(isNodeError(error) && error.code === "ESRCH")) {
+      throw error;
+    }
+  }
+}
+
+async function waitForDockerCommandGroupExit(pid: number | undefined): Promise<void> {
+  if (pid === undefined || process.platform !== "linux") {
+    return;
+  }
+  const deadline = performance.now() + 1_000;
+  while (performance.now() < deadline) {
+    try {
+      process.kill(-pid, 0);
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ESRCH") {
+        return;
+      }
+      throw error;
+    }
+    await delay(10);
+  }
+  throw new Error("Docker command process group did not terminate within the cleanup bound");
+}
+
+function terminatedCommandError(message: string): Error {
+  return Object.assign(new Error(message), { killed: true, signal: "SIGKILL" });
+}
+
+function abortError(reason: unknown): Error {
+  return Object.assign(new Error("The Docker command was aborted", { cause: reason }), {
+    name: "AbortError",
+    code: "ABORT_ERR",
+    killed: true,
+    signal: "SIGKILL",
+  });
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error;
 }
 
 function canonicalize(value: unknown): string {
@@ -606,4 +1316,8 @@ function canonicalize(value: unknown): string {
 
 function sha256(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  signal?.throwIfAborted();
 }

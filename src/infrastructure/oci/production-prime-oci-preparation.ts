@@ -4,6 +4,7 @@ import {
   access,
   chmod,
   chown,
+  type FileHandle,
   lstat,
   mkdir,
   mkdtemp,
@@ -21,6 +22,7 @@ import { z } from "zod";
 import { loadEffectiveFlowConfig } from "../fs/flow-config-store.js";
 import { LocalPrimeImageBuilder, runLocalDockerCommand } from "./local-prime-image-builder.js";
 import {
+  assertPrimeOciSocketPolicy,
   LocalPrimeOciAttestationStore,
   type PrimeOciLocalRuntimeAttestation,
   publishLocalPrimeOciAttestation,
@@ -31,10 +33,13 @@ import {
   type PrimeOciPreparationResult,
   preparePrimeOciRuntime,
 } from "./prime-oci-preparation.js";
+import { resolveDockerManagedRuntimeExecutables } from "./prime-oci-runtime-executables.js";
 
 const DOCKER_SOCKET = "/var/run/docker.sock" as const;
 const MAX_EXECUTABLE_BYTES = 268_435_456;
 const MAX_COMMAND_OUTPUT_BYTES = 1_048_576;
+const PREPARATION_CLEANUP_MS = 30_000;
+const MAX_ATTESTATION_BYTES = 1_048_576;
 const dockerVersionSchema = z
   .object({
     Server: z.object({ ApiVersion: z.string().regex(/^\d+\.\d+$/) }).passthrough(),
@@ -46,6 +51,16 @@ const dockerInfoSchema = z
     DockerRootDir: z.string().min(1).max(4_095),
     OSType: z.literal("linux"),
     Architecture: z.enum(["amd64", "x86_64"]),
+    DefaultRuntime: z.literal("runc"),
+    Runtimes: z.record(
+      z.string().min(1).max(128),
+      z
+        .object({
+          path: z.string().min(1).max(4_095),
+          runtimeArgs: z.array(z.string().max(1_024)).max(0).optional(),
+        })
+        .passthrough(),
+    ),
   })
   .passthrough();
 
@@ -71,22 +86,10 @@ export async function prepareProductionPrimeOciRuntime(input: {
   const packageRoot = await realpath(resolve(dirname(fileURLToPath(import.meta.url)), "../../.."));
   const dockerExecutable = await resolveDockerExecutable();
   const dockerBuildxExecutable = await resolveDockerBuildxExecutable();
-  const containerdExecutable = await resolveContainerdExecutable();
-  const runcExecutable = await resolveRuncExecutable();
   const dockerExecutableSha256 = await hashStableRegularFile(
     dockerExecutable,
     MAX_EXECUTABLE_BYTES,
     "Docker executable",
-  );
-  const containerdExecutableSha256 = await hashStableRegularFile(
-    containerdExecutable,
-    MAX_EXECUTABLE_BYTES,
-    "containerd executable",
-  );
-  const runcExecutableSha256 = await hashStableRegularFile(
-    runcExecutable,
-    MAX_EXECUTABLE_BYTES,
-    "runc executable",
   );
   const environmentRoot = await realpath(
     await mkdtemp(join(tmpdir(), "flow-prime-preparation-environment-")),
@@ -94,12 +97,61 @@ export async function prepareProductionPrimeOciRuntime(input: {
   try {
     const run = (args: readonly string[]) =>
       runLocalDockerCommand(dockerExecutable, args, environmentRoot, input.signal);
+    const runtimeInfo = parseJson(
+      dockerInfoSchema,
+      await run(["info", "--format", "{{json .}}"]),
+      "Docker information",
+    );
+    const configuredRuncPath = runtimeInfo.Runtimes.runc?.path;
+    if (configuredRuncPath === undefined || !configuredRuncPath.startsWith("/")) {
+      throw new Error("Prime OCI runc runtime must use one absolute executable path");
+    }
+    const runcExecutable = await resolveConfiguredExecutable(configuredRuncPath, "runc");
+    const runtimeExecutables = await resolveDockerManagedRuntimeExecutables();
+    const containerdExecutable = runtimeExecutables.containerd;
+    const dockerdExecutable = runtimeExecutables.dockerd;
+    const dockerdExecutableSha256 = await hashStableRegularFile(
+      dockerdExecutable,
+      MAX_EXECUTABLE_BYTES,
+      "dockerd executable",
+    );
+    const containerdExecutableSha256 = await hashStableRegularFile(
+      containerdExecutable,
+      MAX_EXECUTABLE_BYTES,
+      "containerd executable",
+    );
+    const runcExecutableSha256 = await hashStableRegularFile(
+      runcExecutable,
+      MAX_EXECUTABLE_BYTES,
+      "runc executable",
+    );
+    const descriptorPath = join(
+      projectRoot,
+      ".flow",
+      "runtime",
+      "prime-agent",
+      "oci-attestation.json",
+    );
+    const preparationRoot = join(dirname(descriptorPath), "preparation");
+    await mkdir(preparationRoot, { recursive: true, mode: 0o700 });
+    await chmod(preparationRoot, 0o700);
+    const retainedImageId = await readExistingImageId(descriptorPath);
     const builder = new LocalPrimeImageBuilder({
       packageRoot,
       dockerExecutable,
       dockerBuildxExecutable,
+      temporaryRoot: await realpath(preparationRoot),
+      ...(retainedImageId === undefined ? {} : { retainedImageId }),
       run: (args, options) =>
-        runLocalDockerCommand(dockerExecutable, args, options.environmentRoot, input.signal),
+        runLocalDockerCommand(dockerExecutable, args, options.environmentRoot, options.signal),
+      cleanupRun: (args, options) =>
+        runLocalDockerCommand(
+          dockerExecutable,
+          args,
+          options.environmentRoot,
+          AbortSignal.timeout(PREPARATION_CLEANUP_MS),
+          PREPARATION_CLEANUP_MS,
+        ),
     });
     const inspector = new LocalPrimeOciRuntimeInspector({
       run,
@@ -109,6 +161,8 @@ export async function prepareProductionPrimeOciRuntime(input: {
           projectRoot,
           dockerExecutable,
           dockerExecutableSha256,
+          dockerdExecutable,
+          dockerdExecutableSha256,
           containerdExecutable,
           containerdExecutableSha256,
           runcExecutable,
@@ -117,24 +171,26 @@ export async function prepareProductionPrimeOciRuntime(input: {
           signal: input.signal,
         }),
       dockerExecutableSha256,
+      dockerdExecutableSha256,
       containerdExecutableSha256,
       runcExecutableSha256,
     });
-    const descriptorPath = join(
-      projectRoot,
-      ".flow",
-      "runtime",
-      "prime-agent",
-      "oci-attestation.json",
-    );
-    const result = await preparePrimeOciRuntime(
-      { descriptorPath, ...(input.signal === undefined ? {} : { signal: input.signal }) },
-      {
-        build: (buildNumber) => builder.build(buildNumber),
-        inspectRuntime: () => inspector.inspect(),
-        publish: publishLocalPrimeOciAttestation,
-      },
-    );
+    let result: PrimeOciPreparationResult;
+    try {
+      result = await preparePrimeOciRuntime(
+        { descriptorPath, ...(input.signal === undefined ? {} : { signal: input.signal }) },
+        {
+          build: (buildNumber) => builder.build(buildNumber, input.signal),
+          inspectRuntime: () => inspector.inspect(),
+          publish: publishLocalPrimeOciAttestation,
+        },
+      );
+    } catch (error) {
+      const visibleImageId = await readExistingImageId(descriptorPath).catch(() => undefined);
+      await builder.retireCreatedImagesExcept(visibleImageId);
+      throw error;
+    }
+    await builder.retireCreatedImagesExcept(result.imageId);
     await new LocalPrimeOciAttestationStore({ descriptorPath }).read();
     return result;
   } finally {
@@ -142,11 +198,42 @@ export async function prepareProductionPrimeOciRuntime(input: {
   }
 }
 
+async function readExistingImageId(path: string): Promise<string | undefined> {
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
+  try {
+    const metadata = await handle.stat();
+    if (!metadata.isFile() || metadata.size > MAX_ATTESTATION_BYTES) {
+      throw new Error("Prime OCI existing attestation is not one bounded regular file");
+    }
+    const parsed = z
+      .object({ image: z.object({ id: z.string().regex(/^sha256:[a-f0-9]{64}$/) }).passthrough() })
+      .passthrough()
+      .parse(JSON.parse(await handle.readFile("utf8")));
+    return parsed.image.id;
+  } finally {
+    await handle.close();
+  }
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error;
+}
+
 async function observeLocalRuntime(input: {
   readonly packageRoot: string;
   readonly projectRoot: string;
   readonly dockerExecutable: string;
   readonly dockerExecutableSha256: string;
+  readonly dockerdExecutable: string;
+  readonly dockerdExecutableSha256: string;
   readonly containerdExecutable: string;
   readonly containerdExecutableSha256: string;
   readonly runcExecutable: string;
@@ -181,6 +268,7 @@ async function observeLocalRuntime(input: {
     gid: safeNumber(socketMetadata.gid, "Docker socket group"),
     mode: Number(socketMetadata.mode & 0o777n),
   });
+  assertPrimeOciSocketPolicy(socket);
   const globalLeasePath = await prepareGlobalLeaseDirectory(info.ID, socket.gid);
   const imageDevice = await resolvePrimeImageDevice(info.DockerRootDir);
   let seccompProfile: Readonly<Record<string, unknown>>;
@@ -204,6 +292,7 @@ async function observeLocalRuntime(input: {
     imageDevice,
     executables: {
       docker: { path: input.dockerExecutable, sha256: input.dockerExecutableSha256 },
+      dockerd: { path: input.dockerdExecutable, sha256: input.dockerdExecutableSha256 },
       containerd: {
         path: input.containerdExecutable,
         sha256: input.containerdExecutableSha256,
@@ -230,14 +319,6 @@ async function resolveDockerBuildxExecutable(): Promise<string> {
   );
 }
 
-async function resolveContainerdExecutable(): Promise<string> {
-  return resolveFixedExecutable(["/usr/bin/containerd", "/usr/local/bin/containerd"], "containerd");
-}
-
-async function resolveRuncExecutable(): Promise<string> {
-  return resolveFixedExecutable(["/usr/bin/runc", "/usr/local/bin/runc"], "runc");
-}
-
 async function resolveFixedExecutable(
   candidates: readonly string[],
   label: string,
@@ -252,6 +333,18 @@ async function resolveFixedExecutable(
     } catch {}
   }
   throw new Error(`${label} executable is not available at a fixed system path`);
+}
+
+async function resolveConfiguredExecutable(path: string, label: string): Promise<string> {
+  const canonical = await realpath(path);
+  if (canonical !== path) {
+    throw new Error(`${label} executable path is not canonical`);
+  }
+  await access(canonical, constants.X_OK);
+  if (!(await lstat(canonical)).isFile()) {
+    throw new Error(`${label} executable is not one regular file`);
+  }
+  return canonical;
 }
 
 async function prepareGlobalLeaseDirectory(daemonId: string, socketGid: number): Promise<string> {

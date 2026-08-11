@@ -23,7 +23,7 @@ Gate 7 includes tuning-only prompt candidates, zero-tool model generation, exact
 paired evaluation, reviewed activation, durable run snapshots, and rollback.
 
 Remaining targets include executable extensions, signed registries, automatic updates, policy and
-UI packages, a Prime Agent adapter, external artifact storage, and stronger isolation.
+UI packages, external artifact storage, and stronger isolation.
 
 ## Gate 0: Repository foundation
 

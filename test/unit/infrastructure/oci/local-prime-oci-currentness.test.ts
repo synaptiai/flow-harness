@@ -13,16 +13,20 @@ describe("local Prime OCI currentness", () => {
     let info = infoSource("overlay2");
     let imagePresent = true;
     let corePattern = "core";
+    let serverCommit = "dockerd-commit";
+    let cgroupPath = local.cgroupPath;
+    let imageDevice = local.imageDevice;
     const client: PrimeOciCurrentStateClient = {
-      readVersion: async () => versionSource(),
+      readVersion: async () => versionSource(serverCommit),
       readInfo: async () => info,
       inspectImage: async (imageId) => (imagePresent ? { Id: imageId } : null),
     };
     const runtime = (
       await new LocalPrimeOciRuntimeInspector({
-        run: async (args) => (args[0] === "version" ? versionSource() : info),
+        run: async (args) => (args[0] === "version" ? versionSource(serverCommit) : info),
         local: async () => local,
         dockerExecutableSha256: local.executables.docker.sha256,
+        dockerdExecutableSha256: local.executables.dockerd.sha256,
         containerdExecutableSha256: local.executables.containerd.sha256,
         runcExecutableSha256: local.executables.runc.sha256,
       }).inspect()
@@ -33,9 +37,48 @@ describe("local Prime OCI currentness", () => {
       local,
       client,
       readCorePattern: async () => corePattern,
+      readCurrentCgroup: async () => cgroupPath,
+      resolveImageDevice: async () => imageDevice,
+      resolveRuntimeExecutables: async () => ({
+        containerd: local.executables.containerd.path,
+        dockerd: local.executables.dockerd.path,
+      }),
     };
 
     await expect(assertPrimeOciRuntimeCurrent(input)).resolves.toBeUndefined();
+
+    imageDevice = { path: "/dev/changed-image", major: 8, minor: 2 };
+    await expect(assertPrimeOciRuntimeCurrent(input)).rejects.toThrow(/image.*device/i);
+
+    imageDevice = local.imageDevice;
+    cgroupPath = "/sys/fs/cgroup/another-service";
+    await expect(assertPrimeOciRuntimeCurrent(input)).rejects.toThrow(/cgroup/i);
+
+    cgroupPath = local.cgroupPath;
+
+    await expect(
+      assertPrimeOciRuntimeCurrent({
+        ...input,
+        resolveRuntimeExecutables: async () => ({
+          containerd: "/opt/custom/containerd",
+          dockerd: local.executables.dockerd.path,
+        }),
+      }),
+    ).rejects.toThrow(/containerd.*path/i);
+
+    await expect(
+      assertPrimeOciRuntimeCurrent({
+        ...input,
+        resolveRuntimeExecutables: async () => ({
+          containerd: local.executables.containerd.path,
+          dockerd: "/opt/custom/dockerd",
+        }),
+      }),
+    ).rejects.toThrow(/dockerd.*path/i);
+
+    serverCommit = "changed-dockerd-commit";
+    await expect(assertPrimeOciRuntimeCurrent(input)).rejects.toThrow(/runtime.*changed/i);
+    serverCommit = "dockerd-commit";
 
     info = infoSource("btrfs");
     await expect(assertPrimeOciRuntimeCurrent(input)).rejects.toThrow(/runtime.*changed/i);
@@ -63,6 +106,7 @@ function localObservation() {
     imageDevice: { path: "/dev/test-image", major: 8, minor: 1 },
     executables: {
       docker: { path: "/usr/bin/docker", sha256: "4".repeat(64) },
+      dockerd: { path: "/usr/bin/dockerd", sha256: "d".repeat(64) },
       containerd: { path: "/usr/bin/containerd", sha256: "6".repeat(64) },
       runc: { path: "/usr/bin/runc", sha256: "7".repeat(64) },
     },
@@ -71,11 +115,12 @@ function localObservation() {
   };
 }
 
-function versionSource(): string {
+function versionSource(serverCommit: string): string {
   return JSON.stringify({
     Client: { Version: "28.3.3", ApiVersion: "1.51", Os: "linux", Arch: "amd64" },
     Server: {
       Version: "28.3.3",
+      GitCommit: serverCommit,
       ApiVersion: "1.51",
       Os: "linux",
       Arch: "amd64",
@@ -91,6 +136,7 @@ function versionSource(): string {
 function infoSource(driver: string): string {
   return JSON.stringify({
     ID: "daemon-test-id",
+    DockerRootDir: "/var/lib/docker",
     Driver: driver,
     CgroupDriver: "systemd",
     CgroupVersion: 2,
@@ -100,6 +146,8 @@ function infoSource(driver: string): string {
     SecurityOptions: ["name=seccomp,profile=builtin", "name=apparmor"],
     ContainerdCommit: { ID: "containerd-commit" },
     RuncCommit: { ID: "runc-commit" },
+    DefaultRuntime: "runc",
+    Runtimes: { runc: { path: "/usr/bin/runc", runtimeArgs: [] } },
     Rootless: false,
   });
 }

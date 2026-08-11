@@ -121,12 +121,14 @@ func TestReceivePreparationRejectsInvalidOrderAndTrailingBootstrapLines(t *testi
 
 func validReadinessChallenge() ReadinessChallenge {
 	return ReadinessChallenge{
-		Version:        1,
-		ContainerID:    strings.Repeat("a", 64),
-		TrialID:        "trial-" + strings.Repeat("b", 48),
-		IdentityDigest: strings.Repeat("c", 64),
-		ImageID:        "sha256:" + strings.Repeat("d", 64),
-		PolicyDigest:   strings.Repeat("e", 64),
+		Version:          1,
+		ContainerID:      strings.Repeat("a", 64),
+		TrialID:          "trial-" + strings.Repeat("b", 48),
+		IdentityDigest:   strings.Repeat("c", 64),
+		ImageID:          "sha256:" + strings.Repeat("d", 64),
+		PolicyDigest:     strings.Repeat("e", 64),
+		ImageDeviceMajor: 8,
+		ImageDeviceMinor: 1,
 	}
 }
 
