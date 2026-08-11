@@ -29,6 +29,8 @@ const MAX_CONTEXT_ENTRIES = 131_072;
 const MAX_CONTEXT_BYTES = 2_147_483_648;
 const MAX_DOCKER_OUTPUT_BYTES = 16_777_216;
 const MAX_DOCKER_COMMAND_MS = 1_800_000;
+const MAX_PRIME_ARCHIVE_BYTES = 67_108_864;
+const MAX_PRIME_ARCHIVE_DOWNLOAD_MS = 60_000;
 const FIXED_BUILD_TIME = new Date(1_786_127_940_000);
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const imageDigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
@@ -127,6 +129,11 @@ export interface LocalPrimeImageBuilderOptions {
   readonly temporaryRoot?: string;
   readonly run?: (args: readonly string[], options: PrimeDockerCommandOptions) => Promise<string>;
   readonly nonce?: () => string;
+  readonly verifyPrimeArchive?: (input: {
+    readonly url: string;
+    readonly sha256: string;
+    readonly integrity: string;
+  }) => Promise<void>;
 }
 
 export class LocalPrimeImageBuilder {
@@ -136,6 +143,7 @@ export class LocalPrimeImageBuilder {
   readonly #packageRoot: string;
   readonly #run: NonNullable<LocalPrimeImageBuilderOptions["run"]>;
   readonly #temporaryRoot: string;
+  readonly #verifyPrimeArchive: NonNullable<LocalPrimeImageBuilderOptions["verifyPrimeArchive"]>;
 
   constructor(options: LocalPrimeImageBuilderOptions) {
     this.#packageRoot = resolve(options.packageRoot);
@@ -147,6 +155,7 @@ export class LocalPrimeImageBuilder {
       ((args, commandOptions) =>
         runLocalDockerCommand(this.#dockerExecutable, args, commandOptions.environmentRoot));
     this.#nonce = options.nonce ?? (() => randomUUID().replaceAll("-", ""));
+    this.#verifyPrimeArchive = options.verifyPrimeArchive ?? downloadAndVerifyPrimeAgentArchive;
   }
 
   async build(buildNumber: 1 | 2): Promise<PrimeOciPreparedBuild> {
@@ -160,6 +169,7 @@ export class LocalPrimeImageBuilder {
       await mkdir(environmentRoot, { mode: 0o700 });
       await stageDockerBuildxPlugin(this.#dockerBuildxExecutable, environmentRoot);
       const inputs = await stageBuildContext(this.#packageRoot, contextRoot);
+      await this.#verifyPrimeArchive(inputs.primeAgent);
       const buildInputSha256 = await hashTree(contextRoot);
       const iidFile = join(operationRoot, "image-id");
       const metadataFile = join(operationRoot, "build-metadata.json");
@@ -240,6 +250,73 @@ export class LocalPrimeImageBuilder {
     } finally {
       await rm(operationRoot, { recursive: true, force: true });
     }
+  }
+}
+
+async function downloadAndVerifyPrimeAgentArchive(input: {
+  readonly url: string;
+  readonly sha256: string;
+  readonly integrity: string;
+}): Promise<void> {
+  const response = await fetch(input.url, {
+    redirect: "follow",
+    signal: AbortSignal.timeout(MAX_PRIME_ARCHIVE_DOWNLOAD_MS),
+  });
+  if (!response.ok || response.body === null) {
+    throw new Error(`Prime release archive download returned status ${response.status}`);
+  }
+  const declaredLength = response.headers.get("content-length");
+  if (
+    declaredLength !== null &&
+    (!/^\d+$/.test(declaredLength) || Number(declaredLength) > MAX_PRIME_ARCHIVE_BYTES)
+  ) {
+    throw new Error("Prime release archive exceeds its byte limit");
+  }
+  const sha256Hash = createHash("sha256");
+  const sha512Hash = createHash("sha512");
+  let totalBytes = 0;
+  const reader = response.body.getReader();
+  for (;;) {
+    const next = await reader.read();
+    if (next.done) {
+      break;
+    }
+    totalBytes += next.value.byteLength;
+    if (totalBytes > MAX_PRIME_ARCHIVE_BYTES) {
+      await reader.cancel().catch(() => undefined);
+      throw new Error("Prime release archive exceeds its byte limit");
+    }
+    sha256Hash.update(next.value);
+    sha512Hash.update(next.value);
+  }
+  assertPrimeAgentArchiveDigests(
+    sha256Hash.digest("hex"),
+    `sha512-${sha512Hash.digest("base64")}`,
+    input,
+  );
+}
+
+export function verifyPrimeAgentArchiveBytes(
+  bytes: Uint8Array,
+  expected: { readonly sha256: string; readonly integrity: string },
+): void {
+  assertPrimeAgentArchiveDigests(
+    createHash("sha256").update(bytes).digest("hex"),
+    `sha512-${createHash("sha512").update(bytes).digest("base64")}`,
+    expected,
+  );
+}
+
+function assertPrimeAgentArchiveDigests(
+  actualSha256: string,
+  actualIntegrity: string,
+  expected: { readonly sha256: string; readonly integrity: string },
+): void {
+  if (actualSha256 !== expected.sha256) {
+    throw new Error("Prime release archive SHA-256 does not match the fixed identity");
+  }
+  if (actualIntegrity !== expected.integrity) {
+    throw new Error("Prime release archive integrity does not match the Node lock");
   }
 }
 

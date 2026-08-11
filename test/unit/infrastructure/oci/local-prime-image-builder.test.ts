@@ -17,9 +17,26 @@ import { describe, expect, it, vi } from "vitest";
 import {
   LocalPrimeImageBuilder,
   runLocalDockerCommand,
+  verifyPrimeAgentArchiveBytes,
 } from "../../../../src/infrastructure/oci/local-prime-image-builder.js";
 
 describe("local Prime image builder", () => {
+  it("verifies the Prime release archive with SHA-256 and npm integrity", () => {
+    const archive = Buffer.from("fixed Prime archive\n");
+    const identity = {
+      sha256: createHash("sha256").update(archive).digest("hex"),
+      integrity: `sha512-${createHash("sha512").update(archive).digest("base64")}`,
+    };
+
+    expect(() => verifyPrimeAgentArchiveBytes(archive, identity)).not.toThrow();
+    expect(() =>
+      verifyPrimeAgentArchiveBytes(archive, { ...identity, sha256: "0".repeat(64) }),
+    ).toThrow(/SHA-256/i);
+    expect(() =>
+      verifyPrimeAgentArchiveBytes(archive, { ...identity, integrity: "sha512-invalid" }),
+    ).toThrow(/integrity/i);
+  });
+
   it("bounds a Docker command that does not settle", async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "flow-prime-docker-timeout-")));
     const executable = join(root, "docker");
@@ -115,6 +132,7 @@ describe("local Prime image builder", () => {
       temporaryRoot: await realpath(tmpdir()),
       run,
       nonce: () => "0123456789abcdef0123456789abcdef",
+      verifyPrimeArchive: vi.fn(async () => undefined),
     });
 
     const result = await builder.build(1);
