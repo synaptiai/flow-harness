@@ -230,6 +230,8 @@ describe("Prime Agent package boundary", () => {
     expect(workflow).toContain("systemctl stop docker.service docker.socket containerd.service");
     expect(workflow).toContain("systemctl mask containerd.service");
     expect(workflow).toContain("rm --force -- /run/containerd/containerd.sock");
+    expect(workflow).toContain('ps --no-headers --pid "$containerd_pid" --format ppid');
+    expect(workflow).not.toContain('ps --no-headers --ppid "$docker_pid" --format pid');
     expect(workflow).toContain('"default-runtime":"flow-prime-runc"');
     expect(workflow).toContain('"flow-prime-runc":{"path":$path,"runtimeArgs":[]}');
     expect(workflow).not.toContain("-H fd://");
@@ -238,6 +240,8 @@ describe("Prime Agent package boundary", () => {
     expect(workflow).toContain("useradd --create-home --groups docker flow-prime-peer");
     expect(workflow).toContain("FLOW_PRIME_TEST_SECOND_USER=flow-prime-peer");
     expect(readme).toContain("dedicated, reprovisionable Prime runner");
+    expect(readme).toContain('ps --no-headers --pid "$containerd_pid" --format ppid');
+    expect(readme).not.toContain('ps --no-headers --ppid "$docker_pid" --format pid');
     expect(readme).toMatch(
       /Do not use this setup on a\s+shared development host or on a host that serves Kubernetes or other `containerd` clients/,
     );

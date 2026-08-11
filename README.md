@@ -130,7 +130,7 @@ Verify that Docker owns the managed containerd process:
 ```sh
 docker_pid="$(cat /run/docker.pid)"
 containerd_pid="$(cat /run/docker/containerd/containerd.pid)"
-test "$(ps --no-headers --ppid "$docker_pid" --format pid | xargs)" = "$containerd_pid"
+test "$(ps --no-headers --pid "$containerd_pid" --format ppid | xargs)" = "$docker_pid"
 ```
 
 Prepare the fixed image and local runtime evidence before plan validation:

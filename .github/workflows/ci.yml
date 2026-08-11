@@ -127,7 +127,7 @@ jobs:
           sudo test -r /run/docker.pid
           containerd_pid="$(sudo cat /run/docker/containerd/containerd.pid)"
           docker_pid="$(sudo cat /run/docker.pid)"
-          test "$(ps --no-headers --ppid "$docker_pid" --format pid | xargs)" = "$containerd_pid"
+          test "$(ps --no-headers --pid "$containerd_pid" --format ppid | xargs)" = "$docker_pid"
           sudo test "$(readlink --canonicalize "/proc/${containerd_pid}/exe")" = \
             "$(readlink --canonicalize "$(command -v containerd)")"
 
