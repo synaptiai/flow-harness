@@ -236,7 +236,7 @@ export class LocalDockerPrimeOciEngine implements PrimeOciEngine {
       DnsOptions: ["ndots:0"],
       IpcMode: "none",
       CgroupnsMode: "private",
-      Runtime: "runc",
+      Runtime: policy.runtimeName,
       ReadonlyRootfs: true,
       LogConfig: { Type: "none", Config: {} },
       RestartPolicy: { Name: "no", MaximumRetryCount: 0 },

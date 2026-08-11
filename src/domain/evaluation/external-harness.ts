@@ -143,6 +143,7 @@ const primeOuterProtocolSchema = z
 const primeRuntimePolicySchema = z
   .object({
     digest: sha256Schema,
+    runtimeName: z.literal("flow-prime-runc"),
     maxActivePrimeContainers: z.literal(1),
     minMemoryHeadroomBytes: z.literal(4_294_967_296),
     minPidHeadroom: z.literal(256),

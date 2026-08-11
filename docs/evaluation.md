@@ -55,7 +55,7 @@ node dist/cli/main.js eval run examples/evaluation/native-prime-agent-comparison
 ```
 
 Prime Agent requires Linux x64, Docker API 1.51, cgroup v2, and the fixed local image. Docker must
-configure `runc` with one canonical absolute path and no arguments.
+configure `flow-prime-runc` with one canonical `runc` path and no arguments.
 Preparation builds the image twice. Flow rejects different image, package, closure, or SBOM
 identities. A run never builds, pulls, or updates the image.
 

@@ -79,18 +79,19 @@ The Prime Agent evaluation profile has additional requirements:
 The Prime runtime identity has these additional requirements:
 
 - Docker uses its canonical daemon PID record.
-- The `runc` runtime uses one canonical absolute executable path and no arguments.
+- The `flow-prime-runc` runtime uses one canonical `runc` executable path and no arguments.
 - Docker publishes its managed `containerd` PID record under `/run/docker/containerd`.
 - Enough host capacity for the fixed Prime resource policy.
 
-Configure the Docker daemon with the exact `runc` path. Replace the path when your system uses a
-different canonical location.
+Configure the Docker daemon with the dedicated `flow-prime-runc` runtime name and the exact `runc`
+path. Docker reserves its built-in `runc` name. Replace the path when your system uses a different
+canonical location.
 
 ```json
 {
-  "default-runtime": "runc",
+  "default-runtime": "flow-prime-runc",
   "runtimes": {
-    "runc": {
+    "flow-prime-runc": {
       "path": "/usr/bin/runc",
       "runtimeArgs": []
     }

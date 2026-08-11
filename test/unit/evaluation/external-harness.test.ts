@@ -219,6 +219,7 @@ function primeIdentity() {
       },
       policy: {
         digest: "9".repeat(64),
+        runtimeName: "flow-prime-runc" as const,
         maxActivePrimeContainers: 1 as const,
         minMemoryHeadroomBytes: 4_294_967_296 as const,
         minPidHeadroom: 256 as const,

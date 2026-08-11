@@ -28,6 +28,7 @@ import {
   publishLocalPrimeOciAttestation,
 } from "./local-prime-oci-attestation.js";
 import { LocalPrimeOciRuntimeInspector } from "./local-prime-oci-runtime-inspector.js";
+import { PRIME_OCI_RUNTIME_NAME } from "./prime-oci-policy.js";
 import {
   PrimeOciPreparationError,
   type PrimeOciPreparationResult,
@@ -51,7 +52,7 @@ const dockerInfoSchema = z
     DockerRootDir: z.string().min(1).max(4_095),
     OSType: z.literal("linux"),
     Architecture: z.enum(["amd64", "x86_64"]),
-    DefaultRuntime: z.literal("runc"),
+    DefaultRuntime: z.literal(PRIME_OCI_RUNTIME_NAME),
     Runtimes: z.record(
       z.string().min(1).max(128),
       z
@@ -102,7 +103,7 @@ export async function prepareProductionPrimeOciRuntime(input: {
       await run(["info", "--format", "{{json .}}"]),
       "Docker information",
     );
-    const configuredRuncPath = runtimeInfo.Runtimes.runc?.path;
+    const configuredRuncPath = runtimeInfo.Runtimes[PRIME_OCI_RUNTIME_NAME]?.path;
     if (configuredRuncPath === undefined || !configuredRuncPath.startsWith("/")) {
       throw new Error("Prime OCI runc runtime must use one absolute executable path");
     }

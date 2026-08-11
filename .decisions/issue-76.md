@@ -636,8 +636,9 @@ The public engine identity binds client and server builds, API version, kernel, 
 The server build includes the reported commit and the canonical live `dockerd` file digest. The
 identity also binds cgroups, storage, rootless state, security options, and the policy digest.
 
-Docker must configure `runc` with one canonical absolute path and no arguments. Flow hashes that
-file. Docker must use the exact canonical Unix socket and its canonical daemon PID record.
+Docker must configure `flow-prime-runc` with one canonical `runc` path and no arguments. The fixed
+policy binds that runtime name, and Flow hashes the executable. Docker must use the exact canonical
+Unix socket and its canonical daemon PID record.
 
 Flow rejects socket activation and authority-moving daemon options. It also rejects those options
 in the default daemon configuration. The Docker-managed `containerd` must be a direct daemon child.

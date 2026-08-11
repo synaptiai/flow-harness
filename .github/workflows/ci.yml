@@ -101,7 +101,7 @@ jobs:
             printf '{}\n' > /tmp/flow-prime-daemon.json
           fi
           jq --arg path "$runtime_path" \
-            'del(.containerd, .["containerd-namespace"], .["containerd-plugins-namespace"], .["exec-root"], .hosts, .pidfile) | . + {"default-runtime":"runc","runtimes":((.runtimes // {}) + {"runc":{"path":$path,"runtimeArgs":[]}})}' \
+            'del(.containerd, .["containerd-namespace"], .["containerd-plugins-namespace"], .["exec-root"], .hosts, .pidfile) | . + {"default-runtime":"flow-prime-runc","runtimes":((.runtimes // {}) + {"flow-prime-runc":{"path":$path,"runtimeArgs":[]}})}' \
             /tmp/flow-prime-daemon.json > /tmp/flow-prime-daemon.updated.json
           sudo install --mode=0644 /tmp/flow-prime-daemon.updated.json /etc/docker/daemon.json
           sudo systemctl stop docker.service docker.socket
@@ -117,9 +117,10 @@ jobs:
           fi
           test "$(docker version --format '{{.Server.APIVersion}}')" = '1.51'
           test "$(docker version --format '{{.Server.Version}}')" = '28.3.3'
-          docker info --format '{{json .Runtimes.runc}}' | \
+          test "$(docker info --format '{{.DefaultRuntime}}')" = 'flow-prime-runc'
+          docker info --format '{{json .Runtimes}}' | \
             jq --exit-status --arg path "$runtime_path" \
-              '.path == $path and ((.runtimeArgs // []) | length == 0)'
+              '.["flow-prime-runc"].path == $path and ((.["flow-prime-runc"].runtimeArgs // []) | length == 0)'
           sudo test -r /run/docker/containerd/containerd.pid
           sudo test -r /run/docker.pid
           containerd_pid="$(sudo cat /run/docker/containerd/containerd.pid)"

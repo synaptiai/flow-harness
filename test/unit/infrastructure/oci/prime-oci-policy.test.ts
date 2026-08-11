@@ -7,6 +7,7 @@ describe("Prime OCI runtime policy", () => {
     const policy = createPrimeOciRuntimePolicy("a".repeat(64));
 
     expect(policy).toMatchObject({
+      runtimeName: "flow-prime-runc",
       maxActivePrimeContainers: 1,
       pidsMax: 64,
       memoryMaxBytes: 2_147_483_648,

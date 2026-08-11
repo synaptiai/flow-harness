@@ -7,7 +7,10 @@ type PrimeRuntimePolicyContent = Omit<PrimeRuntimePolicy, "digest" | "seccompSha
 
 const sha256Pattern = /^[a-f0-9]{64}$/;
 
+export const PRIME_OCI_RUNTIME_NAME = "flow-prime-runc" as const;
+
 const VERSION_ONE_POLICY = Object.freeze({
+  runtimeName: PRIME_OCI_RUNTIME_NAME,
   maxActivePrimeContainers: 1,
   minMemoryHeadroomBytes: 4_294_967_296,
   minPidHeadroom: 256,

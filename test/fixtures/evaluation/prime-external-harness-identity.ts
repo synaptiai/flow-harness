@@ -64,6 +64,7 @@ export function primeExternalHarnessIdentity(): PrimeExternalHarnessIdentity {
       },
       policy: {
         digest: "9".repeat(64),
+        runtimeName: "flow-prime-runc",
         maxActivePrimeContainers: 1,
         minMemoryHeadroomBytes: 4_294_967_296,
         minPidHeadroom: 256,

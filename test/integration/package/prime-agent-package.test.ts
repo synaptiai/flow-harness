@@ -226,6 +226,8 @@ describe("Prime Agent package boundary", () => {
     expect(workflow).not.toContain("docker/setup-buildx-action");
     expect(workflow).toContain("run: npm run ci:local");
     expect(workflow).toContain("ExecStart=/usr/bin/dockerd --host=unix:///var/run/docker.sock");
+    expect(workflow).toContain('"default-runtime":"flow-prime-runc"');
+    expect(workflow).toContain('"flow-prime-runc":{"path":$path,"runtimeArgs":[]}');
     expect(workflow).not.toContain("-H fd://");
     expect(localCi).toContain('[compiledCliPath, "runtime", "prepare", "prime-agent"]');
     expect(localCi).toContain("FLOW_PRIME_PREPARED_ATTESTATION");

@@ -16,10 +16,14 @@ describe("local Prime OCI currentness", () => {
     let serverCommit = "dockerd-commit";
     let cgroupPath = local.cgroupPath;
     let imageDevice = local.imageDevice;
+    let imageInspections = 0;
     const client: PrimeOciCurrentStateClient = {
       readVersion: async () => versionSource(serverCommit),
       readInfo: async () => info,
-      inspectImage: async (imageId) => (imagePresent ? { Id: imageId } : null),
+      inspectImage: async (imageId) => {
+        imageInspections += 1;
+        return imagePresent ? { Id: imageId } : null;
+      },
     };
     const runtime = (
       await new LocalPrimeOciRuntimeInspector({
@@ -46,6 +50,18 @@ describe("local Prime OCI currentness", () => {
     };
 
     await expect(assertPrimeOciRuntimeCurrent(input)).resolves.toBeUndefined();
+    expect(imageInspections).toBe(1);
+
+    for (const mutate of runtimeDriftMutations()) {
+      const changedInfo = JSON.parse(infoSource("overlay2")) as Record<string, unknown>;
+      mutate(changedInfo);
+      info = JSON.stringify(changedInfo);
+      await expect(assertPrimeOciRuntimeCurrent(input)).rejects.toThrow(
+        /Docker information.*closed schema/i,
+      );
+      expect(imageInspections).toBe(1);
+    }
+    info = infoSource("overlay2");
 
     imageDevice = { path: "/dev/changed-image", major: 8, minor: 2 };
     await expect(assertPrimeOciRuntimeCurrent(input)).rejects.toThrow(/image.*device/i);
@@ -146,8 +162,26 @@ function infoSource(driver: string): string {
     SecurityOptions: ["name=seccomp,profile=builtin", "name=apparmor"],
     ContainerdCommit: { ID: "containerd-commit" },
     RuncCommit: { ID: "runc-commit" },
-    DefaultRuntime: "runc",
-    Runtimes: { runc: { path: "/usr/bin/runc", runtimeArgs: [] } },
+    DefaultRuntime: "flow-prime-runc",
+    Runtimes: { "flow-prime-runc": { path: "/usr/bin/runc", runtimeArgs: [] } },
     Rootless: false,
   });
+}
+
+function runtimeDriftMutations(): readonly ((value: Record<string, unknown>) => void)[] {
+  return [
+    (value) => {
+      value.DefaultRuntime = "runc";
+    },
+    (value) => {
+      value.Runtimes = { "other-runc": { path: "/usr/bin/runc", runtimeArgs: [] } };
+    },
+    (value) => {
+      const runtimes = value.Runtimes as Record<string, Record<string, unknown>>;
+      runtimes["flow-prime-runc"] = {
+        ...runtimes["flow-prime-runc"],
+        runtimeArgs: ["--root=/tmp/changed"],
+      };
+    },
+  ];
 }

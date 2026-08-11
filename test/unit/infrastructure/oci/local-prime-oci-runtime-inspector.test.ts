@@ -82,6 +82,45 @@ describe("local Prime OCI runtime inspector", () => {
     await expect(inspector.inspect()).rejects.toThrow(/runc.*path/i);
   });
 
+  it.each([
+    [
+      "default runtime",
+      (value: Record<string, unknown>) => {
+        value.DefaultRuntime = "runc";
+      },
+    ],
+    [
+      "selected runtime name",
+      (value: Record<string, unknown>) => {
+        value.Runtimes = { "other-runc": { path: "/usr/bin/runc", runtimeArgs: [] } };
+      },
+    ],
+    [
+      "runtime argument",
+      (value: Record<string, unknown>) => {
+        const runtimes = value.Runtimes as Record<string, Record<string, unknown>>;
+        runtimes["flow-prime-runc"] = {
+          ...runtimes["flow-prime-runc"],
+          runtimeArgs: ["--root=/tmp/changed"],
+        };
+      },
+    ],
+  ])("rejects a changed %s", async (_label, mutate) => {
+    const seccompProfile = { defaultAction: "SCMP_ACT_ERRNO", syscalls: [] };
+    const info = JSON.parse(infoOutput("systemd")) as Record<string, unknown>;
+    mutate(info);
+    const inspector = new LocalPrimeOciRuntimeInspector({
+      run: async (args) => (args[0] === "version" ? versionOutput() : JSON.stringify(info)),
+      local: async () => localObservation(seccompProfile),
+      dockerExecutableSha256: "a".repeat(64),
+      dockerdExecutableSha256: "d".repeat(64),
+      containerdExecutableSha256: "b".repeat(64),
+      runcExecutableSha256: "c".repeat(64),
+    });
+
+    await expect(inspector.inspect()).rejects.toThrow(/Docker information.*closed schema/i);
+  });
+
   it("rejects a matching Docker stack below the fixed API version", async () => {
     const seccompProfile = { defaultAction: "SCMP_ACT_ERRNO", syscalls: [] };
     const inspector = new LocalPrimeOciRuntimeInspector({
@@ -127,8 +166,8 @@ function infoOutput(cgroupDriver: string, runcPath = "/usr/bin/runc"): string {
     SecurityOptions: ["name=apparmor", "name=seccomp,profile=builtin", "name=cgroupns"],
     ContainerdCommit: { ID: "containerd-commit" },
     RuncCommit: { ID: "runc-commit" },
-    DefaultRuntime: "runc",
-    Runtimes: { runc: { path: runcPath, runtimeArgs: [] } },
+    DefaultRuntime: "flow-prime-runc",
+    Runtimes: { "flow-prime-runc": { path: runcPath, runtimeArgs: [] } },
     Rootless: false,
   });
 }
