@@ -295,7 +295,7 @@ describe("CommandNodeExecutor sandbox boundary", () => {
         executable: process.execPath,
         args: [
           "-e",
-          'require("node:fs").writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000)',
+          'require("node:fs").writeFileSync(process.argv[1], String(process.pid)); setInterval(() => process.stdout.write("late output\\n"), 1)',
           pidPath,
         ],
         env: {},
@@ -319,7 +319,7 @@ describe("CommandNodeExecutor sandbox boundary", () => {
     let processGroup: number | undefined;
     try {
       const outcome = await executor.executeAgentCommand(
-        normalizeAgentCommandRequest({ executable: "node", timeoutMs: 100 }),
+        normalizeAgentCommandRequest({ executable: "node", timeoutMs: 1_000 }),
         context,
       );
       processGroup = Number(await readFile(pidPath, "utf8"));
