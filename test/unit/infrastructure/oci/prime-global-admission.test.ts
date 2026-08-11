@@ -3,8 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   PrimeGlobalAdmissionController,
   PrimeGlobalAdmissionUnsafeStateError,
-  type PrimeGlobalSlotLease,
   type PrimeGlobalSlotInspection,
+  type PrimeGlobalSlotLease,
 } from "../../../../src/infrastructure/oci/prime-global-admission.js";
 
 describe("Prime global admission", () => {
@@ -121,6 +121,65 @@ describe("Prime global admission", () => {
       "engine:confirm",
       "store:remove",
     ]);
+  });
+
+  it("creates and removes the fixed-name slot after an initial recovery miss", async () => {
+    const events: string[] = [];
+    const intent: PrimeGlobalSlotLease = {
+      version: 1,
+      state: "intent",
+      lockName: "flow-prime-global-v1",
+      ownerNonce: "a".repeat(64),
+      policyDigest: "b".repeat(64),
+      daemonId: "daemon-test-id",
+    };
+    const store = memoryStore(events, intent);
+    const engine = lockEngine(events);
+    engine.inspect.mockImplementationOnce(async () => {
+      events.push("engine:inspect:name");
+      return null;
+    });
+
+    await controller(store, engine).recover();
+
+    expect(events).toEqual([
+      "engine:inspect:name",
+      "engine:create",
+      "store:owned",
+      "engine:inspect:object",
+      "engine:remove",
+      "engine:confirm",
+      "store:remove",
+    ]);
+  });
+
+  it("reconciles a delayed fixed-name slot after the retry gets a conflict", async () => {
+    const events: string[] = [];
+    const intent: PrimeGlobalSlotLease = {
+      version: 1,
+      state: "intent",
+      lockName: "flow-prime-global-v1",
+      ownerNonce: "a".repeat(64),
+      policyDigest: "b".repeat(64),
+      daemonId: "daemon-test-id",
+    };
+    const inspection = {
+      objectId: "d".repeat(64),
+      ownerNonce: intent.ownerNonce,
+      policyDigest: intent.policyDigest,
+      daemonId: intent.daemonId,
+    };
+    const store = memoryStore(events, intent);
+    const engine = lockEngine(events, { createError: new Error("name conflict") });
+    engine.inspect
+      .mockImplementationOnce(async () => null)
+      .mockImplementationOnce(async () => inspection);
+
+    await controller(store, engine).recover();
+
+    expect(engine.inspect).toHaveBeenCalledTimes(3);
+    expect(store.writeOwned).toHaveBeenCalledOnce();
+    expect(store.remove).toHaveBeenCalledOnce();
   });
 
   it("retires an owned lease after daemon-side removal completed", async () => {

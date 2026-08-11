@@ -91,16 +91,12 @@ export class PrimeGlobalAdmissionController {
     } catch (createError) {
       throwIfAborted(signal);
       try {
-        inspection = await this.options.engine.inspect(intent.lockName, signal);
+        inspection = await this.#settleIntent(intent, signal);
       } catch (inspectError) {
         throw new PrimeGlobalAdmissionUnsafeStateError(
           "Prime global slot create outcome cannot be reconciled",
           { cause: new AggregateError([createError, inspectError]) },
         );
-      }
-      if (inspection === null) {
-        await this.options.store.remove(intent);
-        throw createError;
       }
     }
 
@@ -189,11 +185,7 @@ export class PrimeGlobalAdmissionController {
       return;
     }
 
-    const inspection = await this.options.engine.inspect(lease.lockName, signal);
-    if (inspection === null) {
-      await this.options.store.remove(lease);
-      return;
-    }
+    const inspection = await this.#settleIntent(lease, signal);
     const parsedInspection = inspectionSchema.parse(inspection);
     if (!matchesIntent(parsedInspection, lease)) {
       throw new PrimeGlobalAdmissionUnsafeStateError(
@@ -207,6 +199,32 @@ export class PrimeGlobalAdmissionController {
     });
     await this.options.store.writeOwned(owned);
     await this.release(owned, signal);
+  }
+
+  async #settleIntent(
+    lease: PrimeGlobalSlotLease,
+    signal: AbortSignal | undefined,
+  ): Promise<PrimeGlobalSlotInspection> {
+    const existing = await this.options.engine.inspect(lease.lockName, signal);
+    if (existing !== null) {
+      return inspectionSchema.parse(existing);
+    }
+    let createError: unknown;
+    try {
+      return inspectionSchema.parse(await this.options.engine.create(lease, signal));
+    } catch (error) {
+      createError = error;
+    }
+    const reconciled = await this.options.engine.inspect(lease.lockName, signal);
+    if (reconciled !== null) {
+      return inspectionSchema.parse(reconciled);
+    }
+    throw new PrimeGlobalAdmissionUnsafeStateError(
+      "Prime global slot named create did not settle",
+      {
+        cause: createError,
+      },
+    );
   }
 }
 

@@ -129,13 +129,10 @@ export class PrimeOciContainerLifecycle {
       return input.lease;
     }
     if (input.lease.state === "intent") {
-      const created = await this.engine.recoverIntent(
+      const created = await this.#settleIntent(
         input.lease as PrimeOciIntentLease,
         input.cleanupSignal,
       );
-      if (created === null) {
-        return updateRecoveryLease(input, { ...input.lease, state: "absent" });
-      }
       const createdLease = {
         ...input.lease,
         state: "created" as const,
@@ -177,14 +174,37 @@ export class PrimeOciContainerLifecycle {
   async #recoverLostCreate(
     input: PrimeOciContainerLifecycleInput,
     createCleanupSignal: () => AbortSignal | undefined,
-  ): Promise<PrimeOciCreatedIdentity | undefined> {
+  ): Promise<PrimeOciCreatedIdentity> {
     try {
-      return (await this.engine.recoverIntent(input.intent, createCleanupSignal())) ?? undefined;
+      return await this.#settleIntent(input.intent, createCleanupSignal());
     } catch (error) {
       throw new PrimeOciUnsafeStateError("Prime OCI create outcome cannot be recovered", {
         cause: error,
       });
     }
+  }
+
+  async #settleIntent(
+    intent: PrimeOciIntentLease,
+    signal: AbortSignal | undefined,
+  ): Promise<PrimeOciCreatedIdentity> {
+    const recovered = await this.engine.recoverIntent(intent, signal);
+    if (recovered !== null) {
+      return recovered;
+    }
+    let createError: unknown;
+    try {
+      return await this.engine.create(intent, signal);
+    } catch (error) {
+      createError = error;
+    }
+    const reconciled = await this.engine.recoverIntent(intent, signal);
+    if (reconciled !== null) {
+      return reconciled;
+    }
+    throw new PrimeOciUnsafeStateError("Prime OCI named create did not settle", {
+      cause: createError,
+    });
   }
 
   async #cleanup(
