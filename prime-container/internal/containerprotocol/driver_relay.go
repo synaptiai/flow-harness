@@ -14,10 +14,10 @@ func RelayDriver(hostReader io.Reader, hostWriter io.Writer, driver io.ReadWrite
 	}
 	hello, err := ParseInnerHello(bootstrap)
 	if err != nil {
-		return err
+		return newDriverRelayStageError("validating bootstrap", err)
 	}
 	if err := writeInnerLine(driver, bootstrap); err != nil {
-		return err
+		return newDriverRelayStageError("writing bootstrap to the driver", err)
 	}
 	reader := bufio.NewReaderSize(driver, MaxInnerFrameBytes+2)
 	driverSequence := int64(1)
@@ -27,55 +27,84 @@ func RelayDriver(hostReader io.Reader, hostWriter io.Writer, driver io.ReadWrite
 	for {
 		line, err := readInnerLine(reader)
 		if err != nil {
-			return err
+			return newDriverRelayStageError("reading the driver channel", err)
 		}
 		frames++
 		if frames > MaxDriverFrames {
-			return errors.New("Prime driver traffic exceeds the frame limit")
+			return newDriverRelayStageError(
+				"validating a driver frame",
+				errors.New("Prime driver traffic exceeds the frame limit"),
+			)
 		}
 		frame, err := ParseInnerDriver(line, InnerExpectation{
 			SecretHex: hello.SecretHex, SessionID: hello.SessionID, Sequence: driverSequence,
 		})
 		if err != nil {
-			return err
+			return newDriverRelayStageError("validating a driver frame", err)
 		}
 		driverSequence++
 		if !ready {
 			if frame.Type != InnerReady {
-				return errors.New("Prime driver must send ready before other frames")
+				return newDriverRelayStageError(
+					"validating a driver frame",
+					errors.New("Prime driver must send ready before other frames"),
+				)
 			}
 			ready = true
 		} else if frame.Type == InnerReady {
-			return errors.New("Prime driver sent more than one ready frame")
+			return newDriverRelayStageError(
+				"validating a driver frame",
+				errors.New("Prime driver sent more than one ready frame"),
+			)
 		}
 		if err := WriteFrame(hostWriter, FrameDriver, line); err != nil {
-			return err
+			return newDriverRelayStageError("writing the host channel", err)
 		}
 		switch frame.Type {
 		case InnerInferenceRequest:
 			parentFrame, err := ReadFrame(hostReader)
 			if err != nil {
-				return err
+				return newDriverRelayStageError("reading the host channel", err)
 			}
 			if parentFrame.Type != FrameDriver {
-				return fmt.Errorf(
+				return newDriverRelayStageError("validating a host frame", fmt.Errorf(
 					"Prime container frame type %d cannot answer an inference request",
 					parentFrame.Type,
-				)
+				))
 			}
 			if _, err := ParseInnerParent(parentFrame.Payload, InnerExpectation{
 				SecretHex: hello.SecretHex, SessionID: hello.SessionID, Sequence: parentSequence,
 			}); err != nil {
-				return err
+				return newDriverRelayStageError("validating a host frame", err)
 			}
 			parentSequence++
 			if err := writeInnerLine(driver, parentFrame.Payload); err != nil {
-				return err
+				return newDriverRelayStageError("writing the driver channel", err)
 			}
 		case InnerTerminal:
-			return WriteFrame(hostWriter, FrameTerminal, nil)
+			if err := WriteFrame(hostWriter, FrameTerminal, nil); err != nil {
+				return newDriverRelayStageError("writing the host channel", err)
+			}
+			return nil
 		}
 	}
+}
+
+type driverRelayStageError struct {
+	stage string
+	cause error
+}
+
+func newDriverRelayStageError(stage string, cause error) error {
+	return &driverRelayStageError{stage: stage, cause: cause}
+}
+
+func (relayError *driverRelayStageError) Error() string {
+	return "Prime driver relay failed while " + relayError.stage
+}
+
+func (relayError *driverRelayStageError) Unwrap() error {
+	return relayError.cause
 }
 
 func readInnerLine(reader *bufio.Reader) ([]byte, error) {

@@ -1252,6 +1252,45 @@ describe("Docker Unix API client", () => {
       publicMessage: "Prime driver failed while relaying its private protocol",
     },
     {
+      privateDiagnostic: "run Prime driver: Prime driver relay failed while validating bootstrap\n",
+      publicMessage: "Prime driver relay failed while validating its bootstrap",
+    },
+    {
+      privateDiagnostic:
+        "run Prime driver: Prime driver relay failed while writing bootstrap to the driver\n",
+      publicMessage: "Prime driver relay failed while sending its bootstrap",
+    },
+    {
+      privateDiagnostic:
+        "run Prime driver: Prime driver relay failed while reading the driver channel\n",
+      publicMessage: "Prime driver relay failed while reading the driver channel",
+    },
+    {
+      privateDiagnostic:
+        "run Prime driver: Prime driver relay failed while validating a driver frame\n",
+      publicMessage: "Prime driver relay failed while validating a driver frame",
+    },
+    {
+      privateDiagnostic:
+        "run Prime driver: Prime driver relay failed while writing the host channel\n",
+      publicMessage: "Prime driver relay failed while writing the host channel",
+    },
+    {
+      privateDiagnostic:
+        "run Prime driver: Prime driver relay failed while reading the host channel\n",
+      publicMessage: "Prime driver relay failed while reading the host channel",
+    },
+    {
+      privateDiagnostic:
+        "run Prime driver: Prime driver relay failed while validating a host frame\n",
+      publicMessage: "Prime driver relay failed while validating a host frame",
+    },
+    {
+      privateDiagnostic:
+        "run Prime driver: Prime driver relay failed while writing the driver channel\n",
+      publicMessage: "Prime driver relay failed while writing the driver channel",
+    },
+    {
       privateDiagnostic: "run Prime driver: read Prime driver diagnostic: PRIVATE_DIAGNOSTIC\n",
       publicMessage: "Prime driver failed while reading its private diagnostic",
     },

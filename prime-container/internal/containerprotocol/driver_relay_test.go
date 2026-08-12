@@ -7,9 +7,87 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net"
+	"strings"
 	"testing"
 )
+
+func TestRelayDriverReportsClosedStages(t *testing.T) {
+	hello := signTestInnerFrame(t, testInnerSecret, map[string]any{
+		"version": 1, "sequence": 1, "sessionId": testInnerSession, "type": "hello",
+		"payload": map[string]any{
+			"secretHex":      testInnerSecret,
+			"trialId":        "trial-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			"identityDigest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+		},
+	})
+	ready := signTestInnerFrame(t, testInnerSecret, map[string]any{
+		"version": 1, "sequence": 1, "sessionId": testInnerSession, "type": "ready",
+		"payload": map[string]any{
+			"trialId":        "trial-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			"identityDigest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+		},
+	})
+	request := signTestInnerFrame(t, testInnerSecret, map[string]any{
+		"version": 1, "sequence": 2, "sessionId": testInnerSession, "type": "inference_request",
+		"payload": map[string]any{
+			"requestId": "018f4ee8-9d67-7ca1-a31f-4f3f2388e935",
+			"body":      "{}", "bodySha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+		},
+	})
+
+	tests := []struct {
+		name    string
+		host    []byte
+		driver  [][]byte
+		hello   []byte
+		message string
+	}{
+		{
+			name: "bootstrap validation", hello: []byte("PRIVATE_INVALID_BOOTSTRAP"),
+			message: "Prime driver relay failed while validating bootstrap",
+		},
+		{
+			name: "driver read", hello: hello,
+			message: "Prime driver relay failed while reading the driver channel",
+		},
+		{
+			name: "driver validation", hello: hello, driver: [][]byte{[]byte("PRIVATE_INVALID_DRIVER")},
+			message: "Prime driver relay failed while validating a driver frame",
+		},
+		{
+			name: "host read", hello: hello, driver: [][]byte{ready, request},
+			message: "Prime driver relay failed while reading the host channel",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			supervisorSide, driverSide := net.Pipe()
+			defer supervisorSide.Close()
+			go func() {
+				defer driverSide.Close()
+				reader := bufio.NewReader(driverSide)
+				if _, err := reader.ReadBytes('\n'); err != nil {
+					return
+				}
+				for _, frame := range test.driver {
+					if _, err := driverSide.Write(append(append([]byte(nil), frame...), '\n')); err != nil {
+						return
+					}
+				}
+			}()
+			err := RelayDriver(bytes.NewReader(test.host), io.Discard, supervisorSide, test.hello)
+			if err == nil || err.Error() != test.message {
+				t.Fatalf("relay stage changed: %v", err)
+			}
+			if strings.Contains(err.Error(), "PRIVATE") {
+				t.Fatalf("relay stage exposed a private value: %v", err)
+			}
+		})
+	}
+}
 
 func TestRelayDriverAuthenticatesAndRelaysOneInference(t *testing.T) {
 	hello := signTestInnerFrame(t, testInnerSecret, map[string]any{

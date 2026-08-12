@@ -746,6 +746,22 @@ function primeContainerFailureMessage(stderr: Buffer, sawStdout: boolean): strin
       return "Prime driver failed while settling the native SDK session";
     case "run prime driver: prime driver stage failure: unexpected":
       return "Prime driver failed unexpectedly";
+    case "run prime driver: prime driver relay failed while validating bootstrap":
+      return "Prime driver relay failed while validating its bootstrap";
+    case "run prime driver: prime driver relay failed while writing bootstrap to the driver":
+      return "Prime driver relay failed while sending its bootstrap";
+    case "run prime driver: prime driver relay failed while reading the driver channel":
+      return "Prime driver relay failed while reading the driver channel";
+    case "run prime driver: prime driver relay failed while validating a driver frame":
+      return "Prime driver relay failed while validating a driver frame";
+    case "run prime driver: prime driver relay failed while writing the host channel":
+      return "Prime driver relay failed while writing the host channel";
+    case "run prime driver: prime driver relay failed while reading the host channel":
+      return "Prime driver relay failed while reading the host channel";
+    case "run prime driver: prime driver relay failed while validating a host frame":
+      return "Prime driver relay failed while validating a host frame";
+    case "run prime driver: prime driver relay failed while writing the driver channel":
+      return "Prime driver relay failed while writing the driver channel";
   }
   const runDriverPrefix = "run prime driver: ";
   const runDriverDiagnostic = privateDiagnostic.slice(runDriverPrefix.length);
