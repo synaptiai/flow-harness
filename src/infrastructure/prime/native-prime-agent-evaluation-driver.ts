@@ -148,6 +148,7 @@ export interface NativePrimeSessionFactoryInput {
 
 interface PrimeEventStream {
   push(event: Record<string, unknown>): void;
+  end(): void;
 }
 
 interface PrimeSdkSession {
@@ -675,6 +676,8 @@ function createBrokerStream(
         errorMessage: boundedReason(error),
       };
       stream.push({ type: "error", reason: message.stopReason, error: message });
+    } finally {
+      stream.end();
     }
   })();
   return stream;

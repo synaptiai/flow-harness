@@ -156,6 +156,43 @@ describe("native Prime evaluation driver", () => {
     expect(disposeProvisioner).not.toHaveBeenCalled();
   });
 
+  it.each([
+    {
+      name: "successful inference",
+      infer: async () => JSON.stringify(primeAssistantTextResponse()),
+      terminalEvent: "done",
+    },
+    {
+      name: "failed inference",
+      infer: async (): Promise<never> => {
+        throw new Error("PRIVATE_INFERENCE_CANARY");
+      },
+      terminalEvent: "error",
+    },
+  ])("ends the Prime assistant-message stream after $name", async (testCase) => {
+    const fixture = sdkFixture({ thinkingLevel: "off" });
+    const session = await createNativePrimeSdkSession({
+      evaluation: evaluationInput(),
+      workspace: process.cwd(),
+      infer: testCase.infer,
+      loadSdk: async () => fixture.bindings,
+    });
+    const streamSimple = fixture.provider?.streamSimple;
+    if (typeof streamSimple !== "function") {
+      throw new Error("Prime broker provider was not registered");
+    }
+
+    streamSimple(
+      { id: "flow-host-model", provider: "flow-host-broker", api: "flow-host-inference-v1" },
+      { messages: [] },
+    );
+
+    await vi.waitFor(() => expect(fixture.stream.end).toHaveBeenCalledOnce());
+    expect(fixture.streamOrder.at(-2)).toBe(testCase.terminalEvent);
+    expect(fixture.streamOrder.at(-1)).toBe("end");
+    await session.dispose();
+  });
+
   it("rejects a Prime thinking-level clamp before the task starts", async () => {
     const fixture = sdkFixture({ thinkingLevel: "off" });
     const evaluation = evaluationInput("medium");
@@ -643,6 +680,12 @@ function sdkFixture(options: {
   readonly thinkingLevel: string;
   readonly sessionDisposeError?: Error;
 }) {
+  const streamOrder: string[] = [];
+  const stream = {
+    push: vi.fn((event: { readonly type: string }) => streamOrder.push(event.type)),
+    end: vi.fn(() => streamOrder.push("end")),
+  };
+  let provider: Record<string, unknown> | undefined;
   const authStorage = {};
   const disposeProvisioner = vi.fn(async () => undefined);
   const killProvisioner = vi.fn(async () => undefined);
@@ -664,7 +707,9 @@ function sdkFixture(options: {
     state: { messages: [] },
   };
   const modelRegistry = {
-    registerProvider: vi.fn(),
+    registerProvider: vi.fn((_name: string, registered: Record<string, unknown>) => {
+      provider = registered;
+    }),
     find: vi.fn(() => ({ id: "flow-host-model", provider: "flow-host-broker" })),
     setOnOAuthProvidersReset: vi.fn(),
   };
@@ -679,10 +724,40 @@ function sdkFixture(options: {
     },
     createExtensionRuntime: vi.fn(() => ({})),
     createIpythonToolDefinition: vi.fn(() => ({ name: "ipython" })),
-    createAssistantMessageEventStream: vi.fn(),
+    createAssistantMessageEventStream: vi.fn(() => stream),
     createAgentSession: vi.fn(async () => ({ session })),
   };
-  return { bindings, session, disposeProvisioner, killProvisioner };
+  return {
+    bindings,
+    session,
+    disposeProvisioner,
+    killProvisioner,
+    stream,
+    streamOrder,
+    get provider() {
+      return provider;
+    },
+  };
+}
+
+function primeAssistantTextResponse() {
+  return {
+    role: "assistant",
+    content: [{ type: "text", text: "done" }],
+    api: "test-api",
+    provider: "test-provider",
+    model: "test-model",
+    usage: {
+      input: 1,
+      output: 1,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 2,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "stop",
+    timestamp: 1,
+  };
 }
 
 function evaluationInput(
