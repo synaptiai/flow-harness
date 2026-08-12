@@ -662,14 +662,27 @@ function primeContainerFailureMessage(stderr: Buffer, sawStdout: boolean): strin
     }
     if (
       privateDiagnostic.startsWith(readinessPrefix) &&
-      startsWithAny(readinessDiagnostic, [
-        "read prime mount information:",
-        "linux mount information line ",
-        "linux mount information repeats ",
-        "prime root mount is absent",
-      ])
+      readinessDiagnostic.startsWith("read prime mount information:")
     ) {
-      return "Prime container readiness failed while reading filesystem mount evidence";
+      return "Prime container readiness failed while reading filesystem mount information";
+    }
+    if (
+      privateDiagnostic.startsWith(readinessPrefix) &&
+      readinessDiagnostic.startsWith("linux mount information line ")
+    ) {
+      return "Prime container readiness failed while parsing filesystem mount information";
+    }
+    if (
+      privateDiagnostic.startsWith(readinessPrefix) &&
+      readinessDiagnostic.startsWith("linux mount information repeats ")
+    ) {
+      return "Prime container readiness found repeated authoritative mount information";
+    }
+    if (
+      privateDiagnostic.startsWith(readinessPrefix) &&
+      readinessDiagnostic.startsWith("prime root mount is absent")
+    ) {
+      return "Prime container readiness did not find the root mount";
     }
     if (
       privateDiagnostic.startsWith(readinessPrefix) &&

@@ -241,7 +241,10 @@ func measureFilesystems() (FilesystemReadiness, error) {
 	if err != nil {
 		return FilesystemReadiness{}, fmt.Errorf("read Prime mount information: %w", err)
 	}
-	mounts, err := parseMountInfo(string(source))
+	mounts, err := parseSelectedMountInfo(
+		string(source),
+		[]string{"/", "/workspace", "/run/flow-node", "/run/flow-supervisor"},
+	)
 	if err != nil {
 		return FilesystemReadiness{}, err
 	}

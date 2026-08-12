@@ -31,7 +31,8 @@ var (
 		"ff02::1 ip6-allnodes",
 		"ff02::2 ip6-allrouters",
 	}
-	fixedDockerResolver = []string{"nameserver 127.0.0.1", "options ndots:0"}
+	fixedDockerResolver        = []string{"nameserver 127.0.0.1", "options ndots:0"}
+	dockerSystemFileMountPaths = []string{"/etc/hostname", "/etc/hosts", "/etc/resolv.conf"}
 )
 
 type dockerSystemFile interface {
@@ -158,7 +159,7 @@ func measureSystemFilesWith(
 	if err != nil {
 		return SystemFileReadiness{}, fmt.Errorf("read Docker system file mount information: %w", err)
 	}
-	mounts, err := parseMountInfo(string(mountSource))
+	mounts, err := parseSelectedMountInfo(string(mountSource), dockerSystemFileMountPaths)
 	if err != nil {
 		return SystemFileReadiness{}, fmt.Errorf("parse Docker system file mount information: %w", err)
 	}
@@ -274,7 +275,11 @@ func parseCPUControl(source string) (int64, int64, error) {
 	return quota, period, nil
 }
 
-func parseMountInfo(source string) (map[string]mountInformation, error) {
+func parseSelectedMountInfo(source string, selectedMountPoints []string) (map[string]mountInformation, error) {
+	selected := make(map[string]bool, len(selectedMountPoints))
+	for _, mountPoint := range selectedMountPoints {
+		selected[mountPoint] = true
+	}
 	mounts := make(map[string]mountInformation)
 	for lineNumber, line := range strings.Split(strings.TrimSpace(source), "\n") {
 		if strings.TrimSpace(line) == "" {
@@ -292,6 +297,9 @@ func parseMountInfo(source string) (map[string]mountInformation, error) {
 			return nil, fmt.Errorf("Linux mount information line %d is invalid", lineNumber+1)
 		}
 		mountPoint := unescapeMountPath(fields[4])
+		if !selected[mountPoint] {
+			continue
+		}
 		if _, exists := mounts[mountPoint]; exists {
 			return nil, fmt.Errorf("Linux mount information repeats %s", mountPoint)
 		}

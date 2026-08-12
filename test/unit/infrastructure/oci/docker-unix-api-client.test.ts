@@ -1091,7 +1091,7 @@ describe("Docker Unix API client", () => {
     {
       privateDiagnostic:
         "measure Prime container readiness: Linux mount information line 4 is invalid PRIVATE_MOUNT\n",
-      publicMessage: "Prime container readiness failed while reading filesystem mount evidence",
+      publicMessage: "Prime container readiness failed while parsing filesystem mount information",
     },
     {
       privateDiagnostic:
@@ -1348,19 +1348,19 @@ describe("Docker Unix API client", () => {
     ],
     [
       "measure Prime container readiness: read Prime mount information: PRIVATE_SIGNAL",
-      "Prime container readiness failed while reading filesystem mount evidence",
+      "Prime container readiness failed while reading filesystem mount information",
     ],
     [
       "measure Prime container readiness: Linux mount information line 2 is invalid PRIVATE_SIGNAL",
-      "Prime container readiness failed while reading filesystem mount evidence",
+      "Prime container readiness failed while parsing filesystem mount information",
     ],
     [
       "measure Prime container readiness: Linux mount information repeats PRIVATE_SIGNAL",
-      "Prime container readiness failed while reading filesystem mount evidence",
+      "Prime container readiness found repeated authoritative mount information",
     ],
     [
       "measure Prime container readiness: Prime root mount is absent PRIVATE_SIGNAL",
-      "Prime container readiness failed while reading filesystem mount evidence",
+      "Prime container readiness did not find the root mount",
     ],
     [
       "measure Prime container readiness: Prime runtime path /PRIVATE_TMPFS is not one exact tmpfs mount",

@@ -71,7 +71,7 @@ func TestParseCPUAndCgroupValuesRejectUnboundedOrChangedValues(t *testing.T) {
 func TestParseMountInfoFindsExactRootAndTmpfsControls(t *testing.T) {
 	source := "41 29 0:35 / / rw,relatime - overlay overlay ro,lowerdir=/image\n" +
 		"42 41 0:45 / /workspace rw,nosuid,nodev,noexec,relatime - tmpfs tmpfs rw,size=524288k,nr_inodes=8192,mode=710\n"
-	mounts, err := parseMountInfo(source)
+	mounts, err := parseSelectedMountInfo(source, []string{"/", "/workspace"})
 	if err != nil {
 		t.Fatalf("parse mount information: %v", err)
 	}
@@ -82,6 +82,25 @@ func TestParseMountInfoFindsExactRootAndTmpfsControls(t *testing.T) {
 	if workspace.Filesystem != "tmpfs" || !workspace.Options["nosuid"] ||
 		!workspace.Options["nodev"] || !workspace.Options["noexec"] {
 		t.Fatalf("workspace mount changed: %#v", workspace)
+	}
+}
+
+func TestParseMountInfoIgnoresRepeatedNonAuthoritativeMounts(t *testing.T) {
+	source := "41 29 0:35 / / rw,relatime - overlay overlay ro,lowerdir=/image\n" +
+		"42 41 0:45 / /workspace rw,nosuid,nodev,noexec,relatime - tmpfs tmpfs rw,size=524288k,nr_inodes=8192,mode=710\n" +
+		"43 41 0:46 /one /private/stack rw,relatime - tmpfs tmpfs rw\n" +
+		"44 41 0:47 /two /private/stack rw,relatime - tmpfs tmpfs rw\n"
+	mounts, err := parseSelectedMountInfo(source, []string{"/", "/workspace"})
+	if err != nil || len(mounts) != 2 {
+		t.Fatalf("unrelated stacked mount changed authoritative evidence: %#v %v", mounts, err)
+	}
+
+	_, err = parseSelectedMountInfo(
+		source+"45 41 0:48 /shadow /workspace rw,nosuid,nodev,noexec - tmpfs tmpfs rw\n",
+		[]string{"/", "/workspace"},
+	)
+	if err == nil || !strings.HasPrefix(err.Error(), "Linux mount information repeats ") {
+		t.Fatalf("repeated authoritative mount passed: %v", err)
 	}
 }
 
@@ -322,11 +341,12 @@ func fixedDockerResolverDocument(origin string) string {
 }
 
 func TestDockerSystemFileMountsRequireThreeReadOnlyMounts(t *testing.T) {
-	mounts, err := parseMountInfo(
-		"41 29 0:35 / / rw,relatime - overlay overlay ro,lowerdir=/image\n" +
-			"42 41 8:1 /docker/hostname /etc/hostname ro,relatime - ext4 /dev/root rw\n" +
-			"43 41 8:1 /docker/hosts /etc/hosts ro,relatime - ext4 /dev/root rw\n" +
+	mounts, err := parseSelectedMountInfo(
+		"41 29 0:35 / / rw,relatime - overlay overlay ro,lowerdir=/image\n"+
+			"42 41 8:1 /docker/hostname /etc/hostname ro,relatime - ext4 /dev/root rw\n"+
+			"43 41 8:1 /docker/hosts /etc/hosts ro,relatime - ext4 /dev/root rw\n"+
 			"44 41 8:1 /docker/resolv.conf /etc/resolv.conf ro,relatime - ext4 /dev/root rw\n",
+		dockerSystemFileMountPaths,
 	)
 	if err != nil {
 		t.Fatalf("parse mount information: %v", err)

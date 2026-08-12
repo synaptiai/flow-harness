@@ -316,6 +316,10 @@ Docker owns `/etc/hostname`, `/etc/hosts`, and `/etc/resolv.conf`. Flow keeps al
 mounts read-only. The supervisor does not rewrite them. Before it transfers a fixture or secret, it
 requires three distinct read-only mounts and three bounded, root-owned, non-writable regular files.
 
+The supervisor validates each mount information record. It selects only the root, three runtime
+temporary filesystems, and three Docker system files as authority. Each selected path must occur
+once. Repeated unrelated mount points do not change the selected evidence.
+
 The supervisor admits only the Docker 28.3.3 `none`-network hostname and loopback host records. It
 admits one closed legacy resolver document with the fixed DNS, search, and option overrides. The
 readiness value contains only normalized records. It does not contain the host resolver path or
