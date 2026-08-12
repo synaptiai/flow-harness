@@ -43,13 +43,15 @@ describe("native Prime evaluation driver", () => {
       ipython?: { readonly cwd: string; readonly options: Record<string, unknown> };
       session?: Record<string, unknown>;
     } = {};
-    const disposeProvisioner = vi.fn(async () => undefined);
+    const disposeProvisioner = vi.fn(() => new Promise<void>(() => undefined));
+    const killProvisioner = vi.fn(async () => undefined);
     class FakeIpythonKernelProvisioner {
       constructor(cwd: string, options: Record<string, unknown>) {
         calls.provisioner = { cwd, options, instance: this };
       }
 
       dispose = disposeProvisioner;
+      kill = killProvisioner;
     }
     const model = { id: "flow-host-model", provider: "flow-host-broker" };
     const authStorage = {};
@@ -144,9 +146,14 @@ describe("native Prime evaluation driver", () => {
       internalPrompt: true,
       suppressAutonomousContinuation: true,
     });
-    await session.dispose();
+    const settlement = await Promise.race([
+      session.dispose().then(() => "settled" as const),
+      new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 50)),
+    ]);
+    expect(settlement).toBe("settled");
     expect(sdkSession.disposeAsync).toHaveBeenCalledOnce();
-    expect(disposeProvisioner).toHaveBeenCalledOnce();
+    expect(killProvisioner).toHaveBeenCalledOnce();
+    expect(disposeProvisioner).not.toHaveBeenCalled();
   });
 
   it("rejects a Prime thinking-level clamp before the task starts", async () => {
@@ -164,7 +171,7 @@ describe("native Prime evaluation driver", () => {
 
     expect(fixture.session.prompt).not.toHaveBeenCalled();
     expect(fixture.session.disposeAsync).toHaveBeenCalledOnce();
-    expect(fixture.disposeProvisioner).toHaveBeenCalledOnce();
+    expect(fixture.killProvisioner).toHaveBeenCalledOnce();
   });
 
   it("settles the custom IPython provisioner when SDK session disposal rejects", async () => {
@@ -180,7 +187,7 @@ describe("native Prime evaluation driver", () => {
     await expect(session.dispose()).rejects.toBe(disposalError);
 
     expect(fixture.session.disposeAsync).toHaveBeenCalledOnce();
-    expect(fixture.disposeProvisioner).toHaveBeenCalledOnce();
+    expect(fixture.killProvisioner).toHaveBeenCalledOnce();
   });
 
   it("settles the custom IPython provisioner when SDK session creation rejects", async () => {
@@ -200,7 +207,7 @@ describe("native Prime evaluation driver", () => {
       }),
     ).rejects.toThrow("PRIVATE_SESSION_CREATION_CANARY");
 
-    expect(fixture.disposeProvisioner).toHaveBeenCalledOnce();
+    expect(fixture.killProvisioner).toHaveBeenCalledOnce();
   });
 
   it("runs one in-memory IPython-only session and records proven activity", async () => {
@@ -638,6 +645,7 @@ function sdkFixture(options: {
 }) {
   const authStorage = {};
   const disposeProvisioner = vi.fn(async () => undefined);
+  const killProvisioner = vi.fn(async () => undefined);
   const session = {
     thinkingLevel: options.thinkingLevel,
     prompt: vi.fn(async () => undefined),
@@ -667,13 +675,14 @@ function sdkFixture(options: {
     SessionManager: { inMemory: vi.fn(() => ({})) },
     IpythonKernelProvisioner: class {
       dispose = disposeProvisioner;
+      kill = killProvisioner;
     },
     createExtensionRuntime: vi.fn(() => ({})),
     createIpythonToolDefinition: vi.fn(() => ({ name: "ipython" })),
     createAssistantMessageEventStream: vi.fn(),
     createAgentSession: vi.fn(async () => ({ session })),
   };
-  return { bindings, session, disposeProvisioner };
+  return { bindings, session, disposeProvisioner, killProvisioner };
 }
 
 function evaluationInput(

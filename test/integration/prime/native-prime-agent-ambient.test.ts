@@ -12,6 +12,8 @@ describe("native Prime ambient authority", () => {
       settings?: Record<string, unknown>;
       session?: Record<string, unknown>;
     } = {};
+    const disposeProvisioner = vi.fn(async () => undefined);
+    const killProvisioner = vi.fn(async () => undefined);
     const sdkSession = {
       thinkingLevel: "off",
       prompt: vi.fn(async () => undefined),
@@ -39,7 +41,8 @@ describe("native Prime ambient authority", () => {
       },
       SessionManager: { inMemory: vi.fn(() => ({ kind: "session-manager" })) },
       IpythonKernelProvisioner: class {
-        dispose = vi.fn(async () => undefined);
+        dispose = disposeProvisioner;
+        kill = killProvisioner;
       },
       createExtensionRuntime: vi.fn(() => ({ kind: "extension-runtime" })),
       createIpythonToolDefinition: vi.fn(() => ({ name: "ipython" })),
@@ -81,6 +84,8 @@ describe("native Prime ambient authority", () => {
     expect(resourceLoader.getAppendSystemPrompt()).toEqual([]);
 
     await session.dispose();
+    expect(killProvisioner).toHaveBeenCalledOnce();
+    expect(disposeProvisioner).not.toHaveBeenCalled();
   });
 });
 

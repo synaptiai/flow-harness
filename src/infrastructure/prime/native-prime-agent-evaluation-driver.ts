@@ -167,7 +167,7 @@ interface PrimeSdkSession {
 }
 
 interface PrimeIpythonKernelProvisioner {
-  dispose(): Promise<void>;
+  kill(): Promise<void>;
 }
 
 export interface NativePrimeSdkBindings {
@@ -470,7 +470,7 @@ export async function createNativePrimeSdkSession(
           ipythonProvisioner: provisioner,
         };
       } catch (error) {
-        throw await combineWithPrimeSdkCleanup(error, () => provisioner.dispose());
+        throw await combineWithPrimeSdkCleanup(error, () => provisioner.kill());
       }
     },
   );
@@ -491,7 +491,7 @@ export async function createNativePrimeSdkSession(
         ...NATIVE_PRIME_EVALUATION_CONFIG.sessionOptions,
       });
     } catch (error) {
-      throw await combineWithPrimeSdkCleanup(error, () => ipythonProvisioner.dispose());
+      throw await combineWithPrimeSdkCleanup(error, () => ipythonProvisioner.kill());
     }
   });
   if (session.thinkingLevel !== input.evaluation.controls.model.thinking) {
@@ -609,7 +609,7 @@ async function disposeNativePrimeSdkResources(
 ): Promise<void> {
   const failures: unknown[] = [];
   await session.disposeAsync().catch((error: unknown) => failures.push(error));
-  await ipythonProvisioner.dispose().catch((error: unknown) => failures.push(error));
+  await ipythonProvisioner.kill().catch((error: unknown) => failures.push(error));
   if (failures.length === 1) {
     throw failures[0];
   }
