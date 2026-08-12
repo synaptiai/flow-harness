@@ -710,6 +710,10 @@ and `removed`. New recovery retains `absent` only for version-one compatibility.
 Evaluation recovery owns the lease before it marks the trial crashed or removes its workspace.
 Recovery checks the exact ID, nonce, labels, image, and policy before it stops or removes anything.
 
+Container inspection uses strict JSON objects with no prototype. Admission compares exact JSON
+keys, value types, values, and array order. It does not use the parser object prototype as Docker
+evidence.
+
 An `intent` lease has no container ID. Recovery first resolves only its exact name on the stored
 daemon. It verifies a found object's complete durable identity.
 

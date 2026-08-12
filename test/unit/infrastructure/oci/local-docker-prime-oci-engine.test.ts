@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { ExternalHarnessIdentity } from "../../../../src/domain/evaluation/external-harness.js";
+import { parseStrictJson } from "../../../../src/domain/strict-json.js";
 import type { DockerUnixApiClient } from "../../../../src/infrastructure/oci/docker-unix-api-client.js";
 import { LocalDockerPrimeOciEngine } from "../../../../src/infrastructure/oci/local-docker-prime-oci-engine.js";
 import type { PrimeOciIntentLease } from "../../../../src/infrastructure/oci/prime-container-lifecycle.js";
@@ -17,6 +18,13 @@ type ConfigFailureCase = readonly [
   mutate: (inspection: Record<string, unknown>) => void,
 ];
 
+type StrictJsonFailureCase = readonly [
+  name: string,
+  message: string,
+  canary: string,
+  mutate: (inspection: Record<string, unknown>) => void,
+];
+
 describe("local Docker Prime OCI engine", () => {
   it("accepts the exact environment inherited from the pinned Prime image", async () => {
     const fixture = engineFixture();
@@ -27,6 +35,69 @@ describe("local Docker Prime OCI engine", () => {
       inspectedPolicyDigest: fixture.identity.runtime.policy.digest,
     });
   });
+
+  it("accepts an exact Docker inspection parsed through strict JSON", async () => {
+    const fixture = engineFixture();
+    vi.mocked(fixture.api.inspectContainer).mockResolvedValueOnce(
+      strictDockerInspection(fixture.inspection),
+    );
+    const engine = new LocalDockerPrimeOciEngine(fixture.options);
+
+    await expect(engine.create(fixture.intent)).resolves.toEqual({
+      containerId: fixture.containerId,
+      inspectedPolicyDigest: fixture.identity.runtime.policy.digest,
+    });
+  });
+
+  const strictJsonFailureCases: StrictJsonFailureCase[] = [
+    [
+      "nested health configuration",
+      "created Prime container health does not match admission",
+      "private-health",
+      (inspection: Record<string, unknown>) =>
+        ((inspection.Config as Record<string, unknown>).Healthcheck = {
+          Test: ["CMD-SHELL", "private-health"],
+        }),
+    ],
+    [
+      "nested host configuration",
+      "created Prime container control policy does not match admission",
+      "canary",
+      (inspection: Record<string, unknown>) =>
+        ((inspection.HostConfig as Record<string, unknown>).LogConfig = {
+          Type: "none",
+          Config: { private: "canary" },
+        }),
+    ],
+    [
+      "ordered host configuration array",
+      "created Prime container control policy does not match admission",
+      "/proc/acpi",
+      (inspection: Record<string, unknown>) => {
+        const hostConfig = inspection.HostConfig as Record<string, unknown>;
+        hostConfig.MaskedPaths = [...(hostConfig.MaskedPaths as string[])].reverse();
+      },
+    ],
+  ];
+
+  it.each(strictJsonFailureCases)(
+    "rejects changed strict-JSON %s",
+    async (_name, message, canary, mutate) => {
+      const fixture = engineFixture();
+      const changed = structuredClone(fixture.inspection);
+      mutate(changed);
+      vi.mocked(fixture.api.inspectContainer).mockResolvedValueOnce(
+        strictDockerInspection(changed),
+      );
+      const engine = new LocalDockerPrimeOciEngine(fixture.options);
+
+      const error = await engine.create(fixture.intent).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe(message);
+      expect((error as Error).message).not.toContain(canary);
+      expect(fixture.api.startContainer).not.toHaveBeenCalled();
+    },
+  );
 
   it("creates one closed container and reconciles it before start", async () => {
     const fixture = engineFixture();
@@ -423,6 +494,18 @@ function engineFixture() {
       imageDevice: { path: "/dev/test-image", major: 8, minor: 1 },
     },
   };
+}
+
+function strictDockerInspection(inspection: Record<string, unknown>): Record<string, unknown> {
+  const parsed = parseStrictJson(JSON.stringify(inspection), {
+    maxDepth: 64,
+    maxNodes: 200_000,
+    valueLabel: "Docker inspection",
+  });
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("Docker inspection fixture is not an object");
+  }
+  return parsed as Record<string, unknown>;
 }
 
 function intentLease(identity: PrimeIdentity): PrimeOciIntentLease {

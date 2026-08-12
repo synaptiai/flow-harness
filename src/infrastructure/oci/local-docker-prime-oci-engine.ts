@@ -302,13 +302,13 @@ export class LocalDockerPrimeOciEngine implements PrimeOciEngine {
       Name: inspection.Name,
       Image: inspection.Image,
     };
-    if (!isDeepStrictEqual(actualIdentity, expectedIdentity)) {
+    if (!isDockerJsonEqual(actualIdentity, expectedIdentity)) {
       throw new Error("created Prime container identity does not match admission");
     }
 
     const expectedConfig = selectConfig(this.#configuration(intent));
     const actualConfig = selectConfig(asObject(inspection.Config, "Docker Config"));
-    if (!isDeepStrictEqual(actualConfig.Env, expectedConfig.Env)) {
+    if (!isDockerJsonEqual(actualConfig.Env, expectedConfig.Env)) {
       throw new Error("created Prime container environment does not match admission");
     }
     const configGroups = [
@@ -351,7 +351,7 @@ export class LocalDockerPrimeOciEngine implements PrimeOciEngine {
     ];
     for (const group of configGroups) {
       if (
-        !isDeepStrictEqual(
+        !isDockerJsonEqual(
           selectKeys(actualConfig, group.keys),
           selectKeys(expectedConfig, group.keys),
         )
@@ -361,7 +361,7 @@ export class LocalDockerPrimeOciEngine implements PrimeOciEngine {
     }
     const comparedConfigKeys = ["Env", ...configGroups.flatMap((group) => group.keys)];
     if (
-      !isDeepStrictEqual(
+      !isDockerJsonEqual(
         omitKeys(actualConfig, comparedConfigKeys),
         omitKeys(expectedConfig, comparedConfigKeys),
       )
@@ -373,18 +373,18 @@ export class LocalDockerPrimeOciEngine implements PrimeOciEngine {
     const actualHostConfig = selectHostConfig(asObject(inspection.HostConfig, "Docker HostConfig"));
     const capabilityKeys = ["CapDrop", "CapAdd"] as const;
     if (
-      !isDeepStrictEqual(
+      !isDockerJsonEqual(
         selectKeys(actualHostConfig, capabilityKeys),
         selectKeys(expectedHostConfig, capabilityKeys),
       )
     ) {
       throw new Error("created Prime container capabilities do not match admission");
     }
-    if (!isDeepStrictEqual(actualHostConfig.SecurityOpt, expectedHostConfig.SecurityOpt)) {
+    if (!isDockerJsonEqual(actualHostConfig.SecurityOpt, expectedHostConfig.SecurityOpt)) {
       throw new Error("created Prime container security options do not match admission");
     }
     if (
-      !isDeepStrictEqual(
+      !isDockerJsonEqual(
         omitKeys(actualHostConfig, [...capabilityKeys, "SecurityOpt"]),
         omitKeys(expectedHostConfig, [...capabilityKeys, "SecurityOpt"]),
       )
@@ -478,6 +478,25 @@ function omitKeys(
 ): Record<string, unknown> {
   const omitted = new Set(omittedKeys);
   return Object.fromEntries(Object.entries(value).filter(([key]) => !omitted.has(key)));
+}
+
+function isDockerJsonEqual(actual: unknown, expected: unknown): boolean {
+  return isDeepStrictEqual(normalizeDockerJson(actual), normalizeDockerJson(expected));
+}
+
+function normalizeDockerJson(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeDockerJson(item));
+  }
+  if (typeof value !== "object" || value === null) {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+      key,
+      normalizeDockerJson(item),
+    ]),
+  );
 }
 
 function tmpfsOptions(bytes: number, inodes: number, mode: string): string {
