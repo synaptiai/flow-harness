@@ -67,6 +67,10 @@ describe("compiled native Prime driver protocol", () => {
 
     const ready = verifier.acceptDriverLine(await nextLine(lines, child, errors));
     expect(ready).toEqual({ type: "ready", trialId, identityDigest });
+    expectProgress(
+      verifier.acceptDriverLine(await nextLine(lines, child, errors)),
+      "sdk-prompt-started",
+    );
     const request = verifier.acceptDriverLine(await nextLine(lines, child, errors));
     expect(request.type).toBe("inference_request");
     if (request.type !== "inference_request") {
@@ -97,6 +101,22 @@ describe("compiled native Prime driver protocol", () => {
     );
     verifier.completeInference(request.requestId);
 
+    expectProgress(
+      verifier.acceptDriverLine(await nextLine(lines, child, errors)),
+      "inference-response-received",
+    );
+    expectProgress(
+      verifier.acceptDriverLine(await nextLine(lines, child, errors)),
+      "sdk-prompt-settled",
+    );
+    expectProgress(
+      verifier.acceptDriverLine(await nextLine(lines, child, errors)),
+      "sdk-cleanup-started",
+    );
+    expectProgress(
+      verifier.acceptDriverLine(await nextLine(lines, child, errors)),
+      "sdk-cleanup-settled",
+    );
     const terminal = verifier.acceptDriverLine(await nextLine(lines, child, errors));
     expect(terminal).toMatchObject({
       type: "terminal",
@@ -108,6 +128,13 @@ describe("compiled native Prime driver protocol", () => {
     expect(Buffer.concat(errors).toString("utf8")).toBe("");
   });
 });
+
+function expectProgress(
+  event: ReturnType<ExternalHarnessProtocolSession["acceptDriverLine"]>,
+  message: string,
+): void {
+  expect(event).toEqual({ type: "event", category: "progress", message });
+}
 
 function evaluationInput(workspace: string, trialId: string) {
   return {
