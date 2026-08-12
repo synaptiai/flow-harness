@@ -443,7 +443,9 @@ The profile sets fixed PID, memory, CPU, file-descriptor, process, file-size, ou
 storage limits.
 
 The profile disables swap through cgroup version two `memory.swap.max`. It applies fixed read-byte
-and read-IOPS limits to the image backing device.
+and read-IOPS limits to the image backing whole device. If the Docker root uses a partition, Flow
+resolves the canonical sysfs partition parent and verifies its exact block node. Linux `io.max`
+rejects a partition device number.
 
 Flow rejects an engine that cannot identify or limit the image backing device. Cached reads remain
 bounded by the CPU and memory limits.

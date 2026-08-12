@@ -83,6 +83,7 @@ The Prime runtime identity has these additional requirements:
 - The `flow-prime-runc` runtime uses one canonical `runc` executable path and no arguments.
 - Docker supervises its own `containerd` child.
 - Docker publishes its managed `containerd` PID record under `/run/docker/containerd`.
+- Docker image storage resolves through sysfs to one whole block device for `io.max`.
 - Enough host capacity for the fixed Prime resource policy.
 
 Configure the Docker daemon with the dedicated `flow-prime-runc` runtime name and the exact `runc`
