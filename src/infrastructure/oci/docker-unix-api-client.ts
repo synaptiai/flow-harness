@@ -575,20 +575,23 @@ function dockerStartFailureMessage(response: DockerUnixApiResponse): string {
   if (privateMessage === undefined) {
     return `Docker start returned status ${response.statusCode}`;
   }
-  if (
-    includesAny(privateMessage, [
-      "cgroup",
-      "io.max",
-      "blkio",
-      "block io",
-      "rlimit",
-      "resource limit",
-      "memory.swap",
-      "cpu.max",
-      "pids.max",
-    ])
-  ) {
-    return "Docker start failed while applying container resource controls";
+  if (includesAny(privateMessage, ["io.max", "blkio", "block io"])) {
+    return "Docker start failed while applying container block I/O controls";
+  }
+  if (includesAny(privateMessage, ["memory.max", "memory.swap", "memory limit"])) {
+    return "Docker start failed while applying container memory controls";
+  }
+  if (includesAny(privateMessage, ["cpu.max", "cpu quota", "cpu period"])) {
+    return "Docker start failed while applying container CPU controls";
+  }
+  if (includesAny(privateMessage, ["pids.max", "pids limit", "pid limit"])) {
+    return "Docker start failed while applying container PID controls";
+  }
+  if (includesAny(privateMessage, ["rlimit", "resource limit", "setrlimit"])) {
+    return "Docker start failed while applying container process limits";
+  }
+  if (privateMessage.includes("cgroup")) {
+    return "Docker start failed while applying container cgroup controls";
   }
   if (privateMessage.includes("seccomp")) {
     return "Docker start failed while applying the container seccomp policy";

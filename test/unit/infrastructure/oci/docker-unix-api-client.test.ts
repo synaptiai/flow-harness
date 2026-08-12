@@ -276,7 +276,67 @@ describe("Docker Unix API client", () => {
     {
       privateMessage:
         "failed to create task: unable to apply cgroup configuration: failed to write PRIVATE_DEVICE to io.max",
-      publicMessage: "Docker start failed while applying container resource controls",
+      publicMessage: "Docker start failed while applying container block I/O controls",
+    },
+    {
+      privateMessage: "failed to create task: PRIVATE_BLKIO blkio throttle failed",
+      publicMessage: "Docker start failed while applying container block I/O controls",
+    },
+    {
+      privateMessage: "failed to create task: PRIVATE_BLOCK_IO block io throttle failed",
+      publicMessage: "Docker start failed while applying container block I/O controls",
+    },
+    {
+      privateMessage: "failed to create task: failed to write PRIVATE_MEMORY to memory.swap.max",
+      publicMessage: "Docker start failed while applying container memory controls",
+    },
+    {
+      privateMessage: "failed to create task: failed to write PRIVATE_MEMORY to memory.max",
+      publicMessage: "Docker start failed while applying container memory controls",
+    },
+    {
+      privateMessage: "failed to create task: PRIVATE_MEMORY memory limit could not be applied",
+      publicMessage: "Docker start failed while applying container memory controls",
+    },
+    {
+      privateMessage: "failed to create task: failed to write PRIVATE_CPU to cpu.max",
+      publicMessage: "Docker start failed while applying container CPU controls",
+    },
+    {
+      privateMessage: "failed to create task: PRIVATE_CPU cpu quota could not be applied",
+      publicMessage: "Docker start failed while applying container CPU controls",
+    },
+    {
+      privateMessage: "failed to create task: PRIVATE_CPU cpu period could not be applied",
+      publicMessage: "Docker start failed while applying container CPU controls",
+    },
+    {
+      privateMessage: "failed to create task: failed to write PRIVATE_PIDS to pids.max",
+      publicMessage: "Docker start failed while applying container PID controls",
+    },
+    {
+      privateMessage: "failed to create task: PRIVATE_PIDS pids limit could not be applied",
+      publicMessage: "Docker start failed while applying container PID controls",
+    },
+    {
+      privateMessage: "failed to create task: PRIVATE_PIDS pid limit could not be applied",
+      publicMessage: "Docker start failed while applying container PID controls",
+    },
+    {
+      privateMessage: "failed to create task: failed to apply PRIVATE_RLIMIT rlimit",
+      publicMessage: "Docker start failed while applying container process limits",
+    },
+    {
+      privateMessage: "failed to create task: PRIVATE_RLIMIT resource limit could not be applied",
+      publicMessage: "Docker start failed while applying container process limits",
+    },
+    {
+      privateMessage: "failed to create task: PRIVATE_RLIMIT setrlimit failed",
+      publicMessage: "Docker start failed while applying container process limits",
+    },
+    {
+      privateMessage: "failed to create task: unable to apply PRIVATE_CGROUP cgroup configuration",
+      publicMessage: "Docker start failed while applying container cgroup controls",
     },
     {
       privateMessage: "failed to create task: PRIVATE_SECCOMP seccomp filter could not be loaded",
@@ -317,8 +377,32 @@ describe("Docker Unix API client", () => {
   it.each([
     {
       privateMessage:
-        "failed to create task: unable to apply cgroup configuration: permission denied",
-      publicMessage: "Docker start failed while applying container resource controls",
+        "failed to create task: unable to write io.max cgroup configuration: permission denied",
+      publicMessage: "Docker start failed while applying container block I/O controls",
+    },
+    {
+      privateMessage:
+        "failed to create task: unable to write memory.max cgroup configuration: permission denied",
+      publicMessage: "Docker start failed while applying container memory controls",
+    },
+    {
+      privateMessage:
+        "failed to create task: unable to write cpu.max cgroup configuration: permission denied",
+      publicMessage: "Docker start failed while applying container CPU controls",
+    },
+    {
+      privateMessage:
+        "failed to create task: unable to write pids.max cgroup configuration: permission denied",
+      publicMessage: "Docker start failed while applying container PID controls",
+    },
+    {
+      privateMessage:
+        "failed to create task: unable to apply rlimit cgroup configuration: permission denied",
+      publicMessage: "Docker start failed while applying container process limits",
+    },
+    {
+      privateMessage: "failed to create task: cgroup configuration failed: permission denied",
+      publicMessage: "Docker start failed while applying container cgroup controls",
     },
     {
       privateMessage:
