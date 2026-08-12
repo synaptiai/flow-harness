@@ -161,6 +161,8 @@ const CONTEXT_FILES = Object.freeze([
   "python-requirements.in",
   "python-requirements.lock",
   "seccomp.json",
+  "vendor/extract-zip/index.cjs",
+  "vendor/extract-zip/package.json",
 ]);
 const CONTEXT_DIRECTORIES = Object.freeze(["cmd", "internal", "native"]);
 

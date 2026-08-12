@@ -37,8 +37,17 @@ export interface NativePrimeSdkBindingLoaders {
   readonly loadSdk: () => Promise<Readonly<Record<string, unknown>>>;
 }
 
+export interface PrimeNodeDependencyPolicyInput {
+  readonly nodeRoot: string;
+  readonly primeRoot: string;
+}
+
 export function createRuntimeInventory(
   input: PrimeRuntimeInventoryInput,
 ): Promise<PrimeRuntimeInventory>;
 
 export function verifyNativePrimeSdkBindings(loaders?: NativePrimeSdkBindingLoaders): Promise<void>;
+
+export function verifyPrimeNodeDependencyPolicy(
+  input: PrimeNodeDependencyPolicyInput,
+): Promise<void>;

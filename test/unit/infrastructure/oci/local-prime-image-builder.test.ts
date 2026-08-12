@@ -497,6 +497,9 @@ process.exit(2);
         await expect(
           readFile(join(context, "native", "node-hardening.c"), "utf8"),
         ).resolves.toContain("PR_SET_DUMPABLE");
+        await expect(
+          readFile(join(context, "vendor", "extract-zip", "index.cjs"), "utf8"),
+        ).resolves.toContain("ZIP extraction is disabled");
         await expect(access(join(context, "secret.txt"))).rejects.toMatchObject({ code: "ENOENT" });
         contextWasAllowlisted = true;
         return "";
@@ -861,6 +864,7 @@ async function buildFixture(): Promise<string> {
   await mkdir(join(container, "cmd"), { recursive: true });
   await mkdir(join(container, "internal"), { recursive: true });
   await mkdir(join(container, "native"), { recursive: true });
+  await mkdir(join(container, "vendor", "extract-zip"), { recursive: true });
   await mkdir(join(root, "dist"), { recursive: true });
   const files: Record<string, string> = {
     Dockerfile: "FROM scratch\n",
@@ -883,6 +887,10 @@ async function buildFixture(): Promise<string> {
     "cmd/main.go": "package main\n",
     "internal/value.go": "package internal\n",
     "native/node-hardening.c": "#define PR_SET_DUMPABLE 4\n",
+    "vendor/extract-zip/index.cjs":
+      'module.exports = async () => { throw new Error("ZIP extraction is disabled"); };\n',
+    "vendor/extract-zip/package.json":
+      '{"name":"extract-zip","version":"2.0.2","main":"index.cjs"}\n',
   };
   for (const [path, content] of Object.entries(files)) {
     await writeFile(join(container, path), content);

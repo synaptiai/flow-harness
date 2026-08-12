@@ -10,6 +10,10 @@ const MAX_FILE_BYTES = 536_870_912;
 const MAX_METADATA_BYTES = 1_048_576;
 const DRIVER_PATH =
   "/opt/flow/node/flow-dist/infrastructure/prime/native-prime-agent-evaluation-driver.js";
+const PRIME_ZIP_REPLACEMENT = Object.freeze({
+  manifestSha256: "fcea0f861bdcf985c54d761ce2fecae95264594759e6bbb6db4db06ce710550c",
+  moduleSha256: "59bd70167887c9cba2a29fe65f726b48c44d4429a12e8a9242218ca9f54eabf8",
+});
 
 const DEFAULT_NATIVE_PRIME_SDK_LOADERS = Object.freeze({
   loadSdk: async () => {
@@ -41,6 +45,45 @@ export async function verifyNativePrimeSdkBindings(loaders = DEFAULT_NATIVE_PRIM
   ) {
     throw new Error("Prime image SDK bindings are incomplete");
   }
+}
+
+export async function verifyPrimeNodeDependencyPolicy(input) {
+  const nodeRoot = resolve(input.nodeRoot);
+  const primeRoot = resolve(input.primeRoot);
+  if (
+    (await realpath(nodeRoot)) !== nodeRoot ||
+    (await realpath(primeRoot)) !== primeRoot ||
+    primeRoot !== join(nodeRoot, "prime-agent")
+  ) {
+    throw new Error("Prime Node dependency roots contradict the admitted closure");
+  }
+  const replacementRoot = join(nodeRoot, "extract-zip");
+  const replacementMetadata = await lstat(replacementRoot);
+  if (
+    replacementMetadata.isSymbolicLink() ||
+    !replacementMetadata.isDirectory() ||
+    (await realpath(replacementRoot)) !== replacementRoot
+  ) {
+    throw new Error("Prime ZIP replacement contradicts the admitted closure");
+  }
+  const [manifestSha256, moduleSha256] = await Promise.all([
+    hashRegularFile(join(replacementRoot, "package.json")),
+    hashRegularFile(join(replacementRoot, "index.cjs")),
+  ]);
+  if (
+    manifestSha256 !== PRIME_ZIP_REPLACEMENT.manifestSha256 ||
+    moduleSha256 !== PRIME_ZIP_REPLACEMENT.moduleSha256
+  ) {
+    throw new Error("Prime ZIP replacement contradicts the admitted closure");
+  }
+  await assertPathAbsent(
+    join(primeRoot, "dist", "bundle"),
+    "Prime command-line bundle remains in the runtime closure",
+  );
+  await assertPathAbsent(
+    join(nodeRoot, ".bin", "prime-agent"),
+    "Prime command-line shim remains in the runtime closure",
+  );
 }
 
 export async function createRuntimeInventory(input) {
@@ -272,7 +315,23 @@ function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
 }
 
+async function assertPathAbsent(path, message) {
+  try {
+    await lstat(path);
+  } catch (error) {
+    if (error !== null && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return;
+    }
+    throw new Error(message);
+  }
+  throw new Error(message);
+}
+
 if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+  await verifyPrimeNodeDependencyPolicy({
+    nodeRoot: "/opt/flow/node/node_modules",
+    primeRoot: "/opt/flow/node/node_modules/prime-agent",
+  });
   await verifyNativePrimeSdkBindings();
   const inventory = await createRuntimeInventory({
     nodeRoot: "/opt/flow/node/node_modules",

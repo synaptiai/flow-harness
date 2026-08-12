@@ -1,5 +1,6 @@
 import { access, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
@@ -25,6 +26,8 @@ describe("Prime Agent package boundary", () => {
       "prime-container/python-requirements.in",
       "prime-container/python-requirements.lock",
       "prime-container/seccomp.json",
+      "prime-container/vendor/extract-zip/index.cjs",
+      "prime-container/vendor/extract-zip/package.json",
       "prime-container/cmd/flow-prime-kernel-proxy/main.go",
       "prime-container/cmd/flow-prime-python/main.go",
       "prime-container/cmd/flow-prime-supervisor/main.go",
@@ -32,6 +35,56 @@ describe("Prime Agent package boundary", () => {
     ]) {
       await expect(access(resolve(repositoryRoot, path))).resolves.toBeUndefined();
     }
+  });
+
+  it("replaces ZIP extraction with a fail-closed compatibility module", async () => {
+    const packageManifest = JSON.parse(
+      await readFile(resolve(repositoryRoot, "prime-container/package.json"), "utf8"),
+    ) as {
+      readonly dependencies?: Readonly<Record<string, string>>;
+      readonly overrides?: Readonly<Record<string, string>>;
+    };
+    const replacementManifest = JSON.parse(
+      await readFile(
+        resolve(repositoryRoot, "prime-container/vendor/extract-zip/package.json"),
+        "utf8",
+      ),
+    ) as { readonly name?: string; readonly version?: string; readonly main?: string };
+    const replacementModule = (await import(
+      pathToFileURL(resolve(repositoryRoot, "prime-container/vendor/extract-zip/index.cjs")).href
+    )) as {
+      readonly default: (archivePath: string, options: { readonly dir: string }) => Promise<void>;
+    };
+    const dockerfile = await readFile(
+      resolve(repositoryRoot, "prime-container/Dockerfile"),
+      "utf8",
+    );
+
+    expect(packageManifest.dependencies?.["extract-zip"]).toBe("file:vendor/extract-zip");
+    expect(packageManifest.overrides).toEqual({ "extract-zip": "$extract-zip" });
+    expect(replacementManifest).toEqual({
+      name: "@synaptiai/flow-prime-disabled-extract-zip",
+      version: "1.0.0",
+      private: true,
+      main: "index.cjs",
+    });
+    const replacementError = await replacementModule
+      .default("PRIVATE_ARCHIVE", { dir: "PRIVATE_DESTINATION" })
+      .catch((error: unknown) => error);
+    expect(replacementError).toEqual(
+      new Error("ZIP extraction is disabled in the Flow Prime runtime"),
+    );
+    expect(replacementError).not.toHaveProperty("cause");
+    expect((replacementError as Error).message).not.toContain("PRIVATE_ARCHIVE");
+    expect((replacementError as Error).message).not.toContain("PRIVATE_DESTINATION");
+    expect(dockerfile.indexOf("COPY vendor/extract-zip ./vendor/extract-zip")).toBeLessThan(
+      dockerfile.indexOf("RUN npm ci"),
+    );
+    expect(dockerfile).toContain(
+      "npm ci --ignore-scripts --omit=dev --no-audit --no-fund --install-links",
+    );
+    expect(dockerfile).toContain("rm -rf /opt/flow/node/node_modules/prime-agent/dist/bundle");
+    expect(dockerfile).toContain("rm -f /opt/flow/node/node_modules/.bin/prime-agent");
   });
 
   it("ships a default-deny seccomp policy with bounded socket authority", async () => {
@@ -135,7 +188,7 @@ describe("Prime Agent package boundary", () => {
         "sha512-BOT+mqCYeDpKYabk3HVP5T7HomlBUWiQOXZGnX/DYZwT4xvdQSeF7itt/tCU8nv82/30N7VJw5YdXssEyD3qGQ==",
     });
     expect(inputs.locks).toEqual({
-      nodeSha256: "9337bd288359dfb5f5722859cec2b3ac98fdf1d707337da25fa16bd02347d364",
+      nodeSha256: "6ec3f6f94913271f44878408ccaddfb6b13755800acf051c06f9a40545115faa",
       pythonSha256: "b681f2b4beb29bdef7ce4a0b7fef2cf6f24a0ab5e9974614d46bb72ea8ae9376",
     });
     expect(inputs.seccomp).toEqual({

@@ -23,8 +23,11 @@ FROM ${NODE_IMAGE} AS node-build
 ARG SOURCE_DATE_EPOCH
 WORKDIR /opt/flow/node
 COPY package.json package-lock.json ./
-RUN npm ci --ignore-scripts --omit=dev --no-audit --no-fund \
+COPY vendor/extract-zip ./vendor/extract-zip
+RUN npm ci --ignore-scripts --omit=dev --no-audit --no-fund --install-links \
     && rm -rf /opt/flow/node/node_modules/@mistralai/mistralai/tests \
+    && rm -rf /opt/flow/node/node_modules/prime-agent/dist/bundle \
+    && rm -f /opt/flow/node/node_modules/.bin/prime-agent \
     && find /opt/flow/node -xdev -exec touch --date="@${SOURCE_DATE_EPOCH}" {} +
 
 FROM ${PYTHON_IMAGE} AS python-build

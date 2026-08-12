@@ -1,17 +1,73 @@
-import { mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
 import {
   createRuntimeInventory,
   verifyNativePrimeSdkBindings,
+  verifyPrimeNodeDependencyPolicy,
 } from "../../../prime-container/image-probe.mjs";
 import { nodePackageIdentityCases } from "../../fixtures/prime/node-package-identity-cases.js";
 import { invalidUtf8PythonPackageMetadata } from "../../fixtures/prime/package-metadata-cases.js";
 
 describe("Prime image inventory probe", () => {
+  it("accepts only the fail-closed ZIP replacement without the Prime CLI bundle", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-prime-node-policy-")));
+    const fixture = await nodeDependencyPolicyFixture(root);
+
+    await expect(verifyPrimeNodeDependencyPolicy(fixture)).resolves.toBeUndefined();
+  });
+
+  it.each(["index.cjs", "package.json"])(
+    "rejects a changed Prime ZIP replacement %s",
+    async (path) => {
+      const root = await realpath(await mkdtemp(join(tmpdir(), "flow-prime-node-policy-")));
+      const fixture = await nodeDependencyPolicyFixture(root);
+      await writeFile(join(fixture.nodeRoot, "extract-zip", path), "PRIVATE_MUTATION\n");
+
+      const error = await verifyPrimeNodeDependencyPolicy(fixture).catch(
+        (failure: unknown) => failure,
+      );
+      expect(error).toEqual(new Error("Prime ZIP replacement contradicts the admitted closure"));
+      expect(error).not.toHaveProperty("cause");
+      expect((error as Error).message).not.toContain("PRIVATE_MUTATION");
+    },
+  );
+
+  it("rejects a symlinked Prime ZIP replacement", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-prime-node-policy-")));
+    const fixture = await nodeDependencyPolicyFixture(root);
+    const replacementRoot = join(fixture.nodeRoot, "extract-zip");
+    const outsideRoot = join(root, "outside-replacement");
+    await rm(replacementRoot, { recursive: true });
+    await mkdir(outsideRoot);
+    await symlink(outsideRoot, replacementRoot, "dir");
+
+    await expect(verifyPrimeNodeDependencyPolicy(fixture)).rejects.toEqual(
+      new Error("Prime ZIP replacement contradicts the admitted closure"),
+    );
+  });
+
+  it.each([
+    ["dist/bundle/cli.js", "Prime command-line bundle remains in the runtime closure"],
+    ["../.bin/prime-agent", "Prime command-line shim remains in the runtime closure"],
+  ])("rejects the prohibited Prime command-line path %s", async (relativePath, message) => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-prime-node-policy-")));
+    const fixture = await nodeDependencyPolicyFixture(root);
+    const path = join(fixture.primeRoot, relativePath);
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, "PRIVATE_CLI\n");
+
+    const error = await verifyPrimeNodeDependencyPolicy(fixture).catch(
+      (failure: unknown) => failure,
+    );
+    expect(error).toEqual(new Error(message));
+    expect(error).not.toHaveProperty("cause");
+    expect((error as Error).message).not.toContain("PRIVATE_CLI");
+  });
+
   it("loads every native Prime SDK binding from the admitted image closure", async () => {
     const loadSdk = vi.fn(async () => ({
       AuthStorage: class {},
@@ -243,4 +299,21 @@ async function probeFixture(root: string) {
   };
   await Promise.all(Object.values(artifacts).map((path) => writeFile(path, `artifact:${path}\n`)));
   return { nodeRoot, primeRoot, pythonRoot, flowDistRoot, artifacts };
+}
+
+async function nodeDependencyPolicyFixture(root: string) {
+  const fixture = await probeFixture(root);
+  const replacementRoot = join(fixture.nodeRoot, "extract-zip");
+  await mkdir(replacementRoot);
+  await Promise.all(
+    ["index.cjs", "package.json"].map(async (path) => {
+      await writeFile(
+        join(replacementRoot, path),
+        await readFile(
+          resolve(import.meta.dirname, `../../../prime-container/vendor/extract-zip/${path}`),
+        ),
+      );
+    }),
+  );
+  return fixture;
 }
