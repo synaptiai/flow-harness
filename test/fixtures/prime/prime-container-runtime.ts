@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import type { PrimeOciAttachedTransport } from "../../../src/infrastructure/oci/attached-prime-oci-operator.js";
-import { resolvePrimeImageDevice } from "../../../src/infrastructure/oci/production-prime-oci-preparation.js";
+import { resolvePrimeImageDevice } from "../../../src/infrastructure/oci/prime-oci-image-device.js";
 import { primeExternalHarnessIdentity } from "../evaluation/prime-external-harness-identity.js";
 
 const repositoryRoot = resolve(import.meta.dirname, "../../..");

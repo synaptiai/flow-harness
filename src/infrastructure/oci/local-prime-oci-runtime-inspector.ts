@@ -1,11 +1,16 @@
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 
 import { z } from "zod";
 
 import { parsePrimeOciRuntimeIdentity } from "../../domain/evaluation/external-harness.js";
 import type { PrimeOciLocalRuntimeAttestation } from "./local-prime-oci-attestation.js";
 import { createPrimeOciRuntimePolicy, PRIME_OCI_RUNTIME_NAME } from "./prime-oci-policy.js";
-import type { PrimeOciRuntimeInspection } from "./prime-oci-preparation.js";
+import {
+  type PrimeOciRuntimeInspection,
+  settlePrimeOciInspectionStages,
+  withPrimeOciInspectionStage,
+} from "./prime-oci-preparation.js";
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const PRIME_DOCKER_API_VERSION = "1.51" as const;
@@ -18,6 +23,7 @@ const absolutePathSchema = z
     (value) => !value.split("/").some((segment) => segment === "." || segment === ".."),
     "must be a normalized path",
   );
+const executableSchema = z.object({ path: absolutePathSchema, sha256: sha256Schema }).strict();
 const componentSchema = z
   .object({
     Name: z.string().min(1).max(64),
@@ -82,99 +88,126 @@ const infoSchema = z
 export interface LocalPrimeOciRuntimeInspectorOptions {
   readonly run: (args: readonly string[]) => Promise<string>;
   readonly local: () => Promise<PrimeOciLocalRuntimeAttestation>;
-  readonly dockerExecutableSha256: string;
-  readonly dockerdExecutableSha256: string;
-  readonly containerdExecutableSha256: string;
-  readonly runcExecutableSha256: string;
+  readonly expectedExecutables: PrimeOciLocalRuntimeAttestation["executables"];
+  readonly signal?: AbortSignal;
 }
 
 export class LocalPrimeOciRuntimeInspector {
-  readonly #dockerExecutableSha256: string;
-  readonly #dockerdExecutableSha256: string;
-  readonly #containerdExecutableSha256: string;
+  readonly #expectedExecutables: PrimeOciLocalRuntimeAttestation["executables"];
   readonly #local: () => Promise<PrimeOciLocalRuntimeAttestation>;
   readonly #run: (args: readonly string[]) => Promise<string>;
-  readonly #runcExecutableSha256: string;
+  readonly #signal: AbortSignal | undefined;
 
   constructor(options: LocalPrimeOciRuntimeInspectorOptions) {
-    this.#dockerExecutableSha256 = sha256Schema.parse(options.dockerExecutableSha256);
-    this.#dockerdExecutableSha256 = sha256Schema.parse(options.dockerdExecutableSha256);
-    this.#containerdExecutableSha256 = sha256Schema.parse(options.containerdExecutableSha256);
-    this.#runcExecutableSha256 = sha256Schema.parse(options.runcExecutableSha256);
+    this.#expectedExecutables = normalizeExpectedExecutables(options.expectedExecutables);
     this.#local = options.local;
     this.#run = options.run;
+    this.#signal = options.signal;
   }
 
   async inspect(): Promise<PrimeOciRuntimeInspection> {
-    const [versionSource, infoSource, local] = await Promise.all([
-      this.#run(["version", "--format", "{{json .}}"]),
-      this.#run(["info", "--format", "{{json .}}"]),
-      this.#local(),
-    ]);
-    const version = parseJson(versionSchema, versionSource, "Docker version");
-    const info = parseJson(infoSchema, infoSource, "Docker information");
-    if (
-      version.Client.ApiVersion !== version.Server.ApiVersion ||
-      version.Server.ApiVersion !== local.apiVersion
-    ) {
-      throw new Error("Prime OCI Docker API versions do not match");
-    }
-    if (version.Server.ApiVersion !== PRIME_DOCKER_API_VERSION) {
-      throw new Error(`Prime OCI Docker API version must be ${PRIME_DOCKER_API_VERSION}`);
-    }
-    if (version.Server.KernelVersion !== info.KernelVersion) {
-      throw new Error("Prime OCI Docker kernel identities do not match");
-    }
-    if (info.ID !== local.daemonId) {
-      throw new Error("Prime OCI Docker daemon identity changed during inspection");
-    }
-    if (info.CgroupDriver !== "systemd") {
-      throw new Error("Prime OCI Docker cgroup driver must be systemd");
-    }
-    if (info.Runtimes[PRIME_OCI_RUNTIME_NAME]?.path !== local.executables.runc.path) {
-      throw new Error("Prime OCI selected runc path does not match the observed executable");
-    }
-    const containerd = requiredComponent(version.Server.Components, "containerd");
-    const runc = requiredComponent(version.Server.Components, "runc");
-    const containerdCommit = requiredCommit(containerd, "containerd");
-    const runcCommit = requiredCommit(runc, "runc");
-    if (containerdCommit !== info.ContainerdCommit.ID || runcCommit !== info.RuncCommit.ID) {
-      throw new Error("Prime OCI low-level runtime commits do not match");
-    }
-    const securityOptions = [...new Set(info.SecurityOptions)].sort();
-    const rootless = info.Rootless ?? securityOptions.some((value) => value.includes("rootless"));
-    const policy = createPrimeOciRuntimePolicy(sha256(canonicalize(local.seccompProfile)));
-    const runtime = parsePrimeOciRuntimeIdentity({
-      id: "docker-oci-v1",
-      platform: "linux",
-      architecture: "x64",
-      client: {
-        version: normalizeVersion(version.Client.Version, "Docker client"),
-        executableSha256: this.#dockerExecutableSha256,
-      },
-      engine: {
-        serverVersion: normalizeVersion(version.Server.Version, "Docker server"),
-        serverCommit: version.Server.GitCommit,
-        dockerdSha256: this.#dockerdExecutableSha256,
-        apiVersion: version.Server.ApiVersion,
-        kernelRelease: version.Server.KernelVersion,
-        kernelSecurityConfigSha256: sha256(
-          canonicalize({ kernelRelease: version.Server.KernelVersion, securityOptions }),
+    const [versionSource, infoSource, local] = await settlePrimeOciInspectionStages(
+      [
+        withPrimeOciInspectionStage(
+          "read Docker version",
+          () => this.#run(["version", "--format", "{{json .}}"]),
+          this.#signal,
         ),
-        containerdVersion: normalizeVersion(containerd.Version, "containerd"),
-        containerdSha256: this.#containerdExecutableSha256,
-        runcVersion: normalizeVersion(runc.Version, "runc"),
-        runcSha256: this.#runcExecutableSha256,
-        cgroupVersion: 2,
-        cgroupDriver: "systemd",
-        storageDriver: info.Driver,
-        rootless,
-        securityOptionsSha256: sha256(canonicalize(securityOptions)),
+        withPrimeOciInspectionStage(
+          "read Docker information",
+          () => this.#run(["info", "--format", "{{json .}}"]),
+          this.#signal,
+        ),
+        withPrimeOciInspectionStage(
+          "validate Docker runtime identity",
+          () => this.#local(),
+          this.#signal,
+        ),
+      ],
+      this.#signal,
+    );
+    const version = await withPrimeOciInspectionStage(
+      "read Docker version",
+      async () => parseJson(versionSchema, versionSource, "Docker version"),
+      this.#signal,
+    );
+    const info = await withPrimeOciInspectionStage(
+      "read Docker information",
+      async () => parseJson(infoSchema, infoSource, "Docker information"),
+      this.#signal,
+    );
+    return withPrimeOciInspectionStage(
+      "validate Docker runtime identity",
+      async () => {
+        if (
+          version.Client.ApiVersion !== version.Server.ApiVersion ||
+          version.Server.ApiVersion !== local.apiVersion
+        ) {
+          throw new Error("Prime OCI Docker API versions do not match");
+        }
+        if (version.Server.ApiVersion !== PRIME_DOCKER_API_VERSION) {
+          throw new Error(`Prime OCI Docker API version must be ${PRIME_DOCKER_API_VERSION}`);
+        }
+        if (version.Server.KernelVersion !== info.KernelVersion) {
+          throw new Error("Prime OCI Docker kernel identities do not match");
+        }
+        if (info.ID !== local.daemonId) {
+          throw new Error("Prime OCI Docker daemon identity changed during inspection");
+        }
+        if (info.CgroupDriver !== "systemd") {
+          throw new Error("Prime OCI Docker cgroup driver must be systemd");
+        }
+        if (info.Runtimes[PRIME_OCI_RUNTIME_NAME]?.path !== local.executables.runc.path) {
+          throw new Error("Prime OCI selected runc path does not match the observed executable");
+        }
+        if (!isDeepStrictEqual(local.executables, this.#expectedExecutables)) {
+          throw new Error("Prime OCI runtime executable identity changed during inspection");
+        }
+        const containerd = requiredComponent(version.Server.Components, "containerd");
+        const runc = requiredComponent(version.Server.Components, "runc");
+        const containerdCommit = requiredCommit(containerd, "containerd");
+        const runcCommit = requiredCommit(runc, "runc");
+        if (containerdCommit !== info.ContainerdCommit.ID || runcCommit !== info.RuncCommit.ID) {
+          throw new Error("Prime OCI low-level runtime commits do not match");
+        }
+        const securityOptions = [...new Set(info.SecurityOptions)].sort();
+        const rootless =
+          info.Rootless ?? securityOptions.some((value) => value.includes("rootless"));
+        const policy = createPrimeOciRuntimePolicy(sha256(canonicalize(local.seccompProfile)));
+        const runtime = parsePrimeOciRuntimeIdentity({
+          id: "docker-oci-v1",
+          platform: "linux",
+          architecture: "x64",
+          client: {
+            version: normalizeVersion(version.Client.Version, "Docker client"),
+            executableSha256: this.#expectedExecutables.docker.sha256,
+          },
+          engine: {
+            serverVersion: normalizeVersion(version.Server.Version, "Docker server"),
+            serverCommit: version.Server.GitCommit,
+            dockerdSha256: this.#expectedExecutables.dockerd.sha256,
+            apiVersion: version.Server.ApiVersion,
+            kernelRelease: version.Server.KernelVersion,
+            kernelSecurityConfigSha256: sha256(
+              canonicalize({ kernelRelease: version.Server.KernelVersion, securityOptions }),
+            ),
+            containerdVersion: normalizeVersion(containerd.Version, "containerd"),
+            containerdSha256: this.#expectedExecutables.containerd.sha256,
+            runcVersion: normalizeVersion(runc.Version, "runc"),
+            runcSha256: this.#expectedExecutables.runc.sha256,
+            cgroupVersion: 2,
+            cgroupDriver: "systemd",
+            storageDriver: info.Driver,
+            rootless,
+            securityOptionsSha256: sha256(canonicalize(securityOptions)),
+          },
+          policy,
+        });
+        const { daemonId, ...privateLocal } = local;
+        return Object.freeze({ runtime, daemonId, local: Object.freeze(privateLocal) });
       },
-      policy,
-    });
-    const { daemonId, ...privateLocal } = local;
-    return Object.freeze({ runtime, daemonId, local: Object.freeze(privateLocal) });
+      this.#signal,
+    );
   }
 }
 
@@ -197,6 +230,20 @@ function parseJson<Schema extends z.ZodType>(
     throw new Error(`${label} violates the closed schema`, { cause: parsed.error });
   }
   return parsed.data;
+}
+
+function normalizeExpectedExecutables(
+  input: PrimeOciLocalRuntimeAttestation["executables"],
+): PrimeOciLocalRuntimeAttestation["executables"] {
+  return z
+    .object({
+      docker: executableSchema,
+      dockerd: executableSchema,
+      containerd: executableSchema,
+      runc: executableSchema,
+    })
+    .strict()
+    .parse(input);
 }
 
 function requiredComponent(

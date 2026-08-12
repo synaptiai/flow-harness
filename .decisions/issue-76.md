@@ -274,6 +274,8 @@ release archive and fetched artifact before an offline final build stage.
 
 The preparation command sets `SOURCE_DATE_EPOCH`. It disables build data that contains host values.
 It performs two clean builds and requires the same platform manifest and config digests.
+Before build one, the command inspects the runtime and reports only one fixed failure stage. After
+build two, it repeats the authoritative inspection and publishes only that later observation.
 
 The build creates an external SBOM from the final image. It scans each saved layer for secret
 patterns. A separate release gate audits the locked Node and Python dependencies.
@@ -922,7 +924,7 @@ user before it runs the setup.
 | Criterion | Type | Verification command | Expected evidence | Does not promise |
 |---|---|---|---|---|
 | Admit the fixed Prime profile | Contract | `npx vitest run test/unit/evaluation/plan.test.ts test/unit/infrastructure/fs/local-evaluation-plan.test.ts` | Fixed config passes. Unknown config and authority fields fail. | Prime availability on all hosts |
-| Bind the Prime OCI identity | Contract | `npx vitest run test/unit/infrastructure/prime/native-prime-harness-registry.test.ts` | Prepared identity binds engine, image, build, package, and policy values. Local adapter, host OCI, attestation, and admitted-identity drift reject. | Host signatures or hostile engine protection |
+| Bind the Prime OCI identity | Contract | `npx vitest run test/unit/infrastructure/prime/native-prime-harness-registry.test.ts test/unit/infrastructure/oci/local-prime-oci-runtime-inspector.test.ts test/unit/infrastructure/oci/prime-oci-image-device.test.ts test/unit/infrastructure/oci/local-prime-oci-currentness.test.ts test/unit/infrastructure/oci/local-prime-oci-attestation.test.ts test/unit/infrastructure/oci/prime-oci-preparation.test.ts` | Prepared identity binds engine, image, build, package, policy, and the exact image device. Fixed-stage preflight rejects before builds. Local adapter, host OCI, attestation, and admitted-identity drift reject. | Host signatures or hostile engine protection |
 | Build the exact Prime image | Supply chain | `npx vitest run test/unit/infrastructure/oci/prime-image-archive.test.ts test/integration/package/prime-image-probe.test.ts && npm run prime:image:verify` | Exact archive and probe bounds and secret cases pass. Two clean builds match. Archive, lock, layer, SBOM, and secret gates pass. | Registry publication |
 | Audit locked runtime dependencies | Supply chain | `npm run build && node scripts/audit-prime-dependencies.mjs` | The exact Prime Node and Python locks pass the fixed audit policy. | Future dependency versions |
 | Run a real persistent IPython session | Integration | `npx vitest run test/integration/prime/native-prime-agent-evaluation.test.ts` | One session keeps state across two turns. It uses one accepted kernel request. | Live provider quality |

@@ -541,7 +541,7 @@ export class LocalPrimeImageBuilder {
       if (error instanceof PrimeImageArchiveInspectionError) {
         stage = error.stage;
       }
-      buildError = isPrimeImageBuildCancellation(error, signal)
+      buildError = isPrimeDockerCommandCancellation(error, signal)
         ? signal?.reason instanceof Error
           ? signal.reason
           : new Error("Prime image build was cancelled")
@@ -1435,7 +1435,7 @@ function terminatedCommandError(message: string): Error {
   return Object.assign(new Error(message), { killed: true, signal: "SIGKILL" });
 }
 
-class PrimeDockerCommandAbortError extends Error {
+export class PrimeDockerCommandAbortError extends Error {
   override readonly name = "AbortError";
   readonly code = "ABORT_ERR";
   readonly killed = true;
@@ -1450,7 +1450,10 @@ function abortError(reason: unknown): Error {
   return new PrimeDockerCommandAbortError(reason);
 }
 
-function isPrimeImageBuildCancellation(error: unknown, signal: AbortSignal | undefined): boolean {
+export function isPrimeDockerCommandCancellation(
+  error: unknown,
+  signal: AbortSignal | undefined,
+): boolean {
   if (signal?.aborted !== true) {
     return false;
   }

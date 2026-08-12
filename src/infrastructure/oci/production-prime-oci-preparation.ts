@@ -29,14 +29,20 @@ import {
   assertPrimeOciSocketPolicy,
   LocalPrimeOciAttestationStore,
   type PrimeOciLocalRuntimeAttestation,
+  type PrimeOciSocketIdentity,
   publishLocalPrimeOciAttestation,
 } from "./local-prime-oci-attestation.js";
 import { LocalPrimeOciRuntimeInspector } from "./local-prime-oci-runtime-inspector.js";
+import { resolvePrimeImageDevice } from "./prime-oci-image-device.js";
 import { PRIME_OCI_RUNTIME_NAME } from "./prime-oci-policy.js";
 import {
+  type PrimeOciInspectionStage,
+  type PrimeOciPreparationDependencies,
   PrimeOciPreparationError,
   type PrimeOciPreparationResult,
   preparePrimeOciRuntime,
+  settlePrimeOciInspectionStages,
+  withPrimeOciInspectionStage,
 } from "./prime-oci-preparation.js";
 import { resolveDockerManagedRuntimeExecutables } from "./prime-oci-runtime-executables.js";
 
@@ -81,6 +87,7 @@ export async function prepareProductionPrimeOciRuntime(input: {
   }
   throwIfAborted(input.signal);
   const configuration = await loadEffectiveFlowConfig({ cwd: input.cwd });
+  throwIfAborted(input.signal);
   if (configuration.projectRoot === null) {
     throw new PrimeOciPreparationError(
       "inspection_failed",
@@ -88,56 +95,34 @@ export async function prepareProductionPrimeOciRuntime(input: {
     );
   }
   const projectRoot = await realpath(configuration.projectRoot);
+  throwIfAborted(input.signal);
   const packageRoot = await realpath(resolve(dirname(fileURLToPath(import.meta.url)), "../../.."));
-  const dockerExecutable = await resolveDockerExecutable();
-  const dockerBuildxExecutable = await resolveDockerBuildxExecutable();
-  const dockerExecutableSha256 = await hashStableRegularFile(
-    dockerExecutable,
-    MAX_EXECUTABLE_BYTES,
-    "Docker executable",
+  throwIfAborted(input.signal);
+  const { dockerBuildxExecutable, dockerExecutable } = await inspectPrimeOciBootstrapExecutables(
+    input.signal,
   );
-  const environmentRoot = await realpath(
-    await mkdtemp(join(tmpdir(), "flow-prime-preparation-environment-")),
+  const createdEnvironmentRoot = await mkdtemp(
+    join(tmpdir(), "flow-prime-preparation-environment-"),
   );
   return runPrimePreparationWithCleanup(
     async () => {
+      const environmentRoot = await realpath(createdEnvironmentRoot);
+      throwIfAborted(input.signal);
       const run = (args: readonly string[]) =>
         runLocalDockerCommand(dockerExecutable, args, environmentRoot, input.signal);
-      const runtimeInfo = parseJson(
-        dockerInfoSchema,
-        await run(["info", "--format", "{{json .}}"]),
-        "Docker information",
+      const runtimeInfo = await withPrimeOciInspectionStage(
+        "read Docker information",
+        async () =>
+          parseJson(
+            dockerInfoSchema,
+            await run(["info", "--format", "{{json .}}"]),
+            "Docker information",
+          ),
+        input.signal,
       );
-      const configuredRuncPath = runtimeInfo.Runtimes[PRIME_OCI_RUNTIME_NAME]?.path;
-      if (configuredRuncPath === undefined || !configuredRuncPath.startsWith("/")) {
-        throw new Error("Prime OCI runc runtime must use one absolute executable path");
-      }
-      const runcExecutable = await resolveConfiguredExecutable(configuredRuncPath, "runc");
-      const runtimeExecutables = await resolveDockerManagedRuntimeExecutables();
-      const containerdExecutable = runtimeExecutables.containerd;
-      const dockerdExecutable = runtimeExecutables.dockerd;
-      const dockerdExecutableSha256 = await hashStableRegularFile(
-        dockerdExecutable,
-        MAX_EXECUTABLE_BYTES,
-        "dockerd executable",
-      );
-      const containerdExecutableSha256 = await hashStableRegularFile(
-        containerdExecutable,
-        MAX_EXECUTABLE_BYTES,
-        "containerd executable",
-      );
-      if (
-        runtimeExecutables.dockerdSha256 === undefined ||
-        runtimeExecutables.dockerdSha256 !== dockerdExecutableSha256 ||
-        runtimeExecutables.containerdSha256 === undefined ||
-        runtimeExecutables.containerdSha256 !== containerdExecutableSha256
-      ) {
-        throw new Error("Prime OCI protected runtime executable observation changed");
-      }
-      const runcExecutableSha256 = await hashStableRegularFile(
-        runcExecutable,
-        MAX_EXECUTABLE_BYTES,
-        "runc executable",
+      const runtimeExecutables = await inspectPrimeOciManagedRuntimeExecutables(
+        () => inspectRuntimeExecutables(dockerExecutable, runtimeInfo),
+        input.signal,
       );
       const descriptorPath = join(
         projectRoot,
@@ -172,32 +157,23 @@ export async function prepareProductionPrimeOciRuntime(input: {
         local: () =>
           observeLocalRuntime({
             packageRoot,
-            projectRoot,
             dockerExecutable,
-            dockerExecutableSha256,
-            dockerdExecutable,
-            dockerdExecutableSha256,
-            containerdExecutable,
-            containerdExecutableSha256,
-            runcExecutable,
-            runcExecutableSha256,
             run,
             signal: input.signal,
           }),
-        dockerExecutableSha256,
-        dockerdExecutableSha256,
-        containerdExecutableSha256,
-        runcExecutableSha256,
+        expectedExecutables: runtimeExecutables,
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
       });
       const result = await runPrimePreparationWithCleanup(
         () =>
           preparePrimeOciRuntime(
             { descriptorPath, ...(input.signal === undefined ? {} : { signal: input.signal }) },
-            {
-              build: (buildNumber) => builder.build(buildNumber, input.signal),
-              inspectRuntime: () => inspector.inspect(),
+            createProductionPrimeOciPreparationDependencies({
+              builder,
+              inspector,
+              signal: input.signal,
               publish: publishLocalPrimeOciAttestation,
-            },
+            }),
           ),
         async (prepared, primaryError) => {
           await reconcilePrimePreparationImages({
@@ -211,8 +187,22 @@ export async function prepareProductionPrimeOciRuntime(input: {
       await new LocalPrimeOciAttestationStore({ descriptorPath }).read();
       return result;
     },
-    () => rm(environmentRoot, { recursive: true, force: true }),
+    () => rm(createdEnvironmentRoot, { recursive: true, force: true }),
   );
+}
+
+export function createProductionPrimeOciPreparationDependencies(input: {
+  readonly builder: Pick<LocalPrimeImageBuilder, "build">;
+  readonly inspector: Pick<LocalPrimeOciRuntimeInspector, "inspect">;
+  readonly signal: AbortSignal | undefined;
+  readonly publish: PrimeOciPreparationDependencies["publish"];
+}): PrimeOciPreparationDependencies {
+  return Object.freeze({
+    build: (buildNumber: 1 | 2) => input.builder.build(buildNumber, input.signal),
+    preflightRuntime: () => input.inspector.inspect(),
+    inspectRuntime: () => input.inspector.inspect(),
+    publish: input.publish,
+  });
 }
 
 export async function runPrimePreparationWithCleanup<T>(
@@ -288,60 +278,101 @@ function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error;
 }
 
-async function observeLocalRuntime(input: {
+export interface PrimeOciLocalRuntimeObservationInput {
   readonly packageRoot: string;
-  readonly projectRoot: string;
   readonly dockerExecutable: string;
-  readonly dockerExecutableSha256: string;
-  readonly dockerdExecutable: string;
-  readonly dockerdExecutableSha256: string;
-  readonly containerdExecutable: string;
-  readonly containerdExecutableSha256: string;
-  readonly runcExecutable: string;
-  readonly runcExecutableSha256: string;
   readonly run: (args: readonly string[]) => Promise<string>;
   readonly signal: AbortSignal | undefined;
-}): Promise<PrimeOciLocalRuntimeAttestation> {
-  throwIfAborted(input.signal);
-  const [versionSource, infoSource, socketMetadata, corePattern, cgroupSource, seccompSource] =
-    await Promise.all([
-      input.run(["version", "--format", "{{json .}}"]),
-      input.run(["info", "--format", "{{json .}}"]),
-      lstat(DOCKER_SOCKET, { bigint: true }),
+}
+
+export interface PrimeOciLocalRuntimeObservationOperations {
+  readonly readDockerVersion: (run: PrimeOciLocalRuntimeObservationInput["run"]) => Promise<string>;
+  readonly readDockerInformation: (
+    run: PrimeOciLocalRuntimeObservationInput["run"],
+  ) => Promise<string>;
+  readonly inspectDockerSocket: () => Promise<PrimeOciSocketIdentity>;
+  readonly inspectHostCorePolicy: () => Promise<string>;
+  readonly inspectHostCgroup: () => Promise<string>;
+  readonly prepareGlobalLeaseRoot: (daemonId: string, socketGid: number) => Promise<string>;
+  readonly inspectImageBackingDevice: (
+    dockerRoot: string,
+  ) => Promise<PrimeOciLocalRuntimeAttestation["imageDevice"]>;
+  readonly inspectRuntimeExecutables: (
+    dockerExecutable: string,
+    runtimeInfo: z.output<typeof dockerInfoSchema>,
+  ) => Promise<PrimeOciLocalRuntimeAttestation["executables"]>;
+  readonly inspectSeccompPolicy: (
+    packageRoot: string,
+  ) => Promise<Readonly<Record<string, unknown>>>;
+}
+
+const productionLocalRuntimeObservationOperations: PrimeOciLocalRuntimeObservationOperations =
+  Object.freeze({
+    readDockerVersion: (run: PrimeOciLocalRuntimeObservationInput["run"]) =>
+      run(["version", "--format", "{{json .}}"]),
+    readDockerInformation: (run: PrimeOciLocalRuntimeObservationInput["run"]) =>
+      run(["info", "--format", "{{json .}}"]),
+    inspectDockerSocket: inspectDockerSocket,
+    inspectHostCorePolicy: () =>
       readBoundedText("/proc/sys/kernel/core_pattern", 4_096, "host core pattern"),
-      readBoundedText("/proc/self/cgroup", 65_536, "host cgroup membership"),
-      readBoundedText(
-        join(input.packageRoot, "prime-container", "seccomp.json"),
-        1_048_576,
-        "Prime seccomp profile",
+    inspectHostCgroup: async () =>
+      resolveCurrentCgroup(
+        await readBoundedText("/proc/self/cgroup", 65_536, "host cgroup membership"),
       ),
-    ]);
-  if (!socketMetadata.isSocket()) {
-    throw new Error("Prime OCI Docker endpoint is not a Unix socket");
-  }
-  const version = parseJson(dockerVersionSchema, versionSource, "Docker version");
-  const info = parseJson(dockerInfoSchema, infoSource, "Docker information");
-  const cgroupPath = await resolveCurrentCgroup(cgroupSource);
-  const socket = Object.freeze({
-    device: safeNumber(socketMetadata.dev, "Docker socket device"),
-    inode: safeNumber(socketMetadata.ino, "Docker socket inode"),
-    uid: safeNumber(socketMetadata.uid, "Docker socket user"),
-    gid: safeNumber(socketMetadata.gid, "Docker socket group"),
-    mode: Number(socketMetadata.mode & 0o777n),
+    prepareGlobalLeaseRoot: prepareGlobalLeaseDirectory,
+    inspectImageBackingDevice: resolvePrimeImageDevice,
+    inspectRuntimeExecutables: inspectRuntimeExecutables,
+    inspectSeccompPolicy: inspectSeccompPolicy,
   });
-  assertPrimeOciSocketPolicy(socket);
-  const globalLeasePath = await prepareGlobalLeaseDirectory(info.ID, socket.gid);
-  const imageDevice = await resolvePrimeImageDevice(info.DockerRootDir);
-  let seccompProfile: Readonly<Record<string, unknown>>;
-  try {
-    const parsed = JSON.parse(seccompSource) as unknown;
-    if (parsed === null || Array.isArray(parsed) || typeof parsed !== "object") {
-      throw new Error("not an object");
-    }
-    seccompProfile = parsed as Readonly<Record<string, unknown>>;
-  } catch (error) {
-    throw new Error("Prime seccomp profile is not one JSON object", { cause: error });
-  }
+
+export async function observeLocalRuntime(
+  input: PrimeOciLocalRuntimeObservationInput,
+  operations: PrimeOciLocalRuntimeObservationOperations = productionLocalRuntimeObservationOperations,
+): Promise<PrimeOciLocalRuntimeAttestation> {
+  throwIfAborted(input.signal);
+  const inspectStage = <T>(stage: PrimeOciInspectionStage, operation: () => Promise<T>) =>
+    withPrimeOciInspectionStage(stage, operation, input.signal);
+  const [version, info, socket, corePattern, cgroupPath, seccompProfile] =
+    await settlePrimeOciInspectionStages(
+      [
+        inspectStage("read Docker version", async () =>
+          parseJson(
+            dockerVersionSchema,
+            await operations.readDockerVersion(input.run),
+            "Docker version",
+          ),
+        ),
+        inspectStage("read Docker information", async () =>
+          parseJson(
+            dockerInfoSchema,
+            await operations.readDockerInformation(input.run),
+            "Docker information",
+          ),
+        ),
+        inspectStage("inspect Docker socket", () => operations.inspectDockerSocket()),
+        inspectStage("inspect host core policy", () => operations.inspectHostCorePolicy()),
+        inspectStage("inspect host cgroup", () => operations.inspectHostCgroup()),
+        inspectStage("inspect seccomp policy", () =>
+          operations.inspectSeccompPolicy(input.packageRoot),
+        ),
+      ],
+      input.signal,
+    );
+  const [globalLeasePath, imageDevice, executables] = await settlePrimeOciInspectionStages(
+    [
+      inspectStage("prepare global lease root", () =>
+        operations.prepareGlobalLeaseRoot(info.ID, socket.gid),
+      ),
+      inspectStage("inspect image backing device", () =>
+        operations.inspectImageBackingDevice(info.DockerRootDir),
+      ),
+      inspectPrimeOciRuntimeExecutables(
+        () => operations.inspectRuntimeExecutables(input.dockerExecutable, info),
+        input.signal,
+      ),
+    ],
+    input.signal,
+  );
   return Object.freeze({
     daemonId: info.ID,
     socketPath: DOCKER_SOCKET,
@@ -351,17 +382,123 @@ async function observeLocalRuntime(input: {
     corePattern: corePattern.trim(),
     globalLeasePath,
     imageDevice,
-    executables: {
-      docker: { path: input.dockerExecutable, sha256: input.dockerExecutableSha256 },
-      dockerd: { path: input.dockerdExecutable, sha256: input.dockerdExecutableSha256 },
-      containerd: {
-        path: input.containerdExecutable,
-        sha256: input.containerdExecutableSha256,
-      },
-      runc: { path: input.runcExecutable, sha256: input.runcExecutableSha256 },
-    },
+    executables,
     leaseTarget: "flow-prime-global-v1",
     seccompProfile,
+  });
+}
+
+export async function inspectPrimeOciRuntimeExecutables<T>(
+  operation: () => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  return withPrimeOciInspectionStage("inspect runtime executables", operation, signal);
+}
+
+export async function inspectPrimeOciBootstrapExecutables(
+  signal?: AbortSignal,
+  operation: () => Promise<{
+    readonly dockerBuildxExecutable: string;
+    readonly dockerExecutable: string;
+  }> = async () => {
+    const resolvedDocker = await resolveDockerExecutable();
+    return Object.freeze({
+      dockerExecutable: resolvedDocker,
+      dockerBuildxExecutable: await resolveDockerBuildxExecutable(),
+    });
+  },
+) {
+  return inspectPrimeOciRuntimeExecutables(operation, signal);
+}
+
+export async function inspectPrimeOciManagedRuntimeExecutables<T>(
+  operation: () => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  return inspectPrimeOciRuntimeExecutables(operation, signal);
+}
+
+async function inspectDockerSocket(): Promise<PrimeOciSocketIdentity> {
+  const socketMetadata = await lstat(DOCKER_SOCKET, { bigint: true });
+  if (!socketMetadata.isSocket()) {
+    throw new Error("Prime OCI Docker endpoint is not a Unix socket");
+  }
+  const observed = Object.freeze({
+    device: safeNumber(socketMetadata.dev, "Docker socket device"),
+    inode: safeNumber(socketMetadata.ino, "Docker socket inode"),
+    uid: safeNumber(socketMetadata.uid, "Docker socket user"),
+    gid: safeNumber(socketMetadata.gid, "Docker socket group"),
+    mode: Number(socketMetadata.mode & 0o777n),
+  });
+  assertPrimeOciSocketPolicy(observed);
+  return observed;
+}
+
+async function inspectSeccompPolicy(
+  packageRoot: string,
+): Promise<Readonly<Record<string, unknown>>> {
+  const source = await readBoundedText(
+    join(packageRoot, "prime-container", "seccomp.json"),
+    1_048_576,
+    "Prime seccomp profile",
+  );
+  try {
+    const parsed = JSON.parse(source) as unknown;
+    if (parsed === null || Array.isArray(parsed) || typeof parsed !== "object") {
+      throw new Error("not an object");
+    }
+    return parsed as Readonly<Record<string, unknown>>;
+  } catch (error) {
+    throw new Error("Prime seccomp profile is not one JSON object", { cause: error });
+  }
+}
+
+async function inspectRuntimeExecutables(
+  dockerExecutable: string,
+  runtimeInfo: z.output<typeof dockerInfoSchema>,
+): Promise<PrimeOciLocalRuntimeAttestation["executables"]> {
+  if ((await realpath(dockerExecutable)) !== dockerExecutable) {
+    throw new Error("Docker executable path is not canonical");
+  }
+  const configuredRuncPath = runtimeInfo.Runtimes[PRIME_OCI_RUNTIME_NAME]?.path;
+  if (configuredRuncPath === undefined || !configuredRuncPath.startsWith("/")) {
+    throw new Error("Prime OCI runc runtime must use one absolute executable path");
+  }
+  const resolvedRunc = await resolveConfiguredExecutable(configuredRuncPath, "runc");
+  const managed = await resolveDockerManagedRuntimeExecutables();
+  const resolvedDockerdSha256 = await hashStableRegularFile(
+    managed.dockerd,
+    MAX_EXECUTABLE_BYTES,
+    "dockerd executable",
+  );
+  const resolvedContainerdSha256 = await hashStableRegularFile(
+    managed.containerd,
+    MAX_EXECUTABLE_BYTES,
+    "containerd executable",
+  );
+  if (
+    managed.dockerdSha256 === undefined ||
+    managed.dockerdSha256 !== resolvedDockerdSha256 ||
+    managed.containerdSha256 === undefined ||
+    managed.containerdSha256 !== resolvedContainerdSha256
+  ) {
+    throw new Error("Prime OCI protected runtime executable observation changed");
+  }
+  return Object.freeze({
+    docker: {
+      path: dockerExecutable,
+      sha256: await hashStableRegularFile(
+        dockerExecutable,
+        MAX_EXECUTABLE_BYTES,
+        "Docker executable",
+      ),
+    },
+    dockerd: { path: managed.dockerd, sha256: resolvedDockerdSha256 },
+    containerd: { path: managed.containerd, sha256: resolvedContainerdSha256 },
+    runc: {
+      path: resolvedRunc,
+      sha256: await hashStableRegularFile(resolvedRunc, MAX_EXECUTABLE_BYTES, "runc executable"),
+    },
   });
 }
 
@@ -477,26 +614,6 @@ async function resolveCurrentCgroup(source: string): Promise<string> {
     throw new Error("Prime OCI cgroup membership path is not canonical");
   }
   return path;
-}
-
-export async function resolvePrimeImageDevice(dockerRoot: string) {
-  const canonicalRoot = await realpath(dockerRoot);
-  const metadata = await lstat(canonicalRoot, { bigint: true });
-  const { major, minor } = decodeLinuxDevice(metadata.dev);
-  const devicePath = await realpath(`/dev/block/${major}:${minor}`);
-  if (!(await lstat(devicePath)).isBlockDevice()) {
-    throw new Error("Prime OCI image backing path is not one block device");
-  }
-  return Object.freeze({ path: devicePath, major, minor });
-}
-
-function decodeLinuxDevice(device: bigint): { readonly major: number; readonly minor: number } {
-  const major = Number(((device >> 8n) & 0xfffn) | ((device >> 32n) & 0xfffff000n));
-  const minor = Number((device & 0xffn) | ((device >> 12n) & 0xffffff00n));
-  if (!Number.isSafeInteger(major) || !Number.isSafeInteger(minor)) {
-    throw new Error("Prime OCI image device identity exceeds the integer range");
-  }
-  return Object.freeze({ major, minor });
 }
 
 async function hashStableRegularFile(

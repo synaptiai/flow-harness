@@ -29,10 +29,7 @@ describe("local Prime OCI currentness", () => {
       await new LocalPrimeOciRuntimeInspector({
         run: async (args) => (args[0] === "version" ? versionSource(serverCommit) : info),
         local: async () => local,
-        dockerExecutableSha256: local.executables.docker.sha256,
-        dockerdExecutableSha256: local.executables.dockerd.sha256,
-        containerdExecutableSha256: local.executables.containerd.sha256,
-        runcExecutableSha256: local.executables.runc.sha256,
+        expectedExecutables: local.executables,
       }).inspect()
     ).runtime;
     const input = {
@@ -56,15 +53,31 @@ describe("local Prime OCI currentness", () => {
       const changedInfo = JSON.parse(infoSource("overlay2")) as Record<string, unknown>;
       mutate(changedInfo);
       info = JSON.stringify(changedInfo);
-      await expect(assertPrimeOciRuntimeCurrent(input)).rejects.toThrow(
-        /Docker information.*closed schema/i,
-      );
+      await expect(assertPrimeOciRuntimeCurrent(input)).rejects.toMatchObject({
+        stage: "read Docker information",
+        cause: expect.objectContaining({
+          message: expect.stringMatching(/Docker information.*closed schema/i),
+        }),
+      });
       expect(imageInspections).toBe(1);
     }
     info = infoSource("overlay2");
 
     imageDevice = { path: "/dev/changed-image", major: 8, minor: 2 };
     await expect(assertPrimeOciRuntimeCurrent(input)).rejects.toThrow(/image.*device/i);
+
+    const privateDeviceFailure = new Error("ENOENT: realpath '/srv/customer-private/docker-root'");
+    const privateDeviceCheck = assertPrimeOciRuntimeCurrent({
+      ...input,
+      resolveImageDevice: async () => {
+        throw privateDeviceFailure;
+      },
+    });
+    await expect(privateDeviceCheck).rejects.toMatchObject({
+      message: "Prime OCI runtime inspection failed during inspect image backing device",
+      cause: privateDeviceFailure,
+    });
+    await expect(privateDeviceCheck).rejects.not.toThrow(/customer-private/i);
 
     imageDevice = local.imageDevice;
     cgroupPath = "/sys/fs/cgroup/another-service";

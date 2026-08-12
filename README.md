@@ -164,7 +164,9 @@ node dist/cli/main.js runtime prepare prime-agent
 ```
 
 Preparation builds the image twice and compares both identities. It stores local host evidence
-under the configured project `.flow` directory. Evaluation does not build or pull an image.
+under the configured project `.flow` directory. A fixed-stage preflight rejects an incompatible
+host before build one. Preparation repeats the authoritative inspection after build two. Evaluation
+does not build or pull an image.
 
 On Ubuntu or Debian, install the native sandbox dependencies:
 

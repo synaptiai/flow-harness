@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { lstat, open, realpath } from "node:fs/promises";
+import { open, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
@@ -9,6 +9,8 @@ import type { PrimeExternalHarnessIdentity } from "../../domain/evaluation/exter
 import { DockerUnixApiClient } from "./docker-unix-api-client.js";
 import type { PrimeOciLocalRuntimeAttestation } from "./local-prime-oci-attestation.js";
 import { LocalPrimeOciRuntimeInspector } from "./local-prime-oci-runtime-inspector.js";
+import { resolvePrimeImageDevice } from "./prime-oci-image-device.js";
+import { withPrimeOciInspectionStage } from "./prime-oci-preparation.js";
 import {
   type DockerManagedRuntimeExecutables,
   resolveDockerManagedRuntimeExecutables,
@@ -61,10 +63,8 @@ export async function assertPrimeOciRuntimeCurrent(input: {
       throw new Error("Prime OCI currentness received an unsupported Docker observation");
     },
     local: async () => input.local,
-    dockerExecutableSha256: input.local.executables.docker.sha256,
-    dockerdExecutableSha256: input.local.executables.dockerd.sha256,
-    containerdExecutableSha256: input.local.executables.containerd.sha256,
-    runcExecutableSha256: input.local.executables.runc.sha256,
+    expectedExecutables: input.local.executables,
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
   });
   const current = await inspector.inspect();
   const runtimeExecutables = await (
@@ -91,8 +91,10 @@ export async function assertPrimeOciRuntimeCurrent(input: {
   const currentInfo = currentInfoSchema.parse(
     JSON.parse(observedInfoSource ?? (await client.readInfo(input.signal))),
   );
-  const currentImageDevice = await (input.resolveImageDevice ?? resolvePrimeImageDevice)(
-    currentInfo.DockerRootDir,
+  const currentImageDevice = await withPrimeOciInspectionStage(
+    "inspect image backing device",
+    () => (input.resolveImageDevice ?? resolvePrimeImageDevice)(currentInfo.DockerRootDir),
+    input.signal,
   );
   if (!isDeepStrictEqual(currentImageDevice, input.local.imageDevice)) {
     throw new Error("Prime OCI image device changed after admission");
@@ -144,28 +146,6 @@ async function readCurrentCgroup(): Promise<string> {
   } finally {
     await handle.close();
   }
-}
-
-async function resolvePrimeImageDevice(
-  dockerRoot: string,
-): Promise<PrimeOciLocalRuntimeAttestation["imageDevice"]> {
-  const canonicalRoot = await realpath(dockerRoot);
-  const metadata = await lstat(canonicalRoot, { bigint: true });
-  const { major, minor } = decodeLinuxDevice(metadata.dev);
-  const path = await realpath(`/dev/block/${major}:${minor}`);
-  if (!(await lstat(path)).isBlockDevice()) {
-    throw new Error("Prime OCI image backing path is not one block device");
-  }
-  return Object.freeze({ path, major, minor });
-}
-
-function decodeLinuxDevice(device: bigint): { readonly major: number; readonly minor: number } {
-  const major = Number(((device >> 8n) & 0xfffn) | ((device >> 32n) & 0xfffff000n));
-  const minor = Number((device & 0xffn) | ((device >> 12n) & 0xffffff00n));
-  if (!Number.isSafeInteger(major) || !Number.isSafeInteger(minor)) {
-    throw new Error("Prime OCI image device identity exceeds the integer range");
-  }
-  return Object.freeze({ major, minor });
 }
 
 async function readCorePattern(): Promise<string> {

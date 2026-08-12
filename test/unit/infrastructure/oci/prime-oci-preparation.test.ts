@@ -1,20 +1,371 @@
 import { createHash } from "node:crypto";
 
 import { describe, expect, it, vi } from "vitest";
-import { PrimeImageBuildStageError } from "../../../../src/infrastructure/oci/local-prime-image-builder.js";
 import {
+  PrimeDockerCommandAbortError,
+  PrimeImageBuildStageError,
+} from "../../../../src/infrastructure/oci/local-prime-image-builder.js";
+import { LocalPrimeOciRuntimeInspector } from "../../../../src/infrastructure/oci/local-prime-oci-runtime-inspector.js";
+import {
+  type PrimeOciInspectionStage,
+  PrimeOciInspectionStageError,
   type PrimeOciPreparationError,
   type PrimeOciRuntimeInspection,
   preparePrimeOciRuntime,
+  withPrimeOciInspectionStage,
 } from "../../../../src/infrastructure/oci/prime-oci-preparation.js";
 import {
+  createProductionPrimeOciPreparationDependencies,
   globalLeaseDirectoryRepairs,
+  inspectPrimeOciBootstrapExecutables,
+  inspectPrimeOciManagedRuntimeExecutables,
+  observeLocalRuntime,
+  type PrimeOciLocalRuntimeObservationOperations,
   reconcilePrimePreparationImages,
   runPrimePreparationWithCleanup,
 } from "../../../../src/infrastructure/oci/production-prime-oci-preparation.js";
 import { primeExternalHarnessIdentity } from "../../../fixtures/evaluation/prime-external-harness-identity.js";
 
 describe("Prime OCI runtime preparation", () => {
+  it("reports one fixed preflight stage before starting either clean build", async () => {
+    const privateFailure = new Error("private image device path");
+    const build = vi.fn(async () => preparedBuild());
+
+    const preparation = preparePrimeOciRuntime(
+      { descriptorPath: "/project/.flow/runtime/prime-agent/oci-attestation.json" },
+      {
+        preflightRuntime: async () => {
+          throw new PrimeOciInspectionStageError("inspect image backing device", privateFailure);
+        },
+        build,
+        inspectRuntime: async () => runtimeInspection(),
+        publish: vi.fn(),
+      },
+    );
+
+    await expect(preparation).rejects.toMatchObject({
+      code: "inspection_failed",
+      message: "Prime OCI runtime inspection failed during inspect image backing device",
+    });
+    await expect(preparation).rejects.not.toThrow(/private image device path/i);
+    expect(build).not.toHaveBeenCalled();
+  });
+
+  it("reports a piped core policy as the fixed host-core stage", async () => {
+    const build = vi.fn(async () => preparedBuild());
+    const inspected = runtimeInspection();
+
+    await expect(
+      preparePrimeOciRuntime(
+        { descriptorPath: "/project/.flow/runtime/prime-agent/oci-attestation.json" },
+        {
+          preflightRuntime: async () => ({
+            ...inspected,
+            local: { ...inspected.local, corePattern: "|/usr/share/apport/apport" },
+          }),
+          build,
+          inspectRuntime: async () => inspected,
+          publish: vi.fn(),
+        },
+      ),
+    ).rejects.toMatchObject({
+      code: "inspection_failed",
+      message: "Prime OCI runtime inspection failed during inspect host core policy",
+    });
+    expect(build).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "read Docker version",
+    "read Docker information",
+    "inspect Docker socket",
+    "inspect host core policy",
+    "inspect host cgroup",
+    "prepare global lease root",
+    "inspect image backing device",
+    "inspect runtime executables",
+    "inspect seccomp policy",
+  ] as const)("binds production observation failure to %s", async (stage) => {
+    const privateFailure = new Error(`private ${stage} diagnostic`);
+    const build = vi.fn(async () => preparedBuild());
+    const preparation = preparePrimeOciRuntime(
+      { descriptorPath: "/project/.flow/runtime/prime-agent/oci-attestation.json" },
+      {
+        preflightRuntime: async () => {
+          await observeLocalRuntime(
+            localRuntimeObservationInput(),
+            localRuntimeObservationOperations(stage, privateFailure),
+          );
+          return runtimeInspection();
+        },
+        build,
+        inspectRuntime: async () => runtimeInspection(),
+        publish: vi.fn(),
+      },
+    );
+
+    await expect(preparation).rejects.toMatchObject({
+      code: "inspection_failed",
+      message: `Prime OCI runtime inspection failed during ${stage}`,
+      cause: { stage, cause: privateFailure },
+    });
+    await expect(preparation).rejects.not.toThrow(privateFailure.message);
+    expect(build).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      "bootstrap",
+      (operation: () => Promise<never>) =>
+        inspectPrimeOciBootstrapExecutables(undefined, operation),
+    ],
+    [
+      "managed runtime",
+      (operation: () => Promise<never>) => inspectPrimeOciManagedRuntimeExecutables(operation),
+    ],
+  ] as const)(
+    "binds the %s executable setup failure to its fixed stage",
+    async (_name, inspect) => {
+      const privateFailure = new Error("private executable setup diagnostic");
+      const result = inspect(async () => {
+        throw privateFailure;
+      });
+
+      await expect(result).rejects.toMatchObject({
+        stage: "inspect runtime executables",
+        cause: privateFailure,
+      });
+      await expect(result).rejects.not.toThrow(privateFailure.message);
+    },
+  );
+
+  it("repeats authoritative inspection after both clean builds", async () => {
+    const events: string[] = [];
+    let inspectionNumber = 0;
+
+    await preparePrimeOciRuntime(
+      { descriptorPath: "/project/.flow/runtime/prime-agent/oci-attestation.json" },
+      createProductionPrimeOciPreparationDependencies({
+        builder: {
+          build: async (buildNumber) => {
+            events.push(`build ${buildNumber}`);
+            return preparedBuild();
+          },
+        },
+        inspector: {
+          inspect: async () => {
+            inspectionNumber += 1;
+            events.push(inspectionNumber === 1 ? "preflight" : "authoritative inspection");
+            return runtimeInspection();
+          },
+        },
+        signal: undefined,
+        publish: async () => {
+          events.push("publish");
+        },
+      }),
+    );
+
+    expect(events).toEqual([
+      "preflight",
+      "build 1",
+      "build 2",
+      "authoritative inspection",
+      "publish",
+    ]);
+  });
+
+  it("rejects executable drift after both builds before publication", async () => {
+    const publish = vi.fn();
+    let observationNumber = 0;
+    const inspector = new LocalPrimeOciRuntimeInspector({
+      run: async (args) =>
+        args[0] === "version" ? runtimeInspectorVersionOutput() : runtimeInspectorInfoOutput(),
+      local: async () => {
+        observationNumber += 1;
+        const inspected = runtimeInspection();
+        return {
+          daemonId: inspected.daemonId,
+          ...inspected.local,
+          executables: {
+            ...inspected.local.executables,
+            docker: {
+              ...inspected.local.executables.docker,
+              sha256: (observationNumber === 1 ? "a" : "f").repeat(64),
+            },
+          },
+        };
+      },
+      expectedExecutables: runtimeInspection().local.executables,
+    });
+
+    const preparation = preparePrimeOciRuntime(
+      { descriptorPath: "/project/.flow/runtime/prime-agent/oci-attestation.json" },
+      createProductionPrimeOciPreparationDependencies({
+        builder: { build: async () => preparedBuild() },
+        inspector,
+        signal: undefined,
+        publish,
+      }),
+    );
+
+    await expect(preparation).rejects.toMatchObject({
+      code: "inspection_failed",
+      message: "Prime OCI runtime inspection failed during validate Docker runtime identity",
+    });
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it.each(["docker", "dockerd", "containerd", "runc"] as const)(
+    "rejects same-byte %s path drift after both builds before publication",
+    async (executable) => {
+      const publish = vi.fn();
+      let observationNumber = 0;
+      const expected = runtimeInspection().local.executables;
+      const inspector = new LocalPrimeOciRuntimeInspector({
+        run: async (args) =>
+          args[0] === "version" ? runtimeInspectorVersionOutput() : runtimeInspectorInfoOutput(),
+        local: async () => {
+          observationNumber += 1;
+          const inspected = runtimeInspection();
+          return {
+            daemonId: inspected.daemonId,
+            ...inspected.local,
+            executables: {
+              ...inspected.local.executables,
+              [executable]: {
+                ...inspected.local.executables[executable],
+                path:
+                  observationNumber === 1
+                    ? inspected.local.executables[executable].path
+                    : `/opt/changed/${executable}`,
+              },
+            },
+          };
+        },
+        expectedExecutables: expected,
+      });
+
+      const preparation = preparePrimeOciRuntime(
+        { descriptorPath: "/project/.flow/runtime/prime-agent/oci-attestation.json" },
+        createProductionPrimeOciPreparationDependencies({
+          builder: { build: async () => preparedBuild() },
+          inspector,
+          signal: undefined,
+          publish,
+        }),
+      );
+
+      await expect(preparation).rejects.toMatchObject({
+        code: "inspection_failed",
+        message: "Prime OCI runtime inspection failed during validate Docker runtime identity",
+      });
+      expect(publish).not.toHaveBeenCalled();
+    },
+  );
+
+  it("preserves owned Docker cancellation through preflight staging", async () => {
+    const controller = new AbortController();
+    const cancellation = new Error("operator cancelled Docker preflight");
+
+    const preparation = preparePrimeOciRuntime(
+      {
+        descriptorPath: "/project/.flow/runtime/prime-agent/oci-attestation.json",
+        signal: controller.signal,
+      },
+      {
+        preflightRuntime: () =>
+          withPrimeOciInspectionStage(
+            "read Docker version",
+            async () => {
+              controller.abort(cancellation);
+              throw new PrimeDockerCommandAbortError(cancellation);
+            },
+            controller.signal,
+          ),
+        build: async () => preparedBuild(),
+        inspectRuntime: async () => runtimeInspection(),
+        publish: vi.fn(),
+      },
+    );
+
+    await expect(preparation).rejects.toBe(cancellation);
+  });
+
+  it("preserves cancellation when a staged operation aborts and resolves", async () => {
+    const controller = new AbortController();
+    const cancellation = new Error("operator cancelled a resolving inspection");
+    const nextMutation = vi.fn();
+
+    const inspection = withPrimeOciInspectionStage(
+      "read Docker version",
+      async () => {
+        controller.abort(cancellation);
+        return "completed after cancellation";
+      },
+      controller.signal,
+    ).then(nextMutation);
+
+    await expect(inspection).rejects.toBe(cancellation);
+    expect(nextMutation).not.toHaveBeenCalled();
+  });
+
+  it("preserves a non-Error cancellation through nested inspection stages", async () => {
+    const controller = new AbortController();
+    const inspection = withPrimeOciInspectionStage(
+      "validate Docker runtime identity",
+      () =>
+        withPrimeOciInspectionStage(
+          "inspect host cgroup",
+          async () => {
+            controller.abort("operator-stop");
+            return "/sys/fs/cgroup/flow-prime";
+          },
+          controller.signal,
+        ),
+      controller.signal,
+    );
+
+    await expect(inspection).rejects.toMatchObject({
+      name: "AbortError",
+      message: "Prime OCI runtime preparation was cancelled",
+      cause: "operator-stop",
+    });
+    await expect(inspection).rejects.not.toBeInstanceOf(PrimeOciInspectionStageError);
+  });
+
+  it("preserves owned Docker cancellation during authoritative production inspection", async () => {
+    const controller = new AbortController();
+    const cancellation = new Error("operator cancelled authoritative inspection");
+    const publish = vi.fn();
+    let inspectionNumber = 0;
+
+    const preparation = preparePrimeOciRuntime(
+      {
+        descriptorPath: "/project/.flow/runtime/prime-agent/oci-attestation.json",
+        signal: controller.signal,
+      },
+      createProductionPrimeOciPreparationDependencies({
+        builder: { build: async () => preparedBuild() },
+        inspector: {
+          inspect: async () => {
+            inspectionNumber += 1;
+            if (inspectionNumber === 1) {
+              return runtimeInspection();
+            }
+            controller.abort(cancellation);
+            throw new PrimeDockerCommandAbortError(cancellation);
+          },
+        },
+        signal: controller.signal,
+        publish,
+      }),
+    );
+
+    await expect(preparation).rejects.toBe(cancellation);
+    expect(publish).not.toHaveBeenCalled();
+  });
+
   it.each([
     [
       "bootstrap BuildKit builder",
@@ -473,6 +824,104 @@ function builderIdentity() {
     imageReference:
       "moby/buildkit:buildx-stable-1@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec",
   };
+}
+
+function localRuntimeObservationInput(): Parameters<typeof observeLocalRuntime>[0] {
+  return {
+    packageRoot: "/package",
+    dockerExecutable: "/usr/bin/docker",
+    run: async () => {
+      throw new Error("the injected observation operation must handle Docker reads");
+    },
+    signal: undefined,
+  };
+}
+
+function localRuntimeObservationOperations(
+  failedStage: PrimeOciInspectionStage,
+  failure: Error,
+): PrimeOciLocalRuntimeObservationOperations {
+  const observe = async <Value>(stage: PrimeOciInspectionStage, value: Value): Promise<Value> => {
+    if (stage === failedStage) {
+      throw failure;
+    }
+    return value;
+  };
+  return {
+    readDockerVersion: async () =>
+      observe("read Docker version", JSON.stringify({ Server: { ApiVersion: "1.51" } })),
+    readDockerInformation: async () =>
+      observe(
+        "read Docker information",
+        JSON.stringify({
+          ID: "daemon-test-id",
+          DockerRootDir: "/var/lib/docker",
+          OSType: "linux",
+          Architecture: "x86_64",
+          DefaultRuntime: "flow-prime-runc",
+          Runtimes: { "flow-prime-runc": { path: "/usr/bin/runc", runtimeArgs: [] } },
+        }),
+      ),
+    inspectDockerSocket: async () =>
+      observe("inspect Docker socket", {
+        device: 1,
+        inode: 2,
+        uid: 0,
+        gid: 999,
+        mode: 0o660,
+      }),
+    inspectHostCorePolicy: async () => observe("inspect host core policy", "core"),
+    inspectHostCgroup: async () => observe("inspect host cgroup", "/sys/fs/cgroup/flow-prime"),
+    prepareGlobalLeaseRoot: async () =>
+      observe("prepare global lease root", "/var/tmp/flow-prime/global-slot.json"),
+    inspectImageBackingDevice: async () =>
+      observe("inspect image backing device", { path: "/dev/sda1", major: 8, minor: 1 }),
+    inspectRuntimeExecutables: async () =>
+      observe("inspect runtime executables", {
+        docker: { path: "/usr/bin/docker", sha256: "a".repeat(64) },
+        dockerd: { path: "/usr/bin/dockerd", sha256: "d".repeat(64) },
+        containerd: { path: "/usr/bin/containerd", sha256: "b".repeat(64) },
+        runc: { path: "/usr/bin/runc", sha256: "c".repeat(64) },
+      }),
+    inspectSeccompPolicy: async () =>
+      observe("inspect seccomp policy", { defaultAction: "SCMP_ACT_ERRNO", syscalls: [] }),
+  };
+}
+
+function runtimeInspectorVersionOutput(): string {
+  return JSON.stringify({
+    Client: { Version: "28.3.3", ApiVersion: "1.51", Os: "linux", Arch: "amd64" },
+    Server: {
+      Version: "28.3.3",
+      GitCommit: "dockerd-commit",
+      ApiVersion: "1.51",
+      Os: "linux",
+      Arch: "amd64",
+      KernelVersion: "6.11.0-1018-azure",
+      Components: [
+        { Name: "containerd", Version: "v1.7.27", Details: { GitCommit: "containerd-commit" } },
+        { Name: "runc", Version: "1.2.6", Details: { GitCommit: "runc-commit" } },
+      ],
+    },
+  });
+}
+
+function runtimeInspectorInfoOutput(): string {
+  return JSON.stringify({
+    ID: "daemon-test-id",
+    Driver: "overlay2",
+    CgroupDriver: "systemd",
+    CgroupVersion: "2",
+    KernelVersion: "6.11.0-1018-azure",
+    OSType: "linux",
+    Architecture: "x86_64",
+    SecurityOptions: ["name=apparmor", "name=seccomp,profile=builtin", "name=cgroupns"],
+    ContainerdCommit: { ID: "containerd-commit" },
+    RuncCommit: { ID: "runc-commit" },
+    DefaultRuntime: "flow-prime-runc",
+    Runtimes: { "flow-prime-runc": { path: "/usr/bin/runc", runtimeArgs: [] } },
+    Rootless: false,
+  });
 }
 
 function preparedBuild() {

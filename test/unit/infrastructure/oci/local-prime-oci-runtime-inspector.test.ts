@@ -2,9 +2,52 @@ import { createHash } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
+import { PrimeDockerCommandAbortError } from "../../../../src/infrastructure/oci/local-prime-image-builder.js";
 import { LocalPrimeOciRuntimeInspector } from "../../../../src/infrastructure/oci/local-prime-oci-runtime-inspector.js";
 
 describe("local Prime OCI runtime inspector", () => {
+  it("preserves only the owned Docker cancellation reason", async () => {
+    const controller = new AbortController();
+    const cancellation = new Error("operator cancelled runtime inspection");
+    const inspector = new LocalPrimeOciRuntimeInspector({
+      run: async (args) => {
+        if (args[0] === "version") {
+          controller.abort(cancellation);
+          throw new PrimeDockerCommandAbortError(cancellation);
+        }
+        return infoOutput("systemd");
+      },
+      local: async () => localObservation({ defaultAction: "SCMP_ACT_ERRNO", syscalls: [] }),
+      expectedExecutables: expectedExecutables(),
+      signal: controller.signal,
+    });
+
+    await expect(inspector.inspect()).rejects.toBe(cancellation);
+  });
+
+  it("keeps a distinct post-abort Docker failure in its fixed stage", async () => {
+    const controller = new AbortController();
+    const cancellation = new Error("operator cancelled runtime inspection");
+    const distinctFailure = new Error("private distinct Docker failure");
+    const inspector = new LocalPrimeOciRuntimeInspector({
+      run: async (args) => {
+        if (args[0] === "version") {
+          controller.abort(cancellation);
+          throw distinctFailure;
+        }
+        return infoOutput("systemd");
+      },
+      local: async () => localObservation({ defaultAction: "SCMP_ACT_ERRNO", syscalls: [] }),
+      expectedExecutables: expectedExecutables(),
+      signal: controller.signal,
+    });
+
+    await expect(inspector.inspect()).rejects.toMatchObject({
+      stage: "read Docker version",
+      cause: distinctFailure,
+    });
+  });
+
   it("binds the fixed Linux Docker runtime and keeps host details private", async () => {
     const seccompProfile = { defaultAction: "SCMP_ACT_ERRNO", syscalls: [] };
     const seccompSha256 = createHash("sha256").update(JSON.stringify(seccompProfile)).digest("hex");
@@ -19,10 +62,7 @@ describe("local Prime OCI runtime inspector", () => {
         throw new Error("unexpected Docker inspection command");
       },
       local: async () => localObservation(seccompProfile),
-      dockerExecutableSha256: "a".repeat(64),
-      dockerdExecutableSha256: "d".repeat(64),
-      containerdExecutableSha256: "b".repeat(64),
-      runcExecutableSha256: "c".repeat(64),
+      expectedExecutables: expectedExecutables(),
     });
 
     const result = await inspector.inspect();
@@ -58,13 +98,13 @@ describe("local Prime OCI runtime inspector", () => {
     const inspector = new LocalPrimeOciRuntimeInspector({
       run: async (args) => (args[0] === "version" ? versionOutput() : infoOutput("cgroupfs")),
       local: async () => localObservation(seccompProfile),
-      dockerExecutableSha256: "a".repeat(64),
-      dockerdExecutableSha256: "d".repeat(64),
-      containerdExecutableSha256: "b".repeat(64),
-      runcExecutableSha256: "c".repeat(64),
+      expectedExecutables: expectedExecutables(),
     });
 
-    await expect(inspector.inspect()).rejects.toThrow(/cgroup driver/i);
+    await expect(inspector.inspect()).rejects.toMatchObject({
+      stage: "validate Docker runtime identity",
+      cause: expect.objectContaining({ message: expect.stringMatching(/cgroup driver/i) }),
+    });
   });
 
   it("rejects a selected runc path that differs from the observed executable", async () => {
@@ -73,13 +113,13 @@ describe("local Prime OCI runtime inspector", () => {
       run: async (args) =>
         args[0] === "version" ? versionOutput() : infoOutput("systemd", "/opt/custom/runc"),
       local: async () => localObservation(seccompProfile),
-      dockerExecutableSha256: "a".repeat(64),
-      dockerdExecutableSha256: "d".repeat(64),
-      containerdExecutableSha256: "b".repeat(64),
-      runcExecutableSha256: "c".repeat(64),
+      expectedExecutables: expectedExecutables(),
     });
 
-    await expect(inspector.inspect()).rejects.toThrow(/runc.*path/i);
+    await expect(inspector.inspect()).rejects.toMatchObject({
+      stage: "validate Docker runtime identity",
+      cause: expect.objectContaining({ message: expect.stringMatching(/runc.*path/i) }),
+    });
   });
 
   it.each([
@@ -112,13 +152,15 @@ describe("local Prime OCI runtime inspector", () => {
     const inspector = new LocalPrimeOciRuntimeInspector({
       run: async (args) => (args[0] === "version" ? versionOutput() : JSON.stringify(info)),
       local: async () => localObservation(seccompProfile),
-      dockerExecutableSha256: "a".repeat(64),
-      dockerdExecutableSha256: "d".repeat(64),
-      containerdExecutableSha256: "b".repeat(64),
-      runcExecutableSha256: "c".repeat(64),
+      expectedExecutables: expectedExecutables(),
     });
 
-    await expect(inspector.inspect()).rejects.toThrow(/Docker information.*closed schema/i);
+    await expect(inspector.inspect()).rejects.toMatchObject({
+      stage: "read Docker information",
+      cause: expect.objectContaining({
+        message: expect.stringMatching(/Docker information.*closed schema/i),
+      }),
+    });
   });
 
   it("rejects a matching Docker stack below the fixed API version", async () => {
@@ -126,13 +168,13 @@ describe("local Prime OCI runtime inspector", () => {
     const inspector = new LocalPrimeOciRuntimeInspector({
       run: async (args) => (args[0] === "version" ? versionOutput("1.48") : infoOutput("systemd")),
       local: async () => localObservation(seccompProfile, "1.48"),
-      dockerExecutableSha256: "a".repeat(64),
-      dockerdExecutableSha256: "d".repeat(64),
-      containerdExecutableSha256: "b".repeat(64),
-      runcExecutableSha256: "c".repeat(64),
+      expectedExecutables: expectedExecutables(),
     });
 
-    await expect(inspector.inspect()).rejects.toThrow(/API version.*1\.51/i);
+    await expect(inspector.inspect()).rejects.toMatchObject({
+      stage: "validate Docker runtime identity",
+      cause: expect.objectContaining({ message: expect.stringMatching(/API version.*1\.51/i) }),
+    });
   });
 });
 
@@ -191,4 +233,8 @@ function localObservation(seccompProfile: Record<string, unknown>, apiVersion = 
     leaseTarget: "flow-prime-global-v1" as const,
     seccompProfile,
   };
+}
+
+function expectedExecutables() {
+  return localObservation({}).executables;
 }
