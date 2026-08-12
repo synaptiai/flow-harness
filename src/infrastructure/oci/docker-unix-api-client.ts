@@ -628,6 +628,43 @@ function dockerStartFailureMessage(response: DockerUnixApiResponse): string {
   if (includesAny(privateMessage, ["exec:", "exec /", "executable file not found"])) {
     return "Docker start failed while executing the container entrypoint";
   }
+  if (
+    includesAny(privateMessage, [
+      "exec fds",
+      "exec fifo",
+      "log pipe",
+      "pipe fds",
+      "init process i/o",
+    ])
+  ) {
+    return "Docker start failed while setting up container runtime file descriptors";
+  }
+  if (
+    includesAny(privateMessage, [
+      "init pipe",
+      "sync pipe",
+      "sync ready",
+      "bootstrap data to pipe",
+      "final child's pid from pipe",
+      "pid from init pipe",
+    ])
+  ) {
+    return "Docker start failed while synchronizing the container runtime process";
+  }
+  if (privateMessage.includes("container process is already dead")) {
+    return "Docker start failed because the container runtime process ended early";
+  }
+  if (privateMessage.includes("store init state")) {
+    return "Docker start failed while recording container runtime state";
+  }
+  if (
+    includesAny(privateMessage, [
+      "unable to retrieve oci runtime error",
+      "oci runtime create failed: exit status",
+    ])
+  ) {
+    return "Docker start failed before the container runtime returned a diagnostic";
+  }
   if (includesAny(privateMessage, ["permission denied"])) {
     return "Docker start failed while applying the container process policy";
   }

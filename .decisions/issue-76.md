@@ -323,6 +323,9 @@ process, or runtime-task work. Resource categories distinguish block I/O, memory
 process limits. Process categories distinguish entrypoint, working-directory, user-identity,
 capability, no-new-privileges, AppArmor, and residual process-policy work.
 
+Runtime-task categories distinguish file-descriptor setup, process synchronization, early process
+exit, state recording, a missing runtime diagnostic, and residual task creation.
+
 An unknown response reports only the status. Docker response text stays private. The category does
 not change admission, retry, or cleanup.
 

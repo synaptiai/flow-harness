@@ -482,6 +482,87 @@ describe("Docker Unix API client", () => {
       privateMarker: "PRIVATE_PROCESS",
       publicMessage: "Docker start failed while applying the container process policy",
     },
+    {
+      privateMessage:
+        "OCI runtime create failed: error during container init: error closing exec fds: PRIVATE_EXEC_FDS",
+      privateMarker: "PRIVATE_EXEC_FDS",
+      publicMessage: "Docker start failed while setting up container runtime file descriptors",
+    },
+    {
+      privateMessage: "OCI runtime create failed: unable to setup exec fifo: PRIVATE_EXEC_FIFO",
+      privateMarker: "PRIVATE_EXEC_FIFO",
+      publicMessage: "Docker start failed while setting up container runtime file descriptors",
+    },
+    {
+      privateMessage: "OCI runtime create failed: close log pipe: PRIVATE_LOG_PIPE",
+      privateMarker: "PRIVATE_LOG_PIPE",
+      publicMessage: "Docker start failed while setting up container runtime file descriptors",
+    },
+    {
+      privateMessage: "OCI runtime create failed: error getting pipe fds: PRIVATE_PIPE_FDS",
+      privateMarker: "PRIVATE_PIPE_FDS",
+      publicMessage: "Docker start failed while setting up container runtime file descriptors",
+    },
+    {
+      privateMessage:
+        "failed to create shim task: failed to create init process I/O: PRIVATE_INIT_IO",
+      privateMarker: "PRIVATE_INIT_IO",
+      publicMessage: "Docker start failed while setting up container runtime file descriptors",
+    },
+    {
+      privateMessage: "OCI runtime create failed: unable to create init pipe: PRIVATE_INIT_PIPE",
+      privateMarker: "PRIVATE_INIT_PIPE",
+      publicMessage: "Docker start failed while synchronizing the container runtime process",
+    },
+    {
+      privateMessage: "OCI runtime create failed: unable to create sync pipe: PRIVATE_SYNC_PIPE",
+      privateMarker: "PRIVATE_SYNC_PIPE",
+      publicMessage: "Docker start failed while synchronizing the container runtime process",
+    },
+    {
+      privateMessage:
+        "OCI runtime create failed: can't copy bootstrap data to pipe: PRIVATE_BOOTSTRAP_PIPE",
+      privateMarker: "PRIVATE_BOOTSTRAP_PIPE",
+      publicMessage: "Docker start failed while synchronizing the container runtime process",
+    },
+    {
+      privateMessage: "OCI runtime create failed: sync ready: PRIVATE_SYNC_READY",
+      privateMarker: "PRIVATE_SYNC_READY",
+      publicMessage: "Docker start failed while synchronizing the container runtime process",
+    },
+    {
+      privateMessage:
+        "OCI runtime create failed: can't get final child's PID from pipe: PRIVATE_CHILD_PID",
+      privateMarker: "PRIVATE_CHILD_PID",
+      publicMessage: "Docker start failed while synchronizing the container runtime process",
+    },
+    {
+      privateMessage:
+        "OCI runtime create failed: error reading pid from init pipe: PRIVATE_PID_PIPE",
+      privateMarker: "PRIVATE_PID_PIPE",
+      publicMessage: "Docker start failed while synchronizing the container runtime process",
+    },
+    {
+      privateMessage: "OCI runtime create failed: container process is already dead PRIVATE_DEAD",
+      privateMarker: "PRIVATE_DEAD",
+      publicMessage: "Docker start failed because the container runtime process ended early",
+    },
+    {
+      privateMessage: "OCI runtime create failed: unable to store init state: PRIVATE_STATE",
+      privateMarker: "PRIVATE_STATE",
+      publicMessage: "Docker start failed while recording container runtime state",
+    },
+    {
+      privateMessage:
+        "OCI runtime create failed: unable to retrieve OCI runtime error: PRIVATE_DIAGNOSTIC",
+      privateMarker: "PRIVATE_DIAGNOSTIC",
+      publicMessage: "Docker start failed before the container runtime returned a diagnostic",
+    },
+    {
+      privateMessage: "OCI runtime create failed: exit status PRIVATE_EXIT",
+      privateMarker: "PRIVATE_EXIT",
+      publicMessage: "Docker start failed before the container runtime returned a diagnostic",
+    },
   ])("binds one closed category to each process signal", async (testCase) => {
     const transport: DockerUnixApiTransport = {
       request: vi.fn(async () => ({
@@ -519,7 +600,9 @@ describe("Docker Unix API client", () => {
     const error = await client.startContainer("a".repeat(64)).catch((caught) => caught);
 
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toBe("Docker start returned status 500");
+    expect((error as Error).message).toBe(
+      "Docker start failed while setting up container runtime file descriptors",
+    );
     expect((error as Error).message).not.toContain(privateMarker);
   });
 
@@ -590,6 +673,31 @@ describe("Docker Unix API client", () => {
       privateMessage: "failed to create task: PRIVATE_PROCESS permission denied",
       publicMessage: "Docker start failed while applying the container process policy",
     },
+    {
+      privateMessage:
+        "OCI runtime create failed: error closing exec fds: PRIVATE_DESCRIPTOR permission denied",
+      publicMessage: "Docker start failed while setting up container runtime file descriptors",
+    },
+    {
+      privateMessage:
+        "OCI runtime create failed: unable to create init pipe: PRIVATE_SYNC permission denied",
+      publicMessage: "Docker start failed while synchronizing the container runtime process",
+    },
+    {
+      privateMessage:
+        "OCI runtime create failed: container process is already dead PRIVATE_DEAD permission denied",
+      publicMessage: "Docker start failed because the container runtime process ended early",
+    },
+    {
+      privateMessage:
+        "OCI runtime create failed: unable to store init state: PRIVATE_STATE permission denied",
+      publicMessage: "Docker start failed while recording container runtime state",
+    },
+    {
+      privateMessage:
+        "OCI runtime create failed: unable to retrieve OCI runtime error: PRIVATE_DIAGNOSTIC permission denied",
+      publicMessage: "Docker start failed before the container runtime returned a diagnostic",
+    },
   ])("uses the most specific Docker start failure category", async (testCase) => {
     const transport: DockerUnixApiTransport = {
       request: vi.fn(async () => ({
@@ -604,6 +712,33 @@ describe("Docker Unix API client", () => {
     });
 
     await expect(client.startContainer("a".repeat(64))).rejects.toThrow(testCase.publicMessage);
+  });
+
+  it.each([
+    { privateMessage: "PRIVATE_CREATE_TASK create task" },
+    { privateMessage: "PRIVATE_SHIM_TASK create shim task" },
+    { privateMessage: "PRIVATE_OCI_CREATE OCI runtime create" },
+    { privateMessage: "PRIVATE_RUNC_CREATE runc create" },
+  ])("binds each residual runtime-task signal", async ({ privateMessage }) => {
+    const transport: DockerUnixApiTransport = {
+      request: vi.fn(async () => ({
+        statusCode: 503,
+        body: JSON.stringify({ message: privateMessage }),
+      })),
+    };
+    const client = new DockerUnixApiClient({
+      socketPath: "/var/run/docker.sock",
+      apiVersion: "1.51",
+      transport,
+    });
+
+    const error = await client.startContainer("a".repeat(64)).catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(
+      "Docker start failed while creating the container runtime task",
+    );
+    expect((error as Error).message).not.toContain(privateMessage);
   });
 
   it("rejects malformed identities and oversized responses", async () => {
