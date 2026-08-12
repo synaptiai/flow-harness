@@ -72,6 +72,18 @@ describe("native Prime harness registry", () => {
     expect(Object.isFrozen(descriptor.identity)).toBe(true);
   });
 
+  it("resolves default trusted artifacts from the executing source extension", async () => {
+    const fixture = await registryFixture();
+    const registry = new NativePrimeHarnessRegistry({
+      resolveOciIdentity: async () => fixture.attestation,
+    });
+
+    const descriptor = await registry.resolve(profile());
+
+    expect(descriptor.identity.adapter).toBe("prime-agent-native-v1");
+    expect(descriptor.identityDigest).toBe(externalHarnessIdentityDigest(descriptor.identity));
+  });
+
   it("uses image-attested executable hashes without host binary copies", async () => {
     const fixture = await registryFixture();
     await Promise.all([

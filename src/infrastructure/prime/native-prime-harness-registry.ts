@@ -1,4 +1,5 @@
-import { join, resolve } from "node:path";
+import { dirname, extname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   type ExternalHarnessIdentity,
@@ -277,13 +278,23 @@ export async function resolvePrimeOciAttestationPath(cwd: string): Promise<strin
 }
 
 function defaultArtifactPaths(): PrimeArtifactPaths {
-  const sourceRoot = resolve(import.meta.dirname);
+  const registryPath = fileURLToPath(import.meta.url);
+  const extension = extname(registryPath);
+  const sourceRoot = dirname(registryPath);
   return {
-    protocolPath: join(sourceRoot, "../../domain/evaluation/external-harness-protocol.js"),
-    outerProtocolPath: join(sourceRoot, "prime-container-protocol.js"),
-    inferenceBrokerPath: join(sourceRoot, "native-prime-host-inference-broker.js"),
+    protocolPath: join(
+      sourceRoot,
+      "../../domain/evaluation",
+      `external-harness-protocol${extension}`,
+    ),
+    outerProtocolPath: join(sourceRoot, `prime-container-protocol${extension}`),
+    inferenceBrokerPath: join(sourceRoot, `native-prime-host-inference-broker${extension}`),
     sourceRoot,
     hostOciRoot: resolve(sourceRoot, "../oci"),
-    productionRuntimePath: resolve(sourceRoot, "../runtime/production-external-harness-runtime.js"),
+    productionRuntimePath: resolve(
+      sourceRoot,
+      "../runtime",
+      `production-external-harness-runtime${extension}`,
+    ),
   };
 }
