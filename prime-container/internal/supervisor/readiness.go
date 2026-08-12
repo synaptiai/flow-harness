@@ -109,10 +109,30 @@ func BuildReadiness(
 	challenge containerprotocol.ReadinessChallenge,
 	measurement ReadinessMeasurement,
 ) ([]byte, error) {
-	if !reflect.DeepEqual(measurement, expectedReadinessMeasurement(
-		challenge.ImageDeviceMajor, challenge.ImageDeviceMinor,
-	)) {
-		return nil, errors.New("Prime effective controls contradict the fixed runtime policy")
+	expected := expectedReadinessMeasurement(challenge.ImageDeviceMajor, challenge.ImageDeviceMinor)
+	if !reflect.DeepEqual(measurement.Process, expected.Process) {
+		return nil, errors.New("Prime effective process controls contradict the fixed runtime policy")
+	}
+	if measurement.Limits != expected.Limits {
+		return nil, errors.New("Prime effective resource limits contradict the fixed runtime policy")
+	}
+	if measurement.Filesystems != expected.Filesystems {
+		return nil, errors.New("Prime effective filesystem controls contradict the fixed runtime policy")
+	}
+	if !reflect.DeepEqual(measurement.Network, expected.Network) {
+		return nil, errors.New("Prime effective network controls contradict the fixed runtime policy")
+	}
+	if !reflect.DeepEqual(measurement.SystemFiles, expected.SystemFiles) {
+		return nil, errors.New("Prime effective system files contradict the fixed runtime policy")
+	}
+	if measurement.Streams != expected.Streams {
+		return nil, errors.New("Prime effective stream controls contradict the fixed runtime policy")
+	}
+	if measurement.LogDriver != expected.LogDriver {
+		return nil, errors.New("Prime effective log policy contradicts the fixed runtime policy")
+	}
+	if measurement.Healthcheck != expected.Healthcheck {
+		return nil, errors.New("Prime effective health policy contradicts the fixed runtime policy")
 	}
 	payload, err := json.Marshal(Readiness{
 		Version: challenge.Version, ContainerID: challenge.ContainerID, TrialID: challenge.TrialID,

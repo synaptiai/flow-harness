@@ -313,6 +313,9 @@ export class DockerRawStreamDecoder {
       }
       const payload = Buffer.from(this.#pending.subarray(8, frameLength));
       this.#pending = this.#pending.subarray(frameLength);
+      if (payloadLength === 0) {
+        continue;
+      }
       if (stream === 2) {
         this.#stderrBytes += payloadLength;
       }
@@ -525,21 +528,120 @@ async function* stdoutChunks(
   input: Pick<DockerUnixAttachRequest, "maxStderrBytes" | "maxStdoutFrameBytes">,
 ): AsyncIterable<Uint8Array> {
   const decoder = new DockerRawStreamDecoder(input);
+  const stderr: Buffer[] = [];
+  let sawStdout = false;
   if (head.byteLength > 0) {
     for (const chunk of decoder.push(head)) {
       if (chunk.stream === "stdout") {
+        sawStdout = true;
         yield chunk.payload;
+      } else {
+        stderr.push(chunk.payload);
       }
     }
   }
   for await (const bytes of socket) {
     for (const chunk of decoder.push(bytes as Uint8Array)) {
       if (chunk.stream === "stdout") {
+        sawStdout = true;
         yield chunk.payload;
+      } else {
+        stderr.push(chunk.payload);
       }
     }
   }
   decoder.finish();
+  if (stderr.length > 0) {
+    throw new Error(primeContainerFailureMessage(Buffer.concat(stderr), sawStdout));
+  }
+  if (!sawStdout) {
+    throw new Error("Prime container ended before readiness");
+  }
+}
+
+function primeContainerFailureMessage(stderr: Buffer, sawStdout: boolean): string {
+  let privateDiagnostic: string;
+  try {
+    privateDiagnostic = new TextDecoder("utf-8", { fatal: true }).decode(stderr).toLowerCase();
+  } catch {
+    return sawStdout
+      ? "Prime container reported a runtime failure"
+      : "Prime container ended before readiness";
+  }
+  if (privateDiagnostic.endsWith("\n")) {
+    privateDiagnostic = privateDiagnostic.slice(0, -1);
+  }
+  if (privateDiagnostic.includes("\n") || privateDiagnostic.includes("\r")) {
+    return sawStdout
+      ? "Prime container reported a runtime failure"
+      : "Prime container ended before readiness";
+  }
+  if (!sawStdout) {
+    switch (privateDiagnostic) {
+      case "measure prime container readiness: prime effective process controls contradict the fixed runtime policy":
+        return "Prime container readiness failed while validating process controls";
+      case "measure prime container readiness: prime effective resource limits contradict the fixed runtime policy":
+        return "Prime container readiness failed while validating resource limits";
+      case "measure prime container readiness: prime effective filesystem controls contradict the fixed runtime policy":
+        return "Prime container readiness failed while validating filesystem controls";
+      case "measure prime container readiness: prime effective network controls contradict the fixed runtime policy":
+        return "Prime container readiness failed while validating network controls";
+      case "measure prime container readiness: prime effective system files contradict the fixed runtime policy":
+        return "Prime container readiness failed while validating system files";
+      case "measure prime container readiness: prime effective stream controls contradict the fixed runtime policy":
+        return "Prime container readiness failed while validating attached streams";
+      case "measure prime container readiness: prime effective log policy contradicts the fixed runtime policy":
+        return "Prime container readiness failed while validating the log policy";
+      case "measure prime container readiness: prime effective health policy contradicts the fixed runtime policy":
+        return "Prime container readiness failed while validating the health policy";
+    }
+  }
+  if (
+    startsWithAny(privateDiagnostic, [
+      "prime supervisor must start",
+      "set prime supervisor core limit:",
+      "disable prime supervisor dumpable state:",
+      "open fixed prime system file ",
+      "inspect fixed prime system file ",
+      "truncate fixed prime system file ",
+      "write fixed prime system file ",
+      "set fixed prime system file mode ",
+      "synchronize fixed prime system file ",
+      "read fixed prime system file ",
+      "fixed prime system file ",
+    ])
+  ) {
+    return "Prime container failed while applying supervisor hardening";
+  }
+  if (
+    startsWithAny(privateDiagnostic, [
+      "create prime private path ",
+      "set prime private path owner ",
+      "set prime private path mode ",
+      "create kernel supervisor directory:",
+      "remove stale kernel supervisor socket:",
+      "listen on kernel supervisor socket:",
+      "set kernel supervisor socket owner:",
+      "set kernel supervisor socket mode:",
+      "close kernel supervisor listener:",
+    ])
+  ) {
+    return "Prime container failed while preparing its private runtime";
+  }
+  if (
+    startsWithAny(privateDiagnostic, [
+      "read prime container frame ",
+      "unknown prime container frame type:",
+      "parse prime readiness challenge:",
+      "prime readiness challenge violates the closed schema",
+      "prime preparation ",
+    ])
+  ) {
+    return "Prime container failed while reading attached protocol input";
+  }
+  return sawStdout
+    ? "Prime container reported a runtime failure"
+    : "Prime container ended before readiness";
 }
 
 function parseObject(body: string, label: string): Record<string, unknown> {
@@ -741,6 +843,10 @@ function parseDockerErrorMessage(body: string): string | undefined {
 
 function includesAny(value: string, candidates: readonly string[]): boolean {
   return candidates.some((candidate) => value.includes(candidate));
+}
+
+function startsWithAny(value: string, candidates: readonly string[]): boolean {
+  return candidates.some((candidate) => value.startsWith(candidate));
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {

@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Duplex } from "node:stream";
+import { type Duplex, PassThrough } from "node:stream";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -1001,10 +1001,9 @@ describe("Docker Unix API client", () => {
       ).resolves.toEqual(Buffer.from("challenge"));
 
       serverSocket?.destroy();
-      await expect(attached.output[Symbol.asyncIterator]().next()).resolves.toEqual({
-        done: true,
-        value: undefined,
-      });
+      await expect(attached.output[Symbol.asyncIterator]().next()).rejects.toThrow(
+        "Prime container ended before readiness",
+      );
       await expect(attached.write(Buffer.from("late"))).rejects.toBeInstanceOf(Error);
       await attached.release();
     } finally {
@@ -1043,6 +1042,399 @@ describe("Docker Unix API client", () => {
     },
   );
 
+  it.each([
+    {
+      privateDiagnostic:
+        "measure Prime container readiness: Prime effective process controls contradict the fixed runtime policy\n",
+      publicMessage: "Prime container readiness failed while validating process controls",
+    },
+    {
+      privateDiagnostic:
+        "measure Prime container readiness: Prime effective resource limits contradict the fixed runtime policy\n",
+      publicMessage: "Prime container readiness failed while validating resource limits",
+    },
+    {
+      privateDiagnostic:
+        "measure Prime container readiness: Prime effective filesystem controls contradict the fixed runtime policy\n",
+      publicMessage: "Prime container readiness failed while validating filesystem controls",
+    },
+    {
+      privateDiagnostic:
+        "measure Prime container readiness: Prime effective network controls contradict the fixed runtime policy\n",
+      publicMessage: "Prime container readiness failed while validating network controls",
+    },
+    {
+      privateDiagnostic:
+        "measure Prime container readiness: Prime effective system files contradict the fixed runtime policy\n",
+      publicMessage: "Prime container readiness failed while validating system files",
+    },
+    {
+      privateDiagnostic:
+        "measure Prime container readiness: Prime effective stream controls contradict the fixed runtime policy\n",
+      publicMessage: "Prime container readiness failed while validating attached streams",
+    },
+    {
+      privateDiagnostic:
+        "measure Prime container readiness: Prime effective log policy contradicts the fixed runtime policy\n",
+      publicMessage: "Prime container readiness failed while validating the log policy",
+    },
+    {
+      privateDiagnostic:
+        "measure Prime container readiness: Prime effective health policy contradicts the fixed runtime policy\n",
+      publicMessage: "Prime container readiness failed while validating the health policy",
+    },
+    {
+      privateDiagnostic: "set Prime supervisor core limit: PRIVATE_HARDENING\n",
+      publicMessage: "Prime container failed while applying supervisor hardening",
+    },
+    {
+      privateDiagnostic: "create Prime private path /PRIVATE_RUNTIME: permission denied\n",
+      publicMessage: "Prime container failed while preparing its private runtime",
+    },
+    {
+      privateDiagnostic: "read Prime container frame header: PRIVATE_INPUT\n",
+      publicMessage: "Prime container failed while reading attached protocol input",
+    },
+  ])(
+    "maps private attached stderr to $publicMessage",
+    async ({ privateDiagnostic, publicMessage }) => {
+      const socket = new PassThrough();
+      socket.end();
+      const attached = new NodeDockerAttachedTransport(
+        socket,
+        rawStreamFrame(2, Buffer.from(privateDiagnostic)),
+        { maxStderrBytes: 1_024, maxStdoutFrameBytes: 1_024 },
+      );
+
+      const error = await attached.output[Symbol.asyncIterator]()
+        .next()
+        .catch((caught) => caught);
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe(publicMessage);
+      expect((error as Error).cause).toBeUndefined();
+      expect((error as Error).message).not.toContain("PRIVATE");
+    },
+  );
+
+  it.each([
+    [
+      "Prime supervisor must start as the fixed container supervisor user",
+      "Prime container failed while applying supervisor hardening",
+    ],
+    [
+      "set Prime supervisor core limit: PRIVATE_SIGNAL",
+      "Prime container failed while applying supervisor hardening",
+    ],
+    [
+      "disable Prime supervisor dumpable state: PRIVATE_SIGNAL",
+      "Prime container failed while applying supervisor hardening",
+    ],
+    [
+      "open fixed Prime system file /PRIVATE_FILE: failure",
+      "Prime container failed while applying supervisor hardening",
+    ],
+    [
+      "inspect fixed Prime system file /PRIVATE_FILE: failure",
+      "Prime container failed while applying supervisor hardening",
+    ],
+    [
+      "truncate fixed Prime system file /PRIVATE_FILE: failure",
+      "Prime container failed while applying supervisor hardening",
+    ],
+    [
+      "write fixed Prime system file /PRIVATE_FILE: failure",
+      "Prime container failed while applying supervisor hardening",
+    ],
+    [
+      "set fixed Prime system file mode /PRIVATE_FILE: failure",
+      "Prime container failed while applying supervisor hardening",
+    ],
+    [
+      "synchronize fixed Prime system file /PRIVATE_FILE: failure",
+      "Prime container failed while applying supervisor hardening",
+    ],
+    [
+      "read fixed Prime system file /PRIVATE_FILE: failure",
+      "Prime container failed while applying supervisor hardening",
+    ],
+    [
+      "fixed Prime system file /PRIVATE_FILE contradicts the admitted content",
+      "Prime container failed while applying supervisor hardening",
+    ],
+    [
+      "create Prime private path /PRIVATE_PATH: failure",
+      "Prime container failed while preparing its private runtime",
+    ],
+    [
+      "set Prime private path owner /PRIVATE_PATH: failure",
+      "Prime container failed while preparing its private runtime",
+    ],
+    [
+      "set Prime private path mode /PRIVATE_PATH: failure",
+      "Prime container failed while preparing its private runtime",
+    ],
+    [
+      "create kernel supervisor directory: PRIVATE_SIGNAL",
+      "Prime container failed while preparing its private runtime",
+    ],
+    [
+      "remove stale kernel supervisor socket: PRIVATE_SIGNAL",
+      "Prime container failed while preparing its private runtime",
+    ],
+    [
+      "listen on kernel supervisor socket: PRIVATE_SIGNAL",
+      "Prime container failed while preparing its private runtime",
+    ],
+    [
+      "set kernel supervisor socket owner: PRIVATE_SIGNAL",
+      "Prime container failed while preparing its private runtime",
+    ],
+    [
+      "set kernel supervisor socket mode: PRIVATE_SIGNAL",
+      "Prime container failed while preparing its private runtime",
+    ],
+    [
+      "close kernel supervisor listener: PRIVATE_SIGNAL",
+      "Prime container failed while preparing its private runtime",
+    ],
+    [
+      "read Prime container frame header: PRIVATE_SIGNAL",
+      "Prime container failed while reading attached protocol input",
+    ],
+    [
+      "unknown Prime container frame type: PRIVATE_SIGNAL",
+      "Prime container failed while reading attached protocol input",
+    ],
+    [
+      "parse Prime readiness challenge: PRIVATE_SIGNAL",
+      "Prime container failed while reading attached protocol input",
+    ],
+    [
+      "Prime readiness challenge violates the closed schema",
+      "Prime container failed while reading attached protocol input",
+    ],
+    [
+      "Prime preparation input is incomplete",
+      "Prime container failed while reading attached protocol input",
+    ],
+  ])(
+    "admits only an anchored supervisor diagnostic: %s",
+    async (privateDiagnostic, publicMessage) => {
+      const classify = async (diagnostic: string): Promise<Error> => {
+        const socket = new PassThrough();
+        socket.end();
+        const attached = new NodeDockerAttachedTransport(
+          socket,
+          rawStreamFrame(2, Buffer.from(`${diagnostic}\n`)),
+          { maxStderrBytes: 65_536, maxStdoutFrameBytes: 1_024 },
+        );
+        return (await attached.output[Symbol.asyncIterator]()
+          .next()
+          .catch((caught) => caught)) as Error;
+      };
+
+      const admitted = await classify(privateDiagnostic);
+      expect(admitted.message).toBe(publicMessage);
+      expect(admitted.cause).toBeUndefined();
+      expect(admitted.message).not.toContain("PRIVATE");
+
+      const planted = await classify(`PRIVATE_PLANTED ${privateDiagnostic}`);
+      expect(planted.message).toBe("Prime container ended before readiness");
+      expect(planted.cause).toBeUndefined();
+      expect(planted.message).not.toContain("PRIVATE");
+    },
+  );
+
+  it("classifies fragmented private stderr without retaining its suffix", async () => {
+    const socket = new PassThrough();
+    const encoded = rawStreamFrame(
+      2,
+      Buffer.from("create Prime private path /PRIVATE_FRAGMENT: permission denied\n"),
+    );
+    const attached = new NodeDockerAttachedTransport(socket, encoded.subarray(0, 7), {
+      maxStderrBytes: 65_536,
+      maxStdoutFrameBytes: 1_024,
+    });
+    socket.end(encoded.subarray(7));
+
+    const error = await attached.output[Symbol.asyncIterator]()
+      .next()
+      .catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(
+      "Prime container failed while preparing its private runtime",
+    );
+    expect((error as Error).cause).toBeUndefined();
+    expect((error as Error).message).not.toContain("PRIVATE_FRAGMENT");
+  });
+
+  it("joins one diagnostic split across complete stderr frames", async () => {
+    const socket = new PassThrough();
+    socket.end();
+    const attached = new NodeDockerAttachedTransport(
+      socket,
+      Buffer.concat([
+        rawStreamFrame(2, Buffer.from("create Prime priv")),
+        rawStreamFrame(2, Buffer.from("ate path /PRIVATE_MULTI_FRAME\n")),
+      ]),
+      { maxStderrBytes: 65_536, maxStdoutFrameBytes: 1_024 },
+    );
+
+    const error = await attached.output[Symbol.asyncIterator]()
+      .next()
+      .catch((caught) => caught);
+
+    expect((error as Error).message).toBe(
+      "Prime container failed while preparing its private runtime",
+    );
+    expect((error as Error).message).not.toContain("PRIVATE_MULTI_FRAME");
+  });
+
+  it.each([
+    "PRIVATE_PREFIX measure Prime container readiness: Prime effective process controls contradict the fixed runtime policy\n",
+    "measure Prime container readiness: Prime effective process controls contradict the fixed runtime policy PRIVATE_SUFFIX\n",
+  ])("does not classify an embedded readiness phrase", async (privateDiagnostic) => {
+    const socket = new PassThrough();
+    socket.end();
+    const attached = new NodeDockerAttachedTransport(
+      socket,
+      rawStreamFrame(2, Buffer.from(privateDiagnostic)),
+      { maxStderrBytes: 65_536, maxStdoutFrameBytes: 1_024 },
+    );
+
+    const error = await attached.output[Symbol.asyncIterator]()
+      .next()
+      .catch((caught) => caught);
+
+    expect((error as Error).message).toBe("Prime container ended before readiness");
+    expect((error as Error).message).not.toContain("PRIVATE");
+  });
+
+  it.each([
+    { stderr: Buffer.alloc(0), label: "empty" },
+    { stderr: Buffer.from("PRIVATE_UNKNOWN\n"), label: "unknown" },
+    { stderr: Buffer.from([0xff]), label: "invalid UTF-8" },
+  ])("uses one fixed fallback for $label stderr", async ({ stderr }) => {
+    const socket = new PassThrough();
+    socket.end();
+    const head = stderr.byteLength === 0 ? Buffer.alloc(0) : rawStreamFrame(2, stderr);
+    const attached = new NodeDockerAttachedTransport(socket, head, {
+      maxStderrBytes: 65_536,
+      maxStdoutFrameBytes: 1_024,
+    });
+
+    const error = await attached.output[Symbol.asyncIterator]()
+      .next()
+      .catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("Prime container ended before readiness");
+    expect((error as Error).cause).toBeUndefined();
+    expect((error as Error).message).not.toContain("PRIVATE_UNKNOWN");
+  });
+
+  it("keeps the stderr byte boundary exact before classification", async () => {
+    const prefix = Buffer.from("create Prime private path ");
+    const exactDiagnostic = Buffer.concat([prefix, Buffer.alloc(65_536 - prefix.byteLength, 0x78)]);
+    const exactSocket = new PassThrough();
+    exactSocket.end();
+    const exact = new NodeDockerAttachedTransport(exactSocket, rawStreamFrame(2, exactDiagnostic), {
+      maxStderrBytes: 65_536,
+      maxStdoutFrameBytes: 1_024,
+    });
+    const exactError = await exact.output[Symbol.asyncIterator]()
+      .next()
+      .catch((caught) => caught);
+    expect((exactError as Error).message).toBe(
+      "Prime container failed while preparing its private runtime",
+    );
+
+    const overflowSocket = new PassThrough();
+    overflowSocket.end();
+    const overflow = new NodeDockerAttachedTransport(
+      overflowSocket,
+      rawStreamFrame(2, Buffer.concat([exactDiagnostic, Buffer.from("x")])),
+      { maxStderrBytes: 65_536, maxStdoutFrameBytes: 1_024 },
+    );
+    await expect(overflow.output[Symbol.asyncIterator]().next()).rejects.toThrow(
+      "Docker standard error exceeds 65536 bytes",
+    );
+
+    const exactAcrossFramesSocket = new PassThrough();
+    exactAcrossFramesSocket.end();
+    const exactAcrossFrames = new NodeDockerAttachedTransport(
+      exactAcrossFramesSocket,
+      Buffer.concat([
+        rawStreamFrame(2, exactDiagnostic.subarray(0, 32_768)),
+        rawStreamFrame(2, exactDiagnostic.subarray(32_768)),
+      ]),
+      { maxStderrBytes: 65_536, maxStdoutFrameBytes: 1_024 },
+    );
+    const exactAcrossFramesError = await exactAcrossFrames.output[Symbol.asyncIterator]()
+      .next()
+      .catch((caught) => caught);
+    expect((exactAcrossFramesError as Error).message).toBe(
+      "Prime container failed while preparing its private runtime",
+    );
+
+    const overflowAcrossFramesSocket = new PassThrough();
+    overflowAcrossFramesSocket.end();
+    const overflowAcrossFrames = new NodeDockerAttachedTransport(
+      overflowAcrossFramesSocket,
+      Buffer.concat([
+        rawStreamFrame(2, exactDiagnostic.subarray(0, 32_768)),
+        rawStreamFrame(2, Buffer.concat([exactDiagnostic.subarray(32_768), Buffer.from("x")])),
+      ]),
+      { maxStderrBytes: 65_536, maxStdoutFrameBytes: 1_024 },
+    );
+    await expect(overflowAcrossFrames.output[Symbol.asyncIterator]().next()).rejects.toThrow(
+      "Docker standard error exceeds 65536 bytes",
+    );
+  });
+
+  it("keeps a fatal supervisor diagnostic after partial standard output", async () => {
+    const socket = new PassThrough();
+    socket.end();
+    const attached = new NodeDockerAttachedTransport(
+      socket,
+      Buffer.concat([
+        rawStreamFrame(1, Buffer.from("partial")),
+        rawStreamFrame(2, Buffer.from("create Prime private path /PRIVATE_PARTIAL\n")),
+      ]),
+      { maxStderrBytes: 65_536, maxStdoutFrameBytes: 1_024 },
+    );
+    const output = attached.output[Symbol.asyncIterator]();
+
+    await expect(output.next()).resolves.toEqual({ done: false, value: Buffer.from("partial") });
+    const error = await output.next().catch((caught) => caught);
+    expect((error as Error).message).toBe(
+      "Prime container failed while preparing its private runtime",
+    );
+    expect((error as Error).message).not.toContain("PRIVATE_PARTIAL");
+  });
+
+  it("uses one fixed runtime fallback for unknown stderr after standard output", async () => {
+    const socket = new PassThrough();
+    socket.end();
+    const attached = new NodeDockerAttachedTransport(
+      socket,
+      Buffer.concat([
+        rawStreamFrame(1, Buffer.from("partial")),
+        rawStreamFrame(2, Buffer.from("PRIVATE_DRIVER_FAILURE")),
+      ]),
+      { maxStderrBytes: 65_536, maxStdoutFrameBytes: 1_024 },
+    );
+    const output = attached.output[Symbol.asyncIterator]();
+
+    await output.next();
+    const error = await output.next().catch((caught) => caught);
+    expect((error as Error).message).toBe("Prime container reported a runtime failure");
+    expect((error as Error).cause).toBeUndefined();
+    expect((error as Error).message).not.toContain("PRIVATE_DRIVER_FAILURE");
+  });
+
   it("decodes fragmented Docker output and bounds standard error", () => {
     const decoder = new DockerRawStreamDecoder({ maxStderrBytes: 4 });
     const stdout = rawStreamFrame(1, Buffer.from("ok"));
@@ -1059,6 +1451,11 @@ describe("Docker Unix API client", () => {
     expect(() => new DockerRawStreamDecoder({ maxStderrBytes: 3 }).push(stderr)).toThrow(
       /standard error.*3 bytes/i,
     );
+    expect(
+      new DockerRawStreamDecoder({ maxStderrBytes: 4 }).push(
+        Buffer.concat(Array.from({ length: 1_000 }, () => rawStreamFrame(2, Buffer.alloc(0)))),
+      ),
+    ).toEqual([]);
     expect(() => {
       const partial = new DockerRawStreamDecoder({ maxStderrBytes: 4 });
       partial.push(stdout.subarray(0, 9));

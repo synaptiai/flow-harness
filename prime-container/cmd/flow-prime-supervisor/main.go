@@ -123,6 +123,20 @@ func run() error {
 }
 
 func preparePrivatePaths() error {
+	return preparePrivatePathsWith(privatePathFilesystem{
+		mkdirAll: os.MkdirAll,
+		chown:    os.Chown,
+		chmod:    os.Chmod,
+	})
+}
+
+type privatePathFilesystem struct {
+	mkdirAll func(string, os.FileMode) error
+	chown    func(string, int, int) error
+	chmod    func(string, os.FileMode) error
+}
+
+func preparePrivatePathsWith(filesystem privatePathFilesystem) error {
 	paths := []struct {
 		path string
 		mode os.FileMode
@@ -136,15 +150,34 @@ func preparePrivatePaths() error {
 		{"/workspace/.flow-prime/control", 0770, supervisor.NodeUID, supervisor.SharedGID},
 	}
 	for _, item := range paths {
-		if err := os.MkdirAll(item.path, item.mode); err != nil {
+		if err := filesystem.mkdirAll(item.path, 0700); err != nil {
 			return fmt.Errorf("create Prime private path %s: %w", item.path, err)
 		}
-		if err := os.Chown(item.path, item.uid, item.gid); err != nil {
-			return fmt.Errorf("set Prime private path owner %s: %w", item.path, err)
+	}
+	for index, item := range paths {
+		if index == 1 {
+			continue
 		}
-		if err := os.Chmod(item.path, item.mode); err != nil {
-			return fmt.Errorf("set Prime private path mode %s: %w", item.path, err)
+		if err := settlePrivatePath(filesystem, item.path, item.mode, item.uid, item.gid); err != nil {
+			return err
 		}
+	}
+	root := paths[1]
+	return settlePrivatePath(filesystem, root.path, root.mode, root.uid, root.gid)
+}
+
+func settlePrivatePath(
+	filesystem privatePathFilesystem,
+	path string,
+	mode os.FileMode,
+	uid int,
+	gid int,
+) error {
+	if err := filesystem.chown(path, uid, gid); err != nil {
+		return fmt.Errorf("set Prime private path owner %s: %w", path, err)
+	}
+	if err := filesystem.chmod(path, mode); err != nil {
+		return fmt.Errorf("set Prime private path mode %s: %w", path, err)
 	}
 	return nil
 }

@@ -61,6 +61,76 @@ func TestBuildReadinessRejectsAChangedFixedIdentity(t *testing.T) {
 	}
 }
 
+func TestBuildReadinessNamesTheChangedControlGroup(t *testing.T) {
+	tests := []struct {
+		name    string
+		message string
+		mutate  func(*ReadinessMeasurement)
+	}{
+		{name: "process", message: "Prime effective process controls contradict the fixed runtime policy", mutate: func(value *ReadinessMeasurement) { value.Process.NodeUID = 999 }},
+		{name: "limits", message: "Prime effective resource limits contradict the fixed runtime policy", mutate: func(value *ReadinessMeasurement) { value.Limits.PidsMax++ }},
+		{name: "filesystems", message: "Prime effective filesystem controls contradict the fixed runtime policy", mutate: func(value *ReadinessMeasurement) { value.Filesystems.RootReadOnly = false }},
+		{name: "network", message: "Prime effective network controls contradict the fixed runtime policy", mutate: func(value *ReadinessMeasurement) { value.Network.Namespace = "changed" }},
+		{name: "system files", message: "Prime effective system files contradict the fixed runtime policy", mutate: func(value *ReadinessMeasurement) { value.SystemFiles.Hostname = "changed" }},
+		{name: "streams", message: "Prime effective stream controls contradict the fixed runtime policy", mutate: func(value *ReadinessMeasurement) { value.Streams.StdinAttached = false }},
+		{name: "log driver", message: "Prime effective log policy contradicts the fixed runtime policy", mutate: func(value *ReadinessMeasurement) { value.LogDriver = "changed" }},
+		{name: "healthcheck", message: "Prime effective health policy contradicts the fixed runtime policy", mutate: func(value *ReadinessMeasurement) { value.Healthcheck = "changed" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			measurement := fixedReadinessMeasurement()
+			test.mutate(&measurement)
+			_, err := BuildReadiness(fixedReadinessChallenge(), measurement)
+			if err == nil || err.Error() != test.message {
+				t.Fatalf("unexpected readiness failure: %v", err)
+			}
+		})
+	}
+}
+
+func TestBuildReadinessUsesOneDeterministicControlPriority(t *testing.T) {
+	tests := []struct {
+		name    string
+		message string
+		mutate  func(*ReadinessMeasurement)
+	}{
+		{name: "process before limits", message: "Prime effective process controls contradict the fixed runtime policy", mutate: func(value *ReadinessMeasurement) { value.Process.NodeUID = 999; value.Limits.PidsMax++ }},
+		{name: "limits before filesystems", message: "Prime effective resource limits contradict the fixed runtime policy", mutate: func(value *ReadinessMeasurement) { value.Limits.PidsMax++; value.Filesystems.RootReadOnly = false }},
+		{name: "filesystems before network", message: "Prime effective filesystem controls contradict the fixed runtime policy", mutate: func(value *ReadinessMeasurement) {
+			value.Filesystems.RootReadOnly = false
+			value.Network.Namespace = "changed"
+		}},
+		{name: "network before system files", message: "Prime effective network controls contradict the fixed runtime policy", mutate: func(value *ReadinessMeasurement) {
+			value.Network.Namespace = "changed"
+			value.SystemFiles.Hostname = "changed"
+		}},
+		{name: "system files before streams", message: "Prime effective system files contradict the fixed runtime policy", mutate: func(value *ReadinessMeasurement) {
+			value.SystemFiles.Hostname = "changed"
+			value.Streams.StdinAttached = false
+		}},
+		{name: "streams before log", message: "Prime effective stream controls contradict the fixed runtime policy", mutate: func(value *ReadinessMeasurement) { value.Streams.StdinAttached = false; value.LogDriver = "changed" }},
+		{name: "log before health", message: "Prime effective log policy contradicts the fixed runtime policy", mutate: func(value *ReadinessMeasurement) { value.LogDriver = "changed"; value.Healthcheck = "changed" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			measurement := fixedReadinessMeasurement()
+			test.mutate(&measurement)
+			_, err := BuildReadiness(fixedReadinessChallenge(), measurement)
+			if err == nil || err.Error() != test.message {
+				t.Fatalf("unexpected readiness priority: %v", err)
+			}
+		})
+	}
+}
+
+func fixedReadinessChallenge() containerprotocol.ReadinessChallenge {
+	return containerprotocol.ReadinessChallenge{
+		Version: 1, ContainerID: strings.Repeat("a", 64), TrialID: "trial-" + strings.Repeat("b", 48),
+		IdentityDigest: strings.Repeat("c", 64), ImageID: "sha256:" + strings.Repeat("d", 64),
+		PolicyDigest: strings.Repeat("e", 64), ImageDeviceMajor: 8, ImageDeviceMinor: 1,
+	}
+}
+
 func fixedReadinessMeasurement() ReadinessMeasurement {
 	return ReadinessMeasurement{
 		Process: ProcessReadiness{
