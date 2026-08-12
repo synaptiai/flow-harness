@@ -1050,13 +1050,68 @@ describe("Docker Unix API client", () => {
     },
     {
       privateDiagnostic:
+        "measure Prime container readiness: Linux effective capability bit 99 is unknown PRIVATE_PROCESS\n",
+      publicMessage: "Prime container readiness failed while reading process evidence",
+    },
+    {
+      privateDiagnostic:
+        "measure Prime container readiness: Prime runtime does not use cgroup version two PRIVATE_CGROUP\n",
+      publicMessage: "Prime container readiness failed while validating the cgroup mode",
+    },
+    {
+      privateDiagnostic:
+        "measure Prime container readiness: read Prime cgroup pids.max: PRIVATE_PIDS\n",
+      publicMessage: "Prime container readiness failed while validating cgroup PID limits",
+    },
+    {
+      privateDiagnostic:
+        "measure Prime container readiness: Prime cgroup memory.swap.max is invalid PRIVATE_MEMORY\n",
+      publicMessage: "Prime container readiness failed while validating cgroup memory limits",
+    },
+    {
+      privateDiagnostic:
+        "measure Prime container readiness: Prime cgroup cpu.max period is invalid PRIVATE_CPU\n",
+      publicMessage: "Prime container readiness failed while validating cgroup CPU limits",
+    },
+    {
+      privateDiagnostic:
+        "measure Prime container readiness: Prime cgroup io.max omits the admitted image device PRIVATE_IO\n",
+      publicMessage: "Prime container readiness failed while validating image block I/O limits",
+    },
+    {
+      privateDiagnostic:
+        "measure Prime container readiness: read Prime open files limit: PRIVATE_RLIMIT\n",
+      publicMessage: "Prime container readiness failed while validating process resource limits",
+    },
+    {
+      privateDiagnostic:
         "measure Prime container readiness: Prime effective resource limits contradict the fixed runtime policy\n",
       publicMessage: "Prime container readiness failed while validating resource limits",
     },
     {
       privateDiagnostic:
+        "measure Prime container readiness: Linux mount information line 4 is invalid PRIVATE_MOUNT\n",
+      publicMessage: "Prime container readiness failed while reading filesystem mount evidence",
+    },
+    {
+      privateDiagnostic:
+        "measure Prime container readiness: inspect Prime tmpfs root /PRIVATE_TMPFS: failure\n",
+      publicMessage: "Prime container readiness failed while validating runtime tmpfs evidence",
+    },
+    {
+      privateDiagnostic:
         "measure Prime container readiness: Prime effective filesystem controls contradict the fixed runtime policy\n",
       publicMessage: "Prime container readiness failed while validating filesystem controls",
+    },
+    {
+      privateDiagnostic:
+        "measure Prime container readiness: inspect Prime network interfaces: PRIVATE_INTERFACES\n",
+      publicMessage: "Prime container readiness failed while reading network interfaces",
+    },
+    {
+      privateDiagnostic:
+        "measure Prime container readiness: inspect Prime network routes: PRIVATE_ROUTES\n",
+      publicMessage: "Prime container readiness failed while reading network routes",
     },
     {
       privateDiagnostic:
@@ -1174,6 +1229,158 @@ describe("Docker Unix API client", () => {
     [
       "disable Prime supervisor dumpable state: PRIVATE_SIGNAL",
       "Prime container failed while applying supervisor hardening",
+    ],
+    [
+      "measure Prime container readiness: read Prime process status: PRIVATE_SIGNAL",
+      "Prime container readiness failed while reading process evidence",
+    ],
+    [
+      "measure Prime container readiness: Linux process status repeats PRIVATE_SIGNAL",
+      "Prime container readiness failed while reading process evidence",
+    ],
+    [
+      "measure Prime container readiness: Linux process status omits PRIVATE_SIGNAL",
+      "Prime container readiness failed while reading process evidence",
+    ],
+    [
+      "measure Prime container readiness: Linux process group list is invalid PRIVATE_SIGNAL",
+      "Prime container readiness failed while reading process evidence",
+    ],
+    [
+      "measure Prime container readiness: Linux effective capability set is invalid PRIVATE_SIGNAL",
+      "Prime container readiness failed while reading process evidence",
+    ],
+    [
+      "measure Prime container readiness: Linux effective capability bit 99 is unknown PRIVATE_SIGNAL",
+      "Prime container readiness failed while reading process evidence",
+    ],
+    [
+      "measure Prime container readiness: Linux no-new-privileges value is invalid PRIVATE_SIGNAL",
+      "Prime container readiness failed while reading process evidence",
+    ],
+    [
+      "measure Prime container readiness: Linux seccomp mode is invalid PRIVATE_SIGNAL",
+      "Prime container readiness failed while reading process evidence",
+    ],
+    [
+      "measure Prime container readiness: read Prime dumpable state: PRIVATE_SIGNAL",
+      "Prime container readiness failed while reading process evidence",
+    ],
+    [
+      "measure Prime container readiness: read Prime seccomp state: PRIVATE_SIGNAL",
+      "Prime container readiness failed while reading process evidence",
+    ],
+    [
+      "measure Prime container readiness: Prime runtime does not use cgroup version two PRIVATE_SIGNAL",
+      "Prime container readiness failed while validating the cgroup mode",
+    ],
+    [
+      "measure Prime container readiness: read Prime cgroup pids.max: PRIVATE_SIGNAL",
+      "Prime container readiness failed while validating cgroup PID limits",
+    ],
+    [
+      "measure Prime container readiness: Prime cgroup pids.max is invalid PRIVATE_SIGNAL",
+      "Prime container readiness failed while validating cgroup PID limits",
+    ],
+    [
+      "measure Prime container readiness: read Prime cgroup memory.max: PRIVATE_SIGNAL",
+      "Prime container readiness failed while validating cgroup memory limits",
+    ],
+    [
+      "measure Prime container readiness: Prime cgroup memory.max is invalid PRIVATE_SIGNAL",
+      "Prime container readiness failed while validating cgroup memory limits",
+    ],
+    [
+      "measure Prime container readiness: read Prime cgroup memory.swap.max: PRIVATE_SIGNAL",
+      "Prime container readiness failed while validating cgroup memory limits",
+    ],
+    [
+      "measure Prime container readiness: Prime cgroup memory.swap.max is invalid PRIVATE_SIGNAL",
+      "Prime container readiness failed while validating cgroup memory limits",
+    ],
+    [
+      "measure Prime container readiness: read Prime cgroup cpu.max: PRIVATE_SIGNAL",
+      "Prime container readiness failed while validating cgroup CPU limits",
+    ],
+    [
+      "measure Prime container readiness: Prime cgroup cpu.max is invalid PRIVATE_SIGNAL",
+      "Prime container readiness failed while validating cgroup CPU limits",
+    ],
+    [
+      "measure Prime container readiness: Prime cgroup cpu.max period is invalid PRIVATE_SIGNAL",
+      "Prime container readiness failed while validating cgroup CPU limits",
+    ],
+    [
+      "measure Prime container readiness: read Prime cgroup io.max: PRIVATE_SIGNAL",
+      "Prime container readiness failed while validating image block I/O limits",
+    ],
+    [
+      "measure Prime container readiness: Prime cgroup io.max contains an invalid read limit PRIVATE_SIGNAL",
+      "Prime container readiness failed while validating image block I/O limits",
+    ],
+    [
+      "measure Prime container readiness: Prime cgroup io.max contains a duplicate read limit PRIVATE_SIGNAL",
+      "Prime container readiness failed while validating image block I/O limits",
+    ],
+    [
+      "measure Prime container readiness: Prime cgroup io.max omits an admitted read limit PRIVATE_SIGNAL",
+      "Prime container readiness failed while validating image block I/O limits",
+    ],
+    [
+      "measure Prime container readiness: Prime cgroup io.max omits the admitted image device PRIVATE_SIGNAL",
+      "Prime container readiness failed while validating image block I/O limits",
+    ],
+    [
+      "measure Prime container readiness: read Prime open files limit: PRIVATE_SIGNAL",
+      "Prime container readiness failed while validating process resource limits",
+    ],
+    [
+      "measure Prime container readiness: read Prime user processes limit: PRIVATE_SIGNAL",
+      "Prime container readiness failed while validating process resource limits",
+    ],
+    [
+      "measure Prime container readiness: read Prime file size limit: PRIVATE_SIGNAL",
+      "Prime container readiness failed while validating process resource limits",
+    ],
+    [
+      "measure Prime container readiness: read Prime core size limit: PRIVATE_SIGNAL",
+      "Prime container readiness failed while validating process resource limits",
+    ],
+    [
+      "measure Prime container readiness: read Prime mount information: PRIVATE_SIGNAL",
+      "Prime container readiness failed while reading filesystem mount evidence",
+    ],
+    [
+      "measure Prime container readiness: Linux mount information line 2 is invalid PRIVATE_SIGNAL",
+      "Prime container readiness failed while reading filesystem mount evidence",
+    ],
+    [
+      "measure Prime container readiness: Linux mount information repeats PRIVATE_SIGNAL",
+      "Prime container readiness failed while reading filesystem mount evidence",
+    ],
+    [
+      "measure Prime container readiness: Prime root mount is absent PRIVATE_SIGNAL",
+      "Prime container readiness failed while reading filesystem mount evidence",
+    ],
+    [
+      "measure Prime container readiness: Prime runtime path /PRIVATE_TMPFS is not one exact tmpfs mount",
+      "Prime container readiness failed while validating runtime tmpfs evidence",
+    ],
+    [
+      "measure Prime container readiness: inspect Prime tmpfs /PRIVATE_TMPFS: failure",
+      "Prime container readiness failed while validating runtime tmpfs evidence",
+    ],
+    [
+      "measure Prime container readiness: inspect Prime tmpfs root /PRIVATE_TMPFS: failure",
+      "Prime container readiness failed while validating runtime tmpfs evidence",
+    ],
+    [
+      "measure Prime container readiness: inspect Prime network interfaces: PRIVATE_SIGNAL",
+      "Prime container readiness failed while reading network interfaces",
+    ],
+    [
+      "measure Prime container readiness: inspect Prime network routes: PRIVATE_SIGNAL",
+      "Prime container readiness failed while reading network routes",
     ],
     [
       "measure Prime container readiness: read Docker system file mount information: PRIVATE_SIGNAL",

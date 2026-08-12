@@ -492,6 +492,12 @@ invalid text before readiness maps to one fixed early-exit stage. Unknown or inv
 standard output maps to one fixed runtime-failure stage. The private text and its cause do not enter
 the public error.
 
+Readiness measurement stages distinguish process evidence, cgroup mode, PID, memory, CPU, image
+block I/O, and process limits. Other stages distinguish filesystem mounts, runtime temporary
+filesystems, network interfaces, network routes, and Docker system files. Each stage uses an
+anchored supervisor-owned prefix. It does not publish a measured value, path, operating-system
+error, or private suffix.
+
 Each file and directory entry includes a normalized mode from `0o000` through `0o777`. Flow rejects
 special mode bits.
 
@@ -963,7 +969,7 @@ user before it runs the setup.
 | Admit the fixed Prime profile | Contract | `npx vitest run test/unit/evaluation/plan.test.ts test/unit/infrastructure/fs/local-evaluation-plan.test.ts` | Fixed config passes. Unknown config and authority fields fail. | Prime availability on all hosts |
 | Bind the Prime OCI identity | Contract | `npx vitest run test/unit/infrastructure/prime/native-prime-harness-registry.test.ts test/unit/infrastructure/oci/local-prime-oci-runtime-inspector.test.ts test/unit/infrastructure/oci/prime-oci-image-device.test.ts test/unit/infrastructure/oci/local-prime-oci-currentness.test.ts test/unit/infrastructure/oci/local-prime-oci-attestation.test.ts test/unit/infrastructure/oci/prime-oci-preparation.test.ts` | Prepared identity binds engine, image, build, package, policy, and the exact image device. Fixed-stage preflight rejects before builds. Local adapter, host OCI, attestation, and admitted-identity drift reject. | Host signatures or hostile engine protection |
 | Build the exact Prime image | Supply chain | `npx vitest run test/unit/infrastructure/oci/prime-image-archive.test.ts test/integration/package/prime-image-probe.test.ts && npm run prime:image:verify` | Exact archive and probe bounds and secret cases pass. The pinned container build runs the Go tests. These tests prove that the supervisor settles the workspace root last and admits only the fixed Docker system files. Two clean builds match. Archive, lock, layer, SBOM, and secret gates pass. | Registry publication |
-| Diagnose Docker start failure | Contract | `npx vitest run test/unit/infrastructure/oci/docker-unix-api-client.test.ts` | Each admitted start-failure category is fixed. Docker response text does not enter the public error. Attached writes accept both Node success callback values and reject an Error. Bounded supervisor and Docker system-file failures before readiness use fixed stages without private text. | Recovery from an incompatible host |
+| Diagnose Docker start failure | Contract | `npx vitest run test/unit/infrastructure/oci/docker-unix-api-client.test.ts` | Each admitted start-failure category is fixed. Docker response text does not enter the public error. Attached writes accept both Node success callback values and reject an Error. Bounded supervisor, readiness measurement, and Docker system-file failures use anchored fixed stages without private text. | Recovery from an incompatible host |
 | Audit locked runtime dependencies | Supply chain | `npm run build && node scripts/audit-prime-dependencies.mjs` | The exact Prime Node and Python locks pass the fixed audit policy. | Future dependency versions |
 | Run a real persistent IPython session | Integration | `npx vitest run test/integration/prime/native-prime-agent-evaluation.test.ts` | One session keeps state across two turns. It uses one accepted kernel request. | Live provider quality |
 | Exchange signed process frames | Integration | `npx vitest run test/integration/prime/native-prime-agent-driver-protocol.test.ts` | The compiled driver completes one signed tool exchange through fake inference. | Provider quality |

@@ -596,9 +596,106 @@ function primeContainerFailureMessage(stderr: Buffer, sawStdout: boolean): strin
         return "Prime container readiness failed while validating the health policy";
     }
     const readinessPrefix = "measure prime container readiness: ";
+    const readinessDiagnostic = privateDiagnostic.slice(readinessPrefix.length);
     if (
       privateDiagnostic.startsWith(readinessPrefix) &&
-      startsWithAny(privateDiagnostic.slice(readinessPrefix.length), [
+      startsWithAny(readinessDiagnostic, [
+        "read prime process status:",
+        "linux process status repeats ",
+        "linux process status omits ",
+        "linux process group list is invalid",
+        "linux effective capability set is invalid",
+        "linux effective capability bit ",
+        "linux no-new-privileges value is invalid",
+        "linux seccomp mode is invalid",
+        "read prime dumpable state:",
+        "read prime seccomp state:",
+      ])
+    ) {
+      return "Prime container readiness failed while reading process evidence";
+    }
+    if (
+      privateDiagnostic.startsWith(readinessPrefix) &&
+      readinessDiagnostic.startsWith("prime runtime does not use cgroup version two")
+    ) {
+      return "Prime container readiness failed while validating the cgroup mode";
+    }
+    if (
+      privateDiagnostic.startsWith(readinessPrefix) &&
+      startsWithAny(readinessDiagnostic, ["read prime cgroup pids.max:", "prime cgroup pids.max "])
+    ) {
+      return "Prime container readiness failed while validating cgroup PID limits";
+    }
+    if (
+      privateDiagnostic.startsWith(readinessPrefix) &&
+      startsWithAny(readinessDiagnostic, [
+        "read prime cgroup memory.max:",
+        "prime cgroup memory.max ",
+        "read prime cgroup memory.swap.max:",
+        "prime cgroup memory.swap.max ",
+      ])
+    ) {
+      return "Prime container readiness failed while validating cgroup memory limits";
+    }
+    if (
+      privateDiagnostic.startsWith(readinessPrefix) &&
+      startsWithAny(readinessDiagnostic, ["read prime cgroup cpu.max:", "prime cgroup cpu.max "])
+    ) {
+      return "Prime container readiness failed while validating cgroup CPU limits";
+    }
+    if (
+      privateDiagnostic.startsWith(readinessPrefix) &&
+      startsWithAny(readinessDiagnostic, ["read prime cgroup io.max:", "prime cgroup io.max "])
+    ) {
+      return "Prime container readiness failed while validating image block I/O limits";
+    }
+    if (
+      privateDiagnostic.startsWith(readinessPrefix) &&
+      startsWithAny(readinessDiagnostic, [
+        "read prime open files limit:",
+        "read prime user processes limit:",
+        "read prime file size limit:",
+        "read prime core size limit:",
+      ])
+    ) {
+      return "Prime container readiness failed while validating process resource limits";
+    }
+    if (
+      privateDiagnostic.startsWith(readinessPrefix) &&
+      startsWithAny(readinessDiagnostic, [
+        "read prime mount information:",
+        "linux mount information line ",
+        "linux mount information repeats ",
+        "prime root mount is absent",
+      ])
+    ) {
+      return "Prime container readiness failed while reading filesystem mount evidence";
+    }
+    if (
+      privateDiagnostic.startsWith(readinessPrefix) &&
+      startsWithAny(readinessDiagnostic, [
+        "prime runtime path ",
+        "inspect prime tmpfs ",
+        "inspect prime tmpfs root ",
+      ])
+    ) {
+      return "Prime container readiness failed while validating runtime tmpfs evidence";
+    }
+    if (
+      privateDiagnostic.startsWith(readinessPrefix) &&
+      readinessDiagnostic.startsWith("inspect prime network interfaces:")
+    ) {
+      return "Prime container readiness failed while reading network interfaces";
+    }
+    if (
+      privateDiagnostic.startsWith(readinessPrefix) &&
+      readinessDiagnostic.startsWith("inspect prime network routes:")
+    ) {
+      return "Prime container readiness failed while reading network routes";
+    }
+    if (
+      privateDiagnostic.startsWith(readinessPrefix) &&
+      startsWithAny(readinessDiagnostic, [
         "read docker system file mount information:",
         "parse docker system file mount information:",
         "docker system files are not three read-only mounts",
