@@ -1195,6 +1195,70 @@ describe("Docker Unix API client", () => {
       privateDiagnostic: "read Prime container frame header: PRIVATE_INPUT\n",
       publicMessage: "Prime container failed while reading attached protocol input",
     },
+    {
+      privateDiagnostic: "run Prime driver: Prime driver stage failure: read-supervisor-input\n",
+      publicMessage: "Prime driver failed while reading its supervisor channel",
+    },
+    {
+      privateDiagnostic: "run Prime driver: Prime driver stage failure: write-supervisor-output\n",
+      publicMessage: "Prime driver failed while writing its supervisor channel",
+    },
+    {
+      privateDiagnostic: "run Prime driver: Prime driver stage failure: resolve-workspace\n",
+      publicMessage: "Prime driver failed while resolving the trial workspace",
+    },
+    {
+      privateDiagnostic: "run Prime driver: Prime driver stage failure: load-sdk\n",
+      publicMessage: "Prime driver failed while loading the native SDK",
+    },
+    {
+      privateDiagnostic: "run Prime driver: Prime driver stage failure: initialize-sdk\n",
+      publicMessage: "Prime driver failed while configuring the native SDK",
+    },
+    {
+      privateDiagnostic: "run Prime driver: Prime driver stage failure: create-ipython-tool\n",
+      publicMessage: "Prime driver failed while creating the IPython tool",
+    },
+    {
+      privateDiagnostic: "run Prime driver: Prime driver stage failure: create-sdk-session\n",
+      publicMessage: "Prime driver failed while creating the native SDK session",
+    },
+    {
+      privateDiagnostic: "run Prime driver: Prime driver stage failure: validate-sdk-session\n",
+      publicMessage: "Prime driver failed while validating the native SDK session",
+    },
+    {
+      privateDiagnostic: "run Prime driver: Prime driver stage failure: observe-sdk-session\n",
+      publicMessage: "Prime driver failed while observing the native SDK session",
+    },
+    {
+      privateDiagnostic: "run Prime driver: Prime driver stage failure: dispose-sdk-session\n",
+      publicMessage: "Prime driver failed while settling the native SDK session",
+    },
+    {
+      privateDiagnostic: "run Prime driver: Prime driver stage failure: unexpected\n",
+      publicMessage: "Prime driver failed unexpectedly",
+    },
+    {
+      privateDiagnostic: "run Prime driver: create Prime driver socket: PRIVATE_PROCESS\n",
+      publicMessage: "Prime driver failed while starting its restricted process",
+    },
+    {
+      privateDiagnostic: "run Prime driver: Prime driver hardening proof is invalid\n",
+      publicMessage: "Prime driver failed while proving process hardening",
+    },
+    {
+      privateDiagnostic: "run Prime driver: read Prime inner frame: PRIVATE_RELAY\n",
+      publicMessage: "Prime driver failed while relaying its private protocol",
+    },
+    {
+      privateDiagnostic: "run Prime driver: read Prime driver diagnostic: PRIVATE_DIAGNOSTIC\n",
+      publicMessage: "Prime driver failed while reading its private diagnostic",
+    },
+    {
+      privateDiagnostic: "run Prime driver: Prime driver exited with code 125\n",
+      publicMessage: "Prime driver process exited before terminal settlement",
+    },
   ])(
     "maps private attached stderr to $publicMessage",
     async ({ privateDiagnostic, publicMessage }) => {

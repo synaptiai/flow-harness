@@ -27,6 +27,28 @@ const BROKER_MODEL = "flow-host-model";
 const BROKER_API = "flow-host-inference-v1";
 const PRIME_KERNEL_PROXY_PATH = "/opt/flow/bin/flow-prime-kernel-proxy";
 
+type NativePrimeDriverStage =
+  | "read-supervisor-input"
+  | "write-supervisor-output"
+  | "resolve-workspace"
+  | "load-sdk"
+  | "initialize-sdk"
+  | "create-ipython-tool"
+  | "create-sdk-session"
+  | "validate-sdk-session"
+  | "observe-sdk-session"
+  | "dispose-sdk-session";
+
+class NativePrimeDriverStageError extends Error {
+  constructor(
+    readonly stage: NativePrimeDriverStage,
+    error: unknown,
+  ) {
+    super(boundedReason(error));
+    this.name = "NativePrimeDriverStageError";
+  }
+}
+
 const contentSchema = z.discriminatedUnion("type", [
   z
     .object({
@@ -201,21 +223,27 @@ export async function runNativePrimeEvaluationSession(
 ): Promise<NativePrimeEvaluationSessionResult> {
   throwIfAborted(input.signal);
   const started = process.hrtime.bigint();
-  const workspace = await realpath(input.evaluation.workspace.cwd);
+  const workspace = await withNativePrimeDriverStage("resolve-workspace", () =>
+    realpath(input.evaluation.workspace.cwd),
+  );
   throwIfAborted(input.signal);
   const createSession = input.createSession ?? createNativePrimeSdkSession;
-  const session = await createSession({
-    evaluation: input.evaluation,
-    workspace,
-    infer: input.infer,
-    ...(input.signal === undefined ? {} : { signal: input.signal }),
-  });
+  const session = await withNativePrimeDriverStage("create-sdk-session", () =>
+    createSession({
+      evaluation: input.evaluation,
+      workspace,
+      infer: input.infer,
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
+    }),
+  );
   let toolErrors = 0;
-  const unsubscribe = session.subscribe((event) => {
-    if (event.type === "tool_execution_end" && event.isError === true) {
-      toolErrors += 1;
-    }
-  });
+  const unsubscribe = withNativePrimeDriverSyncStage("observe-sdk-session", () =>
+    session.subscribe((event) => {
+      if (event.type === "tool_execution_end" && event.isError === true) {
+        toolErrors += 1;
+      }
+    }),
+  );
   let abortPromise: Promise<void> | undefined;
   const abortSession = () => {
     abortPromise ??= session.abort().catch(() => undefined);
@@ -228,7 +256,9 @@ export async function runNativePrimeEvaluationSession(
     } catch (error) {
       promptError = error;
     }
-    const stats = session.getSessionStats();
+    const stats = withNativePrimeDriverSyncStage("observe-sdk-session", () =>
+      session.getSessionStats(),
+    );
     const metrics = metricsFromStats(stats, toolErrors, elapsedMs(started));
     if (input.signal?.aborted === true) {
       return Object.freeze({
@@ -250,7 +280,9 @@ export async function runNativePrimeEvaluationSession(
         metrics,
       });
     }
-    const finalMessage = session.lastAssistantMessage();
+    const finalMessage = withNativePrimeDriverSyncStage("observe-sdk-session", () =>
+      session.lastAssistantMessage(),
+    );
     if (finalMessage === undefined) {
       return Object.freeze({
         harness: Object.freeze({
@@ -276,23 +308,26 @@ export async function runNativePrimeEvaluationSession(
     input.signal?.removeEventListener("abort", abortSession);
     await abortPromise;
     unsubscribe();
-    await session.dispose();
+    await withNativePrimeDriverStage("dispose-sdk-session", () => session.dispose());
   }
 }
 
 export async function runNativePrimeDriverProtocol(
   input: NativePrimeDriverProtocolInput,
 ): Promise<void> {
-  const first = await input.lines.next();
-  if (first.done === true) {
-    throw new Error("private supervisor channel closed before hello");
-  }
-  const hello = parseExternalHarnessParentLine(first.value);
-  if (hello.type !== "hello" || hello.sequence !== 1) {
-    throw new Error("first supervisor frame must be hello sequence 1");
-  }
+  const hello = await withNativePrimeDriverStage("read-supervisor-input", async () => {
+    const first = await input.lines.next();
+    if (first.done === true) {
+      throw new Error("private supervisor channel closed before hello");
+    }
+    const parsed = parseExternalHarnessParentLine(first.value);
+    if (parsed.type !== "hello" || parsed.sequence !== 1) {
+      throw new Error("first supervisor frame must be hello sequence 1");
+    }
+    return parsed;
+  });
   const channel = new PrimeSupervisorProtocolChannel(hello, input.lines, input.writeLine);
-  await channel.sendReady();
+  await withNativePrimeDriverStage("write-supervisor-output", () => channel.sendReady());
   const result = await runNativePrimeEvaluationSession({
     evaluation: hello.payload.evaluation,
     instructionText: hello.payload.instructionText,
@@ -300,7 +335,7 @@ export async function runNativePrimeDriverProtocol(
     ...(input.createSession === undefined ? {} : { createSession: input.createSession }),
     ...(input.signal === undefined ? {} : { signal: input.signal }),
   });
-  await channel.sendTerminal(result);
+  await withNativePrimeDriverStage("write-supervisor-output", () => channel.sendTerminal(result));
 }
 
 class PrimeSupervisorProtocolChannel {
@@ -373,58 +408,105 @@ class PrimeSupervisorProtocolChannel {
 export async function createNativePrimeSdkSession(
   input: NativePrimeSessionFactoryInput,
 ): Promise<NativePrimeSession> {
-  const sdk = await (input.loadSdk ?? loadNativePrimeSdk)();
-  const authStorage = sdk.AuthStorage.inMemory({}, { usePrimeCliConfig: false });
+  const sdk = await withNativePrimeDriverStage("load-sdk", () =>
+    (input.loadSdk ?? loadNativePrimeSdk)(),
+  );
+  const authStorage = withNativePrimeDriverSyncStage("initialize-sdk", () =>
+    sdk.AuthStorage.inMemory({}, { usePrimeCliConfig: false }),
+  );
   try {
-    const modelRegistry = sdk.ModelRegistry.inMemory(authStorage);
-    modelRegistry.registerProvider(BROKER_PROVIDER, {
-      api: BROKER_API,
-      apiKey: "flow-internal-broker",
-      baseUrl: "flow://host-inference",
-      streamSimple: (
-        model: Record<string, unknown>,
-        context: Record<string, unknown>,
-        options?: { readonly signal?: AbortSignal },
-      ) => createBrokerStream(sdk, model, context, options?.signal ?? input.signal, input.infer),
-      models: [brokerModelDefinition(input.evaluation)],
+    const initialized = withNativePrimeDriverSyncStage("initialize-sdk", () => {
+      const modelRegistry = sdk.ModelRegistry.inMemory(authStorage);
+      modelRegistry.registerProvider(BROKER_PROVIDER, {
+        api: BROKER_API,
+        apiKey: "flow-internal-broker",
+        baseUrl: "flow://host-inference",
+        streamSimple: (
+          model: Record<string, unknown>,
+          context: Record<string, unknown>,
+          options?: { readonly signal?: AbortSignal },
+        ) => createBrokerStream(sdk, model, context, options?.signal ?? input.signal, input.infer),
+        models: [brokerModelDefinition(input.evaluation)],
+      });
+      const selectedModel = modelRegistry.find(BROKER_PROVIDER, BROKER_MODEL);
+      if (selectedModel === undefined) {
+        throw new Error("native Prime broker model is unavailable after registration");
+      }
+      return {
+        modelRegistry,
+        selectedModel,
+        settingsManager: sdk.SettingsManager.inMemory(NATIVE_PRIME_EVALUATION_CONFIG.settings),
+        resourceLoader: createNoIoPrimeResourceLoader(sdk.createExtensionRuntime(), {
+          systemPrompt: lockedSystemPrompt(),
+        }),
+        mcpManager: noOpMcpManager(),
+      };
     });
-    const selectedModel = modelRegistry.find(BROKER_PROVIDER, BROKER_MODEL);
-    if (selectedModel === undefined) {
-      throw new Error("native Prime broker model is unavailable after registration");
-    }
-
-    const settingsManager = sdk.SettingsManager.inMemory(NATIVE_PRIME_EVALUATION_CONFIG.settings);
-    const resourceLoader = createNoIoPrimeResourceLoader(sdk.createExtensionRuntime(), {
-      systemPrompt: lockedSystemPrompt(),
-    });
-    const ipython = sdk.createIpythonToolDefinition(input.workspace, {
-      python: PRIME_KERNEL_PROXY_PATH,
-    });
-    const mcpManager = noOpMcpManager();
-    const { session } = await sdk.createAgentSession({
-      cwd: input.workspace,
-      agentDir: input.workspace,
-      authStorage,
-      modelRegistry,
-      model: selectedModel,
-      thinkingLevel: input.evaluation.controls.model.thinking,
-      settingsManager,
-      sessionManager: sdk.SessionManager.inMemory(input.workspace),
-      resourceLoader,
-      mcpManager,
-      customTools: [ipython],
-      ...NATIVE_PRIME_EVALUATION_CONFIG.sessionOptions,
-    });
+    const ipython = withNativePrimeDriverSyncStage("create-ipython-tool", () =>
+      sdk.createIpythonToolDefinition(input.workspace, {
+        python: PRIME_KERNEL_PROXY_PATH,
+      }),
+    );
+    const { session } = await withNativePrimeDriverStage("create-sdk-session", () =>
+      sdk.createAgentSession({
+        cwd: input.workspace,
+        agentDir: input.workspace,
+        authStorage,
+        modelRegistry: initialized.modelRegistry,
+        model: initialized.selectedModel,
+        thinkingLevel: input.evaluation.controls.model.thinking,
+        settingsManager: initialized.settingsManager,
+        sessionManager: sdk.SessionManager.inMemory(input.workspace),
+        resourceLoader: initialized.resourceLoader,
+        mcpManager: initialized.mcpManager,
+        customTools: [ipython],
+        ...NATIVE_PRIME_EVALUATION_CONFIG.sessionOptions,
+      }),
+    );
     if (session.thinkingLevel !== input.evaluation.controls.model.thinking) {
       await session.disposeAsync();
-      throw new Error(
-        `Prime applied thinking level "${session.thinkingLevel}" instead of "${input.evaluation.controls.model.thinking}"`,
+      throw new NativePrimeDriverStageError(
+        "validate-sdk-session",
+        new Error(
+          `Prime applied thinking level "${session.thinkingLevel}" instead of "${input.evaluation.controls.model.thinking}"`,
+        ),
       );
     }
     return adaptSdkSession(session, authStorage);
   } catch (error) {
     authStorage.close();
     throw error;
+  }
+}
+
+export function nativePrimeDriverFailureDiagnostic(error: unknown): string {
+  return `Prime driver stage failure: ${
+    error instanceof NativePrimeDriverStageError ? error.stage : "unexpected"
+  }`;
+}
+
+async function withNativePrimeDriverStage<T>(
+  stage: NativePrimeDriverStage,
+  operation: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof NativePrimeDriverStageError) {
+      throw error;
+    }
+    throw new NativePrimeDriverStageError(stage, error);
+  }
+}
+
+function withNativePrimeDriverSyncStage<T>(stage: NativePrimeDriverStage, operation: () => T): T {
+  try {
+    return operation();
+  } catch (error) {
+    if (error instanceof NativePrimeDriverStageError) {
+      throw error;
+    }
+    throw new NativePrimeDriverStageError(stage, error);
   }
 }
 
@@ -806,7 +888,7 @@ function isMainModule(): boolean {
 
 if (isMainModule()) {
   void runDriverProcess().catch((error: unknown) => {
-    process.stderr.write(`${boundedReason(error)}\n`);
+    process.stderr.write(`${nativePrimeDriverFailureDiagnostic(error)}\n`);
     process.exitCode = 1;
   });
 }

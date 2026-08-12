@@ -174,6 +174,10 @@ func RunDriverProcess(
 	}
 	exitCode := command.ProcessState.ExitCode()
 	result := DriverProcessResult{ExitCode: exitCode, Diagnostic: boundedDiagnostic(diagnosticValue.value)}
+	if closedDiagnostic, ok := closedPrimeDriverDiagnostic(result.Diagnostic); ok &&
+		(relayError != nil || waitError != nil || exitCode != 0) {
+		return result, errors.New(closedDiagnostic)
+	}
 	if relayError != nil {
 		return result, relayError
 	}
@@ -185,4 +189,23 @@ func RunDriverProcess(
 
 func boundedDiagnostic(value []byte) string {
 	return string(value)
+}
+
+func closedPrimeDriverDiagnostic(value string) (string, bool) {
+	switch value {
+	case "Prime driver stage failure: read-supervisor-input\n",
+		"Prime driver stage failure: write-supervisor-output\n",
+		"Prime driver stage failure: resolve-workspace\n",
+		"Prime driver stage failure: load-sdk\n",
+		"Prime driver stage failure: initialize-sdk\n",
+		"Prime driver stage failure: create-ipython-tool\n",
+		"Prime driver stage failure: create-sdk-session\n",
+		"Prime driver stage failure: validate-sdk-session\n",
+		"Prime driver stage failure: observe-sdk-session\n",
+		"Prime driver stage failure: dispose-sdk-session\n",
+		"Prime driver stage failure: unexpected\n":
+		return value[:len(value)-1], true
+	default:
+		return "", false
+	}
 }

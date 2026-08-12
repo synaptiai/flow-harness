@@ -723,6 +723,92 @@ function primeContainerFailureMessage(stderr: Buffer, sawStdout: boolean): strin
       return "Prime container readiness failed while validating system files";
     }
   }
+  switch (privateDiagnostic) {
+    case "run prime driver: prime driver stage failure: read-supervisor-input":
+      return "Prime driver failed while reading its supervisor channel";
+    case "run prime driver: prime driver stage failure: write-supervisor-output":
+      return "Prime driver failed while writing its supervisor channel";
+    case "run prime driver: prime driver stage failure: resolve-workspace":
+      return "Prime driver failed while resolving the trial workspace";
+    case "run prime driver: prime driver stage failure: load-sdk":
+      return "Prime driver failed while loading the native SDK";
+    case "run prime driver: prime driver stage failure: initialize-sdk":
+      return "Prime driver failed while configuring the native SDK";
+    case "run prime driver: prime driver stage failure: create-ipython-tool":
+      return "Prime driver failed while creating the IPython tool";
+    case "run prime driver: prime driver stage failure: create-sdk-session":
+      return "Prime driver failed while creating the native SDK session";
+    case "run prime driver: prime driver stage failure: validate-sdk-session":
+      return "Prime driver failed while validating the native SDK session";
+    case "run prime driver: prime driver stage failure: observe-sdk-session":
+      return "Prime driver failed while observing the native SDK session";
+    case "run prime driver: prime driver stage failure: dispose-sdk-session":
+      return "Prime driver failed while settling the native SDK session";
+    case "run prime driver: prime driver stage failure: unexpected":
+      return "Prime driver failed unexpectedly";
+  }
+  const runDriverPrefix = "run prime driver: ";
+  const runDriverDiagnostic = privateDiagnostic.slice(runDriverPrefix.length);
+  if (
+    privateDiagnostic.startsWith(runDriverPrefix) &&
+    startsWithAny(runDriverDiagnostic, [
+      "prime driver process options are incomplete",
+      "create prime driver socket:",
+      "create prime driver socket descriptors",
+      "create prime driver hardening pipe:",
+      "open null device for prime driver:",
+      "prime driver user and group must be set together",
+      "prime driver supplemental group is negative",
+      "create prime driver diagnostic pipe:",
+      "start prime driver:",
+      "close parent copy of prime driver socket:",
+      "close parent copy of prime hardening pipe:",
+    ])
+  ) {
+    return "Prime driver failed while starting its restricted process";
+  }
+  if (
+    privateDiagnostic.startsWith(runDriverPrefix) &&
+    startsWithAny(runDriverDiagnostic, [
+      "prime driver hardening proof is invalid",
+      "prime driver hardening proof timed out",
+    ])
+  ) {
+    return "Prime driver failed while proving process hardening";
+  }
+  if (
+    privateDiagnostic.startsWith(runDriverPrefix) &&
+    startsWithAny(runDriverDiagnostic, [
+      "prime driver relay input is incomplete",
+      "parse prime inner ",
+      "prime inner ",
+      "read prime inner frame:",
+      "write prime inner frame:",
+      "prime driver traffic exceeds ",
+      "prime driver must send ready ",
+      "prime driver sent more than one ready ",
+      "prime container frame type ",
+      "read prime container frame ",
+      "write prime container frame ",
+    ])
+  ) {
+    return "Prime driver failed while relaying its private protocol";
+  }
+  if (
+    privateDiagnostic.startsWith(runDriverPrefix) &&
+    startsWithAny(runDriverDiagnostic, [
+      "read prime driver diagnostic:",
+      "prime driver diagnostic exceeds ",
+    ])
+  ) {
+    return "Prime driver failed while reading its private diagnostic";
+  }
+  if (
+    privateDiagnostic.startsWith(runDriverPrefix) &&
+    runDriverDiagnostic.startsWith("prime driver exited with code ")
+  ) {
+    return "Prime driver process exited before terminal settlement";
+  }
   if (
     startsWithAny(privateDiagnostic, [
       "prime supervisor must start",

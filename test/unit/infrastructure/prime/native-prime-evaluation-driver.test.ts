@@ -8,8 +8,9 @@ import {
   createNativePrimeSdkSession,
   type NativePrimeSdkBindings,
   type NativePrimeSession,
-  runNativePrimeEvaluationSession,
+  nativePrimeDriverFailureDiagnostic,
   runNativePrimeDriverProtocol,
+  runNativePrimeEvaluationSession,
 } from "../../../../src/infrastructure/prime/native-prime-agent-evaluation-driver.js";
 
 const driverSessionId = "018f4ee8-9d67-7ca1-a31f-4f3f2388e934";
@@ -297,6 +298,163 @@ describe("native Prime evaluation driver", () => {
     expect(writtenTypes).toEqual(["ready", "inference_request", "terminal"]);
     expect(createSession).toHaveBeenCalledOnce();
   });
+
+  it.each([
+    {
+      name: "supervisor input",
+      expected: "Prime driver stage failure: read-supervisor-input",
+      run: () =>
+        runNativePrimeDriverProtocol({
+          lines: {
+            next: async () => {
+              throw new Error("PRIVATE_INPUT_CANARY");
+            },
+          },
+          writeLine: vi.fn(),
+        }),
+    },
+    {
+      name: "supervisor output",
+      expected: "Prime driver stage failure: write-supervisor-output",
+      run: () =>
+        runNativePrimeDriverProtocol({
+          lines: oneLine(driverHello()),
+          writeLine: async () => {
+            throw new Error("PRIVATE_OUTPUT_CANARY");
+          },
+        }),
+    },
+    {
+      name: "SDK session creation",
+      expected: "Prime driver stage failure: create-sdk-session",
+      run: () =>
+        runNativePrimeDriverProtocol({
+          lines: oneLine(driverHello()),
+          writeLine: async () => undefined,
+          createSession: async () => {
+            throw new Error("PRIVATE_SESSION_CANARY");
+          },
+        }),
+    },
+    {
+      name: "SDK session disposal",
+      expected: "Prime driver stage failure: dispose-sdk-session",
+      run: () =>
+        runNativePrimeDriverProtocol({
+          lines: oneLine(driverHello()),
+          writeLine: async () => undefined,
+          createSession: async () =>
+            fakeSession({ disposeError: new Error("PRIVATE_DISPOSAL_CANARY") }),
+        }),
+    },
+    {
+      name: "SDK loading",
+      expected: "Prime driver stage failure: load-sdk",
+      run: () =>
+        createNativePrimeSdkSession({
+          evaluation: evaluationInput(),
+          workspace: process.cwd(),
+          infer: vi.fn(),
+          loadSdk: async () => {
+            throw new Error("PRIVATE_SDK_CANARY");
+          },
+        }),
+    },
+    {
+      name: "workspace resolution",
+      expected: "Prime driver stage failure: resolve-workspace",
+      run: () => {
+        const evaluation = evaluationInput();
+        return runNativePrimeEvaluationSession({
+          evaluation: {
+            ...evaluation,
+            workspace: {
+              ...evaluation.workspace,
+              cwd: `${process.cwd()}/PRIVATE_MISSING_WORKSPACE_CANARY`,
+            },
+          },
+          instructionText: "Complete the task.",
+          infer: vi.fn(),
+          createSession: async () => fakeSession(),
+        });
+      },
+    },
+    {
+      name: "SDK authority initialization",
+      expected: "Prime driver stage failure: initialize-sdk",
+      run: () => {
+        const fixture = sdkFixture({ thinkingLevel: "off" });
+        return createNativePrimeSdkSession({
+          evaluation: evaluationInput(),
+          workspace: process.cwd(),
+          infer: vi.fn(),
+          loadSdk: async () => ({
+            ...fixture.bindings,
+            AuthStorage: {
+              inMemory: () => {
+                throw new Error("PRIVATE_AUTHORITY_CANARY");
+              },
+            },
+          }),
+        });
+      },
+    },
+    {
+      name: "IPython tool creation",
+      expected: "Prime driver stage failure: create-ipython-tool",
+      run: () => {
+        const fixture = sdkFixture({ thinkingLevel: "off" });
+        return createNativePrimeSdkSession({
+          evaluation: evaluationInput(),
+          workspace: process.cwd(),
+          infer: vi.fn(),
+          loadSdk: async () => ({
+            ...fixture.bindings,
+            createIpythonToolDefinition: () => {
+              throw new Error("PRIVATE_IPYTHON_CANARY");
+            },
+          }),
+        });
+      },
+    },
+    {
+      name: "SDK session validation",
+      expected: "Prime driver stage failure: validate-sdk-session",
+      run: () => {
+        const fixture = sdkFixture({ thinkingLevel: "off" });
+        return createNativePrimeSdkSession({
+          evaluation: evaluationInput("medium"),
+          workspace: process.cwd(),
+          infer: vi.fn(),
+          loadSdk: async () => fixture.bindings,
+        });
+      },
+    },
+    {
+      name: "SDK session observation",
+      expected: "Prime driver stage failure: observe-sdk-session",
+      run: () =>
+        runNativePrimeEvaluationSession({
+          evaluation: evaluationInput(),
+          instructionText: "Complete the task.",
+          infer: vi.fn(),
+          createSession: async () =>
+            fakeSession({ statsError: new Error("PRIVATE_OBSERVATION_CANARY") }),
+        }),
+    },
+  ])("publishes one closed diagnostic for $name failure", async ({ expected, run }) => {
+    const error = await run().catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(nativePrimeDriverFailureDiagnostic(error)).toBe(expected);
+    expect(nativePrimeDriverFailureDiagnostic(error)).not.toContain("PRIVATE");
+  });
+
+  it("uses one fixed diagnostic for an unclassified driver rejection", () => {
+    expect(nativePrimeDriverFailureDiagnostic("PRIVATE_UNKNOWN_CANARY")).toBe(
+      "Prime driver stage failure: unexpected",
+    );
+  });
 });
 
 function fakeSession(
@@ -304,6 +462,8 @@ function fakeSession(
     readonly promptError?: Error;
     readonly toolError?: boolean;
     readonly onPrompt?: () => void | Promise<void>;
+    readonly disposeError?: Error;
+    readonly statsError?: Error;
   } = {},
 ): NativePrimeSession & {
   readonly prompt: ReturnType<typeof vi.fn>;
@@ -324,19 +484,62 @@ function fakeSession(
       }
     }),
     abort: vi.fn(async () => undefined),
-    dispose: vi.fn(async () => undefined),
+    dispose: vi.fn(async () => {
+      if (options.disposeError !== undefined) {
+        throw options.disposeError;
+      }
+    }),
     subscribe: (next) => {
       listener = next;
       return () => {
         listener = undefined;
       };
     },
-    getSessionStats: () => ({
-      sessionId: "prime-session",
-      assistantMessages: 2,
-      toolCalls: 1,
-    }),
+    getSessionStats: () => {
+      if (options.statsError !== undefined) {
+        throw options.statsError;
+      }
+      return {
+        sessionId: "prime-session",
+        assistantMessages: 2,
+        toolCalls: 1,
+      };
+    },
     lastAssistantMessage: () => ({ stopReason: "stop" }),
+  };
+}
+
+function driverHello(): string {
+  return JSON.stringify(
+    signExternalHarnessParentFrame(
+      {
+        version: 1,
+        sequence: 1,
+        sessionId: driverSessionId,
+        type: "hello",
+        payload: {
+          secretHex: driverSecret,
+          trialId: `trial-${"b".repeat(48)}`,
+          identityDigest: "e".repeat(64),
+          evaluation: evaluationInput(),
+          instructionText: "Complete the task.",
+        },
+      },
+      driverSecret,
+    ),
+  );
+}
+
+function oneLine(value: string): AsyncIterator<string> {
+  let available = true;
+  return {
+    next: async () => {
+      if (available) {
+        available = false;
+        return { done: false as const, value };
+      }
+      return { done: true as const, value: undefined };
+    },
   };
 }
 
