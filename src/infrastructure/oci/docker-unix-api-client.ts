@@ -610,16 +610,25 @@ function dockerStartFailureMessage(response: DockerUnixApiResponse): string {
   ) {
     return "Docker start failed while applying container filesystem isolation";
   }
-  if (
-    includesAny(privateMessage, [
-      "exec",
-      "capabilit",
-      "setuid",
-      "setgid",
-      "no such file or directory",
-      "permission denied",
-    ])
-  ) {
+  if (includesAny(privateMessage, ["chdir to cwd", "current working directory"])) {
+    return "Docker start failed while entering the container working directory";
+  }
+  if (includesAny(privateMessage, ["setup user", "setuid", "setgid", "setgroups"])) {
+    return "Docker start failed while applying the container user identity";
+  }
+  if (includesAny(privateMessage, ["capabilit", "apply caps", "bounding set", "keep caps"])) {
+    return "Docker start failed while applying container capabilities";
+  }
+  if (includesAny(privateMessage, ["set_no_new_privs", "no-new-privileges"])) {
+    return "Docker start failed while applying no-new-privileges";
+  }
+  if (privateMessage.includes("apparmor")) {
+    return "Docker start failed while applying the container AppArmor policy";
+  }
+  if (includesAny(privateMessage, ["exec:", "exec /", "executable file not found"])) {
+    return "Docker start failed while executing the container entrypoint";
+  }
+  if (includesAny(privateMessage, ["permission denied"])) {
     return "Docker start failed while applying the container process policy";
   }
   if (

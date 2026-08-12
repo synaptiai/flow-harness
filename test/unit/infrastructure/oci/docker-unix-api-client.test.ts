@@ -347,8 +347,28 @@ describe("Docker Unix API client", () => {
       publicMessage: "Docker start failed while applying container filesystem isolation",
     },
     {
-      privateMessage: "failed to create task: exec PRIVATE_ENTRYPOINT failed",
-      publicMessage: "Docker start failed while applying the container process policy",
+      privateMessage: 'failed to create task: exec: "PRIVATE_ENTRYPOINT": permission denied',
+      publicMessage: "Docker start failed while executing the container entrypoint",
+    },
+    {
+      privateMessage: "failed to create task: chdir to cwd (PRIVATE_CWD) failed",
+      publicMessage: "Docker start failed while entering the container working directory",
+    },
+    {
+      privateMessage: "failed to create task: unable to setup user: setgroups PRIVATE_GROUP failed",
+      publicMessage: "Docker start failed while applying the container user identity",
+    },
+    {
+      privateMessage: "failed to create task: unable to apply caps: PRIVATE_CAPABILITY failed",
+      publicMessage: "Docker start failed while applying container capabilities",
+    },
+    {
+      privateMessage: "failed to create task: prctl(SET_NO_NEW_PRIVS) PRIVATE_POLICY failed",
+      publicMessage: "Docker start failed while applying no-new-privileges",
+    },
+    {
+      privateMessage: "failed to create task: unable to apply apparmor profile PRIVATE_PROFILE",
+      publicMessage: "Docker start failed while applying the container AppArmor policy",
     },
     {
       privateMessage: "failed to create task for container: PRIVATE_RUNTIME runc create failed",
@@ -372,6 +392,135 @@ describe("Docker Unix API client", () => {
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toBe(testCase.publicMessage);
     expect((error as Error).message).not.toContain(testCase.privateMessage);
+  });
+
+  it.each([
+    {
+      privateMessage: "runc create failed: exec: PRIVATE_EXEC_COLON",
+      privateMarker: "PRIVATE_EXEC_COLON",
+      publicMessage: "Docker start failed while executing the container entrypoint",
+    },
+    {
+      privateMessage:
+        "runc create failed: exec /opt/flow/bin/flow-prime-supervisor: PRIVATE_EXEC_PERMISSION",
+      privateMarker: "PRIVATE_EXEC_PERMISSION",
+      publicMessage: "Docker start failed while executing the container entrypoint",
+    },
+    {
+      privateMessage:
+        "runc create failed: exec /opt/flow/bin/flow-prime-supervisor: PRIVATE_EXEC_ABSENT no such file or directory",
+      privateMarker: "PRIVATE_EXEC_ABSENT",
+      publicMessage: "Docker start failed while executing the container entrypoint",
+    },
+    {
+      privateMessage: "PRIVATE_EXECUTABLE executable file not found",
+      privateMarker: "PRIVATE_EXECUTABLE",
+      publicMessage: "Docker start failed while executing the container entrypoint",
+    },
+    {
+      privateMessage: "chdir to cwd (PRIVATE_CWD) failed: no such file or directory",
+      privateMarker: "PRIVATE_CWD",
+      publicMessage: "Docker start failed while entering the container working directory",
+    },
+    {
+      privateMessage: "PRIVATE_CWD current working directory is invalid",
+      privateMarker: "PRIVATE_CWD",
+      publicMessage: "Docker start failed while entering the container working directory",
+    },
+    {
+      privateMessage: "unable to setup user PRIVATE_USER",
+      privateMarker: "PRIVATE_USER",
+      publicMessage: "Docker start failed while applying the container user identity",
+    },
+    {
+      privateMessage: "setuid PRIVATE_UID failed",
+      privateMarker: "PRIVATE_UID",
+      publicMessage: "Docker start failed while applying the container user identity",
+    },
+    {
+      privateMessage: "setgid PRIVATE_GID failed",
+      privateMarker: "PRIVATE_GID",
+      publicMessage: "Docker start failed while applying the container user identity",
+    },
+    {
+      privateMessage: "setgroups PRIVATE_GROUP failed",
+      privateMarker: "PRIVATE_GROUP",
+      publicMessage: "Docker start failed while applying the container user identity",
+    },
+    {
+      privateMessage: "PRIVATE_CAPABILITY capability setup failed",
+      privateMarker: "PRIVATE_CAPABILITY",
+      publicMessage: "Docker start failed while applying container capabilities",
+    },
+    {
+      privateMessage: "unable to apply caps PRIVATE_CAPS",
+      privateMarker: "PRIVATE_CAPS",
+      publicMessage: "Docker start failed while applying container capabilities",
+    },
+    {
+      privateMessage: "unable to apply bounding set PRIVATE_BOUNDING",
+      privateMarker: "PRIVATE_BOUNDING",
+      publicMessage: "Docker start failed while applying container capabilities",
+    },
+    {
+      privateMessage: "unable to set keep caps PRIVATE_KEEP",
+      privateMarker: "PRIVATE_KEEP",
+      publicMessage: "Docker start failed while applying container capabilities",
+    },
+    {
+      privateMessage: "prctl(set_no_new_privs) PRIVATE_NNP",
+      privateMarker: "PRIVATE_NNP",
+      publicMessage: "Docker start failed while applying no-new-privileges",
+    },
+    {
+      privateMessage: "apply no-new-privileges PRIVATE_NNP_HYPHEN",
+      privateMarker: "PRIVATE_NNP_HYPHEN",
+      publicMessage: "Docker start failed while applying no-new-privileges",
+    },
+    {
+      privateMessage: "PRIVATE_PROCESS permission denied",
+      privateMarker: "PRIVATE_PROCESS",
+      publicMessage: "Docker start failed while applying the container process policy",
+    },
+  ])("binds one closed category to each process signal", async (testCase) => {
+    const transport: DockerUnixApiTransport = {
+      request: vi.fn(async () => ({
+        statusCode: 500,
+        body: JSON.stringify({ message: testCase.privateMessage }),
+      })),
+    };
+    const client = new DockerUnixApiClient({
+      socketPath: "/var/run/docker.sock",
+      apiVersion: "1.51",
+      transport,
+    });
+
+    const error = await client.startContainer("a".repeat(64)).catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(testCase.publicMessage);
+    expect((error as Error).message).not.toContain(testCase.privateMarker);
+  });
+
+  it("does not treat runc exec-fd setup as entrypoint execution", async () => {
+    const privateMarker = "PRIVATE_EXEC_FD";
+    const transport: DockerUnixApiTransport = {
+      request: vi.fn(async () => ({
+        statusCode: 500,
+        body: JSON.stringify({ message: `error closing exec fds: ${privateMarker}` }),
+      })),
+    };
+    const client = new DockerUnixApiClient({
+      socketPath: "/var/run/docker.sock",
+      apiVersion: "1.51",
+      transport,
+    });
+
+    const error = await client.startContainer("a".repeat(64)).catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("Docker start returned status 500");
+    expect((error as Error).message).not.toContain(privateMarker);
   });
 
   it.each([
@@ -414,7 +563,31 @@ describe("Docker Unix API client", () => {
       publicMessage: "Docker start failed while applying container filesystem isolation",
     },
     {
-      privateMessage: "failed to create task: exec entrypoint failed",
+      privateMessage: 'failed to create task: exec: "PRIVATE_ENTRYPOINT": permission denied',
+      publicMessage: "Docker start failed while executing the container entrypoint",
+    },
+    {
+      privateMessage: "failed to create task: chdir to cwd (PRIVATE_CWD): permission denied",
+      publicMessage: "Docker start failed while entering the container working directory",
+    },
+    {
+      privateMessage: "failed to create task: unable to setup user: setgroups: permission denied",
+      publicMessage: "Docker start failed while applying the container user identity",
+    },
+    {
+      privateMessage: "failed to create task: unable to apply caps: permission denied",
+      publicMessage: "Docker start failed while applying container capabilities",
+    },
+    {
+      privateMessage: "failed to create task: prctl(SET_NO_NEW_PRIVS): permission denied",
+      publicMessage: "Docker start failed while applying no-new-privileges",
+    },
+    {
+      privateMessage: "failed to create task: unable to apply apparmor profile: permission denied",
+      publicMessage: "Docker start failed while applying the container AppArmor policy",
+    },
+    {
+      privateMessage: "failed to create task: PRIVATE_PROCESS permission denied",
       publicMessage: "Docker start failed while applying the container process policy",
     },
   ])("uses the most specific Docker start failure category", async (testCase) => {

@@ -318,10 +318,13 @@ disabled. Image and container inspection reject any effective health-check comma
 Flow creates the container from the exact image ID with pull policy `never`. It checks the image
 directly before create and checks the resulting container before start.
 
-A failed Docker start reports one fixed category for block I/O, memory, CPU, PID, process-limit,
-cgroup, seccomp, filesystem, process-policy, or runtime-task work. An unknown response reports only
-the status. Docker response text stays private. The category does not change admission, retry, or
-cleanup.
+A failed Docker start reports one fixed category for resource, cgroup, seccomp, filesystem,
+process, or runtime-task work. Resource categories distinguish block I/O, memory, CPU, PID, and
+process limits. Process categories distinguish entrypoint, working-directory, user-identity,
+capability, no-new-privileges, AppArmor, and residual process-policy work.
+
+An unknown response reports only the status. Docker response text stays private. The category does
+not change admission, retry, or cleanup.
 
 ### Fixed Prime session decision
 
