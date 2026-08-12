@@ -174,6 +174,10 @@ func RunDriverProcess(
 		processSettlement <- command.Wait()
 	}()
 	relayError := containerprotocol.RelayDriver(hostReader, hostWriter, supervisorSocket, bootstrap)
+	_ = syscall.Shutdown(int(supervisorSocket.Fd()), syscall.SHUT_RDWR)
+	if closeError := supervisorSocket.Close(); closeError != nil && relayError == nil {
+		relayError = errors.New("close Prime driver relay channel")
+	}
 	var waitError error
 	settlementForced := false
 	if relayError == nil {

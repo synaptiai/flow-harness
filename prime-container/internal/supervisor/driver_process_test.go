@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"syscall"
@@ -52,6 +53,34 @@ func TestRunDriverProcessUsesPrivateProtocolAndHardeningDescriptors(t *testing.T
 	}
 	if output.Len() != 0 {
 		t.Fatalf("driver output has %d trailing bytes", output.Len())
+	}
+}
+
+func TestRunDriverProcessClosesPrivateChannelBeforeWaitingForExit(t *testing.T) {
+	var output bytes.Buffer
+	result, err := RunDriverProcess(
+		&bytes.Buffer{},
+		&output,
+		[]byte(processTestHello),
+		DriverProcessOptions{
+			Executable: os.Args[0],
+			Arguments:  []string{"-test.run=TestPrimeDriverHelperProcess", "--"},
+			Environment: append(
+				os.Environ(),
+				"FLOW_PRIME_TEST_DRIVER=1",
+				"FLOW_PRIME_TEST_HARDENING=1",
+				"FLOW_PRIME_TEST_WAIT_FOR_RELAY_CLOSE=1",
+			),
+			WorkingDirectory: t.TempDir(),
+			UID:              -1, GID: -1,
+			MaxDiagnosticBytes: 65536,
+		},
+	)
+	if err != nil {
+		t.Fatalf("run half-closed driver process: %v (%q)", err, result.Diagnostic)
+	}
+	if result.ExitCode != 0 || result.Diagnostic != "" {
+		t.Fatalf("half-closed driver result changed: %#v", result)
 	}
 }
 
@@ -420,6 +449,28 @@ func TestPrimeDriverHelperProcess(t *testing.T) {
 		if _, err := socket.Write([]byte(frame + "\n")); err != nil {
 			fmt.Fprintln(os.Stderr, "test driver write failed")
 			os.Exit(123)
+		}
+	}
+	if os.Getenv("FLOW_PRIME_TEST_WAIT_FOR_RELAY_CLOSE") == "1" {
+		if err := syscall.Shutdown(int(socket.Fd()), syscall.SHUT_WR); err != nil {
+			os.Exit(124)
+		}
+		readResult := make(chan error, 1)
+		go func() {
+			buffer := make([]byte, 1)
+			_, readError := socket.Read(buffer)
+			readResult <- readError
+		}()
+		select {
+		case err := <-readResult:
+			if errors.Is(err, os.ErrClosed) || errors.Is(err, io.EOF) {
+				break
+			}
+			fmt.Fprintln(os.Stderr, "Prime supervisor closed the relay channel incorrectly")
+			os.Exit(125)
+		case <-time.After(driverHardeningProofTimeout):
+			fmt.Fprintln(os.Stderr, "Prime supervisor did not close the completed relay channel")
+			os.Exit(125)
 		}
 	}
 	if err := socket.Close(); err != nil {
