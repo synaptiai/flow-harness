@@ -32,6 +32,8 @@ type NativePrimeDriverStage =
   | "write-supervisor-output"
   | "resolve-workspace"
   | "load-sdk"
+  | "load-agent-sdk"
+  | "load-ai-sdk"
   | "initialize-sdk"
   | "create-ipython-tool"
   | "create-sdk-session"
@@ -192,6 +194,18 @@ export interface NativePrimeSdkBindings {
   readonly createAgentSession: (
     options: Record<string, unknown>,
   ) => Promise<{ readonly session: PrimeSdkSession }>;
+}
+
+type NativePrimeAgentSdkBindings = Omit<
+  NativePrimeSdkBindings,
+  "createAssistantMessageEventStream"
+>;
+
+type NativePrimeAiSdkBindings = Pick<NativePrimeSdkBindings, "createAssistantMessageEventStream">;
+
+export interface NativePrimeSdkLoaders {
+  readonly loadAgentSdk: () => Promise<NativePrimeAgentSdkBindings>;
+  readonly loadAiSdk: () => Promise<NativePrimeAiSdkBindings>;
 }
 
 export type NativePrimeSessionFactory = (
@@ -510,10 +524,11 @@ function withNativePrimeDriverSyncStage<T>(stage: NativePrimeDriverStage, operat
   }
 }
 
-async function loadNativePrimeSdk(): Promise<NativePrimeSdkBindings> {
-  const agentModuleName = "prime-agent";
-  const aiModuleName = "@earendil-works/pi-ai";
-  const [agent, ai] = await Promise.all([import(agentModuleName), import(aiModuleName)]);
+export async function loadNativePrimeSdk(
+  loaders: NativePrimeSdkLoaders = DEFAULT_NATIVE_PRIME_SDK_LOADERS,
+): Promise<NativePrimeSdkBindings> {
+  const agent = await withNativePrimeDriverStage("load-agent-sdk", loaders.loadAgentSdk);
+  const ai = await withNativePrimeDriverStage("load-ai-sdk", loaders.loadAiSdk);
   return {
     AuthStorage: agent.AuthStorage,
     ModelRegistry: agent.ModelRegistry,
@@ -523,8 +538,19 @@ async function loadNativePrimeSdk(): Promise<NativePrimeSdkBindings> {
     createIpythonToolDefinition: agent.createIpythonToolDefinition,
     createAssistantMessageEventStream: ai.createAssistantMessageEventStream,
     createAgentSession: agent.createAgentSession,
-  } as NativePrimeSdkBindings;
+  };
 }
+
+const DEFAULT_NATIVE_PRIME_SDK_LOADERS = Object.freeze<NativePrimeSdkLoaders>({
+  loadAgentSdk: async () => {
+    const moduleName = "prime-agent";
+    return (await import(moduleName)) as NativePrimeAgentSdkBindings;
+  },
+  loadAiSdk: async () => {
+    const moduleName = "@earendil-works/pi-ai";
+    return (await import(moduleName)) as NativePrimeAiSdkBindings;
+  },
+});
 
 function adaptSdkSession(
   session: PrimeSdkSession,

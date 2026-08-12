@@ -732,6 +732,10 @@ function primeContainerFailureMessage(stderr: Buffer, sawStdout: boolean): strin
       return "Prime driver failed while resolving the trial workspace";
     case "run prime driver: prime driver stage failure: load-sdk":
       return "Prime driver failed while loading the native SDK";
+    case "run prime driver: prime driver stage failure: load-agent-sdk":
+      return "Prime driver failed while loading the native agent SDK";
+    case "run prime driver: prime driver stage failure: load-ai-sdk":
+      return "Prime driver failed while loading the native AI SDK";
     case "run prime driver: prime driver stage failure: initialize-sdk":
       return "Prime driver failed while configuring the native SDK";
     case "run prime driver: prime driver stage failure: create-ipython-tool":

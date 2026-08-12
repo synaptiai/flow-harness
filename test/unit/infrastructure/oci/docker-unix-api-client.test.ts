@@ -1212,6 +1212,14 @@ describe("Docker Unix API client", () => {
       publicMessage: "Prime driver failed while loading the native SDK",
     },
     {
+      privateDiagnostic: "run Prime driver: Prime driver stage failure: load-agent-sdk\n",
+      publicMessage: "Prime driver failed while loading the native agent SDK",
+    },
+    {
+      privateDiagnostic: "run Prime driver: Prime driver stage failure: load-ai-sdk\n",
+      publicMessage: "Prime driver failed while loading the native AI SDK",
+    },
+    {
       privateDiagnostic: "run Prime driver: Prime driver stage failure: initialize-sdk\n",
       publicMessage: "Prime driver failed while configuring the native SDK",
     },

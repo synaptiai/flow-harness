@@ -6,6 +6,7 @@ import {
 } from "../../../../src/domain/evaluation/external-harness-protocol.js";
 import {
   createNativePrimeSdkSession,
+  loadNativePrimeSdk,
   type NativePrimeSdkBindings,
   type NativePrimeSession,
   nativePrimeDriverFailureDiagnostic,
@@ -448,6 +449,40 @@ describe("native Prime evaluation driver", () => {
     expect(error).toBeInstanceOf(Error);
     expect(nativePrimeDriverFailureDiagnostic(error)).toBe(expected);
     expect(nativePrimeDriverFailureDiagnostic(error)).not.toContain("PRIVATE");
+  });
+
+  it.each([
+    {
+      name: "agent SDK",
+      expected: "Prime driver stage failure: load-agent-sdk",
+      loaders: {
+        loadAgentSdk: vi.fn(async (): Promise<never> => {
+          throw new Error("PRIVATE_AGENT_SDK_CANARY");
+        }),
+        loadAiSdk: vi.fn(async (): Promise<never> => {
+          throw new Error("later loader must not run");
+        }),
+      },
+      expectedAiLoads: 0,
+    },
+    {
+      name: "AI SDK",
+      expected: "Prime driver stage failure: load-ai-sdk",
+      loaders: {
+        loadAgentSdk: vi.fn(async () => sdkFixture({ thinkingLevel: "off" }).bindings),
+        loadAiSdk: vi.fn(async (): Promise<never> => {
+          throw new Error("PRIVATE_AI_SDK_CANARY");
+        }),
+      },
+      expectedAiLoads: 1,
+    },
+  ])("publishes one closed diagnostic for $name import failure", async (testCase) => {
+    const error = await loadNativePrimeSdk(testCase.loaders).catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(nativePrimeDriverFailureDiagnostic(error)).toBe(testCase.expected);
+    expect(nativePrimeDriverFailureDiagnostic(error)).not.toContain("PRIVATE");
+    expect(testCase.loaders.loadAiSdk).toHaveBeenCalledTimes(testCase.expectedAiLoads);
   });
 
   it("uses one fixed diagnostic for an unclassified driver rejection", () => {

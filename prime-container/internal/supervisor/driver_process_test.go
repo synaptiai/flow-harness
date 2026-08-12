@@ -151,6 +151,18 @@ func TestClosedPrimeDriverDiagnosticRequiresOneUniqueCompleteStageLine(t *testin
 			accepted: true,
 		},
 		{
+			name:     "agent SDK stage",
+			value:    "Prime driver stage failure: load-agent-sdk\n",
+			expected: "Prime driver stage failure: load-agent-sdk",
+			accepted: true,
+		},
+		{
+			name:     "AI SDK stage",
+			value:    "Prime driver stage failure: load-ai-sdk\n",
+			expected: "Prime driver stage failure: load-ai-sdk",
+			accepted: true,
+		},
+		{
 			name:  "conflicting stages",
 			value: "Prime driver stage failure: load-sdk\nPrime driver stage failure: initialize-sdk\n",
 		},
