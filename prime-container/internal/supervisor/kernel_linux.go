@@ -3,6 +3,7 @@
 package supervisor
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -37,7 +38,7 @@ func PeerUID(connection *net.UnixConn) (int, error) {
 	return int(credential.Uid), nil
 }
 
-func RunKernel(request kernelcontract.Request) (int, string) {
+func RunKernel(ctx context.Context, request kernelcontract.Request) (int, string) {
 	file, err := os.OpenFile(request.ConnectionPath, os.O_RDWR|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return 125, boundedError("open fixed kernel connection file", err)
@@ -112,8 +113,19 @@ func RunKernel(request kernelcontract.Request) (int, string) {
 		}
 		diagnostic <- diagnosticResult{value: value, overflow: overflow, err: readError}
 	}()
-	waitError := command.Wait()
+	processSettlement := make(chan error, 1)
+	go func() {
+		processSettlement <- command.Wait()
+	}()
+	waitError, cancelled := waitForKernelSettlement(
+		ctx,
+		processSettlement,
+		func() error { return syscall.Kill(-command.Process.Pid, syscall.SIGKILL) },
+	)
 	diagnosticValue := <-diagnostic
+	if cancelled {
+		return 0, ""
+	}
 	if diagnosticValue.err != nil {
 		return 125, boundedError("read kernel standard error", diagnosticValue.err)
 	}

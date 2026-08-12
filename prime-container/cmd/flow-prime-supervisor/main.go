@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +20,11 @@ const (
 	driverPath    = "/opt/flow/node/flow-dist/infrastructure/prime/native-prime-agent-evaluation-driver.js"
 	workspacePath = "/workspace"
 )
+
+type kernelServiceResult struct {
+	requests int
+	err      error
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -42,13 +48,11 @@ func run() error {
 		return err
 	}
 	defer listener.Close()
-	type kernelServiceResult struct {
-		requests int
-		err      error
-	}
+	kernelContext, cancelKernel := context.WithCancel(context.Background())
+	defer cancelKernel()
 	kernelResults := make(chan kernelServiceResult, 1)
 	go func() {
-		requests, serveError := serveKernels(listener)
+		requests, serveError := serveKernels(kernelContext, listener)
 		kernelResults <- kernelServiceResult{requests: requests, err: serveError}
 	}()
 	prepared, err := containerprotocol.ReceivePreparation(containerprotocol.PreparationInput{
@@ -70,24 +74,27 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	driverResult, err := supervisor.RunDriverProcess(
+	driverResult, driverError := supervisor.RunDriverProcess(
 		os.Stdin,
 		os.Stdout,
 		prepared.Bootstrap,
 		primeDriverProcessOptions(),
 	)
-	if err != nil {
-		return fmt.Errorf("run Prime driver: %w", err)
+	kernelResult, kernelError := settleKernelService(
+		cancelKernel,
+		listener.Close,
+		kernelResults,
+		supervisor.TerminatePythonProcesses,
+	)
+	if driverError != nil {
+		driverError = fmt.Errorf("run Prime driver: %w", driverError)
+		if kernelError != nil {
+			return errors.Join(driverError, kernelError)
+		}
+		return driverError
 	}
-	if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-		return fmt.Errorf("close kernel supervisor listener: %w", err)
-	}
-	kernelResult := <-kernelResults
-	if kernelResult.err != nil && !errors.Is(kernelResult.err, net.ErrClosed) {
-		return kernelResult.err
-	}
-	if err := supervisor.TerminatePythonProcesses(); err != nil {
-		return err
+	if kernelError != nil {
+		return kernelError
 	}
 	exported, err := containerprotocol.CaptureWorkspace(workspacePath)
 	if err != nil {
@@ -107,6 +114,29 @@ func run() error {
 		return errors.New("encode Prime settlement")
 	}
 	return containerprotocol.WriteFrame(os.Stdout, containerprotocol.FrameSettlement, settlement)
+}
+
+func settleKernelService(
+	cancelKernel func(),
+	closeListener func() error,
+	results <-chan kernelServiceResult,
+	reconcilePython func() error,
+) (kernelServiceResult, error) {
+	cancelKernel()
+	closeError := closeListener()
+	result := <-results
+	reconcileError := reconcilePython()
+	var failures []error
+	if closeError != nil && !errors.Is(closeError, net.ErrClosed) {
+		failures = append(failures, fmt.Errorf("close kernel supervisor listener: %w", closeError))
+	}
+	if result.err != nil && !errors.Is(result.err, net.ErrClosed) {
+		failures = append(failures, result.err)
+	}
+	if reconcileError != nil {
+		failures = append(failures, reconcileError)
+	}
+	return result, errors.Join(failures...)
 }
 
 func primeDriverProcessOptions() supervisor.DriverProcessOptions {
@@ -210,7 +240,7 @@ func createKernelListener() (*net.UnixListener, error) {
 	return listener, nil
 }
 
-func serveKernels(listener *net.UnixListener) (int, error) {
+func serveKernels(ctx context.Context, listener *net.UnixListener) (int, error) {
 	requests := 0
 	for {
 		connection, err := listener.AcceptUnix()
@@ -224,7 +254,7 @@ func serveKernels(listener *net.UnixListener) (int, error) {
 			connection.Close()
 			return requests, errors.New("Prime session requested more than one Python kernel")
 		}
-		if err := handle(connection); err != nil {
+		if err := handle(ctx, connection); err != nil {
 			connection.Close()
 			return requests, err
 		}
@@ -233,7 +263,7 @@ func serveKernels(listener *net.UnixListener) (int, error) {
 	}
 }
 
-func handle(connection *net.UnixConn) error {
+func handle(ctx context.Context, connection *net.UnixConn) error {
 	uid, err := supervisor.PeerUID(connection)
 	if err != nil {
 		return err
@@ -245,7 +275,10 @@ func handle(connection *net.UnixConn) error {
 	if err != nil {
 		return err
 	}
-	exitCode, diagnostic := supervisor.RunKernel(request)
+	exitCode, diagnostic := supervisor.RunKernel(ctx, request)
+	if ctx.Err() != nil {
+		return nil
+	}
 	return supervisor.WriteResponse(connection, kernelcontract.Response{
 		Version:  1,
 		ExitCode: exitCode,
