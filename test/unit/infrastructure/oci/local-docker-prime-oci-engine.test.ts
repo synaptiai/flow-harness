@@ -11,6 +11,12 @@ type PrimeIdentity = Extract<
   { readonly adapter: "prime-agent-native-v1" }
 >;
 
+type ConfigFailureCase = readonly [
+  name: string,
+  message: string,
+  mutate: (inspection: Record<string, unknown>) => void,
+];
+
 describe("local Docker Prime OCI engine", () => {
   it("accepts the exact environment inherited from the pinned Prime image", async () => {
     const fixture = engineFixture();
@@ -222,7 +228,7 @@ describe("local Docker Prime OCI engine", () => {
     await expect(result).rejects.not.toThrow(canary);
   });
 
-  it.each([
+  const configFailureCases: ConfigFailureCase[] = [
     [
       "image reference",
       "created Prime container image reference does not match admission",
@@ -300,18 +306,23 @@ describe("local Docker Prime OCI engine", () => {
       (inspection: Record<string, unknown>) =>
         ((inspection.Config as Record<string, unknown>).StopTimeout = 30),
     ],
-  ])("reports the exact closed %s configuration failure", async (_name, message, mutate) => {
-    const fixture = engineFixture();
-    const changed = structuredClone(fixture.inspection);
-    mutate(changed);
-    vi.mocked(fixture.api.inspectContainer).mockResolvedValueOnce(changed);
-    const engine = new LocalDockerPrimeOciEngine(fixture.options);
+  ];
 
-    const error = await engine.create(fixture.intent).catch((caught: unknown) => caught);
-    expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toBe(message);
-    expect(fixture.api.startContainer).not.toHaveBeenCalled();
-  });
+  it.each(configFailureCases)(
+    "reports the exact closed %s configuration failure",
+    async (_name, message, mutate) => {
+      const fixture = engineFixture();
+      const changed = structuredClone(fixture.inspection);
+      mutate(changed);
+      vi.mocked(fixture.api.inspectContainer).mockResolvedValueOnce(changed);
+      const engine = new LocalDockerPrimeOciEngine(fixture.options);
+
+      const error = await engine.create(fixture.intent).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe(message);
+      expect(fixture.api.startContainer).not.toHaveBeenCalled();
+    },
+  );
 
   it("recovers only the exact intent name and durable labels", async () => {
     const fixture = engineFixture();
