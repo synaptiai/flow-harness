@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { type BigIntStats, constants } from "node:fs";
 import { open, realpath } from "node:fs/promises";
-import { basename, dirname, posix, resolve } from "node:path";
+import { posix, resolve } from "node:path";
 
 const TAR_BLOCK_BYTES = 512;
 const READ_CHUNK_BYTES = 65_536;
@@ -9,25 +9,33 @@ const MAX_ARCHIVE_BYTES = 8_589_934_592;
 const MAX_OUTER_ENTRIES = 2_048;
 const MAX_LAYER_ENTRIES = 262_144;
 const MAX_LAYERS = 512;
+const MAX_PACKAGE_METADATA_BYTES = 2_147_483_648;
+const MAX_PACKAGE_METADATA_ENTRIES = 131_072;
 const MAX_METADATA_BYTES = 1_048_576;
 const MAX_MANIFEST_BYTES = 1_048_576;
+const MAX_PACKAGE_IDENTITIES = 8_192;
 const MAX_PATH_BYTES = 4_095;
+const MAX_PRIVATE_KEY_CANDIDATE_BYTES = 1_048_576;
+const MAX_PRIVATE_KEY_MARKER_LINE_BYTES = 128;
 const SECRET_SCAN_OVERLAP_BYTES = 128;
 const AWS_DOCUMENTATION_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE";
 const imageDigestPattern = /^sha256:[a-f0-9]{64}$/;
-const awsAccessKeyPattern = /AKIA[0-9A-Z]{16}/g;
+const awsAccessKeyPattern = /(?<![A-Za-z0-9])AKIA[0-9A-Z]{16}(?![A-Za-z0-9])/g;
+const privateKeyBeginPattern =
+  /^-----BEGIN ((?:(?:DSA|EC|ENCRYPTED|OPENSSH|RSA) )?PRIVATE KEY)-----$/;
+const privateKeyMetadataNamePattern = /^[A-Za-z][A-Za-z0-9-]*:/;
+const privateKeyPayloadPattern = /^[A-Za-z0-9+/]+={0,2}$/;
+const syntheticSecretPattern = new RegExp(
+  `${["FLOW", "PRIME", "FORBIDDEN", "SECRET"].join("_")}_[A-Za-z0-9_-]*`,
+);
 const forbiddenSecretPatterns: readonly Readonly<{
   pattern: RegExp;
   stage: PrimeImageArchiveSecretStage;
 }>[] = Object.freeze([
-  {
-    pattern: /-----BEGIN (?:EC |OPENSSH |RSA )?PRIVATE KEY-----/,
-    stage: "scan image archive private keys",
-  },
   { pattern: /ghp_[A-Za-z0-9]{36}/, stage: "scan image archive GitHub tokens" },
   { pattern: /npm_[A-Za-z0-9]{36}/, stage: "scan image archive npm tokens" },
   {
-    pattern: /FLOW_PRIME_FORBIDDEN_SECRET_[A-Za-z0-9_-]*/,
+    pattern: syntheticSecretPattern,
     stage: "scan image archive synthetic secrets",
   },
 ]);
@@ -51,7 +59,10 @@ export interface PrimeImageArchiveInspection {
 
 export type PrimeImageArchiveSecretStage =
   | "scan image archive private keys"
-  | "scan image archive AWS access keys"
+  | "scan native Prime image AWS access keys"
+  | "scan Node image AWS access keys"
+  | "scan Python image AWS access keys"
+  | "scan system image AWS access keys"
   | "scan image archive GitHub tokens"
   | "scan image archive npm tokens"
   | "scan image archive synthetic secrets";
@@ -76,9 +87,81 @@ export class PrimeImageArchiveInspectionError extends Error {
   }
 }
 
+export interface PrimeImagePackageMetadataLimits {
+  readonly maxBytes: number;
+  readonly maxEntries: number;
+}
+
+export class PrimeImagePackageMetadataBudget {
+  #bytes = 0;
+  #entries = 0;
+  readonly #limits: PrimeImagePackageMetadataLimits;
+
+  constructor(
+    limits: PrimeImagePackageMetadataLimits = {
+      maxBytes: MAX_PACKAGE_METADATA_BYTES,
+      maxEntries: MAX_PACKAGE_METADATA_ENTRIES,
+    },
+  ) {
+    const maxBytes = limits.maxBytes;
+    const maxEntries = limits.maxEntries;
+    if (
+      !Number.isSafeInteger(maxBytes) ||
+      maxBytes < 1 ||
+      !Number.isSafeInteger(maxEntries) ||
+      maxEntries < 1
+    ) {
+      throw new Error("Prime image package metadata limits are invalid");
+    }
+    this.#limits = Object.freeze({
+      maxBytes: Math.min(maxBytes, MAX_PACKAGE_METADATA_BYTES),
+      maxEntries: Math.min(maxEntries, MAX_PACKAGE_METADATA_ENTRIES),
+    });
+  }
+
+  get bytes(): number {
+    return this.#bytes;
+  }
+
+  get entries(): number {
+    return this.#entries;
+  }
+
+  replace(priorBytes: number | undefined, nextBytes: number): void {
+    if (
+      (priorBytes !== undefined && (!Number.isSafeInteger(priorBytes) || priorBytes < 0)) ||
+      !Number.isSafeInteger(nextBytes) ||
+      nextBytes < 0 ||
+      (priorBytes !== undefined && (this.#entries === 0 || priorBytes > this.#bytes))
+    ) {
+      throw new Error("Prime image package metadata budget transition is invalid");
+    }
+    const entries = this.#entries + (priorBytes === undefined ? 1 : 0);
+    const bytes = this.#bytes - (priorBytes ?? 0) + nextBytes;
+    if (
+      !Number.isSafeInteger(entries) ||
+      entries < 0 ||
+      !Number.isSafeInteger(bytes) ||
+      bytes < 0
+    ) {
+      throw new Error("Prime image package metadata budget transition is invalid");
+    }
+    if (entries > this.#limits.maxEntries || bytes > this.#limits.maxBytes) {
+      throw new PrimeImageArchiveInspectionError(
+        "inventory image archive packages",
+        new Error("Prime image package metadata exceeds its aggregate limit"),
+      );
+    }
+    this.#entries = entries;
+    this.#bytes = bytes;
+  }
+}
+
 export interface PrimeImageArchiveInspectionHooks {
   readonly beforeStabilityObservation?: () => Promise<void>;
   readonly closeArchive?: (handle: Awaited<ReturnType<typeof open>>) => Promise<void>;
+  readonly observeWhiteoutMetadataPath?: () => void;
+  readonly packageMetadataLimits?: PrimeImagePackageMetadataLimits;
 }
 
 interface TarEntry {
@@ -91,6 +174,38 @@ interface TarEntry {
 interface DockerSaveManifest {
   readonly Config: string;
   readonly Layers: readonly string[];
+}
+
+interface PrivateKeyScanState {
+  candidateBytes: number;
+  discardingLine: boolean;
+  label: string | undefined;
+  payloadCharacters: number;
+  payloadStarted: boolean;
+  pendingLine: string;
+}
+
+type PackageMetadataRecord =
+  | {
+      readonly bytes: number;
+      readonly kind: "node" | "python";
+      readonly state: "absent";
+    }
+  | {
+      readonly bytes: number;
+      readonly kind: "node" | "python";
+      readonly state: "invalid";
+    }
+  | {
+      readonly bytes: number;
+      readonly identity: PrimeImagePackageIdentity;
+      readonly kind: "node" | "python";
+      readonly state: "identified";
+    };
+
+interface WhiteoutTrieNode {
+  readonly children: Map<string, WhiteoutTrieNode>;
+  terminal: boolean;
 }
 
 export async function inspectPrimeImageArchive(
@@ -148,13 +263,13 @@ export async function inspectPrimeImageArchive(
       }
     });
 
-    const metadata = new Map<string, Buffer>();
+    const metadata = new Map<string, PackageMetadataRecord>();
     const layerSha256 = await inspectArchiveStage("scan image archive layers", async () => {
       const layerDigests: string[] = [];
       for (const layerPath of manifest.Layers) {
         const layer = requireRegularEntry(byPath, layerPath, MAX_ARCHIVE_BYTES);
         layerDigests.push(await hashRange(handle, layer.dataOffset, layer.size));
-        await inspectLayer(handle, layer, metadata);
+        await inspectLayer(handle, layer, metadata, hooks);
       }
       return Object.freeze(layerDigests);
     });
@@ -232,84 +347,195 @@ async function inspectArchiveStage<T>(
 async function inspectLayer(
   handle: Awaited<ReturnType<typeof open>>,
   layer: TarEntry,
-  metadata: Map<string, Buffer>,
+  metadata: Map<string, PackageMetadataRecord>,
+  hooks: PrimeImageArchiveInspectionHooks,
 ): Promise<void> {
   const entries = await readTarEntries(handle, layer.dataOffset, layer.size, MAX_LAYER_ENTRIES);
+  const lowerMetadata = new Map(metadata);
+  applyWhiteouts(entries, lowerMetadata, hooks);
+  const currentMetadata = new Map<string, PackageMetadataRecord>();
   for (const entry of entries) {
-    applyWhiteout(entry.path, metadata);
-    if (entry.type !== "0" && entry.type !== "\0") {
-      continue;
-    }
-    const secretStage = await findForbiddenSecretStage(handle, entry.dataOffset, entry.size);
-    if (secretStage !== undefined) {
-      throw new PrimeImageArchiveInspectionError(
-        secretStage,
-        new Error("Prime image layer contains a prohibited secret pattern"),
+    const regular = entry.type === "0" || entry.type === "\0";
+    if (regular) {
+      const secretStage = await findForbiddenSecretStage(
+        handle,
+        entry.dataOffset,
+        entry.size,
+        entry.path,
       );
+      if (secretStage !== undefined) {
+        throw new PrimeImageArchiveInspectionError(
+          secretStage,
+          new Error("Prime image layer contains a prohibited secret pattern"),
+        );
+      }
     }
-    if (!isPackageMetadata(entry.path)) {
+    const kind = packageMetadataKind(entry.path);
+    if (kind === undefined) {
       continue;
     }
-    metadata.set(entry.path, await readEntryBytes(handle, entry, MAX_METADATA_BYTES));
+    currentMetadata.set(
+      entry.path,
+      !regular || entry.size > MAX_METADATA_BYTES
+        ? { bytes: entry.size, kind, state: "invalid" }
+        : parsePackageMetadata(kind, await readEntryBytes(handle, entry, MAX_METADATA_BYTES)),
+    );
+  }
+  const currentBudgets = {
+    node: new PrimeImagePackageMetadataBudget(hooks.packageMetadataLimits),
+    python: new PrimeImagePackageMetadataBudget(hooks.packageMetadataLimits),
+  };
+  for (const record of currentMetadata.values()) {
+    currentBudgets[record.kind].replace(undefined, record.bytes);
+  }
+  metadata.clear();
+  for (const [path, bytes] of lowerMetadata) {
+    metadata.set(path, bytes);
+  }
+  for (const [path, bytes] of currentMetadata) {
+    metadata.set(path, bytes);
+  }
+  const finalBudgets = {
+    node: new PrimeImagePackageMetadataBudget(hooks.packageMetadataLimits),
+    python: new PrimeImagePackageMetadataBudget(hooks.packageMetadataLimits),
+  };
+  for (const record of metadata.values()) {
+    finalBudgets[record.kind].replace(undefined, record.bytes);
   }
 }
 
-function applyWhiteout(path: string, metadata: Map<string, Buffer>): void {
-  const name = basename(path);
-  if (name === ".wh..wh..opq") {
-    deleteMetadataPrefix(metadata, `${dirname(path)}/`);
+function applyWhiteouts(
+  entries: readonly TarEntry[],
+  metadata: Map<string, PackageMetadataRecord>,
+  hooks: PrimeImageArchiveInspectionHooks,
+): void {
+  const root: WhiteoutTrieNode = { children: new Map(), terminal: false };
+  let hasWhiteout = false;
+  for (const entry of entries) {
+    const target = whiteoutTarget(entry);
+    if (target === undefined) {
+      continue;
+    }
+    addWhiteoutTarget(root, target);
+    hasWhiteout = true;
+  }
+  if (!hasWhiteout) {
     return;
   }
-  if (!name.startsWith(".wh.")) {
-    return;
-  }
-  const target = posix.join(dirname(path), name.slice(".wh.".length));
-  metadata.delete(target);
-  deleteMetadataPrefix(metadata, `${target}/`);
-}
-
-function deleteMetadataPrefix(metadata: Map<string, Buffer>, prefix: string): void {
   for (const path of metadata.keys()) {
-    if (path.startsWith(prefix)) {
+    hooks.observeWhiteoutMetadataPath?.();
+    if (whiteoutMatches(root, path)) {
       metadata.delete(path);
     }
   }
 }
 
-function isPackageMetadata(path: string): boolean {
-  return (
-    (path.startsWith("opt/flow/node/node_modules/") && path.endsWith("/package.json")) ||
-    (path.startsWith("opt/flow/python/") &&
-      path.includes(".dist-info/") &&
-      path.endsWith("/METADATA"))
-  );
+function whiteoutTarget(entry: TarEntry): string | undefined {
+  const name = posix.basename(entry.path);
+  if (!name.startsWith(".wh.")) {
+    return undefined;
+  }
+  if ((entry.type !== "0" && entry.type !== "\0") || entry.size !== 0) {
+    throw new Error("Prime image layer has an invalid whiteout");
+  }
+  const directory = posix.dirname(entry.path);
+  if (name === ".wh..wh..opq") {
+    return directory === "." ? "" : directory;
+  }
+  const targetName = name.slice(".wh.".length);
+  if (targetName === "" || targetName === "." || targetName === "..") {
+    throw new Error("Prime image layer has an invalid whiteout");
+  }
+  return posix.join(directory, targetName);
+}
+
+function addWhiteoutTarget(root: WhiteoutTrieNode, path: string): void {
+  let node = root;
+  for (const component of path === "" ? [] : path.split("/")) {
+    let child = node.children.get(component);
+    if (child === undefined) {
+      child = { children: new Map(), terminal: false };
+      node.children.set(component, child);
+    }
+    node = child;
+  }
+  node.terminal = true;
+}
+
+function whiteoutMatches(root: WhiteoutTrieNode, path: string): boolean {
+  let node = root;
+  if (node.terminal) {
+    return true;
+  }
+  for (const component of path.split("/")) {
+    const child = node.children.get(component);
+    if (child === undefined) {
+      return false;
+    }
+    node = child;
+    if (node.terminal) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function packageMetadataKind(path: string): "node" | "python" | undefined {
+  if (path.startsWith("opt/flow/node/node_modules/") && path.endsWith("/package.json")) {
+    return "node";
+  }
+  if (
+    path.startsWith("opt/flow/python/") &&
+    posix.dirname(path).endsWith(".dist-info") &&
+    posix.basename(path) === "METADATA"
+  ) {
+    return "python";
+  }
+  return undefined;
 }
 
 function packageInventory(
-  metadata: ReadonlyMap<string, Buffer>,
+  metadata: ReadonlyMap<string, PackageMetadataRecord>,
   kind: "node" | "python",
 ): readonly PrimeImagePackageIdentity[] {
   const packages = new Map<string, PrimeImagePackageIdentity>();
-  for (const [path, bytes] of metadata) {
-    const item =
-      kind === "node" && path.endsWith("/package.json")
-        ? parseNodePackage(bytes)
-        : kind === "python" && path.endsWith("/METADATA")
-          ? parsePythonPackage(bytes)
-          : undefined;
-    if (item !== undefined) {
-      packages.set(`${item.name}\0${item.version}`, Object.freeze(item));
+  for (const record of metadata.values()) {
+    if (record.kind !== kind || record.state === "absent") {
+      continue;
     }
+    if (record.state === "invalid") {
+      throw new Error("Prime image package metadata is invalid");
+    }
+    packages.set(
+      `${record.identity.name}\0${record.identity.version}`,
+      Object.freeze(record.identity),
+    );
   }
-  return Object.freeze(
-    [...packages.values()].sort((left, right) =>
-      `${left.name}\0${left.version}`.localeCompare(`${right.name}\0${right.version}`, "en"),
-    ),
+  const values = [...packages.values()].sort((left, right) =>
+    `${left.name}\0${left.version}`.localeCompare(`${right.name}\0${right.version}`, "en"),
   );
+  if (values.length > MAX_PACKAGE_IDENTITIES) {
+    throw new Error("Prime image package inventory exceeds its count limit");
+  }
+  return Object.freeze(values);
 }
 
-function parseNodePackage(bytes: Buffer): PrimeImagePackageIdentity {
+function parsePackageMetadata(kind: "node" | "python", bytes: Buffer): PackageMetadataRecord {
+  try {
+    const identity = kind === "node" ? parseNodePackage(bytes) : parsePythonPackage(bytes);
+    return identity === undefined
+      ? { bytes: bytes.byteLength, kind, state: "absent" }
+      : { bytes: bytes.byteLength, identity, kind, state: "identified" };
+  } catch {
+    return { bytes: bytes.byteLength, kind, state: "invalid" };
+  }
+}
+
+function parseNodePackage(bytes: Buffer): PrimeImagePackageIdentity | undefined {
   const value = parseJsonObject(bytes, "Prime image Node package metadata");
+  if (typeof value.name !== "string" || typeof value.version !== "string") {
+    return undefined;
+  }
   return packageIdentity(value.name, value.version);
 }
 
@@ -380,10 +606,16 @@ async function readTarEntries(
   const end = start + length;
   let offset = start;
   let pendingPath: string | undefined;
+  let physicalEntries = 0;
+  let rootMarkerSeen = false;
   while (offset + TAR_BLOCK_BYTES <= end) {
     const header = await readRange(handle, offset, TAR_BLOCK_BYTES);
     if (header.every((byte) => byte === 0)) {
       break;
+    }
+    physicalEntries += 1;
+    if (physicalEntries > maxEntries) {
+      throw new Error("Prime image tar exceeds its entry limit");
     }
     assertTarChecksum(header);
     const size = parseTarNumber(header.subarray(124, 136));
@@ -401,12 +633,22 @@ async function readTarEntries(
     } else if (type === "L") {
       pendingPath = trimTarString(await readRange(handle, dataOffset, size));
     } else {
-      const path = normalizeTarPath(pendingPath ?? headerPath, type);
+      const sourcePath = pendingPath ?? headerPath;
       pendingPath = undefined;
-      entries.push(Object.freeze({ dataOffset, path, size, type }));
-      if (entries.length > maxEntries) {
-        throw new Error("Prime image tar exceeds its entry limit");
+      if (isTarRootDirectory(sourcePath, type)) {
+        if (size !== 0 || rootMarkerSeen) {
+          throw new Error(
+            rootMarkerSeen
+              ? "Prime image tar repeats its root marker"
+              : "Prime image tar root marker contains data",
+          );
+        }
+        rootMarkerSeen = true;
+        offset = nextOffset;
+        continue;
       }
+      const path = normalizeTarPath(sourcePath, type);
+      entries.push(Object.freeze({ dataOffset, path, size, type }));
     }
     offset = nextOffset;
   }
@@ -451,6 +693,10 @@ function parsePaxPath(bytes: Buffer): string | undefined {
     offset += recordLength;
   }
   return path;
+}
+
+function isTarRootDirectory(path: string, type: string): boolean {
+  return type === "5" && (path === "." || path === "./");
 }
 
 function normalizeTarPath(path: string, type: string): string {
@@ -564,26 +810,170 @@ async function findForbiddenSecretStage(
   handle: Awaited<ReturnType<typeof open>>,
   position: number,
   bytes: number,
+  path: string,
 ): Promise<PrimeImageArchiveSecretStage | undefined> {
   let offset = 0;
   let overlap = "";
+  const privateKeyState: PrivateKeyScanState = {
+    candidateBytes: 0,
+    discardingLine: false,
+    label: undefined,
+    payloadCharacters: 0,
+    payloadStarted: false,
+    pendingLine: "",
+  };
   while (offset < bytes) {
     const length = Math.min(READ_CHUNK_BYTES, bytes - offset);
-    const source = `${overlap}${(await readRange(handle, position + offset, length)).toString("latin1")}`;
+    const chunk = (await readRange(handle, position + offset, length)).toString("latin1");
+    const privateKeyChunk =
+      offset === 0 && chunk.startsWith("\xef\xbb\xbf") ? chunk.slice(3) : chunk;
+    if (scanPrivateKeyChunk(privateKeyState, privateKeyChunk, false)) {
+      return "scan image archive private keys";
+    }
+    const source = `${overlap}${chunk}`;
     for (const secret of forbiddenSecretPatterns) {
       if (secret.pattern.test(source)) {
         return secret.stage;
       }
     }
+    const finalChunk = offset + length === bytes;
     for (const match of source.matchAll(awsAccessKeyPattern)) {
+      const matchEnd = (match.index ?? 0) + match[0].length;
+      if (matchEnd < overlap.length || (!finalChunk && matchEnd === source.length)) {
+        continue;
+      }
       if (match[0] !== AWS_DOCUMENTATION_ACCESS_KEY_ID) {
-        return "scan image archive AWS access keys";
+        return awsAccessKeyStage(path);
       }
     }
     overlap = source.slice(-SECRET_SCAN_OVERLAP_BYTES);
     offset += length;
   }
+  if (scanPrivateKeyChunk(privateKeyState, "", true)) {
+    return "scan image archive private keys";
+  }
   return undefined;
+}
+
+function awsAccessKeyStage(path: string): PrimeImageArchiveSecretStage {
+  if (path.startsWith("opt/flow/bin/") || path.startsWith("opt/flow/lib/")) {
+    return "scan native Prime image AWS access keys";
+  }
+  if (path.startsWith("opt/flow/node/")) {
+    return "scan Node image AWS access keys";
+  }
+  if (path.startsWith("opt/flow/python/")) {
+    return "scan Python image AWS access keys";
+  }
+  return "scan system image AWS access keys";
+}
+
+function scanPrivateKeyChunk(state: PrivateKeyScanState, chunk: string, final: boolean): boolean {
+  let offset = 0;
+  while (offset < chunk.length) {
+    const newline = chunk.indexOf("\n", offset);
+    const end = newline === -1 ? chunk.length : newline;
+    if (!state.discardingLine) {
+      state.pendingLine += chunk.slice(offset, end);
+      if (
+        state.label !== undefined &&
+        state.candidateBytes + state.pendingLine.length > MAX_PRIVATE_KEY_CANDIDATE_BYTES
+      ) {
+        return true;
+      }
+      if (
+        state.label === undefined &&
+        state.pendingLine.length > MAX_PRIVATE_KEY_MARKER_LINE_BYTES
+      ) {
+        state.pendingLine = "";
+        state.discardingLine = true;
+      }
+    }
+    if (newline === -1) {
+      break;
+    }
+    if (state.discardingLine) {
+      state.discardingLine = false;
+    } else {
+      const line = state.pendingLine;
+      state.pendingLine = "";
+      if (scanPrivateKeyLine(state, line, 1)) {
+        return true;
+      }
+    }
+    offset = newline + 1;
+  }
+  if (
+    final &&
+    !state.discardingLine &&
+    state.pendingLine !== "" &&
+    scanPrivateKeyLine(state, state.pendingLine, 0)
+  ) {
+    return true;
+  }
+  if (final) {
+    state.pendingLine = "";
+    state.discardingLine = false;
+  }
+  return false;
+}
+
+function scanPrivateKeyLine(
+  state: PrivateKeyScanState,
+  line: string,
+  terminatorBytes: number,
+): boolean {
+  const candidate = line.replace(/\r$/, "").trim();
+  if (state.label !== undefined) {
+    state.candidateBytes += line.length + terminatorBytes;
+    if (state.candidateBytes > MAX_PRIVATE_KEY_CANDIDATE_BYTES) {
+      return true;
+    }
+    if (candidate === `-----END ${state.label}-----`) {
+      const matched = state.payloadCharacters >= 64;
+      resetPrivateKeyCandidate(state);
+      return matched;
+    }
+    if (candidate === "") {
+      return false;
+    }
+    if (!state.payloadStarted && isPrivateKeyMetadata(candidate)) {
+      return false;
+    }
+    const normalizedPayload = candidate.replace(/[\t\v\f\r ]/g, "");
+    if (normalizedPayload !== "" && privateKeyPayloadPattern.test(normalizedPayload)) {
+      state.payloadCharacters += normalizedPayload.length;
+      state.payloadStarted = true;
+      return false;
+    }
+    resetPrivateKeyCandidate(state);
+  }
+  const begin = privateKeyBeginPattern.exec(candidate);
+  if (begin?.[1] !== undefined) {
+    state.label = begin[1];
+    state.candidateBytes = line.length + terminatorBytes;
+    state.payloadCharacters = 0;
+    state.payloadStarted = false;
+  }
+  return false;
+}
+
+function isPrivateKeyMetadata(candidate: string): boolean {
+  const prefix = privateKeyMetadataNamePattern.exec(candidate)?.[0];
+  if (prefix === undefined) {
+    return false;
+  }
+  return Array.from(candidate.slice(prefix.length)).every((character) => {
+    const codePoint = character.codePointAt(0);
+    return codePoint === 9 || (codePoint !== undefined && codePoint >= 32 && codePoint <= 126);
+  });
+}
+
+function resetPrivateKeyCandidate(state: PrivateKeyScanState): void {
+  state.candidateBytes = 0;
+  state.label = undefined;
+  state.payloadCharacters = 0;
+  state.payloadStarted = false;
 }
 
 function parseJsonObject(bytes: Buffer, label: string): Record<string, unknown> {

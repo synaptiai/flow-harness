@@ -9,6 +9,7 @@ import {
   realpath,
   rm,
   stat,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -115,6 +116,94 @@ describe("local Prime image builder", () => {
     ).toEqual([]);
   });
 
+  it("recognizes a completed operation through a canonical temporary-root alias", async () => {
+    const { builder, root } = await createBuildHarness({ aliasedTemporaryRoot: true });
+
+    await expect(builder.build(1)).resolves.toBeDefined();
+    await expect(builder.build(2)).resolves.toBeDefined();
+    await builder.retireCreatedImagesExcept();
+
+    expect((await readdir(root)).filter((entry) => entry.startsWith("flow-prime-image-"))).toEqual(
+      [],
+    );
+  });
+
+  it("rechecks completed-operation privacy before its recovery skip", async () => {
+    const { builder, root, cleanupRun } = await createBuildHarness();
+    await expect(builder.build(1)).resolves.toBeDefined();
+    const [operationDirectory] = (await readdir(root)).filter((entry) =>
+      entry.startsWith("flow-prime-image-1-"),
+    );
+    expect(operationDirectory).toBeDefined();
+    await chmod(join(root, operationDirectory as string), 0o755);
+    const cleanupCalls = cleanupRun.mock.calls.length;
+
+    await expect(builder.recoverInterruptedBuilds()).rejects.toThrow(
+      "Prime image recovery directory is not private",
+    );
+
+    expect(cleanupRun).toHaveBeenCalledTimes(cleanupCalls);
+  });
+
+  it("rejects a public recovery directory before journal access or cleanup", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-prime-public-recovery-")));
+    const operationRoot = join(root, "flow-prime-image-1-public");
+    await mkdir(operationRoot, { mode: 0o755 });
+    const run = vi.fn(async () => "");
+    const cleanupRun = vi.fn(async () => "");
+    const removePath = vi.fn<typeof rm>(async (path, options) => rm(path, options));
+    const builder = new LocalPrimeImageBuilder({
+      packageRoot: root,
+      dockerExecutable: join(root, "docker"),
+      dockerBuildxExecutable: join(root, "docker-buildx"),
+      temporaryRoot: root,
+      run,
+      cleanupRun,
+      removePath,
+    });
+
+    await expect(builder.recoverInterruptedBuilds()).rejects.toThrow(
+      "Prime image recovery directory is not private",
+    );
+
+    expect(run).not.toHaveBeenCalled();
+    expect(cleanupRun).not.toHaveBeenCalled();
+    expect(removePath).not.toHaveBeenCalled();
+  });
+
+  it("rejects a canonical recovery escape before journal access or cleanup", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-prime-escaped-recovery-")));
+    const operationRoot = join(root, "flow-prime-image-1-escape");
+    const escapedRoot = await realpath(
+      await mkdtemp(join(tmpdir(), "flow-prime-escaped-operation-")),
+    );
+    await mkdir(operationRoot, { mode: 0o700 });
+    const run = vi.fn(async () => "");
+    const cleanupRun = vi.fn(async () => "");
+    const removePath = vi.fn<typeof rm>(async (path, options) => rm(path, options));
+    const recoveryRealpath = vi.fn(async (path: string) =>
+      path === operationRoot ? escapedRoot : realpath(path),
+    );
+    const builder = new LocalPrimeImageBuilder({
+      packageRoot: root,
+      dockerExecutable: join(root, "docker"),
+      dockerBuildxExecutable: join(root, "docker-buildx"),
+      temporaryRoot: root,
+      run,
+      cleanupRun,
+      removePath,
+      recoveryRealpath,
+    });
+
+    await expect(builder.recoverInterruptedBuilds()).rejects.toThrow(
+      "Prime image recovery directory escapes its temporary root",
+    );
+
+    expect(run).not.toHaveBeenCalled();
+    expect(cleanupRun).not.toHaveBeenCalled();
+    expect(removePath).not.toHaveBeenCalled();
+  });
+
   it("promotes a closed archive phase into the public build stage", async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "flow-prime-missing-archive-")));
     const archiveFailure = await captureArchiveInspectionError({
@@ -139,11 +228,11 @@ describe("local Prime image builder", () => {
       archivePath,
       imageId: archive.imageId,
     });
-    expect(archiveFailure).toMatchObject({ stage: "scan image archive AWS access keys" });
+    expect(archiveFailure).toMatchObject({ stage: "scan system image AWS access keys" });
     const { builder } = await createBuildHarness({ archiveInspectionError: archiveFailure });
 
     await expect(builder.build(1)).rejects.toMatchObject({
-      stage: "scan image archive AWS access keys",
+      stage: "scan system image AWS access keys",
       cause: archiveFailure,
     });
   });
@@ -862,6 +951,7 @@ async function createBuildHarness(
     readonly failRetirementImageRemove?: boolean;
     readonly removePath?: typeof rm;
     readonly archiveInspectionError?: Error;
+    readonly aliasedTemporaryRoot?: boolean;
   } = {},
 ) {
   const root = await buildFixture();
@@ -879,6 +969,12 @@ async function createBuildHarness(
     python: [{ name: "ipykernel", version: "6.30.1" }],
   };
   const sbomSha256 = createHash("sha256").update(JSON.stringify(sbom)).digest("hex");
+  let temporaryRoot = root;
+  if (options.aliasedTemporaryRoot === true) {
+    const aliasRoot = await mkdtemp(join(tmpdir(), "flow-prime-build-alias-"));
+    temporaryRoot = join(aliasRoot, "temporary-root");
+    await symlink(root, temporaryRoot, "dir");
+  }
   let failCommand = options.failCommand;
   let builderPresent = true;
   const run = vi.fn(async (args: readonly string[]) => {
@@ -964,7 +1060,7 @@ async function createBuildHarness(
     packageRoot: root,
     dockerExecutable,
     dockerBuildxExecutable,
-    temporaryRoot: root,
+    temporaryRoot,
     run,
     cleanupRun,
     nonce: () => "0123456789abcdef0123456789abcdef",

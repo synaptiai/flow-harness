@@ -167,8 +167,12 @@ describe("Prime Agent package boundary", () => {
     expect(dockerfile).toContain(
       `find /opt/flow/node -xdev -exec touch --date="@${sourceDateEpoch}" {} +`,
     );
+    expect(dockerfile).toContain("rm -rf /opt/flow/node/node_modules/@mistralai/mistralai/tests");
     expect(dockerfile).toContain(
       `find /opt/flow/python -xdev -exec touch --date="@${sourceDateEpoch}" {} +`,
+    );
+    expect(dockerfile).toContain(
+      "rm -rf /opt/flow/python/lib/python3.11/site-packages/tornado/test",
     );
     expect(dockerfile).toContain("--no-log-init");
     expect(dockerfile).toContain(
@@ -190,6 +194,17 @@ describe("Prime Agent package boundary", () => {
       "docs:ste": "node scripts/check-docs-ste.mjs --changed",
       "ci:local": "node scripts/ci-local.mjs",
     });
+  });
+
+  it("does not embed the synthetic secret canary in the scanned production closure", async () => {
+    const scannerSource = await readFile(
+      resolve(repositoryRoot, "src/infrastructure/oci/prime-image-archive.ts"),
+      "utf8",
+    );
+    const canary = `${["FLOW", "PRIME", "FORBIDDEN", "SECRET"].join("_")}_`;
+
+    expect(scannerSource).not.toContain(canary);
+    expect(scannerSource).toContain('["FLOW", "PRIME", "FORBIDDEN", "SECRET"].join("_")');
   });
 
   it("admits the public Prime comparison through the fixed profile", async () => {

@@ -39,19 +39,33 @@ export function createDockerImageArchive(layers: readonly Buffer[]): {
 }
 
 export function createDockerLayerTar(
-  entries: Readonly<Record<string, string>>,
+  entries: Readonly<Record<string, Buffer | string>>,
   directories: readonly string[] = [],
 ): Buffer {
   return tar(
     Object.fromEntries([
       ...directories.map((path) => [`${path}/`, { content: Buffer.alloc(0), type: "5" }] as const),
-      ...Object.entries(entries).map(([path, value]) => [path, Buffer.from(value)] as const),
+      ...Object.entries(entries).map(
+        ([path, value]) => [path, Buffer.isBuffer(value) ? value : Buffer.from(value)] as const,
+      ),
     ]),
   );
 }
 
 export function createTarArchive(entries: Readonly<Record<string, Buffer>>): Buffer {
   return tar(entries);
+}
+
+export function createTarEntryPrefix(
+  entries: readonly Readonly<{
+    readonly content: Buffer;
+    readonly path: string;
+    readonly type?: string;
+  }>[],
+): Buffer {
+  return Buffer.concat(
+    entries.flatMap(({ content, path, type = "0" }) => tarEntry(path, content, type)),
+  );
 }
 
 function tar(
@@ -61,23 +75,27 @@ function tar(
   for (const [path, fixture] of Object.entries(entries)) {
     const content = Buffer.isBuffer(fixture) ? fixture : fixture.content;
     const type = Buffer.isBuffer(fixture) ? "0" : fixture.type;
-    const header = Buffer.alloc(512);
-    header.write(path, 0, 100, "utf8");
-    writeOctal(header, 100, 8, 0o644);
-    writeOctal(header, 108, 8, 0);
-    writeOctal(header, 116, 8, 0);
-    writeOctal(header, 124, 12, content.byteLength);
-    writeOctal(header, 136, 12, 0);
-    header.fill(0x20, 148, 156);
-    header.write(type, 156, 1, "ascii");
-    header.write("ustar\0", 257, 6, "binary");
-    header.write("00", 263, 2, "ascii");
-    const checksum = header.reduce((sum, byte) => sum + byte, 0);
-    header.write(`${checksum.toString(8).padStart(6, "0")}\0 `, 148, 8, "ascii");
-    parts.push(header, content, Buffer.alloc((512 - (content.byteLength % 512)) % 512));
+    parts.push(...tarEntry(path, content, type));
   }
   parts.push(Buffer.alloc(1_024));
   return Buffer.concat(parts);
+}
+
+function tarEntry(path: string, content: Buffer, type: string): readonly Buffer[] {
+  const header = Buffer.alloc(512);
+  header.write(path, 0, 100, "utf8");
+  writeOctal(header, 100, 8, 0o644);
+  writeOctal(header, 108, 8, 0);
+  writeOctal(header, 116, 8, 0);
+  writeOctal(header, 124, 12, content.byteLength);
+  writeOctal(header, 136, 12, 0);
+  header.fill(0x20, 148, 156);
+  header.write(type, 156, 1, "ascii");
+  header.write("ustar\0", 257, 6, "binary");
+  header.write("00", 263, 2, "ascii");
+  const checksum = header.reduce((sum, byte) => sum + byte, 0);
+  header.write(`${checksum.toString(8).padStart(6, "0")}\0 `, 148, 8, "ascii");
+  return [header, content, Buffer.alloc((512 - (content.byteLength % 512)) % 512)];
 }
 
 function writeOctal(target: Buffer, offset: number, length: number, value: number): void {

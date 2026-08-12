@@ -21,8 +21,8 @@ describe("Prime OCI runtime preparation", () => {
       "Prime OCI clean build 1 failed during bootstrap BuildKit builder",
     ],
     [
-      "scan image archive AWS access keys",
-      "Prime OCI clean build 1 failed during scan image archive AWS access keys",
+      "scan system image AWS access keys",
+      "Prime OCI clean build 1 failed during scan system image AWS access keys",
     ],
   ] as const)(
     "reports fixed image-build stage %s without exposing the nested failure",

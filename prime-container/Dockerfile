@@ -24,6 +24,7 @@ ARG SOURCE_DATE_EPOCH
 WORKDIR /opt/flow/node
 COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts --omit=dev --no-audit --no-fund \
+    && rm -rf /opt/flow/node/node_modules/@mistralai/mistralai/tests \
     && find /opt/flow/node -xdev -exec touch --date="@${SOURCE_DATE_EPOCH}" {} +
 
 FROM ${PYTHON_IMAGE} AS python-build
@@ -35,6 +36,7 @@ RUN python -m venv --copies /opt/flow/python \
     && /opt/flow/python/bin/pip install --require-hashes --only-binary=:all: --requirement /tmp/python-requirements.lock \
     && /opt/flow/python/bin/pip install --no-deps --no-build-isolation /tmp/prime-agent-runtime \
     && /opt/flow/python/bin/python -I -c 'import bs4, dill, httpx, ipykernel, lxml, numpy, pandas, pydantic, requests, rlm, scipy, tyro, yaml' \
+    && rm -rf /opt/flow/python/lib/python3.11/site-packages/tornado/test \
     && find /opt/flow/python -xdev -exec touch --date="@${SOURCE_DATE_EPOCH}" {} +
 
 FROM ${NODE_IMAGE} AS runtime

@@ -151,7 +151,7 @@ async function pythonPackageInventory(root, files) {
     if (file.bytes > MAX_METADATA_BYTES) {
       throw new Error("Python package metadata exceeds its byte limit");
     }
-    const metadata = await readFile(file.path, "utf8");
+    const metadata = new TextDecoder("utf-8", { fatal: true }).decode(await readFile(file.path));
     const name = /^Name:\s*([^\r\n]+)$/im.exec(metadata)?.[1];
     const version = /^Version:\s*([^\r\n]+)$/im.exec(metadata)?.[1];
     if (name === undefined || version === undefined) {

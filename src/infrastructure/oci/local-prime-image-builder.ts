@@ -297,6 +297,7 @@ export interface LocalPrimeImageBuilderOptions {
   readonly inspectImageArchive?: typeof inspectPrimeImageArchive;
   readonly retainedImageId?: string;
   readonly removePath?: typeof rm;
+  readonly recoveryRealpath?: (path: string) => Promise<string>;
 }
 
 interface CompletedPrimeImageBuildOperation {
@@ -318,6 +319,7 @@ export class LocalPrimeImageBuilder {
   readonly #temporaryRoot: string;
   readonly #retainedImageId: string | undefined;
   readonly #removePath: typeof rm;
+  readonly #recoveryRealpath: NonNullable<LocalPrimeImageBuilderOptions["recoveryRealpath"]>;
   readonly #verifyPrimeArchive: NonNullable<LocalPrimeImageBuilderOptions["verifyPrimeArchive"]>;
 
   constructor(options: LocalPrimeImageBuilderOptions) {
@@ -327,6 +329,7 @@ export class LocalPrimeImageBuilder {
     this.#temporaryRoot = resolve(options.temporaryRoot ?? tmpdir());
     this.#retainedImageId = options.retainedImageId;
     this.#removePath = options.removePath ?? rm;
+    this.#recoveryRealpath = options.recoveryRealpath ?? realpath;
     this.#run =
       options.run ??
       ((args, commandOptions) =>
@@ -583,6 +586,7 @@ export class LocalPrimeImageBuilder {
   }
 
   async recoverInterruptedBuilds(): Promise<void> {
+    const canonicalTemporaryRoot = await this.#recoveryRealpath(this.#temporaryRoot);
     const entries = (await readdir(this.#temporaryRoot, { withFileTypes: true }))
       .filter(
         (entry) =>
@@ -593,11 +597,15 @@ export class LocalPrimeImageBuilder {
       throw new Error("Prime image recovery operation count exceeds its limit");
     }
     for (const entry of entries) {
-      const operationRoot = join(this.#temporaryRoot, entry.name);
+      const requestedOperationRoot = join(this.#temporaryRoot, entry.name);
+      await assertPrivateRecoveryDirectory(requestedOperationRoot);
+      const operationRoot = await this.#recoveryRealpath(requestedOperationRoot);
+      if (dirname(operationRoot) !== canonicalTemporaryRoot) {
+        throw new Error("Prime image recovery directory escapes its temporary root");
+      }
       if (this.#completedOperations.some((created) => created.operationRoot === operationRoot)) {
         continue;
       }
-      await assertPrivateRecoveryDirectory(operationRoot);
       const journalPath = join(operationRoot, RECOVERY_JOURNAL);
       let journal: RecoveryJournal | undefined;
       try {
