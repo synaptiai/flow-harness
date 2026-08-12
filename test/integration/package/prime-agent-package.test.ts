@@ -147,10 +147,31 @@ describe("Prime Agent package boundary", () => {
       resolve(repositoryRoot, "prime-container/Dockerfile"),
       "utf8",
     );
+    const engineSource = await readFile(
+      resolve(repositoryRoot, "src/infrastructure/oci/local-docker-prime-oci-engine.ts"),
+      "utf8",
+    );
     const sourceDateEpoch = ["$", "{SOURCE_DATE_EPOCH}"].join("");
     expect(dockerfile).toMatch(
       /^# syntax=docker\/dockerfile:1\.17\.1@sha256:38387523653efa0039f8e1c89bb74a30504e76ee9f565e25c9a09841f9427b05$/m,
     );
+    expect(dockerfile).toContain(
+      "ARG NODE_IMAGE=node:22.19.0-bookworm-slim@sha256:4a4884e8a44826194dff92ba316264f392056cbe243dcc9fd3551e71cea02b90",
+    );
+    expect(dockerfile).toContain(
+      "ENV LANG=C.UTF-8 LC_ALL=C.UTF-8 NODE_ENV=production PRIME_AGENT_KERNEL_FORKSERVER=0",
+    );
+    for (const environment of [
+      "PRIME_AGENT_KERNEL_FORKSERVER=0",
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "NODE_VERSION=22.19.0",
+      "YARN_VERSION=1.22.22",
+      "LANG=C.UTF-8",
+      "LC_ALL=C.UTF-8",
+      "NODE_ENV=production",
+    ]) {
+      expect(engineSource).toContain(`"${environment}"`);
+    }
     expect(dockerfile).toContain(
       "COPY --from=node-build /opt/flow/node/node_modules/prime-agent/dist/prime-agent-runtime /tmp/prime-agent-runtime",
     );

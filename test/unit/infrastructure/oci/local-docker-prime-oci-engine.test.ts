@@ -12,6 +12,16 @@ type PrimeIdentity = Extract<
 >;
 
 describe("local Docker Prime OCI engine", () => {
+  it("accepts the exact environment inherited from the pinned Prime image", async () => {
+    const fixture = engineFixture();
+    const engine = new LocalDockerPrimeOciEngine(fixture.options);
+
+    await expect(engine.create(fixture.intent)).resolves.toEqual({
+      containerId: fixture.containerId,
+      inspectedPolicyDigest: fixture.identity.runtime.policy.digest,
+    });
+  });
+
   it("creates one closed container and reconciles it before start", async () => {
     const fixture = engineFixture();
     const engine = new LocalDockerPrimeOciEngine(fixture.options);
@@ -128,6 +138,37 @@ describe("local Docker Prime OCI engine", () => {
       (value: Record<string, unknown>) =>
         ((value.Config as Record<string, unknown>).Healthcheck = null),
     ],
+    [
+      "missing environment value",
+      (value: Record<string, unknown>) =>
+        ((value.Config as Record<string, unknown>).Env = (
+          (value.Config as Record<string, unknown>).Env as string[]
+        ).slice(1)),
+    ],
+    [
+      "changed environment value",
+      (value: Record<string, unknown>) =>
+        ((value.Config as Record<string, unknown>).Env = [
+          ...((value.Config as Record<string, unknown>).Env as string[]).slice(0, -1),
+          "NODE_ENV=development",
+        ]),
+    ],
+    [
+      "duplicate environment value",
+      (value: Record<string, unknown>) =>
+        ((value.Config as Record<string, unknown>).Env = [
+          ...((value.Config as Record<string, unknown>).Env as string[]),
+          "NODE_ENV=production",
+        ]),
+    ],
+    [
+      "extra environment value",
+      (value: Record<string, unknown>) =>
+        ((value.Config as Record<string, unknown>).Env = [
+          ...((value.Config as Record<string, unknown>).Env as string[]),
+          "PRIVATE_VALUE=unexpected",
+        ]),
+    ],
   ])("rejects a changed %s control before start", async (_name, mutate) => {
     const fixture = engineFixture();
     const engine = new LocalDockerPrimeOciEngine(fixture.options);
@@ -136,8 +177,49 @@ describe("local Docker Prime OCI engine", () => {
     mutate(changed);
     vi.mocked(fixture.api.inspectContainer).mockResolvedValueOnce(changed);
 
-    await expect(engine.start(fixture.containerId)).rejects.toThrow(/policy|control/i);
+    await expect(engine.start(fixture.containerId)).rejects.toThrow(/admission/i);
     expect(fixture.api.startContainer).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      "environment",
+      "created Prime container environment does not match admission",
+      "PRIVATE_VALUE",
+      (inspection: Record<string, unknown>) =>
+        ((inspection.Config as Record<string, unknown>).Env = ["PRIVATE_VALUE=unexpected"]),
+    ],
+    [
+      "added capabilities",
+      "created Prime container capabilities do not match admission",
+      "SYS_ADMIN",
+      (inspection: Record<string, unknown>) =>
+        ((inspection.HostConfig as Record<string, unknown>).CapAdd = ["SYS_ADMIN"]),
+    ],
+    [
+      "dropped capabilities",
+      "created Prime container capabilities do not match admission",
+      "CHOWN",
+      (inspection: Record<string, unknown>) =>
+        ((inspection.HostConfig as Record<string, unknown>).CapDrop = ["CHOWN"]),
+    ],
+    [
+      "security options",
+      "created Prime container security options do not match admission",
+      "unconfined",
+      (inspection: Record<string, unknown>) =>
+        ((inspection.HostConfig as Record<string, unknown>).SecurityOpt = ["seccomp=unconfined"]),
+    ],
+  ])("reports a closed %s inspection failure", async (_name, message, canary, mutate) => {
+    const fixture = engineFixture();
+    const changed = structuredClone(fixture.inspection);
+    mutate(changed);
+    vi.mocked(fixture.api.inspectContainer).mockResolvedValueOnce(changed);
+    const engine = new LocalDockerPrimeOciEngine(fixture.options);
+    const result = engine.create(fixture.intent);
+
+    await expect(result).rejects.toThrow(message);
+    await expect(result).rejects.not.toThrow(canary);
   });
 
   it("recovers only the exact intent name and durable labels", async () => {
@@ -158,7 +240,7 @@ describe("local Docker Prime OCI engine", () => {
       "flow.owner-nonce": "f".repeat(64),
     };
     vi.mocked(fixture.api.inspectContainer).mockResolvedValueOnce(changed);
-    await expect(engine.recoverIntent(fixture.intent)).rejects.toThrow(/label|policy/i);
+    await expect(engine.recoverIntent(fixture.intent)).rejects.toThrow(/admission/i);
   });
 
   it("reconciles the complete durable identity before recovery cleanup", async () => {
@@ -183,7 +265,7 @@ describe("local Docker Prime OCI engine", () => {
     };
     vi.mocked(fixture.api.inspectContainer).mockResolvedValueOnce(changed);
 
-    await expect(engine.recoverCreated(lease)).rejects.toThrow(/policy|control/i);
+    await expect(engine.recoverCreated(lease)).rejects.toThrow(/admission/i);
     expect(fixture.api.stopContainer).not.toHaveBeenCalled();
     expect(fixture.api.removeContainer).not.toHaveBeenCalled();
   });
@@ -286,7 +368,15 @@ function inspectionFor(
       Domainname: "",
       User: `${policy.supervisorUid}:${policy.sharedGid}`,
       WorkingDir: "/workspace",
-      Env: ["PRIME_AGENT_KERNEL_FORKSERVER=0"],
+      Env: [
+        "PRIME_AGENT_KERNEL_FORKSERVER=0",
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "NODE_VERSION=22.19.0",
+        "YARN_VERSION=1.22.22",
+        "LANG=C.UTF-8",
+        "LC_ALL=C.UTF-8",
+        "NODE_ENV=production",
+      ],
       Labels: {
         "flow.evaluation-id": intent.labels.evaluationId,
         "flow.trial-id": intent.labels.trialId,

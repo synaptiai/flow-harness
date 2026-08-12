@@ -36,6 +36,16 @@ const PRIME_OCI_MASKED_PATHS = Object.freeze([
   "/sys/devices/virtual/powercap",
 ]);
 
+const PRIME_OCI_ENVIRONMENT = Object.freeze([
+  "PRIME_AGENT_KERNEL_FORKSERVER=0",
+  "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+  "NODE_VERSION=22.19.0",
+  "YARN_VERSION=1.22.22",
+  "LANG=C.UTF-8",
+  "LC_ALL=C.UTF-8",
+  "NODE_ENV=production",
+]);
+
 type PrimeIdentity = Extract<
   ExternalHarnessIdentity,
   { readonly adapter: "prime-agent-native-v1" }
@@ -212,7 +222,7 @@ export class LocalDockerPrimeOciEngine implements PrimeOciEngine {
       Domainname: "",
       User: `${policy.supervisorUid}:${policy.sharedGid}`,
       WorkingDir: "/workspace",
-      Env: ["PRIME_AGENT_KERNEL_FORKSERVER=0"],
+      Env: [...PRIME_OCI_ENVIRONMENT],
       Labels: dockerLabels(intent),
       OpenStdin: true,
       StdinOnce: true,
@@ -280,21 +290,49 @@ export class LocalDockerPrimeOciEngine implements PrimeOciEngine {
     intent: PrimeOciIntentLease,
     containerId: string,
   ): void {
-    const expected = {
+    const expectedIdentity = {
       Id: containerId,
       Name: `/${intent.containerName}`,
       Image: intent.imageId,
-      Config: selectConfig(this.#configuration(intent)),
-      HostConfig: this.#hostConfiguration(),
     };
-    const actual = {
+    const actualIdentity = {
       Id: inspection.Id,
       Name: inspection.Name,
       Image: inspection.Image,
-      Config: selectConfig(asObject(inspection.Config, "Docker Config")),
-      HostConfig: selectHostConfig(asObject(inspection.HostConfig, "Docker HostConfig")),
     };
-    if (!isDeepStrictEqual(actual, expected)) {
+    if (!isDeepStrictEqual(actualIdentity, expectedIdentity)) {
+      throw new Error("created Prime container identity does not match admission");
+    }
+
+    const expectedConfig = selectConfig(this.#configuration(intent));
+    const actualConfig = selectConfig(asObject(inspection.Config, "Docker Config"));
+    if (!isDeepStrictEqual(actualConfig.Env, expectedConfig.Env)) {
+      throw new Error("created Prime container environment does not match admission");
+    }
+    if (!isDeepStrictEqual(omitKeys(actualConfig, ["Env"]), omitKeys(expectedConfig, ["Env"]))) {
+      throw new Error("created Prime container configuration does not match admission");
+    }
+
+    const expectedHostConfig = this.#hostConfiguration();
+    const actualHostConfig = selectHostConfig(asObject(inspection.HostConfig, "Docker HostConfig"));
+    const capabilityKeys = ["CapDrop", "CapAdd"] as const;
+    if (
+      !isDeepStrictEqual(
+        selectKeys(actualHostConfig, capabilityKeys),
+        selectKeys(expectedHostConfig, capabilityKeys),
+      )
+    ) {
+      throw new Error("created Prime container capabilities do not match admission");
+    }
+    if (!isDeepStrictEqual(actualHostConfig.SecurityOpt, expectedHostConfig.SecurityOpt)) {
+      throw new Error("created Prime container security options do not match admission");
+    }
+    if (
+      !isDeepStrictEqual(
+        omitKeys(actualHostConfig, [...capabilityKeys, "SecurityOpt"]),
+        omitKeys(expectedHostConfig, [...capabilityKeys, "SecurityOpt"]),
+      )
+    ) {
       throw new Error("created Prime container control policy does not match admission");
     }
   }
@@ -367,6 +405,21 @@ function selectHostConfig(configuration: Record<string, unknown>): Record<string
     "BlkioDeviceReadIOps",
   ] as const;
   return Object.fromEntries(keys.map((key) => [key, configuration[key]]));
+}
+
+function selectKeys<const Key extends string>(
+  value: Record<string, unknown>,
+  keys: readonly Key[],
+): Record<Key, unknown> {
+  return Object.fromEntries(keys.map((key) => [key, value[key]])) as Record<Key, unknown>;
+}
+
+function omitKeys(
+  value: Record<string, unknown>,
+  omittedKeys: readonly string[],
+): Record<string, unknown> {
+  const omitted = new Set(omittedKeys);
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !omitted.has(key)));
 }
 
 function tmpfsOptions(bytes: number, inodes: number, mode: string): string {
