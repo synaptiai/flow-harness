@@ -55,6 +55,24 @@ func TestParseInnerDriverAcceptsTypeScriptSignatureAndRejectsForgery(t *testing.
 	}
 }
 
+func TestParseInnerDriverAcceptsTypeScriptSignatureWithHTMLSensitivePayload(t *testing.T) {
+	const sessionID = "018f4d63-9cc1-7a42-9a32-f31bb25e4c70"
+	secretHex := strings.Repeat("ab", 32)
+	source := `{"version":1,"sequence":2,"sessionId":"018f4d63-9cc1-7a42-9a32-f31bb25e4c70","type":"inference_request","payload":{"body":"<skill_import> & \u2028"},"mac":"a985265145e8d53de166cb114bd38ff151d99837e1d989315bae6853ff23a78d"}`
+
+	frame, err := ParseInnerDriver([]byte(source), InnerExpectation{
+		SecretHex: secretHex,
+		SessionID: sessionID,
+		Sequence:  2,
+	})
+	if err != nil {
+		t.Fatalf("parse HTML-sensitive TypeScript driver frame: %v", err)
+	}
+	if frame.Type != InnerInferenceRequest || frame.Sequence != 2 {
+		t.Fatalf("HTML-sensitive driver frame changed: %#v", frame)
+	}
+}
+
 func TestParseInnerParentRequiresTheExpectedDirection(t *testing.T) {
 	source := `{"version":1,"sequence":1,"sessionId":"018f4ee8-9d67-7ca1-a31f-4f3f2388e934","type":"hello","payload":{"secretHex":"1111111111111111111111111111111111111111111111111111111111111111","trialId":"trial-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","identityDigest":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},"mac":"47b869ad338a1066ed892cd559e6dd3376fd2a32084409d3d45b512ba406e93c"}`
 

@@ -50,6 +50,21 @@ describe("external harness protocol", () => {
     expect(session.state).toBe("terminal");
   });
 
+  it("signs HTML-sensitive protocol text with the Go canonical JSON escaping", () => {
+    const signed = signExternalHarnessDriverFrame(
+      {
+        version: 1,
+        sequence: 2,
+        sessionId,
+        type: "inference_request",
+        payload: { body: "<skill_import> & \u2028" },
+      },
+      secretHex,
+    );
+
+    expect(signed.mac).toBe("a985265145e8d53de166cb114bd38ff151d99837e1d989315bae6853ff23a78d");
+  });
+
   it.each([
     ["malformed JSON", "{"],
     [

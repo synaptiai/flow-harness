@@ -426,6 +426,10 @@ Node standard output and error use private bounded diagnostic pipes.
 Node receives one private supervisor socket for signed inner frames. The supervisor parses that
 socket only as `flow-external-harness-jsonl-v1`. Raw outer frames fail.
 
+The signed JSON form sorts object keys. Its strings use the Go JSON escapes for `<`, `>`, `&`,
+U+2028, and U+2029. The transmitted JSON can use an equivalent JSON string form. The MAC input
+always uses the fixed escaped form.
+
 The Python launcher closes and unshares every inherited descriptor from 3 upward before kernel
 startup. Python standard input and output use `/dev/null`.
 
@@ -1007,7 +1011,7 @@ user before it runs the setup.
 | Diagnose Docker and Prime process failure | Contract | `npx vitest run test/unit/infrastructure/oci/docker-unix-api-client.test.ts test/unit/infrastructure/prime/native-prime-evaluation-driver.test.ts && (cd prime-container && go test ./internal/supervisor ./internal/containerprotocol)` | Each admitted start-failure category is fixed. Docker response text does not enter the public error. Attached writes accept both Node success callback values and reject an Error. Bounded supervisor, readiness measurement, Docker system-file, driver-process, relay-boundary, and package-specific driver-SDK failures use closed fixed stages without private text. The driver gets one bounded settlement grace before process-group termination. Closed-channel exit, signal, and forced-settlement outcomes are distinct. Forced settlement distinguishes empty and nonempty unclassified diagnostics. One unique complete allowlisted stage line wins over other private lines. Non-EOF relay stages keep priority. | Recovery from an incompatible host |
 | Audit locked runtime dependencies | Supply chain | `npm run build && node scripts/audit-prime-dependencies.mjs` | The exact Prime Node and Python locks pass the fixed audit policy. | Future dependency versions |
 | Run a real persistent IPython session | Integration | `npx vitest run test/integration/prime/native-prime-agent-evaluation.test.ts` | One session keeps state across two turns. It uses one accepted kernel request. | Live provider quality |
-| Exchange signed process frames | Integration | `npx vitest run test/integration/prime/native-prime-agent-driver-protocol.test.ts` | The compiled driver completes one signed tool exchange through fake inference. | Provider quality |
+| Exchange signed process frames | Integration | `npx vitest run test/unit/evaluation/external-harness-protocol.test.ts test/integration/prime/native-prime-agent-driver-protocol.test.ts && (cd prime-container && go test ./internal/containerprotocol)` | TypeScript and Go use the same fixed string escapes for signed frames. The compiled driver completes one signed tool exchange through fake inference. | Provider quality |
 | Translate host inference | Contract | `npx vitest run test/unit/infrastructure/prime/native-prime-host-inference-broker.test.ts` | The broker preserves bounded Prime continuity and rejects unsupported fields. | New provider authority |
 | Disable ambient Prime features | Security | `npx vitest run test/integration/prime/native-prime-agent-ambient.test.ts` | Each resource, service, session, recursion, retry, compaction, goal, and refinement input stays disabled. | General Prime compatibility |
 | Protect the signed broker channel | Security | `npm run build && npm run test:runtime -- test/runtime/prime-agent-oci-process-boundary.runtime.test.ts` | Python cannot reach Node secrets or outer streams. Raw standard-descriptor injection fails. Mode `000` entries export. | Host-kernel compromise |
