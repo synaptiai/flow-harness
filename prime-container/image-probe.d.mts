@@ -33,6 +33,14 @@ export interface PrimeRuntimeInventory {
   readonly sbomSha256: string;
 }
 
+export interface NativePrimeSdkBindingLoaders {
+  readonly loadSdk: () => Promise<Readonly<Record<string, unknown>>>;
+}
+
 export function createRuntimeInventory(
   input: PrimeRuntimeInventoryInput,
 ): Promise<PrimeRuntimeInventory>;
+
+export function verifyNativePrimeSdkBindings(
+  loaders?: NativePrimeSdkBindingLoaders,
+): Promise<void>;

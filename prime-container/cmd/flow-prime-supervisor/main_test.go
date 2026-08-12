@@ -8,6 +8,13 @@ import (
 	"testing"
 )
 
+func TestPrimeDriverProcessOptionsPermitThePinnedNativeAddon(t *testing.T) {
+	options := primeDriverProcessOptions()
+	if !reflect.DeepEqual(options.Arguments, []string{driverPath}) {
+		t.Fatalf("Prime driver arguments changed: %#v", options.Arguments)
+	}
+}
+
 func TestPreparePrivatePathsCreatesTheTreeBeforeSettlingTheRoot(t *testing.T) {
 	operations := []string{}
 	filesystem := privatePathFilesystem{

@@ -2,13 +2,38 @@ import { mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { createRuntimeInventory } from "../../../prime-container/image-probe.mjs";
+import {
+  createRuntimeInventory,
+  verifyNativePrimeSdkBindings,
+} from "../../../prime-container/image-probe.mjs";
 import { nodePackageIdentityCases } from "../../fixtures/prime/node-package-identity-cases.js";
 import { invalidUtf8PythonPackageMetadata } from "../../fixtures/prime/package-metadata-cases.js";
 
 describe("Prime image inventory probe", () => {
+  it("loads every native Prime SDK binding from the admitted image closure", async () => {
+    const loadSdk = vi.fn(async () => ({
+      AuthStorage: class {},
+      ModelRegistry: class {},
+      SettingsManager: class {},
+      SessionManager: class {},
+      createExtensionRuntime: () => undefined,
+      createIpythonToolDefinition: () => undefined,
+      createAgentSession: async () => undefined,
+      createAssistantMessageEventStream: () => undefined,
+    }));
+
+    await expect(verifyNativePrimeSdkBindings({ loadSdk })).resolves.toBeUndefined();
+    expect(loadSdk).toHaveBeenCalledOnce();
+
+    await expect(
+      verifyNativePrimeSdkBindings({
+        loadSdk: async () => ({ ...((await loadSdk()) as object), AuthStorage: null }),
+      }),
+    ).rejects.toThrow("Prime image SDK bindings are incomplete");
+  });
+
   it("hashes installed Node and Python closures with a canonical inventory", async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "flow-prime-image-probe-")));
     const fixture = await probeFixture(root);

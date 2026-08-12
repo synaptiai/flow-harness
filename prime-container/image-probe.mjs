@@ -2,12 +2,45 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, readdir, readFile, readlink, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const MAX_ENTRIES = 131_072;
 const MAX_LOGICAL_BYTES = 2_147_483_648;
 const MAX_FILE_BYTES = 536_870_912;
 const MAX_METADATA_BYTES = 1_048_576;
+const DRIVER_PATH =
+  "/opt/flow/node/flow-dist/infrastructure/prime/native-prime-agent-evaluation-driver.js";
+
+const DEFAULT_NATIVE_PRIME_SDK_LOADERS = Object.freeze({
+  loadSdk: async () => {
+    const driver = await import(pathToFileURL(DRIVER_PATH).href);
+    if (typeof driver.loadNativePrimeSdk !== "function") {
+      throw new Error("Prime image SDK loader is unavailable");
+    }
+    return driver.loadNativePrimeSdk();
+  },
+});
+
+export async function verifyNativePrimeSdkBindings(loaders = DEFAULT_NATIVE_PRIME_SDK_LOADERS) {
+  const sdk = await loaders.loadSdk();
+  const bindings = [
+    "AuthStorage",
+    "ModelRegistry",
+    "SettingsManager",
+    "SessionManager",
+    "createExtensionRuntime",
+    "createIpythonToolDefinition",
+    "createAgentSession",
+    "createAssistantMessageEventStream",
+  ];
+  if (
+    sdk === null ||
+    typeof sdk !== "object" ||
+    bindings.some((name) => typeof sdk[name] !== "function")
+  ) {
+    throw new Error("Prime image SDK bindings are incomplete");
+  }
+}
 
 export async function createRuntimeInventory(input) {
   const node = await scanTree(input.nodeRoot);
@@ -239,14 +272,14 @@ function sha256(value) {
 }
 
 if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+  await verifyNativePrimeSdkBindings();
   const inventory = await createRuntimeInventory({
     nodeRoot: "/opt/flow/node/node_modules",
     primeRoot: "/opt/flow/node/node_modules/prime-agent",
     pythonRoot: "/opt/flow/python",
     flowDistRoot: "/opt/flow/node/flow-dist",
     artifacts: {
-      driver:
-        "/opt/flow/node/flow-dist/infrastructure/prime/native-prime-agent-evaluation-driver.js",
+      driver: DRIVER_PATH,
       kernelProxy: "/opt/flow/bin/flow-prime-kernel-proxy",
       noIoResourceLoader: "/opt/flow/node/flow-dist/infrastructure/prime/no-io-resource-loader.js",
       pythonLauncher: "/opt/flow/bin/flow-prime-python",

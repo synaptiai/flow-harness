@@ -74,20 +74,7 @@ func run() error {
 		os.Stdin,
 		os.Stdout,
 		prepared.Bootstrap,
-		supervisor.DriverProcessOptions{
-			Executable: nodePath,
-			Arguments:  []string{"--no-addons", driverPath},
-			Environment: []string{
-				"HOME=/run/flow-node", "LANG=C.UTF-8", "LC_ALL=C.UTF-8",
-				"LD_PRELOAD=/opt/flow/lib/flow-prime-node-hardening.so",
-				"NODE_ENV=production", "PATH=/usr/local/bin:/usr/bin:/bin",
-				"FLOW_PRIME_HARDENING_FD=4",
-				"PRIME_AGENT_KERNEL_FORKSERVER=0", "TMPDIR=/run/flow-node",
-			},
-			WorkingDirectory: workspacePath,
-			UID:              supervisor.NodeUID, GID: supervisor.NodeUID, Groups: []int{supervisor.SharedGID},
-			MaxDiagnosticBytes: 65536,
-		},
+		primeDriverProcessOptions(),
 	)
 	if err != nil {
 		return fmt.Errorf("run Prime driver: %w", err)
@@ -120,6 +107,25 @@ func run() error {
 		return errors.New("encode Prime settlement")
 	}
 	return containerprotocol.WriteFrame(os.Stdout, containerprotocol.FrameSettlement, settlement)
+}
+
+func primeDriverProcessOptions() supervisor.DriverProcessOptions {
+	return supervisor.DriverProcessOptions{
+		Executable: nodePath,
+		Arguments:  []string{driverPath},
+		Environment: []string{
+			"HOME=/run/flow-node", "LANG=C.UTF-8", "LC_ALL=C.UTF-8",
+			"LD_PRELOAD=/opt/flow/lib/flow-prime-node-hardening.so",
+			"NODE_ENV=production", "PATH=/usr/local/bin:/usr/bin:/bin",
+			"FLOW_PRIME_HARDENING_FD=4",
+			"PRIME_AGENT_KERNEL_FORKSERVER=0", "TMPDIR=/run/flow-node",
+		},
+		WorkingDirectory:   workspacePath,
+		UID:                supervisor.NodeUID,
+		GID:                supervisor.NodeUID,
+		Groups:             []int{supervisor.SharedGID},
+		MaxDiagnosticBytes: 65536,
+	}
 }
 
 func preparePrivatePaths() error {
