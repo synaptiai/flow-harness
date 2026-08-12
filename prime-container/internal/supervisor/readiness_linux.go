@@ -5,7 +5,6 @@ package supervisor
 import (
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"sort"
 	"strconv"
@@ -291,27 +290,7 @@ func measureTmpfs(path string, mounts map[string]mountInformation) (FilesystemCo
 }
 
 func measureNetwork() (NetworkReadiness, error) {
-	interfaces, err := net.Interfaces()
-	if err != nil {
-		return NetworkReadiness{}, fmt.Errorf("inspect Prime network interfaces: %w", err)
-	}
-	names := make([]string, 0, len(interfaces))
-	for _, item := range interfaces {
-		names = append(names, item.Name)
-	}
-	sort.Strings(names)
-	routeSource, err := os.ReadFile("/proc/net/route")
-	if err != nil {
-		return NetworkReadiness{}, fmt.Errorf("inspect Prime network routes: %w", err)
-	}
-	routes := make([]string, 0)
-	for index, line := range strings.Split(strings.TrimSpace(string(routeSource)), "\n") {
-		if index == 0 || strings.TrimSpace(line) == "" {
-			continue
-		}
-		routes = append(routes, strings.Fields(line)[0])
-	}
-	return NetworkReadiness{Namespace: "private", Interfaces: names, Routes: routes}, nil
+	return measureNetworkWith(readBoundedProcFile)
 }
 
 func descriptorExists(fileDescriptor int) bool {

@@ -6,21 +6,114 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf8"
 )
 
 const (
-	maxDockerSystemFileBytes = 4096
-	fixedDockerHostname      = "flow-prime\n"
-	fixedDockerHostsSource   = "127.0.0.1\tlocalhost\n" +
+	maxDockerSystemFileBytes   = 4096
+	maxNetworkInformationBytes = 65536
+	fixedDockerHostname        = "flow-prime\n"
+	fixedDockerHostsSource     = "127.0.0.1\tlocalhost\n" +
 		"::1\tlocalhost ip6-localhost ip6-loopback\n" +
 		"fe00::\tip6-localnet\n" +
 		"ff00::\tip6-mcastprefix\n" +
 		"ff02::1\tip6-allnodes\n" +
 		"ff02::2\tip6-allrouters\n"
 )
+
+func parseNetworkInterfaces(source string) ([]string, error) {
+	invalid := func() ([]string, error) {
+		return nil, errors.New("Prime network interface information is invalid")
+	}
+	if len(source) > maxNetworkInformationBytes || !utf8.ValidString(source) || strings.ContainsRune(source, '\r') {
+		return invalid()
+	}
+	lines := strings.Split(strings.TrimSuffix(source, "\n"), "\n")
+	if len(lines) < 3 || strings.Join(strings.Fields(lines[0]), " ") != "Inter-| Receive | Transmit" ||
+		strings.Join(strings.Fields(lines[1]), " ") != "face |bytes packets errs drop fifo frame compressed multicast|bytes packets errs drop fifo colls carrier compressed" {
+		return invalid()
+	}
+	names := make([]string, 0, len(lines)-2)
+	seen := make(map[string]bool, len(lines)-2)
+	for _, line := range lines[2:] {
+		nameSource, counterSource, found := strings.Cut(line, ":")
+		name := strings.TrimSpace(nameSource)
+		if !found || strings.Contains(counterSource, ":") || !isNetworkInterfaceName(name) || seen[name] {
+			return invalid()
+		}
+		counters := strings.Fields(counterSource)
+		if len(counters) != 16 {
+			return invalid()
+		}
+		for _, counter := range counters {
+			if _, err := strconv.ParseUint(counter, 10, 64); err != nil {
+				return invalid()
+			}
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		return invalid()
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+func isNetworkInterfaceName(value string) bool {
+	if len(value) < 1 || len(value) > 15 {
+		return false
+	}
+	for _, character := range []byte(value) {
+		if (character < 'a' || character > 'z') && (character < 'A' || character > 'Z') &&
+			(character < '0' || character > '9') && character != '_' && character != '.' && character != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func measureNetworkWith(read func(string, int) ([]byte, error)) (NetworkReadiness, error) {
+	interfaceSource, err := read("/proc/net/dev", maxNetworkInformationBytes)
+	if err != nil {
+		return NetworkReadiness{}, fmt.Errorf("inspect Prime network interfaces: %w", err)
+	}
+	names, err := parseNetworkInterfaces(string(interfaceSource))
+	if err != nil {
+		return NetworkReadiness{}, fmt.Errorf("inspect Prime network interfaces: %w", err)
+	}
+	routeSource, err := read("/proc/net/route", maxNetworkInformationBytes)
+	if err != nil {
+		return NetworkReadiness{}, fmt.Errorf("inspect Prime network routes: %w", err)
+	}
+	routes := make([]string, 0)
+	for index, line := range strings.Split(strings.TrimSpace(string(routeSource)), "\n") {
+		if index == 0 || strings.TrimSpace(line) == "" {
+			continue
+		}
+		routes = append(routes, strings.Fields(line)[0])
+	}
+	return NetworkReadiness{Namespace: "private", Interfaces: names, Routes: routes}, nil
+}
+
+func readBoundedProcFile(path string, limit int) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	content, err := io.ReadAll(io.LimitReader(file, int64(limit)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(content) > limit {
+		return nil, errors.New("Prime proc file exceeds its byte limit")
+	}
+	return content, nil
+}
 
 var (
 	fixedDockerHosts = []string{

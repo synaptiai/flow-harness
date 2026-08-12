@@ -104,6 +104,98 @@ func TestParseMountInfoIgnoresRepeatedNonAuthoritativeMounts(t *testing.T) {
 	}
 }
 
+func TestParseNetworkInterfacesReadsKernelDeviceRows(t *testing.T) {
+	source := "Inter-|   Receive                                                |  Transmit\n" +
+		" face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n" +
+		"    lo: 120 2 0 0 0 0 0 0 120 2 0 0 0 0 0 0\n"
+	interfaces, err := parseNetworkInterfaces(source)
+	if err != nil || !reflect.DeepEqual(interfaces, []string{"lo"}) {
+		t.Fatalf("parse network interfaces: %#v %v", interfaces, err)
+	}
+	exact := strings.TrimSuffix(source, "\n") + strings.Repeat(" ", maxNetworkInformationBytes-len(source)) + "\n"
+	interfaces, err = parseNetworkInterfaces(exact)
+	if err != nil || !reflect.DeepEqual(interfaces, []string{"lo"}) {
+		t.Fatalf("exact network interface boundary failed: %d %#v %v", len(exact), interfaces, err)
+	}
+	if interfaces, err = parseNetworkInterfaces(exact + " "); interfaces != nil || err == nil {
+		t.Fatalf("network interface boundary overflow passed: %#v %v", interfaces, err)
+	}
+
+	for name, changed := range map[string]string{
+		"missing header":  "lo: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
+		"missing counter": strings.Replace(source, " 0 0 0 0\n", " 0 0 0\n", 1),
+		"invalid counter": strings.Replace(source, "120 2", "private 2", 1),
+		"duplicate name":  source + "    lo: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
+		"invalid name":    strings.Replace(source, "lo:", "private/name:", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if value, err := parseNetworkInterfaces(changed); value != nil || err == nil || strings.Contains(err.Error(), "private") {
+				t.Fatalf("invalid network interface evidence passed or escaped: %#v %v", value, err)
+			}
+		})
+	}
+}
+
+func TestMeasureNetworkUsesBoundedKernelTablesInOrder(t *testing.T) {
+	interfaceSource := []byte("Inter-| Receive | Transmit\n face |bytes packets errs drop fifo frame compressed multicast|bytes packets errs drop fifo colls carrier compressed\n lo: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n")
+	routeSource := []byte("Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n")
+	events := make([]string, 0, 2)
+	measurement, err := measureNetworkWith(func(path string, limit int) ([]byte, error) {
+		events = append(events, path)
+		if limit != maxNetworkInformationBytes {
+			t.Fatalf("network evidence limit changed: %d", limit)
+		}
+		if path == "/proc/net/dev" {
+			return interfaceSource, nil
+		}
+		return routeSource, nil
+	})
+	if err != nil || !reflect.DeepEqual(events, []string{"/proc/net/dev", "/proc/net/route"}) ||
+		!reflect.DeepEqual(measurement, NetworkReadiness{Namespace: "private", Interfaces: []string{"lo"}, Routes: []string{}}) {
+		t.Fatalf("network evidence composition changed: %#v %#v %v", measurement, events, err)
+	}
+
+	private := errors.New("private interface failure")
+	events = events[:0]
+	_, err = measureNetworkWith(func(path string, _ int) ([]byte, error) {
+		events = append(events, path)
+		return nil, private
+	})
+	if err == nil || !reflect.DeepEqual(events, []string{"/proc/net/dev"}) {
+		t.Fatalf("network route read started after interface failure: %#v %v", events, err)
+	}
+
+	events = events[:0]
+	_, err = measureNetworkWith(func(path string, _ int) ([]byte, error) {
+		events = append(events, path)
+		if path == "/proc/net/dev" {
+			return interfaceSource, nil
+		}
+		return nil, private
+	})
+	if err == nil || !strings.HasPrefix(err.Error(), "inspect Prime network routes:") ||
+		!reflect.DeepEqual(events, []string{"/proc/net/dev", "/proc/net/route"}) {
+		t.Fatalf("network route failure changed: %#v %v", events, err)
+	}
+}
+
+func TestReadBoundedProcFileEnforcesThePhysicalByteLimit(t *testing.T) {
+	path := t.TempDir() + "/network"
+	if err := os.WriteFile(path, make([]byte, maxNetworkInformationBytes), 0600); err != nil {
+		t.Fatalf("write exact network evidence: %v", err)
+	}
+	content, err := readBoundedProcFile(path, maxNetworkInformationBytes)
+	if err != nil || len(content) != maxNetworkInformationBytes {
+		t.Fatalf("exact network evidence boundary failed: %d %v", len(content), err)
+	}
+	if err := os.WriteFile(path, make([]byte, maxNetworkInformationBytes+1), 0600); err != nil {
+		t.Fatalf("write oversized network evidence: %v", err)
+	}
+	if content, err = readBoundedProcFile(path, maxNetworkInformationBytes); content != nil || err == nil {
+		t.Fatalf("oversized network evidence passed: %d %v", len(content), err)
+	}
+}
+
 func TestParseDockerSystemFilesAcceptsThePinnedGeneratedForms(t *testing.T) {
 	hostname, err := parseDockerHostname([]byte("flow-prime\n"))
 	if err != nil || hostname != "flow-prime" {

@@ -487,6 +487,9 @@ The supervisor measures its effective controls and reports readiness against tha
 it starts the driver. Flow then sends one strict file manifest through the attached input stream.
 Bounded chunks carry the admitted fixture bytes.
 
+Network readiness reads the kernel interface and route tables with a 65,536-byte limit. It does not
+open a netlink socket. The parser reports only normalized interface and route names.
+
 An attached write accepts both Node success values. A non-Error operation or cleanup rejection
 becomes one fixed stage error. Rejected private values do not enter that error.
 
