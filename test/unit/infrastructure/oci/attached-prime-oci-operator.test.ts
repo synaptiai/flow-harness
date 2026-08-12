@@ -34,13 +34,15 @@ describe("attached Prime OCI operator", () => {
     const resultEntry = fileEntry("RESULT.md", "DONE\n");
     const writes: Buffer[] = [];
     const checkpoints: string[] = [];
+    const driverEvents: { readonly category: string; readonly message: string }[] = [];
     const readiness = vi.fn(async () => undefined);
     const resultSink = sink();
     const transport: PrimeOciAttachedTransport = {
       output: outputFrames([
         frame(PrimeContainerFrameType.Readiness, { version: 1, status: "ready" }),
         driverFrame(1, "ready", { trialId, identityDigest }),
-        driverFrame(2, "terminal", {
+        driverEventFrame(2, "progress", "sdk-prompt-started"),
+        driverFrame(3, "terminal", {
           harness: { outcome: "completed", runId: "prime-session", reason: null },
           metrics: unavailableEvaluationMetrics(),
         }),
@@ -71,6 +73,10 @@ describe("attached Prime OCI operator", () => {
       validateReadiness: readiness,
       sessionIdFactory: () => sessionId,
       secretHexFactory: () => secretHex,
+      observeDriverEvent: (event) => {
+        driverEvents.push(event);
+        throw new Error("PRIVATE_OBSERVER_CANARY");
+      },
     });
 
     const evidence = await operator.operate(
@@ -81,6 +87,7 @@ describe("attached Prime OCI operator", () => {
 
     expect(readiness).toHaveBeenCalledOnce();
     expect(checkpoints).toEqual(["terminal", "exported"]);
+    expect(driverEvents).toEqual([{ category: "progress", message: "sdk-prompt-started" }]);
     expect(resultSink.commit).toHaveBeenCalledWith([resultEntry], undefined);
     expect(resultSink.publishResult).not.toHaveBeenCalled();
     expect(resultSink.abort).not.toHaveBeenCalled();
@@ -801,6 +808,30 @@ function driverInferenceFrame(sequence: number, body: string): Buffer {
               body,
               bodySha256: createHash("sha256").update(body).digest("hex"),
             },
+          },
+          secretHex,
+        ),
+      ),
+    ),
+  );
+}
+
+function driverEventFrame(
+  sequence: number,
+  category: "progress" | "diagnostic",
+  message: string,
+): Buffer {
+  return encodePrimeContainerFrame(
+    PrimeContainerFrameType.Driver,
+    Buffer.from(
+      JSON.stringify(
+        signExternalHarnessDriverFrame(
+          {
+            version: 1,
+            sequence,
+            sessionId,
+            type: "event",
+            payload: { category, message },
           },
           secretHex,
         ),

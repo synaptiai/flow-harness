@@ -223,7 +223,18 @@ export interface NativePrimeEvaluationSessionInput {
   readonly infer: (body: string, signal?: AbortSignal) => Promise<string>;
   readonly signal?: AbortSignal;
   readonly createSession?: NativePrimeSessionFactory;
+  readonly reportProgress?: (stage: NativePrimeDriverProgress) => Promise<void>;
 }
+
+export const NATIVE_PRIME_DRIVER_PROGRESS = Object.freeze([
+  "sdk-prompt-started",
+  "inference-response-received",
+  "sdk-prompt-settled",
+  "sdk-cleanup-started",
+  "sdk-cleanup-settled",
+] as const);
+
+export type NativePrimeDriverProgress = (typeof NATIVE_PRIME_DRIVER_PROGRESS)[number];
 
 export interface NativePrimeEvaluationSessionResult {
   readonly harness: EvaluationHarnessOutcome;
@@ -269,12 +280,14 @@ export async function runNativePrimeEvaluationSession(
   };
   input.signal?.addEventListener("abort", abortSession, { once: true });
   try {
+    await input.reportProgress?.("sdk-prompt-started");
     let promptError: unknown;
     try {
       await session.prompt(taskPrompt(input.instructionText));
     } catch (error) {
       promptError = error;
     }
+    await input.reportProgress?.("sdk-prompt-settled");
     const stats = withNativePrimeDriverSyncStage("observe-sdk-session", () =>
       session.getSessionStats(),
     );
@@ -327,8 +340,32 @@ export async function runNativePrimeEvaluationSession(
     input.signal?.removeEventListener("abort", abortSession);
     await abortPromise;
     unsubscribe();
-    await withNativePrimeDriverStage("dispose-sdk-session", () => session.dispose());
+    await settleNativePrimeEvaluationSession(session, input.reportProgress);
   }
+}
+
+async function settleNativePrimeEvaluationSession(
+  session: NativePrimeSession,
+  reportProgress: NativePrimeEvaluationSessionInput["reportProgress"],
+): Promise<void> {
+  const cleanupFailures: unknown[] = [];
+  try {
+    await reportProgress?.("sdk-cleanup-started");
+  } catch (error) {
+    cleanupFailures.push(error);
+  }
+  try {
+    await withNativePrimeDriverStage("dispose-sdk-session", () => session.dispose());
+  } catch (error) {
+    cleanupFailures.push(error);
+  }
+  if (cleanupFailures.length === 1) {
+    throw cleanupFailures[0];
+  }
+  if (cleanupFailures.length > 1) {
+    throw new AggregateError(cleanupFailures, "Prime SDK cleanup progress and disposal failed");
+  }
+  await reportProgress?.("sdk-cleanup-settled");
 }
 
 export async function runNativePrimeDriverProtocol(
@@ -350,7 +387,15 @@ export async function runNativePrimeDriverProtocol(
   const result = await runNativePrimeEvaluationSession({
     evaluation: hello.payload.evaluation,
     instructionText: hello.payload.instructionText,
-    infer: (body, signal) => channel.infer(body, signal),
+    infer: async (body, signal) => {
+      const response = await channel.infer(body, signal);
+      await withNativePrimeDriverStage("write-supervisor-output", () =>
+        channel.sendProgress("inference-response-received"),
+      );
+      return response;
+    },
+    reportProgress: (stage) =>
+      withNativePrimeDriverStage("write-supervisor-output", () => channel.sendProgress(stage)),
     ...(input.createSession === undefined ? {} : { createSession: input.createSession }),
     ...(input.signal === undefined ? {} : { signal: input.signal }),
   });
@@ -404,7 +449,14 @@ class PrimeSupervisorProtocolChannel {
     await this.#send("terminal", result);
   }
 
-  async #send(type: "ready" | "inference_request" | "terminal", payload: unknown): Promise<void> {
+  async sendProgress(message: NativePrimeDriverProgress): Promise<void> {
+    await this.#send("event", { category: "progress", message });
+  }
+
+  async #send(
+    type: "ready" | "event" | "inference_request" | "terminal",
+    payload: unknown,
+  ): Promise<void> {
     this.#driverSequence += 1;
     const frame = signExternalHarnessDriverFrame(
       {

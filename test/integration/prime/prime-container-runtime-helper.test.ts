@@ -29,13 +29,25 @@ afterEach(async () => {
 
 describe("verified Prime container runtime helper", () => {
   it.each([
-    [0, "verified Prime session exceeded 2000ms with inference request count 0"],
-    [1, "verified Prime session exceeded 2000ms with inference request count 1"],
-    [3, "verified Prime session exceeded 2000ms with inference request count 3"],
-  ])(
+    [
+      0,
+      undefined,
+      "verified Prime session exceeded 2000ms with inference request count 0 and driver progress none",
+    ],
+    [
+      1,
+      "sdk-prompt-started",
+      "verified Prime session exceeded 2000ms with inference request count 1 and driver progress sdk-prompt-started",
+    ],
+    [
+      3,
+      "inference-response-received",
+      "verified Prime session exceeded 2000ms with inference request count 3 and driver progress inference-response-received",
+    ],
+  ] as const)(
     "reports the closed inference phase when a session times out after %i requests",
-    (count, message) => {
-      expect(verifiedPrimeSessionTimeoutError(2_000, count)).toEqual(new Error(message));
+    (count, progress, message) => {
+      expect(verifiedPrimeSessionTimeoutError(2_000, count, progress)).toEqual(new Error(message));
     },
   );
 

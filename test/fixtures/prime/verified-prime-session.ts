@@ -15,6 +15,10 @@ import {
 } from "../../../src/infrastructure/oci/local-prime-workspace-transfer.js";
 import { validatePrimeOciReadiness } from "../../../src/infrastructure/oci/prime-oci-readiness.js";
 import {
+  NATIVE_PRIME_DRIVER_PROGRESS,
+  type NativePrimeDriverProgress,
+} from "../../../src/infrastructure/prime/native-prime-agent-evaluation-driver.js";
+import {
   type NativePrimeHarnessDescriptor,
   NativePrimeHarnessRegistry,
 } from "../../../src/infrastructure/prime/native-prime-harness-registry.js";
@@ -60,9 +64,10 @@ export interface VerifiedPrimeSessionResult {
 export function verifiedPrimeSessionTimeoutError(
   maxExecutionMs: number,
   inferenceRequestCount: number,
+  driverProgress?: NativePrimeDriverProgress,
 ): Error {
   return new Error(
-    `verified Prime session exceeded ${maxExecutionMs}ms with inference request count ${inferenceRequestCount}`,
+    `verified Prime session exceeded ${maxExecutionMs}ms with inference request count ${inferenceRequestCount} and driver progress ${driverProgress ?? "none"}`,
   );
 }
 
@@ -114,6 +119,8 @@ export async function runVerifiedPrimeSession(
     });
     const hostRequests: string[] = [];
     const checkpoints: string[] = [];
+    let driverProgress: NativePrimeDriverProgress | undefined;
+    const allowedDriverProgress = new Set<string>(NATIVE_PRIME_DRIVER_PROGRESS);
     const responses = [...input.responses];
     transport = await (input.testDependencies?.startContainer ?? startVerifiedPrimeContainer)(
       identity,
@@ -148,7 +155,10 @@ export async function runVerifiedPrimeSession(
     });
     const controller = new AbortController();
     timeout = setTimeout(
-      () => controller.abort(verifiedPrimeSessionTimeoutError(maxExecutionMs, hostRequests.length)),
+      () =>
+        controller.abort(
+          verifiedPrimeSessionTimeoutError(maxExecutionMs, hostRequests.length, driverProgress),
+        ),
       maxExecutionMs,
     );
     timeout.unref?.();
@@ -168,6 +178,11 @@ export async function runVerifiedPrimeSession(
           trialId: operation.request.evaluation.trial.trialId,
           imageDevice: operation.descriptor.localRuntime.imageDevice,
         });
+      },
+      observeDriverEvent: (event) => {
+        if (event.category === "progress" && allowedDriverProgress.has(event.message)) {
+          driverProgress = event.message as NativePrimeDriverProgress;
+        }
       },
     }).operate({
       request,

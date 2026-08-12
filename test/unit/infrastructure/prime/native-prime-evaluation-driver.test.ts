@@ -285,6 +285,27 @@ describe("native Prime evaluation driver", () => {
     });
   });
 
+  it("disposes the SDK session when cleanup progress reporting rejects", async () => {
+    const progressError = new Error("PRIVATE_PROGRESS_CANARY");
+    const session = fakeSession();
+
+    await expect(
+      runNativePrimeEvaluationSession({
+        evaluation: evaluationInput(),
+        instructionText: "Complete the task.",
+        infer: vi.fn(),
+        createSession: async () => session,
+        reportProgress: async (stage) => {
+          if (stage === "sdk-cleanup-started") {
+            throw progressError;
+          }
+        },
+      }),
+    ).rejects.toBe(progressError);
+
+    expect(session.dispose).toHaveBeenCalledOnce();
+  });
+
   it("counts tool failures and keeps provider errors as harness failures", async () => {
     const session = fakeSession({ promptError: new Error("provider failed"), toolError: true });
 
@@ -339,6 +360,7 @@ describe("native Prime evaluation driver", () => {
     );
     const written: string[] = [];
     const writtenTypes: string[] = [];
+    const progress: string[] = [];
     const verifier = new ExternalHarnessProtocolSession({
       sessionId: driverSessionId,
       secretHex: driverSecret,
@@ -374,6 +396,9 @@ describe("native Prime evaluation driver", () => {
         written.push(line);
         const frame = verifier.acceptDriverLine(line);
         writtenTypes.push(frame.type);
+        if (frame.type === "event" && frame.category === "progress") {
+          progress.push(frame.message);
+        }
         if (frame.type === "inference_request") {
           response = JSON.stringify(
             signExternalHarnessParentFrame(
@@ -397,8 +422,24 @@ describe("native Prime evaluation driver", () => {
       createSession,
     });
 
-    expect(written).toHaveLength(3);
-    expect(writtenTypes).toEqual(["ready", "inference_request", "terminal"]);
+    expect(written).toHaveLength(8);
+    expect(writtenTypes).toEqual([
+      "ready",
+      "event",
+      "inference_request",
+      "event",
+      "event",
+      "event",
+      "event",
+      "terminal",
+    ]);
+    expect(progress).toEqual([
+      "sdk-prompt-started",
+      "inference-response-received",
+      "sdk-prompt-settled",
+      "sdk-cleanup-started",
+      "sdk-cleanup-settled",
+    ]);
     expect(createSession).toHaveBeenCalledOnce();
   });
 

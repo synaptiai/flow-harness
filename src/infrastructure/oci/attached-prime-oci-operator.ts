@@ -88,6 +88,10 @@ export interface AttachedPrimeOciOperatorOptions {
   ) => void | Promise<void>;
   readonly sessionIdFactory?: () => string;
   readonly secretHexFactory?: () => string;
+  readonly observeDriverEvent?: (event: {
+    readonly category: "progress" | "diagnostic";
+    readonly message: string;
+  }) => void;
 }
 
 export class AttachedPrimeOciOperator {
@@ -163,7 +167,15 @@ export class AttachedPrimeOciOperator {
               break;
             case PrimeContainerFrameType.Driver: {
               const event = session.acceptDriverLine(decodeUtf8(frame.payload, "driver frame"));
-              if (event.type === "inference_request") {
+              if (event.type === "event") {
+                try {
+                  this.options.observeDriverEvent?.(
+                    Object.freeze({ category: event.category, message: event.message }),
+                  );
+                } catch {
+                  // Diagnostic observation must not affect protocol authority or settlement.
+                }
+              } else if (event.type === "inference_request") {
                 const body = await waitForAbortable(
                   this.options.inferenceBroker.infer(
                     {
