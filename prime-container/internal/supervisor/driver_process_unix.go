@@ -14,7 +14,10 @@ import (
 	"github.com/synaptiai/flow-harness/prime-container/internal/containerprotocol"
 )
 
-const driverHardeningProofTimeout = 5 * time.Second
+const (
+	driverHardeningProofTimeout = 5 * time.Second
+	driverRelaySettlementGrace  = 1 * time.Second
+)
 
 type DriverProcessOptions struct {
 	Executable         string
@@ -157,12 +160,22 @@ func RunDriverProcess(
 		_ = command.Wait()
 		return DriverProcessResult{}, errors.New("Prime driver hardening proof timed out")
 	}
+	processSettlement := make(chan error, 1)
+	go func() {
+		processSettlement <- command.Wait()
+	}()
 	relayError := containerprotocol.RelayDriver(hostReader, hostWriter, supervisorSocket, bootstrap)
-	if relayError != nil {
-		_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+	var waitError error
+	if relayError == nil {
+		waitError = <-processSettlement
+	} else {
+		waitError = settleDriverProcessAfterRelayFailure(
+			processSettlement,
+			time.After(driverRelaySettlementGrace),
+			func() error { return syscall.Kill(-command.Process.Pid, syscall.SIGKILL) },
+		)
 	}
 	diagnosticValue := <-diagnostic
-	waitError := command.Wait()
 	if diagnosticValue.err != nil {
 		return DriverProcessResult{}, fmt.Errorf("read Prime driver diagnostic: %w", diagnosticValue.err)
 	}
@@ -185,6 +198,20 @@ func RunDriverProcess(
 		return result, fmt.Errorf("Prime driver exited with code %d", exitCode)
 	}
 	return result, nil
+}
+
+func settleDriverProcessAfterRelayFailure(
+	processSettlement <-chan error,
+	graceDeadline <-chan time.Time,
+	killProcessGroup func() error,
+) error {
+	select {
+	case waitError := <-processSettlement:
+		return waitError
+	case <-graceDeadline:
+		_ = killProcessGroup()
+		return <-processSettlement
+	}
 }
 
 func boundedDiagnostic(value []byte) string {

@@ -3,6 +3,7 @@ package supervisor
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -128,6 +129,71 @@ func TestRunDriverProcessPromotesOnlyClosedDriverStages(t *testing.T) {
 	}
 }
 
+func TestRunDriverProcessAllowsClosedStageToSettleAfterDriverEOF(t *testing.T) {
+	result, err := RunDriverProcess(
+		&bytes.Buffer{},
+		&bytes.Buffer{},
+		[]byte(processTestHello),
+		DriverProcessOptions{
+			Executable: os.Args[0],
+			Arguments:  []string{"-test.run=TestPrimeDriverHelperProcess", "--"},
+			Environment: append(
+				os.Environ(),
+				"FLOW_PRIME_TEST_DRIVER=1",
+				"FLOW_PRIME_TEST_HARDENING=1",
+				"FLOW_PRIME_TEST_DELAYED_STAGE_DIAGNOSTIC=load-sdk",
+			),
+			WorkingDirectory: t.TempDir(),
+			UID:              -1, GID: -1,
+			MaxDiagnosticBytes: 65536,
+		},
+	)
+	if err == nil || err.Error() != "Prime driver stage failure: load-sdk" {
+		t.Fatalf("delayed closed driver stage was not promoted: %v", err)
+	}
+	if result.Diagnostic != "Prime driver stage failure: load-sdk\n" {
+		t.Fatalf("delayed driver diagnostic changed: %q", result.Diagnostic)
+	}
+}
+
+func TestSettleDriverProcessAfterRelayFailureUsesOneGraceDeadline(t *testing.T) {
+	expected := errors.New("PRIVATE_WAIT_ERROR")
+	t.Run("settled child", func(t *testing.T) {
+		settled := make(chan error, 1)
+		settled <- expected
+		killed := false
+		waitError := settleDriverProcessAfterRelayFailure(
+			settled,
+			make(chan time.Time),
+			func() error {
+				killed = true
+				return nil
+			},
+		)
+		if !errors.Is(waitError, expected) || killed {
+			t.Fatalf("settled child was killed: %v %t", waitError, killed)
+		}
+	})
+	t.Run("grace deadline", func(t *testing.T) {
+		settled := make(chan error, 1)
+		deadline := make(chan time.Time, 1)
+		deadline <- time.Now()
+		kills := 0
+		waitError := settleDriverProcessAfterRelayFailure(
+			settled,
+			deadline,
+			func() error {
+				kills++
+				settled <- expected
+				return nil
+			},
+		)
+		if !errors.Is(waitError, expected) || kills != 1 {
+			t.Fatalf("unsettled child was not killed once: %v %d", waitError, kills)
+		}
+	})
+}
+
 func TestPrimeDriverHelperProcess(t *testing.T) {
 	if os.Getenv("FLOW_PRIME_TEST_DRIVER") != "1" {
 		return
@@ -159,6 +225,12 @@ func TestPrimeDriverHelperProcess(t *testing.T) {
 	if stage := os.Getenv("FLOW_PRIME_TEST_STAGE_DIAGNOSTIC"); stage != "" {
 		fmt.Fprintf(os.Stderr, "Prime driver stage failure: %s\n", stage)
 		_ = os.NewFile(3, "flow-prime-test-driver").Close()
+		os.Exit(125)
+	}
+	if stage := os.Getenv("FLOW_PRIME_TEST_DELAYED_STAGE_DIAGNOSTIC"); stage != "" {
+		_ = os.NewFile(3, "flow-prime-test-driver").Close()
+		time.Sleep(500 * time.Millisecond)
+		fmt.Fprintf(os.Stderr, "Prime driver stage failure: %s\n", stage)
 		os.Exit(125)
 	}
 	socket := os.NewFile(3, "flow-prime-test-driver")
