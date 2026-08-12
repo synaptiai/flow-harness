@@ -18,7 +18,7 @@ const driverSessionId = "018f4ee8-9d67-7ca1-a31f-4f3f2388e934";
 const driverSecret = "1".repeat(64);
 
 describe("native Prime evaluation driver", () => {
-  it("creates one closed IPython-only SDK session with in-memory services", async () => {
+  it("disposes one closed SDK session without an invented auth-storage cleanup", async () => {
     const sdkSession = {
       thinkingLevel: "off",
       prompt: vi.fn(async () => undefined),
@@ -39,7 +39,7 @@ describe("native Prime evaluation driver", () => {
       session?: Record<string, unknown>;
     } = {};
     const model = { id: "flow-host-model", provider: "flow-host-broker" };
-    const authStorage = { close: vi.fn() };
+    const authStorage = {};
     const modelRegistry = {
       registerProvider: vi.fn((_name: string, provider: Record<string, unknown>) => {
         calls.provider = provider;
@@ -128,7 +128,6 @@ describe("native Prime evaluation driver", () => {
     });
     await session.dispose();
     expect(sdkSession.disposeAsync).toHaveBeenCalledOnce();
-    expect(authStorage.close).toHaveBeenCalledOnce();
   });
 
   it("rejects a Prime thinking-level clamp before the task starts", async () => {
@@ -146,7 +145,6 @@ describe("native Prime evaluation driver", () => {
 
     expect(fixture.session.prompt).not.toHaveBeenCalled();
     expect(fixture.session.disposeAsync).toHaveBeenCalledOnce();
-    expect(fixture.authStorage.close).toHaveBeenCalledOnce();
   });
 
   it("runs one in-memory IPython-only session and records proven activity", async () => {
@@ -579,7 +577,7 @@ function oneLine(value: string): AsyncIterator<string> {
 }
 
 function sdkFixture(options: { readonly thinkingLevel: string }) {
-  const authStorage = { close: vi.fn() };
+  const authStorage = {};
   const session = {
     thinkingLevel: options.thinkingLevel,
     prompt: vi.fn(async () => undefined),
@@ -608,7 +606,7 @@ function sdkFixture(options: { readonly thinkingLevel: string }) {
     createAssistantMessageEventStream: vi.fn(),
     createAgentSession: vi.fn(async () => ({ session })),
   };
-  return { authStorage, bindings, session };
+  return { bindings, session };
 }
 
 function evaluationInput(

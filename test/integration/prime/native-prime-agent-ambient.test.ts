@@ -21,7 +21,7 @@ describe("native Prime ambient authority", () => {
       getSessionStats: () => ({ sessionId: "ambient-test", assistantMessages: 0, toolCalls: 0 }),
       state: { messages: [] },
     };
-    const authStorage = { close: vi.fn() };
+    const authStorage = {};
     const bindings: NativePrimeSdkBindings = {
       AuthStorage: { inMemory: vi.fn(() => authStorage) },
       ModelRegistry: {
@@ -78,7 +78,6 @@ describe("native Prime ambient authority", () => {
     expect(resourceLoader.getAppendSystemPrompt()).toEqual([]);
 
     await session.dispose();
-    expect(authStorage.close).toHaveBeenCalledOnce();
   });
 });
 

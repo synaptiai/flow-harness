@@ -168,12 +168,7 @@ interface PrimeSdkSession {
 
 export interface NativePrimeSdkBindings {
   readonly AuthStorage: {
-    inMemory(
-      data?: Record<string, unknown>,
-      options?: Record<string, unknown>,
-    ): {
-      close(): void;
-    };
+    inMemory(data?: Record<string, unknown>, options?: Record<string, unknown>): unknown;
   };
   readonly ModelRegistry: {
     inMemory(authStorage: unknown): {
@@ -428,69 +423,64 @@ export async function createNativePrimeSdkSession(
   const authStorage = withNativePrimeDriverSyncStage("initialize-sdk", () =>
     sdk.AuthStorage.inMemory({}, { usePrimeCliConfig: false }),
   );
-  try {
-    const initialized = withNativePrimeDriverSyncStage("initialize-sdk", () => {
-      const modelRegistry = sdk.ModelRegistry.inMemory(authStorage);
-      modelRegistry.registerProvider(BROKER_PROVIDER, {
-        api: BROKER_API,
-        apiKey: "flow-internal-broker",
-        baseUrl: "flow://host-inference",
-        streamSimple: (
-          model: Record<string, unknown>,
-          context: Record<string, unknown>,
-          options?: { readonly signal?: AbortSignal },
-        ) => createBrokerStream(sdk, model, context, options?.signal ?? input.signal, input.infer),
-        models: [brokerModelDefinition(input.evaluation)],
-      });
-      const selectedModel = modelRegistry.find(BROKER_PROVIDER, BROKER_MODEL);
-      if (selectedModel === undefined) {
-        throw new Error("native Prime broker model is unavailable after registration");
-      }
-      return {
-        modelRegistry,
-        selectedModel,
-        settingsManager: sdk.SettingsManager.inMemory(NATIVE_PRIME_EVALUATION_CONFIG.settings),
-        resourceLoader: createNoIoPrimeResourceLoader(sdk.createExtensionRuntime(), {
-          systemPrompt: lockedSystemPrompt(),
-        }),
-        mcpManager: noOpMcpManager(),
-      };
+  const initialized = withNativePrimeDriverSyncStage("initialize-sdk", () => {
+    const modelRegistry = sdk.ModelRegistry.inMemory(authStorage);
+    modelRegistry.registerProvider(BROKER_PROVIDER, {
+      api: BROKER_API,
+      apiKey: "flow-internal-broker",
+      baseUrl: "flow://host-inference",
+      streamSimple: (
+        model: Record<string, unknown>,
+        context: Record<string, unknown>,
+        options?: { readonly signal?: AbortSignal },
+      ) => createBrokerStream(sdk, model, context, options?.signal ?? input.signal, input.infer),
+      models: [brokerModelDefinition(input.evaluation)],
     });
-    const ipython = withNativePrimeDriverSyncStage("create-ipython-tool", () =>
-      sdk.createIpythonToolDefinition(input.workspace, {
-        python: PRIME_KERNEL_PROXY_PATH,
-      }),
-    );
-    const { session } = await withNativePrimeDriverStage("create-sdk-session", () =>
-      sdk.createAgentSession({
-        cwd: input.workspace,
-        agentDir: input.workspace,
-        authStorage,
-        modelRegistry: initialized.modelRegistry,
-        model: initialized.selectedModel,
-        thinkingLevel: input.evaluation.controls.model.thinking,
-        settingsManager: initialized.settingsManager,
-        sessionManager: sdk.SessionManager.inMemory(input.workspace),
-        resourceLoader: initialized.resourceLoader,
-        mcpManager: initialized.mcpManager,
-        customTools: [ipython],
-        ...NATIVE_PRIME_EVALUATION_CONFIG.sessionOptions,
-      }),
-    );
-    if (session.thinkingLevel !== input.evaluation.controls.model.thinking) {
-      await session.disposeAsync();
-      throw new NativePrimeDriverStageError(
-        "validate-sdk-session",
-        new Error(
-          `Prime applied thinking level "${session.thinkingLevel}" instead of "${input.evaluation.controls.model.thinking}"`,
-        ),
-      );
+    const selectedModel = modelRegistry.find(BROKER_PROVIDER, BROKER_MODEL);
+    if (selectedModel === undefined) {
+      throw new Error("native Prime broker model is unavailable after registration");
     }
-    return adaptSdkSession(session, authStorage);
-  } catch (error) {
-    authStorage.close();
-    throw error;
+    return {
+      modelRegistry,
+      selectedModel,
+      settingsManager: sdk.SettingsManager.inMemory(NATIVE_PRIME_EVALUATION_CONFIG.settings),
+      resourceLoader: createNoIoPrimeResourceLoader(sdk.createExtensionRuntime(), {
+        systemPrompt: lockedSystemPrompt(),
+      }),
+      mcpManager: noOpMcpManager(),
+    };
+  });
+  const ipython = withNativePrimeDriverSyncStage("create-ipython-tool", () =>
+    sdk.createIpythonToolDefinition(input.workspace, {
+      python: PRIME_KERNEL_PROXY_PATH,
+    }),
+  );
+  const { session } = await withNativePrimeDriverStage("create-sdk-session", () =>
+    sdk.createAgentSession({
+      cwd: input.workspace,
+      agentDir: input.workspace,
+      authStorage,
+      modelRegistry: initialized.modelRegistry,
+      model: initialized.selectedModel,
+      thinkingLevel: input.evaluation.controls.model.thinking,
+      settingsManager: initialized.settingsManager,
+      sessionManager: sdk.SessionManager.inMemory(input.workspace),
+      resourceLoader: initialized.resourceLoader,
+      mcpManager: initialized.mcpManager,
+      customTools: [ipython],
+      ...NATIVE_PRIME_EVALUATION_CONFIG.sessionOptions,
+    }),
+  );
+  if (session.thinkingLevel !== input.evaluation.controls.model.thinking) {
+    await session.disposeAsync();
+    throw new NativePrimeDriverStageError(
+      "validate-sdk-session",
+      new Error(
+        `Prime applied thinking level "${session.thinkingLevel}" instead of "${input.evaluation.controls.model.thinking}"`,
+      ),
+    );
   }
+  return adaptSdkSession(session);
 }
 
 export function nativePrimeDriverFailureDiagnostic(error: unknown): string {
@@ -552,10 +542,7 @@ const DEFAULT_NATIVE_PRIME_SDK_LOADERS = Object.freeze<NativePrimeSdkLoaders>({
   },
 });
 
-function adaptSdkSession(
-  session: PrimeSdkSession,
-  authStorage: { close(): void },
-): NativePrimeSession {
+function adaptSdkSession(session: PrimeSdkSession): NativePrimeSession {
   let disposed = false;
   return Object.freeze({
     prompt: (text: string) =>
@@ -570,11 +557,7 @@ function adaptSdkSession(
         return;
       }
       disposed = true;
-      try {
-        await session.disposeAsync();
-      } finally {
-        authStorage.close();
-      }
+      await session.disposeAsync();
     },
     subscribe: (listener: (event: NativePrimeSessionEvent) => void) => session.subscribe(listener),
     getSessionStats: () => session.getSessionStats(),
