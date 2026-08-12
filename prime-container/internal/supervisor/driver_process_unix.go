@@ -202,7 +202,14 @@ func RunDriverProcess(
 	}
 	if containerprotocol.IsDriverChannelEOF(relayError) {
 		if settlementForced {
-			return result, errors.New("Prime driver did not settle after its private channel closed")
+			if len(diagnosticValue.value) == 0 {
+				return result, errors.New(
+					"Prime driver did not settle after its private channel closed without a diagnostic",
+				)
+			}
+			return result, errors.New(
+				"Prime driver did not settle after its private channel closed with an unclassified diagnostic",
+			)
 		}
 		if driverProcessWasSignaled(command.ProcessState) {
 			return result, errors.New(

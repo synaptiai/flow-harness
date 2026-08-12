@@ -177,7 +177,12 @@ func TestRunDriverProcessDistinguishesClosedChannelSettlement(t *testing.T) {
 		{
 			name:       "grace deadline",
 			settlement: "hang",
-			expected:   "Prime driver did not settle after its private channel closed",
+			expected:   "Prime driver did not settle after its private channel closed without a diagnostic",
+		},
+		{
+			name:       "grace deadline with private diagnostic",
+			settlement: "hang-diagnostic",
+			expected:   "Prime driver did not settle after its private channel closed with an unclassified diagnostic",
 		},
 		{
 			name:       "authenticated relay failure",
@@ -310,6 +315,11 @@ func TestPrimeDriverHelperProcess(t *testing.T) {
 			select {}
 		case "hang":
 			closeTestDriverChannel(socket)
+			time.Sleep(1500 * time.Millisecond)
+			os.Exit(125)
+		case "hang-diagnostic":
+			closeTestDriverChannel(socket)
+			fmt.Fprintln(os.Stderr, "PRIVATE_UNCLASSIFIED_DIAGNOSTIC")
 			time.Sleep(1500 * time.Millisecond)
 			os.Exit(125)
 		case "invalid-frame":

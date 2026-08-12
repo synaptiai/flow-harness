@@ -834,9 +834,17 @@ function primeContainerFailureMessage(stderr: Buffer, sawStdout: boolean): strin
   }
   if (
     privateDiagnostic.startsWith(runDriverPrefix) &&
-    runDriverDiagnostic === "prime driver did not settle after its private channel closed"
+    runDriverDiagnostic ===
+      "prime driver did not settle after its private channel closed without a diagnostic"
   ) {
-    return "Prime driver process did not settle after relay failure";
+    return "Prime driver process stalled without a private diagnostic";
+  }
+  if (
+    privateDiagnostic.startsWith(runDriverPrefix) &&
+    runDriverDiagnostic ===
+      "prime driver did not settle after its private channel closed with an unclassified diagnostic"
+  ) {
+    return "Prime driver process stalled with an unclassified private diagnostic";
   }
   if (
     startsWithAny(privateDiagnostic, [
