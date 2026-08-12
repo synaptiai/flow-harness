@@ -94,12 +94,20 @@ func RunDriverProcess(
 			Uid: uint32(options.UID), Gid: uint32(options.GID), Groups: groups,
 		}
 	}
-	standardError, err := command.StderrPipe()
+	standardError, standardErrorWriter, err := os.Pipe()
 	if err != nil {
 		return DriverProcessResult{}, fmt.Errorf("create Prime driver diagnostic pipe: %w", err)
 	}
+	defer standardError.Close()
+	defer standardErrorWriter.Close()
+	command.Stderr = standardErrorWriter
 	if err := command.Start(); err != nil {
 		return DriverProcessResult{}, fmt.Errorf("start Prime driver: %w", err)
+	}
+	if err := standardErrorWriter.Close(); err != nil {
+		_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+		_ = command.Wait()
+		return DriverProcessResult{}, fmt.Errorf("close parent copy of Prime driver diagnostic: %w", err)
 	}
 	type diagnosticResult struct {
 		value    []byte
@@ -166,10 +174,11 @@ func RunDriverProcess(
 	}()
 	relayError := containerprotocol.RelayDriver(hostReader, hostWriter, supervisorSocket, bootstrap)
 	var waitError error
+	settlementForced := false
 	if relayError == nil {
 		waitError = <-processSettlement
 	} else {
-		waitError = settleDriverProcessAfterRelayFailure(
+		waitError, settlementForced = settleDriverProcessAfterRelayFailure(
 			processSettlement,
 			time.After(driverRelaySettlementGrace),
 			func() error { return syscall.Kill(-command.Process.Pid, syscall.SIGKILL) },
@@ -191,6 +200,17 @@ func RunDriverProcess(
 		(relayError != nil || waitError != nil || exitCode != 0) {
 		return result, errors.New(closedDiagnostic)
 	}
+	if containerprotocol.IsDriverChannelEOF(relayError) {
+		if settlementForced {
+			return result, errors.New("Prime driver did not settle after its private channel closed")
+		}
+		if driverProcessWasSignaled(command.ProcessState) {
+			return result, errors.New(
+				"Prime driver was terminated by a signal before terminal settlement",
+			)
+		}
+		return result, fmt.Errorf("Prime driver exited with code %d", exitCode)
+	}
 	if relayError != nil {
 		return result, relayError
 	}
@@ -204,14 +224,19 @@ func settleDriverProcessAfterRelayFailure(
 	processSettlement <-chan error,
 	graceDeadline <-chan time.Time,
 	killProcessGroup func() error,
-) error {
+) (error, bool) {
 	select {
 	case waitError := <-processSettlement:
-		return waitError
+		return waitError, false
 	case <-graceDeadline:
 		_ = killProcessGroup()
-		return <-processSettlement
+		return <-processSettlement, true
 	}
+}
+
+func driverProcessWasSignaled(state *os.ProcessState) bool {
+	status, ok := state.Sys().(syscall.WaitStatus)
+	return ok && status.Signaled()
 }
 
 func boundedDiagnostic(value []byte) string {

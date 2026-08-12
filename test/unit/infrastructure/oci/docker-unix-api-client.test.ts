@@ -1244,6 +1244,11 @@ describe("Docker Unix API client", () => {
       publicMessage: "Prime driver failed while starting its restricted process",
     },
     {
+      privateDiagnostic:
+        "run Prime driver: close parent copy of Prime driver diagnostic: PRIVATE_PROCESS\n",
+      publicMessage: "Prime driver failed while starting its restricted process",
+    },
+    {
       privateDiagnostic: "run Prime driver: Prime driver hardening proof is invalid\n",
       publicMessage: "Prime driver failed while proving process hardening",
     },
@@ -1297,6 +1302,16 @@ describe("Docker Unix API client", () => {
     {
       privateDiagnostic: "run Prime driver: Prime driver exited with code 125\n",
       publicMessage: "Prime driver process exited before terminal settlement",
+    },
+    {
+      privateDiagnostic:
+        "run Prime driver: Prime driver was terminated by a signal before terminal settlement\n",
+      publicMessage: "Prime driver process was terminated before terminal settlement",
+    },
+    {
+      privateDiagnostic:
+        "run Prime driver: Prime driver did not settle after its private channel closed\n",
+      publicMessage: "Prime driver process did not settle after relay failure",
     },
   ])(
     "maps private attached stderr to $publicMessage",

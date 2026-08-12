@@ -95,6 +95,13 @@ type driverRelayStageError struct {
 	cause error
 }
 
+func IsDriverChannelEOF(err error) bool {
+	var relayError *driverRelayStageError
+	return errors.As(err, &relayError) &&
+		relayError.stage == "reading the driver channel" &&
+		errors.Is(relayError.cause, io.EOF)
+}
+
 func newDriverRelayStageError(stage string, cause error) error {
 	return &driverRelayStageError{stage: stage, cause: cause}
 }

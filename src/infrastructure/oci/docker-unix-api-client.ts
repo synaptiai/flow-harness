@@ -779,6 +779,7 @@ function primeContainerFailureMessage(stderr: Buffer, sawStdout: boolean): strin
       "start prime driver:",
       "close parent copy of prime driver socket:",
       "close parent copy of prime hardening pipe:",
+      "close parent copy of prime driver diagnostic:",
     ])
   ) {
     return "Prime driver failed while starting its restricted process";
@@ -824,6 +825,18 @@ function primeContainerFailureMessage(stderr: Buffer, sawStdout: boolean): strin
     runDriverDiagnostic.startsWith("prime driver exited with code ")
   ) {
     return "Prime driver process exited before terminal settlement";
+  }
+  if (
+    privateDiagnostic.startsWith(runDriverPrefix) &&
+    runDriverDiagnostic === "prime driver was terminated by a signal before terminal settlement"
+  ) {
+    return "Prime driver process was terminated before terminal settlement";
+  }
+  if (
+    privateDiagnostic.startsWith(runDriverPrefix) &&
+    runDriverDiagnostic === "prime driver did not settle after its private channel closed"
+  ) {
+    return "Prime driver process did not settle after relay failure";
   }
   if (
     startsWithAny(privateDiagnostic, [
