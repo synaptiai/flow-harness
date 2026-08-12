@@ -18,6 +18,7 @@ describe("Prime image inventory probe", () => {
       ModelRegistry: class {},
       SettingsManager: class {},
       SessionManager: class {},
+      IpythonKernelProvisioner: class {},
       createExtensionRuntime: () => undefined,
       createIpythonToolDefinition: () => undefined,
       createAgentSession: async () => undefined,
@@ -30,6 +31,14 @@ describe("Prime image inventory probe", () => {
     await expect(
       verifyNativePrimeSdkBindings({
         loadSdk: async () => ({ ...((await loadSdk()) as object), AuthStorage: null }),
+      }),
+    ).rejects.toThrow("Prime image SDK bindings are incomplete");
+    await expect(
+      verifyNativePrimeSdkBindings({
+        loadSdk: async () => ({
+          ...((await loadSdk()) as object),
+          IpythonKernelProvisioner: null,
+        }),
       }),
     ).rejects.toThrow("Prime image SDK bindings are incomplete");
   });

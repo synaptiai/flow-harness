@@ -143,7 +143,7 @@ export class AttachedPrimeOciOperator {
         ),
         input.signal,
       );
-      for await (const bytes of input.transport.output) {
+      for await (const bytes of abortableOutput(input.transport.output, input.signal)) {
         throwIfAborted(input.signal);
         for (const frame of decoder.push(bytes)) {
           sequence.accept("container-to-host", frame.type, frame.payload.byteLength);
@@ -515,6 +515,33 @@ async function waitForAbortable<T>(promise: Promise<T>, signal?: AbortSignal): P
       },
     );
   });
+}
+
+async function* abortableOutput(
+  output: AsyncIterable<Uint8Array>,
+  signal?: AbortSignal,
+): AsyncIterable<Uint8Array> {
+  const iterator = output[Symbol.asyncIterator]();
+  let completed = false;
+  try {
+    while (true) {
+      const next = await waitForAbortable(Promise.resolve(iterator.next()), signal);
+      if (next.done === true) {
+        completed = true;
+        return;
+      }
+      yield next.value;
+    }
+  } finally {
+    if (!completed && iterator.return !== undefined) {
+      const returned = Promise.resolve(iterator.return());
+      if (signal?.aborted === true) {
+        void returned.catch(() => undefined);
+      } else {
+        await returned;
+      }
+    }
+  }
 }
 
 function combineErrors(primary: unknown, secondary: unknown): unknown {

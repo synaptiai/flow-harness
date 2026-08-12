@@ -38,6 +38,9 @@ describe("native Prime ambient authority", () => {
         }),
       },
       SessionManager: { inMemory: vi.fn(() => ({ kind: "session-manager" })) },
+      IpythonKernelProvisioner: class {
+        dispose = vi.fn(async () => undefined);
+      },
       createExtensionRuntime: vi.fn(() => ({ kind: "extension-runtime" })),
       createIpythonToolDefinition: vi.fn(() => ({ name: "ipython" })),
       createAssistantMessageEventStream: vi.fn(),

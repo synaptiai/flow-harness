@@ -426,6 +426,58 @@ describe("attached Prime OCI operator", () => {
     expect(resultSink.abort).toHaveBeenCalledOnce();
   });
 
+  it("does not wait forever for silent transport output after cancellation", async () => {
+    const controller = new AbortController();
+    const cancellation = new Error("Prime output wait cancelled");
+    let markNextStarted: () => void = () => undefined;
+    const nextStarted = new Promise<void>((resolve) => {
+      markNextStarted = resolve;
+    });
+    const returnOutput = vi.fn(async () => ({ done: true as const, value: undefined }));
+    const outputIterator: AsyncIterator<Uint8Array> = {
+      next: () => {
+        markNextStarted();
+        return new Promise<IteratorResult<Uint8Array>>(() => undefined);
+      },
+      return: returnOutput,
+    };
+    const resultSink = sink();
+    const transport: PrimeOciAttachedTransport = {
+      output: { [Symbol.asyncIterator]: () => outputIterator },
+      write: vi.fn(async () => undefined),
+      closeInput: vi.fn(async () => undefined),
+      release: vi.fn(async () => undefined),
+    };
+    const broker = { infer: vi.fn(), close: vi.fn(async () => undefined) };
+    const operator = new AttachedPrimeOciOperator({
+      fixture: fixture([], new Map()),
+      resultSink,
+      inferenceBroker: broker,
+      validateReadiness: vi.fn(async () => undefined),
+    });
+    const operation = operator.operate({
+      ...operationInput(async () => undefined, transport),
+      signal: controller.signal,
+    });
+
+    await nextStarted;
+    controller.abort(cancellation);
+    const outcome = await Promise.race([
+      operation.then(
+        () => "resolved" as const,
+        (error: unknown) => error,
+      ),
+      new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 50)),
+    ]);
+
+    expect(outcome).not.toBe("hung");
+    expect(errorGraphText(outcome)).toContain(cancellation.message);
+    expect(returnOutput).toHaveBeenCalledOnce();
+    expect(resultSink.abort).toHaveBeenCalledOnce();
+    expect(transport.closeInput).toHaveBeenCalledOnce();
+    expect(broker.close).toHaveBeenCalledOnce();
+  });
+
   it.each([null, undefined, "PRIVATE_TRANSPORT_REJECTION"])(
     "normalizes a non-Error transport-write rejection without skipping cleanup",
     async (rejection) => {

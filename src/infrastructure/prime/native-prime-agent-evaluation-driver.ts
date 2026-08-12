@@ -166,6 +166,10 @@ interface PrimeSdkSession {
   };
 }
 
+interface PrimeIpythonKernelProvisioner {
+  dispose(): Promise<void>;
+}
+
 export interface NativePrimeSdkBindings {
   readonly AuthStorage: {
     inMemory(data?: Record<string, unknown>, options?: Record<string, unknown>): unknown;
@@ -183,6 +187,10 @@ export interface NativePrimeSdkBindings {
   readonly SessionManager: {
     inMemory(cwd: string): unknown;
   };
+  readonly IpythonKernelProvisioner: new (
+    cwd: string,
+    options: Record<string, unknown>,
+  ) => PrimeIpythonKernelProvisioner;
   readonly createExtensionRuntime: () => unknown;
   readonly createIpythonToolDefinition: (cwd: string, options: Record<string, unknown>) => unknown;
   readonly createAssistantMessageEventStream: () => PrimeEventStream;
@@ -450,37 +458,54 @@ export async function createNativePrimeSdkSession(
       mcpManager: noOpMcpManager(),
     };
   });
-  const ipython = withNativePrimeDriverSyncStage("create-ipython-tool", () =>
-    sdk.createIpythonToolDefinition(input.workspace, {
-      python: PRIME_KERNEL_PROXY_PATH,
-    }),
+  const { ipython, ipythonProvisioner } = await withNativePrimeDriverStage(
+    "create-ipython-tool",
+    async () => {
+      const provisioner = new sdk.IpythonKernelProvisioner(input.workspace, {
+        python: PRIME_KERNEL_PROXY_PATH,
+      });
+      try {
+        return {
+          ipython: sdk.createIpythonToolDefinition(input.workspace, { provisioner }),
+          ipythonProvisioner: provisioner,
+        };
+      } catch (error) {
+        throw await combineWithPrimeSdkCleanup(error, () => provisioner.dispose());
+      }
+    },
   );
-  const { session } = await withNativePrimeDriverStage("create-sdk-session", () =>
-    sdk.createAgentSession({
-      cwd: input.workspace,
-      agentDir: input.workspace,
-      authStorage,
-      modelRegistry: initialized.modelRegistry,
-      model: initialized.selectedModel,
-      thinkingLevel: input.evaluation.controls.model.thinking,
-      settingsManager: initialized.settingsManager,
-      sessionManager: sdk.SessionManager.inMemory(input.workspace),
-      resourceLoader: initialized.resourceLoader,
-      mcpManager: initialized.mcpManager,
-      customTools: [ipython],
-      ...NATIVE_PRIME_EVALUATION_CONFIG.sessionOptions,
-    }),
-  );
+  const { session } = await withNativePrimeDriverStage("create-sdk-session", async () => {
+    try {
+      return await sdk.createAgentSession({
+        cwd: input.workspace,
+        agentDir: input.workspace,
+        authStorage,
+        modelRegistry: initialized.modelRegistry,
+        model: initialized.selectedModel,
+        thinkingLevel: input.evaluation.controls.model.thinking,
+        settingsManager: initialized.settingsManager,
+        sessionManager: sdk.SessionManager.inMemory(input.workspace),
+        resourceLoader: initialized.resourceLoader,
+        mcpManager: initialized.mcpManager,
+        customTools: [ipython],
+        ...NATIVE_PRIME_EVALUATION_CONFIG.sessionOptions,
+      });
+    } catch (error) {
+      throw await combineWithPrimeSdkCleanup(error, () => ipythonProvisioner.dispose());
+    }
+  });
   if (session.thinkingLevel !== input.evaluation.controls.model.thinking) {
-    await session.disposeAsync();
-    throw new NativePrimeDriverStageError(
+    const validationError = new NativePrimeDriverStageError(
       "validate-sdk-session",
       new Error(
         `Prime applied thinking level "${session.thinkingLevel}" instead of "${input.evaluation.controls.model.thinking}"`,
       ),
     );
+    throw await combineWithPrimeSdkCleanup(validationError, () =>
+      disposeNativePrimeSdkResources(session, ipythonProvisioner),
+    );
   }
-  return adaptSdkSession(session);
+  return adaptSdkSession(session, ipythonProvisioner);
 }
 
 export function nativePrimeDriverFailureDiagnostic(error: unknown): string {
@@ -524,6 +549,7 @@ export async function loadNativePrimeSdk(
     ModelRegistry: agent.ModelRegistry,
     SettingsManager: agent.SettingsManager,
     SessionManager: agent.SessionManager,
+    IpythonKernelProvisioner: agent.IpythonKernelProvisioner,
     createExtensionRuntime: agent.createExtensionRuntime,
     createIpythonToolDefinition: agent.createIpythonToolDefinition,
     createAssistantMessageEventStream: ai.createAssistantMessageEventStream,
@@ -542,7 +568,10 @@ const DEFAULT_NATIVE_PRIME_SDK_LOADERS = Object.freeze<NativePrimeSdkLoaders>({
   },
 });
 
-function adaptSdkSession(session: PrimeSdkSession): NativePrimeSession {
+function adaptSdkSession(
+  session: PrimeSdkSession,
+  ipythonProvisioner: PrimeIpythonKernelProvisioner,
+): NativePrimeSession {
   let disposed = false;
   return Object.freeze({
     prompt: (text: string) =>
@@ -557,7 +586,7 @@ function adaptSdkSession(session: PrimeSdkSession): NativePrimeSession {
         return;
       }
       disposed = true;
-      await session.disposeAsync();
+      await disposeNativePrimeSdkResources(session, ipythonProvisioner);
     },
     subscribe: (listener: (event: NativePrimeSessionEvent) => void) => session.subscribe(listener),
     getSessionStats: () => session.getSessionStats(),
@@ -572,6 +601,36 @@ function adaptSdkSession(session: PrimeSdkSession): NativePrimeSession {
       };
     },
   });
+}
+
+async function disposeNativePrimeSdkResources(
+  session: PrimeSdkSession,
+  ipythonProvisioner: PrimeIpythonKernelProvisioner,
+): Promise<void> {
+  const failures: unknown[] = [];
+  await session.disposeAsync().catch((error: unknown) => failures.push(error));
+  await ipythonProvisioner.dispose().catch((error: unknown) => failures.push(error));
+  if (failures.length === 1) {
+    throw failures[0];
+  }
+  if (failures.length > 1) {
+    throw new AggregateError(failures, "Prime SDK resources failed to settle");
+  }
+}
+
+async function combineWithPrimeSdkCleanup(
+  primaryError: unknown,
+  cleanup: () => Promise<void>,
+): Promise<unknown> {
+  try {
+    await cleanup();
+    return primaryError;
+  } catch (cleanupError) {
+    return new AggregateError(
+      [primaryError, cleanupError],
+      "Prime SDK setup failed and its resources did not settle",
+    );
+  }
 }
 
 function noOpMcpManager() {

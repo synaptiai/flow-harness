@@ -35,9 +35,22 @@ describe("native Prime evaluation driver", () => {
     const calls: {
       provider?: Record<string, unknown>;
       settings?: Record<string, unknown>;
+      provisioner?: {
+        readonly cwd: string;
+        readonly options: Record<string, unknown>;
+        readonly instance: unknown;
+      };
       ipython?: { readonly cwd: string; readonly options: Record<string, unknown> };
       session?: Record<string, unknown>;
     } = {};
+    const disposeProvisioner = vi.fn(async () => undefined);
+    class FakeIpythonKernelProvisioner {
+      constructor(cwd: string, options: Record<string, unknown>) {
+        calls.provisioner = { cwd, options, instance: this };
+      }
+
+      dispose = disposeProvisioner;
+    }
     const model = { id: "flow-host-model", provider: "flow-host-broker" };
     const authStorage = {};
     const modelRegistry = {
@@ -47,7 +60,7 @@ describe("native Prime evaluation driver", () => {
       find: vi.fn(() => model),
       setOnOAuthProvidersReset: vi.fn(),
     };
-    const bindings: NativePrimeSdkBindings = {
+    const bindings = {
       AuthStorage: { inMemory: vi.fn(() => authStorage) },
       ModelRegistry: { inMemory: vi.fn(() => modelRegistry) },
       SettingsManager: {
@@ -57,6 +70,7 @@ describe("native Prime evaluation driver", () => {
         }),
       },
       SessionManager: { inMemory: vi.fn(() => ({ kind: "session-manager" })) },
+      IpythonKernelProvisioner: FakeIpythonKernelProvisioner,
       createExtensionRuntime: vi.fn(() => ({ kind: "extension-runtime" })),
       createIpythonToolDefinition: vi.fn((cwd: string, options: Record<string, unknown>) => {
         calls.ipython = { cwd, options };
@@ -90,6 +104,10 @@ describe("native Prime evaluation driver", () => {
       themes: [],
     });
     expect(calls.ipython).toEqual({
+      cwd: process.cwd(),
+      options: { provisioner: calls.provisioner?.instance },
+    });
+    expect(calls.provisioner).toMatchObject({
       cwd: process.cwd(),
       options: { python: "/opt/flow/bin/flow-prime-kernel-proxy" },
     });
@@ -128,6 +146,7 @@ describe("native Prime evaluation driver", () => {
     });
     await session.dispose();
     expect(sdkSession.disposeAsync).toHaveBeenCalledOnce();
+    expect(disposeProvisioner).toHaveBeenCalledOnce();
   });
 
   it("rejects a Prime thinking-level clamp before the task starts", async () => {
@@ -145,6 +164,43 @@ describe("native Prime evaluation driver", () => {
 
     expect(fixture.session.prompt).not.toHaveBeenCalled();
     expect(fixture.session.disposeAsync).toHaveBeenCalledOnce();
+    expect(fixture.disposeProvisioner).toHaveBeenCalledOnce();
+  });
+
+  it("settles the custom IPython provisioner when SDK session disposal rejects", async () => {
+    const disposalError = new Error("PRIVATE_SDK_DISPOSAL_CANARY");
+    const fixture = sdkFixture({ thinkingLevel: "off", sessionDisposeError: disposalError });
+    const session = await createNativePrimeSdkSession({
+      evaluation: evaluationInput(),
+      workspace: process.cwd(),
+      infer: vi.fn(),
+      loadSdk: async () => fixture.bindings,
+    });
+
+    await expect(session.dispose()).rejects.toBe(disposalError);
+
+    expect(fixture.session.disposeAsync).toHaveBeenCalledOnce();
+    expect(fixture.disposeProvisioner).toHaveBeenCalledOnce();
+  });
+
+  it("settles the custom IPython provisioner when SDK session creation rejects", async () => {
+    const fixture = sdkFixture({ thinkingLevel: "off" });
+
+    await expect(
+      createNativePrimeSdkSession({
+        evaluation: evaluationInput(),
+        workspace: process.cwd(),
+        infer: vi.fn(),
+        loadSdk: async () => ({
+          ...fixture.bindings,
+          createAgentSession: (): never => {
+            throw new Error("PRIVATE_SESSION_CREATION_CANARY");
+          },
+        }),
+      }),
+    ).rejects.toThrow("PRIVATE_SESSION_CREATION_CANARY");
+
+    expect(fixture.disposeProvisioner).toHaveBeenCalledOnce();
   });
 
   it("runs one in-memory IPython-only session and records proven activity", async () => {
@@ -576,13 +632,21 @@ function oneLine(value: string): AsyncIterator<string> {
   };
 }
 
-function sdkFixture(options: { readonly thinkingLevel: string }) {
+function sdkFixture(options: {
+  readonly thinkingLevel: string;
+  readonly sessionDisposeError?: Error;
+}) {
   const authStorage = {};
+  const disposeProvisioner = vi.fn(async () => undefined);
   const session = {
     thinkingLevel: options.thinkingLevel,
     prompt: vi.fn(async () => undefined),
     abort: vi.fn(async () => undefined),
-    disposeAsync: vi.fn(async () => undefined),
+    disposeAsync: vi.fn(async () => {
+      if (options.sessionDisposeError !== undefined) {
+        throw options.sessionDisposeError;
+      }
+    }),
     subscribe: vi.fn(() => () => undefined),
     getSessionStats: () => ({
       sessionId: "sdk-session",
@@ -601,12 +665,15 @@ function sdkFixture(options: { readonly thinkingLevel: string }) {
     ModelRegistry: { inMemory: vi.fn(() => modelRegistry) },
     SettingsManager: { inMemory: vi.fn(() => ({})) },
     SessionManager: { inMemory: vi.fn(() => ({})) },
+    IpythonKernelProvisioner: class {
+      dispose = disposeProvisioner;
+    },
     createExtensionRuntime: vi.fn(() => ({})),
     createIpythonToolDefinition: vi.fn(() => ({ name: "ipython" })),
     createAssistantMessageEventStream: vi.fn(),
     createAgentSession: vi.fn(async () => ({ session })),
   };
-  return { bindings, session };
+  return { bindings, session, disposeProvisioner };
 }
 
 function evaluationInput(

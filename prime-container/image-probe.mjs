@@ -28,6 +28,7 @@ export async function verifyNativePrimeSdkBindings(loaders = DEFAULT_NATIVE_PRIM
     "ModelRegistry",
     "SettingsManager",
     "SessionManager",
+    "IpythonKernelProvisioner",
     "createExtensionRuntime",
     "createIpythonToolDefinition",
     "createAgentSession",
