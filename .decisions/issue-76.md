@@ -318,6 +318,10 @@ disabled. Image and container inspection reject any effective health-check comma
 Flow creates the container from the exact image ID with pull policy `never`. It checks the image
 directly before create and checks the resulting container before start.
 
+A failed Docker start reports one fixed category for resource controls, seccomp policy, filesystem
+isolation, process policy, or runtime task creation. An unknown response reports only the status.
+Docker response text stays private. The category does not change admission, retry, or cleanup.
+
 ### Fixed Prime session decision
 
 The driver creates `SettingsManager.inMemory()` with one complete settings object. It disables
@@ -930,6 +934,7 @@ user before it runs the setup.
 | Admit the fixed Prime profile | Contract | `npx vitest run test/unit/evaluation/plan.test.ts test/unit/infrastructure/fs/local-evaluation-plan.test.ts` | Fixed config passes. Unknown config and authority fields fail. | Prime availability on all hosts |
 | Bind the Prime OCI identity | Contract | `npx vitest run test/unit/infrastructure/prime/native-prime-harness-registry.test.ts test/unit/infrastructure/oci/local-prime-oci-runtime-inspector.test.ts test/unit/infrastructure/oci/prime-oci-image-device.test.ts test/unit/infrastructure/oci/local-prime-oci-currentness.test.ts test/unit/infrastructure/oci/local-prime-oci-attestation.test.ts test/unit/infrastructure/oci/prime-oci-preparation.test.ts` | Prepared identity binds engine, image, build, package, policy, and the exact image device. Fixed-stage preflight rejects before builds. Local adapter, host OCI, attestation, and admitted-identity drift reject. | Host signatures or hostile engine protection |
 | Build the exact Prime image | Supply chain | `npx vitest run test/unit/infrastructure/oci/prime-image-archive.test.ts test/integration/package/prime-image-probe.test.ts && npm run prime:image:verify` | Exact archive and probe bounds and secret cases pass. Two clean builds match. Archive, lock, layer, SBOM, and secret gates pass. | Registry publication |
+| Diagnose Docker start failure | Contract | `npx vitest run test/unit/infrastructure/oci/docker-unix-api-client.test.ts` | Each admitted start-failure category is fixed. Docker response text does not enter the public error. | Recovery from an incompatible host |
 | Audit locked runtime dependencies | Supply chain | `npm run build && node scripts/audit-prime-dependencies.mjs` | The exact Prime Node and Python locks pass the fixed audit policy. | Future dependency versions |
 | Run a real persistent IPython session | Integration | `npx vitest run test/integration/prime/native-prime-agent-evaluation.test.ts` | One session keeps state across two turns. It uses one accepted kernel request. | Live provider quality |
 | Exchange signed process frames | Integration | `npx vitest run test/integration/prime/native-prime-agent-driver-protocol.test.ts` | The compiled driver completes one signed tool exchange through fake inference. | Provider quality |

@@ -211,10 +211,38 @@ describe("Docker Unix API client", () => {
     await expect(client.startContainer(containerName)).rejects.toThrow(/Docker.*start.*404/i);
   });
 
-  it("does not expose Docker response bodies in public errors", async () => {
-    const privateMarker = "PRIVATE_DAEMON_PATH_/var/lib/docker/containers/secret";
+  it.each([
+    { body: "PRIVATE_INVALID_JSON", privateMarker: "PRIVATE_INVALID_JSON" },
+    { body: JSON.stringify({}), privateMarker: "PRIVATE_EMPTY_OBJECT" },
+    {
+      body: JSON.stringify({ message: { value: "PRIVATE_NON_STRING" } }),
+      privateMarker: "PRIVATE_NON_STRING",
+    },
+    {
+      body: JSON.stringify({
+        message: "PRIVATE_DEEP seccomp filter failed",
+        nested: { too: { deeply: { private: "PRIVATE_DEEP" } } },
+      }),
+      privateMarker: "PRIVATE_DEEP",
+    },
+    {
+      body: JSON.stringify({
+        message: "PRIVATE_NODES seccomp filter failed",
+        values: Array.from({ length: 32 }, (_, index) => index),
+      }),
+      privateMarker: "PRIVATE_NODES",
+    },
+    {
+      body: JSON.stringify({ message: "PRIVATE_STRUCTURED_UNKNOWN" }),
+      privateMarker: "PRIVATE_STRUCTURED_UNKNOWN",
+      statusCode: 503,
+    },
+  ])("does not expose an unclassified Docker response body", async (testCase) => {
     const transport: DockerUnixApiTransport = {
-      request: vi.fn(async () => ({ statusCode: 500, body: privateMarker })),
+      request: vi.fn(async () => ({
+        statusCode: testCase.statusCode ?? 500,
+        body: testCase.body,
+      })),
     };
     const client = new DockerUnixApiClient({
       socketPath: "/var/run/docker.sock",
@@ -225,8 +253,100 @@ describe("Docker Unix API client", () => {
     const error = await client.startContainer("a".repeat(64)).catch((caught) => caught);
 
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toMatch(/Docker.*start.*500/i);
-    expect((error as Error).message).not.toContain(privateMarker);
+    expect((error as Error).message).toBe(
+      `Docker start returned status ${testCase.statusCode ?? 500}`,
+    );
+    expect((error as Error).message).not.toContain(testCase.privateMarker);
+  });
+
+  it.each([204, 304])("accepts Docker start status %i", async (statusCode) => {
+    const transport: DockerUnixApiTransport = {
+      request: vi.fn(async () => ({ statusCode, body: "" })),
+    };
+    const client = new DockerUnixApiClient({
+      socketPath: "/var/run/docker.sock",
+      apiVersion: "1.51",
+      transport,
+    });
+
+    await expect(client.startContainer("a".repeat(64))).resolves.toBeUndefined();
+  });
+
+  it.each([
+    {
+      privateMessage:
+        "failed to create task: unable to apply cgroup configuration: failed to write PRIVATE_DEVICE to io.max",
+      publicMessage: "Docker start failed while applying container resource controls",
+    },
+    {
+      privateMessage: "failed to create task: PRIVATE_SECCOMP seccomp filter could not be loaded",
+      publicMessage: "Docker start failed while applying the container seccomp policy",
+    },
+    {
+      privateMessage: "failed to create task: mount PRIVATE_TMPFS at /workspace failed",
+      publicMessage: "Docker start failed while applying container filesystem isolation",
+    },
+    {
+      privateMessage: "failed to create task: exec PRIVATE_ENTRYPOINT failed",
+      publicMessage: "Docker start failed while applying the container process policy",
+    },
+    {
+      privateMessage: "failed to create task for container: PRIVATE_RUNTIME runc create failed",
+      publicMessage: "Docker start failed while creating the container runtime task",
+    },
+  ])("classifies one private Docker start failure without disclosing it", async (testCase) => {
+    const transport: DockerUnixApiTransport = {
+      request: vi.fn(async () => ({
+        statusCode: 500,
+        body: JSON.stringify({ message: testCase.privateMessage }),
+      })),
+    };
+    const client = new DockerUnixApiClient({
+      socketPath: "/var/run/docker.sock",
+      apiVersion: "1.51",
+      transport,
+    });
+
+    const error = await client.startContainer("a".repeat(64)).catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(testCase.publicMessage);
+    expect((error as Error).message).not.toContain(testCase.privateMessage);
+  });
+
+  it.each([
+    {
+      privateMessage:
+        "failed to create task: unable to apply cgroup configuration: permission denied",
+      publicMessage: "Docker start failed while applying container resource controls",
+    },
+    {
+      privateMessage:
+        "failed to create task: seccomp filter could not be loaded: permission denied",
+      publicMessage: "Docker start failed while applying the container seccomp policy",
+    },
+    {
+      privateMessage: "failed to create task: mount tmpfs failed: permission denied",
+      publicMessage: "Docker start failed while applying container filesystem isolation",
+    },
+    {
+      privateMessage: "failed to create task: exec entrypoint failed",
+      publicMessage: "Docker start failed while applying the container process policy",
+    },
+  ])("uses the most specific Docker start failure category", async (testCase) => {
+    const transport: DockerUnixApiTransport = {
+      request: vi.fn(async () => ({
+        statusCode: 500,
+        body: JSON.stringify({ message: testCase.privateMessage }),
+      })),
+    };
+    const client = new DockerUnixApiClient({
+      socketPath: "/var/run/docker.sock",
+      apiVersion: "1.51",
+      transport,
+    });
+
+    await expect(client.startContainer("a".repeat(64))).rejects.toThrow(testCase.publicMessage);
   });
 
   it("rejects malformed identities and oversized responses", async () => {

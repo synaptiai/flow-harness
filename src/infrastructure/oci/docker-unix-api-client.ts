@@ -176,7 +176,9 @@ export class DockerUnixApiClient {
       undefined,
       signal,
     );
-    assertStatus(response, [204, 304], "start");
+    if (![204, 304].includes(response.statusCode)) {
+      throw new Error(dockerStartFailureMessage(response));
+    }
   }
 
   async stopContainer(
@@ -566,6 +568,89 @@ function assertStatus(
   if (!accepted.includes(response.statusCode)) {
     throw new Error(`Docker ${operation} returned status ${response.statusCode}`);
   }
+}
+
+function dockerStartFailureMessage(response: DockerUnixApiResponse): string {
+  const privateMessage = parseDockerErrorMessage(response.body)?.toLowerCase();
+  if (privateMessage === undefined) {
+    return `Docker start returned status ${response.statusCode}`;
+  }
+  if (
+    includesAny(privateMessage, [
+      "cgroup",
+      "io.max",
+      "blkio",
+      "block io",
+      "rlimit",
+      "resource limit",
+      "memory.swap",
+      "cpu.max",
+      "pids.max",
+    ])
+  ) {
+    return "Docker start failed while applying container resource controls";
+  }
+  if (privateMessage.includes("seccomp")) {
+    return "Docker start failed while applying the container seccomp policy";
+  }
+  if (
+    includesAny(privateMessage, [
+      "mount",
+      "rootfs",
+      "tmpfs",
+      "masked path",
+      "readonly path",
+      "read-only path",
+      "pivot_root",
+      "pivot root",
+    ])
+  ) {
+    return "Docker start failed while applying container filesystem isolation";
+  }
+  if (
+    includesAny(privateMessage, [
+      "exec",
+      "capabilit",
+      "setuid",
+      "setgid",
+      "no such file or directory",
+      "permission denied",
+    ])
+  ) {
+    return "Docker start failed while applying the container process policy";
+  }
+  if (
+    includesAny(privateMessage, [
+      "create task",
+      "create shim task",
+      "oci runtime create",
+      "runc create",
+    ])
+  ) {
+    return "Docker start failed while creating the container runtime task";
+  }
+  return `Docker start returned status ${response.statusCode}`;
+}
+
+function parseDockerErrorMessage(body: string): string | undefined {
+  try {
+    const parsed = parseStrictJson(body, {
+      maxDepth: 4,
+      maxNodes: 32,
+      valueLabel: "Docker error response",
+    });
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return undefined;
+    }
+    const message = (parsed as Record<string, unknown>).message;
+    return typeof message === "string" ? message : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function includesAny(value: string, candidates: readonly string[]): boolean {
+  return candidates.some((candidate) => value.includes(candidate));
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
