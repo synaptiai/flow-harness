@@ -15,6 +15,21 @@ func TestPrimeDriverProcessOptionsPermitThePinnedNativeAddon(t *testing.T) {
 	if !reflect.DeepEqual(options.Arguments, []string{driverPath}) {
 		t.Fatalf("Prime driver arguments changed: %#v", options.Arguments)
 	}
+	if !containsString(
+		options.Environment,
+		"TMPDIR=/workspace/.flow-prime/control",
+	) {
+		t.Fatalf("Prime driver temporary directory changed: %#v", options.Environment)
+	}
+}
+
+func containsString(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func TestSettleKernelServiceCancelsTheActiveKernelBeforeWaiting(t *testing.T) {

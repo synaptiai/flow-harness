@@ -11,8 +11,7 @@ import (
 const pythonExecutable = "/opt/flow/python/bin/python3"
 
 func main() {
-	request, err := kernelcontract.RequestFromArgs(os.Args[1:])
-	if err != nil {
+	if err := kernelcontract.ValidatePythonArgs(os.Args[1:]); err != nil {
 		fail(err)
 	}
 	if err := os.Chdir("/workspace"); err != nil {
@@ -24,7 +23,7 @@ func main() {
 		"-m",
 		"ipykernel_launcher",
 		"-f",
-		request.ConnectionPath,
+		kernelcontract.PythonConnectionPath,
 	}
 	environment := []string{
 		"HOME=/workspace/.flow-prime/home",

@@ -148,7 +148,7 @@ func primeDriverProcessOptions() supervisor.DriverProcessOptions {
 			"LD_PRELOAD=/opt/flow/lib/flow-prime-node-hardening.so",
 			"NODE_ENV=production", "PATH=/usr/local/bin:/usr/bin:/bin",
 			"FLOW_PRIME_HARDENING_FD=4",
-			"PRIME_AGENT_KERNEL_FORKSERVER=0", "TMPDIR=/run/flow-node",
+			"PRIME_AGENT_KERNEL_FORKSERVER=0", "TMPDIR=/workspace/.flow-prime/control",
 		},
 		WorkingDirectory:   workspacePath,
 		UID:                supervisor.NodeUID,

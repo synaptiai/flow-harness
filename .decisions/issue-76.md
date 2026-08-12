@@ -391,11 +391,22 @@ memberships remain fixed and empty.
 The supervisor checks the peer user, executable, arguments, connection-file path, and process count.
 Python cannot use the supervisor socket.
 
-The supervisor checks the exact regular `connection.json` file with no-follow operations. It changes
-the connection directory and file to shared group 10003 and mode `0770` and `0660`.
+The pinned Prime provisioner creates one private directory with the exact name
+`prime-agent-kernel-<six ASCII alphanumeric characters>` under `.flow-prime/control`. It creates one
+Node-owned `connection.json` file in that directory with mode `0600`. The supervisor accepts only
+that closed path grammar. It opens the directory and file with no-follow descriptor operations. It
+checks the exact owner, group, mode, size, and initial connection schema.
 
-The connection directory is under the reserved workspace path `.flow-prime/control`. This location
-keeps every Python-writable byte inside the trial workspace.
+The initial connection record must use loopback TCP, five zero ports, HMAC-SHA-256, the `python3`
+kernel name, and one 16-byte hexadecimal key. The supervisor copies that record to one separate
+Python-owned file at `.flow-prime/tmp/connection.json` with mode `0600`. The fixed Python launcher
+accepts only that path. This private copy lets the pinned Jupyter runtime unlink and recreate its
+connection file without giving Python write access to Node's control directory.
+
+The supervisor waits for the Python-owned file under one fixed deadline. It accepts only the same
+loopback address, transport, signature scheme, key, and kernel name, plus five distinct nonzero TCP
+ports. It writes one canonical resolved record through the already-open Node file descriptor. The
+pinned Prime provisioner then reads the resolved ports from its original randomized path.
 
 The workspace root and `.flow-prime` use user 10002, group 10003, and mode `0710`. Node can traverse
 the exact control path, but it cannot list either ancestor.
@@ -403,8 +414,9 @@ the exact control path, but it cannot list either ancestor.
 The Python home and temporary directories use user 10002, group 10002, and mode `0700`. The control
 directory uses user 10001, group 10003, and mode `0770`.
 
-The Node and Python users can read that directory and file. All other driver state stays private to
-user 10001. The supervisor removes the connection directory after kernel exit.
+Node cannot read the Python-owned connection file. Python cannot read the Node-owned connection
+directory or file. All other driver state stays private to user 10001. The supervisor removes both
+connection files and the randomized Node directory after kernel exit.
 
 The kernel proxy relays only bounded status and error data. The supervisor stops the kernel if its
 standard error exceeds the fixed limit.
@@ -1017,7 +1029,7 @@ user before it runs the setup.
 | Admit the fixed Prime profile | Contract | `npx vitest run test/unit/evaluation/plan.test.ts test/unit/infrastructure/fs/local-evaluation-plan.test.ts` | Fixed config passes. Unknown config and authority fields fail. | Prime availability on all hosts |
 | Bind the Prime OCI identity | Contract | `npx vitest run test/unit/infrastructure/prime/native-prime-harness-registry.test.ts test/unit/infrastructure/oci/local-prime-oci-runtime-inspector.test.ts test/unit/infrastructure/oci/prime-oci-image-device.test.ts test/unit/infrastructure/oci/local-prime-oci-currentness.test.ts test/unit/infrastructure/oci/local-prime-oci-attestation.test.ts test/unit/infrastructure/oci/prime-oci-preparation.test.ts` | Prepared identity binds engine, image, build, package, policy, and the exact image device. Fixed-stage preflight rejects before builds. Local adapter, host OCI, attestation, and admitted-identity drift reject. | Host signatures or hostile engine protection |
 | Build the exact Prime image | Supply chain | `npx vitest run test/unit/infrastructure/oci/prime-image-archive.test.ts test/integration/package/prime-image-probe.test.ts && npm run prime:image:verify` | Exact archive and probe bounds and secret cases pass. The probe imports each required SDK binding, including the IPython provisioner and the pinned native addon graph. The pinned container build runs the Go tests. These tests prove that the supervisor settles the workspace root last and admits only the fixed Docker system files. Two clean builds match. Archive, lock, layer, SBOM, and secret gates pass. | Registry publication |
-| Diagnose Docker and Prime process failure | Contract | `npx vitest run test/unit/infrastructure/oci/docker-unix-api-client.test.ts test/unit/infrastructure/oci/attached-prime-oci-operator.test.ts test/unit/infrastructure/prime/native-prime-evaluation-driver.test.ts && (cd prime-container && go test ./internal/supervisor ./internal/containerprotocol ./cmd/flow-prime-supervisor)` | Each admitted start-failure category is fixed. Docker response text does not enter the public error. Attached writes accept both Node success callback values and reject an Error. A pending attached-output read settles on cancellation. The driver awaits the pinned SDK session cleanup and forcefully closes its caller-owned IPython provisioner. It does not call an unsupported authentication-storage cleanup. The supervisor cancels and reaps the active kernel before it waits for the kernel service. It reconciles every Python process before export. Bounded supervisor, readiness measurement, Docker system-file, driver-process, relay-boundary, and package-specific driver-SDK failures use closed fixed stages without private text. The driver gets one bounded settlement grace before process-group termination. Closed-channel exit, signal, and forced-settlement outcomes are distinct. Forced settlement distinguishes empty and nonempty unclassified diagnostics. One unique complete allowlisted stage line wins over other private lines. Non-EOF relay stages keep priority. | Recovery from an incompatible host |
+| Diagnose Docker and Prime process failure | Contract | `npx vitest run test/unit/infrastructure/oci/docker-unix-api-client.test.ts test/unit/infrastructure/oci/attached-prime-oci-operator.test.ts test/unit/infrastructure/prime/native-prime-evaluation-driver.test.ts && (cd prime-container && go test ./internal/kernelcontract ./internal/supervisor ./internal/containerprotocol ./cmd/flow-prime-supervisor ./cmd/flow-prime-python)` | Each admitted start-failure category is fixed. Docker response text does not enter the public error. Attached writes accept both Node success callback values and reject an Error. A pending attached-output read settles on cancellation. The driver awaits the pinned SDK session cleanup and forcefully closes its caller-owned IPython provisioner. It does not call an unsupported authentication-storage cleanup. The supervisor cancels and reaps the active kernel before it waits for the kernel service. It reconciles every Python process before export. The kernel proxy accepts only the pinned provisioner's randomized path grammar. The supervisor bridges the strict Node-owned zero-port connection record to one private Python file and copies back only the matching resolved identity with five distinct ports. Bounded supervisor, readiness measurement, Docker system-file, driver-process, relay-boundary, and package-specific driver-SDK failures use closed fixed stages without private text. The driver gets one bounded settlement grace before process-group termination. Closed-channel exit, signal, and forced-settlement outcomes are distinct. Forced settlement distinguishes empty and nonempty unclassified diagnostics. One unique complete allowlisted stage line wins over other private lines. Non-EOF relay stages keep priority. | Recovery from an incompatible host |
 | Audit locked runtime dependencies | Supply chain | `npm run build && node scripts/audit-prime-dependencies.mjs` | The exact Prime Node and Python locks pass the fixed audit policy. | Future dependency versions |
 | Run a real persistent IPython session | Integration | `npx vitest run test/integration/prime/native-prime-agent-evaluation.test.ts` | One session keeps state across two turns. It uses one accepted kernel request. The caller-owned SDK provisioner settles before the driver exits. The supervisor settles the real Python process before export. | Live provider quality |
 | Exchange signed process frames | Integration | `npx vitest run test/unit/evaluation/external-harness-protocol.test.ts test/integration/prime/native-prime-agent-driver-protocol.test.ts && (cd prime-container && go test ./internal/containerprotocol)` | TypeScript and Go use the same fixed string escapes for signed frames. The compiled driver completes one signed tool exchange through fake inference. | Provider quality |
