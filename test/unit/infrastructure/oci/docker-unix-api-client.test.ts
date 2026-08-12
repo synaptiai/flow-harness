@@ -613,6 +613,102 @@ describe("Docker Unix API client", () => {
       publicMessage: "Docker start failed because a runtime object was missing",
     },
     {
+      privateMessage:
+        "failed to create task: OCI runtime create failed: unable to create safe /proc/self/exe clone for runc init: PRIVATE_CLONE: no such file or directory",
+      privateMarker: "PRIVATE_CLONE",
+      publicMessage: "Docker start failed while preparing the container runtime init binary",
+    },
+    {
+      privateMessage:
+        "failed to create task: OCI runtime create failed: unable to create new parent process: PRIVATE_PARENT: no such file or directory",
+      privateMarker: "PRIVATE_PARENT",
+      publicMessage: "Docker start failed while launching the container runtime init process",
+    },
+    {
+      privateMessage:
+        "failed to create task: OCI runtime create failed: unable to start init: PRIVATE_INIT: no such file or directory",
+      privateMarker: "PRIVATE_INIT",
+      publicMessage: "Docker start failed while launching the container runtime init process",
+    },
+    {
+      privateMessage:
+        "failed to create task: OCI runtime create failed: error creating device nodes: PRIVATE_DEVICE_NODES: no such file or directory",
+      privateMarker: "PRIVATE_DEVICE_NODES",
+      publicMessage: "Docker start failed while preparing isolated container devices",
+    },
+    {
+      privateMessage:
+        "failed to create task: OCI runtime create failed: error setting up ptmx: PRIVATE_PTMX: no such file or directory",
+      privateMarker: "PRIVATE_PTMX",
+      publicMessage: "Docker start failed while preparing isolated container devices",
+    },
+    {
+      privateMessage:
+        "failed to create task: OCI runtime create failed: error setting up /dev symlinks: PRIVATE_DEVICE_LINK: no such file or directory",
+      privateMarker: "PRIVATE_DEVICE_LINK",
+      publicMessage: "Docker start failed while preparing isolated container devices",
+    },
+    {
+      privateMessage:
+        "failed to create task: OCI runtime create failed: error reopening /dev/null inside container: PRIVATE_DEVICE: no such file or directory",
+      privateMarker: "PRIVATE_DEVICE",
+      publicMessage: "Docker start failed while preparing isolated container devices",
+    },
+    {
+      privateMessage:
+        "failed to create task: OCI runtime create failed: stat /dev/null: PRIVATE_NULL_DEVICE: no such file or directory",
+      privateMarker: "PRIVATE_NULL_DEVICE",
+      publicMessage: "Docker start failed while preparing isolated container devices",
+    },
+    {
+      privateMessage:
+        "failed to create task: OCI runtime create failed: unable to join session keyring: PRIVATE_INIT_POLICY: no such file or directory",
+      privateMarker: "PRIVATE_INIT_POLICY",
+      publicMessage: "Docker start failed while applying the container runtime init policy",
+    },
+    {
+      privateMessage:
+        "failed to create task: OCI runtime create failed: unable to mod keyring permissions: PRIVATE_KEYRING_MODE: no such file or directory",
+      privateMarker: "PRIVATE_KEYRING_MODE",
+      publicMessage: "Docker start failed while applying the container runtime init policy",
+    },
+    {
+      privateMessage:
+        "failed to create task: OCI runtime create failed: sethostname: PRIVATE_HOSTNAME: no such file or directory",
+      privateMarker: "PRIVATE_HOSTNAME",
+      publicMessage: "Docker start failed while applying the container runtime init policy",
+    },
+    {
+      privateMessage:
+        "failed to create task: OCI runtime create failed: setdomainname: PRIVATE_DOMAIN: no such file or directory",
+      privateMarker: "PRIVATE_DOMAIN",
+      publicMessage: "Docker start failed while applying the container runtime init policy",
+    },
+    {
+      privateMessage:
+        "failed to create task: OCI runtime create failed: can't get pdeath signal: PRIVATE_PDEATH_READ: no such file or directory",
+      privateMarker: "PRIVATE_PDEATH_READ",
+      publicMessage: "Docker start failed while applying the container runtime init policy",
+    },
+    {
+      privateMessage:
+        "failed to create task: OCI runtime create failed: can't restore pdeath signal: PRIVATE_PDEATH_RESTORE: no such file or directory",
+      privateMarker: "PRIVATE_PDEATH_RESTORE",
+      publicMessage: "Docker start failed while applying the container runtime init policy",
+    },
+    {
+      privateMessage:
+        "failed to create task: OCI runtime create failed: write /proc/sys/net/ipv4/ping_group_range: PRIVATE_NETWORK_DEFAULT: no such file or directory",
+      privateMarker: "PRIVATE_NETWORK_DEFAULT",
+      publicMessage: "Docker start failed while applying container runtime network defaults",
+    },
+    {
+      privateMessage:
+        "failed to create task: OCI runtime create failed: write /proc/sys/net/ipv4/ip_unprivileged_port_start: PRIVATE_PORT_DEFAULT: no such file or directory",
+      privateMarker: "PRIVATE_PORT_DEFAULT",
+      publicMessage: "Docker start failed while applying container runtime network defaults",
+    },
+    {
       privateMessage: "failed to create task: failed to open stdin fifo PRIVATE_STDIN",
       privateMarker: "PRIVATE_STDIN",
       publicMessage: "Docker start failed while opening container runtime streams",
@@ -1338,6 +1434,76 @@ describe("Docker Unix API client", () => {
     {
       privateDiagnostic: "settle Prime kernel service: run Prime kernel service: PRIVATE_SERVICE\n",
       publicMessage: "Prime container failed while settling its active kernel request",
+    },
+    {
+      privateDiagnostic:
+        "settle Prime kernel service: run Prime kernel service: accept kernel proxy request: PRIVATE_ACCEPT\n",
+      publicMessage: "Prime container failed while accepting a kernel request",
+    },
+    {
+      privateDiagnostic:
+        "settle Prime kernel service: run Prime kernel service: Prime session requested more than one Python kernel\n",
+      publicMessage: "Prime container rejected an additional Python kernel request",
+    },
+    {
+      privateDiagnostic:
+        "settle Prime kernel service: run Prime kernel service: inspect kernel peer identity: PRIVATE_PEER\n",
+      publicMessage: "Prime container failed while validating the kernel request peer",
+    },
+    {
+      privateDiagnostic:
+        "settle Prime kernel service: run Prime kernel service: access kernel peer socket: PRIVATE_PEER_ACCESS\n",
+      publicMessage: "Prime container failed while validating the kernel request peer",
+    },
+    {
+      privateDiagnostic:
+        "settle Prime kernel service: run Prime kernel service: inspect kernel peer socket: PRIVATE_PEER_SOCKET\n",
+      publicMessage: "Prime container failed while validating the kernel request peer",
+    },
+    {
+      privateDiagnostic:
+        "settle Prime kernel service: run Prime kernel service: kernel request peer user 10002 is not the fixed Node user\n",
+      publicMessage: "Prime container failed while validating the kernel request peer",
+    },
+    {
+      privateDiagnostic:
+        "settle Prime kernel service: run Prime kernel service: read kernel request header: PRIVATE_REQUEST\n",
+      publicMessage: "Prime container failed while reading a kernel request",
+    },
+    {
+      privateDiagnostic:
+        "settle Prime kernel service: run Prime kernel service: read kernel request: PRIVATE_REQUEST_BODY\n",
+      publicMessage: "Prime container failed while reading a kernel request",
+    },
+    {
+      privateDiagnostic:
+        "settle Prime kernel service: run Prime kernel service: kernel request exceeds its byte limit\n",
+      publicMessage: "Prime container failed while reading a kernel request",
+    },
+    {
+      privateDiagnostic:
+        "settle Prime kernel service: run Prime kernel service: kernel request is not valid JSON\n",
+      publicMessage: "Prime container failed while reading a kernel request",
+    },
+    {
+      privateDiagnostic:
+        "settle Prime kernel service: run Prime kernel service: kernel request violates the fixed contract\n",
+      publicMessage: "Prime container failed while reading a kernel request",
+    },
+    {
+      privateDiagnostic:
+        "settle Prime kernel service: run Prime kernel service: kernel request is not canonical JSON\n",
+      publicMessage: "Prime container failed while reading a kernel request",
+    },
+    {
+      privateDiagnostic:
+        "settle Prime kernel service: run Prime kernel service: write kernel response: PRIVATE_RESPONSE\n",
+      publicMessage: "Prime container failed while returning a kernel result",
+    },
+    {
+      privateDiagnostic:
+        "settle Prime kernel service: run Prime kernel service: kernel response cannot be encoded\n",
+      publicMessage: "Prime container failed while returning a kernel result",
     },
     {
       privateDiagnostic:

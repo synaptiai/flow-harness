@@ -859,7 +859,42 @@ function primeContainerFailureMessage(stderr: Buffer, sawStdout: boolean): strin
   if (privateDiagnostic.startsWith("settle prime kernel service: close prime kernel listener: ")) {
     return "Prime container failed while closing its kernel listener";
   }
-  if (privateDiagnostic.startsWith("settle prime kernel service: run prime kernel service: ")) {
+  const kernelServicePrefix = "settle prime kernel service: run prime kernel service: ";
+  const kernelServiceDiagnostic = privateDiagnostic.slice(kernelServicePrefix.length);
+  if (
+    privateDiagnostic.startsWith(kernelServicePrefix) &&
+    kernelServiceDiagnostic.startsWith("accept kernel proxy request: ")
+  ) {
+    return "Prime container failed while accepting a kernel request";
+  }
+  if (
+    privateDiagnostic.startsWith(kernelServicePrefix) &&
+    kernelServiceDiagnostic === "prime session requested more than one python kernel"
+  ) {
+    return "Prime container rejected an additional Python kernel request";
+  }
+  if (
+    privateDiagnostic.startsWith(kernelServicePrefix) &&
+    (kernelServiceDiagnostic.includes("kernel peer") ||
+      kernelServiceDiagnostic.startsWith("kernel request peer user "))
+  ) {
+    return "Prime container failed while validating the kernel request peer";
+  }
+  if (
+    privateDiagnostic.startsWith(kernelServicePrefix) &&
+    (kernelServiceDiagnostic.startsWith("read kernel request") ||
+      kernelServiceDiagnostic.startsWith("kernel request "))
+  ) {
+    return "Prime container failed while reading a kernel request";
+  }
+  if (
+    privateDiagnostic.startsWith(kernelServicePrefix) &&
+    (kernelServiceDiagnostic.startsWith("write kernel response: ") ||
+      kernelServiceDiagnostic === "kernel response cannot be encoded")
+  ) {
+    return "Prime container failed while returning a kernel result";
+  }
+  if (privateDiagnostic.startsWith(kernelServicePrefix)) {
     return "Prime container failed while settling its active kernel request";
   }
   if (
@@ -1068,6 +1103,45 @@ function dockerStartFailureMessage(response: DockerUnixApiResponse): string {
   }
   if (privateMessage.includes('runtime "io.containerd.runc.v2" binary not installed')) {
     return "Docker start failed while launching the container runtime shim";
+  }
+  if (privateMessage.includes("unable to create safe /proc/self/exe clone for runc init")) {
+    return "Docker start failed while preparing the container runtime init binary";
+  }
+  if (
+    includesAny(privateMessage, ["unable to create new parent process", "unable to start init"])
+  ) {
+    return "Docker start failed while launching the container runtime init process";
+  }
+  if (
+    includesAny(privateMessage, [
+      "error creating device nodes",
+      "error setting up ptmx",
+      "error setting up /dev symlinks",
+      "error reopening /dev/null inside container",
+      "stat /dev/null",
+    ])
+  ) {
+    return "Docker start failed while preparing isolated container devices";
+  }
+  if (
+    includesAny(privateMessage, [
+      "unable to join session keyring",
+      "unable to mod keyring permissions",
+      "sethostname:",
+      "setdomainname:",
+      "can't get pdeath signal",
+      "can't restore pdeath signal",
+    ])
+  ) {
+    return "Docker start failed while applying the container runtime init policy";
+  }
+  if (
+    includesAny(privateMessage, [
+      "/proc/sys/net/ipv4/ping_group_range",
+      "/proc/sys/net/ipv4/ip_unprivileged_port_start",
+    ])
+  ) {
+    return "Docker start failed while applying container runtime network defaults";
   }
   if (includesAny(privateMessage, ["permission denied"])) {
     return "Docker start failed while applying the container process policy";
