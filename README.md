@@ -75,6 +75,7 @@ The Prime Agent evaluation profile has additional requirements:
 - Docker API 1.51 with the systemd cgroup driver.
 - A local Docker socket at `/var/run/docker.sock`.
 - Docker uses that exact Unix endpoint without socket activation.
+- A non-piped host core pattern.
 
 The Prime runtime identity has these additional requirements:
 
@@ -116,6 +117,7 @@ sudo systemctl stop docker.service docker.socket containerd.service
 sudo systemctl disable docker.socket
 sudo systemctl mask containerd.service
 sudo rm --force -- /run/containerd/containerd.sock
+sudo sysctl --write kernel.core_pattern=core
 sudo install --directory /etc/systemd/system/docker.service.d
 printf '[Unit]\nRequires=\n[Service]\nExecStart=\nExecStart=/usr/bin/dockerd --host=unix:///var/run/docker.sock\n' | sudo tee /etc/systemd/system/docker.service.d/flow-prime.conf
 sudo systemctl daemon-reload

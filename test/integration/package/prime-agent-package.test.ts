@@ -233,6 +233,15 @@ describe("Prime Agent package boundary", () => {
     const workflow = await readFile(resolve(repositoryRoot, ".github/workflows/ci.yml"), "utf8");
     const localCi = await readFile(resolve(repositoryRoot, "scripts/ci-local.mjs"), "utf8");
     const readme = await readFile(resolve(repositoryRoot, "README.md"), "utf8");
+    const workflowCorePatternWrite = workflow.indexOf(
+      "sudo sysctl --write kernel.core_pattern=core",
+    );
+    const workflowCorePatternCheck = workflow.indexOf(
+      'test "$(cat /proc/sys/kernel/core_pattern)" = core',
+    );
+    const workflowReleaseGate = workflow.indexOf("run: npm run ci:local");
+    const readmeCorePatternWrite = readme.indexOf("sudo sysctl --write kernel.core_pattern=core");
+    const readmePreparation = readme.indexOf("node dist/cli/main.js runtime prepare prime-agent");
 
     expect(workflow).toContain("docker_version='5:28.3.3-1~ubuntu.24.04~noble'");
     expect(workflow).toContain("containerd.io='1.7.27-1'");
@@ -240,12 +249,15 @@ describe("Prime Agent package boundary", () => {
     expect(workflow).toContain("{{.Server.APIVersion}}')\" = '1.51'");
     expect(workflow).toContain("{{.Server.Version}}')\" = '28.3.3'");
     expect(workflow).not.toContain("docker/setup-buildx-action");
-    expect(workflow).toContain("run: npm run ci:local");
+    expect(workflowReleaseGate).toBeGreaterThan(-1);
     expect(workflow).toContain("ExecStart=/usr/bin/dockerd --host=unix:///var/run/docker.sock");
     expect(workflow).toContain("systemctl stop docker.service docker.socket containerd.service");
     expect(workflow).toContain("systemctl mask containerd.service");
     expect(workflow).toContain("rm --force -- /run/containerd/containerd.sock");
     expect(workflow).toContain("chmod 0711 /run/docker /run/docker/containerd");
+    expect(workflowCorePatternWrite).toBeGreaterThan(-1);
+    expect(workflowCorePatternCheck).toBeGreaterThan(workflowCorePatternWrite);
+    expect(workflowReleaseGate).toBeGreaterThan(workflowCorePatternCheck);
     expect(workflow).toContain("/run/flow-prime-runtime-v1.json");
     expect(workflow).toContain('ps --no-headers --pid "$containerd_pid" --format ppid');
     expect(workflow).not.toContain('ps --no-headers --ppid "$docker_pid" --format pid');
@@ -258,6 +270,9 @@ describe("Prime Agent package boundary", () => {
     expect(workflow).toContain("FLOW_PRIME_TEST_SECOND_USER=flow-prime-peer");
     expect(readme).toContain("dedicated, reprovisionable Prime runner");
     expect(readme).toContain("chmod 0711 /run/docker /run/docker/containerd");
+    expect(readmeCorePatternWrite).toBeGreaterThan(-1);
+    expect(readmePreparation).toBeGreaterThan(readmeCorePatternWrite);
+    expect(readme).toContain("non-piped host core pattern");
     expect(readme).toContain("/run/flow-prime-runtime-v1.json");
     expect(readme).toContain('ps --no-headers --pid "$containerd_pid" --format ppid');
     expect(readme).not.toContain('ps --no-headers --ppid "$docker_pid" --format pid');

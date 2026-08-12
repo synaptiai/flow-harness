@@ -108,6 +108,7 @@ jobs:
           sudo systemctl disable docker.socket
           sudo systemctl mask containerd.service
           sudo rm --force -- /run/containerd/containerd.sock
+          sudo sysctl --write kernel.core_pattern=core
           sudo mkdir --parents /etc/systemd/system/docker.service.d
           printf '[Unit]\nRequires=\n[Service]\nExecStart=\nExecStart=/usr/bin/dockerd --host=unix:///var/run/docker.sock\n' | \
             sudo tee /etc/systemd/system/docker.service.d/flow-prime.conf > /dev/null
@@ -118,6 +119,7 @@ jobs:
             exit 1
           fi
           sudo chmod 0711 /run/docker /run/docker/containerd
+          test "$(cat /proc/sys/kernel/core_pattern)" = core
           test "$(docker version --format '{{.Server.APIVersion}}')" = '1.51'
           test "$(docker version --format '{{.Server.Version}}')" = '28.3.3'
           test "$(docker info --format '{{.DefaultRuntime}}')" = 'flow-prime-runc'
