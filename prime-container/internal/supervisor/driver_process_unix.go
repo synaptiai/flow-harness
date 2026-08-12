@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"time"
 
@@ -251,19 +252,38 @@ func boundedDiagnostic(value []byte) string {
 }
 
 func closedPrimeDriverDiagnostic(value string) (string, bool) {
+	var selected string
+	lines := strings.Split(value, "\n")
+	for index, line := range lines {
+		if index == len(lines)-1 && line != "" {
+			break
+		}
+		stage, ok := closedPrimeDriverStageLine(line)
+		if !ok {
+			continue
+		}
+		if selected != "" && selected != stage {
+			return "", false
+		}
+		selected = stage
+	}
+	return selected, selected != ""
+}
+
+func closedPrimeDriverStageLine(value string) (string, bool) {
 	switch value {
-	case "Prime driver stage failure: read-supervisor-input\n",
-		"Prime driver stage failure: write-supervisor-output\n",
-		"Prime driver stage failure: resolve-workspace\n",
-		"Prime driver stage failure: load-sdk\n",
-		"Prime driver stage failure: initialize-sdk\n",
-		"Prime driver stage failure: create-ipython-tool\n",
-		"Prime driver stage failure: create-sdk-session\n",
-		"Prime driver stage failure: validate-sdk-session\n",
-		"Prime driver stage failure: observe-sdk-session\n",
-		"Prime driver stage failure: dispose-sdk-session\n",
-		"Prime driver stage failure: unexpected\n":
-		return value[:len(value)-1], true
+	case "Prime driver stage failure: read-supervisor-input",
+		"Prime driver stage failure: write-supervisor-output",
+		"Prime driver stage failure: resolve-workspace",
+		"Prime driver stage failure: load-sdk",
+		"Prime driver stage failure: initialize-sdk",
+		"Prime driver stage failure: create-ipython-tool",
+		"Prime driver stage failure: create-sdk-session",
+		"Prime driver stage failure: validate-sdk-session",
+		"Prime driver stage failure: observe-sdk-session",
+		"Prime driver stage failure: dispose-sdk-session",
+		"Prime driver stage failure: unexpected":
+		return value, true
 	default:
 		return "", false
 	}

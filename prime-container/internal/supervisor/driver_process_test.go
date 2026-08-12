@@ -131,6 +131,47 @@ func TestRunDriverProcessPromotesOnlyClosedDriverStages(t *testing.T) {
 	}
 }
 
+func TestClosedPrimeDriverDiagnosticRequiresOneUniqueCompleteStageLine(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		value    string
+		expected string
+		accepted bool
+	}{
+		{
+			name:     "mixed private lines",
+			value:    "PRIVATE_PREFIX\nPrime driver stage failure: load-sdk\nPRIVATE_SUFFIX\n",
+			expected: "Prime driver stage failure: load-sdk",
+			accepted: true,
+		},
+		{
+			name:     "repeated same stage",
+			value:    "Prime driver stage failure: load-sdk\nPrime driver stage failure: load-sdk\n",
+			expected: "Prime driver stage failure: load-sdk",
+			accepted: true,
+		},
+		{
+			name:  "conflicting stages",
+			value: "Prime driver stage failure: load-sdk\nPrime driver stage failure: initialize-sdk\n",
+		},
+		{
+			name:  "embedded stage",
+			value: "PRIVATE Prime driver stage failure: load-sdk PRIVATE\n",
+		},
+		{
+			name:  "unterminated stage",
+			value: "Prime driver stage failure: load-sdk",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			observed, accepted := closedPrimeDriverDiagnostic(test.value)
+			if accepted != test.accepted || observed != test.expected {
+				t.Fatalf("closed driver diagnostic changed: %q %t", observed, accepted)
+			}
+		})
+	}
+}
+
 func TestRunDriverProcessAllowsClosedStageToSettleAfterDriverEOF(t *testing.T) {
 	result, err := RunDriverProcess(
 		&bytes.Buffer{},
@@ -183,6 +224,11 @@ func TestRunDriverProcessDistinguishesClosedChannelSettlement(t *testing.T) {
 			name:       "grace deadline with private diagnostic",
 			settlement: "hang-diagnostic",
 			expected:   "Prime driver did not settle after its private channel closed with an unclassified diagnostic",
+		},
+		{
+			name:       "grace deadline with mixed closed stage",
+			settlement: "hang-stage",
+			expected:   "Prime driver stage failure: load-sdk",
 		},
 		{
 			name:       "authenticated relay failure",
@@ -320,6 +366,12 @@ func TestPrimeDriverHelperProcess(t *testing.T) {
 		case "hang-diagnostic":
 			closeTestDriverChannel(socket)
 			fmt.Fprintln(os.Stderr, "PRIVATE_UNCLASSIFIED_DIAGNOSTIC")
+			time.Sleep(1500 * time.Millisecond)
+			os.Exit(125)
+		case "hang-stage":
+			closeTestDriverChannel(socket)
+			fmt.Fprintln(os.Stderr, "PRIVATE_DEPENDENCY_WARNING")
+			fmt.Fprintln(os.Stderr, "Prime driver stage failure: load-sdk")
 			time.Sleep(1500 * time.Millisecond)
 			os.Exit(125)
 		case "invalid-frame":
