@@ -324,7 +324,9 @@ process limits. Process categories distinguish entrypoint, working-directory, us
 capability, no-new-privileges, AppArmor, and residual process-policy work.
 
 Runtime-task categories distinguish file-descriptor setup, process synchronization, early process
-exit, state recording, a missing runtime diagnostic, and residual task creation.
+exit, state recording, selected-runtime launch, and runtime-shim launch. They also distinguish stream
+opening, stream copying, process-identity reading, execution setup, missing execution objects, a
+missing runtime diagnostic, and residual task creation.
 
 An unknown response reports only the status. Docker response text stays private. The category does
 not change admission, retry, or cleanup.

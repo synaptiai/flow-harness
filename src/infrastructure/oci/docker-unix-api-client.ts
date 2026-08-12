@@ -575,6 +575,12 @@ function dockerStartFailureMessage(response: DockerUnixApiResponse): string {
   if (privateMessage === undefined) {
     return `Docker start returned status ${response.statusCode}`;
   }
+  if (
+    privateMessage.includes("oci runtime create failed") &&
+    privateMessage.includes("fork/exec ")
+  ) {
+    return "Docker start failed while launching the selected container runtime";
+  }
   if (includesAny(privateMessage, ["io.max", "blkio", "block io"])) {
     return "Docker start failed while applying container block I/O controls";
   }
@@ -604,9 +610,11 @@ function dockerStartFailureMessage(response: DockerUnixApiResponse): string {
       "masked path",
       "readonly path",
       "read-only path",
+      "can't mask path",
       "pivot_root",
       "pivot root",
-    ])
+    ]) ||
+    (privateMessage.includes("can't make") && privateMessage.includes("read-only"))
   ) {
     return "Docker start failed while applying container filesystem isolation";
   }
@@ -625,7 +633,10 @@ function dockerStartFailureMessage(response: DockerUnixApiResponse): string {
   if (privateMessage.includes("apparmor")) {
     return "Docker start failed while applying the container AppArmor policy";
   }
-  if (includesAny(privateMessage, ["exec:", "exec /", "executable file not found"])) {
+  if (
+    /(?:^|[^a-z])exec(?::| \/)/u.test(privateMessage) ||
+    privateMessage.includes("executable file not found")
+  ) {
     return "Docker start failed while executing the container entrypoint";
   }
   if (
@@ -635,6 +646,7 @@ function dockerStartFailureMessage(response: DockerUnixApiResponse): string {
       "log pipe",
       "pipe fds",
       "init process i/o",
+      "cloexec",
     ])
   ) {
     return "Docker start failed while setting up container runtime file descriptors";
@@ -665,8 +677,37 @@ function dockerStartFailureMessage(response: DockerUnixApiResponse): string {
   ) {
     return "Docker start failed before the container runtime returned a diagnostic";
   }
+  if (
+    includesAny(privateMessage, [
+      "failed to open stdin fifo",
+      "failed to open stdout fifo",
+      "failed to open stderr fifo",
+    ])
+  ) {
+    return "Docker start failed while opening container runtime streams";
+  }
+  if (includesAny(privateMessage, ["failed to start io pipe copy", "unable to copy pipes"])) {
+    return "Docker start failed while copying container runtime streams";
+  }
+  if (privateMessage.includes("failed to retrieve oci runtime container pid")) {
+    return "Docker start failed while reading the container runtime process identity";
+  }
+  if (privateMessage.includes('runtime "io.containerd.runc.v2" binary not installed')) {
+    return "Docker start failed while launching the container runtime shim";
+  }
   if (includesAny(privateMessage, ["permission denied"])) {
     return "Docker start failed while applying the container process policy";
+  }
+  const hasUnclassifiedExecution = /(?:^|[^a-z])exec(?:[^a-z]|$)/u.test(privateMessage);
+  const hasUnclassifiedMissingObject = privateMessage.includes("no such file or directory");
+  if (hasUnclassifiedExecution && hasUnclassifiedMissingObject) {
+    return "Docker start failed while resolving a runtime execution object";
+  }
+  if (hasUnclassifiedExecution) {
+    return "Docker start failed during runtime execution setup";
+  }
+  if (hasUnclassifiedMissingObject) {
+    return "Docker start failed because a runtime object was missing";
   }
   if (
     includesAny(privateMessage, [

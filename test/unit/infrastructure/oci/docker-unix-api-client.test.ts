@@ -396,6 +396,18 @@ describe("Docker Unix API client", () => {
 
   it.each([
     {
+      privateMessage:
+        "failed to create task: OCI runtime create failed: can't mask path /PRIVATE_MASK: operation not permitted",
+      privateMarker: "PRIVATE_MASK",
+      publicMessage: "Docker start failed while applying container filesystem isolation",
+    },
+    {
+      privateMessage:
+        'failed to create task: OCI runtime create failed: can\'t make "/PRIVATE_READONLY" read-only: operation not permitted',
+      privateMarker: "PRIVATE_READONLY",
+      publicMessage: "Docker start failed while applying container filesystem isolation",
+    },
+    {
       privateMessage: "runc create failed: exec: PRIVATE_EXEC_COLON",
       privateMarker: "PRIVATE_EXEC_COLON",
       publicMessage: "Docker start failed while executing the container entrypoint",
@@ -563,6 +575,83 @@ describe("Docker Unix API client", () => {
       privateMarker: "PRIVATE_EXIT",
       publicMessage: "Docker start failed before the container runtime returned a diagnostic",
     },
+    {
+      privateMessage:
+        "failed to create task: OCI runtime create failed: fork/exec /PRIVATE_RUNC: no such file or directory",
+      privateMarker: "PRIVATE_RUNC",
+      publicMessage: "Docker start failed while launching the selected container runtime",
+    },
+    {
+      privateMessage:
+        "failed to create task: OCI runtime create failed: fork/exec /PRIVATE_RUNC: permission denied",
+      privateMarker: "PRIVATE_RUNC",
+      publicMessage: "Docker start failed while launching the selected container runtime",
+    },
+    {
+      privateMessage:
+        "failed to create task: OCI runtime create failed: fork/exec /PRIVATE_RUNC: exec format error",
+      privateMarker: "PRIVATE_RUNC",
+      publicMessage: "Docker start failed while launching the selected container runtime",
+    },
+    {
+      privateMessage:
+        "failed to create task: exec failed for PRIVATE_RUN because no such file or directory exists",
+      privateMarker: "PRIVATE_RUN",
+      publicMessage: "Docker start failed while resolving a runtime execution object",
+    },
+    {
+      privateMessage: "failed to create task: exec failed for PRIVATE_RUN",
+      privateMarker: "PRIVATE_RUN",
+      publicMessage: "Docker start failed during runtime execution setup",
+    },
+    {
+      privateMessage: "failed to create task: PRIVATE_OBJECT no such file or directory",
+      privateMarker: "PRIVATE_OBJECT",
+      publicMessage: "Docker start failed because a runtime object was missing",
+    },
+    {
+      privateMessage: "failed to create task: failed to open stdin fifo PRIVATE_STDIN",
+      privateMarker: "PRIVATE_STDIN",
+      publicMessage: "Docker start failed while opening container runtime streams",
+    },
+    {
+      privateMessage: "failed to create task: failed to open stdout fifo PRIVATE_STDOUT",
+      privateMarker: "PRIVATE_STDOUT",
+      publicMessage: "Docker start failed while opening container runtime streams",
+    },
+    {
+      privateMessage: "failed to create task: failed to open stderr fifo PRIVATE_STDERR",
+      privateMarker: "PRIVATE_STDERR",
+      publicMessage: "Docker start failed while opening container runtime streams",
+    },
+    {
+      privateMessage: "failed to create task: failed to start io pipe copy PRIVATE_COPY",
+      privateMarker: "PRIVATE_COPY",
+      publicMessage: "Docker start failed while copying container runtime streams",
+    },
+    {
+      privateMessage: "failed to create task: unable to copy pipes PRIVATE_PIPES",
+      privateMarker: "PRIVATE_PIPES",
+      publicMessage: "Docker start failed while copying container runtime streams",
+    },
+    {
+      privateMessage:
+        "failed to create task: failed to retrieve OCI runtime container pid PRIVATE_PID",
+      privateMarker: "PRIVATE_PID",
+      publicMessage: "Docker start failed while reading the container runtime process identity",
+    },
+    {
+      privateMessage:
+        'failed to create task: runtime "io.containerd.runc.v2" binary not installed "PRIVATE_SHIM"',
+      privateMarker: "PRIVATE_SHIM",
+      publicMessage: "Docker start failed while launching the container runtime shim",
+    },
+    {
+      privateMessage:
+        "OCI runtime create failed: unable to mark non-stdio fds as cloexec: PRIVATE_DESCRIPTOR_CANARY",
+      privateMarker: "PRIVATE_DESCRIPTOR_CANARY",
+      publicMessage: "Docker start failed while setting up container runtime file descriptors",
+    },
   ])("binds one closed category to each process signal", async (testCase) => {
     const transport: DockerUnixApiTransport = {
       request: vi.fn(async () => ({
@@ -646,6 +735,16 @@ describe("Docker Unix API client", () => {
       publicMessage: "Docker start failed while applying container filesystem isolation",
     },
     {
+      privateMessage:
+        "failed to create task: OCI runtime create failed: can't mask path /PRIVATE_MASK: permission denied",
+      publicMessage: "Docker start failed while applying container filesystem isolation",
+    },
+    {
+      privateMessage:
+        'failed to create task: OCI runtime create failed: can\'t make "/PRIVATE_READONLY" read-only: permission denied',
+      publicMessage: "Docker start failed while applying container filesystem isolation",
+    },
+    {
       privateMessage: 'failed to create task: exec: "PRIVATE_ENTRYPOINT": permission denied',
       publicMessage: "Docker start failed while executing the container entrypoint",
     },
@@ -697,6 +796,56 @@ describe("Docker Unix API client", () => {
       privateMessage:
         "OCI runtime create failed: unable to retrieve OCI runtime error: PRIVATE_DIAGNOSTIC permission denied",
       publicMessage: "Docker start failed before the container runtime returned a diagnostic",
+    },
+    {
+      privateMessage:
+        "failed to create task: OCI runtime create failed: fork/exec /PRIVATE_RUNC: permission denied",
+      publicMessage: "Docker start failed while launching the selected container runtime",
+    },
+    {
+      privateMessage:
+        "failed to create task: OCI runtime create failed: fork/exec /opt/seccomp/runc: permission denied",
+      publicMessage: "Docker start failed while launching the selected container runtime",
+    },
+    {
+      privateMessage:
+        "failed to create task: OCI runtime create failed: fork/exec /opt/mount/runc: no such file or directory",
+      publicMessage: "Docker start failed while launching the selected container runtime",
+    },
+    {
+      privateMessage:
+        "failed to create task: failed to open stdin fifo /PRIVATE_STDIN: no such file or directory",
+      publicMessage: "Docker start failed while opening container runtime streams",
+    },
+    {
+      privateMessage:
+        "failed to create task: failed to open stdout fifo /PRIVATE_STDOUT: permission denied",
+      publicMessage: "Docker start failed while opening container runtime streams",
+    },
+    {
+      privateMessage:
+        "failed to create task: failed to start io pipe copy: unable to copy pipes: PRIVATE_COPY: permission denied",
+      publicMessage: "Docker start failed while copying container runtime streams",
+    },
+    {
+      privateMessage:
+        "failed to create task: failed to start io pipe copy: unable to copy pipes: PRIVATE_COPY: no such file or directory",
+      publicMessage: "Docker start failed while copying container runtime streams",
+    },
+    {
+      privateMessage:
+        "failed to create task: failed to retrieve OCI runtime container pid /PRIVATE_PID: no such file or directory",
+      publicMessage: "Docker start failed while reading the container runtime process identity",
+    },
+    {
+      privateMessage:
+        "failed to create task: failed to retrieve OCI runtime container pid /PRIVATE_PID: permission denied",
+      publicMessage: "Docker start failed while reading the container runtime process identity",
+    },
+    {
+      privateMessage:
+        "failed to create task: OCI runtime create failed: exec /opt/flow/bin/flow-prime-supervisor: permission denied",
+      publicMessage: "Docker start failed while executing the container entrypoint",
     },
   ])("uses the most specific Docker start failure category", async (testCase) => {
     const transport: DockerUnixApiTransport = {
