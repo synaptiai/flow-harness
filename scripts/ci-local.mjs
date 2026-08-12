@@ -18,20 +18,24 @@ const verifiedGates = [
   ["npm", ["run", "pack:check"]],
   ["npm", ["audit", "--omit=dev", "--audit-level=low"]],
 ];
+const baseEnvironment = { ...process.env };
+delete baseEnvironment.FLOW_PRIME_PREPARED_ATTESTATION;
+delete baseEnvironment.FLOW_PRIME_TEST_IMAGE_ID;
+delete baseEnvironment.FLOW_PRIME_TEST_IMAGE_RESULT;
 
 for (const [command, args] of preliminaryGates) {
-  await run(command, args, process.env);
+  await run(command, args, baseEnvironment);
 }
 
 const temporaryRoot = await mkdtemp(join(tmpdir(), "flow-prime-ci-"));
 try {
   const imageResultPath = join(temporaryRoot, "image-result.json");
   const compiledCliPath = join(process.cwd(), "dist", "cli", "main.js");
-  await run("node", [compiledCliPath, "init", "."], process.env, temporaryRoot);
+  await run("node", [compiledCliPath, "init", "."], baseEnvironment, temporaryRoot);
   await run(
     "node",
     [compiledCliPath, "runtime", "prepare", "prime-agent"],
-    process.env,
+    baseEnvironment,
     temporaryRoot,
   );
   const generatedAttestation = join(
@@ -46,11 +50,10 @@ try {
   await writeFile(imageResultPath, source, { encoding: "utf8", flag: "wx", mode: 0o600 });
   const imageId = parseImageId(await readFile(imageResultPath, "utf8"));
   const verifiedEnvironment = {
-    ...process.env,
+    ...baseEnvironment,
     FLOW_PRIME_TEST_IMAGE_ID: imageId,
     FLOW_PRIME_TEST_IMAGE_RESULT: imageResultPath,
   };
-  delete verifiedEnvironment.FLOW_PRIME_PREPARED_ATTESTATION;
   for (const [command, args] of verifiedGates) {
     await run(command, args, verifiedEnvironment);
   }

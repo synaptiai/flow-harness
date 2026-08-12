@@ -74,6 +74,7 @@ describe("local CI sequence", () => {
     const binaryRoot = join(root, "bin");
     const logPath = join(root, "commands.jsonl");
     const attestationPath = join(root, "attestation.json");
+    const ambientResultPath = join(root, "ambient-prime-evidence.json");
     await mkdir(binaryRoot);
     await writeFile(attestationPath, JSON.stringify({ image: { id: `sha256:${"b".repeat(64)}` } }));
     await writeExecutable(join(binaryRoot, "npm"), fakeCommandSource("npm", logPath, false));
@@ -83,6 +84,8 @@ describe("local CI sequence", () => {
       ...process.env,
       PATH: `${binaryRoot}${delimiter}${process.env.PATH ?? ""}`,
       FLOW_PRIME_PREPARED_ATTESTATION: attestationPath,
+      FLOW_PRIME_TEST_IMAGE_ID: `sha256:${"b".repeat(64)}`,
+      FLOW_PRIME_TEST_IMAGE_RESULT: ambientResultPath,
     });
 
     expect(result).toEqual({ code: 0, stderr: "" });
@@ -95,6 +98,7 @@ describe("local CI sequence", () => {
             readonly command: string;
             readonly args: readonly string[];
             readonly imageId: string | null;
+            readonly imageResultPath: string | null;
             readonly preparedAttestation: string | null;
           },
       );
@@ -104,9 +108,26 @@ describe("local CI sequence", () => {
           command === "node" && args.slice(-3).join(" ") === "runtime prepare prime-agent",
       ),
     ).toBe(true);
+    const firstVerifiedIndex = commands.findIndex(({ imageId }) => imageId !== null);
+    expect(firstVerifiedIndex).toBeGreaterThan(0);
+    expect(
+      commands
+        .slice(0, firstVerifiedIndex)
+        .every(
+          ({ imageId, imageResultPath, preparedAttestation }) =>
+            imageId === null && imageResultPath === null && preparedAttestation === null,
+        ),
+    ).toBe(true);
     const verified = commands.filter(({ imageId }) => imageId !== null);
     expect(verified.length).toBeGreaterThan(0);
     expect(verified.every(({ imageId }) => imageId === `sha256:${"a".repeat(64)}`)).toBe(true);
+    const generatedResultPath = verified[0]?.imageResultPath;
+    expect(generatedResultPath).not.toBeNull();
+    expect(generatedResultPath).not.toBe(ambientResultPath);
+    expect(generatedResultPath).toMatch(/flow-prime-ci-[^/]+\/image-result\.json$/);
+    expect(verified.every(({ imageResultPath }) => imageResultPath === generatedResultPath)).toBe(
+      true,
+    );
     expect(verified.every(({ preparedAttestation }) => preparedAttestation === null)).toBe(true);
   });
 });

@@ -1,16 +1,34 @@
-import { execFile, spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { promisify } from "node:util";
 
+import type { ExternalHarnessIdentity } from "../../../src/domain/evaluation/external-harness.js";
 import type { PrimeOciAttachedTransport } from "../../../src/infrastructure/oci/attached-prime-oci-operator.js";
+import { DockerUnixApiClient } from "../../../src/infrastructure/oci/docker-unix-api-client.js";
+import { LocalDockerPrimeOciEngine } from "../../../src/infrastructure/oci/local-docker-prime-oci-engine.js";
+import type {
+  PrimeOciCreatedIdentity,
+  PrimeOciIntentLease,
+} from "../../../src/infrastructure/oci/prime-container-lifecycle.js";
 import { resolvePrimeImageDevice } from "../../../src/infrastructure/oci/prime-oci-image-device.js";
-import { primeExternalHarnessIdentity } from "../evaluation/prime-external-harness-identity.js";
 
-const repositoryRoot = resolve(import.meta.dirname, "../../..");
 const executeFile = promisify(execFile);
+type PrimeIdentity = Extract<
+  ExternalHarnessIdentity,
+  { readonly adapter: "prime-agent-native-v1" }
+>;
+type VerifiedPrimeDockerApi = Pick<
+  DockerUnixApiClient,
+  | "attachContainer"
+  | "createContainer"
+  | "inspectContainer"
+  | "removeContainer"
+  | "startContainer"
+  | "stopContainer"
+>;
 
 export interface VerifiedPrimeContainerTransport extends PrimeOciAttachedTransport {
   readonly containerId: string;
@@ -24,32 +42,32 @@ export interface VerifiedPrimeContainerTransport extends PrimeOciAttachedTranspo
 }
 
 export interface VerifiedPrimeContainerOptions {
+  readonly api?: VerifiedPrimeDockerApi;
+  readonly assertCurrent?: () => Promise<void>;
   readonly dockerExecutable?: string;
   readonly imageDevice?: {
     readonly path: string;
     readonly major: number;
     readonly minor: number;
   };
-  readonly seccompPath?: string;
+  readonly seccompProfile: Readonly<Record<string, unknown>>;
   readonly temporaryRoot?: string;
 }
 
 export async function startVerifiedPrimeContainer(
-  imageId: string,
-  options: VerifiedPrimeContainerOptions = {},
+  identity: PrimeIdentity,
+  options: VerifiedPrimeContainerOptions,
 ): Promise<VerifiedPrimeContainerTransport> {
+  const imageId = identity.image.id;
   if (!/^sha256:[a-f0-9]{64}$/.test(imageId)) {
     throw new Error("verified Prime container requires one full image ID");
   }
   const docker =
     options.dockerExecutable ?? process.env.FLOW_DOCKER_EXECUTABLE ?? "/usr/bin/docker";
-  const seccompPath =
-    options.seccompPath ?? join(repositoryRoot, "prime-container", "seccomp.json");
   const operationRoot = await mkdtemp(
     join(options.temporaryRoot ?? tmpdir(), "flow-prime-runtime-container-"),
   );
-  const cidPath = join(operationRoot, "container.id");
-  const containerName = `flow-prime-runtime-${randomUUID().replaceAll("-", "")}`;
+  const containerName = `flow-prime-${randomUUID().replaceAll("-", "")}`;
   const environment = {
     HOME: operationRoot,
     PATH: "/usr/local/bin:/usr/bin:/bin",
@@ -66,139 +84,223 @@ export async function startVerifiedPrimeContainer(
     await rm(operationRoot, { recursive: true, force: true });
     throw error;
   }
-  const policy = primeExternalHarnessIdentity().runtime.policy;
-  const child = spawn(
-    docker,
-    [
-      "run",
-      "--rm",
-      "--interactive",
-      "--pull=never",
-      "--platform=linux/amd64",
-      `--name=${containerName}`,
-      `--cidfile=${cidPath}`,
-      "--user=0:10003",
-      "--hostname=flow-prime",
-      "--dns=127.0.0.1",
-      "--dns-search=.",
-      "--dns-option=ndots:0",
-      "--network=none",
-      "--ipc=none",
-      "--read-only",
-      "--log-driver=none",
-      "--no-healthcheck",
-      "--pids-limit=64",
-      "--memory=2147483648",
-      "--memory-swap=2147483648",
-      "--cpu-period=100000",
-      "--cpu-quota=200000",
-      `--device-read-bps=${imageDevice.path}:${String(policy.imageReadBytesPerSecond)}`,
-      `--device-read-iops=${imageDevice.path}:${String(policy.imageReadOperationsPerSecond)}`,
-      "--cap-drop=ALL",
-      "--cap-add=CHOWN",
-      "--cap-add=DAC_READ_SEARCH",
-      "--cap-add=FOWNER",
-      "--cap-add=KILL",
-      "--cap-add=SETGID",
-      "--cap-add=SETUID",
-      "--security-opt=no-new-privileges",
-      "--security-opt=mask=/proc/cmdline",
-      "--security-opt=mask=/proc/sys",
-      "--security-opt=mask=/sys/block",
-      "--security-opt=mask=/sys/bus",
-      "--security-opt=mask=/sys/class",
-      "--security-opt=mask=/sys/class/dmi/id",
-      "--security-opt=mask=/sys/dev",
-      "--security-opt=mask=/sys/devices",
-      "--security-opt=mask=/sys/devices/virtual/dmi/id",
-      "--security-opt=mask=/sys/firmware",
-      "--security-opt=mask=/sys/hypervisor",
-      "--security-opt=mask=/sys/kernel",
-      "--security-opt=mask=/sys/module",
-      "--security-opt=mask=/sys/power",
-      `--security-opt=seccomp=${seccompPath}`,
-      "--ulimit=nofile=256:256",
-      "--ulimit=nproc=64:64",
-      "--ulimit=fsize=268435456:268435456",
-      "--ulimit=core=0:0",
-      "--tmpfs=/workspace:rw,nosuid,nodev,noexec,size=536870912,nr_inodes=8192,mode=0710",
-      "--tmpfs=/run/flow-node:rw,nosuid,nodev,noexec,size=16777216,nr_inodes=256,mode=0700",
-      "--tmpfs=/run/flow-supervisor:rw,nosuid,nodev,noexec,size=16777216,nr_inodes=256,mode=0700",
-      imageId,
-    ],
-    { stdio: ["pipe", "pipe", "pipe"], env: environment },
-  );
-  const errors: Buffer[] = [];
-  child.stderr.on("data", (chunk: Buffer) => errors.push(chunk));
-  const exited = new Promise<number | null>((resolveExit, rejectExit) => {
-    child.once("error", rejectExit);
-    child.once("exit", resolveExit);
+  await rm(operationRoot, { recursive: true, force: true });
+
+  assertSeccompIdentity(identity, options.seccompProfile);
+  const api =
+    options.api ??
+    new DockerUnixApiClient({
+      socketPath: "/var/run/docker.sock",
+      apiVersion: identity.runtime.engine.apiVersion,
+    });
+  const engine = new LocalDockerPrimeOciEngine({
+    api,
+    identity,
+    seccompProfile: options.seccompProfile,
+    imageDevice,
   });
-  let containerId: string;
+  const intent = verifiedIntent(identity, containerName);
+  let containerId: string | undefined;
+  let attachment: PrimeOciAttachedTransport | undefined;
   try {
-    containerId = await waitForContainerId(cidPath, child, errors);
-  } catch (error) {
-    if (child.exitCode === null && child.signalCode === null) {
-      child.kill("SIGKILL");
+    await options.assertCurrent?.();
+    try {
+      containerId = (await engine.create(intent)).containerId;
+    } catch (createError) {
+      try {
+        const settled = await settleVerifiedCreate(engine, intent, options.assertCurrent);
+        containerId = settled.created.containerId;
+        if (settled.retryFailed) {
+          throw new AggregateError(
+            [createError, settled.retryError],
+            "verified Prime container create failed during reconciliation",
+          );
+        }
+      } catch (recoveryError) {
+        if (recoveryError instanceof AggregateError) {
+          throw recoveryError;
+        }
+        throw new AggregateError(
+          [createError, recoveryError],
+          "verified Prime container create outcome is not reconciled",
+        );
+      }
+      throw createError;
     }
-    await exited.catch(() => undefined);
-    await rm(operationRoot, { recursive: true, force: true });
+    attachment = await engine.attach(containerId);
+    await options.assertCurrent?.();
+    await engine.start(containerId);
+  } catch (error) {
+    if (containerId === undefined) {
+      throw error;
+    }
+    const cleanupErrors: unknown[] = [];
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const cleanupError = await settleVerifiedContainer(engine, containerId).then(
+        () => undefined,
+        (cleanup: unknown) => cleanup,
+      );
+      if (cleanupError === undefined) {
+        cleanupErrors.length = 0;
+        break;
+      }
+      cleanupErrors.push(cleanupError);
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError([error, ...cleanupErrors], "verified Prime container setup failed");
+    }
     throw error;
   }
 
-  let released = false;
-  const release = async () => {
-    if (released) {
-      return;
-    }
-    released = true;
-    const code = await exited;
-    await rm(operationRoot, { recursive: true, force: true });
-    if (code !== 0) {
-      throw new Error(
-        `verified Prime container exited with ${String(code)}: ${Buffer.concat(errors).toString("utf8")}`,
-      );
-    }
-  };
+  const verifiedContainerId = containerId;
+  const verifiedAttachment = attachment;
+  let activeSettlement: Promise<void> | undefined;
+  let removed = false;
   return {
-    containerId,
+    containerId: verifiedContainerId,
     containerName,
     imageDevice,
-    output: child.stdout,
-    write: async (bytes, signal) => {
-      throwIfAborted(signal);
-      await new Promise<void>((resolveWrite, rejectWrite) => {
-        child.stdin.write(Buffer.from(bytes), (error) => {
-          if (error === null || error === undefined) {
-            resolveWrite();
-          } else {
-            rejectWrite(error);
-          }
-        });
-      });
-    },
-    closeInput: async () => {
-      if (!child.stdin.destroyed) {
-        child.stdin.end();
+    output: verifiedAttachment.output,
+    write: (bytes, signal) => verifiedAttachment.write(bytes, signal),
+    closeInput: (signal) => verifiedAttachment.closeInput(signal),
+    release: () => settle(),
+    forceRemove: () => settle(),
+  };
+
+  function settle(): Promise<void> {
+    if (removed) {
+      return Promise.resolve();
+    }
+    if (activeSettlement !== undefined) {
+      return activeSettlement;
+    }
+    const attempt = settleVerifiedContainer(engine, verifiedContainerId);
+    activeSettlement = attempt;
+    attempt.then(
+      () => {
+        removed = true;
+        if (activeSettlement === attempt) {
+          activeSettlement = undefined;
+        }
+      },
+      () => {
+        if (activeSettlement === attempt) {
+          activeSettlement = undefined;
+        }
+      },
+    );
+    return attempt;
+  }
+}
+
+async function settleVerifiedCreate(
+  engine: LocalDockerPrimeOciEngine,
+  intent: PrimeOciIntentLease,
+  assertCurrent: (() => Promise<void>) | undefined,
+): Promise<
+  | { readonly created: PrimeOciCreatedIdentity; readonly retryFailed: false }
+  | {
+      readonly created: PrimeOciCreatedIdentity;
+      readonly retryError: unknown;
+      readonly retryFailed: true;
+    }
+> {
+  const recovered = await engine.recoverIntent(intent);
+  if (recovered !== null) {
+    return { created: recovered, retryFailed: false };
+  }
+  let retryFailed = false;
+  let createError: unknown;
+  try {
+    await assertCurrent?.();
+    return { created: await engine.create(intent), retryFailed: false };
+  } catch (error) {
+    retryFailed = true;
+    createError = error;
+  }
+  const reconciled = await engine.recoverIntent(intent);
+  if (reconciled !== null) {
+    return { created: reconciled, retryError: createError, retryFailed };
+  }
+  throw new Error("verified Prime named create did not settle", { cause: createError });
+}
+
+async function settleVerifiedContainer(
+  engine: LocalDockerPrimeOciEngine,
+  reference: string,
+): Promise<void> {
+  const errors: unknown[] = [];
+  await engine.stop(reference).catch((error: unknown) => errors.push(error));
+  await engine.remove(reference).catch((error: unknown) => errors.push(error));
+  await engine
+    .confirmRemoved(reference)
+    .then((removed) => {
+      if (!removed) {
+        errors.push(new Error("verified Prime container removal is not confirmed"));
       }
+    })
+    .catch((error: unknown) => errors.push(error));
+  if (errors.length > 0) {
+    throw new AggregateError(errors, "verified Prime container cleanup failed");
+  }
+}
+
+function verifiedIntent(identity: PrimeIdentity, containerName: string): PrimeOciIntentLease {
+  const ownerNonce = randomBytes(32).toString("hex");
+  return {
+    version: 1,
+    adapter: "prime-agent-native-v1",
+    state: "intent",
+    ownerNonce,
+    containerName,
+    labels: {
+      evaluationId: "verified-prime-runtime",
+      trialId: `trial-${"b".repeat(48)}`,
+      ownerNonce,
+      imageId: identity.image.id,
+      policyDigest: identity.runtime.policy.digest,
     },
-    release,
-    forceRemove: async () => {
-      if (child.exitCode === null && child.signalCode === null) {
-        const cleanup = spawn(docker, ["rm", "--force", containerName], {
-          stdio: "ignore",
-          env: environment,
-        });
-        await new Promise<void>((resolveCleanup) => {
-          cleanup.once("error", () => resolveCleanup());
-          cleanup.once("exit", () => resolveCleanup());
-        });
-      }
-      await exited.catch(() => undefined);
-      await rm(operationRoot, { recursive: true, force: true });
-      released = true;
+    imageId: identity.image.id,
+    policyDigest: identity.runtime.policy.digest,
+    fixtureDigest: "f".repeat(64),
+    engineEndpoint: {
+      socketPath: "/var/run/docker.sock",
+      device: 0,
+      inode: 0,
+      uid: 0,
+      gid: 0,
+      mode: 0o660,
     },
   };
+}
+
+function assertSeccompIdentity(
+  identity: PrimeIdentity,
+  seccompProfile: Readonly<Record<string, unknown>>,
+): void {
+  const digest = createHash("sha256").update(canonicalize(seccompProfile)).digest("hex");
+  if (digest !== identity.runtime.policy.seccompSha256) {
+    throw new Error("verified Prime seccomp profile contradicts its runtime identity");
+  }
+}
+
+function canonicalize(value: unknown): string {
+  if (value === null || typeof value === "boolean" || typeof value === "number") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "string") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalize).join(",")}]`;
+  }
+  if (typeof value !== "object") {
+    throw new Error("verified Prime seccomp profile contains a non-JSON value");
+  }
+  return `{${Object.keys(value)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalize((value as Record<string, unknown>)[key])}`)
+    .join(",")}}`;
 }
 
 async function resolveDockerImageDevice(
@@ -216,38 +318,4 @@ async function resolveDockerImageDevice(
     throw new Error("Docker returned an invalid storage root");
   }
   return resolvePrimeImageDevice(dockerRoot);
-}
-
-async function waitForContainerId(
-  path: string,
-  child: { readonly exitCode: number | null; readonly signalCode: NodeJS.Signals | null },
-  errors: readonly Buffer[],
-): Promise<string> {
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
-    try {
-      const value = (await readFile(path, "utf8")).trim();
-      if (!/^[a-f0-9]{64}$/.test(value)) {
-        throw new Error("Docker CID file contains an invalid full container ID");
-      }
-      return value;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        throw error;
-      }
-    }
-    if (child.exitCode !== null || child.signalCode !== null) {
-      throw new Error(
-        `verified Prime container exited before CID publication: ${Buffer.concat(errors).toString("utf8")}`,
-      );
-    }
-    await new Promise((resolveWait) => setTimeout(resolveWait, 10));
-  }
-  throw new Error("Docker did not publish the Prime container ID within 10000ms");
-}
-
-function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (signal?.aborted === true) {
-    throw signal.reason instanceof Error ? signal.reason : new Error("Prime test aborted");
-  }
 }

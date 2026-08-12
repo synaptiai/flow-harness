@@ -1,10 +1,8 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { lstat, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { parsePrimeOciImageIdentity } from "../../../src/domain/evaluation/external-harness.js";
 import { AttachedPrimeOciOperator } from "../../../src/infrastructure/oci/attached-prime-oci-operator.js";
 import { DurablePrimeWorkspacePublisher } from "../../../src/infrastructure/oci/durable-prime-workspace-publisher.js";
 import type {
@@ -16,16 +14,16 @@ import {
   StagedPrimeOciResultSink,
 } from "../../../src/infrastructure/oci/local-prime-workspace-transfer.js";
 import { validatePrimeOciReadiness } from "../../../src/infrastructure/oci/prime-oci-readiness.js";
-import type { NativePrimeHarnessDescriptor } from "../../../src/infrastructure/prime/native-prime-harness-registry.js";
+import {
+  type NativePrimeHarnessDescriptor,
+  NativePrimeHarnessRegistry,
+} from "../../../src/infrastructure/prime/native-prime-harness-registry.js";
 import { NativePrimeHostInferenceBroker } from "../../../src/infrastructure/prime/native-prime-host-inference-broker.js";
 import {
   createPrimeContainerManifestSha256,
   type PrimeContainerManifestEntry,
 } from "../../../src/infrastructure/prime/prime-container-protocol.js";
-import {
-  type PrimeExternalHarnessIdentity,
-  primeExternalHarnessIdentity,
-} from "../evaluation/prime-external-harness-identity.js";
+import type { PrimeExternalHarnessIdentity } from "../evaluation/prime-external-harness-identity.js";
 import { startVerifiedPrimeContainer } from "./prime-container-runtime.js";
 
 export interface VerifiedPrimeSessionInput {
@@ -43,6 +41,12 @@ export interface VerifiedPrimeSessionInput {
     readonly containerName: string;
   }) => void | Promise<void>;
   readonly signal?: AbortSignal;
+  readonly testDependencies?: {
+    readonly onWorkspaceCreated?: (path: string) => void;
+    readonly removeWorkspace?: (path: string) => Promise<void>;
+    readonly resolveDescriptor?: () => Promise<NativePrimeHarnessDescriptor>;
+    readonly startContainer?: typeof startVerifiedPrimeContainer;
+  };
 }
 
 export interface VerifiedPrimeSessionResult {
@@ -56,77 +60,93 @@ export interface VerifiedPrimeSessionResult {
 export async function runVerifiedPrimeSession(
   input: VerifiedPrimeSessionInput,
 ): Promise<VerifiedPrimeSessionResult> {
-  const image = readVerifiedImage();
+  const descriptor = await (input.testDependencies?.resolveDescriptor ?? readVerifiedDescriptor)();
+  const identity = descriptor.identity;
   const workspace = await mkdtemp(join(tmpdir(), "flow-prime-verified-session-"));
-  const instructionPath = join(workspace, "TASK.md");
-  await writeFile(instructionPath, input.instruction, "utf8");
-  const instructionMetadata = await lstat(instructionPath);
-  const entry: PrimeContainerManifestEntry = {
-    path: "TASK.md",
-    type: "file",
-    mode: instructionMetadata.mode & 0o777,
-    size: Buffer.byteLength(input.instruction),
-    sha256: sha256(input.instruction),
-  };
-  const snapshotDigest = createPrimeContainerManifestSha256([entry]);
-  const identity = Object.freeze({ ...primeExternalHarnessIdentity(), image });
-  const maxExecutionMs = input.maxExecutionMs ?? 90_000;
-  const request = operationRequest(
-    identity,
-    workspace,
-    snapshotDigest,
-    input.instruction,
-    maxExecutionMs,
-  );
-  const fixture = await createLocalPrimeOciFixtureSource({
-    root: workspace,
-    instructionPath: "TASK.md",
-    expectedSnapshotDigest: snapshotDigest,
-  });
-  const publisher = new DurablePrimeWorkspacePublisher();
-  const resultSink = new StagedPrimeOciResultSink({
-    targetRoot: workspace,
-    publish: (publication) => publisher.publish(publication),
-  });
-  const hostRequests: string[] = [];
-  const checkpoints: string[] = [];
-  const responses = [...input.responses];
-  const transport = await startVerifiedPrimeContainer(image.id);
-  const descriptor = descriptorFor(identity, transport.imageDevice);
-  await input.onContainerStarted?.({
-    containerId: transport.containerId,
-    containerName: transport.containerName,
-  });
-  const broker = new NativePrimeHostInferenceBroker({
-    delegate: {
-      infer: async ({ body }: { readonly body: string }, signal?: AbortSignal) => {
-        hostRequests.push(body);
-        await input.onInferenceRequest?.({
-          body,
-          containerId: transport.containerId,
-          containerName: transport.containerName,
-          ...(signal === undefined ? {} : { signal }),
-        });
-        const response = responses.shift();
-        if (response === undefined) {
-          throw new Error("verified Prime session requested an unexpected model turn");
-        }
-        return JSON.stringify(response);
-      },
-    },
-  });
-  const controller = new AbortController();
-  const timeout = setTimeout(
-    () => controller.abort(new Error(`verified Prime session exceeded ${maxExecutionMs}ms`)),
-    maxExecutionMs,
-  );
-  timeout.unref?.();
-  const operationSignal =
-    input.signal === undefined
-      ? controller.signal
-      : AbortSignal.any([controller.signal, input.signal]);
+  const removeWorkspace =
+    input.testDependencies?.removeWorkspace ??
+    ((path: string) => rm(path, { recursive: true, force: true }));
   let released = false;
+  let failed = false;
+  let primaryError: unknown;
+  let result: VerifiedPrimeSessionResult | undefined;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let transport: Awaited<ReturnType<typeof startVerifiedPrimeContainer>> | undefined;
   try {
+    input.testDependencies?.onWorkspaceCreated?.(workspace);
+    const instructionPath = join(workspace, "TASK.md");
+    await writeFile(instructionPath, input.instruction, "utf8");
+    const instructionMetadata = await lstat(instructionPath);
+    const entry: PrimeContainerManifestEntry = {
+      path: "TASK.md",
+      type: "file",
+      mode: instructionMetadata.mode & 0o777,
+      size: Buffer.byteLength(input.instruction),
+      sha256: sha256(input.instruction),
+    };
+    const snapshotDigest = createPrimeContainerManifestSha256([entry]);
+    const maxExecutionMs = input.maxExecutionMs ?? 90_000;
+    const request = operationRequest(
+      identity,
+      workspace,
+      snapshotDigest,
+      input.instruction,
+      maxExecutionMs,
+    );
+    const fixture = await createLocalPrimeOciFixtureSource({
+      root: workspace,
+      instructionPath: "TASK.md",
+      expectedSnapshotDigest: snapshotDigest,
+    });
+    const publisher = new DurablePrimeWorkspacePublisher();
+    const resultSink = new StagedPrimeOciResultSink({
+      targetRoot: workspace,
+      publish: (publication) => publisher.publish(publication),
+    });
+    const hostRequests: string[] = [];
+    const checkpoints: string[] = [];
+    const responses = [...input.responses];
+    transport = await (input.testDependencies?.startContainer ?? startVerifiedPrimeContainer)(
+      identity,
+      {
+        assertCurrent: () => descriptor.assertCurrent(),
+        imageDevice: descriptor.localRuntime.imageDevice,
+        seccompProfile: descriptor.localRuntime.seccompProfile,
+      },
+    );
+    const verifiedTransport = transport;
+    await input.onContainerStarted?.({
+      containerId: verifiedTransport.containerId,
+      containerName: verifiedTransport.containerName,
+    });
+    const broker = new NativePrimeHostInferenceBroker({
+      delegate: {
+        infer: async ({ body }: { readonly body: string }, signal?: AbortSignal) => {
+          hostRequests.push(body);
+          await input.onInferenceRequest?.({
+            body,
+            containerId: verifiedTransport.containerId,
+            containerName: verifiedTransport.containerName,
+            ...(signal === undefined ? {} : { signal }),
+          });
+          const response = responses.shift();
+          if (response === undefined) {
+            throw new Error("verified Prime session requested an unexpected model turn");
+          }
+          return JSON.stringify(response);
+        },
+      },
+    });
+    const controller = new AbortController();
+    timeout = setTimeout(
+      () => controller.abort(new Error(`verified Prime session exceeded ${maxExecutionMs}ms`)),
+      maxExecutionMs,
+    );
+    timeout.unref?.();
+    const operationSignal =
+      input.signal === undefined
+        ? controller.signal
+        : AbortSignal.any([controller.signal, input.signal]);
     const evidence = await new AttachedPrimeOciOperator({
       fixture,
       resultSink,
@@ -143,34 +163,67 @@ export async function runVerifiedPrimeSession(
     }).operate({
       request,
       descriptor,
-      containerId: transport.containerId,
-      transport,
+      containerId: verifiedTransport.containerId,
+      transport: verifiedTransport,
       checkpoint: async (checkpoint) => {
         checkpoints.push(checkpoint);
       },
       signal: operationSignal,
     });
-    await transport.release();
+    await verifiedTransport.release();
     released = true;
     if (responses.length !== 0) {
       throw new Error("verified Prime session did not consume every model response");
     }
-    return Object.freeze({
+    result = Object.freeze({
       workspace,
       hostRequests: Object.freeze(hostRequests),
       checkpoints: Object.freeze(checkpoints),
       evidence,
-      dispose: async () => rm(workspace, { recursive: true, force: true }),
+      dispose: async () => removeWorkspace(workspace),
     });
   } catch (error) {
-    await rm(workspace, { recursive: true, force: true });
-    throw error;
+    failed = true;
+    primaryError = error;
   } finally {
-    clearTimeout(timeout);
-    if (!released) {
-      await transport.forceRemove();
+    if (timeout !== undefined) {
+      clearTimeout(timeout);
     }
   }
+  const cleanupErrors = (
+    await Promise.all([
+      failed ? settleCleanup(() => removeWorkspace(workspace), 1) : Promise.resolve([]),
+      released || transport === undefined
+        ? Promise.resolve([])
+        : settleCleanup(() => transport.forceRemove(), 2),
+    ])
+  ).flat();
+  if (cleanupErrors.length > 0) {
+    throw new AggregateError(
+      [...(failed ? [primaryError] : []), ...cleanupErrors],
+      "verified Prime session cleanup failed",
+    );
+  }
+  if (failed) {
+    throw primaryError;
+  }
+  if (result === undefined) {
+    throw new Error("verified Prime session ended without a result");
+  }
+  return result;
+}
+
+async function settleCleanup(cleanup: () => Promise<void>, attempts: number): Promise<unknown[]> {
+  const errors: unknown[] = [];
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      await cleanup();
+      return [];
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  return errors;
 }
 
 export function primeAssistantToolCall(id: string, code: string, turn: number) {
@@ -210,16 +263,16 @@ function primeAssistantMessage(
   };
 }
 
-function readVerifiedImage() {
+async function readVerifiedDescriptor(): Promise<NativePrimeHarnessDescriptor> {
   const path = process.env.FLOW_PRIME_TEST_IMAGE_RESULT;
   if (path === undefined) {
     throw new Error("verified Prime session requires FLOW_PRIME_TEST_IMAGE_RESULT");
   }
-  const value = JSON.parse(readFileSync(path, "utf8")) as { readonly image?: unknown };
-  if (value.image === undefined) {
-    throw new Error("verified Prime session received an invalid image result");
-  }
-  return parsePrimeOciImageIdentity(value.image);
+  return new NativePrimeHarnessRegistry({ attestationPath: path }).resolve({
+    id: "prime",
+    adapter: "prime-agent-native-v1",
+    harness: { config: "prime-agent-rlm-evaluation-v1" },
+  });
 }
 
 function operationRequest(
@@ -263,42 +316,6 @@ function operationRequest(
       },
     },
     isolation: { projectRoot: workspace, protectedPaths: [] },
-  };
-}
-
-function descriptorFor(
-  identity: PrimeExternalHarnessIdentity,
-  imageDevice: { readonly path: string; readonly major: number; readonly minor: number },
-): NativePrimeHarnessDescriptor {
-  return {
-    identity,
-    identityDigest: "e".repeat(64),
-    localRuntime: {
-      daemonId: "verified-prime-test",
-      socketPath: "/var/run/docker.sock",
-      socket: { device: 1, inode: 1, uid: 0, gid: 0, mode: 0o660 },
-      apiVersion: identity.runtime.engine.apiVersion,
-      cgroupPath: "/sys/fs/cgroup",
-      corePattern: "core",
-      globalLeasePath: "/var/tmp/flow-prime-test-slot.json",
-      imageDevice,
-      executables: executableIdentities(identity),
-      leaseTarget: "flow-prime-global-v1",
-      seccompProfile: {},
-    },
-    assertCurrent: async () => undefined,
-  };
-}
-
-function executableIdentities(identity: PrimeExternalHarnessIdentity) {
-  return {
-    docker: { path: "/usr/bin/docker", sha256: identity.runtime.client.executableSha256 },
-    dockerd: { path: "/usr/bin/dockerd", sha256: identity.runtime.engine.dockerdSha256 },
-    containerd: {
-      path: "/usr/bin/containerd",
-      sha256: identity.runtime.engine.containerdSha256,
-    },
-    runc: { path: "/usr/bin/runc", sha256: identity.runtime.engine.runcSha256 },
   };
 }
 
