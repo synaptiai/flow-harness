@@ -14,7 +14,10 @@ import {
   startVerifiedPrimeContainer,
   type VerifiedPrimeContainerTransport,
 } from "../../fixtures/prime/prime-container-runtime.js";
-import { runVerifiedPrimeSession } from "../../fixtures/prime/verified-prime-session.js";
+import {
+  runVerifiedPrimeSession,
+  verifiedPrimeSessionTimeoutError,
+} from "../../fixtures/prime/verified-prime-session.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -25,6 +28,17 @@ afterEach(async () => {
 });
 
 describe("verified Prime container runtime helper", () => {
+  it.each([
+    [0, "verified Prime session exceeded 2000ms with inference request count 0"],
+    [1, "verified Prime session exceeded 2000ms with inference request count 1"],
+    [3, "verified Prime session exceeded 2000ms with inference request count 3"],
+  ])(
+    "reports the closed inference phase when a session times out after %i requests",
+    (count, message) => {
+      expect(verifiedPrimeSessionTimeoutError(2_000, count)).toEqual(new Error(message));
+    },
+  );
+
   it("creates the verified container through the production Docker API policy", async () => {
     const root = await mkdtemp(join(tmpdir(), "flow-prime-helper-"));
     temporaryDirectories.push(root);

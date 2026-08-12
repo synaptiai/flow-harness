@@ -57,6 +57,15 @@ export interface VerifiedPrimeSessionResult {
   dispose(): Promise<void>;
 }
 
+export function verifiedPrimeSessionTimeoutError(
+  maxExecutionMs: number,
+  inferenceRequestCount: number,
+): Error {
+  return new Error(
+    `verified Prime session exceeded ${maxExecutionMs}ms with inference request count ${inferenceRequestCount}`,
+  );
+}
+
 export async function runVerifiedPrimeSession(
   input: VerifiedPrimeSessionInput,
 ): Promise<VerifiedPrimeSessionResult> {
@@ -139,7 +148,7 @@ export async function runVerifiedPrimeSession(
     });
     const controller = new AbortController();
     timeout = setTimeout(
-      () => controller.abort(new Error(`verified Prime session exceeded ${maxExecutionMs}ms`)),
+      () => controller.abort(verifiedPrimeSessionTimeoutError(maxExecutionMs, hostRequests.length)),
       maxExecutionMs,
     );
     timeout.unref?.();
