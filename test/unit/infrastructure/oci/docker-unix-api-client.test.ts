@@ -1,7 +1,8 @@
 import { mkdtemp, rm } from "node:fs/promises";
-import { createServer } from "node:net";
+import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Duplex } from "node:stream";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -10,7 +11,9 @@ import {
   DockerUnixApiClient,
   type DockerUnixApiTransport,
   type DockerUnixAttachTransport,
+  NodeDockerAttachedTransport,
   NodeDockerUnixApiTransport,
+  NodeDockerUnixAttachTransport,
 } from "../../../../src/infrastructure/oci/docker-unix-api-client.js";
 
 describe("Docker Unix API client", () => {
@@ -955,6 +958,90 @@ describe("Docker Unix API client", () => {
       maxStdoutFrameBytes: 1_048_581,
     });
   });
+
+  it("writes through the upgraded Docker socket and rejects only a real write error", async () => {
+    const root = await mkdtemp(join(tmpdir(), "flow-prime-docker-attach-"));
+    const socketPath = join(root, "docker.sock");
+    let serverSocket: Socket | undefined;
+    let resolvePayload: ((value: Buffer) => void) | undefined;
+    const payload = new Promise<Buffer>((resolve) => {
+      resolvePayload = resolve;
+    });
+    const server = createServer((socket) => {
+      serverSocket = socket;
+      socket.once("data", () => {
+        socket.write(
+          "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n",
+        );
+        socket.once("data", (bytes) => resolvePayload?.(Buffer.from(bytes)));
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, resolve);
+    });
+    try {
+      const attached = await new NodeDockerUnixAttachTransport({
+        requestTimeoutMs: 100,
+      }).attach({
+        socketPath,
+        path: "/v1.51/containers/test/attach",
+        maxStderrBytes: 1_024,
+        maxStdoutFrameBytes: 1_024,
+      });
+
+      await expect(attached.write(Buffer.from("challenge"))).resolves.toBeUndefined();
+      await expect(
+        Promise.race([
+          payload,
+          new Promise<never>((_resolve, reject) =>
+            setTimeout(() => reject(new Error("attached-write test deadline expired")), 250),
+          ),
+        ]),
+      ).resolves.toEqual(Buffer.from("challenge"));
+
+      serverSocket?.destroy();
+      await expect(attached.output[Symbol.asyncIterator]().next()).resolves.toEqual({
+        done: true,
+        value: undefined,
+      });
+      await expect(attached.write(Buffer.from("late"))).rejects.toBeInstanceOf(Error);
+      await attached.release();
+    } finally {
+      serverSocket?.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { callbackValue: null, expected: "resolve" },
+    { callbackValue: undefined, expected: "resolve" },
+    { callbackValue: new Error("fixed write failure"), expected: "reject" },
+  ] as const)(
+    "treats an attached-write callback value as $expected",
+    async ({ callbackValue, expected }) => {
+      const socket = {
+        write: vi.fn(
+          (_bytes: Buffer, callback: (error: Error | null | undefined) => void): boolean => {
+            callback(callbackValue);
+            return true;
+          },
+        ),
+      } as unknown as Duplex;
+      const attached = new NodeDockerAttachedTransport(socket, Buffer.alloc(0), {
+        maxStderrBytes: 1_024,
+        maxStdoutFrameBytes: 1_024,
+      });
+      const write = attached.write(Buffer.from("challenge"));
+
+      if (expected === "reject") {
+        await expect(write).rejects.toBe(callbackValue);
+      } else {
+        await expect(write).resolves.toBeUndefined();
+      }
+    },
+  );
 
   it("decodes fragmented Docker output and bounds standard error", () => {
     const decoder = new DockerRawStreamDecoder({ maxStderrBytes: 4 });

@@ -471,7 +471,7 @@ export class NodeDockerUnixAttachTransport implements DockerUnixAttachTransport 
   }
 }
 
-class NodeDockerAttachedTransport implements PrimeOciAttachedTransport {
+export class NodeDockerAttachedTransport implements PrimeOciAttachedTransport {
   readonly output: AsyncIterable<Uint8Array>;
 
   constructor(
@@ -485,8 +485,8 @@ class NodeDockerAttachedTransport implements PrimeOciAttachedTransport {
   async write(bytes: Uint8Array, signal?: AbortSignal): Promise<void> {
     throwIfAborted(signal);
     await new Promise<void>((resolve, reject) => {
-      this.socket.write(Buffer.from(bytes), (error) => {
-        if (error !== undefined) {
+      this.socket.write(Buffer.from(bytes), (error: Error | null | undefined) => {
+        if (error !== undefined && error !== null) {
           reject(error);
         } else {
           resolve();

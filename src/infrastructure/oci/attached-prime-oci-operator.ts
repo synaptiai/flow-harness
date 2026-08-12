@@ -283,7 +283,7 @@ export class AttachedPrimeOciOperator {
         throw new Error("Prime OCI operation ended without terminal evidence and settlement");
       }
     } catch (error) {
-      operationError = error;
+      operationError = normalizeRejection(error, "Prime OCI operation failed");
       ledger.markTranscriptIncomplete();
       ledger.markLifecycleIncomplete();
     }
@@ -293,13 +293,16 @@ export class AttachedPrimeOciOperator {
       try {
         await this.options.resultSink.abort(operationError);
       } catch (error) {
-        cleanupError = error;
+        cleanupError = normalizeRejection(error, "Prime OCI result abort failed");
       }
     }
     try {
       await input.transport.closeInput(input.signal);
     } catch (error) {
-      cleanupError = combineErrors(cleanupError, error);
+      cleanupError = combineErrors(
+        cleanupError,
+        normalizeRejection(error, "Prime OCI transport input close failed"),
+      );
     }
     try {
       const closePromise = this.options.inferenceBroker.close?.(input.request.evaluation);
@@ -307,7 +310,10 @@ export class AttachedPrimeOciOperator {
         await waitForAbortable(closePromise, input.signal);
       }
     } catch (error) {
-      cleanupError = combineErrors(cleanupError, error);
+      cleanupError = combineErrors(
+        cleanupError,
+        normalizeRejection(error, "Prime OCI inference broker close failed"),
+      );
     }
     if (operationError !== undefined || cleanupError !== undefined) {
       throw combineErrors(operationError, cleanupError);
@@ -437,7 +443,11 @@ export class AttachedPrimeOciOperator {
   ): Promise<void> {
     throwIfAborted(signal);
     sequence.accept("host-to-container", type, payload.byteLength);
-    await transport.write(encodePrimeContainerFrame(type, payload), signal);
+    try {
+      await transport.write(encodePrimeContainerFrame(type, payload), signal);
+    } catch (error) {
+      throw normalizeRejection(error, "Prime OCI transport write failed");
+    }
   }
 }
 
@@ -515,4 +525,8 @@ function combineErrors(primary: unknown, secondary: unknown): unknown {
     return primary;
   }
   return new AggregateError([primary, secondary], "Prime OCI operation and cleanup both failed");
+}
+
+function normalizeRejection(error: unknown, message: string): Error {
+  return error instanceof Error ? error : new Error(message);
 }

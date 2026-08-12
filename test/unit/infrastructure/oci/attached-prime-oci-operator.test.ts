@@ -425,6 +425,161 @@ describe("attached Prime OCI operator", () => {
     ).rejects.toThrow(/inference cancelled/i);
     expect(resultSink.abort).toHaveBeenCalledOnce();
   });
+
+  it.each([null, undefined, "PRIVATE_TRANSPORT_REJECTION"])(
+    "normalizes a non-Error transport-write rejection without skipping cleanup",
+    async (rejection) => {
+      const checkpoints: string[] = [];
+      const resultSink = sink();
+      const outputIterator = vi.fn(() => outputFrames([])[Symbol.asyncIterator]());
+      const transport: PrimeOciAttachedTransport = {
+        output: { [Symbol.asyncIterator]: outputIterator },
+        write: vi.fn(async () => {
+          throw rejection;
+        }),
+        closeInput: vi.fn(async () => undefined),
+        release: vi.fn(async () => undefined),
+      };
+      const broker = {
+        infer: vi.fn(),
+        close: vi.fn(async () => undefined),
+      };
+      const operator = new AttachedPrimeOciOperator({
+        fixture: fixture([], new Map()),
+        resultSink,
+        inferenceBroker: broker,
+        validateReadiness: vi.fn(async () => undefined),
+      });
+
+      const error = await operator
+        .operate(
+          operationInput(async (checkpoint) => {
+            checkpoints.push(checkpoint);
+          }, transport),
+        )
+        .catch((caught) => caught);
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe("Prime OCI transport write failed");
+      expect((error as Error).cause).toBeUndefined();
+      expect(errorGraphText(error)).not.toContain("PRIVATE_TRANSPORT_REJECTION");
+      expect(resultSink.abort).toHaveBeenCalledWith(error);
+      expect(transport.closeInput).toHaveBeenCalledOnce();
+      expect(broker.close).toHaveBeenCalledOnce();
+      expect(outputIterator).not.toHaveBeenCalled();
+      expect(checkpoints).toEqual([]);
+    },
+  );
+
+  it.each([null, undefined, "PRIVATE_OPERATION_REJECTION"])(
+    "normalizes a non-Error operation rejection without retaining its value",
+    async (rejection) => {
+      const checkpoints: string[] = [];
+      const resultSink = sink();
+      const transport: PrimeOciAttachedTransport = {
+        output: (async function* () {
+          yield await Promise.reject<Uint8Array>(rejection);
+        })(),
+        write: vi.fn(async () => undefined),
+        closeInput: vi.fn(async () => undefined),
+        release: vi.fn(async () => undefined),
+      };
+      const broker = {
+        infer: vi.fn(),
+        close: vi.fn(async () => undefined),
+      };
+      const operator = new AttachedPrimeOciOperator({
+        fixture: fixture([], new Map()),
+        resultSink,
+        inferenceBroker: broker,
+        validateReadiness: vi.fn(async () => undefined),
+      });
+
+      const error = await operator
+        .operate(
+          operationInput(async (checkpoint) => {
+            checkpoints.push(checkpoint);
+          }, transport),
+        )
+        .catch((caught) => caught);
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe("Prime OCI operation failed");
+      expect((error as Error).cause).toBeUndefined();
+      expect(errorGraphText(error)).not.toContain("PRIVATE_OPERATION_REJECTION");
+      expect(resultSink.abort).toHaveBeenCalledWith(error);
+      expect(transport.closeInput).toHaveBeenCalledOnce();
+      expect(broker.close).toHaveBeenCalledOnce();
+      expect(checkpoints).toEqual([]);
+    },
+  );
+
+  it.each([
+    {
+      cleanupStage: "result abort",
+      publicMessage: "Prime OCI result abort failed",
+      rejection: "PRIVATE_RESULT_ABORT",
+    },
+    {
+      cleanupStage: "input close",
+      publicMessage: "Prime OCI transport input close failed",
+      rejection: null,
+    },
+    {
+      cleanupStage: "broker close",
+      publicMessage: "Prime OCI inference broker close failed",
+      rejection: undefined,
+    },
+  ])(
+    "normalizes a non-Error $cleanupStage rejection and completes later cleanup",
+    async ({ cleanupStage, publicMessage, rejection }) => {
+      const primaryError = new Error("fixed primary operation failure");
+      const resultSink = sink();
+      if (cleanupStage === "result abort") {
+        vi.mocked(resultSink.abort).mockRejectedValueOnce(rejection);
+      }
+      const transport: PrimeOciAttachedTransport = {
+        output: (async function* () {
+          yield await Promise.reject<Uint8Array>(primaryError);
+        })(),
+        write: vi.fn(async () => undefined),
+        closeInput: vi.fn(async () => {
+          if (cleanupStage === "input close") {
+            throw rejection;
+          }
+        }),
+        release: vi.fn(async () => undefined),
+      };
+      const broker = {
+        infer: vi.fn(),
+        close: vi.fn(async () => {
+          if (cleanupStage === "broker close") {
+            throw rejection;
+          }
+        }),
+      };
+      const operator = new AttachedPrimeOciOperator({
+        fixture: fixture([], new Map()),
+        resultSink,
+        inferenceBroker: broker,
+        validateReadiness: vi.fn(async () => undefined),
+      });
+
+      const error = await operator
+        .operate(operationInput(async () => undefined, transport))
+        .catch((caught) => caught);
+
+      expect(error).toBeInstanceOf(AggregateError);
+      expect((error as AggregateError).errors).toHaveLength(2);
+      expect((error as AggregateError).errors[0]).toBe(primaryError);
+      expect((error as AggregateError).errors[1]).toMatchObject({ message: publicMessage });
+      expect(((error as AggregateError).errors[1] as Error).cause).toBeUndefined();
+      expect(errorGraphText(error)).not.toContain("PRIVATE_RESULT_ABORT");
+      expect(resultSink.abort).toHaveBeenCalledOnce();
+      expect(transport.closeInput).toHaveBeenCalledOnce();
+      expect(broker.close).toHaveBeenCalledOnce();
+    },
+  );
 });
 
 function operationInput(
@@ -615,4 +770,27 @@ function decodeFrames(writes: readonly Buffer[]) {
   const frames = writes.flatMap((write) => decoder.push(write));
   decoder.finish();
   return frames;
+}
+
+function errorGraphText(error: unknown): string {
+  const values: string[] = [];
+  const pending = [error];
+  const seen = new Set<unknown>();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (current === undefined || seen.has(current)) {
+      continue;
+    }
+    seen.add(current);
+    if (current instanceof Error) {
+      values.push(current.message);
+      pending.push(current.cause);
+      if (current instanceof AggregateError) {
+        pending.push(...current.errors);
+      }
+    } else if (typeof current === "string") {
+      values.push(current);
+    }
+  }
+  return values.join("\n");
 }
