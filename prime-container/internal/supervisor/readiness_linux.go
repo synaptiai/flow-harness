@@ -3,10 +3,8 @@
 package supervisor
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"sort"
@@ -24,14 +22,19 @@ const (
 )
 
 func HardenSupervisor() error {
-	core := syscall.Rlimit{Cur: 0, Max: 0}
-	if err := syscall.Setrlimit(syscall.RLIMIT_CORE, &core); err != nil {
-		return fmt.Errorf("set Prime supervisor core limit: %w", err)
-	}
-	if _, _, errno := syscall.Syscall6(syscall.SYS_PRCTL, prSetDumpable, 0, 0, 0, 0, 0); errno != 0 {
-		return fmt.Errorf("disable Prime supervisor dumpable state: %w", errno)
-	}
-	return replaceFixedSystemFiles()
+	return hardenSupervisorWith(
+		func() error {
+			core := syscall.Rlimit{Cur: 0, Max: 0}
+			return syscall.Setrlimit(syscall.RLIMIT_CORE, &core)
+		},
+		func() error {
+			_, _, errno := syscall.Syscall6(syscall.SYS_PRCTL, prSetDumpable, 0, 0, 0, 0, 0)
+			if errno != 0 {
+				return errno
+			}
+			return nil
+		},
+	)
 }
 
 func MeasureReadiness(imageDeviceMajor int, imageDeviceMinor int) (ReadinessMeasurement, error) {
@@ -92,85 +95,35 @@ func MeasureReadiness(imageDeviceMajor int, imageDeviceMinor int) (ReadinessMeas
 	}, nil
 }
 
-func replaceFixedSystemFiles() error {
-	files := []struct {
-		path    string
-		content string
-	}{
-		{path: "/etc/hostname", content: fixedHostnameSource},
-		{path: "/etc/hosts", content: fixedHostsSource},
-		{path: "/etc/resolv.conf", content: fixedResolverSource},
-	}
-	for _, item := range files {
-		if err := replaceFixedSystemFile(item.path, item.content); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func replaceFixedSystemFile(path string, content string) error {
-	descriptor, err := syscall.Open(path, syscall.O_WRONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0)
-	if err != nil {
-		return fmt.Errorf("open fixed Prime system file %s: %w", path, err)
-	}
-	file := os.NewFile(uintptr(descriptor), path)
-	defer file.Close()
-	information, err := file.Stat()
-	if err != nil || !information.Mode().IsRegular() {
-		return fmt.Errorf("inspect fixed Prime system file %s: %w", path, err)
-	}
-	if err := file.Truncate(0); err != nil {
-		return fmt.Errorf("truncate fixed Prime system file %s: %w", path, err)
-	}
-	if _, err := file.WriteString(content); err != nil {
-		return fmt.Errorf("write fixed Prime system file %s: %w", path, err)
-	}
-	if err := file.Chmod(0444); err != nil {
-		return fmt.Errorf("set fixed Prime system file mode %s: %w", path, err)
-	}
-	if err := file.Sync(); err != nil {
-		return fmt.Errorf("synchronize fixed Prime system file %s: %w", path, err)
-	}
-	return nil
-}
-
 func measureSystemFiles() (SystemFileReadiness, error) {
-	if err := verifyFixedSystemFile("/etc/hostname", fixedHostnameSource); err != nil {
-		return SystemFileReadiness{}, err
-	}
-	if err := verifyFixedSystemFile("/etc/hosts", fixedHostsSource); err != nil {
-		return SystemFileReadiness{}, err
-	}
-	if err := verifyFixedSystemFile("/etc/resolv.conf", fixedResolverSource); err != nil {
-		return SystemFileReadiness{}, err
-	}
-	return SystemFileReadiness{
-		Hostname: "flow-prime",
-		Hosts:    []string{"127.0.0.1 localhost flow-prime", "::1 localhost ip6-localhost ip6-loopback"},
-		Resolver: []string{"nameserver 127.0.0.1", "search .", "options ndots:0"},
-	}, nil
+	return measureSystemFilesWith(
+		func() ([]byte, error) { return os.ReadFile("/proc/self/mountinfo") },
+		readDockerSystemFile,
+	)
 }
 
-func verifyFixedSystemFile(path string, expected string) error {
-	descriptor, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0)
-	if err != nil {
-		return fmt.Errorf("open fixed Prime system file %s: %w", path, err)
-	}
-	file := os.NewFile(uintptr(descriptor), path)
-	defer file.Close()
+func readDockerSystemFile(path string) ([]byte, error) {
+	return readDockerSystemFileWith(path, func(path string) (dockerSystemFile, error) {
+		descriptor, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0)
+		if err != nil {
+			return nil, err
+		}
+		return &linuxDockerSystemFile{File: os.NewFile(uintptr(descriptor), path)}, nil
+	})
+}
+
+type linuxDockerSystemFile struct{ *os.File }
+
+func (file *linuxDockerSystemFile) information() (os.FileMode, int64, uint32, uint32, error) {
 	information, err := file.Stat()
-	if err != nil || !information.Mode().IsRegular() || information.Size() > 4096 {
-		return fmt.Errorf("inspect fixed Prime system file %s: %w", path, err)
-	}
-	content, err := io.ReadAll(io.LimitReader(file, 4097))
 	if err != nil {
-		return fmt.Errorf("read fixed Prime system file %s: %w", path, err)
+		return 0, 0, 0, 0, err
 	}
-	if !bytes.Equal(content, []byte(expected)) {
-		return fmt.Errorf("fixed Prime system file %s contradicts the admitted content", path)
+	stat, ok := information.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, 0, 0, 0, errors.New("Docker system file does not have Linux inode metadata")
 	}
-	return nil
+	return information.Mode(), information.Size(), stat.Uid, stat.Gid, nil
 }
 
 var limitsCore syscall.Rlimit

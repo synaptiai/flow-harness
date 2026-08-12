@@ -3,16 +3,21 @@ package supervisor
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 
 	"github.com/synaptiai/flow-harness/prime-container/internal/containerprotocol"
 )
 
-const (
-	fixedHostnameSource = "flow-prime\n"
-	fixedHostsSource    = "127.0.0.1 localhost flow-prime\n::1 localhost ip6-localhost ip6-loopback\n"
-	fixedResolverSource = "nameserver 127.0.0.1\nsearch .\noptions ndots:0\n"
-)
+func hardenSupervisorWith(setCoreLimit func() error, disableDumpable func() error) error {
+	if err := setCoreLimit(); err != nil {
+		return fmt.Errorf("set Prime supervisor core limit: %w", err)
+	}
+	if err := disableDumpable(); err != nil {
+		return fmt.Errorf("disable Prime supervisor dumpable state: %w", err)
+	}
+	return nil
+}
 
 type ProcessReadiness struct {
 	SupervisorPID       int      `json:"supervisorPid"`
@@ -172,8 +177,8 @@ func expectedReadinessMeasurement(imageDeviceMajor int, imageDeviceMinor int) Re
 		Network: NetworkReadiness{Namespace: "private", Interfaces: []string{"lo"}, Routes: []string{}},
 		SystemFiles: SystemFileReadiness{
 			Hostname: "flow-prime",
-			Hosts:    []string{"127.0.0.1 localhost flow-prime", "::1 localhost ip6-localhost ip6-loopback"},
-			Resolver: []string{"nameserver 127.0.0.1", "search .", "options ndots:0"},
+			Hosts:    append([]string(nil), fixedDockerHosts...),
+			Resolver: append([]string(nil), fixedDockerResolver...),
 		},
 		Streams: StreamReadiness{
 			StdinAttached: true, StdoutAttached: true, StderrAttached: true, TTY: false,

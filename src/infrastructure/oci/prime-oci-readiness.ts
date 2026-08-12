@@ -87,14 +87,14 @@ const readinessSchema = z
       .object({
         hostname: z.literal("flow-prime"),
         hosts: z.tuple([
-          z.literal("127.0.0.1 localhost flow-prime"),
+          z.literal("127.0.0.1 localhost"),
           z.literal("::1 localhost ip6-localhost ip6-loopback"),
+          z.literal("fe00:: ip6-localnet"),
+          z.literal("ff00:: ip6-mcastprefix"),
+          z.literal("ff02::1 ip6-allnodes"),
+          z.literal("ff02::2 ip6-allrouters"),
         ]),
-        resolver: z.tuple([
-          z.literal("nameserver 127.0.0.1"),
-          z.literal("search ."),
-          z.literal("options ndots:0"),
-        ]),
+        resolver: z.tuple([z.literal("nameserver 127.0.0.1"), z.literal("options ndots:0")]),
       })
       .strict(),
     streams: z
@@ -183,8 +183,15 @@ export function createExpectedPrimeOciReadiness(
     },
     systemFiles: {
       hostname: "flow-prime",
-      hosts: ["127.0.0.1 localhost flow-prime", "::1 localhost ip6-localhost ip6-loopback"],
-      resolver: ["nameserver 127.0.0.1", "search .", "options ndots:0"],
+      hosts: [
+        "127.0.0.1 localhost",
+        "::1 localhost ip6-localhost ip6-loopback",
+        "fe00:: ip6-localnet",
+        "ff00:: ip6-mcastprefix",
+        "ff02::1 ip6-allnodes",
+        "ff02::2 ip6-allrouters",
+      ],
+      resolver: ["nameserver 127.0.0.1", "options ndots:0"],
     },
     streams: {
       stdinAttached: true,

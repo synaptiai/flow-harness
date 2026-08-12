@@ -21,8 +21,15 @@ describe("Prime OCI readiness", () => {
       process: { supervisorPid: 1 },
       systemFiles: {
         hostname: "flow-prime",
-        hosts: ["127.0.0.1 localhost flow-prime", "::1 localhost ip6-localhost ip6-loopback"],
-        resolver: ["nameserver 127.0.0.1", "search .", "options ndots:0"],
+        hosts: [
+          "127.0.0.1 localhost",
+          "::1 localhost ip6-localhost ip6-loopback",
+          "fe00:: ip6-localnet",
+          "ff00:: ip6-mcastprefix",
+          "ff02::1 ip6-allnodes",
+          "ff02::2 ip6-allrouters",
+        ],
+        resolver: ["nameserver 127.0.0.1", "options ndots:0"],
       },
     });
 

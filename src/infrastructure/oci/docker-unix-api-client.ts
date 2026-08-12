@@ -595,20 +595,29 @@ function primeContainerFailureMessage(stderr: Buffer, sawStdout: boolean): strin
       case "measure prime container readiness: prime effective health policy contradicts the fixed runtime policy":
         return "Prime container readiness failed while validating the health policy";
     }
+    const readinessPrefix = "measure prime container readiness: ";
+    if (
+      privateDiagnostic.startsWith(readinessPrefix) &&
+      startsWithAny(privateDiagnostic.slice(readinessPrefix.length), [
+        "read docker system file mount information:",
+        "parse docker system file mount information:",
+        "docker system files are not three read-only mounts",
+        "open docker system file ",
+        "inspect docker system file ",
+        "read docker system file ",
+        "docker hostname contradicts the admitted content",
+        "docker hosts file contradicts the admitted content",
+        "docker resolver file contradicts the admitted content",
+      ])
+    ) {
+      return "Prime container readiness failed while validating system files";
+    }
   }
   if (
     startsWithAny(privateDiagnostic, [
       "prime supervisor must start",
       "set prime supervisor core limit:",
       "disable prime supervisor dumpable state:",
-      "open fixed prime system file ",
-      "inspect fixed prime system file ",
-      "truncate fixed prime system file ",
-      "write fixed prime system file ",
-      "set fixed prime system file mode ",
-      "synchronize fixed prime system file ",
-      "read fixed prime system file ",
-      "fixed prime system file ",
     ])
   ) {
     return "Prime container failed while applying supervisor hardening";

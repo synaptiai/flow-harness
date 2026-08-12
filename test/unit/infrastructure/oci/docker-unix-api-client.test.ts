@@ -1070,6 +1070,51 @@ describe("Docker Unix API client", () => {
     },
     {
       privateDiagnostic:
+        "measure Prime container readiness: read Docker system file mount information: PRIVATE_MOUNT\n",
+      publicMessage: "Prime container readiness failed while validating system files",
+    },
+    {
+      privateDiagnostic:
+        "measure Prime container readiness: parse Docker system file mount information: PRIVATE_MOUNT\n",
+      publicMessage: "Prime container readiness failed while validating system files",
+    },
+    {
+      privateDiagnostic:
+        "measure Prime container readiness: Docker system files are not three read-only mounts\n",
+      publicMessage: "Prime container readiness failed while validating system files",
+    },
+    {
+      privateDiagnostic:
+        "measure Prime container readiness: open Docker system file /PRIVATE_FILE: failure\n",
+      publicMessage: "Prime container readiness failed while validating system files",
+    },
+    {
+      privateDiagnostic:
+        "measure Prime container readiness: inspect Docker system file /PRIVATE_FILE: failure\n",
+      publicMessage: "Prime container readiness failed while validating system files",
+    },
+    {
+      privateDiagnostic:
+        "measure Prime container readiness: read Docker system file /PRIVATE_FILE: failure\n",
+      publicMessage: "Prime container readiness failed while validating system files",
+    },
+    {
+      privateDiagnostic:
+        "measure Prime container readiness: Docker hostname contradicts the admitted content\n",
+      publicMessage: "Prime container readiness failed while validating system files",
+    },
+    {
+      privateDiagnostic:
+        "measure Prime container readiness: Docker hosts file contradicts the admitted content\n",
+      publicMessage: "Prime container readiness failed while validating system files",
+    },
+    {
+      privateDiagnostic:
+        "measure Prime container readiness: Docker resolver file contradicts the admitted content\n",
+      publicMessage: "Prime container readiness failed while validating system files",
+    },
+    {
+      privateDiagnostic:
         "measure Prime container readiness: Prime effective stream controls contradict the fixed runtime policy\n",
       publicMessage: "Prime container readiness failed while validating attached streams",
     },
@@ -1131,36 +1176,40 @@ describe("Docker Unix API client", () => {
       "Prime container failed while applying supervisor hardening",
     ],
     [
-      "open fixed Prime system file /PRIVATE_FILE: failure",
-      "Prime container failed while applying supervisor hardening",
+      "measure Prime container readiness: read Docker system file mount information: PRIVATE_SIGNAL",
+      "Prime container readiness failed while validating system files",
     ],
     [
-      "inspect fixed Prime system file /PRIVATE_FILE: failure",
-      "Prime container failed while applying supervisor hardening",
+      "measure Prime container readiness: parse Docker system file mount information: PRIVATE_SIGNAL",
+      "Prime container readiness failed while validating system files",
     ],
     [
-      "truncate fixed Prime system file /PRIVATE_FILE: failure",
-      "Prime container failed while applying supervisor hardening",
+      "measure Prime container readiness: Docker system files are not three read-only mounts",
+      "Prime container readiness failed while validating system files",
     ],
     [
-      "write fixed Prime system file /PRIVATE_FILE: failure",
-      "Prime container failed while applying supervisor hardening",
+      "measure Prime container readiness: open Docker system file /PRIVATE_FILE: failure",
+      "Prime container readiness failed while validating system files",
     ],
     [
-      "set fixed Prime system file mode /PRIVATE_FILE: failure",
-      "Prime container failed while applying supervisor hardening",
+      "measure Prime container readiness: inspect Docker system file /PRIVATE_FILE: failure",
+      "Prime container readiness failed while validating system files",
     ],
     [
-      "synchronize fixed Prime system file /PRIVATE_FILE: failure",
-      "Prime container failed while applying supervisor hardening",
+      "measure Prime container readiness: read Docker system file /PRIVATE_FILE: failure",
+      "Prime container readiness failed while validating system files",
     ],
     [
-      "read fixed Prime system file /PRIVATE_FILE: failure",
-      "Prime container failed while applying supervisor hardening",
+      "measure Prime container readiness: Docker hostname contradicts the admitted content",
+      "Prime container readiness failed while validating system files",
     ],
     [
-      "fixed Prime system file /PRIVATE_FILE contradicts the admitted content",
-      "Prime container failed while applying supervisor hardening",
+      "measure Prime container readiness: Docker hosts file contradicts the admitted content",
+      "Prime container readiness failed while validating system files",
+    ],
+    [
+      "measure Prime container readiness: Docker resolver file contradicts the admitted content",
+      "Prime container readiness failed while validating system files",
     ],
     [
       "create Prime private path /PRIVATE_PATH: failure",

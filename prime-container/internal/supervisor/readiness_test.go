@@ -2,12 +2,50 @@ package supervisor
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/synaptiai/flow-harness/prime-container/internal/containerprotocol"
 )
+
+func TestHardenSupervisorWithChangesOnlyProcessControls(t *testing.T) {
+	events := make([]string, 0, 2)
+	err := hardenSupervisorWith(
+		func() error { events = append(events, "core"); return nil },
+		func() error { events = append(events, "dumpable"); return nil },
+	)
+	if err != nil || !reflect.DeepEqual(events, []string{"core", "dumpable"}) {
+		t.Fatalf("supervisor hardening changed: %#v %v", events, err)
+	}
+
+	tests := []struct {
+		name     string
+		message  string
+		core     func() error
+		dumpable func() error
+	}{
+		{
+			name: "core", message: "set Prime supervisor core limit",
+			core:     func() error { return errors.New("private core") },
+			dumpable: func() error { t.Fatal("dumpable ran after core failure"); return nil },
+		},
+		{
+			name: "dumpable", message: "disable Prime supervisor dumpable state",
+			core:     func() error { return nil },
+			dumpable: func() error { return errors.New("private dumpable") },
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := hardenSupervisorWith(test.core, test.dumpable)
+			if err == nil || !strings.HasPrefix(err.Error(), test.message) {
+				t.Fatalf("unexpected hardening error: %v", err)
+			}
+		})
+	}
+}
 
 func TestBuildReadinessBindsChallengeAndMeasuredControls(t *testing.T) {
 	challenge := containerprotocol.ReadinessChallenge{
@@ -40,7 +78,7 @@ func TestBuildReadinessBindsChallengeAndMeasuredControls(t *testing.T) {
 	if readiness.Filesystems.Workspace.Bytes != 536870912 || readiness.Network.Interfaces[0] != "lo" {
 		t.Fatalf("readiness boundary changed: %#v", readiness)
 	}
-	if readiness.SystemFiles.Hostname != "flow-prime" || len(readiness.SystemFiles.Resolver) != 3 {
+	if readiness.SystemFiles.Hostname != "flow-prime" || len(readiness.SystemFiles.Resolver) != 2 {
 		t.Fatalf("readiness system files changed: %#v", readiness.SystemFiles)
 	}
 }
@@ -157,8 +195,15 @@ func fixedReadinessMeasurement() ReadinessMeasurement {
 		Network: NetworkReadiness{Namespace: "private", Interfaces: []string{"lo"}, Routes: []string{}},
 		SystemFiles: SystemFileReadiness{
 			Hostname: "flow-prime",
-			Hosts:    []string{"127.0.0.1 localhost flow-prime", "::1 localhost ip6-localhost ip6-loopback"},
-			Resolver: []string{"nameserver 127.0.0.1", "search .", "options ndots:0"},
+			Hosts: []string{
+				"127.0.0.1 localhost",
+				"::1 localhost ip6-localhost ip6-loopback",
+				"fe00:: ip6-localnet",
+				"ff00:: ip6-mcastprefix",
+				"ff02::1 ip6-allnodes",
+				"ff02::2 ip6-allrouters",
+			},
+			Resolver: []string{"nameserver 127.0.0.1", "options ndots:0"},
 		},
 		Streams:   StreamReadiness{StdinAttached: true, StdoutAttached: true, StderrAttached: true, TTY: false},
 		LogDriver: "none", Healthcheck: "none",

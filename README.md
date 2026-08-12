@@ -76,6 +76,7 @@ The Prime Agent evaluation profile has additional requirements:
 - A local Docker socket at `/var/run/docker.sock`.
 - Docker uses that exact Unix endpoint without socket activation.
 - A non-piped host core pattern.
+- IPv6 loopback support in the private container network namespace.
 
 The Prime runtime identity has these additional requirements:
 
