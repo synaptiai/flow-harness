@@ -240,6 +240,7 @@ describe("Prime Agent package boundary", () => {
       'test "$(cat /proc/sys/kernel/core_pattern)" = core',
     );
     const workflowReleaseGate = workflow.indexOf("run: npm run ci:local");
+    const workflowDockerDiagnostic = workflow.indexOf("name: Diagnose Prime Docker availability");
     const readmeCorePatternWrite = readme.indexOf("sudo sysctl --write kernel.core_pattern=core");
     const readmePreparation = readme.indexOf("node dist/cli/main.js runtime prepare prime-agent");
 
@@ -258,6 +259,28 @@ describe("Prime Agent package boundary", () => {
     expect(workflowCorePatternWrite).toBeGreaterThan(-1);
     expect(workflowCorePatternCheck).toBeGreaterThan(workflowCorePatternWrite);
     expect(workflowReleaseGate).toBeGreaterThan(workflowCorePatternCheck);
+    expect(workflowDockerDiagnostic).toBeGreaterThan(workflowReleaseGate);
+    expect(workflow).toContain(
+      "      - name: Diagnose Prime Docker availability\n        if: failure()",
+    );
+    expect(workflow).toContain("DOCKER_SERVICE_ACTIVE=%s");
+    expect(workflow).toContain("DOCKER_PID_ALIVE=%s");
+    expect(workflow).toContain("CONTAINERD_PID_ALIVE=%s");
+    expect(workflow).toContain("DOCKER_SOCKET_PRESENT=%s");
+    expect(workflow).toContain("DOCKER_VERSION_QUERY_SUCCEEDED=%s");
+    expect(workflow).toContain("DOCKER_INFO_QUERY_SUCCEEDED=%s");
+    expect(workflow).toContain(
+      "if timeout --signal=KILL 10s docker version --format '{{json .}}' > /dev/null 2>&1; then",
+    );
+    expect(workflow).toContain(
+      "if timeout --signal=KILL 10s docker info --format '{{json .}}' > /dev/null 2>&1; then",
+    );
+    expect(workflow).toContain('docker_pid="$(sudo cat /run/docker.pid 2>/dev/null)" &&');
+    expect(workflow).toContain(
+      'containerd_pid="$(sudo cat /run/docker/containerd/containerd.pid 2>/dev/null)" &&',
+    );
+    expect(workflow).toContain('[[ "$docker_pid" =~ ^[1-9][0-9]*$ ]] &&');
+    expect(workflow).toContain('[[ "$containerd_pid" =~ ^[1-9][0-9]*$ ]] &&');
     expect(workflow).toContain("/run/flow-prime-runtime-v1.json");
     expect(workflow).toContain('ps --no-headers --pid "$containerd_pid" --format ppid');
     expect(workflow).not.toContain('ps --no-headers --ppid "$docker_pid" --format pid');

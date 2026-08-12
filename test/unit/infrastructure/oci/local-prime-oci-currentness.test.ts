@@ -54,7 +54,7 @@ describe("local Prime OCI currentness", () => {
       mutate(changedInfo);
       info = JSON.stringify(changedInfo);
       await expect(assertPrimeOciRuntimeCurrent(input)).rejects.toMatchObject({
-        stage: "read Docker information",
+        stage: "decode Docker information response",
         cause: expect.objectContaining({
           message: expect.stringMatching(/Docker information.*closed schema/i),
         }),

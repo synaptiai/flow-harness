@@ -76,8 +76,8 @@ describe("Prime OCI runtime preparation", () => {
   });
 
   it.each([
-    "read Docker version",
-    "read Docker information",
+    "query Docker version",
+    "query Docker information",
     "inspect Docker socket",
     "inspect host core policy",
     "inspect host cgroup",
@@ -111,6 +111,31 @@ describe("Prime OCI runtime preparation", () => {
     });
     await expect(preparation).rejects.not.toThrow(privateFailure.message);
     expect(build).not.toHaveBeenCalled();
+  });
+
+  it("binds malformed production Docker version evidence to its decode stage", async () => {
+    const privateResponse = "private malformed Docker version response";
+    const operations = localRuntimeObservationOperations();
+    const prepareGlobalLeaseRoot = vi.fn(operations.prepareGlobalLeaseRoot);
+    const inspectImageBackingDevice = vi.fn(operations.inspectImageBackingDevice);
+    const inspectRuntimeExecutables = vi.fn(operations.inspectRuntimeExecutables);
+
+    const inspection = observeLocalRuntime(localRuntimeObservationInput(), {
+      ...operations,
+      readDockerVersion: async () => privateResponse,
+      prepareGlobalLeaseRoot,
+      inspectImageBackingDevice,
+      inspectRuntimeExecutables,
+    });
+
+    await expect(inspection).rejects.toMatchObject({
+      stage: "decode Docker version response",
+      cause: expect.any(Error),
+    });
+    await expect(inspection).rejects.not.toThrow(privateResponse);
+    expect(prepareGlobalLeaseRoot).not.toHaveBeenCalled();
+    expect(inspectImageBackingDevice).not.toHaveBeenCalled();
+    expect(inspectRuntimeExecutables).not.toHaveBeenCalled();
   });
 
   it("accepts bounded non-selected Docker runtime metadata", async () => {
@@ -163,7 +188,7 @@ describe("Prime OCI runtime preparation", () => {
         inspectRuntimeExecutables,
       }),
     ).rejects.toMatchObject({
-      stage: "read Docker information",
+      stage: "decode Docker information response",
       cause: expect.objectContaining({ message: expect.stringMatching(/closed schema/i) }),
     });
     expect(inspectRuntimeExecutables).not.toHaveBeenCalled();
@@ -336,7 +361,7 @@ describe("Prime OCI runtime preparation", () => {
       {
         preflightRuntime: () =>
           withPrimeOciInspectionStage(
-            "read Docker version",
+            "query Docker version",
             async () => {
               controller.abort(cancellation);
               throw new PrimeDockerCommandAbortError(cancellation);
@@ -358,7 +383,7 @@ describe("Prime OCI runtime preparation", () => {
     const nextMutation = vi.fn();
 
     const inspection = withPrimeOciInspectionStage(
-      "read Docker version",
+      "query Docker version",
       async () => {
         controller.abort(cancellation);
         return "completed after cancellation";
@@ -912,10 +937,10 @@ function localRuntimeObservationOperations(
   };
   return {
     readDockerVersion: async () =>
-      observe("read Docker version", JSON.stringify({ Server: { ApiVersion: "1.51" } })),
+      observe("query Docker version", JSON.stringify({ Server: { ApiVersion: "1.51" } })),
     readDockerInformation: async () =>
       observe(
-        "read Docker information",
+        "query Docker information",
         JSON.stringify({
           ID: "daemon-test-id",
           DockerRootDir: "/var/lib/docker",

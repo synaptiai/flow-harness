@@ -68,8 +68,10 @@ export interface PrimeOciPreparationDependencies {
 }
 
 export type PrimeOciInspectionStage =
-  | "read Docker version"
-  | "read Docker information"
+  | "query Docker version"
+  | "decode Docker version response"
+  | "query Docker information"
+  | "decode Docker information response"
   | "inspect Docker socket"
   | "inspect host core policy"
   | "inspect host cgroup"

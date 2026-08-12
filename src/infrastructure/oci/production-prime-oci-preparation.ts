@@ -107,11 +107,15 @@ export async function prepareProductionPrimeOciRuntime(input: {
       const run = (args: readonly string[]) =>
         runLocalDockerCommand(dockerExecutable, args, environmentRoot, input.signal);
       const runtimeInfo = await withPrimeOciInspectionStage(
-        "read Docker information",
+        "decode Docker information response",
         async () =>
           parseJson(
             dockerInfoSchema,
-            await run(["info", "--format", "{{json .}}"]),
+            await withPrimeOciInspectionStage(
+              "query Docker information",
+              () => run(["info", "--format", "{{json .}}"]),
+              input.signal,
+            ),
             "Docker information",
           ),
         input.signal,
@@ -331,17 +335,21 @@ export async function observeLocalRuntime(
   const [version, info, socket, corePattern, cgroupPath, seccompProfile] =
     await settlePrimeOciInspectionStages(
       [
-        inspectStage("read Docker version", async () =>
+        inspectStage("decode Docker version response", async () =>
           parseJson(
             dockerVersionSchema,
-            await operations.readDockerVersion(input.run),
+            await inspectStage("query Docker version", () =>
+              operations.readDockerVersion(input.run),
+            ),
             "Docker version",
           ),
         ),
-        inspectStage("read Docker information", async () =>
+        inspectStage("decode Docker information response", async () =>
           parseJson(
             dockerInfoSchema,
-            await operations.readDockerInformation(input.run),
+            await inspectStage("query Docker information", () =>
+              operations.readDockerInformation(input.run),
+            ),
             "Docker information",
           ),
         ),

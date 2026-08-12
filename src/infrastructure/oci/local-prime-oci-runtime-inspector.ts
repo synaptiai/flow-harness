@@ -100,12 +100,12 @@ export class LocalPrimeOciRuntimeInspector {
     const [versionSource, infoSource, local] = await settlePrimeOciInspectionStages(
       [
         withPrimeOciInspectionStage(
-          "read Docker version",
+          "query Docker version",
           () => this.#run(["version", "--format", "{{json .}}"]),
           this.#signal,
         ),
         withPrimeOciInspectionStage(
-          "read Docker information",
+          "query Docker information",
           () => this.#run(["info", "--format", "{{json .}}"]),
           this.#signal,
         ),
@@ -118,12 +118,12 @@ export class LocalPrimeOciRuntimeInspector {
       this.#signal,
     );
     const version = await withPrimeOciInspectionStage(
-      "read Docker version",
+      "decode Docker version response",
       async () => parseJson(versionSchema, versionSource, "Docker version"),
       this.#signal,
     );
     const info = await withPrimeOciInspectionStage(
-      "read Docker information",
+      "decode Docker information response",
       async () => parseJson(infoSchema, infoSource, "Docker information"),
       this.#signal,
     );

@@ -43,10 +43,57 @@ describe("local Prime OCI runtime inspector", () => {
     });
 
     await expect(inspector.inspect()).rejects.toMatchObject({
-      stage: "read Docker version",
+      stage: "query Docker version",
       cause: distinctFailure,
     });
   });
+
+  it.each([
+    ["version", "query Docker version", "private Docker version query failure"],
+    ["info", "query Docker information", "private Docker information query failure"],
+  ] as const)(
+    "separates a Docker %s query failure from response decoding",
+    async (command, stage, privateMessage) => {
+      const privateFailure = new Error(privateMessage);
+      const inspector = new LocalPrimeOciRuntimeInspector({
+        run: async (args) => {
+          if (args[0] === command) {
+            throw privateFailure;
+          }
+          return args[0] === "version" ? versionOutput() : infoOutput("systemd");
+        },
+        local: async () => localObservation({ defaultAction: "SCMP_ACT_ERRNO", syscalls: [] }),
+        expectedExecutables: expectedExecutables(),
+      });
+
+      const inspection = inspector.inspect();
+      await expect(inspection).rejects.toMatchObject({ stage, cause: privateFailure });
+      await expect(inspection).rejects.not.toThrow(privateMessage);
+    },
+  );
+
+  it.each([
+    ["version", "decode Docker version response", "private-version-response"],
+    ["info", "decode Docker information response", "private-information-response"],
+  ] as const)(
+    "separates a malformed Docker %s response from its successful query",
+    async (command, stage, privateResponse) => {
+      const inspector = new LocalPrimeOciRuntimeInspector({
+        run: async (args) => {
+          if (args[0] === command) {
+            return privateResponse;
+          }
+          return args[0] === "version" ? versionOutput() : infoOutput("systemd");
+        },
+        local: async () => localObservation({ defaultAction: "SCMP_ACT_ERRNO", syscalls: [] }),
+        expectedExecutables: expectedExecutables(),
+      });
+
+      const inspection = inspector.inspect();
+      await expect(inspection).rejects.toMatchObject({ stage, cause: expect.any(Error) });
+      await expect(inspection).rejects.not.toThrow(privateResponse);
+    },
+  );
 
   it("binds the fixed Linux Docker runtime and keeps host details private", async () => {
     const seccompProfile = { defaultAction: "SCMP_ACT_ERRNO", syscalls: [] };
@@ -248,7 +295,7 @@ describe("local Prime OCI runtime inspector", () => {
     });
 
     await expect(inspector.inspect()).rejects.toMatchObject({
-      stage: "read Docker information",
+      stage: "decode Docker information response",
       cause: expect.objectContaining({
         message: expect.stringMatching(/Docker information.*closed schema/i),
       }),

@@ -158,6 +158,42 @@ jobs:
       - name: Run local release gates
         run: npm run ci:local
 
+      - name: Diagnose Prime Docker availability
+        if: failure()
+        run: |
+          docker_service_active=false
+          docker_pid_alive=false
+          containerd_pid_alive=false
+          docker_socket_present=false
+          docker_version_query_succeeded=false
+          docker_info_query_succeeded=false
+          if sudo systemctl is-active --quiet docker.service > /dev/null 2>&1; then
+            docker_service_active=true
+          fi
+          if docker_pid="$(sudo cat /run/docker.pid 2>/dev/null)" &&
+            [[ "$docker_pid" =~ ^[1-9][0-9]*$ ]] &&
+            sudo kill -0 "$docker_pid" > /dev/null 2>&1; then
+            docker_pid_alive=true
+          fi
+          if containerd_pid="$(sudo cat /run/docker/containerd/containerd.pid 2>/dev/null)" &&
+            [[ "$containerd_pid" =~ ^[1-9][0-9]*$ ]] &&
+            sudo kill -0 "$containerd_pid" > /dev/null 2>&1; then
+            containerd_pid_alive=true
+          fi
+          if sudo test -S /var/run/docker.sock > /dev/null 2>&1; then
+            docker_socket_present=true
+          fi
+          if timeout --signal=KILL 10s docker version --format '{{json .}}' > /dev/null 2>&1; then
+            docker_version_query_succeeded=true
+          fi
+          if timeout --signal=KILL 10s docker info --format '{{json .}}' > /dev/null 2>&1; then
+            docker_info_query_succeeded=true
+          fi
+          printf 'DOCKER_SERVICE_ACTIVE=%s\nDOCKER_PID_ALIVE=%s\nCONTAINERD_PID_ALIVE=%s\nDOCKER_SOCKET_PRESENT=%s\nDOCKER_VERSION_QUERY_SUCCEEDED=%s\nDOCKER_INFO_QUERY_SUCCEEDED=%s\n' \
+            "$docker_service_active" "$docker_pid_alive" "$containerd_pid_alive" \
+            "$docker_socket_present" "$docker_version_query_succeeded" \
+            "$docker_info_query_succeeded"
+
   dependency-audit:
     runs-on: ubuntu-latest
     timeout-minutes: 5
