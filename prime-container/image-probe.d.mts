@@ -41,6 +41,4 @@ export function createRuntimeInventory(
   input: PrimeRuntimeInventoryInput,
 ): Promise<PrimeRuntimeInventory>;
 
-export function verifyNativePrimeSdkBindings(
-  loaders?: NativePrimeSdkBindingLoaders,
-): Promise<void>;
+export function verifyNativePrimeSdkBindings(loaders?: NativePrimeSdkBindingLoaders): Promise<void>;
