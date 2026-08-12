@@ -1331,8 +1331,18 @@ describe("Docker Unix API client", () => {
       publicMessage: "Prime driver failed while closing its private relay channel",
     },
     {
-      privateDiagnostic: "settle Prime kernel service: PRIVATE_KERNEL\n",
-      publicMessage: "Prime container failed while settling its kernel service",
+      privateDiagnostic:
+        "settle Prime kernel service: close Prime kernel listener: PRIVATE_LISTENER\n",
+      publicMessage: "Prime container failed while closing its kernel listener",
+    },
+    {
+      privateDiagnostic: "settle Prime kernel service: run Prime kernel service: PRIVATE_SERVICE\n",
+      publicMessage: "Prime container failed while settling its active kernel request",
+    },
+    {
+      privateDiagnostic:
+        "settle Prime kernel service: reconcile Prime Python processes: PRIVATE_RECONCILE\n",
+      publicMessage: "Prime container failed while reconciling Python processes",
     },
     {
       privateDiagnostic: "capture Prime workspace: PRIVATE_WORKSPACE\n",

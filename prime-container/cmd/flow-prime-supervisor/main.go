@@ -138,13 +138,13 @@ func settleKernelService(
 	reconcileError := reconcilePython()
 	var failures []error
 	if closeError != nil && !errors.Is(closeError, net.ErrClosed) {
-		failures = append(failures, fmt.Errorf("close kernel supervisor listener: %w", closeError))
+		failures = append(failures, fmt.Errorf("close Prime kernel listener: %w", closeError))
 	}
 	if result.err != nil && !errors.Is(result.err, net.ErrClosed) {
-		failures = append(failures, result.err)
+		failures = append(failures, fmt.Errorf("run Prime kernel service: %w", result.err))
 	}
 	if reconcileError != nil {
-		failures = append(failures, reconcileError)
+		failures = append(failures, fmt.Errorf("reconcile Prime Python processes: %w", reconcileError))
 	}
 	return result, errors.Join(failures...)
 }

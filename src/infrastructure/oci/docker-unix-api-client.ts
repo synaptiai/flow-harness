@@ -856,8 +856,16 @@ function primeContainerFailureMessage(stderr: Buffer, sawStdout: boolean): strin
   ) {
     return "Prime driver failed while closing its private relay channel";
   }
-  if (privateDiagnostic.startsWith("settle prime kernel service: ")) {
-    return "Prime container failed while settling its kernel service";
+  if (privateDiagnostic.startsWith("settle prime kernel service: close prime kernel listener: ")) {
+    return "Prime container failed while closing its kernel listener";
+  }
+  if (privateDiagnostic.startsWith("settle prime kernel service: run prime kernel service: ")) {
+    return "Prime container failed while settling its active kernel request";
+  }
+  if (
+    privateDiagnostic.startsWith("settle prime kernel service: reconcile prime python processes: ")
+  ) {
+    return "Prime container failed while reconciling Python processes";
   }
   if (privateDiagnostic.startsWith("capture prime workspace: ")) {
     return "Prime container failed while capturing its result workspace";
