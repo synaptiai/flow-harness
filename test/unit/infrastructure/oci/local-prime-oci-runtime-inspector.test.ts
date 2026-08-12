@@ -93,6 +93,21 @@ describe("local Prime OCI runtime inspector", () => {
     expect(result.local.socketPath).toBe("/var/run/docker.sock");
   });
 
+  it("accepts bounded non-selected Docker runtime metadata", async () => {
+    const seccompProfile = { defaultAction: "SCMP_ACT_ERRNO", syscalls: [] };
+    const info = JSON.parse(infoOutput("systemd")) as Record<string, unknown>;
+    const runtimes = info.Runtimes as Record<string, Record<string, unknown>>;
+    runtimes["io.containerd.runc.v2"] = { runtimeType: "io.containerd.runc.v2" };
+    runtimes.runc = { path: "runc", runtimeArgs: ["--debug"] };
+    const inspector = new LocalPrimeOciRuntimeInspector({
+      run: async (args) => (args[0] === "version" ? versionOutput() : JSON.stringify(info)),
+      local: async () => localObservation(seccompProfile),
+      expectedExecutables: expectedExecutables(),
+    });
+
+    await expect(inspector.inspect()).resolves.toMatchObject({ daemonId: "daemon-private-id" });
+  });
+
   it("rejects a Docker engine without the fixed cgroup driver", async () => {
     const seccompProfile = { defaultAction: "SCMP_ACT_ERRNO", syscalls: [] };
     const inspector = new LocalPrimeOciRuntimeInspector({
@@ -133,6 +148,14 @@ describe("local Prime OCI runtime inspector", () => {
       "selected runtime name",
       (value: Record<string, unknown>) => {
         value.Runtimes = { "other-runc": { path: "/usr/bin/runc", runtimeArgs: [] } };
+      },
+    ],
+    [
+      "selected runtime path",
+      (value: Record<string, unknown>) => {
+        value.Runtimes = {
+          "flow-prime-runc": { runtimeType: "io.containerd.runc.v2", runtimeArgs: [] },
+        };
       },
     ],
     [

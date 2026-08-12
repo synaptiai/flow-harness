@@ -33,6 +33,10 @@ import {
   publishLocalPrimeOciAttestation,
 } from "./local-prime-oci-attestation.js";
 import { LocalPrimeOciRuntimeInspector } from "./local-prime-oci-runtime-inspector.js";
+import {
+  primeDockerRuntimeMapSchema,
+  selectedPrimeDockerRuntime,
+} from "./prime-docker-runtime-metadata.js";
 import { resolvePrimeImageDevice } from "./prime-oci-image-device.js";
 import { PRIME_OCI_RUNTIME_NAME } from "./prime-oci-policy.js";
 import {
@@ -63,15 +67,7 @@ const dockerInfoSchema = z
     OSType: z.literal("linux"),
     Architecture: z.enum(["amd64", "x86_64"]),
     DefaultRuntime: z.literal(PRIME_OCI_RUNTIME_NAME),
-    Runtimes: z.record(
-      z.string().min(1).max(128),
-      z
-        .object({
-          path: z.string().min(1).max(4_095),
-          runtimeArgs: z.array(z.string().max(1_024)).max(0).optional(),
-        })
-        .passthrough(),
-    ),
+    Runtimes: primeDockerRuntimeMapSchema,
   })
   .passthrough();
 
@@ -460,10 +456,7 @@ async function inspectRuntimeExecutables(
   if ((await realpath(dockerExecutable)) !== dockerExecutable) {
     throw new Error("Docker executable path is not canonical");
   }
-  const configuredRuncPath = runtimeInfo.Runtimes[PRIME_OCI_RUNTIME_NAME]?.path;
-  if (configuredRuncPath === undefined || !configuredRuncPath.startsWith("/")) {
-    throw new Error("Prime OCI runc runtime must use one absolute executable path");
-  }
+  const configuredRuncPath = selectedPrimeDockerRuntime(runtimeInfo.Runtimes).path;
   const resolvedRunc = await resolveConfiguredExecutable(configuredRuncPath, "runc");
   const managed = await resolveDockerManagedRuntimeExecutables();
   const resolvedDockerdSha256 = await hashStableRegularFile(

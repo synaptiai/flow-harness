@@ -5,6 +5,10 @@ import { z } from "zod";
 
 import { parsePrimeOciRuntimeIdentity } from "../../domain/evaluation/external-harness.js";
 import type { PrimeOciLocalRuntimeAttestation } from "./local-prime-oci-attestation.js";
+import {
+  primeDockerRuntimeMapSchema,
+  selectedPrimeDockerRuntime,
+} from "./prime-docker-runtime-metadata.js";
 import { createPrimeOciRuntimePolicy, PRIME_OCI_RUNTIME_NAME } from "./prime-oci-policy.js";
 import {
   type PrimeOciRuntimeInspection,
@@ -67,20 +71,7 @@ const infoSchema = z
     ContainerdCommit: z.object({ ID: z.string().min(1).max(128) }).passthrough(),
     RuncCommit: z.object({ ID: z.string().min(1).max(128) }).passthrough(),
     DefaultRuntime: z.literal(PRIME_OCI_RUNTIME_NAME),
-    Runtimes: z
-      .record(
-        z.string().min(1).max(128),
-        z
-          .object({
-            path: absolutePathSchema,
-            runtimeArgs: z.array(z.string().max(1_024)).max(0).optional(),
-          })
-          .passthrough(),
-      )
-      .refine(
-        (value) => value[PRIME_OCI_RUNTIME_NAME] !== undefined,
-        `must contain ${PRIME_OCI_RUNTIME_NAME}`,
-      ),
+    Runtimes: primeDockerRuntimeMapSchema,
     Rootless: z.boolean().optional(),
   })
   .passthrough();
@@ -157,7 +148,7 @@ export class LocalPrimeOciRuntimeInspector {
         if (info.CgroupDriver !== "systemd") {
           throw new Error("Prime OCI Docker cgroup driver must be systemd");
         }
-        if (info.Runtimes[PRIME_OCI_RUNTIME_NAME]?.path !== local.executables.runc.path) {
+        if (selectedPrimeDockerRuntime(info.Runtimes).path !== local.executables.runc.path) {
           throw new Error("Prime OCI selected runc path does not match the observed executable");
         }
         if (!isDeepStrictEqual(local.executables, this.#expectedExecutables)) {

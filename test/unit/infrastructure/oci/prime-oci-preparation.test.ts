@@ -113,6 +113,62 @@ describe("Prime OCI runtime preparation", () => {
     expect(build).not.toHaveBeenCalled();
   });
 
+  it("accepts bounded non-selected Docker runtime metadata", async () => {
+    const operations = localRuntimeObservationOperations();
+
+    await expect(
+      observeLocalRuntime(localRuntimeObservationInput(), {
+        ...operations,
+        readDockerInformation: async () =>
+          JSON.stringify({
+            ID: "daemon-test-id",
+            DockerRootDir: "/var/lib/docker",
+            OSType: "linux",
+            Architecture: "x86_64",
+            DefaultRuntime: "flow-prime-runc",
+            Runtimes: {
+              "flow-prime-runc": { path: "/usr/bin/runc", runtimeArgs: [] },
+              "io.containerd.runc.v2": { runtimeType: "io.containerd.runc.v2" },
+              runc: { path: "runc", runtimeArgs: ["--debug"] },
+            },
+          }),
+        inspectRuntimeExecutables: async () => ({
+          docker: { path: "/usr/bin/docker", sha256: "a".repeat(64) },
+          dockerd: { path: "/usr/bin/dockerd", sha256: "d".repeat(64) },
+          containerd: { path: "/usr/bin/containerd", sha256: "b".repeat(64) },
+          runc: { path: "/usr/bin/runc", sha256: "c".repeat(64) },
+        }),
+      }),
+    ).resolves.toMatchObject({ daemonId: "daemon-test-id" });
+  });
+
+  it("rejects a selected Prime runtime without its absolute executable path", async () => {
+    const operations = localRuntimeObservationOperations();
+    const inspectRuntimeExecutables = vi.fn(operations.inspectRuntimeExecutables);
+
+    await expect(
+      observeLocalRuntime(localRuntimeObservationInput(), {
+        ...operations,
+        readDockerInformation: async () =>
+          JSON.stringify({
+            ID: "daemon-test-id",
+            DockerRootDir: "/var/lib/docker",
+            OSType: "linux",
+            Architecture: "x86_64",
+            DefaultRuntime: "flow-prime-runc",
+            Runtimes: {
+              "flow-prime-runc": { runtimeType: "io.containerd.runc.v2", runtimeArgs: [] },
+            },
+          }),
+        inspectRuntimeExecutables,
+      }),
+    ).rejects.toMatchObject({
+      stage: "read Docker information",
+      cause: expect.objectContaining({ message: expect.stringMatching(/closed schema/i) }),
+    });
+    expect(inspectRuntimeExecutables).not.toHaveBeenCalled();
+  });
+
   it.each([
     [
       "bootstrap",
@@ -838,11 +894,14 @@ function localRuntimeObservationInput(): Parameters<typeof observeLocalRuntime>[
 }
 
 function localRuntimeObservationOperations(
-  failedStage: PrimeOciInspectionStage,
-  failure: Error,
+  failedStage?: PrimeOciInspectionStage,
+  failure?: Error,
 ): PrimeOciLocalRuntimeObservationOperations {
   const observe = async <Value>(stage: PrimeOciInspectionStage, value: Value): Promise<Value> => {
     if (stage === failedStage) {
+      if (failure === undefined) {
+        throw new Error("an injected observation failure requires one private cause");
+      }
       throw failure;
     }
     return value;
