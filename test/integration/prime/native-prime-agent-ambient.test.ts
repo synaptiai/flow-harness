@@ -18,6 +18,7 @@ describe("native Prime ambient authority", () => {
       thinkingLevel: "off",
       prompt: vi.fn(async () => undefined),
       abort: vi.fn(async () => undefined),
+      dispose: vi.fn(() => undefined),
       disposeAsync: vi.fn(async () => undefined),
       subscribe: vi.fn(() => () => undefined),
       getSessionStats: () => ({ sessionId: "ambient-test", assistantMessages: 0, toolCalls: 0 }),

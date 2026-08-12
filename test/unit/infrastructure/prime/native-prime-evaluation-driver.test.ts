@@ -23,7 +23,8 @@ describe("native Prime evaluation driver", () => {
       thinkingLevel: "off",
       prompt: vi.fn(async () => undefined),
       abort: vi.fn(async () => undefined),
-      disposeAsync: vi.fn(async () => undefined),
+      dispose: vi.fn(() => undefined),
+      disposeAsync: vi.fn(() => new Promise<void>(() => undefined)),
       subscribe: vi.fn(() => () => undefined),
       getSessionStats: () => ({
         sessionId: "sdk-session",
@@ -151,7 +152,8 @@ describe("native Prime evaluation driver", () => {
       new Promise<"hung">((resolve) => setTimeout(() => resolve("hung"), 50)),
     ]);
     expect(settlement).toBe("settled");
-    expect(sdkSession.disposeAsync).toHaveBeenCalledOnce();
+    expect(sdkSession.dispose).toHaveBeenCalledOnce();
+    expect(sdkSession.disposeAsync).not.toHaveBeenCalled();
     expect(killProvisioner).toHaveBeenCalledOnce();
     expect(disposeProvisioner).not.toHaveBeenCalled();
   });
@@ -207,7 +209,8 @@ describe("native Prime evaluation driver", () => {
     ).rejects.toThrow(/thinking level.*off.*medium/i);
 
     expect(fixture.session.prompt).not.toHaveBeenCalled();
-    expect(fixture.session.disposeAsync).toHaveBeenCalledOnce();
+    expect(fixture.session.dispose).toHaveBeenCalledOnce();
+    expect(fixture.session.disposeAsync).not.toHaveBeenCalled();
     expect(fixture.killProvisioner).toHaveBeenCalledOnce();
   });
 
@@ -223,7 +226,8 @@ describe("native Prime evaluation driver", () => {
 
     await expect(session.dispose()).rejects.toBe(disposalError);
 
-    expect(fixture.session.disposeAsync).toHaveBeenCalledOnce();
+    expect(fixture.session.dispose).toHaveBeenCalledOnce();
+    expect(fixture.session.disposeAsync).not.toHaveBeenCalled();
     expect(fixture.killProvisioner).toHaveBeenCalledOnce();
   });
 
@@ -693,11 +697,12 @@ function sdkFixture(options: {
     thinkingLevel: options.thinkingLevel,
     prompt: vi.fn(async () => undefined),
     abort: vi.fn(async () => undefined),
-    disposeAsync: vi.fn(async () => {
+    dispose: vi.fn(() => {
       if (options.sessionDisposeError !== undefined) {
         throw options.sessionDisposeError;
       }
     }),
+    disposeAsync: vi.fn(async () => undefined),
     subscribe: vi.fn(() => () => undefined),
     getSessionStats: () => ({
       sessionId: "sdk-session",

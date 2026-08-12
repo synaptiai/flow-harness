@@ -155,6 +155,7 @@ interface PrimeSdkSession {
   readonly thinkingLevel: string;
   prompt(text: string, options: Record<string, unknown>): Promise<void>;
   abort(): Promise<void>;
+  dispose(): void;
   disposeAsync(): Promise<void>;
   subscribe(listener: (event: NativePrimeSessionEvent) => void): () => void;
   getSessionStats(): ReturnType<NativePrimeSession["getSessionStats"]>;
@@ -609,7 +610,11 @@ async function disposeNativePrimeSdkResources(
   ipythonProvisioner: PrimeIpythonKernelProvisioner,
 ): Promise<void> {
   const failures: unknown[] = [];
-  await session.disposeAsync().catch((error: unknown) => failures.push(error));
+  try {
+    session.dispose();
+  } catch (error) {
+    failures.push(error);
+  }
   await ipythonProvisioner.kill().catch((error: unknown) => failures.push(error));
   if (failures.length === 1) {
     throw failures[0];
