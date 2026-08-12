@@ -108,6 +108,75 @@ describe("local Prime OCI runtime inspector", () => {
     await expect(inspector.inspect()).resolves.toMatchObject({ daemonId: "daemon-private-id" });
   });
 
+  it.each([
+    [
+      "validate Docker API identity",
+      (input: RuntimeInspectionInput) => {
+        const client = input.version.Client as Record<string, unknown>;
+        client.ApiVersion = "1.50";
+      },
+    ],
+    [
+      "validate Docker kernel identity",
+      (input: RuntimeInspectionInput) => {
+        input.info.KernelVersion = "changed-kernel";
+      },
+    ],
+    [
+      "validate Docker daemon identity",
+      (input: RuntimeInspectionInput) => {
+        input.info.ID = "changed-daemon";
+      },
+    ],
+    [
+      "validate Docker cgroup policy",
+      (input: RuntimeInspectionInput) => {
+        input.info.CgroupDriver = "cgroupfs";
+      },
+    ],
+    [
+      "validate selected Docker runtime",
+      (input: RuntimeInspectionInput) => {
+        const runtimes = input.info.Runtimes as Record<string, Record<string, unknown>>;
+        runtimes["flow-prime-runc"] = { path: "/opt/changed/runc", runtimeArgs: [] };
+      },
+    ],
+    [
+      "validate runtime executable identity",
+      (input: RuntimeInspectionInput) => {
+        input.local.executables.docker.sha256 = "f".repeat(64);
+      },
+    ],
+    [
+      "validate low-level runtime identity",
+      (input: RuntimeInspectionInput) => {
+        input.info.RuncCommit = { ID: "changed-runc-commit" };
+      },
+    ],
+    [
+      "construct Docker runtime identity",
+      (input: RuntimeInspectionInput) => {
+        const server = input.version.Server as Record<string, unknown>;
+        server.Version = "not-semver";
+      },
+    ],
+  ] as const)("reports %s without exposing its private cause", async (stage, mutate) => {
+    const input = runtimeInspectionInput();
+    mutate(input);
+    const inspector = new LocalPrimeOciRuntimeInspector({
+      run: async (args) => JSON.stringify(args[0] === "version" ? input.version : input.info),
+      local: async () => input.local,
+      expectedExecutables: expectedExecutables(),
+    });
+
+    const inspection = inspector.inspect();
+    await expect(inspection).rejects.toMatchObject({
+      stage,
+      cause: expect.any(Error),
+    });
+    await expect(inspection).rejects.not.toThrow(/changed-|not-semver|cgroupfs|\/opt\/changed/i);
+  });
+
   it("rejects a Docker engine without the fixed cgroup driver", async () => {
     const seccompProfile = { defaultAction: "SCMP_ACT_ERRNO", syscalls: [] };
     const inspector = new LocalPrimeOciRuntimeInspector({
@@ -117,7 +186,7 @@ describe("local Prime OCI runtime inspector", () => {
     });
 
     await expect(inspector.inspect()).rejects.toMatchObject({
-      stage: "validate Docker runtime identity",
+      stage: "validate Docker cgroup policy",
       cause: expect.objectContaining({ message: expect.stringMatching(/cgroup driver/i) }),
     });
   });
@@ -132,7 +201,7 @@ describe("local Prime OCI runtime inspector", () => {
     });
 
     await expect(inspector.inspect()).rejects.toMatchObject({
-      stage: "validate Docker runtime identity",
+      stage: "validate selected Docker runtime",
       cause: expect.objectContaining({ message: expect.stringMatching(/runc.*path/i) }),
     });
   });
@@ -195,8 +264,31 @@ describe("local Prime OCI runtime inspector", () => {
     });
 
     await expect(inspector.inspect()).rejects.toMatchObject({
-      stage: "validate Docker runtime identity",
+      stage: "validate Docker API identity",
       cause: expect.objectContaining({ message: expect.stringMatching(/API version.*1\.51/i) }),
+    });
+  });
+
+  it("rejects a stock runc component in place of the selected Prime runtime", async () => {
+    const seccompProfile = { defaultAction: "SCMP_ACT_ERRNO", syscalls: [] };
+    const version = JSON.parse(versionOutput()) as Record<string, unknown>;
+    const server = version.Server as Record<string, unknown>;
+    const components = server.Components as Array<Record<string, unknown>>;
+    const selected = components.find((component) => component.Name === "flow-prime-runc");
+    if (selected === undefined) {
+      throw new Error("the fixture omits the selected Prime runtime component");
+    }
+    selected.Name = "runc";
+    const inspector = new LocalPrimeOciRuntimeInspector({
+      run: async (args) =>
+        args[0] === "version" ? JSON.stringify(version) : infoOutput("systemd"),
+      local: async () => localObservation(seccompProfile),
+      expectedExecutables: expectedExecutables(),
+    });
+
+    await expect(inspector.inspect()).rejects.toMatchObject({
+      stage: "validate low-level runtime identity",
+      cause: expect.objectContaining({ message: expect.stringMatching(/flow-prime-runc/i) }),
     });
   });
 });
@@ -213,7 +305,11 @@ function versionOutput(apiVersion = "1.51"): string {
       KernelVersion: "6.11.0-1018-azure",
       Components: [
         { Name: "containerd", Version: "v1.7.27", Details: { GitCommit: "containerd-commit" } },
-        { Name: "runc", Version: "1.2.6", Details: { GitCommit: "runc-commit" } },
+        {
+          Name: "flow-prime-runc",
+          Version: "1.2.6",
+          Details: { GitCommit: "runc-commit" },
+        },
       ],
     },
   });
@@ -255,6 +351,20 @@ function localObservation(seccompProfile: Record<string, unknown>, apiVersion = 
     },
     leaseTarget: "flow-prime-global-v1" as const,
     seccompProfile,
+  };
+}
+
+interface RuntimeInspectionInput {
+  readonly info: Record<string, unknown>;
+  readonly local: ReturnType<typeof localObservation>;
+  readonly version: Record<string, unknown>;
+}
+
+function runtimeInspectionInput(): RuntimeInspectionInput {
+  return {
+    info: JSON.parse(infoOutput("systemd")) as Record<string, unknown>,
+    local: structuredClone(localObservation({ defaultAction: "SCMP_ACT_ERRNO", syscalls: [] })),
+    version: JSON.parse(versionOutput()) as Record<string, unknown>,
   };
 }
 

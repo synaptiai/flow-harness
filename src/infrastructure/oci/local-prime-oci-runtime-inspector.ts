@@ -127,8 +127,8 @@ export class LocalPrimeOciRuntimeInspector {
       async () => parseJson(infoSchema, infoSource, "Docker information"),
       this.#signal,
     );
-    return withPrimeOciInspectionStage(
-      "validate Docker runtime identity",
+    await withPrimeOciInspectionStage(
+      "validate Docker API identity",
       async () => {
         if (
           version.Client.ApiVersion !== version.Server.ApiVersion ||
@@ -139,28 +139,71 @@ export class LocalPrimeOciRuntimeInspector {
         if (version.Server.ApiVersion !== PRIME_DOCKER_API_VERSION) {
           throw new Error(`Prime OCI Docker API version must be ${PRIME_DOCKER_API_VERSION}`);
         }
+      },
+      this.#signal,
+    );
+    await withPrimeOciInspectionStage(
+      "validate Docker kernel identity",
+      async () => {
         if (version.Server.KernelVersion !== info.KernelVersion) {
           throw new Error("Prime OCI Docker kernel identities do not match");
         }
+      },
+      this.#signal,
+    );
+    await withPrimeOciInspectionStage(
+      "validate Docker daemon identity",
+      async () => {
         if (info.ID !== local.daemonId) {
           throw new Error("Prime OCI Docker daemon identity changed during inspection");
         }
+      },
+      this.#signal,
+    );
+    await withPrimeOciInspectionStage(
+      "validate Docker cgroup policy",
+      async () => {
         if (info.CgroupDriver !== "systemd") {
           throw new Error("Prime OCI Docker cgroup driver must be systemd");
         }
+      },
+      this.#signal,
+    );
+    await withPrimeOciInspectionStage(
+      "validate selected Docker runtime",
+      async () => {
         if (selectedPrimeDockerRuntime(info.Runtimes).path !== local.executables.runc.path) {
           throw new Error("Prime OCI selected runc path does not match the observed executable");
         }
+      },
+      this.#signal,
+    );
+    await withPrimeOciInspectionStage(
+      "validate runtime executable identity",
+      async () => {
         if (!isDeepStrictEqual(local.executables, this.#expectedExecutables)) {
           throw new Error("Prime OCI runtime executable identity changed during inspection");
         }
+      },
+      this.#signal,
+    );
+    const { containerd, runc } = await withPrimeOciInspectionStage(
+      "validate low-level runtime identity",
+      async () => {
         const containerd = requiredComponent(version.Server.Components, "containerd");
-        const runc = requiredComponent(version.Server.Components, "runc");
+        const runc = requiredComponent(version.Server.Components, PRIME_OCI_RUNTIME_NAME);
         const containerdCommit = requiredCommit(containerd, "containerd");
         const runcCommit = requiredCommit(runc, "runc");
         if (containerdCommit !== info.ContainerdCommit.ID || runcCommit !== info.RuncCommit.ID) {
           throw new Error("Prime OCI low-level runtime commits do not match");
         }
+        return { containerd, runc };
+      },
+      this.#signal,
+    );
+    return withPrimeOciInspectionStage(
+      "construct Docker runtime identity",
+      async () => {
         const securityOptions = [...new Set(info.SecurityOptions)].sort();
         const rootless =
           info.Rootless ?? securityOptions.some((value) => value.includes("rootless"));
@@ -239,7 +282,7 @@ function normalizeExpectedExecutables(
 
 function requiredComponent(
   components: readonly z.infer<typeof componentSchema>[],
-  name: "containerd" | "runc",
+  name: "containerd" | typeof PRIME_OCI_RUNTIME_NAME,
 ) {
   const matches = components.filter((component) => component.Name === name);
   if (matches.length !== 1 || matches[0] === undefined) {

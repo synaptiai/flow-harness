@@ -77,6 +77,14 @@ export type PrimeOciInspectionStage =
   | "inspect image backing device"
   | "inspect runtime executables"
   | "inspect seccomp policy"
+  | "validate Docker API identity"
+  | "validate Docker kernel identity"
+  | "validate Docker daemon identity"
+  | "validate Docker cgroup policy"
+  | "validate selected Docker runtime"
+  | "validate runtime executable identity"
+  | "validate low-level runtime identity"
+  | "construct Docker runtime identity"
   | "validate Docker runtime identity";
 
 export class PrimeOciInspectionStageError extends Error {

@@ -168,7 +168,11 @@ function versionSource(serverCommit: string): string {
       KernelVersion: "6.11.0-1018-azure",
       Components: [
         { Name: "containerd", Version: "1.7.27", Details: { GitCommit: "containerd-commit" } },
-        { Name: "runc", Version: "1.2.6", Details: { GitCommit: "runc-commit" } },
+        {
+          Name: "flow-prime-runc",
+          Version: "1.2.6",
+          Details: { GitCommit: "runc-commit" },
+        },
       ],
     },
   });
