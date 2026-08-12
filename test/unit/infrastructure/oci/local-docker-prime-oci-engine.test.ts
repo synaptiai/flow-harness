@@ -222,6 +222,97 @@ describe("local Docker Prime OCI engine", () => {
     await expect(result).rejects.not.toThrow(canary);
   });
 
+  it.each([
+    [
+      "image reference",
+      "created Prime container image reference does not match admission",
+      (inspection: Record<string, unknown>) =>
+        ((inspection.Config as Record<string, unknown>).Image = `sha256:${"0".repeat(64)}`),
+    ],
+    [
+      "hostname",
+      "created Prime container host identity does not match admission",
+      (inspection: Record<string, unknown>) =>
+        ((inspection.Config as Record<string, unknown>).Hostname = "private-host"),
+    ],
+    [
+      "domain name",
+      "created Prime container host identity does not match admission",
+      (inspection: Record<string, unknown>) =>
+        ((inspection.Config as Record<string, unknown>).Domainname = "private.example"),
+    ],
+    [
+      "user",
+      "created Prime container execution identity does not match admission",
+      (inspection: Record<string, unknown>) =>
+        ((inspection.Config as Record<string, unknown>).User = "1000:1000"),
+    ],
+    [
+      "working directory",
+      "created Prime container execution identity does not match admission",
+      (inspection: Record<string, unknown>) =>
+        ((inspection.Config as Record<string, unknown>).WorkingDir = "/private-workspace"),
+    ],
+    [
+      "labels",
+      "created Prime container labels do not match admission",
+      (inspection: Record<string, unknown>) =>
+        ((inspection.Config as Record<string, unknown>).Labels = { private: "canary" }),
+    ],
+    ...["OpenStdin", "StdinOnce", "AttachStdin", "AttachStdout", "AttachStderr"].map(
+      (field) =>
+        [
+          field,
+          "created Prime container streams do not match admission",
+          (inspection: Record<string, unknown>) =>
+            ((inspection.Config as Record<string, unknown>)[field] = false),
+        ] as const,
+    ),
+    [
+      "terminal",
+      "created Prime container terminal does not match admission",
+      (inspection: Record<string, unknown>) =>
+        ((inspection.Config as Record<string, unknown>).Tty = true),
+    ],
+    [
+      "entrypoint",
+      "created Prime container process command does not match admission",
+      (inspection: Record<string, unknown>) =>
+        ((inspection.Config as Record<string, unknown>).Entrypoint = ["/private-entrypoint"]),
+    ],
+    [
+      "command",
+      "created Prime container process command does not match admission",
+      (inspection: Record<string, unknown>) =>
+        ((inspection.Config as Record<string, unknown>).Cmd = ["private-command"]),
+    ],
+    [
+      "health check",
+      "created Prime container health does not match admission",
+      (inspection: Record<string, unknown>) =>
+        ((inspection.Config as Record<string, unknown>).Healthcheck = {
+          Test: ["CMD-SHELL", "private-health"],
+        }),
+    ],
+    [
+      "stop timeout",
+      "created Prime container stop timeout does not match admission",
+      (inspection: Record<string, unknown>) =>
+        ((inspection.Config as Record<string, unknown>).StopTimeout = 30),
+    ],
+  ])("reports the exact closed %s configuration failure", async (_name, message, mutate) => {
+    const fixture = engineFixture();
+    const changed = structuredClone(fixture.inspection);
+    mutate(changed);
+    vi.mocked(fixture.api.inspectContainer).mockResolvedValueOnce(changed);
+    const engine = new LocalDockerPrimeOciEngine(fixture.options);
+
+    const error = await engine.create(fixture.intent).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(message);
+    expect(fixture.api.startContainer).not.toHaveBeenCalled();
+  });
+
   it("recovers only the exact intent name and durable labels", async () => {
     const fixture = engineFixture();
     const engine = new LocalDockerPrimeOciEngine(fixture.options);
@@ -368,6 +459,8 @@ function inspectionFor(
       Domainname: "",
       User: `${policy.supervisorUid}:${policy.sharedGid}`,
       WorkingDir: "/workspace",
+      Entrypoint: ["/opt/flow/bin/flow-prime-supervisor"],
+      Cmd: null,
       Env: [
         "PRIME_AGENT_KERNEL_FORKSERVER=0",
         "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",

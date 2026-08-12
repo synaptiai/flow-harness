@@ -222,6 +222,8 @@ export class LocalDockerPrimeOciEngine implements PrimeOciEngine {
       Domainname: "",
       User: `${policy.supervisorUid}:${policy.sharedGid}`,
       WorkingDir: "/workspace",
+      Entrypoint: ["/opt/flow/bin/flow-prime-supervisor"],
+      Cmd: null,
       Env: [...PRIME_OCI_ENVIRONMENT],
       Labels: dockerLabels(intent),
       OpenStdin: true,
@@ -309,7 +311,61 @@ export class LocalDockerPrimeOciEngine implements PrimeOciEngine {
     if (!isDeepStrictEqual(actualConfig.Env, expectedConfig.Env)) {
       throw new Error("created Prime container environment does not match admission");
     }
-    if (!isDeepStrictEqual(omitKeys(actualConfig, ["Env"]), omitKeys(expectedConfig, ["Env"]))) {
+    const configGroups = [
+      {
+        keys: ["Image"] as const,
+        message: "created Prime container image reference does not match admission",
+      },
+      {
+        keys: ["Hostname", "Domainname"] as const,
+        message: "created Prime container host identity does not match admission",
+      },
+      {
+        keys: ["User", "WorkingDir"] as const,
+        message: "created Prime container execution identity does not match admission",
+      },
+      {
+        keys: ["Labels"] as const,
+        message: "created Prime container labels do not match admission",
+      },
+      {
+        keys: ["OpenStdin", "StdinOnce", "AttachStdin", "AttachStdout", "AttachStderr"] as const,
+        message: "created Prime container streams do not match admission",
+      },
+      {
+        keys: ["Tty"] as const,
+        message: "created Prime container terminal does not match admission",
+      },
+      {
+        keys: ["Entrypoint", "Cmd"] as const,
+        message: "created Prime container process command does not match admission",
+      },
+      {
+        keys: ["Healthcheck"] as const,
+        message: "created Prime container health does not match admission",
+      },
+      {
+        keys: ["StopTimeout"] as const,
+        message: "created Prime container stop timeout does not match admission",
+      },
+    ];
+    for (const group of configGroups) {
+      if (
+        !isDeepStrictEqual(
+          selectKeys(actualConfig, group.keys),
+          selectKeys(expectedConfig, group.keys),
+        )
+      ) {
+        throw new Error(group.message);
+      }
+    }
+    const comparedConfigKeys = ["Env", ...configGroups.flatMap((group) => group.keys)];
+    if (
+      !isDeepStrictEqual(
+        omitKeys(actualConfig, comparedConfigKeys),
+        omitKeys(expectedConfig, comparedConfigKeys),
+      )
+    ) {
       throw new Error("created Prime container configuration does not match admission");
     }
 
@@ -362,6 +418,8 @@ function selectConfig(configuration: Record<string, unknown>): Record<string, un
     Domainname: configuration.Domainname,
     User: configuration.User,
     WorkingDir: configuration.WorkingDir,
+    Entrypoint: configuration.Entrypoint,
+    Cmd: configuration.Cmd,
     Env: configuration.Env,
     Labels: configuration.Labels,
     OpenStdin: configuration.OpenStdin,
