@@ -6,6 +6,44 @@ import { PrimeDockerCommandAbortError } from "../../../../src/infrastructure/oci
 import { LocalPrimeOciRuntimeInspector } from "../../../../src/infrastructure/oci/local-prime-oci-runtime-inspector.js";
 
 describe("local Prime OCI runtime inspector", () => {
+  it("uses one coherent Docker snapshot for local and identity inspection", async () => {
+    const events: string[] = [];
+    const inspector = new LocalPrimeOciRuntimeInspector({
+      run: async (args) => {
+        const command = args[0];
+        if (command !== "version" && command !== "info") {
+          throw new Error("unexpected Docker inspection command");
+        }
+        events.push(command);
+        return command === "version" ? versionOutput() : infoOutput("systemd");
+      },
+      local: async (snapshot) => {
+        events.push("local");
+        expect(snapshot.version.Server.ApiVersion).toBe("1.51");
+        expect(snapshot.information.ID).toBe("daemon-private-id");
+        expect(Object.isFrozen(snapshot)).toBe(true);
+        expect(Object.isFrozen(snapshot.version.Server)).toBe(true);
+        expect(Object.isFrozen(snapshot.version.Server.Components)).toBe(true);
+        const firstComponent = snapshot.version.Server.Components[0];
+        expect(firstComponent).toBeDefined();
+        expect(Object.isFrozen(firstComponent)).toBe(true);
+        expect(() => {
+          if (firstComponent === undefined) {
+            throw new Error("the Docker version fixture omits its first component");
+          }
+          firstComponent.Version = "99.99.99";
+        }).toThrow(TypeError);
+        return localObservation({ defaultAction: "SCMP_ACT_ERRNO", syscalls: [] });
+      },
+      expectedExecutables: expectedExecutables(),
+    });
+
+    await expect(inspector.inspect()).resolves.toMatchObject({
+      runtime: { engine: { containerdVersion: "1.7.27" } },
+    });
+    expect(events).toEqual(["version", "info", "local"]);
+  });
+
   it("preserves only the owned Docker cancellation reason", async () => {
     const controller = new AbortController();
     const cancellation = new Error("operator cancelled runtime inspection");
@@ -43,14 +81,14 @@ describe("local Prime OCI runtime inspector", () => {
     });
 
     await expect(inspector.inspect()).rejects.toMatchObject({
-      stage: "query Docker version",
+      stage: "query Docker identity version",
       cause: distinctFailure,
     });
   });
 
   it.each([
-    ["version", "query Docker version", "private Docker version query failure"],
-    ["info", "query Docker information", "private Docker information query failure"],
+    ["version", "query Docker identity version", "private Docker version query failure"],
+    ["info", "query Docker identity information", "private Docker information query failure"],
   ] as const)(
     "separates a Docker %s query failure from response decoding",
     async (command, stage, privateMessage) => {
@@ -73,8 +111,8 @@ describe("local Prime OCI runtime inspector", () => {
   );
 
   it.each([
-    ["version", "decode Docker version response", "private-version-response"],
-    ["info", "decode Docker information response", "private-information-response"],
+    ["version", "parse Docker identity version response", "private-version-response"],
+    ["info", "parse Docker identity information response", "private-information-response"],
   ] as const)(
     "separates a malformed Docker %s response from its successful query",
     async (command, stage, privateResponse) => {
@@ -92,6 +130,60 @@ describe("local Prime OCI runtime inspector", () => {
       const inspection = inspector.inspect();
       await expect(inspection).rejects.toMatchObject({ stage, cause: expect.any(Error) });
       await expect(inspection).rejects.not.toThrow(privateResponse);
+    },
+  );
+
+  it.each([
+    ["version", "validate Docker identity version response schema"],
+    ["info", "validate Docker identity information response schema"],
+  ] as const)("separates a Docker %s schema failure from JSON parsing", async (command, stage) => {
+    const inspector = new LocalPrimeOciRuntimeInspector({
+      run: async (args) => {
+        if (args[0] === command) {
+          return '{"private":"schema-canary"}';
+        }
+        return args[0] === "version" ? versionOutput() : infoOutput("systemd");
+      },
+      local: async () => localObservation({ defaultAction: "SCMP_ACT_ERRNO", syscalls: [] }),
+      expectedExecutables: expectedExecutables(),
+    });
+
+    const inspection = inspector.inspect();
+    await expect(inspection).rejects.toMatchObject({ stage, cause: expect.any(Error) });
+    await expect(inspection).rejects.not.toThrow(/schema-canary|private/);
+  });
+
+  it.each([
+    ["version", "bound Docker identity version response"],
+    ["info", "bound Docker identity information response"],
+  ] as const)("separates a Docker %s byte-bound failure", async (command, stage) => {
+    const inspector = new LocalPrimeOciRuntimeInspector({
+      run: async (args) => {
+        if (args[0] === command) {
+          return "x".repeat(1_048_577);
+        }
+        return args[0] === "version" ? versionOutput() : infoOutput("systemd");
+      },
+      local: async () => localObservation({ defaultAction: "SCMP_ACT_ERRNO", syscalls: [] }),
+      expectedExecutables: expectedExecutables(),
+    });
+
+    await expect(inspector.inspect()).rejects.toMatchObject({ stage, cause: expect.any(Error) });
+  });
+
+  it.each(["version", "info"] as const)(
+    "accepts a valid Docker %s response at the exact byte limit",
+    async (command) => {
+      const inspector = new LocalPrimeOciRuntimeInspector({
+        run: async (args) => {
+          const source = args[0] === "version" ? versionOutput() : infoOutput("systemd");
+          return args[0] === command ? source.padEnd(1_048_576, " ") : source;
+        },
+        local: async () => localObservation({ defaultAction: "SCMP_ACT_ERRNO", syscalls: [] }),
+        expectedExecutables: expectedExecutables(),
+      });
+
+      await expect(inspector.inspect()).resolves.toBeDefined();
     },
   );
 
@@ -295,9 +387,9 @@ describe("local Prime OCI runtime inspector", () => {
     });
 
     await expect(inspector.inspect()).rejects.toMatchObject({
-      stage: "decode Docker information response",
+      stage: "validate Docker identity information response schema",
       cause: expect.objectContaining({
-        message: expect.stringMatching(/Docker information.*closed schema/i),
+        message: expect.stringMatching(/Docker identity information response.*closed schema/i),
       }),
     });
   });
@@ -365,6 +457,7 @@ function versionOutput(apiVersion = "1.51"): string {
 function infoOutput(cgroupDriver: string, runcPath = "/usr/bin/runc"): string {
   return JSON.stringify({
     ID: "daemon-private-id",
+    DockerRootDir: "/var/lib/docker",
     Driver: "overlay2",
     CgroupDriver: cgroupDriver,
     CgroupVersion: "2",

@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 
 import { describe, expect, it, vi } from "vitest";
 import {
   PrimeDockerCommandAbortError,
   PrimeImageBuildStageError,
 } from "../../../../src/infrastructure/oci/local-prime-image-builder.js";
+import type { PrimeDockerIdentitySnapshot } from "../../../../src/infrastructure/oci/local-prime-oci-runtime-inspector.js";
 import { LocalPrimeOciRuntimeInspector } from "../../../../src/infrastructure/oci/local-prime-oci-runtime-inspector.js";
 import {
   type PrimeOciInspectionStage,
@@ -17,6 +19,7 @@ import {
 import {
   createProductionPrimeOciPreparationDependencies,
   globalLeaseDirectoryRepairs,
+  inspectPrimeDockerBootstrapInformation,
   inspectPrimeOciBootstrapExecutables,
   inspectPrimeOciManagedRuntimeExecutables,
   observeLocalRuntime,
@@ -76,8 +79,6 @@ describe("Prime OCI runtime preparation", () => {
   });
 
   it.each([
-    "query Docker version",
-    "query Docker information",
     "inspect Docker socket",
     "inspect host core policy",
     "inspect host cgroup",
@@ -113,85 +114,113 @@ describe("Prime OCI runtime preparation", () => {
     expect(build).not.toHaveBeenCalled();
   });
 
-  it("binds malformed production Docker version evidence to its decode stage", async () => {
-    const privateResponse = "private malformed Docker version response";
+  it.each([
+    [
+      "query",
+      "query Docker bootstrap information",
+      async (): Promise<string> => {
+        throw new Error("private bootstrap query canary");
+      },
+    ],
+    [
+      "bound",
+      "bound Docker bootstrap information response",
+      async (): Promise<string> => "x".repeat(1_048_577),
+    ],
+    [
+      "parse",
+      "parse Docker bootstrap information response",
+      async (): Promise<string> => "private bootstrap parse canary",
+    ],
+    [
+      "schema",
+      "validate Docker bootstrap information response schema",
+      async (): Promise<string> => '{"private":"bootstrap-schema-canary"}',
+    ],
+  ] as const)("binds the Docker bootstrap %s failure stage", async (_name, stage, read) => {
+    const inspection = inspectPrimeDockerBootstrapInformation(read);
+
+    await expect(inspection).rejects.toMatchObject({ stage, cause: expect.any(Error) });
+    await expect(inspection).rejects.not.toThrow(/private|canary/);
+  });
+
+  it("accepts Docker bootstrap information at the exact byte limit", async () => {
+    const source = JSON.stringify({
+      ID: "daemon-test-id",
+      DockerRootDir: "/var/lib/docker",
+      OSType: "linux",
+      Architecture: "x86_64",
+      DefaultRuntime: "flow-prime-runc",
+      Runtimes: { "flow-prime-runc": { path: "/usr/bin/runc", runtimeArgs: [] } },
+    });
+
+    await expect(
+      inspectPrimeDockerBootstrapInformation(async () => source.padEnd(1_048_576, " ")),
+    ).resolves.toMatchObject({ ID: "daemon-test-id" });
+  });
+
+  it("routes the production bootstrap through the staged information helper", async () => {
+    const source = await readFile(
+      new URL(
+        "../../../../src/infrastructure/oci/production-prime-oci-preparation.ts",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+
+    expect(source).toMatch(
+      /const runtimeInfo = await inspectPrimeDockerBootstrapInformation\(\s*\(\) => run\(\["info", "--format", "\{\{json \.\}\}"\]\),\s*input\.signal,\s*\);/,
+    );
+  });
+
+  it("preserves exact cancellation from the production bootstrap query", async () => {
+    const controller = new AbortController();
+    const cancellation = new Error("operator cancelled bootstrap information");
+    const inspection = inspectPrimeDockerBootstrapInformation(async () => {
+      controller.abort(cancellation);
+      return "completed after cancellation";
+    }, controller.signal);
+
+    await expect(inspection).rejects.toBe(cancellation);
+  });
+
+  it("uses the bootstrap daemon anchor with the validated Docker snapshot", async () => {
     const operations = localRuntimeObservationOperations();
     const prepareGlobalLeaseRoot = vi.fn(operations.prepareGlobalLeaseRoot);
     const inspectImageBackingDevice = vi.fn(operations.inspectImageBackingDevice);
-    const inspectRuntimeExecutables = vi.fn(operations.inspectRuntimeExecutables);
 
-    const inspection = observeLocalRuntime(localRuntimeObservationInput(), {
-      ...operations,
-      readDockerVersion: async () => privateResponse,
-      prepareGlobalLeaseRoot,
-      inspectImageBackingDevice,
-      inspectRuntimeExecutables,
+    await expect(
+      observeLocalRuntime(
+        { ...localRuntimeObservationInput(), daemonId: "bootstrap-daemon-id" },
+        { ...operations, prepareGlobalLeaseRoot, inspectImageBackingDevice },
+      ),
+    ).resolves.toMatchObject({
+      daemonId: "bootstrap-daemon-id",
+      apiVersion: "1.51",
     });
+    expect(prepareGlobalLeaseRoot).toHaveBeenCalledWith("bootstrap-daemon-id", 999);
+    expect(inspectImageBackingDevice).toHaveBeenCalledWith("/var/lib/docker");
+  });
 
-    await expect(inspection).rejects.toMatchObject({
-      stage: "decode Docker version response",
-      cause: expect.any(Error),
-    });
-    await expect(inspection).rejects.not.toThrow(privateResponse);
+  it("preserves exact cancellation from local host observation", async () => {
+    const controller = new AbortController();
+    const cancellation = new Error("operator cancelled local host observation");
+    const operations = localRuntimeObservationOperations();
+    const prepareGlobalLeaseRoot = vi.fn(operations.prepareGlobalLeaseRoot);
+    const inspection = observeLocalRuntime(
+      { ...localRuntimeObservationInput(), signal: controller.signal },
+      {
+        ...operations,
+        inspectDockerSocket: async () => {
+          controller.abort(cancellation);
+          return operations.inspectDockerSocket();
+        },
+        prepareGlobalLeaseRoot,
+      },
+    );
+
+    await expect(inspection).rejects.toBe(cancellation);
     expect(prepareGlobalLeaseRoot).not.toHaveBeenCalled();
-    expect(inspectImageBackingDevice).not.toHaveBeenCalled();
-    expect(inspectRuntimeExecutables).not.toHaveBeenCalled();
-  });
-
-  it("accepts bounded non-selected Docker runtime metadata", async () => {
-    const operations = localRuntimeObservationOperations();
-
-    await expect(
-      observeLocalRuntime(localRuntimeObservationInput(), {
-        ...operations,
-        readDockerInformation: async () =>
-          JSON.stringify({
-            ID: "daemon-test-id",
-            DockerRootDir: "/var/lib/docker",
-            OSType: "linux",
-            Architecture: "x86_64",
-            DefaultRuntime: "flow-prime-runc",
-            Runtimes: {
-              "flow-prime-runc": { path: "/usr/bin/runc", runtimeArgs: [] },
-              "io.containerd.runc.v2": { runtimeType: "io.containerd.runc.v2" },
-              runc: { path: "runc", runtimeArgs: ["--debug"] },
-            },
-          }),
-        inspectRuntimeExecutables: async () => ({
-          docker: { path: "/usr/bin/docker", sha256: "a".repeat(64) },
-          dockerd: { path: "/usr/bin/dockerd", sha256: "d".repeat(64) },
-          containerd: { path: "/usr/bin/containerd", sha256: "b".repeat(64) },
-          runc: { path: "/usr/bin/runc", sha256: "c".repeat(64) },
-        }),
-      }),
-    ).resolves.toMatchObject({ daemonId: "daemon-test-id" });
-  });
-
-  it("rejects a selected Prime runtime without its absolute executable path", async () => {
-    const operations = localRuntimeObservationOperations();
-    const inspectRuntimeExecutables = vi.fn(operations.inspectRuntimeExecutables);
-
-    await expect(
-      observeLocalRuntime(localRuntimeObservationInput(), {
-        ...operations,
-        readDockerInformation: async () =>
-          JSON.stringify({
-            ID: "daemon-test-id",
-            DockerRootDir: "/var/lib/docker",
-            OSType: "linux",
-            Architecture: "x86_64",
-            DefaultRuntime: "flow-prime-runc",
-            Runtimes: {
-              "flow-prime-runc": { runtimeType: "io.containerd.runc.v2", runtimeArgs: [] },
-            },
-          }),
-        inspectRuntimeExecutables,
-      }),
-    ).rejects.toMatchObject({
-      stage: "decode Docker information response",
-      cause: expect.objectContaining({ message: expect.stringMatching(/closed schema/i) }),
-    });
-    expect(inspectRuntimeExecutables).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -220,9 +249,28 @@ describe("Prime OCI runtime preparation", () => {
     },
   );
 
-  it("repeats authoritative inspection after both clean builds", async () => {
+  it("uses one Docker snapshot before and after both clean builds", async () => {
     const events: string[] = [];
     let inspectionNumber = 0;
+    const inspector = new LocalPrimeOciRuntimeInspector({
+      run: async (args) => {
+        const command = args[0];
+        if (command !== "version" && command !== "info") {
+          throw new Error("unexpected Docker inspection command");
+        }
+        events.push(`${inspectionNumber === 0 ? "preflight" : "authoritative"} ${command}`);
+        return command === "version"
+          ? runtimeInspectorVersionOutput()
+          : runtimeInspectorInfoOutput();
+      },
+      local: async () => {
+        inspectionNumber += 1;
+        events.push(inspectionNumber === 1 ? "preflight local" : "authoritative local");
+        const inspected = runtimeInspection();
+        return { daemonId: inspected.daemonId, ...inspected.local };
+      },
+      expectedExecutables: runtimeInspection().local.executables,
+    });
 
     await preparePrimeOciRuntime(
       { descriptorPath: "/project/.flow/runtime/prime-agent/oci-attestation.json" },
@@ -233,13 +281,7 @@ describe("Prime OCI runtime preparation", () => {
             return preparedBuild();
           },
         },
-        inspector: {
-          inspect: async () => {
-            inspectionNumber += 1;
-            events.push(inspectionNumber === 1 ? "preflight" : "authoritative inspection");
-            return runtimeInspection();
-          },
-        },
+        inspector,
         signal: undefined,
         publish: async () => {
           events.push("publish");
@@ -248,10 +290,14 @@ describe("Prime OCI runtime preparation", () => {
     );
 
     expect(events).toEqual([
-      "preflight",
+      "preflight version",
+      "preflight info",
+      "preflight local",
       "build 1",
       "build 2",
-      "authoritative inspection",
+      "authoritative version",
+      "authoritative info",
+      "authoritative local",
       "publish",
     ]);
   });
@@ -361,7 +407,7 @@ describe("Prime OCI runtime preparation", () => {
       {
         preflightRuntime: () =>
           withPrimeOciInspectionStage(
-            "query Docker version",
+            "query Docker identity version",
             async () => {
               controller.abort(cancellation);
               throw new PrimeDockerCommandAbortError(cancellation);
@@ -383,7 +429,7 @@ describe("Prime OCI runtime preparation", () => {
     const nextMutation = vi.fn();
 
     const inspection = withPrimeOciInspectionStage(
-      "query Docker version",
+      "query Docker identity version",
       async () => {
         controller.abort(cancellation);
         return "completed after cancellation";
@@ -915,9 +961,8 @@ function localRuntimeObservationInput(): Parameters<typeof observeLocalRuntime>[
   return {
     packageRoot: "/package",
     dockerExecutable: "/usr/bin/docker",
-    run: async () => {
-      throw new Error("the injected observation operation must handle Docker reads");
-    },
+    snapshot: dockerIdentitySnapshot(),
+    daemonId: "daemon-test-id",
     signal: undefined,
   };
 }
@@ -936,20 +981,6 @@ function localRuntimeObservationOperations(
     return value;
   };
   return {
-    readDockerVersion: async () =>
-      observe("query Docker version", JSON.stringify({ Server: { ApiVersion: "1.51" } })),
-    readDockerInformation: async () =>
-      observe(
-        "query Docker information",
-        JSON.stringify({
-          ID: "daemon-test-id",
-          DockerRootDir: "/var/lib/docker",
-          OSType: "linux",
-          Architecture: "x86_64",
-          DefaultRuntime: "flow-prime-runc",
-          Runtimes: { "flow-prime-runc": { path: "/usr/bin/runc", runtimeArgs: [] } },
-        }),
-      ),
     inspectDockerSocket: async () =>
       observe("inspect Docker socket", {
         device: 1,
@@ -1001,6 +1032,7 @@ function runtimeInspectorVersionOutput(): string {
 function runtimeInspectorInfoOutput(): string {
   return JSON.stringify({
     ID: "daemon-test-id",
+    DockerRootDir: "/var/lib/docker",
     Driver: "overlay2",
     CgroupDriver: "systemd",
     CgroupVersion: "2",
@@ -1014,6 +1046,15 @@ function runtimeInspectorInfoOutput(): string {
     Runtimes: { "flow-prime-runc": { path: "/usr/bin/runc", runtimeArgs: [] } },
     Rootless: false,
   });
+}
+
+function dockerIdentitySnapshot(): PrimeDockerIdentitySnapshot {
+  return {
+    version: JSON.parse(runtimeInspectorVersionOutput()) as PrimeDockerIdentitySnapshot["version"],
+    information: JSON.parse(
+      runtimeInspectorInfoOutput(),
+    ) as PrimeDockerIdentitySnapshot["information"],
+  };
 }
 
 function preparedBuild() {

@@ -32,10 +32,16 @@ import {
   type PrimeOciSocketIdentity,
   publishLocalPrimeOciAttestation,
 } from "./local-prime-oci-attestation.js";
-import { LocalPrimeOciRuntimeInspector } from "./local-prime-oci-runtime-inspector.js";
 import {
+  LocalPrimeOciRuntimeInspector,
+  type PrimeDockerIdentitySnapshot,
+} from "./local-prime-oci-runtime-inspector.js";
+import {
+  boundPrimeDockerResponse,
+  parsePrimeDockerJsonResponse,
   primeDockerRuntimeMapSchema,
   selectedPrimeDockerRuntime,
+  validatePrimeDockerResponse,
 } from "./prime-docker-runtime-metadata.js";
 import { resolvePrimeImageDevice } from "./prime-oci-image-device.js";
 import { PRIME_OCI_RUNTIME_NAME } from "./prime-oci-policy.js";
@@ -52,14 +58,8 @@ import { resolveDockerManagedRuntimeExecutables } from "./prime-oci-runtime-exec
 
 const DOCKER_SOCKET = "/var/run/docker.sock" as const;
 const MAX_EXECUTABLE_BYTES = 268_435_456;
-const MAX_COMMAND_OUTPUT_BYTES = 1_048_576;
 const PREPARATION_CLEANUP_MS = 30_000;
 const MAX_ATTESTATION_BYTES = 1_048_576;
-const dockerVersionSchema = z
-  .object({
-    Server: z.object({ ApiVersion: z.string().regex(/^\d+\.\d+$/) }).passthrough(),
-  })
-  .passthrough();
 const dockerInfoSchema = z
   .object({
     ID: z.string().min(1).max(256),
@@ -106,18 +106,8 @@ export async function prepareProductionPrimeOciRuntime(input: {
       throwIfAborted(input.signal);
       const run = (args: readonly string[]) =>
         runLocalDockerCommand(dockerExecutable, args, environmentRoot, input.signal);
-      const runtimeInfo = await withPrimeOciInspectionStage(
-        "decode Docker information response",
-        async () =>
-          parseJson(
-            dockerInfoSchema,
-            await withPrimeOciInspectionStage(
-              "query Docker information",
-              () => run(["info", "--format", "{{json .}}"]),
-              input.signal,
-            ),
-            "Docker information",
-          ),
+      const runtimeInfo = await inspectPrimeDockerBootstrapInformation(
+        () => run(["info", "--format", "{{json .}}"]),
         input.signal,
       );
       const runtimeExecutables = await inspectPrimeOciManagedRuntimeExecutables(
@@ -154,11 +144,12 @@ export async function prepareProductionPrimeOciRuntime(input: {
       });
       const inspector = new LocalPrimeOciRuntimeInspector({
         run,
-        local: () =>
+        local: (snapshot) =>
           observeLocalRuntime({
             packageRoot,
             dockerExecutable,
-            run,
+            snapshot,
+            daemonId: runtimeInfo.ID,
             signal: input.signal,
           }),
         expectedExecutables: runtimeExecutables,
@@ -188,6 +179,37 @@ export async function prepareProductionPrimeOciRuntime(input: {
       return result;
     },
     () => rm(createdEnvironmentRoot, { recursive: true, force: true }),
+  );
+}
+
+export async function inspectPrimeDockerBootstrapInformation(
+  read: () => Promise<string>,
+  signal?: AbortSignal,
+): Promise<z.output<typeof dockerInfoSchema>> {
+  const source = await withPrimeOciInspectionStage(
+    "query Docker bootstrap information",
+    read,
+    signal,
+  );
+  const bounded = await withPrimeOciInspectionStage(
+    "bound Docker bootstrap information response",
+    async () => boundPrimeDockerResponse(source, "Docker bootstrap information response"),
+    signal,
+  );
+  const parsed = await withPrimeOciInspectionStage(
+    "parse Docker bootstrap information response",
+    async () => parsePrimeDockerJsonResponse(bounded, "Docker bootstrap information response"),
+    signal,
+  );
+  return withPrimeOciInspectionStage(
+    "validate Docker bootstrap information response schema",
+    async () =>
+      validatePrimeDockerResponse(
+        dockerInfoSchema,
+        parsed,
+        "Docker bootstrap information response",
+      ),
+    signal,
   );
 }
 
@@ -281,15 +303,12 @@ function isNodeError(error: unknown): error is NodeJS.ErrnoException {
 export interface PrimeOciLocalRuntimeObservationInput {
   readonly packageRoot: string;
   readonly dockerExecutable: string;
-  readonly run: (args: readonly string[]) => Promise<string>;
+  readonly snapshot: PrimeDockerIdentitySnapshot;
+  readonly daemonId: string;
   readonly signal: AbortSignal | undefined;
 }
 
 export interface PrimeOciLocalRuntimeObservationOperations {
-  readonly readDockerVersion: (run: PrimeOciLocalRuntimeObservationInput["run"]) => Promise<string>;
-  readonly readDockerInformation: (
-    run: PrimeOciLocalRuntimeObservationInput["run"],
-  ) => Promise<string>;
   readonly inspectDockerSocket: () => Promise<PrimeOciSocketIdentity>;
   readonly inspectHostCorePolicy: () => Promise<string>;
   readonly inspectHostCgroup: () => Promise<string>;
@@ -308,10 +327,6 @@ export interface PrimeOciLocalRuntimeObservationOperations {
 
 const productionLocalRuntimeObservationOperations: PrimeOciLocalRuntimeObservationOperations =
   Object.freeze({
-    readDockerVersion: (run: PrimeOciLocalRuntimeObservationInput["run"]) =>
-      run(["version", "--format", "{{json .}}"]),
-    readDockerInformation: (run: PrimeOciLocalRuntimeObservationInput["run"]) =>
-      run(["info", "--format", "{{json .}}"]),
     inspectDockerSocket: inspectDockerSocket,
     inspectHostCorePolicy: () =>
       readBoundedText("/proc/sys/kernel/core_pattern", 4_096, "host core pattern"),
@@ -332,40 +347,22 @@ export async function observeLocalRuntime(
   throwIfAborted(input.signal);
   const inspectStage = <T>(stage: PrimeOciInspectionStage, operation: () => Promise<T>) =>
     withPrimeOciInspectionStage(stage, operation, input.signal);
-  const [version, info, socket, corePattern, cgroupPath, seccompProfile] =
-    await settlePrimeOciInspectionStages(
-      [
-        inspectStage("decode Docker version response", async () =>
-          parseJson(
-            dockerVersionSchema,
-            await inspectStage("query Docker version", () =>
-              operations.readDockerVersion(input.run),
-            ),
-            "Docker version",
-          ),
-        ),
-        inspectStage("decode Docker information response", async () =>
-          parseJson(
-            dockerInfoSchema,
-            await inspectStage("query Docker information", () =>
-              operations.readDockerInformation(input.run),
-            ),
-            "Docker information",
-          ),
-        ),
-        inspectStage("inspect Docker socket", () => operations.inspectDockerSocket()),
-        inspectStage("inspect host core policy", () => operations.inspectHostCorePolicy()),
-        inspectStage("inspect host cgroup", () => operations.inspectHostCgroup()),
-        inspectStage("inspect seccomp policy", () =>
-          operations.inspectSeccompPolicy(input.packageRoot),
-        ),
-      ],
-      input.signal,
-    );
+  const info = input.snapshot.information;
+  const [socket, corePattern, cgroupPath, seccompProfile] = await settlePrimeOciInspectionStages(
+    [
+      inspectStage("inspect Docker socket", () => operations.inspectDockerSocket()),
+      inspectStage("inspect host core policy", () => operations.inspectHostCorePolicy()),
+      inspectStage("inspect host cgroup", () => operations.inspectHostCgroup()),
+      inspectStage("inspect seccomp policy", () =>
+        operations.inspectSeccompPolicy(input.packageRoot),
+      ),
+    ],
+    input.signal,
+  );
   const [globalLeasePath, imageDevice, executables] = await settlePrimeOciInspectionStages(
     [
       inspectStage("prepare global lease root", () =>
-        operations.prepareGlobalLeaseRoot(info.ID, socket.gid),
+        operations.prepareGlobalLeaseRoot(input.daemonId, socket.gid),
       ),
       inspectStage("inspect image backing device", () =>
         operations.inspectImageBackingDevice(info.DockerRootDir),
@@ -378,10 +375,10 @@ export async function observeLocalRuntime(
     input.signal,
   );
   return Object.freeze({
-    daemonId: info.ID,
+    daemonId: input.daemonId,
     socketPath: DOCKER_SOCKET,
     socket,
-    apiVersion: version.Server.ApiVersion,
+    apiVersion: input.snapshot.version.Server.ApiVersion,
     cgroupPath,
     corePattern: corePattern.trim(),
     globalLeasePath,
@@ -647,17 +644,6 @@ async function readBoundedText(path: string, maxBytes: number, label: string): P
   } catch (error) {
     throw new Error(`${label} is not valid UTF-8`, { cause: error });
   }
-}
-
-function parseJson<Schema extends z.ZodType>(schema: Schema, source: string, label: string) {
-  if (Buffer.byteLength(source, "utf8") > MAX_COMMAND_OUTPUT_BYTES) {
-    throw new Error(`${label} exceeds its byte limit`);
-  }
-  const parsed = schema.safeParse(JSON.parse(source));
-  if (!parsed.success) {
-    throw new Error(`${label} violates the closed schema`, { cause: parsed.error });
-  }
-  return parsed.data;
 }
 
 function assertSameFile(before: BigIntStats, after: BigIntStats, label: string): void {

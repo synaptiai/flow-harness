@@ -9,6 +9,11 @@ import type { PrimeExternalHarnessIdentity } from "../../domain/evaluation/exter
 import { DockerUnixApiClient } from "./docker-unix-api-client.js";
 import type { PrimeOciLocalRuntimeAttestation } from "./local-prime-oci-attestation.js";
 import { LocalPrimeOciRuntimeInspector } from "./local-prime-oci-runtime-inspector.js";
+import {
+  boundPrimeDockerResponse,
+  parsePrimeDockerJsonResponse,
+  validatePrimeDockerResponse,
+} from "./prime-docker-runtime-metadata.js";
 import { resolvePrimeImageDevice } from "./prime-oci-image-device.js";
 import { withPrimeOciInspectionStage } from "./prime-oci-preparation.js";
 import {
@@ -21,6 +26,27 @@ const MAX_CORE_PATTERN_BYTES = 4_096;
 const CURRENT_CGROUP_PATH = "/proc/self/cgroup";
 const MAX_CGROUP_MEMBERSHIP_BYTES = 65_536;
 const currentInfoSchema = z.object({ DockerRootDir: z.string().min(1).max(4_095) }).passthrough();
+const engineVersionComponentSchema = z
+  .object({
+    Name: z.string().min(1).max(64),
+    Version: z.string().min(1).max(64),
+    Details: z
+      .object({ GitCommit: z.string().min(1).max(128).optional() })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
+const engineVersionSchema = z
+  .object({
+    Version: z.string().min(1).max(64),
+    GitCommit: z.string().min(1).max(128),
+    ApiVersion: z.string().regex(/^\d+\.\d+$/),
+    Os: z.literal("linux"),
+    Arch: z.enum(["amd64", "x86_64"]),
+    KernelVersion: z.string().min(1).max(128),
+    Components: z.array(engineVersionComponentSchema).max(32),
+  })
+  .passthrough();
 
 export interface PrimeOciCurrentStateClient {
   readVersion(signal?: AbortSignal): Promise<string>;
@@ -54,7 +80,12 @@ export async function assertPrimeOciRuntimeCurrent(input: {
         throw new Error("Prime OCI currentness received an unsupported Docker observation");
       }
       if (args[0] === "version") {
-        return client.readVersion(input.signal);
+        return adaptPrimeDockerEngineVersionResponse(
+          await client.readVersion(input.signal),
+          input.runtime.client.version,
+          input.local.apiVersion,
+          input.signal,
+        );
       }
       if (args[0] === "info") {
         observedInfoSource ??= await client.readInfo(input.signal);
@@ -114,6 +145,53 @@ export async function assertPrimeOciRuntimeCurrent(input: {
   if (corePattern.trim() !== input.local.corePattern) {
     throw new Error("Prime OCI host core policy changed after admission");
   }
+}
+
+async function adaptPrimeDockerEngineVersionResponse(
+  source: string,
+  clientVersion: string,
+  clientApiVersion: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const bounded = await withPrimeOciInspectionStage(
+    "bound Docker Engine version response",
+    async () => boundPrimeDockerResponse(source, "Docker Engine version response"),
+    signal,
+  );
+  const input = await withPrimeOciInspectionStage(
+    "parse Docker Engine version response",
+    async () => parsePrimeDockerJsonResponse(bounded, "Docker Engine version response"),
+    signal,
+  );
+  const server = await withPrimeOciInspectionStage(
+    "validate Docker Engine version response schema",
+    async () =>
+      validatePrimeDockerResponse(engineVersionSchema, input, "Docker Engine version response"),
+    signal,
+  );
+  return JSON.stringify({
+    Client: {
+      Version: clientVersion,
+      ApiVersion: clientApiVersion,
+      Os: "linux",
+      Arch: "amd64",
+    },
+    Server: {
+      Version: server.Version,
+      GitCommit: server.GitCommit,
+      ApiVersion: server.ApiVersion,
+      Os: server.Os,
+      Arch: server.Arch,
+      KernelVersion: server.KernelVersion,
+      Components: server.Components.map((component) => ({
+        Name: component.Name,
+        Version: component.Version,
+        ...(component.Details?.GitCommit === undefined
+          ? {}
+          : { Details: { GitCommit: component.Details.GitCommit } }),
+      })),
+    },
+  });
 }
 
 async function readCurrentCgroup(): Promise<string> {

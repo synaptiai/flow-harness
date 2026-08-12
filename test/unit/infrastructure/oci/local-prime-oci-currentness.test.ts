@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  DockerUnixApiClient,
+  type DockerUnixApiTransport,
+} from "../../../../src/infrastructure/oci/docker-unix-api-client.js";
+import {
   assertPrimeOciRuntimeCurrent,
   type PrimeOciCurrentStateClient,
 } from "../../../../src/infrastructure/oci/local-prime-oci-currentness.js";
@@ -14,20 +18,38 @@ describe("local Prime OCI currentness", () => {
     let imagePresent = true;
     let corePattern = "core";
     let serverCommit = "dockerd-commit";
+    let versionOverride: string | undefined;
     let cgroupPath = local.cgroupPath;
     let imageDevice = local.imageDevice;
     let imageInspections = 0;
-    const client: PrimeOciCurrentStateClient = {
-      readVersion: async () => versionSource(serverCommit),
-      readInfo: async () => info,
-      inspectImage: async (imageId) => {
-        imageInspections += 1;
-        return imagePresent ? { Id: imageId } : null;
+    const transport: DockerUnixApiTransport = {
+      request: async (request) => {
+        if (request.path === "/v1.51/version") {
+          return { statusCode: 200, body: versionOverride ?? engineVersionSource(serverCommit) };
+        }
+        if (request.path === "/v1.51/info") {
+          return { statusCode: 200, body: info };
+        }
+        if (request.path.startsWith("/v1.51/images/") && request.path.endsWith("/json")) {
+          imageInspections += 1;
+          return imagePresent
+            ? {
+                statusCode: 200,
+                body: JSON.stringify({ Id: primeExternalHarnessIdentity().image.id }),
+              }
+            : { statusCode: 404, body: "" };
+        }
+        throw new Error(`unexpected Docker API request: ${request.path}`);
       },
     };
+    const client = new DockerUnixApiClient({
+      socketPath: "/var/run/docker.sock",
+      apiVersion: "1.51",
+      transport,
+    });
     const runtime = (
       await new LocalPrimeOciRuntimeInspector({
-        run: async (args) => (args[0] === "version" ? versionSource(serverCommit) : info),
+        run: async (args) => (args[0] === "version" ? versionSource(serverCommit, "28.3.2") : info),
         local: async () => local,
         expectedExecutables: local.executables,
       }).inspect()
@@ -49,17 +71,42 @@ describe("local Prime OCI currentness", () => {
     await expect(assertPrimeOciRuntimeCurrent(input)).resolves.toBeUndefined();
     expect(imageInspections).toBe(1);
 
+    const exactVersion = JSON.parse(engineVersionSource(serverCommit)) as Record<string, unknown>;
+    exactVersion.PrivatePadding = "";
+    const exactBase = JSON.stringify(exactVersion);
+    exactVersion.PrivatePadding = "x".repeat(1_048_576 - Buffer.byteLength(exactBase));
+    versionOverride = JSON.stringify(exactVersion);
+    expect(Buffer.byteLength(versionOverride)).toBe(1_048_576);
+    await expect(assertPrimeOciRuntimeCurrent(input)).resolves.toBeUndefined();
+    expect(imageInspections).toBe(2);
+
+    for (const [source, stage] of [
+      ["x".repeat(1_048_577), "query Docker identity version"],
+      ["private malformed Engine version", "parse Docker Engine version response"],
+      [
+        '{"private":"Engine-version-schema-canary"}',
+        "validate Docker Engine version response schema",
+      ],
+    ] as const) {
+      versionOverride = source;
+      const currentness = assertPrimeOciRuntimeCurrent(input);
+      await expect(currentness).rejects.toMatchObject({ stage, cause: expect.any(Error) });
+      await expect(currentness).rejects.not.toThrow(/private|canary/);
+      expect(imageInspections).toBe(2);
+    }
+    versionOverride = undefined;
+
     for (const mutate of runtimeDriftMutations()) {
       const changedInfo = JSON.parse(infoSource("overlay2")) as Record<string, unknown>;
       mutate(changedInfo);
       info = JSON.stringify(changedInfo);
       await expect(assertPrimeOciRuntimeCurrent(input)).rejects.toMatchObject({
-        stage: "decode Docker information response",
+        stage: "validate Docker identity information response schema",
         cause: expect.objectContaining({
-          message: expect.stringMatching(/Docker information.*closed schema/i),
+          message: expect.stringMatching(/Docker identity information response.*closed schema/i),
         }),
       });
-      expect(imageInspections).toBe(1);
+      expect(imageInspections).toBe(2);
     }
     info = infoSource("overlay2");
 
@@ -132,6 +179,53 @@ describe("local Prime OCI currentness", () => {
     corePattern = "changed-core";
     await expect(assertPrimeOciRuntimeCurrent(input)).rejects.toThrow(/core.*changed/i);
   });
+
+  it("applies the Engine adapter bound after an injected current-state read", async () => {
+    const local = localObservation();
+    const runtime = (
+      await new LocalPrimeOciRuntimeInspector({
+        run: async (args) =>
+          args[0] === "version" ? versionSource("dockerd-commit") : infoSource("overlay2"),
+        local: async () => local,
+        expectedExecutables: local.executables,
+      }).inspect()
+    ).runtime;
+    let version = engineVersionAtBytes("dockerd-commit", 1_048_576);
+    let imageInspections = 0;
+    const client: PrimeOciCurrentStateClient = {
+      readVersion: async () => version,
+      readInfo: async () => infoSource("overlay2"),
+      inspectImage: async (imageId) => {
+        imageInspections += 1;
+        return { Id: imageId };
+      },
+    };
+    const input = {
+      runtime,
+      image: primeExternalHarnessIdentity().image,
+      local,
+      client,
+      readCorePattern: async () => local.corePattern,
+      readCurrentCgroup: async () => local.cgroupPath,
+      resolveImageDevice: async () => local.imageDevice,
+      resolveRuntimeExecutables: async () => ({
+        containerd: local.executables.containerd.path,
+        dockerd: local.executables.dockerd.path,
+      }),
+    };
+
+    await expect(assertPrimeOciRuntimeCurrent(input)).resolves.toBeUndefined();
+    expect(imageInspections).toBe(1);
+
+    version = engineVersionAtBytes("dockerd-commit", 1_048_577);
+    const currentness = assertPrimeOciRuntimeCurrent(input);
+    await expect(currentness).rejects.toMatchObject({
+      stage: "bound Docker Engine version response",
+      cause: expect.any(Error),
+    });
+    await expect(currentness).rejects.not.toThrow(/private-engine-bound-canary/);
+    expect(imageInspections).toBe(1);
+  });
 });
 
 function localObservation() {
@@ -156,9 +250,9 @@ function localObservation() {
   };
 }
 
-function versionSource(serverCommit: string): string {
+function versionSource(serverCommit: string, clientVersion = "28.3.3"): string {
   return JSON.stringify({
-    Client: { Version: "28.3.3", ApiVersion: "1.51", Os: "linux", Arch: "amd64" },
+    Client: { Version: clientVersion, ApiVersion: "1.51", Os: "linux", Arch: "amd64" },
     Server: {
       Version: "28.3.3",
       GitCommit: serverCommit,
@@ -176,6 +270,29 @@ function versionSource(serverCommit: string): string {
       ],
     },
   });
+}
+
+function engineVersionSource(serverCommit: string): string {
+  const source = JSON.parse(versionSource(serverCommit)) as {
+    readonly Server: Record<string, unknown>;
+  };
+  return JSON.stringify(source.Server);
+}
+
+function engineVersionAtBytes(serverCommit: string, bytes: number): string {
+  const source = JSON.parse(engineVersionSource(serverCommit)) as Record<string, unknown>;
+  source.PrivatePadding = "private-engine-bound-canary";
+  const base = JSON.stringify(source);
+  const padding = bytes - Buffer.byteLength(base);
+  if (padding < 0) {
+    throw new Error("the requested Engine version fixture is below its base size");
+  }
+  source.PrivatePadding = `${source.PrivatePadding}${"x".repeat(padding)}`;
+  const result = JSON.stringify(source);
+  if (Buffer.byteLength(result) !== bytes) {
+    throw new Error("the Engine version fixture has the wrong byte size");
+  }
+  return result;
 }
 
 function infoSource(driver: string): string {

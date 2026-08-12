@@ -6,8 +6,11 @@ import { z } from "zod";
 import { parsePrimeOciRuntimeIdentity } from "../../domain/evaluation/external-harness.js";
 import type { PrimeOciLocalRuntimeAttestation } from "./local-prime-oci-attestation.js";
 import {
+  boundPrimeDockerResponse,
+  parsePrimeDockerJsonResponse,
   primeDockerRuntimeMapSchema,
   selectedPrimeDockerRuntime,
+  validatePrimeDockerResponse,
 } from "./prime-docker-runtime-metadata.js";
 import { createPrimeOciRuntimePolicy, PRIME_OCI_RUNTIME_NAME } from "./prime-oci-policy.js";
 import {
@@ -61,6 +64,7 @@ const versionSchema = z
 const infoSchema = z
   .object({
     ID: z.string().min(1).max(256),
+    DockerRootDir: absolutePathSchema,
     Driver: z.string().min(1).max(64),
     CgroupDriver: z.string().min(1).max(64),
     CgroupVersion: z.union([z.literal(2), z.literal("2")]),
@@ -76,16 +80,25 @@ const infoSchema = z
   })
   .passthrough();
 
+export interface PrimeDockerIdentitySnapshot {
+  readonly version: z.output<typeof versionSchema>;
+  readonly information: z.output<typeof infoSchema>;
+}
+
 export interface LocalPrimeOciRuntimeInspectorOptions {
   readonly run: (args: readonly string[]) => Promise<string>;
-  readonly local: () => Promise<PrimeOciLocalRuntimeAttestation>;
+  readonly local: (
+    snapshot: PrimeDockerIdentitySnapshot,
+  ) => Promise<PrimeOciLocalRuntimeAttestation>;
   readonly expectedExecutables: PrimeOciLocalRuntimeAttestation["executables"];
   readonly signal?: AbortSignal;
 }
 
 export class LocalPrimeOciRuntimeInspector {
   readonly #expectedExecutables: PrimeOciLocalRuntimeAttestation["executables"];
-  readonly #local: () => Promise<PrimeOciLocalRuntimeAttestation>;
+  readonly #local: (
+    snapshot: PrimeDockerIdentitySnapshot,
+  ) => Promise<PrimeOciLocalRuntimeAttestation>;
   readonly #run: (args: readonly string[]) => Promise<string>;
   readonly #signal: AbortSignal | undefined;
 
@@ -97,34 +110,61 @@ export class LocalPrimeOciRuntimeInspector {
   }
 
   async inspect(): Promise<PrimeOciRuntimeInspection> {
-    const [versionSource, infoSource, local] = await settlePrimeOciInspectionStages(
+    const [versionSource, infoSource] = await settlePrimeOciInspectionStages(
       [
         withPrimeOciInspectionStage(
-          "query Docker version",
+          "query Docker identity version",
           () => this.#run(["version", "--format", "{{json .}}"]),
           this.#signal,
         ),
         withPrimeOciInspectionStage(
-          "query Docker information",
+          "query Docker identity information",
           () => this.#run(["info", "--format", "{{json .}}"]),
-          this.#signal,
-        ),
-        withPrimeOciInspectionStage(
-          "validate Docker runtime identity",
-          () => this.#local(),
           this.#signal,
         ),
       ],
       this.#signal,
     );
+    const boundedVersion = await withPrimeOciInspectionStage(
+      "bound Docker identity version response",
+      async () => boundPrimeDockerResponse(versionSource, "Docker identity version response"),
+      this.#signal,
+    );
+    const versionInput = await withPrimeOciInspectionStage(
+      "parse Docker identity version response",
+      async () => parsePrimeDockerJsonResponse(boundedVersion, "Docker identity version response"),
+      this.#signal,
+    );
     const version = await withPrimeOciInspectionStage(
-      "decode Docker version response",
-      async () => parseJson(versionSchema, versionSource, "Docker version"),
+      "validate Docker identity version response schema",
+      async () =>
+        validatePrimeDockerResponse(
+          versionSchema,
+          versionInput,
+          "Docker identity version response",
+        ),
+      this.#signal,
+    );
+    const boundedInfo = await withPrimeOciInspectionStage(
+      "bound Docker identity information response",
+      async () => boundPrimeDockerResponse(infoSource, "Docker identity information response"),
+      this.#signal,
+    );
+    const infoInput = await withPrimeOciInspectionStage(
+      "parse Docker identity information response",
+      async () => parsePrimeDockerJsonResponse(boundedInfo, "Docker identity information response"),
       this.#signal,
     );
     const info = await withPrimeOciInspectionStage(
-      "decode Docker information response",
-      async () => parseJson(infoSchema, infoSource, "Docker information"),
+      "validate Docker identity information response schema",
+      async () =>
+        validatePrimeDockerResponse(infoSchema, infoInput, "Docker identity information response"),
+      this.#signal,
+    );
+    const snapshot = deepFreeze({ version, information: info });
+    const local = await withPrimeOciInspectionStage(
+      "validate Docker runtime identity",
+      () => this.#local(snapshot),
       this.#signal,
     );
     await withPrimeOciInspectionStage(
@@ -245,25 +285,14 @@ export class LocalPrimeOciRuntimeInspector {
   }
 }
 
-function parseJson<Schema extends z.ZodType>(
-  schema: Schema,
-  source: string,
-  label: string,
-): z.output<Schema> {
-  if (Buffer.byteLength(source, "utf8") > 1_048_576) {
-    throw new Error(`${label} exceeds its byte limit`);
+function deepFreeze<Value>(value: Value): Value {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const child of Object.values(value)) {
+      deepFreeze(child);
+    }
+    Object.freeze(value);
   }
-  let input: unknown;
-  try {
-    input = JSON.parse(source);
-  } catch (error) {
-    throw new Error(`${label} is not JSON`, { cause: error });
-  }
-  const parsed = schema.safeParse(input);
-  if (!parsed.success) {
-    throw new Error(`${label} violates the closed schema`, { cause: parsed.error });
-  }
-  return parsed.data;
+  return value;
 }
 
 function normalizeExpectedExecutables(
