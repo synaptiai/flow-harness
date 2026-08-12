@@ -86,6 +86,9 @@ func run() error {
 		kernelResults,
 		supervisor.TerminatePythonProcesses,
 	)
+	if kernelError != nil {
+		kernelError = fmt.Errorf("settle Prime kernel service: %w", kernelError)
+	}
 	if driverError != nil {
 		driverError = fmt.Errorf("run Prime driver: %w", driverError)
 		if kernelError != nil {
@@ -98,10 +101,10 @@ func run() error {
 	}
 	exported, err := containerprotocol.CaptureWorkspace(workspacePath)
 	if err != nil {
-		return err
+		return fmt.Errorf("capture Prime workspace: %w", err)
 	}
 	if err := exported.WriteResultFrames(os.Stdout); err != nil {
-		return err
+		return fmt.Errorf("write Prime result: %w", err)
 	}
 	settlement, err := json.Marshal(map[string]any{
 		"exitCode":         driverResult.ExitCode,
@@ -113,7 +116,14 @@ func run() error {
 	if err != nil {
 		return errors.New("encode Prime settlement")
 	}
-	return containerprotocol.WriteFrame(os.Stdout, containerprotocol.FrameSettlement, settlement)
+	if err := containerprotocol.WriteFrame(
+		os.Stdout,
+		containerprotocol.FrameSettlement,
+		settlement,
+	); err != nil {
+		return fmt.Errorf("write Prime settlement: %w", err)
+	}
+	return nil
 }
 
 func settleKernelService(

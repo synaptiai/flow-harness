@@ -20,6 +20,8 @@ const processTestReady = `{"version":1,"sequence":1,"sessionId":"018f4ee8-9d67-7
 const processTestRequest = `{"version":1,"sequence":2,"sessionId":"018f4ee8-9d67-7ca1-a31f-4f3f2388e934","type":"inference_request","payload":{"requestId":"018f4ee8-9d67-7ca1-a31f-4f3f2388e935","body":"{}","bodySha256":"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"},"mac":"8f38868437b773127867237e0422a04973bad8bada371d3b847fd1fbf4eaf9e8"}`
 const processTestTerminal = `{"version":1,"sequence":2,"sessionId":"018f4ee8-9d67-7ca1-a31f-4f3f2388e934","type":"terminal","payload":{"harness":{"outcome":"completed","runId":"prime-test","reason":null},"metrics":{"costUsdMicros":null,"inputTokens":null,"cacheReadTokens":null,"cacheWriteTokens":null,"outputTokens":null,"turns":0,"toolCalls":0,"toolErrors":0,"wallTimeMs":0,"activeTimeMs":null,"interventions":null,"policyViolations":null,"recoveryAttempts":0,"recoveryOutcome":"not_attempted"}},"mac":"76895bab04b53254704d7a3d28dd4b95fb18c57f4d4cc33aa33fb41424ea0708"}`
 
+const processTestRelayCloseTimeout = 30 * time.Second
+
 func TestRunDriverProcessUsesPrivateProtocolAndHardeningDescriptors(t *testing.T) {
 	var output bytes.Buffer
 	result, err := RunDriverProcess(
@@ -468,7 +470,7 @@ func TestPrimeDriverHelperProcess(t *testing.T) {
 			}
 			fmt.Fprintln(os.Stderr, "Prime supervisor closed the relay channel incorrectly")
 			os.Exit(125)
-		case <-time.After(driverHardeningProofTimeout):
+		case <-time.After(processTestRelayCloseTimeout):
 			fmt.Fprintln(os.Stderr, "Prime supervisor did not close the completed relay channel")
 			os.Exit(125)
 		}

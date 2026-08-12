@@ -851,6 +851,24 @@ function primeContainerFailureMessage(stderr: Buffer, sawStdout: boolean): strin
     return "Prime driver process stalled with an unclassified private diagnostic";
   }
   if (
+    privateDiagnostic.startsWith(runDriverPrefix) &&
+    runDriverDiagnostic === "close prime driver relay channel"
+  ) {
+    return "Prime driver failed while closing its private relay channel";
+  }
+  if (privateDiagnostic.startsWith("settle prime kernel service: ")) {
+    return "Prime container failed while settling its kernel service";
+  }
+  if (privateDiagnostic.startsWith("capture prime workspace: ")) {
+    return "Prime container failed while capturing its result workspace";
+  }
+  if (privateDiagnostic.startsWith("write prime result: ")) {
+    return "Prime container failed while publishing its result";
+  }
+  if (privateDiagnostic.startsWith("write prime settlement: ")) {
+    return "Prime container failed while publishing its settlement";
+  }
+  if (
     startsWithAny(privateDiagnostic, [
       "prime supervisor must start",
       "set prime supervisor core limit:",

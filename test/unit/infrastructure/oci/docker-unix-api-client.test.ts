@@ -1326,6 +1326,26 @@ describe("Docker Unix API client", () => {
         "run Prime driver: Prime driver did not settle after its private channel closed with an unclassified diagnostic\n",
       publicMessage: "Prime driver process stalled with an unclassified private diagnostic",
     },
+    {
+      privateDiagnostic: "run Prime driver: close Prime driver relay channel\n",
+      publicMessage: "Prime driver failed while closing its private relay channel",
+    },
+    {
+      privateDiagnostic: "settle Prime kernel service: PRIVATE_KERNEL\n",
+      publicMessage: "Prime container failed while settling its kernel service",
+    },
+    {
+      privateDiagnostic: "capture Prime workspace: PRIVATE_WORKSPACE\n",
+      publicMessage: "Prime container failed while capturing its result workspace",
+    },
+    {
+      privateDiagnostic: "write Prime result: PRIVATE_RESULT\n",
+      publicMessage: "Prime container failed while publishing its result",
+    },
+    {
+      privateDiagnostic: "write Prime settlement: PRIVATE_SETTLEMENT\n",
+      publicMessage: "Prime container failed while publishing its settlement",
+    },
   ])(
     "maps private attached stderr to $publicMessage",
     async ({ privateDiagnostic, publicMessage }) => {
