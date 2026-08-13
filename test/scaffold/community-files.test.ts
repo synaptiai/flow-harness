@@ -26,6 +26,62 @@ describe("public repository contracts", () => {
     expect(readme).toContain("[Security](SECURITY.md)");
   });
 
+  it("documents the operator-only container command profile and its residual boundary", async () => {
+    const [readme, configuration, architecture, security, testing, roadmap] = await Promise.all([
+      readText("README.md"),
+      readText("docs/configuration.md"),
+      readText("docs/architecture.md"),
+      readText("SECURITY.md"),
+      readText("docs/testing-and-evaluation.md"),
+      readText("docs/roadmap.md"),
+    ]);
+
+    expect(readme).toContain("sandbox:\n  profile: container");
+    expect(readme).toContain("flow-container-v1");
+    expect(readme).toContain(".flow/container-command-intents");
+    expect(readme).toMatch(/protected paths.*masked inside the workspace/is);
+    expect(readme).toMatch(/sensitive workspace.*masked/is);
+    expect(readme).toMatch(/Git metadata.*read-only/is);
+    expect(readme).toMatch(/complete submitted Docker configuration.*policy digest/is);
+    expect(readme).toMatch(/bounded workspace content snapshot.*immediately before launch/is);
+    expect(readme).toMatch(/workspace.*contain.*configured project root.*reject/is);
+    expect(readme).toMatch(/container profile.*shared Linux kernel/is);
+    expect(readme).toMatch(/command-only seccomp.*socket creation.*cannot bind/is);
+
+    expect(configuration).toContain("sandbox:\n  profile: container");
+    expect(configuration).toMatch(/project configuration cannot select.*sandbox profile/is);
+    expect(configuration).toMatch(/native.*built-in default/is);
+
+    expect(architecture).toContain("flow-container-v1");
+    expect(architecture).toMatch(/one Docker\s+container per command/is);
+    expect(architecture).toMatch(/durable intent.*before.*Docker create/is);
+    expect(architecture).toContain("Project `.flow` is always protected");
+    expect(architecture).toMatch(/protected child.*inspected masked path/is);
+    expect(architecture).toMatch(/bounded.*sensitive.*discovery/is);
+    expect(architecture).toMatch(/Git metadata.*read-only path/is);
+    expect(architecture).toMatch(/configuration digest.*public sandbox evidence/is);
+    expect(architecture).toMatch(/workspace snapshot digest.*re-observes.*before launch/is);
+    expect(architecture).toMatch(/workspace.*contains the project root.*reject/is);
+    expect(architecture).toMatch(/command-only seccomp.*socket-specific syscalls/is);
+
+    expect(security).toMatch(/container command profile.*shared Linux kernel/is);
+    expect(security).toMatch(/exact full container ID.*confirmed absence/is);
+    expect(security).toMatch(/nested protected paths.*masked/is);
+    expect(security).toMatch(/sensitive workspace.*masked/is);
+    expect(security).toMatch(/Git metadata.*read-only/is);
+    expect(security).toMatch(/not.*atomic.*host filesystem snapshot/is);
+    expect(security).toMatch(/workspace content snapshot.*masked.*content/is);
+    expect(security).toMatch(/command-only seccomp.*local.*binding/is);
+
+    expect(testing).toContain("container-command-sandbox.runtime.test.ts");
+    expect(testing).toContain("container-command-recovery.runtime.test.ts");
+    expect(testing).toMatch(/sensitive.*Git.*configuration digest/is);
+    expect(testing).toMatch(/local TCP.*Unix.*binding/is);
+
+    expect(roadmap).toMatch(/container command profile.*implemented/is);
+    expect(roadmap).toMatch(/real Linux.*runtime gate.*pending/is);
+  });
+
   it("documents and configures the Ubuntu 24.04 sandbox prerequisite", async () => {
     const [readme, workflow] = await Promise.all([
       readText("README.md"),
@@ -47,10 +103,33 @@ describe("public repository contracts", () => {
   });
 
   it("audits the repository and Prime runtime dependency locks", async () => {
-    const workflow = await readText(".github/workflows/ci.yml");
+    const [workflow, containerDecision] = await Promise.all([
+      readText(".github/workflows/ci.yml"),
+      readText(".decisions/issue-78.md"),
+    ]);
 
     expect(workflow).toContain("npm audit --omit=dev --audit-level=low");
     expect(workflow).toContain("node scripts/audit-prime-dependencies.mjs");
+    expect(containerDecision).toContain("npm audit --omit=dev --audit-level=low");
+    expect(containerDecision).toContain(
+      "npx vitest run --config vitest.runtime.config.ts test/runtime/",
+    );
+    expect(containerDecision).not.toContain("npx vitest run test/runtime/");
+  });
+
+  it("maps each container-profile acceptance criterion exactly once", async () => {
+    const decision = await readText(".decisions/issue-78.md");
+    const map = decision.split("## Acceptance verification map\n", 2)[1]?.split("\n## ", 1)[0];
+    expect(map).toBeDefined();
+
+    const criteria = map
+      ?.split("\n")
+      .filter((line) => line.startsWith("| ") && !line.startsWith("| Criterion "))
+      .filter((line) => !line.startsWith("| ---"))
+      .map((line) => line.split("|")[1]?.trim());
+
+    expect(criteria).not.toContain(undefined);
+    expect(new Set(criteria).size).toBe(criteria?.length);
   });
 
   it("routes support, conduct, and vulnerability reports to distinct channels", async () => {

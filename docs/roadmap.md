@@ -25,6 +25,10 @@ paired evaluation, reviewed activation, durable run snapshots, and rollback.
 Remaining targets include executable extensions, signed registries, automatic updates, policy and
 UI packages, external artifact storage, and stronger isolation.
 
+The operator-selectable container command profile is implemented behind the Flow-owned sandbox
+port. The real Linux x64 runtime gate is pending. This profile is a shared-kernel containment
+milestone. It is not VM-grade or multi-tenant isolation.
+
 ## Gate 0: Repository foundation
 
 - Architecture, capability ownership, failure modes, and non-goals are documented.
@@ -56,11 +60,15 @@ UI packages, external artifact storage, and stronger isolation.
 - Timeouts terminate Linux PID-namespace process trees or POSIX process groups and record partial output.
 - Side-effect uncertainty blocks automatic retry.
 - Full-SHA hash-anchored edit of an existing UTF-8 file records before/after effect receipts, coordinates cooperating same-host Flow processes, and fails closed on stale content. *(Implemented.)*
-- A Flow-owned sandbox port isolates command execution from the selected backend. *(Implemented for SRT.)*
-- The initial fixed profile denies network and ambient credentials, permits workspace work, protects durable state, and records provenance. *(Implemented.)*
+- A Flow-owned sandbox port isolates command execution from the selected backend. *(Implemented for SRT and the operator-selected container command profile.)*
+- The initial fixed profile denies network and ambient credentials. It permits workspace work,
+  protects durable state, and records provenance. *(Implemented for native SRT and
+  `flow-container-v1`. The container profile also denies local TCP and Unix socket creation. The
+  real Linux container runtime gate is pending.)*
 - Missing or degraded containment fails before command spawn. *(Implemented; agent `exec` currently requires verified Linux PID-namespace containment.)*
 - Explicit agent `exec` uses the same sandboxed command executor, exact process authorization, optional per-call human approval, write-ahead prepare/settle events, bounded output evidence, and replay-derived artifact accounting. *(Implemented.)*
-- VM, container, and managed sandbox adapters can satisfy higher-isolation deployment profiles.
+- Container and managed sandbox adapters can satisfy higher-isolation deployment profiles. *(The
+  shared-kernel Docker adapter is implemented. VM-grade and managed backends remain planned.)*
 
 ## Gate 4: Recovery and long-running work
 

@@ -459,6 +459,7 @@ function effectiveConfig(projectRoot: string): EffectiveFlowConfig {
   return {
     apiVersion: FLOW_CONFIG_API_VERSION,
     supervisor,
+    sandbox: { profile: "native" },
     policyDigest: calculateFlowPolicyDigest(supervisor),
     projectRoot,
     sources: {

@@ -23,6 +23,12 @@ import {
   createAgentCommandApprovalRequest,
 } from "../../../src/domain/approval/command-approval.js";
 import {
+  calculateFlowPolicyDigest,
+  FLOW_CONFIG_API_VERSION,
+  parseOperatorConfig,
+  resolveFlowConfig,
+} from "../../../src/domain/config/resolver.js";
+import {
   type RunEvent,
   type RunStartedEvent,
   type RunState,
@@ -136,6 +142,88 @@ nodes:
     expect(exitCode).toBe(2);
     expect(capture.stderr.join("\n")).toMatch(/invalid_config.*apiVersion/i);
     await expect(stat(join(directory, ".flow", "runs"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("constructs a foreground executor from the trusted sandbox profile", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "sandbox-profile.workflow.yaml");
+    await writeFile(
+      workflowPath,
+      `apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: sandbox-profile }
+nodes:
+  - id: verify
+    type: command
+    command: { executable: node, args: [--version] }
+`,
+      "utf8",
+    );
+    const config = resolveFlowConfig({
+      projectRoot: directory,
+      operator: {
+        path: "/operator/config.yaml",
+        config: parseOperatorConfig(
+          {
+            apiVersion: FLOW_CONFIG_API_VERSION,
+            kind: "FlowOperatorConfig",
+            sandbox: { profile: "container" },
+          },
+          "/operator/config.yaml",
+        ),
+      },
+    });
+    const selectedProfiles: { readonly profile: string; readonly projectRoot?: string }[] = [];
+    const capture = createCapture();
+
+    const exitCode = await main(["run", workflowPath], capture.io, {
+      cwd: directory,
+      loadConfig: async () => config,
+      createNodeExecutor(profile, projectRoot) {
+        selectedProfiles.push({
+          profile,
+          ...(projectRoot === undefined ? {} : { projectRoot }),
+        });
+        return successfulRecordingExecutor([]);
+      },
+    });
+
+    expect(exitCode, [...capture.stderr, ...capture.stdout].join("\n")).toBe(0);
+    expect(selectedProfiles).toEqual([{ profile: "container", projectRoot: directory }]);
+  });
+
+  it("rejects a detached supervisor sandbox profile that contradicts its policy digest", async () => {
+    const directory = await createTemporaryDirectory();
+    const supervisor = { maxActiveWorkers: 1, maxQueuedJobs: 32 };
+    const capture = createCapture();
+
+    const exitCode = await main(
+      [
+        "__supervisor",
+        "--runs-dir",
+        join(directory, "runs"),
+        "--startup-token",
+        "startup-token",
+        "--startup-owner-token",
+        "startup-owner-token",
+        "--policy-digest",
+        calculateFlowPolicyDigest(supervisor, "native"),
+        "--sandbox-profile",
+        "container",
+        "--max-active-workers",
+        String(supervisor.maxActiveWorkers),
+        "--max-queued-jobs",
+        String(supervisor.maxQueuedJobs),
+      ],
+      capture.io,
+      { cwd: directory },
+    );
+
+    expect(exitCode).toBe(2);
+    expect(capture.stderr.join("\n")).toMatch(
+      /--policy-digest does not match the supplied supervisor limits and sandbox profile/i,
+    );
+    await expect(stat(join(directory, "runs"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("runs and inspects a command workflow through the production path", async () => {

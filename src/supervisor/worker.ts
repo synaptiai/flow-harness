@@ -17,6 +17,7 @@ import {
   runWorkflow,
 } from "../application/run-workflow.js";
 import { compileWorkflowFromSnapshot } from "../application/workflow-package-admission.js";
+import type { FlowSandboxProfile } from "../domain/config/resolver.js";
 import { type RunState, reduceRunEvents } from "../domain/run/events.js";
 import { LocalAgentCommandApprovalChannel } from "../infrastructure/fs/local-agent-command-approval-channel.js";
 import type { LocalSupervisorStore } from "../infrastructure/fs/local-supervisor-store.js";
@@ -38,7 +39,8 @@ const ADOPTION_TIMEOUT_MS = 10_000;
 
 export interface ExecuteWorkerJobOptions {
   readonly store: LocalSupervisorStore;
-  readonly executor: NodeExecutor;
+  readonly executor?: NodeExecutor;
+  readonly createExecutor?: (profile: FlowSandboxProfile, projectRoot?: string) => NodeExecutor;
   readonly effectReconciler: NodeEffectReconciler;
   readonly createRunStore: (rootDirectory: string) => RecoverableRunEventStore;
   readonly createAgentCommandApprovalChannel?: (
@@ -68,6 +70,12 @@ export async function executeWorkerJob(
   options: ExecuteWorkerJobOptions,
 ): Promise<number> {
   const job = await options.store.readJob(jobId);
+  const executor =
+    options.executor ??
+    options.createExecutor?.(job.sandboxProfile ?? "native", job.projectRoot ?? job.cwd);
+  if (executor === undefined) {
+    throw new Error("worker execution requires an executor or sandbox-profile executor factory");
+  }
   const workflow = compileWorkflowFromSnapshot({
     source: job.workflowSource,
     sourceName: job.sourceName,
@@ -224,7 +232,7 @@ export async function executeWorkerJob(
         ...(projectRoot === undefined ? {} : { projectRoot }),
         protectedPaths,
         store: runStore,
-        executor: options.executor,
+        executor,
         effectReconciler: options.effectReconciler,
         workspaceIsolator: (options.createWorkspaceIsolator ?? createProductionWorkspaceIsolator)(
           options.store.runsDirectory,

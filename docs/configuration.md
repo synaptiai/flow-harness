@@ -63,6 +63,32 @@ project value <= operator value ?? built-in value
 This is not a generic last-wins deep merge. Equivalent effective values produce the same SHA-256
 policy digest regardless of comments or source paths.
 
+## Sandbox profile
+
+The native profile is the built-in default. It uses the fixed SRT backend. A trusted operator can
+select the Linux x64 container command profile:
+
+```yaml
+apiVersion: flow.synapti.ai/v1alpha1
+kind: FlowOperatorConfig
+sandbox:
+  profile: container
+```
+
+Project configuration cannot select a sandbox profile. A workflow also cannot select, replace, or
+widen it. An unknown profile or a project `sandbox` field is invalid configuration. Flow does not
+fall back to the native profile after such an error.
+
+The container selection requires the prepared Prime OCI runtime and image evidence described in
+the README. It uses the fixed `flow-container-v1` policy. The selection changes the canonical
+policy digest. `flow config show` reports the effective profile and source without loading Docker.
+An active supervisor keeps its original digest until the operator retires that idle generation.
+
+Each container command also records a command-specific sandbox policy digest. It is the canonical
+digest of the complete submitted Docker configuration, including the attested fixed-policy label,
+bounded workspace snapshot, workspace protections, and effective resource controls. This command
+evidence does not change who can select the profile and does not expose the private configuration.
+
 ## Applying a policy change
 
 A live supervisor is bound to its effective digest and exact limits. Changing a contributing file

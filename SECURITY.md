@@ -19,6 +19,50 @@ The embedded Pi runtime runs with the invoking user's operating-system permissio
 - Command nodes preserve explicit argument arrays through an audited encoder and run inside the fixed SRT `workspace-write-network-deny-v1` profile.
 - The profile denies network, undeclared Unix sockets, ambient credentials, host writes to run state or sensitive project metadata, and home reads outside the workspace except for the exact canonical SRT seccomp helper required on Linux. On Linux, SRT can hide a read-denied directory with an ephemeral mask. A write call in that mask can report success, but it cannot change the host path. That runtime-support file is re-exposed read-only when Flow is installed elsewhere. Ordinary workspace writes remain allowed by design.
 - Same-workspace, same-policy concurrent commands share SRT's process-global session but receive distinct temporary directories and per-command filesystem configurations. A command for a different workspace or policy waits for every active wrap to release, then Flow resets and reinitializes the session before admitting it. Cancellation while queued starts no process, and a poisoned session fails queued work closed.
+- The operator can select the container command profile on Linux x64. It projects one fixed
+  `flow-container-v1` policy from the prepared Prime OCI attestation. Each command uses one Docker
+  container and an exact argument vector.
+
+- The fixed container policy has one read-write workspace bind and explicit read-only runtime
+  support binds. It has a read-only root, no task network, and no IPC. It has no added capabilities
+  and no new privileges. A command-only seccomp projection denies socket creation and
+  socket-specific syscalls. The command inherits no network socket, and local TCP or Unix socket
+  binding fails. Fixed resource limits also apply.
+
+- Nested protected paths are masked inside the workspace. Flow derives project `.flow` protection
+  from the trusted project root. A broad workspace that contains that project, a protected parent,
+  or an overlapping runtime support bind rejects before Docker mutation.
+
+- Bounded, cancellation-aware sensitive workspace discovery masks existing environment files,
+  private-key files, project `.flow` state, and private Flow workspace collections. Existing Git
+  metadata stays readable through one inspected read-only path. Linked or special Git metadata is
+  masked. This is not an atomic host filesystem snapshot. It does not contain concurrent changes
+  by the trusted host user or root.
+
+- A bounded workspace content snapshot binds readable file bytes and modes, directories, symlink
+  targets, and masked exclusions. Masked secret content does not enter the digest. Flow observes
+  at most 100,000 entries and 10 GiB of regular-file content. It re-observes the snapshot
+  immediately before launch and rejects drift.
+
+- Container sandbox evidence uses the SHA-256 digest of the complete submitted Docker
+  configuration. It binds the attested fixed policy, exact command, workspace bind, masks, and
+  read-only paths. It also binds the workspace snapshot, environment, and resource controls. Public
+  evidence does not contain the private configuration or host paths.
+
+- The container command profile uses the shared Linux kernel and Docker daemon. It is not VM-grade
+  or multi-tenant isolation.
+
+- Container command recovery writes an owner-only intent before Docker create and adds the inspected
+  full ID before launch. Cleanup uses the exact full container ID and requires confirmed absence.
+  It removes the private directory and durable record only after that proof. A live owner, changed
+  runtime, foreign object, unresolved create, or uncertain cleanup blocks later container commands.
+  Flow never removes a container by name alone.
+
+- The container profile does not put provider credentials, Docker control access, or a model runtime
+  inside the command container. The host-side Flow and Pi processes retain the invoking user's host
+  authority. Root, the trusted host operator, a Docker daemon compromise, or a host-kernel defect is
+  outside this boundary.
+
 - Child workflows run from owner-only, content-verified reflink-or-copy working-tree snapshots. Flow excludes `.flow` and the configured run-store path, rejects special files and bounded-size overflow, and records the snapshot identity in both ledgers. Ordinary child workspaces are discarded after terminal settlement. Successful compiler-generated optimization candidates normally remain retained until their typed check rejects or conclusively promotes and cleans them. This prevents ordinary child writes from changing the parent working tree; it is not an atomic filesystem snapshot, VM-grade sandbox, or boundary against the invoking user. Host-side Pi retains that user's authority subject to Flow's tool broker, while child command descendants still use SRT.
 - Candidate capture separately bounds changed entries, logical file bytes, and serialized durable evidence. A cancellation after candidate success but before its check retains the isolated candidate for diagnosis; no evaluation, promotion, parent mutation, or later candidate starts. Operators should treat retained candidate workspaces as untrusted artifacts.
 - Flow creates new child workspaces in an owner-only project-sibling collection. The collection name is `.<project-name>.flow-workspaces`. A hash of the canonical physical run-store path separates workspace groups. Filesystem aliases for one run store select one workspace group. Thus, the project workspace, the protected project `.flow` directory, and the configured run store do not contain the collection. Attached runs use the canonical configured project root. Detached jobs save the same optional root in their immutable identity. For an old detached record, Flow can infer the project root from the durable `.flow/runs` ancestor. Flow rejects a linked collection or owner directory.

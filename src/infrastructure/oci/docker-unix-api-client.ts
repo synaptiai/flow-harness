@@ -9,7 +9,8 @@ const DEFAULT_MAX_ATTACH_STDERR_BYTES = 65_536;
 const DEFAULT_MAX_ATTACH_STDOUT_FRAME_BYTES = 1_048_581;
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const MAX_REQUEST_BYTES = 1_048_576;
-const containerReferencePattern = /^(?:[a-f0-9]{64}|flow-prime-[a-f0-9]{32}|flow-prime-global-v1)$/;
+const containerReferencePattern =
+  /^(?:[a-f0-9]{64}|flow-prime-[a-f0-9]{32}|flow-prime-global-v1|flow-command-[a-f0-9]{32})$/;
 const imageReferencePattern = /^sha256:[a-f0-9]{64}$/;
 
 export interface DockerUnixApiRequest {

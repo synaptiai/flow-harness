@@ -8832,17 +8832,22 @@ function validateFailedAgentCommandSettlement(
 ): void {
   const evidence = outcome.evidence;
   if (evidence === null) {
-    if (
-      outcome.error.sideEffectStatus !== "none" ||
-      ![
+    const sideEffectFree =
+      outcome.error.sideEffectStatus === "none" &&
+      [
         "command_platform_unsupported",
         "command_timeout",
         "command_aborted",
         "command_spawn_failed",
         "command_sandbox_unavailable",
         "command_sandbox_cleanup_failed",
-      ].includes(outcome.error.code)
-    ) {
+      ].includes(outcome.error.code);
+    const preparationUncertain =
+      outcome.error.sideEffectStatus === "uncertain" &&
+      ["command_timeout", "command_aborted", "command_sandbox_cleanup_failed"].includes(
+        outcome.error.code,
+      );
+    if (!sideEffectFree && !preparationUncertain) {
       throw new RunReplayError(
         eventIndex,
         "agent command failure without process evidence has an invalid code or side-effect status",

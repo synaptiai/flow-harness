@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -13,16 +13,16 @@ import type {
 } from "../../../src/application/ports.js";
 import { type CliIo, main } from "../../../src/cli/main.js";
 import {
+  type CapabilitySnapshot,
+  createAgentCapabilityEvidence,
+} from "../../../src/domain/capability/agent-skills.js";
+import {
   BUILT_IN_FLOW_CONFIG,
   calculateFlowPolicyDigest,
   type EffectiveFlowConfig,
   FLOW_CONFIG_API_VERSION,
 } from "../../../src/domain/config/resolver.js";
 import type { RunEvent } from "../../../src/domain/run/events.js";
-import {
-  createAgentCapabilityEvidence,
-  type CapabilitySnapshot,
-} from "../../../src/domain/capability/agent-skills.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -164,6 +164,7 @@ function effectiveConfig(projectRoot: string): EffectiveFlowConfig {
   return {
     apiVersion: FLOW_CONFIG_API_VERSION,
     supervisor,
+    sandbox: { profile: "native" },
     policyDigest: calculateFlowPolicyDigest(supervisor),
     projectRoot,
     sources: {
