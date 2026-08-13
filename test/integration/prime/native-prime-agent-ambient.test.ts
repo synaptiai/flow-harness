@@ -13,6 +13,7 @@ describe("native Prime ambient authority", () => {
       session?: Record<string, unknown>;
     } = {};
     const disposeProvisioner = vi.fn(async () => undefined);
+    const ensureProvisioner = vi.fn(async () => undefined);
     const killProvisioner = vi.fn(async () => undefined);
     const sdkSession = {
       thinkingLevel: "off",
@@ -43,6 +44,7 @@ describe("native Prime ambient authority", () => {
       SessionManager: { inMemory: vi.fn(() => ({ kind: "session-manager" })) },
       IpythonKernelProvisioner: class {
         dispose = disposeProvisioner;
+        ensure = ensureProvisioner;
         kill = killProvisioner;
       },
       createExtensionRuntime: vi.fn(() => ({ kind: "extension-runtime" })),
@@ -68,6 +70,7 @@ describe("native Prime ambient authority", () => {
     expect(captured.session).not.toHaveProperty("agentMessageController");
     expect(captured.session).not.toHaveProperty("agentObserveController");
     expect(captured.session).not.toHaveProperty("subagentRuntimeHost");
+    expect(ensureProvisioner).toHaveBeenCalledOnce();
 
     const resourceLoader = captured.session?.resourceLoader as {
       getExtensions(): { extensions: readonly unknown[] };

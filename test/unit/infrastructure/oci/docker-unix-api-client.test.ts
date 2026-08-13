@@ -1324,6 +1324,10 @@ describe("Docker Unix API client", () => {
       publicMessage: "Prime driver failed while creating the IPython tool",
     },
     {
+      privateDiagnostic: "run Prime driver: Prime driver stage failure: start-ipython-kernel\n",
+      publicMessage: "Prime driver failed while starting the persistent IPython kernel",
+    },
+    {
       privateDiagnostic: "run Prime driver: Prime driver stage failure: create-sdk-session\n",
       publicMessage: "Prime driver failed while creating the native SDK session",
     },

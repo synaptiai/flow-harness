@@ -36,6 +36,7 @@ type NativePrimeDriverStage =
   | "load-ai-sdk"
   | "initialize-sdk"
   | "create-ipython-tool"
+  | "start-ipython-kernel"
   | "create-sdk-session"
   | "validate-sdk-session"
   | "observe-sdk-session"
@@ -169,6 +170,7 @@ interface PrimeSdkSession {
 }
 
 interface PrimeIpythonKernelProvisioner {
+  ensure(onProgress?: (message: string) => void, signal?: AbortSignal): Promise<unknown>;
   kill(): Promise<void>;
 }
 
@@ -519,8 +521,12 @@ export async function createNativePrimeSdkSession(
         python: PRIME_KERNEL_PROXY_PATH,
       });
       try {
+        const ipython = sdk.createIpythonToolDefinition(input.workspace, { provisioner });
+        await withNativePrimeDriverStage("start-ipython-kernel", () =>
+          provisioner.ensure(undefined, input.signal),
+        );
         return {
-          ipython: sdk.createIpythonToolDefinition(input.workspace, { provisioner }),
+          ipython,
           ipythonProvisioner: provisioner,
         };
       } catch (error) {

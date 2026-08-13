@@ -284,6 +284,7 @@ func closedPrimeDriverStageLine(value string) (string, bool) {
 		"Prime driver stage failure: load-ai-sdk",
 		"Prime driver stage failure: initialize-sdk",
 		"Prime driver stage failure: create-ipython-tool",
+		"Prime driver stage failure: start-ipython-kernel",
 		"Prime driver stage failure: create-sdk-session",
 		"Prime driver stage failure: validate-sdk-session",
 		"Prime driver stage failure: observe-sdk-session",

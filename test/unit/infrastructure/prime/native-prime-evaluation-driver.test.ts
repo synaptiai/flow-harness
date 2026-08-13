@@ -45,6 +45,7 @@ describe("native Prime evaluation driver", () => {
       session?: Record<string, unknown>;
     } = {};
     const disposeProvisioner = vi.fn(() => new Promise<void>(() => undefined));
+    const ensureProvisioner = vi.fn(async () => undefined);
     const killProvisioner = vi.fn(async () => undefined);
     class FakeIpythonKernelProvisioner {
       constructor(cwd: string, options: Record<string, unknown>) {
@@ -52,6 +53,7 @@ describe("native Prime evaluation driver", () => {
       }
 
       dispose = disposeProvisioner;
+      ensure = ensureProvisioner;
       kill = killProvisioner;
     }
     const model = { id: "flow-host-model", provider: "flow-host-broker" };
@@ -154,8 +156,53 @@ describe("native Prime evaluation driver", () => {
     expect(settlement).toBe("settled");
     expect(sdkSession.dispose).toHaveBeenCalledOnce();
     expect(sdkSession.disposeAsync).not.toHaveBeenCalled();
+    expect(ensureProvisioner).toHaveBeenCalledOnce();
     expect(killProvisioner).toHaveBeenCalledOnce();
     expect(disposeProvisioner).not.toHaveBeenCalled();
+  });
+
+  it("starts the caller-owned IPython kernel before it creates the SDK session", async () => {
+    const order: string[] = [];
+    const controller = new AbortController();
+    const fixture = sdkFixture({
+      thinkingLevel: "off",
+      onEnsureProvisioner: () => order.push("ensure-kernel"),
+      onCreateSession: () => order.push("create-session"),
+    });
+
+    const session = await createNativePrimeSdkSession({
+      evaluation: evaluationInput(),
+      workspace: process.cwd(),
+      infer: vi.fn(),
+      signal: controller.signal,
+      loadSdk: async () => fixture.bindings,
+    });
+
+    expect(fixture.ensureProvisioner).toHaveBeenCalledOnce();
+    expect(fixture.ensureProvisioner).toHaveBeenCalledWith(undefined, controller.signal);
+    expect(order).toEqual(["ensure-kernel", "create-session"]);
+    await session.dispose();
+  });
+
+  it("settles the provisioner when persistent IPython startup fails", async () => {
+    const startupError = new Error("PRIVATE_IPYTHON_START_CANARY");
+    const fixture = sdkFixture({
+      thinkingLevel: "off",
+      ensureProvisionerError: startupError,
+    });
+
+    await expect(
+      createNativePrimeSdkSession({
+        evaluation: evaluationInput(),
+        workspace: process.cwd(),
+        infer: vi.fn(),
+        loadSdk: async () => fixture.bindings,
+      }),
+    ).rejects.toMatchObject({ stage: "start-ipython-kernel" });
+
+    expect(fixture.ensureProvisioner).toHaveBeenCalledOnce();
+    expect(fixture.killProvisioner).toHaveBeenCalledOnce();
+    expect(fixture.bindings.createAgentSession).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -562,6 +609,22 @@ describe("native Prime evaluation driver", () => {
       },
     },
     {
+      name: "IPython kernel startup",
+      expected: "Prime driver stage failure: start-ipython-kernel",
+      run: () => {
+        const fixture = sdkFixture({
+          thinkingLevel: "off",
+          ensureProvisionerError: new Error("PRIVATE_IPYTHON_START_CANARY"),
+        });
+        return createNativePrimeSdkSession({
+          evaluation: evaluationInput(),
+          workspace: process.cwd(),
+          infer: vi.fn(),
+          loadSdk: async () => fixture.bindings,
+        });
+      },
+    },
+    {
       name: "SDK session validation",
       expected: "Prime driver stage failure: validate-sdk-session",
       run: () => {
@@ -724,6 +787,9 @@ function oneLine(value: string): AsyncIterator<string> {
 function sdkFixture(options: {
   readonly thinkingLevel: string;
   readonly sessionDisposeError?: Error;
+  readonly ensureProvisionerError?: Error;
+  readonly onEnsureProvisioner?: () => void;
+  readonly onCreateSession?: () => void;
 }) {
   const streamOrder: string[] = [];
   const stream = {
@@ -734,6 +800,12 @@ function sdkFixture(options: {
   const authStorage = {};
   const disposeProvisioner = vi.fn(async () => undefined);
   const killProvisioner = vi.fn(async () => undefined);
+  const ensureProvisioner = vi.fn(async () => {
+    options.onEnsureProvisioner?.();
+    if (options.ensureProvisionerError !== undefined) {
+      throw options.ensureProvisionerError;
+    }
+  });
   const session = {
     thinkingLevel: options.thinkingLevel,
     prompt: vi.fn(async () => undefined),
@@ -766,17 +838,22 @@ function sdkFixture(options: {
     SessionManager: { inMemory: vi.fn(() => ({})) },
     IpythonKernelProvisioner: class {
       dispose = disposeProvisioner;
+      ensure = ensureProvisioner;
       kill = killProvisioner;
     },
     createExtensionRuntime: vi.fn(() => ({})),
     createIpythonToolDefinition: vi.fn(() => ({ name: "ipython" })),
     createAssistantMessageEventStream: vi.fn(() => stream),
-    createAgentSession: vi.fn(async () => ({ session })),
+    createAgentSession: vi.fn(async () => {
+      options.onCreateSession?.();
+      return { session };
+    }),
   };
   return {
     bindings,
     session,
     disposeProvisioner,
+    ensureProvisioner,
     killProvisioner,
     stream,
     streamOrder,

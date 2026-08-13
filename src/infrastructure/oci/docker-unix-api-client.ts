@@ -740,6 +740,8 @@ function primeContainerFailureMessage(stderr: Buffer, sawStdout: boolean): strin
       return "Prime driver failed while configuring the native SDK";
     case "run prime driver: prime driver stage failure: create-ipython-tool":
       return "Prime driver failed while creating the IPython tool";
+    case "run prime driver: prime driver stage failure: start-ipython-kernel":
+      return "Prime driver failed while starting the persistent IPython kernel";
     case "run prime driver: prime driver stage failure: create-sdk-session":
       return "Prime driver failed while creating the native SDK session";
     case "run prime driver: prime driver stage failure: validate-sdk-session":

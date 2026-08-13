@@ -194,6 +194,12 @@ func TestClosedPrimeDriverDiagnosticRequiresOneUniqueCompleteStageLine(t *testin
 			accepted: true,
 		},
 		{
+			name:     "IPython kernel startup stage",
+			value:    "Prime driver stage failure: start-ipython-kernel\n",
+			expected: "Prime driver stage failure: start-ipython-kernel",
+			accepted: true,
+		},
+		{
 			name:  "conflicting stages",
 			value: "Prime driver stage failure: load-sdk\nPrime driver stage failure: initialize-sdk\n",
 		},
