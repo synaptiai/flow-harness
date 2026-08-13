@@ -112,6 +112,20 @@ describe.skipIf(!linux)("Prime OCI daemon-global admission", () => {
   );
 });
 
+describe("Prime OCI admission worker staging", () => {
+  it("loads the compiled worker from the peer-readable staging tree", async () => {
+    const root = await mkdtemp(join(tmpdir(), "flow-prime-admission-staging-"));
+    temporaryDirectories.push(root);
+    const stagedWorkerPath = await stageAdmissionWorker(root);
+
+    const loaded = await run(process.execPath, [stagedWorkerPath], process.env);
+
+    expect(loaded.code).toBe(1);
+    expect(loaded.stderr).toContain("Prime admission worker arguments are invalid");
+    expect(loaded.stderr).not.toMatch(/ERR_MODULE_NOT_FOUND|Cannot find package/);
+  });
+});
+
 describe("Prime host headroom intersection", () => {
   it("accepts each exact threshold and rejects each one-under value", () => {
     const policy = primeExternalHarnessIdentity().runtime.policy;
@@ -155,9 +169,19 @@ describe("Prime host headroom intersection", () => {
 async function stageAdmissionWorker(root: string): Promise<string> {
   const stagedWorkerPath = join(root, "test/fixtures/prime/global-admission-worker.mjs");
   await mkdir(dirname(stagedWorkerPath), { recursive: true });
+  await mkdir(join(root, "node_modules"));
   await Promise.all([
     cp(workerPath, stagedWorkerPath),
     cp(join(repositoryRoot, "dist"), join(root, "dist"), { recursive: true }),
+    ...["typebox", "yaml", "zod"].map((packageName) =>
+      cp(
+        join(repositoryRoot, "node_modules", packageName),
+        join(root, "node_modules", packageName),
+        {
+          recursive: true,
+        },
+      ),
+    ),
     writeFile(join(root, "package.json"), '{"type":"module"}\n', { mode: 0o640 }),
   ]);
   return stagedWorkerPath;
