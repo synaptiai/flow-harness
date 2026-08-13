@@ -151,14 +151,20 @@ describe("Prime Agent package boundary", () => {
     }
 
     const socketRules = allowedRules.filter((rule) => rule.names?.includes("socket"));
-    expect(socketRules).toHaveLength(3);
+    expect(socketRules).toHaveLength(4);
     expect(
       socketRules
         .map((rule) => rule.args)
         .sort((left, right) => {
           return (left?.[0]?.value ?? 0) - (right?.[0]?.value ?? 0);
         }),
-    ).toEqual([1, 2, 10].map((domain) => [{ index: 0, value: domain, op: "SCMP_CMP_EQ" }]));
+    ).toEqual([
+      ...[1, 2, 10].map((domain) => [{ index: 0, value: domain, op: "SCMP_CMP_EQ" }]),
+      [
+        { index: 0, value: 16, op: "SCMP_CMP_EQ" },
+        { index: 2, value: 0, op: "SCMP_CMP_EQ" },
+      ],
+    ]);
   });
 
   it("binds the fixed dependency and seccomp inputs", async () => {
@@ -193,7 +199,7 @@ describe("Prime Agent package boundary", () => {
     });
     expect(inputs.seccomp).toEqual({
       base: "moby/profiles seccomp/v0.2.1",
-      sha256: "208652fe94e2b103095c48ffe5d9c3e8066680d4d9581eaf94943d06e216324f",
+      sha256: "43e8c38cccc936a736c7619eac8b7e0718880f7c29d7a4f6d2d57e4feeb273c3",
     });
 
     const dockerfile = await readFile(

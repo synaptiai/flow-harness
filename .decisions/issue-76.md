@@ -484,6 +484,11 @@ after launch. Python never receives an attached-stream or inner-protocol descrip
 The fixed seccomp profile denies `ptrace`, cross-process memory calls, `kcmp`, namespace changes,
 mounts, and new privilege paths. It also denies unsafe device and kernel operations.
 
+The profile admits Unix, IPv4, IPv6, and route-netlink sockets. Pinned Jupyter and ZeroMQ use the
+route-netlink socket only to resolve the container-private loopback interface before kernel bind.
+The Python process has no network-administration capability, and network mode `none` supplies no
+route to the host or an external network.
+
 Different user identities prevent Python from reading Node memory, environment, or file
 descriptors. They also prevent Python from sending signals to the driver.
 

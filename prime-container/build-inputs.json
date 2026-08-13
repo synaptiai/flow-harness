@@ -22,6 +22,6 @@
   },
   "seccomp": {
     "base": "moby/profiles seccomp/v0.2.1",
-    "sha256": "208652fe94e2b103095c48ffe5d9c3e8066680d4d9581eaf94943d06e216324f"
+    "sha256": "43e8c38cccc936a736c7619eac8b7e0718880f7c29d7a4f6d2d57e4feeb273c3"
   }
 }
