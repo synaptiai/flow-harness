@@ -679,6 +679,12 @@ describe("LocalDockerContainerCommandEngine", () => {
           CapDrop: ["ALL"],
           CapAdd: [],
           SecurityOpt: ["no-new-privileges", `seccomp=${JSON.stringify(seccompProfile)}`],
+          PidsLimit: 64,
+          Ulimits: [
+            { Name: "nofile", Soft: 1_024, Hard: 1_024 },
+            { Name: "fsize", Soft: 33_554_432, Hard: 33_554_432 },
+            { Name: "core", Soft: 0, Hard: 0 },
+          ],
           Binds: [
             "/workspace/run-1:/workspace:rw",
             "/runtime/node_modules:/runtime/node_modules:ro",
@@ -1362,7 +1368,6 @@ function descriptor(): LocalDockerContainerCommandRuntimeDescriptor {
       cpuQuotaMicros: 100_000,
       cpuPeriodMicros: 100_000,
       openFilesMax: 1_024,
-      userProcessesMax: 64,
       fileSizeMaxBytes: 33_554_432,
       coreSizeMaxBytes: 0,
       temporaryBytes: 67_108_864,
