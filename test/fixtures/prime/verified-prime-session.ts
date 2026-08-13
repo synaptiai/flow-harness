@@ -199,6 +199,7 @@ export async function runVerifiedPrimeSession(
     if (responses.length !== 0) {
       throw new Error("verified Prime session did not consume every model response");
     }
+    await evidence.publishResult();
     result = Object.freeze({
       workspace,
       hostRequests: Object.freeze(hostRequests),
