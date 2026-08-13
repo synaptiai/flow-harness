@@ -10,11 +10,11 @@
 
 ## Status
 
-Implementation and local release verification are complete. Flow now has the strict digest-only
-OCI artifact, bounded public registry client, offline publisher verifier, shipped public-good trust
-root, atomic signed installation coordinator, durable publisher audit identity, CLI command,
-offline workflow evidence, Node.js 26.7.0 baseline, and public documentation. Stacked pull-request
-CI remains the hosted verification authority.
+Implementation and local release verification are complete. Flow now has a strict digest-only OCI
+artifact and a bounded public registry client. It has an offline publisher verifier and a shipped
+public-good trust root. The atomic installer records durable publisher identity. The CLI, offline
+evidence, Node.js 26.7.0 baseline, and public documentation are complete. Stacked pull-request CI
+remains the hosted verification authority.
 
 ## Specification
 
@@ -24,53 +24,68 @@ the user-approved architecture discussion._
 ### Non-goals
 
 - Do not publish or push registry artifacts.
+
 - Do not add private registry credentials or reuse ambient Docker credential files.
+
 - Do not accept mutable tags, version ranges, registry discovery, or package-provided references as
   installation authority.
+
 - Do not add automatic updates, freshness metadata, revocation, rollback protection, or online
   trust-root refresh.
+
 - Do not execute package code, hooks, dependency scripts, or package-selected policy.
-- Do not contact a registry, token service, transparency log, certificate authority, or trust-root
-  service during workflow admission, execution, child execution, detached execution, inspection,
-  recovery, or replay.
+
+- Keep workflow admission, execution, inspection, recovery, and replay offline.
+
+- Keep child and detached execution offline. These paths must not contact registry or trust services.
+
 - Do not claim that a valid publisher signature makes a package safe or correct.
-- Do not change the separately attested Prime OCI image Node.js closure. The host Flow process and
-  the Prime external harness have independent runtime identities.
+
+- Keep the separately attested Prime OCI image Node.js closure unchanged.
+
+- Keep the host Flow process and Prime external harness runtime identities independent.
 
 ### Failure modes
 
 - **Timeouts** — DNS, registry challenge, anonymous token acquisition, manifest acquisition, bundle
   acquisition, and signature acquisition share one total deadline. Timeout closes every response,
   publishes no package state, and emits one bounded value-free stage.
-- **Partial failures** — A fetched or verified object remains inactive until the existing package
-  store publishes the content-addressed blob and then the deterministic lock. A manifest, payload,
-  signature, verification, or store failure leaves the prior lock authoritative.
-- **Invalid input** — Non-canonical registry references, tag references, invalid digests, unexpected
-  media types, extra descriptors, malformed strict JSON, descriptor contradictions, and invalid
-  signature bundles reject before package state changes. Public errors contain fixed stages, never
-  tokens, remote bodies, certificate identities, registry paths, or parser causes.
+
+- **Partial failures** — A fetched or verified object remains inactive during verification. The store
+  publishes the content-addressed blob before the deterministic lock. Any earlier failure leaves the
+  prior lock authoritative.
+
+- **Invalid input** — Invalid references, digests, media types, descriptors, JSON, or signatures
+  reject before package state changes. Public errors contain fixed stages. They never contain tokens,
+  remote bodies, identities, paths, or parser causes.
+
 - **Missing context** — Missing issuer or publisher identity rejects before the first network
-  request. Missing built-in trust material is a packaging failure and cannot fall back to an online
+  request. Missing built-in trust material is a packaging failure. It cannot fall back to an online
   fetch.
 
 ### Interface contracts
 
-- Installation authority is one canonical public registry repository, one exact `sha256` OCI
-  manifest digest, and one exact trusted publisher policy containing a certificate issuer and one
-  subject-alternative-name value.
-- The OCI manifest is an exact OCI image manifest with one empty config descriptor and exactly two
-  ordered layers: one strict Flow capability bundle and one Sigstore v0.3 message-signature bundle.
+- Installation authority contains one canonical public registry repository and one exact `sha256`
+  manifest digest. It also contains one exact publisher issuer and one subject-alternative-name
+  value.
+
+- The OCI manifest has one empty config descriptor and exactly two ordered layers. One layer is a
+  strict Flow capability bundle. The other is a Sigstore v0.3 message-signature bundle.
   Unknown annotations are not authority. Unknown or extra descriptors reject.
+
 - Every registry object is bounded before strict JSON parsing. Descriptor digest and size are checked
   against the exact received bytes before the bytes reach bundle or signature parsing.
+
 - Signature verification uses `@sigstore/verify` 4.1.2 and `@sigstore/bundle` 5.0.0 with Flow-shipped
   trusted-root material. It requires a v0.3 message-signature bundle, at least one valid signed-time,
   one certificate-transparency proof, and one transparency-log inclusion proof. The publisher SAN
   is escaped and anchored before it becomes a verifier regular expression. No verifier-owned
   network or TUF refresh runs during installation.
+
 - Anonymous token negotiation accepts only a public HTTPS bearer realm and the exact
   `repository:<name>:pull` scope. A token is memory-only and is sent only to the original registry
   origin. Cross-origin blob redirects receive no authorization header.
+
 - The existing `CapabilityBundle` parser and `LocalCapabilityPackageStore` remain the only package
   content and publication authorities. The installed immutable bytes remain the only later
   admission, execution, recovery, and replay source.
@@ -169,10 +184,11 @@ network, credential, or kernel authority.
 
 ## Decision
 
-Add an explicit signed-registry installation path for the existing inert `CapabilityBundle` ABI.
-Use an exact digest-only OCI reference, a strict two-layer manifest, Flow-owned bounded public HTTPS
-and anonymous token handling, offline Sigstore v0.3 message-signature verification, and the existing
-atomic package store. Preserve the explicit HTTPS plus SHA-256 installer unchanged.
+Add a signed-registry installation path for the existing inert `CapabilityBundle` ABI. Use an exact
+digest-only OCI reference and a strict two-layer manifest. Flow owns bounded public HTTPS and
+anonymous token handling. Verification uses an offline Sigstore v0.3 message-signature bundle. The
+existing atomic package store remains authoritative. Preserve the explicit HTTPS plus SHA-256
+installer unchanged.
 
 Upgrade the host application and CI minimum to Node.js 26.7.0 and `@types/node` 26.2.0. Add
 `@sigstore/verify` 4.1.2, `@sigstore/bundle` 5.0.0, and the directly imported protobuf definitions at
@@ -180,25 +196,31 @@ Upgrade the host application and CI minimum to Node.js 26.7.0 and `@types/node` 
 
 ## Planned RED → GREEN → REFACTOR sequence
 
-1. **Node compatibility RED/GREEN** — Bind manifest, CI, public prerequisites, package tests, and
-   Sigstore v4 imports to the exact published Node baseline.
+1. **Node compatibility RED/GREEN** — Bind manifest, CI, prerequisites, tests, and Sigstore v4 to
+   the exact published Node baseline.
+
 2. **Reference and manifest RED/GREEN** — Parse only canonical digest references and strict bounded
-   two-layer OCI manifests; reject tags, algorithms, media types, sizes, extras, duplicates, and
+   two-layer OCI manifests. Reject tags, algorithms, media types, sizes, extras, duplicates, and
    contradictions.
+
 3. **Publisher verification RED/GREEN** — Verify one offline v0.3 message signature with exact
-   issuer and escaped/anchored SAN; reject every missing or contradictory proof without private
+   issuer and escaped or anchored SAN. Reject every missing or contradictory proof without private
    causes.
-4. **Registry transport RED/GREEN** — Implement one total deadline, public DNS pinning, strict
-   challenge parsing, exact anonymous pull scope, memory-only token handling, redirect isolation,
-   response settlement, and object digest/size checks.
-5. **Installation RED/GREEN** — Compose acquisition, verification, and the existing package store;
-   extend durable audit identity without changing run-time source authority.
-6. **CLI and offline RED/GREEN** — Add the operator command and prove list, inspect, verify,
-   workflow, detached, child, recovery, and replay paths perform no network access.
+
+4. **Registry transport RED/GREEN** — Implement one total deadline and public DNS pinning. Add strict
+   challenges, exact anonymous scope, token isolation, response settlement, and object checks.
+
+5. **Installation RED/GREEN** — Compose acquisition, verification, and the existing package store.
+   Extend durable audit identity without changing run-time source authority.
+
+6. **CLI and offline RED/GREEN** — Add the operator command. Prove that list, inspect, verify,
+   workflow, detached, child, recovery, and replay paths stay offline.
+
 7. **Docs/refactor** — Update README, roadmap, capability sourcing, testing, examples, help, and
    package checks. Remove duplication without broadening authority.
-8. **Adversarial and hosted verification** — Run focused mutation matrices, full release gates,
-   package audit, credential-free registry integration, and independent security/correctness review.
+
+8. **Adversarial and hosted verification** — Run focused mutations, release gates, package audit,
+   credential-free integration, and independent review.
 
 ## Acceptance verification map
 
@@ -221,36 +243,54 @@ untested paths, known evidence limitations, and negative/adversarial cases.
 ## Verification evidence
 
 - The final complete default suite passed with 2,941 tests and four platform-gated skips.
+
 - Coverage passed with 82.41% statements, 76.29% branches, 88.98% functions, and 82.53% lines.
+
 - Compiled runtime verification passed with 39 tests and 33 platform-gated skips.
+
 - TypeScript, the clean build, changed-file Biome checks, changed-document STE, and
   `git diff --check` pass.
-- The clean package gate rebuilt, packed, installed with lifecycle scripts disabled, and executed
+
+- The clean package gate rebuilt, packed, and installed with lifecycle scripts disabled. It executed
   the installed CLI under Node.js 26.7.0.
+
 - The repository graph was rebuilt after implementation. Generated Graphify output is not product
   or commit content.
+
 - The full-tree Biome commands also inspect unrelated untracked `.claude`, `.codex`, and
   `graphify-out` files in this shared workspace. The changed Issue #80 files pass scoped formatting
   and lint checks. Those unrelated files remain untouched and uncommitted.
+
 - The production dependency audit requires disclosure of the dependency graph to the public npm
-  advisory endpoint. It was not sent from this desktop session. The pinned hosted CI audit remains
+  advisory endpoint. It was not sent from this desktop session. The hosted audit passed and remains
   the release evidence for that criterion.
 
-Negative evidence covers mutable or malformed references; private DNS; changed media types,
-digests, sizes, layers, payloads, signatures, issuers, identities, expiry, proofs, token scopes, and
-redirects; a non-settling response body; cancellation before publication; provenance conflicts;
-corrupt or unsafe store state; and network traps during later admission and execution. Private
-registry credentials, online trust refresh, freshness, revocation, rollback protection, and
-automatic update discovery are deliberately untested because they are outside Issue #80.
+Negative evidence covers mutable or malformed references and private DNS. It covers changed media
+types, digests, sizes, layers, payloads, and signatures. It also covers changed issuers, identities,
+expiry, proofs, token scopes, and redirects. The tests cover a non-settling response body and
+cancellation before publication. They cover provenance conflicts and corrupt or unsafe store state.
+Network traps prove that later admission and execution stay offline.
+
+Private registry credentials and online trust refresh remain untested. Freshness, revocation,
+rollback protection, and automatic update discovery also remain untested. Those concerns are
+outside Issue #80.
 
 ## Primary references
 
 - Node release index: <https://nodejs.org/dist/index.json>
+
 - Node release policy: <https://nodejs.org/en/about/previous-releases>
+
 - OCI Distribution Specification: <https://github.com/opencontainers/distribution-spec/blob/main/spec.md>
+
 - OCI image manifest: <https://github.com/opencontainers/image-spec/blob/main/manifest.md>
+
 - Registry bearer authentication: <https://distribution.github.io/distribution/spec/auth/token/>
+
 - Sigstore bundle: <https://docs.sigstore.dev/about/bundle/>
+
 - Sigstore client wire format: <https://github.com/sigstore/architecture-docs/blob/main/client-spec.md>
+
 - Sigstore trusted-root schema: <https://github.com/sigstore/protobuf-specs/blob/main/protos/sigstore_trustroot.proto>
+
 - TUF specification: <https://theupdateframework.github.io/specification/latest/>
