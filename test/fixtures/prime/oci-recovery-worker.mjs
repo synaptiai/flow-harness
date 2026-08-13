@@ -7,6 +7,7 @@ import { DockerUnixApiClient } from "../../../dist/infrastructure/oci/docker-uni
 import { PrimeOciContainerLifecycle } from "../../../dist/infrastructure/oci/prime-container-lifecycle.js";
 
 let config;
+let crashInjectionEnabled = false;
 
 class RecoveryEngine {
   constructor(apiClient, options) {
@@ -102,7 +103,7 @@ async function writeLease(lease) {
 }
 
 function crashAt(point) {
-  if (config.crashPoint === point) {
+  if (crashInjectionEnabled && config.crashPoint === point) {
     process.kill(process.pid, "SIGKILL");
   }
 }
@@ -179,6 +180,7 @@ if (configPath === undefined || (action !== "run" && action !== "recover")) {
   throw new Error("Prime OCI recovery worker arguments are invalid");
 }
 config = parseConfig(JSON.parse(await readFile(configPath, "utf8")));
+crashInjectionEnabled = action === "run";
 const api = new DockerUnixApiClient({
   socketPath: "/var/run/docker.sock",
   apiVersion: config.apiVersion,

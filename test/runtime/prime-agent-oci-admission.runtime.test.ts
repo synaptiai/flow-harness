@@ -1,8 +1,8 @@
 import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { chmod, chown, lstat, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, chown, cp, lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -51,6 +51,7 @@ describe.skipIf(!linux)("Prime OCI daemon-global admission", () => {
     const configPath = join(root, "config.json");
     const docker = process.env.FLOW_DOCKER_EXECUTABLE ?? "/usr/bin/docker";
     const environment = dockerEnvironment(root);
+    const peerWorkerPath = await stageAdmissionWorker(root);
     const [daemonId, apiVersion] = await Promise.all([
       executeFile(docker, ["info", "--format", "{{.ID}}"], {
         encoding: "utf8",
@@ -79,7 +80,7 @@ describe.skipIf(!linux)("Prime OCI daemon-global admission", () => {
 
     const crossUser = await run(
       "/usr/bin/sudo",
-      ["-n", "-u", secondUser, "--", process.execPath, workerPath, configPath, "attempt"],
+      ["-n", "-u", secondUser, "--", process.execPath, peerWorkerPath, configPath, "attempt"],
       environment,
     );
     expect(crossUser.code).not.toBe(0);
@@ -150,6 +151,17 @@ describe("Prime host headroom intersection", () => {
     expect(measure).toHaveBeenCalledTimes(3);
   });
 });
+
+async function stageAdmissionWorker(root: string): Promise<string> {
+  const stagedWorkerPath = join(root, "test/fixtures/prime/global-admission-worker.mjs");
+  await mkdir(dirname(stagedWorkerPath), { recursive: true });
+  await Promise.all([
+    cp(workerPath, stagedWorkerPath),
+    cp(join(repositoryRoot, "dist"), join(root, "dist"), { recursive: true }),
+    writeFile(join(root, "package.json"), '{"type":"module"}\n', { mode: 0o640 }),
+  ]);
+  return stagedWorkerPath;
+}
 
 function headroomObservation(): PrimeHostAdmissionObservation {
   const policy = primeExternalHarnessIdentity().runtime.policy;
