@@ -188,7 +188,7 @@ mapping, bounded content snapshots, pre-launch snapshot drift rejection, and the
 configuration digest used as public evidence. Integration tests bind the backend-neutral executor
 and offline inspection contracts.
 
-The pending Linux x64 release gate uses
+The pinned Linux x64 release gate uses
 `test/runtime/container-command-sandbox.runtime.test.ts` and
 `test/runtime/container-command-recovery.runtime.test.ts`. These tests use the prepared Prime image
 and the real Docker API. They must prove workspace mutation, protected-state denial, credential

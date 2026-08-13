@@ -42,7 +42,7 @@ through an optional external profile.
 | Evidence-bound prompt candidates | Flow implements zero-tool model generation from tuning-only evidence, strict prompt overlays, paired evaluation, reviewed activation, durable run snapshots, and rollback |
 | Proof-safe fresh recovery of interrupted agent attempts | Implemented as explicit opt-in for read-only attempts and edit attempts proven not applied |
 | Fail-closed sandboxed command isolation | Flow implements filesystem and network isolation on Linux and macOS. Linux alone provides strict agent-command descendant lifecycle containment |
-| Higher-isolation container command profile | Implemented behind operator-only selection on Linux x64; the real engine runtime release gate is pending |
+| Higher-isolation container command profile | Implemented behind operator-only selection; the pinned Linux x64 engine runtime gate passes |
 | Signed registries, automatic updates, policy/UI packages, and model network tools | Planned |
 | VM-grade isolation of the host-side agent runtime | Planned |
 

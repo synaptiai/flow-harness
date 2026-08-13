@@ -332,7 +332,11 @@ Alternatives were rejected as follows:
   counted processes outside the command PID namespace. The command profile now uses its inspected
   cgroup `PidsLimit=64` and omits the host-global rlimit.
 
-The real Linux x64 Docker criteria remain unproved locally. Publication must run the two named
-container runtime files on the pinned hosted runner before Issue #78 can be accepted. These local
-results do not promise macOS or Windows container support, VM-grade isolation, or managed-runtime
-behavior.
+- Hosted CI run [31698882778](https://github.com/synaptiai/flow-harness/actions/runs/31698882778)
+  passed the complete quality gate on pinned Linux x64. The runtime tests proved real command
+  success, denial, resource controls, timeout, cancellation, cleanup, recovery, and drift. The
+  production dependency audit also passed.
+
+Darwin cannot prove the real Linux x64 Docker criteria, so local runtime files remain skipped there.
+The hosted result supplies that evidence. It does not promise macOS or Windows container support,
+VM-grade isolation, or managed-runtime behavior.
