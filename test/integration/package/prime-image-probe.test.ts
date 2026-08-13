@@ -105,6 +105,8 @@ describe("Prime image inventory probe", () => {
     const { nodeRoot, primeRoot, pythonRoot } = fixture;
     await mkdir(join(primeRoot, "dist"), { recursive: true });
     await mkdir(join(nodeRoot, "zod"), { recursive: true });
+    await mkdir(join(pythonRoot, "base", "bin"), { recursive: true });
+    await mkdir(join(pythonRoot, "venv", "bin"), { recursive: true });
     await mkdir(join(pythonRoot, "lib", "example-1.2.3.dist-info"), { recursive: true });
     await mkdir(join(pythonRoot, "lib", "example-1.2.3.dist-info", "nested"), {
       recursive: true,
@@ -120,6 +122,8 @@ describe("Prime image inventory probe", () => {
       join(pythonRoot, "lib", "example-1.2.3.dist-info", "nested", "METADATA"),
       "Name: nested\nVersion: 9.9.9\n",
     );
+    await writeFile(join(pythonRoot, "base", "bin", "python3"), "PRIVATE_INTERPRETER\n");
+    await symlink("../../base/bin/python3", join(pythonRoot, "venv", "bin", "python3"));
     await writeFile(join(pythonRoot, "venv", "pyvenv.cfg"), "version = 3.11.15\n");
 
     const first = await createRuntimeInventory(fixture);

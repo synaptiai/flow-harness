@@ -29,6 +29,7 @@ func main() {
 		"HOME=/workspace/.flow-prime/home",
 		"LANG=C.UTF-8",
 		"LC_ALL=C.UTF-8",
+		"LD_LIBRARY_PATH=/opt/flow/python/lib:/opt/flow/python/base/lib",
 		"PATH=/opt/flow/python/venv/bin:/opt/flow/python/base/bin:/usr/bin:/bin",
 		"PYTHONNOUSERSITE=1",
 		"PYTHONHASHSEED=0",

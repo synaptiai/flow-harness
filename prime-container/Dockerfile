@@ -37,10 +37,24 @@ COPY python-requirements.lock /tmp/python-requirements.lock
 COPY --from=node-build /opt/flow/node/node_modules/prime-agent/dist/prime-agent-runtime /tmp/prime-agent-runtime
 RUN mkdir -p /opt/flow/python/base \
     && cp -a /usr/local/. /opt/flow/python/base/ \
-    && /opt/flow/python/base/bin/python3 -m venv --copies /opt/flow/python/venv \
+    && rm -rf /opt/flow/python/base/lib/python3.11/idlelib /opt/flow/python/base/lib/python3.11/tkinter \
+    && rm -f /opt/flow/python/base/lib/python3.11/lib-dynload/_tkinter*.so \
+    && /opt/flow/python/base/bin/python3 -m venv /opt/flow/python/venv \
     && /opt/flow/python/venv/bin/pip install --require-hashes --only-binary=:all: --requirement /tmp/python-requirements.lock \
     && /opt/flow/python/venv/bin/pip install --no-deps --no-build-isolation /tmp/prime-agent-runtime \
-    && /opt/flow/python/venv/bin/python -I -B -c 'import bs4, dill, httpx, ipykernel, lxml, numpy, pandas, pydantic, requests, rlm, scipy, tyro, yaml' \
+    && mkdir -p /opt/flow/python/lib \
+    && find /opt/flow/python -type f \( -perm /111 -o -name '*.so' -o -name '*.so.*' \) -exec ldd {} \; > /tmp/python-runtime-ldd 2>/dev/null \
+    && if grep -Fq 'not found' /tmp/python-runtime-ldd; then exit 1; fi \
+    && sed -n -e 's|.*=> \(/[^ ]*\) .*|\1|p' -e 's|^\(/[^ ]*\) .*|\1|p' /tmp/python-runtime-ldd \
+        | grep -Ev '^/opt/flow/python/' \
+        | grep -Ev '/(libc\.so\.6|libm\.so\.6|libpthread\.so\.0|libdl\.so\.2|librt\.so\.1|libutil\.so\.1|libresolv\.so\.2|ld-linux[^/]*)$' \
+        | sort -u > /tmp/python-runtime-libraries \
+    && while IFS= read -r library; do \
+        target="/opt/flow/python/lib/$(basename "$library")"; \
+        if [ -e "$target" ] && ! cmp -s "$library" "$target"; then exit 1; fi; \
+        cp -L --preserve=mode,timestamps "$library" "$target"; \
+    done < /tmp/python-runtime-libraries \
+    && LD_LIBRARY_PATH=/opt/flow/python/lib:/opt/flow/python/base/lib /opt/flow/python/venv/bin/python -I -B -c 'import bs4, dill, httpx, ipykernel, lxml, numpy, pandas, pydantic, requests, rlm, scipy, tyro, yaml' \
     && rm -rf /opt/flow/python/venv/lib/python3.11/site-packages/tornado/test \
     && find /opt/flow/python -xdev -exec touch --date="@${SOURCE_DATE_EPOCH}" {} +
 
@@ -55,7 +69,7 @@ COPY --from=native-build /out/flow-prime-node-hardening.so /opt/flow/lib/flow-pr
 COPY image-probe.mjs /opt/flow/bin/flow-prime-image-probe.mjs
 COPY --from=node-build /opt/flow/node/node_modules /opt/flow/node/node_modules
 COPY flow-dist /opt/flow/node/flow-dist
-RUN /opt/flow/python/venv/bin/python -I -B -c 'import bs4, dill, httpx, ipykernel, lxml, numpy, pandas, pydantic, requests, rlm, scipy, tyro, yaml' \
+RUN LD_LIBRARY_PATH=/opt/flow/python/lib:/opt/flow/python/base/lib /opt/flow/python/venv/bin/python -I -B -c 'import bs4, dill, httpx, ipykernel, lxml, numpy, pandas, pydantic, requests, rlm, scipy, tyro, yaml' \
     && groupadd --gid 10001 flow-node \
     && useradd --uid 10001 --gid 10001 --no-create-home --no-log-init --home-dir /run/flow-node flow-node \
     && groupadd --gid 10002 flow-python \

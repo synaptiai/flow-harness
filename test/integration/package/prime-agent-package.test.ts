@@ -241,10 +241,16 @@ describe("Prime Agent package boundary", () => {
     );
     expect(dockerfile).toContain("mkdir -p /opt/flow/python/base");
     expect(dockerfile).toContain("cp -a /usr/local/. /opt/flow/python/base/");
-    expect(dockerfile).toContain(
-      "/opt/flow/python/base/bin/python3 -m venv --copies /opt/flow/python/venv",
-    );
+    expect(dockerfile).toContain("/opt/flow/python/base/bin/python3 -m venv /opt/flow/python/venv");
+    expect(dockerfile).not.toContain("-m venv --copies");
     expect(dockerfile).toContain("/opt/flow/python/venv/bin/pip install");
+    expect(dockerfile).toContain("mkdir -p /opt/flow/python/lib");
+    expect(dockerfile).toContain("find /opt/flow/python -type f");
+    expect(dockerfile).toContain("grep -Fq 'not found' /tmp/python-runtime-ldd");
+    expect(dockerfile).toContain("lib/python3.11/lib-dynload/_tkinter*.so");
+    expect(dockerfile).toContain("cp -L --preserve=mode,timestamps");
+    const pythonLibraryPath = "LD_LIBRARY_PATH=/opt/flow/python/lib:/opt/flow/python/base/lib";
+    expect(dockerfile).toContain(pythonLibraryPath);
     const runtimeStage = dockerfile.indexOf(["FROM ", "$", "{NODE_IMAGE} AS runtime"].join(""));
     const runtimePythonCopy = dockerfile.indexOf(
       "COPY --from=python-build /opt/flow/python /opt/flow/python",
@@ -263,6 +269,7 @@ describe("Prime Agent package boundary", () => {
     expect(pythonLauncherSource).toContain(
       '"PATH=/opt/flow/python/venv/bin:/opt/flow/python/base/bin:/usr/bin:/bin"',
     );
+    expect(pythonLauncherSource).toContain(`"${pythonLibraryPath}"`);
     expect(supervisorSource).toContain(
       '"PATH=/opt/flow/bin:/opt/flow/python/venv/bin:/opt/flow/python/base/bin:/usr/bin:/bin"',
     );
