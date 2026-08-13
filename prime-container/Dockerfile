@@ -43,7 +43,7 @@ RUN mkdir -p /opt/flow/python/base \
     && /opt/flow/python/venv/bin/pip install --require-hashes --only-binary=:all: --requirement /tmp/python-requirements.lock \
     && /opt/flow/python/venv/bin/pip install --no-deps --no-build-isolation /tmp/prime-agent-runtime \
     && mkdir -p /opt/flow/python/lib \
-    && find /opt/flow/python -type f \( -perm /111 -o -name '*.so' -o -name '*.so.*' \) -exec ldd {} \; > /tmp/python-runtime-ldd 2>/dev/null \
+    && find /opt/flow/python -type f ! -path '*/*.libs/*' \( -perm /111 -o -name '*.so' -o -name '*.so.*' \) -exec ldd {} \; > /tmp/python-runtime-ldd 2>/dev/null \
     && if grep -Fq 'not found' /tmp/python-runtime-ldd; then exit 1; fi \
     && sed -n -e 's|.*=> \(/[^ ]*\) .*|\1|p' -e 's|^\(/[^ ]*\) .*|\1|p' /tmp/python-runtime-ldd \
         | grep -Ev '^/opt/flow/python/' \

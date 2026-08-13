@@ -246,6 +246,7 @@ describe("Prime Agent package boundary", () => {
     expect(dockerfile).toContain("/opt/flow/python/venv/bin/pip install");
     expect(dockerfile).toContain("mkdir -p /opt/flow/python/lib");
     expect(dockerfile).toContain("find /opt/flow/python -type f");
+    expect(dockerfile).toContain("! -path '*/*.libs/*'");
     expect(dockerfile).toContain("grep -Fq 'not found' /tmp/python-runtime-ldd");
     expect(dockerfile).toContain("lib/python3.11/lib-dynload/_tkinter*.so");
     expect(dockerfile).toContain("cp -L --preserve=mode,timestamps");
