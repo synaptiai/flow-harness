@@ -220,8 +220,8 @@ func validateKernelConnectionFile(file *os.File) (kernelConnectionInformation, e
 		return kernelConnectionInformation{}, fmt.Errorf("inspect kernel connection file: %w", err)
 	}
 	stat, ok := information.Sys().(*syscall.Stat_t)
-	if !ok || !information.Mode().IsRegular() || stat.Uid != NodeUID || stat.Gid != NodeUID ||
-		information.Mode().Perm() != 0600 || information.Size() < 1 ||
+	if !ok || !information.Mode().IsRegular() || stat.Uid != NodeUID || stat.Gid != SharedGID ||
+		information.Mode().Perm() != 0660 || information.Size() < 1 ||
 		information.Size() > kernelcontract.MaxMessageBytes {
 		return kernelConnectionInformation{}, errors.New("kernel connection file violates the fixed identity")
 	}

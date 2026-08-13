@@ -11,9 +11,9 @@ import (
 )
 
 const (
-	NodeUID   = 10001
+	NodeUID   = kernelcontract.NodeUID
 	PythonUID = 10002
-	SharedGID = 10003
+	SharedGID = kernelcontract.SharedGID
 )
 
 func ReadRequest(reader io.Reader) (kernelcontract.Request, error) {

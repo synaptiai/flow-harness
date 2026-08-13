@@ -13,6 +13,8 @@ const (
 	ConnectionDirPrefix  = "prime-agent-kernel-"
 	PythonConnectionPath = "/workspace/.flow-prime/tmp/connection.json"
 	MaxMessageBytes      = 8192
+	NodeUID              = 10001
+	SharedGID            = 10003
 )
 
 type Request struct {
