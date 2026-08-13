@@ -22,7 +22,7 @@ describe.skipIf(!linux)("Prime OCI hard resource limits", () => {
             "def text(path):",
             "    return open(path, encoding='utf-8').read().strip()",
             "stats = os.statvfs('/workspace')",
-            "file_probe = subprocess.run([sys.executable, '-I', '-c', \"f=open('/workspace/fsize-probe','wb'); f.seek(268435456); f.write(b'x')\"], capture_output=True)",
+            "file_probe = subprocess.run([sys.executable, '-I', '-c', \"f=open('/workspace/fsize-probe','wb',buffering=0); f.seek(268435456); f.write(b'x')\"], capture_output=True)",
             "try: os.unlink('/workspace/fsize-probe')",
             "except OSError: pass",
             "descriptors = []",

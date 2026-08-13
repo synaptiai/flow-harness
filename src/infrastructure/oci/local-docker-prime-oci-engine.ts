@@ -1,7 +1,6 @@
-import { isDeepStrictEqual } from "node:util";
-
 import type { EvaluationOciLease } from "../../domain/evaluation/attempt.js";
 import type { ExternalHarnessIdentity } from "../../domain/evaluation/external-harness.js";
+import { isDockerJsonEqual } from "./docker-json-equality.js";
 import type { DockerUnixApiClient } from "./docker-unix-api-client.js";
 import type {
   PrimeOciCreatedIdentity,
@@ -478,25 +477,6 @@ function omitKeys(
 ): Record<string, unknown> {
   const omitted = new Set(omittedKeys);
   return Object.fromEntries(Object.entries(value).filter(([key]) => !omitted.has(key)));
-}
-
-function isDockerJsonEqual(actual: unknown, expected: unknown): boolean {
-  return isDeepStrictEqual(normalizeDockerJson(actual), normalizeDockerJson(expected));
-}
-
-function normalizeDockerJson(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map((item) => normalizeDockerJson(item));
-  }
-  if (typeof value !== "object" || value === null) {
-    return value;
-  }
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>).map(([key, item]) => [
-      key,
-      normalizeDockerJson(item),
-    ]),
-  );
 }
 
 function tmpfsOptions(bytes: number, inodes: number, mode: string): string {

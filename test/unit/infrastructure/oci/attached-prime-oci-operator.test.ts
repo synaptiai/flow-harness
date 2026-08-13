@@ -353,6 +353,7 @@ describe("attached Prime OCI operator", () => {
 
   it("does not wait forever for a non-cooperative broker close after cancellation", async () => {
     const controller = new AbortController();
+    const cleanupController = new AbortController();
     const transport: PrimeOciAttachedTransport = {
       output: outputFrames([]),
       write: vi.fn(async () => undefined),
@@ -366,6 +367,7 @@ describe("attached Prime OCI operator", () => {
         infer: vi.fn(),
         close: vi.fn(() => {
           controller.abort(new Error("Prime operation cancelled during broker close"));
+          cleanupController.abort(new Error("Prime cleanup deadline expired"));
           return new Promise<void>(() => undefined);
         }),
       },
@@ -374,6 +376,7 @@ describe("attached Prime OCI operator", () => {
     const input = {
       ...operationInput(async () => undefined, transport),
       signal: controller.signal,
+      createCleanupSignal: () => cleanupController.signal,
     };
 
     const outcome = await Promise.race([
@@ -482,6 +485,54 @@ describe("attached Prime OCI operator", () => {
     expect(returnOutput).toHaveBeenCalledOnce();
     expect(resultSink.abort).toHaveBeenCalledOnce();
     expect(transport.closeInput).toHaveBeenCalledOnce();
+    expect(broker.close).toHaveBeenCalledOnce();
+  });
+
+  it("uses a fresh cleanup signal after operation cancellation", async () => {
+    const controller = new AbortController();
+    const cleanupController = new AbortController();
+    const cancellation = new Error("Prime operation cancelled before cleanup");
+    let markNextStarted: () => void = () => undefined;
+    const nextStarted = new Promise<void>((resolve) => {
+      markNextStarted = resolve;
+    });
+    const outputIterator: AsyncIterator<Uint8Array> = {
+      next: () => {
+        markNextStarted();
+        return new Promise<IteratorResult<Uint8Array>>(() => undefined);
+      },
+      return: vi.fn(async () => ({ done: true as const, value: undefined })),
+    };
+    const resultSink = sink();
+    const transport: PrimeOciAttachedTransport = {
+      output: { [Symbol.asyncIterator]: () => outputIterator },
+      write: vi.fn(async () => undefined),
+      closeInput: vi.fn(async (signal) => {
+        if (signal?.aborted === true) {
+          throw signal.reason;
+        }
+      }),
+      release: vi.fn(async () => undefined),
+    };
+    const broker = { infer: vi.fn(), close: vi.fn(async () => undefined) };
+    const operator = new AttachedPrimeOciOperator({
+      fixture: fixture([], new Map()),
+      resultSink,
+      inferenceBroker: broker,
+      validateReadiness: vi.fn(async () => undefined),
+    });
+    const operation = operator.operate({
+      ...operationInput(async () => undefined, transport),
+      signal: controller.signal,
+      createCleanupSignal: () => cleanupController.signal,
+    });
+
+    await nextStarted;
+    controller.abort(cancellation);
+
+    await expect(operation).rejects.toBe(cancellation);
+    expect(resultSink.abort).toHaveBeenCalledWith(cancellation);
+    expect(transport.closeInput).toHaveBeenCalledWith(cleanupController.signal);
     expect(broker.close).toHaveBeenCalledOnce();
   });
 
@@ -711,6 +762,7 @@ function operationInput(
     containerId: "f".repeat(64),
     transport,
     checkpoint,
+    createCleanupSignal: () => new AbortController().signal,
   };
 }
 

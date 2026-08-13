@@ -357,6 +357,75 @@ describe("local Prime OCI harness runtime", () => {
     expect(cleanupSignalFactory).toHaveBeenCalledWith(30_000);
   });
 
+  it("settles attached cleanup before container cleanup after a deadline", async () => {
+    const descriptor = primeDescriptor();
+    const deadlineController = new AbortController();
+    const cleanupController = new AbortController();
+    const globalCleanupController = new AbortController();
+    const cleanupSignalFactory = vi
+      .fn()
+      .mockReturnValueOnce(cleanupController.signal)
+      .mockReturnValueOnce(globalCleanupController.signal);
+    const engine = fakeEngine();
+    const events: string[] = [];
+    vi.mocked(engine.stop).mockImplementation(async () => {
+      events.push("container-stop");
+    });
+    let markOperationStarted: () => void = () => undefined;
+    const operationStarted = new Promise<void>((resolve) => {
+      markOperationStarted = resolve;
+    });
+    let releaseAttachedCleanup: () => void = () => undefined;
+    const attachedCleanup = new Promise<void>((resolve) => {
+      releaseAttachedCleanup = resolve;
+    });
+    const runtime = new LocalPrimeOciHarnessRuntime({
+      registry: { resolveAdmitted: vi.fn(async () => descriptor) },
+      globalAdmission: fakeGlobalAdmission(),
+      createEngine: vi.fn(async () => engine),
+      createIntent: vi.fn(async (request) => intentLease(request.evaluation.trial.trialId)),
+      operate: vi.fn(async (input): Promise<PrimeOciOperationEvidence> => {
+        markOperationStarted();
+        try {
+          await new Promise<never>((_resolve, reject) => {
+            input.signal?.addEventListener("abort", () => reject(input.signal?.reason), {
+              once: true,
+            });
+          });
+        } catch (error) {
+          input.createCleanupSignal();
+          events.push("attached-cleanup-start");
+          await attachedCleanup;
+          events.push("attached-cleanup-end");
+          throw error;
+        }
+        throw new Error("held Prime operation completed without cancellation");
+      }),
+      platform: "linux",
+      clockMs: () => 10,
+      deadlineFactory: () => ({
+        signal: deadlineController.signal,
+        get expired() {
+          return deadlineController.signal.aborted;
+        },
+        dispose: vi.fn(),
+      }),
+      cleanupSignalFactory,
+    });
+    const execution = runtime.execute(runtimeRequest(async () => undefined));
+
+    await operationStarted;
+    deadlineController.abort(new Error("Prime execution deadline expired"));
+    await vi.waitFor(() => expect(events).toContain("attached-cleanup-start"));
+
+    expect(engine.stop).not.toHaveBeenCalled();
+    releaseAttachedCleanup();
+    await expect(execution).resolves.toMatchObject({ harness: { outcome: "timed_out" } });
+    expect(events).toEqual(["attached-cleanup-start", "attached-cleanup-end", "container-stop"]);
+    expect(engine.stop).toHaveBeenCalledWith("f".repeat(64), cleanupController.signal);
+    expect(cleanupSignalFactory).toHaveBeenCalledTimes(2);
+  });
+
   it("terminates a running container after the host monitor rejects its policy", async () => {
     const descriptor = primeDescriptor();
     const globalAdmission = fakeGlobalAdmission();

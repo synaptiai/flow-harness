@@ -48,7 +48,7 @@ describe.skipIf(!linux)("Prime OCI native startup boundary", () => {
         exitCode: 0,
         timedOut: false,
         aborted: false,
-        kernelRequests: 0,
+        kernelRequests: 1,
       });
     } finally {
       await session.dispose();

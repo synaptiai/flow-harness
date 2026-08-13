@@ -1,6 +1,5 @@
-import { isDeepStrictEqual } from "node:util";
-
 import type { ExternalHarnessIdentity } from "../../domain/evaluation/external-harness.js";
+import { isDockerJsonEqual } from "./docker-json-equality.js";
 import type { DockerUnixApiClient } from "./docker-unix-api-client.js";
 import {
   PrimeGlobalAdmissionUnsafeStateError,
@@ -111,7 +110,7 @@ export class LocalDockerPrimeGlobalSlotEngine implements PrimeGlobalSlotEngine {
       !/^[a-f0-9]{64}$/.test(ownerNonce) ||
       policyDigest !== this.options.identity.runtime.policy.digest ||
       daemonId !== this.options.daemonId ||
-      !isDeepStrictEqual(actual, expected)
+      !isDockerJsonEqual(actual, expected)
     ) {
       throw new PrimeGlobalAdmissionUnsafeStateError(
         "Prime global slot lock contradicts its admitted control policy",

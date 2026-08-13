@@ -166,6 +166,11 @@ export async function runVerifiedPrimeSession(
       input.signal === undefined
         ? controller.signal
         : AbortSignal.any([controller.signal, input.signal]);
+    let cleanupSignal: AbortSignal | undefined;
+    const createCleanupSignal = (): AbortSignal => {
+      cleanupSignal ??= AbortSignal.timeout(identity.runtime.policy.cleanupGraceMs);
+      return cleanupSignal;
+    };
     const evidence = await new AttachedPrimeOciOperator({
       fixture,
       resultSink,
@@ -193,6 +198,7 @@ export async function runVerifiedPrimeSession(
         checkpoints.push(checkpoint);
       },
       signal: operationSignal,
+      createCleanupSignal,
     });
     await verifiedTransport.release();
     released = true;

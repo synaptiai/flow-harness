@@ -870,8 +870,9 @@ The evaluation store permits one lease owner. Recovery has count and time limits
 different identity is not enough to authorize removal.
 
 The operation deadline limits identity checks, create, start, model work, kernel work, and export.
-Each pending attached-output read races this deadline. A separate fixed cleanup grace covers stop,
-kill, inspect, and removal.
+Each pending attached-output read races this deadline. A separate fixed cleanup grace starts after
+operation settlement and covers attached-input close, inference-broker close, stop, kill, inspect,
+and removal.
 
 Flow does not accept success or start another trial until removal is proved. If cleanup is
 uncertain, Flow keeps the lease and stops the evaluation with a typed unsafe-state error.
@@ -942,7 +943,8 @@ _Captured by specification-capture on 2026-08-10. Source: Issue #76 and upstream
 ### Failure modes
 
 - **Timeouts** — One operation deadline covers identity checks, image checks, container start,
-  driver work, host inference, kernel work, and export. A fixed cleanup grace covers settlement.
+  driver work, host inference, kernel work, and export. A separate fixed cleanup grace covers
+  attached transport, broker, container, and admission settlement.
 
 - **Partial failures** — A started trial produces one terminal record. A crash after durable start
   does not retry the provider. Cleanup uncertainty cannot become success.
@@ -1104,7 +1106,7 @@ user before it runs the setup.
 | Reconcile effective controls | Security | `npm run build && npm run test:runtime -- test/runtime/prime-agent-oci-startup.runtime.test.ts && npx vitest run test/unit/infrastructure/oci/attached-prime-oci-operator.test.ts` | Each readiness group matches policy. Native startup proves that Docker system files stay read-only and match the normalized readiness contract. Changed readiness rejects before fixture and secret transfer. Non-Error operation and cleanup rejections become fixed stage errors. | Host-kernel compromise |
 | Enforce global admission | Security | `npm run build && npm run test:runtime -- test/runtime/prime-agent-oci-admission.runtime.test.ts` | Independent processes and two required Docker-authorized users share one daemon slot. Setup failure fails the gate. | Multi-host cluster quotas |
 | Reserve host headroom | Security | `npm run build && npm run test:runtime -- test/runtime/prime-agent-oci-admission.runtime.test.ts -t "host headroom"` | Exact and one-under host and ancestor memory, PID, and CPU cases follow policy. The three-sample latency case also passes. | Multi-host cluster quotas |
-| Enforce hard resource limits | Security | `npm run build && npm run test:runtime -- test/runtime/prime-agent-oci-limits.runtime.test.ts` | Cgroup-v2 PID, memory, swap, CPU, I/O, descriptor, file, core, byte, and inode boundaries match. | Multi-host cluster quotas |
+| Enforce hard resource limits | Security | `npm run build && npm run test:runtime -- test/runtime/prime-agent-oci-limits.runtime.test.ts` | Cgroup-v2 PID, memory, swap, CPU, I/O, descriptor, file, core, byte, and inode boundaries match. An unbuffered syscall probe rejects one byte beyond the file-size limit. | Multi-host cluster quotas |
 | Enforce transfer limits | Boundary | `npx vitest run test/unit/infrastructure/oci/prime-container-protocol.test.ts` | Path-component, file, frame, encoded-transfer-byte, and driver-byte checks follow policy. The 16,385-frame distribution passes. | Larger workspaces |
 | Suppress daemon logs | Security | `npm run build && npm run test:runtime -- test/runtime/prime-agent-oci-logging.runtime.test.ts` | A noisy trial has log type `none`. Docker stores no protocol or tool bytes. | Host process tracing |
 | Enforce the outer protocol | Contract | `npx vitest run test/unit/infrastructure/oci/prime-container-protocol.test.ts` | Nested trees pass. File prefixes, frame order, path, mode, digest, and bound mutations fail. | Protocol version two |
@@ -1113,8 +1115,8 @@ user before it runs the setup.
 | Reconcile health and core controls | Security | `npm run build && npm run test:runtime -- test/runtime/prime-agent-oci-startup.runtime.test.ts` | Startup readiness proves no health check, zero core limits, and non-dumpable trusted processes. | Host process tracing |
 | Reject replay identity drift | Data | `npx vitest run test/unit/infrastructure/fs/local-evaluation-store-prime.test.ts` | Every Prime and OCI identity leaf and each adapter mismatch fails after re-digest. | Signed evidence |
 | Fail closed on OCI runtime faults | Error handling | `npx vitest run test/unit/infrastructure/oci/local-prime-oci-harness-runtime.test.ts test/unit/infrastructure/oci/prime-container-lifecycle.test.ts test/unit/infrastructure/oci/local-docker-prime-oci-engine.test.ts test/unit/application/run-evaluation.test.ts` | Runtime, lifecycle, engine, timeout, cancellation, and cleanup faults fail closed. | Provider uptime |
-| Settle native timeout and cancellation | Recovery | `npx vitest run test/unit/infrastructure/oci/local-prime-oci-harness-runtime.test.ts test/integration/prime/prime-container-runtime-helper.test.ts && npm run build && npm run test:runtime -- test/runtime/prime-agent-oci-settlement.runtime.test.ts` | Unit evidence classifies timeout and cancellation. A timeout reports only the inference request count and the last allowlisted driver progress stage. Native elapsed deadline and operator cancellation remove the container. | Recovery of foreign containers |
-| Recover every container transition | Recovery | `npm run build && npm run test:runtime -- test/runtime/prime-agent-oci-recovery.runtime.test.ts test/runtime/prime-agent-oci-admission.runtime.test.ts` | Crashes around global lock and container transitions settle exact leases. Create-response loss uses the exact name. | Recovery of foreign containers |
+| Settle native timeout and cancellation | Recovery | `npx vitest run test/unit/infrastructure/oci/attached-prime-oci-operator.test.ts test/unit/infrastructure/oci/local-prime-oci-harness-runtime.test.ts test/integration/prime/prime-container-runtime-helper.test.ts && npm run build && npm run test:runtime -- test/runtime/prime-agent-oci-settlement.runtime.test.ts` | Unit evidence classifies timeout and cancellation. A timeout reports only the inference request count and the last allowlisted driver progress stage. Attached cleanup settles under one fresh grace signal before container cleanup. Native elapsed deadline and operator cancellation remove the container. | Recovery of foreign containers |
+| Recover every container transition | Recovery | `npm run build && npm run test:runtime -- test/runtime/prime-agent-oci-recovery.runtime.test.ts test/runtime/prime-agent-oci-admission.runtime.test.ts` | Crashes around global lock and container transitions settle exact leases. Strict-parser Docker objects compare by JSON value. Created leases reconcile by full ID. Create-response loss uses the exact name. | Recovery of foreign containers |
 | Record honest metrics | Data | `npx vitest run test/unit/infrastructure/prime/prime-evaluation-metrics.test.ts test/unit/infrastructure/oci/attached-prime-oci-operator.test.ts test/integration/prime/native-prime-agent-evaluation.test.ts` | Each live field and conversion passes. Unavailable active-time and recovery data stay `null`. | Metrics that Prime does not expose |
 | Keep inspect and export offline | Offline | `npx vitest run test/integration/cli/evaluation-offline-prime.test.ts` | Offline commands pass with runtime imports blocked. Unique socket, daemon, device, container, and lease markers stay private. | Offline trial execution |
 | Publish clear docs and example | Documentation | `npx vitest run test/integration/package/prime-agent-package.test.ts test/scaffold/community-files.test.ts && npm run docs:ste && npm run pack:check` | Packed CLI checks the example. Public docs cover authority, limits, recovery, and offline audit. Changed prose passes STE. | Cleanup of old prose debt |

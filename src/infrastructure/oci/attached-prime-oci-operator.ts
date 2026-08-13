@@ -300,6 +300,7 @@ export class AttachedPrimeOciOperator {
       ledger.markLifecycleIncomplete();
     }
 
+    const cleanupSignal = input.createCleanupSignal();
     let cleanupError: unknown;
     if (operationError !== undefined && !resultCommitted) {
       try {
@@ -309,7 +310,7 @@ export class AttachedPrimeOciOperator {
       }
     }
     try {
-      await input.transport.closeInput(input.signal);
+      await input.transport.closeInput(cleanupSignal);
     } catch (error) {
       cleanupError = combineErrors(
         cleanupError,
@@ -319,7 +320,7 @@ export class AttachedPrimeOciOperator {
     try {
       const closePromise = this.options.inferenceBroker.close?.(input.request.evaluation);
       if (closePromise !== undefined) {
-        await waitForAbortable(closePromise, input.signal);
+        await waitForAbortable(closePromise, cleanupSignal);
       }
     } catch (error) {
       cleanupError = combineErrors(

@@ -32,6 +32,25 @@ class RecoveryEngine {
     return { containerId: inspection.Id, inspectedPolicyDigest: intent.policyDigest };
   }
 
+  async recoverCreated(lease) {
+    const inspection = await this.api.inspectContainer(lease.containerId);
+    if (inspection === null) {
+      const byName = await this.api.inspectContainer(lease.containerName);
+      if (byName !== null) {
+        throw new Error("Prime OCI durable container ID is absent but its fixed name is occupied");
+      }
+      return null;
+    }
+    assertRecoveredInspection(inspection, lease);
+    if (inspection.Id !== lease.containerId) {
+      throw new Error("Prime OCI durable container identity changed");
+    }
+    return {
+      containerId: inspection.Id,
+      inspectedPolicyDigest: lease.inspectedPolicyDigest,
+    };
+  }
+
   async attach() {
     crashAt("attach-response");
     return {

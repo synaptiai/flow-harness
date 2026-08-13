@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { parseStrictJson } from "../../../../src/domain/strict-json.js";
 import { LocalDockerPrimeGlobalSlotEngine } from "../../../../src/infrastructure/oci/local-docker-prime-global-slot.js";
 import type { PrimeGlobalSlotLease } from "../../../../src/infrastructure/oci/prime-global-admission.js";
 import { primeExternalHarnessIdentity } from "../../../fixtures/evaluation/prime-external-harness-identity.js";
@@ -35,6 +36,18 @@ describe("local Docker Prime global slot", () => {
         /global slot.*policy|lock.*policy/i,
       );
     }
+  });
+
+  it("accepts an exact Docker inspection parsed through the strict JSON boundary", async () => {
+    const fixture = engineFixture();
+    const inspection = parseStrictJson(JSON.stringify(fixture.inspection), {
+      maxDepth: 64,
+      maxNodes: 200_000,
+      valueLabel: "Prime global slot inspection",
+    }) as unknown as typeof fixture.inspection;
+    fixture.api.inspectContainer.mockResolvedValue(inspection);
+
+    await expect(fixture.engine.inspect("flow-prime-global-v1")).resolves.toEqual(fixture.lock);
   });
 });
 
@@ -86,6 +99,7 @@ function engineFixture(change?: "image" | "label" | "running") {
   };
   return {
     api,
+    inspection,
     lock,
     engine: new LocalDockerPrimeGlobalSlotEngine({
       api,

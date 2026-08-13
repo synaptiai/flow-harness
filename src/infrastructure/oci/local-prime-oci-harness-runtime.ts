@@ -61,6 +61,7 @@ export interface PrimeOciOperationInput {
   readonly transport: PrimeOciAttachedTransport;
   readonly checkpoint: (state: PrimeOciLifecycleCheckpoint) => Promise<void>;
   readonly signal?: AbortSignal;
+  readonly createCleanupSignal: () => AbortSignal;
 }
 
 export interface PrimeOciOperationEvidence {
@@ -166,6 +167,13 @@ export class LocalPrimeOciHarnessRuntime implements ExternalHarnessRuntime {
         let evidence: PrimeOciOperationEvidence | undefined;
         let lifecycleError: unknown;
         let policyTerminationError: unknown;
+        let cleanupSignal: AbortSignal | undefined;
+        const createExecutionCleanupSignal = (): AbortSignal => {
+          cleanupSignal ??= (this.options.cleanupSignalFactory ?? createCleanupSignal)(
+            primeRequest.identity.runtime.policy.cleanupGraceMs,
+          );
+          return cleanupSignal;
+        };
         try {
           await new PrimeOciContainerLifecycle(engine).run({
             intent: intent as PrimeOciIntentLease,
@@ -197,27 +205,48 @@ export class LocalPrimeOciHarnessRuntime implements ExternalHarnessRuntime {
                         }
                       });
               try {
-                evidence = await waitForAbortable(
-                  this.options.operate({
-                    request: primeRequest,
-                    descriptor,
-                    containerId,
-                    transport,
-                    checkpoint,
-                    signal: monitoredOperationSignal,
-                  }),
-                  monitoredOperationSignal,
-                );
+                const operation = this.options.operate({
+                  request: primeRequest,
+                  descriptor,
+                  containerId,
+                  transport,
+                  checkpoint,
+                  signal: monitoredOperationSignal,
+                  createCleanupSignal: createExecutionCleanupSignal,
+                });
+                try {
+                  evidence = await waitForAbortable(operation, monitoredOperationSignal);
+                } catch (error) {
+                  if (!monitoredOperationSignal.aborted) {
+                    throw error;
+                  }
+                  const cancellation = abortError(monitoredOperationSignal);
+                  try {
+                    await waitForAbortable(operation, createExecutionCleanupSignal());
+                  } catch (settlementError) {
+                    if (cleanupSignal?.aborted === true) {
+                      throw new AggregateError(
+                        [cancellation, settlementError],
+                        "Prime OCI operation and cleanup both failed",
+                      );
+                    }
+                    if (
+                      settlementError instanceof AggregateError ||
+                      (monitoredOperationSignal.reason instanceof Error &&
+                        settlementError !== monitoredOperationSignal.reason)
+                    ) {
+                      throw settlementError;
+                    }
+                  }
+                  throw cancellation;
+                }
               } finally {
                 stopMonitor.abort(new Error("Prime host runtime monitor stopped"));
                 await waitForAbortable(monitorPromise, monitorSignal).catch(() => undefined);
               }
             },
             operationSignal,
-            createCleanupSignal: () =>
-              (this.options.cleanupSignalFactory ?? createCleanupSignal)(
-                primeRequest.identity.runtime.policy.cleanupGraceMs,
-              ),
+            createCleanupSignal: createExecutionCleanupSignal,
           });
         } catch (error) {
           if (error instanceof PrimeOciUnsafeStateError) {
