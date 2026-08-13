@@ -129,7 +129,7 @@ func TestPreparePrivatePathsCreatesTheTreeBeforeSettlingTheRoot(t *testing.T) {
 		"mkdir /workspace/.flow-prime/control 0700",
 		"chown /run/flow-node 10001:10001", "chmod /run/flow-node 0700",
 		"chown /workspace/.flow-prime/home 10002:10002", "chmod /workspace/.flow-prime/home 0700",
-		"chown /workspace/.flow-prime/tmp 10002:10002", "chmod /workspace/.flow-prime/tmp 0700",
+		"chown /workspace/.flow-prime/tmp 0:10002", "chmod /workspace/.flow-prime/tmp 0770",
 		"chown /workspace/.flow-prime/control 10001:10003", "chmod /workspace/.flow-prime/control 0770",
 		"chown /workspace/.flow-prime 10002:10003", "chmod /workspace/.flow-prime 0710",
 	}

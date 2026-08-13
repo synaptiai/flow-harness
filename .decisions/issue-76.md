@@ -423,8 +423,11 @@ pinned Prime provisioner then reads the resolved ports from its original randomi
 The workspace root and `.flow-prime` use user 10002, group 10003, and mode `0710`. Node can traverse
 the exact control path, but it cannot list either ancestor.
 
-The Python home and temporary directories use user 10002, group 10002, and mode `0700`. The control
-directory uses user 10001, group 10003, and mode `0770`.
+The Python home directory uses user 10002, group 10002, and mode `0700`. The temporary directory
+uses trusted supervisor user 0, Python group 10002, and mode `0770`. The supervisor creates the
+connection record as owner. Python can replace it through its primary group. Node is not user 0 and
+does not have group 10002, so it cannot access this directory. The control directory uses user
+10001, group 10003, and mode `0770`.
 
 Node cannot read the Python-owned connection file. Python cannot read the Node-owned connection
 directory or file. All other driver state stays private to user 10001. The supervisor removes both

@@ -192,7 +192,7 @@ func preparePrivatePathsWith(filesystem privatePathFilesystem) error {
 		{"/run/flow-node", 0700, supervisor.NodeUID, supervisor.NodeUID},
 		{"/workspace/.flow-prime", 0710, supervisor.PythonUID, supervisor.SharedGID},
 		{"/workspace/.flow-prime/home", 0700, supervisor.PythonUID, supervisor.PythonUID},
-		{"/workspace/.flow-prime/tmp", 0700, supervisor.PythonUID, supervisor.PythonUID},
+		{"/workspace/.flow-prime/tmp", 0770, 0, supervisor.PythonUID},
 		{"/workspace/.flow-prime/control", 0770, supervisor.NodeUID, supervisor.SharedGID},
 	}
 	for _, item := range paths {
