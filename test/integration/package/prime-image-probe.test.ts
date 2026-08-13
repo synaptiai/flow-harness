@@ -120,7 +120,7 @@ describe("Prime image inventory probe", () => {
       join(pythonRoot, "lib", "example-1.2.3.dist-info", "nested", "METADATA"),
       "Name: nested\nVersion: 9.9.9\n",
     );
-    await writeFile(join(pythonRoot, "pyvenv.cfg"), "version = 3.11.15\n");
+    await writeFile(join(pythonRoot, "venv", "pyvenv.cfg"), "version = 3.11.15\n");
 
     const first = await createRuntimeInventory(fixture);
     const second = await createRuntimeInventory(fixture);
@@ -166,7 +166,7 @@ describe("Prime image inventory probe", () => {
       join(fixture.primeRoot, "package.json"),
       '{"name":"prime-agent","version":"0.7.1"}\n',
     );
-    await writeFile(join(fixture.pythonRoot, "pyvenv.cfg"), "version = 3.11.15\n");
+    await writeFile(join(fixture.pythonRoot, "venv", "pyvenv.cfg"), "version = 3.11.15\n");
 
     for (let index = 0; index < 8_191; index += 1) {
       const packageRoot = join(fixture.nodeRoot, `package-${index}`);
@@ -199,7 +199,7 @@ describe("Prime image inventory probe", () => {
       const packageRoot = join(fixture.nodeRoot, "fixture");
       await mkdir(packageRoot);
       await writeFile(join(packageRoot, "package.json"), JSON.stringify(testCase.manifest));
-      await writeFile(join(fixture.pythonRoot, "pyvenv.cfg"), "version = 3.11.15\n");
+      await writeFile(join(fixture.pythonRoot, "venv", "pyvenv.cfg"), "version = 3.11.15\n");
       const inspection = createRuntimeInventory(fixture);
 
       if (testCase.outcome === "reject") {
@@ -222,7 +222,7 @@ describe("Prime image inventory probe", () => {
       await mkdir(packageRoot);
       await writeFile(join(packageRoot, "package.json"), JSON.stringify(identity));
     }
-    await writeFile(join(fixture.pythonRoot, "pyvenv.cfg"), "version = 3.11.15\n");
+    await writeFile(join(fixture.pythonRoot, "venv", "pyvenv.cfg"), "version = 3.11.15\n");
 
     const inspected = await createRuntimeInventory(fixture);
     expect(inspected.sbom.node).toEqual([identity]);
@@ -234,7 +234,7 @@ describe("Prime image inventory probe", () => {
     const metadataRoot = join(fixture.pythonRoot, "invalid.dist-info");
     await mkdir(metadataRoot);
     await writeFile(join(metadataRoot, "METADATA"), invalidUtf8PythonPackageMetadata);
-    await writeFile(join(fixture.pythonRoot, "pyvenv.cfg"), "version = 3.11.15\n");
+    await writeFile(join(fixture.pythonRoot, "venv", "pyvenv.cfg"), "version = 3.11.15\n");
 
     await expect(createRuntimeInventory(fixture)).rejects.toThrow(/not valid.*utf-8/i);
   });
@@ -244,7 +244,7 @@ describe("Prime image inventory probe", () => {
     async (kind) => {
       const root = await realpath(await mkdtemp(join(tmpdir(), "flow-prime-image-probe-")));
       const fixture = await probeFixture(root);
-      await writeFile(join(fixture.pythonRoot, "pyvenv.cfg"), "version = 3.11.15\n");
+      await writeFile(join(fixture.pythonRoot, "venv", "pyvenv.cfg"), "version = 3.11.15\n");
       const base =
         kind === "node"
           ? JSON.stringify({ name: "bounded-node", version: "1.0.0" })
@@ -270,7 +270,7 @@ describe("Prime image inventory probe", () => {
     const fixture = await probeFixture(root);
     const { primeRoot, pythonRoot } = fixture;
     await writeFile(join(primeRoot, "package.json"), '{"name":"prime-agent","version":"0.7.1"}\n');
-    await writeFile(join(pythonRoot, "pyvenv.cfg"), "version = 3.11.15\n");
+    await writeFile(join(pythonRoot, "venv", "pyvenv.cfg"), "version = 3.11.15\n");
     await symlink("../../../outside", join(primeRoot, "linked-package.json"));
 
     await expect(createRuntimeInventory(fixture)).rejects.toThrow(/symbolic link.*escapes/i);
@@ -286,7 +286,7 @@ async function probeFixture(root: string) {
   const binRoot = join(root, "bin");
   await Promise.all([
     mkdir(primeRoot, { recursive: true }),
-    mkdir(pythonRoot, { recursive: true }),
+    mkdir(join(pythonRoot, "venv"), { recursive: true }),
     mkdir(primeDistRoot, { recursive: true }),
     mkdir(binRoot, { recursive: true }),
   ]);

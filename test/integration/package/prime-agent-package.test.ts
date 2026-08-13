@@ -204,6 +204,14 @@ describe("Prime Agent package boundary", () => {
       resolve(repositoryRoot, "src/infrastructure/oci/local-docker-prime-oci-engine.ts"),
       "utf8",
     );
+    const pythonLauncherSource = await readFile(
+      resolve(repositoryRoot, "prime-container/cmd/flow-prime-python/main.go"),
+      "utf8",
+    );
+    const supervisorSource = await readFile(
+      resolve(repositoryRoot, "prime-container/internal/supervisor/kernel_linux.go"),
+      "utf8",
+    );
     const sourceDateEpoch = ["$", "{SOURCE_DATE_EPOCH}"].join("");
     expect(dockerfile).toMatch(
       /^# syntax=docker\/dockerfile:1\.17\.1@sha256:38387523653efa0039f8e1c89bb74a30504e76ee9f565e25c9a09841f9427b05$/m,
@@ -231,7 +239,33 @@ describe("Prime Agent package boundary", () => {
     expect(dockerfile).toContain(
       "pip install --no-deps --no-build-isolation /tmp/prime-agent-runtime",
     );
-    expect(dockerfile).toContain("python -m venv --copies /opt/flow/python");
+    expect(dockerfile).toContain("mkdir -p /opt/flow/python/base");
+    expect(dockerfile).toContain("cp -a /usr/local/. /opt/flow/python/base/");
+    expect(dockerfile).toContain(
+      "/opt/flow/python/base/bin/python3 -m venv --copies /opt/flow/python/venv",
+    );
+    expect(dockerfile).toContain("/opt/flow/python/venv/bin/pip install");
+    const runtimeStage = dockerfile.indexOf(["FROM ", "$", "{NODE_IMAGE} AS runtime"].join(""));
+    const runtimePythonCopy = dockerfile.indexOf(
+      "COPY --from=python-build /opt/flow/python /opt/flow/python",
+      runtimeStage,
+    );
+    const runtimePythonProbe = dockerfile.indexOf(
+      "/opt/flow/python/venv/bin/python -I -B -c 'import bs4, dill, httpx, ipykernel, lxml, numpy, pandas, pydantic, requests, rlm, scipy, tyro, yaml'",
+      runtimePythonCopy,
+    );
+    expect(runtimeStage).toBeGreaterThanOrEqual(0);
+    expect(runtimePythonCopy).toBeGreaterThan(runtimeStage);
+    expect(runtimePythonProbe).toBeGreaterThan(runtimePythonCopy);
+    expect(pythonLauncherSource).toContain(
+      'const pythonExecutable = "/opt/flow/python/venv/bin/python3"',
+    );
+    expect(pythonLauncherSource).toContain(
+      '"PATH=/opt/flow/python/venv/bin:/opt/flow/python/base/bin:/usr/bin:/bin"',
+    );
+    expect(supervisorSource).toContain(
+      '"PATH=/opt/flow/bin:/opt/flow/python/venv/bin:/opt/flow/python/base/bin:/usr/bin:/bin"',
+    );
     expect(dockerfile).toMatch(
       /FROM \$\{PYTHON_IMAGE\} AS python-build\nARG SOURCE_DATE_EPOCH\nENV [^\n]*PYTHONHASHSEED=0 [^\n]*SOURCE_DATE_EPOCH=\$\{SOURCE_DATE_EPOCH\}/,
     );
@@ -246,7 +280,7 @@ describe("Prime Agent package boundary", () => {
       `find /opt/flow/python -xdev -exec touch --date="@${sourceDateEpoch}" {} +`,
     );
     expect(dockerfile).toContain(
-      "rm -rf /opt/flow/python/lib/python3.11/site-packages/tornado/test",
+      "rm -rf /opt/flow/python/venv/lib/python3.11/site-packages/tornado/test",
     );
     expect(dockerfile).toContain("--no-log-init");
     expect(dockerfile).toContain(

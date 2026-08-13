@@ -240,7 +240,7 @@ async function pythonPackageInventory(root, files) {
 }
 
 async function readPythonVersion(root) {
-  const configuration = await readFile(join(root, "pyvenv.cfg"), "utf8");
+  const configuration = await readFile(join(root, "venv", "pyvenv.cfg"), "utf8");
   const version = /^version\s*=\s*([^\r\n]+)$/im.exec(configuration)?.[1]?.trim();
   if (version === undefined || !/^3\.11\.\d+$/.test(version)) {
     throw new Error("Prime Python environment has an invalid version");

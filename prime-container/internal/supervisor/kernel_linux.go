@@ -72,7 +72,7 @@ func RunKernel(ctx context.Context, request kernelcontract.Request) (int, string
 		"HOME=/workspace/.flow-prime/home",
 		"LANG=C.UTF-8",
 		"LC_ALL=C.UTF-8",
-		"PATH=/opt/flow/bin:/opt/flow/python/bin:/usr/bin:/bin",
+		"PATH=/opt/flow/bin:/opt/flow/python/venv/bin:/opt/flow/python/base/bin:/usr/bin:/bin",
 		"PRIME_AGENT_KERNEL_FORKSERVER=0",
 		"TMPDIR=/workspace/.flow-prime/tmp",
 	}

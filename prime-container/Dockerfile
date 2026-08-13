@@ -35,11 +35,13 @@ ARG SOURCE_DATE_EPOCH
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1 PYTHONHASHSEED=0 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 COPY python-requirements.lock /tmp/python-requirements.lock
 COPY --from=node-build /opt/flow/node/node_modules/prime-agent/dist/prime-agent-runtime /tmp/prime-agent-runtime
-RUN python -m venv --copies /opt/flow/python \
-    && /opt/flow/python/bin/pip install --require-hashes --only-binary=:all: --requirement /tmp/python-requirements.lock \
-    && /opt/flow/python/bin/pip install --no-deps --no-build-isolation /tmp/prime-agent-runtime \
-    && /opt/flow/python/bin/python -I -c 'import bs4, dill, httpx, ipykernel, lxml, numpy, pandas, pydantic, requests, rlm, scipy, tyro, yaml' \
-    && rm -rf /opt/flow/python/lib/python3.11/site-packages/tornado/test \
+RUN mkdir -p /opt/flow/python/base \
+    && cp -a /usr/local/. /opt/flow/python/base/ \
+    && /opt/flow/python/base/bin/python3 -m venv --copies /opt/flow/python/venv \
+    && /opt/flow/python/venv/bin/pip install --require-hashes --only-binary=:all: --requirement /tmp/python-requirements.lock \
+    && /opt/flow/python/venv/bin/pip install --no-deps --no-build-isolation /tmp/prime-agent-runtime \
+    && /opt/flow/python/venv/bin/python -I -B -c 'import bs4, dill, httpx, ipykernel, lxml, numpy, pandas, pydantic, requests, rlm, scipy, tyro, yaml' \
+    && rm -rf /opt/flow/python/venv/lib/python3.11/site-packages/tornado/test \
     && find /opt/flow/python -xdev -exec touch --date="@${SOURCE_DATE_EPOCH}" {} +
 
 FROM ${NODE_IMAGE} AS runtime
@@ -53,7 +55,8 @@ COPY --from=native-build /out/flow-prime-node-hardening.so /opt/flow/lib/flow-pr
 COPY image-probe.mjs /opt/flow/bin/flow-prime-image-probe.mjs
 COPY --from=node-build /opt/flow/node/node_modules /opt/flow/node/node_modules
 COPY flow-dist /opt/flow/node/flow-dist
-RUN groupadd --gid 10001 flow-node \
+RUN /opt/flow/python/venv/bin/python -I -B -c 'import bs4, dill, httpx, ipykernel, lxml, numpy, pandas, pydantic, requests, rlm, scipy, tyro, yaml' \
+    && groupadd --gid 10001 flow-node \
     && useradd --uid 10001 --gid 10001 --no-create-home --no-log-init --home-dir /run/flow-node flow-node \
     && groupadd --gid 10002 flow-python \
     && useradd --uid 10002 --gid 10002 --no-create-home --no-log-init --home-dir /run/flow-python/home flow-python \

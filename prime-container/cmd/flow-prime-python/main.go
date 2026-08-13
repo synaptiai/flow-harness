@@ -8,7 +8,7 @@ import (
 	"github.com/synaptiai/flow-harness/prime-container/internal/kernelcontract"
 )
 
-const pythonExecutable = "/opt/flow/python/bin/python3"
+const pythonExecutable = "/opt/flow/python/venv/bin/python3"
 
 func main() {
 	if err := kernelcontract.ValidatePythonArgs(os.Args[1:]); err != nil {
@@ -29,7 +29,7 @@ func main() {
 		"HOME=/workspace/.flow-prime/home",
 		"LANG=C.UTF-8",
 		"LC_ALL=C.UTF-8",
-		"PATH=/opt/flow/python/bin:/usr/bin:/bin",
+		"PATH=/opt/flow/python/venv/bin:/opt/flow/python/base/bin:/usr/bin:/bin",
 		"PYTHONNOUSERSITE=1",
 		"PYTHONHASHSEED=0",
 		"TMPDIR=/workspace/.flow-prime/tmp",
