@@ -28,7 +28,6 @@ const CONTAINER_COMMAND_LIMITS = Object.freeze({
   cpuQuotaMicros: 100_000,
   cpuPeriodMicros: 100_000,
   openFilesMax: 1_024,
-  userProcessesMax: 64,
   fileSizeMaxBytes: 33_554_432,
   coreSizeMaxBytes: 0,
   temporaryBytes: 67_108_864,

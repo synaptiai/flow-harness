@@ -25,9 +25,14 @@ The embedded Pi runtime runs with the invoking user's operating-system permissio
 
 - The fixed container policy has one read-write workspace bind and explicit read-only runtime
   support binds. It has a read-only root, no task network, and no IPC. It has no added capabilities
-  and no new privileges. A command-only seccomp projection denies socket creation and
-  socket-specific syscalls. The command inherits no network socket, and local TCP or Unix socket
-  binding fails. Fixed resource limits also apply.
+  and no new privileges.
+
+- A command-only seccomp projection denies socket creation and socket-specific syscalls. The command
+  inherits no network socket. Local TCP and Unix socket binding fail.
+
+- Fixed resource limits also apply. The process-count ceiling uses the command container cgroup.
+  Flow omits `RLIMIT_NPROC` because the command uses the host operator UID for workspace access.
+  Linux accounts that rlimit across unrelated same-UID host processes.
 
 - Nested protected paths are masked inside the workspace. Flow derives project `.flow` protection
   from the trusted project root. A broad workspace that contains that project, a protected parent,

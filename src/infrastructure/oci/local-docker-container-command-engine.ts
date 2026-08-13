@@ -75,7 +75,6 @@ export interface LocalDockerContainerCommandRuntimeDescriptor {
     readonly cpuQuotaMicros: number;
     readonly cpuPeriodMicros: number;
     readonly openFilesMax: number;
-    readonly userProcessesMax: number;
     readonly fileSizeMaxBytes: number;
     readonly coreSizeMaxBytes: number;
     readonly temporaryBytes: number;
@@ -584,11 +583,6 @@ function createConfiguration(
           Name: "nofile",
           Soft: descriptor.limits.openFilesMax,
           Hard: descriptor.limits.openFilesMax,
-        },
-        {
-          Name: "nproc",
-          Soft: descriptor.limits.userProcessesMax,
-          Hard: descriptor.limits.userProcessesMax,
         },
         {
           Name: "fsize",

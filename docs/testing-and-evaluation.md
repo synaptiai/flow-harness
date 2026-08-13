@@ -196,6 +196,9 @@ denial, sensitive-file masking, and read-only Git access. They must also prove e
 denial, host-loopback denial, undeclared host Unix-socket isolation, and exact resource controls.
 They must also prove that local TCP and Unix-socket binding fail inside the container namespace.
 
+The process-control check binds the container cgroup limit. It does not require `RLIMIT_NPROC`,
+which Linux accounts across unrelated processes that share the host operator UID.
+
 They must prove timeout and operator-cancellation settlement, descendant termination, full-ID cleanup,
 process-restart recovery, and pre-launch disappearance refusal. Portable recovery tests prove
 foreign-object safety.

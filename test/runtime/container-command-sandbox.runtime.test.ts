@@ -1,4 +1,4 @@
-import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -202,15 +202,32 @@ describe.skipIf(!linux)("container command sandbox runtime", () => {
 
   it("removes the container after operator cancellation", async () => {
     const projectRoot = await createPreparedProject();
+    const readyPath = join(projectRoot, "cancellation-ready.txt");
     const controller = new AbortController();
     const executor = new CommandNodeExecutor({
       sandbox: createProductionCommandSandbox("container", projectRoot),
     });
-    const operation = executor.execute(commandNode("setInterval(() => {}, 1000);", 20_000), {
-      ...context(projectRoot),
-      signal: controller.signal,
-    });
-    setTimeout(() => controller.abort(new Error("operator cancelled container command")), 500);
+    const operation = executor.execute(
+      commandNode(
+        'require("node:fs").writeFileSync("/workspace/cancellation-ready.txt", "ready"); setInterval(() => {}, 1000);',
+        20_000,
+      ),
+      {
+        ...context(projectRoot),
+        signal: controller.signal,
+      },
+    );
+    let settledBeforeReady = false;
+    void operation.then(
+      () => {
+        settledBeforeReady = true;
+      },
+      () => {
+        settledBeforeReady = true;
+      },
+    );
+    await waitForRuntimeFile(readyPath, () => settledBeforeReady);
+    controller.abort(new Error("operator cancelled container command"));
 
     await expect(operation).resolves.toMatchObject({
       status: "failed",
@@ -319,10 +336,29 @@ async function readPreparedApiVersion(projectRoot: string): Promise<string> {
       join(projectRoot, ".flow", "runtime", "prime-agent", "oci-attestation.json"),
       "utf8",
     ),
-  ) as { readonly localRuntime?: { readonly apiVersion?: unknown } };
-  const apiVersion = attestation.localRuntime?.apiVersion;
+  ) as { readonly local?: { readonly apiVersion?: unknown } };
+  const apiVersion = attestation.local?.apiVersion;
   if (typeof apiVersion !== "string" || !/^\d+\.\d+$/.test(apiVersion)) {
     throw new Error("container drift gate attestation has no Docker API version");
   }
   return apiVersion;
+}
+
+async function waitForRuntimeFile(path: string, operationSettled: () => boolean): Promise<void> {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    try {
+      await stat(path);
+      return;
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
+        throw error;
+      }
+    }
+    if (operationSettled()) {
+      throw new Error("container command settled before its launch marker was written");
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+  }
+  throw new Error("container command did not write its launch marker before the test deadline");
 }

@@ -65,10 +65,10 @@ describe.skipIf(!linux)("container command crash recovery", () => {
         join(projectRoot, ".flow", "runtime", "prime-agent", "oci-attestation.json"),
         "utf8",
       ),
-    ) as { readonly localRuntime: { readonly apiVersion: string } };
+    ) as { readonly local: { readonly apiVersion: string } };
     const api = new DockerUnixApiClient({
       socketPath: "/var/run/docker.sock",
-      apiVersion: attestation.localRuntime.apiVersion,
+      apiVersion: attestation.local.apiVersion,
     });
     await expect(api.inspectContainer(containerId)).resolves.toBeNull();
     await expect(readIntentRecords(projectRoot)).resolves.toEqual([]);

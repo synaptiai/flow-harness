@@ -217,7 +217,10 @@ capabilities. A command-only seccomp projection denies socket creation and socke
 syscalls. The command inherits no network socket. It cannot bind local TCP or Unix sockets inside
 the isolated loopback namespace.
 
-Fixed process, memory, CPU, file, descriptor, temporary-storage, and core limits also apply.
+Fixed cgroup process, memory, CPU, file, descriptor, temporary-storage, and core limits also apply.
+The process ceiling uses the container cgroup. Flow does not set `RLIMIT_NPROC` for command
+containers because Linux accounts that limit across every process with the host operator UID,
+including processes outside the container.
 
 Flow writes an owner-only record below `.flow/container-command-intents` before Docker create. It
 adds the inspected full container ID before command launch. Completion, timeout, cancellation, and

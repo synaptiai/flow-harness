@@ -11,10 +11,9 @@ boundary limits filesystem and network authority, but it shares the host kernel 
 process identity. The roadmap requires a higher-isolation deployment profile before hostile
 executable extensions can be considered.
 
-Issue #76 added a pinned OCI runtime, immutable runtime and image identity, exact policy
-inspection, durable full-ID intent, crash recovery, bounded diagnostics, and confirmed cleanup for
-the Prime evaluation profile. Issue #78 asks whether those guarantees can serve declared command
-execution without adding workflow-selected runtime authority.
+Issue #76 added a pinned OCI runtime, immutable identity, exact policy inspection, durable intent,
+crash recovery, bounded diagnostics, and confirmed cleanup. Issue #78 asks whether those guarantees
+can serve declared command execution. It must not add workflow-selected runtime authority.
 
 ## Specification
 
@@ -29,6 +28,7 @@ the existing Flow configuration, sandbox-port, OCI, evidence, and recovery contr
 - Does not add shell command strings or executable capability packages.
 - Does not put provider credentials or inference clients inside the command container.
 - Does not add macOS or Windows container execution.
+
 - Does not add a managed control plane, Kubernetes, GPU support, or automatic image updates.
 - Does not weaken SRT, policy approval, effect journaling, replay, or cleanup semantics.
 
@@ -36,21 +36,24 @@ the existing Flow configuration, sandbox-port, OCI, evidence, and recovery contr
 
 - **Timeouts** — one command deadline includes container preparation, creation, start, execution,
   and process termination. A timeout starts an independent bounded cleanup attempt. Confirmed
-  absence is required for side-effect-free settlement; an attempt that does not settle within the
-  cleanup bound records uncertain side effects. Timeout never becomes success and never authorizes
-  an unbounded cleanup wait.
-- **Partial failures** — once intent or a container may exist, Flow retains the primary failure,
-  settles each owned cleanup stage, aggregates terminal cleanup uncertainty, and never deletes an
-  object that did not pass exact intent reconciliation.
-- **Invalid input** — an unknown operator profile, any project-level sandbox selector, malformed
-  runtime evidence, and any workflow attempt to add sandbox authority reject at their existing
-  validation boundary. There is no fallback to a weaker profile.
-- **Missing context** — selecting the container profile without its supported Linux runtime,
-  prepared fixed image, protected workspace boundary, or durable lifecycle store fails before
-  workflow work starts. The native profile remains the built-in default only when no selector was
-  supplied.
+  absence is required for side-effect-free settlement. An attempt that exceeds the cleanup bound
+  records uncertain side effects. Timeout never becomes success or authorizes an unbounded wait.
+
+- **Partial failures** — Flow retains the primary failure after intent or a container may exist.
+  It settles each owned cleanup stage and aggregates terminal cleanup uncertainty. It never deletes
+  an object that did not pass exact intent reconciliation.
+
+- **Invalid input** — unknown operator profiles and project-level sandbox selectors reject.
+  Malformed runtime evidence and workflow attempts to add sandbox authority also reject. Each
+  failure occurs at its existing validation boundary. There is no fallback to a weaker profile.
+
+- **Missing context** — the container profile requires its supported Linux runtime and prepared
+  image. It also requires a protected workspace and lifecycle store. Missing context fails before
+  workflow work starts. The native profile is the default only when no selector was supplied.
+
 - **Dependency outage** — an unavailable or unresponsive engine fails through fixed, value-free
   stages. Flow does not restart the engine or retry identity/policy failures.
+
 - **Resource exhaustion** — input, output, diagnostic, response, process, memory, CPU, filesystem,
   and cleanup work remain bounded. Limit failure triggers owned settlement and does not spill
   private engine values into public evidence.
@@ -60,59 +63,76 @@ the existing Flow configuration, sandbox-port, OCI, evidence, and recovery contr
 - Trusted operator configuration gains one closed sandbox-profile selector with `native` as the
   built-in default and `container` as the higher-isolation value. Project configuration and
   workflow source have no corresponding field.
-- Effective configuration contains the selected profile in its immutable value, source projection,
-  and policy digest so detached workers and recovery observe the same operator decision.
+
+- Effective configuration stores the selected profile in its immutable value and source projection.
+  Its policy digest lets detached workers and recovery observe the same operator decision.
+
 - `CommandSandbox.prepare(request)` remains the only application-facing execution boundary. The
   request keeps exact executable, arguments, working directory, protected paths, runtime support,
-  environment, and cancellation; it gains no image, engine, mount, privilege, or credential knobs.
+  environment, and cancellation. It gains no image, engine, mount, privilege, or credential knobs.
+
 - `PreparedCommand` keeps an immutable launch descriptor, generic sandbox evidence, containment
   class, and idempotent release contract. A container implementation may satisfy it only if release
   proves owned-container absence before resolving.
+
 - `SandboxEvidence` remains the durable provider-neutral identity surface. Backend, exact backend
-  version, profile, and policy digest are sufficient for replay. For the container adapter, the
-  policy digest is the canonical digest of the complete submitted Docker configuration. It binds
-  the attested fixed-policy digest, bounded workspace snapshot, and command-specific filesystem and
-  resource controls. Private engine paths, configuration text, and response text are not stored in
-  public evidence.
-- Offline inspect and export consume stored events only. They do not construct, query, or initialize
-  a sandbox implementation.
+  version, profile, and policy digest are sufficient for replay.
+
+- The container policy digest covers the complete submitted Docker configuration. It binds the
+  attested policy digest, workspace snapshot, filesystem controls, and resource controls. The
+  process ceiling uses the container cgroup and omits `RLIMIT_NPROC`. Linux accounts that rlimit
+  across unrelated processes with the host operator UID. Those processes can be outside the command
+  PID namespace. Public evidence excludes private engine paths, configuration text, and response
+  text.
+
+- Offline inspect and export read stored events only. They do not construct or query a sandbox.
 
 ## User, operator, and system flows
 
 ### Operator selects the container profile
 
 1. The operator selects the higher-isolation profile through trusted local configuration.
+
 2. Flow validates the selection before workflow admission.
+
 3. Flow proves that the fixed engine, image, runtime, policy, and resource controls are current.
+
 4. A workflow command runs through the selected profile without changing workflow syntax.
+
 5. Inspection reports the fixed sandbox identity and settlement evidence.
 
 ### Workflow command runs
 
 1. The scheduler admits an already compiled executable and argument vector.
+
 2. The sandbox maps only the admitted workspace into the container and denies task networking.
-   A command-only seccomp projection removes socket operations from the admitted Prime profile. It
-   denies local TCP and Unix-socket binding inside Docker's isolated loopback namespace.
-   It masks protected children, including project `.flow`, inside that workspace.
-   It performs bounded discovery of existing sensitive entries, masks those entries, and makes
-   existing Git metadata read-only without creating another host bind.
-   It observes a bounded readable-content snapshot and excludes masked secret content from hashing.
-   It rejects a broad workspace that contains the configured project root.
+   A command-only seccomp projection removes socket operations from the admitted Prime profile.
+   This denies local TCP and Unix-socket binding inside Docker's isolated loopback namespace.
+   The sandbox masks protected children and discovered sensitive entries. It makes existing Git
+   metadata read-only without another host bind. A bounded readable-content snapshot excludes
+   masked secret content and rejects a broad workspace that contains the project root.
+
 3. Flow re-observes the workspace snapshot and rechecks authority immediately before start.
+
 4. The command runs without a shell and returns bounded stdout, stderr, exit, and sandbox evidence.
+
 5. Flow stops, removes, and proves absence of the container before command success is durable.
 
 ### Cancellation, failure, or host restart
 
 1. Cancellation or timeout terminates the command and its containing sandbox.
+
 2. Cleanup settles by an exact reconciled full ID, never by an unverified name.
+
 3. Cleanup failure prevents success and records uncertain side effects.
+
 4. After a host restart, recovery replays durable intent, revalidates identity, and either proves
    absence or settles the exact owned container.
 
 ### Offline inspection
 
 1. The operator inspects or exports a stored run.
+
 2. Flow reads durable evidence without contacting or initializing the container engine.
 
 ## Approaches considered
@@ -126,16 +146,18 @@ the existing Flow configuration, sandbox-port, OCI, evidence, and recovery contr
 
 Primary sources:
 
-- Gondolin README, SDK, and security model: <https://github.com/earendil-works/gondolin>
-- NVIDIA OpenShell architecture: <https://docs.nvidia.com/openshell/about/how-it-works>
-- Anthropic Sandbox Runtime: <https://github.com/anthropic-experimental/sandbox-runtime>
+- Gondolin README, SDK, and security model: <https://github.com/earendil-works/gondolin>.
+
+- NVIDIA OpenShell architecture: <https://docs.nvidia.com/openshell/about/how-it-works>.
+
+- Anthropic Sandbox Runtime: <https://github.com/anthropic-experimental/sandbox-runtime>.
 
 ## Decision
 
 Implement a fixed Linux container command profile behind Flow's existing `CommandSandbox` port.
 Reuse the OCI admission and lifecycle principles proven by Issue #76, but keep command execution,
 evidence, and configuration contracts provider-neutral. The existing SRT profile remains the
-default. A trusted operator may select the container profile; workflow source may not select or
+default. A trusted operator may select the container profile. Workflow source may not select or
 parameterize it.
 
 This is an incremental containment milestone. It does not claim VM-grade isolation and does not
@@ -146,15 +168,20 @@ or managed profile after their runtime requirements align with Flow's supported 
 
 - **Domain** owns bounded, immutable sandbox evidence and replay validation. It does not import OCI,
   Docker, SRT, configuration, or filesystem types.
+
 - **Application** owns the backend-neutral command-sandbox request and settlement contract.
+
 - **Configuration** owns the trusted operator selection. Workflow schemas do not receive a sandbox
   selector.
+
 - **Container infrastructure** owns OCI admission, exact intent, creation, start, output transport,
   cancellation, cleanup, and recovery.
+
 - **Composition roots** select SRT or the container adapter and inject one `CommandSandbox`.
+
 - **Offline inspection** consumes stored evidence only and cannot construct the container adapter.
 
-The dependency direction stays `CLI/configuration -> application port <- infrastructure`; the
+The dependency direction stays `CLI/configuration -> application port <- infrastructure`. The
 workflow domain never imports a container implementation.
 
 ## Failure modes
@@ -182,35 +209,39 @@ workflow domain never imports a container implementation.
 - Does not add shell command strings or executable capability packages.
 - Does not put provider credentials or inference clients inside the command container.
 - Does not add macOS or Windows container execution.
+
 - Does not add a managed control plane, Kubernetes, GPU support, or automatic image updates.
 - Does not weaken SRT, policy approval, effect journaling, replay, or cleanup semantics.
 
 ## Consequences
 
 - Issue #78 is stacked on #77 until the OCI primitives land on `main`.
-- Linux runtime verification becomes mandatory for the new profile; local macOS tests use injected
+
+- Linux runtime verification becomes mandatory for the new profile. Local macOS tests use injected
   boundaries and cannot substitute for the native containment gate.
-- Configuration and evidence must remain versioned and backward compatible because recovery and
-  offline inspection outlive the process that selected the backend.
-- The container profile adds setup and image-management cost, while preserving SRT as the lightweight
-  default.
+
+- Configuration and evidence must remain versioned and backward compatible. Recovery and offline
+  inspection outlive the process that selected the backend.
+
+- The container profile adds setup and image-management cost. SRT remains the lightweight default.
 
 ## Durable command-container ownership
 
 Command-container recovery uses a private infrastructure lease store. Flow writes and synchronizes
 one intent record before Docker create. The record contains the generated owner nonce, container
 name, exact submitted policy projection, admitted runtime identity, and the Linux process owner.
-Flow updates the record with the inspected full container ID before it returns a launcher. Flow
+Flow updates the record with the inspected full container ID before it returns a launcher. It
 removes the record only after it proves container absence.
 
 The process owner contains the Linux boot ID, process ID, and process start identity. A recovery
 scan skips a record while that exact process is alive. It treats a different boot ID, absent process,
 or different process start identity as an orphan. A recovering process must atomically claim the
-orphan record before it inspects or removes a container. This prevents concurrent workers from
-settling each other's active command containers and prevents process ID reuse from impersonating a
-lease owner. Concurrent prepares share only an active recovery scan. After that scan settles, every
-later prepare starts a fresh scan so a process that dies after an earlier prepare cannot leave an
-unobserved durable orphan.
+orphan record before it inspects or removes a container. This prevents workers from settling each
+other's active containers. It also prevents process ID reuse from impersonating a lease owner.
+
+Concurrent prepares share only an active recovery scan. Each later prepare starts a fresh scan
+after that scan settles. A process that dies after an earlier prepare cannot leave an unobserved
+durable orphan.
 
 The store uses owner-only real directories and files. It synchronizes record content before atomic
 publication and synchronizes the containing directory after publication, replacement, claim, and
@@ -221,11 +252,12 @@ Alternatives were rejected as follows:
 
 - Reusing the Prime evaluation lease would couple ordinary command execution to trial-only identity
   and adapter state.
-- Deriving every lease path from workflow and agent-command journals would give strong semantic
-  ownership, but it would require a broad protocol change before the container boundary can be made
-  safe.
-- A single global command-container slot would simplify recovery, but it would serialize independent
-  workflow commands and workers.
+
+- Deriving every lease path from workflow and agent-command journals would give strong ownership.
+  It would require a broad protocol change before the container boundary can be safe.
+
+- A single global command-container slot would simplify recovery. It would also serialize
+  independent workflow commands and workers.
 
 ## Acceptance verification map
 
@@ -242,7 +274,7 @@ Alternatives were rejected as follows:
 | Timeout/cancellation settlement | Behavioral/runtime | `npx vitest run test/unit/infrastructure/oci/local-docker-container-command-engine.test.ts test/unit/infrastructure/process/command-node-executor.test.ts test/unit/run/agent-command-reducer.test.ts`<br>`npx vitest run --config vitest.runtime.config.ts test/runtime/container-command-sandbox.runtime.test.ts` | Exact cancellation wins; descendants terminate; confirmed absence permits clean settlement, while bounded unresolved preparation records uncertainty | Unbounded cleanup waits |
 | Crash recovery and foreign-object safety | Recovery/runtime | `npx vitest run test/unit/infrastructure/oci/local-docker-container-command-engine.test.ts test/unit/infrastructure/oci/local-container-command-intent-store.test.ts`<br>`npx vitest run --config vitest.runtime.config.ts test/runtime/container-command-recovery.runtime.test.ts` | Later scans, lost responses, and restarts reconcile owned full IDs; foreign or unverifiable objects remain untouched | Name-only deletion |
 | Cleanup uncertainty | Error/recovery | `npx vitest run test/unit/infrastructure/oci/local-docker-container-command-engine.test.ts test/unit/infrastructure/process/command-node-executor.test.ts` | Primary and terminal cleanup errors remain ordered; success is impossible without confirmed absence | Infinite cleanup retries |
-| Fixed resource controls | Runtime/security | `npx vitest run test/unit/infrastructure/oci/local-docker-container-command-engine.test.ts`<br>`npx vitest run --config vitest.runtime.config.ts test/runtime/container-command-sandbox.runtime.test.ts` | Submitted and inspected CPU, memory, process, filesystem, and output limits match exactly | GPU or operator-tunable limits |
+| Fixed resource controls | Runtime/security | `npx vitest run test/unit/infrastructure/oci/local-docker-container-command-engine.test.ts`<br>`npx vitest run --config vitest.runtime.config.ts test/runtime/container-command-sandbox.runtime.test.ts` | Submitted and inspected CPU, memory, cgroup process, filesystem, and output limits match exactly; no host-global `nproc` rlimit is present | GPU or operator-tunable limits |
 | Offline inspection | Integration | `npx vitest run test/integration/cli/evaluation-offline-loading.test.ts test/integration/cli/evaluation-offline-prime.test.ts` | Stored evaluation evidence inspects and exports without production OCI or external runtime packages | Live currentness proof while offline |
 | Public contract | Docs/scaffold | `npm run docs:ste && npx vitest run test/scaffold/community-files.test.ts` | README, security, architecture, workflow, testing, and roadmap prose match authority and nonclaims | VM-grade claim |
 | Real Linux x64 boundary | Runtime | `npx vitest run --config vitest.runtime.config.ts test/runtime/container-command-sandbox.runtime.test.ts test/runtime/container-command-recovery.runtime.test.ts` | Credential-free real engine success, denial, cancellation, cleanup, recovery, and drift pass | macOS or Windows containers |
@@ -253,35 +285,52 @@ Alternatives were rejected as follows:
 
 1. **Configuration authority** — add failing operator/project/default/digest tests, then introduce the
    closed profile in effective configuration and composition.
-2. **Container contract** — add failing exact-policy, identity, argv, working-directory, and
-   value-free diagnostic tests, then implement the backend-neutral adapter around the admitted OCI
-   boundary.
-3. **Lifecycle and recovery** — add lost-create, start, cancellation, cleanup, crash, and foreign
-   object RED cases before wiring durable intent and bounded settlement.
+
+2. **Container contract** — add failing policy, identity, argv, working-directory, and diagnostic
+   tests. Then implement the backend-neutral adapter around the admitted OCI boundary.
+
+3. **Lifecycle and recovery** — add RED cases for create, start, cancellation, cleanup, crash, and
+   foreign objects. Then wire durable intent and bounded settlement.
+
 4. **Real containment** — add credential-free Linux RED gates for workspace, protected state,
    network, descendants, resources, and currentness before enabling production selection.
-5. **Offline and public contract** — prove stored inspection does not load the engine, update STE
-   documentation, and run the complete release/holdout gates.
+
+5. **Offline and public contract** — prove that stored inspection does not load the engine. Update
+   STE documentation and run the complete release and holdout gates.
 
 ## Current verification evidence
 
 - The focused descriptor, Docker engine, and public-contract selector passes 53 tests. It proves
   the command-only seccomp projection, exact Docker submission and inspection, nested source
   isolation, and the documented local-binding contract.
+
 - The complete portable suite passes 214 files and 2,848 tests. One platform-gated file and four
   tests skip. The same suite first failed only where the desktop sandbox denied temporary Unix
   sockets. The identical unrestricted run passed, which separates that host restriction from the
   product result.
+
 - The runtime configuration passes 8 files and 39 tests. Nine files and 33 tests skip on this
   Darwin host. The five container-command runtime tests are among the Linux-only skips.
+
 - Coverage passes with 82.27% statements, 76.08% branches, 88.82% functions, and 82.38% lines.
+
 - Type checking, the production build, scoped Biome checks, changed-document STE checks, and
   `git diff --check` pass.
+
 - The clean package verifier builds, packs, installs, and runs the CLI from
   `synaptiai-flow-harness-0.0.0.tgz`. The installed effective policy digest is
   `5dfe0fbdfa1a86627e8762bfc071594c1bccbd6a467fc3f3ea12ebddf9b053b4`.
+
 - The production dependency audit reports zero vulnerabilities.
+
 - The refreshed repository graph contains 8,192 nodes, 18,795 edges, and 343 communities.
+
+- Hosted Linux x64 exposed exit 255. A controlled reproduction used the pinned Node image and fixed
+  command profile. The command succeeded alone.
+  It then returned exit 255 while an unrelated container held over 64 same-UID processes and
+  reported `resource temporarily unavailable`. This proves that `RLIMIT_NPROC=64`
+  counted processes outside the command PID namespace. The command profile now uses its inspected
+  cgroup `PidsLimit=64` and omits the host-global rlimit.
 
 The real Linux x64 Docker criteria remain unproved locally. Publication must run the two named
 container runtime files on the pinned hosted runner before Issue #78 can be accepted. These local

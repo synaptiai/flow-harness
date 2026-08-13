@@ -277,6 +277,11 @@ explicit read-only runtime support binds. It uses a read-only root, private cgro
 network, and no IPC. It adds no capability and sets no new privileges. It uses fixed seccomp,
 bounded temporary storage, and fixed resource limits.
 
+The fixed process ceiling is the container cgroup `pids.max` value. The adapter does not submit an
+`nproc` rlimit. The command runs with the trusted host operator UID so that the workspace bind stays
+writable. Linux accounts `RLIMIT_NPROC` across that UID outside the container PID namespace, which
+would couple command availability to unrelated host processes instead of bounding this container.
+
 The command-only seccomp profile derives from the admitted Prime profile. It removes socket
 creation and socket-specific syscalls before Flow hashes and submits the Docker configuration. The
 Prime profile keeps its private loopback support. An ordinary command inherits no network socket
