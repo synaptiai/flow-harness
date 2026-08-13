@@ -115,6 +115,67 @@ describe("Node HTTPS capability bundle transport", () => {
     opened.close();
     expect(response.destroyed).toBe(true);
   });
+
+  it("materializes sensitive authorization only in the Node HTTPS request", async () => {
+    const response = Readable.from([]) as Readable & {
+      statusCode: number;
+      headers: Readonly<Record<string, string>>;
+    };
+    response.statusCode = 200;
+    response.headers = {};
+    const requestHandle = new EventEmitter() as EventEmitter & { end: ReturnType<typeof vi.fn> };
+    requestHandle.end = vi.fn();
+    const request = vi.fn((_url, _options, receiveResponse) => {
+      receiveResponse(response);
+      return requestHandle;
+    }) as unknown as NodeHttpsRequest;
+    const transport = createNodeHttpsCapabilityBundleTransport({
+      createResolver: vi.fn(),
+      request,
+    });
+    const ordinaryHeaders = Object.freeze({ accept: "application/json" });
+    const sensitiveAuthorization = Buffer.from("Basic PRIVATE_AUTHORIZATION", "ascii");
+
+    await transport.openPinnedResponse({
+      url: "https://auth.example.test/token",
+      hostname: "auth.example.test",
+      address: { address: "93.184.216.34", family: 4 },
+      headers: ordinaryHeaders,
+      sensitiveAuthorization,
+      signal: new AbortController().signal,
+    });
+
+    const call = vi.mocked(request).mock.calls[0];
+    if (call === undefined) {
+      throw new Error("expected one HTTPS request");
+    }
+    expect(call[1].headers).toEqual({
+      accept: "application/json",
+      authorization: "Basic PRIVATE_AUTHORIZATION",
+    });
+    expect(ordinaryHeaders).toEqual({ accept: "application/json" });
+    expect(sensitiveAuthorization.toString("ascii")).toBe("Basic PRIVATE_AUTHORIZATION");
+  });
+
+  it("rejects ambiguous ordinary and sensitive authorization before HTTPS", async () => {
+    const request = vi.fn() as unknown as NodeHttpsRequest;
+    const transport = createNodeHttpsCapabilityBundleTransport({
+      createResolver: vi.fn(),
+      request,
+    });
+
+    await expect(
+      transport.openPinnedResponse({
+        url: "https://auth.example.test/token",
+        hostname: "auth.example.test",
+        address: { address: "93.184.216.34", family: 4 },
+        headers: { authorization: "Bearer ORDINARY" },
+        sensitiveAuthorization: Buffer.from("Basic PRIVATE_AUTHORIZATION", "ascii"),
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toThrow("HTTPS request has ambiguous authorization");
+    expect(request).not.toHaveBeenCalled();
+  });
 });
 
 async function invokeLookup(

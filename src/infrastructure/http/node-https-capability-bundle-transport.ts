@@ -72,6 +72,19 @@ export function createNodeHttpsCapabilityBundleTransport(
     },
 
     async openPinnedResponse(request: PinnedHttpsRequest): Promise<PinnedHttpsResponse> {
+      if (
+        request.sensitiveAuthorization !== undefined &&
+        request.headers.authorization !== undefined
+      ) {
+        throw new Error("HTTPS request has ambiguous authorization");
+      }
+      const headers =
+        request.sensitiveAuthorization === undefined
+          ? request.headers
+          : {
+              ...request.headers,
+              authorization: request.sensitiveAuthorization.toString("ascii"),
+            };
       const pinnedLookup: LookupFunction = (_hostname, options, callback) => {
         if (options.all === true) {
           callback(null, [request.address]);
@@ -85,7 +98,7 @@ export function createNodeHttpsCapabilityBundleTransport(
           {
             method: "GET",
             agent: false,
-            headers: request.headers,
+            headers,
             signal: request.signal,
             lookup: pinnedLookup,
           },

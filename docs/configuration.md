@@ -110,8 +110,11 @@ values again.
 
 ## Authority and secrets
 
-The current schema contains no credential or secret fields. Operator configuration can widen the
-conservative built-in defaults only within hard schema caps; project configuration can narrow but
-cannot widen that operator authority. Capacity policy coordinates trusted processes of one local
-operating-system user. It is not a sandbox, distributed quota, provider billing limit, or security
-boundary against that same user or root.
+The current schema contains no credential or secret fields. Optional private OCI package access is
+an explicit install-time CLI input. It is not configuration and is not persisted. Operator
+configuration can widen the conservative built-in defaults only within hard schema caps. Project
+configuration can narrow but cannot widen that operator authority.
+
+Capacity policy coordinates
+trusted processes of one local operating-system user. It is not a sandbox, distributed quota,
+provider billing limit, or security boundary against that same user or root.

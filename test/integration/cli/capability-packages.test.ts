@@ -11,7 +11,11 @@ import {
   parseCapabilityBundle,
 } from "../../../src/domain/capability/capability-bundles.js";
 import {
+  FLOW_CAPABILITY_ARTIFACT_TYPE,
   FLOW_CAPABILITY_BUNDLE_LAYER_MEDIA_TYPE,
+  OCI_EMPTY_CONFIG_DIGEST,
+  OCI_EMPTY_CONFIG_MEDIA_TYPE,
+  OCI_IMAGE_MANIFEST_MEDIA_TYPE,
   SIGSTORE_BUNDLE_LAYER_MEDIA_TYPE,
 } from "../../../src/domain/capability/oci-capability-artifacts.js";
 import type { SigstoreCapabilityVerifier } from "../../../src/domain/capability/sigstore-capability-verifier.js";
@@ -23,10 +27,15 @@ import {
   FLOW_CONFIG_API_VERSION,
 } from "../../../src/domain/config/resolver.js";
 import { packCapabilityBundleDirectory } from "../../../src/infrastructure/fs/capability-bundle-packer.js";
-import type { CapabilityBundleFetcher } from "../../../src/infrastructure/http/strict-capability-bundle-fetcher.js";
 import type {
-  AcquiredOciCapabilityArtifact,
-  StrictOciCapabilityRegistry,
+  CapabilityBundleFetcher,
+  PinnedHttpsRequest,
+  PinnedHttpsResponse,
+} from "../../../src/infrastructure/http/strict-capability-bundle-fetcher.js";
+import {
+  type AcquiredOciCapabilityArtifact,
+  createStrictOciCapabilityRegistry,
+  type StrictOciCapabilityRegistry,
 } from "../../../src/infrastructure/http/strict-oci-capability-registry.js";
 
 const temporaryDirectories: string[] = [];
@@ -172,6 +181,7 @@ describe("capability package CLI", () => {
       sigstoreBundle: signatureBundle,
     });
     const acquire = vi.fn().mockResolvedValue(artifact);
+    const readRegistrySecret = vi.fn();
     const verifyPublisher = vi.fn().mockReturnValue(publisher);
     const networkTrap = vi.fn().mockRejectedValue(new Error("network must remain offline"));
     const cliDependencies = {
@@ -180,6 +190,7 @@ describe("capability package CLI", () => {
       sigstoreCapabilityVerifier: {
         verify: verifyPublisher,
       } satisfies SigstoreCapabilityVerifier,
+      readRegistrySecret,
     };
     const installed = captureIo();
     const listed = captureIo();
@@ -212,6 +223,8 @@ describe("capability package CLI", () => {
     ).toBe(0);
 
     expect(acquire).toHaveBeenCalledOnce();
+    expect(acquire).toHaveBeenCalledWith(reference, undefined, undefined);
+    expect(readRegistrySecret).not.toHaveBeenCalled();
     expect(verifyPublisher).toHaveBeenCalledWith(created.content, signatureBundle, publisher);
     expect(networkTrap).not.toHaveBeenCalled();
     expect(JSON.parse(installed.stdout[0] ?? "null")).toMatchObject({
@@ -247,6 +260,340 @@ describe("capability package CLI", () => {
       version: "1.0.0",
       definition: { tools: { allowed: ["read"] } },
     });
+  });
+
+  it("reads one private registry secret only after an exact challenge", async () => {
+    const project = await projectDirectory();
+    const created = bundle();
+    const signatureBundle = Buffer.from("exact private verification bundle");
+    const manifestDigest = `sha256:${"2".repeat(64)}` as const;
+    const reference = `registry.example.test/flow/private-suite@${manifestDigest}`;
+    const publisher = Object.freeze({
+      certificateIssuer: "https://token.actions.githubusercontent.com/",
+      certificateIdentity:
+        "https://github.com/synaptiai/flow-harness/.github/workflows/release.yml@refs/tags/v1.0.0",
+    });
+    const artifact: AcquiredOciCapabilityArtifact = Object.freeze({
+      reference: Object.freeze({
+        canonical: reference,
+        registryOrigin: "https://registry.example.test",
+        repository: "flow/private-suite",
+        manifestDigest,
+      }),
+      manifest: Object.freeze({
+        digest: manifestDigest,
+        bytes: 512,
+        bundle: Object.freeze({
+          mediaType: FLOW_CAPABILITY_BUNDLE_LAYER_MEDIA_TYPE,
+          digest: sha256Digest(created.content),
+          size: created.content.byteLength,
+        }),
+        sigstoreBundle: Object.freeze({
+          mediaType: SIGSTORE_BUNDLE_LAYER_MEDIA_TYPE,
+          digest: sha256Digest(signatureBundle),
+          size: signatureBundle.byteLength,
+        }),
+      }),
+      capabilityBundle: created.content,
+      sigstoreBundle: signatureBundle,
+    });
+    const controller = new AbortController();
+    const password = Buffer.from("PRIVATE_REGISTRY_PASSWORD");
+    const readRegistrySecret = vi.fn(async (signal: AbortSignal) => {
+      expect(signal).toBe(controller.signal);
+      return password;
+    });
+    const challenge = Object.freeze({
+      realm: "https://auth.example.test/token",
+      service: "registry.example.test",
+      scope: "repository:flow/private-suite:pull",
+    });
+    const acquire = vi.fn(async (_reference, signal, credentialProvider) => {
+      if (credentialProvider === undefined || signal === undefined) {
+        throw new Error("expected private credential provider and signal");
+      }
+      const credentials = await credentialProvider(challenge, signal);
+      expect(credentials.username).toBe("private-user");
+      expect(credentials.password.toString("utf8")).toBe("PRIVATE_REGISTRY_PASSWORD");
+      credentials.password.fill(0);
+      return artifact;
+    });
+    const output = captureIo();
+
+    expect(
+      await main(
+        [
+          "packages",
+          "install-oci",
+          reference,
+          "--certificate-issuer",
+          publisher.certificateIssuer,
+          "--certificate-identity",
+          publisher.certificateIdentity,
+          "--username",
+          "private-user",
+          "--password-stdin",
+        ],
+        output.io,
+        {
+          ...dependencies(project, { fetch: vi.fn() }),
+          ociCapabilityRegistry: { acquire } satisfies StrictOciCapabilityRegistry,
+          sigstoreCapabilityVerifier: {
+            verify: vi.fn().mockReturnValue(publisher),
+          } satisfies SigstoreCapabilityVerifier,
+          readRegistrySecret,
+          signal: controller.signal,
+        },
+      ),
+    ).toBe(0);
+
+    expect(acquire).toHaveBeenCalledWith(reference, controller.signal, expect.any(Function));
+    expect(readRegistrySecret).toHaveBeenCalledOnce();
+    expect(password.equals(Buffer.alloc(password.byteLength))).toBe(true);
+    expect(output.stdout.join("\n")).not.toContain("private-user");
+    expect(output.stdout.join("\n")).not.toContain("PRIVATE_REGISTRY_PASSWORD");
+    expect(output.stderr).toEqual([]);
+
+    const lock = await readFile(join(project, ".flow", "packages.lock.json"), "utf8");
+    expect(lock).not.toContain("private-user");
+    expect(lock).not.toContain("PRIVATE_REGISTRY_PASSWORD");
+
+    const offlineAcquire = vi.fn().mockRejectedValue(new Error("PRIVATE_OFFLINE_NETWORK"));
+    const offlineSecret = vi.fn().mockRejectedValue(new Error("PRIVATE_OFFLINE_SECRET"));
+    const offlineDependencies = {
+      ...dependencies(project, { fetch: offlineAcquire }),
+      ociCapabilityRegistry: { acquire: offlineAcquire } satisfies StrictOciCapabilityRegistry,
+      readRegistrySecret: offlineSecret,
+    };
+    expect(await main(["packages", "list"], captureIo().io, offlineDependencies)).toBe(0);
+    expect(await main(["packages", "verify"], captureIo().io, offlineDependencies)).toBe(0);
+    expect(offlineAcquire).not.toHaveBeenCalled();
+    expect(offlineSecret).not.toHaveBeenCalled();
+  });
+
+  it("installs through the real private-registry and atomic-store composition", async () => {
+    const project = await projectDirectory();
+    const created = bundle();
+    const signatureBundle = Buffer.from("PRIVATE_SIGNATURE_BUNDLE");
+    const manifest = ociManifestBytes(created.content, signatureBundle);
+    const manifestDigest = sha256Digest(manifest);
+    const reference = `registry.example.test/flow/private-suite@${manifestDigest}`;
+    const publisher = Object.freeze({
+      certificateIssuer: "https://token.actions.githubusercontent.com/",
+      certificateIdentity:
+        "https://github.com/synaptiai/flow-harness/.github/workflows/release.yml@refs/tags/v1.0.0",
+    });
+    const closes: ReturnType<typeof vi.fn>[] = [];
+    const requests: Array<{
+      readonly url: string;
+      readonly authorization: string | undefined;
+    }> = [];
+    let manifestReads = 0;
+    const openPinnedResponse = vi.fn(async (request: PinnedHttpsRequest) => {
+      const url = new URL(request.url);
+      requests.push({
+        url: request.url,
+        authorization:
+          request.sensitiveAuthorization?.toString("ascii") ?? request.headers.authorization,
+      });
+      if (url.hostname === "auth.example.test") {
+        return pinnedResponse(Buffer.from('{"token":"PRIVATE_BEARER_TOKEN"}'), closes);
+      }
+      if (url.pathname.includes("/manifests/")) {
+        manifestReads += 1;
+        if (manifestReads === 1) {
+          return pinnedResponse(Buffer.alloc(0), closes, 401, {
+            "www-authenticate":
+              'Bearer realm="https://auth.example.test/token",service="registry.example.test",scope="repository:flow/private-suite:pull"',
+          });
+        }
+        return pinnedResponse(manifest, closes, 200, {
+          "content-type": OCI_IMAGE_MANIFEST_MEDIA_TYPE,
+          "docker-content-digest": manifestDigest,
+        });
+      }
+      if (url.pathname.endsWith(sha256Digest(created.content))) {
+        return pinnedResponse(created.content, closes);
+      }
+      if (url.pathname.endsWith(sha256Digest(signatureBundle))) {
+        return pinnedResponse(signatureBundle, closes);
+      }
+      throw new Error(`unexpected private-registry URL ${request.url}`);
+    });
+    const registry = createStrictOciCapabilityRegistry({
+      resolveHostname: vi.fn(async () => [{ address: "93.184.216.34", family: 4 as const }]),
+      openPinnedResponse,
+    });
+    const password = Buffer.from("PRIVATE_REGISTRY_PASSWORD");
+    const readRegistrySecret = vi.fn(async (signal: AbortSignal) => {
+      expect(signal.aborted).toBe(false);
+      return password;
+    });
+    const output = captureIo();
+
+    expect(
+      await main(
+        [
+          "packages",
+          "install-oci",
+          reference,
+          "--certificate-issuer",
+          publisher.certificateIssuer,
+          "--certificate-identity",
+          publisher.certificateIdentity,
+          "--username",
+          "PRIVATE_USER",
+          "--password-stdin",
+        ],
+        output.io,
+        {
+          ...dependencies(project, { fetch: vi.fn() }),
+          ociCapabilityRegistry: registry,
+          sigstoreCapabilityVerifier: {
+            verify: vi.fn().mockReturnValue(publisher),
+          } satisfies SigstoreCapabilityVerifier,
+          readRegistrySecret,
+        },
+      ),
+    ).toBe(0);
+
+    const basic = `Basic ${Buffer.from("PRIVATE_USER:PRIVATE_REGISTRY_PASSWORD").toString("base64")}`;
+    expect(requests.map(({ authorization }) => authorization)).toEqual([
+      undefined,
+      basic,
+      "Bearer PRIVATE_BEARER_TOKEN",
+      "Bearer PRIVATE_BEARER_TOKEN",
+      "Bearer PRIVATE_BEARER_TOKEN",
+    ]);
+    expect(password.every((value) => value === 0)).toBe(true);
+    expect(closes.every((close) => close.mock.calls.length === 1)).toBe(true);
+    const visible = `${output.stdout.join("\n")}\n${output.stderr.join("\n")}`;
+    expect(visible).not.toContain("PRIVATE_USER");
+    expect(visible).not.toContain("PRIVATE_REGISTRY_PASSWORD");
+    expect(visible).not.toContain("PRIVATE_BEARER_TOKEN");
+    const lock = await readFile(join(project, ".flow", "packages.lock.json"), "utf8");
+    expect(lock).toContain(reference);
+    expect(lock).toContain(publisher.certificateIdentity);
+    expect(lock).not.toContain("auth.example.test");
+    expect(lock).not.toContain("PRIVATE_USER");
+    expect(lock).not.toContain("PRIVATE_REGISTRY_PASSWORD");
+    expect(lock).not.toContain("PRIVATE_BEARER_TOKEN");
+  });
+
+  it.each([
+    ["username without password input", ["--username", "PRIVATE_USER"]],
+    ["password input without username", ["--password-stdin"]],
+    [
+      "duplicate password input",
+      ["--username", "PRIVATE_USER", "--password-stdin", "--password-stdin"],
+    ],
+    [
+      "password value on the command line",
+      ["--username", "PRIVATE_USER", "--password-stdin=PRIVATE_PASSWORD"],
+    ],
+  ] as const)("rejects %s before registry or secret access", async (_name, credentialArgs) => {
+    const project = await projectDirectory();
+    const acquire = vi.fn();
+    const readRegistrySecret = vi.fn();
+    const output = captureIo();
+
+    expect(
+      await main(
+        [
+          "packages",
+          "install-oci",
+          `registry.example.test/flow/review-suite@sha256:${"3".repeat(64)}`,
+          "--certificate-issuer",
+          "https://token.actions.githubusercontent.com/",
+          "--certificate-identity",
+          "https://github.com/synaptiai/flow-harness/.github/workflows/release.yml@refs/tags/v1.0.0",
+          ...credentialArgs,
+        ],
+        output.io,
+        {
+          ...dependencies(project, { fetch: vi.fn() }),
+          ociCapabilityRegistry: { acquire } satisfies StrictOciCapabilityRegistry,
+          readRegistrySecret,
+        },
+      ),
+    ).toBe(2);
+    expect(acquire).not.toHaveBeenCalled();
+    expect(readRegistrySecret).not.toHaveBeenCalled();
+    expect(output.stderr.join("\n")).not.toContain("PRIVATE_PASSWORD");
+  });
+
+  it.each([
+    [
+      "install",
+      ["install", "https://packages.example.test/review.flowpkg", "--sha256", "a".repeat(64)],
+    ],
+    ["pack", ["pack", "source", "--output", "bundle.flowpkg"]],
+    ["list", ["list"]],
+    ["verify", ["verify"]],
+    ["inspect", ["inspect", "review-suite", "--version", "1.0.0"]],
+    ["remove", ["remove", "review-suite", "--version", "1.0.0"]],
+  ] as const)("rejects private credential flags on packages %s", async (_name, commandArgs) => {
+    const project = await projectDirectory();
+    const acquire = vi.fn();
+    const readRegistrySecret = vi.fn();
+    const output = captureIo();
+
+    expect(
+      await main(
+        ["packages", ...commandArgs, "--username", "PRIVATE_USER", "--password-stdin"],
+        output.io,
+        {
+          ...dependencies(project, { fetch: vi.fn() }),
+          ociCapabilityRegistry: { acquire } satisfies StrictOciCapabilityRegistry,
+          readRegistrySecret,
+        },
+      ),
+    ).toBe(2);
+    expect(acquire).not.toHaveBeenCalled();
+    expect(readRegistrySecret).not.toHaveBeenCalled();
+    expect(output.stderr.join("\n")).not.toContain("PRIVATE_USER");
+  });
+
+  it.each([
+    ["space", ["--username", "PRIVATE USER", "--password-stdin"]],
+    ["colon", ["--username", "PRIVATE:USER", "--password-stdin"]],
+    ["newline", ["--username", "PRIVATE\nUSER", "--password-stdin"]],
+    ["non-ASCII", ["--username", "privaté", "--password-stdin"]],
+    ["excess length", ["--username", "P".repeat(257), "--password-stdin"]],
+    [
+      "duplicate username",
+      ["--username", "PRIVATE_ONE", "--username", "PRIVATE_TWO", "--password-stdin"],
+    ],
+  ] as const)("rejects an invalid private registry %s before acquisition", async (_name, args) => {
+    const project = await projectDirectory();
+    const acquire = vi.fn();
+    const readRegistrySecret = vi.fn();
+    const output = captureIo();
+
+    expect(
+      await main(
+        [
+          "packages",
+          "install-oci",
+          `registry.example.test/flow/review-suite@sha256:${"4".repeat(64)}`,
+          "--certificate-issuer",
+          "https://token.actions.githubusercontent.com/",
+          "--certificate-identity",
+          "https://github.com/synaptiai/flow-harness/.github/workflows/release.yml@refs/tags/v1.0.0",
+          ...args,
+        ],
+        output.io,
+        {
+          ...dependencies(project, { fetch: vi.fn() }),
+          ociCapabilityRegistry: { acquire } satisfies StrictOciCapabilityRegistry,
+          readRegistrySecret,
+        },
+      ),
+    ).toBe(2);
+    expect(acquire).not.toHaveBeenCalled();
+    expect(readRegistrySecret).not.toHaveBeenCalled();
+    expect(output.stderr.join("\n")).not.toContain("PRIVATE");
+    expect(output.stderr.join("\n")).not.toContain("privaté");
   });
 
   it("reports a typed digest rejection without publishing state", async () => {
@@ -505,6 +852,53 @@ function bundle() {
 
 function sha256Digest(content: Uint8Array): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(content).digest("hex")}`;
+}
+
+function ociManifestBytes(bundleBytes: Buffer, sigstoreBytes: Buffer): Buffer {
+  return Buffer.from(
+    JSON.stringify({
+      schemaVersion: 2,
+      mediaType: OCI_IMAGE_MANIFEST_MEDIA_TYPE,
+      artifactType: FLOW_CAPABILITY_ARTIFACT_TYPE,
+      config: {
+        mediaType: OCI_EMPTY_CONFIG_MEDIA_TYPE,
+        digest: OCI_EMPTY_CONFIG_DIGEST,
+        size: 2,
+      },
+      layers: [
+        {
+          mediaType: FLOW_CAPABILITY_BUNDLE_LAYER_MEDIA_TYPE,
+          digest: sha256Digest(bundleBytes),
+          size: bundleBytes.byteLength,
+        },
+        {
+          mediaType: SIGSTORE_BUNDLE_LAYER_MEDIA_TYPE,
+          digest: sha256Digest(sigstoreBytes),
+          size: sigstoreBytes.byteLength,
+        },
+      ],
+    }),
+  );
+}
+
+function pinnedResponse(
+  content: Buffer,
+  closes: ReturnType<typeof vi.fn>[],
+  statusCode = 200,
+  headers: Readonly<Record<string, string>> = {},
+): PinnedHttpsResponse {
+  const close = vi.fn();
+  closes.push(close);
+  return {
+    statusCode,
+    headers: { "content-length": String(content.byteLength), ...headers },
+    body: responseChunks(content),
+    close,
+  };
+}
+
+async function* responseChunks(content: Buffer): AsyncIterable<Uint8Array> {
+  yield content;
 }
 
 function verifierManifest(name = "evidence-review"): string {

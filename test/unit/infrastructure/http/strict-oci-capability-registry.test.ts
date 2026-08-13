@@ -19,6 +19,7 @@ import type {
 import {
   createStrictOciCapabilityRegistry,
   OciCapabilityRegistryError,
+  type OciRegistryCredentialProvider,
 } from "../../../../src/infrastructure/http/strict-oci-capability-registry.js";
 
 const reference = `registry.example.test/flow/review@sha256:${"a".repeat(64)}`;
@@ -58,6 +59,212 @@ describe("strict OCI capability registry", () => {
     expect(fixture.closes.every((close) => close.mock.calls.length === 1)).toBe(true);
   });
 
+  it("authenticates once to the exact token realm and clears owned secret material", async () => {
+    const fixture = registryFixture({ requireCredentials: true });
+    const password = Buffer.from("PRIVATE_PASSWORD");
+    const credentialProvider: OciRegistryCredentialProvider = vi.fn(async (challenge, signal) => {
+      expect(signal.aborted).toBe(false);
+      expect(challenge).toEqual({
+        realm: "https://auth.example.test/token",
+        service: "registry.example.test",
+        scope: "repository:flow/review:pull",
+      });
+      return { username: "PRIVATE_USER", password };
+    });
+
+    await expect(
+      fixture.registry.acquire(fixture.reference, undefined, credentialProvider),
+    ).resolves.toMatchObject({ capabilityBundle: bundle, sigstoreBundle: sigstore });
+
+    expect(credentialProvider).toHaveBeenCalledOnce();
+    expect(fixture.observedSensitiveAuthorizations).toEqual([
+      {
+        url: "https://auth.example.test/token?service=registry.example.test&scope=repository%3Aflow%2Freview%3Apull",
+        authorization: `Basic ${Buffer.from("PRIVATE_USER:PRIVATE_PASSWORD").toString("base64")}`,
+      },
+    ]);
+    expect(password.every((value) => value === 0)).toBe(true);
+    expect(
+      fixture.openPinnedResponse.mock.calls.every(
+        ([request]) =>
+          request.sensitiveAuthorization === undefined ||
+          request.sensitiveAuthorization.every((value) => value === 0),
+      ),
+    ).toBe(true);
+    expect(
+      fixture.openPinnedResponse.mock.calls
+        .filter(([request]) => new URL(request.url).hostname !== "auth.example.test")
+        .every(([request]) => request.sensitiveAuthorization === undefined),
+    ).toBe(true);
+  });
+
+  it("captures each provider-controlled credential property exactly once", async () => {
+    const fixture = registryFixture({ requireCredentials: true });
+    const password = Buffer.from("PRIVATE_PASSWORD");
+    const otherPassword = Buffer.from("PRIVATE_OTHER_PASSWORD");
+    let usernameReads = 0;
+    let passwordReads = 0;
+
+    await expect(
+      fixture.registry.acquire(fixture.reference, undefined, async () => ({
+        get username() {
+          usernameReads += 1;
+          return usernameReads === 1 ? "PRIVATE_USER" : "PRIVATE:SWAPPED";
+        },
+        get password() {
+          passwordReads += 1;
+          return passwordReads === 1 ? password : otherPassword;
+        },
+      })),
+    ).resolves.toMatchObject({ capabilityBundle: bundle });
+
+    expect(usernameReads).toBe(1);
+    expect(passwordReads).toBe(1);
+    expect(password.every((value) => value === 0)).toBe(true);
+    expect(otherPassword.toString("utf8")).toBe("PRIVATE_OTHER_PASSWORD");
+    otherPassword.fill(0);
+  });
+
+  it.each([
+    "",
+    "user name",
+    "user:name",
+    "user\nname",
+    "user\rname",
+    "user\0name",
+    "é",
+    "a".repeat(257),
+  ])("rejects invalid private registry username %j before authenticated I/O", async (username) => {
+    const fixture = registryFixture({ requireCredentials: true });
+    const password = Buffer.from("PRIVATE_PASSWORD");
+
+    await expectClosedFailure(
+      fixture.registry.acquire(fixture.reference, undefined, async () => ({
+        username,
+        password,
+      })),
+      "acquire private registry token",
+    );
+
+    expect(password.every((value) => value === 0)).toBe(true);
+    expect(fixture.observedSensitiveAuthorizations).toEqual([]);
+  });
+
+  it("normalizes a private credential-provider failure before token I/O", async () => {
+    const fixture = registryFixture({ requireCredentials: true });
+
+    await expectClosedFailure(
+      fixture.registry.acquire(fixture.reference, undefined, async () => {
+        throw new Error("PRIVATE_CREDENTIAL_FAILURE");
+      }),
+      "acquire private registry token",
+    );
+
+    expect(fixture.observedSensitiveAuthorizations).toEqual([]);
+  });
+
+  it.each([
+    ["empty", Buffer.alloc(0)],
+    ["one byte over", Buffer.alloc(16_385, 0x61)],
+    ["NUL", Buffer.from("PRIVATE\0PASSWORD")],
+    ["LF", Buffer.from("PRIVATE\nPASSWORD")],
+    ["CR", Buffer.from("PRIVATE\rPASSWORD")],
+    ["fatal UTF-8", Buffer.from([0xc3, 0x28])],
+  ])("rejects an invalid private registry password buffer: %s", async (_label, password) => {
+    const fixture = registryFixture({ requireCredentials: true });
+
+    await expectClosedFailure(
+      fixture.registry.acquire(fixture.reference, undefined, async () => ({
+        username: "PRIVATE_USER",
+        password,
+      })),
+      "acquire private registry token",
+    );
+
+    expect(password.every((value) => value === 0)).toBe(true);
+    expect(fixture.observedSensitiveAuthorizations).toEqual([]);
+  });
+
+  it("validates the exact challenge before invoking a private credential provider", async () => {
+    const fixture = registryFixture({
+      challenge:
+        'Bearer realm="https://auth.example.test/token",service="registry.example.test",scope="repository:flow/review:push"',
+    });
+    const credentialProvider: OciRegistryCredentialProvider = vi.fn();
+
+    await expectClosedFailure(
+      fixture.registry.acquire(fixture.reference, undefined, credentialProvider),
+      "acquire private registry token",
+    );
+
+    expect(credentialProvider).not.toHaveBeenCalled();
+    expect(fixture.observedSensitiveAuthorizations).toEqual([]);
+  });
+
+  it("validates the token realm public address before invoking a private credential provider", async () => {
+    const fixture = registryFixture();
+    fixture.resolveHostname.mockImplementation(async (hostname) => [
+      {
+        address: hostname === "auth.example.test" ? "127.0.0.1" : "93.184.216.34",
+        family: 4 as const,
+      },
+    ]);
+    const credentialProvider: OciRegistryCredentialProvider = vi.fn();
+
+    await expectClosedFailure(
+      fixture.registry.acquire(fixture.reference, undefined, credentialProvider),
+      "acquire private registry token",
+    );
+
+    expect(credentialProvider).not.toHaveBeenCalled();
+    expect(fixture.openPinnedResponse).toHaveBeenCalledOnce();
+  });
+
+  it("uses the total acquisition deadline while a credential provider is stalled", async () => {
+    const fixture = registryFixture({ timeoutMs: 10 });
+    const credentialProvider: OciRegistryCredentialProvider = vi.fn(
+      async (): Promise<never> => await new Promise<never>(() => undefined),
+    );
+
+    await expectClosedFailure(
+      fixture.registry.acquire(fixture.reference, undefined, credentialProvider),
+      "acquire OCI artifact",
+    );
+
+    expect(credentialProvider).toHaveBeenCalledOnce();
+    expect(fixture.openPinnedResponse).toHaveBeenCalledOnce();
+    expect(fixture.closes[0]).toHaveBeenCalledOnce();
+  });
+
+  it("clears credentials that settle after acquisition cancellation", async () => {
+    const fixture = registryFixture({ requireCredentials: true });
+    const controller = new AbortController();
+    const password = Buffer.from("PRIVATE_LATE_PASSWORD");
+    let resolveCredentials: (credentials: {
+      readonly username: string;
+      readonly password: Buffer;
+    }) => void = () => undefined;
+    const credentialProvider: OciRegistryCredentialProvider = vi.fn(
+      async () =>
+        await new Promise<{ readonly username: string; readonly password: Buffer }>((resolve) => {
+          resolveCredentials = resolve;
+        }),
+    );
+    const pending = fixture.registry.acquire(
+      fixture.reference,
+      controller.signal,
+      credentialProvider,
+    );
+    await vi.waitFor(() => expect(credentialProvider).toHaveBeenCalledOnce());
+
+    controller.abort(new Error("operator cancelled private registry acquisition"));
+    await expectClosedFailure(pending, "acquire OCI artifact");
+    resolveCredentials({ username: "PRIVATE_USER", password });
+
+    await vi.waitFor(() => expect(password.every((value) => value === 0)).toBe(true));
+    expect(fixture.openPinnedResponse).toHaveBeenCalledOnce();
+  });
+
   it.each([
     ['Basic realm="https://auth.example.test/token"', "acquire anonymous registry token"],
     [
@@ -90,6 +297,7 @@ describe("strict OCI capability registry", () => {
   it.each([
     ["extra token field", { token: "PRIVATE_TOKEN", expires_in: 300 }],
     ["both token fields", { token: "PRIVATE_TOKEN", access_token: "PRIVATE_OTHER" }],
+    ["refresh token", { token: "PRIVATE_TOKEN", refresh_token: "PRIVATE_REFRESH" }],
     ["empty token", { token: "" }],
     ["non-string token", { token: 7 }],
   ])("rejects a non-canonical anonymous token response: %s", async (_label, tokenBody) => {
@@ -99,6 +307,64 @@ describe("strict OCI capability registry", () => {
       fixture.registry.acquire(fixture.reference),
       "acquire anonymous registry token",
     );
+  });
+
+  it.each(["token", "access_token"] as const)(
+    "accepts the exact Bearer bound through %s",
+    async (field) => {
+      const token = "T".repeat(16_384);
+      const fixture = registryFixture({ tokenBody: { [field]: token } });
+
+      await expect(fixture.registry.acquire(fixture.reference)).resolves.toMatchObject({
+        capabilityBundle: bundle,
+      });
+      expect(
+        fixture.openPinnedResponse.mock.calls
+          .map(([request]) => request.headers.authorization)
+          .filter((authorization) => authorization !== undefined),
+      ).toEqual([`Bearer ${token}`, `Bearer ${token}`, `Bearer ${token}`]);
+    },
+  );
+
+  it.each(["token", "access_token"] as const)(
+    "rejects byte 16,385 through %s before the authorized manifest read",
+    async (field) => {
+      const fixture = registryFixture({ tokenBody: { [field]: "T".repeat(16_385) } });
+
+      await expectClosedFailure(
+        fixture.registry.acquire(fixture.reference),
+        "acquire anonymous registry token",
+      );
+      expect(fixture.openPinnedResponse).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each([
+    [
+      "token-service authentication refusal",
+      { tokenStatus: 403 },
+      "acquire private registry token",
+    ],
+    ["insufficient manifest scope", { authorizedManifestStatus: 403 }, "read OCI manifest"],
+  ] as const)("rejects %s without reading artifact layers", async (_label, options, stage) => {
+    const fixture = registryFixture({ ...options, requireCredentials: true });
+    const password = Buffer.from("PRIVATE_PASSWORD");
+
+    await expectClosedFailure(
+      fixture.registry.acquire(fixture.reference, undefined, async () => ({
+        username: "PRIVATE_USER",
+        password,
+      })),
+      stage,
+    );
+
+    expect(password.every((value) => value === 0)).toBe(true);
+    expect(
+      fixture.openPinnedResponse.mock.calls.some(([request]) =>
+        new URL(request.url).pathname.includes("/blobs/"),
+      ),
+    ).toBe(false);
+    expect(fixture.closes.every((close) => close.mock.calls.length === 1)).toBe(true);
   });
 
   it("never sends a registry bearer token to a redirected blob origin", async () => {
@@ -249,6 +515,8 @@ interface RegistryFixtureOptions {
   readonly bundle?: Buffer;
   readonly challenge?: string;
   readonly tokenBody?: unknown;
+  readonly tokenStatus?: number;
+  readonly authorizedManifestStatus?: number;
   readonly redirectBundle?: boolean;
   readonly redirectLoop?: boolean;
   readonly manifestRedirect?: boolean;
@@ -261,6 +529,7 @@ interface RegistryFixtureOptions {
   readonly stallToken?: boolean;
   readonly stallBundleBody?: boolean;
   readonly timeoutMs?: number;
+  readonly requireCredentials?: boolean;
 }
 
 function registryFixture(options: RegistryFixtureOptions = {}) {
@@ -269,6 +538,10 @@ function registryFixture(options: RegistryFixtureOptions = {}) {
   const manifestDigest = digest(manifest);
   const canonicalReference = `registry.example.test/flow/review@${manifestDigest}`;
   const closes: ReturnType<typeof vi.fn>[] = [];
+  const observedSensitiveAuthorizations: {
+    readonly url: string;
+    readonly authorization: string;
+  }[] = [];
   const resolveHostname = vi.fn(
     async (_hostname: string, _signal: AbortSignal): Promise<readonly ResolvedNetworkAddress[]> => [
       { address: "93.184.216.34", family: 4 as const },
@@ -279,6 +552,20 @@ function registryFixture(options: RegistryFixtureOptions = {}) {
     async (request: PinnedHttpsRequest): Promise<PinnedHttpsResponse> => {
       const url = new URL(request.url);
       if (url.hostname === "auth.example.test") {
+        const sensitiveAuthorization = request.sensitiveAuthorization?.toString("ascii");
+        if (sensitiveAuthorization !== undefined) {
+          observedSensitiveAuthorizations.push({
+            url: request.url,
+            authorization: sensitiveAuthorization,
+          });
+        }
+        if (
+          options.requireCredentials === true &&
+          sensitiveAuthorization !==
+            `Basic ${Buffer.from("PRIVATE_USER:PRIVATE_PASSWORD").toString("base64")}`
+        ) {
+          return response(401, Buffer.alloc(0), closes);
+        }
         if (options.stallToken) {
           return await new Promise(() => undefined);
         }
@@ -288,7 +575,7 @@ function registryFixture(options: RegistryFixtureOptions = {}) {
           });
         }
         return response(
-          200,
+          options.tokenStatus ?? 200,
           Buffer.from(JSON.stringify(options.tokenBody ?? { token: "PRIVATE_TOKEN" })),
           closes,
         );
@@ -313,7 +600,7 @@ function registryFixture(options: RegistryFixtureOptions = {}) {
               'Bearer realm="https://auth.example.test/token",service="registry.example.test",scope="repository:flow/review:pull"',
           });
         }
-        return response(200, manifest, closes, {
+        return response(options.authorizedManifestStatus ?? 200, manifest, closes, {
           "docker-content-digest": options.manifestDigestHeader ?? manifestDigest,
           "content-type": options.manifestContentType ?? OCI_IMAGE_MANIFEST_MEDIA_TYPE,
         });
@@ -355,6 +642,7 @@ function registryFixture(options: RegistryFixtureOptions = {}) {
     reference: canonicalReference,
     manifestDigest,
     closes,
+    observedSensitiveAuthorizations,
     resolveHostname,
     openPinnedResponse,
     registry: createStrictOciCapabilityRegistry({

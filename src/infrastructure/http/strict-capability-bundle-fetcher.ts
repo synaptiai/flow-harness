@@ -17,6 +17,7 @@ export interface PinnedHttpsRequest {
   readonly hostname: string;
   readonly address: ResolvedNetworkAddress;
   readonly headers: Readonly<Record<string, string>>;
+  readonly sensitiveAuthorization?: Buffer | undefined;
   readonly signal: AbortSignal;
 }
 

@@ -137,7 +137,7 @@ execution, live-catalog removal immunity, and snapshot-only resume/replay. These
 template parameters, version solving, executable extension containment, policy/UI packages, or
 benchmark superiority.
 
-The credential-free bundle-distribution suite proves deterministic packing, strict content parsing,
+The bundle-distribution suite proves deterministic packing, strict content parsing,
 public-HTTPS-only digest-before-parse acquisition, DNS rebinding defenses, redirect refusal,
 pre-abort and in-flight DNS cancellation, content-addressed activation, parent-synced store
 creation, crash-boundary commit-uncertain reporting, fail-closed stale locks, collision handling,
@@ -269,11 +269,15 @@ limits, interrupted publication, private-data omission, and no automatic activat
 cover exact baseline binding, generated-source provenance, legacy resume, and durable identity
 tampering.
 
-Credential-free registry tests cover canonical digest references and strict OCI manifests. They
-cover public DNS pinning, anonymous pull scope, token-host isolation, and safe blob redirects. They
-also cover response limits, cancellation, offline Sigstore verification, and exact publisher
-policy. Integration tests cover atomic publication and offline workflow or replay use. Tests use no
-registry credential. They do not contact a signature or trust-root service.
+Registry tests cover canonical digest references and strict OCI manifests. They cover public DNS
+pinning, anonymous compatibility, exact private Basic token exchange, and pull-scope validation.
+They also cover token-host isolation, safe blob redirects, limits, cancellation, buffer cleanup,
+offline Sigstore verification, and exact publisher policy.
+
+CLI integration covers
+paired flags, invalid usernames, bounded injected secret input, credential-free durable provenance,
+atomic publication, and offline package use. These tests use synthetic registry responses and
+private canaries. They do not contact a live registry, signature service, or trust-root service.
 
 Activation tests cover complete superior admission, incomplete evaluations, losing evaluations, exact profile identity, and source drift.
 They also cover proposal drift, version conflicts, concurrent writers, and rollback.

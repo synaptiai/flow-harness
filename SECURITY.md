@@ -163,11 +163,27 @@ The embedded Pi runtime runs with the invoking user's operating-system permissio
   The HTTPS form requires one canonical public URL and caller-supplied lowercase SHA-256. It follows
   no redirect and sends no ambient credentials.
 
-- The OCI form requires one canonical public repository and exact manifest digest. It also requires
-  an exact certificate issuer and certificate identity. It accepts only the fixed two-layer Flow
-  artifact and anonymous exact repository-pull tokens. Flow pins public DNS answers, denies unsafe
-  redirects, checks descriptor bytes, and uses shipped offline Sigstore trust material.
-  Installation runs no package code, dependency manager, hook, or driver.
+- The OCI form requires one canonical HTTPS repository with public pinned addresses. It also
+  requires an exact manifest digest, certificate issuer, and certificate identity. It accepts only
+  the fixed two-layer Flow artifact. It requests one exact repository-pull scope. Flow pins public
+  DNS answers, denies unsafe redirects, checks descriptor bytes, and uses shipped offline Sigstore
+  trust material. Installation runs no package code, dependency manager, hook, or driver.
+
+- Anonymous OCI access remains the default. Optional private access requires one bounded username
+  with visible non-space ASCII characters. It also requires the paired `--password-stdin` switch.
+
+- Flow validates the exact HTTPS Bearer realm, service, and pull scope. It does this before reading
+  at most 16,384 UTF-8 secret bytes. It sends Basic only to that token realm. It sends Bearer only
+  to the original registry. It requests no refresh token.
+
+- The selected registry controls its challenged authorization realm and service. Flow validates
+  and preserves those values but cannot prove common ownership across origins. The operator must
+  trust the registry and its delegated token service. A registry-specific credential limits this
+  residual delegation risk. The returned Bearer token is opaque. Flow confines it to the original
+  registry and exact digest reads but cannot verify its embedded grants.
+
+- Flow stores no OCI login, username, realm, credential mode, or authorization value. It reads no
+  Docker configuration, credential helper, password argument, or environment credential.
 
 - Installed bytes are stored once at `.flow/packages/sha256/<digest>.flowpkg`; activation is the
   deterministic `.flow/packages.lock.json` entry published last under an owner-checked local lock.
