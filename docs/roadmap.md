@@ -106,7 +106,14 @@ containment milestone. It is not VM-grade or multi-tenant isolation.
   collisions, local audit commands, and network-free execution. Mutable tags, discovery, private
   credentials, freshness, revocation, rollback protection, and automatic updates remain deferred.
 - Workflow contributions use versioned manifests. *(Implemented for inert exact-version workflow source with packaged root/child selection, ordinary recursive compilation, immutable transitive snapshots, deterministic bundle distribution, detached execution, and fail-closed recovery. Parameterized templates and executable modules remain deferred.)*
-- Policy and UI contributions use versioned manifests.
+- Policy contributions use versioned manifests.
+  Flow implements strict local and digest-pinned installed inert narrowing packages.
+  Operator requirements and project additions use exact selection.
+  Deterministic conjunction produces immutable snapshots before admission.
+  Detached, child, and recovery paths remain fail closed.
+
+- UI contribution manifests remain planned.
+- Flow does not have a stable presentation host contract.
 - OMP-inspired high-value tools are benchmarked before adoption.
 
 ## Gate 7: Adaptive harness

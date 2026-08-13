@@ -1,0 +1,25 @@
+apiVersion: flow.synapti.ai/v1alpha1
+kind: PolicyPackage
+metadata:
+  name: restricted-review
+  version: 1.0.0
+  description: Restrict review workflows to one read-only model envelope.
+  license: Apache-2.0
+  compatibility: Flow v1alpha1 policy admission
+spec:
+  models:
+    allowed:
+      - { provider: openai, model: gpt-5.4 }
+  tools:
+    allowed: [read]
+    allowedPermissions: [filesystem.read]
+  commands:
+    requireApproval: true
+  sandbox:
+    allowedProfiles: [container, native]
+  budget:
+    maxNodeStarts: 2
+    maxModelTokens: 10000
+    maxCostUsdMicros: 1000000
+    maxExecutionMs: 120000
+    maxArtifactBytes: 4096

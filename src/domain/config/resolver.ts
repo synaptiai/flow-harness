@@ -2,11 +2,27 @@ import { createHash } from "node:crypto";
 
 import { z } from "zod";
 
+import {
+  type PolicyPackageCapabilitySnapshot,
+  validateCapabilitySnapshot,
+} from "../capability/agent-skills.js";
+import type { PolicyPackageSnapshot } from "../capability/policy-packages.js";
+import {
+  verifierPackageNameSchema,
+  verifierPackageVersionSchema,
+} from "../capability/verifier-packages.js";
+import {
+  composePolicyPackages,
+  type EffectivePolicyPackages,
+} from "../policy/policy-package-composition.js";
+import { FLOW_SANDBOX_PROFILES, type FlowSandboxProfile } from "./sandbox-profiles.js";
+
+export { FLOW_SANDBOX_PROFILES, type FlowSandboxProfile } from "./sandbox-profiles.js";
+
 export const FLOW_CONFIG_API_VERSION = "flow.synapti.ai/v1alpha1" as const;
 export const MAX_ACTIVE_WORKERS = 64;
 export const MAX_QUEUED_JOBS = 1024;
-export const FLOW_SANDBOX_PROFILES = ["native", "container"] as const;
-export type FlowSandboxProfile = (typeof FLOW_SANDBOX_PROFILES)[number];
+export const MAX_CONFIGURED_POLICY_PACKAGES = 32;
 
 export const BUILT_IN_FLOW_CONFIG = Object.freeze({
   maxActiveWorkers: 1,
@@ -33,10 +49,40 @@ const sandboxConfigSchema = z
   })
   .strict();
 
+const policyPackageReferenceSchema = z
+  .object({
+    name: verifierPackageNameSchema,
+    version: verifierPackageVersionSchema,
+    digest: z.string().regex(/^[a-f0-9]{64}$/),
+  })
+  .strict();
+
+function configuredPolicyReferencesSchema(label: string) {
+  return z
+    .array(policyPackageReferenceSchema)
+    .min(1)
+    .max(MAX_CONFIGURED_POLICY_PACKAGES)
+    .refine(
+      (references) =>
+        references.every(
+          (reference, index) => index === 0 || (references[index - 1]?.name ?? "") < reference.name,
+        ),
+      `${label} must be sorted and unique by package name`,
+    );
+}
+
+const operatorPolicyConfigSchema = z
+  .object({ required: configuredPolicyReferencesSchema("required policy packages") })
+  .strict();
+const projectPolicyConfigSchema = z
+  .object({ additional: configuredPolicyReferencesSchema("additional policy packages") })
+  .strict();
+
 const operatorConfigSchema = z
   .object({
     apiVersion: z.literal(FLOW_CONFIG_API_VERSION),
     kind: z.literal("FlowOperatorConfig"),
+    policies: operatorPolicyConfigSchema.optional(),
     sandbox: sandboxConfigSchema.optional(),
     supervisor: supervisorCapacitySchema.optional(),
   })
@@ -46,6 +92,7 @@ const projectConfigSchema = z
   .object({
     apiVersion: z.literal(FLOW_CONFIG_API_VERSION),
     kind: z.literal("FlowProjectConfig"),
+    policies: projectPolicyConfigSchema.optional(),
     supervisor: supervisorCapacitySchema.optional(),
   })
   .strict();
@@ -54,6 +101,9 @@ export type OperatorConfig = Readonly<z.infer<typeof operatorConfigSchema>>;
 export type ProjectConfig = Readonly<z.infer<typeof projectConfigSchema>>;
 export type SupervisorCapacity = Readonly<z.infer<typeof supervisorCapacitySchema>>;
 export type SandboxConfig = Readonly<z.infer<typeof sandboxConfigSchema>>;
+export type ConfiguredPolicyPackageReference = Readonly<
+  z.infer<typeof policyPackageReferenceSchema>
+>;
 
 export type FlowConfigErrorCode = "invalid_config" | "unsafe_widening";
 
@@ -86,6 +136,7 @@ export interface ResolveFlowConfigInput {
   readonly operator?: ConfigContribution<OperatorConfig>;
   readonly project?: ConfigContribution<ProjectConfig>;
   readonly projectRoot?: string;
+  readonly policyPackages?: PolicyPackageCapabilitySnapshot;
 }
 
 export interface EffectiveFlowConfig {
@@ -95,6 +146,10 @@ export interface EffectiveFlowConfig {
     readonly maxQueuedJobs: number;
   };
   readonly sandbox: SandboxConfig;
+  readonly policyPackages?: {
+    readonly snapshot: PolicyPackageCapabilitySnapshot;
+    readonly effective: EffectivePolicyPackages;
+  };
   readonly policyDigest: string;
   readonly projectRoot: string | null;
   readonly sources: {
@@ -103,10 +158,12 @@ export interface EffectiveFlowConfig {
       readonly path: string;
       readonly values: SupervisorCapacity;
       readonly sandbox: SandboxConfig | null;
+      readonly policies?: readonly ConfiguredPolicyPackageReference[];
     } | null;
     readonly project: {
       readonly path: string;
       readonly values: SupervisorCapacity;
+      readonly policies?: readonly ConfiguredPolicyPackageReference[];
     } | null;
   };
 }
@@ -147,15 +204,21 @@ export function resolveFlowConfig(input: ResolveFlowConfigInput): EffectiveFlowC
   const sandbox = Object.freeze({
     profile: input.operator?.config.sandbox?.profile ?? "native",
   });
+  const policyPackages = resolvePolicyPackages(input, sandbox.profile);
   const canonicalPolicy = {
     apiVersion: FLOW_CONFIG_API_VERSION,
     supervisor,
     sandbox,
   };
-  const policyDigest = calculateFlowPolicyDigest(supervisor, sandbox.profile);
+  const policyDigest = calculateFlowPolicyDigest(
+    supervisor,
+    sandbox.profile,
+    policyPackages?.effective.digest,
+  );
 
   return deepFreeze({
     ...canonicalPolicy,
+    ...(policyPackages === undefined ? {} : { policyPackages }),
     policyDigest,
     projectRoot: input.projectRoot ?? null,
     sources: {
@@ -167,9 +230,20 @@ export function resolveFlowConfig(input: ResolveFlowConfigInput): EffectiveFlowC
               path: input.operator.path,
               values: operatorValues,
               sandbox: input.operator.config.sandbox ?? null,
+              ...(input.operator.config.policies === undefined
+                ? {}
+                : { policies: input.operator.config.policies.required }),
             },
       project:
-        input.project === undefined ? null : { path: input.project.path, values: projectValues },
+        input.project === undefined
+          ? null
+          : {
+              path: input.project.path,
+              values: projectValues,
+              ...(input.project.config.policies === undefined
+                ? {}
+                : { policies: input.project.config.policies.additional }),
+            },
     },
   });
 }
@@ -180,12 +254,154 @@ export function calculateFlowPolicyDigest(
     readonly maxQueuedJobs: number;
   },
   sandboxProfile: FlowSandboxProfile = "native",
+  effectivePolicyPackageDigest?: string,
 ): string {
   const supervisor = effectiveSupervisorCapacitySchema.parse(input);
   const sandbox = sandboxConfigSchema.parse({ profile: sandboxProfile });
   return createHash("sha256")
-    .update(JSON.stringify({ apiVersion: FLOW_CONFIG_API_VERSION, supervisor, sandbox }))
+    .update(
+      JSON.stringify({
+        apiVersion: FLOW_CONFIG_API_VERSION,
+        supervisor,
+        sandbox,
+        ...(effectivePolicyPackageDigest === undefined
+          ? {}
+          : { policyPackages: { digest: effectivePolicyPackageDigest } }),
+      }),
+    )
     .digest("hex");
+}
+
+function resolvePolicyPackages(
+  input: ResolveFlowConfigInput,
+  sandboxProfile: FlowSandboxProfile,
+): EffectiveFlowConfig["policyPackages"] {
+  const operatorReferences = input.operator?.config.policies?.required ?? [];
+  const projectReferences = input.project?.config.policies?.additional ?? [];
+  const references = [...operatorReferences, ...projectReferences];
+  if (references.length === 0) {
+    if (input.policyPackages !== undefined) {
+      throw configError(
+        "invalid_config",
+        "policyPackages",
+        "a policy package snapshot was supplied without configured package references",
+      );
+    }
+    return undefined;
+  }
+  if (input.projectRoot === undefined) {
+    throw configError(
+      "invalid_config",
+      "policies",
+      "configured policy packages require a Flow project root",
+    );
+  }
+  for (const projectReference of projectReferences) {
+    if (operatorReferences.some((reference) => reference.name === projectReference.name)) {
+      throw configError(
+        "unsafe_widening",
+        `policies.additional.${projectReferences.indexOf(projectReference)}.name`,
+        `project policy package "${projectReference.name}" duplicates an operator-required package`,
+        input.project?.path,
+      );
+    }
+  }
+  if (input.policyPackages === undefined) {
+    throw configError(
+      "invalid_config",
+      operatorReferences.length > 0 ? "policies.required" : "policies.additional",
+      "configured policy package snapshots are missing",
+      operatorReferences.length > 0 ? input.operator?.path : input.project?.path,
+    );
+  }
+  let snapshot: PolicyPackageCapabilitySnapshot;
+  try {
+    const validated = validateCapabilitySnapshot(input.policyPackages);
+    if (!validated.packages.every((item) => item.kind === "policy-package")) {
+      throw new Error("snapshot contains a non-policy capability");
+    }
+    snapshot = validated as PolicyPackageCapabilitySnapshot;
+  } catch (error) {
+    throw configError(
+      "invalid_config",
+      "policyPackages",
+      "configured policy package snapshot is invalid",
+      undefined,
+      error,
+    );
+  }
+  const byName = new Map(
+    snapshot.packages.map((policy) => [policy.name, policy as PolicyPackageSnapshot]),
+  );
+  for (const [index, reference] of references.entries()) {
+    const selected = byName.get(reference.name);
+    const source = index < operatorReferences.length ? input.operator?.path : input.project?.path;
+    const prefix = index < operatorReferences.length ? "policies.required" : "policies.additional";
+    const referenceIndex =
+      index < operatorReferences.length ? index : index - operatorReferences.length;
+    if (selected === undefined) {
+      throw configError(
+        "invalid_config",
+        `${prefix}.${referenceIndex}.name`,
+        `configured policy package "${reference.name}" is absent from the selected snapshot`,
+        source,
+      );
+    }
+    if (selected.version !== reference.version) {
+      throw configError(
+        "invalid_config",
+        `${prefix}.${referenceIndex}.version`,
+        `configured policy package "${reference.name}" version does not match its snapshot`,
+        source,
+      );
+    }
+    if (selected.digest !== reference.digest) {
+      throw configError(
+        "invalid_config",
+        `${prefix}.${referenceIndex}.digest`,
+        `configured policy package "${reference.name}" digest does not match its snapshot`,
+        source,
+      );
+    }
+  }
+  if (byName.size !== references.length) {
+    throw configError(
+      "invalid_config",
+      "policyPackages",
+      "selected policy package snapshot contains an unconfigured package",
+    );
+  }
+  const effective = composePolicyPackages([...byName.values()]);
+  if (effective === undefined) {
+    throw configError("invalid_config", "policyPackages", "policy package composition is empty");
+  }
+  if (
+    effective.constraints.sandbox !== undefined &&
+    !effective.constraints.sandbox.allowedProfiles.includes(sandboxProfile)
+  ) {
+    throw configError(
+      "unsafe_widening",
+      "sandbox.profile",
+      `sandbox profile "${sandboxProfile}" is not allowed by the selected policy packages`,
+      input.operator?.path,
+    );
+  }
+  return deepFreeze({ snapshot, effective });
+}
+
+function configError(
+  code: FlowConfigErrorCode,
+  fieldPath: string,
+  message: string,
+  sourcePath?: string,
+  cause?: unknown,
+): FlowConfigError {
+  const prefix = sourcePath === undefined ? "Flow configuration" : sourcePath;
+  return new FlowConfigError(code, `${prefix}: ${fieldPath}: ${message}`, {
+    ...(sourcePath === undefined ? {} : { sourcePath }),
+    fieldPath,
+    ...(cause === undefined ? {} : { cause }),
+  });
 }
 
 function parseConfig<T>(schema: z.ZodType<T>, input: unknown, sourcePath: string): T {

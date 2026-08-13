@@ -273,6 +273,7 @@ describe("capability package CLI", () => {
     const source = join(project, "review-source");
     await writeBundleSource(source);
     await writeWorkflowBundlePackage(source);
+    await writePolicyBundlePackage(source);
     const first = join(project, "review-a.flowpkg");
     const second = join(project, "review-b.flowpkg");
     const firstOutput = captureIo();
@@ -300,6 +301,7 @@ describe("capability package CLI", () => {
       name: "review-suite",
       version: "1.0.0",
       packages: [
+        { kind: "policy-package", name: "restricted-review", version: "1.0.0" },
         { kind: "verifier-package", name: "evidence-review", version: "1.2.0" },
         { kind: "workflow-package", name: "release-check", version: "1.0.0" },
       ],
@@ -545,6 +547,24 @@ spec:
       - id: check
         type: command
         command: { executable: /usr/bin/true }
+`,
+  );
+}
+
+async function writePolicyBundlePackage(source: string): Promise<void> {
+  const policyRoot = join(source, "policies", "restricted-review");
+  await mkdir(policyRoot, { recursive: true });
+  await writeFile(
+    join(policyRoot, "POLICY.yaml"),
+    `apiVersion: flow.synapti.ai/v1alpha1
+kind: PolicyPackage
+metadata:
+  name: restricted-review
+  version: 1.0.0
+  description: Restrict review workflows.
+spec:
+  tools:
+    allowed: [read]
 `,
   );
 }

@@ -8,6 +8,12 @@ import {
 } from "./local-agent-skill-catalog.js";
 import { LocalCapabilityPackageStore } from "./local-capability-package-store.js";
 import {
+  assertPolicyPackageCatalog,
+  createInstalledDiscoveredPolicyPackage,
+  discoverProjectPolicyPackages,
+  type ProjectPolicyPackageCatalog,
+} from "./local-policy-package-catalog.js";
+import {
   createInstalledDiscoveredToolPackage,
   type DiscoveredToolPackage,
   discoverProjectToolPackages,
@@ -35,23 +41,32 @@ export interface ProjectCapabilityCatalogs {
   readonly verifiers: ProjectVerifierPackageCatalog;
   readonly tools: ProjectToolPackageCatalog;
   readonly workflows: ProjectWorkflowPackageCatalog;
+  readonly policies: ProjectPolicyPackageCatalog;
 }
 
 export async function discoverProjectCapabilityCatalogs(
   projectRoot: string,
 ): Promise<ProjectCapabilityCatalogs> {
-  const [localAgentSkills, localVerifiers, localTools, localWorkflows, installedBundles] =
-    await Promise.all([
-      discoverProjectAgentSkills(projectRoot),
-      discoverProjectVerifierPackages(projectRoot),
-      discoverProjectToolPackages(projectRoot),
-      discoverProjectWorkflowPackages(projectRoot),
-      new LocalCapabilityPackageStore(projectRoot).verify(),
-    ]);
+  const [
+    localAgentSkills,
+    localVerifiers,
+    localTools,
+    localWorkflows,
+    localPolicies,
+    installedBundles,
+  ] = await Promise.all([
+    discoverProjectAgentSkills(projectRoot),
+    discoverProjectVerifierPackages(projectRoot),
+    discoverProjectToolPackages(projectRoot),
+    discoverProjectWorkflowPackages(projectRoot),
+    discoverProjectPolicyPackages(projectRoot),
+    new LocalCapabilityPackageStore(projectRoot).verify(),
+  ]);
   const agentSkills = [...localAgentSkills.skills];
   const verifiers = [...localVerifiers.packages];
   const tools = [...localTools.packages];
   const workflows = [...localWorkflows.packages];
+  const policies = [...localPolicies.packages];
   for (const installed of installedBundles) {
     for (const item of installed.bundle.packages) {
       if (item.kind === "agent-skill") {
@@ -78,10 +93,18 @@ export async function discoverProjectCapabilityCatalogs(
             package: item,
           }),
         );
-      } else {
+      } else if (item.kind === "workflow-package") {
         workflows.push(
           createInstalledDiscoveredWorkflowPackage({
             projectRoot: localWorkflows.projectRoot,
+            bundleDigest: installed.entry.digest,
+            package: item,
+          }),
+        );
+      } else {
+        policies.push(
+          createInstalledDiscoveredPolicyPackage({
+            projectRoot: localPolicies.projectRoot,
             bundleDigest: installed.entry.digest,
             package: item,
           }),
@@ -93,10 +116,12 @@ export async function discoverProjectCapabilityCatalogs(
   verifiers.sort(compareByName);
   tools.sort(compareByName);
   workflows.sort(compareByName);
+  policies.sort(compareByName);
   assertAgentSkillCatalog(agentSkills);
   assertVerifierCatalog(verifiers);
   assertToolCatalog(tools);
   assertWorkflowPackageCatalog(workflows);
+  assertPolicyPackageCatalog(policies);
   return deepFreeze({
     agentSkills: {
       ...localAgentSkills,
@@ -113,6 +138,10 @@ export async function discoverProjectCapabilityCatalogs(
     workflows: {
       ...localWorkflows,
       packages: workflows,
+    },
+    policies: {
+      ...localPolicies,
+      packages: policies,
     },
   });
 }

@@ -17,6 +17,7 @@ import {
   snapshotSelectedAgentSkills,
 } from "../../../src/infrastructure/fs/local-agent-skill-catalog.js";
 import { LocalCapabilityPackageStore } from "../../../src/infrastructure/fs/local-capability-package-store.js";
+import { snapshotSelectedPolicyPackages } from "../../../src/infrastructure/fs/local-policy-package-catalog.js";
 import { snapshotSelectedToolPackages } from "../../../src/infrastructure/fs/local-tool-package-catalog.js";
 import { snapshotSelectedVerifierPackages } from "../../../src/infrastructure/fs/local-verifier-package-catalog.js";
 import {
@@ -61,6 +62,7 @@ Review the evidence.
         },
         { kind: "verifier-package", manifest: Buffer.from(verifierManifest()) },
         { kind: "workflow-package", manifest: Buffer.from(workflowManifest()) },
+        { kind: "policy-package", manifest: Buffer.from(policyManifest()) },
       ],
     });
     const sha256 = created.bundle.digest.slice("sha256:".length);
@@ -101,6 +103,13 @@ Review the evidence.
         provenance: `.flow/packages/sha256/${sha256}/workflow-package/release-check`,
       },
     ]);
+    expect(catalogs.policies.packages).toMatchObject([
+      {
+        name: "restricted-review",
+        version: "1.0.0",
+        provenance: `.flow/packages/sha256/${sha256}/policy-package/restricted-review`,
+      },
+    ]);
 
     const agentSnapshot = await snapshotSelectedAgentSkills(catalogs.agentSkills, ["review"]);
     const verifierSnapshot = await snapshotSelectedVerifierPackages(catalogs.verifiers, [
@@ -111,6 +120,9 @@ Review the evidence.
     ]);
     const workflowSnapshot = await snapshotSelectedWorkflowPackages(catalogs.workflows, [
       { name: "release-check", version: "1.0.0" },
+    ]);
+    const policySnapshot = await snapshotSelectedPolicyPackages(catalogs.policies, [
+      { name: "restricted-review", version: "1.0.0" },
     ]);
     expect(agentSnapshot.packages[0]).toMatchObject({
       provenance: `.flow/packages/sha256/${sha256}/agent-skill/review`,
@@ -124,6 +136,9 @@ Review the evidence.
     });
     expect(workflowSnapshot.packages[0]).toMatchObject({
       provenance: `.flow/packages/sha256/${sha256}/workflow-package/release-check`,
+    });
+    expect(policySnapshot.packages[0]).toMatchObject({
+      provenance: `.flow/packages/sha256/${sha256}/policy-package/restricted-review`,
     });
 
     const output = captureIo();
@@ -321,6 +336,19 @@ spec:
         command:
           executable: /usr/bin/true
           args: []
+`;
+}
+
+function policyManifest(): string {
+  return `apiVersion: flow.synapti.ai/v1alpha1
+kind: PolicyPackage
+metadata:
+  name: restricted-review
+  version: 1.0.0
+  description: Restrict review workflows.
+spec:
+  tools:
+    allowed: [read]
 `;
 }
 

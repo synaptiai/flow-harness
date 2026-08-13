@@ -88,6 +88,26 @@ describe("capability bundles", () => {
     expect(parseCapabilityBundle(created.content)).toEqual(created.bundle);
   });
 
+  it("round-trips an inert policy package through canonical bundle bytes", () => {
+    const policy = Buffer.from(policyManifest());
+    const created = createCapabilityBundleSource({
+      name: "policy-suite",
+      version: "1.0.0",
+      description: "Reusable Flow policy constraints.",
+      packages: [{ kind: "policy-package", manifest: policy }],
+    });
+
+    expect(created.bundle.packages).toEqual([
+      {
+        kind: "policy-package",
+        name: "restricted-review",
+        version: "1.2.3",
+        manifestBase64: policy.toString("base64"),
+      },
+    ]);
+    expect(parseCapabilityBundle(created.content)).toEqual(created.bundle);
+  });
+
   it("derives Agent Skill metadata and requested tools from canonical package files", () => {
     const skill = `---
 name: review
@@ -425,5 +445,20 @@ spec:
         command:
           executable: /usr/bin/true
           args: []
+`;
+}
+
+function policyManifest(): string {
+  return `apiVersion: flow.synapti.ai/v1alpha1
+kind: PolicyPackage
+metadata:
+  name: restricted-review
+  version: 1.2.3
+  description: Restrict review execution.
+spec:
+  tools:
+    allowed: [read]
+  commands:
+    requireApproval: true
 `;
 }

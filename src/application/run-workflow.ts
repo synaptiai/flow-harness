@@ -25,6 +25,7 @@ import {
   collectWorkflowPackageReferences,
   resolveVerifierPackageNode,
 } from "../domain/capability/workflow-capabilities.js";
+import { assertWorkflowSatisfiesPolicyPackages } from "../domain/policy/policy-package-admission.js";
 import type { PolicyDecision } from "../domain/policy/types.js";
 import {
   evaluateOptimizationBaseline,
@@ -144,6 +145,7 @@ export async function runWorkflow(
   const capabilitySnapshot = bindWorkflowCapabilities(workflow, options.capabilitySnapshot, {
     allowUnexpected: options.executionWorkspace?.parentRunId !== undefined,
   });
+  assertWorkflowSatisfiesPolicyPackages(workflow, capabilitySnapshot);
   const runId = options.runId ?? randomUUID();
   const now = options.now ?? (() => new Date());
   const executionCwd = resolve(options.cwd);
@@ -214,6 +216,12 @@ async function resumeWorkflowWithRelocation(
   workspaceRelocation?: RecoveryWorkspaceRelocation,
 ): Promise<RunState> {
   assertNotAborted(options.signal);
+  if (options.capabilitySnapshot !== undefined) {
+    const preflightSnapshot = bindWorkflowCapabilities(workflow, options.capabilitySnapshot, {
+      allowUnexpected: options.executionWorkspace?.parentRunId !== undefined,
+    });
+    assertWorkflowSatisfiesPolicyPackages(workflow, preflightSnapshot);
+  }
 
   const events = await options.store.claim(options.runId);
   return await releaseAfter(options.store, options.runId, async () => {
@@ -230,6 +238,7 @@ async function resumeWorkflowWithRelocation(
             state.executionWorkspace?.parentRunId !== undefined,
         },
       );
+      assertWorkflowSatisfiesPolicyPackages(workflow, persistedCapabilitySnapshot);
     } catch (error) {
       throw new RunRecoveryError(
         "workflow_mismatch",

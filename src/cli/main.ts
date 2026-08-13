@@ -95,6 +95,10 @@ import {
   createTuningEvidencePacket,
   TuningEvidenceError,
 } from "../domain/evaluation/tuning-evidence.js";
+import {
+  assertWorkflowSatisfiesPolicyPackages,
+  PolicyPackageAdmissionError,
+} from "../domain/policy/policy-package-admission.js";
 import { type RunStatus, reduceRunEvents } from "../domain/run/events.js";
 import {
   WorkflowCompilationError,
@@ -144,6 +148,11 @@ import {
   LocalEvaluationStore,
   type StoredEvaluation,
 } from "../infrastructure/fs/local-evaluation-store.js";
+import {
+  PolicyPackageCatalogError,
+  type ProjectPolicyPackageCatalog,
+  snapshotSelectedPolicyPackages,
+} from "../infrastructure/fs/local-policy-package-catalog.js";
 import {
   LocalPromptActivationStore,
   PromptActivationStoreError,
@@ -231,6 +240,9 @@ Usage:
   flow workflows list
   flow workflows inspect <name> --version <exact>
   flow workflows validate
+  flow policies list
+  flow policies inspect <name> --version <exact>
+  flow policies validate
   flow packages install <https-url> --sha256 <64-lowercase-hex>
   flow packages install-oci <registry/repository@sha256:digest> --certificate-issuer <https-url> --certificate-identity <exact>
   flow packages pack <source-directory> --output <bundle.flowpkg>
@@ -375,6 +387,8 @@ export async function main(
         return await toolsCommand(args.slice(1), io, dependencyOverrides);
       case "workflows":
         return await workflowsCommand(args.slice(1), io, dependencyOverrides);
+      case "policies":
+        return await policiesCommand(args.slice(1), io, dependencyOverrides);
       case "packages":
         return await packagesCommand(args.slice(1), io, dependencyOverrides);
       case "candidate":
@@ -445,6 +459,8 @@ export async function main(
       error instanceof VerifierPackageCatalogError ||
       error instanceof ToolPackageCatalogError ||
       error instanceof WorkflowPackageCatalogError ||
+      error instanceof PolicyPackageCatalogError ||
+      error instanceof PolicyPackageAdmissionError ||
       error instanceof WorkflowCapabilityError
     ) {
       io.stderr(`${error.code}: ${error.message}`);
@@ -872,6 +888,78 @@ async function workflowsCommand(
   for (const item of catalog.packages) {
     const snapshot = await loadPackage({ name: item.name, version: item.version });
     await admitWorkflowPackages({ source: { kind: "package", snapshot }, loadPackage });
+  }
+  io.stdout(
+    JSON.stringify(
+      {
+        valid: true,
+        root: catalog.root,
+        packages: catalog.packages.map((item) => `${item.name}@${item.version}`),
+      },
+      null,
+      2,
+    ),
+  );
+  return 0;
+}
+
+async function policiesCommand(
+  args: readonly string[],
+  io: CliIo,
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  const { positionals, values } = parseCommandArgs(args, {
+    version: { type: "string" },
+  });
+  const subcommand = positionals[0];
+  if (
+    (subcommand !== "list" && subcommand !== "validate" && subcommand !== "inspect") ||
+    (subcommand === "inspect" ? positionals.length !== 2 : positionals.length !== 1) ||
+    (subcommand === "inspect" ? values.version === undefined : values.version !== undefined)
+  ) {
+    throw new CliUsageError(
+      "policies requires list, validate, or inspect <name> --version <exact>",
+    );
+  }
+  const dependencies = configDependenciesFrom(overrides);
+  const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
+  const catalog = await discoverConfiguredPolicyPackages(config);
+
+  if (subcommand === "list") {
+    io.stdout(
+      JSON.stringify(
+        {
+          root: catalog.root,
+          packages: catalog.packages.map(({ directory: _directory, ...item }) => item),
+        },
+        null,
+        2,
+      ),
+    );
+    return 0;
+  }
+
+  if (subcommand === "inspect") {
+    const name = positionals[1];
+    const version = values.version;
+    if (name === undefined || version === undefined) {
+      throw new CliUsageError("policies inspect requires <name> --version <exact>");
+    }
+    const snapshot = await snapshotSelectedPolicyPackages(catalog, [{ name, version }]);
+    const selected = snapshot.packages.find((item) => item.kind === "policy-package");
+    if (selected === undefined) {
+      throw new PolicyPackageCatalogError(
+        "missing_package",
+        `policy package "${name}" version "${version}" was not captured`,
+      );
+    }
+    const { contentBase64: _contentBase64, ...manifest } = selected.manifest;
+    io.stdout(JSON.stringify({ ...selected, manifest }, null, 2));
+    return 0;
+  }
+
+  for (const item of catalog.packages) {
+    await snapshotSelectedPolicyPackages(catalog, [{ name: item.name, version: item.version }]);
   }
   io.stdout(
     JSON.stringify(
@@ -1902,6 +1990,7 @@ async function resumeCommand(
   // before recovery performs its authoritative claim and compatibility checks.
   const durableState = reduceRunEvents(await store.read(runId));
   const capabilitySnapshot = durableState.capabilitySnapshot ?? undefined;
+  assertCurrentPolicyPackageSnapshot(config, capabilitySnapshot, runId);
   const admitted = await admitResumeWorkflowArgument(
     workflowArgument,
     capabilitySnapshot,
@@ -1974,6 +2063,7 @@ async function validateCommand(
     admitted.capabilitySnapshot,
     supplementalSnapshot,
   ]);
+  assertWorkflowSatisfiesPolicyPackages(admitted.workflow, capabilitySnapshot);
   const skillCount =
     capabilitySnapshot?.packages.filter((item) => item.kind === "agent-skill").length ?? 0;
   const verifierPackageCount =
@@ -1982,9 +2072,11 @@ async function validateCommand(
     capabilitySnapshot?.packages.filter((item) => item.kind === "tool-package").length ?? 0;
   const workflowPackageCount =
     capabilitySnapshot?.packages.filter((item) => item.kind === "workflow-package").length ?? 0;
+  const policyPackageCount =
+    capabilitySnapshot?.packages.filter((item) => item.kind === "policy-package").length ?? 0;
 
   io.stdout(
-    `Workflow "${admitted.workflow.id}" is valid (nodes: ${admitted.workflow.nodes.length}, criteria: ${admitted.workflow.goal?.criteria.length ?? 0}, skills: ${skillCount}, verifier packages: ${verifierPackageCount}, tool packages: ${toolPackageCount}, workflow packages: ${workflowPackageCount}).`,
+    `Workflow "${admitted.workflow.id}" is valid (nodes: ${admitted.workflow.nodes.length}, criteria: ${admitted.workflow.goal?.criteria.length ?? 0}, skills: ${skillCount}, verifier packages: ${verifierPackageCount}, tool packages: ${toolPackageCount}, workflow packages: ${workflowPackageCount}, policy packages: ${policyPackageCount}).`,
   );
   return 0;
 }
@@ -2489,7 +2581,7 @@ async function resolveWorkflowCapabilitySnapshot(
   const verifierReferences = collectWorkflowVerifierPackageReferences(workflow);
   const toolReferences = collectWorkflowToolPackageReferences(workflow);
   if (names.length === 0 && verifierReferences.length === 0 && toolReferences.length === 0) {
-    return undefined;
+    return config.policyPackages?.snapshot;
   }
   if (config.projectRoot === null) {
     if (names.length > 0) {
@@ -2510,7 +2602,9 @@ async function resolveWorkflowCapabilitySnapshot(
     );
   }
   const catalogs = await discoverProjectCapabilityCatalogs(config.projectRoot);
-  const snapshots: CapabilitySnapshot[] = [];
+  const snapshots: CapabilitySnapshot[] = [
+    ...(config.policyPackages === undefined ? [] : [config.policyPackages.snapshot]),
+  ];
   if (names.length > 0) {
     snapshots.push(await snapshotSelectedAgentSkills(catalogs.agentSkills, names));
   }
@@ -2663,6 +2757,25 @@ function combineOptionalCapabilitySnapshots(
   );
 }
 
+function assertCurrentPolicyPackageSnapshot(
+  config: EffectiveFlowConfig,
+  durableSnapshot: CapabilitySnapshot | undefined,
+  runId: string,
+): void {
+  const current = (config.policyPackages?.snapshot.packages ?? [])
+    .filter((item) => item.kind === "policy-package")
+    .map((item) => `${item.name}\0${item.version}\0${item.digest}`);
+  const durable = (durableSnapshot?.packages ?? [])
+    .filter((item) => item.kind === "policy-package")
+    .map((item) => `${item.name}\0${item.version}\0${item.digest}`);
+  if (JSON.stringify(current) !== JSON.stringify(durable)) {
+    throw new RunRecoveryError(
+      "workflow_mismatch",
+      `run "${runId}" policy package snapshot does not match current configuration`,
+    );
+  }
+}
+
 async function discoverConfiguredAgentSkills(
   config: EffectiveFlowConfig,
 ): Promise<ProjectAgentSkillCatalog> {
@@ -2709,6 +2822,18 @@ async function discoverConfiguredWorkflowPackages(
     );
   }
   return (await discoverProjectCapabilityCatalogs(config.projectRoot)).workflows;
+}
+
+async function discoverConfiguredPolicyPackages(
+  config: EffectiveFlowConfig,
+): Promise<ProjectPolicyPackageCatalog> {
+  if (config.projectRoot === null) {
+    throw new PolicyPackageCatalogError(
+      "missing_package",
+      "policy packages require a Flow project root containing .flow/policies",
+    );
+  }
+  return (await discoverProjectCapabilityCatalogs(config.projectRoot)).policies;
 }
 
 function workflowPackageLoader(

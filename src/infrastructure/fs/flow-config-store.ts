@@ -17,13 +17,15 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { parseDocument } from "yaml";
 
 import {
+  type EffectiveFlowConfig,
   FLOW_CONFIG_API_VERSION,
   FlowConfigError,
-  type EffectiveFlowConfig,
   parseOperatorConfig,
   parseProjectConfig,
   resolveFlowConfig,
 } from "../../domain/config/resolver.js";
+import { snapshotSelectedPolicyPackages } from "./local-policy-package-catalog.js";
+import { discoverProjectCapabilityCatalogs } from "./project-capability-catalog.js";
 
 const MAX_CONFIG_BYTES = 1024 * 1024;
 const PROJECT_CONFIG_SOURCE = `apiVersion: ${FLOW_CONFIG_API_VERSION}\nkind: FlowProjectConfig\n`;
@@ -94,25 +96,46 @@ export async function loadEffectiveFlowConfig(
   ]);
   const projectInput =
     projectLocation === null ? null : await readRequiredConfig(projectLocation.path);
+  const operator =
+    operatorInput === null ? undefined : parseOperatorConfig(operatorInput, operatorPath);
+  const project =
+    projectLocation === null || projectInput === null
+      ? undefined
+      : parseProjectConfig(projectInput, projectLocation.path);
+  const policyReferences = [
+    ...(operator?.policies?.required ?? []),
+    ...(project?.policies?.additional ?? []),
+  ];
+  const policyPackages =
+    policyReferences.length === 0 || projectLocation === null
+      ? undefined
+      : await discoverProjectCapabilityCatalogs(projectLocation.projectRoot).then(
+          async (catalogs) =>
+            await snapshotSelectedPolicyPackages(
+              catalogs.policies,
+              policyReferences.map(({ name, version }) => ({ name, version })),
+            ),
+        );
 
   return resolveFlowConfig({
-    ...(operatorInput === null
+    ...(operator === undefined
       ? {}
       : {
           operator: {
             path: operatorPath,
-            config: parseOperatorConfig(operatorInput, operatorPath),
+            config: operator,
           },
         }),
-    ...(projectLocation === null || projectInput === null
+    ...(projectLocation === null || project === undefined
       ? {}
       : {
           project: {
             path: projectLocation.path,
-            config: parseProjectConfig(projectInput, projectLocation.path),
+            config: project,
           },
           projectRoot: projectLocation.projectRoot,
         }),
+    ...(policyPackages === undefined ? {} : { policyPackages }),
   });
 }
 
