@@ -25,6 +25,12 @@ const (
 	kernelConnectionPollInterval   = 10 * time.Millisecond
 )
 
+type kernelDiagnosticResult struct {
+	value    []byte
+	overflow bool
+	err      error
+}
+
 func PeerUID(connection *net.UnixConn) (int, error) {
 	raw, err := connection.SyscallConn()
 	if err != nil {
@@ -87,12 +93,7 @@ func RunKernel(ctx context.Context, request kernelcontract.Request) (int, string
 	if err := command.Start(); err != nil {
 		return 125, boundedError("start fixed Python kernel", err)
 	}
-	type diagnosticResult struct {
-		value    []byte
-		overflow bool
-		err      error
-	}
-	diagnostic := make(chan diagnosticResult, 1)
+	diagnostic := make(chan kernelDiagnosticResult, 1)
 	go func() {
 		value, readError := io.ReadAll(io.LimitReader(standardError, maxStderrBytes+1))
 		overflow := len(value) > maxStderrBytes
@@ -100,34 +101,45 @@ func RunKernel(ctx context.Context, request kernelcontract.Request) (int, string
 			value = value[:maxStderrBytes]
 			_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
 		}
-		diagnostic <- diagnosticResult{value: value, overflow: overflow, err: readError}
+		diagnostic <- kernelDiagnosticResult{value: value, overflow: overflow, err: readError}
 	}()
 	processSettlement := make(chan error, 1)
 	go func() {
 		processSettlement <- command.Wait()
 	}()
-	if err := bridgeResolvedKernelConnection(ctx, file, initialConnection); err != nil {
+	resolution := bridgeResolvedKernelConnection(ctx, file, initialConnection, processSettlement)
+	if resolution.processSettled {
+		return settledKernelResult(resolution.processError, ctx.Err() != nil, <-diagnostic)
+	}
+	if resolution.err != nil {
 		_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
 		<-processSettlement
 		<-diagnostic
 		if ctx.Err() != nil {
 			return 0, ""
 		}
-		return 125, boundedError("resolve fixed Python kernel connection", err)
+		return 125, boundedError("resolve fixed Python kernel connection", resolution.err)
 	}
 	waitError, cancelled := waitForKernelSettlement(
 		ctx,
 		processSettlement,
 		func() error { return syscall.Kill(-command.Process.Pid, syscall.SIGKILL) },
 	)
-	diagnosticValue := <-diagnostic
+	return settledKernelResult(waitError, cancelled, <-diagnostic)
+}
+
+func settledKernelResult(
+	waitError error,
+	cancelled bool,
+	diagnostic kernelDiagnosticResult,
+) (int, string) {
 	if cancelled {
 		return 0, ""
 	}
-	if diagnosticValue.err != nil {
-		return 125, boundedError("read kernel standard error", diagnosticValue.err)
+	if diagnostic.err != nil {
+		return 125, boundedError("read kernel standard error", diagnostic.err)
 	}
-	if diagnosticValue.overflow {
+	if diagnostic.overflow {
 		return 125, "kernel standard error exceeds 65536 bytes"
 	}
 	if waitError == nil {
@@ -135,7 +147,7 @@ func RunKernel(ctx context.Context, request kernelcontract.Request) (int, string
 	} else {
 		var exitError *exec.ExitError
 		if errors.As(waitError, &exitError) && exitError.ExitCode() >= 0 && exitError.ExitCode() <= 255 {
-			return exitError.ExitCode(), boundedText(string(diagnosticValue.value))
+			return exitError.ExitCode(), boundedText(string(diagnostic.value))
 		}
 		return 125, boundedError("run fixed Python kernel", waitError)
 	}
@@ -265,36 +277,39 @@ func bridgeResolvedKernelConnection(
 	ctx context.Context,
 	nodeFile *os.File,
 	initial kernelConnectionInformation,
-) error {
+	processSettlement <-chan error,
+) kernelConnectionResolutionResult {
 	deadline := time.NewTimer(kernelConnectionResolveTimeout)
 	defer deadline.Stop()
 	ticker := time.NewTicker(kernelConnectionPollInterval)
 	defer ticker.Stop()
-	for {
-		resolved, err := readResolvedPythonKernelConnection(initial)
-		if err == nil {
-			if err := nodeFile.Truncate(0); err != nil {
-				return fmt.Errorf("truncate Node kernel connection: %w", err)
-			}
-			if _, err := nodeFile.Seek(0, io.SeekStart); err != nil {
-				return fmt.Errorf("rewind Node kernel connection: %w", err)
-			}
-			if _, err := nodeFile.Write(resolved); err != nil {
-				return fmt.Errorf("write resolved Node kernel connection: %w", err)
-			}
-			if err := nodeFile.Sync(); err != nil {
-				return fmt.Errorf("synchronize resolved Node kernel connection: %w", err)
-			}
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-deadline.C:
-			return errors.New("Python kernel connection did not resolve within its fixed deadline")
-		case <-ticker.C:
-		}
+	result := waitForKernelConnectionResolutionWith(
+		ctx,
+		processSettlement,
+		func() ([]byte, error) { return readResolvedPythonKernelConnection(initial) },
+		ticker.C,
+		deadline.C,
+	)
+	if result.err != nil || result.processSettled {
+		return result
 	}
+	if err := nodeFile.Truncate(0); err != nil {
+		result.err = fmt.Errorf("truncate Node kernel connection: %w", err)
+		return result
+	}
+	if _, err := nodeFile.Seek(0, io.SeekStart); err != nil {
+		result.err = fmt.Errorf("rewind Node kernel connection: %w", err)
+		return result
+	}
+	if _, err := nodeFile.Write(result.resolved); err != nil {
+		result.err = fmt.Errorf("write resolved Node kernel connection: %w", err)
+		return result
+	}
+	if err := nodeFile.Sync(); err != nil {
+		result.err = fmt.Errorf("synchronize resolved Node kernel connection: %w", err)
+		return result
+	}
+	return result
 }
 
 func readResolvedPythonKernelConnection(initial kernelConnectionInformation) ([]byte, error) {
