@@ -367,6 +367,9 @@ describe("Prime Agent package boundary", () => {
     const readmePreparation = readme.indexOf("node dist/cli/main.js runtime prepare prime-agent");
 
     expect(workflow).toContain("docker_version='5:28.3.3-1~ubuntu.24.04~noble'");
+    expect(workflow).toContain(
+      "      - name: Check out repository\n        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6\n        with:\n          fetch-depth: 0",
+    );
     expect(workflow).toContain("containerd.io='1.7.27-1'");
     expect(workflow).toContain("docker-buildx-plugin='0.26.1-1~ubuntu.24.04~noble'");
     expect(workflow).toContain("{{.Server.APIVersion}}')\" = '1.51'");
