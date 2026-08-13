@@ -26,8 +26,8 @@ Remaining targets include executable extensions, signed registries, automatic up
 UI packages, external artifact storage, and stronger isolation.
 
 The operator-selectable container command profile is implemented behind the Flow-owned sandbox
-port. The real Linux x64 runtime gate is pending. This profile is a shared-kernel containment
-milestone. It is not VM-grade or multi-tenant isolation.
+port. Its pinned Linux x64 runtime gate passed in hosted CI. This profile is a shared-kernel
+containment milestone. It is not VM-grade or multi-tenant isolation.
 
 ## Gate 0: Repository foundation
 
@@ -64,7 +64,7 @@ milestone. It is not VM-grade or multi-tenant isolation.
 - The initial fixed profile denies network and ambient credentials. It permits workspace work,
   protects durable state, and records provenance. *(Implemented for native SRT and
   `flow-container-v1`. The container profile also denies local TCP and Unix socket creation. The
-  real Linux container runtime gate is pending.)*
+  real Linux x64 container runtime gate passed in hosted CI.)*
 - Missing or degraded containment fails before command spawn. *(Implemented; agent `exec` currently requires verified Linux PID-namespace containment.)*
 - Explicit agent `exec` uses the same sandboxed command executor, exact process authorization, optional per-call human approval, write-ahead prepare/settle events, bounded output evidence, and replay-derived artifact accounting. *(Implemented.)*
 - Container and managed sandbox adapters can satisfy higher-isolation deployment profiles. *(The
