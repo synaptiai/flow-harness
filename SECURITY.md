@@ -150,11 +150,16 @@ The embedded Pi runtime runs with the invoking user's operating-system permissio
   every selected node remains subject to the standard compiler, scheduler, approvals, containment,
   evidence, budgets, and child isolation.
 - Remote capability bundles contain only the same Agent Skill, verifier, declarative command tool,
-  and inert workflow source ABIs. `flow packages install` is the only network operation: it requires one canonical
-  public HTTPS URL and caller-supplied lowercase SHA-256, follows no redirect, sends no ambient
-  credentials, pins a validated public DNS answer into the TLS connection, and bounds the whole
-  request. The digest is checked before strict JSON and package parsing. Installation runs no
-  package code, dependency manager, hook, or driver.
+  and inert workflow source ABIs. The two install commands are the only package network operations.
+  The HTTPS form requires one canonical public URL and caller-supplied lowercase SHA-256. It follows
+  no redirect and sends no ambient credentials.
+
+- The OCI form requires one canonical public repository and exact manifest digest. It also requires
+  an exact certificate issuer and certificate identity. It accepts only the fixed two-layer Flow
+  artifact and anonymous exact repository-pull tokens. Flow pins public DNS answers, denies unsafe
+  redirects, checks descriptor bytes, and uses shipped offline Sigstore trust material.
+  Installation runs no package code, dependency manager, hook, or driver.
+
 - Installed bytes are stored once at `.flow/packages/sha256/<digest>.flowpkg`; activation is the
   deterministic `.flow/packages.lock.json` entry published last under an owner-checked local lock.
   Missing, corrupt, replaced, symlinked, identity-inconsistent, or colliding state fails closed.
@@ -162,9 +167,11 @@ The embedded Pi runtime runs with the invoking user's operating-system permissio
   before removing an exited owner's exact lock. A `commit_uncertain` result requires local lock/blob
   inspection and verification before retry. New store-directory entries are parent-synced before a
   lock can reference them; bounded reads and traversal budgets remain enforced during source races.
-  Local inspection/removal and workflow execution never fetch the recorded source. A digest proves
-  byte identity, not publisher identity, freshness, revocation, or rollback protection. Treat the
-  URL, digest, lock, and package content as trusted project configuration and review them before
+  Local inspection/removal and workflow execution never fetch the recorded source or contact a
+  signature service. A signed OCI lock entry records exact registry and publisher admission data.
+  A signature authenticates the admitted publisher for the exact bytes. It does not prove safety,
+  correctness, freshness, revocation state, or rollback protection. Treat the source, digest,
+  publisher policy, lock, and package content as trusted project configuration. Review them before
   selecting a package.
 - Run budgets persist checked start, token, reported-cost, and active-time accounting and can reduce
   node timeouts before execution. They are scheduler controls, not provider-side billing

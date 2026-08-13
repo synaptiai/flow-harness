@@ -8,6 +8,7 @@ interface PackageManifest {
   bugs?: { url?: string };
   description?: string;
   dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
   engines?: Record<string, string>;
   files?: string[];
   homepage?: string;
@@ -43,7 +44,7 @@ describe("package contract", () => {
       ]),
     );
     expect(manifest.bin).toEqual({ flow: "dist/cli/main.js" });
-    expect(manifest.engines?.node).toBe(">=22.19.0");
+    expect(manifest.engines?.node).toBe(">=26.7.0");
     expect(manifest.os).toEqual(["darwin", "linux"]);
     expect(manifest.files).toContain("THIRD_PARTY_NOTICES.md");
     expect(manifest.files).toContain("SECURITY.md");
@@ -56,5 +57,39 @@ describe("package contract", () => {
     expect(manifest.scripts?.check).toContain("npm run test");
     expect(manifest.scripts?.check).toContain("npm run build");
     expect(manifest.scripts?.["pack:check"]).toBe("node scripts/verify-package.mjs");
+  });
+
+  it("keeps the host Node baseline consistent across CI and public prerequisites", async () => {
+    const [manifestSource, workflow, readme, contributing] = await Promise.all([
+      readFile(new URL("../../package.json", import.meta.url), "utf8"),
+      readFile(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8"),
+      readFile(new URL("../../README.md", import.meta.url), "utf8"),
+      readFile(new URL("../../CONTRIBUTING.md", import.meta.url), "utf8"),
+    ]);
+    const manifest = JSON.parse(manifestSource) as PackageManifest;
+
+    expect(manifest.engines?.node).toBe(">=26.7.0");
+    expect(manifest.devDependencies?.["@types/node"]).toBe("26.2.0");
+    expect(workflow.match(/node-version: 26\.7\.0/g)).toHaveLength(2);
+    expect(readme).toContain("Node.js 26.7 or newer");
+    expect(contributing).toContain("Node.js 26.7 or newer");
+  });
+
+  it("pins the offline Sigstore verifier stack without verifier-owned network clients", async () => {
+    const [manifestSource, notices] = await Promise.all([
+      readFile(new URL("../../package.json", import.meta.url), "utf8"),
+      readFile(new URL("../../THIRD_PARTY_NOTICES.md", import.meta.url), "utf8"),
+    ]);
+    const manifest = JSON.parse(manifestSource) as PackageManifest;
+
+    expect(manifest.dependencies?.["@sigstore/bundle"]).toBe("5.0.0");
+    expect(manifest.dependencies?.["@sigstore/protobuf-specs"]).toBe("0.5.1");
+    expect(manifest.dependencies?.["@sigstore/verify"]).toBe("4.1.2");
+    expect(manifest.dependencies?.sigstore).toBeUndefined();
+    expect(manifest.dependencies?.["@sigstore/tuf"]).toBeUndefined();
+    expect(notices).toContain("`@sigstore/verify` 4.1.2");
+    expect(notices).toContain("`@sigstore/bundle` 5.0.0");
+    expect(notices).toContain("`@sigstore/protobuf-specs` 0.5.1");
+    expect(notices).toContain("e2dd69e9013072c308f5dd1800c27a8c2491cca2");
   });
 });

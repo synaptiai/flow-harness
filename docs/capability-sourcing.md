@@ -283,18 +283,48 @@ workflow payloads, then emits canonical strict JSON with bounded canonical base6
 zip, dependency graph, executable extension, hook, or install script. Rebuilding the same source
 produces the same bytes and SHA-256.
 
-`flow packages install <https-url> --sha256 <hex>` is the only remote operation. The URL must be a
-canonical public HTTPS URL without credentials, query, fragment, or redirect. Flow resolves all
-addresses, rejects any non-public result, and pins one validated address into Node's TLS connection
-while preserving hostname verification. It sends only fixed Accept and User-Agent headers, shares
-one deadline across DNS/connection/body work, and stops at the bundle byte limit. Expected SHA-256
-is checked over the exact response before UTF-8, strict JSON, or package parsing.
+`flow packages install <https-url> --sha256 <hex>` and `flow packages install-oci` are the only
+package network operations. The HTTPS URL must be canonical and public, without credentials,
+query, fragment, or redirect. Flow resolves all addresses, rejects any non-public result, and pins
+one validated address into Node's TLS connection while preserving hostname verification. It sends
+only fixed Accept and User-Agent headers, shares one deadline across DNS, connection, and body
+work, and stops at the bundle byte limit. Expected SHA-256 is checked over the exact response
+before UTF-8, strict JSON, or package parsing.
+
+`flow packages install-oci <repository@sha256:digest> --certificate-issuer <https-url>
+--certificate-identity <exact>` accepts only a canonical public registry host, repository, and
+lowercase SHA-256 manifest digest. It rejects a tag, version range, registry discovery result,
+package-provided reference, IP literal, port, credential, query, and fragment before DNS.
+
+The manifest is a strict OCI image manifest with an empty config and exactly two ordered layers.
+The first layer is one strict Flow bundle. The second is one Sigstore v0.3 message-signature bundle.
+Flow requires exact response and manifest media types. It checks the manifest, layer sizes, and
+layer digests before it parses or verifies content. Unknown fields, annotations, layers, and media
+types reject.
+
+The operator policy contains one canonical HTTPS certificate issuer and one exact certificate
+identity. Flow escapes and anchors the identity before Sigstore verification. Verification uses the
+public-good trusted root that ships in the Flow package. It requires the admitted certificate,
+signed time, certificate-log evidence, and transparency-log inclusion evidence. It performs no
+online trust-root, certificate-authority, transparency-log, or timestamp request.
+
+Registry resolution, bearer challenge, anonymous token request, manifest read, redirect, and layer
+read share one total deadline. The bearer challenge must request the exact repository pull scope.
+The token is memory-only. Flow sends it only to the original registry. A cross-host blob redirect
+receives no token.
+
+Redirect targets must use public HTTPS and a pinned public address. Manifest and token redirects
+reject. Public errors use fixed stages. They contain no response body, token, registry path,
+publisher value, or parser cause.
 
 Validated bytes are published once at `.flow/packages/sha256/<hex>.flowpkg`. A deterministic
 `.flow/packages.lock.json` entry is published last under a same-host owner lock; therefore a crash
 may leave only an inactive orphan blob. Reinstallation of the same identity and bytes is
-idempotent. A different digest for the same bundle identity, duplicate package name, duplicate
-provider-facing tool name, missing/corrupt blob, or local/installed collision fails closed. List,
+idempotent. A signed reinstall is idempotent only when its OCI source and publisher evidence are
+also exact. A different digest or signed provenance for the same bundle identity fails closed.
+Duplicate package names and provider-facing tool names also fail closed.
+
+The same rule applies to a missing or corrupt blob and a local or installed collision. List,
 inspect, verify, and remove are local and invoke no package driver. Removal publishes the reduced
 lock before best-effort orphan cleanup.
 
@@ -314,18 +344,21 @@ update discovery, rollback, or garbage collection.
 Catalog composition reopens and rehashes every lock-selected blob, re-derives bundle/package
 identities, and captures verified content in memory. Provenance has the portable form
 `.flow/packages/sha256/<digest>/<kind>/<name>`; the recorded source URL is not run evidence or a
-fetch instruction. Attached and detached admission snapshots exact selected content. Child runs,
+fetch instruction. A signed lock entry also records the canonical registry reference, manifest
+digest, exact publisher policy, and signature-layer digest for admission audit. This record is not
+a fetch instruction. Attached and detached admission snapshots exact selected content. Child runs,
 workers, resume, and replay use only that durable snapshot and never consult the live lock, blob,
-URL, DNS, or publisher.
+URL, registry, DNS, signature service, or publisher.
 
-This design adopts the [OCI descriptor](https://github.com/opencontainers/image-spec/blob/main/descriptor.md)
-principle—verify expected digest and size before consuming content—without importing registry,
-layer, authentication, or archive semantics. It intentionally does not reuse
+This design uses the [OCI descriptor](https://github.com/opencontainers/image-spec/blob/main/descriptor.md)
+principle: verify expected digest and size before consuming content. It supports only the fixed
+Flow artifact contract and anonymous public pulls. It intentionally does not reuse
 [Pi's npm/Git package manager](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md)
 because Pi packages may install dependencies and execute host extensions. A digest proves exact
-bytes only. Publisher signing, freshness, expiry, rollback protection, revocation, transparency,
-delegation, and automatic update discovery require a future
-[TUF-like registry metadata layer](https://theupdateframework.github.io/specification/).
+bytes only. The Sigstore bundle authenticates the admitted publisher for those exact bytes. It does
+not prove package safety or correctness. Freshness, revocation, rollback protection, delegation,
+private credentials, and automatic update discovery remain outside this contract. They require a
+separate [TUF-like registry metadata layer](https://theupdateframework.github.io/specification/).
 
 ## Coupling rules
 

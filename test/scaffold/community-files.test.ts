@@ -641,7 +641,7 @@ describe("public repository contracts", () => {
     expect(readme).toMatch(/Versioned command tool packages.*Implemented/is);
     expect(readme).toContain("tools inspect git-status --version 1.0.0");
     expect(readme).toContain("examples/versioned-command-tool.workflow.yaml");
-    expect(architecture).toMatch(/command tool package.*immutable capability snapshot/is);
+    expect(architecture).toMatch(/declarative command\s+tool packages.*immutable snapshots/is);
     expect(workflowSpec).toContain("## Versioned command tool packages");
     expect(sourcing).toMatch(/Command tool packages.*Implemented/is);
     expect(recovery).toMatch(/durable command tool package snapshot/i);
@@ -690,7 +690,7 @@ describe("public repository contracts", () => {
     });
   });
 
-  it("documents digest-pinned remote capability bundles with a valid source example", async () => {
+  it("documents exact HTTPS and publisher-authenticated OCI capability bundles", async () => {
     const [
       readme,
       architecture,
@@ -717,24 +717,32 @@ describe("public repository contracts", () => {
       readText("examples/capability-bundle-source/verifiers/release-tests/VERIFIER.yaml"),
     ]);
 
-    expect(readme).toMatch(/Distribute digest-pinned capability bundles/i);
+    expect(readme).toMatch(/Distribute exact capability bundles/i);
     expect(readme).toContain("packages install");
-    expect(readme).toMatch(/digest identifies bytes.*does not authenticate a publisher/is);
-    expect(architecture).toMatch(/digest-pinned remote acquisition.*transport.*installation/is);
+    expect(readme).toContain("packages install-oci");
+    expect(readme).toMatch(/HTTPS digest identifies bytes.*does not authenticate a publisher/is);
+    expect(readme).toMatch(/signed OCI form.*admitted publisher signed those bytes/is);
+    expect(architecture).toMatch(/publisher-authenticated OCI acquisition/is);
     expect(workflowSpec).toContain("## Installed capability bundles");
-    expect(workflowSpec).toMatch(/Child execution, resume, and\s+replay never use.*source URL/is);
+    expect(workflowSpec).toMatch(
+      /Child execution, resume, and replay never use.*registry reference.*publisher record/is,
+    );
     expect(recovery).toMatch(
       /never reads `\.flow\/packages\.lock\.json`.*contacts the recorded source URL/is,
     );
     expect(sourcing).toContain(
       "https://github.com/opencontainers/image-spec/blob/main/descriptor.md",
     );
+    expect(sourcing).toMatch(/Sigstore v0\.3 message-signature bundle/is);
+    expect(sourcing).toMatch(
+      /token is memory-only.*cross-host blob redirect\s+receives no token/is,
+    );
     expect(sourcing).toContain("https://theupdateframework.github.io/specification/");
-    expect(roadmap).toMatch(/Deterministic inert bundles.*implemented/is);
+    expect(roadmap).toMatch(/publisher-authenticated OCI\s+installation are implemented/is);
     expect(security).toMatch(
       /Remote capability bundles contain only.*Agent Skill.*verifier.*command tool.*workflow source ABIs/is,
     );
-    expect(testing).toContain("packages pack examples/capability-bundle-source");
+    expect(testing).toMatch(/Credential-free registry tests.*strict OCI manifests/is);
     expect(contributing).toMatch(/capability-bundle format.*adversarial regression/is);
 
     expect(JSON.parse(bundleSource)).toEqual({

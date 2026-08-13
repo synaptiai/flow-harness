@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +10,11 @@ import {
   createCapabilityBundleSource,
   parseCapabilityBundle,
 } from "../../../src/domain/capability/capability-bundles.js";
+import {
+  FLOW_CAPABILITY_BUNDLE_LAYER_MEDIA_TYPE,
+  SIGSTORE_BUNDLE_LAYER_MEDIA_TYPE,
+} from "../../../src/domain/capability/oci-capability-artifacts.js";
+import type { SigstoreCapabilityVerifier } from "../../../src/domain/capability/sigstore-capability-verifier.js";
 import { MAX_VERIFIER_PACKAGE_MANIFEST_BYTES } from "../../../src/domain/capability/verifier-packages.js";
 import {
   BUILT_IN_FLOW_CONFIG,
@@ -18,6 +24,10 @@ import {
 } from "../../../src/domain/config/resolver.js";
 import { packCapabilityBundleDirectory } from "../../../src/infrastructure/fs/capability-bundle-packer.js";
 import type { CapabilityBundleFetcher } from "../../../src/infrastructure/http/strict-capability-bundle-fetcher.js";
+import type {
+  AcquiredOciCapabilityArtifact,
+  StrictOciCapabilityRegistry,
+} from "../../../src/infrastructure/http/strict-oci-capability-registry.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -104,6 +114,106 @@ describe("capability package CLI", () => {
       cleanup: "deleted",
       name: "review-suite",
       version: "1.0.0",
+    });
+  });
+
+  it("installs a publisher-verified OCI bundle and keeps its audit identity offline", async () => {
+    const project = await projectDirectory();
+    const created = bundle();
+    const signatureBundle = Buffer.from("exact signed verification bundle");
+    const manifestDigest = `sha256:${"1".repeat(64)}` as const;
+    const reference = `registry.example.test/flow/review-suite@${manifestDigest}`;
+    const publisher = Object.freeze({
+      certificateIssuer: "https://token.actions.githubusercontent.com/",
+      certificateIdentity:
+        "https://github.com/synaptiai/flow-harness/.github/workflows/release.yml@refs/tags/v1.0.0",
+    });
+    const artifact: AcquiredOciCapabilityArtifact = Object.freeze({
+      reference: Object.freeze({
+        canonical: reference,
+        registryOrigin: "https://registry.example.test",
+        repository: "flow/review-suite",
+        manifestDigest,
+      }),
+      manifest: Object.freeze({
+        digest: manifestDigest,
+        bytes: 512,
+        bundle: Object.freeze({
+          mediaType: FLOW_CAPABILITY_BUNDLE_LAYER_MEDIA_TYPE,
+          digest: sha256Digest(created.content),
+          size: created.content.byteLength,
+        }),
+        sigstoreBundle: Object.freeze({
+          mediaType: SIGSTORE_BUNDLE_LAYER_MEDIA_TYPE,
+          digest: sha256Digest(signatureBundle),
+          size: signatureBundle.byteLength,
+        }),
+      }),
+      capabilityBundle: created.content,
+      sigstoreBundle: signatureBundle,
+    });
+    const acquire = vi.fn().mockResolvedValue(artifact);
+    const verifyPublisher = vi.fn().mockReturnValue(publisher);
+    const networkTrap = vi.fn().mockRejectedValue(new Error("network must remain offline"));
+    const cliDependencies = {
+      ...dependencies(project, { fetch: networkTrap }),
+      ociCapabilityRegistry: { acquire } satisfies StrictOciCapabilityRegistry,
+      sigstoreCapabilityVerifier: {
+        verify: verifyPublisher,
+      } satisfies SigstoreCapabilityVerifier,
+    };
+    const installed = captureIo();
+    const listed = captureIo();
+    const verified = captureIo();
+
+    expect(
+      await main(
+        [
+          "packages",
+          "install-oci",
+          reference,
+          "--certificate-issuer",
+          publisher.certificateIssuer,
+          "--certificate-identity",
+          publisher.certificateIdentity,
+        ],
+        installed.io,
+        cliDependencies,
+      ),
+    ).toBe(0);
+    expect(await main(["packages", "list"], listed.io, cliDependencies)).toBe(0);
+    expect(await main(["packages", "verify"], verified.io, cliDependencies)).toBe(0);
+
+    expect(acquire).toHaveBeenCalledOnce();
+    expect(verifyPublisher).toHaveBeenCalledWith(created.content, signatureBundle, publisher);
+    expect(networkTrap).not.toHaveBeenCalled();
+    expect(JSON.parse(installed.stdout[0] ?? "null")).toMatchObject({
+      status: "installed",
+      name: "review-suite",
+      version: "1.0.0",
+      source: reference,
+      publisher: {
+        kind: "sigstore-keyless-v0.3",
+        ...publisher,
+        signatureBundleDigest: sha256Digest(signatureBundle),
+      },
+    });
+    expect(JSON.parse(listed.stdout[0] ?? "null")).toMatchObject({
+      bundles: [
+        {
+          source: reference,
+          publisher: {
+            kind: "sigstore-keyless-v0.3",
+            ...publisher,
+            signatureBundleDigest: sha256Digest(signatureBundle),
+          },
+        },
+      ],
+    });
+    expect(JSON.parse(verified.stdout[0] ?? "null")).toEqual({
+      valid: true,
+      bundles: 1,
+      packages: 1,
     });
   });
 
@@ -354,6 +464,10 @@ function bundle() {
     description: "Review capabilities.",
     packages: [{ kind: "verifier-package", manifest: Buffer.from(verifierManifest()) }],
   });
+}
+
+function sha256Digest(content: Uint8Array): `sha256:${string}` {
+  return `sha256:${createHash("sha256").update(content).digest("hex")}`;
 }
 
 function verifierManifest(name = "evidence-review"): string {

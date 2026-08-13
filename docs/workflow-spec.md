@@ -767,12 +767,13 @@ re-derives bundle name/version before catalog admission. Local and installed pac
 collisions, and provider-facing tool-name collisions, reject the whole composed catalog; there is
 no source precedence.
 
-Only `flow packages install` uses the network. Workflow validation and run admission are local;
-detached jobs persist the selected immutable capability snapshot. Child execution, resume, and
-replay never use the lock's source URL or load the current lock/blob. Bundle provenance is
+Only `flow packages install` and `flow packages install-oci` use the package network. Workflow
+validation and run admission are local. Detached jobs persist the selected immutable capability
+snapshot. Child execution, resume, and replay never use a lock source, registry reference,
+publisher record, or current lock/blob. Bundle provenance is
 `.flow/packages/sha256/<digest>/<kind>/<name>`, so run evidence identifies exact content without
-carrying a network instruction. SHA-256 is content identity, not publisher authentication or
-freshness.
+carrying a network instruction. SHA-256 is content identity. A signed OCI lock record is admission
+audit data. It is not freshness, revocation, rollback, or execution authority.
 
 ## Versioned workflow packages
 
