@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 import { compileWorkflowFromSnapshot } from "../application/workflow-package-admission.js";
 import { bindWorkflowCapabilities } from "../domain/capability/workflow-capabilities.js";
+import type { FlowSandboxProfile } from "../domain/config/resolver.js";
 import { type RunEvent, type RunStatus, reduceRunEvents } from "../domain/run/events.js";
 import type { JsonlAdmissionStore } from "../infrastructure/fs/jsonl-admission-store.js";
 import { JsonlRunStore, RunStoreError } from "../infrastructure/fs/jsonl-run-store.js";
@@ -88,6 +89,7 @@ export interface LocalSupervisorServiceOptions {
   readonly generation: string;
   readonly pid: number;
   readonly startedAt: string;
+  readonly sandboxProfile: FlowSandboxProfile;
   readonly now?: () => Date;
 }
 
@@ -98,6 +100,7 @@ export class LocalSupervisorService {
   readonly #generation: string;
   readonly #pid: number;
   readonly #startedAt: string;
+  readonly #sandboxProfile: FlowSandboxProfile;
   readonly #now: () => Date;
   readonly #submissions = new Map<
     string,
@@ -114,6 +117,7 @@ export class LocalSupervisorService {
     this.#generation = options.generation;
     this.#pid = options.pid;
     this.#startedAt = options.startedAt;
+    this.#sandboxProfile = options.sandboxProfile;
     this.#now = options.now ?? (() => new Date());
   }
 
@@ -219,6 +223,11 @@ export class LocalSupervisorService {
     let job: JobRecord;
     if (existing !== null) {
       job = existing;
+      if ((existing.sandboxProfile ?? "native") !== this.#sandboxProfile) {
+        const message = `command "${command.commandId}" was admitted under a different sandbox profile`;
+        await this.#rejectSubmissionJournal(journal, message);
+        throw new SupervisorServiceError("conflict", message);
+      }
       if (!sameSubmission(existing, command)) {
         const message = `command "${command.commandId}" was already used for different execution input`;
         await this.#rejectSubmissionJournal(journal, message);
@@ -282,6 +291,7 @@ export class LocalSupervisorService {
         mode: command.mode,
         sourceName: command.sourceName,
         workflowSource: command.workflowSource,
+        sandboxProfile: this.#sandboxProfile,
         ...(command.capabilitySnapshot === undefined
           ? {}
           : { capabilitySnapshot: command.capabilitySnapshot }),

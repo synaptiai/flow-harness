@@ -115,6 +115,22 @@ describe("LocalSupervisorService", () => {
     });
   });
 
+  it("persists the supervisor-owned sandbox profile in the detached job identity", async () => {
+    const harness = await createHarness(undefined, undefined, "container");
+    const command = submitCommand(randomUUID(), harness.directory, "container-profile-run");
+
+    await expect(harness.service.submit(command)).resolves.toMatchObject({
+      type: "accepted",
+      runId: "container-profile-run",
+    });
+
+    expect(harness.launcher.jobs).toHaveLength(1);
+    expect(harness.launcher.jobs[0]).toMatchObject({ sandboxProfile: "container" });
+    await expect(harness.store.readJob(command.commandId)).resolves.toMatchObject({
+      sandboxProfile: "container",
+    });
+  });
+
   it("validates before mutation and durably deduplicates exact submissions", async () => {
     const harness = await createHarness();
     const commandId = randomUUID();
@@ -1176,6 +1192,7 @@ async function createHarness(
     | undefined = (runsDirectory, socketDirectory) =>
     new LocalSupervisorStore(runsDirectory, { socketDirectory }),
   limits = { maxActiveWorkers: 1, maxQueuedJobs: 32 },
+  sandboxProfile: "native" | "container" = "native",
 ) {
   const directory = await mkdtemp(join(tmpdir(), "flow-supervisor-service-"));
   temporaryDirectories.push(directory);
@@ -1198,6 +1215,7 @@ async function createHarness(
     generation,
     pid: 9876,
     startedAt: "2026-08-07T12:00:00.000Z",
+    sandboxProfile,
   });
   return { directory, store, admissionStore, launcher, generation, service };
 }

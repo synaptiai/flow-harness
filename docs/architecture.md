@@ -251,7 +251,76 @@ For `exec`, the broker binds `process.execute` authorization to the normalized e
 
 ### Command sandbox
 
-Every command executor depends on a Flow-owned `CommandSandbox` port. The production composition uses Anthropic Sandbox Runtime (SRT) with a fixed, versioned profile: workspace and private-temp writes are allowed; network, home-directory reads, ambient credentials, run-store writes, and writes to sensitive project state are denied. Sandbox dependency errors and degraded-security warnings fail before spawn. Same-policy concurrent commands share one process-global SRT session while each wrap receives its own private temporary directory and complete per-exec filesystem configuration. A reference-counted Flow coordinator serializes initialization and teardown, queues an incompatible workspace or policy until the active session resets, invokes SRT's per-command cleanup once per wrap, honors cancellation while queued, and resets only after the final compatible command releases. Cleanup must complete before a node can succeed.
+Every command executor depends on a Flow-owned `CommandSandbox` port. The built-in operator profile
+is `native`. Its production composition uses Anthropic Sandbox Runtime (SRT) with a fixed, versioned
+profile. Workspace and private temporary writes are allowed. Network, home-directory reads, ambient
+credentials, run-store writes, and writes to sensitive project state are denied.
+
+Sandbox dependency errors and degraded-security warnings fail before spawn. Same-policy concurrent commands share one
+process-global SRT session. Each wrap receives its own private temporary directory and complete
+per-exec filesystem configuration.
+
+A reference-counted Flow coordinator serializes initialization and teardown. It queues an
+incompatible workspace or policy until the active session resets. It
+invokes SRT's per-command cleanup once per wrap, honors cancellation while queued, and resets only
+after the final compatible command releases. Cleanup must complete before a node can succeed.
+
+A trusted operator can select `container` on Linux x64. The composition then uses one Docker
+container per command under the fixed `flow-container-v1` policy. It projects the runtime, image,
+socket, executable, seccomp, and policy identity from the prepared Prime OCI attestation. It checks
+currentness before create and again immediately before launch. The application still supplies one
+backend-neutral preparation request and receives one immutable launch and release contract.
+
+The Docker adapter preserves the exact executable and ordered argument vector as the container
+entrypoint and command. It does not add a shell. It submits one read-write workspace bind and only
+explicit read-only runtime support binds. It uses a read-only root, private cgroup namespace, no task
+network, and no IPC. It adds no capability and sets no new privileges. It uses fixed seccomp,
+bounded temporary storage, and fixed resource limits.
+
+The command-only seccomp profile derives from the admitted Prime profile. It removes socket
+creation and socket-specific syscalls before Flow hashes and submits the Docker configuration. The
+Prime profile keeps its private loopback support. An ordinary command inherits no network socket
+and cannot create, bind, connect, listen, accept, send, or receive through one.
+
+Project `.flow` is always protected from the trusted project root. Each protected child of the
+workspace becomes an inspected masked path. A protected path at or above the workspace rejects.
+A workspace that contains the project root also rejects. A runtime support path cannot overlap
+protected state.
+
+Bounded, cancellation-aware sensitive workspace discovery runs before engine preparation. Existing
+environment files, private-key files, `.flow` directories, and private Flow workspace collections
+become masked paths. Existing Git metadata becomes an inspected read-only path inside the original
+workspace bind. A linked or special `.git` entry becomes masked. This scan is not an atomic host
+filesystem snapshot and does not contain concurrent mutation by the trusted host user or root.
+
+The sandbox observes one versioned workspace snapshot after protection resolution. The snapshot
+binds readable regular-file bytes, modes, directories, symlink targets, and masked exclusion
+identities. It accepts at most 100,000 entries and 10 GiB of file content. Masked secret content is
+not hashed. The workspace snapshot digest enters the submitted Docker labels. Flow re-observes the
+same snapshot immediately before launch and rejects a mismatch.
+
+The adapter inspects the complete selected Docker configuration before it grants launch authority.
+Its canonical configuration digest becomes the public sandbox evidence policy digest. The digest
+transitively binds the attested runtime-policy identity. It directly binds the submitted process,
+environment, mount, mask, read-only path, workspace snapshot, and resource values.
+
+The adapter publishes one owner-only durable intent before Docker create. It replaces that record
+with the verified full container ID before it returns a launch. The record binds the boot identity,
+process ID, process start ticks, complete Docker configuration digest, runtime identity, private
+directory, and ownership nonce.
+
+Before every prepare, recovery claims only records whose exact process owner is dead. Concurrent
+prepares may share one active scan. A later prepare always starts a new scan. Thus, an owner that
+dies after an earlier command cannot escape recovery.
+
+Recovery rechecks current runtime authority and reconciles only an exact intent or full ID. It
+removes the container, confirms absence, removes the private directory, and removes the durable
+record last.
+Foreign or unverifiable objects remain untouched and block progress.
+
+The container profile separates filesystem, mount, PID, IPC, cgroup, and network namespaces. It
+shares the Linux kernel and Docker daemon with the host. It is not a microVM, kernel-independent
+boundary, or multi-tenant isolation layer.
 
 On Linux, SRT can hide a read-denied directory with an ephemeral mask. A write call in that mask can
 report success. The write changes only the mask and cannot change the host path. macOS rejects the
@@ -287,7 +356,14 @@ moved workspace. Its first recovery event records the old and new paths in
 `run_resumed.workspaceRelocation`. A parent records this event before it starts recovery in that
 child. Flow does not create new workspaces in the old location.
 
-The port isolates Flow from the backend. Pi's official SRT and Gondolin examples validate this tool-routing seam; Flow imports SRT as a containment primitive but owns policy, lifecycle, evidence, and failure semantics. The pinned SRT Linux implementation already tracks concurrent active sandbox wraps so mount-point cleanup waits for the last command; Flow's coordinator preserves that backend contract. A future Gondolin, OpenShell, or container adapter can implement the same port without changing workflow or ledger contracts.
+The port isolates Flow from the backend. Pi's official SRT and Gondolin examples validate this
+tool-routing seam. Flow imports SRT as a containment primitive but owns policy, lifecycle, evidence,
+and failure semantics.
+
+The pinned SRT Linux implementation tracks concurrent active sandbox wraps. Mount-point cleanup
+waits for the last command. Flow's coordinator preserves that backend contract. The container
+adapter implements the same port without changing workflow or ledger
+contracts. A future Gondolin, OpenShell, microVM, or managed adapter can do the same.
 
 ### Deterministic concurrent scheduler
 

@@ -78,6 +78,7 @@ import {
   calculateFlowPolicyDigest,
   type EffectiveFlowConfig,
   FlowConfigError,
+  type FlowSandboxProfile,
 } from "../domain/config/resolver.js";
 import { aggregateEvaluation, EvaluationAggregationError } from "../domain/evaluation/aggregate.js";
 import { parseEvaluationTrialAttempt } from "../domain/evaluation/attempt.js";
@@ -287,6 +288,7 @@ export interface CliIo {
 export interface CliDependencies {
   readonly cwd: string;
   readonly executor: NodeExecutor;
+  readonly createNodeExecutor: (profile: FlowSandboxProfile, projectRoot?: string) => NodeExecutor;
   readonly effectReconciler: NodeEffectReconciler;
   readonly createStore: (rootDirectory: string) => RecoverableRunEventStore;
   readonly createAgentCommandApprovalChannel: (
@@ -1275,7 +1277,10 @@ async function evaluationCommand(
           const adapter =
             profile.adapter === "flow-workflow-v1"
               ? new FlowWorkflowEvaluationAdapter(profile, {
-                  executor: dependencies.executor,
+                  executor: dependencies.createNodeExecutor(
+                    evaluationLocation.sandboxProfile,
+                    projectRoot,
+                  ),
                   createStore: () => dependencies.createStore(runStoreDirectory),
                   workspaceIsolator,
                   ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
@@ -1364,6 +1369,7 @@ async function candidateCommand(
       throw new CliUsageError("candidate generate requires one baseline path");
     }
     const dependencies = dependenciesFrom(overrides);
+    const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
     const outputPath = resolve(
       dependencies.cwd,
       requireStringOption(values.output, "candidate generate requires --output <path>"),
@@ -1425,7 +1431,7 @@ async function candidateCommand(
         protectedPaths: [],
         ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
       },
-      dependencies.executor,
+      dependencies.createNodeExecutor(config.sandbox.profile, admitted.root),
     );
     throwIfAborted(dependencies.signal, "candidate generation was cancelled");
     await admitted.revalidate();
@@ -1852,7 +1858,10 @@ async function resumeCommand(
       executionCwd,
       config.projectRoot ?? undefined,
     ),
-    executor: dependencies.executor,
+    executor: dependencies.createNodeExecutor(
+      config.sandbox.profile,
+      config.projectRoot ?? dependencies.cwd,
+    ),
     effectReconciler: dependencies.effectReconciler,
     agentCommandApprovalDecisions: dependencies.createAgentCommandApprovalChannel(runsDirectory),
     ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
@@ -1957,7 +1966,10 @@ async function runCommand(
       executionCwd,
       config.projectRoot ?? undefined,
     ),
-    executor: dependencies.executor,
+    executor: dependencies.createNodeExecutor(
+      config.sandbox.profile,
+      config.projectRoot ?? dependencies.cwd,
+    ),
     agentCommandApprovalDecisions: dependencies.createAgentCommandApprovalChannel(runsDirectory),
     ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
     ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
@@ -2161,6 +2173,7 @@ async function internalSupervisorCommand(
     "max-queued-jobs": { type: "string" },
     "policy-digest": { type: "string" },
     "runs-dir": { type: "string" },
+    "sandbox-profile": { type: "string" },
     "startup-owner-token": { type: "string" },
     "startup-token": { type: "string" },
   });
@@ -2194,8 +2207,16 @@ async function internalSupervisorCommand(
   if (!/^[a-f0-9]{64}$/.test(policyDigest)) {
     throw new CliUsageError("--policy-digest requires a SHA-256 hexadecimal digest");
   }
-  if (calculateFlowPolicyDigest(supervisor) !== policyDigest) {
-    throw new CliUsageError("--policy-digest does not match the supplied supervisor limits");
+  const sandboxProfile = parseSandboxProfileOption(
+    requireStringOption(
+      values["sandbox-profile"],
+      "internal supervisor requires --sandbox-profile",
+    ),
+  );
+  if (calculateFlowPolicyDigest(supervisor, sandboxProfile) !== policyDigest) {
+    throw new CliUsageError(
+      "--policy-digest does not match the supplied supervisor limits and sandbox profile",
+    );
   }
   const startupToken = requireStringOption(
     values["startup-token"],
@@ -2210,7 +2231,7 @@ async function internalSupervisorCommand(
     cliPath: fileURLToPath(import.meta.url),
     startupOwnerToken,
     startupToken,
-    policy: { policyDigest, supervisor },
+    policy: { policyDigest, sandbox: { profile: sandboxProfile }, supervisor },
     ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
   });
   return 0;
@@ -2228,7 +2249,7 @@ async function internalWorkerCommand(
   const runsDirectory = resolve(dependencies.cwd, values["runs-dir"] ?? ".flow/runs");
   return await executeWorkerJob(jobId, {
     store: new LocalSupervisorStore(runsDirectory),
-    executor: dependencies.executor,
+    createExecutor: dependencies.createNodeExecutor,
     effectReconciler: dependencies.effectReconciler,
     createRunStore: dependencies.createStore,
     createAgentCommandApprovalChannel: dependencies.createAgentCommandApprovalChannel,
@@ -2250,6 +2271,13 @@ function parseCommandArgs(
   } catch (error) {
     throw new CliUsageError(error instanceof Error ? error.message : String(error));
   }
+}
+
+function parseSandboxProfileOption(value: string): FlowSandboxProfile {
+  if (value === "native" || value === "container") {
+    return value;
+  }
+  throw new CliUsageError("--sandbox-profile requires native or container");
 }
 
 function extractBooleanFlag(
@@ -2627,6 +2655,10 @@ function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies 
     ...storageDependencies,
     ...configDependencies,
     executor: overrides.executor ?? createProductionNodeExecutor(),
+    createNodeExecutor:
+      overrides.createNodeExecutor ??
+      ((profile, projectRoot) =>
+        overrides.executor ?? createProductionNodeExecutor(profile, projectRoot)),
     effectReconciler: overrides.effectReconciler ?? createProductionNodeEffectReconciler(),
     createWorkspaceIsolator: overrides.createWorkspaceIsolator ?? createProductionWorkspaceIsolator,
     readTextFile: overrides.readTextFile ?? ((path) => readFile(path, "utf8")),
@@ -2708,7 +2740,11 @@ async function resolveEvaluationsDirectory(
 async function resolveEvaluationLocation(
   dependencies: Pick<CliDependencies, "cwd" | "loadConfig">,
   explicitEvaluationsDirectory: string | undefined,
-): Promise<{ readonly directory: string; readonly projectRoot: string | null }> {
+): Promise<{
+  readonly directory: string;
+  readonly projectRoot: string | null;
+  readonly sandboxProfile: FlowSandboxProfile;
+}> {
   const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
   const projectRoot = config.projectRoot === null ? null : await realpath(config.projectRoot);
   return Object.freeze({
@@ -2717,6 +2753,7 @@ async function resolveEvaluationLocation(
         ? resolve(projectRoot ?? dependencies.cwd, ".flow/evaluations")
         : resolve(dependencies.cwd, explicitEvaluationsDirectory),
     projectRoot,
+    sandboxProfile: config.sandbox.profile,
   });
 }
 

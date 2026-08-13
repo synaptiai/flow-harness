@@ -5,6 +5,8 @@ import { z } from "zod";
 export const FLOW_CONFIG_API_VERSION = "flow.synapti.ai/v1alpha1" as const;
 export const MAX_ACTIVE_WORKERS = 64;
 export const MAX_QUEUED_JOBS = 1024;
+export const FLOW_SANDBOX_PROFILES = ["native", "container"] as const;
+export type FlowSandboxProfile = (typeof FLOW_SANDBOX_PROFILES)[number];
 
 export const BUILT_IN_FLOW_CONFIG = Object.freeze({
   maxActiveWorkers: 1,
@@ -25,10 +27,17 @@ const effectiveSupervisorCapacitySchema = z
   })
   .strict();
 
+const sandboxConfigSchema = z
+  .object({
+    profile: z.enum(FLOW_SANDBOX_PROFILES),
+  })
+  .strict();
+
 const operatorConfigSchema = z
   .object({
     apiVersion: z.literal(FLOW_CONFIG_API_VERSION),
     kind: z.literal("FlowOperatorConfig"),
+    sandbox: sandboxConfigSchema.optional(),
     supervisor: supervisorCapacitySchema.optional(),
   })
   .strict();
@@ -44,6 +53,7 @@ const projectConfigSchema = z
 export type OperatorConfig = Readonly<z.infer<typeof operatorConfigSchema>>;
 export type ProjectConfig = Readonly<z.infer<typeof projectConfigSchema>>;
 export type SupervisorCapacity = Readonly<z.infer<typeof supervisorCapacitySchema>>;
+export type SandboxConfig = Readonly<z.infer<typeof sandboxConfigSchema>>;
 
 export type FlowConfigErrorCode = "invalid_config" | "unsafe_widening";
 
@@ -84,6 +94,7 @@ export interface EffectiveFlowConfig {
     readonly maxActiveWorkers: number;
     readonly maxQueuedJobs: number;
   };
+  readonly sandbox: SandboxConfig;
   readonly policyDigest: string;
   readonly projectRoot: string | null;
   readonly sources: {
@@ -91,6 +102,7 @@ export interface EffectiveFlowConfig {
     readonly operator: {
       readonly path: string;
       readonly values: SupervisorCapacity;
+      readonly sandbox: SandboxConfig | null;
     } | null;
     readonly project: {
       readonly path: string;
@@ -132,11 +144,15 @@ export function resolveFlowConfig(input: ResolveFlowConfigInput): EffectiveFlowC
     maxActiveWorkers: projectValues.maxActiveWorkers ?? operatorCeiling.maxActiveWorkers,
     maxQueuedJobs: projectValues.maxQueuedJobs ?? operatorCeiling.maxQueuedJobs,
   });
+  const sandbox = Object.freeze({
+    profile: input.operator?.config.sandbox?.profile ?? "native",
+  });
   const canonicalPolicy = {
     apiVersion: FLOW_CONFIG_API_VERSION,
     supervisor,
+    sandbox,
   };
-  const policyDigest = calculateFlowPolicyDigest(supervisor);
+  const policyDigest = calculateFlowPolicyDigest(supervisor, sandbox.profile);
 
   return deepFreeze({
     ...canonicalPolicy,
@@ -145,20 +161,30 @@ export function resolveFlowConfig(input: ResolveFlowConfigInput): EffectiveFlowC
     sources: {
       builtIn: BUILT_IN_FLOW_CONFIG,
       operator:
-        input.operator === undefined ? null : { path: input.operator.path, values: operatorValues },
+        input.operator === undefined
+          ? null
+          : {
+              path: input.operator.path,
+              values: operatorValues,
+              sandbox: input.operator.config.sandbox ?? null,
+            },
       project:
         input.project === undefined ? null : { path: input.project.path, values: projectValues },
     },
   });
 }
 
-export function calculateFlowPolicyDigest(input: {
-  readonly maxActiveWorkers: number;
-  readonly maxQueuedJobs: number;
-}): string {
+export function calculateFlowPolicyDigest(
+  input: {
+    readonly maxActiveWorkers: number;
+    readonly maxQueuedJobs: number;
+  },
+  sandboxProfile: FlowSandboxProfile = "native",
+): string {
   const supervisor = effectiveSupervisorCapacitySchema.parse(input);
+  const sandbox = sandboxConfigSchema.parse({ profile: sandboxProfile });
   return createHash("sha256")
-    .update(JSON.stringify({ apiVersion: FLOW_CONFIG_API_VERSION, supervisor }))
+    .update(JSON.stringify({ apiVersion: FLOW_CONFIG_API_VERSION, supervisor, sandbox }))
     .digest("hex");
 }
 

@@ -92,6 +92,27 @@ describe("local external harness runtime", () => {
     expect(fixture.release).toHaveBeenCalledTimes(1);
   });
 
+  it("rechecks prepared sandbox authority immediately before external driver start", async () => {
+    const fixture = await runtimeFixture("success");
+    const sandboxError = new Error("container command workspace changed before launch");
+    fixture.beforeLaunch.mockRejectedValueOnce(sandboxError);
+    const beforeHelloWrite = vi.fn();
+    const runtime = new LocalExternalHarnessRuntime({
+      registry: fixture.registry,
+      sandbox: fixture.sandbox,
+      inferenceBroker: { infer: async () => '{"message":"ok"}' },
+      platform: "linux",
+      beforeHelloWrite,
+    });
+
+    await expect(runtime.execute(fixture.request)).rejects.toBe(sandboxError);
+
+    expect(fixture.assertCurrent).toHaveBeenCalledTimes(1);
+    expect(fixture.beforeLaunch).toHaveBeenCalledTimes(1);
+    expect(beforeHelloWrite).not.toHaveBeenCalled();
+    expect(fixture.release).toHaveBeenCalledTimes(1);
+  });
+
   it("does not start the driver when the artifact check crosses the execution deadline", async () => {
     const fixture = await runtimeFixture("success");
     fixture.assertCurrent.mockImplementationOnce(async () => new Promise<void>(() => undefined));
@@ -487,6 +508,7 @@ async function runtimeFixture(
     resolveAdmitted: async () => descriptor,
   };
   const release = vi.fn(async () => undefined);
+  const beforeLaunch = vi.fn(async () => undefined);
   const prepare = vi.fn<CommandSandbox["prepare"]>(async (request) => ({
     processContainment: "linux-pid-namespace",
     launch: {
@@ -500,6 +522,7 @@ async function runtimeFixture(
       profile: "workspace-write-network-deny-v1",
       policyDigest: identity.runtime.policyDigest,
     },
+    beforeLaunch,
     release,
   }));
   const evaluation = evaluationRequest(workspace);
@@ -515,6 +538,7 @@ async function runtimeFixture(
     registry,
     sandbox: { prepare },
     prepare,
+    beforeLaunch,
     release,
     assertCurrent,
     request,

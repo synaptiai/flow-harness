@@ -160,6 +160,28 @@ describe("Docker Unix API client", () => {
     await expect(client.createContainer("flow-prime-global-v1", {})).resolves.toBe("a".repeat(64));
   });
 
+  it("accepts only the fixed command-container nonce name family", async () => {
+    const transport: DockerUnixApiTransport = {
+      request: vi.fn(async () => ({
+        statusCode: 201,
+        body: JSON.stringify({ Id: "a".repeat(64) }),
+      })),
+    };
+    const client = new DockerUnixApiClient({
+      socketPath: "/var/run/docker.sock",
+      apiVersion: "1.51",
+      transport,
+    });
+
+    await expect(client.createContainer(`flow-command-${"b".repeat(32)}`, {})).resolves.toBe(
+      "a".repeat(64),
+    );
+    await expect(client.createContainer("flow-command-user-selected", {})).rejects.toThrow(
+      /reference/i,
+    );
+    expect(transport.request).toHaveBeenCalledTimes(1);
+  });
+
   it("uses one fixed socket and versioned API paths", async () => {
     const containerName = `flow-prime-${"c".repeat(32)}`;
     const requests: Record<string, unknown>[] = [];

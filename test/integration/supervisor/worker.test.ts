@@ -147,6 +147,7 @@ describe("detached run worker", () => {
       cwd: directory,
       projectRoot,
       protectedPaths,
+      sandboxProfile: "container",
       token: "5".repeat(64),
       createdAt: "2026-08-09T12:00:00.000Z",
       capabilitySnapshot,
@@ -163,16 +164,22 @@ describe("detached run worker", () => {
       }),
     );
 
+    let selectedSandboxProfile: string | undefined;
+    let selectedSandboxProjectRoot: string | undefined;
     const worker = executeWorkerJob(job.jobId, {
       store,
-      executor: {
-        async execute(node, context) {
-          observedProtectedPaths = context.protectedPaths;
-          if (node.type !== "agent") {
-            throw new Error("active root executed an unexpected node");
-          }
-          return { status: "succeeded", evidence: successfulAgentEvidence() };
-        },
+      createExecutor(profile, selectedProjectRoot) {
+        selectedSandboxProfile = profile;
+        selectedSandboxProjectRoot = selectedProjectRoot;
+        return {
+          async execute(node, context) {
+            observedProtectedPaths = context.protectedPaths;
+            if (node.type !== "agent") {
+              throw new Error("active root executed an unexpected node");
+            }
+            return { status: "succeeded", evidence: successfulAgentEvidence() };
+          },
+        };
       },
       effectReconciler: createProductionNodeEffectReconciler(),
       createRunStore: (root) => new JsonlRunStore(root),
@@ -193,6 +200,8 @@ describe("detached run worker", () => {
     expect(exitCode, JSON.stringify(finalDescriptor)).toBe(0);
     expect(observedProtectedPaths).toEqual([runsDirectory, ...protectedPaths]);
     expect(observedProjectRoot).toBe(projectRoot);
+    expect(selectedSandboxProfile).toBe("container");
+    expect(selectedSandboxProjectRoot).toBe(projectRoot);
     const events = await new JsonlRunStore(runsDirectory).read(job.runId);
     expect(events[0]).toMatchObject({
       type: "run_started",

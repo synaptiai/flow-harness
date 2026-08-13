@@ -148,6 +148,31 @@ describe("CommandNodeExecutor sandbox boundary", () => {
     expect(sandbox.releaseCalls).toBe(0);
   });
 
+  it("preserves preparation cleanup uncertainty before process evidence exists", async () => {
+    const cleanupFailure = new AggregateError(
+      [new Error("PRIVATE_PREPARATION"), new Error("PRIVATE_CLEANUP")],
+      "Container command preparation cleanup is not proved",
+    );
+    const sandbox = new FakeCommandSandbox(undefined, cleanupFailure);
+    const executor = new CommandNodeExecutor({ sandbox });
+
+    const outcome = await executor.execute(
+      commandNode(process.execPath, ["-e", "process.exit(0)"]),
+      context,
+    );
+
+    expect(outcome).toEqual({
+      status: "failed",
+      error: {
+        code: "command_sandbox_cleanup_failed",
+        message: cleanupFailure.message,
+        retryable: false,
+        sideEffectStatus: "uncertain",
+      },
+      evidence: null,
+    });
+  });
+
   it("includes sandbox preparation in the declared command deadline", async () => {
     let observedSignal: AbortSignal | undefined;
     const sandbox: CommandSandbox = {
@@ -199,7 +224,7 @@ describe("CommandNodeExecutor sandbox boundary", () => {
           );
         }),
     };
-    const executor = new CommandNodeExecutor({ sandbox });
+    const executor = new CommandNodeExecutor({ sandbox, preparationSettlementMs: 20 });
     const startedAt = performance.now();
 
     const outcome = await executor.execute(
@@ -210,9 +235,49 @@ describe("CommandNodeExecutor sandbox boundary", () => {
     expect(performance.now() - startedAt).toBeLessThan(250);
     expect(outcome).toMatchObject({
       status: "failed",
-      error: { code: "command_timeout", sideEffectStatus: "none" },
+      error: { code: "command_timeout", sideEffectStatus: "uncertain" },
       evidence: null,
     });
+  });
+
+  it("reports a late preparation cleanup failure before returning the timeout", async () => {
+    const releaseError = new Error("PRIVATE_LATE_CONTAINER_CLEANUP");
+    const release = vi.fn(async () => {
+      throw releaseError;
+    });
+    const sandbox: CommandSandbox = {
+      prepare: async () =>
+        await new Promise<PreparedCommand>((resolve) => {
+          setTimeout(
+            () =>
+              resolve({
+                processContainment: "linux-pid-namespace",
+                launch: { executable: process.execPath, args: [], env: {} },
+                evidence: sandboxEvidence,
+                release,
+              }),
+            20,
+          );
+        }),
+    };
+    const executor = new CommandNodeExecutor({ sandbox, preparationSettlementMs: 100 });
+
+    const outcome = await executor.execute(
+      commandNode(process.execPath, ["-e", "process.exit(0)"], 5),
+      context,
+    );
+
+    expect(outcome).toEqual({
+      status: "failed",
+      error: {
+        code: "command_sandbox_cleanup_failed",
+        message: releaseError.message,
+        retryable: false,
+        sideEffectStatus: "uncertain",
+      },
+      evidence: null,
+    });
+    expect(release).toHaveBeenCalledTimes(1);
   });
 
   it("does not spawn when synchronous preparation returns after the absolute deadline", async () => {
@@ -260,6 +325,44 @@ describe("CommandNodeExecutor sandbox boundary", () => {
       evidence: null,
     });
     expect(sandbox.releaseCalls).toBe(1);
+  });
+
+  it("rechecks prepared sandbox authority immediately before launcher spawn", async () => {
+    const authorityError = new Error("container command runtime identity changed before launch");
+    const beforeLaunch = vi.fn(async () => {
+      throw authorityError;
+    });
+    const release = vi.fn(async () => undefined);
+    const sandbox: CommandSandbox = {
+      prepare: async () =>
+        ({
+          processContainment: "linux-pid-namespace",
+          launch: {
+            executable: process.execPath,
+            args: ["-e", 'process.stdout.write("MUST_NOT_RUN")'],
+            env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+          },
+          evidence: sandboxEvidence,
+          beforeLaunch,
+          release,
+        }) as PreparedCommand,
+    };
+    const executor = new CommandNodeExecutor({ sandbox });
+
+    const outcome = await executor.execute(commandNode("node", []), context);
+
+    expect(outcome).toEqual({
+      status: "failed",
+      error: {
+        code: "command_sandbox_unavailable",
+        message: authorityError.message,
+        retryable: false,
+        sideEffectStatus: "none",
+      },
+      evidence: null,
+    });
+    expect(beforeLaunch).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledTimes(1);
   });
 
   it("does not report success when sandbox cleanup fails after execution", async () => {

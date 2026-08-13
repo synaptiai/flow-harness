@@ -145,6 +145,10 @@ function isProtectedTarget(
   ) {
     return true;
   }
+  return isSensitiveWorkspacePath(target);
+}
+
+export function isSensitiveWorkspacePath(target: string): boolean {
   const targetName = basename(target).toLowerCase();
   return (
     targetName === ".env" ||
@@ -159,7 +163,7 @@ function isProtectedTarget(
   );
 }
 
-function isFlowWorkspaceCollectionName(name: string): boolean {
+export function isFlowWorkspaceCollectionName(name: string): boolean {
   return (
     name === ".flow-workspaces" ||
     (name.startsWith(".") && name.endsWith(".flow-workspaces") && name.length > 17)

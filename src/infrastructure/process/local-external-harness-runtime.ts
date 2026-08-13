@@ -244,6 +244,9 @@ export class LocalExternalHarnessRuntime implements ExternalHarnessRuntime {
     const assertionSignal =
       signal === undefined ? deadline.signal : AbortSignal.any([signal, deadline.signal]);
     await waitForAbortable(descriptor.assertCurrent(), assertionSignal);
+    if (prepared.beforeLaunch !== undefined) {
+      await waitForAbortable(prepared.beforeLaunch(), assertionSignal);
+    }
     assertOperationActive(signal);
     const remainingMs = deadline.remainingMs();
     if (remainingMs <= 0) {

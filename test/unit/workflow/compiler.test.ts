@@ -489,6 +489,21 @@ nodes:
     expectCompilationFailure(source, "invalid_schema", "$");
   });
 
+  it("rejects workflow-selected sandbox authority", () => {
+    const source = `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: sandbox-authority }
+sandbox: { profile: container }
+nodes:
+  - id: verify
+    type: command
+    command: { executable: node, args: [--version] }
+`;
+
+    expectCompilationFailure(source, "invalid_schema", "$");
+  });
+
   it("rejects agent tools outside the Flow-owned allowlist", () => {
     const source = workflowWithNodes(`
   - id: analyze

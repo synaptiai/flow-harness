@@ -133,6 +133,16 @@ describe("durable agent command replay", () => {
       { code: "command_sandbox_unavailable", sideEffectStatus: "committed" },
       null,
     ],
+    [
+      "uncertain spawn failure without evidence",
+      { code: "command_spawn_failed", sideEffectStatus: "uncertain" },
+      null,
+    ],
+    [
+      "uncertain generic sandbox failure without evidence",
+      { code: "command_sandbox_unavailable", sideEffectStatus: "uncertain" },
+      null,
+    ],
   ] as const)("rejects %s", (_label, failure, evidence) => {
     expect(() =>
       reduceRunEvents([
@@ -175,6 +185,44 @@ describe("durable agent command replay", () => {
               message: "command exceeded timeout before process launch",
               retryable: false,
               sideEffectStatus: "none",
+            },
+            evidence: null,
+          },
+        }),
+      ]),
+    ).not.toThrow();
+  });
+
+  it.each([
+    {
+      code: "command_timeout",
+      message: "command preparation did not settle before its cleanup bound",
+    },
+    {
+      code: "command_aborted",
+      message: "cancelled command preparation did not settle before its cleanup bound",
+    },
+    {
+      code: "command_sandbox_cleanup_failed",
+      message: "container absence is not proved",
+    },
+  ])("accepts evidence-free pre-spawn uncertainty for $code", ({ code, message }) => {
+    expect(() =>
+      reduceRunEvents([
+        ...preparedEvents(),
+        parseRunEvent({
+          ...base(4),
+          type: "node_agent_command_settled",
+          nodeId: "implement",
+          attempt: 1,
+          commandId: "command-3",
+          outcome: {
+            status: "failed",
+            error: {
+              code,
+              message,
+              retryable: false,
+              sideEffectStatus: "uncertain",
             },
             evidence: null,
           },
