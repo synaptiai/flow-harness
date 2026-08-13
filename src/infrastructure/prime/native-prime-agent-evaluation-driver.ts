@@ -36,6 +36,11 @@ type NativePrimeDriverStage =
   | "load-ai-sdk"
   | "initialize-sdk"
   | "create-ipython-tool"
+  | "prepare-ipython-kernel-connection"
+  | "launch-ipython-kernel"
+  | "resolve-ipython-kernel-connection"
+  | "probe-ipython-kernel"
+  | "bootstrap-ipython-kernel"
   | "start-ipython-kernel"
   | "create-sdk-session"
   | "validate-sdk-session"
@@ -522,9 +527,7 @@ export async function createNativePrimeSdkSession(
       });
       try {
         const ipython = sdk.createIpythonToolDefinition(input.workspace, { provisioner });
-        await withNativePrimeDriverStage("start-ipython-kernel", () =>
-          provisioner.ensure(undefined, input.signal),
-        );
+        await startNativePrimeKernel(provisioner, input.signal);
         return {
           ipython,
           ipythonProvisioner: provisioner,
@@ -597,6 +600,55 @@ function withNativePrimeDriverSyncStage<T>(stage: NativePrimeDriverStage, operat
     }
     throw new NativePrimeDriverStageError(stage, error);
   }
+}
+
+async function startNativePrimeKernel(
+  provisioner: PrimeIpythonKernelProvisioner,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  try {
+    await provisioner.ensure(undefined, signal);
+  } catch (error) {
+    if (error instanceof NativePrimeDriverStageError) {
+      throw error;
+    }
+    throw new NativePrimeDriverStageError(nativePrimeKernelStartupStage(error), error);
+  }
+}
+
+function nativePrimeKernelStartupStage(error: unknown): NativePrimeDriverStage {
+  if (!(error instanceof Error)) {
+    return "start-ipython-kernel";
+  }
+  const message = error.message.toLowerCase();
+  if (
+    message.includes("inspect fixed kernel connection file") ||
+    message.includes("prepare fixed python kernel connection")
+  ) {
+    return "prepare-ipython-kernel-connection";
+  }
+  if (
+    message.includes("resolve fixed python kernel connection") ||
+    message.startsWith("kernel did not resolve connection ports within ")
+  ) {
+    return "resolve-ipython-kernel-connection";
+  }
+  if (
+    message.startsWith("kernel exited during startup.") ||
+    message.startsWith("kernel did not respond to kernel_info_request within ")
+  ) {
+    return "probe-ipython-kernel";
+  }
+  if (message.startsWith("failed to initialize rlm runtime in the ipython kernel:")) {
+    return "bootstrap-ipython-kernel";
+  }
+  if (
+    message.includes("start fixed python kernel") ||
+    message.startsWith("kernel exited before resolving ports.")
+  ) {
+    return "launch-ipython-kernel";
+  }
+  return "start-ipython-kernel";
 }
 
 export async function loadNativePrimeSdk(

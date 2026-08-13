@@ -1328,6 +1328,28 @@ describe("Docker Unix API client", () => {
       publicMessage: "Prime driver failed while starting the persistent IPython kernel",
     },
     {
+      privateDiagnostic:
+        "run Prime driver: Prime driver stage failure: prepare-ipython-kernel-connection\n",
+      publicMessage: "Prime driver failed while preparing the IPython kernel connection",
+    },
+    {
+      privateDiagnostic: "run Prime driver: Prime driver stage failure: launch-ipython-kernel\n",
+      publicMessage: "Prime driver failed while launching the persistent IPython kernel",
+    },
+    {
+      privateDiagnostic:
+        "run Prime driver: Prime driver stage failure: resolve-ipython-kernel-connection\n",
+      publicMessage: "Prime driver failed while resolving the IPython kernel connection",
+    },
+    {
+      privateDiagnostic: "run Prime driver: Prime driver stage failure: probe-ipython-kernel\n",
+      publicMessage: "Prime driver failed while probing the persistent IPython kernel",
+    },
+    {
+      privateDiagnostic: "run Prime driver: Prime driver stage failure: bootstrap-ipython-kernel\n",
+      publicMessage: "Prime driver failed while preparing the IPython runtime",
+    },
+    {
       privateDiagnostic: "run Prime driver: Prime driver stage failure: create-sdk-session\n",
       publicMessage: "Prime driver failed while creating the native SDK session",
     },

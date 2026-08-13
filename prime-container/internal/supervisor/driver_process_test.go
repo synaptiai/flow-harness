@@ -200,6 +200,36 @@ func TestClosedPrimeDriverDiagnosticRequiresOneUniqueCompleteStageLine(t *testin
 			accepted: true,
 		},
 		{
+			name:     "IPython kernel connection preparation stage",
+			value:    "Prime driver stage failure: prepare-ipython-kernel-connection\n",
+			expected: "Prime driver stage failure: prepare-ipython-kernel-connection",
+			accepted: true,
+		},
+		{
+			name:     "IPython kernel launch stage",
+			value:    "Prime driver stage failure: launch-ipython-kernel\n",
+			expected: "Prime driver stage failure: launch-ipython-kernel",
+			accepted: true,
+		},
+		{
+			name:     "IPython kernel connection resolution stage",
+			value:    "Prime driver stage failure: resolve-ipython-kernel-connection\n",
+			expected: "Prime driver stage failure: resolve-ipython-kernel-connection",
+			accepted: true,
+		},
+		{
+			name:     "IPython kernel probe stage",
+			value:    "Prime driver stage failure: probe-ipython-kernel\n",
+			expected: "Prime driver stage failure: probe-ipython-kernel",
+			accepted: true,
+		},
+		{
+			name:     "IPython kernel bootstrap stage",
+			value:    "Prime driver stage failure: bootstrap-ipython-kernel\n",
+			expected: "Prime driver stage failure: bootstrap-ipython-kernel",
+			accepted: true,
+		},
+		{
 			name:  "conflicting stages",
 			value: "Prime driver stage failure: load-sdk\nPrime driver stage failure: initialize-sdk\n",
 		},

@@ -609,20 +609,78 @@ describe("native Prime evaluation driver", () => {
       },
     },
     {
-      name: "IPython kernel startup",
+      name: "IPython kernel connection preparation",
+      expected: "Prime driver stage failure: prepare-ipython-kernel-connection",
+      run: () =>
+        kernelStartupFailure(
+          "Kernel exited before resolving ports. stderr:\nprepare fixed Python kernel connection: PRIVATE_PREPARE",
+        ),
+    },
+    {
+      name: "IPython kernel connection inspection",
+      expected: "Prime driver stage failure: prepare-ipython-kernel-connection",
+      run: () =>
+        kernelStartupFailure(
+          "Kernel exited before resolving ports. stderr:\ninspect fixed kernel connection file: PRIVATE_INSPECT",
+        ),
+    },
+    {
+      name: "fixed Python kernel launch",
+      expected: "Prime driver stage failure: launch-ipython-kernel",
+      run: () =>
+        kernelStartupFailure(
+          "Kernel exited before resolving ports. stderr:\nstart fixed Python kernel: PRIVATE_FIXED_LAUNCH",
+        ),
+    },
+    {
+      name: "IPython kernel process launch",
+      expected: "Prime driver stage failure: launch-ipython-kernel",
+      run: () =>
+        kernelStartupFailure(
+          "Kernel exited before resolving ports. stderr:\nPRIVATE_LAUNCH_CANARY",
+        ),
+    },
+    {
+      name: "IPython kernel connection resolution",
+      expected: "Prime driver stage failure: resolve-ipython-kernel-connection",
+      run: () =>
+        kernelStartupFailure(
+          "Kernel did not resolve connection ports within 5000ms. stderr tail:\nPRIVATE_PORT_CANARY",
+        ),
+    },
+    {
+      name: "fixed Python kernel connection resolution",
+      expected: "Prime driver stage failure: resolve-ipython-kernel-connection",
+      run: () =>
+        kernelStartupFailure(
+          "Kernel exited before resolving ports. stderr:\nresolve fixed Python kernel connection: PRIVATE_FIXED_PORT",
+        ),
+    },
+    {
+      name: "IPython kernel readiness probe",
+      expected: "Prime driver stage failure: probe-ipython-kernel",
+      run: () =>
+        kernelStartupFailure(
+          "Kernel did not respond to kernel_info_request within 5000ms. stderr tail:\nPRIVATE_PROBE_CANARY",
+        ),
+    },
+    {
+      name: "IPython kernel early probe exit",
+      expected: "Prime driver stage failure: probe-ipython-kernel",
+      run: () => kernelStartupFailure("Kernel exited during startup. stderr:\nPRIVATE_EARLY_PROBE"),
+    },
+    {
+      name: "IPython kernel runtime bootstrap",
+      expected: "Prime driver stage failure: bootstrap-ipython-kernel",
+      run: () =>
+        kernelStartupFailure(
+          "Failed to initialize rlm runtime in the IPython kernel:\nPRIVATE_BOOTSTRAP_CANARY",
+        ),
+    },
+    {
+      name: "unclassified IPython kernel startup",
       expected: "Prime driver stage failure: start-ipython-kernel",
-      run: () => {
-        const fixture = sdkFixture({
-          thinkingLevel: "off",
-          ensureProvisionerError: new Error("PRIVATE_IPYTHON_START_CANARY"),
-        });
-        return createNativePrimeSdkSession({
-          evaluation: evaluationInput(),
-          workspace: process.cwd(),
-          infer: vi.fn(),
-          loadSdk: async () => fixture.bindings,
-        });
-      },
+      run: () => kernelStartupFailure("PRIVATE_IPYTHON_START_CANARY"),
     },
     {
       name: "SDK session validation",
@@ -782,6 +840,19 @@ function oneLine(value: string): AsyncIterator<string> {
       return { done: true as const, value: undefined };
     },
   };
+}
+
+function kernelStartupFailure(message: string): Promise<NativePrimeSession> {
+  const fixture = sdkFixture({
+    thinkingLevel: "off",
+    ensureProvisionerError: new Error(message),
+  });
+  return createNativePrimeSdkSession({
+    evaluation: evaluationInput(),
+    workspace: process.cwd(),
+    infer: vi.fn(),
+    loadSdk: async () => fixture.bindings,
+  });
 }
 
 function sdkFixture(options: {
