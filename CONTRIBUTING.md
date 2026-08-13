@@ -6,7 +6,7 @@ Flow welcomes focused issues and pull requests that preserve the harness boundar
 
 Requirements:
 
-- Node.js 22.19 or newer
+- Node.js 26.7 or newer
 - npm with lockfile support
 - Git
 - Linux or macOS with the native sandbox prerequisites listed in the

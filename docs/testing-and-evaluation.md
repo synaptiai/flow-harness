@@ -269,6 +269,12 @@ limits, interrupted publication, private-data omission, and no automatic activat
 cover exact baseline binding, generated-source provenance, legacy resume, and durable identity
 tampering.
 
+Credential-free registry tests cover canonical digest references and strict OCI manifests. They
+cover public DNS pinning, anonymous pull scope, token-host isolation, and safe blob redirects. They
+also cover response limits, cancellation, offline Sigstore verification, and exact publisher
+policy. Integration tests cover atomic publication and offline workflow or replay use. Tests use no
+registry credential. They do not contact a signature or trust-root service.
+
 Activation tests cover complete superior admission, incomplete evaluations, losing evaluations, exact profile identity, and source drift.
 They also cover proposal drift, version conflicts, concurrent writers, and rollback.
 Store tests cover candidate artifacts, baseline artifacts, linked paths, invalid UTF-8, changed blobs, and rollback target checks.

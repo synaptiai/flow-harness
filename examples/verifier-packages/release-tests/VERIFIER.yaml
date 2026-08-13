@@ -5,7 +5,7 @@ metadata:
   version: 1.0.0
   description: Verify that the configured Node.js runtime starts successfully.
   license: Apache-2.0
-  compatibility: Requires Node.js 22.19 or newer.
+  compatibility: Requires Node.js 26.7 or newer.
 spec:
   kind: command
   command:

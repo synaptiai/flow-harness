@@ -1,10 +1,10 @@
-import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
-  mkdtemp,
   mkdir,
-  readFile,
+  mkdtemp,
   readdir,
+  readFile,
   rename,
   rm,
   stat,
@@ -72,6 +72,134 @@ describe("local capability package store", () => {
     await expect(store.list()).resolves.toMatchObject({
       bundles: [{ name: "review-suite", version: "1.0.0", digest: `sha256:${sha256}` }],
     });
+  });
+
+  it("round-trips signed OCI publisher provenance without changing offline verification", async () => {
+    const projectRoot = await projectDirectory();
+    const created = bundle("Review signed evidence.");
+    const sha256 = digest(created.content);
+    const manifestDigest = `sha256:${"1".repeat(64)}`;
+    const signatureBundleDigest = `sha256:${"2".repeat(64)}`;
+    const source = `registry.example.test/flow/review-suite@${manifestDigest}`;
+    const publisher = {
+      signatureBundleDigest,
+      certificateIdentity:
+        "https://github.com/synaptiai/flow-harness/.github/workflows/release.yml@refs/tags/v1.0.0",
+      certificateIssuer: "https://token.actions.githubusercontent.com/",
+      kind: "sigstore-keyless-v0.3" as const,
+    };
+    const store = new LocalCapabilityPackageStore(projectRoot);
+
+    await expect(
+      store.install({
+        source,
+        expectedSha256: sha256,
+        content: created.content,
+        publisher,
+      }),
+    ).resolves.toMatchObject({ status: "installed" });
+    await expect(
+      store.install({
+        source,
+        expectedSha256: sha256,
+        content: created.content,
+        publisher,
+      }),
+    ).resolves.toMatchObject({ status: "already_installed" });
+
+    await expect(store.list()).resolves.toEqual({
+      apiVersion: "flow.synapti.ai/v1alpha1",
+      kind: "CapabilityLock",
+      bundles: [
+        {
+          name: "review-suite",
+          version: "1.0.0",
+          source,
+          digest: `sha256:${sha256}`,
+          bytes: created.content.byteLength,
+          publisher,
+        },
+      ],
+    });
+    await expect(store.verify()).resolves.toMatchObject([
+      {
+        entry: { source, publisher },
+        bundle: { name: "review-suite", version: "1.0.0" },
+      },
+    ]);
+    await expect(readFile(join(projectRoot, ".flow", "packages.lock.json"), "utf8")).resolves.toBe(
+      `${JSON.stringify({
+        apiVersion: "flow.synapti.ai/v1alpha1",
+        kind: "CapabilityLock",
+        bundles: [
+          {
+            name: "review-suite",
+            version: "1.0.0",
+            source,
+            digest: `sha256:${sha256}`,
+            bytes: created.content.byteLength,
+            publisher: {
+              kind: "sigstore-keyless-v0.3",
+              certificateIssuer: publisher.certificateIssuer,
+              certificateIdentity: publisher.certificateIdentity,
+              signatureBundleDigest,
+            },
+          },
+        ],
+      })}\n`,
+    );
+  });
+
+  it.each([
+    {
+      label: "an OCI source without publisher evidence",
+      source: `registry.example.test/flow/review-suite@sha256:${"1".repeat(64)}`,
+      publisher: undefined,
+    },
+    {
+      label: "publisher evidence on an HTTPS source",
+      source: "https://packages.example.test/review-suite-1.0.0.flowpkg",
+      publisher: {
+        kind: "sigstore-keyless-v0.3" as const,
+        certificateIssuer: "https://token.actions.githubusercontent.com/",
+        certificateIdentity: "PRIVATE_IDENTITY",
+        signatureBundleDigest: `sha256:${"2".repeat(64)}`,
+      },
+    },
+    {
+      label: "a malformed signature-bundle digest",
+      source: `registry.example.test/flow/review-suite@sha256:${"1".repeat(64)}`,
+      publisher: {
+        kind: "sigstore-keyless-v0.3" as const,
+        certificateIssuer: "https://token.actions.githubusercontent.com/",
+        certificateIdentity: "PRIVATE_IDENTITY",
+        signatureBundleDigest: "sha256:not-a-digest",
+      },
+    },
+    {
+      label: "a publisher identity beyond the UTF-8 byte bound",
+      source: `registry.example.test/flow/review-suite@sha256:${"1".repeat(64)}`,
+      publisher: {
+        kind: "sigstore-keyless-v0.3" as const,
+        certificateIssuer: "https://token.actions.githubusercontent.com/",
+        certificateIdentity: "😀".repeat(2_048),
+        signatureBundleDigest: `sha256:${"2".repeat(64)}`,
+      },
+    },
+  ])("rejects $label before publishing package state", async ({ source, publisher }) => {
+    const projectRoot = await projectDirectory();
+    const created = bundle("Review signed evidence.");
+    const store = new LocalCapabilityPackageStore(projectRoot);
+
+    await expect(
+      store.install({
+        source,
+        expectedSha256: digest(created.content),
+        content: created.content,
+        ...(publisher === undefined ? {} : { publisher }),
+      }),
+    ).rejects.toMatchObject({ code: "invalid_source" });
+    await expect(readdir(join(projectRoot, ".flow"))).resolves.toEqual([]);
   });
 
   it("rejects a digest mismatch before creating package state", async () => {
@@ -162,6 +290,40 @@ describe("local capability package store", () => {
     await expect(store.list()).resolves.toMatchObject({
       bundles: [{ source: "https://packages.example.test/review-suite-1.0.0.flowpkg" }],
     });
+  });
+
+  it("does not report a signed install when identical locked bytes lack its provenance", async () => {
+    const projectRoot = await projectDirectory();
+    const created = bundle("Review evidence.");
+    const sha256 = digest(created.content);
+    const store = new LocalCapabilityPackageStore(projectRoot);
+    await store.install({
+      source: "https://packages.example.test/review-suite-1.0.0.flowpkg",
+      expectedSha256: sha256,
+      content: created.content,
+    });
+
+    await expect(
+      store.install({
+        source: `registry.example.test/flow/review@sha256:${"1".repeat(64)}`,
+        expectedSha256: sha256,
+        content: created.content,
+        publisher: {
+          kind: "sigstore-keyless-v0.3",
+          certificateIssuer: "https://token.actions.githubusercontent.com/",
+          certificateIdentity: "PRIVATE_SIGNED_IDENTITY",
+          signatureBundleDigest: `sha256:${"2".repeat(64)}`,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "identity_conflict" });
+    await expect(store.list()).resolves.toMatchObject({
+      bundles: [
+        {
+          source: "https://packages.example.test/review-suite-1.0.0.flowpkg",
+        },
+      ],
+    });
+    expect((await store.list()).bundles[0]).not.toHaveProperty("publisher");
   });
 
   it("refuses idempotent activation when the locked blob is corrupt", async () => {

@@ -26,6 +26,7 @@ import {
   generatePromptCandidate,
   PromptCandidateGenerationExecutionError,
 } from "../application/generate-prompt-candidate.js";
+import { createSignedOciCapabilityBundleInstaller } from "../application/install-signed-oci-capability-bundle.js";
 import type {
   AgentCommandApprovalDecisionChannel,
   NodeEffectReconciler,
@@ -63,6 +64,11 @@ import {
   combineCapabilitySnapshots,
 } from "../domain/capability/agent-skills.js";
 import { assertCapabilityBundleSha256 } from "../domain/capability/capability-bundles.js";
+import {
+  OfflineSigstoreCapabilityVerifier,
+  SigstoreCapabilityVerificationError,
+  type SigstoreCapabilityVerifier,
+} from "../domain/capability/sigstore-capability-verifier.js";
 import {
   collectWorkflowAgentSkillNames,
   collectWorkflowToolPackageReferences,
@@ -172,11 +178,18 @@ import {
   WorkflowPackageCatalogError,
 } from "../infrastructure/fs/local-workflow-package-catalog.js";
 import { discoverProjectCapabilityCatalogs } from "../infrastructure/fs/project-capability-catalog.js";
-import { createProductionCapabilityBundleFetcher } from "../infrastructure/http/node-https-capability-bundle-transport.js";
+import {
+  createProductionCapabilityBundleFetcher,
+  createProductionOciCapabilityRegistry,
+} from "../infrastructure/http/node-https-capability-bundle-transport.js";
 import {
   CapabilityBundleFetchError,
   type CapabilityBundleFetcher,
 } from "../infrastructure/http/strict-capability-bundle-fetcher.js";
+import {
+  OciCapabilityRegistryError,
+  type StrictOciCapabilityRegistry,
+} from "../infrastructure/http/strict-oci-capability-registry.js";
 import type { PrimeOciPreparationResult } from "../infrastructure/oci/prime-oci-preparation.js";
 import {
   BuiltInExternalHarnessRegistry,
@@ -185,6 +198,7 @@ import {
 import { createProductionNodeEffectReconciler } from "../infrastructure/runtime/production-effect-reconciler.js";
 import { createProductionNodeExecutor } from "../infrastructure/runtime/production-node-executor.js";
 import { createProductionWorkspaceIsolator } from "../infrastructure/runtime/production-workspace-isolator.js";
+import { createSigstorePublicGoodTrustedRoot } from "../infrastructure/sigstore-public-good-trusted-root.js";
 import {
   ensureSupervisor,
   requestSupervisor,
@@ -218,6 +232,7 @@ Usage:
   flow workflows inspect <name> --version <exact>
   flow workflows validate
   flow packages install <https-url> --sha256 <64-lowercase-hex>
+  flow packages install-oci <registry/repository@sha256:digest> --certificate-issuer <https-url> --certificate-identity <exact>
   flow packages pack <source-directory> --output <bundle.flowpkg>
   flow packages list
   flow packages inspect <name> --version <exact>
@@ -307,6 +322,8 @@ export interface CliDependencies {
   ) => Promise<InitializedFlowProject>;
   readonly loadConfig: (options?: FlowConfigLocationOptions) => Promise<EffectiveFlowConfig>;
   readonly capabilityBundleFetcher: CapabilityBundleFetcher;
+  readonly ociCapabilityRegistry: StrictOciCapabilityRegistry;
+  readonly sigstoreCapabilityVerifier: SigstoreCapabilityVerifier;
   readonly externalHarnessRegistry: ExternalHarnessRegistry;
   readonly externalHarnessRuntime: ExternalHarnessRuntime;
   readonly preparePrimeRuntime?: (input: {
@@ -417,6 +434,8 @@ export async function main(
     if (
       error instanceof CapabilityBundleFetchError ||
       error instanceof CapabilityPackageStoreError ||
+      error instanceof OciCapabilityRegistryError ||
+      error instanceof SigstoreCapabilityVerificationError ||
       error instanceof CapabilityBundlePackError
     ) {
       io.stderr(`${error.code}: ${error.message}`);
@@ -874,6 +893,8 @@ async function packagesCommand(
   overrides: Partial<CliDependencies>,
 ): Promise<number> {
   const { positionals, values } = parseCommandArgs(args, {
+    "certificate-identity": { type: "string" },
+    "certificate-issuer": { type: "string" },
     output: { type: "string" },
     sha256: { type: "string" },
     version: { type: "string" },
@@ -882,27 +903,42 @@ async function packagesCommand(
   const valid =
     (subcommand === "install" &&
       positionals.length === 2 &&
+      values["certificate-identity"] === undefined &&
+      values["certificate-issuer"] === undefined &&
       values.output === undefined &&
       values.sha256 !== undefined &&
       values.version === undefined) ||
+    (subcommand === "install-oci" &&
+      positionals.length === 2 &&
+      values["certificate-identity"] !== undefined &&
+      values["certificate-issuer"] !== undefined &&
+      values.output === undefined &&
+      values.sha256 === undefined &&
+      values.version === undefined) ||
     (subcommand === "pack" &&
       positionals.length === 2 &&
+      values["certificate-identity"] === undefined &&
+      values["certificate-issuer"] === undefined &&
       values.output !== undefined &&
       values.sha256 === undefined &&
       values.version === undefined) ||
     ((subcommand === "list" || subcommand === "verify") &&
       positionals.length === 1 &&
+      values["certificate-identity"] === undefined &&
+      values["certificate-issuer"] === undefined &&
       values.output === undefined &&
       values.sha256 === undefined &&
       values.version === undefined) ||
     ((subcommand === "inspect" || subcommand === "remove") &&
       positionals.length === 2 &&
+      values["certificate-identity"] === undefined &&
+      values["certificate-issuer"] === undefined &&
       values.output === undefined &&
       values.sha256 === undefined &&
       values.version !== undefined);
   if (!valid) {
     throw new CliUsageError(
-      "packages requires pack <source-directory> --output <bundle.flowpkg>, install <https-url> --sha256 <hex>, list, inspect <name> --version <exact>, verify, or remove <name> --version <exact>",
+      "packages requires pack <source-directory> --output <bundle.flowpkg>, install <https-url> --sha256 <hex>, install-oci <digest-reference> --certificate-issuer <https-url> --certificate-identity <exact>, list, inspect <name> --version <exact>, verify, or remove <name> --version <exact>",
     );
   }
   const dependencies = configDependenciesFrom(overrides);
@@ -942,6 +978,54 @@ async function packagesCommand(
     );
   }
   const store = new LocalCapabilityPackageStore(config.projectRoot);
+  if (subcommand === "install-oci") {
+    const reference = positionals[1];
+    const certificateIssuer = values["certificate-issuer"];
+    const certificateIdentity = values["certificate-identity"];
+    if (
+      reference === undefined ||
+      certificateIssuer === undefined ||
+      certificateIdentity === undefined
+    ) {
+      throw new CliUsageError(
+        "packages install-oci requires <digest-reference> --certificate-issuer <https-url> --certificate-identity <exact>",
+      );
+    }
+    const installer = createSignedOciCapabilityBundleInstaller(
+      overrides.ociCapabilityRegistry ?? createProductionOciCapabilityRegistry(),
+      overrides.sigstoreCapabilityVerifier ??
+        new OfflineSigstoreCapabilityVerifier(createSigstorePublicGoodTrustedRoot()),
+      store,
+    );
+    const installed = await installer.install({
+      reference,
+      certificateIssuer,
+      certificateIdentity,
+      ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
+    });
+    io.stdout(
+      JSON.stringify(
+        {
+          status: installed.status,
+          name: installed.bundle.name,
+          version: installed.bundle.version,
+          description: installed.bundle.description,
+          ...(installed.bundle.license === undefined ? {} : { license: installed.bundle.license }),
+          ...(installed.bundle.compatibility === undefined
+            ? {}
+            : { compatibility: installed.bundle.compatibility }),
+          bytes: installed.bundle.bytes,
+          digest: installed.bundle.digest,
+          source: installed.source,
+          publisher: installed.publisher,
+          packages: installed.bundle.packages.map(capabilityBundlePackageSummary),
+        },
+        null,
+        2,
+      ),
+    );
+    return 0;
+  }
   if (subcommand === "install") {
     const source = positionals[1];
     const expectedSha256 = values.sha256;
@@ -2664,6 +2748,11 @@ function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies 
     readTextFile: overrides.readTextFile ?? ((path) => readFile(path, "utf8")),
     capabilityBundleFetcher:
       overrides.capabilityBundleFetcher ?? createProductionCapabilityBundleFetcher(),
+    ociCapabilityRegistry:
+      overrides.ociCapabilityRegistry ?? createProductionOciCapabilityRegistry(),
+    sigstoreCapabilityVerifier:
+      overrides.sigstoreCapabilityVerifier ??
+      new OfflineSigstoreCapabilityVerifier(createSigstorePublicGoodTrustedRoot()),
     externalHarnessRegistry,
     externalHarnessRuntime:
       overrides.externalHarnessRuntime ??

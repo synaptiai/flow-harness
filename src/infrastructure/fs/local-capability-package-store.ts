@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { link, lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import { z } from "zod";
 
@@ -11,11 +12,12 @@ import {
   MAX_CAPABILITY_BUNDLE_BYTES,
   parseDigestPinnedCapabilityBundle,
 } from "../../domain/capability/capability-bundles.js";
-import { parseStrictJson } from "../../domain/strict-json.js";
+import { parseOciCapabilityArtifactReference } from "../../domain/capability/oci-capability-artifacts.js";
 import {
   verifierPackageNameSchema,
   verifierPackageVersionSchema,
 } from "../../domain/capability/verifier-packages.js";
+import { parseStrictJson } from "../../domain/strict-json.js";
 
 export const CAPABILITY_LOCK_API_VERSION = "flow.synapti.ai/v1alpha1" as const;
 const MAX_CAPABILITY_LOCK_BYTES = 512 * 1024;
@@ -23,15 +25,38 @@ const MAX_CAPABILITY_LOCK_ENTRIES = 128;
 const MAX_CAPABILITY_LOCKED_BUNDLE_BYTES = 64 * 1024 * 1024;
 const MAX_STORE_ERROR_BYTES = 16_384;
 
+const sha256DigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+const capabilityPublisherSchema = z
+  .object({
+    kind: z.literal("sigstore-keyless-v0.3"),
+    certificateIssuer: z
+      .string()
+      .min(1)
+      .max(2_048)
+      .refine(isCanonicalHttpsIssuer, "must be a canonical HTTPS issuer"),
+    certificateIdentity: z
+      .string()
+      .min(1)
+      .max(4_096)
+      .refine(isCanonicalPublisherIdentity, "must be a bounded exact identity"),
+    signatureBundleDigest: sha256DigestSchema,
+  })
+  .strict();
 const capabilityLockEntrySchema = z
   .object({
     name: verifierPackageNameSchema,
     version: verifierPackageVersionSchema,
-    source: z.string().min(1).max(4_096).refine(isCanonicalHttpsSource, "must be canonical HTTPS"),
-    digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    source: z.string().min(1).max(4_096),
+    digest: sha256DigestSchema,
     bytes: z.number().int().positive().max(MAX_CAPABILITY_BUNDLE_BYTES),
+    publisher: capabilityPublisherSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((entry, context) => {
+    if (!isValidCapabilitySource(entry.source, entry.publisher !== undefined)) {
+      context.addIssue({ code: "custom", path: ["source"], message: "invalid source authority" });
+    }
+  });
 
 const capabilityLockSchema = z
   .object({
@@ -55,6 +80,14 @@ export interface CapabilityLockEntry {
   readonly source: string;
   readonly digest: string;
   readonly bytes: number;
+  readonly publisher?: CapabilityPublisherVerification;
+}
+
+export interface CapabilityPublisherVerification {
+  readonly kind: "sigstore-keyless-v0.3";
+  readonly certificateIssuer: string;
+  readonly certificateIdentity: string;
+  readonly signatureBundleDigest: string;
 }
 
 export interface CapabilityLock {
@@ -92,6 +125,7 @@ export interface InstallCapabilityBundleInput {
   readonly source: string;
   readonly expectedSha256: string;
   readonly content: Uint8Array;
+  readonly publisher?: CapabilityPublisherVerification;
 }
 
 export interface InstallCapabilityBundleResult {
@@ -125,12 +159,18 @@ export class LocalCapabilityPackageStore {
   ) {}
 
   async install(input: InstallCapabilityBundleInput): Promise<InstallCapabilityBundleResult> {
-    if (!isCanonicalHttpsSource(input.source)) {
+    if (
+      !isValidCapabilitySource(input.source, input.publisher !== undefined) ||
+      (input.publisher !== undefined &&
+        !capabilityPublisherSchema.safeParse(input.publisher).success)
+    ) {
       throw new CapabilityPackageStoreError(
         "invalid_source",
-        "capability bundle source must be a canonical HTTPS URL without credentials, query, or fragment",
+        "capability bundle source and publisher evidence are invalid",
       );
     }
+    const publisher =
+      input.publisher === undefined ? undefined : canonicalPublisher(input.publisher);
     let bundle: CapabilityBundle;
     try {
       bundle = parseDigestPinnedCapabilityBundle(input.content, input.expectedSha256);
@@ -157,6 +197,17 @@ export class LocalCapabilityPackageStore {
             `capability bundle ${bundle.name}@${bundle.version} is already locked to ${existing.digest}`,
           );
         }
+        if (
+          publisher !== undefined &&
+          (existing.source !== input.source ||
+            existing.publisher === undefined ||
+            !isDeepStrictEqual(existing.publisher, publisher))
+        ) {
+          throw new CapabilityPackageStoreError(
+            "identity_conflict",
+            `capability bundle ${bundle.name}@${bundle.version} is already locked with different acquisition evidence`,
+          );
+        }
         await requireExactBlob(paths, existing, Buffer.from(input.content));
         return Object.freeze({ status: "already_installed" as const, bundle });
       }
@@ -166,6 +217,7 @@ export class LocalCapabilityPackageStore {
         source: input.source,
         digest: bundle.digest,
         bytes: bundle.bytes,
+        ...(publisher === undefined ? {} : { publisher }),
       });
       await publishBlob(paths, entry, Buffer.from(input.content), this.hooks);
       const bundles = [...lock.bundles, entry].sort(compareLockEntries);
@@ -316,11 +368,19 @@ async function readCapabilityLock(lockPath: string): Promise<CapabilityLock> {
       valueLabel: "capability package lock",
     });
     const parsed = capabilityLockSchema.parse(input);
-    assertCanonicalLockEntries(parsed.bundles);
+    const bundles: CapabilityLockEntry[] = parsed.bundles.map((entry) => ({
+      name: entry.name,
+      version: entry.version,
+      source: entry.source,
+      digest: entry.digest,
+      bytes: entry.bytes,
+      ...(entry.publisher === undefined ? {} : { publisher: { ...entry.publisher } }),
+    }));
+    assertCanonicalLockEntries(bundles);
     return deepFreeze({
       apiVersion: parsed.apiVersion,
       kind: parsed.kind,
-      bundles: parsed.bundles.map((entry) => ({ ...entry })),
+      bundles,
     });
   } catch (error) {
     if (error instanceof CapabilityPackageStoreError) {
@@ -899,6 +959,60 @@ function isCanonicalHttpsSource(source: string): boolean {
     url.password.length === 0 &&
     url.hostname.length > 0
   );
+}
+
+function isValidCapabilitySource(source: string, hasPublisher: boolean): boolean {
+  if (isCanonicalHttpsSource(source)) {
+    return !hasPublisher;
+  }
+  if (!hasPublisher) {
+    return false;
+  }
+  try {
+    return parseOciCapabilityArtifactReference(source).canonical === source;
+  } catch {
+    return false;
+  }
+}
+
+function isCanonicalHttpsIssuer(source: string): boolean {
+  try {
+    const parsed = new URL(source);
+    return (
+      parsed.protocol === "https:" &&
+      parsed.username === "" &&
+      parsed.password === "" &&
+      parsed.port === "" &&
+      parsed.search === "" &&
+      parsed.hash === "" &&
+      parsed.hostname === parsed.hostname.toLowerCase() &&
+      parsed.toString() === source
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isCanonicalPublisherIdentity(identity: string): boolean {
+  return (
+    identity === identity.trim() &&
+    Buffer.byteLength(identity, "utf8") <= 4_096 &&
+    !Array.from(identity).some((character) => {
+      const point = character.codePointAt(0);
+      return point !== undefined && (point <= 31 || point === 127);
+    })
+  );
+}
+
+function canonicalPublisher(
+  publisher: CapabilityPublisherVerification,
+): CapabilityPublisherVerification {
+  return Object.freeze({
+    kind: publisher.kind,
+    certificateIssuer: publisher.certificateIssuer,
+    certificateIdentity: publisher.certificateIdentity,
+    signatureBundleDigest: publisher.signatureBundleDigest,
+  });
 }
 
 function invalidLock(message: string, cause?: unknown): CapabilityPackageStoreError {
