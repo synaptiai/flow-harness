@@ -16,8 +16,8 @@ public-good trust root. The atomic installer records durable publisher identity.
 evidence, Node.js 26.7.0 baseline, and public documentation are complete.
 
 The stacked pull-request CI passed before the former base branch was removed. The implementation is
-now reconstructed directly on merged `main`. Hosted verification of that reconstructed branch
-remains pending.
+now reconstructed directly on merged `main`. Pull request #86 passed its complete hosted Linux x64
+quality and dependency-audit jobs on 2026-08-14.
 
 ## Specification
 
@@ -247,15 +247,15 @@ untested paths, known evidence limitations, and negative/adversarial cases.
 
 ### Reconstructed-main verification — 2026-08-14
 
-- Pull request #81 closed automatically after its stacked base branch was removed. The two Issue
-  #80 commits were reconstructed without conflicts on merged `main`. No later Issue #82, #83, #84,
-  or #85 work is included.
+- Pull request #81 closed automatically after its stacked base branch was removed. The initial
+  Issue #80 commits were reconstructed without conflicts on merged `main`. No later Issue #82,
+  #83, #84, or #85 work is included.
 
-- The complete default suite passed with 2,986 tests and four platform-gated skips. The first
+- The complete default suite passed with 3,036 tests and four platform-gated skips. The first
   sandboxed run failed only where the desktop sandbox denied Unix-socket and special-file creation.
   The complete rerun outside that restriction passed.
 
-- Coverage passed with 82.53% statements, 76.37% branches, 89.08% functions, and 82.64% lines.
+- Coverage passed with 82.56% statements, 76.51% branches, 89.08% functions, and 82.68% lines.
 
 - Compiled runtime verification passed with 39 tests and 33 platform-gated skips.
 
@@ -270,8 +270,14 @@ untested paths, known evidence limitations, and negative/adversarial cases.
   round-trip. This keeps durable publisher evidence equal to the identity grammar enforced by the
   Sigstore verifier.
 
-- Hosted CI for the reconstructed branch is pending. It remains the acceptance authority for the
-  hosted platform matrix.
+- Pull request #86 hosted CI passed both jobs. The evidence is
+  [GitHub Actions run 31849498190](https://github.com/synaptiai/flow-harness/actions/runs/31849498190).
+  The quality job passed the complete Linux x64 `ci:local` gate, including the native Prime runtime.
+  The dependency-audit job passed too.
+
+- Hosted setup proved that `/usr/bin/runc` belongs to the exact `containerd.io` 1.7.27-1 package
+  and reports runc 1.2.5 commit `v1.2.5-0-g59923ef`. An independent read-only, network-disabled
+  x64 container inspection of the exact package artifact reported the same version and commit.
 
 ### Original stacked-branch verification
 
