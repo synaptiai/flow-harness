@@ -186,6 +186,16 @@ describe("local capability package store", () => {
         signatureBundleDigest: `sha256:${"2".repeat(64)}`,
       },
     },
+    {
+      label: "a publisher identity that is not canonical UTF-8",
+      source: `registry.example.test/flow/review-suite@sha256:${"1".repeat(64)}`,
+      publisher: {
+        kind: "sigstore-keyless-v0.3" as const,
+        certificateIssuer: "https://token.actions.githubusercontent.com/",
+        certificateIdentity: "\ud800",
+        signatureBundleDigest: `sha256:${"2".repeat(64)}`,
+      },
+    },
   ])("rejects $label before publishing package state", async ({ source, publisher }) => {
     const projectRoot = await projectDirectory();
     const created = bundle("Review signed evidence.");

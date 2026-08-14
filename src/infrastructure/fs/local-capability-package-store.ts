@@ -994,14 +994,23 @@ function isCanonicalHttpsIssuer(source: string): boolean {
 }
 
 function isCanonicalPublisherIdentity(identity: string): boolean {
-  return (
-    identity === identity.trim() &&
-    Buffer.byteLength(identity, "utf8") <= 4_096 &&
-    !Array.from(identity).some((character) => {
+  if (
+    identity !== identity.trim() ||
+    Buffer.byteLength(identity, "utf8") > 4_096 ||
+    Array.from(identity).some((character) => {
       const point = character.codePointAt(0);
       return point !== undefined && (point <= 31 || point === 127);
     })
-  );
+  ) {
+    return false;
+  }
+  try {
+    return (
+      new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(identity, "utf8")) === identity
+    );
+  } catch {
+    return false;
+  }
 }
 
 function canonicalPublisher(

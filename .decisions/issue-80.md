@@ -2,7 +2,7 @@
 
 **Issue**: #80
 
-**Branch**: `codex/issue-80-signed-oci-registry`
+**Branch**: `codex/issue-80-signed-oci-registry-main`
 
 **Started**: 2026-08-13
 
@@ -13,8 +13,11 @@
 Implementation and local release verification are complete. Flow now has a strict digest-only OCI
 artifact and a bounded public registry client. It has an offline publisher verifier and a shipped
 public-good trust root. The atomic installer records durable publisher identity. The CLI, offline
-evidence, Node.js 26.7.0 baseline, and public documentation are complete. Stacked pull-request CI
-remains the hosted verification authority.
+evidence, Node.js 26.7.0 baseline, and public documentation are complete.
+
+The stacked pull-request CI passed before the former base branch was removed. The implementation is
+now reconstructed directly on merged `main`. Hosted verification of that reconstructed branch
+remains pending.
 
 ## Specification
 
@@ -242,6 +245,36 @@ untested paths, known evidence limitations, and negative/adversarial cases.
 
 ## Verification evidence
 
+### Reconstructed-main verification — 2026-08-14
+
+- Pull request #81 closed automatically after its stacked base branch was removed. The two Issue
+  #80 commits were reconstructed without conflicts on merged `main`. No later Issue #82, #83, #84,
+  or #85 work is included.
+
+- The complete default suite passed with 2,986 tests and four platform-gated skips. The first
+  sandboxed run failed only where the desktop sandbox denied Unix-socket and special-file creation.
+  The complete rerun outside that restriction passed.
+
+- Coverage passed with 82.53% statements, 76.37% branches, 89.08% functions, and 82.64% lines.
+
+- Compiled runtime verification passed with 39 tests and 33 platform-gated skips.
+
+- TypeScript, the clean build, full formatting, lint, documentation STE, dependency-tree, package,
+  and diff checks passed. Lint reported one unchanged informational constructor finding and exited
+  successfully.
+
+- The clean package gate rebuilt, packed, installed, and executed the installed CLI with lifecycle
+  scripts disabled. The production dependency audit returned zero vulnerabilities.
+
+- The package store now rejects publisher identities that cannot make an exact fatal UTF-8
+  round-trip. This keeps durable publisher evidence equal to the identity grammar enforced by the
+  Sigstore verifier.
+
+- Hosted CI for the reconstructed branch is pending. It remains the acceptance authority for the
+  hosted platform matrix.
+
+### Original stacked-branch verification
+
 - The final complete default suite passed with 2,941 tests and four platform-gated skips.
 
 - Coverage passed with 82.41% statements, 76.29% branches, 88.98% functions, and 82.53% lines.
@@ -261,9 +294,8 @@ untested paths, known evidence limitations, and negative/adversarial cases.
   `graphify-out` files in this shared workspace. The changed Issue #80 files pass scoped formatting
   and lint checks. Those unrelated files remain untouched and uncommitted.
 
-- The production dependency audit requires disclosure of the dependency graph to the public npm
-  advisory endpoint. It was not sent from this desktop session. The hosted audit passed and remains
-  the release evidence for that criterion.
+- The production dependency audit was not sent from the original desktop session. Its hosted audit
+  passed. The reconstructed branch later passed the same production audit locally.
 
 Negative evidence covers mutable or malformed references and private DNS. It covers changed media
 types, digests, sizes, layers, payloads, and signatures. It also covers changed issuers, identities,
