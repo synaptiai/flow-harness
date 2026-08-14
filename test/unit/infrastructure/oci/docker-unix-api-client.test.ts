@@ -894,6 +894,64 @@ describe("Docker Unix API client", () => {
   it.each([
     {
       privateMessage:
+        "failed to create task for container: failed to create shim task: OCI runtime create failed: unable to start container process: error during container init: error preparing rootfs: open /PRIVATE_ROOTFS: no such file or directory",
+      privateMarker: "PRIVATE_ROOTFS",
+      publicMessage: "Docker start failed while applying container filesystem isolation",
+    },
+    {
+      privateMessage:
+        "failed to create task for container: failed to create shim task: OCI runtime create failed: unable to start container process: error during container init: error closing exec fds: open /proc/thread-self/fd/PRIVATE_DESCRIPTOR: no such file or directory",
+      privateMarker: "PRIVATE_DESCRIPTOR",
+      publicMessage: "Docker start failed while setting up container runtime file descriptors",
+    },
+    {
+      privateMessage:
+        "failed to create task for container: failed to create shim task: OCI runtime create failed: unable to start container process: error during container init: open exec fifo /proc/thread-self/fd/PRIVATE_FIFO: no such file or directory",
+      privateMarker: "PRIVATE_FIFO",
+      publicMessage: "Docker start failed while setting up container runtime file descriptors",
+    },
+    {
+      privateMessage:
+        "failed to create task for container: failed to create shim task: OCI runtime create failed: unable to start container process: error during container init: error reopening /dev/null inside container: open /dev/PRIVATE_NULL: no such file or directory",
+      privateMarker: "PRIVATE_NULL",
+      publicMessage: "Docker start failed while preparing isolated container devices",
+    },
+    {
+      privateMessage:
+        "failed to create task for container: failed to create shim task: OCI runtime create failed: unable to start container process: error during container init: unable to init seccomp: open /PRIVATE_SECCOMP: no such file or directory",
+      privateMarker: "PRIVATE_SECCOMP",
+      publicMessage: "Docker start failed while applying the container seccomp policy",
+    },
+    {
+      privateMessage:
+        "failed to create task for container: failed to create shim task: OCI runtime create failed: unable to start container process: error during container init: open /proc/sys/net/ipv4/ping_group_range/PRIVATE_NETWORK: no such file or directory",
+      privateMarker: "PRIVATE_NETWORK",
+      publicMessage: "Docker start failed while applying container runtime network defaults",
+    },
+  ])("keeps a pinned child-init subsystem ahead of the missing-open fallback", async (testCase) => {
+    const transport: DockerUnixApiTransport = {
+      request: vi.fn(async () => ({
+        statusCode: 500,
+        body: JSON.stringify({ message: testCase.privateMessage }),
+      })),
+    };
+    const client = new DockerUnixApiClient({
+      socketPath: "/var/run/docker.sock",
+      apiVersion: "1.51",
+      transport,
+    });
+
+    const error = await client.startContainer("a".repeat(64)).catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(testCase.publicMessage);
+    expect((error as Error).message).not.toContain(testCase.privateMarker);
+    expect((error as Error).cause).toBeUndefined();
+  });
+
+  it.each([
+    {
+      privateMessage:
         "failed to create task: failed to write bundle spec: open /PRIVATE_BUNDLE/config.json: no such file or directory",
       privateMarker: "PRIVATE_BUNDLE",
       publicMessage: "Docker start failed while writing the container runtime bundle",

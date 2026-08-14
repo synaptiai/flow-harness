@@ -1232,6 +1232,10 @@ function dockerStartFailureMessage(response: DockerUnixApiResponse): string {
   const hasUnclassifiedMissingObject = privateMessage.includes("no such file or directory");
   const hasUnclassifiedOpen =
     hasUnclassifiedMissingObject && /(?:^|: )(?:open|openat|openat2)(?: |:)/u.test(privateMessage);
+  const hasRuncChildInitialization =
+    privateMessage.includes("oci runtime create failed") &&
+    privateMessage.includes("unable to start container process:") &&
+    privateMessage.includes("error during container init:");
   if (
     privateMessage.includes("oci runtime create failed") &&
     privateMessage.includes("fork/exec ")
@@ -1263,10 +1267,43 @@ function dockerStartFailureMessage(response: DockerUnixApiResponse): string {
   }
   if (
     hasUnclassifiedOpen &&
-    privateMessage.includes("oci runtime create failed") &&
-    privateMessage.includes("unable to start container process:") &&
-    privateMessage.includes("error during container init:")
+    hasRuncChildInitialization &&
+    includesAny(privateMessage, ["error closing exec fds:", "open exec fifo "])
   ) {
+    return "Docker start failed while setting up container runtime file descriptors";
+  }
+  if (
+    hasUnclassifiedOpen &&
+    hasRuncChildInitialization &&
+    privateMessage.includes("error reopening /dev/null inside container:")
+  ) {
+    return "Docker start failed while preparing isolated container devices";
+  }
+  if (
+    hasUnclassifiedOpen &&
+    hasRuncChildInitialization &&
+    privateMessage.includes("unable to init seccomp:")
+  ) {
+    return "Docker start failed while applying the container seccomp policy";
+  }
+  if (
+    hasUnclassifiedOpen &&
+    hasRuncChildInitialization &&
+    includesAny(privateMessage, [
+      "/proc/sys/net/ipv4/ping_group_range",
+      "/proc/sys/net/ipv4/ip_unprivileged_port_start",
+    ])
+  ) {
+    return "Docker start failed while applying container runtime network defaults";
+  }
+  if (
+    hasUnclassifiedOpen &&
+    hasRuncChildInitialization &&
+    privateMessage.includes("error preparing rootfs:")
+  ) {
+    return "Docker start failed while applying container filesystem isolation";
+  }
+  if (hasUnclassifiedOpen && hasRuncChildInitialization) {
     return "Docker start failed while opening an isolated container init object";
   }
   if (
