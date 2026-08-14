@@ -796,6 +796,58 @@ describe("Docker Unix API client", () => {
   it.each([
     {
       privateMessage:
+        "failed to create task for container: failed to start shim: open shim log pipe: failed to open /PRIVATE_CANARY/log with O_PATH: open /PRIVATE_CANARY/log: no such file or directory",
+      publicMessage: "Docker start failed while opening the container runtime shim log",
+    },
+    {
+      privateMessage:
+        "failed to create task for container: failed to start shim: failed to create temp file: open /PRIVATE_CANARY/address: no such file or directory",
+      publicMessage: "Docker start failed while publishing the container runtime shim address",
+    },
+    {
+      privateMessage:
+        "failed to create task for container: failed to start shim: open /PRIVATE_CANARY/shim-binary-path: no such file or directory",
+      publicMessage: "Docker start failed while recording the container runtime shim identity",
+    },
+    {
+      privateMessage:
+        "failed to create task for container: failed to start shim: open /PRIVATE_CANARY/runtime-state: no such file or directory",
+      publicMessage: "Docker start failed while opening a container runtime shim startup object",
+    },
+    {
+      privateMessage:
+        "failed to create task for container: failed to create shim task: OCI runtime create failed: open /PRIVATE_CANARY/runtime-state: no such file or directory",
+      publicMessage: "Docker start failed while opening an OCI runtime create object",
+    },
+    {
+      privateMessage:
+        "failed to create task for container: failed to create shim task: open /PRIVATE_CANARY/task-state: no such file or directory",
+      publicMessage: "Docker start failed while opening a container runtime task object",
+    },
+  ])("classifies a missing runtime object by its pinned containerd wrapper", async (testCase) => {
+    const transport: DockerUnixApiTransport = {
+      request: vi.fn(async () => ({
+        statusCode: 500,
+        body: JSON.stringify({ message: testCase.privateMessage }),
+      })),
+    };
+    const client = new DockerUnixApiClient({
+      socketPath: "/var/run/docker.sock",
+      apiVersion: "1.51",
+      transport,
+    });
+
+    const error = await client.startContainer("a".repeat(64)).catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(testCase.publicMessage);
+    expect((error as Error).message).not.toContain("PRIVATE_CANARY");
+    expect((error as Error).cause).toBeUndefined();
+  });
+
+  it.each([
+    {
+      privateMessage:
         "failed to create task: failed to write bundle spec: open /PRIVATE_BUNDLE/config.json: no such file or directory",
       privateMarker: "PRIVATE_BUNDLE",
       publicMessage: "Docker start failed while writing the container runtime bundle",
@@ -839,19 +891,19 @@ describe("Docker Unix API client", () => {
       privateMessage:
         "failed to create shim task: open /PRIVATE_STATE/address: no such file or directory",
       privateMarker: "PRIVATE_STATE",
-      publicMessage: "Docker start failed while opening a container runtime object",
+      publicMessage: "Docker start failed while opening a container runtime task object",
     },
     {
       privateMessage:
         "failed to create shim task: openat /PRIVATE_STATE/address: no such file or directory",
       privateMarker: "PRIVATE_STATE",
-      publicMessage: "Docker start failed while opening a container runtime object",
+      publicMessage: "Docker start failed while opening a container runtime task object",
     },
     {
       privateMessage:
         "failed to create shim task: openat2 /PRIVATE_STATE/address: no such file or directory",
       privateMarker: "PRIVATE_STATE",
-      publicMessage: "Docker start failed while opening a container runtime object",
+      publicMessage: "Docker start failed while opening a container runtime task object",
     },
     {
       privateMessage:

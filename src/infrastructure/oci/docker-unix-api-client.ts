@@ -1229,11 +1229,47 @@ function dockerStartFailureMessage(response: DockerUnixApiResponse): string {
   if (privateMessage === undefined) {
     return `Docker start returned status ${response.statusCode}`;
   }
+  const hasUnclassifiedMissingObject = privateMessage.includes("no such file or directory");
+  const hasUnclassifiedOpen =
+    hasUnclassifiedMissingObject && /(?:^|: )(?:open|openat|openat2)(?: |:)/u.test(privateMessage);
   if (
     privateMessage.includes("oci runtime create failed") &&
     privateMessage.includes("fork/exec ")
   ) {
     return "Docker start failed while launching the selected container runtime";
+  }
+  if (hasUnclassifiedMissingObject && privateMessage.includes("failed to write bundle spec:")) {
+    return "Docker start failed while writing the container runtime bundle";
+  }
+  if (
+    hasUnclassifiedMissingObject &&
+    /(?:^|: )open (?:[^:\n]*\/)?config\.json:/u.test(privateMessage)
+  ) {
+    return "Docker start failed while reading the container runtime bundle";
+  }
+  if (
+    hasUnclassifiedOpen &&
+    privateMessage.includes("failed to start shim:") &&
+    privateMessage.includes("open shim log pipe:")
+  ) {
+    return "Docker start failed while opening the container runtime shim log";
+  }
+  if (
+    hasUnclassifiedOpen &&
+    privateMessage.includes("failed to start shim:") &&
+    privateMessage.includes("failed to create temp file:")
+  ) {
+    return "Docker start failed while publishing the container runtime shim address";
+  }
+  if (
+    hasUnclassifiedOpen &&
+    privateMessage.includes("failed to start shim:") &&
+    privateMessage.includes("shim-binary-path")
+  ) {
+    return "Docker start failed while recording the container runtime shim identity";
+  }
+  if (hasUnclassifiedOpen && privateMessage.includes("failed to start shim:")) {
+    return "Docker start failed while opening a container runtime shim startup object";
   }
   if (includesAny(privateMessage, ["io.max", "blkio", "block io"])) {
     return "Docker start failed while applying container block I/O controls";
@@ -1391,16 +1427,6 @@ function dockerStartFailureMessage(response: DockerUnixApiResponse): string {
   if (includesAny(privateMessage, ["permission denied"])) {
     return "Docker start failed while applying the container process policy";
   }
-  const hasUnclassifiedMissingObject = privateMessage.includes("no such file or directory");
-  if (hasUnclassifiedMissingObject && privateMessage.includes("failed to write bundle spec:")) {
-    return "Docker start failed while writing the container runtime bundle";
-  }
-  if (
-    hasUnclassifiedMissingObject &&
-    /(?:^|: )open (?:[^:\n]*\/)?config\.json:/u.test(privateMessage)
-  ) {
-    return "Docker start failed while reading the container runtime bundle";
-  }
   if (
     hasUnclassifiedMissingObject &&
     /(?:^|: )(?:mkdir|mkdirat|mknod|symlink)(?: |:)/u.test(privateMessage)
@@ -1408,9 +1434,16 @@ function dockerStartFailureMessage(response: DockerUnixApiResponse): string {
     return "Docker start failed while creating a container runtime object";
   }
   if (
-    hasUnclassifiedMissingObject &&
-    /(?:^|: )(?:open|openat|openat2)(?: |:)/u.test(privateMessage)
+    hasUnclassifiedOpen &&
+    privateMessage.includes("failed to create shim task:") &&
+    privateMessage.includes("oci runtime create failed")
   ) {
+    return "Docker start failed while opening an OCI runtime create object";
+  }
+  if (hasUnclassifiedOpen && privateMessage.includes("failed to create shim task:")) {
+    return "Docker start failed while opening a container runtime task object";
+  }
+  if (hasUnclassifiedOpen) {
     return "Docker start failed while opening a container runtime object";
   }
   if (
