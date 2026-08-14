@@ -1249,6 +1249,28 @@ function dockerStartFailureMessage(response: DockerUnixApiResponse): string {
   }
   if (
     hasUnclassifiedOpen &&
+    privateMessage.includes("oci runtime create failed") &&
+    privateMessage.includes("open root handle:")
+  ) {
+    return "Docker start failed while opening the container root filesystem";
+  }
+  if (
+    hasUnclassifiedOpen &&
+    privateMessage.includes("oci runtime create failed") &&
+    privateMessage.includes("open o_path procfd:")
+  ) {
+    return "Docker start failed while opening a container mount target";
+  }
+  if (
+    hasUnclassifiedOpen &&
+    privateMessage.includes("oci runtime create failed") &&
+    privateMessage.includes("unable to start container process:") &&
+    privateMessage.includes("error during container init:")
+  ) {
+    return "Docker start failed while opening an isolated container init object";
+  }
+  if (
+    hasUnclassifiedOpen &&
     privateMessage.includes("failed to start shim:") &&
     privateMessage.includes("open shim log pipe:")
   ) {

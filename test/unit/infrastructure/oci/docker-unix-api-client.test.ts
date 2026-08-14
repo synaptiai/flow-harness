@@ -848,6 +848,52 @@ describe("Docker Unix API client", () => {
   it.each([
     {
       privateMessage:
+        "failed to create task for container: failed to create shim task: OCI runtime create failed: open root handle: open /PRIVATE_CANARY_A: no such file or directory",
+      publicMessage: "Docker start failed while opening the container root filesystem",
+      privateMarker: "PRIVATE_CANARY_A",
+    },
+    {
+      privateMessage:
+        "failed to create task for container: failed to create shim task: OCI runtime create failed: open o_path procfd: open /PRIVATE_CANARY_B: no such file or directory",
+      publicMessage: "Docker start failed while opening a container mount target",
+      privateMarker: "PRIVATE_CANARY_B",
+    },
+    {
+      privateMessage:
+        "failed to create task for container: failed to create shim task: OCI runtime create failed: unable to start container process: error during container init: open /PRIVATE_CANARY_C: no such file or directory",
+      publicMessage: "Docker start failed while opening an isolated container init object",
+      privateMarker: "PRIVATE_CANARY_C",
+    },
+    {
+      privateMessage:
+        "failed to create task for container: failed to create shim task: OCI runtime create failed: open root handle: open /opt/seccomp/mount/rootfs/PRIVATE_CANARY_D: no such file or directory",
+      publicMessage: "Docker start failed while opening the container root filesystem",
+      privateMarker: "PRIVATE_CANARY_D",
+    },
+  ])("classifies a missing object by its pinned runc create phase", async (testCase) => {
+    const transport: DockerUnixApiTransport = {
+      request: vi.fn(async () => ({
+        statusCode: 500,
+        body: JSON.stringify({ message: testCase.privateMessage }),
+      })),
+    };
+    const client = new DockerUnixApiClient({
+      socketPath: "/var/run/docker.sock",
+      apiVersion: "1.51",
+      transport,
+    });
+
+    const error = await client.startContainer("a".repeat(64)).catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(testCase.publicMessage);
+    expect((error as Error).message).not.toContain(testCase.privateMarker);
+    expect((error as Error).cause).toBeUndefined();
+  });
+
+  it.each([
+    {
+      privateMessage:
         "failed to create task: failed to write bundle spec: open /PRIVATE_BUNDLE/config.json: no such file or directory",
       privateMarker: "PRIVATE_BUNDLE",
       publicMessage: "Docker start failed while writing the container runtime bundle",
