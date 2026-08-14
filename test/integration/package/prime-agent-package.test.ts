@@ -372,6 +372,17 @@ describe("Prime Agent package boundary", () => {
     );
     expect(workflow).toContain("containerd.io='1.7.27-1'");
     expect(workflow).toContain("docker-buildx-plugin='0.26.1-1~ubuntu.24.04~noble'");
+    expect(workflow).toContain(
+      "test \"$(dpkg-query --search /usr/bin/runc)\" = 'containerd.io: /usr/bin/runc'",
+    );
+    expect(workflow).toContain(
+      "test \"$(/usr/bin/runc --version | sed --quiet '1p')\" = 'runc version 1.2.5'",
+    );
+    expect(workflow).toContain(
+      "test \"$(/usr/bin/runc --version | sed --quiet '2p')\" = 'commit: v1.2.5-0-g59923ef'",
+    );
+    expect(workflow).toContain('runtime_path="$(readlink --canonicalize /usr/bin/runc)"');
+    expect(workflow).not.toContain("command -v runc");
     expect(workflow).toContain("{{.Server.APIVersion}}')\" = '1.51'");
     expect(workflow).toContain("{{.Server.Version}}')\" = '28.3.3'");
     expect(workflow).not.toContain("docker/setup-buildx-action");
@@ -417,6 +428,10 @@ describe("Prime Agent package boundary", () => {
     expect(workflow).toContain("useradd --create-home --groups docker flow-prime-peer");
     expect(workflow).toContain("FLOW_PRIME_TEST_SECOND_USER=flow-prime-peer");
     expect(readme).toContain("dedicated, reprovisionable Prime runner");
+    expect(readme).toContain("`containerd.io` 1.7.27-1 package");
+    expect(readme).toMatch(/`runc` 1\.2\.5 commit\s+`v1\.2\.5-0-g59923ef`/);
+    expect(readme).toContain("does not resolve `runc` through `PATH`");
+    expect(readme).not.toContain("Replace the path when your system uses a different");
     expect(readme).toContain("chmod 0711 /run/docker /run/docker/containerd");
     expect(readmeCorePatternWrite).toBeGreaterThan(-1);
     expect(readmePreparation).toBeGreaterThan(readmeCorePatternWrite);

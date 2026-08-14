@@ -88,9 +88,11 @@ The Prime runtime identity has these additional requirements:
 - Docker image storage resolves through sysfs to one whole block device for `io.max`.
 - Enough host capacity for the fixed Prime resource policy.
 
-Configure the Docker daemon with the dedicated `flow-prime-runc` runtime name and the exact `runc`
-path. Docker reserves its built-in `runc` name. Replace the path when your system uses a different
-canonical location.
+Configure the Docker daemon with the dedicated `flow-prime-runc` runtime name and the verified
+`runc` path. Docker reserves its built-in `runc` name. The Linux x64 acceptance profile uses
+`/usr/bin/runc` from the exact `containerd.io` 1.7.27-1 package. It verifies `runc` 1.2.5 commit
+`v1.2.5-0-g59923ef` and does not resolve `runc` through `PATH`. A different path, version, or commit
+is outside the verified version one profile.
 
 ```json
 {
