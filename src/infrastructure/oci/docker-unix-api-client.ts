@@ -1391,8 +1391,41 @@ function dockerStartFailureMessage(response: DockerUnixApiResponse): string {
   if (includesAny(privateMessage, ["permission denied"])) {
     return "Docker start failed while applying the container process policy";
   }
-  const hasUnclassifiedExecution = /(?:^|[^a-z])exec(?:[^a-z]|$)/u.test(privateMessage);
   const hasUnclassifiedMissingObject = privateMessage.includes("no such file or directory");
+  if (hasUnclassifiedMissingObject && privateMessage.includes("failed to write bundle spec:")) {
+    return "Docker start failed while writing the container runtime bundle";
+  }
+  if (
+    hasUnclassifiedMissingObject &&
+    /(?:^|: )open (?:[^:\n]*\/)?config\.json:/u.test(privateMessage)
+  ) {
+    return "Docker start failed while reading the container runtime bundle";
+  }
+  if (
+    hasUnclassifiedMissingObject &&
+    /(?:^|: )(?:mkdir|mkdirat|mknod|symlink)(?: |:)/u.test(privateMessage)
+  ) {
+    return "Docker start failed while creating a container runtime object";
+  }
+  if (
+    hasUnclassifiedMissingObject &&
+    /(?:^|: )(?:open|openat|openat2)(?: |:)/u.test(privateMessage)
+  ) {
+    return "Docker start failed while opening a container runtime object";
+  }
+  if (
+    hasUnclassifiedMissingObject &&
+    /(?:^|: )(?:stat|lstat|statfs)(?: |:)/u.test(privateMessage)
+  ) {
+    return "Docker start failed while inspecting a container runtime object";
+  }
+  if (hasUnclassifiedMissingObject && /(?:^|: )readlink(?: |:)/u.test(privateMessage)) {
+    return "Docker start failed while resolving a container runtime link";
+  }
+  if (hasUnclassifiedMissingObject && /(?:^|: )(?:chdir|getwd)(?: |:)/u.test(privateMessage)) {
+    return "Docker start failed while resolving the container runtime working directory";
+  }
+  const hasUnclassifiedExecution = /(?:^|[^a-z])exec(?:[^a-z]|$)/u.test(privateMessage);
   if (hasUnclassifiedExecution && hasUnclassifiedMissingObject) {
     return "Docker start failed while resolving a runtime execution object";
   }

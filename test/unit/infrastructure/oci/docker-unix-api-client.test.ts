@@ -793,6 +793,147 @@ describe("Docker Unix API client", () => {
     expect((error as Error).message).not.toContain(testCase.privateMarker);
   });
 
+  it.each([
+    {
+      privateMessage:
+        "failed to create task: failed to write bundle spec: open /PRIVATE_BUNDLE/config.json: no such file or directory",
+      privateMarker: "PRIVATE_BUNDLE",
+      publicMessage: "Docker start failed while writing the container runtime bundle",
+    },
+    {
+      privateMessage:
+        "failed to create shim task: open config.json: no such file or directory PRIVATE_SPEC",
+      privateMarker: "PRIVATE_SPEC",
+      publicMessage: "Docker start failed while reading the container runtime bundle",
+    },
+    {
+      privateMessage:
+        "failed to create shim task: open /PRIVATE_BUNDLE/config.json: no such file or directory",
+      privateMarker: "PRIVATE_BUNDLE",
+      publicMessage: "Docker start failed while reading the container runtime bundle",
+    },
+    {
+      privateMessage: "failed to create task: mkdir /PRIVATE_STATE/task: no such file or directory",
+      privateMarker: "PRIVATE_STATE",
+      publicMessage: "Docker start failed while creating a container runtime object",
+    },
+    {
+      privateMessage:
+        "failed to create task: symlink /PRIVATE_WORK /PRIVATE_STATE/work: no such file or directory",
+      privateMarker: "PRIVATE_WORK",
+      publicMessage: "Docker start failed while creating a container runtime object",
+    },
+    {
+      privateMessage:
+        "failed to create task: mkdirat /PRIVATE_STATE/task: no such file or directory",
+      privateMarker: "PRIVATE_STATE",
+      publicMessage: "Docker start failed while creating a container runtime object",
+    },
+    {
+      privateMessage:
+        "failed to create task: mknod /PRIVATE_STATE/device: no such file or directory",
+      privateMarker: "PRIVATE_STATE",
+      publicMessage: "Docker start failed while creating a container runtime object",
+    },
+    {
+      privateMessage:
+        "failed to create shim task: open /PRIVATE_STATE/address: no such file or directory",
+      privateMarker: "PRIVATE_STATE",
+      publicMessage: "Docker start failed while opening a container runtime object",
+    },
+    {
+      privateMessage:
+        "failed to create shim task: openat /PRIVATE_STATE/address: no such file or directory",
+      privateMarker: "PRIVATE_STATE",
+      publicMessage: "Docker start failed while opening a container runtime object",
+    },
+    {
+      privateMessage:
+        "failed to create shim task: openat2 /PRIVATE_STATE/address: no such file or directory",
+      privateMarker: "PRIVATE_STATE",
+      publicMessage: "Docker start failed while opening a container runtime object",
+    },
+    {
+      privateMessage:
+        "failed to create task: lstat /PRIVATE_STATE/bundle: no such file or directory",
+      privateMarker: "PRIVATE_STATE",
+      publicMessage: "Docker start failed while inspecting a container runtime object",
+    },
+    {
+      privateMessage:
+        "failed to create task: stat /PRIVATE_STATE/bundle: no such file or directory",
+      privateMarker: "PRIVATE_STATE",
+      publicMessage: "Docker start failed while inspecting a container runtime object",
+    },
+    {
+      privateMessage:
+        "failed to create task: statfs /PRIVATE_STATE/bundle: no such file or directory",
+      privateMarker: "PRIVATE_STATE",
+      publicMessage: "Docker start failed while inspecting a container runtime object",
+    },
+    {
+      privateMessage:
+        "failed to create task: readlink /PRIVATE_STATE/work: no such file or directory",
+      privateMarker: "PRIVATE_STATE",
+      publicMessage: "Docker start failed while resolving a container runtime link",
+    },
+    {
+      privateMessage: "failed to create shim task: getwd: no such file or directory PRIVATE_CWD",
+      privateMarker: "PRIVATE_CWD",
+      publicMessage: "Docker start failed while resolving the container runtime working directory",
+    },
+    {
+      privateMessage: "failed to create shim task: chdir /PRIVATE_CWD: no such file or directory",
+      privateMarker: "PRIVATE_CWD",
+      publicMessage: "Docker start failed while resolving the container runtime working directory",
+    },
+  ])("classifies a missing runtime object by its closed operation", async (testCase) => {
+    const transport: DockerUnixApiTransport = {
+      request: vi.fn(async () => ({
+        statusCode: 500,
+        body: JSON.stringify({ message: testCase.privateMessage }),
+      })),
+    };
+    const client = new DockerUnixApiClient({
+      socketPath: "/var/run/docker.sock",
+      apiVersion: "1.51",
+      transport,
+    });
+
+    const error = await client.startContainer("a".repeat(64)).catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(testCase.publicMessage);
+    expect((error as Error).message).not.toContain(testCase.privateMarker);
+    expect((error as Error).cause).toBeUndefined();
+  });
+
+  it.each([
+    "failed to create task: /PRIVATE_OPEN/object: no such file or directory",
+    "failed to create task: PRIVATE_STAT_OBJECT no such file or directory",
+    "failed to create task: reopen /PRIVATE_OBJECT: no such file or directory",
+  ])("does not infer a missing-object operation from a lookalike", async (privateMessage) => {
+    const transport: DockerUnixApiTransport = {
+      request: vi.fn(async () => ({
+        statusCode: 500,
+        body: JSON.stringify({ message: privateMessage }),
+      })),
+    };
+    const client = new DockerUnixApiClient({
+      socketPath: "/var/run/docker.sock",
+      apiVersion: "1.51",
+      transport,
+    });
+
+    const error = await client.startContainer("a".repeat(64)).catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(
+      "Docker start failed because a runtime object was missing",
+    );
+    expect((error as Error).message).not.toContain(privateMessage);
+  });
+
   it("does not treat runc exec-fd setup as entrypoint execution", async () => {
     const privateMarker = "PRIVATE_EXEC_FD";
     const transport: DockerUnixApiTransport = {
