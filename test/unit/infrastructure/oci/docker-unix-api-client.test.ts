@@ -952,6 +952,115 @@ describe("Docker Unix API client", () => {
   it.each([
     {
       privateMessage:
+        'failed to create task for container: failed to create shim task: OCI runtime create failed: unable to start container process: error during container init: error mounting "PRIVATE_MOUNT_SOURCE" to rootfs at "/PRIVATE_MOUNT_TARGET": open /proc/thread-self/fd/71: no such file or directory',
+      privateMarker: "PRIVATE_MOUNT_SOURCE",
+      publicMessage: "Docker start failed while applying container filesystem isolation",
+    },
+    {
+      privateMessage:
+        "failed to create task for container: failed to create shim task: OCI runtime create failed: unable to start container process: error during container init: error jailing process inside rootfs: open /opt/seccomp/apparmor/PRIVATE_JAIL: no such file or directory",
+      privateMarker: "PRIVATE_JAIL",
+      publicMessage: "Docker start failed while applying container filesystem isolation",
+    },
+    {
+      privateMessage:
+        "failed to create task for container: failed to create shim task: OCI runtime create failed: unable to start container process: error during container init: unable to setup user: open /proc/self/setgroups: no such file or directory: PRIVATE_USER_CANARY",
+      privateMarker: "PRIVATE_USER_CANARY",
+      publicMessage: "Docker start failed while applying the container user identity",
+    },
+    {
+      privateMessage:
+        "failed to create task for container: failed to create shim task: OCI runtime create failed: unable to start container process: error during container init: apparmor failed to apply profile: open /proc/thread-self/attr/apparmor/exec: no such file or directory: PRIVATE_APPARMOR_CANARY",
+      privateMarker: "PRIVATE_APPARMOR_CANARY",
+      publicMessage: "Docker start failed while applying the container AppArmor policy",
+    },
+    {
+      privateMessage:
+        "failed to create task for container: failed to create shim task: OCI runtime create failed: unable to start container process: error during container init: open /proc/thread-self/fd/PRIVATE_DESCRIPTOR: no such file or directory",
+      privateMarker: "PRIVATE_DESCRIPTOR",
+      publicMessage: "Docker start failed while setting up container runtime file descriptors",
+    },
+    {
+      privateMessage:
+        'failed to create task for container: failed to create shim task: OCI runtime create failed: unable to start container process: error during container init: openat2: "/proc/self/fd/PRIVATE_SELF_DESCRIPTOR": no such file or directory',
+      privateMarker: "PRIVATE_SELF_DESCRIPTOR",
+      publicMessage: "Docker start failed while setting up container runtime file descriptors",
+    },
+    {
+      privateMessage:
+        "failed to create task for container: failed to create shim task: OCI runtime create failed: unable to start container process: error during container init: open /proc/thread-self/attr/apparmor/PRIVATE_ATTR: no such file or directory",
+      privateMarker: "PRIVATE_ATTR",
+      publicMessage: "Docker start failed while applying the container AppArmor policy",
+    },
+    {
+      privateMessage:
+        "failed to create task for container: failed to create shim task: OCI runtime create failed: unable to start container process: error during container init: open /dev/PRIVATE_DEVICE: no such file or directory",
+      privateMarker: "PRIVATE_DEVICE",
+      publicMessage: "Docker start failed while preparing isolated container devices",
+    },
+    {
+      privateMessage:
+        "failed to create task for container: failed to create shim task: OCI runtime create failed: unable to start container process: error during container init: open /proc/PRIVATE_PROCESS_OBJECT: no such file or directory",
+      privateMarker: "PRIVATE_PROCESS_OBJECT",
+      publicMessage: "Docker start failed while opening an isolated container process object",
+    },
+    {
+      privateMessage:
+        "failed to create task for container: failed to create shim task: OCI runtime create failed: unable to start container process: error during container init: open /sys/PRIVATE_KERNEL_OBJECT: no such file or directory",
+      privateMarker: "PRIVATE_KERNEL_OBJECT",
+      publicMessage: "Docker start failed while opening an isolated container kernel object",
+    },
+    {
+      privateMessage:
+        "failed to create task for container: failed to create shim task: OCI runtime create failed: unable to start container process: error during container init: open /proc/sys/PRIVATE_KERNEL_SETTING: no such file or directory",
+      privateMarker: "PRIVATE_KERNEL_SETTING",
+      publicMessage: "Docker start failed while opening an isolated container kernel object",
+    },
+    {
+      privateMessage:
+        "failed to create task for container: failed to create shim task: OCI runtime create failed: unable to start container process: error during container init: open /procurement/PRIVATE_BOUNDARY: no such file or directory",
+      privateMarker: "PRIVATE_BOUNDARY",
+      publicMessage: "Docker start failed while opening an isolated container init object",
+    },
+    {
+      privateMessage:
+        "failed to create task for container: failed to create shim task: OCI runtime create failed: unable to start container process: error during container init: open /PRIVATE_ERROR_MOUNTING/error mounting decoy to rootfs at decoy: no such file or directory",
+      privateMarker: "PRIVATE_ERROR_MOUNTING",
+      publicMessage: "Docker start failed while opening an isolated container init object",
+    },
+    {
+      privateMessage:
+        "failed to create task for container: failed to create shim task: OCI runtime create failed: unable to start container process: error during container init: open /PRIVATE_OTHER_OBJECT: no such file or directory",
+      privateMarker: "PRIVATE_OTHER_OBJECT",
+      publicMessage: "Docker start failed while opening an isolated container init object",
+    },
+  ])(
+    "classifies a missing child-init open by its pinned wrapper or system-object family",
+    async (testCase) => {
+      const transport: DockerUnixApiTransport = {
+        request: vi.fn(async () => ({
+          statusCode: 500,
+          body: JSON.stringify({ message: testCase.privateMessage }),
+        })),
+      };
+      const client = new DockerUnixApiClient({
+        socketPath: "/var/run/docker.sock",
+        apiVersion: "1.51",
+        transport,
+      });
+
+      const error = await client.startContainer("a".repeat(64)).catch((caught) => caught);
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe(testCase.publicMessage);
+      expect((error as Error).message).not.toContain(testCase.privateMarker);
+      expect((error as Error).cause).toBeUndefined();
+    },
+  );
+
+  it.each([
+    {
+      privateMessage:
         "failed to create task: failed to write bundle spec: open /PRIVATE_BUNDLE/config.json: no such file or directory",
       privateMarker: "PRIVATE_BUNDLE",
       publicMessage: "Docker start failed while writing the container runtime bundle",

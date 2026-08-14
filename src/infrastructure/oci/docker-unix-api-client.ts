@@ -1265,46 +1265,8 @@ function dockerStartFailureMessage(response: DockerUnixApiResponse): string {
   ) {
     return "Docker start failed while opening a container mount target";
   }
-  if (
-    hasUnclassifiedOpen &&
-    hasRuncChildInitialization &&
-    includesAny(privateMessage, ["error closing exec fds:", "open exec fifo "])
-  ) {
-    return "Docker start failed while setting up container runtime file descriptors";
-  }
-  if (
-    hasUnclassifiedOpen &&
-    hasRuncChildInitialization &&
-    privateMessage.includes("error reopening /dev/null inside container:")
-  ) {
-    return "Docker start failed while preparing isolated container devices";
-  }
-  if (
-    hasUnclassifiedOpen &&
-    hasRuncChildInitialization &&
-    privateMessage.includes("unable to init seccomp:")
-  ) {
-    return "Docker start failed while applying the container seccomp policy";
-  }
-  if (
-    hasUnclassifiedOpen &&
-    hasRuncChildInitialization &&
-    includesAny(privateMessage, [
-      "/proc/sys/net/ipv4/ping_group_range",
-      "/proc/sys/net/ipv4/ip_unprivileged_port_start",
-    ])
-  ) {
-    return "Docker start failed while applying container runtime network defaults";
-  }
-  if (
-    hasUnclassifiedOpen &&
-    hasRuncChildInitialization &&
-    privateMessage.includes("error preparing rootfs:")
-  ) {
-    return "Docker start failed while applying container filesystem isolation";
-  }
   if (hasUnclassifiedOpen && hasRuncChildInitialization) {
-    return "Docker start failed while opening an isolated container init object";
+    return classifyRuncChildInitializationOpen(privateMessage);
   }
   if (
     hasUnclassifiedOpen &&
@@ -1538,6 +1500,94 @@ function dockerStartFailureMessage(response: DockerUnixApiResponse): string {
     return "Docker start failed while creating the container runtime task";
   }
   return `Docker start returned status ${response.statusCode}`;
+}
+
+function classifyRuncChildInitializationOpen(privateMessage: string): string {
+  const childInitialization = privateMessage
+    .slice(
+      privateMessage.indexOf("error during container init:") +
+        "error during container init:".length,
+    )
+    .trimStart();
+  const openedObject =
+    /(?:^|: )(?:open|openat|openat2)(?::? )["']?(?<path>\/[^:"'\n]*)(?:["'])?:/u.exec(
+      childInitialization,
+    );
+  const wrapperChain = childInitialization.slice(0, openedObject?.index);
+  const openedPath = openedObject?.groups?.path;
+
+  if (
+    includesAny(wrapperChain, [
+      "error closing exec fds",
+      "open exec fifo ",
+      "unable to mark non-stdio fds as cloexec",
+      "error getting pipe fds",
+    ])
+  ) {
+    return "Docker start failed while setting up container runtime file descriptors";
+  }
+  if (
+    includesAny(wrapperChain, [
+      "error creating device nodes",
+      "error setting up ptmx",
+      "error setting up /dev symlinks",
+      "error reopening /dev/null inside container",
+    ])
+  ) {
+    return "Docker start failed while preparing isolated container devices";
+  }
+  if (wrapperChain.includes("unable to init seccomp")) {
+    return "Docker start failed while applying the container seccomp policy";
+  }
+  if (wrapperChain.includes("unable to setup user")) {
+    return "Docker start failed while applying the container user identity";
+  }
+  if (
+    includesAny(wrapperChain, [
+      "apparmor failed to apply profile",
+      "unable to apply apparmor profile",
+    ])
+  ) {
+    return "Docker start failed while applying the container AppArmor policy";
+  }
+  if (
+    wrapperChain.includes("error preparing rootfs") ||
+    (wrapperChain.includes("error mounting ") && wrapperChain.includes(" to rootfs at ")) ||
+    wrapperChain.includes("error jailing process inside rootfs") ||
+    wrapperChain.includes("can't mask path ") ||
+    (wrapperChain.includes("can't make ") && wrapperChain.includes(" read-only"))
+  ) {
+    return "Docker start failed while applying container filesystem isolation";
+  }
+  if (
+    isRuncObjectWithin(openedPath, "/proc/sys/net/ipv4/ping_group_range") ||
+    isRuncObjectWithin(openedPath, "/proc/sys/net/ipv4/ip_unprivileged_port_start")
+  ) {
+    return "Docker start failed while applying container runtime network defaults";
+  }
+  if (
+    isRuncObjectWithin(openedPath, "/proc/thread-self/fd") ||
+    isRuncObjectWithin(openedPath, "/proc/self/fd")
+  ) {
+    return "Docker start failed while setting up container runtime file descriptors";
+  }
+  if (isRuncObjectWithin(openedPath, "/proc/thread-self/attr/apparmor")) {
+    return "Docker start failed while applying the container AppArmor policy";
+  }
+  if (isRuncObjectWithin(openedPath, "/dev")) {
+    return "Docker start failed while preparing isolated container devices";
+  }
+  if (isRuncObjectWithin(openedPath, "/proc/sys") || isRuncObjectWithin(openedPath, "/sys")) {
+    return "Docker start failed while opening an isolated container kernel object";
+  }
+  if (isRuncObjectWithin(openedPath, "/proc")) {
+    return "Docker start failed while opening an isolated container process object";
+  }
+  return "Docker start failed while opening an isolated container init object";
+}
+
+function isRuncObjectWithin(openedPath: string | undefined, root: string): boolean {
+  return openedPath === root || openedPath?.startsWith(`${root}/`) === true;
 }
 
 function parseDockerErrorMessage(body: string): string | undefined {
