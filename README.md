@@ -195,6 +195,15 @@ image, Docker API 1.51, the `flow-prime-runc` runtime, and the current non-root 
 Flow preserves the exact executable and argument vector without a shell. The selected workspace is
 the only read-write bind. Explicit runtime support paths are read-only binds.
 
+Flow attaches to the container output before start, starts the verified full container ID, and
+waits through Docker API 1.51. The one command deadline owns the wait. Flow decodes Docker's
+multiplexed stream and records only bounded task standard output and standard error. Docker attach,
+start, wait, stream, and attachment-release failures use fixed public stages. Docker control text
+does not become task output or an exit code.
+
+A control failure after possible start retains bounded task output and reports uncertain command
+side effects. Confirmed container absence does not undo earlier workspace writes.
+
 Nested protected paths are masked inside the workspace. Flow always protects project `.flow`
 state from the trusted project root. A protected path at or above the workspace rejects before
 Docker mutation. A workspace that would contain the configured project root also rejects. A
@@ -227,6 +236,10 @@ adds the inspected full container ID before command launch. Completion, timeout,
 restart recovery remove only the verified full-ID container and require confirmed absence before
 Flow removes the record. An unresolved or foreign container blocks later container commands. Flow
 does not delete a container by name alone.
+
+The live process also owns a retryable settlement for each failed preparation or returned lease.
+It settles that work before another create. Durable orphan recovery correctly skips the still-live
+process owner.
 
 The complete submitted Docker configuration determines the public sandbox policy digest. This
 digest binds the attested engine, image, runtime, executable, and fixed profile through the static

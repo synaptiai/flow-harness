@@ -63,6 +63,15 @@ The embedded Pi runtime runs with the invoking user's operating-system permissio
   runtime, foreign object, unresolved create, or uncertain cleanup blocks later container commands.
   Flow never removes a container by name alone.
 
+- The active process retains failed preparation and lease settlement. It retries that settlement
+  before any later create. The durable scanner correctly treats the same process as live.
+
+- Container command execution uses Docker's structured attach, start, and wait API operations.
+  Flow attaches before start, separates multiplexed task output, and gives the long wait the command
+  cancellation signal. Private Docker response, socket, path, and stream errors map to fixed public
+  stages. Docker control output cannot become durable task evidence. A control failure after
+  possible start retains bounded task evidence and reports uncertain command side effects.
+
 - The container profile does not put provider credentials, Docker control access, or a model runtime
   inside the command container. The host-side Flow and Pi processes retain the invoking user's host
   authority. Root, the trusted host operator, a Docker daemon compromise, or a host-kernel defect is

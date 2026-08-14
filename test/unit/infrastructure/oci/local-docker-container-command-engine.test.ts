@@ -599,6 +599,465 @@ describe("LocalDockerContainerCommandEngine", () => {
     expect(removePrivateDirectory).not.toHaveBeenCalled();
   });
 
+  it("blocks a later prepare until same-process cleanup uncertainty is settled", async () => {
+    const configurations = new Map<string, Record<string, unknown>>();
+    const createdIds = [CONTAINER_ID, "d".repeat(64)];
+    const api = {
+      createContainer: vi.fn(async (_name: string, input: Record<string, unknown>) => {
+        const id = createdIds.shift();
+        if (id === undefined) {
+          throw new Error("unexpected container create");
+        }
+        configurations.set(id, structuredClone(input));
+        return id;
+      }),
+      inspectContainer: vi.fn(async (reference: string) => {
+        const configuration = configurations.get(reference);
+        return configuration === undefined
+          ? null
+          : {
+              Id: reference,
+              Name: `/flow-command-${"b".repeat(32)}`,
+              Image: descriptor().imageId,
+              Config: configuration,
+              HostConfig: configuration.HostConfig,
+            };
+      }),
+      stopContainer: vi.fn(async () => undefined),
+      removeContainer: vi.fn(async () => {
+        throw new Error("PRIVATE_PERSISTENT_REMOVE");
+      }),
+    };
+    const engine = new LocalDockerContainerCommandEngine({
+      resolveDescriptor: async () => descriptor(),
+      createApi: () => api,
+      createNonce: () => "b".repeat(32),
+      createPrivateDirectory: async () => "/private/docker-config",
+      removePrivateDirectory: async () => undefined,
+    });
+    const first = await engine.prepare({
+      executable: "node",
+      args: [],
+      cwd: "/workspace/run-1",
+      protectedPaths: [],
+      workspaceSnapshotDigest: WORKSPACE_SNAPSHOT_DIGEST,
+    });
+    await expect(first.release()).rejects.toThrow("Container command cleanup is not proved");
+
+    await expect(
+      engine.prepare({
+        executable: "node",
+        args: [],
+        cwd: "/workspace/run-2",
+        protectedPaths: [],
+        workspaceSnapshotDigest: WORKSPACE_SNAPSHOT_DIGEST,
+      }),
+    ).rejects.toThrow("Container command cleanup is not proved");
+
+    expect(api.createContainer).toHaveBeenCalledTimes(1);
+    expect(api.removeContainer).toHaveBeenCalledTimes(4);
+  });
+
+  it("blocks a later prepare after preparation cleanup cannot prove absence", async () => {
+    const configurations = new Map<string, Record<string, unknown>>();
+    const createdIds = [CONTAINER_ID, "d".repeat(64)];
+    let firstInspection = true;
+    const api = {
+      createContainer: vi.fn(async (_name: string, input: Record<string, unknown>) => {
+        const id = createdIds.shift();
+        if (id === undefined) {
+          throw new Error("unexpected container create");
+        }
+        configurations.set(id, structuredClone(input));
+        return id;
+      }),
+      inspectContainer: vi.fn(async (reference: string) => {
+        if (reference === CONTAINER_ID && firstInspection) {
+          firstInspection = false;
+          return null;
+        }
+        const configuration = configurations.get(reference);
+        return configuration === undefined
+          ? null
+          : {
+              Id: reference,
+              Name: `/flow-command-${"b".repeat(32)}`,
+              Image: descriptor().imageId,
+              Config: configuration,
+              HostConfig: configuration.HostConfig,
+            };
+      }),
+      stopContainer: vi.fn(async () => undefined),
+      removeContainer: vi.fn(async () => {
+        throw new Error("PRIVATE_PERSISTENT_PREPARATION_REMOVE");
+      }),
+    };
+    const engine = new LocalDockerContainerCommandEngine({
+      resolveDescriptor: async () => descriptor(),
+      createApi: () => api,
+      createNonce: () => "b".repeat(32),
+      createPrivateDirectory: async () => "/private/docker-config",
+      removePrivateDirectory: async () => undefined,
+    });
+
+    await expect(
+      engine.prepare({
+        executable: "node",
+        args: [],
+        cwd: "/workspace/run-1",
+        protectedPaths: [],
+        workspaceSnapshotDigest: WORKSPACE_SNAPSHOT_DIGEST,
+      }),
+    ).rejects.toThrow("Container command preparation cleanup is not proved");
+
+    await expect(
+      engine.prepare({
+        executable: "node",
+        args: [],
+        cwd: "/workspace/run-2",
+        protectedPaths: [],
+        workspaceSnapshotDigest: WORKSPACE_SNAPSHOT_DIGEST,
+      }),
+    ).rejects.toThrow("Container command cleanup is not proved");
+
+    expect(api.createContainer).toHaveBeenCalledTimes(1);
+    expect(api.removeContainer).toHaveBeenCalledTimes(4);
+  });
+
+  it("reconciles an ambiguous preparation create to a full ID before blocking later work", async () => {
+    let configuration: Record<string, unknown> | undefined;
+    let nameInspections = 0;
+    const api = {
+      createContainer: vi.fn(async (_name: string, input: Record<string, unknown>) => {
+        if (api.createContainer.mock.calls.length === 1) {
+          configuration = structuredClone(input);
+          throw new Error("PRIVATE_LOST_CREATE_RESPONSE");
+        }
+        if (api.createContainer.mock.calls.length === 2) {
+          throw new Error("PRIVATE_NAMED_CREATE_FENCE_CONFLICT");
+        }
+        return "d".repeat(64);
+      }),
+      inspectContainer: vi.fn(async (reference: string) => {
+        if (reference.startsWith("flow-command-")) {
+          nameInspections += 1;
+          if (nameInspections < 3 || configuration === undefined) {
+            return null;
+          }
+        }
+        if (reference !== CONTAINER_ID && !reference.startsWith("flow-command-")) {
+          return null;
+        }
+        return {
+          Id: CONTAINER_ID,
+          Name: `/flow-command-${"b".repeat(32)}`,
+          Image: descriptor().imageId,
+          Config: configuration,
+          HostConfig: configuration?.HostConfig,
+        };
+      }),
+      stopContainer: vi.fn(async () => undefined),
+      removeContainer: vi.fn(async () => {
+        throw new Error("PRIVATE_PERSISTENT_RECONCILED_REMOVE");
+      }),
+    };
+    const engine = new LocalDockerContainerCommandEngine({
+      resolveDescriptor: async () => descriptor(),
+      createApi: () => api,
+      createNonce: () => "b".repeat(32),
+      createPrivateDirectory: async () => "/private/docker-config",
+      removePrivateDirectory: async () => undefined,
+    });
+
+    await expect(
+      engine.prepare({
+        executable: "node",
+        args: [],
+        cwd: "/workspace/run-1",
+        protectedPaths: [],
+        workspaceSnapshotDigest: WORKSPACE_SNAPSHOT_DIGEST,
+      }),
+    ).rejects.toThrow("Command container create outcome cannot be recovered");
+
+    await expect(
+      engine.prepare({
+        executable: "node",
+        args: [],
+        cwd: "/workspace/run-2",
+        protectedPaths: [],
+        workspaceSnapshotDigest: WORKSPACE_SNAPSHOT_DIGEST,
+      }),
+    ).rejects.toThrow("Container command cleanup is not proved");
+
+    expect(api.createContainer).toHaveBeenCalledTimes(2);
+    expect(api.stopContainer).toHaveBeenCalledWith(CONTAINER_ID, 5, undefined);
+    expect(api.removeContainer).toHaveBeenCalledTimes(2);
+  });
+
+  it("runs a command through structured attach, start, and wait operations", async () => {
+    const events: string[] = [];
+    let configuration: Record<string, unknown> | undefined;
+    let removed = false;
+    const attachment = {
+      output: (async function* () {
+        events.push("read-output");
+        yield { stream: "stdout" as const, payload: Buffer.from("TASK_STDOUT") };
+        yield { stream: "stderr" as const, payload: Buffer.from("TASK_STDERR") };
+      })(),
+      release: vi.fn(async () => {
+        events.push("release-attachment");
+      }),
+    };
+    const api = {
+      createContainer: vi.fn(async (_name: string, input: Record<string, unknown>) => {
+        configuration = structuredClone(input);
+        return CONTAINER_ID;
+      }),
+      inspectContainer: vi.fn(async () =>
+        removed
+          ? null
+          : {
+              Id: CONTAINER_ID,
+              Name: `/flow-command-${"b".repeat(32)}`,
+              Image: descriptor().imageId,
+              Config: configuration,
+              HostConfig: configuration?.HostConfig,
+            },
+      ),
+      attachCommandContainer: vi.fn(async () => {
+        events.push("attach");
+        return attachment;
+      }),
+      startContainer: vi.fn(async () => {
+        events.push("start");
+      }),
+      waitContainer: vi.fn(async () => {
+        events.push("wait");
+        return 125;
+      }),
+      stopContainer: vi.fn(async () => undefined),
+      removeContainer: vi.fn(async () => {
+        removed = true;
+      }),
+    };
+    const engine = new LocalDockerContainerCommandEngine({
+      resolveDescriptor: async () => descriptor(),
+      createApi: () => api,
+      createNonce: () => "b".repeat(32),
+      createPrivateDirectory: async () => "/private/docker-config",
+      removePrivateDirectory: async () => undefined,
+    });
+    const lease = await engine.prepare({
+      executable: "node",
+      args: [],
+      cwd: "/workspace/run-1",
+      protectedPaths: [],
+      workspaceSnapshotDigest: WORKSPACE_SNAPSHOT_DIGEST,
+    });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+
+    const result = await (
+      lease as unknown as {
+        run(input: {
+          readonly signal: AbortSignal;
+          stdout(chunk: Uint8Array): void;
+          stderr(chunk: Uint8Array): void;
+        }): Promise<{ readonly exitCode: number }>;
+      }
+    ).run({
+      signal: AbortSignal.timeout(1_000),
+      stdout: (chunk) => stdout.push(Buffer.from(chunk)),
+      stderr: (chunk) => stderr.push(Buffer.from(chunk)),
+    });
+
+    expect(result).toEqual({ exitCode: 125 });
+    expect(Buffer.concat(stdout).toString("utf8")).toBe("TASK_STDOUT");
+    expect(Buffer.concat(stderr).toString("utf8")).toBe("TASK_STDERR");
+    expect(events).toEqual(["attach", "read-output", "start", "wait", "release-attachment"]);
+    await lease.release();
+  });
+
+  it("fails fast when attached output rejects while Docker start is pending", async () => {
+    let configuration: Record<string, unknown> | undefined;
+    let removed = false;
+    const attachment = {
+      output: (async function* () {
+        yield* [];
+        throw new Error("PRIVATE_EARLY_OUTPUT_FAILURE");
+      })(),
+      release: vi.fn(async () => undefined),
+    };
+    const api = {
+      createContainer: vi.fn(async (_name: string, input: Record<string, unknown>) => {
+        configuration = structuredClone(input);
+        return CONTAINER_ID;
+      }),
+      inspectContainer: vi.fn(async () =>
+        removed
+          ? null
+          : {
+              Id: CONTAINER_ID,
+              Name: `/flow-command-${"b".repeat(32)}`,
+              Image: descriptor().imageId,
+              Config: configuration,
+              HostConfig: configuration?.HostConfig,
+            },
+      ),
+      attachCommandContainer: vi.fn(async () => attachment),
+      startContainer: vi.fn(
+        async (_reference: string, signal?: AbortSignal) =>
+          await new Promise<void>((_resolve, reject) => {
+            if (signal?.aborted === true) {
+              reject(signal.reason);
+              return;
+            }
+            signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+          }),
+      ),
+      waitContainer: vi.fn(async () => 0),
+      stopContainer: vi.fn(async () => undefined),
+      removeContainer: vi.fn(async () => {
+        removed = true;
+      }),
+    };
+    const engine = new LocalDockerContainerCommandEngine({
+      resolveDescriptor: async () => descriptor(),
+      createApi: () => api,
+      createNonce: () => "b".repeat(32),
+      createPrivateDirectory: async () => "/private/docker-config",
+      removePrivateDirectory: async () => undefined,
+    });
+    const lease = await engine.prepare({
+      executable: "node",
+      args: [],
+      cwd: "/workspace/run-1",
+      protectedPaths: [],
+      workspaceSnapshotDigest: WORKSPACE_SNAPSHOT_DIGEST,
+    });
+
+    const error = await lease
+      .run?.({
+        signal: AbortSignal.timeout(100),
+        stdout: () => undefined,
+        stderr: () => undefined,
+      })
+      .catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(
+      "Command sandbox execution failed during read execution output",
+    );
+    expect((error as Error).message).not.toContain("PRIVATE_EARLY_OUTPUT_FAILURE");
+    expect(api.waitContainer).not.toHaveBeenCalled();
+    expect(attachment.release).toHaveBeenCalledTimes(1);
+    await lease.release();
+  });
+
+  it.each([
+    ["attach", "attach execution output", "PRIVATE_DOCKER_ATTACH_RESPONSE"],
+    ["start", "start execution", "PRIVATE_DOCKER_START_RESPONSE"],
+    ["wait", "wait for execution", "PRIVATE_DOCKER_WAIT_RESPONSE"],
+    ["read", "read execution output", "PRIVATE_DOCKER_STREAM_RESPONSE"],
+    ["release", "release execution output", "PRIVATE_DOCKER_RELEASE_RESPONSE"],
+  ] as const)(
+    "closes a private Docker %s failure during %s",
+    async (failureStage, publicStage, privateCanary) => {
+      let configuration: Record<string, unknown> | undefined;
+      let removed = false;
+      const attachment = {
+        output: (async function* () {
+          yield* [];
+          if (failureStage === "read") {
+            throw new Error(privateCanary);
+          }
+        })(),
+        release: vi.fn(async () => {
+          if (failureStage === "release") {
+            throw new Error(privateCanary);
+          }
+        }),
+      };
+      const api = {
+        createContainer: vi.fn(async (_name: string, input: Record<string, unknown>) => {
+          configuration = structuredClone(input);
+          return CONTAINER_ID;
+        }),
+        inspectContainer: vi.fn(async () =>
+          removed
+            ? null
+            : {
+                Id: CONTAINER_ID,
+                Name: `/flow-command-${"b".repeat(32)}`,
+                Image: descriptor().imageId,
+                Config: configuration,
+                HostConfig: configuration?.HostConfig,
+              },
+        ),
+        attachCommandContainer: vi.fn(async () => {
+          if (failureStage === "attach") {
+            throw new Error(privateCanary);
+          }
+          return attachment;
+        }),
+        startContainer: vi.fn(async () => {
+          if (failureStage === "start") {
+            throw new Error(privateCanary);
+          }
+        }),
+        waitContainer: vi.fn(async () => {
+          if (failureStage === "wait") {
+            throw new Error(privateCanary);
+          }
+          return 0;
+        }),
+        stopContainer: vi.fn(async () => undefined),
+        removeContainer: vi.fn(async () => {
+          removed = true;
+        }),
+      };
+      const engine = new LocalDockerContainerCommandEngine({
+        resolveDescriptor: async () => descriptor(),
+        createApi: () => api,
+        createNonce: () => "b".repeat(32),
+        createPrivateDirectory: async () => "/private/docker-config",
+        removePrivateDirectory: async () => undefined,
+      });
+      const lease = await engine.prepare({
+        executable: "node",
+        args: [],
+        cwd: "/workspace/run-1",
+        protectedPaths: [],
+        workspaceSnapshotDigest: WORKSPACE_SNAPSHOT_DIGEST,
+      });
+
+      const error = await (
+        lease as unknown as {
+          run(input: {
+            signal: AbortSignal;
+            stdout(chunk: Uint8Array): void;
+            stderr(chunk: Uint8Array): void;
+          }): Promise<{ readonly exitCode: number }>;
+        }
+      )
+        .run({
+          signal: AbortSignal.timeout(1_000),
+          stdout: () => undefined,
+          stderr: () => undefined,
+        })
+        .catch((caught) => caught);
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe(
+        `Command sandbox execution failed during ${publicStage}`,
+      );
+      expect((error as Error).message).not.toContain(privateCanary);
+      expect((error as Error).cause).toBeInstanceOf(Error);
+      expect(attachment.release).toHaveBeenCalledTimes(failureStage === "attach" ? 0 : 1);
+      await lease.release();
+    },
+  );
+
   it("submits and inspects a fixed shell-free container policy before returning its launcher", async () => {
     let configuration: Record<string, unknown> | undefined;
     let removed = false;

@@ -19,6 +19,7 @@ export interface DockerUnixApiRequest {
   readonly path: string;
   readonly body?: string;
   readonly maxResponseBytes: number;
+  readonly requestTimeoutMs?: null;
   readonly signal?: AbortSignal;
 }
 
@@ -43,6 +44,22 @@ export interface DockerUnixAttachTransport {
   attach(request: DockerUnixAttachRequest): Promise<PrimeOciAttachedTransport>;
 }
 
+export interface DockerCommandAttachRequest {
+  readonly socketPath: string;
+  readonly path: string;
+  readonly maxFrameBytes: number;
+  readonly signal?: AbortSignal;
+}
+
+export interface DockerCommandAttachedTransport {
+  readonly output: AsyncIterable<DockerRawStreamChunk>;
+  release(): Promise<void>;
+}
+
+export interface DockerUnixCommandAttachTransport {
+  attach(request: DockerCommandAttachRequest): Promise<DockerCommandAttachedTransport>;
+}
+
 export interface NodeDockerUnixTransportOptions {
   readonly requestTimeoutMs?: number;
 }
@@ -52,6 +69,7 @@ export interface DockerUnixApiClientOptions {
   readonly apiVersion: string;
   readonly transport?: DockerUnixApiTransport;
   readonly attachTransport?: DockerUnixAttachTransport;
+  readonly commandAttachTransport?: DockerUnixCommandAttachTransport;
   readonly maxResponseBytes?: number;
   readonly maxAttachStderrBytes?: number;
   readonly maxAttachStdoutFrameBytes?: number;
@@ -60,6 +78,7 @@ export interface DockerUnixApiClientOptions {
 export class DockerUnixApiClient {
   readonly #apiPrefix: string;
   readonly #attachTransport: DockerUnixAttachTransport;
+  readonly #commandAttachTransport: DockerUnixCommandAttachTransport;
   readonly #maxAttachStderrBytes: number;
   readonly #maxAttachStdoutFrameBytes: number;
   readonly #maxResponseBytes: number;
@@ -81,6 +100,8 @@ export class DockerUnixApiClient {
     this.#apiPrefix = `/v${options.apiVersion}`;
     this.#transport = options.transport ?? new NodeDockerUnixApiTransport();
     this.#attachTransport = options.attachTransport ?? new NodeDockerUnixAttachTransport();
+    this.#commandAttachTransport =
+      options.commandAttachTransport ?? new NodeDockerUnixCommandAttachTransport();
     this.#maxResponseBytes = maxResponseBytes;
     this.#maxAttachStderrBytes = boundedPositiveInteger(
       options.maxAttachStderrBytes ?? DEFAULT_MAX_ATTACH_STDERR_BYTES,
@@ -182,6 +203,41 @@ export class DockerUnixApiClient {
     }
   }
 
+  async waitContainer(reference: string, signal?: AbortSignal): Promise<number> {
+    assertContainerReference(reference);
+    const response = await this.#request(
+      "POST",
+      `${this.#apiPrefix}/containers/${reference}/wait?condition=not-running`,
+      undefined,
+      signal,
+      signal === undefined ? undefined : null,
+    );
+    assertStatus(response, [200], "wait");
+    let body: Record<string, unknown>;
+    try {
+      body = parseObject(response.body, "Docker wait response");
+    } catch (error) {
+      throw new Error("Docker wait response is invalid", { cause: error });
+    }
+    if (
+      !Number.isSafeInteger(body.StatusCode) ||
+      (body.StatusCode as number) < 0 ||
+      (body.StatusCode as number) > 255
+    ) {
+      throw new Error("Docker wait response has an invalid status code");
+    }
+    if (body.Error !== undefined && body.Error !== null) {
+      const error = asDockerObject(body.Error, "Docker wait error");
+      if (typeof error.Message !== "string") {
+        throw new Error("Docker wait response has an invalid error");
+      }
+      if (error.Message.length > 0) {
+        throw new Error("Docker wait reported a container error");
+      }
+    }
+    return body.StatusCode as number;
+  }
+
   async stopContainer(
     reference: string,
     graceSeconds: number,
@@ -226,11 +282,26 @@ export class DockerUnixApiClient {
     });
   }
 
+  async attachCommandContainer(
+    reference: string,
+    signal?: AbortSignal,
+  ): Promise<DockerCommandAttachedTransport> {
+    assertContainerReference(reference);
+    throwIfAborted(signal);
+    return this.#commandAttachTransport.attach({
+      socketPath: this.#socketPath,
+      path: `${this.#apiPrefix}/containers/${reference}/attach?stream=1&stdin=0&stdout=1&stderr=1&logs=0`,
+      maxFrameBytes: this.#maxAttachStdoutFrameBytes,
+      ...(signal === undefined ? {} : { signal }),
+    });
+  }
+
   async #request(
     method: DockerUnixApiRequest["method"],
     path: string,
     body: string | undefined,
     signal: AbortSignal | undefined,
+    requestTimeoutMs?: null,
   ): Promise<DockerUnixApiResponse> {
     throwIfAborted(signal);
     if (body !== undefined && Buffer.byteLength(body, "utf8") > MAX_REQUEST_BYTES) {
@@ -242,6 +313,7 @@ export class DockerUnixApiClient {
       path,
       ...(body === undefined ? {} : { body }),
       maxResponseBytes: this.#maxResponseBytes,
+      ...(requestTimeoutMs === undefined ? {} : { requestTimeoutMs }),
       ...(signal === undefined ? {} : { signal }),
     });
     if (Buffer.byteLength(response.body, "utf8") > this.#maxResponseBytes) {
@@ -336,6 +408,64 @@ export class DockerRawStreamDecoder {
   }
 }
 
+class DockerCommandRawStreamDecoder {
+  readonly #maxFrameBytes: number;
+  #finished = false;
+  #pending = Buffer.alloc(0);
+
+  constructor(maxFrameBytes: number) {
+    this.#maxFrameBytes = boundedPositiveInteger(
+      maxFrameBytes,
+      "Docker command output frame limit",
+    );
+  }
+
+  push(bytes: Uint8Array): DockerRawStreamChunk[] {
+    if (this.#finished) {
+      throw new Error("Docker command output decoder is already finished");
+    }
+    if (bytes.byteLength > 0) {
+      this.#pending = Buffer.concat([this.#pending, Buffer.from(bytes)]);
+    }
+    const chunks: DockerRawStreamChunk[] = [];
+    while (this.#pending.byteLength >= 8) {
+      const stream = this.#pending.readUInt8(0);
+      if (
+        (stream !== 1 && stream !== 2) ||
+        this.#pending.readUInt8(1) !== 0 ||
+        this.#pending.readUInt8(2) !== 0 ||
+        this.#pending.readUInt8(3) !== 0
+      ) {
+        throw new Error("Docker command output has an invalid multiplex header");
+      }
+      const payloadLength = this.#pending.readUInt32BE(4);
+      if (payloadLength > this.#maxFrameBytes) {
+        throw new Error(`Docker command output frame exceeds ${this.#maxFrameBytes} bytes`);
+      }
+      const frameLength = 8 + payloadLength;
+      if (this.#pending.byteLength < frameLength) {
+        break;
+      }
+      const payload = Buffer.from(this.#pending.subarray(8, frameLength));
+      this.#pending = this.#pending.subarray(frameLength);
+      if (payloadLength > 0) {
+        chunks.push({ stream: stream === 1 ? "stdout" : "stderr", payload });
+      }
+    }
+    return chunks;
+  }
+
+  finish(): void {
+    if (this.#finished) {
+      return;
+    }
+    this.#finished = true;
+    if (this.#pending.byteLength !== 0) {
+      throw new Error("Docker command output ends with a partial multiplex frame");
+    }
+  }
+}
+
 export class NodeDockerUnixApiTransport implements DockerUnixApiTransport {
   readonly #requestTimeoutMs: number;
 
@@ -348,6 +478,9 @@ export class NodeDockerUnixApiTransport implements DockerUnixApiTransport {
 
   request(input: DockerUnixApiRequest): Promise<DockerUnixApiResponse> {
     throwIfAborted(input.signal);
+    if (input.requestTimeoutMs === null && input.signal === undefined) {
+      throw new Error("Docker API signal-owned request requires a cancellation signal");
+    }
     return new Promise((resolve, reject) => {
       let settled = false;
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -409,12 +542,15 @@ export class NodeDockerUnixApiTransport implements DockerUnixApiTransport {
           });
         },
       );
-      timer = setTimeout(() => {
-        const error = new Error(`Docker API request exceeded ${this.#requestTimeoutMs}ms`);
-        settle(reject, error);
-        request.destroy();
-      }, this.#requestTimeoutMs);
-      timer.unref();
+      const requestTimeoutMs = input.requestTimeoutMs ?? this.#requestTimeoutMs;
+      if (input.requestTimeoutMs !== null) {
+        timer = setTimeout(() => {
+          const error = new Error(`Docker API request exceeded ${requestTimeoutMs}ms`);
+          settle(reject, error);
+          request.destroy();
+        }, requestTimeoutMs);
+        timer.unref();
+      }
       request.once("error", (error) => settle(reject, error));
       if (input.body !== undefined) {
         request.write(input.body);
@@ -472,6 +608,80 @@ export class NodeDockerUnixAttachTransport implements DockerUnixAttachTransport 
       request.once("error", (error) => settle(reject, error));
       request.end();
     });
+  }
+}
+
+export class NodeDockerUnixCommandAttachTransport implements DockerUnixCommandAttachTransport {
+  readonly #requestTimeoutMs: number;
+
+  constructor(options: NodeDockerUnixTransportOptions = {}) {
+    this.#requestTimeoutMs = boundedPositiveInteger(
+      options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
+      "Docker command attach request timeout",
+    );
+  }
+
+  attach(input: DockerCommandAttachRequest): Promise<DockerCommandAttachedTransport> {
+    throwIfAborted(input.signal);
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const settle = <T>(callback: (value: T) => void, value: T) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (timer !== undefined) {
+          clearTimeout(timer);
+        }
+        callback(value);
+      };
+      const request = httpRequest({
+        socketPath: input.socketPath,
+        method: "POST",
+        path: input.path,
+        headers: { Connection: "Upgrade", Upgrade: "tcp" },
+        signal: input.signal,
+      });
+      request.once("upgrade", (_response, socket, head) => {
+        settle(resolve, new NodeDockerCommandAttachedTransport(socket, head, input.maxFrameBytes));
+      });
+      request.once("response", (response) => {
+        response.resume();
+        settle(
+          reject,
+          new Error(`Docker command attach returned status ${response.statusCode ?? 0}`),
+        );
+      });
+      timer = setTimeout(() => {
+        const error = new Error(
+          `Docker command attach request exceeded ${this.#requestTimeoutMs}ms`,
+        );
+        settle(reject, error);
+        request.destroy();
+      }, this.#requestTimeoutMs);
+      timer.unref();
+      request.once("error", (error) => settle(reject, error));
+      request.end();
+    });
+  }
+}
+
+export class NodeDockerCommandAttachedTransport implements DockerCommandAttachedTransport {
+  readonly output: AsyncIterable<DockerRawStreamChunk>;
+
+  constructor(
+    private readonly socket: Duplex,
+    head: Buffer,
+    maxFrameBytes: number,
+  ) {
+    this.output = commandOutputChunks(socket, head, maxFrameBytes);
+  }
+
+  async release(): Promise<void> {
+    if (!this.socket.destroyed) {
+      this.socket.destroy();
+    }
   }
 }
 
@@ -558,6 +768,21 @@ async function* stdoutChunks(
   if (!sawStdout) {
     throw new Error("Prime container ended before readiness");
   }
+}
+
+async function* commandOutputChunks(
+  socket: Duplex,
+  head: Buffer,
+  maxFrameBytes: number,
+): AsyncIterable<DockerRawStreamChunk> {
+  const decoder = new DockerCommandRawStreamDecoder(maxFrameBytes);
+  if (head.byteLength > 0) {
+    yield* decoder.push(head);
+  }
+  for await (const bytes of socket) {
+    yield* decoder.push(bytes as Uint8Array);
+  }
+  decoder.finish();
 }
 
 function primeContainerFailureMessage(stderr: Buffer, sawStdout: boolean): string {
@@ -970,6 +1195,13 @@ function parseObject(body: string, label: string): Record<string, unknown> {
     maxNodes: 200_000,
     valueLabel: label,
   });
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`${label} is not an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function asDockerObject(value: unknown, label: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Error(`${label} is not an object`);
   }

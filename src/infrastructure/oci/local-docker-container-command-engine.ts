@@ -1,6 +1,12 @@
 import { relative, sep } from "node:path";
 
 import {
+  CommandSandboxExecutionError,
+  type CommandSandboxExecutionStage,
+  type ManagedCommandExecutionInput,
+  type ManagedCommandExecutionResult,
+} from "../../application/command-sandbox.js";
+import {
   type ContainerCommandIntent,
   type ContainerCommandProcessOwner,
   calculateContainerCommandConfigurationDigest,
@@ -86,7 +92,8 @@ export interface LocalDockerContainerCommandRuntimeDescriptor {
 type ContainerCommandApi = Pick<
   DockerUnixApiClient,
   "createContainer" | "inspectContainer" | "stopContainer" | "removeContainer"
->;
+> &
+  Partial<Pick<DockerUnixApiClient, "attachCommandContainer" | "startContainer" | "waitContainer">>;
 
 export interface LocalDockerContainerCommandEngineOptions {
   readonly resolveDescriptor: (
@@ -122,6 +129,8 @@ export interface LocalDockerContainerCommandEngineOptions {
 }
 
 export class LocalDockerContainerCommandEngine implements LocalContainerCommandSandboxEngine {
+  readonly #unsettled = new Map<string, () => Promise<void>>();
+  #localSettlement: Promise<void> | undefined;
   #recovery: Promise<void> | undefined;
 
   constructor(private readonly options: LocalDockerContainerCommandEngineOptions) {}
@@ -130,6 +139,8 @@ export class LocalDockerContainerCommandEngine implements LocalContainerCommandS
     input: LocalContainerCommandPreparationInput,
   ): Promise<LocalContainerCommandEngineLease> {
     const workspacePolicy = resolveWorkspacePolicy(input);
+    throwIfAborted(input.signal);
+    await this.#settleUnresolvedLocalCommands();
     throwIfAborted(input.signal);
     const descriptor = await this.options.resolveDescriptor(input.signal);
     validateDescriptor(descriptor);
@@ -163,6 +174,84 @@ export class LocalDockerContainerCommandEngine implements LocalContainerCommandS
     let containerId: string | undefined;
     let durableIntent: ContainerCommandIntent | undefined;
     let intentPublished = false;
+    let createAttempted = false;
+    let failedContainerSettled = false;
+    let failedPrivateDirectoryRemoved = false;
+    let failedDurableIntentRemoved = false;
+    let activeFailedPreparationSettlement: Promise<void> | undefined;
+    const settleFailedCommand = async (): Promise<void> => {
+      if (failedContainerSettled && failedPrivateDirectoryRemoved && failedDurableIntentRemoved) {
+        return;
+      }
+      activeFailedPreparationSettlement ??= (async () => {
+        const errors: unknown[] = [];
+        if (!failedContainerSettled) {
+          if (!createAttempted) {
+            failedContainerSettled = true;
+          } else {
+            if (containerId === undefined) {
+              try {
+                containerId = await recoverCreatedContainer(
+                  api,
+                  containerName,
+                  configuration,
+                  descriptor,
+                  this.options.createCleanupSignal?.(),
+                );
+                if (containerId === undefined) {
+                  errors.push(new Error("command container create outcome is unresolved"));
+                }
+              } catch (error) {
+                errors.push(error);
+              }
+            }
+            if (containerId !== undefined && errors.length === 0) {
+              const containerErrors = await settleContainerWithRetry(
+                api,
+                containerId,
+                descriptor,
+                this.options.createCleanupSignal,
+              );
+              errors.push(...containerErrors);
+              failedContainerSettled = containerErrors.length === 0;
+            }
+          }
+        }
+        if (failedContainerSettled && !failedPrivateDirectoryRemoved) {
+          try {
+            await this.options.removePrivateDirectory(privateDirectory);
+            failedPrivateDirectoryRemoved = true;
+          } catch (error) {
+            errors.push(error);
+          }
+        }
+        if (
+          failedContainerSettled &&
+          failedPrivateDirectoryRemoved &&
+          !failedDurableIntentRemoved
+        ) {
+          if (!intentPublished || this.options.durability === undefined) {
+            failedDurableIntentRemoved = true;
+          } else {
+            try {
+              await this.options.durability.store.remove(ownerNonce);
+              failedDurableIntentRemoved = true;
+            } catch (error) {
+              errors.push(error);
+            }
+          }
+        }
+        if (errors.length > 0) {
+          throw new AggregateError(errors, "Container command cleanup is not proved");
+        }
+        this.#unsettled.delete(ownerNonce);
+      })();
+      try {
+        await activeFailedPreparationSettlement;
+      } finally {
+        activeFailedPreparationSettlement = undefined;
+      }
+    };
 
     try {
       if (this.options.durability !== undefined) {
@@ -188,6 +277,7 @@ export class LocalDockerContainerCommandEngine implements LocalContainerCommandS
         intentPublished = true;
       }
       try {
+        createAttempted = true;
         containerId = await api.createContainer(containerName, configuration, input.signal);
       } catch (createError) {
         try {
@@ -222,26 +312,81 @@ export class LocalDockerContainerCommandEngine implements LocalContainerCommandS
         await this.options.durability.store.writeOwned(durableIntent);
       }
     } catch (error) {
-      const cleanupErrors = await settleFailedPreparation(
-        api,
-        containerId,
-        descriptor,
-        privateDirectory,
-        this.options.removePrivateDirectory,
-        this.options.createCleanupSignal,
-        intentPublished ? this.options.durability?.store : undefined,
-        durableIntent,
+      const createOutcomeWasUnresolved = createAttempted && containerId === undefined;
+      this.#unsettled.set(ownerNonce, settleFailedCommand);
+      if (createOutcomeWasUnresolved) {
+        throw error;
+      }
+      const cleanupError = await settleFailedCommand().then(
+        () => undefined,
+        (failure: unknown) => failure,
       );
-      if (cleanupErrors.length === 0) {
+      if (cleanupError === undefined) {
         throw error;
       }
       throw new AggregateError(
-        [error, ...cleanupErrors],
+        [error, cleanupError],
         "Container command preparation cleanup is not proved",
       );
     }
 
     const ownedContainerId = containerId;
+    let containerSettled = false;
+    let privateDirectoryRemoved = false;
+    let durableIntentRemoved = false;
+    let activeSettlement: Promise<void> | undefined;
+    const settleOwnedCommand = async (): Promise<void> => {
+      if (containerSettled && privateDirectoryRemoved && durableIntentRemoved) {
+        return;
+      }
+      activeSettlement ??= (async () => {
+        const errors: unknown[] = [];
+        if (!containerSettled) {
+          errors.push(
+            ...(await settleContainerWithRetry(
+              api,
+              ownedContainerId,
+              descriptor,
+              this.options.createCleanupSignal,
+            )),
+          );
+          containerSettled = errors.length === 0;
+        }
+        if (containerSettled && !privateDirectoryRemoved) {
+          try {
+            await this.options.removePrivateDirectory(privateDirectory);
+            privateDirectoryRemoved = true;
+          } catch (error) {
+            errors.push(error);
+          }
+        }
+        if (
+          containerSettled &&
+          privateDirectoryRemoved &&
+          !durableIntentRemoved &&
+          durableIntent !== undefined &&
+          this.options.durability !== undefined
+        ) {
+          try {
+            await this.options.durability.store.remove(durableIntent.ownerNonce);
+            durableIntentRemoved = true;
+          } catch (error) {
+            errors.push(error);
+          }
+        } else if (durableIntent === undefined || this.options.durability === undefined) {
+          durableIntentRemoved = true;
+        }
+        if (errors.length > 0) {
+          throw new AggregateError(errors, "Container command cleanup is not proved");
+        }
+        this.#unsettled.delete(ownerNonce);
+      })();
+      try {
+        await activeSettlement;
+      } finally {
+        activeSettlement = undefined;
+      }
+    };
     return Object.freeze({
       launch: Object.freeze({
         executable: descriptor.dockerExecutable,
@@ -272,27 +417,26 @@ export class LocalDockerContainerCommandEngine implements LocalContainerCommandS
         assertInspection(inspection, configuration, descriptor, containerName, ownedContainerId);
         throwIfAborted(input.signal);
       },
+      run: (execution: ManagedCommandExecutionInput) =>
+        runContainerCommand(api, ownedContainerId, execution),
       release: async () => {
-        const errors = await settleContainerWithRetry(
-          api,
-          ownedContainerId,
-          descriptor,
-          this.options.createCleanupSignal,
-        );
-        if (errors.length === 0) {
+        this.#unsettled.set(ownerNonce, settleOwnedCommand);
+        await settleOwnedCommand();
+      },
+    });
+  }
+
+  async #settleUnresolvedLocalCommands(): Promise<void> {
+    if (this.#unsettled.size === 0) {
+      return;
+    }
+    const attempt =
+      this.#localSettlement ??
+      (async () => {
+        const errors: unknown[] = [];
+        for (const settle of [...this.#unsettled.values()]) {
           try {
-            await this.options.removePrivateDirectory(privateDirectory);
-          } catch (error) {
-            errors.push(error);
-          }
-        }
-        if (
-          errors.length === 0 &&
-          durableIntent !== undefined &&
-          this.options.durability !== undefined
-        ) {
-          try {
-            await this.options.durability.store.remove(durableIntent.ownerNonce);
+            await settle();
           } catch (error) {
             errors.push(error);
           }
@@ -300,8 +444,15 @@ export class LocalDockerContainerCommandEngine implements LocalContainerCommandS
         if (errors.length > 0) {
           throw new AggregateError(errors, "Container command cleanup is not proved");
         }
-      },
-    });
+      })();
+    this.#localSettlement = attempt;
+    try {
+      await attempt;
+    } finally {
+      if (this.#localSettlement === attempt) {
+        this.#localSettlement = undefined;
+      }
+    }
   }
 
   async #recoverBeforePrepare(
@@ -365,6 +516,114 @@ export class LocalDockerContainerCommandEngine implements LocalContainerCommandS
         throw error;
       }
     }
+  }
+}
+
+async function runContainerCommand(
+  api: ContainerCommandApi,
+  containerId: string,
+  input: ManagedCommandExecutionInput,
+): Promise<ManagedCommandExecutionResult> {
+  const operationController = new AbortController();
+  const operationSignal = AbortSignal.any([input.signal, operationController.signal]);
+  const attach = requiredExecutionOperation(api.attachCommandContainer, "attach execution output");
+  const start = requiredExecutionOperation(api.startContainer, "start execution");
+  const wait = requiredExecutionOperation(api.waitContainer, "wait for execution");
+  const attachment = await withCommandExecutionStage(
+    "attach execution output",
+    () => attach.call(api, containerId, operationSignal),
+    operationSignal,
+  );
+  const outputSettlement = withCommandExecutionStage(
+    "read execution output",
+    async () => {
+      for await (const chunk of attachment.output) {
+        throwIfAborted(operationSignal);
+        if (chunk.stream === "stdout") {
+          input.stdout(chunk.payload);
+        } else {
+          input.stderr(chunk.payload);
+        }
+      }
+    },
+    operationSignal,
+  );
+  void outputSettlement.catch((error: unknown) => operationController.abort(error));
+  let result: ManagedCommandExecutionResult | undefined;
+  let failure: unknown;
+  try {
+    await withCommandExecutionStage(
+      "start execution",
+      () => start.call(api, containerId, operationSignal),
+      operationSignal,
+    );
+    const [exitCode] = await Promise.all([
+      withCommandExecutionStage(
+        "wait for execution",
+        () => wait.call(api, containerId, operationSignal),
+        operationSignal,
+      ),
+      outputSettlement,
+    ]);
+    result = Object.freeze({ exitCode });
+  } catch (error) {
+    failure = error;
+  }
+
+  const releaseFailure = await withCommandExecutionStage(
+    "release execution output",
+    () => attachment.release(),
+    undefined,
+  ).then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  await outputSettlement.catch(() => undefined);
+  if (failure !== undefined) {
+    if (releaseFailure !== undefined) {
+      throw new AggregateError(
+        [failure, releaseFailure],
+        "Command sandbox execution and output cleanup failed",
+      );
+    }
+    throw failure;
+  }
+  if (releaseFailure !== undefined) {
+    throw releaseFailure;
+  }
+  if (result === undefined) {
+    throw new CommandSandboxExecutionError("run managed execution");
+  }
+  return result;
+}
+
+function requiredExecutionOperation<T extends (...args: never[]) => unknown>(
+  operation: T | undefined,
+  stage: CommandSandboxExecutionStage,
+): T {
+  if (operation === undefined) {
+    throw new CommandSandboxExecutionError(stage);
+  }
+  return operation;
+}
+
+async function withCommandExecutionStage<T>(
+  stage: CommandSandboxExecutionStage,
+  operation: () => Promise<T>,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  try {
+    const value = await operation();
+    throwIfAborted(signal);
+    return value;
+  } catch (error) {
+    if (signal?.aborted === true) {
+      throwIfAborted(signal);
+    }
+    if (error instanceof CommandSandboxExecutionError) {
+      throw error;
+    }
+    throw new CommandSandboxExecutionError(stage, error);
   }
 }
 
@@ -680,48 +939,6 @@ function selectHostConfig(value: Record<string, unknown>): Record<string, unknow
     "Ulimits",
   ] as const;
   return Object.fromEntries(keys.map((key) => [key, value[key]]));
-}
-
-async function settleFailedPreparation(
-  api: ContainerCommandApi,
-  containerId: string | undefined,
-  descriptor: LocalDockerContainerCommandRuntimeDescriptor,
-  privateDirectory: string,
-  removePrivateDirectory: (path: string) => Promise<void>,
-  createCleanupSignal: (() => AbortSignal | undefined) | undefined,
-  intentStore:
-    | {
-        remove(ownerNonce: string): Promise<void>;
-      }
-    | undefined,
-  durableIntent: ContainerCommandIntent | undefined,
-): Promise<unknown[]> {
-  const errors =
-    containerId === undefined
-      ? []
-      : await settleContainerWithRetry(api, containerId, descriptor, createCleanupSignal);
-  const canFinalize =
-    errors.length === 0 && (containerId !== undefined || intentStore === undefined);
-  if (canFinalize) {
-    try {
-      await removePrivateDirectory(privateDirectory);
-    } catch (error) {
-      errors.push(error);
-    }
-  }
-  if (
-    errors.length === 0 &&
-    containerId !== undefined &&
-    intentStore !== undefined &&
-    durableIntent !== undefined
-  ) {
-    try {
-      await intentStore.remove(durableIntent.ownerNonce);
-    } catch (error) {
-      errors.push(error);
-    }
-  }
-  return errors;
 }
 
 async function settleContainerWithRetry(

@@ -1077,6 +1077,74 @@ describe("Docker Unix API client", () => {
     });
   });
 
+  it("keeps command task streams separate from the wait control response", async () => {
+    const attached = {
+      output: (async function* () {
+        yield { stream: "stdout" as const, payload: Buffer.from("TASK_STDOUT") };
+        yield { stream: "stderr" as const, payload: Buffer.from("TASK_STDERR") };
+      })(),
+      release: vi.fn(async () => undefined),
+    };
+    const commandAttachTransport = {
+      attach: vi.fn(async () => attached),
+    };
+    const transport: DockerUnixApiTransport = {
+      request: vi.fn(async (request) => ({
+        statusCode: 200,
+        body: request.path.endsWith("/wait?condition=not-running")
+          ? JSON.stringify({ StatusCode: 125, Error: null })
+          : "",
+      })),
+    };
+    const client = new DockerUnixApiClient({
+      socketPath: "/var/run/docker.sock",
+      apiVersion: "1.51",
+      transport,
+      commandAttachTransport,
+    } as never) as unknown as {
+      attachCommandContainer(reference: string): Promise<typeof attached>;
+      waitContainer(reference: string): Promise<number>;
+    };
+
+    await expect(client.attachCommandContainer("a".repeat(64))).resolves.toBe(attached);
+    await expect(client.waitContainer("a".repeat(64))).resolves.toBe(125);
+    expect(commandAttachTransport.attach).toHaveBeenCalledWith({
+      socketPath: "/var/run/docker.sock",
+      path: `/v1.51/containers/${"a".repeat(64)}/attach?stream=1&stdin=0&stdout=1&stderr=1&logs=0`,
+      maxFrameBytes: 1_048_581,
+    });
+    expect(transport.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "POST",
+        path: `/v1.51/containers/${"a".repeat(64)}/wait?condition=not-running`,
+      }),
+    );
+  });
+
+  it("keeps a private Docker wait error out of the control-plane failure", async () => {
+    const transport: DockerUnixApiTransport = {
+      request: vi.fn(async () => ({
+        statusCode: 200,
+        body: JSON.stringify({
+          StatusCode: 125,
+          Error: { Message: "PRIVATE_DOCKER_WAIT_RESPONSE" },
+        }),
+      })),
+    };
+    const client = new DockerUnixApiClient({
+      socketPath: "/var/run/docker.sock",
+      apiVersion: "1.51",
+      transport,
+    }) as unknown as { waitContainer(reference: string): Promise<number> };
+
+    const error = await client.waitContainer("a".repeat(64)).catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("Docker wait reported a container error");
+    expect((error as Error).message).not.toContain("PRIVATE_DOCKER_WAIT_RESPONSE");
+    expect((error as Error).cause).toBeUndefined();
+  });
+
   it("writes through the upgraded Docker socket and rejects only a real write error", async () => {
     const root = await mkdtemp(join(tmpdir(), "flow-prime-docker-attach-"));
     const socketPath = join(root, "docker.sock");

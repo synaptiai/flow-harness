@@ -183,10 +183,15 @@ Runtime sandbox tests require the host capabilities listed in the README. A sand
 The container command profile has separate unit, integration, and real-engine evidence. Unit tests
 bind operator-only selection, exact Docker configuration, currentness, durable ownership, and
 lost-create reconciliation. They also bind later orphan scans, foreign-object refusal, cancellation,
-and two-attempt cleanup. Workspace tests bind bounded sensitive-entry discovery, Git read-only
-mapping, bounded content snapshots, pre-launch snapshot drift rejection, and the complete
-configuration digest used as public evidence. Integration tests bind the backend-neutral executor
-and offline inspection contracts.
+and two-attempt cleanup.
+
+Structured execution tests bind attach-before-start, multiplexed task output, fixed control stages,
+command-owned wait cancellation, and task exit status. They also bind same-process settlement after
+preparation and lease cleanup failures. Workspace tests bind bounded sensitive-entry discovery and
+Git read-only mapping. They also bind bounded content snapshots, pre-launch snapshot drift
+rejection, and the complete public configuration digest.
+
+Integration tests bind the backend-neutral executor and offline inspection contracts.
 
 The pinned Linux x64 release gate uses
 `test/runtime/container-command-sandbox.runtime.test.ts` and

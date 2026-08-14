@@ -269,13 +269,27 @@ A trusted operator can select `container` on Linux x64. The composition then use
 container per command under the fixed `flow-container-v1` policy. It projects the runtime, image,
 socket, executable, seccomp, and policy identity from the prepared Prime OCI attestation. It checks
 currentness before create and again immediately before launch. The application still supplies one
-backend-neutral preparation request and receives one immutable launch and release contract.
+backend-neutral preparation request and receives one immutable execution and release contract.
 
 The Docker adapter preserves the exact executable and ordered argument vector as the container
 entrypoint and command. It does not add a shell. It submits one read-write workspace bind and only
 explicit read-only runtime support binds. It uses a read-only root, private cgroup namespace, no task
 network, and no IPC. It adds no capability and sets no new privileges. It uses fixed seccomp,
 bounded temporary storage, and fixed resource limits.
+
+The prepared command exposes a provider-neutral managed execution operation. The Docker adapter
+attaches to standard output and standard error before it starts the verified full container ID. It
+then starts through API 1.51 and waits for the not-running state. The command deadline signal owns
+that long wait. The ordinary short Docker-query timer does not replace it.
+
+The adapter decodes each bounded non-TTY multiplex frame. It forwards only task bytes to the
+executor's cumulative bounded capture. Attach, start, wait, stream, and attachment-release faults
+map to closed stages. The legacy launch descriptor remains inert compatibility metadata while
+managed execution is present.
+
+An attach failure is before start and has no command side effects. Later control failures may occur
+after task execution begins. They retain bounded task evidence and report uncertain side effects.
+Confirmed container absence proves termination, but it does not reverse workspace mutation.
 
 The fixed process ceiling is the container cgroup `pids.max` value. The adapter does not submit an
 `nproc` rlimit. The command runs with the trusted host operator UID so that the workspace bind stays
@@ -322,6 +336,13 @@ Recovery rechecks current runtime authority and reconciles only an exact intent 
 removes the container, confirms absence, removes the private directory, and removes the durable
 record last.
 Foreign or unverifiable objects remain untouched and block progress.
+
+The engine also retains a same-process settlement closure for a failed preparation or returned
+lease. A later prepare settles every retained closure before descriptor resolution or Docker
+create. This matters because the durable store must skip an intent whose exact owner process is
+still alive. An ambiguous create remains an intent until a later authority check reconciles one
+verified full ID. A known full ID can retry stop, remove, absence proof, private-directory removal,
+and durable-record removal from its last proved phase.
 
 The container profile separates filesystem, mount, PID, IPC, cgroup, and network namespaces. It
 shares the Linux kernel and Docker daemon with the host. It is not a microVM, kernel-independent

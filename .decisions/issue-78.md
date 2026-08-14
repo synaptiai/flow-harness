@@ -71,9 +71,11 @@ the existing Flow configuration, sandbox-port, OCI, evidence, and recovery contr
   request keeps exact executable, arguments, working directory, protected paths, runtime support,
   environment, and cancellation. It gains no image, engine, mount, privilege, or credential knobs.
 
-- `PreparedCommand` keeps an immutable launch descriptor, generic sandbox evidence, containment
-  class, and idempotent release contract. A container implementation may satisfy it only if release
-  proves owned-container absence before resolving.
+- `PreparedCommand` keeps immutable generic evidence, a containment class, and an idempotent
+  release contract. It keeps the compatible launch descriptor and may add a provider-neutral
+  managed operation. Consumers use the managed form when it is present. Docker control output
+  cannot become task evidence. Release resolves only after it proves that the owned container is
+  absent.
 
 - `SandboxEvidence` remains the durable provider-neutral identity surface. Backend, exact backend
   version, profile, and policy digest are sufficient for replay.
@@ -152,6 +154,14 @@ Primary sources:
 
 - Anthropic Sandbox Runtime: <https://github.com/anthropic-experimental/sandbox-runtime>.
 
+- Docker Engine API 1.51: <https://docs.docker.com/reference/api/engine/version/v1.51/>.
+
+- Moby 28.3.3 attach client:
+  <https://github.com/moby/moby/blob/v28.3.3/client/container_attach.go>.
+
+- Moby 28.3.3 wait client:
+  <https://github.com/moby/moby/blob/v28.3.3/client/container_wait.go>.
+
 ## Decision
 
 Implement a fixed Linux container command profile behind Flow's existing `CommandSandbox` port.
@@ -194,6 +204,7 @@ workflow domain never imports a container implementation.
 | Workspace path, mount, or protected-path mismatch | Reject before the command process starts |
 | Container creation response is lost | Reconcile exact intent, fence one exact retry, and retain only a verified full ID for cleanup |
 | Container start or output attachment fails | Settle the exact full ID; never report command success |
+| Container wait, output decoding, or attachment release fails | Publish only the fixed control stage; keep Docker text out of task evidence and settle the exact full ID |
 | Timeout or cancellation | Preserve exact cancellation, terminate the command and container, and prove absence |
 | Cleanup partially fails | Retry only the bounded settlement policy; report uncertain side effects if absence is not proved |
 | Host restarts after intent publication | Recover from durable intent without trusting a name-only match |
@@ -215,7 +226,7 @@ workflow domain never imports a container implementation.
 
 ## Consequences
 
-- Issue #78 is stacked on #77 until the OCI primitives land on `main`.
+- Issue #77 has landed. Issue #78 must retarget its stack to that `main` revision before merge.
 
 - Linux runtime verification becomes mandatory for the new profile. Local macOS tests use injected
   boundaries and cannot substitute for the native containment gate.
@@ -242,6 +253,32 @@ other's active containers. It also prevents process ID reuse from impersonating 
 Concurrent prepares share only an active recovery scan. Each later prepare starts a fresh scan
 after that scan settles. A process that dies after an earlier prepare cannot leave an unobserved
 durable orphan.
+
+The live engine separately owns every failed local settlement. It registers that owner before the
+first cleanup attempt for both preparation failures and returned leases. A later prepare settles
+all such owners before it resolves another descriptor or creates a container. This closes the case
+where durable orphan recovery correctly skips the same still-live process. Settlement resumes from
+the last proved phase and removes no name-only object.
+
+## Structured container command execution
+
+The container profile does not run `docker start --attach` as a child process. It uses the pinned
+Docker API 1.51 sequence directly:
+
+1. Attach to standard output and standard error with stdin and logs disabled.
+2. Start the verified full container ID.
+3. Wait for `condition=not-running` under the command deadline signal.
+4. Decode the non-TTY multiplex frames into separate bounded task streams.
+5. Release the attachment and settle the full-ID container.
+
+The ordinary 10-second Docker query timer bounds setup and inspection calls. It does not bound the
+long-running wait. The command deadline remains the one total execution limit. Attach, start, wait,
+stream, and attachment-release errors use closed value-free stages. Only a validated wait status in
+the range 0 through 255 becomes the task exit code.
+
+Attach failure occurs before start and has no command side effects. Later control failure retains
+bounded task evidence and reports uncertain side effects. Confirmed absence proves termination. It
+does not reverse earlier workspace mutation.
 
 The store uses owner-only real directories and files. It synchronizes record content before atomic
 publication and synchronizes the containing directory after publication, replacement, claim, and
@@ -270,10 +307,10 @@ Alternatives were rejected as follows:
 | Network denial | Runtime/security | `npx vitest run --config vitest.runtime.config.ts test/runtime/container-command-sandbox.runtime.test.ts -t "network"` | Internet, host loopback, undeclared host Unix-socket, local TCP bind, and local Unix-socket bind attempts fail | Managed egress allowlists |
 | Durable complete identity | Domain/contract | `npx vitest run test/unit/infrastructure/runtime/production-container-command-sandbox.test.ts test/unit/infrastructure/oci/container-command-workspace-snapshot.test.ts test/unit/infrastructure/oci/container-command-intent.test.ts test/unit/infrastructure/oci/local-container-command-sandbox.test.ts test/unit/infrastructure/oci/local-docker-container-command-engine.test.ts test/unit/run/reducer.test.ts` | Frozen evidence binds the attested runtime identity, bounded workspace snapshot, and exact submitted command configuration, then round-trips through replay | Private engine values in evidence |
 | Adjacent drift rejection | Error/security | `npx vitest run test/unit/infrastructure/oci/local-docker-container-command-engine.test.ts test/unit/infrastructure/process/local-external-harness-runtime.test.ts -t "immediately before"` | Command and external-harness consumers invoke prepared sandbox authority before process start; the container hook rechecks workspace, runtime, and Docker policy | Automatic engine restart or retry |
-| Existing command outcome compatibility | Integration | `npx vitest run test/unit/infrastructure/process/command-node-executor.test.ts test/integration/process/command-node-executor.test.ts` | Success, nonzero exit, output bounds, timeout, cancellation, inspection, and replay shapes stay compatible | New workflow output semantics |
-| Timeout/cancellation settlement | Behavioral/runtime | `npx vitest run test/unit/infrastructure/oci/local-docker-container-command-engine.test.ts test/unit/infrastructure/process/command-node-executor.test.ts test/unit/run/agent-command-reducer.test.ts`<br>`npx vitest run --config vitest.runtime.config.ts test/runtime/container-command-sandbox.runtime.test.ts` | Exact cancellation wins; descendants terminate; confirmed absence permits clean settlement, while bounded unresolved preparation records uncertainty | Unbounded cleanup waits |
+| Existing command outcome compatibility | Integration | `npx vitest run test/unit/infrastructure/oci/docker-command-api.test.ts test/unit/infrastructure/process/command-node-executor.test.ts test/integration/process/command-node-executor.test.ts` | Success, nonzero exit, bounded task streams, fixed Docker control failures, timeout, cancellation, inspection, and replay shapes stay compatible | New workflow output semantics |
+| Timeout/cancellation settlement | Behavioral/runtime | `npx vitest run test/unit/infrastructure/oci/docker-command-api.test.ts test/unit/infrastructure/oci/local-docker-container-command-engine.test.ts test/unit/infrastructure/process/command-node-executor.test.ts test/unit/run/agent-command-reducer.test.ts`<br>`npx vitest run --config vitest.runtime.config.ts test/runtime/container-command-sandbox.runtime.test.ts` | Exact cancellation owns the Docker wait; descendants terminate; confirmed absence permits clean settlement, while bounded unresolved preparation records uncertainty | Unbounded cleanup waits |
 | Crash recovery and foreign-object safety | Recovery/runtime | `npx vitest run test/unit/infrastructure/oci/local-docker-container-command-engine.test.ts test/unit/infrastructure/oci/local-container-command-intent-store.test.ts`<br>`npx vitest run --config vitest.runtime.config.ts test/runtime/container-command-recovery.runtime.test.ts` | Later scans, lost responses, and restarts reconcile owned full IDs; foreign or unverifiable objects remain untouched | Name-only deletion |
-| Cleanup uncertainty | Error/recovery | `npx vitest run test/unit/infrastructure/oci/local-docker-container-command-engine.test.ts test/unit/infrastructure/process/command-node-executor.test.ts` | Primary and terminal cleanup errors remain ordered; success is impossible without confirmed absence | Infinite cleanup retries |
+| Cleanup uncertainty | Error/recovery | `npx vitest run test/unit/infrastructure/oci/local-docker-container-command-engine.test.ts test/unit/infrastructure/process/command-node-executor.test.ts` | Primary and terminal cleanup errors remain ordered; preparation and lease failures retain same-process settlement; success and later create are impossible without confirmed absence | Infinite cleanup retries |
 | Fixed resource controls | Runtime/security | `npx vitest run test/unit/infrastructure/oci/local-docker-container-command-engine.test.ts`<br>`npx vitest run --config vitest.runtime.config.ts test/runtime/container-command-sandbox.runtime.test.ts` | Submitted and inspected CPU, memory, cgroup process, filesystem, and output limits match exactly; no host-global `nproc` rlimit is present | GPU or operator-tunable limits |
 | Offline inspection | Integration | `npx vitest run test/integration/cli/evaluation-offline-loading.test.ts test/integration/cli/evaluation-offline-prime.test.ts` | Stored evaluation evidence inspects and exports without production OCI or external runtime packages | Live currentness proof while offline |
 | Public contract | Docs/scaffold | `npm run docs:ste && npx vitest run test/scaffold/community-files.test.ts` | README, security, architecture, workflow, testing, and roadmap prose match authority and nonclaims | VM-grade claim |
@@ -300,11 +337,11 @@ Alternatives were rejected as follows:
 
 ## Current verification evidence
 
-- The focused descriptor, Docker engine, and public-contract selector passes 53 tests. It proves
-  the command-only seccomp projection, exact Docker submission and inspection, nested source
-  isolation, and the documented local-binding contract.
+- The mapped repair selector passes seven files and 449 tests. It proves structured Docker
+  execution, fixed public stages, private-cause retention, task-output separation, exact
+  cancellation, and same-process cleanup ownership. Existing command outcomes remain compatible.
 
-- The complete portable suite passes 214 files and 2,848 tests. One platform-gated file and four
+- The complete portable suite passes 215 files and 2,893 tests. One platform-gated file and four
   tests skip. The same suite first failed only where the desktop sandbox denied temporary Unix
   sockets. The identical unrestricted run passed, which separates that host restriction from the
   product result.
@@ -312,10 +349,11 @@ Alternatives were rejected as follows:
 - The runtime configuration passes 8 files and 39 tests. Nine files and 33 tests skip on this
   Darwin host. The five container-command runtime tests are among the Linux-only skips.
 
-- Coverage passes with 82.27% statements, 76.08% branches, 88.82% functions, and 82.38% lines.
+- Coverage passes with 82.37% statements, 76.15% branches, 88.92% functions, and 82.49% lines.
 
-- Type checking, the production build, scoped Biome checks, changed-document STE checks, and
-  `git diff --check` pass.
+- Repository formatting, lint, type checking, the production build, changed-document STE, compiled
+  smoke, and `git diff --check` pass. The restricted desktop smoke attempt exhausted its deadline
+  inside nested sandbox preparation. The identical host-capable command passed.
 
 - The clean package verifier builds, packs, installs, and runs the CLI from
   `synaptiai-flow-harness-0.0.0.tgz`. The installed effective policy digest is
@@ -333,10 +371,12 @@ Alternatives were rejected as follows:
   cgroup `PidsLimit=64` and omits the host-global rlimit.
 
 - Hosted CI run [31698882778](https://github.com/synaptiai/flow-harness/actions/runs/31698882778)
-  passed the complete quality gate on pinned Linux x64. The runtime tests proved real command
+  passed the earlier acceptance baseline on pinned Linux x64. Its runtime tests proved real command
   success, denial, resource controls, timeout, cancellation, cleanup, recovery, and drift. The
-  production dependency audit also passed.
+  production dependency audit also passed. The current structured-execution repair requires a new
+  hosted run after push.
 
-Darwin cannot prove the real Linux x64 Docker criteria, so local runtime files remain skipped there.
-The hosted result supplies that evidence. It does not promise macOS or Windows container support,
-VM-grade isolation, or managed-runtime behavior.
+Darwin cannot prove the current Linux x64 Docker criteria, so local runtime files remain skipped
+there. The earlier hosted result is a baseline, not proof of the current repair. The new hosted run
+must supply that evidence. It does not promise macOS or Windows container support, VM-grade
+isolation, or managed-runtime behavior.

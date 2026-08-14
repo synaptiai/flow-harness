@@ -14,6 +14,7 @@ describe("LocalContainerCommandSandbox", () => {
   it("passes the exact executable, argument vector, and canonical working directory without a shell", async () => {
     const release = vi.fn(async () => undefined);
     const beforeLaunch = vi.fn(async () => undefined);
+    const run = vi.fn(async () => ({ exitCode: 0 }));
     const observeWorkspaceSnapshot = vi.fn(async () => "c".repeat(64));
     const prepare = vi.fn<LocalContainerCommandSandboxEngine["prepare"]>(async () => ({
       launch: {
@@ -26,6 +27,7 @@ describe("LocalContainerCommandSandbox", () => {
         policyDigest: "a".repeat(64),
       },
       beforeLaunch,
+      run,
       release,
     }));
     const sandbox = new LocalContainerCommandSandbox(
@@ -90,6 +92,14 @@ describe("LocalContainerCommandSandbox", () => {
       excludedPaths: ["/canonical/workspace/.env"],
       signal: undefined,
     });
+    await expect(
+      prepared.run?.({
+        signal: AbortSignal.timeout(1_000),
+        stdout: () => undefined,
+        stderr: () => undefined,
+      }),
+    ).resolves.toEqual({ exitCode: 0 });
+    expect(run).toHaveBeenCalledTimes(1);
     await prepared.release();
     await prepared.release();
     expect(release).toHaveBeenCalledTimes(1);
@@ -205,6 +215,142 @@ describe("LocalContainerCommandSandbox", () => {
         protectedPaths: [],
       }),
     ).rejects.toThrow("Container command sandbox preparation and cleanup failed");
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    {
+      privateCanary: "PRIVATE_WORKSPACE_PATH",
+      expectedStage: "inspect workspace paths",
+      request: {},
+      options: {
+        canonicalize: async () => {
+          throw new Error("ENOENT realpath '/srv/PRIVATE_WORKSPACE_PATH'");
+        },
+        discoverWorkspaceProtection: emptyWorkspaceProtection,
+      },
+    },
+    {
+      privateCanary: "PRIVATE_PROTECTION_PATH",
+      expectedStage: "inspect workspace protection",
+      request: {},
+      options: {
+        canonicalize: async (path: string) => path,
+        discoverWorkspaceProtection: async () => {
+          throw new Error("EACCES readdir '/srv/PRIVATE_PROTECTION_PATH'");
+        },
+      },
+    },
+    {
+      privateCanary: "PRIVATE_RUNTIME_PATH",
+      expectedStage: "inspect runtime support",
+      request: { runtimeSupportPaths: ["/srv/PRIVATE_RUNTIME_PATH"] },
+      options: {
+        canonicalize: async (path: string) => {
+          if (path.includes("PRIVATE_RUNTIME_PATH")) {
+            throw new Error("ENOENT realpath '/srv/PRIVATE_RUNTIME_PATH'");
+          }
+          return path;
+        },
+        discoverWorkspaceProtection: emptyWorkspaceProtection,
+      },
+    },
+  ])(
+    "keeps private host paths nested during $expectedStage",
+    async ({ privateCanary, expectedStage, request, options }) => {
+      const prepare = vi.fn<LocalContainerCommandSandboxEngine["prepare"]>();
+      const sandbox = new LocalContainerCommandSandbox(
+        { prepare },
+        {
+          platform: "linux",
+          ...options,
+          observeWorkspaceSnapshot: stableWorkspaceSnapshot,
+        },
+      );
+
+      const error = await sandbox
+        .prepare({
+          executable: "node",
+          args: [],
+          cwd: "/workspace",
+          protectedPaths: [],
+          ...request,
+        })
+        .catch((caught) => caught);
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe(
+        `Container command sandbox inspection failed during ${expectedStage}`,
+      );
+      expect((error as Error).message).not.toContain(privateCanary);
+      expect((error as Error).cause).toBeInstanceOf(Error);
+      expect(prepare).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps a private engine preparation cause nested", async () => {
+    const sandbox = new LocalContainerCommandSandbox(
+      {
+        prepare: async () => {
+          throw new Error("Docker socket /srv/PRIVATE_DOCKER_SOCKET is unavailable");
+        },
+      },
+      {
+        platform: "linux",
+        canonicalize: async (path) => path,
+        discoverWorkspaceProtection: emptyWorkspaceProtection,
+        observeWorkspaceSnapshot: stableWorkspaceSnapshot,
+      },
+    );
+
+    const error = await sandbox
+      .prepare({ executable: "node", args: [], cwd: "/workspace", protectedPaths: [] })
+      .catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(
+      "Container command sandbox inspection failed during prepare command container",
+    );
+    expect((error as Error).message).not.toContain("PRIVATE_DOCKER_SOCKET");
+    expect((error as Error).cause).toBeInstanceOf(Error);
+  });
+
+  it("keeps a private engine currentness cause nested before launch", async () => {
+    const release = vi.fn(async () => undefined);
+    const sandbox = new LocalContainerCommandSandbox(
+      {
+        prepare: async () => ({
+          launch: { executable: "/usr/bin/docker", args: [], env: {} },
+          identity: { backendVersion: "28.3.3", policyDigest: "c".repeat(64) },
+          beforeLaunch: async () => {
+            throw new Error("Docker path /srv/PRIVATE_RUNTIME_PATH changed");
+          },
+          release,
+        }),
+      },
+      {
+        platform: "linux",
+        canonicalize: async (path) => path,
+        discoverWorkspaceProtection: emptyWorkspaceProtection,
+        observeWorkspaceSnapshot: stableWorkspaceSnapshot,
+      },
+    );
+    const prepared = await sandbox.prepare({
+      executable: "node",
+      args: [],
+      cwd: "/workspace",
+      protectedPaths: [],
+    });
+
+    const error = await prepared.beforeLaunch?.().catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(
+      "Container command sandbox inspection failed during validate command container before launch",
+    );
+    expect((error as Error).message).not.toContain("PRIVATE_RUNTIME_PATH");
+    expect((error as Error).cause).toBeInstanceOf(Error);
+    await prepared.release();
     expect(release).toHaveBeenCalledTimes(1);
   });
 

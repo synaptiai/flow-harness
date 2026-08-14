@@ -4,6 +4,8 @@ import { isAbsolute, join, relative, sep } from "node:path";
 import type {
   CommandSandbox,
   CommandSandboxRequest,
+  ManagedCommandExecutionInput,
+  ManagedCommandExecutionResult,
   PreparedCommand,
   SandboxLaunch,
 } from "../../application/command-sandbox.js";
@@ -58,6 +60,7 @@ export interface LocalContainerCommandEngineLease {
     readonly policyDigest: string;
   };
   beforeLaunch?(): Promise<void>;
+  run?(input: ManagedCommandExecutionInput): Promise<ManagedCommandExecutionResult>;
   release(): Promise<void>;
 }
 
@@ -75,6 +78,24 @@ export interface LocalContainerCommandSandboxOptions {
   readonly observeWorkspaceSnapshot?: (
     request: ContainerCommandWorkspaceSnapshotRequest,
   ) => Promise<string>;
+}
+
+type ContainerCommandInspectionStage =
+  | "inspect workspace paths"
+  | "inspect workspace protection"
+  | "inspect runtime support"
+  | "prepare command container"
+  | "validate command container before launch";
+
+class ContainerCommandInspectionError extends Error {
+  override readonly name = "ContainerCommandInspectionError";
+
+  constructor(
+    readonly stage: ContainerCommandInspectionStage,
+    cause: unknown,
+  ) {
+    super(`Container command sandbox inspection failed during ${stage}`, { cause });
+  }
 }
 
 export class LocalContainerCommandSandbox implements CommandSandbox {
@@ -107,48 +128,68 @@ export class LocalContainerCommandSandbox implements CommandSandbox {
     validateCommand(request.executable, request.args);
     throwIfAborted(request.signal);
 
-    const cwd = await this.#canonicalize(request.cwd);
-    throwIfAborted(request.signal);
-    const projectRoot =
-      request.projectRoot === undefined ? undefined : await this.#canonicalize(request.projectRoot);
-    throwIfAborted(request.signal);
+    const { cwd, projectRoot } = await withContainerCommandInspectionStage(
+      "inspect workspace paths",
+      async () => ({
+        cwd: await this.#canonicalize(request.cwd),
+        projectRoot:
+          request.projectRoot === undefined
+            ? undefined
+            : await this.#canonicalize(request.projectRoot),
+      }),
+      request.signal,
+    );
     if (projectRoot !== undefined && projectRoot !== cwd && isAtOrWithin(projectRoot, cwd)) {
       throw new Error(
         "container command workspace must not contain the configured Flow project root",
       );
     }
-    const workspaceProtection = await this.#discoverWorkspaceProtection(
-      cwd,
-      request.signal === undefined ? {} : { signal: request.signal },
-    );
-    throwIfAborted(request.signal);
-    const protectedPaths = Object.freeze([
-      ...new Set(
-        await Promise.all(
-          [
-            ...request.protectedPaths,
-            ...(request.projectRoot === undefined ? [] : [join(request.projectRoot, ".flow")]),
-            ...workspaceProtection.maskedPaths,
-          ].map((path) => this.#canonicalize(path)),
+    const workspaceProtection = await withContainerCommandInspectionStage(
+      "inspect workspace protection",
+      () =>
+        this.#discoverWorkspaceProtection(
+          cwd,
+          request.signal === undefined ? {} : { signal: request.signal },
         ),
-      ),
-    ]);
-    throwIfAborted(request.signal);
-    const readOnlyPaths = Object.freeze(
-      await Promise.all(workspaceProtection.readOnlyPaths.map((path) => this.#canonicalize(path))),
+      request.signal,
     );
-    throwIfAborted(request.signal);
-    const runtimeSupportPaths = Object.freeze(
-      await Promise.all(
-        (request.runtimeSupportPaths ?? []).map((path) => this.#canonicalize(path)),
-      ),
+    const { protectedPaths, readOnlyPaths } = await withContainerCommandInspectionStage(
+      "inspect workspace protection",
+      async () => ({
+        protectedPaths: Object.freeze([
+          ...new Set(
+            await Promise.all(
+              [
+                ...request.protectedPaths,
+                ...(request.projectRoot === undefined ? [] : [join(request.projectRoot, ".flow")]),
+                ...workspaceProtection.maskedPaths,
+              ].map((path) => this.#canonicalize(path)),
+            ),
+          ),
+        ]),
+        readOnlyPaths: Object.freeze(
+          await Promise.all(
+            workspaceProtection.readOnlyPaths.map((path) => this.#canonicalize(path)),
+          ),
+        ),
+      }),
+      request.signal,
     );
-    throwIfAborted(request.signal);
-    const runtimeEnvironment = await canonicalizeRuntimeEnvironment(
-      request.runtimeEnvironment,
-      this.#canonicalize,
+    const { runtimeEnvironment, runtimeSupportPaths } = await withContainerCommandInspectionStage(
+      "inspect runtime support",
+      async () => ({
+        runtimeSupportPaths: Object.freeze(
+          await Promise.all(
+            (request.runtimeSupportPaths ?? []).map((path) => this.#canonicalize(path)),
+          ),
+        ),
+        runtimeEnvironment: await canonicalizeRuntimeEnvironment(
+          request.runtimeEnvironment,
+          this.#canonicalize,
+        ),
+      }),
+      request.signal,
     );
-    throwIfAborted(request.signal);
     const snapshotRequest = Object.freeze({
       workspace: cwd,
       excludedPaths: Object.freeze(
@@ -175,13 +216,20 @@ export class LocalContainerCommandSandbox implements CommandSandbox {
       ...(runtimeEnvironment === undefined ? {} : { runtimeEnvironment }),
       ...(request.signal === undefined ? {} : { signal: request.signal }),
     });
-    const lease = await this.engine.prepare(input);
+    const lease = await withContainerCommandInspectionStage(
+      "prepare command container",
+      () => this.engine.prepare(input),
+      request.signal,
+      true,
+    );
 
     try {
       throwIfAborted(request.signal);
       const launch = validateLaunch(lease.launch);
       const evidence = validateIdentity(lease.identity);
       const release = retryableRelease(lease.release.bind(lease));
+      const run = lease.run?.bind(lease);
+      const engineBeforeLaunch = lease.beforeLaunch?.bind(lease);
       const beforeLaunch = async () => {
         const currentSnapshotDigest = await observeWorkspaceSnapshotClosed(
           this.#observeWorkspaceSnapshot,
@@ -191,13 +239,20 @@ export class LocalContainerCommandSandbox implements CommandSandbox {
         if (currentSnapshotDigest !== workspaceSnapshotDigest) {
           throw new Error("container command workspace changed before launch");
         }
-        await lease.beforeLaunch?.();
+        if (engineBeforeLaunch !== undefined) {
+          await withContainerCommandInspectionStage(
+            "validate command container before launch",
+            engineBeforeLaunch,
+            request.signal,
+          );
+        }
       };
       return Object.freeze({
         processContainment: "linux-pid-namespace" as const,
         launch,
         evidence,
         beforeLaunch,
+        ...(run === undefined ? {} : { run }),
         release,
       });
     } catch (error) {
@@ -213,6 +268,27 @@ export class LocalContainerCommandSandbox implements CommandSandbox {
         "Container command sandbox preparation and cleanup failed",
       );
     }
+  }
+}
+
+async function withContainerCommandInspectionStage<T>(
+  stage: ContainerCommandInspectionStage,
+  operation: () => Promise<T>,
+  signal: AbortSignal | undefined,
+  preserveAggregate = false,
+): Promise<T> {
+  try {
+    const value = await operation();
+    throwIfAborted(signal);
+    return value;
+  } catch (error) {
+    if (signal?.aborted === true) {
+      throwIfAborted(signal);
+    }
+    if (preserveAggregate && error instanceof AggregateError) {
+      throw error;
+    }
+    throw new ContainerCommandInspectionError(stage, error);
   }
 }
 
