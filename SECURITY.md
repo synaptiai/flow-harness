@@ -214,8 +214,33 @@ Immediately before process start, Flow compares the prepared SRT evidence with t
 runtime identity. The check covers containment, backend, version, profile, and policy digest. A
 difference stops the trial before process start.
 
+The Prime Agent evaluation profile uses a separate Docker OCI boundary on Linux x64. An explicit
+preparation command builds the fixed image twice and records one protected local attestation.
+
+The container has no external network route, host bind mount, Docker log, health check, or provider
+credential. The host broker owns every model request. Private loopback supports only the IPython
+kernel inside the container network namespace.
+
+Flow applies exact CPU, memory, swap, PID, I/O, file, descriptor, byte, and inode limits. One
+daemon-global slot prevents concurrent Prime containers. Host admission keeps capacity for Flow,
+the broker, and cleanup.
+
+Node and Python use different user identities. The fixed seccomp policy blocks cross-process memory
+access. The trusted Node driver signs protocol frames. The supervisor verifies and relays them.
+
+The supervisor also owns workspace transfer. It removes all Python processes before result export.
+
+Each Prime attempt stores one durable OCI lease. Recovery accepts only the exact nonce, name, image,
+policy, daemon endpoint, and full container ID. Uncertain removal blocks later Prime execution.
+
+Public evaluation evidence omits the Docker socket, daemon ID, device identity, container name, and
+lease path. Offline inspect and export do not load Docker, Prime Agent, or Python.
+
 SRT is not a microVM. It cannot protect against a kernel defect, an SRT defect, root, or a process
 with the same trusted account authority. Use a stronger runtime for hostile or multi-tenant tasks.
+
+Docker isolation is not a virtual machine. The Prime boundary does not protect against a host
+kernel defect, Docker daemon compromise, root, or the trusted host operator.
 
 Private verifier transport does not prevent author-side holdout contamination. Expected answers,
 hashes, hidden checks, evaluator logic, or prior result-bearing history placed in a fixture,

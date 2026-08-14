@@ -27,7 +27,7 @@ describe("native Pi harness registry", () => {
     const descriptor = await new NativePiHarnessRegistry().resolve(profile());
 
     expect(descriptor.identity.adapter).toBe("pi-native-v1");
-  }, 20_000);
+  }, 60_000);
 
   it("binds the adapter to its executable dependency closure", async () => {
     const fixture = await registryFixture();

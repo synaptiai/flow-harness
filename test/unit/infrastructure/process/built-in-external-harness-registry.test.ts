@@ -1,12 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { ExternalHarnessIdentity } from "../../../../src/domain/evaluation/external-harness.js";
+import type { NativePrimeHarnessDescriptor } from "../../../../src/infrastructure/prime/native-prime-harness-registry.js";
 import { BuiltInExternalHarnessRegistry } from "../../../../src/infrastructure/process/built-in-external-harness-registry.js";
+import { primeExternalHarnessIdentity } from "../../../fixtures/evaluation/prime-external-harness-identity.js";
 
 describe("built-in external harness registry", () => {
-  it("routes fixed Pi and OMP profiles without constructing the other registry", async () => {
+  it("routes fixed Pi, OMP, and Prime profiles without eager construction", async () => {
     const piIdentity = piIdentityFixture();
     const ompIdentity = ompIdentityFixture();
+    const primeIdentity = primeExternalHarnessIdentity();
     const pi = {
       resolveIdentity: vi.fn(async () => piIdentity),
       resolveAdmitted: vi.fn(),
@@ -16,7 +19,18 @@ describe("built-in external harness registry", () => {
       resolveAdmitted: vi.fn(),
     };
     const createOmp = vi.fn(() => omp);
-    const registry = new BuiltInExternalHarnessRegistry({ pi, createOmp });
+    const primeDescriptor = { identity: primeIdentity } as NativePrimeHarnessDescriptor;
+    const prime = {
+      resolveIdentity: vi.fn(async () => primeIdentity),
+      resolveAdmitted: vi.fn(async () => primeDescriptor),
+    };
+    const createPrime = vi.fn(() => prime);
+    const registry = new BuiltInExternalHarnessRegistry({
+      cwd: "/project/plans",
+      pi,
+      createOmp,
+      createPrime,
+    });
 
     await expect(
       registry.resolveIdentity({
@@ -35,6 +49,18 @@ describe("built-in external harness registry", () => {
       }),
     ).resolves.toBe(ompIdentity);
     expect(createOmp).toHaveBeenCalledOnce();
+    expect(createPrime).not.toHaveBeenCalled();
+
+    await expect(
+      registry.resolveIdentity({
+        id: "prime",
+        adapter: "prime-agent-native-v1",
+        harness: { config: "prime-agent-rlm-evaluation-v1" },
+      }),
+    ).resolves.toBe(primeIdentity);
+    await expect(registry.resolvePrimeAdmitted(primeIdentity)).resolves.toBe(primeDescriptor);
+    expect(createPrime).toHaveBeenCalledOnce();
+    expect(createPrime).toHaveBeenCalledWith("/project/plans");
   });
 });
 

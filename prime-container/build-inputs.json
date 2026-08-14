@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "platform": "linux/amd64",
+  "sourceDateEpoch": 1786127940,
+  "buildkit": {
+    "image": "moby/buildkit:buildx-stable-1@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec"
+  },
+  "baseImages": {
+    "golang": "golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651",
+    "node": "node:22.19.0-bookworm-slim@sha256:4a4884e8a44826194dff92ba316264f392056cbe243dcc9fd3551e71cea02b90",
+    "python": "python:3.11.15-slim-bookworm@sha256:b18992999dbe963a45a8a4da40ac2b1975be1a776d939d098c647482bcad5cba"
+  },
+  "primeAgent": {
+    "version": "0.7.1",
+    "url": "https://github.com/PrimeIntellect-ai/prime-agent/releases/download/v0.7.1/prime-agent-0.7.1.tgz",
+    "sha256": "d68612c83239caafab72cc76c55ac572bfd07a059ea8fbd2a3ddbe1f2b55dcdb",
+    "integrity": "sha512-BOT+mqCYeDpKYabk3HVP5T7HomlBUWiQOXZGnX/DYZwT4xvdQSeF7itt/tCU8nv82/30N7VJw5YdXssEyD3qGQ=="
+  },
+  "locks": {
+    "nodeSha256": "6ec3f6f94913271f44878408ccaddfb6b13755800acf051c06f9a40545115faa",
+    "pythonSha256": "b681f2b4beb29bdef7ce4a0b7fef2cf6f24a0ab5e9974614d46bb72ea8ae9376"
+  },
+  "seccomp": {
+    "base": "moby/profiles seccomp/v0.2.1",
+    "sha256": "43e8c38cccc936a736c7619eac8b7e0718880f7c29d7a4f6d2d57e4feeb273c3"
+  }
+}

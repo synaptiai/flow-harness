@@ -131,6 +131,28 @@ describe("evaluation plan", () => {
         ),
       ),
     ).toThrow(/executable|unrecognized|schema/i);
+
+    const prime = validPlan().replace(
+      "  - id: candidate\n    adapter: flow-workflow-v1\n    workflow: candidate.workflow.yaml",
+      "  - id: candidate\n    adapter: prime-agent-native-v1\n    harness:\n      config: prime-agent-rlm-evaluation-v1",
+    );
+
+    expect(parseEvaluationPlanText(prime).profiles[1]).toEqual({
+      id: "candidate",
+      adapter: "prime-agent-native-v1",
+      harness: { config: "prime-agent-rlm-evaluation-v1" },
+    });
+    expect(() =>
+      parseEvaluationPlanText(prime.replace("prime-agent-rlm-evaluation-v1", "operator-command")),
+    ).toThrow(/config|schema/i);
+    expect(() =>
+      parseEvaluationPlanText(
+        prime.replace(
+          "      config: prime-agent-rlm-evaluation-v1",
+          "      config: prime-agent-rlm-evaluation-v1\n      dockerSocket: /var/run/docker.sock",
+        ),
+      ),
+    ).toThrow(/dockerSocket|unrecognized|schema/i);
   });
 
   it("rejects a comparison minimum that exceeds the holdout pair schedule", () => {

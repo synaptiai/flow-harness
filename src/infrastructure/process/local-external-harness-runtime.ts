@@ -6,32 +6,35 @@ import { isAbsolute, join, relative, sep } from "node:path";
 import { TextDecoder } from "node:util";
 
 import type { CommandSandbox, PreparedCommand } from "../../application/command-sandbox.js";
+import type { HarnessEvaluationResult } from "../../application/evaluation-adapter.js";
 import type {
   ExternalHarnessRuntime,
   ExternalHarnessRuntimeRequest,
 } from "../../application/external-harness-adapter.js";
-import type { HarnessEvaluationResult } from "../../application/evaluation-adapter.js";
 import {
   ExternalHarnessProtocolSession,
   MAX_EXTERNAL_HARNESS_FRAME_BYTES,
   signExternalHarnessParentFrame,
 } from "../../domain/evaluation/external-harness-protocol.js";
+import { MAX_EVALUATION_INSTRUCTION_BYTES } from "../../domain/evaluation/plan.js";
 import {
   parseEvaluationHarnessOutcome,
   unavailableEvaluationMetrics,
 } from "../../domain/evaluation/records.js";
-import { MAX_EVALUATION_INSTRUCTION_BYTES } from "../../domain/evaluation/plan.js";
-import type { ExternalHarnessDescriptor } from "./external-harness-descriptor.js";
 import { type ProcessTreeExitResult, waitForProcessTreeExit } from "./command-node-executor.js";
+import type { ExternalHarnessDescriptor } from "./external-harness-descriptor.js";
 
 const MAX_EXTERNAL_HARNESS_EVENTS = 256;
 const MAX_RETAINED_EXTERNAL_HARNESS_STDERR_BYTES = 16_384;
 export const MAX_EXTERNAL_HARNESS_STDERR_BYTES = 64 * 1_024;
 
+type ProcessExternalHarnessIdentity = Exclude<
+  ExternalHarnessRuntimeRequest["identity"],
+  { readonly adapter: "prime-agent-native-v1" }
+>;
+
 export interface ExternalHarnessDescriptorRegistry {
-  resolveAdmitted(
-    identity: ExternalHarnessRuntimeRequest["identity"],
-  ): Promise<ExternalHarnessDescriptor>;
+  resolveAdmitted(identity: ProcessExternalHarnessIdentity): Promise<ExternalHarnessDescriptor>;
 }
 
 export interface ExternalHarnessInferenceRequest {
@@ -99,6 +102,10 @@ export class LocalExternalHarnessRuntime implements ExternalHarnessRuntime {
     request: ExternalHarnessRuntimeRequest,
     signal?: AbortSignal,
   ): Promise<HarnessEvaluationResult> {
+    const identity = request.identity;
+    if (identity.adapter === "prime-agent-native-v1") {
+      throw new Error("Prime Agent requires the OCI external harness runtime");
+    }
     if (this.#platform !== "linux") {
       throw new Error(`external harness runtime is not supported on ${this.#platform}`);
     }
@@ -108,7 +115,7 @@ export class LocalExternalHarnessRuntime implements ExternalHarnessRuntime {
         const operationSignal =
           signal === undefined ? deadline.signal : AbortSignal.any([signal, deadline.signal]);
         const descriptor = await waitForAbortable(
-          this.#registry.resolveAdmitted(request.identity),
+          this.#registry.resolveAdmitted(identity),
           operationSignal,
         );
         const instructionPath = resolveInstructionPath(
@@ -142,7 +149,7 @@ export class LocalExternalHarnessRuntime implements ExternalHarnessRuntime {
           }
           throw error;
         }
-        const runtimeContractError = preparedRuntimeContractError(request.identity, prepared);
+        const runtimeContractError = preparedRuntimeContractError(identity, prepared);
         if (runtimeContractError !== undefined) {
           let releaseError: unknown;
           try {
@@ -158,6 +165,7 @@ export class LocalExternalHarnessRuntime implements ExternalHarnessRuntime {
         try {
           result = await this.#runPrepared(
             request,
+            identity,
             descriptor,
             instructionText,
             prepared,
@@ -223,6 +231,7 @@ export class LocalExternalHarnessRuntime implements ExternalHarnessRuntime {
 
   async #runPrepared(
     request: ExternalHarnessRuntimeRequest,
+    identity: ProcessExternalHarnessIdentity,
     descriptor: ExternalHarnessDescriptor,
     instructionText: string,
     prepared: PreparedCommand,
@@ -342,7 +351,7 @@ export class LocalExternalHarnessRuntime implements ExternalHarnessRuntime {
           const body = await waitForAbortable(
             this.#inferenceBroker.infer(
               {
-                identity: request.identity,
+                identity,
                 evaluation: request.evaluation,
                 requestId: event.requestId,
                 body: event.body,
@@ -381,7 +390,7 @@ export class LocalExternalHarnessRuntime implements ExternalHarnessRuntime {
     }
     protocolError ??= stderrError;
     const exit = await exitPromise;
-    const runtime = processEvidence(request.identity.adapter, prepared, exit, deadline.expired);
+    const runtime = processEvidence(identity.adapter, prepared, exit, deadline.expired);
     if (exit.terminationIncomplete) {
       return failureResult(
         "crashed",
@@ -437,7 +446,7 @@ export class LocalExternalHarnessRuntime implements ExternalHarnessRuntime {
 }
 
 function preparedRuntimeContractError(
-  identity: ExternalHarnessRuntimeRequest["identity"],
+  identity: ProcessExternalHarnessIdentity,
   prepared: PreparedCommand,
 ): Error | undefined {
   const mismatches: string[] = [];
@@ -464,7 +473,7 @@ function preparedRuntimeContractError(
 }
 
 function processEvidence(
-  adapter: ExternalHarnessRuntimeRequest["identity"]["adapter"],
+  adapter: ProcessExternalHarnessIdentity["adapter"],
   prepared: PreparedCommand,
   exit: ProcessTreeExitResult,
   deadlineExpired: boolean,

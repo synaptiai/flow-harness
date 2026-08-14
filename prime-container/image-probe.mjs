@@ -1,0 +1,350 @@
+import { createHash } from "node:crypto";
+import { constants } from "node:fs";
+import { lstat, open, readdir, readFile, readlink, realpath } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const MAX_ENTRIES = 131_072;
+const MAX_LOGICAL_BYTES = 2_147_483_648;
+const MAX_FILE_BYTES = 536_870_912;
+const MAX_METADATA_BYTES = 1_048_576;
+const DRIVER_PATH =
+  "/opt/flow/node/flow-dist/infrastructure/prime/native-prime-agent-evaluation-driver.js";
+const PRIME_ZIP_REPLACEMENT = Object.freeze({
+  manifestSha256: "fcea0f861bdcf985c54d761ce2fecae95264594759e6bbb6db4db06ce710550c",
+  moduleSha256: "59bd70167887c9cba2a29fe65f726b48c44d4429a12e8a9242218ca9f54eabf8",
+});
+
+const DEFAULT_NATIVE_PRIME_SDK_LOADERS = Object.freeze({
+  loadSdk: async () => {
+    const driver = await import(pathToFileURL(DRIVER_PATH).href);
+    if (typeof driver.loadNativePrimeSdk !== "function") {
+      throw new Error("Prime image SDK loader is unavailable");
+    }
+    return driver.loadNativePrimeSdk();
+  },
+});
+
+export async function verifyNativePrimeSdkBindings(loaders = DEFAULT_NATIVE_PRIME_SDK_LOADERS) {
+  const sdk = await loaders.loadSdk();
+  const bindings = [
+    "AuthStorage",
+    "ModelRegistry",
+    "SettingsManager",
+    "SessionManager",
+    "IpythonKernelProvisioner",
+    "createExtensionRuntime",
+    "createIpythonToolDefinition",
+    "createAgentSession",
+    "createAssistantMessageEventStream",
+  ];
+  if (
+    sdk === null ||
+    typeof sdk !== "object" ||
+    bindings.some((name) => typeof sdk[name] !== "function")
+  ) {
+    throw new Error("Prime image SDK bindings are incomplete");
+  }
+}
+
+export async function verifyPrimeNodeDependencyPolicy(input) {
+  const nodeRoot = resolve(input.nodeRoot);
+  const primeRoot = resolve(input.primeRoot);
+  if (
+    (await realpath(nodeRoot)) !== nodeRoot ||
+    (await realpath(primeRoot)) !== primeRoot ||
+    primeRoot !== join(nodeRoot, "prime-agent")
+  ) {
+    throw new Error("Prime Node dependency roots contradict the admitted closure");
+  }
+  const replacementRoot = join(nodeRoot, "extract-zip");
+  const replacementMetadata = await lstat(replacementRoot);
+  if (
+    replacementMetadata.isSymbolicLink() ||
+    !replacementMetadata.isDirectory() ||
+    (await realpath(replacementRoot)) !== replacementRoot
+  ) {
+    throw new Error("Prime ZIP replacement contradicts the admitted closure");
+  }
+  const [manifestSha256, moduleSha256] = await Promise.all([
+    hashRegularFile(join(replacementRoot, "package.json")),
+    hashRegularFile(join(replacementRoot, "index.cjs")),
+  ]);
+  if (
+    manifestSha256 !== PRIME_ZIP_REPLACEMENT.manifestSha256 ||
+    moduleSha256 !== PRIME_ZIP_REPLACEMENT.moduleSha256
+  ) {
+    throw new Error("Prime ZIP replacement contradicts the admitted closure");
+  }
+  await assertPathAbsent(
+    join(primeRoot, "dist", "bundle"),
+    "Prime command-line bundle remains in the runtime closure",
+  );
+  await assertPathAbsent(
+    join(nodeRoot, ".bin", "prime-agent"),
+    "Prime command-line shim remains in the runtime closure",
+  );
+}
+
+export async function createRuntimeInventory(input) {
+  const node = await scanTree(input.nodeRoot);
+  const prime = await scanTree(input.primeRoot);
+  const python = await scanTree(input.pythonRoot);
+  const flowDist = await scanTree(input.flowDistRoot);
+  const artifacts = Object.freeze({
+    driverSha256: await hashRegularFile(input.artifacts.driver),
+    flowDistSha256: flowDist.sha256,
+    kernelProxySha256: await hashRegularFile(input.artifacts.kernelProxy),
+    noIoResourceLoaderSha256: await hashRegularFile(input.artifacts.noIoResourceLoader),
+    pythonLauncherSha256: await hashRegularFile(input.artifacts.pythonLauncher),
+    supervisorSha256: await hashRegularFile(input.artifacts.supervisor),
+  });
+  const sbom = Object.freeze({
+    node: await nodePackageInventory(input.nodeRoot, node.files),
+    python: await pythonPackageInventory(input.pythonRoot, python.files),
+  });
+  return Object.freeze({
+    nodeVersion: process.versions.node,
+    pythonVersion: await readPythonVersion(input.pythonRoot),
+    nodeClosureSha256: node.sha256,
+    primePackageContentSha256: prime.sha256,
+    pythonClosureSha256: python.sha256,
+    artifacts,
+    sbom,
+    sbomSha256: sha256(canonicalize(sbom)),
+  });
+}
+
+async function hashRegularFile(path) {
+  const metadata = await lstat(path, { bigint: true });
+  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > BigInt(MAX_FILE_BYTES)) {
+    throw new Error("Prime image artifact is not one bounded regular file");
+  }
+  return sha256(await readStableFile(path, metadata));
+}
+
+async function scanTree(inputRoot) {
+  const requestedRoot = resolve(inputRoot);
+  const root = await realpath(requestedRoot);
+  if (root !== requestedRoot || !(await lstat(root)).isDirectory()) {
+    throw new Error("Prime image probe root is not one canonical directory");
+  }
+  const entries = [];
+  const files = [];
+  let logicalBytes = 0;
+  async function walk(directory, relativeDirectory) {
+    const children = await readdir(directory, { withFileTypes: true });
+    children.sort((left, right) => left.name.localeCompare(right.name, "en"));
+    for (const child of children) {
+      const path = join(directory, child.name);
+      const relativePath =
+        relativeDirectory === "" ? child.name : `${relativeDirectory}/${child.name}`;
+      validateRelativePath(relativePath);
+      const metadata = await lstat(path, { bigint: true });
+      if (metadata.isDirectory()) {
+        entries.push(`d\0${relativePath}\0${Number(metadata.mode & 0o777n).toString(8)}\n`);
+        await walk(path, relativePath);
+      } else if (metadata.isFile()) {
+        if (metadata.size > BigInt(MAX_FILE_BYTES)) {
+          throw new Error("Prime image probe file exceeds its byte limit");
+        }
+        const bytes = await readStableFile(path, metadata);
+        logicalBytes += bytes.byteLength;
+        if (logicalBytes > MAX_LOGICAL_BYTES) {
+          throw new Error("Prime image probe closure exceeds its logical-byte limit");
+        }
+        entries.push(
+          `f\0${relativePath}\0${Number(metadata.mode & 0o777n).toString(8)}\0${bytes.byteLength}\0${sha256(bytes)}\n`,
+        );
+        files.push(Object.freeze({ path, relativePath, bytes: bytes.byteLength }));
+      } else if (metadata.isSymbolicLink()) {
+        const target = await readlink(path, "utf8");
+        const resolvedTarget = isAbsolute(target)
+          ? resolve(target)
+          : resolve(dirname(path), target);
+        const fromRoot = relative(root, resolvedTarget);
+        if (
+          fromRoot === ".." ||
+          fromRoot.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)
+        ) {
+          throw new Error("Prime image probe symbolic link escapes its closure");
+        }
+        entries.push(`l\0${relativePath}\0${target}\n`);
+      } else {
+        throw new Error("Prime image probe closure contains a special file");
+      }
+      if (entries.length > MAX_ENTRIES) {
+        throw new Error("Prime image probe closure exceeds its entry limit");
+      }
+    }
+  }
+  await walk(root, "");
+  return Object.freeze({ sha256: sha256(entries.join("")), files: Object.freeze(files) });
+}
+
+async function readStableFile(path, before) {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const bytes = await handle.readFile();
+    const after = await handle.stat({ bigint: true });
+    if (
+      before.dev !== after.dev ||
+      before.ino !== after.ino ||
+      before.size !== after.size ||
+      before.ctimeNs !== after.ctimeNs ||
+      before.mtimeNs !== after.mtimeNs
+    ) {
+      throw new Error("Prime image probe file changed while read");
+    }
+    return bytes;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function nodePackageInventory(root, files) {
+  const packages = [];
+  for (const file of files) {
+    if (basename(file.path) !== "package.json") {
+      continue;
+    }
+    const manifest = parseBoundedJson(await readFile(file.path), "Node package manifest");
+    if (typeof manifest.name === "string" && typeof manifest.version === "string") {
+      packages.push({
+        name: boundedIdentity(manifest.name),
+        version: boundedIdentity(manifest.version),
+      });
+    }
+  }
+  return uniquePackages(packages, root);
+}
+
+async function pythonPackageInventory(root, files) {
+  const packages = [];
+  for (const file of files) {
+    if (basename(file.path) !== "METADATA" || !dirname(file.path).endsWith(".dist-info")) {
+      continue;
+    }
+    if (file.bytes > MAX_METADATA_BYTES) {
+      throw new Error("Python package metadata exceeds its byte limit");
+    }
+    const metadata = new TextDecoder("utf-8", { fatal: true }).decode(await readFile(file.path));
+    const name = /^Name:\s*([^\r\n]+)$/im.exec(metadata)?.[1];
+    const version = /^Version:\s*([^\r\n]+)$/im.exec(metadata)?.[1];
+    if (name === undefined || version === undefined) {
+      throw new Error("Python package metadata omits its name or version");
+    }
+    packages.push({ name: boundedIdentity(name.trim()), version: boundedIdentity(version.trim()) });
+  }
+  return uniquePackages(packages, root);
+}
+
+async function readPythonVersion(root) {
+  const configuration = await readFile(join(root, "venv", "pyvenv.cfg"), "utf8");
+  const version = /^version\s*=\s*([^\r\n]+)$/im.exec(configuration)?.[1]?.trim();
+  if (version === undefined || !/^3\.11\.\d+$/.test(version)) {
+    throw new Error("Prime Python environment has an invalid version");
+  }
+  return version;
+}
+
+function uniquePackages(packages, label) {
+  const unique = new Map();
+  for (const item of packages) {
+    unique.set(`${item.name}\0${item.version}`, Object.freeze(item));
+  }
+  const values = [...unique.values()].sort((left, right) =>
+    `${left.name}\0${left.version}`.localeCompare(`${right.name}\0${right.version}`, "en"),
+  );
+  if (values.length > 8_192) {
+    throw new Error(`${label} package inventory exceeds its count limit`);
+  }
+  return Object.freeze(values);
+}
+
+function parseBoundedJson(bytes, label) {
+  if (bytes.byteLength > MAX_METADATA_BYTES) {
+    throw new Error(`${label} exceeds its byte limit`);
+  }
+  const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  if (value === null || Array.isArray(value) || typeof value !== "object") {
+    throw new Error(`${label} is not an object`);
+  }
+  return value;
+}
+
+function boundedIdentity(value) {
+  const hasControlCharacter = Array.from(value).some((character) => {
+    const codePoint = character.codePointAt(0);
+    return codePoint !== undefined && (codePoint < 32 || codePoint === 127);
+  });
+  if (value.length < 1 || value.length > 256 || hasControlCharacter) {
+    throw new Error("Prime image package identity is outside its bounds");
+  }
+  return value;
+}
+
+function validateRelativePath(path) {
+  const bytes = Buffer.byteLength(path, "utf8");
+  if (
+    bytes < 1 ||
+    bytes > 4_095 ||
+    path.split("/").some((part) => Buffer.byteLength(part, "utf8") > 255)
+  ) {
+    throw new Error("Prime image probe path exceeds its Linux bounds");
+  }
+}
+
+function canonicalize(value) {
+  if (value === null || typeof value === "boolean" || typeof value === "number") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "string") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalize).join(",")}]`;
+  }
+  return `{${Object.keys(value)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalize(value[key])}`)
+    .join(",")}}`;
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+async function assertPathAbsent(path, message) {
+  try {
+    await lstat(path);
+  } catch (error) {
+    if (error !== null && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return;
+    }
+    throw new Error(message);
+  }
+  throw new Error(message);
+}
+
+if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+  await verifyPrimeNodeDependencyPolicy({
+    nodeRoot: "/opt/flow/node/node_modules",
+    primeRoot: "/opt/flow/node/node_modules/prime-agent",
+  });
+  await verifyNativePrimeSdkBindings();
+  const inventory = await createRuntimeInventory({
+    nodeRoot: "/opt/flow/node/node_modules",
+    primeRoot: "/opt/flow/node/node_modules/prime-agent",
+    pythonRoot: "/opt/flow/python",
+    flowDistRoot: "/opt/flow/node/flow-dist",
+    artifacts: {
+      driver: DRIVER_PATH,
+      kernelProxy: "/opt/flow/bin/flow-prime-kernel-proxy",
+      noIoResourceLoader: "/opt/flow/node/flow-dist/infrastructure/prime/no-io-resource-loader.js",
+      pythonLauncher: "/opt/flow/bin/flow-prime-python",
+      supervisor: "/opt/flow/bin/flow-prime-supervisor",
+    },
+  });
+  process.stdout.write(`${canonicalize(inventory)}\n`);
+}

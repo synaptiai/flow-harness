@@ -2,7 +2,9 @@
 
 ## Decision
 
-Flow owns every semantic that determines whether work is allowed, contained, complete, recoverable, or correct. Pi supplies the default model-facing machinery. Anthropic Sandbox Runtime (SRT) supplies the first command-containment primitive behind a Flow-owned port. OMP supplies one optional external evaluation profile. Prime Agent remains a reference for a later profile.
+Flow owns all authority, lifecycle, evidence, and replay semantics. Pi supplies the default model
+runtime. SRT contains command and native Pi or OMP processes. OMP supplies one optional evaluation
+profile. Prime Agent supplies one optional OCI evaluation profile.
 
 The first runtime embeds [`@earendil-works/pi-coding-agent`](https://pi.dev/docs/latest/sdk) behind a narrow Flow-owned executor. The package is pinned exactly and all events are translated before persistence.
 
@@ -108,7 +110,7 @@ Prime Agent proves that Pi can support a distinct long-running harness. Its prod
 | Daemon workload limits | Prime leaves fixed caps outside its daemon layer; Flow independently adds strict operator/project ceilings, durable active reservations, a bounded FIFO queue, deterministic overflow rejection, and per-run graph-node concurrency. Artifact limits remain |
 | Heartbeats and schedules | Later trigger package now that bounded admission exists; triggers must not bypass the same queue |
 | Retained children and messaging | Isolated child runs and bounded optimization-candidate retention are implemented as graph-owned state; general mailboxes remain future work |
-| Persistent IPython | Optional capability only; never describe it as a sandbox |
+| Persistent IPython | Implemented only in the fixed Prime OCI evaluation profile. Docker policy, not IPython, supplies the containment boundary |
 | Recursive subagents | Use narrow contexts but keep recursion and joins graph-owned |
 | Executable Python skills | Defer because installation expands the supply-chain boundary |
 | Continual harness refinement | **Partially implemented independently** for prompt candidates, paired evaluation, reviewed activation, durable run snapshots, and rollback. Model-driven proposals and other adaptation surfaces remain future work |
@@ -125,8 +127,9 @@ superior evaluation. The activation store keeps immutable artifacts, durable run
 rollback history. Flow does not import Prime's refiner, state format, IPython kernel, or direct-apply
 behavior.
 
-Flow follows Prime Agent's proven client/supervisor/worker separation but does not import its
-Python RLM, graph state, protocol, or code. Pi remains embedded through its typed TypeScript SDK
+Flow follows Prime Agent's client, supervisor, and worker separation. The optional OCI profile uses
+the upstream Prime SDK and persistent IPython session. It does not use Prime graph state, daemon
+protocol, refiner, or direct-apply behavior. Pi remains embedded through its typed TypeScript SDK
 inside each worker because Pi's RPC process would supervise only the inner model session, not Flow
 command nodes, approvals, budgets, evidence, or recovery. OMP's background jobs similarly inform
 cancellation mechanics but are not a reusable whole-harness daemon.
@@ -230,8 +233,8 @@ project packages cannot add shells, interpreters, dispatchers, alternate paths, 
 occupy only complete profile-approved data elements, so model values cannot become code or shell
 structure.
 
-Flow reuses Pi's typed custom-tool seam but not its extension or package loader. It likewise does
-not import OMP's mutable hook/middleware surface or Prime Agent's shared Python kernel. The selected
+Flow reuses Pi's typed custom-tool seam but not its extension or package loader. It does not import
+OMP's mutable hook or middleware surface. The selected
 definition is translated at the adapter boundary, while the rendered request enters Flow's
 existing agent-command recorder. Policy, optional live approval, sandboxing, process lifecycle,
 write-ahead evidence, cancellation, output bounds, budgets, and replay therefore remain Flow-owned

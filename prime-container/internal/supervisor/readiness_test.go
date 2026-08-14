@@ -1,0 +1,218 @@
+package supervisor
+
+import (
+	"encoding/json"
+	"errors"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/synaptiai/flow-harness/prime-container/internal/containerprotocol"
+)
+
+func TestHardenSupervisorWithChangesOnlyProcessControls(t *testing.T) {
+	events := make([]string, 0, 2)
+	err := hardenSupervisorWith(
+		func() error { events = append(events, "core"); return nil },
+		func() error { events = append(events, "dumpable"); return nil },
+	)
+	if err != nil || !reflect.DeepEqual(events, []string{"core", "dumpable"}) {
+		t.Fatalf("supervisor hardening changed: %#v %v", events, err)
+	}
+
+	tests := []struct {
+		name     string
+		message  string
+		core     func() error
+		dumpable func() error
+	}{
+		{
+			name: "core", message: "set Prime supervisor core limit",
+			core:     func() error { return errors.New("private core") },
+			dumpable: func() error { t.Fatal("dumpable ran after core failure"); return nil },
+		},
+		{
+			name: "dumpable", message: "disable Prime supervisor dumpable state",
+			core:     func() error { return nil },
+			dumpable: func() error { return errors.New("private dumpable") },
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := hardenSupervisorWith(test.core, test.dumpable)
+			if err == nil || !strings.HasPrefix(err.Error(), test.message) {
+				t.Fatalf("unexpected hardening error: %v", err)
+			}
+		})
+	}
+}
+
+func TestBuildReadinessBindsChallengeAndMeasuredControls(t *testing.T) {
+	challenge := containerprotocol.ReadinessChallenge{
+		Version:          1,
+		ContainerID:      strings.Repeat("a", 64),
+		TrialID:          "trial-" + strings.Repeat("b", 48),
+		IdentityDigest:   strings.Repeat("c", 64),
+		ImageID:          "sha256:" + strings.Repeat("d", 64),
+		PolicyDigest:     strings.Repeat("e", 64),
+		ImageDeviceMajor: 8, ImageDeviceMinor: 1,
+	}
+	measurement := fixedReadinessMeasurement()
+
+	payload, err := BuildReadiness(challenge, measurement)
+	if err != nil {
+		t.Fatalf("build readiness: %v", err)
+	}
+	var readiness Readiness
+	if err := json.Unmarshal(payload, &readiness); err != nil {
+		t.Fatalf("parse readiness: %v", err)
+	}
+	if readiness.ContainerID != challenge.ContainerID || readiness.TrialID != challenge.TrialID ||
+		readiness.IdentityDigest != challenge.IdentityDigest || readiness.ImageID != challenge.ImageID ||
+		readiness.PolicyDigest != challenge.PolicyDigest {
+		t.Fatalf("readiness challenge changed: %#v", readiness)
+	}
+	if !reflect.DeepEqual(readiness.Process, measurement.Process) || readiness.Limits != measurement.Limits {
+		t.Fatalf("readiness measurements changed: %#v", readiness)
+	}
+	if readiness.Filesystems.Workspace.Bytes != 536870912 || readiness.Network.Interfaces[0] != "lo" {
+		t.Fatalf("readiness boundary changed: %#v", readiness)
+	}
+	if readiness.SystemFiles.Hostname != "flow-prime" || len(readiness.SystemFiles.Resolver) != 2 {
+		t.Fatalf("readiness system files changed: %#v", readiness.SystemFiles)
+	}
+}
+
+func TestBuildReadinessRejectsAChangedFixedIdentity(t *testing.T) {
+	measurement := fixedReadinessMeasurement()
+	measurement.Process.NodeUID = 999
+	if _, err := BuildReadiness(containerprotocol.ReadinessChallenge{
+		Version:          1,
+		ContainerID:      strings.Repeat("a", 64),
+		TrialID:          "trial-" + strings.Repeat("b", 48),
+		IdentityDigest:   strings.Repeat("c", 64),
+		ImageID:          "sha256:" + strings.Repeat("d", 64),
+		PolicyDigest:     strings.Repeat("e", 64),
+		ImageDeviceMajor: 8, ImageDeviceMinor: 1,
+	}, measurement); err == nil {
+		t.Fatal("changed fixed Node identity passed readiness")
+	}
+}
+
+func TestBuildReadinessNamesTheChangedControlGroup(t *testing.T) {
+	tests := []struct {
+		name    string
+		message string
+		mutate  func(*ReadinessMeasurement)
+	}{
+		{name: "process", message: "Prime effective process controls contradict the fixed runtime policy", mutate: func(value *ReadinessMeasurement) { value.Process.NodeUID = 999 }},
+		{name: "limits", message: "Prime effective resource limits contradict the fixed runtime policy", mutate: func(value *ReadinessMeasurement) { value.Limits.PidsMax++ }},
+		{name: "filesystems", message: "Prime effective filesystem controls contradict the fixed runtime policy", mutate: func(value *ReadinessMeasurement) { value.Filesystems.RootReadOnly = false }},
+		{name: "network", message: "Prime effective network controls contradict the fixed runtime policy", mutate: func(value *ReadinessMeasurement) { value.Network.Namespace = "changed" }},
+		{name: "system files", message: "Prime effective system files contradict the fixed runtime policy", mutate: func(value *ReadinessMeasurement) { value.SystemFiles.Hostname = "changed" }},
+		{name: "streams", message: "Prime effective stream controls contradict the fixed runtime policy", mutate: func(value *ReadinessMeasurement) { value.Streams.StdinAttached = false }},
+		{name: "log driver", message: "Prime effective log policy contradicts the fixed runtime policy", mutate: func(value *ReadinessMeasurement) { value.LogDriver = "changed" }},
+		{name: "healthcheck", message: "Prime effective health policy contradicts the fixed runtime policy", mutate: func(value *ReadinessMeasurement) { value.Healthcheck = "changed" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			measurement := fixedReadinessMeasurement()
+			test.mutate(&measurement)
+			_, err := BuildReadiness(fixedReadinessChallenge(), measurement)
+			if err == nil || err.Error() != test.message {
+				t.Fatalf("unexpected readiness failure: %v", err)
+			}
+		})
+	}
+}
+
+func TestBuildReadinessUsesOneDeterministicControlPriority(t *testing.T) {
+	tests := []struct {
+		name    string
+		message string
+		mutate  func(*ReadinessMeasurement)
+	}{
+		{name: "process before limits", message: "Prime effective process controls contradict the fixed runtime policy", mutate: func(value *ReadinessMeasurement) { value.Process.NodeUID = 999; value.Limits.PidsMax++ }},
+		{name: "limits before filesystems", message: "Prime effective resource limits contradict the fixed runtime policy", mutate: func(value *ReadinessMeasurement) { value.Limits.PidsMax++; value.Filesystems.RootReadOnly = false }},
+		{name: "filesystems before network", message: "Prime effective filesystem controls contradict the fixed runtime policy", mutate: func(value *ReadinessMeasurement) {
+			value.Filesystems.RootReadOnly = false
+			value.Network.Namespace = "changed"
+		}},
+		{name: "network before system files", message: "Prime effective network controls contradict the fixed runtime policy", mutate: func(value *ReadinessMeasurement) {
+			value.Network.Namespace = "changed"
+			value.SystemFiles.Hostname = "changed"
+		}},
+		{name: "system files before streams", message: "Prime effective system files contradict the fixed runtime policy", mutate: func(value *ReadinessMeasurement) {
+			value.SystemFiles.Hostname = "changed"
+			value.Streams.StdinAttached = false
+		}},
+		{name: "streams before log", message: "Prime effective stream controls contradict the fixed runtime policy", mutate: func(value *ReadinessMeasurement) { value.Streams.StdinAttached = false; value.LogDriver = "changed" }},
+		{name: "log before health", message: "Prime effective log policy contradicts the fixed runtime policy", mutate: func(value *ReadinessMeasurement) { value.LogDriver = "changed"; value.Healthcheck = "changed" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			measurement := fixedReadinessMeasurement()
+			test.mutate(&measurement)
+			_, err := BuildReadiness(fixedReadinessChallenge(), measurement)
+			if err == nil || err.Error() != test.message {
+				t.Fatalf("unexpected readiness priority: %v", err)
+			}
+		})
+	}
+}
+
+func fixedReadinessChallenge() containerprotocol.ReadinessChallenge {
+	return containerprotocol.ReadinessChallenge{
+		Version: 1, ContainerID: strings.Repeat("a", 64), TrialID: "trial-" + strings.Repeat("b", 48),
+		IdentityDigest: strings.Repeat("c", 64), ImageID: "sha256:" + strings.Repeat("d", 64),
+		PolicyDigest: strings.Repeat("e", 64), ImageDeviceMajor: 8, ImageDeviceMinor: 1,
+	}
+}
+
+func fixedReadinessMeasurement() ReadinessMeasurement {
+	return ReadinessMeasurement{
+		Process: ProcessReadiness{
+			SupervisorPID: 1, SupervisorUID: 0, NodeUID: NodeUID, PythonUID: PythonUID, SharedGID: SharedGID,
+			SupplementaryGroups: []int{SharedGID},
+			Capabilities:        []string{"CHOWN", "DAC_READ_SEARCH", "FOWNER", "KILL", "SETGID", "SETUID"},
+			Dumpable:            false, NoNewPrivileges: true, SeccompMode: 2,
+			CoreSoftBytes: 0, CoreHardBytes: 0,
+		},
+		Limits: LimitReadiness{
+			CgroupVersion: 2, PidsMax: 64, MemoryMaxBytes: 2147483648, MemorySwapMaxBytes: 0,
+			CPUQuotaMicros: 200000, CPUPeriodMicros: 100000,
+			ImageDeviceMajor: 8, ImageDeviceMinor: 1,
+			ImageReadBPS: 67108864, ImageReadIOPS: 4096,
+			OpenFilesSoft: 256, OpenFilesHard: 256, UserProcessesSoft: 64, UserProcessesHard: 64,
+			FileSizeSoftBytes: 268435456, FileSizeHardBytes: 268435456,
+		},
+		Filesystems: FilesystemReadiness{
+			RootReadOnly:      true,
+			Workspace:         fixedFilesystem(536870912, 8192, 0710),
+			NodeRuntime:       fixedFilesystem(16777216, 256, 0700),
+			SupervisorRuntime: fixedFilesystem(16777216, 256, 0700),
+		},
+		Network: NetworkReadiness{Namespace: "private", Interfaces: []string{"lo"}, Routes: []string{}},
+		SystemFiles: SystemFileReadiness{
+			Hostname: "flow-prime",
+			Hosts: []string{
+				"127.0.0.1 localhost",
+				"::1 localhost ip6-localhost ip6-loopback",
+				"fe00:: ip6-localnet",
+				"ff00:: ip6-mcastprefix",
+				"ff02::1 ip6-allnodes",
+				"ff02::2 ip6-allrouters",
+			},
+			Resolver: []string{"nameserver 127.0.0.1", "options ndots:0"},
+		},
+		Streams:   StreamReadiness{StdinAttached: true, StdoutAttached: true, StderrAttached: true, TTY: false},
+		LogDriver: "none", Healthcheck: "none",
+	}
+}
+
+func fixedFilesystem(bytes int64, inodes int64, mode int) FilesystemControl {
+	return FilesystemControl{
+		Type: "tmpfs", Bytes: bytes, Inodes: inodes, Mode: mode,
+		Nosuid: true, Nodev: true, Noexec: true,
+	}
+}

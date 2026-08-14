@@ -23,7 +23,7 @@ Gate 7 includes tuning-only prompt candidates, zero-tool model generation, exact
 paired evaluation, reviewed activation, durable run snapshots, and rollback.
 
 Remaining targets include executable extensions, signed registries, automatic updates, policy and
-UI packages, a Prime Agent adapter, external artifact storage, and stronger isolation.
+UI packages, external artifact storage, and stronger isolation.
 
 ## Gate 0: Repository foundation
 
@@ -113,8 +113,8 @@ UI packages, a Prime Agent adapter, external artifact storage, and stronger isol
 - A native OMP adapter supports paired Pi-versus-OMP evaluation. It uses pinned OMP packages, an
   attested official Bun executable, SRT, private host inference, installed-byte identity, and
   parent-owned process evidence.
-- A Prime Agent adapter remains future work. It can use the same runtime port and evidence
-  contracts.
+- A Prime Agent adapter supports paired Flow-versus-Prime evaluation on Linux x64. It uses a fixed
+  OCI image, persistent IPython, private host inference, durable leases, and confirmed removal.
 - A public claim that Flow beats the legacy plugin remains pending measured held-out evidence.
 
 The standalone harness is compared against the legacy plugin on held-out repository tasks using equivalent model configurations. Record:

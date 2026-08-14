@@ -15,6 +15,10 @@ import {
   trySubmitAgentCommandApprovalDecision,
 } from "../application/command-approval.js";
 import {
+  FlowWorkflowEvaluationAdapter,
+  type HarnessEvaluationAdapter,
+} from "../application/evaluation-adapter.js";
+import {
   ExternalHarnessEvaluationAdapter,
   type ExternalHarnessRuntime,
 } from "../application/external-harness-adapter.js";
@@ -22,10 +26,6 @@ import {
   generatePromptCandidate,
   PromptCandidateGenerationExecutionError,
 } from "../application/generate-prompt-candidate.js";
-import {
-  FlowWorkflowEvaluationAdapter,
-  type HarnessEvaluationAdapter,
-} from "../application/evaluation-adapter.js";
 import type {
   AgentCommandApprovalDecisionChannel,
   NodeEffectReconciler,
@@ -50,14 +50,14 @@ import {
   promptActivationSource,
 } from "../domain/adaptation/prompt-activation.js";
 import {
-  MAX_PROMPT_CANDIDATE_GENERATION_OUTPUT_TOKENS,
-  preparePromptCandidateGeneration,
-  PromptCandidateGenerationError,
-} from "../domain/adaptation/prompt-candidate-generation.js";
-import {
-  projectPromptCandidate,
   PromptCandidateError,
+  projectPromptCandidate,
 } from "../domain/adaptation/prompt-candidate.js";
+import {
+  MAX_PROMPT_CANDIDATE_GENERATION_OUTPUT_TOKENS,
+  PromptCandidateGenerationError,
+  preparePromptCandidateGeneration,
+} from "../domain/adaptation/prompt-candidate-generation.js";
 import {
   type CapabilitySnapshot,
   combineCapabilitySnapshots,
@@ -80,6 +80,7 @@ import {
   FlowConfigError,
 } from "../domain/config/resolver.js";
 import { aggregateEvaluation, EvaluationAggregationError } from "../domain/evaluation/aggregate.js";
+import { parseEvaluationTrialAttempt } from "../domain/evaluation/attempt.js";
 import { verifyEvaluationWorkspace } from "../domain/evaluation/filesystem-verifier.js";
 import { EvaluationPlanError } from "../domain/evaluation/plan.js";
 import { EvaluationRecordError } from "../domain/evaluation/records.js";
@@ -141,8 +142,8 @@ import {
   PromptActivationStoreError,
 } from "../infrastructure/fs/local-prompt-activation-store.js";
 import {
-  admitLocalPromptCandidateGenerationSources,
   admitLocalPromptCandidate,
+  admitLocalPromptCandidateGenerationSources,
   LocalPromptCandidateError,
 } from "../infrastructure/fs/local-prompt-candidate.js";
 import {
@@ -175,13 +176,14 @@ import {
   CapabilityBundleFetchError,
   type CapabilityBundleFetcher,
 } from "../infrastructure/http/strict-capability-bundle-fetcher.js";
-import { createProductionNodeEffectReconciler } from "../infrastructure/runtime/production-effect-reconciler.js";
-import { createProductionNodeExecutor } from "../infrastructure/runtime/production-node-executor.js";
-import { createProductionWorkspaceIsolator } from "../infrastructure/runtime/production-workspace-isolator.js";
+import type { PrimeOciPreparationResult } from "../infrastructure/oci/prime-oci-preparation.js";
 import {
   BuiltInExternalHarnessRegistry,
   type ExternalHarnessRegistry,
 } from "../infrastructure/process/built-in-external-harness-registry.js";
+import { createProductionNodeEffectReconciler } from "../infrastructure/runtime/production-effect-reconciler.js";
+import { createProductionNodeExecutor } from "../infrastructure/runtime/production-node-executor.js";
+import { createProductionWorkspaceIsolator } from "../infrastructure/runtime/production-workspace-isolator.js";
 import {
   ensureSupervisor,
   requestSupervisor,
@@ -231,6 +233,7 @@ Usage:
   flow eval inspect <evaluation-id> [--evaluations-dir <path>]
   flow eval export <evaluation-id> --output <path> [--evaluations-dir <path>]
   flow eval tuning-evidence <evaluation-id> --output <path> [--evaluations-dir <path>]
+  flow runtime prepare prime-agent
   flow validate <workflow.yaml|workflow:name@version|activation:workflow-id>
   flow run <workflow.yaml|workflow:name@version|activation:workflow-id> [--detach] [--command-id <uuid>] [--run-id <id>] [--runs-dir <path>] [--cwd <path>]
   flow resume <workflow.yaml|workflow:name@version|activation:workflow-id> --run-id <id> [--detach] [--command-id <uuid>] [--runs-dir <path>] [--cwd <path>]
@@ -304,6 +307,10 @@ export interface CliDependencies {
   readonly capabilityBundleFetcher: CapabilityBundleFetcher;
   readonly externalHarnessRegistry: ExternalHarnessRegistry;
   readonly externalHarnessRuntime: ExternalHarnessRuntime;
+  readonly preparePrimeRuntime?: (input: {
+    readonly cwd: string;
+    readonly signal: AbortSignal | undefined;
+  }) => Promise<PrimeOciPreparationResult>;
   readonly signal?: AbortSignal;
 }
 
@@ -357,6 +364,8 @@ export async function main(
         return await activationCommand(args.slice(1), io, dependencyOverrides);
       case "eval":
         return await evaluationCommand(args.slice(1), io, dependencyOverrides);
+      case "runtime":
+        return await runtimeCommand(args.slice(1), io, dependencyOverrides);
       case "validate":
         return await validateCommand(args.slice(1), io, dependencyOverrides);
       case "run":
@@ -490,6 +499,33 @@ export async function main(
     io.stderr(error instanceof Error ? error.message : String(error));
     return 1;
   }
+}
+
+async function runtimeCommand(
+  args: readonly string[],
+  io: CliIo,
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  const { positionals } = parseCommandArgs(args, {});
+  if (
+    positionals.length !== 2 ||
+    positionals[0] !== "prepare" ||
+    positionals[1] !== "prime-agent"
+  ) {
+    throw new CliUsageError("runtime prepare requires prime-agent");
+  }
+  const cwd = overrides.cwd ?? process.cwd();
+  const preparePrimeRuntime =
+    overrides.preparePrimeRuntime ??
+    (async (input: { readonly cwd: string; readonly signal: AbortSignal | undefined }) => {
+      const { prepareProductionPrimeOciRuntime } = await import(
+        "../infrastructure/oci/production-prime-oci-preparation.js"
+      );
+      return prepareProductionPrimeOciRuntime(input);
+    });
+  const result = await preparePrimeRuntime({ cwd, signal: overrides.signal });
+  io.stdout(JSON.stringify({ prepared: true, ...result }, null, 2));
+  return 0;
 }
 
 async function initCommand(
@@ -1038,7 +1074,8 @@ async function evaluationCommand(
       "eval validate requires one evaluation plan path",
     );
     const cwd = overrides.cwd ?? process.cwd();
-    const registry = overrides.externalHarnessRegistry ?? new BuiltInExternalHarnessRegistry();
+    const registry =
+      overrides.externalHarnessRegistry ?? new BuiltInExternalHarnessRegistry({ cwd });
     const admitted = await admitLocalEvaluationPlan(resolve(cwd, planArgument), {
       resolveExternalHarnessIdentity: (profile) => registry.resolveIdentity(profile),
     });
@@ -1197,6 +1234,30 @@ async function evaluationCommand(
         attempts: {
           active: claimed.activeAttempt,
           begin: (attempt) => store.beginAttempt(evaluationId, attempt),
+          update: (attempt) => store.updateAttempt(evaluationId, attempt),
+          recover: async (attempt) => {
+            const profile = admitted.profiles.find((item) => item.id === attempt.profileId);
+            if (
+              profile?.adapter !== "prime-agent-native-v1" ||
+              dependencies.externalHarnessRuntime.recoverAttempt === undefined
+            ) {
+              throw new Error("Prime OCI attempt recovery is not available");
+            }
+            let current = attempt;
+            return dependencies.externalHarnessRuntime.recoverAttempt(
+              {
+                identity: profile.harness,
+                attempt,
+                workspaceRoot: join(evaluationRuntime, `workspace-${attempt.trialId}`, "workspace"),
+                updateOciLease: async (lease) => {
+                  const updated = parseEvaluationTrialAttempt({ ...current, ociLease: lease });
+                  await store.updateAttempt(evaluationId, updated);
+                  current = updated;
+                },
+              },
+              dependencies.signal,
+            );
+          },
           complete: (attempt) => store.completeAttempt(evaluationId, attempt),
         },
         append: (record) => store.append(evaluationId, record),
@@ -2560,7 +2621,8 @@ function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies 
   const storageDependencies = storageDependenciesFrom(overrides);
   const configDependencies = configDependenciesFrom(overrides);
   const externalHarnessRegistry =
-    overrides.externalHarnessRegistry ?? new BuiltInExternalHarnessRegistry();
+    overrides.externalHarnessRegistry ??
+    new BuiltInExternalHarnessRegistry({ cwd: storageDependencies.cwd });
   return {
     ...storageDependencies,
     ...configDependencies,
@@ -2672,6 +2734,20 @@ function createLazyProductionExternalHarnessRuntime(
           createProductionExternalHarnessRuntime(registry),
       );
       return (await runtime).execute(request, signal);
+    },
+    recoverAttempt: async (
+      request: Parameters<NonNullable<ExternalHarnessRuntime["recoverAttempt"]>>[0],
+      signal?: AbortSignal,
+    ) => {
+      runtime ??= import("../infrastructure/runtime/production-external-harness-runtime.js").then(
+        ({ createProductionExternalHarnessRuntime }) =>
+          createProductionExternalHarnessRuntime(registry),
+      );
+      const loaded = await runtime;
+      if (loaded.recoverAttempt === undefined) {
+        throw new Error("Prime OCI attempt recovery is not available");
+      }
+      return loaded.recoverAttempt(request, signal);
     },
   });
 }

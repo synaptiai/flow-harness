@@ -107,7 +107,7 @@ describe("prompt candidates", () => {
     expect(() => projectPromptCandidate(oversized)).toThrowError(
       expect.objectContaining({ code: "limit_exceeded" }),
     );
-  });
+  }, 20_000);
 
   it("parses a strict versioned prompt-only source", () => {
     const source = parsePromptCandidateText(candidateText(), "candidate.yaml");

@@ -21,14 +21,14 @@ import {
   parsePromptCandidateIdentity,
 } from "../../domain/adaptation/prompt-candidate.js";
 import {
+  type EvaluationReportInput,
+  validateCommittedEvaluationPrefix,
+} from "../../domain/evaluation/aggregate.js";
+import {
   type EvaluationTrialAttempt,
   parseEvaluationTrialAttempt,
 } from "../../domain/evaluation/attempt.js";
 import { parseExternalHarnessIdentity } from "../../domain/evaluation/external-harness.js";
-import {
-  type EvaluationReportInput,
-  validateCommittedEvaluationPrefix,
-} from "../../domain/evaluation/aggregate.js";
 import {
   calculateEvaluationPlanDigest,
   createEvaluationSchedule,
@@ -197,10 +197,27 @@ const ompExternalProfileSchema = z
   })
   .strict();
 
+const primeExternalProfileSchema = z
+  .object({
+    id: identifierSchema,
+    adapter: z.literal("prime-agent-native-v1"),
+    harness: z.custom<
+      Extract<ReturnType<typeof parseExternalHarnessIdentity>, { adapter: "prime-agent-native-v1" }>
+    >((value) => {
+      try {
+        return parseExternalHarnessIdentity(value).adapter === "prime-agent-native-v1";
+      } catch {
+        return false;
+      }
+    }, "external harness identity is invalid"),
+  })
+  .strict();
+
 const profileSchema = z.discriminatedUnion("adapter", [
   flowProfileSchema,
   piExternalProfileSchema,
   ompExternalProfileSchema,
+  primeExternalProfileSchema,
 ]);
 
 const scheduleItemSchema = z
@@ -441,6 +458,9 @@ export function createPublicEvaluationHeader(
       if (profile.adapter === "omp-native-v1") {
         return { id: profile.id, adapter: profile.adapter, harness: profile.harness };
       }
+      if (profile.adapter === "prime-agent-native-v1") {
+        return { id: profile.id, adapter: profile.adapter, harness: profile.harness };
+      }
       return {
         id: profile.id,
         adapter: profile.adapter,
@@ -626,6 +646,52 @@ export class LocalEvaluationStore {
       throw new EvaluationStoreError(
         "io",
         `failed to store adapter start for evaluation "${evaluationId}"`,
+        { cause: error },
+      );
+    }
+  }
+
+  async updateAttempt(
+    evaluationIdInput: string,
+    rawAttempt: EvaluationTrialAttempt,
+  ): Promise<void> {
+    const evaluationId = validateEvaluationId(evaluationIdInput);
+    await (this.#appendTails.get(evaluationId) ?? Promise.resolve());
+    const owned = this.#owned.get(evaluationId);
+    if (owned === undefined) {
+      throw new EvaluationStoreError(
+        "not_owner",
+        `claim evaluation "${evaluationId}" before updating an adapter attempt`,
+      );
+    }
+    if (owned.activeAttempt === null) {
+      throw new EvaluationStoreError(
+        "sequence",
+        `evaluation "${evaluationId}" has no active adapter attempt`,
+      );
+    }
+    const attempt = parseAttemptForStore(rawAttempt, evaluationId);
+    reconcileAttempt(owned.header, owned.records, attempt);
+    assertAttemptUpdate(owned.activeAttempt, attempt, evaluationId);
+    const contents = `${JSON.stringify(attempt)}\n`;
+    if (Buffer.byteLength(contents, "utf8") > MAX_EVALUATION_TRIAL_ATTEMPT_BYTES) {
+      throw new EvaluationStoreError(
+        "limit_exceeded",
+        `evaluation adapter start exceeds ${MAX_EVALUATION_TRIAL_ATTEMPT_BYTES} bytes`,
+      );
+    }
+    const directory = this.#evaluationDirectory(evaluationId);
+    try {
+      await this.#assertEvaluationDirectory(evaluationId);
+      await writeDurableFileAtomicReplace(directory, "active-attempt.json", contents);
+      this.#owned.set(evaluationId, { ...owned, activeAttempt: attempt });
+    } catch (error) {
+      if (error instanceof EvaluationStoreError) {
+        throw error;
+      }
+      throw new EvaluationStoreError(
+        "io",
+        `failed to update adapter start for evaluation "${evaluationId}"`,
         { cause: error },
       );
     }
@@ -1232,6 +1298,84 @@ function reconcileAttempt(
   );
 }
 
+const ociLeaseStateRank = Object.freeze({
+  intent: 0,
+  absent: 7,
+  created: 1,
+  started: 2,
+  terminal: 3,
+  exported: 4,
+  stopped: 5,
+  removed: 6,
+});
+
+function assertAttemptUpdate(
+  previous: EvaluationTrialAttempt,
+  next: EvaluationTrialAttempt,
+  evaluationId: string,
+): void {
+  const { ociLease: previousLease, ...previousBase } = previous;
+  const { ociLease: nextLease, ...nextBase } = next;
+  if (JSON.stringify(previousBase) !== JSON.stringify(nextBase)) {
+    throw new EvaluationStoreError(
+      "sequence",
+      `evaluation "${evaluationId}" adapter attempt identity is immutable`,
+    );
+  }
+  if (nextLease === undefined) {
+    throw new EvaluationStoreError(
+      "sequence",
+      `evaluation "${evaluationId}" OCI lease cannot be removed by an update`,
+    );
+  }
+  if (previousLease === undefined) {
+    if (nextLease.state !== "intent") {
+      throw new EvaluationStoreError(
+        "sequence",
+        `evaluation "${evaluationId}" OCI lease must start in state "intent"`,
+      );
+    }
+    return;
+  }
+  if (ociLeaseStateRank[nextLease.state] <= ociLeaseStateRank[previousLease.state]) {
+    throw new EvaluationStoreError(
+      "sequence",
+      `evaluation "${evaluationId}" OCI lease state transition regresses or repeats`,
+    );
+  }
+  const { state: _previousState, ...previousIdentity } = previousLease;
+  const { state: _nextState, ...nextIdentity } = nextLease;
+  if (previousLease.state === "intent") {
+    if (nextLease.state === "absent") {
+      if (JSON.stringify(previousIdentity) !== JSON.stringify(nextIdentity)) {
+        throw new EvaluationStoreError(
+          "sequence",
+          `evaluation "${evaluationId}" OCI lease identity is immutable`,
+        );
+      }
+      return;
+    }
+    const {
+      containerId: _containerId,
+      inspectedPolicyDigest: _policyDigest,
+      ...createdBase
+    } = nextIdentity;
+    if (JSON.stringify(previousIdentity) !== JSON.stringify(createdBase)) {
+      throw new EvaluationStoreError(
+        "sequence",
+        `evaluation "${evaluationId}" OCI lease identity is immutable`,
+      );
+    }
+    return;
+  }
+  if (JSON.stringify(previousIdentity) !== JSON.stringify(nextIdentity)) {
+    throw new EvaluationStoreError(
+      "sequence",
+      `evaluation "${evaluationId}" OCI lease identity is immutable`,
+    );
+  }
+}
+
 function headerIdentity(header: PublicEvaluationHeader): EvaluationPlanIdentity {
   return {
     version: 1,
@@ -1243,6 +1387,9 @@ function headerIdentity(header: PublicEvaluationHeader): EvaluationPlanIdentity 
         return { id: profile.id, adapter: profile.adapter, harness: profile.harness };
       }
       if (profile.adapter === "omp-native-v1") {
+        return { id: profile.id, adapter: profile.adapter, harness: profile.harness };
+      }
+      if (profile.adapter === "prime-agent-native-v1") {
         return { id: profile.id, adapter: profile.adapter, harness: profile.harness };
       }
       return {
@@ -1345,6 +1492,23 @@ async function writeDurableFileAtomicExclusive(
     await link(temporary, join(directory, finalName));
     await syncDirectory(directory);
     await unlink(temporary);
+    await syncDirectory(directory);
+  } catch (error) {
+    await unlink(temporary).catch(() => undefined);
+    await syncDirectory(directory).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function writeDurableFileAtomicReplace(
+  directory: string,
+  finalName: string,
+  contents: string,
+): Promise<void> {
+  const temporary = join(directory, `.active-attempt.${randomUUID()}.tmp`);
+  try {
+    await writeDurableFile(temporary, contents);
+    await rename(temporary, join(directory, finalName));
     await syncDirectory(directory);
   } catch (error) {
     await unlink(temporary).catch(() => undefined);

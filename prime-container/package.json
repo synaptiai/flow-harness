@@ -1,0 +1,17 @@
+{
+  "name": "@synaptiai/flow-prime-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "22.19.0"
+  },
+  "dependencies": {
+    "extract-zip": "file:vendor/extract-zip",
+    "prime-agent": "https://github.com/PrimeIntellect-ai/prime-agent/releases/download/v0.7.1/prime-agent-0.7.1.tgz",
+    "zod": "4.4.3"
+  },
+  "overrides": {
+    "extract-zip": "$extract-zip"
+  }
+}

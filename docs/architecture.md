@@ -780,8 +780,24 @@ converts an unresolved start to one interrupted failure. It does not repeat the 
 The native external runtime fails before spawn on macOS and Windows. Process-group cleanup does not
 prove full descendant termination.
 
-Prime Agent can implement the same runtime port later. It does not require a plan, record, report,
-or verifier schema change.
+Prime Agent implements the same provider-neutral runtime port through an OCI adapter. The public
+plan, record, report, and verifier contracts stay Flow-owned.
+
+The adapter builds one fixed image twice during explicit preparation. It binds both OCI digests,
+the software inventory, Node, Python, Prime Agent, the supervisor, and the driver.
+
+One final-image probe hashes the Flow driver closure and each native executable. The protected
+attestation stores these values. Plan admission does not look for container binaries on the host.
+
+Each trial gets one durable container lease and one daemon-global slot. The host broker owns model
+access. A signed inner protocol and a bounded outer protocol keep the container untrusted.
+
+The supervisor imports one exact fixture tree into quota-backed memory storage. It removes every
+Python process before it exports one exact result tree. Flow then replaces the host workspace
+through its durable replacement journal.
+
+Normal completion, timeout, cancellation, and recovery all require confirmed container removal.
+An uncertain removal keeps the durable lease and blocks later Prime work.
 
 Admission hashes portable fixture content, the instruction, workflow source and compiled graph,
 private verifier identity and assertion count, controls, suite version, profiles, and seeds. The plan digest derives an

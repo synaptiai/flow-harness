@@ -92,6 +92,13 @@ const profileSchema = z.union([
       harness: z.object({ config: z.literal("omp-evaluation-v1") }).strict(),
     })
     .strict(),
+  z
+    .object({
+      id: identifierSchema,
+      adapter: z.literal("prime-agent-native-v1"),
+      harness: z.object({ config: z.literal("prime-agent-rlm-evaluation-v1") }).strict(),
+    })
+    .strict(),
 ]);
 
 const budgetSchema = z

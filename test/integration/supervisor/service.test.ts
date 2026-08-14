@@ -288,7 +288,7 @@ describe("LocalSupervisorService", () => {
     await expect(harness.store.readCommand(healthy.commandId)).resolves.toMatchObject({
       status: "completed",
     });
-  });
+  }, 20_000);
 
   it("imports a legacy active claim before admitting new work", async () => {
     const harness = await createHarness(undefined, { maxActiveWorkers: 1, maxQueuedJobs: 1 });

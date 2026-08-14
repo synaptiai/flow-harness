@@ -1,8 +1,8 @@
-import type { VerifyEvaluationWorkspaceRequest } from "../domain/evaluation/filesystem-verifier.js";
 import {
-  parseEvaluationTrialAttempt,
   type EvaluationTrialAttempt,
+  parseEvaluationTrialAttempt,
 } from "../domain/evaluation/attempt.js";
+import type { VerifyEvaluationWorkspaceRequest } from "../domain/evaluation/filesystem-verifier.js";
 import type {
   EvaluationFilesystemAssertion,
   EvaluationProfileSource,
@@ -21,10 +21,11 @@ import {
   parseEvaluationVerificationOutcome,
   unavailableEvaluationMetrics,
 } from "../domain/evaluation/records.js";
-import type {
-  HarnessEvaluationAdapter,
-  HarnessEvaluationRequest,
-  HarnessEvaluationResult,
+import {
+  type HarnessEvaluationAdapter,
+  type HarnessEvaluationRequest,
+  type HarnessEvaluationResult,
+  HarnessUnsafeStateError,
 } from "./evaluation-adapter.js";
 import type { WorkspaceIsolator } from "./ports.js";
 
@@ -68,6 +69,8 @@ export interface RunEvaluationTrialsInput {
   readonly attempts: {
     readonly active: EvaluationTrialAttempt | null;
     readonly begin: (attempt: EvaluationTrialAttempt) => Promise<void>;
+    readonly update?: (attempt: EvaluationTrialAttempt) => Promise<void>;
+    readonly recover?: (attempt: EvaluationTrialAttempt) => Promise<EvaluationTrialAttempt>;
     readonly complete: (attempt: EvaluationTrialAttempt) => Promise<void>;
   };
   readonly append: (record: EvaluationTrialRecord) => Promise<void>;
@@ -100,7 +103,10 @@ export async function runEvaluationTrials(
   }
 
   if (input.attempts.active !== null) {
-    const attempt = reconcileActiveAttempt(input.plan, records, input.attempts.active);
+    let attempt = reconcileActiveAttempt(input.plan, records, input.attempts.active);
+    if (attempt.adapter === "prime-agent-native-v1") {
+      attempt = await recoverPrimeAttempt(attempt, input.attempts.recover);
+    }
     const schedule = input.plan.schedule[records.length];
     const task = input.plan.tasks.find((item) => item.id === schedule?.taskId);
     if (schedule === undefined || task === undefined) {
@@ -211,6 +217,16 @@ export async function runEvaluationTrials(
       assertEvaluationActive(input.signal);
       let result: HarnessEvaluationResult | undefined;
       try {
+        const durability =
+          profile.adapter === "prime-agent-native-v1"
+            ? createPrimeAttemptDurability(
+                input.attempts.update,
+                () => attempt,
+                (updated) => {
+                  attempt = updated;
+                },
+              )
+            : undefined;
         result = await adapter.run({
           planDigest: input.plan.planDigest,
           trial: Object.freeze({
@@ -227,8 +243,12 @@ export async function runEvaluationTrials(
             sha256: task.fixture.instructionSha256,
           }),
           controls: input.plan.controls,
+          ...(durability === undefined ? {} : { durability }),
         });
       } catch (error) {
+        if (error instanceof HarnessUnsafeStateError) {
+          throw error;
+        }
         harness = { outcome: "crashed", runId: null, reason: boundedReason(error) };
         metrics = unavailableEvaluationMetrics();
       }
@@ -267,6 +287,9 @@ export async function runEvaluationTrials(
         }
       }
     } catch (error) {
+      if (error instanceof HarnessUnsafeStateError) {
+        throw error;
+      }
       if (error instanceof EvaluationAttemptDurabilityError) {
         throw error.cause;
       }
@@ -336,6 +359,94 @@ export async function runEvaluationTrials(
     }
   }
   return Object.freeze(records);
+}
+
+async function recoverPrimeAttempt(
+  attempt: EvaluationTrialAttempt,
+  recover: ((attempt: EvaluationTrialAttempt) => Promise<EvaluationTrialAttempt>) | undefined,
+): Promise<EvaluationTrialAttempt> {
+  if (recover === undefined) {
+    throw new HarnessUnsafeStateError("Prime OCI attempt requires recovery before replay");
+  }
+  try {
+    const recovered = parseEvaluationTrialAttempt(await recover(attempt));
+    assertRecoveredAttemptIdentity(attempt, recovered);
+    if (
+      recovered.ociLease !== undefined &&
+      recovered.ociLease.state !== "removed" &&
+      recovered.ociLease.state !== "absent"
+    ) {
+      throw new Error("Prime OCI recovery did not prove container removal");
+    }
+    return recovered;
+  } catch (error) {
+    if (error instanceof HarnessUnsafeStateError) {
+      throw error;
+    }
+    throw new HarnessUnsafeStateError("Prime OCI attempt recovery did not prove safe removal", {
+      cause: error,
+    });
+  }
+}
+
+function assertRecoveredAttemptIdentity(
+  previous: EvaluationTrialAttempt,
+  recovered: EvaluationTrialAttempt,
+): void {
+  const { ociLease: previousLease, ...previousBase } = previous;
+  const { ociLease: recoveredLease, ...recoveredBase } = recovered;
+  if (JSON.stringify(previousBase) !== JSON.stringify(recoveredBase)) {
+    throw new Error("Prime OCI recovery changed the durable attempt identity");
+  }
+  if (previousLease === undefined && recoveredLease === undefined) {
+    return;
+  }
+  if (previousLease === undefined || recoveredLease === undefined) {
+    throw new Error("Prime OCI recovery removed the durable lease identity");
+  }
+  const { state: _previousState, ...previousIdentity } = previousLease;
+  const { state: _recoveredState, ...recoveredIdentity } = recoveredLease;
+  if (previousLease.state === "intent") {
+    if (recoveredLease.state === "absent") {
+      if (JSON.stringify(previousIdentity) !== JSON.stringify(recoveredIdentity)) {
+        throw new Error("Prime OCI recovery changed the durable lease identity");
+      }
+      return;
+    }
+    const {
+      containerId: _containerId,
+      inspectedPolicyDigest: _policyDigest,
+      ...recoveredBaseIdentity
+    } = recoveredIdentity;
+    if (JSON.stringify(previousIdentity) !== JSON.stringify(recoveredBaseIdentity)) {
+      throw new Error("Prime OCI recovery changed the durable lease identity");
+    }
+    return;
+  }
+  if (JSON.stringify(previousIdentity) !== JSON.stringify(recoveredIdentity)) {
+    throw new Error("Prime OCI recovery changed the durable lease identity");
+  }
+}
+
+function createPrimeAttemptDurability(
+  update: ((attempt: EvaluationTrialAttempt) => Promise<void>) | undefined,
+  current: () => EvaluationTrialAttempt | undefined,
+  setCurrent: (attempt: EvaluationTrialAttempt) => void,
+): NonNullable<HarnessEvaluationRequest["durability"]> {
+  if (update === undefined) {
+    throw new Error("Prime adapter requires durable OCI lease updates");
+  }
+  return Object.freeze({
+    updateOciLease: async (lease) => {
+      const attempt = current();
+      if (attempt === undefined) {
+        throw new Error("Prime adapter has no durable active attempt");
+      }
+      const updated = parseEvaluationTrialAttempt({ ...attempt, ociLease: lease });
+      await update(updated);
+      setCurrent(updated);
+    },
+  });
 }
 
 class EvaluationAttemptDurabilityError extends Error {

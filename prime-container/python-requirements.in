@@ -1,0 +1,16 @@
+beautifulsoup4
+dill
+hatchling
+httpx
+ipykernel
+lxml
+nest-asyncio
+numpy
+pandas
+pydantic
+python-dotenv
+pyyaml
+requests
+scipy
+tomli
+tyro

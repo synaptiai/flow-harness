@@ -46,6 +46,13 @@ describe("public repository contracts", () => {
     expect(Object.keys(workflow.jobs).sort()).toEqual(["dependency-audit", "quality"]);
   });
 
+  it("audits the repository and Prime runtime dependency locks", async () => {
+    const workflow = await readText(".github/workflows/ci.yml");
+
+    expect(workflow).toContain("npm audit --omit=dev --audit-level=low");
+    expect(workflow).toContain("node scripts/audit-prime-dependencies.mjs");
+  });
+
   it("routes support, conduct, and vulnerability reports to distinct channels", async () => {
     const [support, conduct, security] = await Promise.all([
       readText("SUPPORT.md"),

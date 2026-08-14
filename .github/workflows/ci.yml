@@ -17,10 +17,12 @@ concurrency:
 jobs:
   quality:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -46,42 +48,153 @@ jobs:
       - name: Install sandbox system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes bubblewrap socat ripgrep
+          sudo apt-get install --yes bubblewrap ca-certificates curl ripgrep socat
           # GitHub's ephemeral Ubuntu 24.04 runner otherwise strips the user-namespace
           # capabilities required by SRT's bubblewrap and seccomp layers.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
+      - name: Install the exact Docker Engine
+        run: |
+          conflicts=()
+          for package in containerd docker-compose docker-compose-v2 docker-doc docker.io podman-docker runc; do
+            if dpkg-query --show --showformat='${db:Status-Status}' "$package" 2>/dev/null | grep --quiet '^installed$'; then
+              conflicts+=("$package")
+            fi
+          done
+          if (( ${#conflicts[@]} > 0 )); then
+            sudo apt-get remove --yes "${conflicts[@]}"
+          fi
+          sudo install --mode=0755 --directory /etc/apt/keyrings
+          sudo curl --fail --silent --show-error --location \
+            https://download.docker.com/linux/ubuntu/gpg \
+            --output /etc/apt/keyrings/docker.asc
+          sudo chmod a+r /etc/apt/keyrings/docker.asc
+          printf '%s\n' \
+            'Types: deb' \
+            'URIs: https://download.docker.com/linux/ubuntu' \
+            'Suites: noble' \
+            'Components: stable' \
+            'Architectures: amd64' \
+            'Signed-By: /etc/apt/keyrings/docker.asc' | \
+            sudo tee /etc/apt/sources.list.d/docker.sources > /dev/null
+          sudo apt-get update
+          docker_version='5:28.3.3-1~ubuntu.24.04~noble'
+          sudo apt-get install --yes --allow-downgrades \
+            docker-ce="$docker_version" \
+            docker-ce-cli="$docker_version" \
+            containerd.io='1.7.27-1' \
+            docker-buildx-plugin='0.26.1-1~ubuntu.24.04~noble'
+
       - name: Install exact dependencies
         run: npm ci --ignore-scripts
 
-      - name: Check formatting
-        run: npm run format:check
-
-      - name: Lint
-        run: npm run lint
-
-      - name: Type check
-        run: npm run typecheck
-
-      - name: Test with coverage floors
-        run: npm run test:coverage
-
-      - name: Build
-        run: npm run build
-
-      - name: Test compiled process behavior
-        run: npm run test:runtime
-
-      - name: Smoke-test compiled CLI
+      - name: Create the Prime admission peer
         run: |
-          node dist/cli/main.js --help
-          node dist/cli/main.js validate examples/verify-foundation.workflow.yaml
-          runs_dir="$(mktemp -d)"
-          node dist/cli/main.js run examples/verify-foundation.workflow.yaml --run-id ci-smoke --runs-dir "$runs_dir"
-          node dist/cli/main.js inspect ci-smoke --runs-dir "$runs_dir"
+          sudo useradd --create-home --groups docker flow-prime-peer
+          printf 'FLOW_PRIME_TEST_SECOND_USER=flow-prime-peer\n' >> "$GITHUB_ENV"
 
-      - name: Verify installable package
-        run: npm run pack:check
+      - name: Configure the exact Prime runc runtime
+        run: |
+          runtime_path="$(readlink --canonicalize "$(command -v runc)")"
+          sudo mkdir --parents /etc/docker
+          if sudo test -f /etc/docker/daemon.json; then
+            sudo cat /etc/docker/daemon.json > /tmp/flow-prime-daemon.json
+          else
+            printf '{}\n' > /tmp/flow-prime-daemon.json
+          fi
+          jq --arg path "$runtime_path" \
+            'del(.containerd, .["containerd-namespace"], .["containerd-plugins-namespace"], .["exec-root"], .hosts, .pidfile) | . + {"default-runtime":"flow-prime-runc","runtimes":((.runtimes // {}) + {"flow-prime-runc":{"path":$path,"runtimeArgs":[]}})}' \
+            /tmp/flow-prime-daemon.json > /tmp/flow-prime-daemon.updated.json
+          sudo install --mode=0644 /tmp/flow-prime-daemon.updated.json /etc/docker/daemon.json
+          sudo systemctl stop docker.service docker.socket containerd.service
+          sudo systemctl disable docker.socket
+          sudo systemctl mask containerd.service
+          sudo rm --force -- /run/containerd/containerd.sock
+          sudo sysctl --write kernel.core_pattern=core
+          sudo mkdir --parents /etc/systemd/system/docker.service.d
+          printf '[Unit]\nRequires=\n[Service]\nExecStart=\nExecStart=/usr/bin/dockerd --host=unix:///var/run/docker.sock\n' | \
+            sudo tee /etc/systemd/system/docker.service.d/flow-prime.conf > /dev/null
+          sudo systemctl daemon-reload
+          if ! sudo systemctl start docker.service; then
+            sudo systemctl status docker.service --no-pager --full || true
+            sudo journalctl --unit=docker.service --no-pager --lines=200 || true
+            exit 1
+          fi
+          sudo chmod 0711 /run/docker /run/docker/containerd
+          test "$(cat /proc/sys/kernel/core_pattern)" = core
+          test "$(docker version --format '{{.Server.APIVersion}}')" = '1.51'
+          test "$(docker version --format '{{.Server.Version}}')" = '28.3.3'
+          test "$(docker info --format '{{.DefaultRuntime}}')" = 'flow-prime-runc'
+          docker info --format '{{json .Runtimes}}' | \
+            jq --exit-status --arg path "$runtime_path" \
+              '.["flow-prime-runc"].path == $path and ((.["flow-prime-runc"].runtimeArgs // []) | length == 0)'
+          test -r /run/docker/containerd/containerd.pid
+          test -r /run/docker.pid
+          containerd_pid="$(cat /run/docker/containerd/containerd.pid)"
+          docker_pid="$(cat /run/docker.pid)"
+          containerd_parent_pid="$(ps --no-headers --pid "$containerd_pid" --format ppid | xargs)"
+          containerd_executable="$(sudo readlink --canonicalize "/proc/${containerd_pid}/exe")"
+          dockerd_executable="$(sudo readlink --canonicalize "/proc/${docker_pid}/exe")"
+          expected_containerd_executable="$(readlink --canonicalize "$(command -v containerd)")"
+          expected_dockerd_executable="$(readlink --canonicalize "$(command -v dockerd)")"
+          printf 'DOCKER_PID=%s\nCONTAINERD_PID=%s\nCONTAINERD_PARENT_PID=%s\nCONTAINERD_EXECUTABLE=%s\nEXPECTED_CONTAINERD_EXECUTABLE=%s\n' \
+            "$docker_pid" "$containerd_pid" "$containerd_parent_pid" "$containerd_executable" \
+            "$expected_containerd_executable"
+          test "$containerd_parent_pid" = "$docker_pid"
+          test "$containerd_executable" = "$expected_containerd_executable"
+          test "$dockerd_executable" = "$expected_dockerd_executable"
+          containerd_sha256="$(sudo sha256sum "/proc/${containerd_pid}/exe" | cut --delimiter=' ' --fields=1)"
+          dockerd_sha256="$(sudo sha256sum "/proc/${docker_pid}/exe" | cut --delimiter=' ' --fields=1)"
+          jq --null-input \
+            --argjson dockerPid "$docker_pid" \
+            --argjson containerdPid "$containerd_pid" \
+            --arg dockerdPath "$dockerd_executable" \
+            --arg dockerdSha256 "$dockerd_sha256" \
+            --arg containerdPath "$containerd_executable" \
+            --arg containerdSha256 "$containerd_sha256" \
+            '{version:1,dockerPid:$dockerPid,containerdPid:$containerdPid,dockerd:{path:$dockerdPath,sha256:$dockerdSha256},containerd:{path:$containerdPath,sha256:$containerdSha256}}' \
+            > /tmp/flow-prime-runtime-v1.json
+          sudo install --owner=root --group=root --mode=0444 \
+            /tmp/flow-prime-runtime-v1.json /run/flow-prime-runtime-v1.json
+
+      - name: Run local release gates
+        run: npm run ci:local
+
+      - name: Diagnose Prime Docker availability
+        if: failure()
+        run: |
+          docker_service_active=false
+          docker_pid_alive=false
+          containerd_pid_alive=false
+          docker_socket_present=false
+          docker_version_query_succeeded=false
+          docker_info_query_succeeded=false
+          if sudo systemctl is-active --quiet docker.service > /dev/null 2>&1; then
+            docker_service_active=true
+          fi
+          if docker_pid="$(sudo cat /run/docker.pid 2>/dev/null)" &&
+            [[ "$docker_pid" =~ ^[1-9][0-9]*$ ]] &&
+            sudo kill -0 "$docker_pid" > /dev/null 2>&1; then
+            docker_pid_alive=true
+          fi
+          if containerd_pid="$(sudo cat /run/docker/containerd/containerd.pid 2>/dev/null)" &&
+            [[ "$containerd_pid" =~ ^[1-9][0-9]*$ ]] &&
+            sudo kill -0 "$containerd_pid" > /dev/null 2>&1; then
+            containerd_pid_alive=true
+          fi
+          if sudo test -S /var/run/docker.sock > /dev/null 2>&1; then
+            docker_socket_present=true
+          fi
+          if timeout --signal=KILL 10s docker version --format '{{json .}}' > /dev/null 2>&1; then
+            docker_version_query_succeeded=true
+          fi
+          if timeout --signal=KILL 10s docker info --format '{{json .}}' > /dev/null 2>&1; then
+            docker_info_query_succeeded=true
+          fi
+          printf 'DOCKER_SERVICE_ACTIVE=%s\nDOCKER_PID_ALIVE=%s\nCONTAINERD_PID_ALIVE=%s\nDOCKER_SOCKET_PRESENT=%s\nDOCKER_VERSION_QUERY_SUCCEEDED=%s\nDOCKER_INFO_QUERY_SUCCEEDED=%s\n' \
+            "$docker_service_active" "$docker_pid_alive" "$containerd_pid_alive" \
+            "$docker_socket_present" "$docker_version_query_succeeded" \
+            "$docker_info_query_succeeded"
 
   dependency-audit:
     runs-on: ubuntu-latest
@@ -100,6 +213,12 @@ jobs:
 
       - name: Install exact dependencies
         run: npm ci --ignore-scripts
+
+      - name: Build the Prime audit client
+        run: npm run build
+
+      - name: Audit Prime runtime dependencies
+        run: node scripts/audit-prime-dependencies.mjs
 
       - name: Audit runtime dependencies
         run: npm audit --omit=dev --audit-level=low

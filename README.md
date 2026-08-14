@@ -38,7 +38,7 @@ through an optional external profile.
 | Versioned command tool packages | Implemented for strict local or digest-pinned installed declarative manifests, exact per-agent selection, deterministic argv rendering, and the existing policy/approval/sandbox/journal boundary |
 | Versioned workflow packages | Implemented for strict local or digest-pinned installed inert source manifests, exact packaged roots and children, closed snapshot-only compilation, and durable replay identity |
 | Remote capability bundle distribution | Implemented with deterministic inert `.flowpkg` files, explicit public HTTPS plus SHA-256 installation, a content-addressed project store, deterministic lock, local audit/removal commands, and offline execution/recovery |
-| Reproducible harness evaluation | Implemented for paired Flow, native Pi, and native OMP profiles. Flow records exact identities, fresh workspaces, private checks, evidence, and constrained reports. |
+| Reproducible harness evaluation | Implemented for paired Flow, native Pi, native OMP, and Prime Agent profiles. Flow records exact identities, fresh workspaces, private checks, evidence, and constrained reports. |
 | Evidence-bound prompt candidates | Flow implements zero-tool model generation from tuning-only evidence, strict prompt overlays, paired evaluation, reviewed activation, durable run snapshots, and rollback |
 | Proof-safe fresh recovery of interrupted agent attempts | Implemented as explicit opt-in for read-only attempts and edit attempts proven not applied |
 | Fail-closed sandboxed command isolation | Flow implements filesystem and network isolation on Linux and macOS. Linux alone provides strict agent-command descendant lifecycle containment |
@@ -68,6 +68,107 @@ Normal Flow runs and offline evaluation inspection do not load these optional OM
 Flow verifies the complete Bun executable against its built-in release attestations. You can use
 `FLOW_BUN_EXECUTABLE` to select another host path. The selected file must still match an attested
 official release.
+
+The Prime Agent evaluation profile has additional requirements:
+
+- Linux x64 with Docker Engine and cgroup v2.
+- Docker API 1.51 with the systemd cgroup driver.
+- A local Docker socket at `/var/run/docker.sock`.
+- Docker uses that exact Unix endpoint without socket activation.
+- A non-piped host core pattern.
+- IPv6 loopback support in the private container network namespace.
+
+The Prime runtime identity has these additional requirements:
+
+- Docker uses its canonical daemon PID record.
+- The `flow-prime-runc` runtime uses one canonical `runc` executable path and no arguments.
+- Docker supervises its own `containerd` child.
+- Docker publishes its managed `containerd` PID record under `/run/docker/containerd`.
+- Docker image storage resolves through sysfs to one whole block device for `io.max`.
+- Enough host capacity for the fixed Prime resource policy.
+
+Configure the Docker daemon with the dedicated `flow-prime-runc` runtime name and the exact `runc`
+path. Docker reserves its built-in `runc` name. Replace the path when your system uses a different
+canonical location.
+
+```json
+{
+  "default-runtime": "flow-prime-runc",
+  "runtimes": {
+    "flow-prime-runc": {
+      "path": "/usr/bin/runc",
+      "runtimeArgs": []
+    }
+  }
+}
+```
+
+The default daemon configuration must not set `containerd`, `containerd-namespace`,
+`containerd-plugins-namespace`, `hosts`, `exec-root`, or `pidfile`. Flow rejects custom
+configuration-file paths and related command options.
+
+Use this profile only on a dedicated, reprovisionable Prime runner. Do not use this setup on a
+shared development host or on a host that serves Kubernetes or other `containerd` clients. The
+commands below stop the separate service and replace the Docker service start command.
+
+For systemd, disable Docker socket activation and the separate `containerd` service. Remove its
+stale socket before Docker starts. Docker then starts the managed child that Flow admits.
+
+```sh
+sudo systemctl stop docker.service docker.socket containerd.service
+sudo systemctl disable docker.socket
+sudo systemctl mask containerd.service
+sudo rm --force -- /run/containerd/containerd.sock
+sudo sysctl --write kernel.core_pattern=core
+sudo install --directory /etc/systemd/system/docker.service.d
+printf '[Unit]\nRequires=\n[Service]\nExecStart=\nExecStart=/usr/bin/dockerd --host=unix:///var/run/docker.sock\n' | sudo tee /etc/systemd/system/docker.service.d/flow-prime.conf
+sudo systemctl daemon-reload
+sudo systemctl start docker.service
+sudo chmod 0711 /run/docker /run/docker/containerd
+```
+
+To roll back this setup, recreate the runner from its trusted base image. Version one does not
+support in-place restoration because Flow does not record the prior Docker and systemd states.
+
+Verify that Docker owns the managed containerd process:
+
+```sh
+docker_pid="$(cat /run/docker.pid)"
+containerd_pid="$(cat /run/docker/containerd/containerd.pid)"
+test "$(ps --no-headers --pid "$containerd_pid" --format ppid | xargs)" = "$docker_pid"
+```
+
+Publish the protected runtime observation that non-root Flow uses. The file binds the two live
+processes to their canonical executable paths and hashes.
+
+```sh
+containerd_executable="$(sudo readlink --canonicalize "/proc/${containerd_pid}/exe")"
+dockerd_executable="$(sudo readlink --canonicalize "/proc/${docker_pid}/exe")"
+containerd_sha256="$(sudo sha256sum "/proc/${containerd_pid}/exe" | cut --delimiter=' ' --fields=1)"
+dockerd_sha256="$(sudo sha256sum "/proc/${docker_pid}/exe" | cut --delimiter=' ' --fields=1)"
+jq --null-input \
+  --argjson dockerPid "$docker_pid" \
+  --argjson containerdPid "$containerd_pid" \
+  --arg dockerdPath "$dockerd_executable" \
+  --arg dockerdSha256 "$dockerd_sha256" \
+  --arg containerdPath "$containerd_executable" \
+  --arg containerdSha256 "$containerd_sha256" \
+  '{version:1,dockerPid:$dockerPid,containerdPid:$containerdPid,dockerd:{path:$dockerdPath,sha256:$dockerdSha256},containerd:{path:$containerdPath,sha256:$containerdSha256}}' \
+  > /tmp/flow-prime-runtime-v1.json
+sudo install --owner=root --group=root --mode=0444 \
+  /tmp/flow-prime-runtime-v1.json /run/flow-prime-runtime-v1.json
+```
+
+Prepare the fixed image and local runtime evidence before plan validation:
+
+```sh
+node dist/cli/main.js runtime prepare prime-agent
+```
+
+Preparation builds the image twice and compares both identities. It stores local host evidence
+under the configured project `.flow` directory. A fixed-stage preflight rejects an incompatible
+host before build one. Preparation repeats the authoritative inspection after build two. Evaluation
+does not build or pull an image.
 
 On Ubuntu or Debian, install the native sandbox dependencies:
 
@@ -99,12 +200,16 @@ SRT's [platform-specific dependency guidance](https://github.com/anthropic-exper
 git clone https://github.com/synaptiai/flow-harness.git
 cd flow-harness
 npm ci --ignore-scripts
-npm run check
-npm run build
+sudo useradd --create-home --groups docker flow-prime-peer
+export FLOW_PRIME_TEST_SECOND_USER=flow-prime-peer
+npm run ci:local
 ```
 
 `npm ci --ignore-scripts` installs only the exact lockfile. Use `npm install` only when
 intentionally changing dependencies.
+
+The release gate builds and verifies the Prime image before it runs native tests. It also requires
+the named second user to prove daemon-wide admission across Docker-authorized users.
 
 ### Execute the example
 
@@ -184,6 +289,18 @@ node dist/cli/main.js eval inspect native-omp-comparison
 Flow starts OMP in a separate Bun process under the same Linux SRT boundary. The child has no
 provider credentials or task network. OMP can use only workspace-confined `read` and `edit` tools.
 This example does not claim that either harness is better.
+
+The Prime Agent example compares one Flow workflow with the fixed persistent IPython profile:
+
+```sh
+node dist/cli/main.js eval validate examples/evaluation/native-prime-agent-comparison.evaluation.yaml
+node dist/cli/main.js eval run examples/evaluation/native-prime-agent-comparison.evaluation.yaml
+node dist/cli/main.js eval inspect native-prime-agent-comparison
+```
+
+Prime Agent runs in one fixed OCI image on Linux x64. Python has no provider credential or external
+network route. The host broker makes each model request. Flow removes the container before it
+accepts a terminal result.
 
 ### Evaluate an adaptive prompt candidate
 

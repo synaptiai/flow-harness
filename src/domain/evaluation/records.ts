@@ -103,7 +103,7 @@ const assertionEvidenceSchema = z
   })
   .strict();
 
-const externalRuntimeEvidenceSchema = z
+const processRuntimeEvidenceSchema = z
   .object({
     adapter: z.enum(["pi-native-v1", "omp-native-v1"]),
     containment: z.enum(["linux-pid-namespace", "process-group"]),
@@ -113,8 +113,36 @@ const externalRuntimeEvidenceSchema = z
     aborted: z.boolean(),
     treeTermination: z.enum(["confirmed", "unconfirmed"]),
   })
-  .strict()
+  .strict();
+
+const primeRuntimeEvidenceSchema = z
+  .object({
+    adapter: z.literal("prime-agent-native-v1"),
+    containment: z.literal("docker-oci-v1"),
+    engineStatus: z.literal("verified"),
+    imageId: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    policyDigest: sha256Schema,
+    exitCode: z.number().int().min(0).max(255).nullable(),
+    timedOut: z.boolean(),
+    aborted: z.boolean(),
+    recoveryOutcome: z.enum(["not_attempted", "succeeded", "failed"]),
+    removal: z.enum(["confirmed", "unconfirmed"]),
+  })
+  .strict();
+
+const externalRuntimeEvidenceSchema = z
+  .discriminatedUnion("adapter", [processRuntimeEvidenceSchema, primeRuntimeEvidenceSchema])
   .superRefine((runtime, context) => {
+    if (runtime.adapter === "prime-agent-native-v1") {
+      if (runtime.timedOut && runtime.aborted) {
+        context.addIssue({
+          code: "custom",
+          path: ["aborted"],
+          message: "external OCI evidence cannot be both timed out and aborted",
+        });
+      }
+      return;
+    }
     if (runtime.exitCode !== null && runtime.signal !== null) {
       context.addIssue({
         code: "custom",
@@ -150,6 +178,23 @@ const harnessOutcomeSchema = z
   .superRefine((harness, context) => {
     const runtime = harness.runtime;
     if (runtime === undefined || harness.outcome !== "completed") {
+      return;
+    }
+    if (runtime.adapter === "prime-agent-native-v1") {
+      if (
+        runtime.engineStatus !== "verified" ||
+        runtime.exitCode !== 0 ||
+        runtime.timedOut ||
+        runtime.aborted ||
+        runtime.recoveryOutcome === "failed" ||
+        runtime.removal !== "confirmed"
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["runtime"],
+          message: "completed Prime OCI evidence requires verified exit and removal",
+        });
+      }
       return;
     }
     if (

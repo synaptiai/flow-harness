@@ -8,19 +8,19 @@ import type { CliIo } from "../../../src/cli/main.js";
 import {
   BUILT_IN_FLOW_CONFIG,
   calculateFlowPolicyDigest,
-  FLOW_CONFIG_API_VERSION,
   type EffectiveFlowConfig,
+  FLOW_CONFIG_API_VERSION,
 } from "../../../src/domain/config/resolver.js";
 import type { ExternalHarnessIdentity } from "../../../src/domain/evaluation/external-harness.js";
 import {
   createEvaluationTrialRecord,
   unavailableEvaluationMetrics,
 } from "../../../src/domain/evaluation/records.js";
+import { admitLocalEvaluationPlan } from "../../../src/infrastructure/fs/local-evaluation-plan.js";
 import {
   createPublicEvaluationHeader,
   LocalEvaluationStore,
 } from "../../../src/infrastructure/fs/local-evaluation-store.js";
-import { admitLocalEvaluationPlan } from "../../../src/infrastructure/fs/local-evaluation-plan.js";
 
 vi.mock("../../../src/infrastructure/runtime/production-external-harness-runtime.js", () => {
   throw new Error("offline command loaded the production external harness runtime");
@@ -64,7 +64,11 @@ it("inspects and exports stored OMP evidence without loading external runtime pa
   let previousDigest: string | null = null;
   for (const schedule of admitted.schedule) {
     const profile = admitted.profiles.find((item) => item.id === schedule.profileId);
-    if (profile === undefined || profile.adapter === "flow-workflow-v1") {
+    if (
+      profile === undefined ||
+      profile.adapter === "flow-workflow-v1" ||
+      profile.adapter === "prime-agent-native-v1"
+    ) {
       throw new Error("offline OMP fixture has an invalid external profile");
     }
     const record = createEvaluationTrialRecord({

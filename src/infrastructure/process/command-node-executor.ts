@@ -171,18 +171,21 @@ export class CommandNodeExecutor implements CommandExecutor, AgentCommandExecuto
       return spawnFailure(result.spawnError);
     }
 
+    const stdoutEvidence = stdout.seal();
+    const stderrEvidence = stderr.seal();
+
     const evidence: CommandEvidence = {
       kind: "command",
       executable: node.command.executable,
       args: Object.freeze([...node.command.args]),
       exitCode: result.exitCode,
       signal: result.signal,
-      stdout: stdout.text(),
-      stderr: stderr.text(),
-      stdoutHash: stdout.digest(),
-      stderrHash: stderr.digest(),
-      stdoutTruncated: stdout.truncated,
-      stderrTruncated: stderr.truncated,
+      stdout: stdoutEvidence.text,
+      stderr: stderrEvidence.text,
+      stdoutHash: stdoutEvidence.digest,
+      stderrHash: stderrEvidence.digest,
+      stdoutTruncated: stdoutEvidence.truncated,
+      stderrTruncated: stderrEvidence.truncated,
       timedOut: result.timedOut,
       aborted: result.aborted,
       durationMs: Number(process.hrtime.bigint() - startedAt) / 1_000_000,
@@ -628,15 +631,14 @@ class BoundedOutput {
   readonly #chunks: Buffer[] = [];
   #capturedBytes = 0;
   #totalBytes = 0;
-  #digest: string | undefined;
+  #sealed = false;
 
   constructor(readonly maxBytes: number) {}
 
-  get truncated(): boolean {
-    return this.#totalBytes > this.maxBytes;
-  }
-
   add(chunk: Buffer): void {
+    if (this.#sealed) {
+      return;
+    }
     this.#hash.update(chunk);
     this.#totalBytes += chunk.length;
     const remaining = this.maxBytes - this.#capturedBytes;
@@ -648,13 +650,13 @@ class BoundedOutput {
     this.#capturedBytes += captured.length;
   }
 
-  text(): string {
-    return decodeBoundedUtf8(Buffer.concat(this.#chunks), this.maxBytes);
-  }
-
-  digest(): string {
-    this.#digest ??= this.#hash.digest("hex");
-    return this.#digest;
+  seal(): { readonly text: string; readonly digest: string; readonly truncated: boolean } {
+    this.#sealed = true;
+    return Object.freeze({
+      text: decodeBoundedUtf8(Buffer.concat(this.#chunks), this.maxBytes),
+      digest: this.#hash.digest("hex"),
+      truncated: this.#totalBytes > this.maxBytes,
+    });
   }
 }
 

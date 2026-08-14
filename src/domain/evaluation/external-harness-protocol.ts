@@ -535,10 +535,12 @@ function canonicalize(value: unknown): string {
   if (
     value === null ||
     typeof value === "boolean" ||
-    typeof value === "string" ||
     (typeof value === "number" && Number.isFinite(value))
   ) {
     return JSON.stringify(value);
+  }
+  if (typeof value === "string") {
+    return canonicalizeString(value);
   }
   if (Array.isArray(value)) {
     return `[${value.map(canonicalize).join(",")}]`;
@@ -547,11 +549,31 @@ function canonicalize(value: unknown): string {
     return `{${Object.keys(value)
       .sort()
       .map(
-        (key) => `${JSON.stringify(key)}:${canonicalize((value as Record<string, unknown>)[key])}`,
+        (key) =>
+          `${canonicalizeString(key)}:${canonicalize((value as Record<string, unknown>)[key])}`,
       )
       .join(",")}}`;
   }
   throw new ExternalHarnessProtocolError("frame_invalid", "protocol frame is not canonical JSON");
+}
+
+function canonicalizeString(value: string): string {
+  return JSON.stringify(value).replace(/[<>&\u2028\u2029]/gu, (character) => {
+    switch (character) {
+      case "<":
+        return "\\u003c";
+      case ">":
+        return "\\u003e";
+      case "&":
+        return "\\u0026";
+      case "\u2028":
+        return "\\u2028";
+      case "\u2029":
+        return "\\u2029";
+      default:
+        return character;
+    }
+  });
 }
 
 function boundedMessage(message: string): string {

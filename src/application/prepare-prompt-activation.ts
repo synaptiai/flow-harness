@@ -65,7 +65,7 @@ export interface PromptActivationStoredEvaluation {
         }
       | {
           readonly id: string;
-          readonly adapter: "pi-native-v1" | "omp-native-v1";
+          readonly adapter: "pi-native-v1" | "omp-native-v1" | "prime-agent-native-v1";
           readonly harness: unknown;
         }
     )[];

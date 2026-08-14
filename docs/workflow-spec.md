@@ -1137,9 +1137,9 @@ Provider credentials remain outside workflow files and use Pi's configured crede
 
 ## External evaluation profiles
 
-An evaluation plan can select `pi-native-v1` or `omp-native-v1` for one profile. Each adapter can
-select only its fixed evaluation configuration. The plan cannot select a command, path, package, or
-endpoint.
+An evaluation plan can select `pi-native-v1`, `omp-native-v1`, or `prime-agent-native-v1` for one
+profile. Each adapter can select only its fixed evaluation configuration. The plan cannot select a
+command, path, package, or endpoint.
 
 Flow binds the exact adapter, protocol, driver, local dependency closure, harness package closures,
 SRT closure, SRT policy, Linux platform, PID namespace, configuration, and broker contract to the
@@ -1161,11 +1161,33 @@ Immediately before process start, Flow compares the prepared SRT containment, ba
 profile, and policy digest with the admitted runtime identity. Flow releases the sandbox and stops
 the trial if a value differs.
 
+The Prime profile uses `prime-agent-rlm-evaluation-v1`. It runs only on Linux x64 through the fixed
+Docker OCI boundary. The plan cannot select an image, socket, daemon, mount, limit, or Python path.
+
+Prime preparation builds the image twice and requires equal identities. The identity binds the
+image, platform config, build inputs, software inventory, runtime closures, policy, and protocols.
+
+The fixed policy permits one daemon-global container. It denies external network, host mounts,
+daemon logs, health checks, swap, and ambient Docker configuration. It sets exact CPU, memory, PID,
+I/O, file, descriptor, workspace byte, and workspace inode limits.
+
+The Prime host sends one bounded fixture tree after readiness. The container returns one bounded
+result tree. Both trees bind file types, modes, sizes, paths, and content hashes.
+
+The container uses a private loopback network namespace only for the persistent IPython kernel.
+The Python process cannot reach the host loopback address or an external address.
+
+The trusted supervisor records zero or one kernel request in the outer settlement. It rejects a
+second kernel request. Multiple IPython tool calls must use the first persistent kernel.
+
+Flow stores the OCI lease before start. Recovery settles the exact owned container before Flow
+records interruption or removes the isolated trial workspace.
+
 Before each trial, Flow writes one durable adapter-start record. Flow then starts the selected
 driver in SRT. The child has no provider credentials and no general network route. A private signed
 JSONL channel sends model requests to the host broker.
 
-Both native profiles have only `read` and `edit`. Both tools accept only existing files in the
+The Pi and OMP profiles have only `read` and `edit`. Both tools accept only existing files in the
 canonical trial workspace. The profiles use in-memory sessions and zero retries. The OMP profile
 also disables rules, MCP, memory, LSP, IRC, project context, and ambient discovery.
 Bun starts with environment-file loading, automatic installation, and workspace configuration
@@ -1176,7 +1198,8 @@ termination. The child cannot assert these values. Missing, forged, repeated, ov
 out-of-order frames fail the trial.
 
 Version 1 external harness execution requires Linux. Flow rejects macOS and Windows before it loads
-the driver. Flow also rejects a Linux sandbox that does not prove PID-namespace containment.
+the driver. Pi and OMP also require verified PID-namespace containment. Prime requires the fixed
+Docker OCI identity and effective policy evidence.
 
 Each driver reads the pinned session statistics after prompt settlement. It translates the four
 token components and reported cost into the Flow-owned usage shape. A settled child result preserves
