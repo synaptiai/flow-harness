@@ -260,7 +260,7 @@ describe.skipIf(!linux)("container command sandbox runtime", () => {
 
     try {
       await expect(prepared.beforeLaunch?.()).rejects.toThrow(
-        "created command container cannot be inspected before launch",
+        "Container command sandbox inspection failed during validate command container before launch",
       );
     } finally {
       await prepared.release();
