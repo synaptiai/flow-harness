@@ -18,6 +18,7 @@ describe("Flow configuration resolution", () => {
     const expectedPolicy = {
       apiVersion: FLOW_CONFIG_API_VERSION,
       supervisor: { maxActiveWorkers: 1, maxQueuedJobs: 32 },
+      sandbox: { profile: "native" },
     };
 
     expect(first).toEqual({
@@ -33,7 +34,73 @@ describe("Flow configuration resolution", () => {
     expect(second.policyDigest).toBe(first.policyDigest);
     expect(Object.isFrozen(first)).toBe(true);
     expect(Object.isFrozen(first.supervisor)).toBe(true);
+    expect(Object.isFrozen(first.sandbox)).toBe(true);
     expect(Object.isFrozen(first.sources)).toBe(true);
+  });
+
+  it("lets only operator configuration select the container sandbox profile", () => {
+    const operator = parseOperatorConfig(
+      {
+        apiVersion: FLOW_CONFIG_API_VERSION,
+        kind: "FlowOperatorConfig",
+        sandbox: { profile: "container" },
+      },
+      "/operator/config.yaml",
+    );
+
+    const effective = resolveFlowConfig({
+      operator: { path: "/operator/config.yaml", config: operator },
+    });
+
+    expect(effective).toMatchObject({
+      sandbox: { profile: "container" },
+      sources: {
+        operator: {
+          path: "/operator/config.yaml",
+          sandbox: { profile: "container" },
+        },
+      },
+    });
+    expect(Object.isFrozen(effective.sandbox)).toBe(true);
+    expect(Object.isFrozen(effective.sources.operator?.sandbox)).toBe(true);
+  });
+
+  it("rejects a project sandbox profile selector", () => {
+    expect(() =>
+      parseProjectConfig(
+        {
+          apiVersion: FLOW_CONFIG_API_VERSION,
+          kind: "FlowProjectConfig",
+          sandbox: { profile: "container" },
+        },
+        "/workspace/.flow/config.yaml",
+      ),
+    ).toThrowError(
+      expect.objectContaining({
+        code: "invalid_config",
+        sourcePath: "/workspace/.flow/config.yaml",
+        fieldPath: "<root>",
+      }),
+    );
+  });
+
+  it("rejects an unknown operator sandbox profile", () => {
+    expect(() =>
+      parseOperatorConfig(
+        {
+          apiVersion: FLOW_CONFIG_API_VERSION,
+          kind: "FlowOperatorConfig",
+          sandbox: { profile: "private-host" },
+        },
+        "/operator/config.yaml",
+      ),
+    ).toThrowError(
+      expect.objectContaining({
+        code: "invalid_config",
+        sourcePath: "/operator/config.yaml",
+        fieldPath: "sandbox.profile",
+      }),
+    );
   });
 
   it("lets operator configuration change defaults within hard bounds", () => {
@@ -229,6 +296,26 @@ describe("Flow configuration resolution", () => {
 
     expect(right.policyDigest).toBe(left.policyDigest);
     expect(right.sources).not.toEqual(left.sources);
+  });
+
+  it("changes the policy digest when the effective sandbox profile changes", () => {
+    const native = resolveFlowConfig({});
+    const container = resolveFlowConfig({
+      operator: {
+        path: "/operator/config.yaml",
+        config: parseOperatorConfig(
+          {
+            apiVersion: FLOW_CONFIG_API_VERSION,
+            kind: "FlowOperatorConfig",
+            sandbox: { profile: "container" },
+          },
+          "/operator/config.yaml",
+        ),
+      },
+    });
+
+    expect(container.supervisor).toEqual(native.supervisor);
+    expect(container.policyDigest).not.toBe(native.policyDigest);
   });
 });
 

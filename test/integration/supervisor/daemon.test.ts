@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,18 +10,20 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   calculateFlowPolicyDigest,
+  FLOW_CONFIG_API_VERSION,
+  parseOperatorConfig,
   resolveFlowConfig,
 } from "../../../src/domain/config/resolver.js";
-import { LocalSupervisorStore } from "../../../src/infrastructure/fs/local-supervisor-store.js";
 import { JsonlAdmissionStore } from "../../../src/infrastructure/fs/jsonl-admission-store.js";
+import { LocalSupervisorStore } from "../../../src/infrastructure/fs/local-supervisor-store.js";
+import { createAdmissionInitializedEvent } from "../../../src/supervisor/admission.js";
 import {
   ensureSupervisor,
   requestSupervisor,
   runSupervisorDaemon,
-  startSupervisorServer,
   SupervisorStartupTimeoutError,
+  startSupervisorServer,
 } from "../../../src/supervisor/daemon.js";
-import { createAdmissionInitializedEvent } from "../../../src/supervisor/admission.js";
 import {
   encodeSupervisorMessage,
   SUPERVISOR_PROTOCOL_VERSION,
@@ -229,7 +231,11 @@ describe("local supervisor daemon", () => {
     });
     await first.completed;
     const supervisor = { maxActiveWorkers: 2, maxQueuedJobs: 4 };
-    const policy = { policyDigest: calculateFlowPolicyDigest(supervisor), supervisor };
+    const policy = {
+      policyDigest: calculateFlowPolicyDigest(supervisor),
+      sandbox: { profile: "native" as const },
+      supervisor,
+    };
 
     const second = await startSupervisorServer({ store, launcher: unavailableLauncher, policy });
 
@@ -259,6 +265,7 @@ describe("local supervisor daemon", () => {
     const replacementLimits = { maxActiveWorkers: 2, maxQueuedJobs: 32 };
     const replacement = {
       policyDigest: calculateFlowPolicyDigest(replacementLimits),
+      sandbox: { profile: "native" as const },
       supervisor: replacementLimits,
     };
 
@@ -293,6 +300,37 @@ describe("local supervisor daemon", () => {
         process.kill(-pid, "SIGKILL");
       }
     }
+  }, 15_000);
+
+  it("passes the effective sandbox profile to a detached supervisor", async () => {
+    const { directory, store } = await createStore();
+    const argumentsPath = join(directory, "supervisor-arguments.json");
+    const fixturePath = join(directory, "record-supervisor-arguments.cjs");
+    await writeFile(
+      fixturePath,
+      `require("node:fs").writeFileSync(${JSON.stringify(argumentsPath)}, JSON.stringify(process.argv.slice(2))); setInterval(() => {}, 1000);`,
+      "utf8",
+    );
+    const policy = resolveFlowConfig({
+      operator: {
+        path: "/operator/config.yaml",
+        config: parseOperatorConfig(
+          {
+            apiVersion: FLOW_CONFIG_API_VERSION,
+            kind: "FlowOperatorConfig",
+            sandbox: { profile: "container" },
+          },
+          "/operator/config.yaml",
+        ),
+      },
+    });
+
+    await expect(
+      ensureSupervisor(store, fixturePath, policy, { startupTimeoutMs: 1_000 }),
+    ).rejects.toBeInstanceOf(SupervisorStartupTimeoutError);
+    const recorded = JSON.parse(await readFile(argumentsPath, "utf8")) as unknown;
+
+    expect(recorded).toEqual(expect.arrayContaining(["--sandbox-profile", policy.sandbox.profile]));
   }, 15_000);
 });
 

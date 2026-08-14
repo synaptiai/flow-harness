@@ -1,6 +1,12 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash, type Hash } from "node:crypto";
-import type { CommandSandbox, PreparedCommand } from "../../application/command-sandbox.js";
+import {
+  type CommandSandbox,
+  CommandSandboxExecutionError,
+  type ManagedCommandExecutionInput,
+  type ManagedCommandExecutionResult,
+  type PreparedCommand,
+} from "../../application/command-sandbox.js";
 import type {
   AgentCommandExecutor,
   CommandExecutor,
@@ -20,6 +26,7 @@ export interface CommandNodeExecutorOptions {
   readonly sandbox: CommandSandbox;
   readonly maxOutputBytes?: number;
   readonly platform?: NodeJS.Platform;
+  readonly preparationSettlementMs?: number;
   readonly terminationGraceMs?: number;
   readonly terminationConfirmationMs?: number;
 }
@@ -27,6 +34,7 @@ export interface CommandNodeExecutorOptions {
 export class CommandNodeExecutor implements CommandExecutor, AgentCommandExecutor {
   readonly #maxOutputBytes: number;
   readonly #platform: NodeJS.Platform;
+  readonly #preparationSettlementMs: number;
   readonly #sandbox: CommandSandbox;
   readonly #terminationConfirmationMs: number;
   readonly #terminationGraceMs: number;
@@ -34,6 +42,7 @@ export class CommandNodeExecutor implements CommandExecutor, AgentCommandExecuto
   constructor(options: CommandNodeExecutorOptions) {
     this.#maxOutputBytes = options.maxOutputBytes ?? 32_768;
     this.#platform = options.platform ?? process.platform;
+    this.#preparationSettlementMs = options.preparationSettlementMs ?? 65_000;
     this.#sandbox = options.sandbox;
     this.#terminationConfirmationMs = options.terminationConfirmationMs ?? 2_000;
     this.#terminationGraceMs = options.terminationGraceMs ?? 2_000;
@@ -52,6 +61,13 @@ export class CommandNodeExecutor implements CommandExecutor, AgentCommandExecuto
       this.#terminationConfirmationMs <= 0
     ) {
       throw new RangeError("terminationConfirmationMs must be a positive safe integer");
+    }
+    if (
+      !Number.isSafeInteger(this.#preparationSettlementMs) ||
+      this.#preparationSettlementMs <= 0 ||
+      this.#preparationSettlementMs > 65_000
+    ) {
+      throw new RangeError("preparationSettlementMs must be between 1 and 65000");
     }
   }
 
@@ -90,11 +106,24 @@ export class CommandNodeExecutor implements CommandExecutor, AgentCommandExecuto
     ]);
     if (preparationResult.status === "interrupted") {
       deadline.dispose();
-      releaseLatePreparation(preparation);
-      return preLaunchInterruption(preparationResult.cause, node.command.timeoutMs);
+      const settlement = await settleInterruptedPreparation(
+        preparation,
+        this.#preparationSettlementMs,
+      );
+      if (settlement.status === "cleanup_failed") {
+        return sandboxCleanupFailure(settlement.error, null, "uncertain");
+      }
+      return preLaunchInterruption(
+        preparationResult.cause,
+        node.command.timeoutMs,
+        settlement.status === "unsettled" ? "uncertain" : "none",
+      );
     }
     if (preparationResult.status === "failed") {
       deadline.dispose();
+      if (preparationResult.error instanceof AggregateError) {
+        return sandboxCleanupFailure(preparationResult.error, null, "uncertain");
+      }
       const preparationFailureCause = deadline.cause ?? (deadline.expired() ? "timeout" : null);
       if (preparationFailureCause !== null) {
         return preLaunchInterruption(preparationFailureCause, node.command.timeoutMs);
@@ -106,7 +135,10 @@ export class CommandNodeExecutor implements CommandExecutor, AgentCommandExecuto
     const preparationCause = deadline.cause ?? (deadline.expired() ? "timeout" : null);
     if (preparationCause !== null) {
       deadline.dispose();
-      releaseLatePreparation(Promise.resolve(prepared));
+      const cleanupError = await release(prepared);
+      if (cleanupError !== null) {
+        return sandboxCleanupFailure(cleanupError, null, "uncertain");
+      }
       return preLaunchInterruption(preparationCause, node.command.timeoutMs);
     }
 
@@ -117,6 +149,35 @@ export class CommandNodeExecutor implements CommandExecutor, AgentCommandExecuto
         return sandboxCleanupFailure(cleanupError, null, "none");
       }
       return insufficientContainmentFailure();
+    }
+
+    if (prepared.beforeLaunch !== undefined) {
+      const beforeLaunchResult = await Promise.race([
+        prepared.beforeLaunch().then(
+          () => ({ status: "current" as const }),
+          (error: unknown) => ({ status: "failed" as const, error }),
+        ),
+        deadline.interruption.then((cause) => ({ status: "interrupted" as const, cause })),
+      ]);
+      if (beforeLaunchResult.status === "interrupted") {
+        deadline.dispose();
+        const cleanupError = await release(prepared);
+        if (cleanupError !== null) {
+          return sandboxCleanupFailure(cleanupError, null, "uncertain");
+        }
+        return preLaunchInterruption(beforeLaunchResult.cause, node.command.timeoutMs);
+      }
+      if (beforeLaunchResult.status === "failed") {
+        const interruptionCause = deadline.cause ?? (deadline.expired() ? "timeout" : null);
+        deadline.dispose();
+        const cleanupError = await release(prepared);
+        if (cleanupError !== null) {
+          return sandboxCleanupFailure(cleanupError, null, "uncertain");
+        }
+        return interruptionCause === null
+          ? sandboxFailure(beforeLaunchResult.error)
+          : preLaunchInterruption(interruptionCause, node.command.timeoutMs);
+      }
     }
 
     const stdout = new BoundedOutput(this.#maxOutputBytes);
@@ -130,6 +191,18 @@ export class CommandNodeExecutor implements CommandExecutor, AgentCommandExecuto
         return sandboxCleanupFailure(cleanupError, null, "none");
       }
       return preLaunchInterruption("timeout", node.command.timeoutMs);
+    }
+
+    if (prepared.run !== undefined) {
+      return executeManagedCommand(
+        node,
+        prepared,
+        prepared.run,
+        deadline,
+        startedAt,
+        stdout,
+        stderr,
+      );
     }
 
     try {
@@ -171,31 +244,7 @@ export class CommandNodeExecutor implements CommandExecutor, AgentCommandExecuto
       return spawnFailure(result.spawnError);
     }
 
-    const stdoutEvidence = stdout.seal();
-    const stderrEvidence = stderr.seal();
-
-    const evidence: CommandEvidence = {
-      kind: "command",
-      executable: node.command.executable,
-      args: Object.freeze([...node.command.args]),
-      exitCode: result.exitCode,
-      signal: result.signal,
-      stdout: stdoutEvidence.text,
-      stderr: stderrEvidence.text,
-      stdoutHash: stdoutEvidence.digest,
-      stderrHash: stderrEvidence.digest,
-      stdoutTruncated: stdoutEvidence.truncated,
-      stderrTruncated: stderrEvidence.truncated,
-      timedOut: result.timedOut,
-      aborted: result.aborted,
-      durationMs: Number(process.hrtime.bigint() - startedAt) / 1_000_000,
-      terminationStatus: result.terminationIncomplete
-        ? "unconfirmed"
-        : result.timedOut || result.aborted
-          ? "confirmed"
-          : "not-required",
-      sandbox: prepared.evidence,
-    };
+    const evidence = commandEvidence(node, prepared, startedAt, result, stdout, stderr);
 
     const cleanupError = await release(prepared);
     if (result.terminationIncomplete) {
@@ -261,6 +310,230 @@ export class CommandNodeExecutor implements CommandExecutor, AgentCommandExecuto
     }
     return { status: "failed", error: outcome.error, evidence };
   }
+}
+
+async function executeManagedCommand(
+  node: CompiledCommandNode,
+  prepared: PreparedCommand,
+  run: (input: ManagedCommandExecutionInput) => Promise<ManagedCommandExecutionResult>,
+  deadline: CommandDeadline,
+  startedAt: bigint,
+  stdout: BoundedOutput,
+  stderr: BoundedOutput,
+): Promise<NodeExecutionOutcome> {
+  const execution = run({
+    signal: deadline.signal,
+    stdout: (chunk) => stdout.add(Buffer.from(chunk)),
+    stderr: (chunk) => stderr.add(Buffer.from(chunk)),
+  });
+  const settlement = await Promise.race([
+    execution.then(
+      (result) => ({ status: "settled" as const, result }),
+      (error: unknown) => ({ status: "failed" as const, error }),
+    ),
+    deadline.interruption.then((cause) => ({ status: "interrupted" as const, cause })),
+  ]);
+
+  if (settlement.status === "interrupted") {
+    deadline.dispose();
+    const cleanupError = await release(prepared);
+    void execution.catch(() => undefined);
+    const result: ProcessTreeExitResult = {
+      exitCode: null,
+      signal: null,
+      timedOut: settlement.cause === "timeout",
+      aborted: settlement.cause === "abort",
+      spawnError: null,
+      terminationIncomplete: cleanupError !== null,
+    };
+    const evidence = commandEvidence(node, prepared, startedAt, result, stdout, stderr);
+    if (cleanupError !== null) {
+      return sandboxCleanupFailure(cleanupError, evidence, "uncertain");
+    }
+    return settlement.cause === "timeout"
+      ? failed(
+          "command_timeout",
+          `command exceeded timeout of ${node.command.timeoutMs}ms`,
+          evidence,
+        )
+      : failed("command_aborted", "command was cancelled", evidence);
+  }
+
+  const interruptionCause = deadline.cause ?? (deadline.expired() ? "timeout" : null);
+  deadline.dispose();
+  if (settlement.status === "failed") {
+    const executionMayHaveStarted = managedExecutionMayHaveStarted(settlement.error);
+    const cleanupError = await release(prepared);
+    if (interruptionCause !== null) {
+      const result: ProcessTreeExitResult = {
+        exitCode: null,
+        signal: null,
+        timedOut: interruptionCause === "timeout",
+        aborted: interruptionCause === "abort",
+        spawnError: null,
+        terminationIncomplete: cleanupError !== null,
+      };
+      const evidence = commandEvidence(node, prepared, startedAt, result, stdout, stderr);
+      if (cleanupError !== null) {
+        return sandboxCleanupFailure(cleanupError, evidence, "uncertain");
+      }
+      return interruptionCause === "timeout"
+        ? failed(
+            "command_timeout",
+            `command exceeded timeout of ${node.command.timeoutMs}ms`,
+            evidence,
+          )
+        : failed("command_aborted", "command was cancelled", evidence);
+    }
+    if (cleanupError !== null) {
+      const evidence = executionMayHaveStarted
+        ? managedFailureEvidence(node, prepared, startedAt, stdout, stderr, true)
+        : null;
+      return sandboxCleanupFailure(cleanupError, evidence, "uncertain");
+    }
+    if (executionMayHaveStarted) {
+      return sandboxFailure(
+        publicManagedExecutionError(settlement.error),
+        managedFailureEvidence(node, prepared, startedAt, stdout, stderr, false),
+        "uncertain",
+      );
+    }
+    return sandboxFailure(publicManagedExecutionError(settlement.error));
+  }
+
+  if (
+    !Number.isSafeInteger(settlement.result.exitCode) ||
+    settlement.result.exitCode < 0 ||
+    settlement.result.exitCode > 255
+  ) {
+    const cleanupError = await release(prepared);
+    const evidence = managedFailureEvidence(
+      node,
+      prepared,
+      startedAt,
+      stdout,
+      stderr,
+      cleanupError !== null,
+    );
+    if (cleanupError !== null) {
+      return sandboxCleanupFailure(cleanupError, evidence, "uncertain");
+    }
+    return sandboxFailure(
+      new CommandSandboxExecutionError("run managed execution"),
+      evidence,
+      "uncertain",
+    );
+  }
+
+  const result: ProcessTreeExitResult = {
+    exitCode: settlement.result.exitCode,
+    signal: null,
+    timedOut: interruptionCause === "timeout",
+    aborted: interruptionCause === "abort",
+    spawnError: null,
+    terminationIncomplete: false,
+  };
+  const evidence = commandEvidence(node, prepared, startedAt, result, stdout, stderr);
+  const cleanupError = await release(prepared);
+  if (cleanupError !== null) {
+    return sandboxCleanupFailure(cleanupError, evidence, "uncertain");
+  }
+  if (result.timedOut) {
+    return failed(
+      "command_timeout",
+      `command exceeded timeout of ${node.command.timeoutMs}ms`,
+      evidence,
+    );
+  }
+  if (result.aborted) {
+    return failed("command_aborted", "command was cancelled", evidence);
+  }
+  if (result.exitCode !== 0) {
+    return failed("command_failed", `command exited with code ${result.exitCode}`, evidence);
+  }
+  return { status: "succeeded", evidence };
+}
+
+function publicManagedExecutionError(error: unknown): Error {
+  if (error instanceof CommandSandboxExecutionError) {
+    return error;
+  }
+  if (
+    error instanceof AggregateError &&
+    error.message === "Command sandbox execution and output cleanup failed"
+  ) {
+    return error;
+  }
+  return new CommandSandboxExecutionError("run managed execution");
+}
+
+function managedExecutionMayHaveStarted(error: unknown): boolean {
+  return !(
+    error instanceof CommandSandboxExecutionError && error.stage === "attach execution output"
+  );
+}
+
+function managedFailureEvidence(
+  node: CompiledCommandNode,
+  prepared: PreparedCommand,
+  startedAt: bigint,
+  stdout: BoundedOutput,
+  stderr: BoundedOutput,
+  terminationIncomplete: boolean,
+): CommandEvidence {
+  return commandEvidence(
+    node,
+    prepared,
+    startedAt,
+    {
+      exitCode: null,
+      signal: null,
+      timedOut: false,
+      aborted: false,
+      spawnError: null,
+      terminationIncomplete,
+    },
+    stdout,
+    stderr,
+    terminationIncomplete ? undefined : "confirmed",
+  );
+}
+
+function commandEvidence(
+  node: CompiledCommandNode,
+  prepared: PreparedCommand,
+  startedAt: bigint,
+  result: ProcessTreeExitResult,
+  stdout: BoundedOutput,
+  stderr: BoundedOutput,
+  terminationStatus?: CommandEvidence["terminationStatus"],
+): CommandEvidence {
+  const stdoutEvidence = stdout.seal();
+  const stderrEvidence = stderr.seal();
+  return {
+    kind: "command",
+    executable: node.command.executable,
+    args: Object.freeze([...node.command.args]),
+    exitCode: result.exitCode,
+    signal: result.signal,
+    stdout: stdoutEvidence.text,
+    stderr: stderrEvidence.text,
+    stdoutHash: stdoutEvidence.digest,
+    stderrHash: stderrEvidence.digest,
+    stdoutTruncated: stdoutEvidence.truncated,
+    stderrTruncated: stderrEvidence.truncated,
+    timedOut: result.timedOut,
+    aborted: result.aborted,
+    durationMs: Number(process.hrtime.bigint() - startedAt) / 1_000_000,
+    terminationStatus:
+      terminationStatus ??
+      (result.terminationIncomplete
+        ? "unconfirmed"
+        : result.timedOut || result.aborted
+          ? "confirmed"
+          : "not-required"),
+    sandbox: prepared.evidence,
+  };
 }
 
 function toAgentCommandEvidence(evidence: CommandEvidence): AgentCommandEvidence {
@@ -340,17 +613,10 @@ function commandDeadline(timeoutMs: number, signal?: AbortSignal): CommandDeadli
   };
 }
 
-function releaseLatePreparation(preparation: Promise<PreparedCommand>): void {
-  void preparation
-    .then(async (prepared) => {
-      await release(prepared);
-    })
-    .catch(() => undefined);
-}
-
 function preLaunchInterruption(
   cause: "abort" | "timeout",
   timeoutMs: number,
+  sideEffectStatus: NodeFailure["sideEffectStatus"] = "none",
 ): NodeExecutionOutcome {
   const timeout = cause === "timeout";
   return {
@@ -361,10 +627,47 @@ function preLaunchInterruption(
         ? `command exceeded timeout of ${timeoutMs}ms before process launch`
         : "command was cancelled before process launch",
       retryable: false,
-      sideEffectStatus: "none",
+      sideEffectStatus,
     },
     evidence: null,
   };
+}
+
+type InterruptedPreparationSettlement =
+  | { readonly status: "settled" }
+  | { readonly status: "unsettled" }
+  | { readonly status: "cleanup_failed"; readonly error: unknown };
+
+async function settleInterruptedPreparation(
+  preparation: Promise<PreparedCommand>,
+  timeoutMs: number,
+): Promise<InterruptedPreparationSettlement> {
+  const settlement = preparation.then<
+    InterruptedPreparationSettlement,
+    InterruptedPreparationSettlement
+  >(
+    async (prepared) => {
+      const cleanupError = await release(prepared);
+      return cleanupError === null
+        ? { status: "settled" }
+        : { status: "cleanup_failed", error: cleanupError };
+    },
+    (error: unknown) =>
+      error instanceof AggregateError ? { status: "cleanup_failed", error } : { status: "settled" },
+  );
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      settlement,
+      new Promise<InterruptedPreparationSettlement>((resolve) => {
+        timer = setTimeout(() => resolve({ status: "unsettled" }), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  }
 }
 
 async function release(prepared: PreparedCommand): Promise<unknown | null> {
@@ -565,16 +868,20 @@ function spawnFailure(error: unknown): NodeExecutionOutcome {
   return { status: "failed", error: failure, evidence: null };
 }
 
-function sandboxFailure(error: unknown): NodeExecutionOutcome {
+function sandboxFailure(
+  error: unknown,
+  evidence: CommandEvidence | null = null,
+  sideEffectStatus: NodeFailure["sideEffectStatus"] = "none",
+): NodeExecutionOutcome {
   return {
     status: "failed",
     error: {
       code: "command_sandbox_unavailable",
       message: boundedMessage(error),
       retryable: false,
-      sideEffectStatus: "none",
+      sideEffectStatus,
     },
-    evidence: null,
+    evidence,
   };
 }
 

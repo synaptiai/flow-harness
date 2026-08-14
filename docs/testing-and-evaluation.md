@@ -180,6 +180,37 @@ cancellation records.
 
 Runtime sandbox tests require the host capabilities listed in the README. A sandbox dependency warning is a test failure, not a skip. Running Flow's sandbox suite from inside another restrictive sandbox can prevent SRT from creating its internal Unix socket or namespace; run the suite directly on the host or in a CI runner configured for nested containment. This operational accommodation must not weaken the production profile.
 
+The container command profile has separate unit, integration, and real-engine evidence. Unit tests
+bind operator-only selection, exact Docker configuration, currentness, durable ownership, and
+lost-create reconciliation. They also bind later orphan scans, foreign-object refusal, cancellation,
+and two-attempt cleanup.
+
+Structured execution tests bind attach-before-start, multiplexed task output, fixed control stages,
+command-owned wait cancellation, and task exit status. They also bind same-process settlement after
+preparation and lease cleanup failures. Workspace tests bind bounded sensitive-entry discovery and
+Git read-only mapping. They also bind bounded content snapshots, pre-launch snapshot drift
+rejection, and the complete public configuration digest.
+
+Integration tests bind the backend-neutral executor and offline inspection contracts.
+
+The pinned Linux x64 release gate uses
+`test/runtime/container-command-sandbox.runtime.test.ts` and
+`test/runtime/container-command-recovery.runtime.test.ts`. These tests use the prepared Prime image
+and the real Docker API. They must prove workspace mutation, protected-state denial, credential
+denial, sensitive-file masking, and read-only Git access. They must also prove external-route
+denial, host-loopback denial, undeclared host Unix-socket isolation, and exact resource controls.
+They must also prove that local TCP and Unix-socket binding fail inside the container namespace.
+
+The process-control check binds the container cgroup limit. It does not require `RLIMIT_NPROC`,
+which Linux accounts across unrelated processes that share the host operator UID.
+
+They must prove timeout and operator-cancellation settlement, descendant termination, full-ID cleanup,
+process-restart recovery, and pre-launch disappearance refusal. Portable recovery tests prove
+foreign-object safety.
+
+A missing Docker prerequisite fails the dedicated runner. The gate does not skip or weaken the
+production policy.
+
 ## Live Pi test policy
 
 Live tests are opt-in and excluded from `npm test`. Run them with both `FLOW_LIVE_PI_PROVIDER` and

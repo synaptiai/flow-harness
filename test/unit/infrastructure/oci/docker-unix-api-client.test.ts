@@ -160,6 +160,28 @@ describe("Docker Unix API client", () => {
     await expect(client.createContainer("flow-prime-global-v1", {})).resolves.toBe("a".repeat(64));
   });
 
+  it("accepts only the fixed command-container nonce name family", async () => {
+    const transport: DockerUnixApiTransport = {
+      request: vi.fn(async () => ({
+        statusCode: 201,
+        body: JSON.stringify({ Id: "a".repeat(64) }),
+      })),
+    };
+    const client = new DockerUnixApiClient({
+      socketPath: "/var/run/docker.sock",
+      apiVersion: "1.51",
+      transport,
+    });
+
+    await expect(client.createContainer(`flow-command-${"b".repeat(32)}`, {})).resolves.toBe(
+      "a".repeat(64),
+    );
+    await expect(client.createContainer("flow-command-user-selected", {})).rejects.toThrow(
+      /reference/i,
+    );
+    expect(transport.request).toHaveBeenCalledTimes(1);
+  });
+
   it("uses one fixed socket and versioned API paths", async () => {
     const containerName = `flow-prime-${"c".repeat(32)}`;
     const requests: Record<string, unknown>[] = [];
@@ -1053,6 +1075,74 @@ describe("Docker Unix API client", () => {
       maxStderrBytes: 65_536,
       maxStdoutFrameBytes: 1_048_581,
     });
+  });
+
+  it("keeps command task streams separate from the wait control response", async () => {
+    const attached = {
+      output: (async function* () {
+        yield { stream: "stdout" as const, payload: Buffer.from("TASK_STDOUT") };
+        yield { stream: "stderr" as const, payload: Buffer.from("TASK_STDERR") };
+      })(),
+      release: vi.fn(async () => undefined),
+    };
+    const commandAttachTransport = {
+      attach: vi.fn(async () => attached),
+    };
+    const transport: DockerUnixApiTransport = {
+      request: vi.fn(async (request) => ({
+        statusCode: 200,
+        body: request.path.endsWith("/wait?condition=not-running")
+          ? JSON.stringify({ StatusCode: 125, Error: null })
+          : "",
+      })),
+    };
+    const client = new DockerUnixApiClient({
+      socketPath: "/var/run/docker.sock",
+      apiVersion: "1.51",
+      transport,
+      commandAttachTransport,
+    } as never) as unknown as {
+      attachCommandContainer(reference: string): Promise<typeof attached>;
+      waitContainer(reference: string): Promise<number>;
+    };
+
+    await expect(client.attachCommandContainer("a".repeat(64))).resolves.toBe(attached);
+    await expect(client.waitContainer("a".repeat(64))).resolves.toBe(125);
+    expect(commandAttachTransport.attach).toHaveBeenCalledWith({
+      socketPath: "/var/run/docker.sock",
+      path: `/v1.51/containers/${"a".repeat(64)}/attach?stream=1&stdin=0&stdout=1&stderr=1&logs=0`,
+      maxFrameBytes: 1_048_581,
+    });
+    expect(transport.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "POST",
+        path: `/v1.51/containers/${"a".repeat(64)}/wait?condition=not-running`,
+      }),
+    );
+  });
+
+  it("keeps a private Docker wait error out of the control-plane failure", async () => {
+    const transport: DockerUnixApiTransport = {
+      request: vi.fn(async () => ({
+        statusCode: 200,
+        body: JSON.stringify({
+          StatusCode: 125,
+          Error: { Message: "PRIVATE_DOCKER_WAIT_RESPONSE" },
+        }),
+      })),
+    };
+    const client = new DockerUnixApiClient({
+      socketPath: "/var/run/docker.sock",
+      apiVersion: "1.51",
+      transport,
+    }) as unknown as { waitContainer(reference: string): Promise<number> };
+
+    const error = await client.waitContainer("a".repeat(64)).catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("Docker wait reported a container error");
+    expect((error as Error).message).not.toContain("PRIVATE_DOCKER_WAIT_RESPONSE");
+    expect((error as Error).cause).toBeUndefined();
   });
 
   it("writes through the upgraded Docker socket and rejects only a real write error", async () => {

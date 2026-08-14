@@ -1,5 +1,7 @@
+import type { CommandSandbox } from "../../application/command-sandbox.js";
 import { NodeExecutorRouter } from "../../application/node-executor-router.js";
 import type { NodeExecutor } from "../../application/ports.js";
+import type { FlowSandboxProfile } from "../../domain/config/resolver.js";
 import { PiAgentExecutor } from "../pi/pi-agent-executor.js";
 import { CommandNodeExecutor } from "../process/command-node-executor.js";
 import {
@@ -8,8 +10,15 @@ import {
   resolveAnthropicSandboxRuntimeSeccompPath,
 } from "../sandbox/anthropic-sandbox-runtime-manager.js";
 import { SrtCommandSandbox } from "../sandbox/srt-command-sandbox.js";
+import { createProductionContainerCommandSandbox } from "./production-container-command-sandbox.js";
 
-export function createProductionCommandSandbox(): SrtCommandSandbox {
+export function createProductionCommandSandbox(
+  profile: FlowSandboxProfile = "native",
+  projectRoot = process.cwd(),
+): CommandSandbox {
+  if (profile === "container") {
+    return createProductionContainerCommandSandbox(projectRoot);
+  }
   const seccompApplyPath = resolveAnthropicSandboxRuntimeSeccompPath();
   return new SrtCommandSandbox(anthropicSandboxRuntimeManager, {
     backendVersion: ANTHROPIC_SANDBOX_RUNTIME_VERSION,
@@ -17,10 +26,13 @@ export function createProductionCommandSandbox(): SrtCommandSandbox {
   });
 }
 
-export function createProductionNodeExecutor(): NodeExecutor {
+export function createProductionNodeExecutor(
+  profile: FlowSandboxProfile = "native",
+  projectRoot = process.cwd(),
+): NodeExecutor {
   return new NodeExecutorRouter(
     new CommandNodeExecutor({
-      sandbox: createProductionCommandSandbox(),
+      sandbox: createProductionCommandSandbox(profile, projectRoot),
     }),
     new PiAgentExecutor(),
   );

@@ -1,48 +1,48 @@
+import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { spawn, type ChildProcess } from "node:child_process";
 import { chmod, rm } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
 import { basename, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { resolveFlowConfig, type EffectiveFlowConfig } from "../domain/config/resolver.js";
+import { type EffectiveFlowConfig, resolveFlowConfig } from "../domain/config/resolver.js";
 import {
   AdmissionStoreError,
   JsonlAdmissionStore,
 } from "../infrastructure/fs/jsonl-admission-store.js";
 import {
-  LocalSupervisorStoreError,
   type LocalSupervisorStore,
+  LocalSupervisorStoreError,
 } from "../infrastructure/fs/local-supervisor-store.js";
+import { createAdmissionInitializedEvent } from "./admission.js";
 import {
   encodeSupervisorMessage,
   parseSupervisorRequestFrame,
   parseSupervisorResponseFrame,
   SUPERVISOR_PROTOCOL_VERSION,
-  SupervisorProtocolError,
   type SupervisorErrorCode,
+  SupervisorProtocolError,
   type SupervisorRequest,
   type SupervisorResponse,
   type SupervisorResult,
 } from "./protocol.js";
 import {
   createSupervisorStartLock,
-  supervisorSocketPath,
-  parseSupervisorDescriptor,
   type JobRecord,
+  parseSupervisorDescriptor,
   type SupervisorDescriptor,
+  supervisorSocketPath,
   type WorkerDescriptor,
 } from "./records.js";
 import { LocalSupervisorService, SupervisorServiceError, type WorkerLauncher } from "./service.js";
 import { closeServer, exchangeFrame, listen, readFrame } from "./socket-transport.js";
 import { requestWorker } from "./worker.js";
-import { createAdmissionInitializedEvent } from "./admission.js";
 
 const SUPERVISOR_REQUEST_TIMEOUT_MS = 15_000;
 const STARTUP_TIMEOUT_MS = 10_000;
 const RECONCILIATION_INTERVAL_MS = 100;
 
-export type SupervisorPolicy = Pick<EffectiveFlowConfig, "policyDigest" | "supervisor">;
+export type SupervisorPolicy = Pick<EffectiveFlowConfig, "policyDigest" | "sandbox" | "supervisor">;
 
 export class SupervisorStartupTimeoutError extends Error {
   override readonly name = "SupervisorStartupTimeoutError";
@@ -288,6 +288,8 @@ async function launchSupervisor(
       startupOwnerToken,
       "--policy-digest",
       policy.policyDigest,
+      "--sandbox-profile",
+      policy.sandbox.profile,
       "--max-active-workers",
       String(policy.supervisor.maxActiveWorkers),
       "--max-queued-jobs",
@@ -416,6 +418,7 @@ export async function startSupervisorServer(
     generation,
     pid,
     startedAt,
+    sandboxProfile: policy.sandbox.profile,
   });
   await service.reconcile();
   let closePromise: Promise<void> | undefined;

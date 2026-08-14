@@ -4,10 +4,13 @@ import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import type {
-  CommandSandbox,
-  CommandSandboxRequest,
-  PreparedCommand,
+import {
+  CommandSandboxExecutionError,
+  type CommandSandbox,
+  type CommandSandboxRequest,
+  type CommandSandboxExecutionStage,
+  type ManagedCommandExecutionInput,
+  type PreparedCommand,
 } from "../../../../src/application/command-sandbox.js";
 import type { NodeExecutionContext } from "../../../../src/application/ports.js";
 import { normalizeAgentCommandRequest } from "../../../../src/domain/agent-command.js";
@@ -126,6 +129,315 @@ describe("CommandNodeExecutor sandbox boundary", () => {
     expect(sandbox.releaseCalls).toBe(1);
   });
 
+  it("uses managed sandbox execution without treating launcher control output as task evidence", async () => {
+    const release = vi.fn(async () => undefined);
+    const run = vi.fn(
+      async (input: {
+        readonly signal: AbortSignal;
+        stdout(chunk: Uint8Array): void;
+        stderr(chunk: Uint8Array): void;
+      }) => {
+        input.stdout(Buffer.from("TASK_STDOUT"));
+        input.stderr(Buffer.from("TASK_STDERR"));
+        return { exitCode: 125 };
+      },
+    );
+    const prepared = {
+      processContainment: "linux-pid-namespace",
+      launch: {
+        executable: "/PRIVATE_DOCKER_CONTROL_LAUNCHER",
+        args: ["start", "PRIVATE_CONTAINER_ID"],
+        env: {},
+      },
+      evidence: sandboxEvidence,
+      run,
+      release,
+    } as unknown as PreparedCommand;
+    const sandbox: CommandSandbox = { prepare: async () => prepared };
+    const executor = new CommandNodeExecutor({ sandbox });
+
+    const outcome = await executor.execute(commandNode("node", ["task.js"]), context);
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: { code: "command_failed", message: "command exited with code 125" },
+      evidence: {
+        executable: "node",
+        args: ["task.js"],
+        exitCode: 125,
+        stdout: "TASK_STDOUT",
+        stderr: "TASK_STDERR",
+      },
+    });
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([-1, 1.5, 256])(
+    "rejects invalid managed exit code %s with retained task evidence",
+    async (exitCode) => {
+      const release = vi.fn(async () => undefined);
+      const run = vi.fn(async (input: ManagedCommandExecutionInput) => {
+        input.stderr(Buffer.from("PARTIAL_TASK_STDERR"));
+        return { exitCode };
+      });
+      const sandbox: CommandSandbox = {
+        prepare: async () => managedPrepared(run, release),
+      };
+      const executor = new CommandNodeExecutor({ sandbox });
+
+      const outcome = await executor.execute(commandNode("node", ["task.js"]), context);
+
+      expect(outcome).toMatchObject({
+        status: "failed",
+        error: {
+          code: "command_sandbox_unavailable",
+          message: "Command sandbox execution failed during run managed execution",
+          sideEffectStatus: "uncertain",
+        },
+        evidence: {
+          exitCode: null,
+          stderr: "PARTIAL_TASK_STDERR",
+          terminationStatus: "confirmed",
+        },
+      });
+      expect(release).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("uses the command deadline to cancel managed execution and retains partial task output", async () => {
+    let observedSignal: AbortSignal | undefined;
+    const release = vi.fn(async () => undefined);
+    const run = vi.fn<NonNullable<PreparedCommand["run"]>>(async (input) => {
+      observedSignal = input.signal;
+      input.stdout(Buffer.from("PARTIAL_TASK_STDOUT"));
+      return await new Promise((_resolve, reject) => {
+        input.signal.addEventListener(
+          "abort",
+          () => reject(input.signal.reason ?? new Error("managed execution aborted")),
+          { once: true },
+        );
+      });
+    });
+    const sandbox: CommandSandbox = {
+      prepare: async () => managedPrepared(run, release),
+    };
+    const executor = new CommandNodeExecutor({ sandbox });
+
+    const outcome = await executor.execute(commandNode("node", ["task.js"], 10), context);
+
+    expect(observedSignal?.aborted).toBe(true);
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "command_timeout",
+        message: "command exceeded timeout of 10ms",
+        sideEffectStatus: "uncertain",
+      },
+      evidence: {
+        exitCode: null,
+        timedOut: true,
+        aborted: false,
+        stdout: "PARTIAL_TASK_STDOUT",
+      },
+    });
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves operator cancellation across managed execution and releases its container", async () => {
+    const controller = new AbortController();
+    let markStarted: () => void = () => undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const release = vi.fn(async () => undefined);
+    const run = vi.fn<NonNullable<PreparedCommand["run"]>>(async (input) => {
+      input.stderr(Buffer.from("PARTIAL_TASK_STDERR"));
+      markStarted();
+      return await new Promise((_resolve, reject) => {
+        input.signal.addEventListener(
+          "abort",
+          () => reject(input.signal.reason ?? new Error("managed execution aborted")),
+          { once: true },
+        );
+      });
+    });
+    const sandbox: CommandSandbox = {
+      prepare: async () => managedPrepared(run, release),
+    };
+    const executor = new CommandNodeExecutor({ sandbox });
+    const execution = executor.execute(commandNode("node", ["task.js"], 10_000), {
+      ...context,
+      signal: controller.signal,
+    });
+    await started;
+    controller.abort(new Error("PRIVATE_OPERATOR_CANCELLATION"));
+
+    const outcome = await execution;
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "command_aborted",
+        message: "command was cancelled",
+        sideEffectStatus: "uncertain",
+      },
+      evidence: {
+        exitCode: null,
+        timedOut: false,
+        aborted: true,
+        stderr: "PARTIAL_TASK_STDERR",
+      },
+    });
+    expect(JSON.stringify(outcome)).not.toContain("PRIVATE_OPERATOR_CANCELLATION");
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports managed cleanup uncertainty before a timeout outcome", async () => {
+    const release = vi.fn(async () => {
+      throw new Error("Container command cleanup is not proved");
+    });
+    const run = vi.fn<NonNullable<PreparedCommand["run"]>>(async (input) => {
+      return await new Promise((_resolve, reject) => {
+        input.signal.addEventListener(
+          "abort",
+          () => reject(input.signal.reason ?? new Error("managed execution aborted")),
+          { once: true },
+        );
+      });
+    });
+    const sandbox: CommandSandbox = {
+      prepare: async () => managedPrepared(run, release),
+    };
+    const executor = new CommandNodeExecutor({ sandbox });
+
+    const outcome = await executor.execute(commandNode("node", ["task.js"], 10), context);
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "command_sandbox_cleanup_failed",
+        message: "Container command cleanup is not proved",
+        sideEffectStatus: "uncertain",
+      },
+      evidence: {
+        exitCode: null,
+        timedOut: true,
+        terminationStatus: "unconfirmed",
+      },
+    });
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    {
+      stage: "attach execution output" as CommandSandboxExecutionStage,
+      expectedSideEffectStatus: "none",
+      expectedEvidence: null,
+    },
+    {
+      stage: "wait for execution" as CommandSandboxExecutionStage,
+      expectedSideEffectStatus: "uncertain",
+      expectedEvidence: {
+        exitCode: null,
+        stdout: "PARTIAL_TASK_STDOUT",
+        terminationStatus: "confirmed",
+      },
+    },
+  ] as const)(
+    "distinguishes a $stage failure from control failure after possible task start",
+    async ({ stage, expectedSideEffectStatus, expectedEvidence }) => {
+      const release = vi.fn(async () => undefined);
+      const run = vi.fn(async (input: ManagedCommandExecutionInput) => {
+        if (stage !== "attach execution output") {
+          input.stdout(Buffer.from("PARTIAL_TASK_STDOUT"));
+        }
+        throw new CommandSandboxExecutionError(stage, new Error("PRIVATE_DOCKER_CONTROL_FAILURE"));
+      });
+      const sandbox: CommandSandbox = {
+        prepare: async () => managedPrepared(run, release),
+      };
+      const executor = new CommandNodeExecutor({ sandbox });
+
+      const outcome = await executor.execute(commandNode("node", ["task.js"]), context);
+
+      expect(outcome).toMatchObject({
+        status: "failed",
+        error: {
+          code: "command_sandbox_unavailable",
+          message: `Command sandbox execution failed during ${stage}`,
+          sideEffectStatus: expectedSideEffectStatus,
+        },
+        evidence: expectedEvidence,
+      });
+      expect(JSON.stringify(outcome)).not.toContain("PRIVATE_DOCKER_CONTROL_FAILURE");
+      expect(release).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("retains task evidence when a managed control failure also loses cleanup certainty", async () => {
+    const release = vi.fn(async () => {
+      throw new Error("Container command cleanup is not proved");
+    });
+    const run = vi.fn(async (input: ManagedCommandExecutionInput) => {
+      input.stderr(Buffer.from("PARTIAL_TASK_STDERR"));
+      throw new CommandSandboxExecutionError("wait for execution");
+    });
+    const sandbox: CommandSandbox = {
+      prepare: async () => managedPrepared(run, release),
+    };
+    const executor = new CommandNodeExecutor({ sandbox });
+
+    const outcome = await executor.execute(commandNode("node", ["task.js"]), context);
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "command_sandbox_cleanup_failed",
+        message: "Container command cleanup is not proved",
+        sideEffectStatus: "uncertain",
+      },
+      evidence: {
+        exitCode: null,
+        stderr: "PARTIAL_TASK_STDERR",
+        terminationStatus: "unconfirmed",
+      },
+    });
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([null, undefined, "PRIVATE_MANAGED_REJECTION", { private: "PRIVATE_OBJECT" }])(
+    "closes a non-Error managed execution rejection: %j",
+    async (rejection) => {
+      const release = vi.fn(async () => undefined);
+      const run = vi.fn<NonNullable<PreparedCommand["run"]>>(async () => {
+        throw rejection;
+      });
+      const sandbox: CommandSandbox = {
+        prepare: async () => managedPrepared(run, release),
+      };
+      const executor = new CommandNodeExecutor({ sandbox });
+
+      const outcome = await executor.execute(commandNode("node", ["task.js"]), context);
+
+      expect(outcome).toMatchObject({
+        status: "failed",
+        error: {
+          code: "command_sandbox_unavailable",
+          message: "Command sandbox execution failed during run managed execution",
+          retryable: false,
+          sideEffectStatus: "uncertain",
+        },
+        evidence: {
+          exitCode: null,
+          terminationStatus: "confirmed",
+        },
+      });
+      expect(JSON.stringify(outcome)).not.toContain("PRIVATE_");
+      expect(release).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it("fails with no side effects when sandbox preparation fails", async () => {
     const sandbox = new FakeCommandSandbox(undefined, new Error("bubblewrap unavailable"));
     const executor = new CommandNodeExecutor({ sandbox });
@@ -146,6 +458,31 @@ describe("CommandNodeExecutor sandbox boundary", () => {
       evidence: null,
     });
     expect(sandbox.releaseCalls).toBe(0);
+  });
+
+  it("preserves preparation cleanup uncertainty before process evidence exists", async () => {
+    const cleanupFailure = new AggregateError(
+      [new Error("PRIVATE_PREPARATION"), new Error("PRIVATE_CLEANUP")],
+      "Container command preparation cleanup is not proved",
+    );
+    const sandbox = new FakeCommandSandbox(undefined, cleanupFailure);
+    const executor = new CommandNodeExecutor({ sandbox });
+
+    const outcome = await executor.execute(
+      commandNode(process.execPath, ["-e", "process.exit(0)"]),
+      context,
+    );
+
+    expect(outcome).toEqual({
+      status: "failed",
+      error: {
+        code: "command_sandbox_cleanup_failed",
+        message: cleanupFailure.message,
+        retryable: false,
+        sideEffectStatus: "uncertain",
+      },
+      evidence: null,
+    });
   });
 
   it("includes sandbox preparation in the declared command deadline", async () => {
@@ -199,7 +536,7 @@ describe("CommandNodeExecutor sandbox boundary", () => {
           );
         }),
     };
-    const executor = new CommandNodeExecutor({ sandbox });
+    const executor = new CommandNodeExecutor({ sandbox, preparationSettlementMs: 20 });
     const startedAt = performance.now();
 
     const outcome = await executor.execute(
@@ -210,9 +547,49 @@ describe("CommandNodeExecutor sandbox boundary", () => {
     expect(performance.now() - startedAt).toBeLessThan(250);
     expect(outcome).toMatchObject({
       status: "failed",
-      error: { code: "command_timeout", sideEffectStatus: "none" },
+      error: { code: "command_timeout", sideEffectStatus: "uncertain" },
       evidence: null,
     });
+  });
+
+  it("reports a late preparation cleanup failure before returning the timeout", async () => {
+    const releaseError = new Error("PRIVATE_LATE_CONTAINER_CLEANUP");
+    const release = vi.fn(async () => {
+      throw releaseError;
+    });
+    const sandbox: CommandSandbox = {
+      prepare: async () =>
+        await new Promise<PreparedCommand>((resolve) => {
+          setTimeout(
+            () =>
+              resolve({
+                processContainment: "linux-pid-namespace",
+                launch: { executable: process.execPath, args: [], env: {} },
+                evidence: sandboxEvidence,
+                release,
+              }),
+            20,
+          );
+        }),
+    };
+    const executor = new CommandNodeExecutor({ sandbox, preparationSettlementMs: 100 });
+
+    const outcome = await executor.execute(
+      commandNode(process.execPath, ["-e", "process.exit(0)"], 5),
+      context,
+    );
+
+    expect(outcome).toEqual({
+      status: "failed",
+      error: {
+        code: "command_sandbox_cleanup_failed",
+        message: releaseError.message,
+        retryable: false,
+        sideEffectStatus: "uncertain",
+      },
+      evidence: null,
+    });
+    expect(release).toHaveBeenCalledTimes(1);
   });
 
   it("does not spawn when synchronous preparation returns after the absolute deadline", async () => {
@@ -260,6 +637,44 @@ describe("CommandNodeExecutor sandbox boundary", () => {
       evidence: null,
     });
     expect(sandbox.releaseCalls).toBe(1);
+  });
+
+  it("rechecks prepared sandbox authority immediately before launcher spawn", async () => {
+    const authorityError = new Error("container command runtime identity changed before launch");
+    const beforeLaunch = vi.fn(async () => {
+      throw authorityError;
+    });
+    const release = vi.fn(async () => undefined);
+    const sandbox: CommandSandbox = {
+      prepare: async () =>
+        ({
+          processContainment: "linux-pid-namespace",
+          launch: {
+            executable: process.execPath,
+            args: ["-e", 'process.stdout.write("MUST_NOT_RUN")'],
+            env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+          },
+          evidence: sandboxEvidence,
+          beforeLaunch,
+          release,
+        }) as PreparedCommand,
+    };
+    const executor = new CommandNodeExecutor({ sandbox });
+
+    const outcome = await executor.execute(commandNode("node", []), context);
+
+    expect(outcome).toEqual({
+      status: "failed",
+      error: {
+        code: "command_sandbox_unavailable",
+        message: authorityError.message,
+        retryable: false,
+        sideEffectStatus: "none",
+      },
+      evidence: null,
+    });
+    expect(beforeLaunch).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledTimes(1);
   });
 
   it("does not report success when sandbox cleanup fails after execution", async () => {
@@ -388,5 +803,22 @@ function commandNode(
     type: "command",
     dependsOn: [],
     command: { executable, args, timeoutMs },
+  };
+}
+
+function managedPrepared(
+  run: NonNullable<PreparedCommand["run"]>,
+  release: () => Promise<void>,
+): PreparedCommand {
+  return {
+    processContainment: "linux-pid-namespace",
+    launch: {
+      executable: "/PRIVATE_DOCKER_CONTROL_LAUNCHER",
+      args: ["start", "PRIVATE_CONTAINER_ID"],
+      env: {},
+    },
+    evidence: sandboxEvidence,
+    run,
+    release,
   };
 }

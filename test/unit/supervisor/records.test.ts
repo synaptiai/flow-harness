@@ -67,6 +67,36 @@ describe("supervisor durable records", () => {
     expect(() => parseJobRecord({ ...job, extra: true })).toThrow(/unrecognized/i);
   });
 
+  it("binds a selected sandbox profile while retaining legacy native records", () => {
+    const legacy = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "legacy-native-job",
+      mode: "run",
+      sourceName: "/workspace/workflow.yaml",
+      workflowSource: "kind: Workflow\n",
+      cwd: "/workspace",
+      token: "e".repeat(64),
+      createdAt: "2026-08-07T12:00:00.000Z",
+    });
+    const container = createJobRecord({
+      ...legacy,
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "container-job",
+      sandboxProfile: "container",
+      token: "f".repeat(64),
+    });
+
+    expect(legacy).not.toHaveProperty("sandboxProfile");
+    expect(parseJobRecord(structuredClone(legacy))).toEqual(legacy);
+    expect(container.sandboxProfile).toBe("container");
+    expect(() => parseJobRecord({ ...container, sandboxProfile: "native" })).toThrow(/digest/i);
+    expect(calculateJobDigest({ ...container, sandboxProfile: undefined })).not.toBe(
+      container.digest,
+    );
+  });
+
   it("binds detached capability bytes into the immutable job digest", () => {
     const capabilitySnapshot = createCapabilitySnapshot([
       {

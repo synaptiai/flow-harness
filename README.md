@@ -42,6 +42,7 @@ through an optional external profile.
 | Evidence-bound prompt candidates | Flow implements zero-tool model generation from tuning-only evidence, strict prompt overlays, paired evaluation, reviewed activation, durable run snapshots, and rollback |
 | Proof-safe fresh recovery of interrupted agent attempts | Implemented as explicit opt-in for read-only attempts and edit attempts proven not applied |
 | Fail-closed sandboxed command isolation | Flow implements filesystem and network isolation on Linux and macOS. Linux alone provides strict agent-command descendant lifecycle containment |
+| Higher-isolation container command profile | Implemented behind operator-only selection; the pinned Linux x64 engine runtime gate passes |
 | Signed registries, automatic updates, policy/UI packages, and model network tools | Planned |
 | VM-grade isolation of the host-side agent runtime | Planned |
 
@@ -169,6 +170,87 @@ Preparation builds the image twice and compares both identities. It stores local
 under the configured project `.flow` directory. A fixed-stage preflight rejects an incompatible
 host before build one. Preparation repeats the authoritative inspection after build two. Evaluation
 does not build or pull an image.
+
+### Select the container command profile
+
+The native command profile is the built-in default. A trusted operator can select the
+higher-isolation container profile after Prime runtime preparation. Add this field to the operator
+file in `${XDG_CONFIG_HOME}/flow/config.yaml`, or `${HOME}/.config/flow/config.yaml` when
+`XDG_CONFIG_HOME` is absent:
+
+```yaml
+apiVersion: flow.synapti.ai/v1alpha1
+kind: FlowOperatorConfig
+sandbox:
+  profile: container
+```
+
+Do not add this field to `.flow/config.yaml`. Project configuration cannot select or widen sandbox
+authority. Run `flow config show` after the change. The effective policy digest changes when the
+profile changes. An active supervisor must reach idle and shut down before it can bind the new
+digest.
+
+The `flow-container-v1` profile starts one Docker container per command. It uses the prepared Prime
+image, Docker API 1.51, the `flow-prime-runc` runtime, and the current non-root host user identity.
+Flow preserves the exact executable and argument vector without a shell. The selected workspace is
+the only read-write bind. Explicit runtime support paths are read-only binds.
+
+Flow attaches to the container output before start, starts the verified full container ID, and
+waits through Docker API 1.51. The one command deadline owns the wait. Flow decodes Docker's
+multiplexed stream and records only bounded task standard output and standard error. Docker attach,
+start, wait, stream, and attachment-release failures use fixed public stages. Docker control text
+does not become task output or an exit code.
+
+A control failure after possible start retains bounded task output and reports uncertain command
+side effects. Confirmed container absence does not undo earlier workspace writes.
+
+Nested protected paths are masked inside the workspace. Flow always protects project `.flow`
+state from the trusted project root. A protected path at or above the workspace rejects before
+Docker mutation. A workspace that would contain the configured project root also rejects. A
+runtime support bind that overlaps protected state also rejects.
+
+Before preparation, bounded and cancellation-aware discovery finds existing sensitive workspace
+entries. Flow masks environment files, private-key files, project `.flow` state, and private Flow
+workspace collections. Existing Git metadata stays readable through the workspace bind, but an
+explicit inspected read-only path prevents container writes. A linked or special `.git` entry is
+masked instead. This discovery is not an atomic host filesystem snapshot and does not defend
+against concurrent changes by the trusted host user or root.
+
+Flow records a bounded workspace content snapshot before Docker creation. The snapshot accepts at
+most 100,000 entries and 10 GiB of regular-file content. It binds readable file bytes and modes,
+directories, symlink targets, and masked-path exclusion identities. It does not hash masked secret
+content. Flow re-observes the same snapshot immediately before launch and rejects drift.
+
+The root filesystem is read-only. Task networking and IPC are disabled. Flow drops all
+capabilities. A command-only seccomp projection denies socket creation and socket-specific
+syscalls. The command inherits no network socket. It cannot bind local TCP or Unix sockets inside
+the isolated loopback namespace.
+
+Fixed cgroup process, memory, CPU, file, descriptor, temporary-storage, and core limits also apply.
+The process ceiling uses the container cgroup. Flow does not set `RLIMIT_NPROC` for command
+containers because Linux accounts that limit across every process with the host operator UID,
+including processes outside the container.
+
+Flow writes an owner-only record below `.flow/container-command-intents` before Docker create. It
+adds the inspected full container ID before command launch. Completion, timeout, cancellation, and
+restart recovery remove only the verified full-ID container and require confirmed absence before
+Flow removes the record. An unresolved or foreign container blocks later container commands. Flow
+does not delete a container by name alone.
+
+The live process also owns a retryable settlement for each failed preparation or returned lease.
+It settles that work before another create. Durable orphan recovery correctly skips the still-live
+process owner.
+
+The complete submitted Docker configuration determines the public sandbox policy digest. This
+digest binds the attested engine, image, runtime, executable, and fixed profile through the static
+policy label. It also binds the workspace snapshot digest, exact process, workspace bind, masks,
+read-only paths, environment, and resource controls. Public evidence contains the digest, not the
+private Docker configuration or host paths.
+
+This profile adds separate filesystem, mount, PID, IPC, cgroup, and network namespaces. The
+container profile still uses the shared Linux kernel and Docker daemon. It is not a VM-grade or
+multi-tenant boundary. Use a microVM or managed sandbox when the workload is hostile to the host
+kernel or Docker daemon.
 
 On Ubuntu or Debian, install the native sandbox dependencies:
 

@@ -13,8 +13,8 @@ import type {
 } from "../../../src/application/ports.js";
 import { type CliIo, main } from "../../../src/cli/main.js";
 import {
-  createAgentCapabilityEvidence,
   type CapabilitySnapshot,
+  createAgentCapabilityEvidence,
 } from "../../../src/domain/capability/agent-skills.js";
 import { createCapabilityBundleSource } from "../../../src/domain/capability/capability-bundles.js";
 import {
@@ -387,6 +387,7 @@ function effectiveConfig(projectRoot: string): EffectiveFlowConfig {
   return {
     apiVersion: FLOW_CONFIG_API_VERSION,
     supervisor,
+    sandbox: { profile: "native" },
     policyDigest: calculateFlowPolicyDigest(supervisor),
     projectRoot,
     sources: {

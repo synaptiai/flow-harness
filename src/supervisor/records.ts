@@ -10,7 +10,11 @@ import {
   persistedCapabilitySnapshotSchema,
 } from "../domain/capability/agent-skills.js";
 import { parseWorkflowPackageLocator } from "../domain/capability/workflow-packages.js";
-import { MAX_ACTIVE_WORKERS, MAX_QUEUED_JOBS } from "../domain/config/resolver.js";
+import {
+  type FlowSandboxProfile,
+  MAX_ACTIVE_WORKERS,
+  MAX_QUEUED_JOBS,
+} from "../domain/config/resolver.js";
 import { SUPERVISOR_PROTOCOL_VERSION } from "./protocol.js";
 
 const uuidSchema = z.uuid();
@@ -57,6 +61,7 @@ export interface JobDigestInput {
   readonly mode: "run" | "resume";
   readonly sourceName: string;
   readonly workflowSource: string;
+  readonly sandboxProfile?: FlowSandboxProfile | undefined;
   readonly cwd: string;
   readonly projectRoot?: string | undefined;
   readonly protectedPaths?: readonly string[] | undefined;
@@ -179,6 +184,7 @@ const jobRecordShape = {
   mode: z.enum(["run", "resume"]),
   sourceName: workflowSourceNameSchema,
   workflowSource: z.string().min(1).max(20_000_000),
+  sandboxProfile: z.enum(["native", "container"]).optional(),
   cwd: absolutePathSchema,
   projectRoot: absolutePathSchema.optional(),
   protectedPaths: protectedPathsSchema.optional(),
@@ -496,6 +502,7 @@ export function calculateJobDigest(record: JobDigestInput | JobRecord): string {
     mode: record.mode,
     sourceName: record.sourceName,
     workflowSource: record.workflowSource,
+    ...(record.sandboxProfile === undefined ? {} : { sandboxProfile: record.sandboxProfile }),
     cwd: record.cwd,
     ...(record.projectRoot === undefined ? {} : { projectRoot: record.projectRoot }),
     ...(record.protectedPaths === undefined ? {} : { protectedPaths: record.protectedPaths }),
