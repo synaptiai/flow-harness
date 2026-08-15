@@ -4,16 +4,32 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
-import { createEvaluationSchedule } from "../../../../src/domain/evaluation/plan.js";
+import {
+  type AgentSkillCandidateIdentity,
+  calculateAgentSkillCandidateIdentityDigest,
+} from "../../../../src/domain/adaptation/agent-skill-candidate.js";
+import {
+  calculateEvaluationPlanDigest,
+  createEvaluationSchedule,
+  type EvaluationPlanIdentity,
+} from "../../../../src/domain/evaluation/plan.js";
 import { createEvaluationTrialRecord } from "../../../../src/domain/evaluation/records.js";
 import { createTuningEvidencePacket } from "../../../../src/domain/evaluation/tuning-evidence.js";
 import { compileWorkflowText } from "../../../../src/domain/workflow/compiler.js";
 import { calculateWorkflowDigest } from "../../../../src/domain/workflow/digest.js";
 import {
+  discoverProjectAgentSkills,
+  snapshotSelectedAgentSkills,
+} from "../../../../src/infrastructure/fs/local-agent-skill-catalog.js";
+import {
   admitLocalEvaluationPlan,
   MAX_EVALUATION_INSTRUCTION_BYTES,
 } from "../../../../src/infrastructure/fs/local-evaluation-plan.js";
-import { createPublicEvaluationHeader } from "../../../../src/infrastructure/fs/local-evaluation-store.js";
+import {
+  createPublicEvaluationHeader,
+  LocalEvaluationStore,
+  type PublicEvaluationHeader,
+} from "../../../../src/infrastructure/fs/local-evaluation-store.js";
 import { primeExternalHarnessIdentity } from "../../../fixtures/evaluation/prime-external-harness-identity.js";
 
 const temporaryDirectories: string[] = [];
@@ -301,6 +317,323 @@ describe("local evaluation plan admission", () => {
       },
       workflow: { sourceKind: "prompt-candidate-projection" },
     });
+  });
+
+  it("admits an Agent Skill candidate as one workflow with paired immutable skill snapshots", async () => {
+    const project = await evaluationProject();
+    const fixture = await configureAgentSkillCandidateProfile(project);
+
+    const admitted = await admitLocalEvaluationPlan(join(project, "evaluation.yaml"));
+    const baseline = admitted.profiles[0];
+    const candidate = admitted.profiles[1];
+    if (baseline?.adapter !== "flow-workflow-v1" || candidate?.adapter !== "flow-workflow-v1") {
+      throw new Error("Agent Skill evaluation fixture is not a paired Flow workflow");
+    }
+
+    expect(baseline.workflow).toMatchObject({
+      sourceKind: "file",
+      sourceSha256: sha256(fixture.workflowText),
+      workflowDigest: fixture.workflowDigest,
+    });
+    expect(candidate.workflow).toMatchObject({
+      sourceKind: "agent-skill-candidate-projection",
+      sourceSha256: sha256(fixture.workflowText),
+      workflowDigest: fixture.workflowDigest,
+    });
+    const candidateIdentity = candidate.candidate;
+    if (candidateIdentity === undefined || !("kind" in candidateIdentity)) {
+      throw new Error("Agent Skill evaluation fixture has no Agent Skill candidate identity");
+    }
+    expect(baseline.capabilitySnapshot?.digest).toBe(
+      candidateIdentity.baseline.skill.capabilityDigest,
+    );
+    expect(candidate.capabilitySnapshot?.digest).toBe(
+      candidateIdentity.projectedSkill.capabilityDigest,
+    );
+    expect(candidate.capabilitySnapshot?.digest).not.toBe(baseline.capabilitySnapshot?.digest);
+    expect(candidate.workflow.compiled).toEqual(baseline.workflow.compiled);
+    expect(createPublicEvaluationHeader(admitted, "skill-candidate-evaluation").profiles).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "baseline",
+          capabilitySnapshotDigest: baseline.capabilitySnapshot?.digest,
+        }),
+        expect.objectContaining({
+          id: "candidate",
+          capabilitySnapshotDigest: candidate.capabilitySnapshot?.digest,
+          candidate: {
+            provenance: "better.agent-skill-candidate.yaml",
+            identity: expect.objectContaining({
+              kind: "agent-skill-candidate",
+              baseline: expect.objectContaining({
+                skill: expect.objectContaining({ packageDigest: fixture.baselineSkillDigest }),
+              }),
+            }),
+          },
+        }),
+      ]),
+    );
+  });
+
+  it("preserves exact cancellation at a nested Agent Skill candidate boundary", async () => {
+    const project = await evaluationProject();
+    await configureAgentSkillCandidateProfile(project);
+    const controller = new AbortController();
+    const reason = new Error("operator cancelled evaluation candidate admission");
+    const dependencies = {
+      signal: controller.signal,
+      afterCandidatePathValidation: (provenance: string) => {
+        if (provenance === ".flow/skills/review") {
+          controller.abort(reason);
+        }
+      },
+    };
+
+    await expect(
+      admitLocalEvaluationPlan(join(project, "evaluation.yaml"), dependencies),
+    ).rejects.toBe(reason);
+  });
+
+  it("rejects a redigested durable profile that substitutes one skill snapshot identity", async () => {
+    const project = await evaluationProject();
+    await configureAgentSkillCandidateProfile(project);
+    const admitted = await admitLocalEvaluationPlan(join(project, "evaluation.yaml"));
+    const header = createPublicEvaluationHeader(admitted, "skill-candidate-evaluation");
+    const baseline = header.profiles[0];
+    if (baseline?.adapter !== "flow-workflow-v1") {
+      throw new Error("Agent Skill evaluation fixture has no Flow baseline profile");
+    }
+    const profiles: typeof header.profiles = [
+      { ...baseline, capabilitySnapshotDigest: "f".repeat(64) },
+      ...header.profiles.slice(1),
+    ];
+    const identityProfiles: EvaluationPlanIdentity["profiles"] = profiles.map((profile) => {
+      if (profile.adapter === "pi-native-v1") {
+        return { id: profile.id, adapter: profile.adapter, harness: profile.harness };
+      }
+      if (profile.adapter === "omp-native-v1") {
+        return { id: profile.id, adapter: profile.adapter, harness: profile.harness };
+      }
+      if (profile.adapter === "prime-agent-native-v1") {
+        return { id: profile.id, adapter: profile.adapter, harness: profile.harness };
+      }
+      return {
+        id: profile.id,
+        adapter: profile.adapter,
+        workflow: {
+          provenance: profile.workflow.provenance,
+          sourceSha256: profile.workflow.sourceSha256,
+          workflowDigest: profile.workflow.workflowDigest,
+          ...(profile.workflow.sourceKind === undefined
+            ? {}
+            : { sourceKind: profile.workflow.sourceKind }),
+        },
+        ...(profile.capabilitySnapshotDigest === undefined
+          ? {}
+          : { capabilitySnapshotDigest: profile.capabilitySnapshotDigest }),
+        ...(profile.candidate === undefined ? {} : { candidate: profile.candidate }),
+      };
+    });
+    const identity: EvaluationPlanIdentity = {
+      version: 1,
+      apiVersion: header.apiVersion,
+      id: header.planId,
+      suite: header.suite,
+      profiles: identityProfiles,
+      controls: header.controls,
+      seeds: header.seeds,
+      order: header.order,
+      comparison: header.comparison,
+    };
+    const planDigest = calculateEvaluationPlanDigest(identity);
+    const redigested = {
+      ...header,
+      profiles,
+      planDigest,
+      schedule: [
+        ...createEvaluationSchedule(
+          planDigest,
+          header.suite.tasks.map((task) => task.id),
+          profiles.map((profile) => profile.id),
+          header.seeds,
+        ),
+      ],
+    };
+
+    await expect(
+      new LocalEvaluationStore(join(project, "evaluations")).create(redigested),
+    ).rejects.toMatchObject({ code: "corrupt" });
+  });
+
+  it.each([
+    {
+      label: "candidate manifest provenance",
+      mutate: (header: MutablePublicHeader) => {
+        requiredSkillCandidateIdentity(header).manifest.provenance = "substitute.yaml";
+      },
+    },
+    {
+      label: "baseline package digest",
+      mutate: (header: MutablePublicHeader) => {
+        requiredSkillCandidateIdentity(header).baseline.skill.packageDigest = "f".repeat(64);
+      },
+    },
+    {
+      label: "projected package digest",
+      mutate: (header: MutablePublicHeader) => {
+        requiredSkillCandidateIdentity(header).projectedSkill.packageDigest = "f".repeat(64);
+      },
+    },
+    {
+      label: "baseline capability digest",
+      mutate: (header: MutablePublicHeader) => {
+        requiredSkillCandidateIdentity(header).baseline.skill.capabilityDigest = "f".repeat(64);
+      },
+    },
+    {
+      label: "projected capability digest",
+      mutate: (header: MutablePublicHeader) => {
+        requiredSkillCandidateIdentity(header).projectedSkill.capabilityDigest = "f".repeat(64);
+      },
+    },
+    {
+      label: "baseline workflow source",
+      mutate: (header: MutablePublicHeader) => {
+        requiredSkillCandidateIdentity(header).baseline.workflow.sourceSha256 = "f".repeat(64);
+      },
+    },
+    {
+      label: "baseline profile package list",
+      mutate: (header: MutablePublicHeader) => {
+        requiredFlowProfile(header, "baseline").capabilityPackageDigests = ["f".repeat(64)];
+      },
+    },
+    {
+      label: "candidate profile package list",
+      mutate: (header: MutablePublicHeader) => {
+        requiredFlowProfile(header, "candidate").capabilityPackageDigests = ["f".repeat(64)];
+      },
+    },
+  ])("rejects a redigested durable $label substitution", async ({ mutate }) => {
+    const project = await evaluationProject();
+    await configureAgentSkillCandidateProfile(project);
+    const admitted = await admitLocalEvaluationPlan(join(project, "evaluation.yaml"));
+    const header = structuredClone(
+      createPublicEvaluationHeader(admitted, "skill-candidate-evaluation"),
+    ) as MutablePublicHeader;
+    mutate(header);
+    redigestSkillCandidateHeader(header);
+
+    await expect(
+      new LocalEvaluationStore(join(project, "evaluations")).create(
+        header as PublicEvaluationHeader,
+      ),
+    ).rejects.toMatchObject({ code: "corrupt" });
+  });
+
+  it.each(["baseline", "candidate"] as const)(
+    "rejects a jointly redigested %s skill package and package-list substitution",
+    async (profileId) => {
+      const project = await evaluationProject();
+      await configureAgentSkillCandidateProfile(project);
+      const admitted = await admitLocalEvaluationPlan(join(project, "evaluation.yaml"));
+      const header = structuredClone(
+        createPublicEvaluationHeader(admitted, "skill-candidate-evaluation"),
+      ) as MutablePublicHeader;
+      const substitutedDigest = "f".repeat(64);
+      if (profileId === "baseline") {
+        requiredSkillCandidateIdentity(header).baseline.skill.packageDigest = substitutedDigest;
+      } else {
+        requiredSkillCandidateIdentity(header).projectedSkill.packageDigest = substitutedDigest;
+      }
+      requiredFlowProfile(header, profileId).capabilityPackageDigests = [substitutedDigest];
+      redigestSkillCandidateHeader(header);
+
+      await expect(
+        new LocalEvaluationStore(join(project, "evaluations")).create(
+          header as PublicEvaluationHeader,
+        ),
+      ).rejects.toMatchObject({ code: "corrupt" });
+    },
+  );
+
+  it("preserves a nested candidate selection provenance in durable identity", async () => {
+    const project = await evaluationProject();
+    await configureAgentSkillCandidateProfile(project);
+    const nestedRoot = join(project, "candidates");
+    await mkdir(join(nestedRoot, ".flow", "skills", "review"), { recursive: true });
+    for (const relativePath of [
+      "better.agent-skill-candidate.yaml",
+      "baseline.workflow.yaml",
+      "tuning.json",
+      ".flow/skills/review/SKILL.md",
+      ".flow/skills/review/reference.md",
+    ]) {
+      await writeFile(join(nestedRoot, relativePath), await readFile(join(project, relativePath)));
+    }
+    const plan = await readFile(join(project, "evaluation.yaml"), "utf8");
+    await writeFile(
+      join(project, "evaluation.yaml"),
+      plan.replace(
+        "candidate: better.agent-skill-candidate.yaml",
+        "candidate: candidates/better.agent-skill-candidate.yaml",
+      ),
+    );
+
+    const admitted = await admitLocalEvaluationPlan(join(project, "evaluation.yaml"));
+    const header = createPublicEvaluationHeader(admitted, "nested-skill-candidate-evaluation");
+    expect(header.profiles[1]).toMatchObject({
+      candidate: {
+        provenance: "candidates/better.agent-skill-candidate.yaml",
+        identity: {
+          manifest: { provenance: "better.agent-skill-candidate.yaml" },
+        },
+      },
+    });
+    await expect(
+      new LocalEvaluationStore(join(project, "evaluations")).create(header),
+    ).resolves.toBeUndefined();
+  });
+
+  it("keeps prompt candidate identity stable across a nested plan selection", async () => {
+    const project = await evaluationProject();
+    await configureCandidateProfile(project);
+    const rootAdmission = await admitLocalEvaluationPlan(join(project, "evaluation.yaml"));
+    const rootCandidate = rootAdmission.profiles[1];
+    if (rootCandidate?.adapter !== "flow-workflow-v1" || rootCandidate.candidate === undefined) {
+      throw new Error("prompt candidate fixture has no admitted candidate profile");
+    }
+    const nestedRoot = join(project, "candidates");
+    await mkdir(nestedRoot);
+    for (const relativePath of [
+      "better.prompt-candidate.yaml",
+      "baseline.workflow.yaml",
+      "tuning.json",
+    ]) {
+      await writeFile(join(nestedRoot, relativePath), await readFile(join(project, relativePath)));
+    }
+    const plan = await readFile(join(project, "evaluation.yaml"), "utf8");
+    await writeFile(
+      join(project, "evaluation.yaml"),
+      plan.replace(
+        "candidate: better.prompt-candidate.yaml",
+        "candidate: candidates/better.prompt-candidate.yaml",
+      ),
+    );
+
+    const nestedAdmission = await admitLocalEvaluationPlan(join(project, "evaluation.yaml"));
+    const nestedCandidate = nestedAdmission.profiles[1];
+    if (
+      nestedCandidate?.adapter !== "flow-workflow-v1" ||
+      nestedCandidate.candidate === undefined
+    ) {
+      throw new Error("nested prompt candidate fixture has no admitted candidate profile");
+    }
+    expect(nestedCandidate.candidate.candidateDigest).toBe(rootCandidate.candidate.candidateDigest);
+    expect(nestedCandidate.candidate.manifest.provenance).toBe("better.prompt-candidate.yaml");
+    expect(
+      createPublicEvaluationHeader(nestedAdmission, "nested-prompt-candidate-evaluation"),
+    ).toBeDefined();
   });
 
   it("requires a candidate projection to overlay the declared comparison baseline", async () => {
@@ -646,6 +979,173 @@ async function configureCandidateProfile(
     join(project, "evaluation.yaml"),
     plan.replace("workflow: candidate.workflow.yaml", "candidate: better.prompt-candidate.yaml"),
   );
+}
+
+async function configureAgentSkillCandidateProfile(project: string) {
+  const skillRoot = join(project, ".flow", "skills", "review");
+  await mkdir(skillRoot, { recursive: true });
+  const skillManifest = `---
+name: review
+description: Review the result against the task.
+metadata:
+  owner: synapti
+allowed-tools: Read
+---
+# Review
+
+Check correctness.
+`;
+  const resourceText = "Check the evidence.\n";
+  await writeFile(join(skillRoot, "SKILL.md"), skillManifest);
+  await writeFile(join(skillRoot, "reference.md"), resourceText);
+  const workflowText = workflowSource("deterministic", 8).replace(
+    "      tools: [read, edit]",
+    "      tools: [read, edit]\n      skills: [review]",
+  );
+  const compiled = compileWorkflowText(workflowText);
+  const workflowDigest = calculateWorkflowDigest(compiled);
+  await writeFile(join(project, "baseline.workflow.yaml"), workflowText);
+  const evidence = tuningEvidence(workflowDigest);
+  const evidenceText = JSON.stringify(evidence);
+  await writeFile(join(project, "tuning.json"), evidenceText);
+  const snapshot = await snapshotSelectedAgentSkills(await discoverProjectAgentSkills(project), [
+    "review",
+  ]);
+  const skill = snapshot.packages[0];
+  if (skill === undefined) {
+    throw new Error("Agent Skill evaluation fixture has no baseline package");
+  }
+  await writeFile(
+    join(project, "better.agent-skill-candidate.yaml"),
+    JSON.stringify({
+      apiVersion: "flow.synapti.ai/v1alpha1",
+      kind: "AgentSkillCandidate",
+      metadata: { id: "better-review", version: "1.0.0" },
+      scope: {
+        kind: "workflow-agent-skill",
+        workflowId: "baseline",
+        skillName: "review",
+      },
+      baseline: {
+        workflow: {
+          path: "baseline.workflow.yaml",
+          sourceSha256: sha256(workflowText),
+          workflowDigest,
+        },
+        skill: { path: ".flow/skills/review", packageDigest: skill.digest },
+      },
+      evidence: [
+        {
+          path: "tuning.json",
+          sourceSha256: sha256(evidenceText),
+          evidenceDigest: evidence.evidenceDigest,
+          planDigest: evidence.evaluation.planDigest,
+        },
+      ],
+      changes: {
+        resources: [
+          {
+            path: "reference.md",
+            expectedSha256: sha256(resourceText),
+            value: "Check correctness, security, and evidence.\n",
+          },
+        ],
+      },
+    }),
+  );
+  const plan = await readFile(join(project, "evaluation.yaml"), "utf8");
+  await writeFile(
+    join(project, "evaluation.yaml"),
+    plan.replace(
+      "workflow: candidate.workflow.yaml",
+      "candidate: better.agent-skill-candidate.yaml",
+    ),
+  );
+  return { workflowText, workflowDigest, baselineSkillDigest: skill.digest };
+}
+
+type MutablePublicHeader = DeepMutable<PublicEvaluationHeader>;
+type MutableFlowProfile = Extract<
+  MutablePublicHeader["profiles"][number],
+  { adapter: "flow-workflow-v1" }
+>;
+
+type DeepMutable<Value> = Value extends (...args: never[]) => unknown
+  ? Value
+  : Value extends readonly (infer Item)[]
+    ? DeepMutable<Item>[]
+    : Value extends object
+      ? { -readonly [Key in keyof Value]: DeepMutable<Value[Key]> }
+      : Value;
+
+function requiredFlowProfile(header: MutablePublicHeader, id: string): MutableFlowProfile {
+  const profile = header.profiles.find(
+    (item): item is MutableFlowProfile => item.adapter === "flow-workflow-v1" && item.id === id,
+  );
+  if (profile === undefined) {
+    throw new Error(`Agent Skill durable fixture has no ${id} Flow profile`);
+  }
+  return profile;
+}
+
+function requiredSkillCandidateIdentity(
+  header: MutablePublicHeader,
+): DeepMutable<AgentSkillCandidateIdentity> {
+  const identity = requiredFlowProfile(header, "candidate").candidate?.identity;
+  if (identity === undefined || !("kind" in identity)) {
+    throw new Error("Agent Skill durable fixture has no skill candidate identity");
+  }
+  return identity;
+}
+
+function redigestSkillCandidateHeader(header: MutablePublicHeader): void {
+  const candidateIdentity = requiredSkillCandidateIdentity(header);
+  const { candidateDigest: _candidateDigest, ...identityContent } = candidateIdentity;
+  candidateIdentity.candidateDigest = calculateAgentSkillCandidateIdentityDigest(identityContent);
+  const profiles: EvaluationPlanIdentity["profiles"] = header.profiles.map((profile) => {
+    if (profile.adapter !== "flow-workflow-v1") {
+      throw new Error("Agent Skill durable fixture unexpectedly contains an external profile");
+    }
+    return {
+      id: profile.id,
+      adapter: profile.adapter,
+      workflow: {
+        provenance: profile.workflow.provenance,
+        sourceSha256: profile.workflow.sourceSha256,
+        workflowDigest: profile.workflow.workflowDigest,
+        ...(profile.workflow.sourceKind === undefined
+          ? {}
+          : { sourceKind: profile.workflow.sourceKind }),
+      },
+      ...(profile.capabilitySnapshotDigest === undefined
+        ? {}
+        : { capabilitySnapshotDigest: profile.capabilitySnapshotDigest }),
+      ...(profile.capabilityPackageDigests === undefined
+        ? {}
+        : { capabilityPackageDigests: profile.capabilityPackageDigests }),
+      ...(profile.candidate === undefined ? {} : { candidate: profile.candidate }),
+    };
+  });
+  const planIdentity: EvaluationPlanIdentity = {
+    version: 1,
+    apiVersion: header.apiVersion,
+    id: header.planId,
+    suite: header.suite,
+    profiles,
+    controls: header.controls,
+    seeds: header.seeds,
+    order: header.order,
+    comparison: header.comparison,
+  };
+  header.planDigest = calculateEvaluationPlanDigest(planIdentity);
+  header.schedule = [
+    ...createEvaluationSchedule(
+      header.planDigest,
+      header.suite.tasks.map((task) => task.id),
+      header.profiles.map((profile) => profile.id),
+      header.seeds,
+    ),
+  ];
 }
 
 function sha256(value: string): string {

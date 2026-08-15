@@ -490,6 +490,20 @@ export function calculateCapabilitySnapshotDigest(
   );
 }
 
+export function calculateAgentSkillCapabilitySnapshotDigest(
+  packages: readonly { readonly name: string; readonly digest: string }[],
+): string {
+  return sha256(
+    JSON.stringify({
+      version: 1,
+      packages: packages.map((capability) => ({
+        name: capability.name,
+        digest: capability.digest,
+      })),
+    }),
+  );
+}
+
 export function combineCapabilitySnapshots(
   snapshots: readonly CapabilitySnapshot[],
 ): CapabilitySnapshot | undefined {

@@ -54,7 +54,10 @@ export interface PromptActivationStoredEvaluation {
             readonly provenance: string;
             readonly sourceSha256: string;
             readonly workflowDigest: string;
-            readonly sourceKind?: "prompt-candidate-projection" | undefined;
+            readonly sourceKind?:
+              | "prompt-candidate-projection"
+              | "agent-skill-candidate-projection"
+              | undefined;
           };
           readonly candidate?:
             | {

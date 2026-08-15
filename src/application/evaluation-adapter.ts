@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import type { CapabilitySnapshot } from "../domain/capability/agent-skills.js";
 import type { EvaluationOciLease } from "../domain/evaluation/attempt.js";
 import type { EvaluationHarnessOutcome, EvaluationMetrics } from "../domain/evaluation/records.js";
 import { unavailableEvaluationMetrics } from "../domain/evaluation/records.js";
@@ -70,6 +71,7 @@ export interface FlowWorkflowEvaluationProfile {
     readonly compiled: CompiledWorkflow;
     readonly workflowDigest: string;
   };
+  readonly capabilitySnapshot?: CapabilitySnapshot;
 }
 
 export interface FlowWorkflowEvaluationAdapterDependencies {
@@ -106,6 +108,9 @@ export class FlowWorkflowEvaluationAdapter implements HarnessEvaluationAdapter {
         store: this.dependencies.createStore(runId),
         executor: this.dependencies.executor,
         runId,
+        ...(this.profile.capabilitySnapshot === undefined
+          ? {}
+          : { capabilitySnapshot: this.profile.capabilitySnapshot }),
         ...(this.dependencies.workspaceIsolator === undefined
           ? {}
           : { workspaceIsolator: this.dependencies.workspaceIsolator }),

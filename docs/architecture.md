@@ -930,7 +930,7 @@ It does not make task selection representative, control provider stochasticity t
 seed, or turn a bootstrap interval into a universal performance claim. See
 [Reproducible harness evaluation](evaluation.md).
 
-## Adaptive prompt candidate and activation layer
+## Adaptive candidate and prompt activation layer
 
 Gate 7 sits above evaluation. A complete evaluation can produce a canonical tuning-only evidence
 packet. The packet omits regression data, holdout data, verifier evidence, run handles, and schedule
@@ -939,6 +939,11 @@ positions. Admission rejects contradictory outcomes, incomplete pairs, and impos
 A `PromptCandidate` is inert supplemental state. It binds an exact baseline, exact tuning evidence,
 a workflow scope, and prompt replacements for existing root agent nodes. Admission performs stable
 no-follow reads and verifies each declared hash. It changes only the declared prompt fields.
+
+An `AgentSkillCandidate` is a sibling inert source. It binds the same evidence model to one exact
+workflow and one selected Agent Skill package. Admission snapshots the baseline package once,
+projects only declared existing UTF-8 resource replacements, and produces immutable baseline and
+candidate capability snapshots. Package authority fields and the workflow identity cannot change.
 
 The generation service uses the provider-neutral `AgentExecutor` port. The Pi adapter is the first
 implementation. Flow creates one agent request with no tools, skills, or packages. The request
@@ -955,6 +960,13 @@ complete final file can exist in this state. A pre-commit failure with an unsett
 The standard compiler creates the projected workflow. The `flow-workflow-v1` adapter evaluates that
 projection against the exact declared baseline. The evaluation header stores the complete public
 candidate identity without prompt bodies.
+
+For an Agent Skill candidate the compiler output is identical for both profiles. The adapter passes
+the original package snapshot to the baseline and the projected package snapshot to the candidate.
+The workflow runner performs the ordinary capability binding and evidence checks. The scheduler,
+executor, verifier, policy, sandbox, and result contracts do not branch on candidate kind. Durable
+identity stores both capability digests without resource contents. Trial execution and offline
+inspection do not consult live catalogs.
 
 An operator can activate only a complete superior evaluation. Preview creates a deterministic
 proposal from the current head, target, actor, and reason. Apply holds one cross-process mutation
@@ -977,8 +989,11 @@ Rollback changes the index head for future runs. It selects an earlier candidate
 stored baseline artifact for the current lineage. It does not change active runs, rewrite the
 baseline file, or delete artifacts.
 
-A candidate cannot change graphs, tools, skills, packages, models, policy, approvals, budgets,
-verifiers, retries, or routing. Model-authorized evaluation and activation remain unavailable.
+A prompt candidate cannot change graphs, tools, skills, packages, models, policy, approvals,
+budgets, verifiers, retries, or routing. An Agent Skill candidate can change only declared existing
+resource bytes while preserving skill selection and package authority.
+Model-authorized evaluation and activation remain unavailable. Agent Skill activation is also
+unavailable.
 
 ## Non-goals
 

@@ -68,6 +68,24 @@ describe("local evaluation store", () => {
     expect(durableHeader).toContain(admitted.suite.tasks[0]?.verifier.digest);
   });
 
+  it("preserves exact cancellation before the durable evaluation commit", async () => {
+    const { root, admitted } = await admittedEvaluation();
+    const evaluations = join(root, "evaluations");
+    const store = new LocalEvaluationStore(evaluations);
+    const header = createPublicEvaluationHeader(admitted, "evaluation-run");
+    const controller = new AbortController();
+    const reason = new Error("operator cancelled evaluation publication");
+
+    await expect(
+      store.create(header, {
+        signal: controller.signal,
+        afterStagingPrepared: () => controller.abort(reason),
+      }),
+    ).rejects.toBe(reason);
+    expect(await readdir(evaluations)).toEqual([]);
+    await expect(store.read("evaluation-run")).rejects.toMatchObject({ code: "not_found" });
+  });
+
   it("enforces one owner and appends only the exact next digest-chained trial", async () => {
     const { root, admitted } = await admittedEvaluation();
     const stores = [

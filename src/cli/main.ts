@@ -148,10 +148,12 @@ import {
 } from "../infrastructure/fs/flow-config-store.js";
 import { AdmissionStoreError } from "../infrastructure/fs/jsonl-admission-store.js";
 import { JsonlRunStore, RunStoreError } from "../infrastructure/fs/jsonl-run-store.js";
+import { admitLocalAdaptationCandidate } from "../infrastructure/fs/local-adaptation-candidate.js";
 import {
   LocalAgentCommandApprovalChannel,
   LocalAgentCommandApprovalChannelError,
 } from "../infrastructure/fs/local-agent-command-approval-channel.js";
+import { LocalAgentSkillCandidateError } from "../infrastructure/fs/local-agent-skill-candidate.js";
 import {
   AgentSkillCatalogError,
   type ProjectAgentSkillCatalog,
@@ -566,6 +568,7 @@ export async function main(
       error instanceof PromptCandidateError ||
       error instanceof PromptCandidateGenerationError ||
       error instanceof PromptCandidateGenerationExecutionError ||
+      error instanceof LocalAgentSkillCandidateError ||
       error instanceof LocalPromptCandidateError ||
       error instanceof LocalPromptCandidatePublisherError
     ) {
@@ -1605,6 +1608,7 @@ async function evaluationCommand(
       overrides.externalHarnessRegistry ?? new BuiltInExternalHarnessRegistry({ cwd });
     const admitted = await admitLocalEvaluationPlan(resolve(cwd, planArgument), {
       resolveExternalHarnessIdentity: (profile) => registry.resolveIdentity(profile),
+      ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
     });
     io.stdout(
       JSON.stringify(
@@ -1628,6 +1632,9 @@ async function evaluationCommand(
                   id: profile.id,
                   adapter: profile.adapter,
                   workflowDigest: profile.workflow.workflowDigest,
+                  ...(profile.capabilitySnapshot === undefined
+                    ? {}
+                    : { capabilitySnapshotDigest: profile.capabilitySnapshot.digest }),
                   ...(profile.candidate === undefined
                     ? {}
                     : { candidateDigest: profile.candidate.candidateDigest }),
@@ -1692,11 +1699,14 @@ async function evaluationCommand(
     const admitted = await admitLocalEvaluationPlan(resolve(dependencies.cwd, planArgument), {
       resolveExternalHarnessIdentity: (profile) =>
         dependencies.externalHarnessRegistry.resolveIdentity(profile),
+      ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
     });
+    dependencies.signal?.throwIfAborted();
     const evaluationLocation = await resolveEvaluationLocation(
       dependencies,
       values["evaluations-dir"],
     );
+    dependencies.signal?.throwIfAborted();
     const evaluationsDirectory = evaluationLocation.directory;
     const hasExternalProfile = admitted.profiles.some(
       (profile) => profile.adapter !== "flow-workflow-v1",
@@ -1707,34 +1717,43 @@ async function evaluationCommand(
       );
     }
     const projectRoot = evaluationLocation.projectRoot ?? (await realpath(dependencies.cwd));
+    dependencies.signal?.throwIfAborted();
     const evaluationId = values["evaluation-id"] ?? admitted.id;
     const store = new LocalEvaluationStore(evaluationsDirectory);
     const header = createPublicEvaluationHeader(admitted, evaluationId);
     try {
       await store.read(evaluationId);
+      dependencies.signal?.throwIfAborted();
     } catch (error) {
       if (!(error instanceof EvaluationStoreError && error.code === "not_found")) {
         throw error;
       }
-      await store.create(header);
+      dependencies.signal?.throwIfAborted();
+      await store.create(header, {
+        ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
+      });
     }
-    const claimed = await store.claim(evaluationId, admitted.planDigest);
-    const evaluationRuntime = join(evaluationsDirectory, evaluationId, "runtime");
-    const runStoreDirectory = join(evaluationsDirectory, evaluationId, "runs");
-    const evaluationRoot = join(evaluationsDirectory, evaluationId);
-    const workspaceIsolator = dependencies.createWorkspaceIsolator(
-      evaluationRuntime,
-      [
-        evaluationRuntime,
-        ...(evaluationLocation.projectRoot === null
-          ? []
-          : [join(evaluationLocation.projectRoot, ".flow")]),
-      ],
-      evaluationRuntime,
-      projectRoot,
-    );
-    const adapters = new Map<string, HarnessEvaluationAdapter>();
+    dependencies.signal?.throwIfAborted();
+    const claimed = await store.claim(evaluationId, admitted.planDigest, {
+      ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
+    });
     try {
+      dependencies.signal?.throwIfAborted();
+      const evaluationRuntime = join(evaluationsDirectory, evaluationId, "runtime");
+      const runStoreDirectory = join(evaluationsDirectory, evaluationId, "runs");
+      const evaluationRoot = join(evaluationsDirectory, evaluationId);
+      const workspaceIsolator = dependencies.createWorkspaceIsolator(
+        evaluationRuntime,
+        [
+          evaluationRuntime,
+          ...(evaluationLocation.projectRoot === null
+            ? []
+            : [join(evaluationLocation.projectRoot, ".flow")]),
+        ],
+        evaluationRuntime,
+        projectRoot,
+      );
+      const adapters = new Map<string, HarnessEvaluationAdapter>();
       await runEvaluationTrials({
         plan: {
           planDigest: admitted.planDigest,
@@ -2016,8 +2035,10 @@ async function candidateCommand(
       "candidate validate requires one candidate path",
     );
     const cwd = overrides.cwd ?? process.cwd();
-    const admitted = await admitLocalPromptCandidate(resolve(cwd, candidatePath));
-    io.stdout(JSON.stringify({ valid: true, candidate: admitted.identity }, null, 2));
+    const admitted = await admitLocalAdaptationCandidate(resolve(cwd, candidatePath), {
+      ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
+    });
+    io.stdout(JSON.stringify({ valid: true, candidate: admitted.candidate.identity }, null, 2));
     return 0;
   }
   if (subcommand === "activate") {

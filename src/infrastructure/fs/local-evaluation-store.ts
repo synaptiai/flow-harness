@@ -12,14 +12,19 @@ import {
   rm,
   unlink,
 } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 
 import { z } from "zod";
 
 import {
+  type AgentSkillCandidateIdentity,
+  parseAgentSkillCandidateIdentity,
+} from "../../domain/adaptation/agent-skill-candidate.js";
+import {
   type PromptCandidateIdentity,
   parsePromptCandidateIdentity,
 } from "../../domain/adaptation/prompt-candidate.js";
+import { calculateAgentSkillCapabilitySnapshotDigest } from "../../domain/capability/agent-skills.js";
 import {
   type EvaluationReportInput,
   validateCommittedEvaluationPrefix,
@@ -138,12 +143,17 @@ const taskSchema = z
 const candidateIdentitySchema = z
   .object({
     provenance: relativePathSchema,
-    identity: z.custom<PromptCandidateIdentity>((value) => {
+    identity: z.custom<PromptCandidateIdentity | AgentSkillCandidateIdentity>((value) => {
       try {
         parsePromptCandidateIdentity(value);
         return true;
       } catch {
-        return false;
+        try {
+          parseAgentSkillCandidateIdentity(value);
+          return true;
+        } catch {
+          return false;
+        }
       }
     }, "candidate identity is invalid or internally inconsistent"),
   })
@@ -155,12 +165,16 @@ const flowProfileSchema = z
     adapter: z.literal("flow-workflow-v1"),
     workflow: z
       .object({
-        sourceKind: z.literal("prompt-candidate-projection").optional(),
+        sourceKind: z
+          .enum(["prompt-candidate-projection", "agent-skill-candidate-projection"])
+          .optional(),
         provenance: relativePathSchema,
         sourceSha256: sha256Schema,
         workflowDigest: sha256Schema,
       })
       .strict(),
+    capabilitySnapshotDigest: sha256Schema.optional(),
+    capabilityPackageDigests: z.array(sha256Schema).min(1).max(128).readonly().optional(),
     candidate: candidateIdentitySchema.optional(),
   })
   .strict();
@@ -317,8 +331,26 @@ const publicHeaderSchema = z
     );
     const candidateProfiles = flowProfiles.filter((profile) => profile.candidate !== undefined);
     const projectionProfiles = flowProfiles.filter(
-      (profile) => profile.workflow.sourceKind === "prompt-candidate-projection",
+      (profile) => profile.workflow.sourceKind !== undefined,
     );
+    const capabilityProfiles = flowProfiles.filter(
+      (profile) => profile.capabilitySnapshotDigest !== undefined,
+    );
+    for (const [index, profile] of flowProfiles.entries()) {
+      if (
+        (profile.capabilitySnapshotDigest === undefined) !==
+          (profile.capabilityPackageDigests === undefined) ||
+        (profile.capabilityPackageDigests !== undefined &&
+          new Set(profile.capabilityPackageDigests).size !==
+            profile.capabilityPackageDigests.length)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["profiles", index, "capabilityPackageDigests"],
+          message: "capability package identity must accompany its snapshot identity",
+        });
+      }
+    }
     for (const [index, profile] of header.profiles.entries()) {
       if (profile.adapter !== "flow-workflow-v1" && profile.harness.adapter !== profile.adapter) {
         context.addIssue({
@@ -329,6 +361,53 @@ const publicHeaderSchema = z
       }
     }
     if (candidateProfiles.length > 0 || projectionProfiles.length > 0) {
+      const flowBaseline = baseline?.adapter === "flow-workflow-v1" ? baseline : undefined;
+      const flowCandidate = candidate?.adapter === "flow-workflow-v1" ? candidate : undefined;
+      const identity = flowCandidate?.candidate?.identity;
+      const isAgentSkillCandidate = identity !== undefined && "kind" in identity;
+      const baselineAgentSkillCapabilityDigest = isAgentSkillCandidate
+        ? calculateAgentSkillCapabilitySnapshotDigest([
+            {
+              name: identity.baseline.skill.name,
+              digest: identity.baseline.skill.packageDigest,
+            },
+          ])
+        : undefined;
+      const projectedAgentSkillCapabilityDigest = isAgentSkillCandidate
+        ? calculateAgentSkillCapabilitySnapshotDigest([
+            {
+              name: identity.scope.skillName,
+              digest: identity.projectedSkill.packageDigest,
+            },
+          ])
+        : undefined;
+      const baselineMatches =
+        identity === undefined
+          ? false
+          : isAgentSkillCandidate
+            ? identity.baseline.workflow.sourceSha256 === flowBaseline?.workflow.sourceSha256 &&
+              identity.baseline.workflow.workflowDigest === flowBaseline?.workflow.workflowDigest &&
+              flowCandidate?.workflow.sourceSha256 === flowBaseline?.workflow.sourceSha256 &&
+              flowCandidate?.workflow.workflowDigest === flowBaseline?.workflow.workflowDigest &&
+              identity.baseline.skill.capabilityDigest === flowBaseline?.capabilitySnapshotDigest &&
+              identity.baseline.skill.capabilityDigest === baselineAgentSkillCapabilityDigest &&
+              identity.projectedSkill.capabilityDigest ===
+                flowCandidate?.capabilitySnapshotDigest &&
+              identity.projectedSkill.capabilityDigest === projectedAgentSkillCapabilityDigest &&
+              flowBaseline?.capabilityPackageDigests?.length === 1 &&
+              flowBaseline.capabilityPackageDigests[0] === identity.baseline.skill.packageDigest &&
+              flowCandidate?.capabilityPackageDigests?.length === 1 &&
+              flowCandidate.capabilityPackageDigests[0] === identity.projectedSkill.packageDigest &&
+              identity.manifest.provenance === basename(flowCandidate.candidate?.provenance ?? "")
+            : identity.baseline.sourceSha256 === flowBaseline?.workflow.sourceSha256 &&
+              identity.baseline.workflowDigest === flowBaseline?.workflow.workflowDigest &&
+              identity.projectedWorkflow.sourceSha256 === flowCandidate?.workflow.sourceSha256 &&
+              identity.projectedWorkflow.workflowDigest ===
+                flowCandidate?.workflow.workflowDigest &&
+              flowBaseline?.capabilitySnapshotDigest === undefined &&
+              flowCandidate?.capabilitySnapshotDigest === undefined &&
+              flowBaseline?.capabilityPackageDigests === undefined &&
+              flowCandidate?.capabilityPackageDigests === undefined;
       if (
         candidateProfiles.length !== 1 ||
         projectionProfiles.length !== 1 ||
@@ -337,16 +416,14 @@ const publicHeaderSchema = z
         baseline.adapter !== "flow-workflow-v1" ||
         candidate.adapter !== "flow-workflow-v1" ||
         baseline.candidate !== undefined ||
-        baseline.workflow.sourceKind === "prompt-candidate-projection" ||
+        baseline.workflow.sourceKind !== undefined ||
         candidate.candidate === undefined ||
-        candidate.workflow.sourceKind !== "prompt-candidate-projection" ||
+        candidate.workflow.sourceKind !==
+          (isAgentSkillCandidate
+            ? "agent-skill-candidate-projection"
+            : "prompt-candidate-projection") ||
         candidate.candidate.provenance !== candidate.workflow.provenance ||
-        candidate.candidate.identity.baseline.sourceSha256 !== baseline.workflow.sourceSha256 ||
-        candidate.candidate.identity.baseline.workflowDigest !== baseline.workflow.workflowDigest ||
-        candidate.candidate.identity.projectedWorkflow.sourceSha256 !==
-          candidate.workflow.sourceSha256 ||
-        candidate.candidate.identity.projectedWorkflow.workflowDigest !==
-          candidate.workflow.workflowDigest
+        !baselineMatches
       ) {
         context.addIssue({
           code: "custom",
@@ -355,6 +432,12 @@ const publicHeaderSchema = z
             "candidate provenance must identify one projection on the comparison candidate over the exact comparison baseline",
         });
       }
+    } else if (capabilityProfiles.length > 0) {
+      context.addIssue({
+        code: "custom",
+        path: ["profiles"],
+        message: "capability snapshot identity requires an Agent Skill candidate comparison",
+      });
     }
     const holdoutPairs =
       header.suite.tasks.filter((task) => task.partition === "holdout").length *
@@ -468,10 +551,18 @@ export function createPublicEvaluationHeader(
           provenance: profile.workflow.provenance,
           sourceSha256: profile.workflow.sourceSha256,
           workflowDigest: profile.workflow.workflowDigest,
-          ...(profile.workflow.sourceKind === "prompt-candidate-projection"
+          ...(profile.workflow.sourceKind !== "file"
             ? { sourceKind: profile.workflow.sourceKind }
             : {}),
         },
+        ...(profile.capabilitySnapshot === undefined
+          ? {}
+          : {
+              capabilitySnapshotDigest: profile.capabilitySnapshot.digest,
+              capabilityPackageDigests: profile.capabilitySnapshot.packages.map(
+                (item) => item.digest,
+              ),
+            }),
         ...(profile.candidate === undefined
           ? {}
           : {
@@ -519,9 +610,18 @@ export class LocalEvaluationStore {
     this.#rootDirectory = resolve(rootDirectory);
   }
 
-  async create(rawHeader: PublicEvaluationHeader): Promise<void> {
+  async create(
+    rawHeader: PublicEvaluationHeader,
+    options: {
+      readonly signal?: AbortSignal;
+      /** @internal Deterministic pre-commit cancellation seam. */
+      readonly afterStagingPrepared?: () => void | Promise<void>;
+    } = {},
+  ): Promise<void> {
+    options.signal?.throwIfAborted();
     const header = parsePublicHeader(rawHeader);
     const root = await ensureCanonicalRoot(this.#rootDirectory);
+    options.signal?.throwIfAborted();
     this.#rootDirectory = root;
     const target = join(root, header.evaluationId);
     const staging = join(root, `.${header.evaluationId}-${randomUUID()}.pending`);
@@ -530,10 +630,13 @@ export class LocalEvaluationStore {
       await writeDurableFile(join(staging, "plan.json"), `${JSON.stringify(header)}\n`);
       await writeDurableFile(join(staging, "trials.jsonl"), "");
       await syncDirectory(staging);
+      await options.afterStagingPrepared?.();
+      options.signal?.throwIfAborted();
       await rename(staging, target);
       await syncDirectory(root);
     } catch (error) {
       await rm(staging, { recursive: true, force: true }).catch(() => undefined);
+      options.signal?.throwIfAborted();
       if (isNodeError(error) && (error.code === "EEXIST" || error.code === "ENOTEMPTY")) {
         throw new EvaluationStoreError(
           "evaluation_exists",
@@ -563,7 +666,12 @@ export class LocalEvaluationStore {
     });
   }
 
-  async claim(evaluationIdInput: string, planDigest: string): Promise<StoredEvaluation> {
+  async claim(
+    evaluationIdInput: string,
+    planDigest: string,
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<StoredEvaluation> {
+    options.signal?.throwIfAborted();
     const evaluationId = validateEvaluationId(evaluationIdInput);
     if (this.#owned.has(evaluationId)) {
       throw new EvaluationStoreError(
@@ -572,17 +680,23 @@ export class LocalEvaluationStore {
       );
     }
     const header = await this.#readHeader(evaluationId);
+    options.signal?.throwIfAborted();
     if (header.planDigest !== planDigest) {
       throw new EvaluationStoreError(
         "identity_mismatch",
         `evaluation "${evaluationId}" does not match plan digest "${planDigest}"`,
       );
     }
+    options.signal?.throwIfAborted();
     const token = await this.#acquireOwner(evaluationId);
     try {
+      options.signal?.throwIfAborted();
       await this.#recoverAttemptTemporaries(evaluationId);
+      options.signal?.throwIfAborted();
       const ledger = await this.#readLedger(header);
+      options.signal?.throwIfAborted();
       const active = await this.#readAttempt(header, ledger.records);
+      options.signal?.throwIfAborted();
       if (active.completed && active.attempt !== null) {
         await this.#retireAttempt(evaluationId, active.attempt);
       }
@@ -590,6 +704,7 @@ export class LocalEvaluationStore {
         throw new EvaluationStoreError("complete", `evaluation "${evaluationId}" is complete`);
       }
       const activeAttempt = active.completed ? null : active.attempt;
+      options.signal?.throwIfAborted();
       this.#owned.set(evaluationId, { header, ...ledger, token, activeAttempt });
       return deepFreeze({ header, records: [...ledger.records], activeAttempt });
     } catch (error) {
@@ -1403,6 +1518,12 @@ function headerIdentity(header: PublicEvaluationHeader): EvaluationPlanIdentity 
             ? {}
             : { sourceKind: profile.workflow.sourceKind }),
         },
+        ...(profile.capabilitySnapshotDigest === undefined
+          ? {}
+          : { capabilitySnapshotDigest: profile.capabilitySnapshotDigest }),
+        ...(profile.capabilityPackageDigests === undefined
+          ? {}
+          : { capabilityPackageDigests: profile.capabilityPackageDigests }),
         ...(profile.candidate === undefined ? {} : { candidate: profile.candidate }),
       };
     }),
