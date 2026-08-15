@@ -774,10 +774,18 @@ publisher record, credential input, or current lock/blob. Private OCI authentica
 challenge-scoped install operation. It leaves no username, token realm, credential mode, password,
 Basic value, or Bearer token in package or run state.
 
+When `.flow/packages.metadata.json` exists, new installed-package admission also requires an
+unexpired exact active target under the stored authenticated metadata authority. That local state
+binds bundle identity, bytes, source, status, and publisher policy. It is not copied into execution
+authority. An authenticated empty target set denies every new installation and admission. It does
+not revert the project to its pre-metadata rules. Child execution, detached work, resume, and
+replay never consult it after admission.
+
 Bundle provenance is
 `.flow/packages/sha256/<digest>/<kind>/<name>`, so run evidence identifies exact content without
 carrying a network instruction. SHA-256 is content identity. A signed OCI lock record is admission
-audit data. It is not freshness, revocation, rollback, or execution authority.
+audit data. Freshness and revocation come only from the optional signed metadata state. Neither the
+lock nor metadata is later execution authority.
 
 ## Versioned workflow packages
 

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { type CliIo, main } from "../../../src/cli/main.js";
 import { createCapabilityBundleSource } from "../../../src/domain/capability/capability-bundles.js";
+import { parseCapabilityMetadata } from "../../../src/domain/capability/capability-metadata.js";
 import {
   BUILT_IN_FLOW_CONFIG,
   calculateFlowPolicyDigest,
@@ -76,6 +77,44 @@ describe("installed project capability catalog", () => {
       ).rejects.toBe(reason);
     },
   );
+
+  it("keeps an admitted metadata snapshot while a revoked refresh blocks new admission", async () => {
+    const project = await projectDirectory();
+    const created = createCapabilityBundleSource({
+      name: "review-suite",
+      version: "1.0.0",
+      description: "Review capabilities.",
+      packages: [{ kind: "verifier-package", manifest: Buffer.from(verifierManifest()) }],
+    });
+    const source = "https://packages.example.test/review-suite-1.0.0.flowpkg";
+    const store = new LocalCapabilityPackageStore(project);
+    await store.install({
+      source,
+      expectedSha256: created.bundle.digest.slice("sha256:".length),
+      content: created.content,
+    });
+    await store.refreshMetadata({
+      metadata: metadataFor(created.bundle, source, 1, "active"),
+      authority: metadataAuthority(),
+    });
+    const admitted = await discoverProjectCapabilityCatalogs(project);
+
+    await store.refreshMetadata({
+      metadata: metadataFor(created.bundle, source, 2, "revoked"),
+      authority: metadataAuthority(),
+    });
+
+    await expect(
+      snapshotSelectedVerifierPackages(admitted.verifiers, [
+        { name: "evidence-review", version: "1.2.0" },
+      ]),
+    ).resolves.toMatchObject({
+      packages: [{ name: "evidence-review", version: "1.2.0" }],
+    });
+    await expect(discoverProjectCapabilityCatalogs(project)).rejects.toMatchObject({
+      code: "metadata_target",
+    });
+  });
 
   it("composes every installed package ABI with portable bundle provenance", async () => {
     const project = await projectDirectory();
@@ -352,6 +391,50 @@ spec:
   kind: model
   prompt: Reject unsupported claims.
 `;
+}
+
+function metadataFor(
+  bundle: ReturnType<typeof createCapabilityBundleSource>["bundle"],
+  source: string,
+  version: number,
+  status: "active" | "revoked",
+) {
+  return parseCapabilityMetadata(
+    Buffer.from(
+      JSON.stringify({
+        apiVersion: "flow.synapti.ai/v1alpha1",
+        kind: "CapabilityMetadata",
+        metadata: {
+          name: "flow-capabilities",
+          version,
+          expiresAt: "2099-01-01T00:00:00.000Z",
+        },
+        spec: {
+          targets: [
+            {
+              name: bundle.name,
+              version: bundle.version,
+              digest: bundle.digest,
+              bytes: bundle.bytes,
+              source,
+              status,
+            },
+          ],
+        },
+      }),
+    ),
+    new Date("2026-08-14T00:00:00.000Z"),
+  );
+}
+
+function metadataAuthority() {
+  return Object.freeze({
+    kind: "sigstore-keyless-v0.3" as const,
+    certificateIssuer: "https://token.actions.githubusercontent.com/",
+    certificateIdentity:
+      "https://github.com/synaptiai/flow-harness/.github/workflows/metadata.yml@refs/heads/main",
+    signatureBundleDigest: `sha256:${"f".repeat(64)}`,
+  });
 }
 
 function toolManifest(name: string, toolName: string): string {

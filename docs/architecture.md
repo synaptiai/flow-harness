@@ -21,7 +21,10 @@ tool packages. It also adds inert workflow packages and deterministic bundle dis
 publisher-authenticated OCI acquisition, a content-addressed project store, and immutable snapshots
 are included.
 
-A TUI, executable extensions, automatic updates, and policy/UI package types remain later work.
+A TUI, executable extensions, automatic package updates, and UI package types remain later work.
+Explicit signed capability metadata provides project-local freshness, revocation, exact-target
+admission, and monotonic rollback refusal. Background refresh, package discovery, online trust-root
+refresh, and delegated metadata roles remain later work.
 Opaque Pi session continuation and general failure or fallback
 retries also remain later work. The same is true for broader configurable policy, model network
 tools, and arbitrary evaluator runtimes. Stronger VM or managed sandbox backends also remain later
@@ -111,8 +114,10 @@ and records transitions. It binds model verifiers and typed results to exact com
 attempts. It recursively schedules independently-ledgered child workflows through an isolation
 port, reserves their ceilings against ancestors, and imports only typed results and resource
 evidence. A candidate-workspace port captures and promotes typed deltas behind durable lifecycle
-callbacks. The same state-based selector checks recovered history. It never executes tools directly,
-and result, condition, join, loop-check, optimization-check, and controller nodes never enter an executor port.
+callbacks. Application modules import domain contracts and application-owned ports, not
+infrastructure implementations. The same state-based selector checks recovered history. It never
+executes tools directly. Result, condition, join, loop-check, optimization-check, and controller
+nodes never enter an executor port.
 
 ### Pi runtime
 

@@ -19,6 +19,7 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createCapabilityBundleSource } from "../../../../src/domain/capability/capability-bundles.js";
+import { parseCapabilityMetadata } from "../../../../src/domain/capability/capability-metadata.js";
 import {
   CapabilityPackageStoreError,
   LocalCapabilityPackageStore,
@@ -34,6 +35,583 @@ afterEach(async () => {
 });
 
 describe("local capability package store", () => {
+  it("establishes and idempotently reopens one authenticated metadata state", async () => {
+    const projectRoot = await projectDirectory();
+    const created = bundle("Review freshness evidence.");
+    const now = new Date("2026-08-14T00:00:00.000Z");
+    const metadata = capabilityMetadata(created.content, { version: 1 });
+    const authority = metadataAuthority();
+    const store = new LocalCapabilityPackageStore(projectRoot, { now: () => now });
+
+    await expect(store.refreshMetadata({ metadata, authority })).resolves.toMatchObject({
+      status: "established",
+      state: { name: "project-capabilities", version: 1, authority },
+    });
+    await expect(store.refreshMetadata({ metadata, authority })).resolves.toMatchObject({
+      status: "already_current",
+    });
+    await expect(store.inspectMetadata()).resolves.toMatchObject({
+      name: "project-capabilities",
+      version: 1,
+      metadataDigest: metadata.digest,
+      authority,
+      targets: [{ name: "review-suite", version: "1.0.0", status: "active" }],
+    });
+    await expect(
+      readFile(join(projectRoot, ".flow", "packages.metadata.json"), "utf8"),
+    ).resolves.not.toContain("PRIVATE");
+  });
+
+  it("accepts a higher metadata version and rejects rollback or equal-version substitution", async () => {
+    const projectRoot = await projectDirectory();
+    const created = bundle("Review freshness evidence.");
+    const now = new Date("2026-08-14T00:00:00.000Z");
+    const authority = metadataAuthority();
+    const store = new LocalCapabilityPackageStore(projectRoot, { now: () => now });
+    const first = capabilityMetadata(created.content, { version: 1 });
+    const second = capabilityMetadata(created.content, { version: 2 });
+    const substituted = capabilityMetadata(created.content, { version: 2, status: "revoked" });
+
+    await store.refreshMetadata({ metadata: first, authority });
+    await expect(store.refreshMetadata({ metadata: second, authority })).resolves.toMatchObject({
+      status: "refreshed",
+      state: { version: 2 },
+    });
+    await expect(store.refreshMetadata({ metadata: first, authority })).rejects.toMatchObject({
+      code: "metadata_rollback",
+    });
+    await expect(store.refreshMetadata({ metadata: substituted, authority })).rejects.toMatchObject(
+      { code: "metadata_rollback" },
+    );
+    await expect(store.inspectMetadata()).resolves.toMatchObject({
+      version: 2,
+      metadataDigest: second.digest,
+      targets: [{ status: "active" }],
+    });
+  });
+
+  it.each([
+    ["metadata name", { metadataName: "private-substitute" }, {}],
+    ["certificate issuer", {}, { certificateIssuer: "https://private-issuer.example.test/" }],
+    [
+      "certificate identity",
+      {},
+      { certificateIdentity: "https://publisher.example.test/PRIVATE_SUBSTITUTE" },
+    ],
+  ] as const)(
+    "rejects a %s substitution at a higher version",
+    async (_label, metadata, publisher) => {
+      const projectRoot = await projectDirectory();
+      const created = bundle("Review freshness evidence.");
+      const authority = metadataAuthority();
+      const store = new LocalCapabilityPackageStore(projectRoot, {
+        now: () => new Date("2026-08-14T00:00:00.000Z"),
+      });
+      await store.refreshMetadata({
+        metadata: capabilityMetadata(created.content, { version: 1 }),
+        authority,
+      });
+
+      let caught: unknown;
+      try {
+        await store.refreshMetadata({
+          metadata: capabilityMetadata(created.content, { version: 2, ...metadata }),
+          authority: { ...authority, ...publisher },
+        });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toMatchObject({ code: "metadata_rollback" });
+      expect((caught as Error).message).not.toContain("private");
+      await expect(store.inspectMetadata()).resolves.toMatchObject({
+        name: "project-capabilities",
+        version: 1,
+        authority,
+      });
+    },
+  );
+
+  it("rechecks candidate freshness after acquiring mutation ownership", async () => {
+    const projectRoot = await projectDirectory();
+    const created = bundle("Review freshness evidence.");
+    const observations = [
+      new Date("2026-08-14T23:59:59.999Z"),
+      new Date("2026-08-15T00:00:00.000Z"),
+    ];
+    const store = new LocalCapabilityPackageStore(projectRoot, {
+      now: () => observations.shift() ?? new Date("2026-08-15T00:00:00.000Z"),
+    });
+
+    await expect(
+      store.refreshMetadata({
+        metadata: capabilityMetadata(created.content, { version: 1 }),
+        authority: metadataAuthority(),
+      }),
+    ).rejects.toMatchObject({ code: "metadata_expired" });
+    await expect(readdir(join(projectRoot, ".flow"))).resolves.toEqual([]);
+  });
+
+  it("publishes nothing for pre-rename cancellation and reports post-rename uncertainty", async () => {
+    const cancelledProject = await projectDirectory();
+    const created = bundle("Review freshness evidence.");
+    const metadata = capabilityMetadata(created.content, { version: 1 });
+    const authority = metadataAuthority();
+    const cancellation = new Error("PRIVATE_METADATA_CANCELLATION");
+    const cancelled = new AbortController();
+    const cancelledStore = new LocalCapabilityPackageStore(cancelledProject, {
+      now: () => new Date("2026-08-14T00:00:00.000Z"),
+      beforeCapabilityMetadataRename: async () => {
+        cancelled.abort(cancellation);
+      },
+    });
+
+    await expect(
+      cancelledStore.refreshMetadata({ metadata, authority, signal: cancelled.signal }),
+    ).rejects.toBe(cancellation);
+    await expect(readdir(join(cancelledProject, ".flow"))).resolves.toEqual([]);
+
+    const uncertainProject = await projectDirectory();
+    const postRename = new AbortController();
+    const uncertain = new LocalCapabilityPackageStore(uncertainProject, {
+      now: () => new Date("2026-08-14T00:00:00.000Z"),
+      afterCapabilityMetadataRenamed: async () => {
+        postRename.abort(cancellation);
+        throw cancellation;
+      },
+    });
+    await expect(
+      uncertain.refreshMetadata({ metadata, authority, signal: postRename.signal }),
+    ).rejects.toMatchObject({ code: "commit_uncertain" });
+    await expect(uncertain.inspectMetadata()).resolves.toMatchObject({ version: 1 });
+  });
+
+  it("preserves prior trusted metadata when a pre-rename publication step fails", async () => {
+    const projectRoot = await projectDirectory();
+    const created = bundle("Review freshness evidence.");
+    const authority = metadataAuthority();
+    const now = () => new Date("2026-08-14T00:00:00.000Z");
+    const first = capabilityMetadata(created.content, { version: 1 });
+    await new LocalCapabilityPackageStore(projectRoot, { now }).refreshMetadata({
+      metadata: first,
+      authority,
+    });
+    const failed = new LocalCapabilityPackageStore(projectRoot, {
+      now,
+      beforeCapabilityMetadataRename: async () => {
+        throw new Error("PRIVATE_PRE_RENAME_WRITE_FAILURE");
+      },
+    });
+
+    await expect(
+      failed.refreshMetadata({
+        metadata: capabilityMetadata(created.content, { version: 2 }),
+        authority,
+      }),
+    ).rejects.toMatchObject({ code: "io" });
+    await expect(failed.inspectMetadata()).resolves.toMatchObject({
+      version: 1,
+      metadataDigest: first.digest,
+    });
+  });
+
+  it("allows an exact active target, then blocks new verification after revocation", async () => {
+    const projectRoot = await projectDirectory();
+    const created = bundle("Review freshness evidence.");
+    const now = new Date("2026-08-14T00:00:00.000Z");
+    const store = new LocalCapabilityPackageStore(projectRoot, { now: () => now });
+    const authority = metadataAuthority();
+    await store.refreshMetadata({
+      metadata: capabilityMetadata(created.content, { version: 1 }),
+      authority,
+    });
+
+    await expect(
+      store.install({
+        source: "https://packages.example.test/review-suite-1.0.0.flowpkg",
+        expectedSha256: digest(created.content),
+        content: created.content,
+      }),
+    ).resolves.toMatchObject({ status: "installed" });
+    await expect(store.verify()).resolves.toMatchObject([
+      { bundle: { name: "review-suite", version: "1.0.0" } },
+    ]);
+
+    await store.refreshMetadata({
+      metadata: capabilityMetadata(created.content, { version: 2, status: "revoked" }),
+      authority,
+    });
+    await expect(store.verify()).rejects.toMatchObject({ code: "metadata_target" });
+    await expect(store.remove("review-suite", "1.0.0")).resolves.toMatchObject({
+      status: "removed",
+    });
+  });
+
+  it("establishes an empty deny-all target set and blocks legacy installation", async () => {
+    const projectRoot = await projectDirectory();
+    const created = bundle("Review freshness evidence.");
+    const source = "https://packages.example.test/review-suite-1.0.0.flowpkg";
+    const store = new LocalCapabilityPackageStore(projectRoot, {
+      now: () => new Date("2026-08-14T00:00:00.000Z"),
+    });
+    await store.install({
+      source,
+      expectedSha256: digest(created.content),
+      content: created.content,
+    });
+    await expect(
+      store.refreshMetadata({
+        metadata: capabilityMetadata(created.content, { version: 1, empty: true }),
+        authority: metadataAuthority(),
+      }),
+    ).resolves.toMatchObject({ status: "established", state: { targets: [] } });
+
+    await expect(store.verify()).rejects.toMatchObject({ code: "metadata_target" });
+    await expect(
+      store.install({
+        source,
+        expectedSha256: digest(created.content),
+        content: created.content,
+      }),
+    ).rejects.toMatchObject({ code: "metadata_target" });
+    await expect(store.list()).resolves.toMatchObject({ bundles: [{ source }] });
+  });
+
+  it("rejects install before blob publication when trusted target evidence differs", async () => {
+    const projectRoot = await projectDirectory();
+    const created = bundle("Review freshness evidence.");
+    const store = new LocalCapabilityPackageStore(projectRoot, {
+      now: () => new Date("2026-08-14T00:00:00.000Z"),
+    });
+    await store.refreshMetadata({
+      metadata: capabilityMetadata(created.content, {
+        version: 1,
+        source: "https://mirror.example.test/review-suite-1.0.0.flowpkg",
+      }),
+      authority: metadataAuthority(),
+    });
+
+    await expect(
+      store.install({
+        source: "https://packages.example.test/review-suite-1.0.0.flowpkg",
+        expectedSha256: digest(created.content),
+        content: created.content,
+      }),
+    ).rejects.toMatchObject({ code: "metadata_target" });
+    await expect(stat(join(projectRoot, ".flow", "packages.lock.json"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(readdir(join(projectRoot, ".flow"))).resolves.toEqual(["packages.metadata.json"]);
+  });
+
+  it("rejects legacy locked source evidence that contradicts newly established metadata", async () => {
+    const projectRoot = await projectDirectory();
+    const created = bundle("Review freshness evidence.");
+    const legacySource = "https://mirror.example.test/review-suite-1.0.0.flowpkg";
+    const trustedSource = "https://packages.example.test/review-suite-1.0.0.flowpkg";
+    const store = new LocalCapabilityPackageStore(projectRoot, {
+      now: () => new Date("2026-08-14T00:00:00.000Z"),
+    });
+    await store.install({
+      source: legacySource,
+      expectedSha256: digest(created.content),
+      content: created.content,
+    });
+    await store.refreshMetadata({
+      metadata: capabilityMetadata(created.content, { version: 1, source: trustedSource }),
+      authority: metadataAuthority(),
+    });
+
+    await expect(
+      store.install({
+        source: trustedSource,
+        expectedSha256: digest(created.content),
+        content: created.content,
+      }),
+    ).rejects.toMatchObject({ code: "metadata_target" });
+    await expect(store.list()).resolves.toMatchObject({ bundles: [{ source: legacySource }] });
+    await expect(store.verify()).rejects.toMatchObject({ code: "metadata_target" });
+  });
+
+  it("rejects every mismatched trusted target identity leaf before publication", async () => {
+    const created = bundle("Review freshness evidence.");
+    const mutations = [
+      { label: "name", options: { targetName: "other-suite" } },
+      { label: "version", options: { targetVersion: "2.0.0" } },
+      { label: "digest", options: { targetDigest: `sha256:${"0".repeat(64)}` } },
+      { label: "bytes", options: { targetBytes: created.content.byteLength + 1 } },
+      { label: "status", options: { status: "revoked" as const } },
+    ] as const;
+
+    for (const mutation of mutations) {
+      const projectRoot = await projectDirectory();
+      const store = new LocalCapabilityPackageStore(projectRoot, {
+        now: () => new Date("2026-08-14T00:00:00.000Z"),
+      });
+      await store.refreshMetadata({
+        metadata: capabilityMetadata(created.content, { version: 1, ...mutation.options }),
+        authority: metadataAuthority(),
+      });
+
+      await expect(
+        store.install({
+          source: "https://packages.example.test/review-suite-1.0.0.flowpkg",
+          expectedSha256: digest(created.content),
+          content: created.content,
+        }),
+        mutation.label,
+      ).rejects.toMatchObject({ code: "metadata_target" });
+      await expect(
+        stat(join(projectRoot, ".flow", "packages.lock.json")),
+        mutation.label,
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    }
+  });
+
+  it.each(["certificateIssuer", "certificateIdentity"] as const)(
+    "binds signed OCI target publisher %s independently from proof bytes",
+    async (field) => {
+      const projectRoot = await projectDirectory();
+      const created = bundle("Review freshness evidence.");
+      const source = `registry.example.test/flow/review-suite@sha256:${"1".repeat(64)}`;
+      const publisherPolicy = {
+        certificateIssuer: "https://token.actions.githubusercontent.com/",
+        certificateIdentity:
+          "https://github.com/synaptiai/flow-harness/.github/workflows/release.yml@refs/tags/v1.0.0",
+      };
+      const publisher = {
+        kind: "sigstore-keyless-v0.3" as const,
+        ...publisherPolicy,
+        signatureBundleDigest: `sha256:${"2".repeat(64)}`,
+      };
+      const store = new LocalCapabilityPackageStore(projectRoot, {
+        now: () => new Date("2026-08-14T00:00:00.000Z"),
+      });
+      await store.refreshMetadata({
+        metadata: capabilityMetadata(created.content, {
+          version: 1,
+          source,
+          publisher: publisherPolicy,
+        }),
+        authority: metadataAuthority(),
+      });
+
+      await expect(
+        store.install({
+          source,
+          expectedSha256: digest(created.content),
+          content: created.content,
+          publisher,
+        }),
+      ).resolves.toMatchObject({ status: "installed" });
+
+      await store.refreshMetadata({
+        metadata: capabilityMetadata(created.content, {
+          version: 2,
+          source,
+          publisher: {
+            ...publisherPolicy,
+            [field]:
+              field === "certificateIssuer"
+                ? "https://issuer.example.test/PRIVATE_SUBSTITUTE"
+                : "https://publisher.example.test/PRIVATE_REVOKED_IDENTITY",
+          },
+        }),
+        authority: metadataAuthority(),
+      });
+      await expect(store.verify()).rejects.toMatchObject({ code: "metadata_target" });
+    },
+  );
+
+  it("serializes metadata refresh with package mutation through one lock", async () => {
+    const projectRoot = await projectDirectory();
+    const created = bundle("Review freshness evidence.");
+    let announceLockHeld: (() => void) | undefined;
+    let releaseLock: (() => void) | undefined;
+    const lockHeld = new Promise<void>((resolve) => {
+      announceLockHeld = resolve;
+    });
+    const holdLock = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    const store = new LocalCapabilityPackageStore(projectRoot, {
+      now: () => new Date("2026-08-14T00:00:00.000Z"),
+      beforeMutationLockRelease: async () => {
+        announceLockHeld?.();
+        await holdLock;
+      },
+    });
+    const refresh = store.refreshMetadata({
+      metadata: capabilityMetadata(created.content, { version: 1 }),
+      authority: metadataAuthority(),
+    });
+    await lockHeld;
+
+    await expect(
+      store.install({
+        source: "https://packages.example.test/review-suite-1.0.0.flowpkg",
+        expectedSha256: digest(created.content),
+        content: created.content,
+      }),
+    ).rejects.toMatchObject({ code: "busy" });
+    releaseLock?.();
+    await expect(refresh).resolves.toMatchObject({ status: "established" });
+    await expect(store.inspectMetadata()).resolves.toMatchObject({ version: 1 });
+  });
+
+  it("lets only one concurrent metadata refresh own the monotonic publication", async () => {
+    const projectRoot = await projectDirectory();
+    const created = bundle("Review freshness evidence.");
+    const authority = metadataAuthority();
+    let announceLockHeld: (() => void) | undefined;
+    let releaseLock: (() => void) | undefined;
+    const lockHeld = new Promise<void>((resolve) => {
+      announceLockHeld = resolve;
+    });
+    const holdLock = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    const firstStore = new LocalCapabilityPackageStore(projectRoot, {
+      now: () => new Date("2026-08-14T00:00:00.000Z"),
+      beforeMutationLockRelease: async () => {
+        announceLockHeld?.();
+        await holdLock;
+      },
+    });
+    const secondStore = new LocalCapabilityPackageStore(projectRoot, {
+      now: () => new Date("2026-08-14T00:00:00.000Z"),
+    });
+    const first = firstStore.refreshMetadata({
+      metadata: capabilityMetadata(created.content, { version: 1 }),
+      authority,
+    });
+    await lockHeld;
+
+    await expect(
+      secondStore.refreshMetadata({
+        metadata: capabilityMetadata(created.content, { version: 2 }),
+        authority,
+      }),
+    ).rejects.toMatchObject({ code: "busy" });
+    releaseLock?.();
+    await expect(first).resolves.toMatchObject({ status: "established" });
+    await expect(secondStore.inspectMetadata()).resolves.toMatchObject({ version: 1 });
+  });
+
+  it("rejects a metadata refresh that settles while installed bytes are being verified", async () => {
+    const projectRoot = await projectDirectory();
+    const created = bundle("Review freshness evidence.");
+    const source = "https://packages.example.test/review-suite-1.0.0.flowpkg";
+    const authority = metadataAuthority();
+    const authorityStore = new LocalCapabilityPackageStore(projectRoot, {
+      now: () => new Date("2026-08-14T00:00:00.000Z"),
+    });
+    await authorityStore.install({
+      source,
+      expectedSha256: digest(created.content),
+      content: created.content,
+    });
+    await authorityStore.refreshMetadata({
+      metadata: capabilityMetadata(created.content, { version: 1 }),
+      authority,
+    });
+    let refreshed = false;
+    const verifyingStore = new LocalCapabilityPackageStore(projectRoot, {
+      now: () => new Date("2026-08-14T00:00:00.000Z"),
+      beforeVerifyBundleRead: async () => {
+        if (!refreshed) {
+          refreshed = true;
+          await authorityStore.refreshMetadata({
+            metadata: capabilityMetadata(created.content, { version: 2, status: "revoked" }),
+            authority,
+          });
+        }
+      },
+    });
+
+    await expect(verifyingStore.verify()).rejects.toMatchObject({ code: "metadata_target" });
+    expect(refreshed).toBe(true);
+  });
+
+  it("rechecks metadata expiry after all installed bytes settle", async () => {
+    const projectRoot = await projectDirectory();
+    const created = bundle("Review freshness evidence.");
+    const source = "https://packages.example.test/review-suite-1.0.0.flowpkg";
+    const authority = metadataAuthority();
+    const setupStore = new LocalCapabilityPackageStore(projectRoot, {
+      now: () => new Date("2026-08-14T00:00:00.000Z"),
+    });
+    await setupStore.refreshMetadata({
+      metadata: capabilityMetadata(created.content, { version: 1 }),
+      authority,
+    });
+    await setupStore.install({
+      source,
+      expectedSha256: digest(created.content),
+      content: created.content,
+    });
+    let clockReads = 0;
+    const verifyingStore = new LocalCapabilityPackageStore(projectRoot, {
+      now: () => {
+        clockReads += 1;
+        return new Date(clockReads < 3 ? "2026-08-14T23:59:59.999Z" : "2026-08-15T00:00:00.000Z");
+      },
+    });
+
+    await expect(verifyingStore.verify()).rejects.toMatchObject({ code: "metadata_expired" });
+    expect(clockReads).toBe(3);
+  });
+
+  it("rejects new install after metadata expiry but keeps inspection available", async () => {
+    const projectRoot = await projectDirectory();
+    const created = bundle("Review freshness evidence.");
+    let now = new Date("2026-08-14T00:00:00.000Z");
+    const store = new LocalCapabilityPackageStore(projectRoot, { now: () => now });
+    await store.refreshMetadata({
+      metadata: capabilityMetadata(created.content, { version: 1 }),
+      authority: metadataAuthority(),
+    });
+    now = new Date("2026-08-15T00:00:00.000Z");
+
+    await expect(
+      store.install({
+        source: "https://packages.example.test/review-suite-1.0.0.flowpkg",
+        expectedSha256: digest(created.content),
+        content: created.content,
+      }),
+    ).rejects.toMatchObject({ code: "metadata_expired" });
+    await expect(store.inspectMetadata()).resolves.toMatchObject({ version: 1 });
+  });
+
+  it("withholds package activation when metadata expires after blob settlement", async () => {
+    const projectRoot = await projectDirectory();
+    const created = bundle("Review freshness evidence.");
+    const source = "https://packages.example.test/review-suite-1.0.0.flowpkg";
+    const setupStore = new LocalCapabilityPackageStore(projectRoot, {
+      now: () => new Date("2026-08-14T00:00:00.000Z"),
+    });
+    await setupStore.refreshMetadata({
+      metadata: capabilityMetadata(created.content, { version: 1 }),
+      authority: metadataAuthority(),
+    });
+    let clockReads = 0;
+    const installingStore = new LocalCapabilityPackageStore(projectRoot, {
+      now: () => {
+        clockReads += 1;
+        return new Date(clockReads === 1 ? "2026-08-14T23:59:59.999Z" : "2026-08-15T00:00:00.000Z");
+      },
+    });
+
+    await expect(
+      installingStore.install({
+        source,
+        expectedSha256: digest(created.content),
+        content: created.content,
+      }),
+    ).rejects.toMatchObject({ code: "metadata_expired" });
+    expect(clockReads).toBe(2);
+    await expect(installingStore.list()).resolves.toMatchObject({ bundles: [] });
+  });
+
   it("publishes exact blob bytes before a deterministic lock entry", async () => {
     const projectRoot = await projectDirectory();
     const created = bundle("Review evidence.");
@@ -765,6 +1343,66 @@ spec:
   kind: model
   prompt: ${prompt}
 `;
+}
+
+function capabilityMetadata(
+  content: Uint8Array,
+  options: {
+    readonly version: number;
+    readonly metadataName?: string;
+    readonly status?: "active" | "revoked";
+    readonly source?: string;
+    readonly targetName?: string;
+    readonly targetVersion?: string;
+    readonly targetDigest?: string;
+    readonly targetBytes?: number;
+    readonly empty?: boolean;
+    readonly publisher?: {
+      readonly certificateIssuer: string;
+      readonly certificateIdentity: string;
+    };
+  },
+) {
+  return parseCapabilityMetadata(
+    Buffer.from(
+      JSON.stringify({
+        apiVersion: "flow.synapti.ai/v1alpha1",
+        kind: "CapabilityMetadata",
+        metadata: {
+          name: options.metadataName ?? "project-capabilities",
+          version: options.version,
+          expiresAt: "2026-08-15T00:00:00.000Z",
+        },
+        spec: {
+          targets: options.empty
+            ? []
+            : [
+                {
+                  name: options.targetName ?? "review-suite",
+                  version: options.targetVersion ?? "1.0.0",
+                  digest: options.targetDigest ?? `sha256:${digest(content)}`,
+                  bytes: options.targetBytes ?? content.byteLength,
+                  source:
+                    options.source ?? "https://packages.example.test/review-suite-1.0.0.flowpkg",
+                  status: options.status ?? "active",
+                  ...(options.publisher === undefined ? {} : { publisher: options.publisher }),
+                },
+              ],
+        },
+      }),
+    ),
+    new Date("2026-08-14T00:00:00.000Z"),
+  );
+}
+
+function metadataAuthority() {
+  return {
+    kind: "sigstore-keyless-v0.3" as const,
+    certificateIssuer: "https://token.actions.githubusercontent.com/",
+    certificateIdentity:
+      "https://github.com/synaptiai/flow-harness/.github/workflows/release.yml@refs/tags/metadata-v1",
+    signatureBundleDigest: `sha256:${"f".repeat(64)}`,
+  };
 }
 
 function digest(content: Uint8Array): string {

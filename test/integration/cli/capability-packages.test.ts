@@ -11,6 +11,10 @@ import {
   parseCapabilityBundle,
 } from "../../../src/domain/capability/capability-bundles.js";
 import {
+  MAX_CAPABILITY_METADATA_BYTES,
+  parseCapabilityMetadata,
+} from "../../../src/domain/capability/capability-metadata.js";
+import {
   FLOW_CAPABILITY_ARTIFACT_TYPE,
   FLOW_CAPABILITY_BUNDLE_LAYER_MEDIA_TYPE,
   OCI_EMPTY_CONFIG_DIGEST,
@@ -27,6 +31,7 @@ import {
   FLOW_CONFIG_API_VERSION,
 } from "../../../src/domain/config/resolver.js";
 import { packCapabilityBundleDirectory } from "../../../src/infrastructure/fs/capability-bundle-packer.js";
+import { LocalCapabilityPackageStore } from "../../../src/infrastructure/fs/local-capability-package-store.js";
 import type {
   CapabilityBundleFetcher,
   PinnedHttpsRequest,
@@ -47,6 +52,216 @@ afterEach(async () => {
 });
 
 describe("capability package CLI", () => {
+  it("refreshes and inspects signed capability metadata from local files", async () => {
+    const project = await projectDirectory();
+    const created = bundle();
+    const metadataPath = join(project, "capability-metadata.json");
+    const sigstoreBundlePath = join(project, "capability-metadata.sigstore.json");
+    const sigstoreBundle = Buffer.from("PRIVATE_METADATA_SIGSTORE_PROOF");
+    const publisher = Object.freeze({
+      certificateIssuer: "https://token.actions.githubusercontent.com/",
+      certificateIdentity:
+        "https://github.com/synaptiai/flow-harness/.github/workflows/metadata.yml@refs/heads/main",
+    });
+    const metadata = Buffer.from(
+      JSON.stringify({
+        apiVersion: "flow.synapti.ai/v1alpha1",
+        kind: "CapabilityMetadata",
+        metadata: {
+          name: "flow-capabilities",
+          version: 1,
+          expiresAt: "2099-01-01T00:00:00.000Z",
+        },
+        spec: {
+          targets: [
+            {
+              name: created.bundle.name,
+              version: created.bundle.version,
+              digest: created.bundle.digest,
+              bytes: created.bundle.bytes,
+              source: "https://packages.example.test/review-suite-1.0.0.flowpkg",
+              status: "active",
+            },
+          ],
+        },
+      }),
+    );
+    await writeFile(metadataPath, metadata);
+    await writeFile(sigstoreBundlePath, sigstoreBundle);
+    const verifyPublisher = vi.fn().mockReturnValue(publisher);
+    const cliDependencies = {
+      ...dependencies(project, { fetch: vi.fn() }),
+      sigstoreCapabilityVerifier: {
+        verify: verifyPublisher,
+      } satisfies SigstoreCapabilityVerifier,
+    };
+    const refreshed = captureIo();
+    const inspected = captureIo();
+
+    expect(
+      await main(
+        [
+          "packages",
+          "metadata",
+          "refresh",
+          metadataPath,
+          "--sigstore-bundle",
+          sigstoreBundlePath,
+          "--certificate-issuer",
+          publisher.certificateIssuer,
+          "--certificate-identity",
+          publisher.certificateIdentity,
+        ],
+        refreshed.io,
+        cliDependencies,
+      ),
+    ).toBe(0);
+    expect(await main(["packages", "metadata", "inspect"], inspected.io, cliDependencies)).toBe(0);
+
+    expect(verifyPublisher).toHaveBeenCalledWith(metadata, sigstoreBundle, publisher);
+    expect(JSON.parse(refreshed.stdout[0] ?? "null")).toMatchObject({
+      status: "established",
+      metadata: {
+        name: "flow-capabilities",
+        version: 1,
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        authority: {
+          kind: "sigstore-keyless-v0.3",
+          ...publisher,
+          signatureBundleDigest: sha256Digest(sigstoreBundle),
+        },
+      },
+    });
+    expect(JSON.parse(inspected.stdout[0] ?? "null")).toMatchObject({
+      metadata: {
+        name: "flow-capabilities",
+        version: 1,
+        targets: [{ name: "review-suite", version: "1.0.0", status: "active" }],
+      },
+    });
+    const visible = `${refreshed.stdout.join("\n")}\n${inspected.stdout.join("\n")}`;
+    expect(visible).not.toContain("PRIVATE_METADATA_SIGSTORE_PROOF");
+    expect(await readFile(join(project, ".flow", "packages.metadata.json"), "utf8")).not.toContain(
+      "PRIVATE_METADATA_SIGSTORE_PROOF",
+    );
+  });
+
+  it("rejects an oversized local metadata file before verification or publication", async () => {
+    const project = await projectDirectory();
+    const metadataPath = join(project, "PRIVATE_OVERSIZED_METADATA.json");
+    const sigstoreBundlePath = join(project, "metadata.sigstore.json");
+    await writeFile(metadataPath, Buffer.alloc(MAX_CAPABILITY_METADATA_BYTES + 1, 0x61));
+    await writeFile(sigstoreBundlePath, "PRIVATE_METADATA_SIGSTORE_PROOF");
+    const verify = vi.fn();
+    const output = captureIo();
+
+    expect(
+      await main(
+        [
+          "packages",
+          "metadata",
+          "refresh",
+          metadataPath,
+          "--sigstore-bundle",
+          sigstoreBundlePath,
+          "--certificate-issuer",
+          "https://token.actions.githubusercontent.com/",
+          "--certificate-identity",
+          "https://publisher.example.test/metadata",
+        ],
+        output.io,
+        {
+          ...dependencies(project, { fetch: vi.fn() }),
+          sigstoreCapabilityVerifier: { verify } satisfies SigstoreCapabilityVerifier,
+        },
+      ),
+    ).toBe(1);
+
+    expect(verify).not.toHaveBeenCalled();
+    expect(output.stderr).toEqual(["io: could not read signed capability metadata inputs"]);
+    expect(output.stderr.join("\n")).not.toContain("PRIVATE_OVERSIZED_METADATA");
+    expect(output.stderr.join("\n")).not.toContain("PRIVATE_METADATA_SIGSTORE_PROOF");
+    await expect(stat(join(project, ".flow", "packages.metadata.json"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it.each(["expired", "revoked"] as const)(
+    "keeps exact installed-package inspection available after metadata is %s",
+    async (state) => {
+      const project = await projectDirectory();
+      const created = bundle();
+      const source = "https://packages.example.test/review-suite-1.0.0.flowpkg";
+      const store = new LocalCapabilityPackageStore(project);
+      await store.install({
+        source,
+        expectedSha256: created.bundle.digest.slice("sha256:".length),
+        content: created.content,
+      });
+      await store.refreshMetadata({
+        metadata: parseCapabilityMetadata(
+          Buffer.from(
+            JSON.stringify({
+              apiVersion: "flow.synapti.ai/v1alpha1",
+              kind: "CapabilityMetadata",
+              metadata: {
+                name: "flow-capabilities",
+                version: 1,
+                expiresAt: "2099-01-01T00:00:00.000Z",
+              },
+              spec: {
+                targets: [
+                  {
+                    name: created.bundle.name,
+                    version: created.bundle.version,
+                    digest: created.bundle.digest,
+                    bytes: created.bundle.bytes,
+                    source,
+                    status: state === "revoked" ? "revoked" : "active",
+                  },
+                ],
+              },
+            }),
+          ),
+          new Date("2026-08-15T00:00:00.000Z"),
+        ),
+        authority: {
+          kind: "sigstore-keyless-v0.3",
+          certificateIssuer: "https://token.actions.githubusercontent.com/",
+          certificateIdentity:
+            "https://github.com/synaptiai/flow-harness/.github/workflows/metadata.yml@refs/heads/main",
+          signatureBundleDigest: `sha256:${"b".repeat(64)}`,
+        },
+      });
+      if (state === "expired") {
+        const metadataPath = join(project, ".flow", "packages.metadata.json");
+        const trusted = JSON.parse(await readFile(metadataPath, "utf8")) as {
+          expiresAt: string;
+        };
+        trusted.expiresAt = "2000-01-01T00:00:00.000Z";
+        await writeFile(metadataPath, `${JSON.stringify(trusted)}\n`);
+      }
+      await expect(store.verify()).rejects.toMatchObject({
+        code: state === "expired" ? "metadata_expired" : "metadata_target",
+      });
+      const output = captureIo();
+
+      expect(
+        await main(
+          ["packages", "inspect", created.bundle.name, "--version", created.bundle.version],
+          output.io,
+          dependencies(project, { fetch: vi.fn() }),
+        ),
+      ).toBe(0);
+      expect(JSON.parse(output.stdout[0] ?? "null")).toMatchObject({
+        valid: true,
+        name: created.bundle.name,
+        version: created.bundle.version,
+        digest: created.bundle.digest,
+      });
+    },
+  );
+
   it("installs once and keeps list, inspect, verify, and remove offline", async () => {
     const project = await projectDirectory();
     const created = bundle();

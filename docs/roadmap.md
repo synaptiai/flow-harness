@@ -24,8 +24,10 @@ digest-chained evidence, offline reports, and constrained comparison.
 Gate 7 includes tuning-only prompt candidates, zero-tool model generation, exact prompt overlays,
 paired evaluation, reviewed activation, durable run snapshots, and rollback.
 
-Remaining targets include executable extensions, automatic updates, freshness and revocation,
-policy and UI packages, and stronger isolation.
+Remaining targets include executable extensions, automatic package updates, policy and UI
+packages, and stronger isolation. Explicit signed project metadata now provides local-clock
+expiry, revocation, exact-target admission, and monotonic rollback refusal. Flow does not discover,
+refresh, activate, or install packages automatically.
 
 The operator-selectable container command profile is implemented behind the Flow-owned sandbox
 port. Its pinned Linux x64 runtime gate passed in hosted CI. This profile is a shared-kernel
@@ -104,8 +106,9 @@ containment milestone. It is not VM-grade or multi-tenant isolation.
   also supports exact digest-only OCI installation, optional challenge-scoped private credentials,
   and offline Sigstore publisher verification. The store uses content-addressed blobs,
   deterministic lock state, fail-closed collisions, local audit commands, and network-free
-  execution. Mutable tags, discovery, credential helpers, freshness, revocation, rollback
-  protection, and automatic updates remain deferred.
+  execution. Explicit offline-imported signed metadata adds expiry, revocation, exact-target
+  admission, and rollback refusal. Mutable tags, discovery, credential helpers, delegation,
+  background refresh, and automatic package updates remain deferred.
 - Workflow contributions use versioned manifests. *(Implemented for inert exact-version workflow source with packaged root/child selection, ordinary recursive compilation, immutable transitive snapshots, deterministic bundle distribution, detached execution, and fail-closed recovery. Parameterized templates and executable modules remain deferred.)*
 - Policy contributions use versioned manifests.
   Flow implements strict local and digest-pinned installed inert narrowing packages.

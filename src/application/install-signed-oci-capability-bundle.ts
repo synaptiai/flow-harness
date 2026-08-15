@@ -12,12 +12,12 @@ import type {
   CapabilityPublisherVerification,
   InstallCapabilityBundleInput,
   InstallCapabilityBundleResult,
-} from "../infrastructure/fs/local-capability-package-store.js";
+} from "./capability-package-store.js";
 import {
   OciCapabilityRegistryError,
   type OciRegistryCredentialProvider,
   type StrictOciCapabilityRegistry,
-} from "../infrastructure/http/strict-oci-capability-registry.js";
+} from "./oci-capability-registry.js";
 
 export interface SignedOciCapabilityPackageStore {
   install(input: InstallCapabilityBundleInput): Promise<InstallCapabilityBundleResult>;

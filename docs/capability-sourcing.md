@@ -368,6 +368,25 @@ non-overlapping versions may coexist. Rollback explicitly reinstalls the retaine
 removes the new one. Same-name/same-version bytes are immutable, and Flow performs no automatic
 update discovery, rollback, or garbage collection.
 
+An operator may explicitly establish signed project metadata with `flow packages metadata refresh
+<metadata.json> --sigstore-bundle <bundle.json> --certificate-issuer <https-url>
+--certificate-identity <exact>`. The command reads only those bounded local files and reuses the
+offline Sigstore verifier. It performs no discovery, download, trust-root refresh, or automatic
+package action. The canonical metadata binds a monotonically increasing version, UTC expiry, and a
+strictly sorted target list. Each target binds name, exact version, digest, bytes, source, status,
+and any OCI publisher policy.
+
+The first accepted metadata state makes this freshness layer authoritative for that project. Lower
+versions and equal-version substitutions reject. Install and catalog admission require current
+metadata plus one exact active target. An invalid local clock or `now >= expiresAt` rejects. List,
+metadata inspection, exact-byte package inspection, and explicit package removal remain available
+for remediation.
+
+An authenticated empty target list is an established deny-all state for every new installation and
+catalog admission. It does not restore the pre-metadata behavior. The state and package lock share
+one mutation owner and publish through separate atomic replacements. A post-rename durability
+failure is `commit_uncertain` and requires inspection.
+
 Catalog composition reopens and rehashes every lock-selected blob, re-derives bundle/package
 identities, and captures verified content in memory. Provenance has the portable form
 `.flow/packages/sha256/<digest>/<kind>/<name>`; the recorded source URL is not run evidence or a
@@ -383,13 +402,18 @@ Flow artifact contract and exact anonymous or challenge-scoped private pulls. It
 [Pi's npm/Git package manager](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md)
 because Pi packages may install dependencies and execute host extensions. A digest proves exact
 bytes only. The Sigstore bundle authenticates the admitted publisher for those exact bytes. It does
-not prove package safety or correctness. Freshness, revocation, rollback protection, delegation,
-credential helpers, federated identity, and automatic update discovery remain outside this contract. They require a
-separate [TUF-like registry metadata layer](https://theupdateframework.github.io/specification/).
+not prove package safety or correctness.
+
+The opt-in signed metadata layer adds project-local expiry, revocation, exact-target admission, and
+monotonic rollback refusal. It relies on the local clock and explicit operator refresh. Delegation,
+credential helpers, federated identity, discovery, background refresh, automatic package updates,
+and online trust-root refresh remain outside this contract. The design is TUF-like but is not a
+general [TUF repository](https://theupdateframework.github.io/specification/).
 
 ## Coupling rules
 
 - No Pi, OMP, Prime Agent, or provider type appears in a persisted workflow or public Flow API.
+- No application module imports an infrastructure implementation.
 - No domain module imports an executor or infrastructure implementation.
 - No tool implementation advances a workflow.
 - No model session writes authoritative run state.

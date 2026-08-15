@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 import { createHash, randomUUID } from "node:crypto";
-import { realpathSync } from "node:fs";
-import { readFile, realpath } from "node:fs/promises";
+import { constants, realpathSync } from "node:fs";
+import { open, readFile, realpath } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { basename, dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -25,6 +25,7 @@ import {
   generatePromptCandidate,
   PromptCandidateGenerationExecutionError,
 } from "../application/generate-prompt-candidate.js";
+import { createCapabilityMetadataImporter } from "../application/import-capability-metadata.js";
 import { createSignedOciCapabilityBundleInstaller } from "../application/install-signed-oci-capability-bundle.js";
 import type {
   AgentCommandApprovalDecisionChannel,
@@ -66,6 +67,11 @@ import {
   validateCapabilitySnapshot,
 } from "../domain/capability/agent-skills.js";
 import { assertCapabilityBundleSha256 } from "../domain/capability/capability-bundles.js";
+import {
+  CapabilityMetadataError,
+  MAX_CAPABILITY_METADATA_BYTES,
+} from "../domain/capability/capability-metadata.js";
+import { MAX_SIGSTORE_BUNDLE_BYTES } from "../domain/capability/oci-capability-artifacts.js";
 import {
   OfflineSigstoreCapabilityVerifier,
   SigstoreCapabilityVerificationError,
@@ -252,6 +258,8 @@ Usage:
   flow packages install <https-url> --sha256 <64-lowercase-hex>
   flow packages install-oci <registry/repository@sha256:digest> --certificate-issuer <https-url> --certificate-identity <exact> [--username <exact> --password-stdin]
   flow packages pack <source-directory> --output <bundle.flowpkg>
+  flow packages metadata refresh <metadata.json> --sigstore-bundle <bundle.json> --certificate-issuer <https-url> --certificate-identity <exact>
+  flow packages metadata inspect
   flow packages list
   flow packages inspect <name> --version <exact>
   flow packages verify
@@ -457,6 +465,7 @@ export async function main(
     }
     if (
       error instanceof CapabilityBundleFetchError ||
+      error instanceof CapabilityMetadataError ||
       error instanceof CapabilityPackageStoreError ||
       error instanceof OciCapabilityRegistryError ||
       error instanceof SigstoreCapabilityVerificationError ||
@@ -1013,6 +1022,7 @@ async function packagesCommand(
     "certificate-issuer": { type: "string" },
     output: { type: "string" },
     sha256: { type: "string" },
+    "sigstore-bundle": { type: "string" },
     username: { type: "string" },
     version: { type: "string" },
   });
@@ -1026,6 +1036,7 @@ async function packagesCommand(
     (values.username === undefined && !passwordInput.enabled) ||
     (values.username !== undefined && passwordInput.enabled);
   const hasNoCredentials = values.username === undefined && !passwordInput.enabled;
+  const hasNoSigstoreBundle = values["sigstore-bundle"] === undefined;
   const valid =
     (subcommand === "install" &&
       positionals.length === 2 &&
@@ -1033,6 +1044,7 @@ async function packagesCommand(
       values["certificate-issuer"] === undefined &&
       values.output === undefined &&
       values.sha256 !== undefined &&
+      hasNoSigstoreBundle &&
       hasNoCredentials &&
       values.version === undefined) ||
     (subcommand === "install-oci" &&
@@ -1041,6 +1053,7 @@ async function packagesCommand(
       values["certificate-issuer"] !== undefined &&
       values.output === undefined &&
       values.sha256 === undefined &&
+      hasNoSigstoreBundle &&
       hasCredentialPair &&
       values.version === undefined) ||
     (subcommand === "pack" &&
@@ -1049,6 +1062,7 @@ async function packagesCommand(
       values["certificate-issuer"] === undefined &&
       values.output !== undefined &&
       values.sha256 === undefined &&
+      hasNoSigstoreBundle &&
       hasNoCredentials &&
       values.version === undefined) ||
     ((subcommand === "list" || subcommand === "verify") &&
@@ -1057,6 +1071,7 @@ async function packagesCommand(
       values["certificate-issuer"] === undefined &&
       values.output === undefined &&
       values.sha256 === undefined &&
+      hasNoSigstoreBundle &&
       hasNoCredentials &&
       values.version === undefined) ||
     ((subcommand === "inspect" || subcommand === "remove") &&
@@ -1065,11 +1080,32 @@ async function packagesCommand(
       values["certificate-issuer"] === undefined &&
       values.output === undefined &&
       values.sha256 === undefined &&
+      hasNoSigstoreBundle &&
       hasNoCredentials &&
-      values.version !== undefined);
+      values.version !== undefined) ||
+    (subcommand === "metadata" &&
+      positionals[1] === "refresh" &&
+      positionals.length === 3 &&
+      values["certificate-identity"] !== undefined &&
+      values["certificate-issuer"] !== undefined &&
+      values.output === undefined &&
+      values.sha256 === undefined &&
+      !hasNoSigstoreBundle &&
+      hasNoCredentials &&
+      values.version === undefined) ||
+    (subcommand === "metadata" &&
+      positionals[1] === "inspect" &&
+      positionals.length === 2 &&
+      values["certificate-identity"] === undefined &&
+      values["certificate-issuer"] === undefined &&
+      values.output === undefined &&
+      values.sha256 === undefined &&
+      hasNoSigstoreBundle &&
+      hasNoCredentials &&
+      values.version === undefined);
   if (!valid) {
     throw new CliUsageError(
-      "packages requires pack <source-directory> --output <bundle.flowpkg>, install <https-url> --sha256 <hex>, install-oci <digest-reference> --certificate-issuer <https-url> --certificate-identity <exact> [--username <exact> --password-stdin], list, inspect <name> --version <exact>, verify, or remove <name> --version <exact>",
+      "packages requires pack, install, install-oci, metadata refresh, metadata inspect, list, inspect, verify, or remove with the documented exact arguments",
     );
   }
   const dependencies = configDependenciesFrom(overrides);
@@ -1109,6 +1145,62 @@ async function packagesCommand(
     );
   }
   const store = new LocalCapabilityPackageStore(config.projectRoot);
+  if (subcommand === "metadata") {
+    if (positionals[1] === "inspect") {
+      io.stdout(
+        JSON.stringify({ metadata: await store.inspectMetadata(overrides.signal) }, null, 2),
+      );
+      return 0;
+    }
+    const metadataPath = positionals[2];
+    const sigstoreBundlePath = values["sigstore-bundle"];
+    const certificateIssuer = values["certificate-issuer"];
+    const certificateIdentity = values["certificate-identity"];
+    if (
+      metadataPath === undefined ||
+      sigstoreBundlePath === undefined ||
+      certificateIssuer === undefined ||
+      certificateIdentity === undefined
+    ) {
+      throw new CliUsageError(
+        "packages metadata refresh requires <metadata.json> --sigstore-bundle <bundle.json> --certificate-issuer <https-url> --certificate-identity <exact>",
+      );
+    }
+    let metadata: Buffer;
+    let sigstoreBundle: Buffer;
+    try {
+      [metadata, sigstoreBundle] = await Promise.all([
+        readBoundedCommandInput(
+          resolve(dependencies.cwd, metadataPath),
+          MAX_CAPABILITY_METADATA_BYTES,
+        ),
+        readBoundedCommandInput(
+          resolve(dependencies.cwd, sigstoreBundlePath),
+          MAX_SIGSTORE_BUNDLE_BYTES,
+        ),
+      ]);
+    } catch (error) {
+      throw new CapabilityPackageStoreError(
+        "io",
+        "could not read signed capability metadata inputs",
+        { cause: error },
+      );
+    }
+    const imported = await createCapabilityMetadataImporter(
+      overrides.sigstoreCapabilityVerifier ??
+        new OfflineSigstoreCapabilityVerifier(createSigstorePublicGoodTrustedRoot()),
+      store,
+    ).import({
+      metadata,
+      sigstoreBundle,
+      certificateIssuer,
+      certificateIdentity,
+      now: new Date(),
+      ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
+    });
+    io.stdout(JSON.stringify({ status: imported.status, metadata: imported.state }, null, 2));
+    return 0;
+  }
   if (subcommand === "install-oci") {
     const reference = positionals[1];
     const certificateIssuer = values["certificate-issuer"];
@@ -1211,7 +1303,9 @@ async function packagesCommand(
     return 0;
   }
   if (subcommand === "verify") {
-    const verified = await store.verify();
+    const verified = await store.verify({
+      ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
+    });
     io.stdout(
       JSON.stringify(
         {
@@ -1247,16 +1341,9 @@ async function packagesCommand(
     );
     return 0;
   }
-  const verified = await store.verify();
-  const selected = verified.find(
-    (item) => item.entry.name === name && item.entry.version === version,
-  );
-  if (selected === undefined) {
-    throw new CapabilityPackageStoreError(
-      "not_found",
-      `capability bundle ${name}@${version} is not installed`,
-    );
-  }
+  const selected = await store.inspect(name, version, {
+    ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
+  });
   io.stdout(
     JSON.stringify(
       {
@@ -1274,6 +1361,42 @@ async function packagesCommand(
     ),
   );
   return 0;
+}
+
+async function readBoundedCommandInput(path: string, maximumBytes: number): Promise<Buffer> {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
+  try {
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile() || before.size < 1n || before.size > BigInt(maximumBytes)) {
+      throw new Error("signed capability metadata input is not a bounded regular file");
+    }
+    const buffer = Buffer.alloc(maximumBytes + 1);
+    let offset = 0;
+    while (offset < buffer.byteLength) {
+      const { bytesRead } = await handle.read(buffer, offset, buffer.byteLength - offset, null);
+      if (bytesRead === 0) {
+        break;
+      }
+      offset += bytesRead;
+    }
+    if (offset > maximumBytes) {
+      throw new Error("signed capability metadata input exceeds its byte limit");
+    }
+    const after = await handle.stat({ bigint: true });
+    if (
+      !after.isFile() ||
+      after.dev !== before.dev ||
+      after.ino !== before.ino ||
+      after.size !== before.size ||
+      after.mtimeNs !== before.mtimeNs ||
+      BigInt(offset) !== after.size
+    ) {
+      throw new Error("signed capability metadata input changed during bounded read");
+    }
+    return Buffer.from(buffer.subarray(0, offset));
+  } finally {
+    await handle.close();
+  }
 }
 
 function capabilityBundlePackageSummary(

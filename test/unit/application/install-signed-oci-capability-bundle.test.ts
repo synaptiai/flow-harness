@@ -2,7 +2,12 @@ import { createHash } from "node:crypto";
 
 import { describe, expect, it, vi } from "vitest";
 
+import type { InstallCapabilityBundleResult } from "../../../src/application/capability-package-store.js";
 import { createSignedOciCapabilityBundleInstaller } from "../../../src/application/install-signed-oci-capability-bundle.js";
+import type {
+  AcquiredOciCapabilityArtifact,
+  OciRegistryCredentialProvider,
+} from "../../../src/application/oci-capability-registry.js";
 import {
   createCapabilityBundleSource,
   parseCapabilityBundle,
@@ -12,11 +17,6 @@ import {
   SIGSTORE_BUNDLE_LAYER_MEDIA_TYPE,
 } from "../../../src/domain/capability/oci-capability-artifacts.js";
 import { SigstoreCapabilityVerificationError } from "../../../src/domain/capability/sigstore-capability-verifier.js";
-import type { InstallCapabilityBundleResult } from "../../../src/infrastructure/fs/local-capability-package-store.js";
-import type {
-  AcquiredOciCapabilityArtifact,
-  OciRegistryCredentialProvider,
-} from "../../../src/infrastructure/http/strict-oci-capability-registry.js";
 
 const manifestDigest = `sha256:${"1".repeat(64)}` as const;
 const reference = `registry.example.test/flow/review-suite@${manifestDigest}`;
