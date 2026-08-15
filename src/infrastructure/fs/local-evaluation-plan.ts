@@ -2,7 +2,13 @@ import { createHash } from "node:crypto";
 import { constants, type Stats } from "node:fs";
 import { type FileHandle, lstat, open, opendir, realpath } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import type { AgentSkillCandidateIdentity } from "../../domain/adaptation/agent-skill-candidate.js";
 import type { PromptCandidateIdentity } from "../../domain/adaptation/prompt-candidate.js";
+import type {
+  AgentSkillCapabilitySnapshot,
+  CapabilitySnapshot,
+} from "../../domain/capability/agent-skills.js";
+import { bindWorkflowCapabilities } from "../../domain/capability/workflow-capabilities.js";
 import {
   type ExternalHarnessIdentity,
   parseExternalHarnessIdentity,
@@ -22,7 +28,7 @@ import {
 import { compileWorkflowText } from "../../domain/workflow/compiler.js";
 import { calculateWorkflowDigest } from "../../domain/workflow/digest.js";
 import type { CompiledRunBudget, CompiledWorkflow } from "../../domain/workflow/types.js";
-import { admitLocalPromptCandidate } from "./local-prompt-candidate.js";
+import { admitLocalAdaptationCandidate } from "./local-adaptation-candidate.js";
 
 export const MAX_EVALUATION_FIXTURE_ENTRIES = 4_096;
 export const MAX_EVALUATION_FIXTURE_BYTES = 256 * 1024 * 1024;
@@ -75,7 +81,10 @@ export interface AdmittedFlowEvaluationProfile {
   readonly id: string;
   readonly adapter: "flow-workflow-v1";
   readonly workflow: {
-    readonly sourceKind: "file" | "prompt-candidate-projection";
+    readonly sourceKind:
+      | "file"
+      | "prompt-candidate-projection"
+      | "agent-skill-candidate-projection";
     readonly sourcePath: string | null;
     readonly provenance: string;
     readonly source: string;
@@ -83,7 +92,11 @@ export interface AdmittedFlowEvaluationProfile {
     readonly workflowDigest: string;
     readonly compiled: CompiledWorkflow;
   };
-  readonly candidate?: PromptCandidateIdentity & { readonly selectionProvenance: string };
+  readonly candidate?: (PromptCandidateIdentity | AgentSkillCandidateIdentity) & {
+    readonly selectionProvenance: string;
+  };
+  readonly capabilitySnapshot?: CapabilitySnapshot;
+  readonly baselineCapabilitySnapshot?: AgentSkillCapabilitySnapshot;
 }
 
 export type AdmittedExternalEvaluationProfile = {
@@ -118,7 +131,10 @@ export interface AdmittedEvaluationPlan {
 
 export function projectEvaluationCandidateIdentity(
   candidate: NonNullable<AdmittedFlowEvaluationProfile["candidate"]>,
-): { readonly provenance: string; readonly identity: PromptCandidateIdentity } {
+): {
+  readonly provenance: string;
+  readonly identity: PromptCandidateIdentity | AgentSkillCandidateIdentity;
+} {
   const { selectionProvenance, ...identity } = candidate;
   return Object.freeze({ provenance: selectionProvenance, identity: Object.freeze(identity) });
 }
@@ -144,20 +160,26 @@ export interface LocalEvaluationPlanDependencies {
   readonly resolveExternalHarnessIdentity: (
     profile: ExternalProfileSource,
   ) => Promise<ExternalHarnessIdentity>;
+  readonly signal?: AbortSignal;
+  /** @internal Deterministic nested-candidate cancellation seam. */
+  readonly afterCandidatePathValidation?: (provenance: string) => void | Promise<void>;
 }
 
 export async function admitLocalEvaluationPlan(
   planPath: string,
   dependencies?: Partial<LocalEvaluationPlanDependencies>,
 ): Promise<AdmittedEvaluationPlan> {
+  dependencies?.signal?.throwIfAborted();
   const absolutePlanPath = resolve(planPath);
   const planRoot = await realpath(dirname(absolutePlanPath));
+  dependencies?.signal?.throwIfAborted();
   const canonicalPlanPath = join(planRoot, basename(absolutePlanPath));
   const planFile = await stableReadFile(
     canonicalPlanPath,
     MAX_EVALUATION_PLAN_BYTES,
     "evaluation plan",
   );
+  dependencies?.signal?.throwIfAborted();
   const source = parseEvaluationPlanText(planFile.content.toString("utf8"), basename(planPath));
 
   const tasks = await Promise.all(
@@ -184,9 +206,11 @@ export async function admitLocalEvaluationPlan(
       });
     }),
   );
+  dependencies?.signal?.throwIfAborted();
 
   const admittedProfiles = await Promise.all(
     source.profiles.map(async (profile): Promise<AdmittedEvaluationProfile> => {
+      dependencies?.signal?.throwIfAborted();
       if (profile.adapter !== "flow-workflow-v1") {
         const resolver = dependencies?.resolveExternalHarnessIdentity;
         if (resolver === undefined) {
@@ -198,7 +222,9 @@ export async function admitLocalEvaluationPlan(
         let harness: ExternalHarnessIdentity;
         try {
           harness = parseExternalHarnessIdentity(await resolver(profile));
+          dependencies?.signal?.throwIfAborted();
         } catch (error) {
+          dependencies?.signal?.throwIfAborted();
           throw new EvaluationAdmissionError(
             "invalid_workflow",
             `profile "${profile.id}" external harness identity is invalid: ${boundedMessage(error)}`,
@@ -224,16 +250,19 @@ export async function admitLocalEvaluationPlan(
       }
       if ("workflow" in profile) {
         const workflowPath = await resolveAdmittedPath(planRoot, profile.workflow, "file");
+        dependencies?.signal?.throwIfAborted();
         const workflowFile = await stableReadFile(
           workflowPath,
           MAX_EVALUATION_WORKFLOW_BYTES,
           `workflow "${profile.id}"`,
         );
+        dependencies?.signal?.throwIfAborted();
         const workflowSource = workflowFile.content.toString("utf8");
         let compiled: CompiledWorkflow;
         try {
           compiled = compileWorkflowText(workflowSource, profile.workflow);
         } catch (error) {
+          dependencies?.signal?.throwIfAborted();
           throw new EvaluationAdmissionError(
             "invalid_workflow",
             `profile "${profile.id}" workflow cannot be compiled: ${boundedMessage(error)}`,
@@ -257,17 +286,51 @@ export async function admitLocalEvaluationPlan(
       }
 
       const candidatePath = await resolveAdmittedPath(planRoot, profile.candidate, "file");
-      let admittedCandidate: Awaited<ReturnType<typeof admitLocalPromptCandidate>>;
+      dependencies?.signal?.throwIfAborted();
+      let admittedCandidate: Awaited<ReturnType<typeof admitLocalAdaptationCandidate>>;
       try {
-        admittedCandidate = await admitLocalPromptCandidate(candidatePath);
+        admittedCandidate = await admitLocalAdaptationCandidate(candidatePath, {
+          ...(dependencies?.signal === undefined ? {} : { signal: dependencies.signal }),
+          ...(dependencies?.afterCandidatePathValidation === undefined
+            ? {}
+            : {
+                afterAgentSkillPathValidation: dependencies.afterCandidatePathValidation,
+              }),
+        });
+        dependencies?.signal?.throwIfAborted();
       } catch (error) {
+        dependencies?.signal?.throwIfAborted();
         throw new EvaluationAdmissionError(
           "invalid_workflow",
-          `profile "${profile.id}" prompt candidate cannot be admitted: ${boundedMessage(error)}`,
+          `profile "${profile.id}" candidate cannot be admitted: ${boundedMessage(error)}`,
           { cause: error },
         );
       }
-      assertWorkflowControls(profile.id, admittedCandidate.workflow.compiled, source.controls);
+      if (admittedCandidate.kind === "agent-skill-candidate") {
+        const skillCandidate = admittedCandidate.candidate;
+        assertWorkflowControls(profile.id, skillCandidate.workflow.compiled, source.controls);
+        return Object.freeze({
+          id: profile.id,
+          adapter: profile.adapter,
+          workflow: Object.freeze({
+            sourceKind: "agent-skill-candidate-projection" as const,
+            sourcePath: null,
+            provenance: profile.candidate,
+            source: skillCandidate.baseline.workflow.sourceText,
+            sourceSha256: skillCandidate.workflow.sourceSha256,
+            workflowDigest: skillCandidate.workflow.workflowDigest,
+            compiled: skillCandidate.workflow.compiled,
+          }),
+          candidate: Object.freeze({
+            ...skillCandidate.identity,
+            selectionProvenance: profile.candidate,
+          }),
+          capabilitySnapshot: skillCandidate.candidateCapabilitySnapshot,
+          baselineCapabilitySnapshot: skillCandidate.baselineCapabilitySnapshot,
+        });
+      }
+      const promptCandidate = admittedCandidate.candidate;
+      assertWorkflowControls(profile.id, promptCandidate.workflow.compiled, source.controls);
       return Object.freeze({
         id: profile.id,
         adapter: profile.adapter,
@@ -275,20 +338,32 @@ export async function admitLocalEvaluationPlan(
           sourceKind: "prompt-candidate-projection" as const,
           sourcePath: null,
           provenance: profile.candidate,
-          source: admittedCandidate.workflow.source,
-          sourceSha256: admittedCandidate.workflow.sourceSha256,
-          workflowDigest: admittedCandidate.workflow.workflowDigest,
-          compiled: admittedCandidate.workflow.compiled,
+          source: promptCandidate.workflow.source,
+          sourceSha256: promptCandidate.workflow.sourceSha256,
+          workflowDigest: promptCandidate.workflow.workflowDigest,
+          compiled: promptCandidate.workflow.compiled,
         }),
         candidate: Object.freeze({
-          ...admittedCandidate.identity,
+          ...promptCandidate.identity,
           selectionProvenance: profile.candidate,
         }),
       });
     }),
   );
-  const profiles = admittedProfiles as [AdmittedEvaluationProfile, AdmittedEvaluationProfile];
-  assertCandidateComparison(profiles, source.comparison);
+  dependencies?.signal?.throwIfAborted();
+  const profiles = bindCandidateComparison(
+    admittedProfiles as [AdmittedEvaluationProfile, AdmittedEvaluationProfile],
+    source.comparison,
+  );
+  for (const profile of profiles) {
+    if (profile.adapter === "flow-workflow-v1") {
+      assertClosedWorkflowCapabilities(
+        profile.id,
+        profile.workflow.compiled,
+        profile.capabilitySnapshot,
+      );
+    }
+  }
 
   const planDigest = calculateEvaluationPlanDigest({
     version: 1,
@@ -332,10 +407,13 @@ export async function admitLocalEvaluationPlan(
           provenance: profile.workflow.provenance,
           sourceSha256: profile.workflow.sourceSha256,
           workflowDigest: profile.workflow.workflowDigest,
-          ...(profile.workflow.sourceKind === "prompt-candidate-projection"
+          ...(profile.workflow.sourceKind !== "file"
             ? { sourceKind: profile.workflow.sourceKind }
             : {}),
         },
+        ...(profile.capabilitySnapshot === undefined
+          ? {}
+          : { capabilitySnapshotDigest: profile.capabilitySnapshot.digest }),
         ...(profile.candidate === undefined
           ? {}
           : {
@@ -354,6 +432,7 @@ export async function admitLocalEvaluationPlan(
     profiles.map((profile) => profile.id),
     source.seeds,
   );
+  dependencies?.signal?.throwIfAborted();
 
   return Object.freeze({
     apiVersion: source.apiVersion,
@@ -558,16 +637,16 @@ async function stableReadFile(path: string, maxBytes: number, label: string): Pr
   }
 }
 
-function assertCandidateComparison(
+function bindCandidateComparison(
   profiles: readonly [AdmittedEvaluationProfile, AdmittedEvaluationProfile],
   comparison: EvaluationPlanSource["comparison"],
-): void {
+): [AdmittedEvaluationProfile, AdmittedEvaluationProfile] {
   const candidateProfiles = profiles.filter(
     (profile): profile is AdmittedFlowEvaluationProfile =>
       profile.adapter === "flow-workflow-v1" && profile.candidate !== undefined,
   );
   if (candidateProfiles.length === 0) {
-    return;
+    return [...profiles];
   }
   const baseline = profiles.find((profile) => profile.id === comparison.baselineProfileId);
   const candidate = profiles.find((profile) => profile.id === comparison.candidateProfileId);
@@ -582,18 +661,42 @@ function assertCandidateComparison(
   ) {
     throw new EvaluationAdmissionError(
       "invalid_workflow",
-      "a prompt candidate source must be selected only on the comparison candidate profile",
+      "a candidate source must be selected only on the comparison candidate profile",
     );
   }
+  if (!("kind" in candidate.candidate)) {
+    if (
+      candidate.candidate.baseline.sourceSha256 !== baseline.workflow.sourceSha256 ||
+      candidate.candidate.baseline.workflowDigest !== baseline.workflow.workflowDigest
+    ) {
+      throw new EvaluationAdmissionError(
+        "invalid_workflow",
+        "the prompt candidate must overlay the exact comparison baseline workflow identity",
+      );
+    }
+    return [...profiles];
+  }
   if (
-    candidate.candidate.baseline.sourceSha256 !== baseline.workflow.sourceSha256 ||
-    candidate.candidate.baseline.workflowDigest !== baseline.workflow.workflowDigest
+    candidate.candidate.baseline.workflow.sourceSha256 !== baseline.workflow.sourceSha256 ||
+    candidate.candidate.baseline.workflow.workflowDigest !== baseline.workflow.workflowDigest ||
+    candidate.workflow.sourceSha256 !== baseline.workflow.sourceSha256 ||
+    candidate.workflow.workflowDigest !== baseline.workflow.workflowDigest ||
+    candidate.baselineCapabilitySnapshot === undefined ||
+    candidate.capabilitySnapshot === undefined
   ) {
     throw new EvaluationAdmissionError(
       "invalid_workflow",
-      "the prompt candidate must overlay the exact comparison baseline workflow identity",
+      "the Agent Skill candidate must preserve the exact comparison workflow and skill identities",
     );
   }
+  return profiles.map((profile) =>
+    profile === baseline
+      ? Object.freeze({
+          ...profile,
+          capabilitySnapshot: candidate.baselineCapabilitySnapshot,
+        })
+      : profile,
+  ) as [AdmittedEvaluationProfile, AdmittedEvaluationProfile];
 }
 
 function assertWorkflowControls(
@@ -607,7 +710,6 @@ function assertWorkflowControls(
       `profile "${profileId}" workflow budget must exactly match evaluation controls`,
     );
   }
-  assertClosedWorkflowCapabilities(profileId, workflow);
   const models = workflowModels(workflow);
   if (models.length === 0) {
     throw new EvaluationAdmissionError(
@@ -629,7 +731,37 @@ function assertWorkflowControls(
   }
 }
 
-function assertClosedWorkflowCapabilities(profileId: string, workflow: CompiledWorkflow): void {
+function assertClosedWorkflowCapabilities(
+  profileId: string,
+  workflow: CompiledWorkflow,
+  capabilitySnapshot?: CapabilitySnapshot,
+): void {
+  if (
+    capabilitySnapshot?.packages.some((item) => item.kind !== "agent-skill") === true ||
+    (capabilitySnapshot?.activations?.length ?? 0) > 0
+  ) {
+    throw new EvaluationAdmissionError(
+      "invalid_workflow",
+      `profile "${profileId}" contains capability types not admitted by Agent Skill evaluation`,
+    );
+  }
+  assertClosedWorkflowStructure(profileId, workflow, capabilitySnapshot !== undefined);
+  try {
+    bindWorkflowCapabilities(workflow, capabilitySnapshot);
+  } catch (error) {
+    throw new EvaluationAdmissionError(
+      "invalid_workflow",
+      `profile "${profileId}" capability snapshot does not bind its workflow`,
+      { cause: error },
+    );
+  }
+}
+
+function assertClosedWorkflowStructure(
+  profileId: string,
+  workflow: CompiledWorkflow,
+  permitsAgentSkills: boolean,
+): void {
   if (workflow.sourcePackage !== undefined) {
     throw new EvaluationAdmissionError(
       "invalid_workflow",
@@ -638,7 +770,10 @@ function assertClosedWorkflowCapabilities(profileId: string, workflow: CompiledW
   }
   for (const node of workflow.nodes) {
     if (node.type === "agent") {
-      if (node.agent.skills.length > 0 || node.agent.toolPackages.length > 0) {
+      if (
+        (!permitsAgentSkills && node.agent.skills.length > 0) ||
+        node.agent.toolPackages.length > 0
+      ) {
         throw new EvaluationAdmissionError(
           "invalid_workflow",
           `profile "${profileId}" Agent Skills and tool capability packages are not captured by evaluation plan version 1`,
@@ -659,7 +794,7 @@ function assertClosedWorkflowCapabilities(profileId: string, workflow: CompiledW
         `profile "${profileId}" verifier capability packages are not captured by evaluation plan version 1`,
       );
     } else if (node.type === "child") {
-      assertClosedWorkflowCapabilities(profileId, node.child.workflow);
+      assertClosedWorkflowStructure(profileId, node.child.workflow, permitsAgentSkills);
     }
   }
 }

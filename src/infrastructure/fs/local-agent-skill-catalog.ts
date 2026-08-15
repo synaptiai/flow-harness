@@ -1,7 +1,10 @@
 import { constants, type Dirent, type Stats } from "node:fs";
 import { type FileHandle, lstat, open, readdir, realpath } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
-
+import {
+  AgentSkillManifestError,
+  parseAgentSkillManifest,
+} from "../../domain/capability/agent-skill-manifest.js";
 import {
   type AgentSkillCapabilitySnapshot,
   type AgentSkillPackageSnapshotInput,
@@ -12,10 +15,6 @@ import {
   MAX_AGENT_SKILL_PACKAGE_BYTES,
   MAX_AGENT_SKILL_PACKAGES,
 } from "../../domain/capability/agent-skills.js";
-import {
-  AgentSkillManifestError,
-  parseAgentSkillManifest,
-} from "../../domain/capability/agent-skill-manifest.js";
 import type { CapabilityBundleAgentSkillPackage } from "../../domain/capability/capability-bundles.js";
 
 const MAX_DISCOVERY_DEPTH = 6;
@@ -179,6 +178,51 @@ export async function snapshotSelectedAgentSkills(
       { cause: error },
     );
   }
+}
+
+export async function snapshotProjectAgentSkillPath(input: {
+  readonly projectRoot: string;
+  readonly provenance: string;
+  readonly expectedName: string;
+}): Promise<AgentSkillCapabilitySnapshot> {
+  if (!isAgentSkillName(input.expectedName)) {
+    throw new AgentSkillCatalogError("invalid_skill", "selected Agent Skill name is invalid");
+  }
+  const canonicalProject = await canonicalDirectory(input.projectRoot, "Flow project root");
+  const skillsRoot = join(canonicalProject, ".flow", "skills");
+  const rootMetadata = await lstatSafe(skillsRoot);
+  assertRealDirectory(rootMetadata, skillsRoot);
+  const canonicalRoot = await realpath(skillsRoot);
+  if (canonicalRoot !== skillsRoot) {
+    throw unsafeError("Agent Skills root changed identity");
+  }
+  const directory = resolve(canonicalProject, input.provenance);
+  assertWithin(directory, canonicalRoot, "Agent Skill package");
+  if (
+    directory === canonicalRoot ||
+    portableRelative(canonicalProject, directory) !== input.provenance
+  ) {
+    throw unsafeError("Agent Skill package provenance is not canonical");
+  }
+  const directoryMetadata = await lstatSafe(directory);
+  assertRealDirectory(directoryMetadata, directory);
+  const canonicalDirectoryPath = await realpath(directory);
+  if (canonicalDirectoryPath !== directory) {
+    throw unsafeError("Agent Skill package changed identity");
+  }
+  const discovered = await readDiscoveredSkill(canonicalProject, canonicalRoot, directory);
+  if (discovered.name !== input.expectedName || discovered.provenance !== input.provenance) {
+    throw new AgentSkillCatalogError(
+      "invalid_skill",
+      "selected Agent Skill identity contradicts the declared package path",
+    );
+  }
+  const catalog = deepFreeze({
+    projectRoot: canonicalProject,
+    root: canonicalRoot,
+    skills: [discovered],
+  });
+  return snapshotSelectedAgentSkills(catalog, [input.expectedName]);
 }
 
 async function scanForSkills(

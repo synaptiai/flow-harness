@@ -81,7 +81,7 @@ task. Tuning and regression pairs do not count toward this threshold.
 
 A profile selects one of these built-in adapters:
 
-- `flow-workflow-v1` selects one admitted workflow or prompt candidate.
+- `flow-workflow-v1` selects one admitted workflow, prompt candidate, or Agent Skill candidate.
 - `pi-native-v1` selects the fixed `pi-evaluation-v1` harness configuration.
 - `omp-native-v1` selects the fixed `omp-evaluation-v1` harness configuration.
 
@@ -92,8 +92,10 @@ Paths are portable relative paths below the plan directory. Fixtures may contain
 regular files and directories: symbolic links, special files, `.flow`, path escapes, oversized
 trees, and sources that change during admission fail closed. Each workflow must contain a
 model-bearing node and exactly match the plan's model and budget. Version 1 rejects workflow,
-verifier, skill, and command-tool packages plus agent fresh-recovery settings because their full
-identity is not yet represented in the evaluation plan.
+verifier, and command-tool packages plus agent fresh-recovery settings because their full identity
+is not yet represented in the evaluation plan. An Agent Skill candidate is the only skill-bearing
+profile form. It binds one selected package and supplies exact capability snapshots to both
+profiles.
 
 The built-in `filesystem-v1` verifier supports only closed data assertions:
 
@@ -258,7 +260,7 @@ policy, and full container ID. Flow does not start another trial while removal s
 Tuning-evidence export accepts only `flow-workflow-v1` profiles. It rejects an evaluation that uses
 an external harness profile.
 
-## Tuning-only evidence and prompt candidates
+## Tuning-only evidence and adaptive candidates
 
 A completed evaluation with at least one tuning task can produce a deterministic refiner input:
 
@@ -326,6 +328,31 @@ and export. The projection still uses `flow-workflow-v1`. Evaluation never chang
 The public header stores the complete prompt-free candidate identity. Replay recalculates its digest.
 The baseline and projected identities must match both comparison profiles. Direct workflow profiles
 omit the projection discriminator. This omission preserves existing version-1 plan digests.
+
+### Agent Skill candidates
+
+An `AgentSkillCandidate` binds the same tuning-only evidence to one exact workflow and one already
+selected local Agent Skill package. It declares one through sixteen replacements for unique
+existing UTF-8 package resources. Every replacement includes the expected current SHA-256.
+
+Admission performs stable no-follow reads of the candidate, workflow, evidence, and baseline skill
+package. It rejects path escape, links, special files, source drift, and missing or binary
+resources. It also rejects stale hashes, unrelated evidence, and changes to package authority.
+Replacing `SKILL.md` is allowed only when its parsed manifest authority remains exact.
+
+The comparison baseline and candidate compile to the same workflow identity. The baseline profile
+receives the admitted original package snapshot. The candidate receives the projected package
+snapshot. Both snapshots come from the same candidate admission. Ordinary workflow capability
+checks bind them before scheduling. Runtime trials do not reread the live skill catalog.
+
+The candidate identity stores the baseline and projected package/capability digests, changed-file
+hashes, workflow identity, evidence identity, and portable provenance. It omits resource contents
+and absolute paths. The durable header distinguishes `agent-skill-candidate-projection` from prompt
+projection while retaining legacy direct and prompt encodings. Inspection and export need no live
+candidate, package directory, network, registry, or credential.
+
+This slice is evaluation-only. Flow does not generate, activate, roll back, install, publish, or
+automatically select an Agent Skill candidate. A favorable result is evidence, not authority.
 
 ## Activation gate
 

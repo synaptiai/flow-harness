@@ -9,6 +9,11 @@ import {
   type HarnessEvaluationRequest,
 } from "../../../src/application/evaluation-adapter.js";
 import type { NodeExecutor } from "../../../src/application/ports.js";
+import {
+  type CapabilitySnapshot,
+  createAgentCapabilityEvidence,
+  createCapabilitySnapshot,
+} from "../../../src/domain/capability/agent-skills.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { calculateWorkflowDigest } from "../../../src/domain/workflow/digest.js";
 import { JsonlRunStore } from "../../../src/infrastructure/fs/jsonl-run-store.js";
@@ -74,6 +79,54 @@ describe("Flow workflow evaluation adapter", () => {
     ).resolves.toEqual(
       expect.arrayContaining([expect.objectContaining({ type: "run_succeeded" })]),
     );
+  });
+
+  it("binds an admitted Agent Skill snapshot to the evaluated workflow", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-evaluation-adapter-")));
+    temporaryDirectories.push(root);
+    await writeFile(join(root, "TASK.md"), "Create RESULT.md.\n");
+    const workflow = compiledSkillWorkflow();
+    const capabilitySnapshot = createCapabilitySnapshot([
+      {
+        kind: "agent-skill",
+        name: "review",
+        description: "Review the result.",
+        metadata: { owner: "synapti" },
+        requestedTools: ["Read"],
+        trust: "project-explicit",
+        provenance: ".flow/skills/review",
+        files: [
+          {
+            path: "SKILL.md",
+            content: Buffer.from("---\nname: review\ndescription: Review the result.\n---\n"),
+          },
+        ],
+      },
+    ]);
+    const observed: Array<unknown> = [];
+    const executor = successfulExecutor(capabilitySnapshot);
+    const adapter = new FlowWorkflowEvaluationAdapter(
+      {
+        id: "candidate",
+        adapter: "flow-workflow-v1",
+        workflow: { compiled: workflow, workflowDigest: calculateWorkflowDigest(workflow) },
+        capabilitySnapshot,
+      },
+      {
+        executor: {
+          execute: async (node, context) => {
+            observed.push(context.capabilitySnapshot);
+            return executor.execute(node, context);
+          },
+        },
+        createStore: () => new JsonlRunStore(join(root, "runs")),
+      },
+    );
+
+    await expect(adapter.run(publicRequest(root))).resolves.toMatchObject({
+      harness: { outcome: "completed" },
+    });
+    expect(observed).toEqual([capabilitySnapshot]);
   });
 
   it("converts workflow failure into a typed harness failure without inventing telemetry", async () => {
@@ -212,6 +265,33 @@ nodes:
 `);
 }
 
+function compiledSkillWorkflow() {
+  return compileWorkflowText(`apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: evaluated-profile }
+budget:
+  maxNodeStarts: 8
+  maxModelTokens: 10000
+  maxCostUsd: 1
+  maxExecutionMs: 300000
+  maxArtifactBytes: 1048576
+nodes:
+  - id: implement
+    type: agent
+    agent:
+      prompt: Follow TASK.md.
+      model: { provider: test, id: deterministic }
+      tools: [read, edit]
+      skills: [review]
+  - id: publish
+    type: result
+    dependsOn: [implement]
+    result:
+      source: { nodeId: implement, field: agent.text }
+      schema: { type: string, maxLength: 1024 }
+`);
+}
+
 function compiledChildWorkflow() {
   return compileWorkflowText(`apiVersion: flow.synapti.ai/v1alpha1
 kind: Workflow
@@ -292,7 +372,7 @@ function publicRequest(cwd: string): HarnessEvaluationRequest {
   });
 }
 
-function successfulExecutor(): NodeExecutor {
+function successfulExecutor(capabilitySnapshot?: CapabilitySnapshot): NodeExecutor {
   return {
     execute: async (node, context) => {
       if (node.type !== "agent") {
@@ -319,6 +399,9 @@ function successfulExecutor(): NodeExecutor {
           activity: { turns: 2, toolCalls: 1, toolErrors: 0 },
           policyDecisions: [],
           effectReceipts: [],
+          ...(capabilitySnapshot === undefined
+            ? {}
+            : { capabilities: createAgentCapabilityEvidence(capabilitySnapshot, ["review"]) }),
         },
       };
     },

@@ -17,6 +17,10 @@ import { join, resolve } from "node:path";
 import { z } from "zod";
 
 import {
+  type AgentSkillCandidateIdentity,
+  parseAgentSkillCandidateIdentity,
+} from "../../domain/adaptation/agent-skill-candidate.js";
+import {
   type PromptCandidateIdentity,
   parsePromptCandidateIdentity,
 } from "../../domain/adaptation/prompt-candidate.js";
@@ -138,12 +142,17 @@ const taskSchema = z
 const candidateIdentitySchema = z
   .object({
     provenance: relativePathSchema,
-    identity: z.custom<PromptCandidateIdentity>((value) => {
+    identity: z.custom<PromptCandidateIdentity | AgentSkillCandidateIdentity>((value) => {
       try {
         parsePromptCandidateIdentity(value);
         return true;
       } catch {
-        return false;
+        try {
+          parseAgentSkillCandidateIdentity(value);
+          return true;
+        } catch {
+          return false;
+        }
       }
     }, "candidate identity is invalid or internally inconsistent"),
   })
@@ -155,12 +164,15 @@ const flowProfileSchema = z
     adapter: z.literal("flow-workflow-v1"),
     workflow: z
       .object({
-        sourceKind: z.literal("prompt-candidate-projection").optional(),
+        sourceKind: z
+          .enum(["prompt-candidate-projection", "agent-skill-candidate-projection"])
+          .optional(),
         provenance: relativePathSchema,
         sourceSha256: sha256Schema,
         workflowDigest: sha256Schema,
       })
       .strict(),
+    capabilitySnapshotDigest: sha256Schema.optional(),
     candidate: candidateIdentitySchema.optional(),
   })
   .strict();
@@ -317,7 +329,10 @@ const publicHeaderSchema = z
     );
     const candidateProfiles = flowProfiles.filter((profile) => profile.candidate !== undefined);
     const projectionProfiles = flowProfiles.filter(
-      (profile) => profile.workflow.sourceKind === "prompt-candidate-projection",
+      (profile) => profile.workflow.sourceKind !== undefined,
+    );
+    const capabilityProfiles = flowProfiles.filter(
+      (profile) => profile.capabilitySnapshotDigest !== undefined,
     );
     for (const [index, profile] of header.profiles.entries()) {
       if (profile.adapter !== "flow-workflow-v1" && profile.harness.adapter !== profile.adapter) {
@@ -329,6 +344,27 @@ const publicHeaderSchema = z
       }
     }
     if (candidateProfiles.length > 0 || projectionProfiles.length > 0) {
+      const flowBaseline = baseline?.adapter === "flow-workflow-v1" ? baseline : undefined;
+      const flowCandidate = candidate?.adapter === "flow-workflow-v1" ? candidate : undefined;
+      const identity = flowCandidate?.candidate?.identity;
+      const isAgentSkillCandidate = identity !== undefined && "kind" in identity;
+      const baselineMatches =
+        identity === undefined
+          ? false
+          : isAgentSkillCandidate
+            ? identity.baseline.workflow.sourceSha256 === flowBaseline?.workflow.sourceSha256 &&
+              identity.baseline.workflow.workflowDigest === flowBaseline?.workflow.workflowDigest &&
+              flowCandidate?.workflow.sourceSha256 === flowBaseline?.workflow.sourceSha256 &&
+              flowCandidate?.workflow.workflowDigest === flowBaseline?.workflow.workflowDigest &&
+              identity.baseline.skill.capabilityDigest === flowBaseline?.capabilitySnapshotDigest &&
+              identity.projectedSkill.capabilityDigest === flowCandidate?.capabilitySnapshotDigest
+            : identity.baseline.sourceSha256 === flowBaseline?.workflow.sourceSha256 &&
+              identity.baseline.workflowDigest === flowBaseline?.workflow.workflowDigest &&
+              identity.projectedWorkflow.sourceSha256 === flowCandidate?.workflow.sourceSha256 &&
+              identity.projectedWorkflow.workflowDigest ===
+                flowCandidate?.workflow.workflowDigest &&
+              flowBaseline?.capabilitySnapshotDigest === undefined &&
+              flowCandidate?.capabilitySnapshotDigest === undefined;
       if (
         candidateProfiles.length !== 1 ||
         projectionProfiles.length !== 1 ||
@@ -337,16 +373,14 @@ const publicHeaderSchema = z
         baseline.adapter !== "flow-workflow-v1" ||
         candidate.adapter !== "flow-workflow-v1" ||
         baseline.candidate !== undefined ||
-        baseline.workflow.sourceKind === "prompt-candidate-projection" ||
+        baseline.workflow.sourceKind !== undefined ||
         candidate.candidate === undefined ||
-        candidate.workflow.sourceKind !== "prompt-candidate-projection" ||
+        candidate.workflow.sourceKind !==
+          (isAgentSkillCandidate
+            ? "agent-skill-candidate-projection"
+            : "prompt-candidate-projection") ||
         candidate.candidate.provenance !== candidate.workflow.provenance ||
-        candidate.candidate.identity.baseline.sourceSha256 !== baseline.workflow.sourceSha256 ||
-        candidate.candidate.identity.baseline.workflowDigest !== baseline.workflow.workflowDigest ||
-        candidate.candidate.identity.projectedWorkflow.sourceSha256 !==
-          candidate.workflow.sourceSha256 ||
-        candidate.candidate.identity.projectedWorkflow.workflowDigest !==
-          candidate.workflow.workflowDigest
+        !baselineMatches
       ) {
         context.addIssue({
           code: "custom",
@@ -355,6 +389,12 @@ const publicHeaderSchema = z
             "candidate provenance must identify one projection on the comparison candidate over the exact comparison baseline",
         });
       }
+    } else if (capabilityProfiles.length > 0) {
+      context.addIssue({
+        code: "custom",
+        path: ["profiles"],
+        message: "capability snapshot identity requires an Agent Skill candidate comparison",
+      });
     }
     const holdoutPairs =
       header.suite.tasks.filter((task) => task.partition === "holdout").length *
@@ -468,10 +508,13 @@ export function createPublicEvaluationHeader(
           provenance: profile.workflow.provenance,
           sourceSha256: profile.workflow.sourceSha256,
           workflowDigest: profile.workflow.workflowDigest,
-          ...(profile.workflow.sourceKind === "prompt-candidate-projection"
+          ...(profile.workflow.sourceKind !== "file"
             ? { sourceKind: profile.workflow.sourceKind }
             : {}),
         },
+        ...(profile.capabilitySnapshot === undefined
+          ? {}
+          : { capabilitySnapshotDigest: profile.capabilitySnapshot.digest }),
         ...(profile.candidate === undefined
           ? {}
           : {
@@ -1403,6 +1446,9 @@ function headerIdentity(header: PublicEvaluationHeader): EvaluationPlanIdentity 
             ? {}
             : { sourceKind: profile.workflow.sourceKind }),
         },
+        ...(profile.capabilitySnapshotDigest === undefined
+          ? {}
+          : { capabilitySnapshotDigest: profile.capabilitySnapshotDigest }),
         ...(profile.candidate === undefined ? {} : { candidate: profile.candidate }),
       };
     }),

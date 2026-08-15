@@ -468,6 +468,48 @@ Flow verifies stable no-follow reads and each declared digest. It also verifies 
 hash and baseline evidence coverage. Flow changes only the declared prompt fields. It then uses the
 standard compiler and evaluation adapter.
 
+An `AgentSkillCandidate` uses the same `candidate validate` and paired evaluation commands, but it
+projects one exact selected Agent Skill package instead of changing the workflow:
+
+```yaml
+apiVersion: flow.synapti.ai/v1alpha1
+kind: AgentSkillCandidate
+metadata: { id: better-review, version: 1.0.0 }
+scope:
+  kind: workflow-agent-skill
+  workflowId: evaluated-profile
+  skillName: review
+baseline:
+  workflow:
+    path: baseline.workflow.yaml
+    sourceSha256: <64-lowercase-hex>
+    workflowDigest: <64-lowercase-hex>
+  skill:
+    path: .flow/skills/review
+    packageDigest: <64-lowercase-hex>
+evidence:
+  - path: tuning-evidence.json
+    sourceSha256: <64-lowercase-hex>
+    evidenceDigest: <64-lowercase-hex>
+    planDigest: <64-lowercase-hex>
+changes:
+  resources:
+    - path: reference.md
+      expectedSha256: <64-lowercase-hex>
+      value: Review correctness, security, and evidence.
+```
+
+The workflow must select exactly that one skill. Flow admits the workflow, baseline package, and
+tuning evidence in one stable transaction. The baseline profile receives the original immutable
+skill snapshot. The candidate profile receives a projected snapshot with only the declared existing
+UTF-8 resources replaced. Both profiles use the same compiled workflow, controls, tasks, and
+verifier. Package metadata, requested tools, trust, provenance, and file set cannot change.
+
+The public candidate identity contains hashes and portable provenance, not resource contents or
+absolute paths. Inspection remains available after the live candidate and skill files are removed.
+Agent Skill candidate generation, activation, rollback, installation, and publication are not
+implemented. A favorable evaluation grants no package or execution authority.
+
 Activation requires a complete superior evaluation. First, request a preview:
 
 ```sh

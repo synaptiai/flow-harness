@@ -332,9 +332,16 @@ preview, exact apply, active execution, inspect, source removal, and baseline ro
 that a new run uses the stored baseline artifact after rollback. It also proves that the baseline
 file remains unchanged. These tests do not claim candidate superiority.
 
+The Agent Skill candidate integration validates one bounded candidate. It admits paired immutable
+package snapshots and executes the same workflow with both snapshots. The test excludes private
+resource bytes from CLI output. It also reopens public evidence after removal of the live candidate
+and skill directory. It does not grant activation or package authority.
+
 `test/integration/cli/prompt-candidate-generation.test.ts` covers the zero-tool generation path.
 `test/integration/cli/prompt-candidate.test.ts` covers the complete evaluation and activation path.
 `test/integration/cli/prompt-activation.test.ts` covers durable active-run and resume behavior.
+`test/integration/cli/agent-skill-candidate.test.ts` covers the Agent Skill validation, paired
+execution, privacy, and offline-inspection path.
 
 The production CLI integration runs the complete composition with a deterministic fake executor, so
 unit and integration suites need no provider credentials or network. Live provider comparisons are

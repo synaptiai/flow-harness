@@ -21,8 +21,9 @@ installation are implemented.
 Flow supports paired harness evaluation with fixed controls, fresh fixtures, private verification,
 digest-chained evidence, offline reports, and constrained comparison.
 
-Gate 7 includes tuning-only prompt candidates, zero-tool model generation, exact prompt overlays,
-paired evaluation, reviewed activation, durable run snapshots, and rollback.
+Gate 7 includes tuning-only prompt and Agent Skill candidates. It also includes zero-tool prompt
+generation, exact prompt overlays, authority-preserving skill-resource projections, paired
+evaluation, reviewed prompt activation, durable run snapshots, and rollback.
 
 Remaining targets include executable extensions, automatic package updates, policy and UI
 packages, and stronger isolation. Explicit signed project metadata now provides local-clock
@@ -127,10 +128,15 @@ containment milestone. It is not VM-grade or multi-tenant isolation.
 ## Gate 7: Adaptive harness
 
 - Flow can produce evidence-bound prompt candidates from canonical tuning-only evaluation evidence. *(Implemented for exact prompt-only manifests and zero-tool model generation.)*
-- Skill, memory, sub-agent, and routing candidates remain planned.
-- Prompt candidates use the paired held-out and regression evaluation gate. *(Implemented.)*
+- Flow can validate and evaluate one evidence-bound Agent Skill resource candidate against its exact immutable baseline package. *(Implemented without generation or activation authority.)*
+- Memory, sub-agent, and routing candidates remain planned. Agent Skill generation, activation,
+  rollback, installation, publication, and multi-skill candidates remain planned.
+- Prompt and Agent Skill candidates use the paired held-out and regression evaluation gate. *(Implemented.)*
 - Activation is versioned, reviewable, scoped, and rollbackable. *(Implemented with operator preview, exact apply, paired candidate and baseline artifacts, and baseline or version rollback.)*
-- Base safety, workflow semantics, and evaluator definitions remain immutable during a candidate run. *(Implemented for prompt projection: graph, models, tools, skills, packages, policy, approvals, budgets, verifiers, retry behavior, and runtime semantics cannot be changed by the candidate.)*
+- Base safety, workflow semantics, and evaluator definitions remain immutable during a candidate
+  run. *(Implemented for prompt projection and one-skill resource projection. Candidates cannot
+  change graph, models, tools, selection, package authority, policy, approvals, budgets, verifiers,
+  retry behavior, or runtime semantics.)*
 
 ## Product benchmark gate
 

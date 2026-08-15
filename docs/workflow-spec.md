@@ -1489,6 +1489,60 @@ declared comparison baseline. Public headers distinguish prompt-candidate projec
 file-backed workflow sources. Direct file sources omit the discriminator to preserve version-1 plan
 digests and legacy resume. Generation does not evaluate or activate the candidate.
 
+### Agent Skill candidates
+
+An Agent Skill candidate is a separate inert document that projects resource bytes in one exact
+already-selected package without changing the workflow:
+
+```yaml
+apiVersion: flow.synapti.ai/v1alpha1
+kind: AgentSkillCandidate
+metadata: { id: better-review, version: 1.0.0 }
+scope:
+  kind: workflow-agent-skill
+  workflowId: evaluated-profile
+  skillName: review
+baseline:
+  workflow:
+    path: baseline.workflow.yaml
+    sourceSha256: <64-lowercase-hex>
+    workflowDigest: <64-lowercase-hex>
+  skill:
+    path: .flow/skills/review
+    packageDigest: <64-lowercase-hex>
+evidence:
+  - path: tuning-evidence.json
+    sourceSha256: <64-lowercase-hex>
+    evidenceDigest: <64-lowercase-hex>
+    planDigest: <64-lowercase-hex>
+changes:
+  resources:
+    - path: reference.md
+      expectedSha256: <64-lowercase-hex>
+      value: Review correctness, security, and evidence.
+```
+
+The source is at most 1 MiB. It declares 1–16 unique evidence packets and 1–16 unique existing
+UTF-8 resource replacements. Each resource value is non-empty, is bounded by the Agent Skill file
+limit, and contributes to the package limit. Candidate, workflow, evidence, and skill paths are
+portable relative paths under the candidate directory and are admitted without following links.
+
+The workflow must select exactly one Agent Skill and no other package capability. The selected name,
+package provenance, package digest, workflow source digest, compiled workflow digest, and tuning
+evidence must match the candidate. Projection preserves package name, description, license,
+compatibility, metadata, requested tools, trust, provenance, file paths, and file count. It replaces
+only the declared bytes and recomputes the package and capability digests. A `SKILL.md` replacement
+must parse to the same manifest authority.
+
+Paired evaluation uses the same compiled workflow for both profiles. The baseline receives the
+original capability snapshot and the candidate receives the projected snapshot. The normal runner
+binds each snapshot to the workflow before execution. The public identity contains only portable
+provenance and hashes. Durable inspection remains available after live source removal.
+
+`flow candidate validate <candidate.yaml>` accepts prompt or Agent Skill candidates and is read-only.
+Agent Skill generation, activation, rollback, installation, publication, and automatic selection
+remain unavailable. Evaluation success grants no authority.
+
 ### Prompt activation
 
 An operator can activate a prompt candidate after a complete superior evaluation. Preview creates a

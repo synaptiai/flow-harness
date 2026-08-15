@@ -148,10 +148,12 @@ import {
 } from "../infrastructure/fs/flow-config-store.js";
 import { AdmissionStoreError } from "../infrastructure/fs/jsonl-admission-store.js";
 import { JsonlRunStore, RunStoreError } from "../infrastructure/fs/jsonl-run-store.js";
+import { admitLocalAdaptationCandidate } from "../infrastructure/fs/local-adaptation-candidate.js";
 import {
   LocalAgentCommandApprovalChannel,
   LocalAgentCommandApprovalChannelError,
 } from "../infrastructure/fs/local-agent-command-approval-channel.js";
+import { LocalAgentSkillCandidateError } from "../infrastructure/fs/local-agent-skill-candidate.js";
 import {
   AgentSkillCatalogError,
   type ProjectAgentSkillCatalog,
@@ -566,6 +568,7 @@ export async function main(
       error instanceof PromptCandidateError ||
       error instanceof PromptCandidateGenerationError ||
       error instanceof PromptCandidateGenerationExecutionError ||
+      error instanceof LocalAgentSkillCandidateError ||
       error instanceof LocalPromptCandidateError ||
       error instanceof LocalPromptCandidatePublisherError
     ) {
@@ -1605,6 +1608,7 @@ async function evaluationCommand(
       overrides.externalHarnessRegistry ?? new BuiltInExternalHarnessRegistry({ cwd });
     const admitted = await admitLocalEvaluationPlan(resolve(cwd, planArgument), {
       resolveExternalHarnessIdentity: (profile) => registry.resolveIdentity(profile),
+      ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
     });
     io.stdout(
       JSON.stringify(
@@ -1628,6 +1632,9 @@ async function evaluationCommand(
                   id: profile.id,
                   adapter: profile.adapter,
                   workflowDigest: profile.workflow.workflowDigest,
+                  ...(profile.capabilitySnapshot === undefined
+                    ? {}
+                    : { capabilitySnapshotDigest: profile.capabilitySnapshot.digest }),
                   ...(profile.candidate === undefined
                     ? {}
                     : { candidateDigest: profile.candidate.candidateDigest }),
@@ -1692,6 +1699,7 @@ async function evaluationCommand(
     const admitted = await admitLocalEvaluationPlan(resolve(dependencies.cwd, planArgument), {
       resolveExternalHarnessIdentity: (profile) =>
         dependencies.externalHarnessRegistry.resolveIdentity(profile),
+      ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
     });
     const evaluationLocation = await resolveEvaluationLocation(
       dependencies,
@@ -2016,8 +2024,10 @@ async function candidateCommand(
       "candidate validate requires one candidate path",
     );
     const cwd = overrides.cwd ?? process.cwd();
-    const admitted = await admitLocalPromptCandidate(resolve(cwd, candidatePath));
-    io.stdout(JSON.stringify({ valid: true, candidate: admitted.identity }, null, 2));
+    const admitted = await admitLocalAdaptationCandidate(resolve(cwd, candidatePath), {
+      ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
+    });
+    io.stdout(JSON.stringify({ valid: true, candidate: admitted.candidate.identity }, null, 2));
     return 0;
   }
   if (subcommand === "activate") {
