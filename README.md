@@ -38,7 +38,7 @@ through an optional external profile.
 | Versioned command tool packages | Implemented for strict local or exact installed declarative manifests, including publisher-authenticated OCI sources, exact per-agent selection, deterministic argv rendering, and the existing policy/approval/sandbox/journal boundary |
 | Versioned workflow packages | Implemented for strict local or exact installed inert source manifests, including publisher-authenticated OCI sources, exact packaged roots and children, closed snapshot-only compilation, and durable replay identity |
 | Versioned policy packages | Implemented for strict local or exact installed inert narrowing manifests, including operator-required and project-additional exact selection, deterministic composition, pre-mutation workflow admission, and durable replay identity |
-| Remote capability bundle distribution | Implemented with deterministic inert `.flowpkg` files, explicit public HTTPS plus SHA-256 installation, exact publisher-authenticated OCI installation with optional challenge-scoped private credentials, a content-addressed project store, deterministic lock, local audit/removal commands, and offline execution/recovery |
+| Remote capability bundle distribution | Implemented with deterministic inert `.flowpkg` files, explicit public HTTPS plus SHA-256 installation, exact publisher-authenticated OCI installation with optional challenge-scoped private credentials, opt-in signed freshness/revocation metadata, a content-addressed project store, deterministic locks, local audit/removal commands, and offline execution/recovery |
 | Reproducible harness evaluation | Implemented for paired Flow, native Pi, native OMP, and Prime Agent profiles. Flow records exact identities, fresh workspaces, private checks, evidence, and constrained reports. |
 | Evidence-bound prompt candidates | Flow implements zero-tool model generation from tuning-only evidence, strict prompt overlays, paired evaluation, reviewed activation, durable run snapshots, and rollback |
 | Proof-safe fresh recovery of interrupted agent attempts | Implemented as explicit opt-in for read-only attempts and edit attempts proven not applied |
@@ -724,6 +724,16 @@ node dist/cli/main.js packages verify
 node dist/cli/main.js packages remove review-suite --version 1.0.0
 ```
 
+To establish the optional signed metadata authority, use only explicit local files:
+
+```sh
+node dist/cli/main.js packages metadata refresh capability-metadata.json \
+  --sigstore-bundle capability-metadata.sigstore.json \
+  --certificate-issuer https://token.actions.githubusercontent.com/ \
+  --certificate-identity <exact-metadata-certificate-identity>
+node dist/cli/main.js packages metadata inspect
+```
+
 For a token-gated repository, read the secret without exporting it or placing it in argv:
 
 ```sh
@@ -797,15 +807,35 @@ completed but durability or cleanup could not be confirmed: inspect `packages li
 verify`, and reconcile the exact installed versions before retrying.
 
 The HTTPS digest identifies bytes but does not authenticate a publisher. The signed OCI form also
-proves that the admitted publisher signed those bytes. It does not prove that the content is safe
-or correct. It does not provide freshness, revocation, rollback protection, delegated trust, or
-automatic updates. Review the source, digest, publisher policy, and package content. Installation
-executes nothing.
+proves that the admitted publisher signed those bytes. Neither proves that content is safe or
+correct. Review the source, digest, publisher policy, and package content. Installation executes
+nothing.
+
+Signed capability metadata is an optional, explicit second authority layer. Refresh reads only the
+two named local files, verifies the exact canonical metadata bytes with the same offline Sigstore
+root, and atomically publishes `.flow/packages.metadata.json`. It performs no discovery or network
+request. A positive integer version must increase monotonically. An equal version is idempotent
+only for the same metadata bytes and signer policy. Lower versions, substituted bytes or authority,
+expired metadata, revoked targets, and any target mismatch reject.
+
+Before metadata is established, the existing exact digest and publisher rules apply. After it is
+established, each new install and catalog admission also requires one current `active` target that
+matches the complete target identity. That identity includes bundle name, exact version, digest,
+bytes, source, and OCI publisher policy. Freshness uses the local system clock. An untrusted or
+incorrect clock invalidates the freshness claim.
+
+An authenticated metadata state may contain no targets. That state denies every new package
+installation and catalog admission. Metadata inspection, exact-byte package inspection, listing,
+and explicit package removal remain available when metadata is expired or a target is revoked.
+Metadata never changes packages automatically. It does not implement delegation, discovery,
+background refresh, online trust-root refresh, or automatic updates.
 
 A later selected Skill or model rubric can influence a model. A selected command package retains
-its documented sandboxed command authority. Listing, inspection, verification,
-workflow admission, execution, detached work, child work, resume, and replay use installed bytes.
-They never fetch a URL, contact a registry or signature service, or consult live publisher data.
+its documented sandboxed command authority. Listing, inspection, verification, workflow admission,
+execution, detached work, child work, resume, and replay use installed bytes. Admission consults
+only local metadata when that authority exists. An admitted run retains its immutable package
+snapshot. Later metadata refresh does not mutate it. Execution and recovery never fetch a URL,
+contact a registry or signature service, or consult live publisher data.
 
 To exercise the first-class verifier contract without model credentials:
 

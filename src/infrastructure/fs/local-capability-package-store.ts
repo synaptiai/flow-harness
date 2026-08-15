@@ -8,10 +8,26 @@ import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 
 import {
+  CAPABILITY_METADATA_STATE_API_VERSION,
+  type CapabilityMetadataState,
+  type CapabilityPublisherVerification,
+  type InstallCapabilityBundleInput,
+  type InstallCapabilityBundleResult,
+  type RefreshCapabilityMetadataInput,
+  type RefreshCapabilityMetadataResult,
+} from "../../application/capability-package-store.js";
+import {
   type CapabilityBundle,
   MAX_CAPABILITY_BUNDLE_BYTES,
   parseDigestPinnedCapabilityBundle,
 } from "../../domain/capability/capability-bundles.js";
+import {
+  CAPABILITY_METADATA_API_VERSION,
+  type CapabilityMetadata,
+  type CapabilityMetadataTarget,
+  MAX_CAPABILITY_METADATA_BYTES,
+  MAX_CAPABILITY_METADATA_TARGETS,
+} from "../../domain/capability/capability-metadata.js";
 import { parseOciCapabilityArtifactReference } from "../../domain/capability/oci-capability-artifacts.js";
 import {
   verifierPackageNameSchema,
@@ -20,7 +36,18 @@ import {
 import { parseStrictJson } from "../../domain/strict-json.js";
 
 export const CAPABILITY_LOCK_API_VERSION = "flow.synapti.ai/v1alpha1" as const;
+export {
+  CAPABILITY_METADATA_STATE_API_VERSION,
+  type CapabilityMetadataState,
+  type CapabilityPublisherVerification,
+  type InstallCapabilityBundleInput,
+  type InstallCapabilityBundleResult,
+  type RefreshCapabilityMetadataInput,
+  type RefreshCapabilityMetadataResult,
+} from "../../application/capability-package-store.js";
+
 const MAX_CAPABILITY_LOCK_BYTES = 512 * 1024;
+const MAX_CAPABILITY_METADATA_STATE_BYTES = 768 * 1024;
 const MAX_CAPABILITY_LOCK_ENTRIES = 128;
 const MAX_CAPABILITY_LOCKED_BUNDLE_BYTES = 64 * 1024 * 1024;
 const MAX_STORE_ERROR_BYTES = 16_384;
@@ -66,6 +93,40 @@ const capabilityLockSchema = z
   })
   .strict();
 
+const capabilityMetadataPublisherPolicySchema = capabilityPublisherSchema.omit({
+  kind: true,
+  signatureBundleDigest: true,
+});
+const capabilityMetadataTargetSchema = z
+  .object({
+    name: verifierPackageNameSchema,
+    version: verifierPackageVersionSchema,
+    digest: sha256DigestSchema,
+    bytes: z.number().int().positive().max(MAX_CAPABILITY_BUNDLE_BYTES),
+    source: z.string().min(1).max(4_096),
+    status: z.enum(["active", "revoked"]),
+    publisher: capabilityMetadataPublisherPolicySchema.optional(),
+  })
+  .strict()
+  .superRefine((target, context) => {
+    if (!isValidCapabilitySource(target.source, target.publisher !== undefined)) {
+      context.addIssue({ code: "custom", path: ["source"], message: "invalid source authority" });
+    }
+  });
+const capabilityMetadataStateSchema = z
+  .object({
+    apiVersion: z.literal(CAPABILITY_METADATA_STATE_API_VERSION),
+    kind: z.literal("CapabilityMetadataState"),
+    name: verifierPackageNameSchema,
+    version: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    expiresAt: z.string().refine(isCanonicalInstant),
+    metadataBytes: z.number().int().positive().max(MAX_CAPABILITY_METADATA_BYTES),
+    metadataDigest: sha256DigestSchema,
+    authority: capabilityPublisherSchema,
+    targets: z.array(capabilityMetadataTargetSchema).max(MAX_CAPABILITY_METADATA_TARGETS),
+  })
+  .strict();
+
 const mutationLockOwnerSchema = z
   .object({
     pid: z.number().int().positive().max(2_147_483_647),
@@ -83,13 +144,6 @@ export interface CapabilityLockEntry {
   readonly publisher?: CapabilityPublisherVerification;
 }
 
-export interface CapabilityPublisherVerification {
-  readonly kind: "sigstore-keyless-v0.3";
-  readonly certificateIssuer: string;
-  readonly certificateIdentity: string;
-  readonly signatureBundleDigest: string;
-}
-
 export interface CapabilityLock {
   readonly apiVersion: typeof CAPABILITY_LOCK_API_VERSION;
   readonly kind: "CapabilityLock";
@@ -101,6 +155,10 @@ export type CapabilityPackageStoreErrorCode =
   | "invalid_source"
   | "invalid_identity"
   | "invalid_lock"
+  | "invalid_metadata"
+  | "metadata_rollback"
+  | "metadata_expired"
+  | "metadata_target"
   | "identity_conflict"
   | "corrupt_blob"
   | "unsafe_state"
@@ -119,18 +177,6 @@ export class CapabilityPackageStoreError extends Error {
   ) {
     super(message, options);
   }
-}
-
-export interface InstallCapabilityBundleInput {
-  readonly source: string;
-  readonly expectedSha256: string;
-  readonly content: Uint8Array;
-  readonly publisher?: CapabilityPublisherVerification;
-}
-
-export interface InstallCapabilityBundleResult {
-  readonly status: "installed" | "already_installed";
-  readonly bundle: CapabilityBundle;
 }
 
 export interface RemoveCapabilityBundleResult {
@@ -152,6 +198,9 @@ export interface CapabilityPackageStoreHooks {
   readonly afterMutationLockCollision?: () => Promise<void>;
   readonly beforeVerifyBundleRead?: (entry: CapabilityLockEntry) => Promise<void>;
   readonly beforeVerifyLockRead?: () => Promise<void>;
+  readonly beforeCapabilityMetadataRename?: () => Promise<void>;
+  readonly afterCapabilityMetadataRenamed?: () => Promise<void>;
+  readonly now?: () => Date;
 }
 
 export interface VerifyCapabilityBundlesOptions {
@@ -163,6 +212,46 @@ export class LocalCapabilityPackageStore {
     readonly projectRoot: string,
     private readonly hooks: CapabilityPackageStoreHooks = {},
   ) {}
+
+  async refreshMetadata(
+    input: RefreshCapabilityMetadataInput,
+  ): Promise<RefreshCapabilityMetadataResult> {
+    throwIfAborted(input.signal);
+    const state = createCapabilityMetadataState(input.metadata, input.authority);
+    requireCurrentMetadata(state, this.now());
+    const paths = await storePaths(this.projectRoot);
+    const mutationLock = await acquireMutationLock(paths.flowDirectory, this.hooks);
+    return await withMutationLock(mutationLock, async () => {
+      throwIfAborted(input.signal);
+      requireCurrentMetadata(state, this.now());
+      const current = await readCapabilityMetadataState(paths.metadataPath);
+      if (current !== null) {
+        requireMonotonicMetadata(current, state);
+        if (current.version === state.version) {
+          return deepFreeze({ status: "already_current" as const, state: current });
+        }
+      }
+      await publishCapabilityMetadataState(paths, state, this.hooks, input.signal);
+      return deepFreeze({
+        status: current === null ? ("established" as const) : ("refreshed" as const),
+        state,
+      });
+    });
+  }
+
+  async inspectMetadata(signal?: AbortSignal): Promise<CapabilityMetadataState | null> {
+    throwIfAborted(signal);
+    const paths = await storePaths(this.projectRoot);
+    throwIfAborted(signal);
+    const state = await readCapabilityMetadataState(paths.metadataPath);
+    throwIfAborted(signal);
+    return state;
+  }
+
+  private now(): Date {
+    const value = this.hooks.now?.() ?? new Date();
+    return new Date(value.getTime());
+  }
 
   async install(input: InstallCapabilityBundleInput): Promise<InstallCapabilityBundleResult> {
     if (
@@ -192,6 +281,8 @@ export class LocalCapabilityPackageStore {
     const paths = await storePaths(this.projectRoot);
     const mutationLock = await acquireMutationLock(paths.flowDirectory, this.hooks);
     return await withMutationLock(mutationLock, async () => {
+      const metadata = await readCapabilityMetadataState(paths.metadataPath);
+      requireTrustedTarget(metadata, bundle, input.source, publisher, this.now());
       const lock = await readCapabilityLock(paths.lockPath);
       const existing = lock.bundles.find(
         (entry) => entry.name === bundle.name && entry.version === bundle.version,
@@ -214,6 +305,7 @@ export class LocalCapabilityPackageStore {
             `capability bundle ${bundle.name}@${bundle.version} is already locked with different acquisition evidence`,
           );
         }
+        requireTrustedTarget(metadata, bundle, existing.source, existing.publisher, this.now());
         await requireExactBlob(paths, existing, Buffer.from(input.content));
         return Object.freeze({ status: "already_installed" as const, bundle });
       }
@@ -226,6 +318,7 @@ export class LocalCapabilityPackageStore {
         ...(publisher === undefined ? {} : { publisher }),
       });
       await publishBlob(paths, entry, Buffer.from(input.content), this.hooks);
+      requireTrustedTarget(metadata, bundle, input.source, publisher, this.now());
       const bundles = [...lock.bundles, entry].sort(compareLockEntries);
       assertCanonicalLockEntries(bundles);
       await publishCapabilityLock(
@@ -246,17 +339,64 @@ export class LocalCapabilityPackageStore {
     return await readCapabilityLock(paths.lockPath);
   }
 
+  async inspect(
+    name: string,
+    version: string,
+    options: VerifyCapabilityBundlesOptions = {},
+  ): Promise<VerifiedInstalledCapabilityBundle> {
+    if (
+      !verifierPackageNameSchema.safeParse(name).success ||
+      !verifierPackageVersionSchema.safeParse(version).success
+    ) {
+      throw new CapabilityPackageStoreError(
+        "invalid_identity",
+        "capability bundle inspection requires a valid name and exact version",
+      );
+    }
+    options.signal?.throwIfAborted();
+    const paths = await storePaths(this.projectRoot);
+    const lock = await readCapabilityLock(paths.lockPath, options.signal, this.hooks);
+    const entry = lock.bundles.find(
+      (candidate) => candidate.name === name && candidate.version === version,
+    );
+    if (entry === undefined) {
+      throw new CapabilityPackageStoreError(
+        "not_found",
+        `capability bundle ${name}@${version} is not installed`,
+      );
+    }
+    const installed = await readVerifiedLockedBundle(paths, entry, options.signal, this.hooks);
+    options.signal?.throwIfAborted();
+    return installed;
+  }
+
   async verify(
     options: VerifyCapabilityBundlesOptions = {},
   ): Promise<readonly VerifiedInstalledCapabilityBundle[]> {
     options.signal?.throwIfAborted();
     const paths = await storePaths(this.projectRoot);
     options.signal?.throwIfAborted();
+    const metadata = await readCapabilityMetadataState(paths.metadataPath);
+    if (metadata !== null) {
+      requireCurrentMetadata(metadata, this.now());
+    }
     const lock = await readCapabilityLock(paths.lockPath, options.signal, this.hooks);
     const verified: VerifiedInstalledCapabilityBundle[] = [];
     for (const entry of lock.bundles) {
       options.signal?.throwIfAborted();
-      verified.push(await readVerifiedLockedBundle(paths, entry, options.signal, this.hooks));
+      const installed = await readVerifiedLockedBundle(paths, entry, options.signal, this.hooks);
+      requireTrustedTarget(metadata, installed.bundle, entry.source, entry.publisher, this.now());
+      verified.push(installed);
+    }
+    const settledMetadata = await readCapabilityMetadataState(paths.metadataPath);
+    if (!isDeepStrictEqual(metadata, settledMetadata)) {
+      throw new CapabilityPackageStoreError(
+        "metadata_target",
+        "trusted capability metadata changed during package verification",
+      );
+    }
+    if (metadata !== null) {
+      requireCurrentMetadata(metadata, this.now());
     }
     options.signal?.throwIfAborted();
     return deepFreeze(verified);
@@ -306,6 +446,7 @@ interface CapabilityStorePaths {
   readonly packagesDirectory: string;
   readonly blobDirectory: string;
   readonly lockPath: string;
+  readonly metadataPath: string;
 }
 
 async function storePaths(projectRoot: string): Promise<CapabilityStorePaths> {
@@ -344,7 +485,42 @@ async function storePaths(projectRoot: string): Promise<CapabilityStorePaths> {
     packagesDirectory,
     blobDirectory: join(packagesDirectory, "sha256"),
     lockPath: join(flowDirectory, "packages.lock.json"),
+    metadataPath: join(flowDirectory, "packages.metadata.json"),
   });
+}
+
+async function readCapabilityMetadataState(path: string): Promise<CapabilityMetadataState | null> {
+  let content: Buffer;
+  try {
+    content = await readBoundedRegularFile(path, MAX_CAPABILITY_METADATA_STATE_BYTES);
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return null;
+    }
+    if (error instanceof CapabilityPackageStoreError) {
+      throw error;
+    }
+    throw ioError("could not read trusted capability metadata state", error);
+  }
+  try {
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(content);
+    const input = parseStrictJson(text, {
+      maxDepth: 10,
+      maxNodes: 16_384,
+      valueLabel: "trusted capability metadata state",
+    });
+    const state = canonicalMetadataState(capabilityMetadataStateSchema.parse(input));
+    if (!content.equals(Buffer.from(`${JSON.stringify(state)}\n`))) {
+      throw new Error("trusted metadata state is not canonical");
+    }
+    assertCanonicalMetadataTargets(state.targets);
+    return state;
+  } catch {
+    throw new CapabilityPackageStoreError(
+      "invalid_metadata",
+      "trusted capability metadata state is invalid",
+    );
+  }
 }
 
 async function readCapabilityLock(
@@ -612,6 +788,200 @@ async function publishCapabilityLock(
       );
     }
     throw ioError("could not publish capability package lock", error);
+  }
+}
+
+async function publishCapabilityMetadataState(
+  paths: CapabilityStorePaths,
+  state: CapabilityMetadataState,
+  hooks: CapabilityPackageStoreHooks,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  const content = Buffer.from(`${JSON.stringify(state)}\n`, "utf8");
+  if (content.byteLength > MAX_CAPABILITY_METADATA_STATE_BYTES) {
+    throw new CapabilityPackageStoreError(
+      "invalid_metadata",
+      "trusted capability metadata state exceeds its byte limit",
+    );
+  }
+  const temporary = join(paths.flowDirectory, `.packages.metadata.${randomUUID()}.tmp`);
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  let renamed = false;
+  try {
+    handle = await open(temporary, "wx", 0o644);
+    await handle.writeFile(content);
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await hooks.beforeCapabilityMetadataRename?.();
+    throwIfAborted(signal);
+    await rename(temporary, paths.metadataPath);
+    renamed = true;
+    await hooks.afterCapabilityMetadataRenamed?.();
+    await syncDirectory(paths.flowDirectory);
+  } catch (error) {
+    await handle?.close().catch(() => undefined);
+    await unlink(temporary).catch(() => undefined);
+    if (error instanceof CapabilityPackageStoreError) {
+      throw error;
+    }
+    if (renamed) {
+      throw new CapabilityPackageStoreError(
+        "commit_uncertain",
+        "trusted capability metadata was replaced but its directory sync failed; inspect packages.metadata.json before retrying",
+        { cause: error },
+      );
+    }
+    if (signal?.aborted === true) {
+      throw error;
+    }
+    throw ioError("could not publish trusted capability metadata state", error);
+  }
+}
+
+function createCapabilityMetadataState(
+  metadata: CapabilityMetadata,
+  authority: CapabilityPublisherVerification,
+): CapabilityMetadataState {
+  try {
+    if (
+      metadata.apiVersion !== CAPABILITY_METADATA_API_VERSION ||
+      metadata.kind !== "CapabilityMetadata"
+    ) {
+      throw new Error("invalid metadata identity");
+    }
+    const state = canonicalMetadataState(
+      capabilityMetadataStateSchema.parse({
+        apiVersion: CAPABILITY_METADATA_STATE_API_VERSION,
+        kind: "CapabilityMetadataState",
+        name: metadata.name,
+        version: metadata.version,
+        expiresAt: metadata.expiresAt,
+        metadataBytes: metadata.bytes,
+        metadataDigest: metadata.digest,
+        authority,
+        targets: metadata.targets,
+      }),
+    );
+    assertCanonicalMetadataTargets(state.targets);
+    return state;
+  } catch {
+    throw new CapabilityPackageStoreError(
+      "invalid_metadata",
+      "trusted capability metadata input is invalid",
+    );
+  }
+}
+
+function canonicalMetadataState(
+  state: z.infer<typeof capabilityMetadataStateSchema>,
+): CapabilityMetadataState {
+  return deepFreeze({
+    apiVersion: state.apiVersion,
+    kind: state.kind,
+    name: state.name,
+    version: state.version,
+    expiresAt: state.expiresAt,
+    metadataBytes: state.metadataBytes,
+    metadataDigest: state.metadataDigest,
+    authority: canonicalPublisher(state.authority),
+    targets: state.targets.map((target) => ({
+      name: target.name,
+      version: target.version,
+      digest: target.digest,
+      bytes: target.bytes,
+      source: target.source,
+      status: target.status,
+      ...(target.publisher === undefined
+        ? {}
+        : {
+            publisher: {
+              certificateIssuer: target.publisher.certificateIssuer,
+              certificateIdentity: target.publisher.certificateIdentity,
+            },
+          }),
+    })),
+  });
+}
+
+function requireMonotonicMetadata(
+  current: CapabilityMetadataState,
+  candidate: CapabilityMetadataState,
+): void {
+  const sameAuthority =
+    current.name === candidate.name &&
+    current.authority.kind === candidate.authority.kind &&
+    current.authority.certificateIssuer === candidate.authority.certificateIssuer &&
+    current.authority.certificateIdentity === candidate.authority.certificateIdentity;
+  if (
+    !sameAuthority ||
+    candidate.version < current.version ||
+    (candidate.version === current.version &&
+      (candidate.metadataDigest !== current.metadataDigest ||
+        candidate.metadataBytes !== current.metadataBytes))
+  ) {
+    throw new CapabilityPackageStoreError(
+      "metadata_rollback",
+      "trusted capability metadata would roll back or substitute current authority",
+    );
+  }
+}
+
+function requireCurrentMetadata(state: CapabilityMetadataState, now: Date): void {
+  if (Number.isNaN(now.getTime()) || now.getTime() >= Date.parse(state.expiresAt)) {
+    throw new CapabilityPackageStoreError(
+      "metadata_expired",
+      "trusted capability metadata is expired or the trusted clock is invalid",
+    );
+  }
+}
+
+function requireTrustedTarget(
+  state: CapabilityMetadataState | null,
+  bundle: Pick<CapabilityBundle, "name" | "version" | "digest" | "bytes">,
+  source: string,
+  publisher: CapabilityPublisherVerification | undefined,
+  now: Date,
+): void {
+  if (state === null) {
+    return;
+  }
+  requireCurrentMetadata(state, now);
+  const target = state.targets.find(
+    (candidate) => candidate.name === bundle.name && candidate.version === bundle.version,
+  );
+  const publisherMatches =
+    target?.publisher === undefined
+      ? publisher === undefined
+      : publisher !== undefined &&
+        target.publisher.certificateIssuer === publisher.certificateIssuer &&
+        target.publisher.certificateIdentity === publisher.certificateIdentity;
+  if (
+    target === undefined ||
+    target.status !== "active" ||
+    target.digest !== bundle.digest ||
+    target.bytes !== bundle.bytes ||
+    target.source !== source ||
+    !publisherMatches
+  ) {
+    throw new CapabilityPackageStoreError(
+      "metadata_target",
+      "capability bundle does not match one active trusted metadata target",
+    );
+  }
+}
+
+function assertCanonicalMetadataTargets(targets: readonly CapabilityMetadataTarget[]): void {
+  for (let index = 1; index < targets.length; index += 1) {
+    const previous = targets[index - 1];
+    const current = targets[index];
+    if (
+      previous === undefined ||
+      current === undefined ||
+      compareLockEntries(previous, current) >= 0
+    ) {
+      throw new Error("trusted metadata targets must be strictly sorted and unique");
+    }
   }
 }
 
@@ -967,7 +1337,10 @@ async function syncDirectory(path: string): Promise<void> {
   }
 }
 
-function compareLockEntries(left: CapabilityLockEntry, right: CapabilityLockEntry): number {
+function compareLockEntries(
+  left: Pick<CapabilityLockEntry, "name" | "version">,
+  right: Pick<CapabilityLockEntry, "name" | "version">,
+): number {
   const leftKey = `${left.name}\0${left.version}`;
   const rightKey = `${right.name}\0${right.version}`;
   return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
@@ -1048,6 +1421,20 @@ function isCanonicalPublisherIdentity(identity: string): boolean {
     );
   } catch {
     return false;
+  }
+}
+
+function isCanonicalInstant(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) {
+    return false;
+  }
+  const instant = new Date(value);
+  return !Number.isNaN(instant.getTime()) && instant.toISOString() === value;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted === true) {
+    throw signal.reason;
   }
 }
 

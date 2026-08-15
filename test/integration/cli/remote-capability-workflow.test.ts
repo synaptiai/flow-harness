@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,6 +17,7 @@ import {
   createAgentCapabilityEvidence,
 } from "../../../src/domain/capability/agent-skills.js";
 import { createCapabilityBundleSource } from "../../../src/domain/capability/capability-bundles.js";
+import { parseCapabilityMetadata } from "../../../src/domain/capability/capability-metadata.js";
 import {
   FLOW_CAPABILITY_BUNDLE_LAYER_MEDIA_TYPE,
   SIGSTORE_BUNDLE_LAYER_MEDIA_TYPE,
@@ -60,7 +61,18 @@ describe("installed capability workflow", () => {
     const created = mixedBundle();
     const bundleDigest = created.bundle.digest.slice("sha256:".length);
     const packageStore = new LocalCapabilityPackageStore(project);
-    await installPrivateBundle(project, created.content, bundleDigest);
+    const acquisition = await installPrivateBundle(project, created.content, bundleDigest);
+    const metadataAuthority = {
+      kind: "sigstore-keyless-v0.3" as const,
+      certificateIssuer: "https://token.actions.githubusercontent.com/",
+      certificateIdentity:
+        "https://github.com/synaptiai/flow-harness/.github/workflows/metadata.yml@refs/heads/main",
+      signatureBundleDigest: `sha256:${"e".repeat(64)}`,
+    };
+    await packageStore.refreshMetadata({
+      metadata: packageMetadata(created.bundle, acquisition, 1, "active"),
+      authority: metadataAuthority,
+    });
     const provenanceRoot = `.flow/packages/sha256/${bundleDigest}`;
     const fetch = vi.fn(async () => {
       throw new Error("workflow and replay must not fetch capability bundles");
@@ -142,10 +154,18 @@ describe("installed capability workflow", () => {
 
     const runStore = new MemoryStore();
     const observed: NodeExecutionContext[] = [];
+    let authorityRevoked = false;
     const executor: NodeExecutor = {
       async execute(node, context) {
         observed.push(context);
         if (node.type === "agent") {
+          if (!authorityRevoked) {
+            authorityRevoked = true;
+            await packageStore.refreshMetadata({
+              metadata: packageMetadata(created.bundle, acquisition, 2, "revoked"),
+              authority: metadataAuthority,
+            });
+          }
           return successfulAgentOutcome(context.capabilitySnapshot);
         }
         if (node.type === "verifier") {
@@ -166,6 +186,7 @@ describe("installed capability workflow", () => {
       }),
     );
     expect(run.code).toBe(0);
+    expect(authorityRevoked).toBe(true);
     expect(fetch).not.toHaveBeenCalled();
 
     const started = runStore.events.find((event) => event.type === "run_started");
@@ -209,6 +230,13 @@ describe("installed capability workflow", () => {
       version: "1.0.0",
       digest: verifierSnapshot?.digest,
     });
+    const rejectedAdmission = captureIo();
+    expect(await main(["validate", workflowPath], rejectedAdmission.io, metadataDependencies)).toBe(
+      1,
+    );
+    expect(rejectedAdmission.stderr).toEqual([
+      "metadata_target: capability bundle does not match one active trusted metadata target",
+    ]);
 
     const detachedRunsDirectory = join(project, "detached-runs");
     const supervisorStore = new LocalSupervisorStore(detachedRunsDirectory);
@@ -235,28 +263,37 @@ describe("installed capability workflow", () => {
         claimedAt: job.createdAt,
       }),
     );
-    const detachedWorker = executeWorkerJob(job.jobId, {
-      store: supervisorStore,
-      executor,
-      effectReconciler: createProductionNodeEffectReconciler(),
-      createRunStore: (root) => new JsonlRunStore(root),
-      createWorkspaceIsolator: (root, paths, executionRoot, selectedProjectRoot) =>
-        createProductionWorkspaceIsolator(root, paths, executionRoot, selectedProjectRoot),
-      pid: 4383,
-    });
-    let descriptor: Awaited<ReturnType<LocalSupervisorStore["readWorkerDescriptor"]>> | undefined;
-    await vi.waitFor(async () => {
-      descriptor = await supervisorStore.readWorkerDescriptor(job.workerId);
-      expect(descriptor.workerId).toBe(job.workerId);
-    });
-    if (descriptor === undefined) {
-      throw new Error("detached worker did not publish its descriptor");
+    const metadataPath = join(project, ".flow", "packages.metadata.json");
+    const heldMetadataPath = join(project, ".flow", "packages.metadata.held.json");
+    await rename(metadataPath, heldMetadataPath);
+    await mkdir(metadataPath);
+    try {
+      const detachedWorker = executeWorkerJob(job.jobId, {
+        store: supervisorStore,
+        executor,
+        effectReconciler: createProductionNodeEffectReconciler(),
+        createRunStore: (root) => new JsonlRunStore(root),
+        createWorkspaceIsolator: (root, paths, executionRoot, selectedProjectRoot) =>
+          createProductionWorkspaceIsolator(root, paths, executionRoot, selectedProjectRoot),
+        pid: 4383,
+      });
+      let descriptor: Awaited<ReturnType<LocalSupervisorStore["readWorkerDescriptor"]>> | undefined;
+      await vi.waitFor(async () => {
+        descriptor = await supervisorStore.readWorkerDescriptor(job.workerId);
+        expect(descriptor.workerId).toBe(job.workerId);
+      });
+      if (descriptor === undefined) {
+        throw new Error("detached worker did not publish its descriptor");
+      }
+      await expect(requestWorker(descriptor, { type: "identify" })).resolves.toMatchObject({
+        ok: true,
+        result: { runId: job.runId, status: "running" },
+      });
+      await expect(detachedWorker).resolves.toBe(0);
+    } finally {
+      await rm(metadataPath, { recursive: true });
+      await rename(heldMetadataPath, metadataPath);
     }
-    await expect(requestWorker(descriptor, { type: "identify" })).resolves.toMatchObject({
-      ok: true,
-      result: { runId: job.runId, status: "running" },
-    });
-    await expect(detachedWorker).resolves.toBe(0);
     expect(
       reduceRunEvents(
         await new JsonlRunStore(detachedRunsDirectory).read("installed-capability-detached"),
@@ -304,7 +341,13 @@ async function installPrivateBundle(
   project: string,
   content: Buffer,
   bundleDigest: string,
-): Promise<void> {
+): Promise<{
+  readonly source: string;
+  readonly publisher: {
+    readonly certificateIssuer: string;
+    readonly certificateIdentity: string;
+  };
+}> {
   const manifestDigest = `sha256:${"1".repeat(64)}` as const;
   const reference = `registry.example.test/flow/review-suite@${manifestDigest}`;
   const signatureBundle = Buffer.from("PRIVATE_SIGNATURE_BUNDLE");
@@ -389,6 +432,7 @@ async function installPrivateBundle(
   expect(readRegistrySecret).toHaveBeenCalledOnce();
   expect(password.every((value) => value === 0)).toBe(true);
   expect(`${output.stdout.join("\n")}\n${output.stderr.join("\n")}`).not.toContain("PRIVATE_");
+  return Object.freeze({ source: reference, publisher });
 }
 
 class MemoryStore implements RecoverableRunEventStore {
@@ -478,6 +522,47 @@ spec:
     timeoutMs: 10000
   permissions: [process.execute]
 `;
+}
+
+function packageMetadata(
+  bundle: ReturnType<typeof mixedBundle>["bundle"],
+  acquisition: {
+    readonly source: string;
+    readonly publisher: {
+      readonly certificateIssuer: string;
+      readonly certificateIdentity: string;
+    };
+  },
+  version: number,
+  status: "active" | "revoked",
+) {
+  return parseCapabilityMetadata(
+    Buffer.from(
+      JSON.stringify({
+        apiVersion: "flow.synapti.ai/v1alpha1",
+        kind: "CapabilityMetadata",
+        metadata: {
+          name: "flow-capabilities",
+          version,
+          expiresAt: "2099-01-01T00:00:00.000Z",
+        },
+        spec: {
+          targets: [
+            {
+              name: bundle.name,
+              version: bundle.version,
+              digest: bundle.digest,
+              bytes: bundle.bytes,
+              source: acquisition.source,
+              status,
+              publisher: acquisition.publisher,
+            },
+          ],
+        },
+      }),
+    ),
+    new Date("2026-08-15T00:00:00.000Z"),
+  );
 }
 
 function workflowSource(): string {
