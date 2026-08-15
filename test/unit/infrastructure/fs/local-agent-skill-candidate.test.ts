@@ -1,5 +1,16 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  symlink,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -11,6 +22,7 @@ import {
   admitLocalAgentSkillCandidate,
   LocalAgentSkillCandidateError,
 } from "../../../../src/infrastructure/fs/local-agent-skill-candidate.js";
+import { admitLocalAdaptationCandidate } from "../../../../src/infrastructure/fs/local-adaptation-candidate.js";
 import { promptCandidateTuningEvidence } from "../../../fixtures/prompt-candidate-generation.js";
 
 const temporaryDirectories: string[] = [];
@@ -153,6 +165,307 @@ describe("local Agent Skill candidate admission", () => {
         },
       }),
     ).rejects.toMatchObject({ code: "source_changed" });
+  });
+
+  it("rejects an initially symbolic-linked candidate root", async () => {
+    const fixture = await candidateProject();
+    const alias = `${fixture.project}-alias`;
+    await symlink(fixture.project, alias, "dir");
+
+    try {
+      await expect(
+        admitLocalAgentSkillCandidate(join(alias, "candidate.yaml")),
+      ).rejects.toMatchObject({ code: "invalid_path" });
+    } finally {
+      await unlink(alias);
+    }
+  });
+
+  it("preserves exact cancellation after observing an invalid candidate root", async () => {
+    const fixture = await candidateProject();
+    const alias = `${fixture.project}-cancelled-alias`;
+    await symlink(fixture.project, alias, "dir");
+    const controller = new AbortController();
+    const reason = new Error("operator cancelled after candidate-root observation");
+
+    try {
+      await expect(
+        admitLocalAgentSkillCandidate(join(alias, "candidate.yaml"), {
+          signal: controller.signal,
+          afterCandidateAncestorObservation: (isCandidateRoot) => {
+            if (isCandidateRoot) {
+              controller.abort(reason);
+            }
+          },
+        }),
+      ).rejects.toBe(reason);
+    } finally {
+      await unlink(alias);
+    }
+  });
+
+  it("rejects a symbolic link in an intermediate candidate-root ancestor before reads", async () => {
+    const fixture = await candidateProject();
+    const container = await realpath(
+      await mkdtemp(join(tmpdir(), "flow-skill-candidate-ancestor-")),
+    );
+    temporaryDirectories.push(container);
+    const realAncestor = join(container, "real");
+    const directParent = join(realAncestor, "project");
+    const linkedAncestor = join(container, "alias");
+    await mkdir(realAncestor);
+    await cp(fixture.project, directParent, { recursive: true });
+    await symlink(realAncestor, linkedAncestor, "dir");
+    let reachedCandidateRead = false;
+
+    await expect(
+      admitLocalAgentSkillCandidate(join(linkedAncestor, "project", "candidate.yaml"), {
+        afterPathValidation: () => {
+          reachedCandidateRead = true;
+        },
+      }),
+    ).rejects.toMatchObject({ code: "invalid_path" });
+    expect(reachedCandidateRead).toBe(false);
+  });
+
+  it("binds kind discrimination to the exact candidate file identity", async () => {
+    const fixture = await candidateProject();
+    const saved = `${fixture.candidatePath}.saved`;
+    temporaryDirectories.push(saved);
+    const replacement = fixture.candidateText.replace("better-review", "other-review");
+
+    await expect(
+      admitLocalAdaptationCandidate(fixture.candidatePath, {
+        afterDiscriminatorStat: async () => {
+          await rename(fixture.candidatePath, saved);
+          await writeFile(fixture.candidatePath, replacement);
+        },
+      }),
+    ).rejects.toThrow("candidate discriminator source changed while it was read");
+  });
+
+  it("rejects evidence drift during later package admission", async () => {
+    const fixture = await candidateProject();
+    let changed = false;
+
+    await expect(
+      admitLocalAgentSkillCandidate(fixture.candidatePath, {
+        afterPathValidation: async (provenance) => {
+          if (provenance !== ".flow/skills/review" || changed) {
+            return;
+          }
+          changed = true;
+          const path = join(fixture.project, "tuning.json");
+          const current = await readFile(path, "utf8");
+          await writeFile(path, current.replace('"version":1', '"version":2'));
+        },
+      }),
+    ).rejects.toMatchObject({ code: "source_changed" });
+  });
+
+  it("rejects a same-size skill resource write during package capture", async () => {
+    const fixture = await candidateProject();
+    let changed = false;
+
+    await expect(
+      admitLocalAgentSkillCandidate(fixture.candidatePath, {
+        afterSkillEntryObservation: async (provenance) => {
+          if (provenance !== ".flow/skills/review/reference.md" || changed) {
+            return;
+          }
+          changed = true;
+          const path = join(fixture.project, provenance);
+          const current = await readFile(path);
+          await writeFile(path, Buffer.alloc(current.byteLength, 0x78));
+        },
+      }),
+    ).rejects.toMatchObject({ code: "source_changed" });
+  });
+
+  it("rejects replacement of an observed skill directory", async () => {
+    const fixture = await candidateProject();
+    const skill = join(fixture.project, ".flow", "skills", "review");
+    const saved = `${skill}.saved`;
+    let changed = false;
+
+    await expect(
+      admitLocalAgentSkillCandidate(fixture.candidatePath, {
+        afterSkillEntryObservation: async (provenance) => {
+          if (provenance !== ".flow/skills/review" || changed) {
+            return;
+          }
+          changed = true;
+          await rename(skill, saved);
+          await symlink(saved, skill, "dir");
+        },
+      }),
+    ).rejects.toMatchObject({ code: "source_changed" });
+  });
+
+  it("preserves exact cancellation after observing a changed skill directory", async () => {
+    const fixture = await candidateProject();
+    const saved = `${fixture.project}.cancelled`;
+    temporaryDirectories.push(saved);
+    const controller = new AbortController();
+    const reason = new Error("operator cancelled after skill revalidation observation");
+    let changed = false;
+
+    await expect(
+      admitLocalAgentSkillCandidate(fixture.candidatePath, {
+        signal: controller.signal,
+        afterSkillEntryObservation: async (provenance) => {
+          if (provenance !== ".flow/skills/review" || changed) {
+            return;
+          }
+          changed = true;
+          await rename(fixture.project, saved);
+          await symlink(saved, fixture.project, "dir");
+        },
+        afterSkillRevalidationObservation: (provenance) => {
+          if (provenance === "") {
+            controller.abort(reason);
+          }
+        },
+      }),
+    ).rejects.toBe(reason);
+  });
+
+  it("bounds the total selected-package entry fan-out", async () => {
+    const fixture = await candidateProject();
+    const skill = join(fixture.project, ".flow", "skills", "review");
+    for (let index = 0; index < 2_001; index += 1) {
+      await mkdir(join(skill, `empty-${String(index).padStart(4, "0")}`));
+    }
+
+    await expect(admitLocalAgentSkillCandidate(fixture.candidatePath)).rejects.toMatchObject({
+      code: "invalid_source",
+    });
+  }, 20_000);
+
+  it("preserves exact cancellation during selected-package capture", async () => {
+    const fixture = await candidateProject();
+    const controller = new AbortController();
+    const reason = new Error("operator cancelled selected package capture");
+
+    await expect(
+      admitLocalAgentSkillCandidate(fixture.candidatePath, {
+        signal: controller.signal,
+        afterSkillEntryObservation: (provenance) => {
+          if (provenance === ".flow/skills/review/reference.md") {
+            controller.abort(reason);
+          }
+        },
+      }),
+    ).rejects.toBe(reason);
+  });
+
+  it("preserves exact cancellation after observing a changed package directory", async () => {
+    const fixture = await candidateProject();
+    const controller = new AbortController();
+    const reason = new Error("operator cancelled after package directory observation");
+    let changed = false;
+
+    await expect(
+      admitLocalAgentSkillCandidate(fixture.candidatePath, {
+        signal: controller.signal,
+        afterSkillDirectoryBoundary: async (provenance, phase) => {
+          if (provenance !== ".flow/skills/review") {
+            return;
+          }
+          if (phase === "entries" && !changed) {
+            changed = true;
+            await writeFile(join(fixture.project, provenance, "late-entry.md"), "late\n");
+          } else if (phase === "stat") {
+            controller.abort(reason);
+          }
+        },
+      }),
+    ).rejects.toBe(reason);
+  });
+
+  it("prevents file inspection after cancellation at a successful package-file open", async () => {
+    const fixture = await candidateProject();
+    const controller = new AbortController();
+    const reason = new Error("operator cancelled after package file open");
+    const phases: string[] = [];
+
+    await expect(
+      admitLocalAgentSkillCandidate(fixture.candidatePath, {
+        signal: controller.signal,
+        afterSkillFileBoundary: (provenance, phase) => {
+          if (provenance !== ".flow/skills/review/SKILL.md") {
+            return;
+          }
+          phases.push(phase);
+          if (phase === "open") {
+            controller.abort(reason);
+          }
+        },
+      }),
+    ).rejects.toBe(reason);
+    expect(phases).toEqual(["open", "close"]);
+  });
+
+  it("prevents package processing after cancellation at package-file close", async () => {
+    const fixture = await candidateProject();
+    const controller = new AbortController();
+    const reason = new Error("operator cancelled after package file close");
+    let reachedPackageProcessing = false;
+
+    await expect(
+      admitLocalAgentSkillCandidate(fixture.candidatePath, {
+        signal: controller.signal,
+        afterSkillFileBoundary: (provenance, phase) => {
+          if (provenance === ".flow/skills/review/reference.md" && phase === "close") {
+            controller.abort(reason);
+          }
+        },
+        afterSkillPackageCapture: () => {
+          reachedPackageProcessing = true;
+        },
+      }),
+    ).rejects.toBe(reason);
+    expect(reachedPackageProcessing).toBe(false);
+  });
+
+  it("keeps baseline workflow diagnostics value-free", async () => {
+    const fixture = await candidateProject();
+    const source = JSON.parse(fixture.candidateText);
+    const privateWorkflow = JSON.stringify({
+      apiVersion: "flow.synapti.ai/v1alpha1",
+      kind: "Workflow",
+      metadata: { id: "adaptive-skill-workflow" },
+      budget: {
+        maxNodeStarts: 1,
+        maxModelTokens: 1,
+        maxCostUsd: 1,
+        maxExecutionMs: 1,
+        maxArtifactBytes: 1,
+      },
+      nodes: [
+        {
+          id: "PRIVATE_NODE",
+          type: "result",
+          dependsOn: ["PRIVATE_MISSING"],
+          result: { source: { nodeId: "PRIVATE_MISSING", field: "result.value" } },
+        },
+      ],
+    });
+    source.baseline.workflow.path = "PRIVATE.workflow.yaml";
+    source.baseline.workflow.sourceSha256 = sha256(privateWorkflow);
+    await writeFile(join(fixture.project, "PRIVATE.workflow.yaml"), privateWorkflow);
+    await writeFile(fixture.candidatePath, JSON.stringify(source));
+
+    try {
+      await admitLocalAgentSkillCandidate(fixture.candidatePath);
+      throw new Error("private invalid workflow unexpectedly admitted");
+    } catch (error) {
+      expect(error).toBeInstanceOf(LocalAgentSkillCandidateError);
+      expect((error as Error).message).toBe(
+        "invalid_source: candidate baseline workflow is invalid",
+      );
+      expect((error as Error).message).not.toContain("PRIVATE");
+    }
   });
 });
 

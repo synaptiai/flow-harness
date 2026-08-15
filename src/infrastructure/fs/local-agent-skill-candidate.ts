@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { type BigIntStats, constants } from "node:fs";
-import { type FileHandle, lstat, open, realpath } from "node:fs/promises";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { type FileHandle, lstat, open } from "node:fs/promises";
+import { basename, dirname, join, parse, relative, resolve, sep } from "node:path";
 
 import {
   type AgentSkillCandidateErrorCode,
@@ -25,7 +25,10 @@ import { compileWorkflowText, parseWorkflowSourceText } from "../../domain/workf
 import { calculateWorkflowDigest } from "../../domain/workflow/digest.js";
 import type { WorkflowSource } from "../../domain/workflow/schema.js";
 import type { CompiledWorkflow } from "../../domain/workflow/types.js";
-import { snapshotProjectAgentSkillPath } from "./local-agent-skill-catalog.js";
+import {
+  AgentSkillCatalogError,
+  snapshotProjectAgentSkillPath,
+} from "./local-agent-skill-catalog.js";
 
 const MAX_LOCAL_WORKFLOW_BYTES = 8 * 1024 * 1024;
 
@@ -51,6 +54,26 @@ export interface LocalAgentSkillCandidateAdmissionOptions {
   readonly signal?: AbortSignal;
   /** @internal Deterministic race and cancellation seam. */
   readonly afterPathValidation?: (provenance: string) => void | Promise<void>;
+  /** @internal Deterministic ancestor-observation cancellation seam. */
+  readonly afterCandidateAncestorObservation?: (isCandidateRoot: boolean) => void | Promise<void>;
+  /** @internal Deterministic selected-package entry race and cancellation seam. */
+  readonly afterSkillEntryObservation?: (provenance: string) => void | Promise<void>;
+  /** @internal Deterministic selected-package revalidation cancellation seam. */
+  readonly afterSkillRevalidationObservation?: (provenance: string) => void | Promise<void>;
+  /** @internal Deterministic selected-package directory cancellation seam. */
+  readonly afterSkillDirectoryBoundary?: (
+    provenance: string,
+    phase: "entries" | "stat",
+  ) => void | Promise<void>;
+  /** @internal Deterministic selected-package file cancellation seam. */
+  readonly afterSkillFileBoundary?: (
+    provenance: string,
+    phase: "open" | "stat" | "close",
+  ) => void | Promise<void>;
+  /** @internal Proves cancellation prevents post-capture package processing. */
+  readonly afterSkillPackageCapture?: () => void | Promise<void>;
+  /** @internal Binds neutral candidate dispatch to this exact source. */
+  readonly expectedSource?: { readonly identity: BigIntStats; readonly sha256: string };
 }
 
 export interface AdmittedLocalAgentSkillCandidate {
@@ -105,18 +128,28 @@ export async function admitLocalAgentSkillCandidate(
 ): Promise<AdmittedLocalAgentSkillCandidate> {
   assertActive(options.signal);
   const absoluteCandidatePath = resolve(candidatePath);
-  const candidateRoot = await realpath(dirname(absoluteCandidatePath));
-  assertActive(options.signal);
-  const rootObservation = await observeDirectory(candidateRoot, options.signal);
+  const candidateRoot = dirname(absoluteCandidatePath);
+  const rootPathObservations = await observeLexicalDirectories(
+    candidateRoot,
+    options.signal,
+    options.afterCandidateAncestorObservation,
+  );
+  const rootObservation = requiredRootObservation(rootPathObservations);
   const canonicalCandidatePath = join(candidateRoot, basename(absoluteCandidatePath));
   const candidateObservation = await observeRegularFile(canonicalCandidatePath, options.signal);
   await options.afterPathValidation?.(basename(canonicalCandidatePath));
   assertActive(options.signal);
+  if (
+    options.expectedSource !== undefined &&
+    !sameFileIdentity(options.expectedSource.identity, candidateObservation)
+  ) {
+    throw new LocalAgentSkillCandidateError(
+      "source_changed",
+      "candidate changed after kind discrimination",
+    );
+  }
   await revalidatePathObservations(
-    [
-      { path: candidateRoot, identity: rootObservation },
-      { path: canonicalCandidatePath, identity: candidateObservation },
-    ],
+    [...rootPathObservations, { path: canonicalCandidatePath, identity: candidateObservation }],
     options.signal,
   );
   const candidateFile = await stableReadFile(
@@ -125,6 +158,15 @@ export async function admitLocalAgentSkillCandidate(
     candidateObservation,
     options.signal,
   );
+  if (
+    options.expectedSource !== undefined &&
+    options.expectedSource.sha256 !== candidateFile.sha256
+  ) {
+    throw new LocalAgentSkillCandidateError(
+      "source_changed",
+      "candidate changed after kind discrimination",
+    );
+  }
   const candidateText = decodeUtf8(candidateFile.content);
   const source = parseAgentSkillCandidateText(candidateText, basename(candidatePath));
 
@@ -144,10 +186,21 @@ export async function admitLocalAgentSkillCandidate(
   );
   await revalidatePathObservations(workflowAdmission.observations, options.signal);
   const workflowText = decodeUtf8(workflowFile.content);
-  const workflowSource = parseWorkflowSourceText(workflowText, source.baseline.workflow.path);
-  const compiled = compileWorkflowText(workflowText, source.baseline.workflow.path);
+  let workflowSource: WorkflowSource;
+  let compiled: CompiledWorkflow;
+  try {
+    workflowSource = parseWorkflowSourceText(workflowText, source.baseline.workflow.path);
+    compiled = compileWorkflowText(workflowText, source.baseline.workflow.path);
+  } catch (error) {
+    throw new LocalAgentSkillCandidateError(
+      "invalid_source",
+      "candidate baseline workflow is invalid",
+      { cause: error },
+    );
+  }
 
   const evidence: Array<AdmittedLocalAgentSkillCandidate["evidence"][number]> = [];
+  const evidenceObservations: PathObservation[] = [];
   for (const declared of source.evidence) {
     assertActive(options.signal);
     const admission = await resolveAdmittedFile(
@@ -165,6 +218,7 @@ export async function admitLocalAgentSkillCandidate(
       options.signal,
     );
     await revalidatePathObservations(admission.observations, options.signal);
+    evidenceObservations.push(...admission.observations);
     const sourceText = decodeUtf8(file.content);
     let raw: unknown;
     try {
@@ -199,19 +253,45 @@ export async function admitLocalAgentSkillCandidate(
     options.signal,
   );
   let baselineCapabilitySnapshot: AgentSkillCapabilitySnapshot;
+  let revalidateSkill: () => Promise<void>;
   try {
     await options.afterPathValidation?.(source.baseline.skill.path);
     assertActive(options.signal);
-    baselineCapabilitySnapshot = await snapshotProjectAgentSkillPath({
+    const admittedSkill = await snapshotProjectAgentSkillPath({
       projectRoot: candidateRoot,
       provenance: source.baseline.skill.path,
       expectedName: source.scope.skillName,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+      ...(options.afterSkillEntryObservation === undefined
+        ? {}
+        : { afterEntryObservation: options.afterSkillEntryObservation }),
+      ...(options.afterSkillRevalidationObservation === undefined
+        ? {}
+        : { afterRevalidationObservation: options.afterSkillRevalidationObservation }),
+      ...(options.afterSkillDirectoryBoundary === undefined
+        ? {}
+        : { afterDirectoryBoundary: options.afterSkillDirectoryBoundary }),
+      ...(options.afterSkillFileBoundary === undefined
+        ? {}
+        : { afterFileBoundary: options.afterSkillFileBoundary }),
+      ...(options.afterSkillPackageCapture === undefined
+        ? {}
+        : { afterPackageCapture: options.afterSkillPackageCapture }),
     });
+    baselineCapabilitySnapshot = admittedSkill.snapshot;
+    revalidateSkill = admittedSkill.revalidate;
     assertActive(options.signal);
   } catch (error) {
     options.signal?.throwIfAborted();
     if (error instanceof LocalAgentSkillCandidateError) {
       throw error;
+    }
+    if (error instanceof AgentSkillCatalogError && error.code === "source_changed") {
+      throw new LocalAgentSkillCandidateError(
+        "source_changed",
+        "candidate baseline skill changed during admission",
+        { cause: error },
+      );
     }
     throw new LocalAgentSkillCandidateError(
       "invalid_source",
@@ -231,10 +311,13 @@ export async function admitLocalAgentSkillCandidate(
     [
       { path: candidateRoot, identity: rootObservation },
       { path: canonicalCandidatePath, identity: candidateObservation },
+      ...rootPathObservations,
       ...workflowAdmission.observations,
+      ...evidenceObservations,
     ],
     options.signal,
   );
+  await revalidateSkill();
   assertActive(options.signal);
   let projected: ReturnType<typeof projectAgentSkillCandidate>;
   try {
@@ -262,6 +345,17 @@ export async function admitLocalAgentSkillCandidate(
     }
     throw error;
   }
+  await revalidatePathObservations(
+    [
+      ...rootPathObservations,
+      { path: canonicalCandidatePath, identity: candidateObservation },
+      ...workflowAdmission.observations,
+      ...evidenceObservations,
+    ],
+    options.signal,
+  );
+  await revalidateSkill();
+  assertActive(options.signal);
   return deepFreeze({
     sourcePath: canonicalCandidatePath,
     sourceText: candidateText,
@@ -283,6 +377,52 @@ export async function admitLocalAgentSkillCandidate(
     baselineCapabilitySnapshot: projected.baselineCapabilitySnapshot,
     candidateCapabilitySnapshot: projected.candidateCapabilitySnapshot,
   });
+}
+
+async function observeLexicalDirectories(
+  path: string,
+  signal?: AbortSignal,
+  afterObservation?: (isCandidateRoot: boolean) => void | Promise<void>,
+): Promise<PathObservation[]> {
+  assertActive(signal);
+  const absolutePath = resolve(path);
+  const anchor = parse(absolutePath).root;
+  const components = relative(anchor, absolutePath).split(sep).filter(Boolean);
+  const observations: PathObservation[] = [];
+  let current = anchor;
+  for (const component of ["", ...components]) {
+    assertActive(signal);
+    if (component !== "") {
+      current = join(current, component);
+    }
+    let identity: BigIntStats;
+    try {
+      identity = await lstat(current, { bigint: true });
+    } catch (error) {
+      signal?.throwIfAborted();
+      throw new LocalAgentSkillCandidateError("invalid_path", "candidate root is unavailable", {
+        cause: error,
+      });
+    }
+    await afterObservation?.(current === absolutePath);
+    assertActive(signal);
+    if (identity.isSymbolicLink() || !identity.isDirectory()) {
+      throw new LocalAgentSkillCandidateError(
+        "invalid_path",
+        "candidate root ancestry must contain only direct directories",
+      );
+    }
+    observations.push({ path: current, identity });
+  }
+  return observations;
+}
+
+function requiredRootObservation(observations: readonly PathObservation[]): BigIntStats {
+  const identity = observations.at(-1)?.identity;
+  if (identity === undefined) {
+    throw new LocalAgentSkillCandidateError("invalid_path", "candidate root is unavailable");
+  }
+  return identity;
 }
 
 async function resolveAdmittedFile(
@@ -438,27 +578,6 @@ async function observeRegularFile(path: string, signal?: AbortSignal): Promise<B
     throw new LocalAgentSkillCandidateError(
       "invalid_source",
       "candidate source must be a direct regular file",
-    );
-  }
-  return entry;
-}
-
-async function observeDirectory(path: string, signal?: AbortSignal): Promise<BigIntStats> {
-  assertActive(signal);
-  let entry: BigIntStats;
-  try {
-    entry = await lstat(path, { bigint: true });
-  } catch (error) {
-    signal?.throwIfAborted();
-    throw new LocalAgentSkillCandidateError("invalid_source", "candidate root is unavailable", {
-      cause: error,
-    });
-  }
-  assertActive(signal);
-  if (entry.isSymbolicLink() || !entry.isDirectory()) {
-    throw new LocalAgentSkillCandidateError(
-      "invalid_source",
-      "candidate root must be a direct directory",
     );
   }
   return entry;

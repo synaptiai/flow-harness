@@ -1,4 +1,5 @@
-import { constants } from "node:fs";
+import { createHash } from "node:crypto";
+import { type BigIntStats, constants } from "node:fs";
 import { type FileHandle, open } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -37,6 +38,8 @@ export interface LocalAdaptationCandidateOptions {
   readonly afterDiscriminatorStat?: () => void | Promise<void>;
   /** @internal Deterministic nested-admission cancellation seam. */
   readonly afterAgentSkillPathValidation?: (provenance: string) => void | Promise<void>;
+  /** @internal Deterministic nested prompt-candidate cancellation seam. */
+  readonly afterPromptPathValidation?: (provenance: string) => void | Promise<void>;
 }
 
 export async function admitLocalAdaptationCandidate(
@@ -55,22 +58,24 @@ export async function admitLocalAdaptationCandidate(
     });
   }
   let source: string;
+  let sourceIdentity: BigIntStats;
+  let sourceSha256: string;
   try {
-    const before = await handle.stat();
-    if (!before.isFile() || before.size > MAX_LOCAL_ADAPTATION_CANDIDATE_BYTES) {
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile() || before.size > BigInt(MAX_LOCAL_ADAPTATION_CANDIDATE_BYTES)) {
       throw new Error("candidate discriminator source is not an admitted regular file");
     }
     await options.afterDiscriminatorStat?.();
     options.signal?.throwIfAborted();
     const content = await readBoundedDiscriminator(handle, options.signal);
-    const after = await handle.stat();
+    const after = await handle.stat({ bigint: true });
     if (
-      content.byteLength !== before.size ||
+      BigInt(content.byteLength) !== before.size ||
       before.dev !== after.dev ||
       before.ino !== after.ino ||
       before.size !== after.size ||
-      before.mtimeMs !== after.mtimeMs ||
-      before.ctimeMs !== after.ctimeMs
+      before.mtimeNs !== after.mtimeNs ||
+      before.ctimeNs !== after.ctimeNs
     ) {
       throw new Error("candidate discriminator source changed while it was read");
     }
@@ -79,6 +84,8 @@ export async function admitLocalAdaptationCandidate(
     } catch {
       throw new Error("candidate discriminator source is not UTF-8");
     }
+    sourceIdentity = before;
+    sourceSha256 = createHash("sha256").update(content).digest("hex");
   } finally {
     await handle.close();
   }
@@ -90,10 +97,17 @@ export async function admitLocalAdaptationCandidate(
       ...(options.afterAgentSkillPathValidation === undefined
         ? {}
         : { afterPathValidation: options.afterAgentSkillPathValidation }),
+      expectedSource: { identity: sourceIdentity, sha256: sourceSha256 },
     });
     return Object.freeze({ kind: "agent-skill-candidate", candidate });
   }
-  const candidate = await admitLocalPromptCandidate(absolutePath);
+  const candidate = await admitLocalPromptCandidate(absolutePath, {
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+    ...(options.afterPromptPathValidation === undefined
+      ? {}
+      : { afterPathValidation: options.afterPromptPathValidation }),
+    expectedSource: { identity: sourceIdentity, sha256: sourceSha256 },
+  });
   options.signal?.throwIfAborted();
   return Object.freeze({ kind: "prompt-candidate", candidate });
 }

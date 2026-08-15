@@ -1,5 +1,5 @@
-import { constants, type Dirent, type Stats } from "node:fs";
-import { type FileHandle, lstat, open, readdir, realpath } from "node:fs/promises";
+import { type BigIntStats, constants, type Dir, type Dirent, type Stats } from "node:fs";
+import { type FileHandle, lstat, open, opendir, readdir, realpath } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   AgentSkillManifestError,
@@ -19,6 +19,7 @@ import type { CapabilityBundleAgentSkillPackage } from "../../domain/capability/
 
 const MAX_DISCOVERY_DEPTH = 6;
 const MAX_DISCOVERY_ENTRIES = 2_000;
+export const MAX_AGENT_SKILL_SNAPSHOT_ENTRIES = MAX_DISCOVERY_ENTRIES;
 const installedAgentSkillSources = new WeakMap<
   DiscoveredAgentSkill,
   CapabilityBundleAgentSkillPackage["files"]
@@ -184,45 +185,410 @@ export async function snapshotProjectAgentSkillPath(input: {
   readonly projectRoot: string;
   readonly provenance: string;
   readonly expectedName: string;
-}): Promise<AgentSkillCapabilitySnapshot> {
+  readonly signal?: AbortSignal;
+  /** @internal Deterministic package-entry race and cancellation seam. */
+  readonly afterEntryObservation?: (provenance: string) => void | Promise<void>;
+  /** @internal Deterministic package-revalidation cancellation seam. */
+  readonly afterRevalidationObservation?: (provenance: string) => void | Promise<void>;
+  /** @internal Deterministic package-directory cancellation seam. */
+  readonly afterDirectoryBoundary?: (
+    provenance: string,
+    phase: "entries" | "stat",
+  ) => void | Promise<void>;
+  /** @internal Deterministic package-file cancellation seam. */
+  readonly afterFileBoundary?: (
+    provenance: string,
+    phase: "open" | "stat" | "close",
+  ) => void | Promise<void>;
+  /** @internal Proves cancellation prevents post-capture package processing. */
+  readonly afterPackageCapture?: () => void | Promise<void>;
+}): Promise<{
+  readonly snapshot: AgentSkillCapabilitySnapshot;
+  readonly revalidate: () => Promise<void>;
+}> {
+  input.signal?.throwIfAborted();
   if (!isAgentSkillName(input.expectedName)) {
     throw new AgentSkillCatalogError("invalid_skill", "selected Agent Skill name is invalid");
   }
-  const canonicalProject = await canonicalDirectory(input.projectRoot, "Flow project root");
+  const canonicalProject = resolve(input.projectRoot);
+  const projectIdentity = await observeDirectDirectory(canonicalProject, input.signal);
   const skillsRoot = join(canonicalProject, ".flow", "skills");
-  const rootMetadata = await lstatSafe(skillsRoot);
-  assertRealDirectory(rootMetadata, skillsRoot);
-  const canonicalRoot = await realpath(skillsRoot);
-  if (canonicalRoot !== skillsRoot) {
-    throw unsafeError("Agent Skills root changed identity");
-  }
   const directory = resolve(canonicalProject, input.provenance);
-  assertWithin(directory, canonicalRoot, "Agent Skill package");
+  assertWithin(directory, skillsRoot, "Agent Skill package");
   if (
-    directory === canonicalRoot ||
+    directory === skillsRoot ||
     portableRelative(canonicalProject, directory) !== input.provenance
   ) {
     throw unsafeError("Agent Skill package provenance is not canonical");
   }
-  const directoryMetadata = await lstatSafe(directory);
-  assertRealDirectory(directoryMetadata, directory);
-  const canonicalDirectoryPath = await realpath(directory);
-  if (canonicalDirectoryPath !== directory) {
-    throw unsafeError("Agent Skill package changed identity");
+  const observations = new Map<string, BigIntStats>();
+  observations.set(canonicalProject, projectIdentity);
+  let current = canonicalProject;
+  for (const segment of input.provenance.split("/")) {
+    input.signal?.throwIfAborted();
+    current = join(current, segment);
+    const identity = await observeDirectDirectory(current, input.signal);
+    rememberDirectObservation(observations, current, identity);
   }
-  const discovered = await readDiscoveredSkill(canonicalProject, canonicalRoot, directory);
-  if (discovered.name !== input.expectedName || discovered.provenance !== input.provenance) {
+  await input.afterEntryObservation?.(input.provenance);
+  input.signal?.throwIfAborted();
+  const revalidate = async (): Promise<void> => {
+    await revalidateDirectObservations(
+      observations,
+      input.signal,
+      input.afterRevalidationObservation === undefined
+        ? undefined
+        : (path) =>
+            input.afterRevalidationObservation?.(
+              path === canonicalProject ? "" : portableRelative(canonicalProject, path),
+            ),
+    );
+  };
+  await revalidate();
+  const state: DirectPackageCaptureState = {
+    entries: 0,
+    files: 0,
+    logicalBytes: 0,
+    observations,
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
+    ...(input.afterEntryObservation === undefined
+      ? {}
+      : { afterEntryObservation: input.afterEntryObservation }),
+    ...(input.afterDirectoryBoundary === undefined
+      ? {}
+      : { afterDirectoryBoundary: input.afterDirectoryBoundary }),
+    ...(input.afterFileBoundary === undefined
+      ? {}
+      : { afterFileBoundary: input.afterFileBoundary }),
+  };
+  const files: { path: string; content: Uint8Array }[] = [];
+  await collectDirectPackageFiles(canonicalProject, directory, directory, 0, state, files);
+  await input.afterPackageCapture?.();
+  input.signal?.throwIfAborted();
+  files.sort((left, right) => compareStrings(left.path, right.path));
+  const manifest = files.find((file) => file.path === "SKILL.md");
+  if (manifest === undefined) {
+    throw new AgentSkillCatalogError("source_changed", "selected Agent Skill lost its manifest");
+  }
+  const parsed = parseLocalSkillManifest(
+    Buffer.from(manifest.content),
+    join(directory, "SKILL.md"),
+  );
+  if (parsed.name !== input.expectedName || parsed.name !== basename(directory)) {
     throw new AgentSkillCatalogError(
       "invalid_skill",
       "selected Agent Skill identity contradicts the declared package path",
     );
   }
-  const catalog = deepFreeze({
-    projectRoot: canonicalProject,
-    root: canonicalRoot,
-    skills: [discovered],
-  });
-  return snapshotSelectedAgentSkills(catalog, [input.expectedName]);
+  const snapshot = createCapabilitySnapshot([
+    {
+      kind: "agent-skill",
+      name: parsed.name,
+      description: parsed.description,
+      ...(parsed.license === undefined ? {} : { license: parsed.license }),
+      ...(parsed.compatibility === undefined ? {} : { compatibility: parsed.compatibility }),
+      metadata: parsed.metadata,
+      requestedTools: parsed.requestedTools,
+      trust: "project-explicit",
+      provenance: input.provenance,
+      files,
+    },
+  ]) as AgentSkillCapabilitySnapshot;
+  await revalidate();
+  return deepFreeze({ snapshot, revalidate });
+}
+
+interface DirectPackageCaptureState {
+  entries: number;
+  files: number;
+  logicalBytes: number;
+  readonly observations: Map<string, BigIntStats>;
+  readonly signal?: AbortSignal;
+  readonly afterEntryObservation?: (provenance: string) => void | Promise<void>;
+  readonly afterDirectoryBoundary?: (
+    provenance: string,
+    phase: "entries" | "stat",
+  ) => void | Promise<void>;
+  readonly afterFileBoundary?: (
+    provenance: string,
+    phase: "open" | "stat" | "close",
+  ) => void | Promise<void>;
+}
+
+async function collectDirectPackageFiles(
+  projectRoot: string,
+  packageRoot: string,
+  directory: string,
+  depth: number,
+  state: DirectPackageCaptureState,
+  files: { path: string; content: Uint8Array }[],
+): Promise<void> {
+  state.signal?.throwIfAborted();
+  if (depth > MAX_DISCOVERY_DEPTH) {
+    throw limitError(`Agent Skill package exceeds depth ${MAX_DISCOVERY_DEPTH}`);
+  }
+  const directoryIdentity = await observeDirectDirectory(directory, state.signal);
+  rememberDirectObservation(state.observations, directory, directoryIdentity);
+  if (depth > 0) {
+    await state.afterEntryObservation?.(portableRelative(projectRoot, directory));
+    state.signal?.throwIfAborted();
+  }
+  let handle: Dir | undefined;
+  const entries: Dirent[] = [];
+  try {
+    try {
+      handle = await opendir(directory);
+    } catch (error) {
+      state.signal?.throwIfAborted();
+      throw new AgentSkillCatalogError("source_changed", "Agent Skill directory cannot be opened", {
+        cause: error,
+      });
+    }
+    state.signal?.throwIfAborted();
+    for await (const entry of handle) {
+      state.signal?.throwIfAborted();
+      state.entries += 1;
+      if (state.entries > MAX_AGENT_SKILL_SNAPSHOT_ENTRIES) {
+        throw limitError(`Agent Skill package exceeds ${MAX_AGENT_SKILL_SNAPSHOT_ENTRIES} entries`);
+      }
+      entries.push(entry);
+    }
+  } finally {
+    await handle?.close().catch(() => undefined);
+    state.signal?.throwIfAborted();
+  }
+  const directoryProvenance = portableRelative(projectRoot, directory);
+  await state.afterDirectoryBoundary?.(directoryProvenance, "entries");
+  state.signal?.throwIfAborted();
+  let afterDirectory: BigIntStats;
+  try {
+    afterDirectory = await lstat(directory, { bigint: true });
+  } catch (error) {
+    state.signal?.throwIfAborted();
+    throw new AgentSkillCatalogError(
+      "source_changed",
+      "Agent Skill directory changed during read",
+      { cause: error },
+    );
+  }
+  await state.afterDirectoryBoundary?.(directoryProvenance, "stat");
+  state.signal?.throwIfAborted();
+  if (!sameDirectIdentity(directoryIdentity, afterDirectory)) {
+    throw new AgentSkillCatalogError("source_changed", "Agent Skill directory changed during read");
+  }
+  entries.sort((left, right) => compareStrings(left.name, right.name));
+  for (const entry of entries) {
+    state.signal?.throwIfAborted();
+    const path = join(directory, entry.name);
+    let identity: BigIntStats;
+    try {
+      identity = await lstat(path, { bigint: true });
+    } catch (error) {
+      state.signal?.throwIfAborted();
+      throw new AgentSkillCatalogError("source_changed", "Agent Skill entry changed", {
+        cause: error,
+      });
+    }
+    state.signal?.throwIfAborted();
+    if (identity.isSymbolicLink()) {
+      throw unsafeError("Agent Skill package contains a symbolic link");
+    }
+    rememberDirectObservation(state.observations, path, identity);
+    const provenance = portableRelative(projectRoot, path);
+    await state.afterEntryObservation?.(provenance);
+    state.signal?.throwIfAborted();
+    if (identity.isDirectory()) {
+      await collectDirectPackageFiles(projectRoot, packageRoot, path, depth + 1, state, files);
+      continue;
+    }
+    if (!identity.isFile()) {
+      throw unsafeError("Agent Skill package contains a non-regular entry");
+    }
+    state.files += 1;
+    if (state.files > MAX_AGENT_SKILL_FILES) {
+      throw limitError(`Agent Skill package exceeds ${MAX_AGENT_SKILL_FILES} files`);
+    }
+    const content = await readDirectPackageFile(
+      path,
+      identity,
+      state.signal,
+      state.afterFileBoundary === undefined
+        ? undefined
+        : (phase) => state.afterFileBoundary?.(provenance, phase),
+    );
+    state.logicalBytes += content.byteLength;
+    if (state.logicalBytes > MAX_AGENT_SKILL_PACKAGE_BYTES) {
+      throw limitError(`Agent Skill package exceeds ${MAX_AGENT_SKILL_PACKAGE_BYTES} bytes`);
+    }
+    files.push({ path: portableRelative(packageRoot, path), content });
+  }
+}
+
+async function readDirectPackageFile(
+  path: string,
+  expected: BigIntStats,
+  signal?: AbortSignal,
+  afterBoundary?: (phase: "open" | "stat" | "close") => void | Promise<void>,
+): Promise<Buffer> {
+  signal?.throwIfAborted();
+  if (expected.size > BigInt(MAX_AGENT_SKILL_FILE_BYTES)) {
+    throw limitError(`Agent Skill file exceeds ${MAX_AGENT_SKILL_FILE_BYTES} bytes`);
+  }
+  let handle: FileHandle;
+  try {
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch (error) {
+    signal?.throwIfAborted();
+    throw unsafeError("Agent Skill file cannot be opened without links", error);
+  }
+  let readOutcome:
+    | { readonly ok: true; readonly value: Buffer }
+    | { readonly ok: false; readonly error: unknown };
+  try {
+    readOutcome = {
+      ok: true,
+      value: await readOpenedDirectPackageFile(handle, path, expected, signal, afterBoundary),
+    };
+  } catch (error) {
+    readOutcome = { ok: false, error };
+  }
+  let closeOutcome: { readonly ok: true } | { readonly ok: false; readonly error: unknown };
+  try {
+    await handle.close();
+    closeOutcome = { ok: true };
+  } catch (error) {
+    closeOutcome = { ok: false, error };
+  }
+  let boundaryOutcome: { readonly ok: true } | { readonly ok: false; readonly error: unknown };
+  try {
+    if (closeOutcome.ok) {
+      await afterBoundary?.("close");
+    }
+    boundaryOutcome = { ok: true };
+  } catch (error) {
+    boundaryOutcome = { ok: false, error };
+  }
+  signal?.throwIfAborted();
+  if (!readOutcome.ok) {
+    throw readOutcome.error;
+  }
+  if (!closeOutcome.ok) {
+    throw closeOutcome.error;
+  }
+  if (!boundaryOutcome.ok) {
+    throw boundaryOutcome.error;
+  }
+  return readOutcome.value;
+}
+
+async function readOpenedDirectPackageFile(
+  handle: FileHandle,
+  path: string,
+  expected: BigIntStats,
+  signal?: AbortSignal,
+  afterBoundary?: (phase: "open" | "stat" | "close") => void | Promise<void>,
+): Promise<Buffer> {
+  await afterBoundary?.("open");
+  signal?.throwIfAborted();
+  const before = await handle.stat({ bigint: true });
+  await afterBoundary?.("stat");
+  signal?.throwIfAborted();
+  if (!before.isFile() || !sameDirectIdentity(expected, before)) {
+    throw new AgentSkillCatalogError("source_changed", "Agent Skill file changed before read");
+  }
+  const chunks: Buffer[] = [];
+  let total = 0;
+  while (total <= MAX_AGENT_SKILL_FILE_BYTES) {
+    signal?.throwIfAborted();
+    const remaining = MAX_AGENT_SKILL_FILE_BYTES + 1 - total;
+    const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, remaining));
+    const { bytesRead } = await handle.read(chunk, 0, chunk.byteLength, null);
+    signal?.throwIfAborted();
+    if (bytesRead === 0) {
+      break;
+    }
+    chunks.push(chunk.subarray(0, bytesRead));
+    total += bytesRead;
+  }
+  if (total > MAX_AGENT_SKILL_FILE_BYTES) {
+    throw limitError(`Agent Skill file exceeds ${MAX_AGENT_SKILL_FILE_BYTES} bytes`);
+  }
+  const after = await handle.stat({ bigint: true });
+  signal?.throwIfAborted();
+  const lexical = await lstat(path, { bigint: true });
+  signal?.throwIfAborted();
+  if (!sameDirectIdentity(before, after) || !sameDirectIdentity(after, lexical)) {
+    throw new AgentSkillCatalogError("source_changed", "Agent Skill file changed during read");
+  }
+  return Buffer.concat(chunks, total);
+}
+
+async function observeDirectDirectory(path: string, signal?: AbortSignal): Promise<BigIntStats> {
+  signal?.throwIfAborted();
+  let identity: BigIntStats;
+  try {
+    identity = await lstat(path, { bigint: true });
+  } catch (error) {
+    signal?.throwIfAborted();
+    throw new AgentSkillCatalogError("source_changed", "Agent Skill directory is unavailable", {
+      cause: error,
+    });
+  }
+  signal?.throwIfAborted();
+  if (identity.isSymbolicLink() || !identity.isDirectory()) {
+    throw unsafeError("Agent Skill directory must be a direct directory");
+  }
+  return identity;
+}
+
+function rememberDirectObservation(
+  observations: Map<string, BigIntStats>,
+  path: string,
+  identity: BigIntStats,
+): void {
+  const prior = observations.get(path);
+  if (prior !== undefined && !sameDirectIdentity(prior, identity)) {
+    throw new AgentSkillCatalogError("source_changed", "Agent Skill path changed during admission");
+  }
+  observations.set(path, identity);
+}
+
+async function revalidateDirectObservations(
+  observations: ReadonlyMap<string, BigIntStats>,
+  signal?: AbortSignal,
+  afterObservation?: (path: string) => void | Promise<void>,
+): Promise<void> {
+  for (const [path, expected] of observations) {
+    signal?.throwIfAborted();
+    let current: BigIntStats;
+    try {
+      current = await lstat(path, { bigint: true });
+    } catch (error) {
+      signal?.throwIfAborted();
+      throw new AgentSkillCatalogError("source_changed", "Agent Skill path changed", {
+        cause: error,
+      });
+    }
+    await afterObservation?.(path);
+    signal?.throwIfAborted();
+    if (!sameDirectIdentity(expected, current)) {
+      throw new AgentSkillCatalogError("source_changed", "Agent Skill path changed");
+    }
+  }
+}
+
+function sameDirectIdentity(left: BigIntStats, right: BigIntStats): boolean {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs &&
+    left.isFile() === right.isFile() &&
+    left.isDirectory() === right.isDirectory() &&
+    !left.isSymbolicLink() &&
+    !right.isSymbolicLink()
+  );
 }
 
 async function scanForSkills(

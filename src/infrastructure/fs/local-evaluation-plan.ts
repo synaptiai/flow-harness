@@ -413,7 +413,12 @@ export async function admitLocalEvaluationPlan(
         },
         ...(profile.capabilitySnapshot === undefined
           ? {}
-          : { capabilitySnapshotDigest: profile.capabilitySnapshot.digest }),
+          : {
+              capabilitySnapshotDigest: profile.capabilitySnapshot.digest,
+              capabilityPackageDigests: profile.capabilitySnapshot.packages.map(
+                (item) => item.digest,
+              ),
+            }),
         ...(profile.candidate === undefined
           ? {}
           : {

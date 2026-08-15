@@ -271,6 +271,7 @@ export type EvaluationProfileIdentity =
         readonly workflowDigest: string;
       };
       readonly capabilitySnapshotDigest?: string;
+      readonly capabilityPackageDigests?: readonly string[];
       readonly candidate?: {
         readonly provenance: string;
         readonly identity: PromptCandidateIdentity | AgentSkillCandidateIdentity;

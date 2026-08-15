@@ -8,6 +8,8 @@ import {
   type AgentSkillCandidateProjectionInput,
   type AgentSkillCandidateSource,
   MAX_AGENT_SKILL_CANDIDATE_BYTES,
+  MAX_AGENT_SKILL_CANDIDATE_CHANGES,
+  MAX_AGENT_SKILL_CANDIDATE_EVIDENCE,
   calculateAgentSkillCandidateIdentityDigest,
   parseAgentSkillCandidateIdentity,
   parseAgentSkillCandidateText,
@@ -16,6 +18,8 @@ import {
 import {
   type AgentSkillPackageSnapshot,
   createCapabilitySnapshot,
+  MAX_AGENT_SKILL_FILE_BYTES,
+  MAX_AGENT_SKILL_PACKAGE_BYTES,
 } from "../../../src/domain/capability/agent-skills.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { calculateWorkflowDigest } from "../../../src/domain/workflow/digest.js";
@@ -115,6 +119,8 @@ describe("Agent Skill candidates", () => {
       kind: "agent-skill",
       name: "review",
       description: context.baseline.skill.description,
+      license: context.baseline.skill.license,
+      compatibility: context.baseline.skill.compatibility,
       metadata: context.baseline.skill.metadata,
       requestedTools: context.baseline.skill.requestedTools,
       trust: context.baseline.skill.trust,
@@ -298,6 +304,99 @@ describe("Agent Skill candidates", () => {
     );
   });
 
+  it.each([
+    { field: "evidence", count: 1, accepted: true },
+    { field: "evidence", count: MAX_AGENT_SKILL_CANDIDATE_EVIDENCE, accepted: true },
+    { field: "evidence", count: 0, accepted: false },
+    { field: "evidence", count: MAX_AGENT_SKILL_CANDIDATE_EVIDENCE + 1, accepted: false },
+    { field: "changes", count: 1, accepted: true },
+    { field: "changes", count: MAX_AGENT_SKILL_CANDIDATE_CHANGES, accepted: true },
+    { field: "changes", count: 0, accepted: false },
+    { field: "changes", count: MAX_AGENT_SKILL_CANDIDATE_CHANGES + 1, accepted: false },
+  ] as const)("binds the $field count boundary at $count", ({ field, count, accepted }) => {
+    const source = candidateSource();
+    if (field === "evidence") {
+      source.evidence = Array.from({ length: count }, (_, index) => ({
+        path: `evidence-${index}.json`,
+        sourceSha256: sha256(`source-${index}`),
+        evidenceDigest: sha256(`evidence-${index}`),
+        planDigest: sha256(`plan-${index}`),
+      }));
+    } else {
+      source.changes.resources = Array.from({ length: count }, (_, index) => ({
+        path: `resource-${index}.md`,
+        expectedSha256: sha256(`before-${index}`),
+        value: `replacement-${index}`,
+      }));
+    }
+
+    const operation = () => parseAgentSkillCandidateText(JSON.stringify(source));
+    if (accepted) {
+      expect(operation()).toMatchObject({
+        [field]: field === "changes" ? { resources: expect.any(Array) } : expect.any(Array),
+      });
+    } else {
+      expect(operation).toThrowError(expect.objectContaining({ code: "invalid_schema" }));
+    }
+  });
+
+  it("binds replacement UTF-8 file bytes at the exact limit and one byte above", () => {
+    const exact = candidateSource();
+    requiredItem(exact.changes.resources, 0, "candidate resource").value = "é".repeat(
+      MAX_AGENT_SKILL_FILE_BYTES / 2,
+    );
+    expect(parseAgentSkillCandidateText(JSON.stringify(exact))).toBeDefined();
+
+    const above = structuredClone(exact);
+    requiredItem(above.changes.resources, 0, "candidate resource").value += "a";
+    expect(() => parseAgentSkillCandidateText(JSON.stringify(above))).toThrowError(
+      expect.objectContaining({ code: "invalid_schema" }),
+    );
+  });
+
+  it("binds aggregate replacement bytes at the exact package limit and one byte above", () => {
+    const exact = candidateSource();
+    exact.changes.resources = [
+      {
+        path: "first.md",
+        expectedSha256: sha256("first"),
+        value: "a".repeat(MAX_AGENT_SKILL_PACKAGE_BYTES / 2),
+      },
+      {
+        path: "second.md",
+        expectedSha256: sha256("second"),
+        value: "b".repeat(MAX_AGENT_SKILL_PACKAGE_BYTES / 2),
+      },
+    ];
+    expect(parseAgentSkillCandidateText(JSON.stringify(exact))).toBeDefined();
+
+    const above = structuredClone(exact);
+    above.changes.resources.push({
+      path: "third.md",
+      expectedSha256: sha256("third"),
+      value: "c",
+    });
+    expect(() => parseAgentSkillCandidateText(JSON.stringify(above))).toThrowError(
+      expect.objectContaining({ code: "invalid_schema" }),
+    );
+  });
+
+  it("binds the complete projected package at the exact byte limit and one byte above", () => {
+    const exact = projectedPackageBoundaryContext("x".repeat(64 * 1024));
+    const projected = projectAgentSkillCandidate(exact);
+    expect(
+      projected.candidateCapabilitySnapshot.packages[0]?.files.reduce(
+        (total, file) => total + file.bytes,
+        0,
+      ),
+    ).toBe(MAX_AGENT_SKILL_PACKAGE_BYTES);
+
+    const above = projectedPackageBoundaryContext(`${"x".repeat(64 * 1024)}y`);
+    expect(() => projectAgentSkillCandidate(above)).toThrowError(
+      expect.objectContaining({ code: "invalid_projection" }),
+    );
+  });
+
   it("rejects duplicate evidence and resource targets", () => {
     const duplicateEvidence = candidateSource();
     duplicateEvidence.evidence.push(
@@ -367,6 +466,52 @@ function baselineSkill(): AgentSkillPackageSnapshot {
     throw new Error("Agent Skill candidate fixture has no skill package");
   }
   return skill;
+}
+
+function projectedPackageBoundaryContext(replacement: string): MutableProjectionContext {
+  const remainingBytes =
+    MAX_AGENT_SKILL_PACKAGE_BYTES - Buffer.byteLength(baselineSkillText) - 64 * 1024;
+  const firstPaddingBytes = Math.floor(remainingBytes / 2);
+  const secondPaddingBytes = remainingBytes - firstPaddingBytes;
+  const snapshot = createCapabilitySnapshot([
+    {
+      kind: "agent-skill",
+      name: "review",
+      description: "Review the result against the task.",
+      license: "MIT",
+      compatibility: "Flow 1.x",
+      metadata: { owner: "synapti" },
+      requestedTools: ["Read"],
+      trust: "project-explicit",
+      provenance: ".flow/skills/review",
+      files: [
+        { path: "SKILL.md", content: Buffer.from(baselineSkillText) },
+        { path: "reference.md", content: Buffer.from("z") },
+        { path: "assets/first.bin", content: Buffer.alloc(firstPaddingBytes) },
+        { path: "assets/second.bin", content: Buffer.alloc(secondPaddingBytes) },
+      ],
+    },
+  ]);
+  const skill = snapshot.packages[0];
+  if (skill?.kind !== "agent-skill") {
+    throw new Error("projected package boundary fixture has no Agent Skill");
+  }
+  const original = projectionContext();
+  const context: MutableProjectionContext = {
+    ...original,
+    baseline: { ...original.baseline, skill },
+  };
+  context.source = candidateSource(
+    skill,
+    calculateWorkflowDigest(context.baseline.workflow.compiled),
+    context.evidence[0]?.packet.evidenceDigest,
+  );
+  const resource = firstResource(context);
+  resource.path = "reference.md";
+  resource.expectedSha256 = sha256("z");
+  resource.value = replacement;
+  refreshCandidateSourceHash(context);
+  return context;
 }
 
 function candidateSource(

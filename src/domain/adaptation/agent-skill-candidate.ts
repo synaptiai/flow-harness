@@ -436,22 +436,31 @@ export function projectAgentSkillCandidate(
     return { path: change.path, beforeSha256, afterSha256 };
   });
 
-  const candidateCapabilitySnapshot = createCapabilitySnapshot([
-    {
-      kind: "agent-skill",
-      name: baselineSkill.name,
-      description: baselineSkill.description,
-      ...(baselineSkill.license === undefined ? {} : { license: baselineSkill.license }),
-      ...(baselineSkill.compatibility === undefined
-        ? {}
-        : { compatibility: baselineSkill.compatibility }),
-      metadata: baselineSkill.metadata,
-      requestedTools: baselineSkill.requestedTools,
-      trust: baselineSkill.trust,
-      provenance: baselineSkill.provenance,
-      files,
-    },
-  ]);
+  let candidateCapabilitySnapshot: AgentSkillCapabilitySnapshot;
+  try {
+    candidateCapabilitySnapshot = createCapabilitySnapshot([
+      {
+        kind: "agent-skill",
+        name: baselineSkill.name,
+        description: baselineSkill.description,
+        ...(baselineSkill.license === undefined ? {} : { license: baselineSkill.license }),
+        ...(baselineSkill.compatibility === undefined
+          ? {}
+          : { compatibility: baselineSkill.compatibility }),
+        metadata: baselineSkill.metadata,
+        requestedTools: baselineSkill.requestedTools,
+        trust: baselineSkill.trust,
+        provenance: baselineSkill.provenance,
+        files,
+      },
+    ]);
+  } catch (error) {
+    throw new AgentSkillCandidateError(
+      "invalid_projection",
+      "candidate projected skill exceeds its admitted package bounds",
+      { cause: error },
+    );
+  }
   const candidateSkill = requiredSkill(candidateCapabilitySnapshot);
   if (candidateSkill.digest === baselineSkill.digest) {
     throw new AgentSkillCandidateError(

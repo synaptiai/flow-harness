@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,6 +17,7 @@ import {
   discoverProjectAgentSkills,
   snapshotSelectedAgentSkills,
 } from "../../../src/infrastructure/fs/local-agent-skill-catalog.js";
+import { loadEffectiveFlowConfig } from "../../../src/infrastructure/fs/flow-config-store.js";
 import { promptCandidateTuningEvidence } from "../../fixtures/prompt-candidate-generation.js";
 
 const temporaryDirectories: string[] = [];
@@ -31,6 +32,7 @@ describe("Agent Skill candidate CLI", () => {
   it("validates, evaluates, and durably inspects one paired immutable skill projection", async () => {
     const fixture = await candidateEvaluationProject();
     const validation = capture();
+    const treeBeforeValidation = await snapshotTree(fixture.project);
 
     expect(
       await main(["candidate", "validate", fixture.candidatePath], validation.io, {
@@ -51,6 +53,8 @@ describe("Agent Skill candidate CLI", () => {
       },
     });
     expect(validation.stdout.join("\n")).not.toContain("PRIVATE CANDIDATE REVIEW INSTRUCTIONS");
+    expect(validation.stdout.join("\n")).not.toContain(fixture.project);
+    expect(await snapshotTree(fixture.project)).toEqual(treeBeforeValidation);
 
     const planValidation = capture();
     expect(
@@ -86,7 +90,24 @@ describe("Agent Skill candidate CLI", () => {
           evaluations,
         ],
         execution.io,
-        { cwd: fixture.project, executor: evaluationExecutor(observed) },
+        {
+          cwd: fixture.project,
+          executor: evaluationExecutor(observed, async () => {
+            await rm(join(fixture.project, ".flow", "skills", "review"), { recursive: true });
+            await rm(fixture.candidatePath);
+            await rm(join(fixture.project, "baseline.workflow.yaml"));
+            await rm(join(fixture.project, "tuning.json"));
+            await mkdir(join(fixture.project, ".flow", "skills", "review"), { recursive: true });
+            await writeFile(
+              join(fixture.project, ".flow", "skills", "review", "SKILL.md"),
+              "---\nname: review\ndescription: PRIVATE LIVE COLLISION\n---\n",
+            );
+            await writeFile(
+              join(fixture.project, ".flow", "skills", "review", "reference.md"),
+              "PRIVATE LIVE COLLISION\n",
+            );
+          }),
+        },
       ),
       execution.stderr.join("\n"),
     ).toBe(0);
@@ -101,9 +122,8 @@ describe("Agent Skill candidate CLI", () => {
       },
     ]);
     expect(execution.stdout.join("\n")).not.toContain("PRIVATE CANDIDATE REVIEW INSTRUCTIONS");
+    expect(execution.stdout.join("\n")).not.toContain("PRIVATE LIVE COLLISION");
 
-    await rm(join(fixture.project, ".flow", "skills", "review"), { recursive: true });
-    await rm(fixture.candidatePath);
     const inspected = capture();
     expect(
       await main(
@@ -133,11 +153,148 @@ describe("Agent Skill candidate CLI", () => {
       }),
     ]);
     expect(inspected.stdout.join("\n")).not.toContain("PRIVATE CANDIDATE REVIEW INSTRUCTIONS");
+    expect(inspected.stdout.join("\n")).not.toContain("PRIVATE LIVE COLLISION");
+    expect(inspected.stdout.join("\n")).not.toContain(fixture.project);
+
+    const exported = capture();
+    const exportPath = join(fixture.project, "evaluation-export.json");
+    expect(
+      await main(
+        [
+          "eval",
+          "export",
+          "skill-candidate-evaluation",
+          "--evaluations-dir",
+          evaluations,
+          "--output",
+          exportPath,
+        ],
+        exported.io,
+        { cwd: fixture.project },
+      ),
+      exported.stderr.join("\n"),
+    ).toBe(0);
+    const exportText = await readFile(exportPath, "utf8");
+    expect(exportText).toContain(validated.candidate.candidateDigest);
+    expect(exportText).not.toContain("PRIVATE CANDIDATE REVIEW INSTRUCTIONS");
+    expect(exportText).not.toContain("PRIVATE LIVE COLLISION");
+    expect(exportText).not.toContain(fixture.project);
   }, 20_000);
+
+  it("keeps invalid baseline diagnostics private and validation read-only", async () => {
+    const fixture = await candidateEvaluationProject();
+    const privateWorkflow = JSON.stringify({
+      apiVersion: "flow.synapti.ai/v1alpha1",
+      kind: "Workflow",
+      metadata: { id: "skill-evaluation-workflow" },
+      budget: {
+        maxNodeStarts: 1,
+        maxModelTokens: 1,
+        maxCostUsd: 1,
+        maxExecutionMs: 1,
+        maxArtifactBytes: 1,
+      },
+      nodes: [
+        {
+          id: "PRIVATE_NODE",
+          type: "result",
+          dependsOn: ["PRIVATE_MISSING"],
+          result: { source: { nodeId: "PRIVATE_MISSING", field: "result.value" } },
+        },
+      ],
+    });
+    await writeFile(join(fixture.project, "baseline.workflow.yaml"), privateWorkflow);
+    const source = JSON.parse(await readFile(fixture.candidatePath, "utf8"));
+    source.baseline.workflow.sourceSha256 = sha256(privateWorkflow);
+    await writeFile(fixture.candidatePath, JSON.stringify(source));
+    const before = await snapshotTree(fixture.project);
+    const output = capture();
+
+    expect(
+      await main(["candidate", "validate", fixture.candidatePath], output.io, {
+        cwd: fixture.project,
+      }),
+    ).toBe(1);
+    expect(output.stderr).toEqual(["invalid_source: candidate baseline workflow is invalid"]);
+    expect(output.stderr.join("\n")).not.toContain("PRIVATE");
+    expect(output.stderr.join("\n")).not.toContain(fixture.project);
+    expect(await snapshotTree(fixture.project)).toEqual(before);
+  });
+
+  it("cancels after plan admission without publishing an evaluation", async () => {
+    const fixture = await candidateEvaluationProject();
+    const evaluations = join(fixture.project, "cancelled-evaluations");
+    const controller = new AbortController();
+    const reason = new Error("operator cancelled before evaluation publication");
+    const output = capture();
+
+    expect(
+      await main(
+        [
+          "eval",
+          "run",
+          fixture.planPath,
+          "--evaluation-id",
+          "cancelled-skill-evaluation",
+          "--evaluations-dir",
+          evaluations,
+        ],
+        output.io,
+        {
+          cwd: fixture.project,
+          signal: controller.signal,
+          loadConfig: async (options) => {
+            const config = await loadEffectiveFlowConfig(options);
+            controller.abort(reason);
+            return config;
+          },
+        },
+      ),
+    ).toBe(1);
+    expect(output.stderr).toEqual([reason.message]);
+    await expect(
+      readFile(join(evaluations, "cancelled-skill-evaluation", "plan.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("releases evaluation ownership when post-claim setup fails", async () => {
+    const fixture = await candidateEvaluationProject();
+    const evaluations = join(fixture.project, "setup-failure-evaluations");
+    const args = [
+      "eval",
+      "run",
+      fixture.planPath,
+      "--evaluation-id",
+      "setup-failure-skill-evaluation",
+      "--evaluations-dir",
+      evaluations,
+    ] as const;
+    const reason = new Error("PRIVATE_SETUP_FAILURE");
+    const failed = capture();
+
+    expect(
+      await main(args, failed.io, {
+        cwd: fixture.project,
+        createWorkspaceIsolator: () => {
+          throw reason;
+        },
+      }),
+    ).toBe(1);
+    expect(failed.stderr).toEqual([reason.message]);
+
+    const resumed = capture();
+    await expect(
+      main(args, resumed.io, {
+        cwd: fixture.project,
+        executor: evaluationExecutor([]),
+      }),
+    ).resolves.toBe(0);
+    expect(resumed.stderr).toEqual([]);
+  });
 });
 
 async function candidateEvaluationProject() {
-  const project = await mkdtemp(join(tmpdir(), "flow-agent-skill-candidate-cli-"));
+  const project = await realpath(await mkdtemp(join(tmpdir(), "flow-agent-skill-candidate-cli-")));
   temporaryDirectories.push(project);
   await mkdir(join(project, ".flow", "skills", "review"), { recursive: true });
   await writeFile(
@@ -291,6 +448,7 @@ comparison:
 
 function evaluationExecutor(
   observed: Array<{ readonly digest: string; readonly resource: string }>,
+  afterFirstExecution?: () => Promise<void>,
 ): NodeExecutor {
   return {
     execute: async (node, context) => {
@@ -308,6 +466,9 @@ function evaluationExecutor(
         digest: context.capabilitySnapshot.digest,
         resource: Buffer.from(resource.contentBase64, "base64").toString("utf8"),
       });
+      if (observed.length === 1) {
+        await afterFirstExecution?.();
+      }
       await writeFile(join(context.cwd, "RESULT.md"), "verified\n");
       const text = '"done"';
       return {
@@ -335,6 +496,26 @@ function evaluationExecutor(
       };
     },
   };
+}
+
+async function snapshotTree(root: string): Promise<Readonly<Record<string, string>>> {
+  const snapshot: Record<string, string> = {};
+  const visit = async (directory: string, prefix: string): Promise<void> => {
+    const entries = await readdir(directory, { withFileTypes: true });
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      const relativePath = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        snapshot[`${relativePath}/`] = "directory";
+        await visit(path, relativePath);
+      } else {
+        snapshot[relativePath] = (await readFile(path)).toString("base64");
+      }
+    }
+  };
+  await visit(root, "");
+  return snapshot;
 }
 
 function capture(): { readonly io: CliIo; readonly stdout: string[]; readonly stderr: string[] } {

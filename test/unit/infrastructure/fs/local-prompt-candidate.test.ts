@@ -16,6 +16,7 @@ import {
   admitLocalPromptCandidate,
   LocalPromptCandidateError,
 } from "../../../../src/infrastructure/fs/local-prompt-candidate.js";
+import { admitLocalAdaptationCandidate } from "../../../../src/infrastructure/fs/local-adaptation-candidate.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -59,6 +60,23 @@ describe("local prompt candidate admission", () => {
     expect(admitted.evidence[0]?.sourcePath).toBe(join(fixture.project, "tuning.json"));
     expect(admitted.workflow.source).toContain("Read TASK.md first");
     expect(Object.isFrozen(admitted)).toBe(true);
+  });
+
+  it("preserves exact cancellation in the dispatcher prompt branch", async () => {
+    const fixture = await candidateProject();
+    const controller = new AbortController();
+    const reason = new Error("operator cancelled nested prompt admission");
+
+    await expect(
+      admitLocalAdaptationCandidate(fixture.candidatePath, {
+        signal: controller.signal,
+        afterPromptPathValidation: (provenance) => {
+          if (provenance === "baseline.workflow.yaml") {
+            controller.abort(reason);
+          }
+        },
+      }),
+    ).rejects.toBe(reason);
   });
 
   it.each(["baseline", "evidence"] as const)("rejects a symbolic-link %s source", async (kind) => {

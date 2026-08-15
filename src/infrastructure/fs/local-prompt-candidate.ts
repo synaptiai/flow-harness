@@ -84,7 +84,10 @@ interface AdmittedFilePath {
 }
 
 export interface LocalPromptCandidateAdmissionOptions {
+  readonly signal?: AbortSignal;
   readonly afterPathValidation?: (provenance: string) => Promise<void> | void;
+  /** @internal Binds neutral candidate dispatch to this exact source. */
+  readonly expectedSource?: { readonly identity: BigIntStats; readonly sha256: string };
 }
 
 export interface AdmittedLocalPromptCandidateGenerationSources {
@@ -214,18 +217,40 @@ export async function admitLocalPromptCandidate(
   candidatePath: string,
   options: LocalPromptCandidateAdmissionOptions = {},
 ): Promise<AdmittedLocalPromptCandidate> {
+  options.signal?.throwIfAborted();
   const absoluteCandidatePath = resolve(candidatePath);
   const candidateRoot = await realpath(dirname(absoluteCandidatePath));
+  options.signal?.throwIfAborted();
   const candidateRootObservation = await observeDirectory(candidateRoot, "prompt candidate root");
   const canonicalCandidatePath = join(candidateRoot, basename(absoluteCandidatePath));
   const candidateObservation = await observeRegularFile(canonicalCandidatePath, "prompt candidate");
   await options.afterPathValidation?.(basename(canonicalCandidatePath));
+  options.signal?.throwIfAborted();
+  if (
+    options.expectedSource !== undefined &&
+    !sameFileIdentity(options.expectedSource.identity, candidateObservation)
+  ) {
+    throw new LocalPromptCandidateError(
+      "source_changed",
+      "prompt candidate changed after kind discrimination",
+    );
+  }
   const candidateFile = await stableReadFile(
     canonicalCandidatePath,
     MAX_PROMPT_CANDIDATE_BYTES,
     "prompt candidate",
     candidateObservation,
   );
+  options.signal?.throwIfAborted();
+  if (
+    options.expectedSource !== undefined &&
+    options.expectedSource.sha256 !== candidateFile.sha256
+  ) {
+    throw new LocalPromptCandidateError(
+      "source_changed",
+      "prompt candidate changed after kind discrimination",
+    );
+  }
   await revalidatePathObservations([
     { path: candidateRoot, identity: candidateRootObservation },
     { path: canonicalCandidatePath, identity: candidateObservation },
@@ -239,12 +264,14 @@ export async function admitLocalPromptCandidate(
     source.baseline.workflow,
   );
   await options.afterPathValidation?.(source.baseline.workflow);
+  options.signal?.throwIfAborted();
   const baselineFile = await stableReadFile(
     baselineAdmission.path,
     MAX_LOCAL_WORKFLOW_BYTES,
     "candidate baseline workflow",
     requiredFinalObservation(baselineAdmission),
   );
+  options.signal?.throwIfAborted();
   await revalidatePathObservations(baselineAdmission.observations);
   const baselineText = decodeUtf8(baselineFile.content, "candidate baseline workflow");
   const baselineSource = parseWorkflowSourceText(baselineText, source.baseline.workflow);
@@ -252,18 +279,21 @@ export async function admitLocalPromptCandidate(
 
   const evidence = await Promise.all(
     source.evidence.map(async (declared) => {
+      options.signal?.throwIfAborted();
       const admission = await resolveAdmittedFile(
         candidateRoot,
         candidateRootObservation,
         declared.path,
       );
       await options.afterPathValidation?.(declared.path);
+      options.signal?.throwIfAborted();
       const file = await stableReadFile(
         admission.path,
         MAX_TUNING_EVIDENCE_BYTES,
         `candidate evidence "${declared.path}"`,
         requiredFinalObservation(admission),
       );
+      options.signal?.throwIfAborted();
       await revalidatePathObservations(admission.observations);
       const sourceText = decodeUtf8(file.content, `candidate evidence "${declared.path}"`);
       let raw: unknown;
@@ -289,6 +319,8 @@ export async function admitLocalPromptCandidate(
     }),
   );
 
+  options.signal?.throwIfAborted();
+
   const projected = projectPromptCandidate({
     manifestProvenance: basename(canonicalCandidatePath),
     source,
@@ -305,6 +337,7 @@ export async function admitLocalPromptCandidate(
       packet: item.packet,
     })),
   });
+  options.signal?.throwIfAborted();
   return deepFreeze({
     sourcePath: canonicalCandidatePath,
     sourceText: candidateText,
