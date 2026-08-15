@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { type BigIntStats, constants, type Dirent, type Stats } from "node:fs";
-import { type FileHandle, lstat, open, readdir, realpath } from "node:fs/promises";
+import { type FileHandle, lstat, open, opendir, realpath } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import {
@@ -69,6 +69,8 @@ export interface ProjectPolicyPackageCatalog {
 }
 
 export interface PolicyPackageCatalogOptions {
+  /** @internal Test seam for bounded streaming directory traversal. */
+  readonly openDirectory?: (path: string) => Promise<AsyncIterable<Dirent>>;
   readonly signal?: AbortSignal;
 }
 
@@ -129,6 +131,7 @@ export async function discoverProjectPolicyPackages(
     { entries: 0 },
     packages,
     options.signal,
+    options.openDirectory,
   );
   throwIfAborted(options.signal);
   packages.sort(compareByName);
@@ -227,12 +230,18 @@ async function scanPackages(
   budget: ScanBudget,
   packages: DiscoveredPolicyPackage[],
   signal: AbortSignal | undefined,
+  openDirectory: PolicyPackageCatalogOptions["openDirectory"],
 ): Promise<void> {
   throwIfAborted(signal);
   if (depth > MAX_DISCOVERY_DEPTH) {
     throw limitError(`policy package discovery exceeds depth ${MAX_DISCOVERY_DEPTH}`);
   }
-  const entries = await readDirectory(directory, signal);
+  const entries = await readDirectory(
+    directory,
+    MAX_DISCOVERY_ENTRIES - budget.entries,
+    signal,
+    openDirectory,
+  );
   budget.entries += entries.length;
   if (budget.entries > MAX_DISCOVERY_ENTRIES) {
     throw limitError(`policy package discovery exceeds ${MAX_DISCOVERY_ENTRIES} entries`);
@@ -261,7 +270,16 @@ async function scanPackages(
     if (!entry.isDirectory()) {
       throw unsafeError(`policy package catalog entry "${path}" must be a package directory`);
     }
-    await scanPackages(projectRoot, catalogRoot, path, depth + 1, budget, packages, signal);
+    await scanPackages(
+      projectRoot,
+      catalogRoot,
+      path,
+      depth + 1,
+      budget,
+      packages,
+      signal,
+      openDirectory,
+    );
   }
 }
 
@@ -325,7 +343,12 @@ async function snapshotPackage(
     throw unsafeError(`policy package "${discovered.directory}" changed identity`);
   }
   assertWithin(canonicalDirectoryPath, catalog.root, "policy package");
-  const entries = await readDirectory(canonicalDirectoryPath, signal);
+  const entries = await readDirectory(
+    canonicalDirectoryPath,
+    MAX_DISCOVERY_ENTRIES,
+    signal,
+    undefined,
+  );
   if (
     entries.length !== 1 ||
     entries[0]?.name !== MANIFEST_NAME ||
@@ -470,14 +493,31 @@ async function readBounded(
   return buffer.subarray(0, offset);
 }
 
-async function readDirectory(path: string, signal: AbortSignal | undefined): Promise<Dirent[]> {
+async function readDirectory(
+  path: string,
+  remainingEntries: number,
+  signal: AbortSignal | undefined,
+  openDirectory: PolicyPackageCatalogOptions["openDirectory"],
+): Promise<Dirent[]> {
   throwIfAborted(signal);
   try {
-    const entries = await readdir(path, { withFileTypes: true });
-    throwIfAborted(signal);
+    const directory = await (
+      openDirectory ?? (async (directoryPath) => await opendir(directoryPath))
+    )(path);
+    const entries: Dirent[] = [];
+    for await (const entry of directory) {
+      throwIfAborted(signal);
+      if (entries.length >= remainingEntries) {
+        throw limitError(`policy package discovery exceeds ${MAX_DISCOVERY_ENTRIES} entries`);
+      }
+      entries.push(entry);
+    }
     return entries.sort((left, right) => compareStrings(left.name, right.name));
   } catch (error) {
     throwIfAborted(signal);
+    if (error instanceof PolicyPackageCatalogError) {
+      throw error;
+    }
     throw new PolicyPackageCatalogError("io", `failed to read policy package directory "${path}"`, {
       cause: error,
     });

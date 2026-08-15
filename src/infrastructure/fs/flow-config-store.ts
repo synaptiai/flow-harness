@@ -122,6 +122,7 @@ export async function loadEffectiveFlowConfig(
       : policyReferences.length === 0 || projectLocation === null
         ? undefined
         : await discoverProjectCapabilityCatalogs(projectLocation.projectRoot, {
+            includeNonPolicies: false,
             ...(options.signal === undefined ? {} : { signal: options.signal }),
           }).then(
             async (catalogs) =>

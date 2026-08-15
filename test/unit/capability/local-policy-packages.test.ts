@@ -164,6 +164,36 @@ describe("local policy package catalog", () => {
     await expect(discoverProjectPolicyPackages(project)).rejects.toMatchObject({
       code: "limit_exceeded",
     });
+  }, 15_000);
+
+  it("stops streaming directory traversal at the first excess entry", async () => {
+    const project = await temporaryProject();
+    let yielded = 0;
+
+    await expect(
+      discoverProjectPolicyPackages(project, {
+        openDirectory: async () => ({
+          async *[Symbol.asyncIterator]() {
+            while (true) {
+              yielded += 1;
+              yield {
+                name: `entry-${yielded}`,
+                isBlockDevice: () => false,
+                isCharacterDevice: () => false,
+                isDirectory: () => true,
+                isFIFO: () => false,
+                isFile: () => false,
+                isSocket: () => false,
+                isSymbolicLink: () => false,
+                parentPath: join(project, ".flow", "policies"),
+                path: join(project, ".flow", "policies"),
+              };
+            }
+          },
+        }),
+      }),
+    ).rejects.toMatchObject({ code: "limit_exceeded" });
+    expect(yielded).toBe(2_001);
   });
 });
 

@@ -42,7 +42,12 @@ const SUPERVISOR_REQUEST_TIMEOUT_MS = 15_000;
 const STARTUP_TIMEOUT_MS = 10_000;
 const RECONCILIATION_INTERVAL_MS = 100;
 
-export type SupervisorPolicy = Pick<EffectiveFlowConfig, "policyDigest" | "sandbox" | "supervisor">;
+export type SupervisorPolicy = Pick<
+  EffectiveFlowConfig,
+  "policyDigest" | "policyPackages" | "sandbox" | "supervisor"
+> & {
+  readonly policyPackageDigest?: string;
+};
 
 export class SupervisorStartupTimeoutError extends Error {
   override readonly name = "SupervisorStartupTimeoutError";
@@ -66,6 +71,18 @@ export interface StartSupervisorServerOptions {
   readonly pid?: number;
   readonly startedAt?: string;
   readonly policy?: SupervisorPolicy;
+}
+
+function selectedPolicyPackageDigest(policy: SupervisorPolicy): string | undefined {
+  const configured = policy.policyPackages?.effective.digest;
+  if (
+    policy.policyPackageDigest !== undefined &&
+    configured !== undefined &&
+    policy.policyPackageDigest !== configured
+  ) {
+    throw new Error("supervisor policy package digests disagree");
+  }
+  return policy.policyPackageDigest ?? configured;
 }
 
 export interface RunningSupervisor {
@@ -239,6 +256,7 @@ async function launchSupervisor(
   policy: SupervisorPolicy,
   options: EnsureSupervisorOptions,
 ): Promise<Extract<SupervisorResponse, { readonly ok: true }>> {
+  const policyPackageDigest = selectedPolicyPackageDigest(policy);
   const descriptor = await store.readSupervisorDescriptor();
   if (descriptor !== null && isProcessAlive(descriptor.pid)) {
     const liveDeadline = Math.min(deadline, Date.now() + 1_000);
@@ -288,6 +306,9 @@ async function launchSupervisor(
       startupOwnerToken,
       "--policy-digest",
       policy.policyDigest,
+      ...(policyPackageDigest === undefined
+        ? []
+        : ["--policy-package-digest", policyPackageDigest]),
       "--sandbox-profile",
       policy.sandbox.profile,
       "--max-active-workers",
@@ -396,6 +417,7 @@ export async function startSupervisorServer(
 ): Promise<RunningSupervisor> {
   await options.store.initialize();
   const policy = options.policy ?? resolveFlowConfig({});
+  const policyPackageDigest = selectedPolicyPackageDigest(policy);
   const generation = options.generation ?? randomUUID();
   const pid = options.pid ?? process.pid;
   const startedAt = options.startedAt ?? new Date().toISOString();
@@ -419,6 +441,7 @@ export async function startSupervisorServer(
     pid,
     startedAt,
     sandboxProfile: policy.sandbox.profile,
+    ...(policyPackageDigest === undefined ? {} : { policyPackageDigest }),
   });
   await service.reconcile();
   let closePromise: Promise<void> | undefined;

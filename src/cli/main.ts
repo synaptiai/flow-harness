@@ -346,6 +346,7 @@ export interface CliDependencies {
     readonly cwd: string;
     readonly signal: AbortSignal | undefined;
   }) => Promise<PrimeOciPreparationResult>;
+  readonly runSupervisorDaemon: typeof runSupervisorDaemon;
   readonly signal?: AbortSignal;
 }
 
@@ -2015,6 +2016,7 @@ async function resumeCommand(
     capabilitySnapshot,
     dependencies,
   );
+  assertWorkflowSatisfiesPolicyPackages(admitted.workflow, capabilitySnapshot);
   const executionCwd = resolve(dependencies.cwd, values.cwd ?? ".");
   const protectedPaths = resolveRunProtectedPaths(runsDirectory, config);
   const commandId = detachedCommandId(values["command-id"], detached.enabled);
@@ -2125,6 +2127,7 @@ async function runCommand(
     admitted.capabilitySnapshot,
     supplementalSnapshot,
   ]);
+  assertWorkflowSatisfiesPolicyPackages(admitted.workflow, capabilitySnapshot);
   const runsDirectory = resolveRunsDirectory(dependencies.cwd, values["runs-dir"], config);
   const executionCwd = resolve(dependencies.cwd, values.cwd ?? ".");
   const protectedPaths = resolveRunProtectedPaths(runsDirectory, config);
@@ -2366,6 +2369,7 @@ async function internalSupervisorCommand(
   const { positionals, values } = parseCommandArgs(args, {
     "max-active-workers": { type: "string" },
     "max-queued-jobs": { type: "string" },
+    "policy-package-digest": { type: "string" },
     "policy-digest": { type: "string" },
     "runs-dir": { type: "string" },
     "sandbox-profile": { type: "string" },
@@ -2375,8 +2379,8 @@ async function internalSupervisorCommand(
   if (positionals.length !== 0) {
     throw new CliUsageError("internal supervisor accepts no positional arguments");
   }
-  const dependencies = storageDependenciesFrom(overrides);
-  const runsDirectory = resolve(dependencies.cwd, values["runs-dir"] ?? ".flow/runs");
+  const storageDependencies = storageDependenciesFrom(overrides);
+  const runsDirectory = resolve(storageDependencies.cwd, values["runs-dir"] ?? ".flow/runs");
   const supervisor = {
     maxActiveWorkers: parsePositiveIntegerOption(
       requireStringOption(
@@ -2408,7 +2412,11 @@ async function internalSupervisorCommand(
       "internal supervisor requires --sandbox-profile",
     ),
   );
-  if (calculateFlowPolicyDigest(supervisor, sandboxProfile) !== policyDigest) {
+  const policyPackageDigest = values["policy-package-digest"];
+  if (policyPackageDigest !== undefined && !/^[a-f0-9]{64}$/.test(policyPackageDigest)) {
+    throw new CliUsageError("--policy-package-digest requires a SHA-256 hexadecimal digest");
+  }
+  if (calculateFlowPolicyDigest(supervisor, sandboxProfile, policyPackageDigest) !== policyDigest) {
     throw new CliUsageError(
       "--policy-digest does not match the supplied supervisor limits and sandbox profile",
     );
@@ -2421,12 +2429,18 @@ async function internalSupervisorCommand(
     values["startup-owner-token"],
     "internal supervisor requires --startup-owner-token",
   );
-  await runSupervisorDaemon({
+  const runtimeDependencies = dependenciesFrom(overrides);
+  await runtimeDependencies.runSupervisorDaemon({
     store: new LocalSupervisorStore(runsDirectory),
     cliPath: fileURLToPath(import.meta.url),
     startupOwnerToken,
     startupToken,
-    policy: { policyDigest, sandbox: { profile: sandboxProfile }, supervisor },
+    policy: {
+      policyDigest,
+      ...(policyPackageDigest === undefined ? {} : { policyPackageDigest }),
+      sandbox: { profile: sandboxProfile },
+      supervisor,
+    },
     ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
   });
   return 0;
@@ -2620,7 +2634,9 @@ async function resolveWorkflowCapabilitySnapshot(
       "tool packages require a Flow project root containing .flow/tools",
     );
   }
-  const catalogs = await discoverProjectCapabilityCatalogs(config.projectRoot);
+  const catalogs = await discoverProjectCapabilityCatalogs(config.projectRoot, {
+    includePolicies: false,
+  });
   const snapshots: CapabilitySnapshot[] = [
     ...(config.policyPackages === undefined ? [] : [config.policyPackages.snapshot]),
   ];
@@ -2649,9 +2665,9 @@ async function admitWorkflowArgument(
         "workflow packages require a Flow project root containing .flow/workflows",
       );
     }
-    catalogPromise ??= discoverProjectCapabilityCatalogs(config.projectRoot).then(
-      (catalogs) => catalogs.workflows,
-    );
+    catalogPromise ??= discoverProjectCapabilityCatalogs(config.projectRoot, {
+      includePolicies: false,
+    }).then((catalogs) => catalogs.workflows);
     return await workflowPackageLoader(await catalogPromise)(reference);
   };
   const activationLocator = parseActiveWorkflowLocator(argument);
@@ -2818,7 +2834,8 @@ async function discoverConfiguredAgentSkills(
       "Agent Skills require a Flow project root containing .flow/skills",
     );
   }
-  return (await discoverProjectCapabilityCatalogs(config.projectRoot)).agentSkills;
+  return (await discoverProjectCapabilityCatalogs(config.projectRoot, { includePolicies: false }))
+    .agentSkills;
 }
 
 async function discoverConfiguredVerifierPackages(
@@ -2830,7 +2847,8 @@ async function discoverConfiguredVerifierPackages(
       "verifier packages require a Flow project root containing .flow/verifiers",
     );
   }
-  return (await discoverProjectCapabilityCatalogs(config.projectRoot)).verifiers;
+  return (await discoverProjectCapabilityCatalogs(config.projectRoot, { includePolicies: false }))
+    .verifiers;
 }
 
 async function discoverConfiguredToolPackages(
@@ -2842,7 +2860,8 @@ async function discoverConfiguredToolPackages(
       "tool packages require a Flow project root containing .flow/tools",
     );
   }
-  return (await discoverProjectCapabilityCatalogs(config.projectRoot)).tools;
+  return (await discoverProjectCapabilityCatalogs(config.projectRoot, { includePolicies: false }))
+    .tools;
 }
 
 async function discoverConfiguredWorkflowPackages(
@@ -2854,7 +2873,8 @@ async function discoverConfiguredWorkflowPackages(
       "workflow packages require a Flow project root containing .flow/workflows",
     );
   }
-  return (await discoverProjectCapabilityCatalogs(config.projectRoot)).workflows;
+  return (await discoverProjectCapabilityCatalogs(config.projectRoot, { includePolicies: false }))
+    .workflows;
 }
 
 async function discoverConfiguredPolicyPackages(
@@ -2868,10 +2888,10 @@ async function discoverConfiguredPolicyPackages(
     );
   }
   return (
-    await discoverProjectCapabilityCatalogs(
-      config.projectRoot,
-      signal === undefined ? {} : { signal },
-    )
+    await discoverProjectCapabilityCatalogs(config.projectRoot, {
+      includeNonPolicies: false,
+      ...(signal === undefined ? {} : { signal }),
+    })
   ).policies;
 }
 
@@ -2921,6 +2941,7 @@ function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies 
     externalHarnessRuntime:
       overrides.externalHarnessRuntime ??
       createLazyProductionExternalHarnessRuntime(externalHarnessRegistry),
+    runSupervisorDaemon: overrides.runSupervisorDaemon ?? runSupervisorDaemon,
     ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
   };
 }

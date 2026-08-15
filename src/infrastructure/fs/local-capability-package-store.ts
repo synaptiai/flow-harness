@@ -150,6 +150,12 @@ export interface CapabilityPackageStoreHooks {
   readonly beforeStoreDirectoryParentSync?: (path: string, parent: string) => Promise<void>;
   readonly afterStoreDirectoryParentSynced?: (path: string, parent: string) => Promise<void>;
   readonly afterMutationLockCollision?: () => Promise<void>;
+  readonly beforeVerifyBundleRead?: (entry: CapabilityLockEntry) => Promise<void>;
+  readonly beforeVerifyLockRead?: () => Promise<void>;
+}
+
+export interface VerifyCapabilityBundlesOptions {
+  readonly signal?: AbortSignal;
 }
 
 export class LocalCapabilityPackageStore {
@@ -240,13 +246,19 @@ export class LocalCapabilityPackageStore {
     return await readCapabilityLock(paths.lockPath);
   }
 
-  async verify(): Promise<readonly VerifiedInstalledCapabilityBundle[]> {
+  async verify(
+    options: VerifyCapabilityBundlesOptions = {},
+  ): Promise<readonly VerifiedInstalledCapabilityBundle[]> {
+    options.signal?.throwIfAborted();
     const paths = await storePaths(this.projectRoot);
-    const lock = await readCapabilityLock(paths.lockPath);
+    options.signal?.throwIfAborted();
+    const lock = await readCapabilityLock(paths.lockPath, options.signal, this.hooks);
     const verified: VerifiedInstalledCapabilityBundle[] = [];
     for (const entry of lock.bundles) {
-      verified.push(await readVerifiedLockedBundle(paths, entry));
+      options.signal?.throwIfAborted();
+      verified.push(await readVerifiedLockedBundle(paths, entry, options.signal, this.hooks));
     }
+    options.signal?.throwIfAborted();
     return deepFreeze(verified);
   }
 
@@ -335,11 +347,17 @@ async function storePaths(projectRoot: string): Promise<CapabilityStorePaths> {
   });
 }
 
-async function readCapabilityLock(lockPath: string): Promise<CapabilityLock> {
+async function readCapabilityLock(
+  lockPath: string,
+  signal?: AbortSignal,
+  hooks?: CapabilityPackageStoreHooks,
+): Promise<CapabilityLock> {
   let content: Buffer;
   try {
-    content = await readBoundedRegularFile(lockPath, MAX_CAPABILITY_LOCK_BYTES);
+    await hooks?.beforeVerifyLockRead?.();
+    content = await readBoundedRegularFile(lockPath, MAX_CAPABILITY_LOCK_BYTES, signal);
   } catch (error) {
+    signal?.throwIfAborted();
     if (isNodeError(error) && error.code === "ENOENT") {
       return emptyCapabilityLock();
     }
@@ -421,21 +439,29 @@ function assertCanonicalLockEntries(entries: readonly CapabilityLockEntry[]): vo
 async function readVerifiedLockedBundle(
   paths: CapabilityStorePaths,
   entry: CapabilityLockEntry,
+  signal?: AbortSignal,
+  hooks?: CapabilityPackageStoreHooks,
 ): Promise<VerifiedInstalledCapabilityBundle> {
+  signal?.throwIfAborted();
   await requireCanonicalBlobStore(paths);
+  signal?.throwIfAborted();
   const digest = entry.digest.slice("sha256:".length);
   const path = join(paths.blobDirectory, `${digest}.flowpkg`);
   let content: Buffer;
   try {
-    content = await readBoundedRegularFile(path, MAX_CAPABILITY_BUNDLE_BYTES);
+    await hooks?.beforeVerifyBundleRead?.(entry);
+    content = await readBoundedRegularFile(path, MAX_CAPABILITY_BUNDLE_BYTES, signal);
   } catch (error) {
+    signal?.throwIfAborted();
     throw new CapabilityPackageStoreError(
       "corrupt_blob",
       `capability bundle blob ${entry.digest} is missing, unsafe, or unreadable`,
       { cause: error },
     );
   }
+  signal?.throwIfAborted();
   await requireCanonicalBlobStore(paths);
+  signal?.throwIfAborted();
   if (content.byteLength !== entry.bytes) {
     throw new CapabilityPackageStoreError(
       "corrupt_blob",
@@ -797,18 +823,27 @@ async function ensureDirectory(
   }
 }
 
-async function readBoundedRegularFile(path: string, maximumBytes: number): Promise<Buffer> {
+async function readBoundedRegularFile(
+  path: string,
+  maximumBytes: number,
+  signal?: AbortSignal,
+): Promise<Buffer> {
+  signal?.throwIfAborted();
   const handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
   try {
+    signal?.throwIfAborted();
     const before = await handle.stat({ bigint: true });
+    signal?.throwIfAborted();
     if (!before.isFile() || before.size < 1n || before.size > BigInt(maximumBytes)) {
       throw new CapabilityPackageStoreError(
         "unsafe_state",
         `capability package file ${JSON.stringify(path)} is not a bounded regular file`,
       );
     }
-    const content = await readBoundedHandle(handle, maximumBytes);
+    const content = await readBoundedHandle(handle, maximumBytes, signal);
+    signal?.throwIfAborted();
     const after = await handle.stat({ bigint: true });
+    signal?.throwIfAborted();
     if (
       before.dev !== after.dev ||
       before.ino !== after.ino ||
@@ -831,11 +866,14 @@ async function readBoundedRegularFile(path: string, maximumBytes: number): Promi
 async function readBoundedHandle(
   handle: Awaited<ReturnType<typeof open>>,
   maximumBytes: number,
+  signal?: AbortSignal,
 ): Promise<Buffer> {
   const buffer = Buffer.alloc(maximumBytes + 1);
   let offset = 0;
   while (offset < buffer.byteLength) {
+    signal?.throwIfAborted();
     const { bytesRead } = await handle.read(buffer, offset, buffer.byteLength - offset, null);
+    signal?.throwIfAborted();
     if (bytesRead === 0) {
       break;
     }

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { NodeExecutor } from "../../../src/application/ports.js";
 import { type CliIo, main } from "../../../src/cli/main.js";
 import { createPolicyPackageSnapshot } from "../../../src/domain/capability/policy-packages.js";
+import { calculateFlowPolicyDigest } from "../../../src/domain/config/resolver.js";
 import { loadEffectiveFlowConfig } from "../../../src/infrastructure/fs/flow-config-store.js";
 import {
   PolicyPackageCatalogError,
@@ -99,6 +100,114 @@ describe("policy package CLI", () => {
     );
   });
 
+  it("uses the admitted policy snapshot while resolving a supplemental skill", async () => {
+    const project = await projectFixture();
+    const skillDirectory = join(project, ".flow", "skills", "review");
+    await mkdir(skillDirectory, { recursive: true });
+    await writeFile(
+      join(skillDirectory, "SKILL.md"),
+      "---\nname: review\ndescription: Review the project.\n---\nReview safely.\n",
+      "utf8",
+    );
+    const config = await loadEffectiveFlowConfig({ cwd: project });
+    await writeFile(
+      join(project, ".flow", "policies", "restricted-review", "POLICY.yaml"),
+      "kind: Invalid\n",
+      "utf8",
+    );
+    const workflowPath = join(project, "supplemental-skill.workflow.yaml");
+    await writeFile(workflowPath, workflowWithSkillSource(), "utf8");
+    const output = captureIo();
+
+    expect(
+      await main(["validate", workflowPath], output.io, {
+        cwd: project,
+        loadConfig: async () => config,
+      }),
+      output.stderr.join("\n"),
+    ).toBe(0);
+    expect(output.stdout.join("\n")).toContain("policy packages: 1");
+    expect(output.stdout.join("\n")).toContain("skills: 1");
+  });
+
+  it("loads a selected policy without parsing an unrelated invalid skill", async () => {
+    const project = await projectFixture();
+    const skillDirectory = join(project, ".flow", "skills", "unselected");
+    await mkdir(skillDirectory, { recursive: true });
+    await writeFile(join(skillDirectory, "SKILL.md"), "kind: Invalid\n", "utf8");
+
+    await expect(loadEffectiveFlowConfig({ cwd: project })).resolves.toMatchObject({
+      policyPackages: { snapshot: { packages: [{ name: "restricted-review" }] } },
+    });
+  });
+
+  it("passes the parsed policy package identity into the internal supervisor daemon", async () => {
+    const project = await projectFixture();
+    const policyPackageDigest = "b".repeat(64);
+    const supervisor = { maxActiveWorkers: 2, maxQueuedJobs: 7 };
+    const policyDigest = calculateFlowPolicyDigest(supervisor, "native", policyPackageDigest);
+    let observedPolicy: unknown;
+    const output = captureIo();
+
+    expect(
+      await main(
+        [
+          "__supervisor",
+          "--runs-dir",
+          join(project, "internal-runs"),
+          "--startup-token",
+          "source-token",
+          "--startup-owner-token",
+          "owner-token",
+          "--policy-digest",
+          policyDigest,
+          "--policy-package-digest",
+          policyPackageDigest,
+          "--sandbox-profile",
+          "native",
+          "--max-active-workers",
+          String(supervisor.maxActiveWorkers),
+          "--max-queued-jobs",
+          String(supervisor.maxQueuedJobs),
+        ],
+        output.io,
+        {
+          cwd: project,
+          runSupervisorDaemon: async (options) => {
+            observedPolicy = options.policy;
+          },
+        },
+      ),
+      output.stderr.join("\n"),
+    ).toBe(0);
+    expect(observedPolicy).toEqual({
+      policyDigest,
+      policyPackageDigest,
+      sandbox: { profile: "native" },
+      supervisor,
+    });
+  });
+
+  it("rejects a policy-incompatible detached workflow before supervisor mutation", async () => {
+    const project = await projectFixture();
+    const rejected = join(project, "rejected-detached.workflow.yaml");
+    const runsDirectory = join(project, "detached-runs");
+    await writeFile(rejected, workflowSource("edit"), "utf8");
+    const output = captureIo();
+
+    expect(
+      await main(
+        ["run", rejected, "--detach", "--runs-dir", runsDirectory, "--run-id", "rejected"],
+        output.io,
+        { cwd: project },
+      ),
+    ).toBe(1);
+    expect(output.stderr.join("\n")).toMatch(
+      /policy_violation.*nodes\.agent\.agent\.tools.*edit.*not allowed/i,
+    );
+    await expect(stat(runsDirectory)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("requires an exact version when inspecting", async () => {
     const project = await projectFixture();
     const output = captureIo();
@@ -174,6 +283,46 @@ policies:
     expect(resumeOutput.stderr.join("\n")).toMatch(
       /invalid_config.*policies\.additional\.0\.digest.*does not match/i,
     );
+  });
+
+  it("rejects a policy-incompatible detached resume before supervisor mutation", async () => {
+    const project = await projectFixture();
+    const workflowPath = join(project, "detached-resume.workflow.yaml");
+    const runsDirectory = join(project, "detached-resume-runs");
+    await writeFile(workflowPath, workflowSource("read"), "utf8");
+    const runOutput = captureIo();
+
+    expect(
+      await main(
+        ["run", workflowPath, "--run-id", "detached-resume", "--runs-dir", runsDirectory],
+        runOutput.io,
+        { cwd: project, executor: successfulExecutor() },
+      ),
+      runOutput.stderr.join("\n"),
+    ).toBe(0);
+    const before = (await readdir(runsDirectory, { recursive: true })).sort();
+    await writeFile(workflowPath, workflowSource("edit"), "utf8");
+    const resumeOutput = captureIo();
+
+    expect(
+      await main(
+        [
+          "resume",
+          workflowPath,
+          "--run-id",
+          "detached-resume",
+          "--runs-dir",
+          runsDirectory,
+          "--detach",
+        ],
+        resumeOutput.io,
+        { cwd: project },
+      ),
+    ).toBe(1);
+    expect(resumeOutput.stderr.join("\n")).toMatch(
+      /policy_violation.*nodes\.agent\.agent\.tools.*edit.*not allowed/i,
+    );
+    await expect(readdir(runsDirectory, { recursive: true })).resolves.toEqual(before);
   });
 
   it("keeps private catalog paths out of public diagnostics", async () => {
@@ -309,6 +458,26 @@ nodes:
       prompt: Review the project.
       model: { provider: test, id: allowed }
       tools: [${tool}]
+  - id: finish
+    type: command
+    dependsOn: [agent]
+    command: { executable: node, args: [--version] }
+`;
+}
+
+function workflowWithSkillSource(): string {
+  return `apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: policy-skill-snapshot }
+budget: { maxNodeStarts: 2 }
+nodes:
+  - id: agent
+    type: agent
+    agent:
+      prompt: Review the project.
+      model: { provider: test, id: allowed }
+      tools: [read]
+      skills: [review]
   - id: finish
     type: command
     dependsOn: [agent]

@@ -1,8 +1,11 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 import { compileWorkflowFromSnapshot } from "../application/workflow-package-admission.js";
+import type { PolicyPackageSnapshot } from "../domain/capability/policy-packages.js";
 import { bindWorkflowCapabilities } from "../domain/capability/workflow-capabilities.js";
 import type { FlowSandboxProfile } from "../domain/config/resolver.js";
+import { assertWorkflowSatisfiesPolicyPackages } from "../domain/policy/policy-package-admission.js";
+import { composePolicyPackages } from "../domain/policy/policy-package-composition.js";
 import { type RunEvent, type RunStatus, reduceRunEvents } from "../domain/run/events.js";
 import type { JsonlAdmissionStore } from "../infrastructure/fs/jsonl-admission-store.js";
 import { JsonlRunStore, RunStoreError } from "../infrastructure/fs/jsonl-run-store.js";
@@ -90,6 +93,7 @@ export interface LocalSupervisorServiceOptions {
   readonly pid: number;
   readonly startedAt: string;
   readonly sandboxProfile: FlowSandboxProfile;
+  readonly policyPackageDigest?: string;
   readonly now?: () => Date;
 }
 
@@ -101,6 +105,7 @@ export class LocalSupervisorService {
   readonly #pid: number;
   readonly #startedAt: string;
   readonly #sandboxProfile: FlowSandboxProfile;
+  readonly #policyPackageDigest: string | undefined;
   readonly #now: () => Date;
   readonly #submissions = new Map<
     string,
@@ -118,6 +123,7 @@ export class LocalSupervisorService {
     this.#pid = options.pid;
     this.#startedAt = options.startedAt;
     this.#sandboxProfile = options.sandboxProfile;
+    this.#policyPackageDigest = options.policyPackageDigest;
     this.#now = options.now ?? (() => new Date());
   }
 
@@ -154,7 +160,19 @@ export class LocalSupervisorService {
         ? {}
         : { capabilitySnapshot: command.capabilitySnapshot }),
     });
-    bindWorkflowCapabilities(workflow, command.capabilitySnapshot);
+    const capabilitySnapshot = bindWorkflowCapabilities(workflow, command.capabilitySnapshot);
+    assertWorkflowSatisfiesPolicyPackages(workflow, capabilitySnapshot);
+    const effectivePolicyPackages = composePolicyPackages(
+      (capabilitySnapshot?.packages ?? []).filter(
+        (item): item is PolicyPackageSnapshot => item.kind === "policy-package",
+      ),
+    );
+    if (effectivePolicyPackages?.digest !== this.#policyPackageDigest) {
+      throw new SupervisorServiceError(
+        "policy_mismatch",
+        "submitted capability snapshot does not reconstruct the supervisor policy",
+      );
+    }
 
     let journal: SubmissionCommandRecord;
     try {

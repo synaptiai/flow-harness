@@ -192,7 +192,7 @@ evaluator or executable.
 | --- | --- | --- | --- | --- |
 | Strict inert manifest and exact identity | Contract/error | `npx vitest run test/unit/capability/policy-packages.test.ts` | Exact bounded manifests parse and freeze; unknown, executable, ambiguous, oversized, duplicate, and mutable input rejects | General-purpose policy languages |
 | Narrowing algebra and deterministic effective identity | Property/security | `npx vitest run test/unit/policy/policy-package-composition.test.ts` | Permutations, duplicates, and grouping produce one result; added layers never widen; contradictions reject | Dynamic attribute-based policy |
-| Immutable snapshot and bundle distribution | Data/recovery | `npx vitest run test/unit/capability/agent-skills.test.ts test/unit/capability/capability-bundles.test.ts` | Policy bytes, identity, trust, provenance, order, and digest round-trip; mutations reject | Freshness or automatic updates |
+| Immutable snapshot and bundle distribution | Data/recovery | `npx vitest run test/unit/capability/policy-packages.test.ts test/unit/capability/capability-bundles.test.ts` | Policy bytes, identity, trust, provenance, order, and digest round-trip; mutations reject | Freshness or automatic updates |
 | Safe local and installed catalog | Integration/security | `npx vitest run test/unit/capability/local-policy-packages.test.ts test/unit/capability/installed-capability-catalog.test.ts` | Exact versions snapshot; unsafe entries, collisions, missing versions, and source drift fail without execution | Remote discovery |
 | Operator and project selection | Config/security | `npx vitest run test/unit/config/resolver.test.ts test/integration/config/project-config.test.ts` | Required and added references compose canonically; projects cannot remove requirements; no-selection digest stays exact | Workflow-selected policy |
 | Pre-mutation workflow enforcement | Behavioral/error | `npx vitest run test/unit/policy/policy-package-admission.test.ts test/integration/cli/policy-packages.test.ts` | Every authority family accepts admitted values and rejects a single-leaf contradiction before run/provider/executor mutation | New enforcement engines |
@@ -208,14 +208,14 @@ negative evidence, platform skips, untested paths, and any gap between local and
 
 Local verification on 2026-08-15 produced the following evidence:
 
-- The Issue #82 selector passed all 180 tests in 16 files. It covered manifest parsing, algebra,
-  config, local and installed catalogs, admission, CLI, replay, distribution, and the detached
-  worker.
+- The expanded Issue #82 review selector passed all 239 tests in 18 files. It covered manifest
+  parsing, algebra, config, local and installed catalogs, admission, CLI, supervisor identity,
+  replay, distribution, and the detached worker.
 
-- The memory-bounded full coverage suite passed 3,099 tests in 227 files. Four tests and one file
+- The memory-bounded full coverage suite passed 3,112 tests in 227 files. Four tests and one file
   used their declared skip conditions.
 
-- Serial coverage passed with 82.73% statements, 76.66% branches, 89.34% functions, and 82.84%
+- Serial coverage passed with 82.79% statements, 76.75% branches, 89.35% functions, and 82.91%
   lines. The policy domain measured 98.33% statements and 94.03% branches.
 
 - Whole-tree Biome formatting and lint, type checking, the production build, changed-document

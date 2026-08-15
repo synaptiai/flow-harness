@@ -17,7 +17,10 @@ import {
   snapshotSelectedAgentSkills,
 } from "../../../src/infrastructure/fs/local-agent-skill-catalog.js";
 import { LocalCapabilityPackageStore } from "../../../src/infrastructure/fs/local-capability-package-store.js";
-import { snapshotSelectedPolicyPackages } from "../../../src/infrastructure/fs/local-policy-package-catalog.js";
+import {
+  PolicyPackageCatalogError,
+  snapshotSelectedPolicyPackages,
+} from "../../../src/infrastructure/fs/local-policy-package-catalog.js";
 import { snapshotSelectedToolPackages } from "../../../src/infrastructure/fs/local-tool-package-catalog.js";
 import { snapshotSelectedVerifierPackages } from "../../../src/infrastructure/fs/local-verifier-package-catalog.js";
 import {
@@ -35,6 +38,45 @@ afterEach(async () => {
 });
 
 describe("installed project capability catalog", () => {
+  it.each(["lock", "bundle"] as const)(
+    "stops installed-bundle verification when the %s read is cancelled",
+    async (boundary) => {
+      const project = await projectDirectory();
+      const created = createCapabilityBundleSource({
+        name: "cancelled-suite",
+        version: "1.0.0",
+        description: "Cancellation fixture.",
+        packages: [{ kind: "policy-package", manifest: Buffer.from(policyManifest()) }],
+      });
+      const digest = created.bundle.digest.slice("sha256:".length);
+      await new LocalCapabilityPackageStore(project).install({
+        source: "https://packages.example.test/cancelled-suite-1.0.0.flowpkg",
+        expectedSha256: digest,
+        content: created.content,
+      });
+      const controller = new AbortController();
+      const reason = new Error("cancel installed policy discovery");
+
+      const lockPath = join(project, ".flow", "packages.lock.json");
+      const blobPath = join(project, ".flow", "packages", "sha256", `${digest}.flowpkg`);
+      const cancelRead = async () => {
+        controller.abort(reason);
+        await rm(boundary === "lock" ? lockPath : blobPath);
+      };
+
+      await expect(
+        discoverProjectCapabilityCatalogs(project, {
+          signal: controller.signal,
+          capabilityPackageStoreHooks: {
+            ...(boundary === "lock"
+              ? { beforeVerifyLockRead: cancelRead }
+              : { beforeVerifyBundleRead: cancelRead }),
+          },
+        }),
+      ).rejects.toBe(reason);
+    },
+  );
+
   it("composes every installed package ABI with portable bundle provenance", async () => {
     const project = await projectDirectory();
     const skill = Buffer.from(`---
@@ -242,6 +284,29 @@ Review.
     await expect(discoverProjectCapabilityCatalogs(project)).rejects.toSatisfy(
       (error: unknown) =>
         error instanceof WorkflowPackageCatalogError && error.code === "duplicate_package",
+    );
+  });
+
+  it("rejects a local and installed policy package name collision", async () => {
+    const project = await projectDirectory();
+    const created = createCapabilityBundleSource({
+      name: "policy-suite",
+      version: "1.0.0",
+      description: "Policy capabilities.",
+      packages: [{ kind: "policy-package", manifest: Buffer.from(policyManifest()) }],
+    });
+    await new LocalCapabilityPackageStore(project).install({
+      source: "https://packages.example.test/policy-suite-1.0.0.flowpkg",
+      expectedSha256: created.bundle.digest.slice("sha256:".length),
+      content: created.content,
+    });
+    const localDirectory = join(project, ".flow", "policies", "restricted-review");
+    await mkdir(localDirectory, { recursive: true });
+    await writeFile(join(localDirectory, "POLICY.yaml"), policyManifest());
+
+    await expect(discoverProjectCapabilityCatalogs(project)).rejects.toSatisfy(
+      (error: unknown) =>
+        error instanceof PolicyPackageCatalogError && error.code === "duplicate_package",
     );
   });
 

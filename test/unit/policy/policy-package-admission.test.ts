@@ -33,6 +33,11 @@ describe("policy package workflow admission", () => {
       fieldPath: "nodes.agent.agent.model",
     },
     {
+      name: "agent model provider",
+      mutate: () => workflowFixture([agentNode({ provider: "forbidden", tools: ["read"] })]),
+      fieldPath: "nodes.agent.agent.model",
+    },
+    {
       name: "model verifier",
       mutate: () =>
         workflowFixture([
@@ -72,6 +77,15 @@ describe("policy package workflow admission", () => {
       snapshot: () =>
         policySnapshot(
           "tools:\n  allowed: [exec, read]\n  allowedPermissions: [filesystem.read, process.execute]\ncommands:\n  requireApproval: true\n",
+        ),
+    },
+    {
+      name: "packaged command approval",
+      mutate: () => workflowFixture([packagedToolAgent(false)]),
+      fieldPath: "nodes.agent.agent.toolApproval",
+      snapshot: () =>
+        combinedToolPolicySnapshot(
+          "tools:\n  allowed: [create_project_report]\n  allowedPermissions: [process.execute]\ncommands:\n  requireApproval: true\n",
         ),
     },
     {
@@ -206,6 +220,7 @@ function workflowFixture(
 
 function agentNode(input: {
   readonly model?: string;
+  readonly provider?: string;
   readonly tools: CompiledAgentNode["agent"]["tools"];
   readonly approval?: boolean;
 }): CompiledAgentNode {
@@ -215,7 +230,7 @@ function agentNode(input: {
     dependsOn: [],
     agent: {
       prompt: "Review the project.",
-      model: { provider: "test", id: input.model ?? "allowed", thinking: "off" },
+      model: { provider: input.provider ?? "test", id: input.model ?? "allowed", thinking: "off" },
       tools: input.tools,
       skills: [],
       toolPackages: [],
@@ -237,11 +252,11 @@ function commandNode(input: { readonly approval: boolean }): CompiledCommandNode
   };
 }
 
-function packagedToolAgent(): CompiledAgentNode {
+function packagedToolAgent(approval = true): CompiledAgentNode {
   return {
-    ...agentNode({ tools: [], approval: true }),
+    ...agentNode({ tools: [], approval }),
     agent: {
-      ...agentNode({ tools: [], approval: true }).agent,
+      ...agentNode({ tools: [], approval }).agent,
       toolPackages: [{ name: "project-report", version: "1.2.3" }],
     },
   };

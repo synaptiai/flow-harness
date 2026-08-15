@@ -8,6 +8,8 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { createCapabilitySnapshot } from "../../../src/domain/capability/agent-skills.js";
+import type { PolicyPackageSnapshotInput } from "../../../src/domain/capability/policy-packages.js";
 import {
   calculateFlowPolicyDigest,
   FLOW_CONFIG_API_VERSION,
@@ -302,7 +304,7 @@ describe("local supervisor daemon", () => {
     }
   }, 15_000);
 
-  it("passes the effective sandbox profile to a detached supervisor", async () => {
+  it("passes the effective sandbox profile and policy package digest to a detached supervisor", async () => {
     const { directory, store } = await createStore();
     const argumentsPath = join(directory, "supervisor-arguments.json");
     const fixturePath = join(directory, "record-supervisor-arguments.cjs");
@@ -311,7 +313,14 @@ describe("local supervisor daemon", () => {
       `require("node:fs").writeFileSync(${JSON.stringify(argumentsPath)}, JSON.stringify(process.argv.slice(2))); setInterval(() => {}, 1000);`,
       "utf8",
     );
+    const policyPackages = createCapabilitySnapshot([], [], [], [], [policyPackageInput()]);
+    const selected = policyPackages.packages.find((item) => item.kind === "policy-package");
+    if (selected === undefined) {
+      throw new Error("policy fixture was not captured");
+    }
     const policy = resolveFlowConfig({
+      projectRoot: directory,
+      policyPackages,
       operator: {
         path: "/operator/config.yaml",
         config: parseOperatorConfig(
@@ -319,6 +328,11 @@ describe("local supervisor daemon", () => {
             apiVersion: FLOW_CONFIG_API_VERSION,
             kind: "FlowOperatorConfig",
             sandbox: { profile: "container" },
+            policies: {
+              required: [
+                { name: selected.name, version: selected.version, digest: selected.digest },
+              ],
+            },
           },
           "/operator/config.yaml",
         ),
@@ -331,8 +345,27 @@ describe("local supervisor daemon", () => {
     const recorded = JSON.parse(await readFile(argumentsPath, "utf8")) as unknown;
 
     expect(recorded).toEqual(expect.arrayContaining(["--sandbox-profile", policy.sandbox.profile]));
+    expect(recorded).toEqual(
+      expect.arrayContaining(["--policy-package-digest", policy.policyPackages?.effective.digest]),
+    );
   }, 15_000);
 });
+
+function policyPackageInput(): PolicyPackageSnapshotInput {
+  return {
+    kind: "policy-package",
+    trust: "project-explicit",
+    provenance: ".flow/policies/daemon-policy",
+    manifest: {
+      content: Buffer.from(`apiVersion: flow.synapti.ai/v1alpha1
+kind: PolicyPackage
+metadata: { name: daemon-policy, version: 1.0.0, description: Daemon policy. }
+spec:
+  tools: { allowed: [read] }
+`),
+    },
+  };
+}
 
 const unavailableLauncher: WorkerLauncher = {
   async launch() {
