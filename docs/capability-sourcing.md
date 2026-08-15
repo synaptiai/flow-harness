@@ -318,7 +318,9 @@ secret input.
 The authenticated registry response is the authority that selects the token realm and service.
 Flow sends those exact challenge values in the token request. It cannot prove that a different
 realm origin has the same operator as the registry origin. The operator must trust both origins
-and should supply a registry-specific credential. Flow does not broaden this delegated authority
+and should supply a registry-specific credential.
+
+Flow does not broaden this delegated authority
 to redirects, artifact endpoints, configuration, or later execution. The returned Bearer token is
 opaque. Flow cannot inspect its embedded grants. It confines that token to the original registry
 and the exact digest-addressed manifest and layer reads.
