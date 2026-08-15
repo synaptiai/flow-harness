@@ -2,7 +2,7 @@
 
 **Issue**: #82
 
-**Branch**: `codex/issue-82-versioned-policy-packages`
+**Branch**: `codex/issue-82-versioned-policy-packages-refresh`
 
 **Started**: 2026-08-13
 
@@ -52,12 +52,11 @@ the user-approved architecture comparison._
   provider, or executor state.
 
 - **Invalid input** — Unknown fields, mutable versions, duplicate identities, contradictory sets,
-  invalid ceilings, unsupported authority families, and attempted widening reject with bounded
-  diagnostics.
+  and invalid ceilings reject. Unsupported authority families and attempted widening also reject
+  with bounded diagnostics.
 
-- **Missing context** — A selected package, exact version, digest, project root, workflow model,
-  declared tool, approval setting, sandbox profile, or budget field that cannot be proved rejects
-  before execution.
+- **Missing context** — Any unproved selection context rejects before execution. This includes
+  package identity, project root, model, tool, approval, sandbox, and budget fields.
 
 - **Recovery mismatch** — Recovery and replay use the durable admitted snapshot. Missing, changed,
   reordered, or live-substituted policy evidence rejects rather than falling back to a catalog or
@@ -194,7 +193,7 @@ evaluator or executable.
 | Strict inert manifest and exact identity | Contract/error | `npx vitest run test/unit/capability/policy-packages.test.ts` | Exact bounded manifests parse and freeze; unknown, executable, ambiguous, oversized, duplicate, and mutable input rejects | General-purpose policy languages |
 | Narrowing algebra and deterministic effective identity | Property/security | `npx vitest run test/unit/policy/policy-package-composition.test.ts` | Permutations, duplicates, and grouping produce one result; added layers never widen; contradictions reject | Dynamic attribute-based policy |
 | Immutable snapshot and bundle distribution | Data/recovery | `npx vitest run test/unit/capability/agent-skills.test.ts test/unit/capability/capability-bundles.test.ts` | Policy bytes, identity, trust, provenance, order, and digest round-trip; mutations reject | Freshness or automatic updates |
-| Safe local and installed catalog | Integration/security | `npx vitest run test/unit/capability/local-policy-packages.test.ts` | Exact versions snapshot; unsafe entries, collisions, missing versions, and source drift fail without execution | Remote discovery |
+| Safe local and installed catalog | Integration/security | `npx vitest run test/unit/capability/local-policy-packages.test.ts test/unit/capability/installed-capability-catalog.test.ts` | Exact versions snapshot; unsafe entries, collisions, missing versions, and source drift fail without execution | Remote discovery |
 | Operator and project selection | Config/security | `npx vitest run test/unit/config/resolver.test.ts test/integration/config/project-config.test.ts` | Required and added references compose canonically; projects cannot remove requirements; no-selection digest stays exact | Workflow-selected policy |
 | Pre-mutation workflow enforcement | Behavioral/error | `npx vitest run test/unit/policy/policy-package-admission.test.ts test/integration/cli/policy-packages.test.ts` | Every authority family accepts admitted values and rejects a single-leaf contradiction before run/provider/executor mutation | New enforcement engines |
 | Attached, detached, child, recovery, and replay identity | Recovery/integration | `npx vitest run test/integration/supervisor/worker.test.ts test/unit/run/policy-package-reducer.test.ts test/integration/cli/policy-packages.test.ts` | Exact durable snapshot is reused offline; changed, missing, or live-substituted evidence rejects | Catalog availability after admission |
@@ -207,35 +206,38 @@ negative evidence, platform skips, untested paths, and any gap between local and
 
 ## Verification evidence
 
-Local verification on 2026-08-13 produced the following evidence:
+Local verification on 2026-08-15 produced the following evidence:
 
-- The Issue #82 selector passed 129 tests across manifest parsing, algebra, config, catalogs,
-  admission, CLI, replay, distribution, and the detached worker.
+- The Issue #82 selector passed all 180 tests in 16 files. It covered manifest parsing, algebra,
+  config, local and installed catalogs, admission, CLI, replay, distribution, and the detached
+  worker.
 
-- The memory-bounded full suite passed 2,988 tests in 226 files. Four tests and one file used their
-  declared skip conditions.
+- The memory-bounded full coverage suite passed 3,099 tests in 227 files. Four tests and one file
+  used their declared skip conditions.
 
-- Serial coverage passed with 82.54% statements, 76.42% branches, 89.14% functions, and 82.65%
+- Serial coverage passed with 82.73% statements, 76.66% branches, 89.34% functions, and 82.84%
   lines. The policy domain measured 98.33% statements and 94.03% branches.
 
-- Type checking, the production build, scoped Biome formatting and lint, changed-document prose
-  lint, 31 public-documentation tests, and `git diff --check` passed.
+- Whole-tree Biome formatting and lint, type checking, the production build, changed-document
+  prose lint, public-documentation tests, compiled smoke, and `git diff --check` passed.
 
 - Runtime verification passed 39 tests. Thirty-three tests used declared platform or configuration
   skips. Clean-package verification installed the generated tarball, executed the installed CLI,
   and reached the Prime runtime-preparation boundary.
 
-- The aggregate `npm run check` stopped at its whole-tree formatter because unrelated user-owned
-  `.claude` and `.codex` files and generated `graphify-out` caches are outside canonical formatting.
-  Its product gates were run independently and passed. Those unrelated files are not part of this
-  change.
+- The Prime dependency audit passed for the Node lock and 60 Python packages. The production npm
+  dependency audit reported zero vulnerabilities at the configured low threshold.
 
-- The managed environment denied `npm audit` because that request would disclose the production
-  dependency graph to the public npm advisory endpoint without a separate informed authorization.
-  The audit remains a hosted-CI or explicitly authorized network gate.
+- The managed desktop sandbox denied temporary Unix sockets, temporary home entries, and registry
+  access. Exact reruns with the approved narrow permissions passed. These were environment
+  restrictions, not product failures.
 
 - Graphify rebuilt the repository graph from 445 code files. The graph contains 8,543 nodes and
   19,621 edges. Generated graph artifacts remain uncommitted.
+
+- GitHub CI supplies the pinned hosted platform evidence. It covers Linux x64, Docker 28.3.3,
+  containerd 1.7.27, and runc 1.2.5. Bun and Prime image gates also run there. This macOS host is
+  not an equivalent platform.
 
 ## Primary references
 

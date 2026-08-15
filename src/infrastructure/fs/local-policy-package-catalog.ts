@@ -68,6 +68,10 @@ export interface ProjectPolicyPackageCatalog {
   readonly packages: readonly DiscoveredPolicyPackage[];
 }
 
+export interface PolicyPackageCatalogOptions {
+  readonly signal?: AbortSignal;
+}
+
 export function createInstalledDiscoveredPolicyPackage(input: {
   readonly projectRoot: string;
   readonly bundleDigest: string;
@@ -92,25 +96,41 @@ export function createInstalledDiscoveredPolicyPackage(input: {
 
 export async function discoverProjectPolicyPackages(
   projectRoot: string,
+  options: PolicyPackageCatalogOptions = {},
 ): Promise<ProjectPolicyPackageCatalog> {
-  const canonicalProject = await canonicalDirectory(projectRoot, "Flow project root");
+  throwIfAborted(options.signal);
+  const canonicalProject = await canonicalDirectory(
+    projectRoot,
+    "Flow project root",
+    options.signal,
+  );
   const flowDirectory = join(canonicalProject, ".flow");
-  const flowMetadata = await optionalLstat(flowDirectory);
+  const flowMetadata = await optionalLstat(flowDirectory, options.signal);
   if (flowMetadata === null) {
     return emptyCatalog(canonicalProject, join(flowDirectory, "policies"));
   }
   assertRealDirectory(flowMetadata, flowDirectory);
   const root = join(flowDirectory, "policies");
-  const rootMetadata = await optionalLstat(root);
+  const rootMetadata = await optionalLstat(root, options.signal);
   if (rootMetadata === null) {
     return emptyCatalog(canonicalProject, root);
   }
   assertRealDirectory(rootMetadata, root);
   const canonicalRoot = await realpath(root);
+  throwIfAborted(options.signal);
   assertWithin(canonicalRoot, flowDirectory, "policy package root");
 
   const packages: DiscoveredPolicyPackage[] = [];
-  await scanPackages(canonicalProject, canonicalRoot, canonicalRoot, 0, { entries: 0 }, packages);
+  await scanPackages(
+    canonicalProject,
+    canonicalRoot,
+    canonicalRoot,
+    0,
+    { entries: 0 },
+    packages,
+    options.signal,
+  );
+  throwIfAborted(options.signal);
   packages.sort(compareByName);
   assertPolicyPackageCatalog(packages);
   return deepFreeze({ projectRoot: canonicalProject, root: canonicalRoot, packages });
@@ -119,7 +139,9 @@ export async function discoverProjectPolicyPackages(
 export async function snapshotSelectedPolicyPackages(
   catalog: ProjectPolicyPackageCatalog,
   references: readonly PolicyPackageReference[],
+  options: PolicyPackageCatalogOptions = {},
 ): Promise<PolicyPackageCapabilitySnapshot> {
+  throwIfAborted(options.signal);
   if (references.length === 0) {
     throw new PolicyPackageCatalogError(
       "missing_package",
@@ -140,6 +162,7 @@ export async function snapshotSelectedPolicyPackages(
   for (const reference of [...references].sort((left, right) =>
     compareStrings(left.name, right.name),
   )) {
+    throwIfAborted(options.signal);
     const discovered = byName.get(reference.name);
     if (discovered === undefined) {
       throw new PolicyPackageCatalogError(
@@ -153,8 +176,9 @@ export async function snapshotSelectedPolicyPackages(
         `selected policy package "${reference.name}" requires version "${reference.version}" but discovered "${discovered.version}"`,
       );
     }
-    inputs.push(await snapshotPackage(catalog, discovered));
+    inputs.push(await snapshotPackage(catalog, discovered, options.signal));
   }
+  throwIfAborted(options.signal);
   try {
     return createCapabilitySnapshot([], [], [], [], inputs);
   } catch (error) {
@@ -202,11 +226,13 @@ async function scanPackages(
   depth: number,
   budget: ScanBudget,
   packages: DiscoveredPolicyPackage[],
+  signal: AbortSignal | undefined,
 ): Promise<void> {
+  throwIfAborted(signal);
   if (depth > MAX_DISCOVERY_DEPTH) {
     throw limitError(`policy package discovery exceeds depth ${MAX_DISCOVERY_DEPTH}`);
   }
-  const entries = await readDirectory(directory);
+  const entries = await readDirectory(directory, signal);
   budget.entries += entries.length;
   if (budget.entries > MAX_DISCOVERY_ENTRIES) {
     throw limitError(`policy package discovery exceeds ${MAX_DISCOVERY_ENTRIES} entries`);
@@ -223,10 +249,11 @@ async function scanPackages(
         `policy package "${directory}" must contain only its inert ${MANIFEST_NAME} manifest`,
       );
     }
-    packages.push(await readDiscoveredPackage(projectRoot, catalogRoot, directory));
+    packages.push(await readDiscoveredPackage(projectRoot, catalogRoot, directory, signal));
     return;
   }
   for (const entry of entries) {
+    throwIfAborted(signal);
     const path = join(directory, entry.name);
     if (entry.isSymbolicLink()) {
       throw unsafeError(`policy package discovery refuses symbolic link "${path}"`);
@@ -234,7 +261,7 @@ async function scanPackages(
     if (!entry.isDirectory()) {
       throw unsafeError(`policy package catalog entry "${path}" must be a package directory`);
     }
-    await scanPackages(projectRoot, catalogRoot, path, depth + 1, budget, packages);
+    await scanPackages(projectRoot, catalogRoot, path, depth + 1, budget, packages, signal);
   }
 }
 
@@ -242,9 +269,10 @@ async function readDiscoveredPackage(
   projectRoot: string,
   catalogRoot: string,
   directory: string,
+  signal: AbortSignal | undefined,
 ): Promise<DiscoveredPolicyPackage> {
   const path = join(directory, MANIFEST_NAME);
-  const source = await readRegularFile(path, catalogRoot);
+  const source = await readRegularFile(path, catalogRoot, signal);
   const manifest = parseManifest(source, path);
   if (manifest.metadata.name !== basename(directory)) {
     throw new PolicyPackageCatalogError(
@@ -280,21 +308,24 @@ function discoveredPackage(
 async function snapshotPackage(
   catalog: ProjectPolicyPackageCatalog,
   discovered: DiscoveredPolicyPackage,
+  signal: AbortSignal | undefined,
 ): Promise<PolicyPackageSnapshotInput> {
+  throwIfAborted(signal);
   const installedSource = installedPolicySources.get(discovered);
   if (installedSource !== undefined) {
     const source = Buffer.from(installedSource, "base64");
     assertDiscoveredManifest(discovered, source, `${discovered.directory}/${MANIFEST_NAME}`);
     return snapshotInput(discovered, source);
   }
-  const metadata = await lstatSafe(discovered.directory);
+  const metadata = await lstatSafe(discovered.directory, signal);
   assertRealDirectory(metadata, discovered.directory);
   const canonicalDirectoryPath = await realpath(discovered.directory);
+  throwIfAborted(signal);
   if (canonicalDirectoryPath !== discovered.directory) {
     throw unsafeError(`policy package "${discovered.directory}" changed identity`);
   }
   assertWithin(canonicalDirectoryPath, catalog.root, "policy package");
-  const entries = await readDirectory(canonicalDirectoryPath);
+  const entries = await readDirectory(canonicalDirectoryPath, signal);
   if (
     entries.length !== 1 ||
     entries[0]?.name !== MANIFEST_NAME ||
@@ -307,7 +338,7 @@ async function snapshotPackage(
     );
   }
   const path = join(canonicalDirectoryPath, MANIFEST_NAME);
-  const source = await readRegularFile(path, catalog.root);
+  const source = await readRegularFile(path, catalog.root, signal);
   assertDiscoveredManifest(discovered, source, path);
   return snapshotInput(discovered, source);
 }
@@ -358,8 +389,13 @@ function parseManifest(source: Uint8Array, path: string): PolicyPackageManifest 
   }
 }
 
-async function readRegularFile(path: string, root: string): Promise<Buffer> {
-  const before = await lstatBigintSafe(path);
+async function readRegularFile(
+  path: string,
+  root: string,
+  signal: AbortSignal | undefined,
+): Promise<Buffer> {
+  throwIfAborted(signal);
+  const before = await lstatBigintSafe(path, signal);
   if (before.isSymbolicLink() || !before.isFile()) {
     throw unsafeError(`policy package file "${path}" must be a regular file`);
   }
@@ -369,11 +405,14 @@ async function readRegularFile(path: string, root: string): Promise<Buffer> {
     );
   }
   const canonical = await realpath(path);
+  throwIfAborted(signal);
   assertWithin(canonical, root, "policy package file");
   let handle: FileHandle | undefined;
   try {
     handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    throwIfAborted(signal);
     const opened = await handle.stat({ bigint: true });
+    throwIfAborted(signal);
     if (!opened.isFile() || !sameFileIdentity(before, opened)) {
       throw unsafeError(`policy package file "${path}" changed identity before it was opened`);
     }
@@ -381,8 +420,10 @@ async function readRegularFile(path: string, root: string): Promise<Buffer> {
       handle,
       MAX_POLICY_PACKAGE_MANIFEST_BYTES,
       `policy package manifest "${path}"`,
+      signal,
     );
     const after = await handle.stat({ bigint: true });
+    throwIfAborted(signal);
     if (!sameFileIdentity(opened, after) || after.size !== BigInt(content.byteLength)) {
       throw new PolicyPackageCatalogError(
         "source_changed",
@@ -391,6 +432,7 @@ async function readRegularFile(path: string, root: string): Promise<Buffer> {
     }
     return content;
   } catch (error) {
+    throwIfAborted(signal);
     if (error instanceof PolicyPackageCatalogError) {
       throw error;
     }
@@ -405,11 +447,18 @@ async function readRegularFile(path: string, root: string): Promise<Buffer> {
   }
 }
 
-async function readBounded(handle: FileHandle, maxBytes: number, label: string): Promise<Buffer> {
+async function readBounded(
+  handle: FileHandle,
+  maxBytes: number,
+  label: string,
+  signal: AbortSignal | undefined,
+): Promise<Buffer> {
   const buffer = Buffer.allocUnsafe(maxBytes + 1);
   let offset = 0;
   while (offset < buffer.byteLength) {
+    throwIfAborted(signal);
     const { bytesRead } = await handle.read(buffer, offset, buffer.byteLength - offset, offset);
+    throwIfAborted(signal);
     if (bytesRead === 0) {
       break;
     }
@@ -421,24 +470,35 @@ async function readBounded(handle: FileHandle, maxBytes: number, label: string):
   return buffer.subarray(0, offset);
 }
 
-async function readDirectory(path: string): Promise<Dirent[]> {
+async function readDirectory(path: string, signal: AbortSignal | undefined): Promise<Dirent[]> {
+  throwIfAborted(signal);
   try {
     const entries = await readdir(path, { withFileTypes: true });
+    throwIfAborted(signal);
     return entries.sort((left, right) => compareStrings(left.name, right.name));
   } catch (error) {
+    throwIfAborted(signal);
     throw new PolicyPackageCatalogError("io", `failed to read policy package directory "${path}"`, {
       cause: error,
     });
   }
 }
 
-async function canonicalDirectory(path: string, label: string): Promise<string> {
+async function canonicalDirectory(
+  path: string,
+  label: string,
+  signal: AbortSignal | undefined,
+): Promise<string> {
+  throwIfAborted(signal);
   try {
     const canonical = await realpath(path);
+    throwIfAborted(signal);
     const metadata = await lstat(canonical);
+    throwIfAborted(signal);
     assertRealDirectory(metadata, canonical);
     return canonical;
   } catch (error) {
+    throwIfAborted(signal);
     if (error instanceof PolicyPackageCatalogError) {
       throw error;
     }
@@ -469,10 +529,14 @@ function portableRelative(root: string, path: string): string {
   return value.split(sep).join("/");
 }
 
-async function optionalLstat(path: string): Promise<Stats | null> {
+async function optionalLstat(path: string, signal: AbortSignal | undefined): Promise<Stats | null> {
+  throwIfAborted(signal);
   try {
-    return await lstat(path);
+    const metadata = await lstat(path);
+    throwIfAborted(signal);
+    return metadata;
   } catch (error) {
+    throwIfAborted(signal);
     if (isNodeError(error) && error.code === "ENOENT") {
       return null;
     }
@@ -482,8 +546,8 @@ async function optionalLstat(path: string): Promise<Stats | null> {
   }
 }
 
-async function lstatSafe(path: string): Promise<Stats> {
-  const metadata = await optionalLstat(path);
+async function lstatSafe(path: string, signal: AbortSignal | undefined): Promise<Stats> {
+  const metadata = await optionalLstat(path, signal);
   if (metadata === null) {
     throw new PolicyPackageCatalogError(
       "source_changed",
@@ -493,10 +557,17 @@ async function lstatSafe(path: string): Promise<Stats> {
   return metadata;
 }
 
-async function lstatBigintSafe(path: string): Promise<BigIntStats> {
+async function lstatBigintSafe(
+  path: string,
+  signal: AbortSignal | undefined,
+): Promise<BigIntStats> {
+  throwIfAborted(signal);
   try {
-    return await lstat(path, { bigint: true });
+    const metadata = await lstat(path, { bigint: true });
+    throwIfAborted(signal);
+    return metadata;
   } catch (error) {
+    throwIfAborted(signal);
     if (isNodeError(error) && error.code === "ENOENT") {
       throw new PolicyPackageCatalogError(
         "source_changed",
@@ -567,6 +638,10 @@ function compareStrings(left: string, right: string): number {
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  signal?.throwIfAborted();
 }
 
 function deepFreeze<T>(value: T): T {

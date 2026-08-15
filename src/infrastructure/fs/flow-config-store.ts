@@ -16,6 +16,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 
 import { parseDocument } from "yaml";
 
+import type { PolicyPackageCapabilitySnapshot } from "../../domain/capability/agent-skills.js";
 import {
   type EffectiveFlowConfig,
   FLOW_CONFIG_API_VERSION,
@@ -51,6 +52,11 @@ export interface FlowConfigLocationOptions {
   readonly environment?: Readonly<Pick<NodeJS.ProcessEnv, "XDG_CONFIG_HOME" | "HOME">>;
 }
 
+export interface LoadEffectiveFlowConfigOptions extends FlowConfigLocationOptions {
+  readonly policyPackages?: PolicyPackageCapabilitySnapshot;
+  readonly signal?: AbortSignal;
+}
+
 export interface InitializeFlowProjectOptions {
   readonly replace?: boolean;
 }
@@ -77,12 +83,14 @@ export function resolveOperatorConfigPath(options: {
 }
 
 export async function loadEffectiveFlowConfig(
-  options: FlowConfigLocationOptions = {},
+  options: LoadEffectiveFlowConfigOptions = {},
 ): Promise<EffectiveFlowConfig> {
+  options.signal?.throwIfAborted();
   const cwd = await canonicalDirectory(
     options.cwd ?? process.cwd(),
     "configuration working directory",
   );
+  options.signal?.throwIfAborted();
   const environment = options.environment ?? process.env;
   const xdgConfigHome = options.xdgConfigHome ?? environment.XDG_CONFIG_HOME;
   const homeDirectory = options.homeDirectory ?? environment.HOME;
@@ -94,8 +102,10 @@ export async function loadEffectiveFlowConfig(
     readOptionalConfig(operatorPath),
     discoverProjectConfig(cwd),
   ]);
+  options.signal?.throwIfAborted();
   const projectInput =
     projectLocation === null ? null : await readRequiredConfig(projectLocation.path);
+  options.signal?.throwIfAborted();
   const operator =
     operatorInput === null ? undefined : parseOperatorConfig(operatorInput, operatorPath);
   const project =
@@ -107,15 +117,22 @@ export async function loadEffectiveFlowConfig(
     ...(project?.policies?.additional ?? []),
   ];
   const policyPackages =
-    policyReferences.length === 0 || projectLocation === null
-      ? undefined
-      : await discoverProjectCapabilityCatalogs(projectLocation.projectRoot).then(
-          async (catalogs) =>
-            await snapshotSelectedPolicyPackages(
-              catalogs.policies,
-              policyReferences.map(({ name, version }) => ({ name, version })),
-            ),
-        );
+    options.policyPackages !== undefined
+      ? options.policyPackages
+      : policyReferences.length === 0 || projectLocation === null
+        ? undefined
+        : await discoverProjectCapabilityCatalogs(projectLocation.projectRoot, {
+            ...(options.signal === undefined ? {} : { signal: options.signal }),
+          }).then(
+            async (catalogs) =>
+              await snapshotSelectedPolicyPackages(
+                catalogs.policies,
+                policyReferences.map(({ name, version }) => ({ name, version })),
+                { ...(options.signal === undefined ? {} : { signal: options.signal }) },
+              ),
+          );
+
+  options.signal?.throwIfAborted();
 
   return resolveFlowConfig({
     ...(operator === undefined
@@ -137,6 +154,16 @@ export async function loadEffectiveFlowConfig(
         }),
     ...(policyPackages === undefined ? {} : { policyPackages }),
   });
+}
+
+export async function locateFlowProjectRoot(
+  options: FlowConfigLocationOptions = {},
+): Promise<string | null> {
+  const cwd = await canonicalDirectory(
+    options.cwd ?? process.cwd(),
+    "configuration working directory",
+  );
+  return (await discoverProjectConfig(cwd))?.projectRoot ?? null;
 }
 
 export async function initializeFlowProject(

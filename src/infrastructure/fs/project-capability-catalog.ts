@@ -44,9 +44,15 @@ export interface ProjectCapabilityCatalogs {
   readonly policies: ProjectPolicyPackageCatalog;
 }
 
+export interface ProjectCapabilityCatalogOptions {
+  readonly signal?: AbortSignal;
+}
+
 export async function discoverProjectCapabilityCatalogs(
   projectRoot: string,
+  options: ProjectCapabilityCatalogOptions = {},
 ): Promise<ProjectCapabilityCatalogs> {
+  options.signal?.throwIfAborted();
   const [
     localAgentSkills,
     localVerifiers,
@@ -59,15 +65,17 @@ export async function discoverProjectCapabilityCatalogs(
     discoverProjectVerifierPackages(projectRoot),
     discoverProjectToolPackages(projectRoot),
     discoverProjectWorkflowPackages(projectRoot),
-    discoverProjectPolicyPackages(projectRoot),
+    discoverProjectPolicyPackages(projectRoot, options),
     new LocalCapabilityPackageStore(projectRoot).verify(),
   ]);
+  options.signal?.throwIfAborted();
   const agentSkills = [...localAgentSkills.skills];
   const verifiers = [...localVerifiers.packages];
   const tools = [...localTools.packages];
   const workflows = [...localWorkflows.packages];
   const policies = [...localPolicies.packages];
   for (const installed of installedBundles) {
+    options.signal?.throwIfAborted();
     for (const item of installed.bundle.packages) {
       if (item.kind === "agent-skill") {
         agentSkills.push(
@@ -122,6 +130,7 @@ export async function discoverProjectCapabilityCatalogs(
   assertToolCatalog(tools);
   assertWorkflowPackageCatalog(workflows);
   assertPolicyPackageCatalog(policies);
+  options.signal?.throwIfAborted();
   return deepFreeze({
     agentSkills: {
       ...localAgentSkills,

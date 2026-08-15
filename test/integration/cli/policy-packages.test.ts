@@ -1,11 +1,18 @@
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { NodeExecutor } from "../../../src/application/ports.js";
 import { type CliIo, main } from "../../../src/cli/main.js";
 import { createPolicyPackageSnapshot } from "../../../src/domain/capability/policy-packages.js";
+import { loadEffectiveFlowConfig } from "../../../src/infrastructure/fs/flow-config-store.js";
+import {
+  PolicyPackageCatalogError,
+  type PolicyPackageCatalogErrorCode,
+} from "../../../src/infrastructure/fs/local-policy-package-catalog.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -101,6 +108,146 @@ describe("policy package CLI", () => {
     ).toBe(2);
     expect(output.stderr.join("\n")).toMatch(/--version <exact>/i);
   });
+
+  it("resumes from durable policy bytes after the live catalog disappears", async () => {
+    const project = await projectFixture();
+    const workflowPath = join(project, "offline-policy.workflow.yaml");
+    await writeFile(workflowPath, workflowSource("read"), "utf8");
+    const executor = successfulExecutor();
+    const runOutput = captureIo();
+    const resumeOutput = captureIo();
+
+    expect(
+      await main(["run", workflowPath, "--run-id", "offline-policy"], runOutput.io, {
+        cwd: project,
+        executor,
+      }),
+      runOutput.stderr.join("\n"),
+    ).toBe(0);
+    await rm(join(project, ".flow", "policies"), { recursive: true });
+
+    expect(
+      await main(["resume", workflowPath, "--run-id", "offline-policy"], resumeOutput.io, {
+        cwd: project,
+        executor,
+      }),
+    ).toBe(1);
+    expect(resumeOutput.stderr.join("\n")).toMatch(/terminal_run.*already terminal.*succeeded/i);
+    expect(resumeOutput.stderr.join("\n")).not.toMatch(/missing_package|ENOENT|no such file/i);
+  });
+
+  it("rejects a current policy selection that contradicts durable policy bytes", async () => {
+    const project = await projectFixture();
+    const workflowPath = join(project, "changed-policy.workflow.yaml");
+    await writeFile(workflowPath, workflowSource("read"), "utf8");
+    const executor = successfulExecutor();
+    const runOutput = captureIo();
+    const resumeOutput = captureIo();
+
+    expect(
+      await main(["run", workflowPath, "--run-id", "changed-policy"], runOutput.io, {
+        cwd: project,
+        executor,
+      }),
+      runOutput.stderr.join("\n"),
+    ).toBe(0);
+    await writeFile(
+      join(project, ".flow", "config.yaml"),
+      `apiVersion: flow.synapti.ai/v1alpha1
+kind: FlowProjectConfig
+policies:
+  additional:
+    - name: restricted-review
+      version: 1.2.3
+      digest: "${"0".repeat(64)}"
+`,
+      "utf8",
+    );
+    await rm(join(project, ".flow", "policies"), { recursive: true });
+
+    expect(
+      await main(["resume", workflowPath, "--run-id", "changed-policy"], resumeOutput.io, {
+        cwd: project,
+        executor,
+      }),
+    ).toBe(2);
+    expect(resumeOutput.stderr.join("\n")).toMatch(
+      /invalid_config.*policies\.additional\.0\.digest.*does not match/i,
+    );
+  });
+
+  it("keeps private catalog paths out of public diagnostics", async () => {
+    const project = await projectFixture();
+    const privateCanary = "PRIVATE_POLICY_CATALOG_CANARY";
+    await writeFile(
+      join(project, ".flow", "policies", "restricted-review", privateCanary),
+      "private\n",
+      "utf8",
+    );
+    const output = captureIo();
+
+    expect(await main(["policies", "validate"], output.io, { cwd: project })).toBe(1);
+    expect(output.stderr).toEqual([
+      "unsafe_entry: policy package catalog contains an unsafe entry",
+    ]);
+    expect(output.stderr.join("\n")).not.toContain(privateCanary);
+    expect(output.stderr.join("\n")).not.toContain(project);
+  });
+
+  it("propagates exact cancellation through config and policy catalog discovery", async () => {
+    const project = await projectFixture();
+    const config = await loadEffectiveFlowConfig({ cwd: project });
+    const controller = new AbortController();
+    const reason = new Error("operator cancelled policy inspection");
+    controller.abort(reason);
+    const loadConfig = vi.fn(async (options) => {
+      expect(options?.signal).toBe(controller.signal);
+      return config;
+    });
+    const output = captureIo();
+
+    expect(
+      await main(["policies", "validate"], output.io, {
+        cwd: project,
+        loadConfig,
+        signal: controller.signal,
+      }),
+    ).toBe(1);
+    expect(output.stdout).toEqual([]);
+    expect(output.stderr).toEqual([reason.message]);
+    expect(loadConfig).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["duplicate_package", "policy package catalog contains a duplicate package"],
+    ["invalid_package", "policy package catalog contains an invalid package"],
+    ["io", "policy package catalog inspection failed"],
+    ["limit_exceeded", "policy package catalog exceeds its limits"],
+    ["missing_package", "required policy package is unavailable"],
+    ["source_changed", "policy package source changed during capture"],
+    ["unsafe_entry", "policy package catalog contains an unsafe entry"],
+    ["version_mismatch", "policy package version does not match"],
+  ] satisfies readonly (readonly [PolicyPackageCatalogErrorCode, string])[])(
+    "keeps %s catalog diagnostics value-free",
+    async (code, publicMessage) => {
+      const privateCanary = `PRIVATE_${code.toUpperCase()}_CANARY`;
+      const output = captureIo();
+
+      expect(
+        await main(["policies", "list"], output.io, {
+          cwd: "/unused",
+          loadConfig: async () => {
+            throw new PolicyPackageCatalogError(code, privateCanary, {
+              cause: new Error(privateCanary),
+            });
+          },
+        }),
+      ).toBe(1);
+      expect(output.stdout).toEqual([]);
+      expect(output.stderr).toEqual([`${code}: ${publicMessage}`]);
+      expect(output.stderr.join("\n")).not.toContain(privateCanary);
+    },
+  );
 });
 
 async function projectFixture(): Promise<string> {
@@ -179,5 +326,28 @@ function captureIo(): { readonly io: CliIo; readonly stdout: string[]; readonly 
       stdout: (text) => stdout.push(text),
       stderr: (text) => stderr.push(text),
     },
+  };
+}
+
+function successfulExecutor(): NodeExecutor {
+  return {
+    execute: vi.fn(async (node) => ({
+      status: "succeeded" as const,
+      evidence: {
+        kind: "command" as const,
+        executable: node.type === "command" ? node.command.executable : "/usr/bin/true",
+        args: node.type === "command" ? node.command.args : [],
+        exitCode: 0,
+        signal: null,
+        stdout: "",
+        stderr: "",
+        stdoutHash: createHash("sha256").update("").digest("hex"),
+        stderrHash: createHash("sha256").update("").digest("hex"),
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        timedOut: false,
+        durationMs: 1,
+      },
+    })),
   };
 }
