@@ -48,6 +48,29 @@ credential input or repeat registry authentication.
 The same rule applies inside a child ledger, which may carry the parent snapshot but can bind only
 its own compiled selections.
 
+Signed metadata candidates below `.flow/packages.metadata.candidates/sha256/` are inert review
+state. Recovery, resume, replay, workers, and child runs never read them. A failed check before the
+candidate rename leaves no candidate.
+
+A late observation failure may leave a valid unreferenced candidate after its durable commit.
+Repeat the exact check or inspect the candidate list. A
+`capability_metadata_candidate_store_failed` result during candidate settlement means visibility
+or directory durability could not be confirmed. Inspect the exact digest and candidate list before
+retrying. Do not infer activation.
+
+Candidate-store operations fail closed when `.flow/packages.metadata.check.lock` already exists.
+Flow does not infer that a recorded process is dead and does not remove the lock automatically.
+Confirm that no metadata check, list, inspect, activation, or removal operation owns the lock before
+you remove that exact file. Flow does not delete crash debris automatically. Inspect and remove only
+the exact `.flow/.packages.metadata.candidate.pending` directory or
+`.flow/.packages.metadata.check.pending` file after the same ownership check. Candidate-store
+commands fail closed while either path exists.
+
+Activation reopens and re-verifies the candidate and then uses the existing active-metadata
+mutation owner. Handle an activation `commit_uncertain` outcome like explicit local metadata
+refresh. Inspect active metadata before retrying. Reconcile its exact version, digest, and signer
+policy. Candidate removal never repairs, rolls back, or changes active metadata.
+
 For a workflow package, resume accepts `workflow:<name>@<exact-version>` and reconstructs the root
 and every transitive packaged child from the durable snapshot before claiming the run. It verifies
 manifest/source hashes, package digest, compiled source-package identity, run-start requirements,

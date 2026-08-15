@@ -149,10 +149,17 @@ payloads. The signed-OCI suite separately proves publisher identity.
 The capability-metadata suite proves strict canonical metadata and exact offline signature input.
 It proves local-clock expiry, revocation, exact target binding, and monotonic rollback refusal. It
 also proves atomic publication, shared mutation ownership, an authenticated empty deny-all target
-set, remediation, and immutable attached, detached, child, recovery, and replay snapshots.
+set, remediation, and immutable admitted snapshots.
 
-The suite does not claim a trustworthy host clock. It does not claim discovery, delegation,
-background refresh, automatic package updates, or online trust-root refresh.
+The signed-channel selectors prove canonical public HTTPS admission, DNS pinning, redirect refusal,
+and one total deadline. They prove exact media type and envelope bounds. They also prove candidate
+identity, capacity, tamper checks, explicit review, and fresh activation. No check mutates a package
+or run. The CLI composition test spans check, list, inspect, inactive-state proof, activation,
+removal, and retained active state across separate invocations.
+
+The suite does not claim a trustworthy host clock. It does not claim delegation or private channel
+credentials. It also does not claim background polling, automatic activation, automatic package
+updates, or online trust-root refresh.
 
 Validating `examples/agent-command-approval.workflow.yaml` is credential-free. Running it requires
 a configured model provider and a second local client to approve or deny each exact `flow_exec`

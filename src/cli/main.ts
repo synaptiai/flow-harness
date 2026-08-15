@@ -9,6 +9,20 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import {
+  activateCapabilityMetadataCandidate,
+  CapabilityMetadataActivationError,
+} from "../application/activate-capability-metadata-candidate.js";
+import { CapabilityMetadataCandidateError } from "../application/capability-metadata-candidate.js";
+import { CapabilityMetadataCandidateStoreError } from "../application/capability-metadata-candidate-store.js";
+import {
+  type CapabilityMetadataChannel,
+  CapabilityMetadataChannelError,
+} from "../application/capability-metadata-channel.js";
+import {
+  CapabilityMetadataCheckError,
+  createCapabilityMetadataChannelChecker,
+} from "../application/check-capability-metadata-channel.js";
+import {
   ApprovalDecisionError,
   decideApproval,
   trySubmitAgentCommandApprovalDecision,
@@ -40,6 +54,7 @@ import {
 } from "../application/prepare-prompt-activation.js";
 import { runEvaluationTrials } from "../application/run-evaluation.js";
 import { RunRecoveryError, resumeWorkflow, runWorkflow } from "../application/run-workflow.js";
+import { createSignedCapabilityMetadataVerifier } from "../application/verify-signed-capability-metadata.js";
 import {
   admitWorkflowPackages,
   compileWorkflowFromSnapshot,
@@ -72,6 +87,7 @@ import {
   MAX_CAPABILITY_METADATA_BYTES,
 } from "../domain/capability/capability-metadata.js";
 import { MAX_SIGSTORE_BUNDLE_BYTES } from "../domain/capability/oci-capability-artifacts.js";
+import { SignedCapabilityMetadataEnvelopeError } from "../domain/capability/signed-capability-metadata-envelope.js";
 import {
   OfflineSigstoreCapabilityVerifier,
   SigstoreCapabilityVerificationError,
@@ -141,6 +157,7 @@ import {
   type ProjectAgentSkillCatalog,
   snapshotSelectedAgentSkills,
 } from "../infrastructure/fs/local-agent-skill-catalog.js";
+import { LocalCapabilityMetadataCandidateStore } from "../infrastructure/fs/local-capability-metadata-candidate-store.js";
 import {
   CapabilityPackageStoreError,
   LocalCapabilityPackageStore,
@@ -198,6 +215,7 @@ import {
 import { discoverProjectCapabilityCatalogs } from "../infrastructure/fs/project-capability-catalog.js";
 import {
   createProductionCapabilityBundleFetcher,
+  createProductionCapabilityMetadataChannel,
   createProductionOciCapabilityRegistry,
 } from "../infrastructure/http/node-https-capability-bundle-transport.js";
 import {
@@ -260,6 +278,11 @@ Usage:
   flow packages pack <source-directory> --output <bundle.flowpkg>
   flow packages metadata refresh <metadata.json> --sigstore-bundle <bundle.json> --certificate-issuer <https-url> --certificate-identity <exact>
   flow packages metadata inspect
+  flow packages metadata check <https-channel-url> --certificate-issuer <https-url> --certificate-identity <exact>
+  flow packages metadata candidates list
+  flow packages metadata candidate inspect <sha256:digest>
+  flow packages metadata candidate remove <sha256:digest>
+  flow packages metadata activate <sha256:digest> --certificate-issuer <https-url> --certificate-identity <exact>
   flow packages list
   flow packages inspect <name> --version <exact>
   flow packages verify
@@ -348,6 +371,7 @@ export interface CliDependencies {
   ) => Promise<InitializedFlowProject>;
   readonly loadConfig: (options?: LoadEffectiveFlowConfigOptions) => Promise<EffectiveFlowConfig>;
   readonly capabilityBundleFetcher: CapabilityBundleFetcher;
+  readonly capabilityMetadataChannel: CapabilityMetadataChannel;
   readonly ociCapabilityRegistry: StrictOciCapabilityRegistry;
   readonly sigstoreCapabilityVerifier: SigstoreCapabilityVerifier;
   readonly readRegistrySecret: (signal: AbortSignal) => Promise<Buffer>;
@@ -465,10 +489,16 @@ export async function main(
     }
     if (
       error instanceof CapabilityBundleFetchError ||
+      error instanceof CapabilityMetadataActivationError ||
+      error instanceof CapabilityMetadataCandidateError ||
+      error instanceof CapabilityMetadataCandidateStoreError ||
+      error instanceof CapabilityMetadataChannelError ||
+      error instanceof CapabilityMetadataCheckError ||
       error instanceof CapabilityMetadataError ||
       error instanceof CapabilityPackageStoreError ||
       error instanceof OciCapabilityRegistryError ||
       error instanceof SigstoreCapabilityVerificationError ||
+      error instanceof SignedCapabilityMetadataEnvelopeError ||
       error instanceof CapabilityBundlePackError
     ) {
       io.stderr(`${error.code}: ${error.message}`);
@@ -1010,11 +1040,13 @@ async function packagesCommand(
   io: CliIo,
   overrides: Partial<CliDependencies>,
 ): Promise<number> {
-  const usernameOccurrences = args.filter(
-    (argument) => argument === "--username" || argument.startsWith("--username="),
-  ).length;
-  if (usernameOccurrences > 1) {
-    throw new CliUsageError("--username may be specified only once");
+  for (const option of ["username", "certificate-issuer", "certificate-identity"] as const) {
+    const occurrences = args.filter(
+      (argument) => argument === `--${option}` || argument.startsWith(`--${option}=`),
+    ).length;
+    if (occurrences > 1) {
+      throw new CliUsageError(`--${option} may be specified only once`);
+    }
   }
   const passwordInput = extractBooleanFlag(args, "--password-stdin");
   const { positionals, values } = parseCommandArgs(passwordInput.args, {
@@ -1102,10 +1134,52 @@ async function packagesCommand(
       values.sha256 === undefined &&
       hasNoSigstoreBundle &&
       hasNoCredentials &&
+      values.version === undefined) ||
+    (subcommand === "metadata" &&
+      positionals[1] === "check" &&
+      positionals.length === 3 &&
+      values["certificate-identity"] !== undefined &&
+      values["certificate-issuer"] !== undefined &&
+      values.output === undefined &&
+      values.sha256 === undefined &&
+      hasNoSigstoreBundle &&
+      hasNoCredentials &&
+      values.version === undefined) ||
+    (subcommand === "metadata" &&
+      positionals[1] === "candidates" &&
+      positionals[2] === "list" &&
+      positionals.length === 3 &&
+      values["certificate-identity"] === undefined &&
+      values["certificate-issuer"] === undefined &&
+      values.output === undefined &&
+      values.sha256 === undefined &&
+      hasNoSigstoreBundle &&
+      hasNoCredentials &&
+      values.version === undefined) ||
+    (subcommand === "metadata" &&
+      positionals[1] === "candidate" &&
+      (positionals[2] === "inspect" || positionals[2] === "remove") &&
+      positionals.length === 4 &&
+      values["certificate-identity"] === undefined &&
+      values["certificate-issuer"] === undefined &&
+      values.output === undefined &&
+      values.sha256 === undefined &&
+      hasNoSigstoreBundle &&
+      hasNoCredentials &&
+      values.version === undefined) ||
+    (subcommand === "metadata" &&
+      positionals[1] === "activate" &&
+      positionals.length === 3 &&
+      values["certificate-identity"] !== undefined &&
+      values["certificate-issuer"] !== undefined &&
+      values.output === undefined &&
+      values.sha256 === undefined &&
+      hasNoSigstoreBundle &&
+      hasNoCredentials &&
       values.version === undefined);
   if (!valid) {
     throw new CliUsageError(
-      "packages requires pack, install, install-oci, metadata refresh, metadata inspect, list, inspect, verify, or remove with the documented exact arguments",
+      "packages requires pack, install, install-oci, metadata refresh, metadata inspect, metadata check, metadata candidates list, metadata candidate inspect/remove, metadata activate, list, inspect, verify, or remove with the documented exact arguments",
     );
   }
   const dependencies = configDependenciesFrom(overrides);
@@ -1146,9 +1220,112 @@ async function packagesCommand(
   }
   const store = new LocalCapabilityPackageStore(config.projectRoot);
   if (subcommand === "metadata") {
+    const sigstoreVerifier =
+      overrides.sigstoreCapabilityVerifier ??
+      new OfflineSigstoreCapabilityVerifier(createSigstorePublicGoodTrustedRoot());
+    const candidateStore = new LocalCapabilityMetadataCandidateStore(
+      config.projectRoot,
+      sigstoreVerifier,
+    );
     if (positionals[1] === "inspect") {
       io.stdout(
         JSON.stringify({ metadata: await store.inspectMetadata(overrides.signal) }, null, 2),
+      );
+      return 0;
+    }
+    if (positionals[1] === "candidates") {
+      io.stdout(
+        JSON.stringify({ candidates: await candidateStore.list(overrides.signal) }, null, 2),
+      );
+      return 0;
+    }
+    if (positionals[1] === "candidate") {
+      const action = positionals[2];
+      const candidateDigest = positionals[3];
+      if (candidateDigest === undefined || (action !== "inspect" && action !== "remove")) {
+        throw new CliUsageError(
+          "packages metadata candidate requires inspect or remove <sha256:digest>",
+        );
+      }
+      if (action === "inspect") {
+        const stored = await candidateStore.read(candidateDigest, overrides.signal);
+        io.stdout(JSON.stringify({ candidate: stored.candidate }, null, 2));
+        return 0;
+      }
+      await candidateStore.remove(candidateDigest, overrides.signal);
+      io.stdout(JSON.stringify({ status: "removed", candidateDigest }, null, 2));
+      return 0;
+    }
+    if (positionals[1] === "check") {
+      const channel = positionals[2];
+      const certificateIssuer = values["certificate-issuer"];
+      const certificateIdentity = values["certificate-identity"];
+      if (
+        channel === undefined ||
+        certificateIssuer === undefined ||
+        certificateIdentity === undefined
+      ) {
+        throw new CliUsageError(
+          "packages metadata check requires <https-channel-url> --certificate-issuer <https-url> --certificate-identity <exact>",
+        );
+      }
+      const verifier = createSignedCapabilityMetadataVerifier(sigstoreVerifier);
+      const checked = await createCapabilityMetadataChannelChecker({
+        channel: overrides.capabilityMetadataChannel ?? createProductionCapabilityMetadataChannel(),
+        verifier,
+        activeMetadata: store,
+        candidates: candidateStore,
+        now: () => new Date(),
+      }).check({
+        channel,
+        certificateIssuer,
+        certificateIdentity,
+        ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
+      });
+      io.stdout(
+        JSON.stringify(
+          {
+            status: checked.status,
+          },
+          null,
+          2,
+        ),
+      );
+      return 0;
+    }
+    if (positionals[1] === "activate") {
+      const candidateDigest = positionals[2];
+      const certificateIssuer = values["certificate-issuer"];
+      const certificateIdentity = values["certificate-identity"];
+      if (
+        candidateDigest === undefined ||
+        certificateIssuer === undefined ||
+        certificateIdentity === undefined
+      ) {
+        throw new CliUsageError(
+          "packages metadata activate requires <sha256:digest> --certificate-issuer <https-url> --certificate-identity <exact>",
+        );
+      }
+      const activated = await activateCapabilityMetadataCandidate(
+        {
+          candidates: candidateStore,
+          verifier: createSignedCapabilityMetadataVerifier(sigstoreVerifier),
+          activeMetadata: store,
+          now: () => new Date(),
+        },
+        {
+          candidateDigest,
+          certificateIssuer,
+          certificateIdentity,
+          ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
+        },
+      );
+      io.stdout(
+        JSON.stringify(
+          { status: activated.status, candidateDigest, metadata: activated.state },
+          null,
+          2,
+        ),
       );
       return 0;
     }
@@ -3092,6 +3269,8 @@ function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies 
     readTextFile: overrides.readTextFile ?? ((path) => readFile(path, "utf8")),
     capabilityBundleFetcher:
       overrides.capabilityBundleFetcher ?? createProductionCapabilityBundleFetcher(),
+    capabilityMetadataChannel:
+      overrides.capabilityMetadataChannel ?? createProductionCapabilityMetadataChannel(),
     ociCapabilityRegistry:
       overrides.ociCapabilityRegistry ?? createProductionOciCapabilityRegistry(),
     sigstoreCapabilityVerifier:

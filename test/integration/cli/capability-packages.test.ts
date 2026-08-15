@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { CapabilityMetadataChannel } from "../../../src/application/capability-metadata-channel.js";
 import { type CliIo, main } from "../../../src/cli/main.js";
 import {
   createCapabilityBundleSource,
@@ -22,6 +23,7 @@ import {
   OCI_IMAGE_MANIFEST_MEDIA_TYPE,
   SIGSTORE_BUNDLE_LAYER_MEDIA_TYPE,
 } from "../../../src/domain/capability/oci-capability-artifacts.js";
+import { encodeSignedCapabilityMetadataEnvelope } from "../../../src/domain/capability/signed-capability-metadata-envelope.js";
 import type { SigstoreCapabilityVerifier } from "../../../src/domain/capability/sigstore-capability-verifier.js";
 import { MAX_VERIFIER_PACKAGE_MANIFEST_BYTES } from "../../../src/domain/capability/verifier-packages.js";
 import {
@@ -52,6 +54,214 @@ afterEach(async () => {
 });
 
 describe("capability package CLI", () => {
+  it("checks, reviews, activates, and removes one durable metadata candidate explicitly", async () => {
+    const project = await projectDirectory();
+    const metadata = Buffer.from(
+      JSON.stringify({
+        apiVersion: "flow.synapti.ai/v1alpha1",
+        kind: "CapabilityMetadata",
+        metadata: {
+          name: "flow-capabilities",
+          version: 1,
+          expiresAt: "2099-01-01T00:00:00.000Z",
+        },
+        spec: { targets: [] },
+      }),
+    );
+    const sigstoreBundle = Buffer.from("PRIVATE_DISCOVERY_SIGSTORE_PROOF");
+    const envelope = encodeSignedCapabilityMetadataEnvelope({ metadata, sigstoreBundle });
+    const publisher = Object.freeze({
+      certificateIssuer: "https://token.actions.githubusercontent.com/",
+      certificateIdentity:
+        "https://github.com/synaptiai/flow-harness/.github/workflows/metadata.yml@refs/heads/main",
+    });
+    const channelUrl = "https://metadata.example.test/flow/capability-metadata.json";
+    const read = vi.fn(async () => envelope);
+    const verify = vi.fn().mockReturnValue(publisher);
+    const cliDependencies = {
+      ...dependencies(project, { fetch: vi.fn() }),
+      capabilityMetadataChannel: { read } satisfies CapabilityMetadataChannel,
+      sigstoreCapabilityVerifier: { verify } satisfies SigstoreCapabilityVerifier,
+    };
+    const checked = captureIo();
+    const listed = captureIo();
+    const inspected = captureIo();
+    const activeBefore = captureIo();
+    const activated = captureIo();
+    const removed = captureIo();
+    const listedAfter = captureIo();
+    const activeAfter = captureIo();
+
+    expect(
+      await main(
+        [
+          "packages",
+          "metadata",
+          "check",
+          channelUrl,
+          "--certificate-issuer",
+          publisher.certificateIssuer,
+          "--certificate-identity",
+          publisher.certificateIdentity,
+        ],
+        checked.io,
+        cliDependencies,
+      ),
+    ).toBe(0);
+    expect(
+      await main(["packages", "metadata", "candidates", "list"], listed.io, cliDependencies),
+    ).toBe(0);
+    const listedResult = JSON.parse(listed.stdout[0] ?? "null") as {
+      candidates: readonly { candidateDigest: string }[];
+    };
+    const candidateDigest = listedResult.candidates[0]?.candidateDigest;
+    expect(candidateDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
+    if (candidateDigest === undefined) {
+      throw new Error("candidate list did not contain the checked candidate");
+    }
+    expect(
+      await main(
+        ["packages", "metadata", "candidate", "inspect", candidateDigest],
+        inspected.io,
+        cliDependencies,
+      ),
+    ).toBe(0);
+    expect(await main(["packages", "metadata", "inspect"], activeBefore.io, cliDependencies)).toBe(
+      0,
+    );
+    expect(
+      await main(
+        [
+          "packages",
+          "metadata",
+          "activate",
+          candidateDigest,
+          "--certificate-issuer",
+          publisher.certificateIssuer,
+          "--certificate-identity",
+          publisher.certificateIdentity,
+        ],
+        activated.io,
+        cliDependencies,
+      ),
+    ).toBe(0);
+    expect(
+      await main(
+        ["packages", "metadata", "candidate", "remove", candidateDigest],
+        removed.io,
+        cliDependencies,
+      ),
+    ).toBe(0);
+    expect(
+      await main(["packages", "metadata", "candidates", "list"], listedAfter.io, cliDependencies),
+    ).toBe(0);
+    expect(await main(["packages", "metadata", "inspect"], activeAfter.io, cliDependencies)).toBe(
+      0,
+    );
+
+    expect(read).toHaveBeenCalledOnce();
+    expect(read).toHaveBeenCalledWith(channelUrl, expect.any(AbortSignal));
+    expect(verify).toHaveBeenCalledTimes(6);
+    expect(JSON.parse(checked.stdout[0] ?? "null")).toEqual({ status: "staged" });
+    expect(JSON.parse(listed.stdout[0] ?? "null")).toMatchObject({
+      candidates: [{ candidateDigest, authority: publisher }],
+    });
+    expect(JSON.parse(inspected.stdout[0] ?? "null")).toMatchObject({
+      candidate: {
+        candidateDigest,
+        authority: publisher,
+        metadata: { version: 1, targets: [] },
+        sigstoreBundle: { digest: sha256Digest(sigstoreBundle) },
+      },
+    });
+    expect(JSON.parse(activeBefore.stdout[0] ?? "null")).toEqual({ metadata: null });
+    expect(JSON.parse(activated.stdout[0] ?? "null")).toMatchObject({
+      status: "established",
+      candidateDigest,
+      metadata: { name: "flow-capabilities", version: 1 },
+    });
+    expect(JSON.parse(removed.stdout[0] ?? "null")).toEqual({
+      status: "removed",
+      candidateDigest,
+    });
+    expect(JSON.parse(listedAfter.stdout[0] ?? "null")).toEqual({ candidates: [] });
+    expect(JSON.parse(activeAfter.stdout[0] ?? "null")).toMatchObject({
+      metadata: { name: "flow-capabilities", version: 1 },
+    });
+    const visible = [checked, listed, inspected, activated, removed]
+      .flatMap((capture) => [...capture.stdout, ...capture.stderr])
+      .join("\n");
+    expect(visible).not.toContain("PRIVATE_DISCOVERY_SIGSTORE_PROOF");
+    await expect(stat(join(project, ".flow", "packages.lock.json"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it.each([
+    [
+      "check without signer policy",
+      ["packages", "metadata", "check", "https://metadata.example.test/channel"],
+    ],
+    [
+      "candidate listing with signer authority",
+      [
+        "packages",
+        "metadata",
+        "candidates",
+        "list",
+        "--certificate-issuer",
+        "https://PRIVATE.example.test/",
+      ],
+    ],
+    [
+      "activation without signer policy",
+      ["packages", "metadata", "activate", `sha256:${"a".repeat(64)}`],
+    ],
+    [
+      "check with repeated issuer authority",
+      [
+        "packages",
+        "metadata",
+        "check",
+        "https://metadata.example.test/channel",
+        "--certificate-issuer",
+        "https://issuer.example.test/",
+        "--certificate-issuer",
+        "https://PRIVATE.example.test/",
+        "--certificate-identity",
+        "publisher",
+      ],
+    ],
+    [
+      "activation with repeated identity authority",
+      [
+        "packages",
+        "metadata",
+        "activate",
+        `sha256:${"a".repeat(64)}`,
+        "--certificate-issuer",
+        "https://issuer.example.test/",
+        "--certificate-identity",
+        "publisher",
+        "--certificate-identity",
+        "PRIVATE_SUBSTITUTE",
+      ],
+    ],
+  ])("rejects %s as usage before channel or store work", async (_label, args) => {
+    const project = await projectDirectory();
+    const read = vi.fn();
+    const output = captureIo();
+
+    expect(
+      await main(args, output.io, {
+        ...dependencies(project, { fetch: vi.fn() }),
+        capabilityMetadataChannel: { read } satisfies CapabilityMetadataChannel,
+      }),
+    ).toBe(2);
+    expect(read).not.toHaveBeenCalled();
+    expect([...output.stdout, ...output.stderr].join("\n")).not.toContain("PRIVATE");
+  });
+
   it("refreshes and inspects signed capability metadata from local files", async () => {
     const project = await projectDirectory();
     const created = bundle();

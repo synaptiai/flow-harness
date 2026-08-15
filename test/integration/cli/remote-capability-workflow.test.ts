@@ -1,10 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-
+import {
+  createCapabilityMetadataCandidate,
+  encodeCapabilityMetadataCandidate,
+} from "../../../src/application/capability-metadata-candidate.js";
 import type {
   NodeExecutionContext,
   NodeExecutionOutcome,
@@ -73,6 +76,60 @@ describe("installed capability workflow", () => {
       metadata: packageMetadata(created.bundle, acquisition, 1, "active"),
       authority: metadataAuthority,
     });
+    const inertCandidateMetadataBytes = Buffer.from(
+      JSON.stringify({
+        apiVersion: "flow.synapti.ai/v1alpha1",
+        kind: "CapabilityMetadata",
+        metadata: {
+          name: "flow-capabilities",
+          version: 999,
+          expiresAt: "2099-01-01T00:00:00.000Z",
+        },
+        spec: {
+          targets: [
+            {
+              name: created.bundle.name,
+              version: created.bundle.version,
+              digest: created.bundle.digest,
+              bytes: created.bundle.bytes,
+              source: acquisition.source,
+              status: "revoked",
+              publisher: acquisition.publisher,
+            },
+          ],
+        },
+      }),
+    );
+    const inertCandidateMetadata = parseCapabilityMetadata(
+      inertCandidateMetadataBytes,
+      new Date("2026-08-15T00:00:00.000Z"),
+    );
+    const inertCandidateCanary = Buffer.from("PRIVATE_INERT_METADATA_CANDIDATE");
+    const inertCandidate = createCapabilityMetadataCandidate({
+      metadata: inertCandidateMetadata,
+      metadataBytes: inertCandidateMetadataBytes,
+      sigstoreBundle: inertCandidateCanary,
+      authority: {
+        ...metadataAuthority,
+        signatureBundleDigest: sha256Digest(inertCandidateCanary),
+      },
+    });
+    const inertCandidateDirectory = join(
+      project,
+      ".flow",
+      "packages.metadata.candidates",
+      "sha256",
+      inertCandidate.candidateDigest.slice("sha256:".length),
+    );
+    await mkdir(inertCandidateDirectory, { recursive: true });
+    await Promise.all([
+      writeFile(
+        join(inertCandidateDirectory, "candidate.json"),
+        encodeCapabilityMetadataCandidate(inertCandidate),
+      ),
+      writeFile(join(inertCandidateDirectory, "metadata.json"), inertCandidateMetadataBytes),
+      writeFile(join(inertCandidateDirectory, "sigstore.bundle.json"), inertCandidateCanary),
+    ]);
     const provenanceRoot = `.flow/packages/sha256/${bundleDigest}`;
     const fetch = vi.fn(async () => {
       throw new Error("workflow and replay must not fetch capability bundles");
@@ -334,6 +391,9 @@ describe("installed capability workflow", () => {
         await new JsonlRunStore(detachedRunsDirectory).read("installed-capability-detached"),
       ),
     ).not.toContain("PRIVATE_");
+    await expect(readFile(join(inertCandidateDirectory, "sigstore.bundle.json"))).resolves.toEqual(
+      inertCandidateCanary,
+    );
   });
 });
 

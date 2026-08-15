@@ -22,9 +22,10 @@ publisher-authenticated OCI acquisition, a content-addressed project store, and 
 are included.
 
 A TUI, executable extensions, automatic package updates, and UI package types remain later work.
-Explicit signed capability metadata provides project-local freshness, revocation, exact-target
-admission, and monotonic rollback refusal. Background refresh, package discovery, online trust-root
-refresh, and delegated metadata roles remain later work.
+Explicit signed capability metadata provides project-local freshness and revocation. One explicit
+public HTTPS check can stage inert signed candidates for review, while activation remains a
+separate explicit command. Background polling, private channels, online trust-root refresh, and
+delegated metadata roles remain later work.
 Opaque Pi session continuation and general failure or fallback
 retries also remain later work. The same is true for broader configurable policy, model network
 tools, and arbitrary evaluator runtimes. Stronger VM or managed sandbox backends also remain later
@@ -45,6 +46,8 @@ Architecture is derived from these flows.
 | Resume | A user reopens an interrupted run | Reconciled state and continuation from the next safe node |
 | Extend | A user installs a capability package | Validated and explicitly enabled skills, tools, workflows, evaluators, or policies |
 | Distribute | A publisher packs inert capability sources and an operator installs exact HTTPS bytes | Reproducible bundle identity, reviewable lock state, and no runtime/provider lock-in |
+| Discover metadata | An operator or external scheduler invokes one explicit signed-channel check | One authenticated inert candidate and a bounded latest-check observation; no package or active-policy mutation |
+| Activate metadata | An operator reviews and activates one exact candidate | Reverified monotonic active metadata for future admission; installed packages and existing run snapshots stay unchanged |
 
 ### Operator flows
 
