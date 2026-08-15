@@ -27,7 +27,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: 22.19.0
+          node-version: 26.7.0
           cache: npm
 
       - name: Set up Bun
@@ -95,7 +95,10 @@ jobs:
 
       - name: Configure the exact Prime runc runtime
         run: |
-          runtime_path="$(readlink --canonicalize "$(command -v runc)")"
+          test "$(dpkg-query --search /usr/bin/runc)" = 'containerd.io: /usr/bin/runc'
+          test "$(/usr/bin/runc --version | sed --quiet '1p')" = 'runc version 1.2.5'
+          test "$(/usr/bin/runc --version | sed --quiet '2p')" = 'commit: v1.2.5-0-g59923ef'
+          runtime_path="$(readlink --canonicalize /usr/bin/runc)"
           sudo mkdir --parents /etc/docker
           if sudo test -f /etc/docker/daemon.json; then
             sudo cat /etc/docker/daemon.json > /tmp/flow-prime-daemon.json
@@ -208,7 +211,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: 22.19.0
+          node-version: 26.7.0
           cache: npm
 
       - name: Install exact dependencies

@@ -42,9 +42,16 @@ describe("installed capability workflow", () => {
     const bundleDigest = created.bundle.digest.slice("sha256:".length);
     const packageStore = new LocalCapabilityPackageStore(project);
     await packageStore.install({
-      source: "https://packages.example.test/review-suite-1.0.0.flowpkg",
+      source: `registry.example.test/flow/review-suite@sha256:${"1".repeat(64)}`,
       expectedSha256: bundleDigest,
       content: created.content,
+      publisher: {
+        kind: "sigstore-keyless-v0.3",
+        certificateIssuer: "https://token.actions.githubusercontent.com/",
+        certificateIdentity:
+          "https://github.com/synaptiai/flow-harness/.github/workflows/release.yml@refs/tags/v1.0.0",
+        signatureBundleDigest: `sha256:${"2".repeat(64)}`,
+      },
     });
     const provenanceRoot = `.flow/packages/sha256/${bundleDigest}`;
     const fetch = vi.fn(async () => {

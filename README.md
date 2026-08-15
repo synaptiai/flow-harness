@@ -33,17 +33,17 @@ through an optional external profile.
 | Bounded detached supervisor, durable FIFO queue, authenticated workers, cancellation, and event replay | Implemented on Linux and macOS |
 | First-class typed verifier nodes | Implemented for sandboxed command and evidence-isolated zero-tool Pi model drivers |
 | Bounded Pi agent nodes with Flow-owned `read`, `ls`, hash-anchored `edit`, and sandboxed argv-only `exec` tools | Implemented; `exec` currently requires Linux PID-namespace containment |
-| Portable Agent Skills packages with progressive disclosure | Implemented for strict local or digest-pinned installed packages, explicit workflow selection, immutable run snapshots, and digest-bound read evidence |
-| Versioned verifier packages | Implemented for strict local or digest-pinned installed command/model manifests, exact workflow selection, immutable run snapshots, and digest-bound verdict evidence |
-| Versioned command tool packages | Implemented for strict local or digest-pinned installed declarative manifests, exact per-agent selection, deterministic argv rendering, and the existing policy/approval/sandbox/journal boundary |
-| Versioned workflow packages | Implemented for strict local or digest-pinned installed inert source manifests, exact packaged roots and children, closed snapshot-only compilation, and durable replay identity |
-| Remote capability bundle distribution | Implemented with deterministic inert `.flowpkg` files, explicit public HTTPS plus SHA-256 installation, a content-addressed project store, deterministic lock, local audit/removal commands, and offline execution/recovery |
+| Portable Agent Skills packages with progressive disclosure | Implemented for strict local or exact installed packages, including publisher-authenticated OCI sources, explicit workflow selection, immutable run snapshots, and digest-bound read evidence |
+| Versioned verifier packages | Implemented for strict local or exact installed command/model manifests, including publisher-authenticated OCI sources, exact workflow selection, immutable run snapshots, and digest-bound verdict evidence |
+| Versioned command tool packages | Implemented for strict local or exact installed declarative manifests, including publisher-authenticated OCI sources, exact per-agent selection, deterministic argv rendering, and the existing policy/approval/sandbox/journal boundary |
+| Versioned workflow packages | Implemented for strict local or exact installed inert source manifests, including publisher-authenticated OCI sources, exact packaged roots and children, closed snapshot-only compilation, and durable replay identity |
+| Remote capability bundle distribution | Implemented with deterministic inert `.flowpkg` files, explicit public HTTPS plus SHA-256 installation, exact publisher-authenticated OCI installation, a content-addressed project store, deterministic lock, local audit/removal commands, and offline execution/recovery |
 | Reproducible harness evaluation | Implemented for paired Flow, native Pi, native OMP, and Prime Agent profiles. Flow records exact identities, fresh workspaces, private checks, evidence, and constrained reports. |
 | Evidence-bound prompt candidates | Flow implements zero-tool model generation from tuning-only evidence, strict prompt overlays, paired evaluation, reviewed activation, durable run snapshots, and rollback |
 | Proof-safe fresh recovery of interrupted agent attempts | Implemented as explicit opt-in for read-only attempts and edit attempts proven not applied |
 | Fail-closed sandboxed command isolation | Flow implements filesystem and network isolation on Linux and macOS. Linux alone provides strict agent-command descendant lifecycle containment |
 | Higher-isolation container command profile | Implemented behind operator-only selection; the pinned Linux x64 engine runtime gate passes |
-| Signed registries, automatic updates, policy/UI packages, and model network tools | Planned |
+| Automatic updates, policy/UI packages, and model network tools | Planned |
 | VM-grade isolation of the host-side agent runtime | Planned |
 
 The executable format is `flow.synapti.ai/v1alpha1`. There is no compatibility or migration
@@ -54,7 +54,7 @@ promise before the first stable release.
 ### Prerequisites
 
 - Git
-- Node.js 22.19 or newer
+- Node.js 26.7 or newer
 - npm with lockfile support
 - Linux or macOS
 
@@ -88,9 +88,11 @@ The Prime runtime identity has these additional requirements:
 - Docker image storage resolves through sysfs to one whole block device for `io.max`.
 - Enough host capacity for the fixed Prime resource policy.
 
-Configure the Docker daemon with the dedicated `flow-prime-runc` runtime name and the exact `runc`
-path. Docker reserves its built-in `runc` name. Replace the path when your system uses a different
-canonical location.
+Configure the Docker daemon with the dedicated `flow-prime-runc` runtime name and the verified
+`runc` path. Docker reserves its built-in `runc` name. The Linux x64 acceptance profile uses
+`/usr/bin/runc` from the exact `containerd.io` 1.7.27-1 package. It verifies `runc` 1.2.5 commit
+`v1.2.5-0-g59923ef` and does not resolve `runc` through `PATH`. A different path, version, or commit
+is outside the verified version one profile.
 
 ```json
 {
@@ -636,7 +638,7 @@ providers, credentials, policy, sandbox permissions, or dynamic graph factories.
 the authority of the ordinary workflow nodes an operator explicitly selects. Template inputs,
 version solving, executable extensions, and policy/UI packages remain unsupported.
 
-### Distribute digest-pinned capability bundles
+### Distribute exact capability bundles
 
 Flow can pack the four existing inert package ABIs into one deterministic strict-JSON `.flowpkg`.
 Bundle sources contain `BUNDLE.json` plus any of the conventional `skills/`, `verifiers/`, `tools/`,
@@ -658,18 +660,39 @@ requested output path; the final file is already visible and a blind retry will 
 node dist/cli/main.js packages install \
   https://packages.example.test/review-suite-1.0.0.flowpkg \
   --sha256 <64-lowercase-hex>
+node dist/cli/main.js packages install-oci \
+  registry.example.test/flow/review-suite@sha256:<64-lowercase-hex> \
+  --certificate-issuer https://token.actions.githubusercontent.com/ \
+  --certificate-identity <exact-certificate-identity>
 node dist/cli/main.js packages list
 node dist/cli/main.js packages inspect review-suite --version 1.0.0
 node dist/cli/main.js packages verify
 node dist/cli/main.js packages remove review-suite --version 1.0.0
 ```
 
-Install is the only network operation. It accepts canonical HTTPS without credentials, query,
-fragment, or redirects; resolves and pins public IP addresses; sends no ambient authentication;
-and applies one deadline and byte ceiling. Flow verifies the exact SHA-256 before parsing, reuses
-the existing package validators, publishes an immutable blob below `.flow/packages/sha256/`, and
-atomically updates `.flow/packages.lock.json` last. Orphan blobs are inactive. Local and installed
-name/tool collisions fail instead of applying precedence.
+The two install commands are the only package network operations. The HTTPS form accepts a
+canonical URL without credentials, query, fragment, or redirects. The OCI form accepts only a
+canonical public registry repository and an exact manifest digest. It does not accept a tag,
+version range, registry discovery result, package-provided reference, or private credential.
+
+The OCI artifact must contain one strict Flow bundle layer and one Sigstore v0.3 verification
+layer in a fixed order. Flow checks the manifest, media types, descriptor sizes, and SHA-256 values
+before it parses or verifies content. It verifies the exact bundle bytes against the supplied
+certificate issuer and exact certificate identity. Verification uses the trusted Sigstore
+public-good root that ships with this Flow release. It requires signed-time, certificate-log, and
+transparency-log evidence. It does not contact a signature service or update trust data.
+
+Registry DNS, anonymous pull-token work, manifest reads, redirects, and layer reads share one
+deadline. Flow pins public IP addresses. It denies unsafe redirects. It sends a bearer token only
+to the original registry and never stores or prints that token. Cross-host blob redirects receive
+no token. All public failures use fixed stages and omit registry bodies, paths, publisher values,
+and parser causes.
+
+Both forms reuse the existing package validators. Flow publishes an immutable blob below
+`.flow/packages/sha256/` and atomically updates `.flow/packages.lock.json` last. A signed lock entry
+records the exact OCI reference, manifest digest, publisher policy, and signature-bundle digest.
+This data is audit evidence, not a later network instruction. Orphan blobs are inactive. Local and
+installed name or tool collisions fail instead of applying precedence.
 
 Upgrades are explicit and are not atomic in v1. Pause new admissions, retain the old bundle URL and
 digest, install a new exact bundle version, then remove the old exact version and run `packages
@@ -685,11 +708,16 @@ exact stale lock manually. A `commit_uncertain` error means the lock-file replac
 completed but durability or cleanup could not be confirmed: inspect `packages list`, run `packages
 verify`, and reconcile the exact installed versions before retrying.
 
-The digest identifies bytes; it does not authenticate a publisher, prove freshness, or prevent
-rollback. Review the source and digest. Installation executes nothing, but a later explicitly
-selected Skill or model rubric can influence a model, and a selected command package retains its
-documented sandboxed command authority. Runs snapshot selected content; detached work, children,
-resume, and replay never fetch a URL or consult the live package lock.
+The HTTPS digest identifies bytes but does not authenticate a publisher. The signed OCI form also
+proves that the admitted publisher signed those bytes. It does not prove that the content is safe
+or correct. It does not provide freshness, revocation, rollback protection, delegated trust, or
+automatic updates. Review the source, digest, publisher policy, and package content. Installation
+executes nothing.
+
+A later selected Skill or model rubric can influence a model. A selected command package retains
+its documented sandboxed command authority. Listing, inspection, verification,
+workflow admission, execution, detached work, child work, resume, and replay use installed bytes.
+They never fetch a URL, contact a registry or signature service, or consult live publisher data.
 
 To exercise the first-class verifier contract without model credentials:
 

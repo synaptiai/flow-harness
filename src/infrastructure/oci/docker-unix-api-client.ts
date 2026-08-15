@@ -1229,11 +1229,68 @@ function dockerStartFailureMessage(response: DockerUnixApiResponse): string {
   if (privateMessage === undefined) {
     return `Docker start returned status ${response.statusCode}`;
   }
+  const hasUnclassifiedMissingObject = privateMessage.includes("no such file or directory");
+  const hasUnclassifiedOpen =
+    hasUnclassifiedMissingObject && /(?:^|: )(?:open|openat|openat2)(?: |:)/u.test(privateMessage);
+  const hasRuncChildInitialization =
+    privateMessage.includes("oci runtime create failed") &&
+    privateMessage.includes("unable to start container process:") &&
+    privateMessage.includes("error during container init:");
   if (
     privateMessage.includes("oci runtime create failed") &&
     privateMessage.includes("fork/exec ")
   ) {
     return "Docker start failed while launching the selected container runtime";
+  }
+  if (hasUnclassifiedMissingObject && privateMessage.includes("failed to write bundle spec:")) {
+    return "Docker start failed while writing the container runtime bundle";
+  }
+  if (
+    hasUnclassifiedMissingObject &&
+    /(?:^|: )open (?:[^:\n]*\/)?config\.json:/u.test(privateMessage)
+  ) {
+    return "Docker start failed while reading the container runtime bundle";
+  }
+  if (
+    hasUnclassifiedOpen &&
+    privateMessage.includes("oci runtime create failed") &&
+    privateMessage.includes("open root handle:")
+  ) {
+    return "Docker start failed while opening the container root filesystem";
+  }
+  if (
+    hasUnclassifiedOpen &&
+    privateMessage.includes("oci runtime create failed") &&
+    privateMessage.includes("open o_path procfd:")
+  ) {
+    return "Docker start failed while opening a container mount target";
+  }
+  if (hasUnclassifiedOpen && hasRuncChildInitialization) {
+    return classifyRuncChildInitializationOpen(privateMessage);
+  }
+  if (
+    hasUnclassifiedOpen &&
+    privateMessage.includes("failed to start shim:") &&
+    privateMessage.includes("open shim log pipe:")
+  ) {
+    return "Docker start failed while opening the container runtime shim log";
+  }
+  if (
+    hasUnclassifiedOpen &&
+    privateMessage.includes("failed to start shim:") &&
+    privateMessage.includes("failed to create temp file:")
+  ) {
+    return "Docker start failed while publishing the container runtime shim address";
+  }
+  if (
+    hasUnclassifiedOpen &&
+    privateMessage.includes("failed to start shim:") &&
+    privateMessage.includes("shim-binary-path")
+  ) {
+    return "Docker start failed while recording the container runtime shim identity";
+  }
+  if (hasUnclassifiedOpen && privateMessage.includes("failed to start shim:")) {
+    return "Docker start failed while opening a container runtime shim startup object";
   }
   if (includesAny(privateMessage, ["io.max", "blkio", "block io"])) {
     return "Docker start failed while applying container block I/O controls";
@@ -1391,8 +1448,38 @@ function dockerStartFailureMessage(response: DockerUnixApiResponse): string {
   if (includesAny(privateMessage, ["permission denied"])) {
     return "Docker start failed while applying the container process policy";
   }
+  if (
+    hasUnclassifiedMissingObject &&
+    /(?:^|: )(?:mkdir|mkdirat|mknod|symlink)(?: |:)/u.test(privateMessage)
+  ) {
+    return "Docker start failed while creating a container runtime object";
+  }
+  if (
+    hasUnclassifiedOpen &&
+    privateMessage.includes("failed to create shim task:") &&
+    privateMessage.includes("oci runtime create failed")
+  ) {
+    return "Docker start failed while opening an OCI runtime create object";
+  }
+  if (hasUnclassifiedOpen && privateMessage.includes("failed to create shim task:")) {
+    return "Docker start failed while opening a container runtime task object";
+  }
+  if (hasUnclassifiedOpen) {
+    return "Docker start failed while opening a container runtime object";
+  }
+  if (
+    hasUnclassifiedMissingObject &&
+    /(?:^|: )(?:stat|lstat|statfs)(?: |:)/u.test(privateMessage)
+  ) {
+    return "Docker start failed while inspecting a container runtime object";
+  }
+  if (hasUnclassifiedMissingObject && /(?:^|: )readlink(?: |:)/u.test(privateMessage)) {
+    return "Docker start failed while resolving a container runtime link";
+  }
+  if (hasUnclassifiedMissingObject && /(?:^|: )(?:chdir|getwd)(?: |:)/u.test(privateMessage)) {
+    return "Docker start failed while resolving the container runtime working directory";
+  }
   const hasUnclassifiedExecution = /(?:^|[^a-z])exec(?:[^a-z]|$)/u.test(privateMessage);
-  const hasUnclassifiedMissingObject = privateMessage.includes("no such file or directory");
   if (hasUnclassifiedExecution && hasUnclassifiedMissingObject) {
     return "Docker start failed while resolving a runtime execution object";
   }
@@ -1413,6 +1500,94 @@ function dockerStartFailureMessage(response: DockerUnixApiResponse): string {
     return "Docker start failed while creating the container runtime task";
   }
   return `Docker start returned status ${response.statusCode}`;
+}
+
+function classifyRuncChildInitializationOpen(privateMessage: string): string {
+  const childInitialization = privateMessage
+    .slice(
+      privateMessage.indexOf("error during container init:") +
+        "error during container init:".length,
+    )
+    .trimStart();
+  const openedObject =
+    /(?:^|: )(?:open|openat|openat2)(?::? )["']?(?<path>\/[^:"'\n]*)(?:["'])?:/u.exec(
+      childInitialization,
+    );
+  const wrapperChain = childInitialization.slice(0, openedObject?.index);
+  const openedPath = openedObject?.groups?.path;
+
+  if (
+    includesAny(wrapperChain, [
+      "error closing exec fds",
+      "open exec fifo ",
+      "unable to mark non-stdio fds as cloexec",
+      "error getting pipe fds",
+    ])
+  ) {
+    return "Docker start failed while setting up container runtime file descriptors";
+  }
+  if (
+    includesAny(wrapperChain, [
+      "error creating device nodes",
+      "error setting up ptmx",
+      "error setting up /dev symlinks",
+      "error reopening /dev/null inside container",
+    ])
+  ) {
+    return "Docker start failed while preparing isolated container devices";
+  }
+  if (wrapperChain.includes("unable to init seccomp")) {
+    return "Docker start failed while applying the container seccomp policy";
+  }
+  if (wrapperChain.includes("unable to setup user")) {
+    return "Docker start failed while applying the container user identity";
+  }
+  if (
+    includesAny(wrapperChain, [
+      "apparmor failed to apply profile",
+      "unable to apply apparmor profile",
+    ])
+  ) {
+    return "Docker start failed while applying the container AppArmor policy";
+  }
+  if (
+    wrapperChain.includes("error preparing rootfs") ||
+    (wrapperChain.includes("error mounting ") && wrapperChain.includes(" to rootfs at ")) ||
+    wrapperChain.includes("error jailing process inside rootfs") ||
+    wrapperChain.includes("can't mask path ") ||
+    (wrapperChain.includes("can't make ") && wrapperChain.includes(" read-only"))
+  ) {
+    return "Docker start failed while applying container filesystem isolation";
+  }
+  if (
+    isRuncObjectWithin(openedPath, "/proc/sys/net/ipv4/ping_group_range") ||
+    isRuncObjectWithin(openedPath, "/proc/sys/net/ipv4/ip_unprivileged_port_start")
+  ) {
+    return "Docker start failed while applying container runtime network defaults";
+  }
+  if (
+    isRuncObjectWithin(openedPath, "/proc/thread-self/fd") ||
+    isRuncObjectWithin(openedPath, "/proc/self/fd")
+  ) {
+    return "Docker start failed while setting up container runtime file descriptors";
+  }
+  if (isRuncObjectWithin(openedPath, "/proc/thread-self/attr/apparmor")) {
+    return "Docker start failed while applying the container AppArmor policy";
+  }
+  if (isRuncObjectWithin(openedPath, "/dev")) {
+    return "Docker start failed while preparing isolated container devices";
+  }
+  if (isRuncObjectWithin(openedPath, "/proc/sys") || isRuncObjectWithin(openedPath, "/sys")) {
+    return "Docker start failed while opening an isolated container kernel object";
+  }
+  if (isRuncObjectWithin(openedPath, "/proc")) {
+    return "Docker start failed while opening an isolated container process object";
+  }
+  return "Docker start failed while opening an isolated container init object";
+}
+
+function isRuncObjectWithin(openedPath: string | undefined, root: string): boolean {
+  return openedPath === root || openedPath?.startsWith(`${root}/`) === true;
 }
 
 function parseDockerErrorMessage(body: string): string | undefined {

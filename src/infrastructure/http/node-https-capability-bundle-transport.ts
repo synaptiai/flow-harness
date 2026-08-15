@@ -1,6 +1,6 @@
 import { Resolver as NodeResolver } from "node:dns/promises";
 import type { ClientRequest, IncomingMessage } from "node:http";
-import { request as nodeRequest, type RequestOptions as HttpsRequestOptions } from "node:https";
+import { type RequestOptions as HttpsRequestOptions, request as nodeRequest } from "node:https";
 import type { LookupFunction } from "node:net";
 
 import {
@@ -10,6 +10,10 @@ import {
   type PinnedHttpsResponse,
   type ResolvedNetworkAddress,
 } from "./strict-capability-bundle-fetcher.js";
+import {
+  createStrictOciCapabilityRegistry,
+  type StrictOciCapabilityRegistry,
+} from "./strict-oci-capability-registry.js";
 
 export interface NodeHttpsDnsResolver {
   readonly resolve4: (hostname: string) => Promise<readonly string[]>;
@@ -104,11 +108,28 @@ export function createNodeHttpsCapabilityBundleTransport(
 }
 
 export function createProductionCapabilityBundleFetcher(): CapabilityBundleFetcher {
-  const transport = createNodeHttpsCapabilityBundleTransport({
+  return createStrictCapabilityBundleFetcher(createProductionNodeHttpsTransport());
+}
+
+export function createProductionOciCapabilityRegistry(): StrictOciCapabilityRegistry {
+  return createNodeHttpsOciCapabilityRegistry(productionNodeHttpsDependencies());
+}
+
+export function createNodeHttpsOciCapabilityRegistry(
+  dependencies: NodeHttpsCapabilityBundleDependencies,
+): StrictOciCapabilityRegistry {
+  return createStrictOciCapabilityRegistry(createNodeHttpsCapabilityBundleTransport(dependencies));
+}
+
+function createProductionNodeHttpsTransport(): NodeHttpsCapabilityBundleTransport {
+  return createNodeHttpsCapabilityBundleTransport(productionNodeHttpsDependencies());
+}
+
+function productionNodeHttpsDependencies(): NodeHttpsCapabilityBundleDependencies {
+  return {
     createResolver: () => new NodeResolver(),
     request: nodeRequest,
-  });
-  return createStrictCapabilityBundleFetcher(transport);
+  };
 }
 
 function collectResolvedAddresses(

@@ -91,7 +91,7 @@ export function createStrictCapabilityBundleFetcher(
           operationSignal,
           options.resolveHostname,
         );
-        const address = requirePublicAddresses(addresses);
+        const address = requirePublicNetworkAddress(addresses);
         response = await awaitFactoryWithSignal(
           () =>
             options.openPinnedResponse({
@@ -203,7 +203,7 @@ async function resolveSourceAddresses(
   return await awaitFactoryWithSignal(() => resolveHostname(hostname, signal), signal);
 }
 
-function requirePublicAddresses(
+export function requirePublicNetworkAddress(
   addresses: readonly ResolvedNetworkAddress[],
 ): ResolvedNetworkAddress {
   if (addresses.length === 0) {

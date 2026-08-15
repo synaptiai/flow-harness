@@ -46,6 +46,21 @@ Sandbox Runtime and its dependency packages retain their own license metadata in
 - Use: direct runtime dependency for Flow-owned custom Pi tool schemas
 - Copied source: none
 
+## Sigstore JavaScript
+
+- Project: [sigstore/sigstore-js](https://github.com/sigstore/sigstore-js).
+- Packages: `@sigstore/verify` 4.1.2, `@sigstore/bundle` 5.0.0, and
+  `@sigstore/protobuf-specs` 0.5.1.
+- License: Apache-2.0.
+- Use: offline signed-bundle verification.
+- Copied source: none.
+
+Flow also embeds one immutable Sigstore public-good trusted-root target from
+[sigstore/root-signing](https://github.com/sigstore/root-signing), commit
+`e2dd69e9013072c308f5dd1800c27a8c2491cca2`, targets version 14. The target is public trust
+material, not executable code. Its recorded SHA-256 is
+`6494e21ea73fa7ee769f85f57d5a3e6a08725eae1e38c755fc3517c9e6bc0b66`.
+
 ## OMP
 
 - Project: [can1357/oh-my-pi](https://github.com/can1357/oh-my-pi)

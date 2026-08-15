@@ -16,12 +16,16 @@ recovery, exclusive local ownership, typed edit reconciliation, proof-safe fresh
 durable budgets, detachable waits, and bounded authenticated local supervision. Gate 5 adds typed
 results and verifiers, replay-safe conditions, joins, concurrency, bounded loops and optimization,
 evidence-bound graph approvals, isolated child workflows, and candidate promotion. Gate 6 adds
-strict local and digest-pinned installed Agent Skills, versioned verifier packages, declarative
-command tool packages, inert versioned workflow source packages, deterministic bundle distribution, a content-addressed project store,
-and immutable capability snapshots. A
-TUI, signed registries, executable extensions, policy/UI package types, opaque Pi session
-continuation, general failure/fallback retries, broader configurable policy, model network tools,
-arbitrary evaluator runtimes, and stronger VM or managed sandbox backends remain later work.
+strict local and exact installed Agent Skills, versioned verifier packages, and declarative command
+tool packages. It also adds inert workflow packages and deterministic bundle distribution. Exact
+publisher-authenticated OCI acquisition, a content-addressed project store, and immutable snapshots
+are included.
+
+A TUI, executable extensions, automatic updates, and policy/UI package types remain later work.
+Opaque Pi session continuation and general failure or fallback
+retries also remain later work. The same is true for broader configurable policy, model network
+tools, and arbitrary evaluator runtimes. Stronger VM or managed sandbox backends also remain later
+work.
 
 ## Target flows
 
