@@ -291,10 +291,11 @@ only fixed Accept and User-Agent headers, shares one deadline across DNS, connec
 work, and stops at the bundle byte limit. Expected SHA-256 is checked over the exact response
 before UTF-8, strict JSON, or package parsing.
 
-`flow packages install-oci <repository@sha256:digest> --certificate-issuer <https-url>
---certificate-identity <exact>` accepts only a canonical public registry host, repository, and
-lowercase SHA-256 manifest digest. It rejects a tag, version range, registry discovery result,
-package-provided reference, IP literal, port, credential, query, and fragment before DNS.
+The `flow packages install-oci` command accepts only a canonical HTTPS registry host with public
+pinned addresses. It also requires one repository and lowercase SHA-256 manifest digest. It rejects
+a tag, version range, registry discovery result, or package-provided reference. It also rejects an
+IP literal, port, query, or fragment before DNS. Private access adds `--username <exact>
+--password-stdin`. These two options must appear together.
 
 The manifest is a strict OCI image manifest with an empty config and exactly two ordered layers.
 The first layer is one strict Flow bundle. The second is one Sigstore v0.3 message-signature bundle.
@@ -308,10 +309,36 @@ public-good trusted root that ships in the Flow package. It requires the admitte
 signed time, certificate-log evidence, and transparency-log inclusion evidence. It performs no
 online trust-root, certificate-authority, transparency-log, or timestamp request.
 
-Registry resolution, bearer challenge, anonymous token request, manifest read, redirect, and layer
-read share one total deadline. The bearer challenge must request the exact repository pull scope.
-The token is memory-only. Flow sends it only to the original registry. A cross-host blob redirect
-receives no token.
+Registry resolution, credential input, bearer challenge, token request, manifest read, redirect,
+and layer read share one total deadline. The bearer challenge must contain one canonical HTTPS
+realm, exact service, and exact `repository:<name>:pull` scope. Flow validates that challenge before
+it invokes a private credential callback. Anonymous installation supplies no callback and reads no
+secret input.
+
+The authenticated registry response is the authority that selects the token realm and service.
+Flow sends those exact challenge values in the token request. It cannot prove that a different
+realm origin has the same operator as the registry origin. The operator must trust both origins
+and should supply a registry-specific credential.
+
+Flow does not broaden this delegated authority
+to redirects, artifact endpoints, configuration, or later execution. The returned Bearer token is
+opaque. Flow cannot inspect its embedded grants. It confines that token to the original registry
+and the exact digest-addressed manifest and layer reads.
+
+The username contains 1 to 256 visible non-space ASCII characters and no colon. Password stdin
+contains one non-empty UTF-8 record of at most 16,384 bytes. Flow removes one terminal LF. It
+rejects NUL, CR, another LF, invalid UTF-8, empty input, and byte 16,385.
+
+Flow sends one RFC 7617 Basic value only to the exact token realm. It requests no offline access.
+It rejects refresh tokens, dual token fields, extra response fields, token redirects, and
+non-success status. The bounded Bearer token is memory-only and goes only to the original registry.
+A cross-host blob redirect receives neither authorization value.
+
+Flow clears its mutable secret and Basic buffers after token settlement. JavaScript and TLS
+implementations can create temporary string copies that Flow cannot overwrite. Flow does not read
+Docker configuration, invoke a credential helper, accept a password argument or environment
+credential, or retain a login session. Public output, fixed errors, package locks, snapshots, and
+run evidence omit the username, realm, credential mode, password, Basic value, and Bearer token.
 
 Redirect targets must use public HTTPS and a pinned public address. Manifest and token redirects
 reject. Public errors use fixed stages. They contain no response body, token, registry path,
@@ -352,12 +379,12 @@ URL, registry, DNS, signature service, or publisher.
 
 This design uses the [OCI descriptor](https://github.com/opencontainers/image-spec/blob/main/descriptor.md)
 principle: verify expected digest and size before consuming content. It supports only the fixed
-Flow artifact contract and anonymous public pulls. It intentionally does not reuse
+Flow artifact contract and exact anonymous or challenge-scoped private pulls. It intentionally does not reuse
 [Pi's npm/Git package manager](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md)
 because Pi packages may install dependencies and execute host extensions. A digest proves exact
 bytes only. The Sigstore bundle authenticates the admitted publisher for those exact bytes. It does
 not prove package safety or correctness. Freshness, revocation, rollback protection, delegation,
-private credentials, and automatic update discovery remain outside this contract. They require a
+credential helpers, federated identity, and automatic update discovery remain outside this contract. They require a
 separate [TUF-like registry metadata layer](https://theupdateframework.github.io/specification/).
 
 ## Coupling rules

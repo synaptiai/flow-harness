@@ -720,6 +720,7 @@ describe("public repository contracts", () => {
     expect(readme).toMatch(/Distribute exact capability bundles/i);
     expect(readme).toContain("packages install");
     expect(readme).toContain("packages install-oci");
+    expect(readme).toContain("--username registry-user --password-stdin");
     expect(readme).toMatch(/HTTPS digest identifies bytes.*does not authenticate a publisher/is);
     expect(readme).toMatch(/signed OCI form.*admitted publisher signed those bytes/is);
     expect(architecture).toMatch(/publisher-authenticated OCI acquisition/is);
@@ -730,19 +731,21 @@ describe("public repository contracts", () => {
     expect(recovery).toMatch(
       /never reads `\.flow\/packages\.lock\.json`.*contacts the recorded source URL/is,
     );
+    expect(recovery).toMatch(/private-registry username.*never part of the lock or run snapshot/is);
     expect(sourcing).toContain(
       "https://github.com/opencontainers/image-spec/blob/main/descriptor.md",
     );
     expect(sourcing).toMatch(/Sigstore v0\.3 message-signature bundle/is);
-    expect(sourcing).toMatch(
-      /token is memory-only.*cross-host blob redirect\s+receives no token/is,
-    );
+    expect(sourcing).toMatch(/validates that challenge before.*private credential callback/is);
+    expect(sourcing).toMatch(/Basic value only to the exact token realm/is);
+    expect(sourcing).toMatch(/Bearer token is memory-only.*cross-host blob redirect/is);
     expect(sourcing).toContain("https://theupdateframework.github.io/specification/");
     expect(roadmap).toMatch(/publisher-authenticated OCI\s+installation are implemented/is);
     expect(security).toMatch(
       /Remote capability bundles contain only.*Agent Skill.*verifier.*command tool.*workflow source ABIs/is,
     );
-    expect(testing).toMatch(/Credential-free registry tests.*strict OCI manifests/is);
+    expect(testing).toMatch(/Registry tests cover.*strict OCI manifests/is);
+    expect(testing).toMatch(/synthetic registry responses.*do not contact a live registry/is);
     expect(contributing).toMatch(/capability-bundle format.*adversarial regression/is);
 
     expect(JSON.parse(bundleSource)).toEqual({

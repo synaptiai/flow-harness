@@ -30,6 +30,7 @@ export type OciCapabilityRegistryStage =
   | "resolve OCI registry"
   | "read OCI manifest"
   | "acquire anonymous registry token"
+  | "acquire private registry token"
   | "validate OCI manifest"
   | "read capability bundle layer"
   | "read Sigstore bundle layer"
@@ -52,7 +53,31 @@ export interface AcquiredOciCapabilityArtifact {
 }
 
 export interface StrictOciCapabilityRegistry {
-  acquire(reference: string, signal?: AbortSignal): Promise<AcquiredOciCapabilityArtifact>;
+  acquire(
+    reference: string,
+    signal?: AbortSignal,
+    credentialProvider?: OciRegistryCredentialProvider,
+  ): Promise<AcquiredOciCapabilityArtifact>;
+}
+
+export interface OciRegistryCredentialChallenge {
+  readonly realm: string;
+  readonly service: string;
+  readonly scope: string;
+}
+
+export interface OciRegistryBasicCredentials {
+  readonly username: string;
+  readonly password: Buffer;
+}
+
+export type OciRegistryCredentialProvider = (
+  challenge: OciRegistryCredentialChallenge,
+  signal: AbortSignal,
+) => Promise<OciRegistryBasicCredentials>;
+
+export function isValidOciRegistryUsername(username: string): boolean {
+  return /^[!-~]{1,256}$/.test(username) && !username.includes(":");
 }
 
 export interface StrictOciCapabilityRegistryOptions {
@@ -99,6 +124,7 @@ export function createStrictOciCapabilityRegistry(
     async acquire(
       referenceSource: string,
       callerSignal?: AbortSignal,
+      credentialProvider?: OciRegistryCredentialProvider,
     ): Promise<AcquiredOciCapabilityArtifact> {
       let reference: OciCapabilityArtifactReference;
       try {
@@ -132,10 +158,11 @@ export function createStrictOciCapabilityRegistry(
         let authorization: string | undefined;
         if (manifestResponse.statusCode === 401) {
           manifestResponse.close();
-          authorization = await acquireAnonymousToken(
+          authorization = await acquireRegistryToken(
             context,
             manifestResponse.headers["www-authenticate"],
             reference.repository,
+            credentialProvider,
           );
           manifestResponse = await withStage("read OCI manifest", signal, async () =>
             readWithoutRedirect(
@@ -185,6 +212,9 @@ export function createStrictOciCapabilityRegistry(
           sigstoreBundle,
         });
       } catch (error) {
+        if (callerSignal?.aborted === true && Object.is(signal.reason, callerSignal.reason)) {
+          throw callerSignal.reason;
+        }
         if (error instanceof OciCapabilityRegistryError) {
           throw error;
         }
@@ -194,32 +224,57 @@ export function createStrictOciCapabilityRegistry(
   });
 }
 
-async function acquireAnonymousToken(
+async function acquireRegistryToken(
   context: RegistryContext,
   header: string | readonly string[] | undefined,
   repository: string,
+  credentialProvider: OciRegistryCredentialProvider | undefined,
 ): Promise<string> {
-  return await withStage("acquire anonymous registry token", context.signal, async () => {
+  const stage =
+    credentialProvider === undefined
+      ? "acquire anonymous registry token"
+      : "acquire private registry token";
+  return await withStage(stage, context.signal, async () => {
     const challenge = parseBearerChallenge(header, repository);
     const tokenUrl = new URL(challenge.realm);
     tokenUrl.searchParams.set("service", challenge.service);
     tokenUrl.searchParams.set("scope", challenge.scope);
-    const response = await readWithoutRedirect(
-      context,
-      tokenUrl,
-      Object.freeze({ accept: "application/json", "user-agent": "flow-harness" }),
-      MAX_TOKEN_RESPONSE_BYTES,
-      undefined,
-    );
-    const read = await requireReadSuccess(response, 200);
-    const text = new TextDecoder("utf-8", { fatal: true }).decode(read.bytes);
-    const input = parseStrictJson(text, {
-      maxDepth: 4,
-      maxNodes: 16,
-      valueLabel: "OCI registry token response",
-    });
-    const parsed = tokenResponseSchema.parse(JSON.parse(JSON.stringify(input)));
-    return "token" in parsed ? parsed.token : parsed.access_token;
+    await resolveOrigin(context, tokenUrl);
+    let password: Buffer | undefined;
+    let sensitiveAuthorization: Buffer | undefined;
+    try {
+      if (credentialProvider !== undefined) {
+        const credentials = await awaitWithSignal(
+          credentialProvider(Object.freeze({ ...challenge }), context.signal),
+          context.signal,
+          clearCredentialPassword,
+        );
+        const username = credentials.username;
+        password = credentials.password;
+        validateBasicCredentials(username, password);
+        sensitiveAuthorization = basicAuthorization(username, password);
+      }
+      const response = await readWithoutRedirect(
+        context,
+        tokenUrl,
+        Object.freeze({ accept: "application/json", "user-agent": "flow-harness" }),
+        MAX_TOKEN_RESPONSE_BYTES,
+        undefined,
+        sensitiveAuthorization,
+      );
+      const read = await requireReadSuccess(response, 200);
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(read.bytes);
+      const input = parseStrictJson(text, {
+        maxDepth: 4,
+        maxNodes: 16,
+        valueLabel: "OCI registry token response",
+      });
+      const parsed = tokenResponseSchema.parse(JSON.parse(JSON.stringify(input)));
+      return "token" in parsed ? parsed.token : parsed.access_token;
+    } finally {
+      sensitiveAuthorization?.fill(0);
+      password?.fill(0);
+    }
   });
 }
 
@@ -288,6 +343,7 @@ async function readWithoutRedirect(
   headers: Readonly<Record<string, string>>,
   maximumBytes: number,
   expectedBytes: number | undefined,
+  sensitiveAuthorization?: Buffer,
 ): Promise<DeferredReadResponse> {
   const origin = await resolveOrigin(context, url);
   const response = await openResponse(context, {
@@ -295,6 +351,7 @@ async function readWithoutRedirect(
     hostname: origin.hostname,
     address: origin.address,
     headers,
+    ...(sensitiveAuthorization === undefined ? {} : { sensitiveAuthorization }),
     signal: context.signal,
   });
   let consumed = false;
@@ -411,7 +468,7 @@ async function readBoundedBody(
 function parseBearerChallenge(
   header: string | readonly string[] | undefined,
   repository: string,
-): { readonly realm: string; readonly service: string; readonly scope: string } {
+): OciRegistryCredentialChallenge {
   if (
     typeof header !== "string" ||
     Buffer.byteLength(header, "utf8") === 0 ||
@@ -455,6 +512,33 @@ function parseBearerChallenge(
     throw new Error("invalid bearer realm");
   }
   return Object.freeze({ realm, service, scope });
+}
+
+function validateBasicCredentials(username: string, password: Buffer): void {
+  if (
+    !isValidOciRegistryUsername(username) ||
+    !Buffer.isBuffer(password) ||
+    password.byteLength < 1 ||
+    password.byteLength > 16_384 ||
+    password.includes(0x00) ||
+    password.includes(0x0a) ||
+    password.includes(0x0d)
+  ) {
+    throw new Error("invalid private registry credentials");
+  }
+  new TextDecoder("utf-8", { fatal: true }).decode(password);
+}
+
+function basicAuthorization(username: string, password: Buffer): Buffer {
+  const userPass = Buffer.concat([Buffer.from(`${username}:`, "ascii"), password]);
+  let encoded: Buffer | undefined;
+  try {
+    encoded = Buffer.from(userPass.toString("base64"), "ascii");
+    return Buffer.concat([Buffer.from("Basic ", "ascii"), encoded]);
+  } finally {
+    encoded?.fill(0);
+    userPass.fill(0);
+  }
 }
 
 function parseBlobRedirect(location: string | readonly string[] | undefined, current: URL): URL {
@@ -534,12 +618,7 @@ function bearerTokenSchema(): z.ZodString {
     .string()
     .min(1)
     .max(MAX_BEARER_TOKEN_BYTES)
-    .refine((value) =>
-      Array.from(value).every((character) => {
-        const point = character.codePointAt(0);
-        return point !== undefined && point >= 33 && point <= 126;
-      }),
-    );
+    .regex(/^[A-Za-z0-9._~+/-]+=*$/);
 }
 
 function isRedirect(status: number): boolean {
@@ -572,13 +651,36 @@ async function withStage<T>(
   }
 }
 
-async function awaitWithSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+async function awaitWithSignal<T>(
+  promise: Promise<T>,
+  signal: AbortSignal,
+  clearLateResolution?: (value: T) => void,
+): Promise<T> {
   throwIfAborted(signal);
   return await new Promise<T>((resolve, reject) => {
     const aborted = (): void => reject(signal.reason);
     signal.addEventListener("abort", aborted, { once: true });
-    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", aborted));
+    promise
+      .then((value) => {
+        if (signal.aborted) {
+          try {
+            clearLateResolution?.(value);
+          } catch {
+            // Late cleanup cannot replace the settled cancellation outcome.
+          }
+          return;
+        }
+        resolve(value);
+      }, reject)
+      .finally(() => signal.removeEventListener("abort", aborted));
   });
+}
+
+function clearCredentialPassword(credentials: OciRegistryBasicCredentials): void {
+  const password = credentials?.password;
+  if (Buffer.isBuffer(password)) {
+    password.fill(0);
+  }
 }
 
 function throwIfAborted(signal: AbortSignal): void {

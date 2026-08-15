@@ -38,7 +38,7 @@ through an optional external profile.
 | Versioned command tool packages | Implemented for strict local or exact installed declarative manifests, including publisher-authenticated OCI sources, exact per-agent selection, deterministic argv rendering, and the existing policy/approval/sandbox/journal boundary |
 | Versioned workflow packages | Implemented for strict local or exact installed inert source manifests, including publisher-authenticated OCI sources, exact packaged roots and children, closed snapshot-only compilation, and durable replay identity |
 | Versioned policy packages | Implemented for strict local or exact installed inert narrowing manifests, including operator-required and project-additional exact selection, deterministic composition, pre-mutation workflow admission, and durable replay identity |
-| Remote capability bundle distribution | Implemented with deterministic inert `.flowpkg` files, explicit public HTTPS plus SHA-256 installation, exact publisher-authenticated OCI installation, a content-addressed project store, deterministic lock, local audit/removal commands, and offline execution/recovery |
+| Remote capability bundle distribution | Implemented with deterministic inert `.flowpkg` files, explicit public HTTPS plus SHA-256 installation, exact publisher-authenticated OCI installation with optional challenge-scoped private credentials, a content-addressed project store, deterministic lock, local audit/removal commands, and offline execution/recovery |
 | Reproducible harness evaluation | Implemented for paired Flow, native Pi, native OMP, and Prime Agent profiles. Flow records exact identities, fresh workspaces, private checks, evidence, and constrained reports. |
 | Evidence-bound prompt candidates | Flow implements zero-tool model generation from tuning-only evidence, strict prompt overlays, paired evaluation, reviewed activation, durable run snapshots, and rollback |
 | Proof-safe fresh recovery of interrupted agent attempts | Implemented as explicit opt-in for read-only attempts and edit attempts proven not applied |
@@ -724,10 +724,23 @@ node dist/cli/main.js packages verify
 node dist/cli/main.js packages remove review-suite --version 1.0.0
 ```
 
+For a token-gated repository, read the secret without exporting it or placing it in argv:
+
+```sh
+read -r -s registry_password
+printf '%s\n' "$registry_password" | node dist/cli/main.js packages install-oci \
+  registry.example.test/flow/private-suite@sha256:<64-lowercase-hex> \
+  --certificate-issuer https://token.actions.githubusercontent.com/ \
+  --certificate-identity <exact-certificate-identity> \
+  --username registry-user --password-stdin
+unset registry_password
+```
+
 The two install commands are the only package network operations. The HTTPS form accepts a
 canonical URL without credentials, query, fragment, or redirects. The OCI form accepts only a
-canonical public registry repository and an exact manifest digest. It does not accept a tag,
-version range, registry discovery result, package-provided reference, or private credential.
+canonical HTTPS registry repository with public pinned addresses and an exact manifest digest. It
+does not accept a tag, version range, registry discovery result, package-provided reference, IP
+literal, port, query, or fragment.
 
 The OCI artifact must contain one strict Flow bundle layer and one Sigstore v0.3 verification
 layer in a fixed order. Flow checks the manifest, media types, descriptor sizes, and SHA-256 values
@@ -736,17 +749,38 @@ certificate issuer and exact certificate identity. Verification uses the trusted
 public-good root that ships with this Flow release. It requires signed-time, certificate-log, and
 transparency-log evidence. It does not contact a signature service or update trust data.
 
-Registry DNS, anonymous pull-token work, manifest reads, redirects, and layer reads share one
-deadline. Flow pins public IP addresses. It denies unsafe redirects. It sends a bearer token only
-to the original registry and never stores or prints that token. Cross-host blob redirects receive
-no token. All public failures use fixed stages and omit registry bodies, paths, publisher values,
-and parser causes.
+Registry DNS, credential input, pull-token work, manifest reads, redirects, and layer reads share
+one deadline. Without the paired private options, Flow preserves the anonymous pull flow and never
+reads stdin. With both options, Flow first validates the canonical HTTPS Bearer realm, exact
+service, and exact `repository:<name>:pull` scope. It then reads one non-empty UTF-8 secret of at
+most 16,384 bytes from stdin. One terminal LF is removed. NUL, CR, another LF, invalid UTF-8, empty
+input, and byte 16,385 reject.
+
+The selected registry controls the challenged authorization realm and service. Flow preserves
+those values exactly and validates their transport and scope. It cannot prove that a separate
+realm has the same operator as the registry. The operator must trust both services and should use
+a registry-specific credential. The Bearer token is opaque. Flow cannot inspect its embedded
+grants, so it confines the token to the original registry and exact digest reads.
+
+Flow sends one RFC 7617 Basic value only to that exact token realm. It sends the returned bounded
+Bearer token only to the original registry. A cross-host blob redirect receives neither value.
+Flow requests no refresh token and rejects token-response extensions. It does not read Docker
+configuration, invoke a credential helper, accept a password argument or environment credential,
+or persist a login session.
+
+Mutable secret buffers are cleared after the token request. The JavaScript and TLS stacks cannot
+promise heap erasure of temporary string copies. All public failures use fixed stages. They omit
+credential input, authorization values, registry bodies, paths, publisher values, and parser
+causes.
 
 Both forms reuse the existing package validators. Flow publishes an immutable blob below
 `.flow/packages/sha256/` and atomically updates `.flow/packages.lock.json` last. A signed lock entry
 records the exact OCI reference, manifest digest, publisher policy, and signature-bundle digest.
-This data is audit evidence, not a later network instruction. Orphan blobs are inactive. Local and
-installed name or tool collisions fail instead of applying precedence.
+This data is audit evidence, not a later network instruction. It contains no username, token realm,
+credential mode, password, Basic value, or Bearer token.
+
+Orphan blobs are inactive. Local and installed name or tool collisions fail instead of applying
+precedence.
 
 Upgrades are explicit and are not atomic in v1. Pause new admissions, retain the old bundle URL and
 digest, install a new exact bundle version, then remove the old exact version and run `packages

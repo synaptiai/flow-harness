@@ -8,7 +8,6 @@ import { basename, dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-
 import {
   ApprovalDecisionError,
   decideApproval,
@@ -200,7 +199,9 @@ import {
   type CapabilityBundleFetcher,
 } from "../infrastructure/http/strict-capability-bundle-fetcher.js";
 import {
+  isValidOciRegistryUsername,
   OciCapabilityRegistryError,
+  type OciRegistryCredentialProvider,
   type StrictOciCapabilityRegistry,
 } from "../infrastructure/http/strict-oci-capability-registry.js";
 import type { PrimeOciPreparationResult } from "../infrastructure/oci/prime-oci-preparation.js";
@@ -226,6 +227,7 @@ import type {
 } from "../supervisor/protocol.js";
 import { SupervisorServiceError } from "../supervisor/service.js";
 import { executeWorkerJob } from "../supervisor/worker.js";
+import { readBoundedSecretInput } from "./bounded-secret-input.js";
 
 const HELP = `Flow — Provider-neutral coding-agent harness
 
@@ -248,7 +250,7 @@ Usage:
   flow policies inspect <name> --version <exact>
   flow policies validate
   flow packages install <https-url> --sha256 <64-lowercase-hex>
-  flow packages install-oci <registry/repository@sha256:digest> --certificate-issuer <https-url> --certificate-identity <exact>
+  flow packages install-oci <registry/repository@sha256:digest> --certificate-issuer <https-url> --certificate-identity <exact> [--username <exact> --password-stdin]
   flow packages pack <source-directory> --output <bundle.flowpkg>
   flow packages list
   flow packages inspect <name> --version <exact>
@@ -340,6 +342,7 @@ export interface CliDependencies {
   readonly capabilityBundleFetcher: CapabilityBundleFetcher;
   readonly ociCapabilityRegistry: StrictOciCapabilityRegistry;
   readonly sigstoreCapabilityVerifier: SigstoreCapabilityVerifier;
+  readonly readRegistrySecret: (signal: AbortSignal) => Promise<Buffer>;
   readonly externalHarnessRegistry: ExternalHarnessRegistry;
   readonly externalHarnessRuntime: ExternalHarnessRuntime;
   readonly preparePrimeRuntime?: (input: {
@@ -354,6 +357,8 @@ const processIo: CliIo = {
   stdout: (text) => writeProcessOutput(process.stdout, `${text}\n`),
   stderr: (text) => writeProcessOutput(process.stderr, `${text}\n`),
 };
+const readProcessRegistrySecret = async (signal: AbortSignal): Promise<Buffer> =>
+  await readBoundedSecretInput(process.stdin, signal);
 let processWriteTail: Promise<void> = Promise.resolve();
 
 export function writeProcessOutput(stream: NodeJS.WriteStream, text: string): void {
@@ -996,14 +1001,31 @@ async function packagesCommand(
   io: CliIo,
   overrides: Partial<CliDependencies>,
 ): Promise<number> {
-  const { positionals, values } = parseCommandArgs(args, {
+  const usernameOccurrences = args.filter(
+    (argument) => argument === "--username" || argument.startsWith("--username="),
+  ).length;
+  if (usernameOccurrences > 1) {
+    throw new CliUsageError("--username may be specified only once");
+  }
+  const passwordInput = extractBooleanFlag(args, "--password-stdin");
+  const { positionals, values } = parseCommandArgs(passwordInput.args, {
     "certificate-identity": { type: "string" },
     "certificate-issuer": { type: "string" },
     output: { type: "string" },
     sha256: { type: "string" },
+    username: { type: "string" },
     version: { type: "string" },
   });
   const subcommand = positionals[0];
+  if (values.username !== undefined && !isValidOciRegistryUsername(values.username)) {
+    throw new CliUsageError(
+      "--username requires 1 to 256 visible non-space ASCII characters without a colon",
+    );
+  }
+  const hasCredentialPair =
+    (values.username === undefined && !passwordInput.enabled) ||
+    (values.username !== undefined && passwordInput.enabled);
+  const hasNoCredentials = values.username === undefined && !passwordInput.enabled;
   const valid =
     (subcommand === "install" &&
       positionals.length === 2 &&
@@ -1011,6 +1033,7 @@ async function packagesCommand(
       values["certificate-issuer"] === undefined &&
       values.output === undefined &&
       values.sha256 !== undefined &&
+      hasNoCredentials &&
       values.version === undefined) ||
     (subcommand === "install-oci" &&
       positionals.length === 2 &&
@@ -1018,6 +1041,7 @@ async function packagesCommand(
       values["certificate-issuer"] !== undefined &&
       values.output === undefined &&
       values.sha256 === undefined &&
+      hasCredentialPair &&
       values.version === undefined) ||
     (subcommand === "pack" &&
       positionals.length === 2 &&
@@ -1025,6 +1049,7 @@ async function packagesCommand(
       values["certificate-issuer"] === undefined &&
       values.output !== undefined &&
       values.sha256 === undefined &&
+      hasNoCredentials &&
       values.version === undefined) ||
     ((subcommand === "list" || subcommand === "verify") &&
       positionals.length === 1 &&
@@ -1032,6 +1057,7 @@ async function packagesCommand(
       values["certificate-issuer"] === undefined &&
       values.output === undefined &&
       values.sha256 === undefined &&
+      hasNoCredentials &&
       values.version === undefined) ||
     ((subcommand === "inspect" || subcommand === "remove") &&
       positionals.length === 2 &&
@@ -1039,10 +1065,11 @@ async function packagesCommand(
       values["certificate-issuer"] === undefined &&
       values.output === undefined &&
       values.sha256 === undefined &&
+      hasNoCredentials &&
       values.version !== undefined);
   if (!valid) {
     throw new CliUsageError(
-      "packages requires pack <source-directory> --output <bundle.flowpkg>, install <https-url> --sha256 <hex>, install-oci <digest-reference> --certificate-issuer <https-url> --certificate-identity <exact>, list, inspect <name> --version <exact>, verify, or remove <name> --version <exact>",
+      "packages requires pack <source-directory> --output <bundle.flowpkg>, install <https-url> --sha256 <hex>, install-oci <digest-reference> --certificate-issuer <https-url> --certificate-identity <exact> [--username <exact> --password-stdin], list, inspect <name> --version <exact>, verify, or remove <name> --version <exact>",
     );
   }
   const dependencies = configDependenciesFrom(overrides);
@@ -1101,10 +1128,20 @@ async function packagesCommand(
         new OfflineSigstoreCapabilityVerifier(createSigstorePublicGoodTrustedRoot()),
       store,
     );
+    const username = values.username;
+    const credentialProvider: OciRegistryCredentialProvider | undefined =
+      username === undefined
+        ? undefined
+        : async (_challenge, signal) =>
+            Object.freeze({
+              username,
+              password: await (overrides.readRegistrySecret ?? readProcessRegistrySecret)(signal),
+            });
     const installed = await installer.install({
       reference,
       certificateIssuer,
       certificateIdentity,
+      ...(credentialProvider === undefined ? {} : { credentialProvider }),
       ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
     });
     io.stdout(
@@ -2937,6 +2974,7 @@ function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies 
     sigstoreCapabilityVerifier:
       overrides.sigstoreCapabilityVerifier ??
       new OfflineSigstoreCapabilityVerifier(createSigstorePublicGoodTrustedRoot()),
+    readRegistrySecret: overrides.readRegistrySecret ?? readProcessRegistrySecret,
     externalHarnessRegistry,
     externalHarnessRuntime:
       overrides.externalHarnessRuntime ??

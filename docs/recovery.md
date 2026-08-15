@@ -39,7 +39,9 @@ from that durable verifier package snapshot. It never reads `.flow/verifiers`; a
 snapshot must have the exact durable aggregate digest or recovery refuses with `workflow_mismatch`.
 For an installed package it likewise never reads `.flow/packages.lock.json`, reopens a bundle blob,
 or contacts the recorded source URL. The lock and blob are admission inputs only; `run_started` is
-the recovery authority.
+the recovery authority. A private-registry username, token realm, credential mode, password, Basic
+value, or Bearer token is never part of the lock or run snapshot. Resume and replay never read
+credential input or repeat registry authentication.
 The same rule applies inside a child ledger, which may carry the parent snapshot but can bind only
 its own compiled selections.
 

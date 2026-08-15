@@ -15,6 +15,7 @@ import type {
 } from "../infrastructure/fs/local-capability-package-store.js";
 import {
   OciCapabilityRegistryError,
+  type OciRegistryCredentialProvider,
   type StrictOciCapabilityRegistry,
 } from "../infrastructure/http/strict-oci-capability-registry.js";
 
@@ -25,6 +26,7 @@ export interface SignedOciCapabilityPackageStore {
 export interface InstallSignedOciCapabilityBundleInput extends SigstoreCapabilityPublisherPolicy {
   readonly reference: string;
   readonly signal?: AbortSignal;
+  readonly credentialProvider?: OciRegistryCredentialProvider;
 }
 
 export interface InstallSignedOciCapabilityBundleResult extends InstallCapabilityBundleResult {
@@ -55,7 +57,11 @@ export function createSignedOciCapabilityBundleInstaller(
         throw new OciCapabilityRegistryError("validate OCI reference");
       }
       const policy = validateSigstoreCapabilityPublisherPolicy(input);
-      const acquired = await registry.acquire(requestedReference.canonical, input.signal);
+      const acquired = await registry.acquire(
+        requestedReference.canonical,
+        input.signal,
+        input.credentialProvider,
+      );
       throwIfAborted(input.signal);
 
       try {

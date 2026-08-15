@@ -13,7 +13,10 @@ import {
 } from "../../../src/domain/capability/oci-capability-artifacts.js";
 import { SigstoreCapabilityVerificationError } from "../../../src/domain/capability/sigstore-capability-verifier.js";
 import type { InstallCapabilityBundleResult } from "../../../src/infrastructure/fs/local-capability-package-store.js";
-import type { AcquiredOciCapabilityArtifact } from "../../../src/infrastructure/http/strict-oci-capability-registry.js";
+import type {
+  AcquiredOciCapabilityArtifact,
+  OciRegistryCredentialProvider,
+} from "../../../src/infrastructure/http/strict-oci-capability-registry.js";
 
 const manifestDigest = `sha256:${"1".repeat(64)}` as const;
 const reference = `registry.example.test/flow/review-suite@${manifestDigest}`;
@@ -60,7 +63,7 @@ describe("signed OCI capability bundle installer", () => {
     });
 
     expect(events).toEqual(["acquire", "verify", "publish"]);
-    expect(fixture.acquire).toHaveBeenCalledWith(reference, undefined);
+    expect(fixture.acquire).toHaveBeenCalledWith(reference, undefined, undefined);
     expect(fixture.verify).toHaveBeenCalledWith(
       fixture.artifact.capabilityBundle,
       fixture.artifact.sigstoreBundle,
@@ -76,6 +79,21 @@ describe("signed OCI capability bundle installer", () => {
         signatureBundleDigest: fixture.artifact.manifest.sigstoreBundle.digest,
       },
     });
+  });
+
+  it("forwards one per-install credential provider only to registry acquisition", async () => {
+    const fixture = installerFixture();
+    const credentialProvider: OciRegistryCredentialProvider = vi.fn();
+
+    await fixture.installer.install({
+      reference,
+      ...policy,
+      credentialProvider,
+    });
+
+    expect(fixture.acquire).toHaveBeenCalledWith(reference, undefined, credentialProvider);
+    expect(fixture.verify).toHaveBeenCalledOnce();
+    expect(fixture.publish).toHaveBeenCalledOnce();
   });
 
   it("does not publish when registry acquisition or publisher verification fails", async () => {

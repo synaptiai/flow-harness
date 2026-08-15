@@ -12,8 +12,8 @@ Gate 5 includes conditions, joins, bounded concurrency, loops, graph approvals, 
 verifiers, child workflows, and isolated optimization promotion.
 
 Gate 6 includes Agent Skills, verifier packages, command tool packages, workflow packages, inert
-bundles, content-addressed installation, publisher-authenticated OCI acquisition, audit, removal,
-and offline recovery.
+bundles, content-addressed installation, publisher-authenticated OCI acquisition, challenge-scoped
+private registry credentials, audit, removal, and offline recovery.
 
 Deterministic inert bundles, content-addressed installation, and exact publisher-authenticated OCI
 installation are implemented.
@@ -25,7 +25,7 @@ Gate 7 includes tuning-only prompt candidates, zero-tool model generation, exact
 paired evaluation, reviewed activation, durable run snapshots, and rollback.
 
 Remaining targets include executable extensions, automatic updates, freshness and revocation,
-policy and UI packages, private registry credentials, and stronger isolation.
+policy and UI packages, and stronger isolation.
 
 The operator-selectable container command profile is implemented behind the Flow-owned sandbox
 port. Its pinned Linux x64 runtime gate passed in hosted CI. This profile is a shared-kernel
@@ -101,10 +101,11 @@ containment milestone. It is not VM-grade or multi-tenant isolation.
 - Tool contributions use versioned manifests. *(Implemented for strict local and digest-pinned installed declarative command tools with exact per-agent selection, closed Flow-owned data-position command profiles, typed scalar-to-literal-argv rendering, immutable snapshots, independently reconciled raw-exec authority, and reuse of the existing policy/approval/sandbox/journal boundary. Executable package code remains deferred.)*
 - Capability distribution is deterministic, reviewable, and provider-neutral. *(Implemented.)*
   Flow supports strict `.flowpkg` packing and explicit public HTTPS plus SHA-256 installation. It
-  also supports exact digest-only public OCI installation and offline Sigstore publisher
-  verification. The store uses content-addressed blobs, deterministic lock state, fail-closed
-  collisions, local audit commands, and network-free execution. Mutable tags, discovery, private
-  credentials, freshness, revocation, rollback protection, and automatic updates remain deferred.
+  also supports exact digest-only OCI installation, optional challenge-scoped private credentials,
+  and offline Sigstore publisher verification. The store uses content-addressed blobs,
+  deterministic lock state, fail-closed collisions, local audit commands, and network-free
+  execution. Mutable tags, discovery, credential helpers, freshness, revocation, rollback
+  protection, and automatic updates remain deferred.
 - Workflow contributions use versioned manifests. *(Implemented for inert exact-version workflow source with packaged root/child selection, ordinary recursive compilation, immutable transitive snapshots, deterministic bundle distribution, detached execution, and fail-closed recovery. Parameterized templates and executable modules remain deferred.)*
 - Policy contributions use versioned manifests.
   Flow implements strict local and digest-pinned installed inert narrowing packages.
