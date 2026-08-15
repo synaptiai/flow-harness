@@ -253,11 +253,11 @@ import. It adds monotonic atomic state, install and catalog gates, explicit CLI 
 immutable admitted snapshots. An authenticated empty target set is a deliberate deny-all state.
 Metadata never triggers a package or run mutation by itself.
 
-Final focused evidence on the clean merged base includes 160 passing tests across the seven
-non-socket mapped files and one passing durable snapshot test with local Unix-socket permission
-(161 tests across eight files in total). The full suite passes 3,256 tests with four intentional
-platform skips. Runtime verification passes 39 tests with 33 platform or configuration skips.
-Coverage passes at 82.95% statements, 77% branches, 89.41% functions, and 83.07% lines.
+Final focused evidence on the clean merged base includes 160 passing tests across seven non-socket
+mapped files. The durable snapshot test also passes with local Unix-socket permission. In total,
+161 tests pass across eight files. The full suite passes 3,256 tests with four intentional platform
+skips. Runtime verification passes 39 tests with 33 platform or configuration skips. Coverage
+passes at 82.95% statements, 77% branches, 89.41% functions, and 83.07% lines.
 
 Formatting, linting, type checking, compilation, compiled smoke, changed-document prose, clean
 package installation, and `npm ls --all` pass. The authorized runtime audit reports zero
