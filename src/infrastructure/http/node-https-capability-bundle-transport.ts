@@ -3,6 +3,7 @@ import type { ClientRequest, IncomingMessage } from "node:http";
 import { type RequestOptions as HttpsRequestOptions, request as nodeRequest } from "node:https";
 import type { LookupFunction } from "node:net";
 
+import type { CapabilityMetadataChannel } from "../../application/capability-metadata-channel.js";
 import {
   type CapabilityBundleFetcher,
   createStrictCapabilityBundleFetcher,
@@ -10,6 +11,7 @@ import {
   type PinnedHttpsResponse,
   type ResolvedNetworkAddress,
 } from "./strict-capability-bundle-fetcher.js";
+import { createStrictCapabilityMetadataChannel } from "./strict-capability-metadata-channel.js";
 import {
   createStrictOciCapabilityRegistry,
   type StrictOciCapabilityRegistry,
@@ -122,6 +124,10 @@ export function createNodeHttpsCapabilityBundleTransport(
 
 export function createProductionCapabilityBundleFetcher(): CapabilityBundleFetcher {
   return createStrictCapabilityBundleFetcher(createProductionNodeHttpsTransport());
+}
+
+export function createProductionCapabilityMetadataChannel(): CapabilityMetadataChannel {
+  return createStrictCapabilityMetadataChannel(createProductionNodeHttpsTransport());
 }
 
 export function createProductionOciCapabilityRegistry(): StrictOciCapabilityRegistry {

@@ -787,6 +787,12 @@ carrying a network instruction. SHA-256 is content identity. A signed OCI lock r
 audit data. Freshness and revocation come only from the optional signed metadata state. Neither the
 lock nor metadata is later execution authority.
 
+Metadata channel candidates are also outside workflow authority. One explicit check may stage an
+authenticated candidate, and one explicit activation may publish active metadata after repeating
+signer, freshness, byte, identity, and monotonic checks. Candidate state is not part of workflow
+syntax, catalog snapshots, `run_started`, detached job identity, child ledgers, recovery, or replay.
+Removing a candidate cannot change an admitted run or active metadata.
+
 ## Versioned workflow packages
 
 A reusable workflow may be selected as an exact packaged root:

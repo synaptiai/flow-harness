@@ -387,6 +387,55 @@ catalog admission. It does not restore the pre-metadata behavior. The state and 
 one mutation owner and publish through separate atomic replacements. A post-rename durability
 failure is `commit_uncertain` and requires inspection.
 
+Approach C adds an explicit signed channel without granting that channel activation authority:
+
+```sh
+flow packages metadata check <canonical-public-https-url> \
+  --certificate-issuer <exact-https-issuer> \
+  --certificate-identity <exact>
+flow packages metadata candidates list
+flow packages metadata candidate inspect sha256:<digest>
+flow packages metadata activate sha256:<digest> \
+  --certificate-issuer <exact-https-issuer> \
+  --certificate-identity <exact>
+flow packages metadata candidate remove sha256:<digest>
+```
+
+The check command follows no redirect and sends no credential. All resolved addresses must be
+public, and the request is pinned to one admitted address under one total deadline. The response
+must be HTTP 200 with exact media type
+`application/vnd.synapti.flow-capability-metadata-envelope+json`. Its strict canonical JSON has
+only `apiVersion`, `kind`, `metadataBase64`, and `sigstoreBundleBase64`. Canonical padded
+base64 decodes to at most 524,288 metadata bytes and 1,048,576 Sigstore bundle bytes. The complete
+canonical envelope is at most 2,097,285 UTF-8 bytes.
+
+The envelope is transport evidence, not trust. Flow verifies the exact decoded metadata bytes with
+the offline trusted root and the command-line issuer and identity. It then compares the verified
+metadata only with active rollback authority. A successful check publishes or reuses one inert
+content-addressed candidate and atomically replaces the latest-check observation. A channel URL,
+check time, and envelope digest are observations. They do not change candidate identity.
+
+Candidate identity binds the complete metadata summary and target list, exact metadata and
+signature-bundle byte counts and SHA-256 digests, and exact signer policy. Candidate bytes are
+reopened, bounded, parsed, and rehashed on inspection and activation. At most four distinct
+candidates may coexist. Candidates do not create a monotonic high-water mark over each other, so a
+staged high-version candidate cannot block a different later candidate. Only active metadata is
+rollback authority.
+
+Candidate-store commands use `.flow/packages.metadata.check.lock` as a fail-closed single-writer
+boundary. Flow never reclaims an existing lock by guessing process liveness. An operator may remove
+that exact file only after confirming that no metadata check, list, inspect, activation, or removal
+operation owns it. Flow never traverses or deletes unexpected pending state. After the same
+ownership check, an operator may inspect and remove only
+`.flow/.packages.metadata.candidate.pending` or `.flow/.packages.metadata.check.pending`.
+Candidate-store commands fail closed while either path exists.
+
+Activation requires the exact candidate digest and newly supplied signer arguments. It reopens the
+stored bytes, repeats canonical parsing, signature verification, freshness at a fresh clock
+instant, and candidate identity reconstruction. It repeats active monotonic comparison before it
+publishes active metadata. The candidate remains available after activation. Candidate removal
+affects only that inert directory. Check, activation, and removal never mutate installed packages.
+
 Catalog composition reopens and rehashes every lock-selected blob, re-derives bundle/package
 identities, and captures verified content in memory. Provenance has the portable form
 `.flow/packages/sha256/<digest>/<kind>/<name>`; the recorded source URL is not run evidence or a
@@ -404,11 +453,13 @@ because Pi packages may install dependencies and execute host extensions. A dige
 bytes only. The Sigstore bundle authenticates the admitted publisher for those exact bytes. It does
 not prove package safety or correctness.
 
-The opt-in signed metadata layer adds project-local expiry, revocation, exact-target admission, and
-monotonic rollback refusal. It relies on the local clock and explicit operator refresh. Delegation,
-credential helpers, federated identity, discovery, background refresh, automatic package updates,
-and online trust-root refresh remain outside this contract. The design is TUF-like but is not a
-general [TUF repository](https://theupdateframework.github.io/specification/).
+The opt-in signed metadata layer adds project-local expiry, revocation, exact-target admission,
+monotonic rollback refusal, and explicit signed-channel discovery with inert review staging. It
+relies on the local clock and explicit operator activation. Delegation, credential helpers,
+federated identity, private channel credentials, background polling, automatic activation,
+automatic package updates, and online trust-root refresh remain outside this contract. The design
+is TUF-like but is not a general
+[TUF repository](https://theupdateframework.github.io/specification/).
 
 ## Coupling rules
 

@@ -734,6 +734,22 @@ node dist/cli/main.js packages metadata refresh capability-metadata.json \
 node dist/cli/main.js packages metadata inspect
 ```
 
+To check one signed public channel without changing active metadata, then review and explicitly
+activate one exact candidate:
+
+```sh
+node dist/cli/main.js packages metadata check \
+  https://metadata.example.test/flow/capability-metadata.json \
+  --certificate-issuer https://token.actions.githubusercontent.com/ \
+  --certificate-identity <exact-metadata-certificate-identity>
+node dist/cli/main.js packages metadata candidates list
+node dist/cli/main.js packages metadata candidate inspect sha256:<64-lowercase-hex>
+node dist/cli/main.js packages metadata activate sha256:<64-lowercase-hex> \
+  --certificate-issuer https://token.actions.githubusercontent.com/ \
+  --certificate-identity <exact-metadata-certificate-identity>
+node dist/cli/main.js packages metadata candidate remove sha256:<64-lowercase-hex>
+```
+
 For a token-gated repository, read the secret without exporting it or placing it in argv:
 
 ```sh
@@ -746,11 +762,11 @@ printf '%s\n' "$registry_password" | node dist/cli/main.js packages install-oci 
 unset registry_password
 ```
 
-The two install commands are the only package network operations. The HTTPS form accepts a
-canonical URL without credentials, query, fragment, or redirects. The OCI form accepts only a
-canonical HTTPS registry repository with public pinned addresses and an exact manifest digest. It
-does not accept a tag, version range, registry discovery result, package-provided reference, IP
-literal, port, query, or fragment.
+The two install commands and the explicit metadata check are the only package network operations.
+The HTTPS install and metadata-channel forms accept canonical URLs without credentials, query,
+fragment, or redirects. The OCI form accepts only a canonical HTTPS registry repository with
+public pinned addresses and an exact manifest digest. It does not accept a tag, version range,
+registry discovery result, package-provided reference, IP literal, port, query, or fragment.
 
 The OCI artifact must contain one strict Flow bundle layer and one Sigstore v0.3 verification
 layer in a fixed order. Flow checks the manifest, media types, descriptor sizes, and SHA-256 values
@@ -824,11 +840,28 @@ matches the complete target identity. That identity includes bundle name, exact 
 bytes, source, and OCI publisher policy. Freshness uses the local system clock. An untrusted or
 incorrect clock invalidates the freshness claim.
 
-An authenticated metadata state may contain no targets. That state denies every new package
-installation and catalog admission. Metadata inspection, exact-byte package inspection, listing,
-and explicit package removal remain available when metadata is expired or a target is revoked.
-Metadata never changes packages automatically. It does not implement delegation, discovery,
-background refresh, online trust-root refresh, or automatic updates.
+The optional channel check accepts only one explicit canonical public HTTPS URL and one exact
+operator-supplied signer policy. It fetches one strict canonical signed envelope, verifies its
+metadata offline, compares it only with active metadata, and stages an inert candidate below
+`.flow/packages.metadata.candidates/sha256/`. It also replaces one bounded latest-check
+observation. It does not change `.flow/packages.metadata.json` or
+`.flow/packages.lock.json`. Exactly four distinct candidates may coexist. Checking the same
+candidate again is idempotent.
+
+Activation reopens and rehashes the candidate. It repeats signature and freshness verification
+with new signer arguments and a fresh clock reading. The existing active-metadata store performs
+monotonic publication. Candidate removal removes only inert candidate state. Neither operation
+installs, removes, downloads, or executes a package.
+
+Runs, workers, children, recovery, and replay never read candidate state. An external scheduler
+may invoke `metadata check`. Flow does not poll or activate metadata. It does not install, roll
+back, or resolve packages automatically.
+
+An authenticated metadata state may contain no targets. That is an established deny-all state:
+every new package installation and catalog admission rejects, while metadata inspection and
+explicit package removal remain available. Those same remediation operations remain available when
+metadata is expired or a target is revoked. Metadata never changes packages automatically. It does
+not implement delegation or online trust-root refresh.
 
 A later selected Skill or model rubric can influence a model. A selected command package retains
 its documented sandboxed command authority. Listing, inspection, verification, workflow admission,
