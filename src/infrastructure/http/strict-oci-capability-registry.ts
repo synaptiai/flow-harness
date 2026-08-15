@@ -212,6 +212,9 @@ export function createStrictOciCapabilityRegistry(
           sigstoreBundle,
         });
       } catch (error) {
+        if (callerSignal?.aborted === true && Object.is(signal.reason, callerSignal.reason)) {
+          throw callerSignal.reason;
+        }
         if (error instanceof OciCapabilityRegistryError) {
           throw error;
         }
@@ -615,12 +618,7 @@ function bearerTokenSchema(): z.ZodString {
     .string()
     .min(1)
     .max(MAX_BEARER_TOKEN_BYTES)
-    .refine((value) =>
-      Array.from(value).every((character) => {
-        const point = character.codePointAt(0);
-        return point !== undefined && point >= 33 && point <= 126;
-      }),
-    );
+    .regex(/^[A-Za-z0-9._~+/-]+=*$/);
 }
 
 function isRedirect(status: number): boolean {
@@ -679,8 +677,9 @@ async function awaitWithSignal<T>(
 }
 
 function clearCredentialPassword(credentials: OciRegistryBasicCredentials): void {
-  if (Buffer.isBuffer(credentials?.password)) {
-    credentials.password.fill(0);
+  const password = credentials?.password;
+  if (Buffer.isBuffer(password)) {
+    password.fill(0);
   }
 }
 

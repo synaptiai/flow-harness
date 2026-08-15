@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,14 +18,33 @@ import {
 } from "../../../src/domain/capability/agent-skills.js";
 import { createCapabilityBundleSource } from "../../../src/domain/capability/capability-bundles.js";
 import {
+  FLOW_CAPABILITY_BUNDLE_LAYER_MEDIA_TYPE,
+  SIGSTORE_BUNDLE_LAYER_MEDIA_TYPE,
+} from "../../../src/domain/capability/oci-capability-artifacts.js";
+import type { SigstoreCapabilityVerifier } from "../../../src/domain/capability/sigstore-capability-verifier.js";
+import {
   BUILT_IN_FLOW_CONFIG,
   calculateFlowPolicyDigest,
   type EffectiveFlowConfig,
   FLOW_CONFIG_API_VERSION,
 } from "../../../src/domain/config/resolver.js";
-import type { CommandEvidence, RunEvent } from "../../../src/domain/run/events.js";
+import {
+  type CommandEvidence,
+  type RunEvent,
+  reduceRunEvents,
+} from "../../../src/domain/run/events.js";
+import { JsonlRunStore } from "../../../src/infrastructure/fs/jsonl-run-store.js";
 import { LocalCapabilityPackageStore } from "../../../src/infrastructure/fs/local-capability-package-store.js";
+import { LocalSupervisorStore } from "../../../src/infrastructure/fs/local-supervisor-store.js";
 import type { CapabilityBundleFetcher } from "../../../src/infrastructure/http/strict-capability-bundle-fetcher.js";
+import type {
+  AcquiredOciCapabilityArtifact,
+  StrictOciCapabilityRegistry,
+} from "../../../src/infrastructure/http/strict-oci-capability-registry.js";
+import { createProductionNodeEffectReconciler } from "../../../src/infrastructure/runtime/production-effect-reconciler.js";
+import { createProductionWorkspaceIsolator } from "../../../src/infrastructure/runtime/production-workspace-isolator.js";
+import { createActiveRunClaim, createJobRecord } from "../../../src/supervisor/records.js";
+import { executeWorkerJob, requestWorker } from "../../../src/supervisor/worker.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -41,24 +60,21 @@ describe("installed capability workflow", () => {
     const created = mixedBundle();
     const bundleDigest = created.bundle.digest.slice("sha256:".length);
     const packageStore = new LocalCapabilityPackageStore(project);
-    await packageStore.install({
-      source: `registry.example.test/flow/review-suite@sha256:${"1".repeat(64)}`,
-      expectedSha256: bundleDigest,
-      content: created.content,
-      publisher: {
-        kind: "sigstore-keyless-v0.3",
-        certificateIssuer: "https://token.actions.githubusercontent.com/",
-        certificateIdentity:
-          "https://github.com/synaptiai/flow-harness/.github/workflows/release.yml@refs/tags/v1.0.0",
-        signatureBundleDigest: `sha256:${"2".repeat(64)}`,
-      },
-    });
+    await installPrivateBundle(project, created.content, bundleDigest);
     const provenanceRoot = `.flow/packages/sha256/${bundleDigest}`;
     const fetch = vi.fn(async () => {
       throw new Error("workflow and replay must not fetch capability bundles");
     });
+    const acquire = vi.fn(async () => {
+      throw new Error("PRIVATE_OFFLINE_REGISTRY");
+    });
+    const readRegistrySecret = vi.fn(async () => {
+      throw new Error("PRIVATE_OFFLINE_CREDENTIAL");
+    });
     const metadataDependencies = dependencies(project, {
       capabilityBundleFetcher: { fetch } satisfies CapabilityBundleFetcher,
+      ociCapabilityRegistry: { acquire } satisfies StrictOciCapabilityRegistry,
+      readRegistrySecret,
     });
 
     const skills = await invoke(["skills", "list"], metadataDependencies);
@@ -129,9 +145,16 @@ describe("installed capability workflow", () => {
     const executor: NodeExecutor = {
       async execute(node, context) {
         observed.push(context);
-        return node.type === "agent"
-          ? successfulAgentOutcome(context.capabilitySnapshot)
-          : successfulVerifierOutcome(context);
+        if (node.type === "agent") {
+          return successfulAgentOutcome(context.capabilitySnapshot);
+        }
+        if (node.type === "verifier") {
+          return successfulVerifierOutcome(context);
+        }
+        if (node.type === "command") {
+          return successfulCommandOutcome();
+        }
+        throw new Error(`unexpected installed capability node "${node.type}"`);
       },
     };
     const run = await invoke(
@@ -187,6 +210,59 @@ describe("installed capability workflow", () => {
       digest: verifierSnapshot?.digest,
     });
 
+    const detachedRunsDirectory = join(project, "detached-runs");
+    const supervisorStore = new LocalSupervisorStore(detachedRunsDirectory);
+    await supervisorStore.initialize();
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "installed-capability-detached",
+      mode: "run",
+      sourceName: workflowPath,
+      workflowSource: workflowSource(),
+      cwd: project,
+      projectRoot: project,
+      token: "9".repeat(64),
+      createdAt: "2026-08-15T12:00:00.000Z",
+      capabilitySnapshot: started.capabilitySnapshot ?? undefined,
+    });
+    await supervisorStore.reserveSubmission(
+      job,
+      createActiveRunClaim({
+        runId: job.runId,
+        jobId: job.jobId,
+        workerId: job.workerId,
+        claimedAt: job.createdAt,
+      }),
+    );
+    const detachedWorker = executeWorkerJob(job.jobId, {
+      store: supervisorStore,
+      executor,
+      effectReconciler: createProductionNodeEffectReconciler(),
+      createRunStore: (root) => new JsonlRunStore(root),
+      createWorkspaceIsolator: (root, paths, executionRoot, selectedProjectRoot) =>
+        createProductionWorkspaceIsolator(root, paths, executionRoot, selectedProjectRoot),
+      pid: 4383,
+    });
+    let descriptor: Awaited<ReturnType<LocalSupervisorStore["readWorkerDescriptor"]>> | undefined;
+    await vi.waitFor(async () => {
+      descriptor = await supervisorStore.readWorkerDescriptor(job.workerId);
+      expect(descriptor.workerId).toBe(job.workerId);
+    });
+    if (descriptor === undefined) {
+      throw new Error("detached worker did not publish its descriptor");
+    }
+    await expect(requestWorker(descriptor, { type: "identify" })).resolves.toMatchObject({
+      ok: true,
+      result: { runId: job.runId, status: "running" },
+    });
+    await expect(detachedWorker).resolves.toBe(0);
+    expect(
+      reduceRunEvents(
+        await new JsonlRunStore(detachedRunsDirectory).read("installed-capability-detached"),
+      ).status,
+    ).toBe("succeeded");
+
     await packageStore.remove("review-suite", "1.0.0");
     const inspectedRun = await invoke(
       ["inspect", "installed-capability-run"],
@@ -197,9 +273,123 @@ describe("installed capability workflow", () => {
     );
     expect(inspectedRun.code).toBe(0);
     expect(inspectedRun.stdout).toContain(`${provenanceRoot}/agent-skill/review`);
+    const resumeOutput = captureIo();
+    expect(
+      await main(
+        ["resume", workflowPath, "--run-id", "installed-capability-run"],
+        resumeOutput.io,
+        dependencies(project, {
+          capabilityBundleFetcher: { fetch } satisfies CapabilityBundleFetcher,
+          ociCapabilityRegistry: { acquire } satisfies StrictOciCapabilityRegistry,
+          readRegistrySecret,
+          executor,
+          createStore: () => runStore,
+        }),
+      ),
+    ).toBe(1);
+    expect(resumeOutput.stderr.join("\n")).toMatch(/terminal_run.*already terminal.*succeeded/i);
     expect(fetch).not.toHaveBeenCalled();
+    expect(acquire).not.toHaveBeenCalled();
+    expect(readRegistrySecret).not.toHaveBeenCalled();
+    expect(JSON.stringify(runStore.events)).not.toContain("PRIVATE_");
+    expect(
+      JSON.stringify(
+        await new JsonlRunStore(detachedRunsDirectory).read("installed-capability-detached"),
+      ),
+    ).not.toContain("PRIVATE_");
   });
 });
+
+async function installPrivateBundle(
+  project: string,
+  content: Buffer,
+  bundleDigest: string,
+): Promise<void> {
+  const manifestDigest = `sha256:${"1".repeat(64)}` as const;
+  const reference = `registry.example.test/flow/review-suite@${manifestDigest}`;
+  const signatureBundle = Buffer.from("PRIVATE_SIGNATURE_BUNDLE");
+  const publisher = Object.freeze({
+    certificateIssuer: "https://token.actions.githubusercontent.com/",
+    certificateIdentity:
+      "https://github.com/synaptiai/flow-harness/.github/workflows/release.yml@refs/tags/v1.0.0",
+  });
+  const artifact: AcquiredOciCapabilityArtifact = Object.freeze({
+    reference: Object.freeze({
+      canonical: reference,
+      registryOrigin: "https://registry.example.test",
+      repository: "flow/review-suite",
+      manifestDigest,
+    }),
+    manifest: Object.freeze({
+      digest: manifestDigest,
+      bytes: 512,
+      bundle: Object.freeze({
+        mediaType: FLOW_CAPABILITY_BUNDLE_LAYER_MEDIA_TYPE,
+        digest: `sha256:${bundleDigest}`,
+        size: content.byteLength,
+      }),
+      sigstoreBundle: Object.freeze({
+        mediaType: SIGSTORE_BUNDLE_LAYER_MEDIA_TYPE,
+        digest: sha256Digest(signatureBundle),
+        size: signatureBundle.byteLength,
+      }),
+    }),
+    capabilityBundle: content,
+    sigstoreBundle: signatureBundle,
+  });
+  const password = Buffer.from("PRIVATE_REGISTRY_PASSWORD");
+  const controller = new AbortController();
+  const readRegistrySecret = vi.fn(async () => password);
+  const acquire = vi.fn(async (_reference, signal, credentialProvider) => {
+    if (signal === undefined || credentialProvider === undefined) {
+      throw new Error("private installation requires explicit credentials");
+    }
+    const credentials = await credentialProvider(
+      Object.freeze({
+        realm: "https://auth.example.test/token",
+        service: "registry.example.test",
+        scope: "repository:flow/review-suite:pull",
+      }),
+      signal,
+    );
+    expect(credentials).toMatchObject({ username: "private-user" });
+    expect(credentials.password.toString("utf8")).toBe("PRIVATE_REGISTRY_PASSWORD");
+    credentials.password.fill(0);
+    return artifact;
+  });
+  const output = captureIo();
+
+  expect(
+    await main(
+      [
+        "packages",
+        "install-oci",
+        reference,
+        "--certificate-issuer",
+        publisher.certificateIssuer,
+        "--certificate-identity",
+        publisher.certificateIdentity,
+        "--username",
+        "private-user",
+        "--password-stdin",
+      ],
+      output.io,
+      dependencies(project, {
+        ociCapabilityRegistry: { acquire } satisfies StrictOciCapabilityRegistry,
+        sigstoreCapabilityVerifier: {
+          verify: vi.fn().mockReturnValue(publisher),
+        } satisfies SigstoreCapabilityVerifier,
+        readRegistrySecret,
+        signal: controller.signal,
+      }),
+    ),
+    output.stderr.join("\n"),
+  ).toBe(0);
+  expect(acquire).toHaveBeenCalledOnce();
+  expect(readRegistrySecret).toHaveBeenCalledOnce();
+  expect(password.every((value) => value === 0)).toBe(true);
+  expect(`${output.stdout.join("\n")}\n${output.stderr.join("\n")}`).not.toContain("PRIVATE_");
+}
 
 class MemoryStore implements RecoverableRunEventStore {
   readonly events: RunEvent[] = [];
@@ -208,15 +398,19 @@ class MemoryStore implements RecoverableRunEventStore {
     this.events.push(structuredClone(event));
   }
 
-  async read(): Promise<readonly RunEvent[]> {
-    return structuredClone(this.events);
+  async read(runId: string): Promise<readonly RunEvent[]> {
+    return structuredClone(this.events.filter((event) => event.runId === runId));
   }
 
-  async claim(): Promise<readonly RunEvent[]> {
-    return structuredClone(this.events);
+  async claim(runId: string): Promise<readonly RunEvent[]> {
+    return await this.read(runId);
   }
 
   async release(): Promise<void> {}
+
+  async exists(runId: string): Promise<boolean> {
+    return this.events.some((event) => event.runId === runId);
+  }
 }
 
 async function temporaryProject(): Promise<string> {
@@ -287,9 +481,36 @@ spec:
 }
 
 function workflowSource(): string {
+  const child = `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: installed-capabilities-child }
+budget:
+  maxNodeStarts: 4
+  maxModelTokens: 100
+  maxCostUsd: 0.01
+  maxExecutionMs: 10000
+  maxArtifactBytes: 100000
+nodes:
+  - id: produce
+    type: command
+    command: { executable: node }
+  - id: publish
+    type: result
+    dependsOn: [produce]
+    result:
+      source: { nodeId: produce, field: command.stdout }
+      schema: { type: string, maxLength: 1024 }
+`.trim();
   return `apiVersion: flow.synapti.ai/v1alpha1
 kind: Workflow
 metadata: { id: installed-capabilities }
+budget:
+  maxNodeStarts: 16
+  maxModelTokens: 1000
+  maxCostUsd: 1
+  maxExecutionMs: 60000
+  maxArtifactBytes: 1000000
 nodes:
   - id: analyze
     type: agent
@@ -306,6 +527,16 @@ nodes:
     verifier:
       kind: packaged-command
       package: { name: release-tests, version: 1.0.0 }
+  - id: delegate
+    type: child
+    dependsOn: [release]
+    child:
+      resultNodeId: publish
+      workflow: |
+${child
+  .split("\n")
+  .map((line) => `        ${line}`)
+  .join("\n")}
 `;
 }
 
@@ -364,13 +595,35 @@ function successfulVerifierOutcome(context: NodeExecutionContext): NodeExecution
   };
 }
 
+function successfulCommandOutcome(): NodeExecutionOutcome {
+  const stdout = '"child-ok"';
+  return {
+    status: "succeeded",
+    evidence: {
+      kind: "command",
+      executable: "node",
+      args: [],
+      exitCode: 0,
+      signal: null,
+      stdout,
+      stderr: "",
+      stdoutHash: sha256(stdout),
+      stderrHash: sha256(""),
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      timedOut: false,
+      durationMs: 1,
+    },
+  };
+}
+
 async function invoke(
   args: readonly string[],
   cliDependencies: Record<string, unknown>,
 ): Promise<{ readonly code: number; readonly json: unknown; readonly stdout: string }> {
   const output = captureIo();
   const code = await main(args, output.io, cliDependencies);
-  expect(code, output.stderr.join("\n")).toBe(0);
+  expect(code, [...output.stderr, ...output.stdout].join("\n")).toBe(0);
   const stdout = output.stdout.join("\n");
   let json: unknown;
   try {
@@ -420,4 +673,8 @@ function captureIo(): { readonly io: CliIo; readonly stdout: string[]; readonly 
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function sha256Digest(value: Uint8Array): `sha256:${string}` {
+  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }

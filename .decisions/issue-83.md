@@ -218,7 +218,7 @@ also remain credential-free.
 | CLI and anonymous compatibility | Behavioral/config | `npx vitest run test/integration/cli/capability-packages.test.ts test/integration/cli/main.test.ts` | Paired options invoke secret input only after challenge; anonymous form makes no secret call; invalid forms reject before acquisition | Persistent login sessions |
 | Atomic publication and credential-free provenance | Data/recovery | `npx vitest run test/unit/application/install-signed-oci-capability-bundle.test.ts test/unit/infrastructure/fs/local-capability-package-store.test.ts test/integration/cli/capability-packages.test.ts` | Authentication, exact artifact, and publisher checks precede publication; store and lock files contain no canary after success or failure | Registry-side audit correctness |
 | One total deadline, cancellation, and settlement | Behavioral/runtime | `npx vitest run test/unit/infrastructure/http/strict-oci-capability-registry.test.ts test/unit/cli/bounded-secret-input.test.ts` | Secret, DNS, token, manifest, and layer stalls settle under one signal; responses close; a late credential Buffer clears; no later phase starts | Remote service availability |
-| Offline later use | Integration/recovery | `npx vitest run test/integration/cli/capability-packages.test.ts test/integration/cli/remote-capability-workflow.test.ts test/integration/supervisor/worker.test.ts` | Network and credential traps remain untouched during list, verify, execution, detached work, recovery, and replay | Availability of deleted local package bytes |
+| Offline later use | Integration/recovery | `npx vitest run test/integration/cli/capability-packages.test.ts test/integration/cli/remote-capability-workflow.test.ts test/integration/supervisor/worker.test.ts` | One private install is followed by trapped list, inspect, verify, admission, attached child execution, detached snapshot execution, recovery, and replay; no private canary enters durable events | Availability of deleted local package bytes |
 | Public documentation | Docs | `npm run docs:ste && npx vitest run test/scaffold/community-files.test.ts test/integration/package/docs-ste.test.ts` | README, roadmap, sourcing, security, limits, recovery, and tests match the shipped private flow | Other credential protocols |
 | Release quality | Release/runtime | `npm run check && npm run test:coverage && npm run test:runtime && npm run pack:check && npm audit --omit=dev --audit-level=low` | Build, type, lint, full tests, coverage, runtime, package, docs, and production dependency gates pass | Hosted private-registry uptime |
 
@@ -227,12 +227,13 @@ skips, network fixtures, untested registry variants, known evidence limits, and 
 
 ## Verification evidence
 
-Local verification on 2026-08-13 has produced this evidence:
+Local verification on 2026-08-15 has produced this evidence:
 
-- The mapped Issue #83 selector passed 227 tests in 11 files. The selector covered bounded secret
+- The mapped Issue #83 selector passed 238 tests in 11 files. The selector covered bounded secret
   input, registry and transport isolation, installation, the store, and CLI behavior. It also
-  covered offline workflow and worker use and public documentation. The registry file passed 53
-  focused tests after the final auth-realm ordering change.
+  covered offline workflow and worker use and public documentation. The registry file passed 63
+  focused tests after exact cancellation, RFC 6750 token grammar, secret-boundary, and late-cleanup
+  regressions were added.
 
 - The first restricted run could not create temporary SRT Unix sockets. The same selector passed
   outside that desktop restriction. This was an environment limit, not a product failure.
@@ -240,12 +241,12 @@ Local verification on 2026-08-13 has produced this evidence:
 - Type checking, the production build, scoped Biome, and `git diff --check` passed. The compiled
   CLI exists at `dist/cli/main.js`.
 
-- The serial full suite passed 3,038 tests in 227 files. One file and four tests skipped through
+- The serial full suite passed 3,187 tests in 228 files. One file and four tests skipped through
   their declared platform conditions. The one-worker run limited memory pressure after the host
   restart.
 
-- The one-worker coverage suite completed. It covered 82.71% of lines, 82.60% of statements,
-  89.15% of functions, and 76.51% of branches.
+- The one-worker coverage suite completed. It covered 82.98% of lines, 82.87% of statements,
+  89.34% of functions, and 76.86% of branches.
 
 - The unrestricted runtime suite passed 39 tests in eight files. Nine files and 33 tests skipped
   through platform conditions. A restricted first run failed only because the desktop sandbox
@@ -269,18 +270,16 @@ Local verification on 2026-08-13 has produced this evidence:
 - Registry and CLI tests use synthetic HTTPS responses and private canaries. They do not contact a
   live private registry, signature service, or trust-root service.
 
-- Every Issue #83 documentation line passes the prose rules. The default changed-document command
-  also scans the predecessor Issue #82 commit against `origin/main` and reports four inherited
-  journal sentences. Final stacked-base verification remains pending.
+- Every Issue #83 documentation line passes the prose rules. The changed-document command and the
+  public documentation integration tests pass against the current `origin/main` base.
 
-- Whole-tree lint and formatting are not Issue #83 evidence in this working tree. They scan
-  user-owned `.claude` and `.codex` files and generated `graphify-out` files. Whole-tree lint also
-  reports one inherited constructor in `src/application/external-harness-adapter.ts`. Scoped checks
-  over every Issue #83 TypeScript and test file pass.
+- Whole-tree formatting passed over 448 files. Whole-tree lint passed with one inherited
+  informational constructor notice in `src/application/external-harness-adapter.ts`. Scoped checks
+  over every Issue #83 TypeScript and test file also pass.
 
-- The production dependency audit remains pending. The execution policy requires explicit consent
-  before the dependency graph can be sent to npm's public advisory endpoint. Hosted CI evidence
-  also remains pending. No claim of release readiness is made yet.
+- The production dependency audit found zero vulnerabilities. The Prime audit passed for the Node
+  lock and 60 Python packages. Hosted CI evidence remains pending, so no claim of hosted release
+  readiness is made yet.
 
 ## Primary references
 

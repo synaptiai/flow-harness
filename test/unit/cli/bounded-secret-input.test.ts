@@ -10,20 +10,28 @@ import {
 
 describe("bounded secret input", () => {
   it.each([
-    ["exact boundary", Buffer.alloc(MAX_REGISTRY_SECRET_BYTES, 0x61)],
+    [
+      "exact boundary",
+      Buffer.alloc(MAX_REGISTRY_SECRET_BYTES, 0x61),
+      Buffer.alloc(MAX_REGISTRY_SECRET_BYTES, 0x61),
+    ],
     [
       "exact boundary with one terminal LF",
       Buffer.concat([Buffer.alloc(MAX_REGISTRY_SECRET_BYTES, 0x61), Buffer.from("\n")]),
+      Buffer.alloc(MAX_REGISTRY_SECRET_BYTES, 0x61),
     ],
-    ["fragmented UTF-8", [Buffer.from([0xe2]), Buffer.from([0x82, 0xac])]],
-  ])("reads %s as mutable secret bytes", async (_label, source) => {
+    [
+      "fragmented UTF-8",
+      [Buffer.from([0xe2]), Buffer.from([0x82, 0xac])],
+      Buffer.from([0xe2, 0x82, 0xac]),
+    ],
+  ])("reads %s as exact mutable secret bytes", async (_label, source, expected) => {
     const secret = await readBoundedSecretInput(
       chunks(...(Array.isArray(source) ? source : [source])),
     );
 
     expect(Buffer.isBuffer(secret)).toBe(true);
-    expect(secret.byteLength).toBe(_label === "fragmented UTF-8" ? 3 : MAX_REGISTRY_SECRET_BYTES);
-    expect(secret.at(-1)).not.toBe(0x0a);
+    expect(secret).toEqual(expected);
     secret.fill(0);
   });
 

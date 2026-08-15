@@ -19,6 +19,7 @@ import type {
 import {
   createStrictOciCapabilityRegistry,
   OciCapabilityRegistryError,
+  type OciRegistryBasicCredentials,
   type OciRegistryCredentialProvider,
 } from "../../../../src/infrastructure/http/strict-oci-capability-registry.js";
 
@@ -123,6 +124,31 @@ describe("strict OCI capability registry", () => {
     expect(password.every((value) => value === 0)).toBe(true);
     expect(otherPassword.toString("utf8")).toBe("PRIVATE_OTHER_PASSWORD");
     otherPassword.fill(0);
+  });
+
+  it("accepts the exact private credential bounds and clears the password", async () => {
+    const fixture = registryFixture();
+    const username = "U".repeat(256);
+    const password = Buffer.alloc(16_384, 0x50);
+
+    await expect(
+      fixture.registry.acquire(fixture.reference, undefined, async () => ({
+        username,
+        password,
+      })),
+    ).resolves.toMatchObject({ capabilityBundle: bundle });
+
+    expect(fixture.observedSensitiveAuthorizations).toEqual([
+      {
+        url: "https://auth.example.test/token?service=registry.example.test&scope=repository%3Aflow%2Freview%3Apull",
+        authorization: `Basic ${Buffer.concat([
+          Buffer.from(username),
+          Buffer.from(":"),
+          Buffer.alloc(16_384, 0x50),
+        ]).toString("base64")}`,
+      },
+    ]);
+    expect(password.every((value) => value === 0)).toBe(true);
   });
 
   it.each([
@@ -236,17 +262,16 @@ describe("strict OCI capability registry", () => {
     expect(fixture.closes[0]).toHaveBeenCalledOnce();
   });
 
-  it("clears credentials that settle after acquisition cancellation", async () => {
+  it("captures and clears a late provider password exactly once after cancellation", async () => {
     const fixture = registryFixture({ requireCredentials: true });
     const controller = new AbortController();
     const password = Buffer.from("PRIVATE_LATE_PASSWORD");
-    let resolveCredentials: (credentials: {
-      readonly username: string;
-      readonly password: Buffer;
-    }) => void = () => undefined;
+    const otherPassword = Buffer.from("PRIVATE_OTHER_LATE_PASSWORD");
+    let passwordReads = 0;
+    let resolveCredentials: (credentials: OciRegistryBasicCredentials) => void = () => undefined;
     const credentialProvider: OciRegistryCredentialProvider = vi.fn(
       async () =>
-        await new Promise<{ readonly username: string; readonly password: Buffer }>((resolve) => {
+        await new Promise<OciRegistryBasicCredentials>((resolve) => {
           resolveCredentials = resolve;
         }),
     );
@@ -257,12 +282,43 @@ describe("strict OCI capability registry", () => {
     );
     await vi.waitFor(() => expect(credentialProvider).toHaveBeenCalledOnce());
 
-    controller.abort(new Error("operator cancelled private registry acquisition"));
-    await expectClosedFailure(pending, "acquire OCI artifact");
-    resolveCredentials({ username: "PRIVATE_USER", password });
+    const reason = new Error("operator cancelled private registry acquisition");
+    controller.abort(reason);
+    await expect(pending).rejects.toBe(reason);
+    resolveCredentials({
+      username: "PRIVATE_USER",
+      get password() {
+        passwordReads += 1;
+        return passwordReads === 1 ? password : otherPassword;
+      },
+    });
 
     await vi.waitFor(() => expect(password.every((value) => value === 0)).toBe(true));
+    expect(passwordReads).toBe(1);
+    expect(otherPassword.toString("utf8")).toBe("PRIVATE_OTHER_LATE_PASSWORD");
     expect(fixture.openPinnedResponse).toHaveBeenCalledOnce();
+    otherPassword.fill(0);
+  });
+
+  it("clears private credentials when cancellation wins during token I/O", async () => {
+    const fixture = registryFixture({ requireCredentials: true, stallToken: true });
+    const controller = new AbortController();
+    const reason = new Error("operator cancelled stalled private token request");
+    const password = Buffer.from("PRIVATE_PASSWORD");
+    const pending = fixture.registry.acquire(fixture.reference, controller.signal, async () => ({
+      username: "PRIVATE_USER",
+      password,
+    }));
+    await vi.waitFor(() => expect(fixture.openPinnedResponse).toHaveBeenCalledTimes(2));
+
+    controller.abort(reason);
+
+    await expect(pending).rejects.toBe(reason);
+    expect(password.every((value) => value === 0)).toBe(true);
+    expect(fixture.closes[0]).toHaveBeenCalledOnce();
+    const tokenRequest = fixture.openPinnedResponse.mock.calls[1]?.[0];
+    expect(tokenRequest?.sensitiveAuthorization?.every((value) => value === 0)).toBe(true);
+    expect(fixture.openPinnedResponse).toHaveBeenCalledTimes(2);
   });
 
   it.each([
@@ -309,6 +365,46 @@ describe("strict OCI capability registry", () => {
     );
   });
 
+  it.each([
+    ["token", "bad:token"],
+    ["access_token", "bad:token"],
+    ["token", "=abc"],
+    ["access_token", "=abc"],
+    ["token", "abc=def"],
+    ["access_token", "abc=def"],
+  ] as const)(
+    "rejects malformed RFC 6750 %s value %j before a Bearer request",
+    async (field, token) => {
+      for (const requireCredentials of [false, true]) {
+        const fixture = registryFixture({
+          tokenBody: { [field]: token },
+          requireCredentials,
+        });
+        const password = Buffer.from("PRIVATE_PASSWORD");
+
+        await expectClosedFailure(
+          fixture.registry.acquire(
+            fixture.reference,
+            undefined,
+            requireCredentials ? async () => ({ username: "PRIVATE_USER", password }) : undefined,
+          ),
+          requireCredentials
+            ? "acquire private registry token"
+            : "acquire anonymous registry token",
+        );
+
+        expect(
+          fixture.openPinnedResponse.mock.calls.some(
+            ([request]) => request.headers.authorization?.startsWith("Bearer ") === true,
+          ),
+        ).toBe(false);
+        if (requireCredentials) {
+          expect(password.every((value) => value === 0)).toBe(true);
+        }
+      }
+    },
+  );
+
   it.each(["token", "access_token"] as const)(
     "accepts the exact Bearer bound through %s",
     async (field) => {
@@ -323,6 +419,35 @@ describe("strict OCI capability registry", () => {
           .map(([request]) => request.headers.authorization)
           .filter((authorization) => authorization !== undefined),
       ).toEqual([`Bearer ${token}`, `Bearer ${token}`, `Bearer ${token}`]);
+    },
+  );
+
+  it.each(["token", "access_token"] as const)(
+    "accepts RFC 6750 trailing padding through %s",
+    async (field) => {
+      for (const requireCredentials of [false, true]) {
+        const fixture = registryFixture({
+          tokenBody: { [field]: "abc==" },
+          requireCredentials,
+        });
+        const password = Buffer.from("PRIVATE_PASSWORD");
+
+        await expect(
+          fixture.registry.acquire(
+            fixture.reference,
+            undefined,
+            requireCredentials ? async () => ({ username: "PRIVATE_USER", password }) : undefined,
+          ),
+        ).resolves.toMatchObject({ capabilityBundle: bundle });
+        expect(
+          fixture.openPinnedResponse.mock.calls
+            .map(([request]) => request.headers.authorization)
+            .filter((authorization) => authorization !== undefined),
+        ).toEqual(["Bearer abc==", "Bearer abc==", "Bearer abc=="]);
+        if (requireCredentials) {
+          expect(password.every((value) => value === 0)).toBe(true);
+        }
+      }
     },
   );
 
@@ -456,11 +581,11 @@ describe("strict OCI capability registry", () => {
   it("stops before DNS when cancellation is already requested", async () => {
     const fixture = registryFixture();
     const controller = new AbortController();
-    controller.abort(new Error("PRIVATE_CANCEL"));
+    const reason = new Error("PRIVATE_CANCEL");
+    controller.abort(reason);
 
-    await expectClosedFailure(
-      fixture.registry.acquire(fixture.reference, controller.signal),
-      "acquire OCI artifact",
+    await expect(fixture.registry.acquire(fixture.reference, controller.signal)).rejects.toBe(
+      reason,
     );
     expect(fixture.resolveHostname).not.toHaveBeenCalled();
     expect(fixture.openPinnedResponse).not.toHaveBeenCalled();
@@ -487,10 +612,7 @@ describe("strict OCI capability registry", () => {
       delay(100).then(() => ({ status: "blocked" as const, error: undefined })),
     ]);
 
-    expect(outcome).toEqual({
-      status: "rejected",
-      error: new OciCapabilityRegistryError("acquire OCI artifact"),
-    });
+    expect(outcome).toEqual({ status: "rejected", error: controller.signal.reason });
     expect(fixture.closes.at(-1)).toHaveBeenCalledOnce();
     expect(
       fixture.openPinnedResponse.mock.calls.some(([request]) =>
