@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
+import { createCapabilitySnapshot } from "../../../src/domain/capability/agent-skills.js";
 import {
   BUILT_IN_FLOW_CONFIG,
   FLOW_CONFIG_API_VERSION,
@@ -317,7 +318,235 @@ describe("Flow configuration resolution", () => {
     expect(container.supervisor).toEqual(native.supervisor);
     expect(container.policyDigest).not.toBe(native.policyDigest);
   });
+
+  it("resolves exact operator-required and project-additional policy packages", () => {
+    const operatorPackage = policySnapshot({
+      name: "operator-baseline",
+      version: "1.0.0",
+      spec: "sandbox:\n  allowedProfiles: [container]\ntools:\n  allowed: [edit, read]\n",
+    });
+    const projectPackage = policySnapshot({
+      name: "project-review",
+      version: "2.1.0",
+      spec: "tools:\n  allowed: [read]\ncommands:\n  requireApproval: true\n",
+    });
+    const operator = parseOperatorConfig(
+      {
+        apiVersion: FLOW_CONFIG_API_VERSION,
+        kind: "FlowOperatorConfig",
+        sandbox: { profile: "container" },
+        policies: {
+          required: [exactReference(operatorPackage.packages[0])],
+        },
+      },
+      "/operator/config.yaml",
+    );
+    const project = parseProjectConfig(
+      {
+        apiVersion: FLOW_CONFIG_API_VERSION,
+        kind: "FlowProjectConfig",
+        policies: {
+          additional: [exactReference(projectPackage.packages[0])],
+        },
+      },
+      "/workspace/.flow/config.yaml",
+    );
+    const selected = createCapabilitySnapshot(
+      [],
+      [],
+      [],
+      [],
+      [
+        policyInput(
+          "project-review",
+          "2.1.0",
+          "tools:\n  allowed: [read]\ncommands:\n  requireApproval: true\n",
+        ),
+        policyInput(
+          "operator-baseline",
+          "1.0.0",
+          "sandbox:\n  allowedProfiles: [container]\ntools:\n  allowed: [edit, read]\n",
+        ),
+      ],
+    );
+
+    const effective = resolveFlowConfig({
+      operator: { path: "/operator/config.yaml", config: operator },
+      project: { path: "/workspace/.flow/config.yaml", config: project },
+      projectRoot: "/workspace",
+      policyPackages: selected,
+    });
+
+    expect(effective.policyPackages).toMatchObject({
+      snapshot: selected,
+      effective: {
+        packages: [
+          { name: "operator-baseline", version: "1.0.0" },
+          { name: "project-review", version: "2.1.0" },
+        ],
+        constraints: {
+          sandbox: { allowedProfiles: ["container"] },
+          tools: { allowed: ["read"] },
+          commands: { requireApproval: true },
+        },
+      },
+    });
+    expect(effective.sources.operator?.policies).toEqual(operator.policies?.required);
+    expect(effective.sources.project?.policies).toEqual(project.policies?.additional);
+    expect(effective.policyDigest).not.toBe(
+      resolveFlowConfig({
+        operator: {
+          path: "/operator/config.yaml",
+          config: parseOperatorConfig(
+            {
+              apiVersion: FLOW_CONFIG_API_VERSION,
+              kind: "FlowOperatorConfig",
+              sandbox: { profile: "container" },
+            },
+            "/operator/config.yaml",
+          ),
+        },
+      }).policyDigest,
+    );
+    expect(Object.isFrozen(effective.policyPackages?.effective.constraints)).toBe(true);
+  });
+
+  it("rejects missing, substituted, duplicated, and sandbox-incompatible selections", () => {
+    const selected = policySnapshot({
+      name: "restricted-review",
+      version: "1.2.3",
+      spec: "sandbox:\n  allowedProfiles: [container]\n",
+    });
+    const policy = selected.packages[0];
+    if (policy === undefined) {
+      throw new Error("policy fixture is missing");
+    }
+    const cases = [
+      {
+        name: "missing snapshot",
+        operatorReference: exactReference(policy),
+        policyPackages: undefined,
+        fieldPath: "policies.required",
+      },
+      {
+        name: "substituted digest",
+        operatorReference: { ...exactReference(policy), digest: "0".repeat(64) },
+        policyPackages: selected,
+        fieldPath: "policies.required.0.digest",
+      },
+    ];
+    for (const testCase of cases) {
+      const operator = parseOperatorConfig(
+        {
+          apiVersion: FLOW_CONFIG_API_VERSION,
+          kind: "FlowOperatorConfig",
+          sandbox: { profile: "container" },
+          policies: { required: [testCase.operatorReference] },
+        },
+        "/operator/config.yaml",
+      );
+      expect(() =>
+        resolveFlowConfig({
+          operator: { path: "/operator/config.yaml", config: operator },
+          projectRoot: "/workspace",
+          ...(testCase.policyPackages === undefined
+            ? {}
+            : { policyPackages: testCase.policyPackages }),
+        }),
+      ).toThrowError(expect.objectContaining({ fieldPath: testCase.fieldPath }));
+    }
+
+    const reference = exactReference(policy);
+    const operator = parseOperatorConfig(
+      {
+        apiVersion: FLOW_CONFIG_API_VERSION,
+        kind: "FlowOperatorConfig",
+        policies: { required: [reference] },
+      },
+      "/operator/config.yaml",
+    );
+    const project = parseProjectConfig(
+      {
+        apiVersion: FLOW_CONFIG_API_VERSION,
+        kind: "FlowProjectConfig",
+        policies: { additional: [reference] },
+      },
+      "/workspace/.flow/config.yaml",
+    );
+    expect(() =>
+      resolveFlowConfig({
+        operator: { path: "/operator/config.yaml", config: operator },
+        project: { path: "/workspace/.flow/config.yaml", config: project },
+        projectRoot: "/workspace",
+        policyPackages: selected,
+      }),
+    ).toThrowError(expect.objectContaining({ fieldPath: "policies.additional.0.name" }));
+
+    expect(() =>
+      resolveFlowConfig({
+        operator: {
+          path: "/operator/config.yaml",
+          config: parseOperatorConfig(
+            {
+              apiVersion: FLOW_CONFIG_API_VERSION,
+              kind: "FlowOperatorConfig",
+              policies: { required: [reference] },
+            },
+            "/operator/config.yaml",
+          ),
+        },
+        projectRoot: "/workspace",
+        policyPackages: selected,
+      }),
+    ).toThrowError(expect.objectContaining({ fieldPath: "sandbox.profile" }));
+  });
 });
+
+function policySnapshot(input: {
+  readonly name: string;
+  readonly version: string;
+  readonly spec: string;
+}) {
+  return createCapabilitySnapshot(
+    [],
+    [],
+    [],
+    [],
+    [policyInput(input.name, input.version, input.spec)],
+  );
+}
+
+function policyInput(name: string, version: string, spec: string) {
+  return {
+    kind: "policy-package" as const,
+    trust: "project-explicit" as const,
+    provenance: `.flow/policies/${name}`,
+    manifest: {
+      content: Buffer.from(`apiVersion: flow.synapti.ai/v1alpha1
+kind: PolicyPackage
+metadata:
+  name: ${name}
+  version: ${version}
+  description: Policy fixture.
+spec:
+${spec
+  .split("\n")
+  .filter((line) => line.length > 0)
+  .map((line) => `  ${line}`)
+  .join("\n")}
+`),
+    },
+  };
+}
+
+function exactReference(
+  value: { readonly name: string; readonly version: string; readonly digest: string } | undefined,
+) {
+  if (value === undefined) {
+    throw new Error("policy fixture is missing");
+  }
+  return { name: value.name, version: value.version, digest: value.digest };
+}
 
 describe("FlowConfigError", () => {
   it("preserves structured diagnostics", () => {

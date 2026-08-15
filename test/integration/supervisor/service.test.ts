@@ -8,7 +8,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { NodeExecutor } from "../../../src/application/ports.js";
 import { runWorkflow } from "../../../src/application/run-workflow.js";
 import { createCapabilitySnapshot } from "../../../src/domain/capability/agent-skills.js";
+import type { PolicyPackageSnapshotInput } from "../../../src/domain/capability/policy-packages.js";
 import type { WorkflowPackageSnapshotInput } from "../../../src/domain/capability/workflow-packages.js";
+import { calculateFlowPolicyDigest } from "../../../src/domain/config/resolver.js";
+import { composePolicyPackages } from "../../../src/domain/policy/policy-package-composition.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { JsonlAdmissionStore } from "../../../src/infrastructure/fs/jsonl-admission-store.js";
 import { JsonlRunStore } from "../../../src/infrastructure/fs/jsonl-run-store.js";
@@ -55,6 +58,67 @@ afterEach(async () => {
 });
 
 describe("LocalSupervisorService", () => {
+  it("rejects a submission whose policy snapshot cannot reconstruct the supervisor policy", async () => {
+    const limits = { maxActiveWorkers: 1, maxQueuedJobs: 32 };
+    const capabilitySnapshot = createCapabilitySnapshot([], [], [], [], [policyPackageInput()]);
+    const policies = capabilitySnapshot.packages.filter((item) => item.kind === "policy-package");
+    const effective = composePolicyPackages(policies);
+    if (effective === undefined) {
+      throw new Error("policy fixture did not compose");
+    }
+    const policyDigest = calculateFlowPolicyDigest(limits, "native", effective.digest);
+    const substituted = createCapabilitySnapshot(
+      [],
+      [],
+      [],
+      [],
+      [policyPackageInput("substituted-policy", "edit")],
+    );
+
+    for (const [label, candidate] of [
+      ["missing", undefined],
+      ["substituted", substituted],
+    ] as const) {
+      const harness = await createHarness(
+        undefined,
+        limits,
+        "native",
+        policyDigest,
+        effective.digest,
+      );
+      const command = {
+        ...submitCommand(randomUUID(), harness.directory, `${label}-policy-snapshot`),
+        policyDigest,
+        ...(candidate === undefined ? {} : { capabilitySnapshot: candidate }),
+      };
+
+      await expect(harness.service.submit(command)).rejects.toMatchObject({
+        code: "policy_mismatch",
+      });
+      expect(harness.launcher.jobs).toEqual([]);
+      await expect(harness.store.listActiveRunClaims()).resolves.toEqual([]);
+      await expect(harness.store.readCommand(command.commandId)).rejects.toMatchObject({
+        code: "not_found",
+      });
+    }
+
+    const admitted = await createHarness(
+      undefined,
+      limits,
+      "native",
+      policyDigest,
+      effective.digest,
+    );
+    await expect(
+      admitted.service.submit({
+        ...submitCommand(randomUUID(), admitted.directory, "matching-policy-snapshot"),
+        policyDigest,
+        capabilitySnapshot,
+      }),
+    ).resolves.toMatchObject({ type: "accepted", runId: "matching-policy-snapshot" });
+    expect(admitted.launcher.jobs).toHaveLength(1);
+  });
+
   it("rejects an activation locator without an exact activation snapshot", async () => {
     const harness = await createHarness();
     const command = {
@@ -1193,6 +1257,8 @@ async function createHarness(
     new LocalSupervisorStore(runsDirectory, { socketDirectory }),
   limits = { maxActiveWorkers: 1, maxQueuedJobs: 32 },
   sandboxProfile: "native" | "container" = "native",
+  policyDigest = POLICY_DIGEST,
+  policyPackageDigest?: string,
 ) {
   const directory = await mkdtemp(join(tmpdir(), "flow-supervisor-service-"));
   temporaryDirectories.push(directory);
@@ -1201,7 +1267,7 @@ async function createHarness(
   const admissionStore = new JsonlAdmissionStore(store.runsDirectory);
   await admissionStore.open(
     createAdmissionInitializedEvent({
-      policyDigest: POLICY_DIGEST,
+      policyDigest,
       limits,
       at: "2026-08-07T12:00:00.000Z",
     }),
@@ -1216,8 +1282,28 @@ async function createHarness(
     pid: 9876,
     startedAt: "2026-08-07T12:00:00.000Z",
     sandboxProfile,
+    ...(policyPackageDigest === undefined ? {} : { policyPackageDigest }),
   });
   return { directory, store, admissionStore, launcher, generation, service };
+}
+
+function policyPackageInput(
+  name = "service-policy",
+  allowedTool: "read" | "edit" = "read",
+): PolicyPackageSnapshotInput {
+  return {
+    kind: "policy-package",
+    trust: "project-explicit",
+    provenance: `.flow/policies/${name}`,
+    manifest: {
+      content: Buffer.from(`apiVersion: flow.synapti.ai/v1alpha1
+kind: PolicyPackage
+metadata: { name: ${name}, version: 1.0.0, description: Service policy. }
+spec:
+  tools: { allowed: [${allowedTool}] }
+`),
+    },
+  };
 }
 
 function admissionIdentity(index: number, runId: string) {

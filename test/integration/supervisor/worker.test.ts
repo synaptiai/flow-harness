@@ -66,6 +66,94 @@ afterEach(async () => {
 });
 
 describe("detached run worker", () => {
+  it("rejects a policy-incompatible detached workflow before run mutation", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-worker-policy-rejection-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    const store = new LocalSupervisorStore(runsDirectory);
+    await store.initialize();
+    const capabilitySnapshot = createCapabilitySnapshot(
+      [],
+      [],
+      [],
+      [],
+      [
+        {
+          kind: "policy-package",
+          trust: "project-explicit",
+          provenance: ".flow/policies/bounded-worker",
+          manifest: {
+            content: Buffer.from(`apiVersion: flow.synapti.ai/v1alpha1
+kind: PolicyPackage
+metadata: { name: bounded-worker, version: 1.0.0, description: Bound worker starts. }
+spec:
+  budget: { maxNodeStarts: 1 }
+`),
+          },
+        },
+      ],
+    );
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "worker-policy-rejection",
+      mode: "run",
+      sourceName: join(directory, "workflow.yaml"),
+      workflowSource: `apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: worker-policy-rejection }
+budget: { maxNodeStarts: 2 }
+nodes:
+  - id: finish
+    type: command
+    command: { executable: /usr/bin/true }
+`,
+      cwd: directory,
+      token: "f".repeat(64),
+      createdAt: "2026-08-13T12:00:00.000Z",
+      capabilitySnapshot,
+    });
+    await store.reserveSubmission(
+      job,
+      createActiveRunClaim({
+        runId: job.runId,
+        jobId: job.jobId,
+        workerId: job.workerId,
+        claimedAt: job.createdAt,
+      }),
+    );
+    let executions = 0;
+
+    const worker = executeWorkerJob(job.jobId, {
+      store,
+      executor: {
+        async execute() {
+          executions += 1;
+          throw new Error("executor must not run");
+        },
+      },
+      effectReconciler: createProductionNodeEffectReconciler(),
+      createRunStore: (root) => new JsonlRunStore(root),
+      pid: 4332,
+    });
+    const descriptor = await waitForDescriptor(store, job.workerId);
+    await expect(requestWorker(descriptor, { type: "identify" })).resolves.toMatchObject({
+      ok: true,
+      result: { runId: job.runId, status: "running" },
+    });
+
+    await expect(worker).resolves.toBe(1);
+    expect(executions).toBe(0);
+    await expect(store.readWorkerDescriptor(job.workerId)).resolves.toMatchObject({
+      status: "failed",
+      exitCode: 1,
+      failure: "budget.maxNodeStarts: workflow value 2 exceeds ceiling 1",
+    });
+    await expect(new JsonlRunStore(runsDirectory).read(job.runId)).rejects.toMatchObject({
+      code: "not_found",
+    });
+  });
+
   it("rejects changed active-root source bytes before worker execution", async () => {
     const directory = await mkdtemp(join(tmpdir(), "flow-worker-activation-tamper-"));
     temporaryDirectories.push(directory);

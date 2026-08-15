@@ -1,3 +1,5 @@
+import { join } from "node:path";
+
 import { MAX_AGENT_SKILL_PACKAGES } from "../../domain/capability/agent-skills.js";
 import {
   AgentSkillCatalogError,
@@ -6,7 +8,16 @@ import {
   discoverProjectAgentSkills,
   type ProjectAgentSkillCatalog,
 } from "./local-agent-skill-catalog.js";
-import { LocalCapabilityPackageStore } from "./local-capability-package-store.js";
+import {
+  type CapabilityPackageStoreHooks,
+  LocalCapabilityPackageStore,
+} from "./local-capability-package-store.js";
+import {
+  assertPolicyPackageCatalog,
+  createInstalledDiscoveredPolicyPackage,
+  discoverProjectPolicyPackages,
+  type ProjectPolicyPackageCatalog,
+} from "./local-policy-package-catalog.js";
 import {
   createInstalledDiscoveredToolPackage,
   type DiscoveredToolPackage,
@@ -35,53 +46,127 @@ export interface ProjectCapabilityCatalogs {
   readonly verifiers: ProjectVerifierPackageCatalog;
   readonly tools: ProjectToolPackageCatalog;
   readonly workflows: ProjectWorkflowPackageCatalog;
+  readonly policies: ProjectPolicyPackageCatalog;
+}
+
+export interface ProjectCapabilityCatalogOptions {
+  /** @internal Test seam for cancellation at installed-bundle verification boundaries. */
+  readonly capabilityPackageStoreHooks?: CapabilityPackageStoreHooks;
+  readonly includeNonPolicies?: boolean;
+  readonly includePolicies?: boolean;
+  readonly signal?: AbortSignal;
 }
 
 export async function discoverProjectCapabilityCatalogs(
   projectRoot: string,
+  options: ProjectCapabilityCatalogOptions = {},
 ): Promise<ProjectCapabilityCatalogs> {
-  const [localAgentSkills, localVerifiers, localTools, localWorkflows, installedBundles] =
-    await Promise.all([
-      discoverProjectAgentSkills(projectRoot),
-      discoverProjectVerifierPackages(projectRoot),
-      discoverProjectToolPackages(projectRoot),
-      discoverProjectWorkflowPackages(projectRoot),
-      new LocalCapabilityPackageStore(projectRoot).verify(),
-    ]);
-  const agentSkills = [...localAgentSkills.skills];
-  const verifiers = [...localVerifiers.packages];
-  const tools = [...localTools.packages];
-  const workflows = [...localWorkflows.packages];
+  options.signal?.throwIfAborted();
+  const includeNonPolicies = options.includeNonPolicies !== false;
+  const includePolicies = options.includePolicies !== false;
+  const [
+    localAgentSkills,
+    localVerifiers,
+    localTools,
+    localWorkflows,
+    localPolicies,
+    installedBundles,
+  ] = await Promise.all([
+    includeNonPolicies ? discoverProjectAgentSkills(projectRoot) : Promise.resolve(undefined),
+    includeNonPolicies ? discoverProjectVerifierPackages(projectRoot) : Promise.resolve(undefined),
+    includeNonPolicies ? discoverProjectToolPackages(projectRoot) : Promise.resolve(undefined),
+    includeNonPolicies ? discoverProjectWorkflowPackages(projectRoot) : Promise.resolve(undefined),
+    includePolicies
+      ? discoverProjectPolicyPackages(projectRoot, options)
+      : Promise.resolve(undefined),
+    new LocalCapabilityPackageStore(projectRoot, options.capabilityPackageStoreHooks).verify(
+      options.signal === undefined ? {} : { signal: options.signal },
+    ),
+  ]);
+  options.signal?.throwIfAborted();
+  const catalogProjectRoot = localAgentSkills?.projectRoot ?? localPolicies?.projectRoot;
+  if (catalogProjectRoot === undefined) {
+    throw new Error("capability catalog discovery must include at least one capability family");
+  }
+  const resolvedLocalAgentSkills: ProjectAgentSkillCatalog =
+    localAgentSkills ??
+    deepFreeze({
+      projectRoot: catalogProjectRoot,
+      root: join(catalogProjectRoot, ".flow", "skills"),
+      skills: [],
+    });
+  const resolvedLocalVerifiers: ProjectVerifierPackageCatalog =
+    localVerifiers ??
+    deepFreeze({
+      projectRoot: catalogProjectRoot,
+      root: join(catalogProjectRoot, ".flow", "verifiers"),
+      packages: [],
+    });
+  const resolvedLocalTools: ProjectToolPackageCatalog =
+    localTools ??
+    deepFreeze({
+      projectRoot: catalogProjectRoot,
+      root: join(catalogProjectRoot, ".flow", "tools"),
+      packages: [],
+    });
+  const resolvedLocalWorkflows: ProjectWorkflowPackageCatalog =
+    localWorkflows ??
+    deepFreeze({
+      projectRoot: catalogProjectRoot,
+      root: join(catalogProjectRoot, ".flow", "workflows"),
+      packages: [],
+    });
+  const resolvedLocalPolicies: ProjectPolicyPackageCatalog =
+    localPolicies ??
+    deepFreeze({
+      projectRoot: catalogProjectRoot,
+      root: join(catalogProjectRoot, ".flow", "policies"),
+      packages: [],
+    });
+  const agentSkills = [...resolvedLocalAgentSkills.skills];
+  const verifiers = [...resolvedLocalVerifiers.packages];
+  const tools = [...resolvedLocalTools.packages];
+  const workflows = [...resolvedLocalWorkflows.packages];
+  const policies = [...resolvedLocalPolicies.packages];
   for (const installed of installedBundles) {
+    options.signal?.throwIfAborted();
     for (const item of installed.bundle.packages) {
-      if (item.kind === "agent-skill") {
+      if (includeNonPolicies && item.kind === "agent-skill") {
         agentSkills.push(
           createInstalledDiscoveredAgentSkill({
-            projectRoot: localAgentSkills.projectRoot,
+            projectRoot: resolvedLocalAgentSkills.projectRoot,
             bundleDigest: installed.entry.digest,
             skill: item,
           }),
         );
-      } else if (item.kind === "verifier-package") {
+      } else if (includeNonPolicies && item.kind === "verifier-package") {
         verifiers.push(
           createInstalledDiscoveredVerifierPackage({
-            projectRoot: localVerifiers.projectRoot,
+            projectRoot: resolvedLocalVerifiers.projectRoot,
             bundleDigest: installed.entry.digest,
             package: item,
           }),
         );
-      } else if (item.kind === "tool-package") {
+      } else if (includeNonPolicies && item.kind === "tool-package") {
         tools.push(
           createInstalledDiscoveredToolPackage({
-            projectRoot: localTools.projectRoot,
+            projectRoot: resolvedLocalTools.projectRoot,
             bundleDigest: installed.entry.digest,
             package: item,
           }),
         );
-      } else {
+      } else if (includeNonPolicies && item.kind === "workflow-package") {
         workflows.push(
           createInstalledDiscoveredWorkflowPackage({
-            projectRoot: localWorkflows.projectRoot,
+            projectRoot: resolvedLocalWorkflows.projectRoot,
+            bundleDigest: installed.entry.digest,
+            package: item,
+          }),
+        );
+      } else if (includePolicies && item.kind === "policy-package") {
+        policies.push(
+          createInstalledDiscoveredPolicyPackage({
+            projectRoot: resolvedLocalPolicies.projectRoot,
             bundleDigest: installed.entry.digest,
             package: item,
           }),
@@ -93,26 +178,37 @@ export async function discoverProjectCapabilityCatalogs(
   verifiers.sort(compareByName);
   tools.sort(compareByName);
   workflows.sort(compareByName);
-  assertAgentSkillCatalog(agentSkills);
-  assertVerifierCatalog(verifiers);
-  assertToolCatalog(tools);
-  assertWorkflowPackageCatalog(workflows);
+  policies.sort(compareByName);
+  if (includeNonPolicies) {
+    assertAgentSkillCatalog(agentSkills);
+    assertVerifierCatalog(verifiers);
+    assertToolCatalog(tools);
+    assertWorkflowPackageCatalog(workflows);
+  }
+  if (includePolicies) {
+    assertPolicyPackageCatalog(policies);
+  }
+  options.signal?.throwIfAborted();
   return deepFreeze({
     agentSkills: {
-      ...localAgentSkills,
+      ...resolvedLocalAgentSkills,
       skills: agentSkills,
     },
     verifiers: {
-      ...localVerifiers,
+      ...resolvedLocalVerifiers,
       packages: verifiers,
     },
     tools: {
-      ...localTools,
+      ...resolvedLocalTools,
       packages: tools,
     },
     workflows: {
-      ...localWorkflows,
+      ...resolvedLocalWorkflows,
       packages: workflows,
+    },
+    policies: {
+      ...resolvedLocalPolicies,
+      packages: policies,
     },
   });
 }

@@ -37,13 +37,14 @@ through an optional external profile.
 | Versioned verifier packages | Implemented for strict local or exact installed command/model manifests, including publisher-authenticated OCI sources, exact workflow selection, immutable run snapshots, and digest-bound verdict evidence |
 | Versioned command tool packages | Implemented for strict local or exact installed declarative manifests, including publisher-authenticated OCI sources, exact per-agent selection, deterministic argv rendering, and the existing policy/approval/sandbox/journal boundary |
 | Versioned workflow packages | Implemented for strict local or exact installed inert source manifests, including publisher-authenticated OCI sources, exact packaged roots and children, closed snapshot-only compilation, and durable replay identity |
+| Versioned policy packages | Implemented for strict local or exact installed inert narrowing manifests, including operator-required and project-additional exact selection, deterministic composition, pre-mutation workflow admission, and durable replay identity |
 | Remote capability bundle distribution | Implemented with deterministic inert `.flowpkg` files, explicit public HTTPS plus SHA-256 installation, exact publisher-authenticated OCI installation, a content-addressed project store, deterministic lock, local audit/removal commands, and offline execution/recovery |
 | Reproducible harness evaluation | Implemented for paired Flow, native Pi, native OMP, and Prime Agent profiles. Flow records exact identities, fresh workspaces, private checks, evidence, and constrained reports. |
 | Evidence-bound prompt candidates | Flow implements zero-tool model generation from tuning-only evidence, strict prompt overlays, paired evaluation, reviewed activation, durable run snapshots, and rollback |
 | Proof-safe fresh recovery of interrupted agent attempts | Implemented as explicit opt-in for read-only attempts and edit attempts proven not applied |
 | Fail-closed sandboxed command isolation | Flow implements filesystem and network isolation on Linux and macOS. Linux alone provides strict agent-command descendant lifecycle containment |
 | Higher-isolation container command profile | Implemented behind operator-only selection; the pinned Linux x64 engine runtime gate passes |
-| Automatic updates, policy/UI packages, and model network tools | Planned |
+| Automatic updates, UI packages, and model network tools | Planned |
 | VM-grade isolation of the host-side agent runtime | Planned |
 
 The executable format is `flow.synapti.ai/v1alpha1`. There is no compatibility or migration
@@ -636,13 +637,66 @@ races, and snapshot mismatches fail closed.
 `WorkflowPackage` contains only bounded workflow source. It cannot register code, hooks, drivers,
 providers, credentials, policy, sandbox permissions, or dynamic graph factories. It has exactly
 the authority of the ordinary workflow nodes an operator explicitly selects. Template inputs,
-version solving, executable extensions, and policy/UI packages remain unsupported.
+version solving, executable extensions, and UI packages remain unsupported.
+
+### Apply a versioned policy package
+
+Flow discovers strict inert `PolicyPackage` manifests below the project-owned `.flow/policies`
+directory. Install and inspect the example before selecting it:
+
+```sh
+mkdir -p .flow/policies
+cp -R examples/policy-packages/restricted-review .flow/policies/
+node dist/cli/main.js policies validate
+node dist/cli/main.js policies list
+node dist/cli/main.js policies inspect restricted-review --version 1.0.0
+```
+
+Copy the inspected package `digest` into trusted configuration. A project can add constraints in
+`.flow/config.yaml`:
+
+```yaml
+apiVersion: flow.synapti.ai/v1alpha1
+kind: FlowProjectConfig
+policies:
+  additional:
+    - name: restricted-review
+      version: 1.0.0
+      digest: <64-lowercase-hex-from-inspect>
+```
+
+A trusted operator can require the same exact reference with `policies.required` in
+`${XDG_CONFIG_HOME}/flow/config.yaml`. Project configuration can add another package, but it cannot
+remove or replace an operator requirement. References are exact, sorted, and unique. Flow rejects a
+missing version, changed digest, duplicate name, incompatible sandbox profile, or contradictory
+combination before it creates run or supervisor state.
+
+```sh
+node dist/cli/main.js config show
+node dist/cli/main.js validate examples/versioned-policy-package.workflow.yaml
+```
+
+Policy packages contain only a closed set of model, tool-name, tool-permission, command-approval,
+sandbox-profile, and workflow-budget constraints. Allowed sets intersect, numeric ceilings take
+the minimum, and approval requirements combine with logical OR. Adding a package can only narrow.
+Packages cannot register a provider, tool, permission, sandbox, graph node, credential, hook,
+evaluator, or executable code.
+
+Mandatory command approval covers direct commands and command-capable agent tools. It rejects
+command verifier nodes because those nodes do not have an approval contract.
+
+Flow snapshots every selected manifest before admission and includes the canonical effective
+policy digest in the supervisor identity. The same snapshot constrains attached, detached, child,
+recovery, and replay paths. Resume rejects a current configuration that adds, removes, upgrades, or
+substitutes a package relative to durable history. Catalog and network access are not needed after
+admission. With no selected policy package, the prior config shape, policy digest, and workflow
+behavior remain unchanged.
 
 ### Distribute exact capability bundles
 
-Flow can pack the four existing inert package ABIs into one deterministic strict-JSON `.flowpkg`.
+Flow can pack the five existing inert package ABIs into one deterministic strict-JSON `.flowpkg`.
 Bundle sources contain `BUNDLE.json` plus any of the conventional `skills/`, `verifiers/`, `tools/`,
-or `workflows/` trees:
+`workflows/`, or `policies/` trees:
 
 ```sh
 node dist/cli/main.js packages pack examples/capability-bundle-source \
@@ -1129,6 +1183,12 @@ exclusive scheduler and run-ledger owner. If it disappears after `node_started` 
 outcome, a later resume applies the same opt-in proof gate; it never repeats unconfigured or
 ambiguous work.
 
+Policy-package recovery is also closed over durable evidence. Flow revalidates the exact stored
+manifest bytes and effective constraints before resumed work. It does not reload `.flow/policies`
+or an installed bundle. The current trusted configuration must select the same policy package
+names, versions, and digests as the run history. A mismatch stops recovery before claim or
+execution.
+
 ## Security boundary
 
 Each command and descendant receives workspace write access, a private temporary directory, an
@@ -1143,6 +1203,11 @@ policy allowance and command preparation. The owner-only decision sidecar is tra
 append-only ledger remains authoritative. Approval never widens the declared tool set, policy
 decision, sandbox profile, filesystem scope, network denial, timeout, or descendant-containment
 requirements.
+
+Policy packages add only declarative narrowing before these enforcement points. They do not replace
+the policy broker, approval ledger, sandbox, budget accounting, or provider boundary. A workflow or
+model cannot select a policy package, and a package cannot turn a denied operation into an allowed
+one.
 
 Flow does not trust a bare `bwrap` resolved through the model-visible `PATH`. The Linux adapter pins
 one canonical root-owned executable outside the workspace and fails before SRT initialization if no

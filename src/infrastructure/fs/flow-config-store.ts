@@ -16,14 +16,17 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 
 import { parseDocument } from "yaml";
 
+import type { PolicyPackageCapabilitySnapshot } from "../../domain/capability/agent-skills.js";
 import {
+  type EffectiveFlowConfig,
   FLOW_CONFIG_API_VERSION,
   FlowConfigError,
-  type EffectiveFlowConfig,
   parseOperatorConfig,
   parseProjectConfig,
   resolveFlowConfig,
 } from "../../domain/config/resolver.js";
+import { snapshotSelectedPolicyPackages } from "./local-policy-package-catalog.js";
+import { discoverProjectCapabilityCatalogs } from "./project-capability-catalog.js";
 
 const MAX_CONFIG_BYTES = 1024 * 1024;
 const PROJECT_CONFIG_SOURCE = `apiVersion: ${FLOW_CONFIG_API_VERSION}\nkind: FlowProjectConfig\n`;
@@ -47,6 +50,11 @@ export interface FlowConfigLocationOptions {
   readonly xdgConfigHome?: string;
   readonly homeDirectory?: string;
   readonly environment?: Readonly<Pick<NodeJS.ProcessEnv, "XDG_CONFIG_HOME" | "HOME">>;
+}
+
+export interface LoadEffectiveFlowConfigOptions extends FlowConfigLocationOptions {
+  readonly policyPackages?: PolicyPackageCapabilitySnapshot;
+  readonly signal?: AbortSignal;
 }
 
 export interface InitializeFlowProjectOptions {
@@ -75,12 +83,14 @@ export function resolveOperatorConfigPath(options: {
 }
 
 export async function loadEffectiveFlowConfig(
-  options: FlowConfigLocationOptions = {},
+  options: LoadEffectiveFlowConfigOptions = {},
 ): Promise<EffectiveFlowConfig> {
+  options.signal?.throwIfAborted();
   const cwd = await canonicalDirectory(
     options.cwd ?? process.cwd(),
     "configuration working directory",
   );
+  options.signal?.throwIfAborted();
   const environment = options.environment ?? process.env;
   const xdgConfigHome = options.xdgConfigHome ?? environment.XDG_CONFIG_HOME;
   const homeDirectory = options.homeDirectory ?? environment.HOME;
@@ -92,28 +102,69 @@ export async function loadEffectiveFlowConfig(
     readOptionalConfig(operatorPath),
     discoverProjectConfig(cwd),
   ]);
+  options.signal?.throwIfAborted();
   const projectInput =
     projectLocation === null ? null : await readRequiredConfig(projectLocation.path);
+  options.signal?.throwIfAborted();
+  const operator =
+    operatorInput === null ? undefined : parseOperatorConfig(operatorInput, operatorPath);
+  const project =
+    projectLocation === null || projectInput === null
+      ? undefined
+      : parseProjectConfig(projectInput, projectLocation.path);
+  const policyReferences = [
+    ...(operator?.policies?.required ?? []),
+    ...(project?.policies?.additional ?? []),
+  ];
+  const policyPackages =
+    options.policyPackages !== undefined
+      ? options.policyPackages
+      : policyReferences.length === 0 || projectLocation === null
+        ? undefined
+        : await discoverProjectCapabilityCatalogs(projectLocation.projectRoot, {
+            includeNonPolicies: false,
+            ...(options.signal === undefined ? {} : { signal: options.signal }),
+          }).then(
+            async (catalogs) =>
+              await snapshotSelectedPolicyPackages(
+                catalogs.policies,
+                policyReferences.map(({ name, version }) => ({ name, version })),
+                { ...(options.signal === undefined ? {} : { signal: options.signal }) },
+              ),
+          );
+
+  options.signal?.throwIfAborted();
 
   return resolveFlowConfig({
-    ...(operatorInput === null
+    ...(operator === undefined
       ? {}
       : {
           operator: {
             path: operatorPath,
-            config: parseOperatorConfig(operatorInput, operatorPath),
+            config: operator,
           },
         }),
-    ...(projectLocation === null || projectInput === null
+    ...(projectLocation === null || project === undefined
       ? {}
       : {
           project: {
             path: projectLocation.path,
-            config: parseProjectConfig(projectInput, projectLocation.path),
+            config: project,
           },
           projectRoot: projectLocation.projectRoot,
         }),
+    ...(policyPackages === undefined ? {} : { policyPackages }),
   });
+}
+
+export async function locateFlowProjectRoot(
+  options: FlowConfigLocationOptions = {},
+): Promise<string | null> {
+  const cwd = await canonicalDirectory(
+    options.cwd ?? process.cwd(),
+    "configuration working directory",
+  );
+  return (await discoverProjectConfig(cwd))?.projectRoot ?? null;
 }
 
 export async function initializeFlowProject(

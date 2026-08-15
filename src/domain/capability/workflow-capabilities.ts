@@ -155,7 +155,10 @@ export function bindWorkflowCapabilities(
           `capability snapshot contains workflow package "${unexpectedWorkflow.name}" version "${unexpectedWorkflow.version}" that workflow "${workflow.id}" does not select`,
         );
       }
-      if ((boundSnapshot.activations?.length ?? 0) === 0) {
+      if (
+        (boundSnapshot.activations?.length ?? 0) === 0 &&
+        !boundSnapshot.packages.some((item) => item.kind === "policy-package")
+      ) {
         throw new WorkflowCapabilityError(
           "invalid_snapshot",
           "capability snapshot contains no recognized package or activation",

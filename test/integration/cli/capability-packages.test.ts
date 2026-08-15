@@ -48,6 +48,7 @@ describe("capability package CLI", () => {
     const installed = captureIo();
     const listed = captureIo();
     const inspected = captureIo();
+    const policyInspected = captureIo();
     const verified = captureIo();
     const removed = captureIo();
 
@@ -75,6 +76,13 @@ describe("capability package CLI", () => {
     expect(await main(["packages", "verify"], verified.io, cliDependencies)).toBe(0);
     expect(
       await main(
+        ["policies", "inspect", "restricted-review", "--version", "1.0.0"],
+        policyInspected.io,
+        cliDependencies,
+      ),
+    ).toBe(0);
+    expect(
+      await main(
         ["packages", "remove", "review-suite", "--version", "1.0.0"],
         removed.io,
         cliDependencies,
@@ -91,7 +99,10 @@ describe("capability package CLI", () => {
       name: "review-suite",
       version: "1.0.0",
       digest: `sha256:${sha256}`,
-      packages: [{ kind: "verifier-package", name: "evidence-review", version: "1.2.0" }],
+      packages: expect.arrayContaining([
+        { kind: "verifier-package", name: "evidence-review", version: "1.2.0" },
+        { kind: "policy-package", name: "restricted-review", version: "1.0.0" },
+      ]),
     });
     expect(JSON.parse(listed.stdout[0] ?? "null")).toMatchObject({
       bundles: [{ name: "review-suite", version: "1.0.0", digest: `sha256:${sha256}` }],
@@ -100,14 +111,22 @@ describe("capability package CLI", () => {
       valid: true,
       name: "review-suite",
       version: "1.0.0",
-      packages: [{ kind: "verifier-package", name: "evidence-review", version: "1.2.0" }],
+      packages: expect.arrayContaining([
+        { kind: "verifier-package", name: "evidence-review", version: "1.2.0" },
+        { kind: "policy-package", name: "restricted-review", version: "1.0.0" },
+      ]),
     });
     expect(inspected.stdout.join("\n")).not.toContain("manifestBase64");
     expect(inspected.stdout.join("\n")).not.toContain("Reject unsupported claims");
+    expect(JSON.parse(policyInspected.stdout[0] ?? "null")).toMatchObject({
+      name: "restricted-review",
+      version: "1.0.0",
+      definition: { tools: { allowed: ["read"] } },
+    });
     expect(JSON.parse(verified.stdout[0] ?? "null")).toEqual({
       valid: true,
       bundles: 1,
-      packages: 1,
+      packages: 2,
     });
     expect(JSON.parse(removed.stdout[0] ?? "null")).toMatchObject({
       status: "removed",
@@ -165,6 +184,7 @@ describe("capability package CLI", () => {
     const installed = captureIo();
     const listed = captureIo();
     const verified = captureIo();
+    const policyInspected = captureIo();
 
     expect(
       await main(
@@ -183,6 +203,13 @@ describe("capability package CLI", () => {
     ).toBe(0);
     expect(await main(["packages", "list"], listed.io, cliDependencies)).toBe(0);
     expect(await main(["packages", "verify"], verified.io, cliDependencies)).toBe(0);
+    expect(
+      await main(
+        ["policies", "inspect", "restricted-review", "--version", "1.0.0"],
+        policyInspected.io,
+        cliDependencies,
+      ),
+    ).toBe(0);
 
     expect(acquire).toHaveBeenCalledOnce();
     expect(verifyPublisher).toHaveBeenCalledWith(created.content, signatureBundle, publisher);
@@ -213,7 +240,12 @@ describe("capability package CLI", () => {
     expect(JSON.parse(verified.stdout[0] ?? "null")).toEqual({
       valid: true,
       bundles: 1,
-      packages: 1,
+      packages: 2,
+    });
+    expect(JSON.parse(policyInspected.stdout[0] ?? "null")).toMatchObject({
+      name: "restricted-review",
+      version: "1.0.0",
+      definition: { tools: { allowed: ["read"] } },
     });
   });
 
@@ -273,6 +305,7 @@ describe("capability package CLI", () => {
     const source = join(project, "review-source");
     await writeBundleSource(source);
     await writeWorkflowBundlePackage(source);
+    await writePolicyBundlePackage(source);
     const first = join(project, "review-a.flowpkg");
     const second = join(project, "review-b.flowpkg");
     const firstOutput = captureIo();
@@ -300,6 +333,7 @@ describe("capability package CLI", () => {
       name: "review-suite",
       version: "1.0.0",
       packages: [
+        { kind: "policy-package", name: "restricted-review", version: "1.0.0" },
         { kind: "verifier-package", name: "evidence-review", version: "1.2.0" },
         { kind: "workflow-package", name: "release-check", version: "1.0.0" },
       ],
@@ -462,7 +496,10 @@ function bundle() {
     name: "review-suite",
     version: "1.0.0",
     description: "Review capabilities.",
-    packages: [{ kind: "verifier-package", manifest: Buffer.from(verifierManifest()) }],
+    packages: [
+      { kind: "verifier-package", manifest: Buffer.from(verifierManifest()) },
+      { kind: "policy-package", manifest: Buffer.from(policyManifest()) },
+    ],
   });
 }
 
@@ -480,6 +517,19 @@ metadata:
 spec:
   kind: model
   prompt: Reject unsupported claims.
+`;
+}
+
+function policyManifest(): string {
+  return `apiVersion: flow.synapti.ai/v1alpha1
+kind: PolicyPackage
+metadata:
+  name: restricted-review
+  version: 1.0.0
+  description: Restrict review workflows.
+spec:
+  tools:
+    allowed: [read]
 `;
 }
 
@@ -547,6 +597,12 @@ spec:
         command: { executable: /usr/bin/true }
 `,
   );
+}
+
+async function writePolicyBundlePackage(source: string): Promise<void> {
+  const policyRoot = join(source, "policies", "restricted-review");
+  await mkdir(policyRoot, { recursive: true });
+  await writeFile(join(policyRoot, "POLICY.yaml"), policyManifest());
 }
 
 async function createEmptyDirectories(root: string, count: number): Promise<void> {

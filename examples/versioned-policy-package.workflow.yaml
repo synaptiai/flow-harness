@@ -1,0 +1,23 @@
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata:
+  id: versioned-policy-package
+budget:
+  maxNodeStarts: 2
+  maxModelTokens: 10000
+  maxCostUsd: 1
+  maxExecutionMs: 120000
+  maxArtifactBytes: 4096
+nodes:
+  - id: review
+    type: agent
+    agent:
+      prompt: Read the project and return a short JSON string with the review result.
+      model: { provider: openai, id: gpt-5.4 }
+      tools: [read]
+  - id: publish
+    type: result
+    dependsOn: [review]
+    result:
+      source: { nodeId: review, field: agent.text }
+      schema: { type: string, maxLength: 4096 }

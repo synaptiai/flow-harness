@@ -61,7 +61,10 @@ import {
 } from "../domain/adaptation/prompt-candidate-generation.js";
 import {
   type CapabilitySnapshot,
+  calculateCapabilitySnapshotDigest,
   combineCapabilitySnapshots,
+  type PolicyPackageCapabilitySnapshot,
+  validateCapabilitySnapshot,
 } from "../domain/capability/agent-skills.js";
 import { assertCapabilityBundleSha256 } from "../domain/capability/capability-bundles.js";
 import {
@@ -95,6 +98,10 @@ import {
   createTuningEvidencePacket,
   TuningEvidenceError,
 } from "../domain/evaluation/tuning-evidence.js";
+import {
+  assertWorkflowSatisfiesPolicyPackages,
+  PolicyPackageAdmissionError,
+} from "../domain/policy/policy-package-admission.js";
 import { type RunStatus, reduceRunEvents } from "../domain/run/events.js";
 import {
   WorkflowCompilationError,
@@ -110,12 +117,13 @@ import {
   writeCanonicalEvaluationExport,
 } from "../infrastructure/fs/evaluation-report-exporter.js";
 import {
-  type FlowConfigLocationOptions,
   FlowConfigStoreError,
   type InitializedFlowProject,
   type InitializeFlowProjectOptions,
   initializeFlowProject,
+  type LoadEffectiveFlowConfigOptions,
   loadEffectiveFlowConfig,
+  locateFlowProjectRoot,
 } from "../infrastructure/fs/flow-config-store.js";
 import { AdmissionStoreError } from "../infrastructure/fs/jsonl-admission-store.js";
 import { JsonlRunStore, RunStoreError } from "../infrastructure/fs/jsonl-run-store.js";
@@ -144,6 +152,11 @@ import {
   LocalEvaluationStore,
   type StoredEvaluation,
 } from "../infrastructure/fs/local-evaluation-store.js";
+import {
+  PolicyPackageCatalogError,
+  type ProjectPolicyPackageCatalog,
+  snapshotSelectedPolicyPackages,
+} from "../infrastructure/fs/local-policy-package-catalog.js";
 import {
   LocalPromptActivationStore,
   PromptActivationStoreError,
@@ -231,6 +244,9 @@ Usage:
   flow workflows list
   flow workflows inspect <name> --version <exact>
   flow workflows validate
+  flow policies list
+  flow policies inspect <name> --version <exact>
+  flow policies validate
   flow packages install <https-url> --sha256 <64-lowercase-hex>
   flow packages install-oci <registry/repository@sha256:digest> --certificate-issuer <https-url> --certificate-identity <exact>
   flow packages pack <source-directory> --output <bundle.flowpkg>
@@ -320,7 +336,7 @@ export interface CliDependencies {
     directory: string,
     options?: InitializeFlowProjectOptions,
   ) => Promise<InitializedFlowProject>;
-  readonly loadConfig: (options?: FlowConfigLocationOptions) => Promise<EffectiveFlowConfig>;
+  readonly loadConfig: (options?: LoadEffectiveFlowConfigOptions) => Promise<EffectiveFlowConfig>;
   readonly capabilityBundleFetcher: CapabilityBundleFetcher;
   readonly ociCapabilityRegistry: StrictOciCapabilityRegistry;
   readonly sigstoreCapabilityVerifier: SigstoreCapabilityVerifier;
@@ -330,6 +346,7 @@ export interface CliDependencies {
     readonly cwd: string;
     readonly signal: AbortSignal | undefined;
   }) => Promise<PrimeOciPreparationResult>;
+  readonly runSupervisorDaemon: typeof runSupervisorDaemon;
   readonly signal?: AbortSignal;
 }
 
@@ -375,6 +392,8 @@ export async function main(
         return await toolsCommand(args.slice(1), io, dependencyOverrides);
       case "workflows":
         return await workflowsCommand(args.slice(1), io, dependencyOverrides);
+      case "policies":
+        return await policiesCommand(args.slice(1), io, dependencyOverrides);
       case "packages":
         return await packagesCommand(args.slice(1), io, dependencyOverrides);
       case "candidate":
@@ -445,9 +464,14 @@ export async function main(
       error instanceof VerifierPackageCatalogError ||
       error instanceof ToolPackageCatalogError ||
       error instanceof WorkflowPackageCatalogError ||
+      error instanceof PolicyPackageAdmissionError ||
       error instanceof WorkflowCapabilityError
     ) {
       io.stderr(`${error.code}: ${error.message}`);
+      return 1;
+    }
+    if (error instanceof PolicyPackageCatalogError) {
+      io.stderr(`${error.code}: ${publicPolicyPackageCatalogMessage(error.code)}`);
       return 1;
     }
     if (error instanceof RunStoreError) {
@@ -872,6 +896,86 @@ async function workflowsCommand(
   for (const item of catalog.packages) {
     const snapshot = await loadPackage({ name: item.name, version: item.version });
     await admitWorkflowPackages({ source: { kind: "package", snapshot }, loadPackage });
+  }
+  io.stdout(
+    JSON.stringify(
+      {
+        valid: true,
+        root: catalog.root,
+        packages: catalog.packages.map((item) => `${item.name}@${item.version}`),
+      },
+      null,
+      2,
+    ),
+  );
+  return 0;
+}
+
+async function policiesCommand(
+  args: readonly string[],
+  io: CliIo,
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  const { positionals, values } = parseCommandArgs(args, {
+    version: { type: "string" },
+  });
+  const subcommand = positionals[0];
+  if (
+    (subcommand !== "list" && subcommand !== "validate" && subcommand !== "inspect") ||
+    (subcommand === "inspect" ? positionals.length !== 2 : positionals.length !== 1) ||
+    (subcommand === "inspect" ? values.version === undefined : values.version !== undefined)
+  ) {
+    throw new CliUsageError(
+      "policies requires list, validate, or inspect <name> --version <exact>",
+    );
+  }
+  const dependencies = configDependenciesFrom(overrides);
+  const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
+  const catalog = await discoverConfiguredPolicyPackages(config, dependencies.signal);
+
+  if (subcommand === "list") {
+    io.stdout(
+      JSON.stringify(
+        {
+          root: catalog.root,
+          packages: catalog.packages.map(({ directory: _directory, ...item }) => item),
+        },
+        null,
+        2,
+      ),
+    );
+    return 0;
+  }
+
+  if (subcommand === "inspect") {
+    const name = positionals[1];
+    const version = values.version;
+    if (name === undefined || version === undefined) {
+      throw new CliUsageError("policies inspect requires <name> --version <exact>");
+    }
+    const snapshot = await snapshotSelectedPolicyPackages(
+      catalog,
+      [{ name, version }],
+      dependencies.signal === undefined ? {} : { signal: dependencies.signal },
+    );
+    const selected = snapshot.packages.find((item) => item.kind === "policy-package");
+    if (selected === undefined) {
+      throw new PolicyPackageCatalogError(
+        "missing_package",
+        `policy package "${name}" version "${version}" was not captured`,
+      );
+    }
+    const { contentBase64: _contentBase64, ...manifest } = selected.manifest;
+    io.stdout(JSON.stringify({ ...selected, manifest }, null, 2));
+    return 0;
+  }
+
+  for (const item of catalog.packages) {
+    await snapshotSelectedPolicyPackages(
+      catalog,
+      [{ name: item.name, version: item.version }],
+      dependencies.signal === undefined ? {} : { signal: dependencies.signal },
+    );
   }
   io.stdout(
     JSON.stringify(
@@ -1895,18 +1999,24 @@ async function resumeCommand(
   );
   const runId = requireStringOption(values["run-id"], "resume requires --run-id <id>");
   const dependencies = dependenciesFrom(overrides);
-  const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
-  const runsDirectory = resolveRunsDirectory(dependencies.cwd, values["runs-dir"], config);
+  const runsDirectory = await resolveRecoveryRunsDirectory(dependencies.cwd, values["runs-dir"]);
   const store = dependencies.createStore(runsDirectory);
   // Durable history is read without claiming ownership so package bytes can be reconstructed
   // before recovery performs its authoritative claim and compatibility checks.
   const durableState = reduceRunEvents(await store.read(runId));
   const capabilitySnapshot = durableState.capabilitySnapshot ?? undefined;
+  const policyPackages = selectPolicyPackageSnapshot(capabilitySnapshot);
+  const config = await dependencies.loadConfig({
+    cwd: dependencies.cwd,
+    ...(policyPackages === undefined ? {} : { policyPackages }),
+  });
+  assertCurrentPolicyPackageSnapshot(config, capabilitySnapshot, runId);
   const admitted = await admitResumeWorkflowArgument(
     workflowArgument,
     capabilitySnapshot,
     dependencies,
   );
+  assertWorkflowSatisfiesPolicyPackages(admitted.workflow, capabilitySnapshot);
   const executionCwd = resolve(dependencies.cwd, values.cwd ?? ".");
   const protectedPaths = resolveRunProtectedPaths(runsDirectory, config);
   const commandId = detachedCommandId(values["command-id"], detached.enabled);
@@ -1974,6 +2084,7 @@ async function validateCommand(
     admitted.capabilitySnapshot,
     supplementalSnapshot,
   ]);
+  assertWorkflowSatisfiesPolicyPackages(admitted.workflow, capabilitySnapshot);
   const skillCount =
     capabilitySnapshot?.packages.filter((item) => item.kind === "agent-skill").length ?? 0;
   const verifierPackageCount =
@@ -1982,9 +2093,11 @@ async function validateCommand(
     capabilitySnapshot?.packages.filter((item) => item.kind === "tool-package").length ?? 0;
   const workflowPackageCount =
     capabilitySnapshot?.packages.filter((item) => item.kind === "workflow-package").length ?? 0;
+  const policyPackageCount =
+    capabilitySnapshot?.packages.filter((item) => item.kind === "policy-package").length ?? 0;
 
   io.stdout(
-    `Workflow "${admitted.workflow.id}" is valid (nodes: ${admitted.workflow.nodes.length}, criteria: ${admitted.workflow.goal?.criteria.length ?? 0}, skills: ${skillCount}, verifier packages: ${verifierPackageCount}, tool packages: ${toolPackageCount}, workflow packages: ${workflowPackageCount}).`,
+    `Workflow "${admitted.workflow.id}" is valid (nodes: ${admitted.workflow.nodes.length}, criteria: ${admitted.workflow.goal?.criteria.length ?? 0}, skills: ${skillCount}, verifier packages: ${verifierPackageCount}, tool packages: ${toolPackageCount}, workflow packages: ${workflowPackageCount}, policy packages: ${policyPackageCount}).`,
   );
   return 0;
 }
@@ -2014,6 +2127,7 @@ async function runCommand(
     admitted.capabilitySnapshot,
     supplementalSnapshot,
   ]);
+  assertWorkflowSatisfiesPolicyPackages(admitted.workflow, capabilitySnapshot);
   const runsDirectory = resolveRunsDirectory(dependencies.cwd, values["runs-dir"], config);
   const executionCwd = resolve(dependencies.cwd, values.cwd ?? ".");
   const protectedPaths = resolveRunProtectedPaths(runsDirectory, config);
@@ -2255,6 +2369,7 @@ async function internalSupervisorCommand(
   const { positionals, values } = parseCommandArgs(args, {
     "max-active-workers": { type: "string" },
     "max-queued-jobs": { type: "string" },
+    "policy-package-digest": { type: "string" },
     "policy-digest": { type: "string" },
     "runs-dir": { type: "string" },
     "sandbox-profile": { type: "string" },
@@ -2264,8 +2379,8 @@ async function internalSupervisorCommand(
   if (positionals.length !== 0) {
     throw new CliUsageError("internal supervisor accepts no positional arguments");
   }
-  const dependencies = storageDependenciesFrom(overrides);
-  const runsDirectory = resolve(dependencies.cwd, values["runs-dir"] ?? ".flow/runs");
+  const storageDependencies = storageDependenciesFrom(overrides);
+  const runsDirectory = resolve(storageDependencies.cwd, values["runs-dir"] ?? ".flow/runs");
   const supervisor = {
     maxActiveWorkers: parsePositiveIntegerOption(
       requireStringOption(
@@ -2297,7 +2412,11 @@ async function internalSupervisorCommand(
       "internal supervisor requires --sandbox-profile",
     ),
   );
-  if (calculateFlowPolicyDigest(supervisor, sandboxProfile) !== policyDigest) {
+  const policyPackageDigest = values["policy-package-digest"];
+  if (policyPackageDigest !== undefined && !/^[a-f0-9]{64}$/.test(policyPackageDigest)) {
+    throw new CliUsageError("--policy-package-digest requires a SHA-256 hexadecimal digest");
+  }
+  if (calculateFlowPolicyDigest(supervisor, sandboxProfile, policyPackageDigest) !== policyDigest) {
     throw new CliUsageError(
       "--policy-digest does not match the supplied supervisor limits and sandbox profile",
     );
@@ -2310,12 +2429,18 @@ async function internalSupervisorCommand(
     values["startup-owner-token"],
     "internal supervisor requires --startup-owner-token",
   );
-  await runSupervisorDaemon({
+  const runtimeDependencies = dependenciesFrom(overrides);
+  await runtimeDependencies.runSupervisorDaemon({
     store: new LocalSupervisorStore(runsDirectory),
     cliPath: fileURLToPath(import.meta.url),
     startupOwnerToken,
     startupToken,
-    policy: { policyDigest, sandbox: { profile: sandboxProfile }, supervisor },
+    policy: {
+      policyDigest,
+      ...(policyPackageDigest === undefined ? {} : { policyPackageDigest }),
+      sandbox: { profile: sandboxProfile },
+      supervisor,
+    },
     ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
   });
   return 0;
@@ -2489,7 +2614,7 @@ async function resolveWorkflowCapabilitySnapshot(
   const verifierReferences = collectWorkflowVerifierPackageReferences(workflow);
   const toolReferences = collectWorkflowToolPackageReferences(workflow);
   if (names.length === 0 && verifierReferences.length === 0 && toolReferences.length === 0) {
-    return undefined;
+    return config.policyPackages?.snapshot;
   }
   if (config.projectRoot === null) {
     if (names.length > 0) {
@@ -2509,8 +2634,12 @@ async function resolveWorkflowCapabilitySnapshot(
       "tool packages require a Flow project root containing .flow/tools",
     );
   }
-  const catalogs = await discoverProjectCapabilityCatalogs(config.projectRoot);
-  const snapshots: CapabilitySnapshot[] = [];
+  const catalogs = await discoverProjectCapabilityCatalogs(config.projectRoot, {
+    includePolicies: false,
+  });
+  const snapshots: CapabilitySnapshot[] = [
+    ...(config.policyPackages === undefined ? [] : [config.policyPackages.snapshot]),
+  ];
   if (names.length > 0) {
     snapshots.push(await snapshotSelectedAgentSkills(catalogs.agentSkills, names));
   }
@@ -2536,9 +2665,9 @@ async function admitWorkflowArgument(
         "workflow packages require a Flow project root containing .flow/workflows",
       );
     }
-    catalogPromise ??= discoverProjectCapabilityCatalogs(config.projectRoot).then(
-      (catalogs) => catalogs.workflows,
-    );
+    catalogPromise ??= discoverProjectCapabilityCatalogs(config.projectRoot, {
+      includePolicies: false,
+    }).then((catalogs) => catalogs.workflows);
     return await workflowPackageLoader(await catalogPromise)(reference);
   };
   const activationLocator = parseActiveWorkflowLocator(argument);
@@ -2663,6 +2792,39 @@ function combineOptionalCapabilitySnapshots(
   );
 }
 
+function assertCurrentPolicyPackageSnapshot(
+  config: EffectiveFlowConfig,
+  durableSnapshot: CapabilitySnapshot | undefined,
+  runId: string,
+): void {
+  const current = (config.policyPackages?.snapshot.packages ?? [])
+    .filter((item) => item.kind === "policy-package")
+    .map((item) => `${item.name}\0${item.version}\0${item.digest}`);
+  const durable = (durableSnapshot?.packages ?? [])
+    .filter((item) => item.kind === "policy-package")
+    .map((item) => `${item.name}\0${item.version}\0${item.digest}`);
+  if (JSON.stringify(current) !== JSON.stringify(durable)) {
+    throw new RunRecoveryError(
+      "workflow_mismatch",
+      `run "${runId}" policy package snapshot does not match current configuration`,
+    );
+  }
+}
+
+function selectPolicyPackageSnapshot(
+  snapshot: CapabilitySnapshot | undefined,
+): PolicyPackageCapabilitySnapshot | undefined {
+  const packages = (snapshot?.packages ?? []).filter((item) => item.kind === "policy-package");
+  if (packages.length === 0) {
+    return undefined;
+  }
+  return validateCapabilitySnapshot({
+    version: 1,
+    packages,
+    digest: calculateCapabilitySnapshotDigest(packages),
+  }) as PolicyPackageCapabilitySnapshot;
+}
+
 async function discoverConfiguredAgentSkills(
   config: EffectiveFlowConfig,
 ): Promise<ProjectAgentSkillCatalog> {
@@ -2672,7 +2834,8 @@ async function discoverConfiguredAgentSkills(
       "Agent Skills require a Flow project root containing .flow/skills",
     );
   }
-  return (await discoverProjectCapabilityCatalogs(config.projectRoot)).agentSkills;
+  return (await discoverProjectCapabilityCatalogs(config.projectRoot, { includePolicies: false }))
+    .agentSkills;
 }
 
 async function discoverConfiguredVerifierPackages(
@@ -2684,7 +2847,8 @@ async function discoverConfiguredVerifierPackages(
       "verifier packages require a Flow project root containing .flow/verifiers",
     );
   }
-  return (await discoverProjectCapabilityCatalogs(config.projectRoot)).verifiers;
+  return (await discoverProjectCapabilityCatalogs(config.projectRoot, { includePolicies: false }))
+    .verifiers;
 }
 
 async function discoverConfiguredToolPackages(
@@ -2696,7 +2860,8 @@ async function discoverConfiguredToolPackages(
       "tool packages require a Flow project root containing .flow/tools",
     );
   }
-  return (await discoverProjectCapabilityCatalogs(config.projectRoot)).tools;
+  return (await discoverProjectCapabilityCatalogs(config.projectRoot, { includePolicies: false }))
+    .tools;
 }
 
 async function discoverConfiguredWorkflowPackages(
@@ -2708,7 +2873,26 @@ async function discoverConfiguredWorkflowPackages(
       "workflow packages require a Flow project root containing .flow/workflows",
     );
   }
-  return (await discoverProjectCapabilityCatalogs(config.projectRoot)).workflows;
+  return (await discoverProjectCapabilityCatalogs(config.projectRoot, { includePolicies: false }))
+    .workflows;
+}
+
+async function discoverConfiguredPolicyPackages(
+  config: EffectiveFlowConfig,
+  signal: AbortSignal | undefined,
+): Promise<ProjectPolicyPackageCatalog> {
+  if (config.projectRoot === null) {
+    throw new PolicyPackageCatalogError(
+      "missing_package",
+      "policy packages require a Flow project root containing .flow/policies",
+    );
+  }
+  return (
+    await discoverProjectCapabilityCatalogs(config.projectRoot, {
+      includeNonPolicies: false,
+      ...(signal === undefined ? {} : { signal }),
+    })
+  ).policies;
 }
 
 function workflowPackageLoader(
@@ -2757,6 +2941,7 @@ function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies 
     externalHarnessRuntime:
       overrides.externalHarnessRuntime ??
       createLazyProductionExternalHarnessRuntime(externalHarnessRegistry),
+    runSupervisorDaemon: overrides.runSupervisorDaemon ?? runSupervisorDaemon,
     ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
   };
 }
@@ -2775,11 +2960,17 @@ function storageDependenciesFrom(
 
 function configDependenciesFrom(
   overrides: Partial<CliDependencies>,
-): Pick<CliDependencies, "cwd" | "initializeProject" | "loadConfig"> {
+): Pick<CliDependencies, "cwd" | "initializeProject" | "loadConfig" | "signal"> {
+  const loadConfig = overrides.loadConfig ?? loadEffectiveFlowConfig;
   return {
     cwd: overrides.cwd ?? process.cwd(),
     initializeProject: overrides.initializeProject ?? initializeFlowProject,
-    loadConfig: overrides.loadConfig ?? loadEffectiveFlowConfig,
+    loadConfig: async (options = {}) =>
+      await loadConfig({
+        ...options,
+        ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
+      }),
+    ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
   };
 }
 
@@ -2787,15 +2978,42 @@ function boundedCliDiagnostic(message: string): string {
   return message.length <= 8_192 ? message : `${message.slice(0, 8_192)}…`;
 }
 
+function publicPolicyPackageCatalogMessage(code: PolicyPackageCatalogError["code"]): string {
+  switch (code) {
+    case "duplicate_package":
+      return "policy package catalog contains a duplicate package";
+    case "invalid_package":
+      return "policy package catalog contains an invalid package";
+    case "io":
+      return "policy package catalog inspection failed";
+    case "limit_exceeded":
+      return "policy package catalog exceeds its limits";
+    case "missing_package":
+      return "required policy package is unavailable";
+    case "source_changed":
+      return "policy package source changed during capture";
+    case "unsafe_entry":
+      return "policy package catalog contains an unsafe entry";
+    case "version_mismatch":
+      return "policy package version does not match";
+  }
+}
+
 function controlDependenciesFrom(
   overrides: Partial<CliDependencies>,
 ): Pick<
   CliDependencies,
-  "cwd" | "createStore" | "createAgentCommandApprovalChannel" | "loadConfig"
+  "cwd" | "createStore" | "createAgentCommandApprovalChannel" | "loadConfig" | "signal"
 > {
+  const loadConfig = overrides.loadConfig ?? loadEffectiveFlowConfig;
   return {
     ...storageDependenciesFrom(overrides),
-    loadConfig: overrides.loadConfig ?? loadEffectiveFlowConfig,
+    loadConfig: async (options = {}) =>
+      await loadConfig({
+        ...options,
+        ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
+      }),
+    ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
   };
 }
 
@@ -2808,6 +3026,17 @@ function resolveRunsDirectory(
     return resolve(invocationDirectory, explicitRunsDirectory);
   }
   return resolve(config.projectRoot ?? invocationDirectory, ".flow/runs");
+}
+
+async function resolveRecoveryRunsDirectory(
+  invocationDirectory: string,
+  explicitRunsDirectory: string | undefined,
+): Promise<string> {
+  if (explicitRunsDirectory !== undefined) {
+    return resolve(invocationDirectory, explicitRunsDirectory);
+  }
+  const projectRoot = await locateFlowProjectRoot({ cwd: invocationDirectory });
+  return resolve(projectRoot ?? invocationDirectory, ".flow/runs");
 }
 
 function resolveRunProtectedPaths(runsDirectory: string, config: EffectiveFlowConfig): string[] {

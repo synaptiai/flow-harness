@@ -7,6 +7,14 @@ import {
 } from "../adaptation/prompt-activation.js";
 import { agentSkillNameSchema, MAX_AGENT_SKILL_PACKAGES } from "./agent-skill-contract.js";
 import {
+  createPolicyPackageSnapshot,
+  type PolicyPackageSnapshot,
+  type PolicyPackageSnapshotInput,
+  policyPackageIdentityKey,
+  policyPackageSnapshotSchema,
+  validatePolicyPackageSnapshot,
+} from "./policy-packages.js";
+import {
   createToolPackageSnapshot,
   type ToolPackageSnapshot,
   type ToolPackageSnapshotInput,
@@ -91,7 +99,8 @@ export type CapabilityPackageSnapshot =
   | AgentSkillPackageSnapshot
   | VerifierPackageSnapshot
   | ToolPackageSnapshot
-  | WorkflowPackageSnapshot;
+  | WorkflowPackageSnapshot
+  | PolicyPackageSnapshot;
 
 export interface CapabilitySnapshot {
   readonly version: 1;
@@ -114,6 +123,10 @@ export interface ToolPackageCapabilitySnapshot extends CapabilitySnapshot {
 
 export interface WorkflowPackageCapabilitySnapshot extends CapabilitySnapshot {
   readonly packages: readonly WorkflowPackageSnapshot[];
+}
+
+export interface PolicyPackageCapabilitySnapshot extends CapabilitySnapshot {
+  readonly packages: readonly PolicyPackageSnapshot[];
 }
 
 export interface AgentSkillPackageSnapshotInput
@@ -181,6 +194,7 @@ const capabilitySnapshotSchema = z
           verifierPackageSnapshotSchema,
           toolPackageSnapshotSchema,
           workflowPackageSnapshotSchema,
+          policyPackageSnapshotSchema,
         ]),
       )
       .max(MAX_AGENT_SKILL_PACKAGES),
@@ -256,18 +270,34 @@ export function createCapabilitySnapshot(
   workflowInputs: readonly WorkflowPackageSnapshotInput[],
 ): WorkflowPackageCapabilitySnapshot;
 export function createCapabilitySnapshot(
+  inputs: readonly [],
+  verifierInputs: readonly [],
+  toolInputs: readonly [],
+  workflowInputs: readonly [],
+  policyInputs: readonly PolicyPackageSnapshotInput[],
+): PolicyPackageCapabilitySnapshot;
+export function createCapabilitySnapshot(
   inputs: readonly AgentSkillPackageSnapshotInput[],
   verifierInputs: readonly VerifierPackageSnapshotInput[],
   toolInputs?: readonly ToolPackageSnapshotInput[],
   workflowInputs?: readonly WorkflowPackageSnapshotInput[],
+  policyInputs?: readonly PolicyPackageSnapshotInput[],
 ): CapabilitySnapshot;
 export function createCapabilitySnapshot(
   inputs: readonly AgentSkillPackageSnapshotInput[],
   verifierInputs: readonly VerifierPackageSnapshotInput[] = [],
   toolInputs: readonly ToolPackageSnapshotInput[] = [],
   workflowInputs: readonly WorkflowPackageSnapshotInput[] = [],
+  policyInputs: readonly PolicyPackageSnapshotInput[] = [],
 ): CapabilitySnapshot {
-  if (inputs.length + verifierInputs.length + toolInputs.length + workflowInputs.length === 0) {
+  if (
+    inputs.length +
+      verifierInputs.length +
+      toolInputs.length +
+      workflowInputs.length +
+      policyInputs.length ===
+    0
+  ) {
     throw new RangeError("a capability snapshot requires at least one selected package");
   }
   const skills = inputs
@@ -310,6 +340,7 @@ export function createCapabilitySnapshot(
     ...verifierInputs.map(createVerifierPackageSnapshot),
     ...toolInputs.map(createToolPackageSnapshot),
     ...workflowInputs.map(createWorkflowPackageSnapshot),
+    ...policyInputs.map(createPolicyPackageSnapshot),
   ].sort((left, right) => compareStrings(capabilityPackageKey(left), capabilityPackageKey(right)));
   const candidate = {
     version: 1 as const,
@@ -335,6 +366,10 @@ export function validateCapabilitySnapshot(input: unknown): CapabilitySnapshot {
     }
     if (capability.kind === "workflow-package") {
       validateWorkflowPackageSnapshot(capability);
+      continue;
+    }
+    if (capability.kind === "policy-package") {
+      validatePolicyPackageSnapshot(capability);
       continue;
     }
     const skill = capability;
@@ -505,9 +540,12 @@ function capabilityPackageKey(value: CapabilityPackageSnapshot): string {
   if (value.kind === "verifier-package") {
     return verifierPackageIdentityKey(value);
   }
-  return value.kind === "tool-package"
-    ? toolPackageIdentityKey(value)
-    : workflowPackageIdentityKey(value);
+  if (value.kind === "tool-package") {
+    return toolPackageIdentityKey(value);
+  }
+  return value.kind === "workflow-package"
+    ? workflowPackageIdentityKey(value)
+    : policyPackageIdentityKey(value);
 }
 
 function promptActivationKey(value: PromptActivationSnapshot): string {

@@ -1,7 +1,7 @@
 import {
   lstat,
-  mkdtemp,
   mkdir,
+  mkdtemp,
   readdir,
   readFile,
   realpath,
@@ -14,6 +14,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { createPolicyPackageSnapshot } from "../../../src/domain/capability/policy-packages.js";
 import { FLOW_CONFIG_API_VERSION, FlowConfigError } from "../../../src/domain/config/resolver.js";
 import {
   FlowConfigStoreError,
@@ -264,6 +265,65 @@ describe("Flow project configuration", () => {
     });
   });
 
+  it("discovers and snapshots exact configured policy packages before resolution", async () => {
+    const project = await temporaryDirectory("flow-config-policy-");
+    const flowDirectory = join(project, ".flow");
+    const packageDirectory = join(flowDirectory, "policies", "restricted-review");
+    const source = policyManifest("restricted-review", "1.2.3");
+    const snapshot = createPolicyPackageSnapshot({
+      kind: "policy-package",
+      trust: "project-explicit",
+      provenance: ".flow/policies/restricted-review",
+      manifest: { content: source },
+    });
+    await mkdir(packageDirectory, { recursive: true });
+    await writeFile(join(packageDirectory, "POLICY.yaml"), source);
+    await writeFile(
+      join(flowDirectory, "config.yaml"),
+      `${projectConfigHeader()}policies:\n  additional:\n    - name: restricted-review\n      version: 1.2.3\n      digest: ${snapshot.digest}\n`,
+      "utf8",
+    );
+
+    const effective = await loadEffectiveFlowConfig({
+      cwd: project,
+      xdgConfigHome: join(project, "missing-xdg"),
+      homeDirectory: join(project, "missing-home"),
+    });
+
+    expect(effective.policyPackages).toMatchObject({
+      snapshot: {
+        packages: [{ kind: "policy-package", name: "restricted-review", version: "1.2.3" }],
+      },
+      effective: {
+        packages: [{ name: "restricted-review", digest: snapshot.digest }],
+        constraints: { tools: { allowed: ["read"] } },
+      },
+    });
+    expect(effective.sources.project?.policies).toEqual([
+      { name: "restricted-review", version: "1.2.3", digest: snapshot.digest },
+    ]);
+  });
+
+  it("rejects a configured policy before creating runtime state when it is not discovered", async () => {
+    const project = await temporaryDirectory("flow-config-missing-policy-");
+    const flowDirectory = join(project, ".flow");
+    await mkdir(flowDirectory);
+    await writeFile(
+      join(flowDirectory, "config.yaml"),
+      `${projectConfigHeader()}policies:\n  additional:\n    - name: missing-policy\n      version: 1.0.0\n      digest: ${"f".repeat(64)}\n`,
+      "utf8",
+    );
+
+    await expect(
+      loadEffectiveFlowConfig({
+        cwd: project,
+        xdgConfigHome: join(project, "missing-xdg"),
+        homeDirectory: join(project, "missing-home"),
+      }),
+    ).rejects.toMatchObject({ code: "missing_package" });
+    await expect(lstat(join(flowDirectory, "runs"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("rejects an unsafe .flow directory instead of following it", async () => {
     const project = await temporaryDirectory("flow-config-flow-link-");
     const target = await temporaryDirectory("flow-config-flow-link-target-");
@@ -286,4 +346,17 @@ function projectConfigHeader(): string {
 
 function operatorConfigHeader(): string {
   return `apiVersion: ${FLOW_CONFIG_API_VERSION}\nkind: FlowOperatorConfig\n`;
+}
+
+function policyManifest(name: string, version: string): Buffer {
+  return Buffer.from(`apiVersion: flow.synapti.ai/v1alpha1
+kind: PolicyPackage
+metadata:
+  name: ${name}
+  version: ${version}
+  description: Restrict the workflow to read-only tools.
+spec:
+  tools:
+    allowed: [read]
+`);
 }

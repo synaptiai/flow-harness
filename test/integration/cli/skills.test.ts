@@ -105,6 +105,23 @@ describe("Agent Skills CLI", () => {
     });
   });
 
+  it("ignores an unselected invalid policy catalog when resolving an Agent Skill", async () => {
+    const project = await temporaryProject();
+    await writeSkill(project, "review", "Review the repository.");
+    const policyDirectory = join(project, ".flow", "policies", "unselected");
+    await mkdir(policyDirectory, { recursive: true });
+    await writeFile(join(policyDirectory, "POLICY.yaml"), "kind: Invalid\n", "utf8");
+    const workflowPath = join(project, "skilled.workflow.yaml");
+    await writeFile(workflowPath, skilledWorkflowSource(), "utf8");
+    const output = captureIo();
+
+    expect(
+      await main(["validate", workflowPath], output.io, dependencies(project)),
+      output.stderr.join("\n"),
+    ).toBe(0);
+    expect(output.stdout.join("\n")).toContain("skills: 1");
+  });
+
   it("fails workflow validation when a selected package is missing", async () => {
     const project = await temporaryProject();
     const workflowPath = join(project, "missing.workflow.yaml");
