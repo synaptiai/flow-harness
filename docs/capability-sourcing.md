@@ -46,9 +46,15 @@ Pi's experimental `AgentHarness` API is not a foundation for the first release. 
 | Context transformation and compaction | Reuse mechanics | Durable state remains outside context |
 | Session usage statistics | Translate `getSessionStats()` after settlement | Persist only Flow token components and integer micro-USD; Pi totals and transcripts are not authoritative |
 | Session storage | Optional diagnostic artifact | Never authoritative run state; fresh recovery deliberately creates a new in-memory session rather than reopening a Pi transcript |
-| TUI primitives | Optional presentation dependency | Flow owns navigation, language, and approvals |
+| TUI primitives | First-party terminal renderer only | Flow owns the presentation document, safe text, navigation, actions, cursor replay, and terminal lifecycle |
 
 Pi is MIT-licensed. Its fast release cadence and breaking changes create meaningful update risk, so Flow pins exact versions and maintains adapter conformance tests. See the [Pi repository](https://github.com/earendil-works/pi) and [agent-core documentation](https://github.com/earendil-works/pi/blob/main/packages/agent/README.md).
+
+The terminal adapter imports `@earendil-works/pi-tui` only from Flow infrastructure. Domain and
+application modules do not import it. Flow does not use Pi Markdown, hyperlinks, clipboard, image,
+URL-opening, or mouse features. A future UI package can target the Flow presentation contract only
+after a separate package-authority design. The current host does not discover or execute UI package
+content.
 
 ## Imported containment primitive
 

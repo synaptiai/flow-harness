@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
 const applicationRoot = join(repositoryRoot, "src", "application");
+const domainRoot = join(repositoryRoot, "src", "domain");
 
 describe("source dependency boundaries", () => {
   it.each([
@@ -27,6 +28,20 @@ describe("source dependency boundaries", () => {
       const source = await readFile(path, "utf8");
       if (importsInfrastructure(source)) {
         violations.push(relative(repositoryRoot, path));
+      }
+    }
+
+    expect(violations).toEqual([]);
+  });
+
+  it("keeps the Pi terminal renderer outside domain and application modules", async () => {
+    const violations: string[] = [];
+    for (const root of [domainRoot, applicationRoot]) {
+      for (const path of await typescriptFiles(root)) {
+        const source = await readFile(path, "utf8");
+        if (/\b(?:from\s*|import\s*(?:\(\s*)?)["']@earendil-works\/pi-tui["']/u.test(source)) {
+          violations.push(relative(repositoryRoot, path));
+        }
       }
     }
 

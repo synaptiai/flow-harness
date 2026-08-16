@@ -21,7 +21,8 @@ tool packages. It also adds inert workflow packages and deterministic bundle dis
 publisher-authenticated OCI acquisition, a content-addressed project store, and immutable snapshots
 are included.
 
-A TUI, executable extensions, automatic package updates, and UI package types remain later work.
+Flow includes a first-party terminal presentation host over the public run projection. UI package
+types, executable extensions, and automatic package updates remain later work.
 Explicit signed capability metadata provides project-local freshness and revocation. One explicit
 public HTTPS check can stage inert signed candidates for review, while activation remains a
 separate explicit command. Background polling, private channels, online trust-root refresh, and
@@ -89,7 +90,7 @@ The inner loop may propose a transition. It cannot authorize one.
 ## Components and dependency direction
 
 ```text
-CLI / future TUI
+CLI / terminal host
         |
         v
 local supervisor ------> detached worker
@@ -121,6 +122,26 @@ callbacks. Application modules import domain contracts and application-owned por
 infrastructure implementations. The same state-based selector checks recovered history. It never
 executes tools directly. Result, condition, join, loop-check, optimization-check, and controller
 nodes never enter an executor port.
+
+### Terminal presentation host
+
+`flow tui <run-id> --actor <label>` follows the same bounded supervisor event pages as `flow
+events`. The application reduces each page with the authoritative run reducer and projects only a
+strict public `FlowPresentationDocument`. The document has a closed component and action grammar.
+It is not durable state and cannot select a workflow, tool, provider, file, or policy.
+
+All non-Flow display values become terminal-safe text before the infrastructure renderer receives
+them. The Pi terminal package supplies alternate-screen, input, and layout primitives only. It does
+not parse source data, sanitize text, retain run history, or route actions. Flow disables mouse and
+does not use Markdown, hyperlinks, clipboard controls, images, or URL opening. The renderer adds
+only Flow-owned ANSI styling after strict document validation.
+
+An approval, denial, or cancellation keypress carries one current opaque action id. The application
+rebinds that id to the latest validated document and invokes the existing approval or supervisor
+cancellation boundary. The renderer never writes a ledger or supervisor record. A stable command
+UUID identifies cancellation settlement. Non-interactive use fails before configuration,
+supervisor startup, storage access, or terminal takeover. JSON `inspect`, `events`, `approve`,
+`deny`, and `cancel` remain the automation and recovery interfaces.
 
 ### Pi runtime
 
