@@ -121,8 +121,11 @@ containment milestone. It is not VM-grade or multi-tenant isolation.
   Deterministic conjunction produces immutable snapshots before admission.
   Detached, child, and recovery paths remain fail closed.
 
+- Flow has a stable, bounded first-party terminal presentation host. *(Implemented with a
+  renderer-neutral Flow document, terminal-safe text, durable cursor replay, and steering through
+  the existing approval and cancellation controls.)*
 - UI contribution manifests remain planned.
-- Flow does not have a stable presentation host contract.
+- The first-party host does not admit package markup, code, or renderers.
 - OMP-inspired high-value tools are benchmarked before adoption.
 
 ## Gate 7: Adaptive harness

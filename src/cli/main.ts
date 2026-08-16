@@ -57,6 +57,15 @@ import {
   PromptActivationAdmissionError,
 } from "../application/prepare-prompt-activation.js";
 import { runEvaluationTrials } from "../application/run-evaluation.js";
+import {
+  RunPresentationActionController,
+  type RunPresentationControl,
+} from "../application/run-presentation-actions.js";
+import {
+  type RunPresentationEventSource,
+  type RunPresentationRenderer,
+  runPresentationSession,
+} from "../application/run-presentation-session.js";
 import { RunRecoveryError, resumeWorkflow, runWorkflow } from "../application/run-workflow.js";
 import { createSignedCapabilityMetadataVerifier } from "../application/verify-signed-capability-metadata.js";
 import {
@@ -249,6 +258,12 @@ import { createProductionNodeExecutor } from "../infrastructure/runtime/producti
 import { createProductionWorkspaceIsolator } from "../infrastructure/runtime/production-workspace-isolator.js";
 import { createSigstorePublicGoodTrustedRoot } from "../infrastructure/sigstore-public-good-trusted-root.js";
 import {
+  createProcessFlowTerminalRenderer,
+  FlowTerminalRendererError,
+  type InteractiveRunPresentationRenderer,
+  isProcessTerminalInteractive,
+} from "../infrastructure/terminal/flow-terminal-renderer.js";
+import {
   ensureSupervisor,
   requestSupervisor,
   runSupervisorDaemon,
@@ -318,6 +333,7 @@ Usage:
   flow deny <run-id> <request-id> --actor <label> [--reason <text>] [--runs-dir <path>]
   flow cancel <run-id> --actor <label> [--reason <text>] [--command-id <uuid>] [--runs-dir <path>]
   flow events <run-id> [--after <sequence>] [--limit <count>] [--follow] [--runs-dir <path>]
+  flow tui <run-id> --actor <label> [--runs-dir <path>]
   flow inspect <run-id> [--runs-dir <path>]
   flow supervisor status [--runs-dir <path>]
   flow supervisor shutdown [--runs-dir <path>]
@@ -394,6 +410,11 @@ export interface CliDependencies {
     readonly signal: AbortSignal | undefined;
   }) => Promise<PrimeOciPreparationResult>;
   readonly runSupervisorDaemon: typeof runSupervisorDaemon;
+  readonly isInteractiveTerminal: () => boolean;
+  readonly createTerminalPresentationRenderer: (options: {
+    readonly onAction: (actionId: string) => Promise<void>;
+    readonly onExit: () => void;
+  }) => InteractiveRunPresentationRenderer;
   readonly signal?: AbortSignal;
 }
 
@@ -467,6 +488,8 @@ export async function main(
         return await cancelCommand(args.slice(1), io, dependencyOverrides);
       case "events":
         return await eventsCommand(args.slice(1), io, dependencyOverrides);
+      case "tui":
+        return await tuiCommand(args.slice(1), dependencyOverrides);
       case "inspect":
         return await inspectCommand(args.slice(1), io, dependencyOverrides);
       case "supervisor":
@@ -548,6 +571,10 @@ export async function main(
     }
     if (error instanceof SupervisorCommandError) {
       io.stderr(`${error.code}: ${error.message}`);
+      return 1;
+    }
+    if (error instanceof FlowTerminalRendererError) {
+      io.stderr(error.message);
       return 1;
     }
     if (error instanceof RunRecoveryError) {
@@ -2399,39 +2426,55 @@ async function approvalDecisionCommand(
   const dependencies = controlDependenciesFrom(overrides);
   const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
   const runsDirectory = resolveRunsDirectory(dependencies.cwd, values["runs-dir"], config);
-  const store = dependencies.createStore(runsDirectory);
-  const agentSubmission = await trySubmitAgentCommandApprovalDecision({
+  const result = await submitApprovalDecision({
     runId,
     requestId,
     actor,
-    store,
+    ...(decision === "approve"
+      ? { decision }
+      : {
+          decision,
+          ...(values.reason === undefined ? {} : { reason: values.reason }),
+        }),
+    store: dependencies.createStore(runsDirectory),
     sink: dependencies.createAgentCommandApprovalChannel(runsDirectory),
-    ...(decision === "approve"
-      ? { decision }
-      : {
-          decision,
-          ...(values.reason === undefined ? {} : { reason: values.reason }),
-        }),
-  });
-  if (agentSubmission !== null) {
-    io.stdout(JSON.stringify(agentSubmission, null, 2));
-    return 0;
-  }
-  const state = await decideApproval({
-    runId,
-    requestId,
-    actor,
-    store,
-    ...(decision === "approve"
-      ? { decision }
-      : {
-          decision,
-          ...(values.reason === undefined ? {} : { reason: values.reason }),
-        }),
   });
 
-  io.stdout(JSON.stringify(projectPublicRunOutput(state), null, 2));
+  io.stdout(JSON.stringify(projectPublicRunOutput(result), null, 2));
   return 0;
+}
+
+async function submitApprovalDecision(input: {
+  readonly runId: string;
+  readonly requestId: string;
+  readonly actor: string;
+  readonly decision: "approve" | "deny";
+  readonly reason?: string;
+  readonly store: RecoverableRunEventStore;
+  readonly sink: AgentCommandApprovalDecisionChannel;
+}): Promise<unknown> {
+  const decision =
+    input.decision === "approve"
+      ? {
+          runId: input.runId,
+          requestId: input.requestId,
+          actor: input.actor,
+          decision: input.decision,
+          store: input.store,
+        }
+      : {
+          runId: input.runId,
+          requestId: input.requestId,
+          actor: input.actor,
+          decision: input.decision,
+          ...(input.reason === undefined ? {} : { reason: input.reason }),
+          store: input.store,
+        };
+  const agentSubmission = await trySubmitAgentCommandApprovalDecision({
+    ...decision,
+    sink: input.sink,
+  });
+  return agentSubmission ?? (await decideApproval(decision));
 }
 
 async function resumeCommand(
@@ -2694,16 +2737,35 @@ async function cancelCommand(
   const dependencies = controlDependenciesFrom(overrides);
   const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
   const runsDirectory = resolveRunsDirectory(dependencies.cwd, values["runs-dir"], config);
-  const store = new LocalSupervisorStore(runsDirectory);
-  await ensureSupervisor(store, fileURLToPath(import.meta.url), config);
+  const result = await submitSupervisorCancellation({
+    runId,
+    actor,
+    commandId,
+    ...(values.reason === undefined ? {} : { reason: values.reason }),
+    store: new LocalSupervisorStore(runsDirectory),
+    config,
+  });
+  io.stdout(JSON.stringify(result, null, 2));
+  return 0;
+}
+
+async function submitSupervisorCancellation(input: {
+  readonly runId: string;
+  readonly actor: string;
+  readonly commandId: string;
+  readonly reason?: string;
+  readonly store: LocalSupervisorStore;
+  readonly config: SupervisorPolicy;
+}): Promise<SupervisorResult> {
+  await ensureSupervisor(input.store, fileURLToPath(import.meta.url), input.config);
   const result = requireSupervisorSuccess(
-    await requestSupervisor(store, {
+    await requestSupervisor(input.store, {
       type: "cancel",
-      policyDigest: config.policyDigest,
-      commandId,
-      runId,
-      actor,
-      ...(values.reason === undefined ? {} : { reason: values.reason }),
+      policyDigest: input.config.policyDigest,
+      commandId: input.commandId,
+      runId: input.runId,
+      actor: input.actor,
+      ...(input.reason === undefined ? {} : { reason: input.reason }),
     }),
   );
   if (result.type !== "cancelled") {
@@ -2712,8 +2774,7 @@ async function cancelCommand(
       "supervisor returned a non-cancellation result",
     );
   }
-  io.stdout(JSON.stringify(result, null, 2));
-  return 0;
+  return result;
 }
 
 async function eventsCommand(
@@ -2768,6 +2829,161 @@ async function eventsCommand(
     }
     await delay(100);
   }
+}
+
+async function tuiCommand(
+  args: readonly string[],
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  const { positionals, values } = parseCommandArgs(args, {
+    actor: { type: "string" },
+    "runs-dir": { type: "string" },
+  });
+  const runId = requireSinglePositional(positionals, "tui requires one run id");
+  const actor = requireStringOption(values.actor, "tui requires --actor <label>");
+  const isInteractive = overrides.isInteractiveTerminal ?? isProcessTerminalInteractive;
+  if (!isInteractive()) {
+    throw new CliUsageError("tui requires an interactive input and output terminal");
+  }
+
+  const dependencies = dependenciesFrom(overrides);
+  const exitController = new AbortController();
+  const signal =
+    dependencies.signal === undefined
+      ? exitController.signal
+      : AbortSignal.any([dependencies.signal, exitController.signal]);
+  signal.throwIfAborted();
+  const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
+  signal.throwIfAborted();
+  const runsDirectory = resolveRunsDirectory(dependencies.cwd, values["runs-dir"], config);
+  const supervisorStore = new LocalSupervisorStore(runsDirectory);
+  await ensureSupervisor(supervisorStore, fileURLToPath(import.meta.url), config);
+  signal.throwIfAborted();
+  const runStore = dependencies.createStore(runsDirectory);
+  const approvalChannel = dependencies.createAgentCommandApprovalChannel(runsDirectory);
+  const control: RunPresentationControl = {
+    decide: async (input) =>
+      await submitApprovalDecision({ ...input, store: runStore, sink: approvalChannel }),
+    cancel: async (input) =>
+      await submitSupervisorCancellation({
+        ...input,
+        store: supervisorStore,
+        config,
+      }),
+  };
+  const actionController = new RunPresentationActionController({
+    runId,
+    actor,
+    control,
+    createCommandId: randomUUID,
+    signal,
+  });
+  let actionTail: Promise<void> = Promise.resolve();
+  let exitRequested = false;
+  const requestExit = () => {
+    if (exitRequested) {
+      return;
+    }
+    exitRequested = true;
+    void actionTail.then(() => exitController.abort(new TuiExitRequested()));
+  };
+  const renderer = dependencies.createTerminalPresentationRenderer({
+    onAction: (actionId) => {
+      if (exitRequested) {
+        return Promise.reject(new TuiExitRequested());
+      }
+      const operation = actionController.execute(actionId).then((result) => {
+        if (isQueuedCancellationResult(result)) {
+          requestExit();
+        }
+      });
+      actionTail = operation.then(
+        () => undefined,
+        () => undefined,
+      );
+      return operation;
+    },
+    onExit: requestExit,
+  });
+  const sessionRenderer: RunPresentationRenderer = {
+    render: async (document) => {
+      actionController.update(document);
+      await renderer.render(document);
+    },
+    close: async () => {
+      await actionTail;
+      await renderer.close();
+    },
+  };
+  const source: RunPresentationEventSource = {
+    readPage: async (input) => {
+      const result = requireSupervisorSuccess(
+        await requestSupervisor(supervisorStore, {
+          type: "events",
+          policyDigest: config.policyDigest,
+          runId: input.runId,
+          afterSequence: input.afterSequence,
+          limit: input.limit,
+        }),
+      );
+      if (result.type !== "events") {
+        throw new SupervisorCommandError(
+          "protocol_invalid",
+          "supervisor returned a non-event result",
+        );
+      }
+      return {
+        type: result.type,
+        events: result.events,
+        cursor: result.cursor,
+        terminal: result.terminal,
+      };
+    },
+  };
+
+  renderer.start();
+  let hasSessionError = false;
+  let sessionError: unknown;
+  let state: Awaited<ReturnType<typeof runPresentationSession>> | undefined;
+  try {
+    state = await runPresentationSession({
+      runId,
+      source,
+      renderer: sessionRenderer,
+      waitForMore: async (waitSignal) => {
+        await delay(100, undefined, waitSignal === undefined ? undefined : { signal: waitSignal });
+      },
+      signal,
+    });
+  } catch (error) {
+    hasSessionError = true;
+    sessionError = error;
+  }
+
+  await actionTail;
+  if (hasSessionError) {
+    if (sessionError instanceof TuiExitRequested) {
+      return 0;
+    }
+    throw sessionError;
+  }
+  if (state === undefined) {
+    throw new Error("Flow terminal presentation ended without run state");
+  }
+  return runStateExitCode(state.status);
+}
+
+function isQueuedCancellationResult(input: unknown): boolean {
+  if (typeof input !== "object" || input === null) {
+    return false;
+  }
+  const result = input as Record<string, unknown>;
+  return (
+    result.type === "cancelled" &&
+    result.phase === "queued" &&
+    result.lastSequence === null &&
+    result.runStatus === "cancelled"
+  );
 }
 
 async function supervisorCommand(
@@ -3428,6 +3644,9 @@ function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies 
       overrides.externalHarnessRuntime ??
       createLazyProductionExternalHarnessRuntime(externalHarnessRegistry),
     runSupervisorDaemon: overrides.runSupervisorDaemon ?? runSupervisorDaemon,
+    isInteractiveTerminal: overrides.isInteractiveTerminal ?? isProcessTerminalInteractive,
+    createTerminalPresentationRenderer:
+      overrides.createTerminalPresentationRenderer ?? createProcessFlowTerminalRenderer,
     ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
   };
 }
@@ -3644,6 +3863,14 @@ async function awaitWithCancellationPrecedence<T>(
 
 class CliUsageError extends Error {
   override readonly name = "CliUsageError";
+}
+
+class TuiExitRequested extends Error {
+  override readonly name = "TuiExitRequested";
+
+  constructor() {
+    super("Flow terminal presentation exit requested");
+  }
 }
 
 class SupervisorCommandError extends Error {

@@ -1077,6 +1077,31 @@ conflict. Submission acceptance, deterministic rejection, and uncertain launch a
 uncertain submission is reconciled only from its authenticated worker, while an uncertain
 cancellation is reconciled from the ledger rather than dispatched again.
 
+### Follow and steer a run in a terminal
+
+Use the first-party terminal host from an interactive terminal:
+
+```sh
+node dist/cli/main.js tui background-run --actor local:daniel
+```
+
+The view follows the authoritative event cursor and shows bounded public run state. Use `j` and
+`k`, or the arrow keys, to select an action. Press Enter to submit the current approval, denial, or
+cancellation action. Press `q` or Ctrl-C to leave the view. Leaving the view does not cancel the
+run.
+
+The host accepts only Flow's closed presentation document. It replaces terminal controls and
+ambiguous Unicode formatting in untrusted values before rendering. Pi supplies terminal layout and
+input primitives. It does not receive durable authority, raw capability bytes, private error
+causes, provider credentials, filesystem paths, or arbitrary markup. Mouse input, Markdown,
+hyperlinks, URL opening, clipboard controls, images, package renderers, and executable UI content
+are not enabled.
+
+The command requires interactive stdin and stdout. It rejects redirected or non-interactive use
+before configuration, supervisor, storage, or terminal mutation. Use the unchanged JSON `inspect`,
+`events`, `approve`, `deny`, and `cancel` commands for scripts, redirected output, or explicit
+recovery.
+
 ### Approve an exact command
 
 The approval example stops before sandbox preparation or process spawn and exits with code 3:

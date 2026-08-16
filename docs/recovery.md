@@ -128,6 +128,13 @@ result. A later client can page ledger events, follow to a terminal event, or ca
 work with
 `flow cancel <run-id> --actor <label> [--reason <text>] [--command-id <uuid>]`.
 
+The terminal host retains no separate run history or mutation authority. After a terminal failure,
+signal, or operator exit, it stops input and restores the terminal exactly once. An approval or
+cancellation that already crossed its mutation boundary settles through the existing durable
+control before the host reports the result. Reopen `flow tui` to replay from sequence zero, or use
+the JSON `inspect`, `events`, `approve`, `deny`, and `cancel` commands. A renderer failure never
+advances or repairs the run ledger.
+
 Flow generates command ids when omitted. A caller that needs retry safety across a lost response
 must persist a UUID before the first request and reuse it with byte-equivalent input. A reused key
 with different input is rejected. Submission commands are journaled before admission: exact retries

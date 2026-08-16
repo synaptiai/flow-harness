@@ -48,7 +48,7 @@ jobs:
       - name: Install sandbox system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes bubblewrap ca-certificates curl ripgrep socat
+          sudo apt-get install --yes bubblewrap ca-certificates curl ripgrep socat util-linux
           # GitHub's ephemeral Ubuntu 24.04 runner otherwise strips the user-namespace
           # capabilities required by SRT's bubblewrap and seccomp layers.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
