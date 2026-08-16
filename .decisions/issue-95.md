@@ -13,9 +13,9 @@ stable presentation-host contract. No Flow-owned presentation model currently co
 flows.
 
 Defining a third-party presentation manifest first would create an unused ABI. It would not prove
-how the host derives public state, follows a durable cursor, maps actions to existing controls,
-neutralizes hostile terminal text, or restores terminal ownership. Issue #95 therefore builds the
-first-party host before admitting any presentation package.
+public-state derivation, cursor following, or action routing. It would not prove hostile-text
+neutralization or terminal restoration. Issue #95 therefore builds the first-party host before it
+admits any presentation package.
 
 Run and event state can contain workflow-, model-, tool-, provider-, and operator-derived strings.
 Those values are bounded for durable storage, but they are not terminal-safe presentation data.
@@ -25,22 +25,22 @@ mutating a ledger or supervisor.
 ## External evidence
 
 - [MITRE CWE-150](https://cwe.mitre.org/data/definitions/150.html) describes terminal escape
-  sequence injection through untrusted output, including cursor movement, screen clearing, fake
-  prompts, and terminal-specific side effects. Flow therefore treats every non-Flow display value
-  as inert text before adding renderer styling.
+  sequence injection through untrusted output. Examples include cursor movement, screen clearing,
+  fake prompts, and terminal-specific side effects. Flow therefore treats every non-Flow display
+  value as inert text before adding renderer styling.
 
 - The [Model Context Protocol Apps extension](https://modelcontextprotocol.io/extensions/apps/overview)
-  uses a sandboxed UI resource, capability negotiation, and a message bridge. That is a useful
-  future browser-host precedent, but it also introduces executable HTML and bridge authority that
-  this terminal-only issue deliberately excludes.
+  uses a sandboxed UI resource, capability negotiation, and a message bridge. It is a useful future
+  browser-host precedent. It also introduces executable HTML and bridge authority, which this issue
+  excludes.
 
 - [A2UI](https://github.com/a2ui-project/a2ui) uses declarative data and a client-owned component
   catalog instead of arbitrary UI code. This supports a closed, renderer-neutral Flow document,
   but the evolving external schema is not adopted as Flow's contract.
 
 - [WebAssembly Component Model worlds](https://component-model.bytecodealliance.org/design/worlds.html)
-  explicitly declare imports and exports. They are a possible future executable-extension boundary,
-  but they add a runtime and capability system that are unnecessary for a presentation-only host.
+  explicitly declare imports and exports. They are a possible future executable-extension boundary.
+  They also add an unnecessary runtime and capability system for this presentation-only host.
 
 - [The Update Framework metadata model](https://theupdateframework.io/docs/metadata/) separates
   authenticated target identity, freshness, and application. That supports keeping later package
@@ -68,16 +68,16 @@ The terminal host ranked first in every sensitivity run. The user approved Appro
 ### A. Flow-owned presentation contract plus first-party terminal host — selected
 
 Flow derives one bounded versioned presentation document from its existing public run projection.
-A first-party controller follows the authoritative event cursor, applies events through the existing
-run reducer, renders the document through an injected adapter, and routes actions through the
-existing approval and cancellation boundaries.
+A first-party controller follows the authoritative event cursor and applies events through the
+existing run reducer. It renders through an injected adapter. It routes actions through the existing
+approval and cancellation boundaries.
 
-- **Strengths**: proves the presentation ABI in a real user flow, keeps durable state authoritative,
-  reuses existing controls, and creates a safe consumer for later inert presentation packages.
+- **Strengths**: proves the host in a real flow, keeps durable state authoritative, reuses controls,
+  and safely supports later inert packages.
 - **Costs**: must define terminal ownership, display neutralization, controller settlement, and a
   renderer adapter now.
-- **Dependency rule**: a terminal library may render Flow-owned styling only. It is not a parser,
-  sanitizer, authority, state store, or action router.
+- **Dependency rule**: libraries render Flow-owned styling only and hold no parsing, state, action,
+  or authority role.
 
 ### B. Presentation-package manifest first — rejected
 
@@ -101,8 +101,8 @@ Extend metadata checking into polling, selection, and activation.
 Let packages contribute browser or Wasm renderers.
 
 - **Strengths**: flexible third-party experiences.
-- **Failure**: introduces executable package authority before Flow has a stable host contract or the
-  VM-grade isolation milestone required by the roadmap.
+- **Failure**: introduces executable package authority before Flow has a stable host contract. It
+  also precedes the roadmap's VM-grade isolation milestone.
 
 ## Selected architecture
 
@@ -123,7 +123,7 @@ ledger or supervisor store.
 
 The infrastructure adapter owns terminal mode, screen, cursor, resize handling, input decoding,
 and restoration. The terminal dependency is a direct exact-version dependency. Flow sanitizes
-untrusted text before the adapter receives it; the adapter may add only Flow-owned styling.
+untrusted text before the adapter receives it. The adapter may add only Flow-owned styling.
 
 ## Specification
 
@@ -158,8 +158,9 @@ objective, non-goals, and failure contract. The user approved Approach A and the
   the primary failure.
 
 - **Invalid input** — malformed, excessive, private, terminal-active, out-of-order, duplicated,
-  incompatible, or policy-mismatched input rejects or neutralizes at a fixed value-free stage before
-  gaining presentation or action authority. No raw value or nested private cause enters public output.
+  incompatible, or policy-mismatched input rejects or neutralizes at a fixed value-free stage. It
+  gains no presentation or action authority. No raw value or nested private cause enters public
+  output.
 
 - **Missing context** — a missing run, supervisor, policy match, actor, action target, renderer,
   terminal capability, or event page fails closed. The host never invents state, chooses a fallback
@@ -181,9 +182,8 @@ objective, non-goals, and failure contract. The user approved Approach A and the
   bytes are independently bounded. Truncation is deterministic and explicitly represented.
 
 - Presentation text is `SafeDisplayText`, not arbitrary terminal output. It permits printable
-  Unicode plus Flow-owned line structure after replacing malformed surrogates, C0/C1 controls,
-  carriage return, tab, escape, bidi controls, and terminal hyperlink/title/clipboard/cursor control
-  material with inert visible replacement text. It never emits an untrusted escape byte.
+  Unicode and Flow-owned line structure. It replaces malformed surrogates, controls, escape bytes,
+  and terminal control material with inert visible text. It never emits an untrusted escape byte.
 
 - `RunPresentationProjector` accepts only the existing public run projection. It cannot receive
   capability resource bytes, credentials, protected paths, or raw error causes. It sorts facts,
@@ -257,29 +257,31 @@ objective, non-goals, and failure contract. The user approved Approach A and the
 
 ## TDD implementation sequence
 
-1. RED/GREEN strict presentation text and document schemas. Cover canonical bytes, every bound,
-   malformed Unicode, C0/C1, CSI, OSC 8, OSC 52, cursor/title controls, carriage-return overwrite,
-   bidi controls, and planted private canaries.
+1. RED/GREEN strict presentation text and document schemas. Cover canonical bytes and every bound.
+   Cover malformed Unicode, C0/C1, CSI, OSC 8, OSC 52, cursor controls, bidi controls, and private
+   canaries.
 
 2. RED/GREEN pure public run projection. Cover empty, active, waiting, approval, resource, evidence,
-   failure, cancelled, and succeeded states; 256-node bounds; deterministic ordering; truncation;
-   and absence of private package fields at every document path.
+   failure, cancelled, and succeeded states. Cover node bounds, ordering, and truncation. Prove that
+   every document path excludes private package fields.
 
 3. RED/GREEN cursor session control with injected page and renderer ports. Cover pagination, follow,
-   duplicate pages, gaps, regression, malformed responses, policy mismatch, disappearance,
-   cancellation, serialized rendering, and terminal-state equivalence with full replay.
+   duplicate pages, gaps, regression, and malformed responses. Cover policy mismatch,
+   disappearance, cancellation, serialized rendering, and terminal-state equivalence with full
+   replay.
 
 4. RED/GREEN action routing through extracted approval and cancellation application boundaries.
-   Cover command, agent-command, and workflow approvals; exact actors and request ids; stale actions;
-   idempotency; rejection; uncertain settlement; stable cancel UUID; and no direct mutation.
+   Cover command, agent-command, and workflow approvals. Cover exact actors, request ids, stale
+   actions, idempotency, rejection, and uncertain settlement. Prove stable cancellation identity and
+   no direct mutation.
 
-5. RED/GREEN terminal ownership and the renderer adapter. Cover non-TTY rejection, acquire/restore,
-   resize, input parsing, unsupported keys, primary plus cleanup errors, signals, Flow styling, and
-   injected deterministic terminal frames.
+5. RED/GREEN terminal ownership and the renderer adapter. Cover non-TTY rejection, setup and restore,
+   resize, input parsing, and unsupported keys. Cover primary and cleanup errors, signals, Flow
+   styling, and deterministic terminal frames.
 
 6. RED/GREEN CLI integration through the real supervisor and socket. Cover paged and followed
-   events, approve, deny, cancel, supervisor loss, public privacy, unchanged JSON commands, and no
-   mutation before terminal admission.
+   events, approve, deny, cancel, and supervisor loss. Cover public privacy, unchanged JSON commands,
+   and no mutation before terminal admission.
 
 7. RED/GREEN one Linux x64 pseudo-terminal test for startup, update, action, exit, and restoration.
    Keep the portable injected-terminal suite authoritative for layout and failure mutations.
