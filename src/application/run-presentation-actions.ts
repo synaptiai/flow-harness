@@ -1,9 +1,9 @@
+import { isValidApprovalActor } from "../domain/approval/command-approval.js";
 import {
   type FlowPresentationDocument,
   parseFlowPresentationDocument,
 } from "../domain/presentation/flow-presentation.js";
 import { parseSafeDisplayText } from "../domain/presentation/safe-display-text.js";
-import { isValidApprovalActor } from "../domain/approval/command-approval.js";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -109,6 +109,25 @@ export class RunPresentationActionController {
       }
       throw new RunPresentationActionError("Cannot steer Flow run presentation: control rejected");
     }
+  }
+
+  executeCurrent(
+    documentSequence: number,
+    actionId: string,
+    options: { readonly reason?: string } = {},
+  ): Promise<unknown> {
+    const document = this.#document;
+    if (document === undefined) {
+      return Promise.reject(
+        new RunPresentationActionError("Cannot steer Flow run presentation: no current document"),
+      );
+    }
+    if (!Number.isSafeInteger(documentSequence) || document.run.sequence !== documentSequence) {
+      return Promise.reject(
+        new RunPresentationActionError("Cannot steer Flow run presentation: document is stale"),
+      );
+    }
+    return this.execute(actionId, options);
   }
 
   #cancellationCommandId(): string {

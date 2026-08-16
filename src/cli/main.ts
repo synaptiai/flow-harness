@@ -144,7 +144,7 @@ import {
   PolicyPackageAdmissionError,
 } from "../domain/policy/policy-package-admission.js";
 import { applyPresentationPackage } from "../domain/presentation/presentation-package-projector.js";
-import { type RunStatus, reduceRunEvents } from "../domain/run/events.js";
+import { type RunEvent, type RunStatus, reduceRunEvents } from "../domain/run/events.js";
 import {
   WorkflowCompilationError,
   type WorkflowPackageReference,
@@ -240,6 +240,11 @@ import {
   WorkflowPackageCatalogError,
 } from "../infrastructure/fs/local-workflow-package-catalog.js";
 import { discoverProjectCapabilityCatalogs } from "../infrastructure/fs/project-capability-catalog.js";
+import {
+  type BrowserPresentationHost,
+  LocalBrowserPresentationHost,
+  type LocalBrowserPresentationHostOptions,
+} from "../infrastructure/http/local-browser-presentation-host.js";
 import {
   createProductionCapabilityBundleFetcher,
   createProductionCapabilityMetadataChannel,
@@ -344,6 +349,7 @@ Usage:
   flow cancel <run-id> --actor <label> [--reason <text>] [--command-id <uuid>] [--runs-dir <path>]
   flow events <run-id> [--after <sequence>] [--limit <count>] [--follow] [--runs-dir <path>]
   flow tui <run-id> --actor <label> [--presentation <name>@<exact-version>] [--runs-dir <path>]
+  flow web <run-id> --actor <label> [--presentation <name>@<exact-version>] [--runs-dir <path>]
   flow inspect <run-id> [--runs-dir <path>]
   flow supervisor status [--runs-dir <path>]
   flow supervisor shutdown [--runs-dir <path>]
@@ -425,6 +431,9 @@ export interface CliDependencies {
     readonly onAction: (actionId: string) => Promise<void>;
     readonly onExit: () => void;
   }) => InteractiveRunPresentationRenderer;
+  readonly createBrowserPresentationHost: (
+    options: LocalBrowserPresentationHostOptions,
+  ) => BrowserPresentationHost;
   readonly signal?: AbortSignal;
 }
 
@@ -502,6 +511,8 @@ export async function main(
         return await eventsCommand(args.slice(1), io, dependencyOverrides);
       case "tui":
         return await tuiCommand(args.slice(1), dependencyOverrides);
+      case "web":
+        return await webCommand(args.slice(1), io, dependencyOverrides);
       case "inspect":
         return await inspectCommand(args.slice(1), io, dependencyOverrides);
       case "supervisor":
@@ -3105,6 +3116,131 @@ async function tuiCommand(
   return runStateExitCode(state.status);
 }
 
+async function webCommand(
+  args: readonly string[],
+  io: CliIo,
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  assertStringOptionAtMostOnce(args, "presentation");
+  const { positionals, values } = parseCommandArgs(args, {
+    actor: { type: "string" },
+    presentation: { type: "string" },
+    "runs-dir": { type: "string" },
+  });
+  const runId = requireSinglePositional(positionals, "web requires one run id");
+  const actor = requireStringOption(values.actor, "web requires --actor <label>");
+  const presentationReference =
+    values.presentation === undefined
+      ? undefined
+      : parsePresentationPackageReference(values.presentation);
+  const dependencies = dependenciesFrom(overrides);
+  const config = await awaitWithCancellationPrecedence(
+    () => dependencies.loadConfig({ cwd: dependencies.cwd }),
+    dependencies.signal,
+    "browser presentation was cancelled",
+  );
+  const selectedPresentation =
+    presentationReference === undefined
+      ? undefined
+      : await snapshotSelectedPresentationPackage(
+          await discoverConfiguredPresentationPackages(config, dependencies.signal),
+          presentationReference,
+          dependencies.signal === undefined ? {} : { signal: dependencies.signal },
+        );
+  dependencies.signal?.throwIfAborted();
+  const runsDirectory = resolveRunsDirectory(dependencies.cwd, values["runs-dir"], config);
+  const runStore = dependencies.createStore(runsDirectory);
+  let initialEvents: readonly RunEvent[];
+  try {
+    initialEvents = await runStore.read(runId);
+  } catch {
+    dependencies.signal?.throwIfAborted();
+    throw new Error("Cannot open Flow browser presentation: run is unavailable");
+  }
+  dependencies.signal?.throwIfAborted();
+  if (initialEvents.length === 0) {
+    throw new Error("Cannot open Flow browser presentation: run is unavailable");
+  }
+  const supervisorStore = new LocalSupervisorStore(runsDirectory);
+  const approvalChannel = dependencies.createAgentCommandApprovalChannel(runsDirectory);
+  const control: RunPresentationControl = {
+    decide: async (input) =>
+      await submitApprovalDecision({ ...input, store: runStore, sink: approvalChannel }),
+    cancel: async (input) =>
+      await submitSupervisorCancellation({ ...input, store: supervisorStore, config }),
+  };
+  const actionController = new RunPresentationActionController({
+    runId,
+    actor,
+    control,
+    createCommandId: randomUUID,
+    ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
+  });
+  await ensureSupervisor(supervisorStore, fileURLToPath(import.meta.url), config);
+  dependencies.signal?.throwIfAborted();
+  const host = dependencies.createBrowserPresentationHost({ actionController });
+  let session: Awaited<ReturnType<BrowserPresentationHost["start"]>>;
+  try {
+    session = await host.start();
+  } catch (startError) {
+    try {
+      await host.close();
+    } catch (closeError) {
+      throw new AggregateError(
+        [startError, closeError],
+        "Cannot open Flow browser presentation: startup and cleanup failed",
+      );
+    }
+    throw startError;
+  }
+  io.stdout(session.url);
+  const source: RunPresentationEventSource = {
+    readPage: async (input) => {
+      const result = requireSupervisorSuccess(
+        await requestSupervisor(supervisorStore, {
+          type: "events",
+          policyDigest: config.policyDigest,
+          runId: input.runId,
+          afterSequence: input.afterSequence,
+          limit: input.limit,
+        }),
+      );
+      if (result.type !== "events") {
+        throw new SupervisorCommandError(
+          "protocol_invalid",
+          "supervisor returned a non-event result",
+        );
+      }
+      return {
+        type: result.type,
+        events: result.events,
+        cursor: result.cursor,
+        terminal: result.terminal,
+      };
+    },
+  };
+  const renderer: RunPresentationRenderer = {
+    render: async (document) => {
+      await host.render(
+        selectedPresentation === undefined
+          ? document
+          : applyPresentationPackage(document, selectedPresentation),
+      );
+    },
+    close: async () => await host.close(),
+  };
+  const state = await runPresentationSession({
+    runId,
+    source,
+    renderer,
+    waitForMore: async (waitSignal) => {
+      await delay(100, undefined, waitSignal === undefined ? undefined : { signal: waitSignal });
+    },
+    ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
+  });
+  return runStateExitCode(state.status);
+}
+
 function isQueuedCancellationResult(input: unknown): boolean {
   if (typeof input !== "object" || input === null) {
     return false;
@@ -3809,6 +3945,9 @@ function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies 
     isInteractiveTerminal: overrides.isInteractiveTerminal ?? isProcessTerminalInteractive,
     createTerminalPresentationRenderer:
       overrides.createTerminalPresentationRenderer ?? createProcessFlowTerminalRenderer,
+    createBrowserPresentationHost:
+      overrides.createBrowserPresentationHost ??
+      ((options) => new LocalBrowserPresentationHost(options)),
     ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
   };
 }

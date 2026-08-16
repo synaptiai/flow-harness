@@ -66,6 +66,20 @@ The embedded Pi runtime runs with the invoking user's operating-system permissio
 - The active process retains failed preparation and lease settlement. It retries that settlement
   before any later create. The durable scanner correctly treats the same process as live.
 
+- `flow web` binds one explicit IPv4 loopback listener to an ephemeral port. A random 256-bit
+  capability enters only the initial URL fragment and later authorization headers. API requests
+  also require the exact host and browser Fetch Metadata context. Action requests require the exact
+  origin.
+
+- The browser host serves fixed offline assets under a closed content policy. It exposes no CORS,
+  cookie, service worker, external resource, raw event, or package code. It retains one bounded
+  complete public presentation document and one observer. Header, body, JSON, output, and delivery
+  limits fail closed.
+
+- The browser boundary protects against other operating-system users and ambient web origins. It
+  also protects against accidental disclosure. It does not protect against a malicious same-user
+  process.
+
 - Container command execution uses Docker's structured attach, start, and wait API operations.
   Flow attaches before start, separates multiplexed task output, and gives the long wait the command
   cancellation signal. Private Docker response, socket, path, and stream errors map to fixed public

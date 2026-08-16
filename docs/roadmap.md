@@ -25,9 +25,11 @@ Gate 7 includes tuning-only prompt and Agent Skill candidates. It also includes 
 generation, exact prompt overlays, authority-preserving skill-resource projections, paired
 evaluation, reviewed prompt activation, durable run snapshots, and rollback.
 
-Remaining targets include executable extensions, automatic package updates, richer UI hosts, and
-stronger isolation. The terminal host now accepts exact inert A2UI-profile presentation packages
-that arrange a closed Flow-owned widget catalog without supplying content or behavior. Explicit signed project metadata now provides local-clock
+Remaining targets include executable extensions, automatic package updates, remote or multi-user
+UI hosts, and stronger isolation.
+Each first-party host accepts exact inert A2UI-profile presentation packages.
+These packages arrange a closed Flow-owned widget catalog without content or behavior. Explicit
+signed project metadata now provides local-clock
 expiry, revocation, exact-target admission, and monotonic rollback refusal. An explicit signed
 public channel stages inert candidates for reviewed activation. Flow does not poll, activate, or
 install automatically.
@@ -125,8 +127,13 @@ containment milestone. It is not VM-grade or multi-tenant isolation.
 - Flow has a stable, bounded first-party terminal presentation host. *(Implemented with a
   renderer-neutral Flow document, terminal-safe text, durable cursor replay, and steering through
   the existing approval and cancellation controls.)*
+- Flow has a stable, bounded first-party local browser presentation host. *(Implemented. It uses
+  explicit IPv4 loopback, a fragment-held 256-bit capability, and fixed offline assets. It also has
+  authenticated document streaming, current-action binding, reload, and responsive Chromium
+  evidence.)*
 - Content-bearing or executable UI contribution manifests remain planned. The inert A2UI-profile
-  presentation manifest above is implemented.
+  presentation manifest above is implemented for both first-party hosts. Remote, multi-user,
+  reverse-proxied, ACP, and AG-UI hosts remain separate work.
 - The first-party host does not admit package markup, code, or renderers.
 - OMP-inspired high-value tools are benchmarked before adoption.
 

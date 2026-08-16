@@ -47,15 +47,17 @@ Pi's experimental `AgentHarness` API is not a foundation for the first release. 
 | Session usage statistics | Translate `getSessionStats()` after settlement | Persist only Flow token components and integer micro-USD; Pi totals and transcripts are not authoritative |
 | Session storage | Optional diagnostic artifact | Never authoritative run state; fresh recovery deliberately creates a new in-memory session rather than reopening a Pi transcript |
 | TUI primitives | First-party terminal renderer only | Flow owns the presentation document, safe text, navigation, actions, cursor replay, and terminal lifecycle |
+| Browser primitives | Fixed first-party loopback host only | Flow owns the document, DOM projection, capability, browser context checks, actions, replay, and listener lifecycle |
 
 Pi is MIT-licensed. Its fast release cadence and breaking changes create meaningful update risk, so Flow pins exact versions and maintains adapter conformance tests. See the [Pi repository](https://github.com/earendil-works/pi) and [agent-core documentation](https://github.com/earendil-works/pi/blob/main/packages/agent/README.md).
 
 The terminal adapter imports `@earendil-works/pi-tui` only from Flow infrastructure. Domain and
 application modules do not import it. Flow does not use Pi Markdown, hyperlinks, clipboard, image,
-URL-opening, or mouse features. Flow discovers inert A2UI-profile presentation manifests through a
-separate, explicit catalog. Those manifests can arrange only the closed Flow terminal widget set.
-They cannot supply content, actions, data bindings, functions, themes, assets, code, or dynamic
-children.
+URL-opening, or mouse features. The browser adapter uses fixed Flow HTML, CSS, and JavaScript. It
+accepts no package resource or renderer. Flow discovers inert A2UI-profile presentation manifests
+through a separate, explicit catalog. Those manifests can arrange only the closed Flow widget set
+that both first-party hosts project. They cannot supply content, actions, data bindings, functions,
+themes, assets, code, or dynamic children.
 
 ## Imported containment primitive
 
@@ -287,9 +289,10 @@ and do not enter workflow capability snapshots.
 
 **Implemented for exact local and digest-pinned installed inert manifests.** Flow reads one
 `PRESENTATION.yaml` below `.flow/presentations/<name>` or the corresponding path in an installed
-bundle. `flow presentations validate [<manifest-path>]`, `list`, and `inspect` perform no run, model, package action,
-or terminal mutation. `flow tui --presentation <name>@<version>` resolves one exact package before
-supervisor startup and terminal takeover.
+bundle. `flow presentations validate [<manifest-path>]`, `list`, and `inspect` perform no run,
+model, package action, terminal, or browser mutation. `flow tui --presentation
+<name>@<version>` and `flow web --presentation <name>@<version>` resolve one exact package before
+supervisor startup and host creation.
 
 The manifest uses the production A2UI v0.9.1 release. Each message uses the wire discriminator
 `version: v0.9`. The manifest contains one `createSurface` for the fixed `flow-run` surface and one
@@ -309,9 +312,10 @@ lists to static component-id arrays.
 
 Package selection is session-local. It is not workflow authority and is absent from durable run
 state, capability snapshots, worker requests, child ledgers, and recovery identity. The default
-terminal presentation remains governed by the existing host projection when no package is
-selected. An Agent Client Protocol adapter could later carry the sanitized document or interaction
-across a session. ACP does not replace this package profile or grant presentation authority.
+presentation remains governed by the existing host projection when no package is selected. An
+Agent Client Protocol adapter could later carry the sanitized document or interaction to an editor.
+ACP does not replace this package profile, browser API, durable run state, or presentation
+authority.
 
 ## Digest-pinned bundle distribution
 
