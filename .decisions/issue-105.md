@@ -291,8 +291,11 @@ npx vitest run test/integration/package/dependency-boundaries.test.ts
 - The compiled smoke check passed.
 
 - `npm run ci:local` passed its preliminary gates and then rejected Prime preparation because the
-  local host is macOS arm64. Hosted Linux x64 CI with the pinned Docker, containerd, and runc stack
-  remains required before merge.
+  local host is macOS arm64.
+
+- Hosted Linux x64 [CI run 31978949625](https://github.com/synaptiai/flow-harness/actions/runs/31978949625)
+  passed the complete release gate on commit `d5f3aef9f8f238d030cd0bb26c91136ea4927625`. The run used
+  the pinned Docker, containerd, and runc stack.
 
 ## Activity log
 
@@ -310,3 +313,6 @@ npx vitest run test/integration/package/dependency-boundaries.test.ts
 
 - 2026-08-17: Closed the final findings for durable target grammar, source-root ancestry, audit
   output, and mutation evidence. Re-ran the frozen release gates with the evidence above.
+
+- 2026-08-17: Fixed the hosted STE finding. The final Linux x64 release run passed on the corrected
+  head.
