@@ -50,10 +50,10 @@ alignment 10%, and operator value 10%.
 | Content-bearing A2UI packages | 3.900 | Standards-based generated presentation | Renderer authority and executable extension policy remain unresolved | Revisit after generated inert resources |
 | ACP adapter | 3.400 | Standards-based editor integration | Does not close a current harness-authority gap | Later client integration |
 
-A deterministic 100,000-sample sensitivity check over randomized criterion weights selected Agent
-Skill generation 94,143 times, automatic updates 3,443 times, and MicroVM isolation 2,414 times.
-A2UI and ACP did not win a sample. Agent Skill generation is therefore the robust next slice, not
-only the winner under one chosen weighting.
+A deterministic sensitivity check sampled 100,000 randomized criterion-weight sets. Agent Skill
+generation won 94,143 samples. Automatic updates won 3,443, and MicroVM isolation won 2,414.
+A2UI and ACP did not win a sample. Agent Skill generation is therefore the stable next slice.
+The result does not depend on only one chosen weighting.
 
 ## Architecture alternatives
 
@@ -119,30 +119,39 @@ Approach A._
 
 - **Cancellation and timeout** — cancellation or timeout before publication returns the exact
   controlling reason and leaves no final candidate. No later phase starts.
+
 - **Invalid model result** — malformed, excessive, empty, unselected, duplicated, unchanged, or
-  identity-mismatched output returns a fixed bounded public stage without private content or a
-  nested private cause.
-- **Source drift** — a workflow, evidence packet, package directory, or selected resource that
-  changes before the final publication boundary rejects instead of mixing snapshots.
+  identity-mismatched output returns a fixed bounded public stage. The error has no private content
+  or nested private cause.
+
+- **Source drift** — a selected workflow, evidence packet, package directory, or resource can
+  change before publication. Flow rejects drift instead of mixing snapshots.
+
 - **Publication uncertainty** — a failure after an atomic candidate commit reports explicit
   uncertain publication and never retries generation automatically.
-- **Missing context** — missing project, workflow, skill, evidence, model, output, resource, or
-  limit context fails before model execution.
+
+- **Missing context** — the command requires the project, workflow, skill, evidence, model, output,
+  resource, and limit context. It fails before model execution when any context is absent.
 
 ### Interface contracts
 
-- The operator selects one baseline workflow, one or more tuning-evidence packets, one exact skill,
-  one or more exact existing resource paths, one output path, one candidate identity, one
-  provider/model setting, and bounded execution limits.
+- The operator selects one baseline workflow, one or more tuning-evidence packets, and one exact
+  skill. The operator also selects resource paths, an output path, a candidate identity, a
+  provider/model setting, and execution limits.
+
 - The model-facing request is canonical, bounded, versioned, and contains only admitted generation
   inputs. It contains portable identities and selected resource bytes, never absolute paths,
   credentials, holdout material, verifier data, or unrelated package content.
+
 - The response is one strict bounded resource-replacement object. It may address only the explicit
   allowlist and must change at least one resource.
+
 - Generation executes one model turn with no tools, skills, packages, workspace reads, policy
   decisions, effects, retries, evaluation, or activation.
-- The generated file is an ordinary `AgentSkillCandidate` accepted by existing validation,
-  evaluation, activation, rollback, detached execution, recovery, and offline replay commands.
+
+- The generated file is an ordinary `AgentSkillCandidate`. Existing validation, evaluation,
+  activation, rollback, detached execution, recovery, and offline replay commands accept it.
+
 - Public success output contains only portable identities, selected resource paths, hashes, limits,
   usage, and generation status. Public errors remain value-free.
 
@@ -160,6 +169,7 @@ identity. The model-facing request contains:
 - one through sixteen tuning-evidence identities and tuning-only summaries.
 - one through sixteen unique selected existing inert UTF-8 resources with portable path, current
   digest, and bounded content. `SKILL.md` and top-level `scripts/` files are excluded.
+
 - exact provider, model, thinking level, timeout, output-token limit, and response-byte limit.
 
 The response contains only a strict `changes` array of portable resource path and non-empty UTF-8
@@ -212,6 +222,7 @@ Skill-candidate text without weakening either schema.
    revalidation around publication.
 6. Run generated output through existing validation, paired evaluation, activation, rollback,
    detached, recovery, and offline replay selectors.
+
 7. Update README, architecture, capability sourcing, evaluation, testing, workflow specification,
    roadmap, and public examples.
 8. Run focused, full, coverage, runtime, live-provider, offline, package, documentation, dependency,
@@ -267,13 +278,18 @@ npx vitest run test/integration/package/dependency-boundaries.test.ts
   files.
 - The browser suite passed 2 tests. The live-provider suite loaded and skipped 3 tests because no
   provider credentials were available.
+
 - Format, typecheck, build, changed-document STE, and diff checks passed. Lint passed with one
   pre-existing informational constructor note in an unchanged file.
+
 - Clean package installation and CLI execution passed. The installed project reported effective
   policy digest `5dfe0fbdfa1a86627e8762bfc071594c1bccbd6a467fc3f3ea12ebddf9b053b4`.
+
 - The production npm audit reported zero vulnerabilities. The Prime dependency audit passed for
   the Node lock and 60 Python packages.
+
 - The compiled smoke check passed.
+
 - `npm run ci:local` passed its preliminary gates and then rejected Prime preparation because the
   local host is macOS arm64. Hosted Linux x64 CI with the pinned Docker, containerd, and runc stack
   remains required before merge.
@@ -285,9 +301,12 @@ npx vitest run test/integration/package/dependency-boundaries.test.ts
   analysis. Agent Skill generation won 94.143% of randomized samples.
 - 2026-08-16: Created Issue #105 with explicit non-goals, failure modes, and interface contracts.
 - 2026-08-16: Presented four architecture alternatives. The user approved Approach A.
+
 - 2026-08-16: Implemented the bounded resource-delta generation contract, stable local admission,
   zero-tool execution, generation provenance, sibling-kind atomic publication, and CLI grammar.
-- 2026-08-16: Ran the focused, full, coverage, runtime, browser, live-provider, package, audit,
-  documentation, static, and local CI-entry gates on the frozen tree.
-- 2026-08-17: Closed the final review findings for durable target grammar, source-root ancestry,
-  audit output, and mutation evidence. Re-ran the frozen release gates with the evidence above.
+
+- 2026-08-16: Ran the frozen-tree focused, full, coverage, runtime, browser, live-provider, package,
+  audit, documentation, static, and local CI gates.
+
+- 2026-08-17: Closed the final findings for durable target grammar, source-root ancestry, audit
+  output, and mutation evidence. Re-ran the frozen release gates with the evidence above.
