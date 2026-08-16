@@ -222,8 +222,14 @@ The process-control check binds the container cgroup limit. It does not require 
 which Linux accounts across unrelated processes that share the host operator UID.
 
 They must prove timeout and operator-cancellation settlement, descendant termination, full-ID cleanup,
-process-restart recovery, and pre-launch disappearance refusal. Portable recovery tests prove
-foreign-object safety.
+process-restart recovery, and pre-launch disappearance refusal. The descendant gate issues its
+survival challenge only after confirmed cleanup. It does not infer cleanup from the relative order
+of independently scheduled host and container timers. Portable recovery tests prove foreign-object
+safety.
+
+The compiled-process run-identifier gate holds the winning run at its existing approval boundary.
+It proves one public creation and one fixed conflict without making command-sandbox success part of
+the ownership oracle.
 
 A missing Docker prerequisite fails the dedicated runner. The gate does not skip or weaken the
 production policy.

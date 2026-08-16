@@ -193,7 +193,7 @@ describe("compiled Flow process", () => {
     const runsDirectory = join(directory, "runs");
     await writeFile(
       workflowPath,
-      commandWorkflow("collision-workflow", "setTimeout(() => {}, 250);"),
+      approvalWorkflow("collision-workflow", "throw new Error('approval must not execute');"),
       "utf8",
     );
     const args = [
@@ -211,15 +211,13 @@ describe("compiled Flow process", () => {
     const second = spawnFlow(args);
     const results = await Promise.all([first.completed, second.completed]);
 
-    expect(results.map((result) => result.code).sort()).toEqual([0, 1]);
+    expect(results.map((result) => result.code).sort()).toEqual([1, 3]);
     expect(results.map((result) => result.stderr).join("\n")).toContain("run_exists");
     const events = await readLedger(join(runsDirectory, "shared-run", "events.jsonl"));
-    expect(events.map((event) => event.sequence)).toEqual([1, 2, 3, 4]);
+    expect(events.map((event) => event.sequence)).toEqual([1, 2]);
     expect(events.map((event) => event.type)).toEqual([
       "run_started",
-      "node_started",
-      "node_succeeded",
-      "run_succeeded",
+      "command_approval_requested",
     ]);
 
     const inspect = spawnFlow(["inspect", "shared-run", "--runs-dir", runsDirectory]);
@@ -227,7 +225,7 @@ describe("compiled Flow process", () => {
     expect(inspected.code).toBe(0);
     expect(JSON.parse(inspected.stdout)).toMatchObject({
       runId: "shared-run",
-      status: "succeeded",
+      status: "waiting_for_approval",
     });
   });
 
