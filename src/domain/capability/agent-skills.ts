@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 
 import { z } from "zod";
 import {
+  type AgentSkillActivationSnapshot,
+  parseAgentSkillActivationSnapshot,
+} from "../adaptation/agent-skill-activation.js";
+import {
   type PromptActivationSnapshot,
   parsePromptActivationSnapshot,
 } from "../adaptation/prompt-activation.js";
@@ -105,9 +109,11 @@ export type CapabilityPackageSnapshot =
 export interface CapabilitySnapshot {
   readonly version: 1;
   readonly packages: readonly CapabilityPackageSnapshot[];
-  readonly activations?: readonly PromptActivationSnapshot[];
+  readonly activations?: readonly AdaptiveActivationSnapshot[];
   readonly digest: string;
 }
+
+export type AdaptiveActivationSnapshot = PromptActivationSnapshot | AgentSkillActivationSnapshot;
 
 export interface AgentSkillCapabilitySnapshot extends CapabilitySnapshot {
   readonly packages: readonly AgentSkillPackageSnapshot[];
@@ -352,9 +358,9 @@ export function createCapabilitySnapshot(
 
 export function validateCapabilitySnapshot(input: unknown): CapabilitySnapshot {
   const parsed = capabilitySnapshotSchema.parse(input);
-  const activations = (parsed.activations ?? []).map(parsePromptActivationSnapshot);
+  const activations = (parsed.activations ?? []).map(parseAdaptiveActivationSnapshot);
   assertSortedUnique(parsed.packages.map(capabilityPackageKey), "capability package identities");
-  assertSortedUnique(activations.map(promptActivationKey), "prompt activation identities");
+  assertSortedUnique(activations.map(adaptiveActivationKey), "adaptive activation identities");
   for (const capability of parsed.packages) {
     if (capability.kind === "verifier-package") {
       validateVerifierPackageSnapshot(capability);
@@ -403,6 +409,17 @@ export function validateCapabilitySnapshot(input: unknown): CapabilitySnapshot {
     }
     if (calculateAgentSkillPackageDigest(skill) !== skill.digest) {
       throw new Error(`skill "${skill.name}" package digest does not match`);
+    }
+  }
+  for (const activation of activations) {
+    if (activation.kind !== "agent-skill-activation") {
+      continue;
+    }
+    const selected = parsed.packages.find(
+      (item) => item.kind === "agent-skill" && item.name === activation.skill.name,
+    );
+    if (selected?.digest !== activation.skill.digest) {
+      throw new Error("Agent Skill activation does not match its selected capability package");
     }
   }
   if (calculateCapabilitySnapshotDigest(parsed.packages, activations) !== parsed.digest) {
@@ -461,7 +478,7 @@ export function calculateAgentSkillPackageDigest(
 
 export function calculateCapabilitySnapshotDigest(
   packages: readonly CapabilityPackageSnapshot[],
-  activations: readonly PromptActivationSnapshot[] = [],
+  activations: readonly AdaptiveActivationSnapshot[] = [],
 ): string {
   return sha256(
     JSON.stringify({
@@ -479,12 +496,7 @@ export function calculateCapabilitySnapshotDigest(
       ...(activations.length === 0
         ? {}
         : {
-            activations: activations.map((activation) => ({
-              workflowId: activation.workflowId,
-              candidateId: activation.candidateId,
-              candidateVersion: activation.candidateVersion,
-              digest: activation.activationDigest,
-            })),
+            activations: activations.map(activationDigestIdentity),
           }),
     }),
   );
@@ -518,7 +530,9 @@ export function combineCapabilitySnapshots(
     .sort((left, right) => compareStrings(capabilityPackageKey(left), capabilityPackageKey(right)));
   const activations = snapshots
     .flatMap((snapshot) => snapshot.activations ?? [])
-    .sort((left, right) => compareStrings(promptActivationKey(left), promptActivationKey(right)));
+    .sort((left, right) =>
+      compareStrings(adaptiveActivationKey(left), adaptiveActivationKey(right)),
+    );
   return validateCapabilitySnapshot({
     version: 1,
     packages,
@@ -562,8 +576,32 @@ function capabilityPackageKey(value: CapabilityPackageSnapshot): string {
     : policyPackageIdentityKey(value);
 }
 
-function promptActivationKey(value: PromptActivationSnapshot): string {
-  return `${value.workflowId}\0${value.candidateId}\0${value.candidateVersion}`;
+export function parseAdaptiveActivationSnapshot(input: unknown): AdaptiveActivationSnapshot {
+  if (
+    typeof input === "object" &&
+    input !== null &&
+    "kind" in input &&
+    input.kind === "agent-skill-activation"
+  ) {
+    return parseAgentSkillActivationSnapshot(input);
+  }
+  return parsePromptActivationSnapshot(input);
+}
+
+function adaptiveActivationKey(value: AdaptiveActivationSnapshot): string {
+  return value.kind === "prompt-activation"
+    ? `${value.workflowId}\0${value.candidateId}\0${value.candidateVersion}`
+    : `${value.workflowId}\0agent-skill\0${value.candidateId}\0${value.candidateVersion}`;
+}
+
+function activationDigestIdentity(value: AdaptiveActivationSnapshot) {
+  const identity = {
+    workflowId: value.workflowId,
+    candidateId: value.candidateId,
+    candidateVersion: value.candidateVersion,
+    digest: value.activationDigest,
+  };
+  return value.kind === "prompt-activation" ? identity : { kind: value.kind, ...identity };
 }
 
 export function createAgentCapabilityEvidence(

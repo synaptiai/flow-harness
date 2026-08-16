@@ -7,7 +7,15 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { NodeExecutor } from "../../../src/application/ports.js";
 import { runWorkflow } from "../../../src/application/run-workflow.js";
-import { createCapabilitySnapshot } from "../../../src/domain/capability/agent-skills.js";
+import {
+  agentSkillActivationWorkflow,
+  createAgentSkillActivationSnapshot,
+} from "../../../src/domain/adaptation/agent-skill-activation.js";
+import {
+  calculateCapabilitySnapshotDigest,
+  createCapabilitySnapshot,
+  validateCapabilitySnapshot,
+} from "../../../src/domain/capability/agent-skills.js";
 import type { PolicyPackageSnapshotInput } from "../../../src/domain/capability/policy-packages.js";
 import type { WorkflowPackageSnapshotInput } from "../../../src/domain/capability/workflow-packages.js";
 import { calculateFlowPolicyDigest } from "../../../src/domain/config/resolver.js";
@@ -44,6 +52,7 @@ import {
   SupervisorServiceError,
   type WorkerLauncher,
 } from "../../../src/supervisor/service.js";
+import { agentSkillActivationInput } from "../../fixtures/agent-skill-activation.js";
 import { projectedPromptActivationSource } from "../../fixtures/prompt-activation.js";
 
 const temporaryDirectories: string[] = [];
@@ -130,6 +139,49 @@ describe("LocalSupervisorService", () => {
     await expect(harness.service.submit(command)).rejects.toThrow(/one exact activation/i);
     await expect(harness.store.listActiveRunClaims()).resolves.toEqual([]);
     await expect(harness.store.listWorkerDescriptors()).resolves.toEqual([]);
+  });
+
+  it("admits only the exact Agent Skill activation source and package snapshot", async () => {
+    const activation = createAgentSkillActivationSnapshot(agentSkillActivationInput());
+    const packages = [activation.skill];
+    const activations = [activation];
+    const capabilitySnapshot = validateCapabilitySnapshot({
+      version: 1,
+      packages,
+      activations,
+      digest: calculateCapabilitySnapshotDigest(packages, activations),
+    });
+    const source = agentSkillActivationWorkflow(activation);
+    const rejected = await createHarness();
+    const rejectedCommand = {
+      ...submitCommand(randomUUID(), rejected.directory, "changed-skill-activation"),
+      sourceName: "activation:adaptive-skill-workflow",
+      workflowSource: `${source} `,
+      capabilitySnapshot,
+    };
+
+    await expect(rejected.service.submit(rejectedCommand)).rejects.toThrow(
+      /source does not match/i,
+    );
+    await expect(rejected.store.listActiveRunClaims()).resolves.toEqual([]);
+    expect(rejected.launcher.jobs).toEqual([]);
+
+    const admitted = await createHarness();
+    const command = {
+      ...submitCommand(randomUUID(), admitted.directory, "exact-skill-activation"),
+      sourceName: "activation:adaptive-skill-workflow",
+      workflowSource: source,
+      capabilitySnapshot,
+    };
+    await expect(admitted.service.submit(command)).resolves.toMatchObject({
+      type: "accepted",
+      runId: "exact-skill-activation",
+    });
+    expect(admitted.launcher.jobs).toHaveLength(1);
+    expect(admitted.launcher.jobs[0]).toMatchObject({
+      sourceName: "activation:adaptive-skill-workflow",
+      capabilitySnapshot: { digest: capabilitySnapshot.digest },
+    });
   });
 
   it("admits a packaged root from the submitted immutable snapshot", async () => {

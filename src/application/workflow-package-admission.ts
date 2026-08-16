@@ -1,3 +1,4 @@
+import { agentSkillActivationWorkflow } from "../domain/adaptation/agent-skill-activation.js";
 import {
   parsePromptActivationLocator,
   promptActivationSource,
@@ -75,7 +76,11 @@ export function compileWorkflowFromSnapshot(
         `capability snapshot does not contain one exact activation for workflow "${activationLocator.workflowId}"`,
       );
     }
-    if (promptActivationSource(exactActivation) !== input.source) {
+    const activationSource =
+      exactActivation.kind === "agent-skill-activation"
+        ? agentSkillActivationWorkflow(exactActivation)
+        : promptActivationSource(exactActivation);
+    if (activationSource !== input.source) {
       throw new Error(
         `activation for workflow "${activationLocator.workflowId}" source does not match its exact snapshot`,
       );

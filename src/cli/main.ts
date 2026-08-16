@@ -49,6 +49,10 @@ import type {
   WorkspaceIsolator,
 } from "../application/ports.js";
 import {
+  AgentSkillActivationAdmissionError,
+  createAgentSkillActivationFromEvaluation,
+} from "../application/prepare-agent-skill-activation.js";
+import {
   createPromptActivationFromEvaluation,
   PromptActivationAdmissionError,
 } from "../application/prepare-prompt-activation.js";
@@ -60,8 +64,11 @@ import {
   compileWorkflowFromSnapshot,
 } from "../application/workflow-package-admission.js";
 import {
+  AgentSkillActivationError,
+  agentSkillActivationWorkflow,
+} from "../domain/adaptation/agent-skill-activation.js";
+import {
   PromptActivationError,
-  type PromptActivationSnapshot,
   parsePromptActivationLocator,
   promptActivationSource,
 } from "../domain/adaptation/prompt-activation.js";
@@ -75,6 +82,9 @@ import {
   preparePromptCandidateGeneration,
 } from "../domain/adaptation/prompt-candidate-generation.js";
 import {
+  type AdaptiveActivationSnapshot,
+  type AgentSkillCapabilitySnapshot,
+  type AgentSkillPackageSnapshot,
   type CapabilitySnapshot,
   calculateCapabilitySnapshotDigest,
   combineCapabilitySnapshots,
@@ -186,7 +196,6 @@ import {
   PromptActivationStoreError,
 } from "../infrastructure/fs/local-prompt-activation-store.js";
 import {
-  admitLocalPromptCandidate,
   admitLocalPromptCandidateGenerationSources,
   LocalPromptCandidateError,
 } from "../infrastructure/fs/local-prompt-candidate.js";
@@ -254,6 +263,7 @@ import type {
 import { SupervisorServiceError } from "../supervisor/service.js";
 import { executeWorkerJob } from "../supervisor/worker.js";
 import { readBoundedSecretInput } from "./bounded-secret-input.js";
+import { projectPublicRunOutput } from "./public-output.js";
 
 const HELP = `Flow — Provider-neutral coding-agent harness
 
@@ -294,7 +304,7 @@ Usage:
   flow candidate activate <candidate.yaml> --evaluation <id> --actor <label> [--reason <text>] [--evaluations-dir <path>] <--dry-run|--expected-digest <sha256>>
   flow activation list
   flow activation inspect <workflow-id>
-  flow activation rollback <workflow-id> --to <candidate-id>@<version>|baseline --actor <label> [--reason <text>] <--dry-run|--expected-digest <sha256>>
+  flow activation rollback <workflow-id> --to <candidate-id>@<version>|agent-skill:<candidate-id>@<version>|baseline --actor <label> [--reason <text>] <--dry-run|--expected-digest <sha256>>
   flow eval validate <plan.yaml>
   flow eval run <plan.yaml> [--evaluation-id <id>] [--evaluations-dir <path>]
   flow eval inspect <evaluation-id> [--evaluations-dir <path>]
@@ -576,6 +586,8 @@ export async function main(
       return 1;
     }
     if (
+      error instanceof AgentSkillActivationError ||
+      error instanceof AgentSkillActivationAdmissionError ||
       error instanceof PromptActivationError ||
       error instanceof PromptActivationAdmissionError ||
       error instanceof PromptActivationStoreError
@@ -2061,28 +2073,67 @@ async function candidateCommand(
     );
     requireMutationMode(dryRun.enabled, values["expected-digest"], "candidate activate");
     const dependencies = configDependenciesFrom(overrides);
-    const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
-    const store = promptActivationStore(config);
-    const candidate = await admitLocalPromptCandidate(resolve(dependencies.cwd, candidatePath));
-    const evaluationsDirectory = await resolveEvaluationsDirectory(
-      dependencies,
-      values["evaluations-dir"],
+    const config = await awaitWithCancellationPrecedence(
+      () => dependencies.loadConfig({ cwd: dependencies.cwd }),
+      overrides.signal,
+      "candidate activation was cancelled",
     );
-    const evaluation = await new LocalEvaluationStore(evaluationsDirectory).read(evaluationId);
-    const snapshots = createPromptActivationFromEvaluation(candidate, evaluation);
+    const store = promptActivationStore(config);
+    const admitted = await awaitWithCancellationPrecedence(
+      () =>
+        admitLocalAdaptationCandidate(resolve(dependencies.cwd, candidatePath), {
+          ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
+        }),
+      overrides.signal,
+      "candidate activation was cancelled",
+    );
+    const evaluationsDirectory = await awaitWithCancellationPrecedence(
+      () => resolveEvaluationsDirectory(dependencies, values["evaluations-dir"]),
+      overrides.signal,
+      "candidate activation was cancelled",
+    );
+    const evaluation = await awaitWithCancellationPrecedence(
+      () => new LocalEvaluationStore(evaluationsDirectory).read(evaluationId),
+      overrides.signal,
+      "candidate activation was cancelled",
+    );
+    const snapshots =
+      admitted.kind === "prompt-candidate"
+        ? createPromptActivationFromEvaluation(admitted.candidate, evaluation)
+        : createAgentSkillActivationFromEvaluation(
+            {
+              identity: admitted.candidate.identity,
+              workflow: {
+                source: admitted.candidate.baseline.workflow.sourceText,
+                sourceSha256: admitted.candidate.baseline.workflow.sourceSha256,
+                workflowDigest: admitted.candidate.baseline.workflow.workflowDigest,
+              },
+              baselineSkill: requiredSingleAgentSkill(
+                admitted.candidate.baselineCapabilitySnapshot,
+              ),
+              candidateSkill: requiredSingleAgentSkill(
+                admitted.candidate.candidateCapabilitySnapshot,
+              ),
+            },
+            evaluation,
+          );
+    throwIfAborted(overrides.signal, "candidate activation was cancelled");
     const input = {
       snapshot: snapshots.candidate,
       baselineSnapshot: snapshots.baseline,
       actor,
       ...(values.reason === undefined ? {} : { reason: values.reason }),
+      ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
     };
     if (dryRun.enabled) {
+      const proposal = await store.previewActivate(input);
+      throwIfAborted(overrides.signal, "candidate activation was cancelled");
       io.stdout(
         JSON.stringify(
           {
             dryRun: true,
-            activation: promptActivationView(snapshots.candidate),
-            proposal: await store.previewActivate(input),
+            activation: adaptiveActivationView(snapshots.candidate),
+            proposal,
           },
           null,
           2,
@@ -2090,6 +2141,7 @@ async function candidateCommand(
       );
       return 0;
     }
+    throwIfAborted(overrides.signal, "candidate activation was cancelled");
     io.stdout(
       JSON.stringify(
         await store.applyActivate({
@@ -2115,7 +2167,11 @@ async function activationCommand(
 ): Promise<number> {
   const subcommand = args[0];
   const dependencies = configDependenciesFrom(overrides);
-  const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
+  const config = await awaitWithCancellationPrecedence(
+    () => dependencies.loadConfig({ cwd: dependencies.cwd }),
+    overrides.signal,
+    "activation command was cancelled",
+  );
   const store = promptActivationStore(config);
   if (subcommand === "list") {
     const { positionals } = parseCommandArgs(args.slice(1), {});
@@ -2143,7 +2199,7 @@ async function activationCommand(
     const active =
       head.activationDigest === null
         ? null
-        : promptActivationView((await store.loadActive(workflowId)).snapshot);
+        : adaptiveActivationView((await store.loadActive(workflowId)).snapshot);
     io.stdout(JSON.stringify({ workflowId, head, activations, active }, null, 2));
     return 0;
   }
@@ -2169,6 +2225,7 @@ async function activationCommand(
       target,
       actor,
       ...(values.reason === undefined ? {} : { reason: values.reason }),
+      ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
     };
     if (dryRun.enabled) {
       io.stdout(
@@ -2204,19 +2261,49 @@ function promptActivationStore(config: EffectiveFlowConfig): LocalPromptActivati
   return new LocalPromptActivationStore(config.projectRoot);
 }
 
-function promptActivationView(snapshot: PromptActivationSnapshot) {
-  return Object.freeze({
-    version: snapshot.version,
-    kind: snapshot.kind,
-    selection: snapshot.selection,
-    workflowId: snapshot.workflowId,
-    candidateId: snapshot.candidateId,
-    candidateVersion: snapshot.candidateVersion,
-    candidate: snapshot.candidate,
-    evaluation: snapshot.evaluation,
-    source: { bytes: snapshot.source.bytes, sha256: snapshot.source.sha256 },
-    activationDigest: snapshot.activationDigest,
-  });
+function adaptiveActivationView(snapshot: AdaptiveActivationSnapshot) {
+  return snapshot.kind === "prompt-activation"
+    ? Object.freeze({
+        version: snapshot.version,
+        kind: snapshot.kind,
+        selection: snapshot.selection,
+        workflowId: snapshot.workflowId,
+        candidateId: snapshot.candidateId,
+        candidateVersion: snapshot.candidateVersion,
+        candidate: snapshot.candidate,
+        evaluation: snapshot.evaluation,
+        source: { bytes: snapshot.source.bytes, sha256: snapshot.source.sha256 },
+        activationDigest: snapshot.activationDigest,
+      })
+    : Object.freeze({
+        version: snapshot.version,
+        kind: snapshot.kind,
+        selection: snapshot.selection,
+        workflowId: snapshot.workflowId,
+        candidateId: snapshot.candidateId,
+        candidateVersion: snapshot.candidateVersion,
+        candidate: snapshot.candidate,
+        evaluation: snapshot.evaluation,
+        activationDigest: snapshot.activationDigest,
+        workflow: { bytes: snapshot.workflow.bytes, sha256: snapshot.workflow.sha256 },
+        skill: { name: snapshot.skill.name, digest: snapshot.skill.digest },
+      });
+}
+
+function adaptiveActivationSource(snapshot: AdaptiveActivationSnapshot): string {
+  return snapshot.kind === "agent-skill-activation"
+    ? agentSkillActivationWorkflow(snapshot)
+    : promptActivationSource(snapshot);
+}
+
+function requiredSingleAgentSkill(
+  snapshot: AgentSkillCapabilitySnapshot,
+): AgentSkillPackageSnapshot {
+  const skill = snapshot.packages[0];
+  if (snapshot.packages.length !== 1 || skill === undefined) {
+    throw new Error("Agent Skill activation candidate must contain exactly one skill package");
+  }
+  return skill;
 }
 
 function requireMutationMode(
@@ -2235,10 +2322,18 @@ function parseRollbackSelection(value: string) {
   if (value === "baseline") {
     return null;
   }
-  const match = /^([^@]+)@([^@]+)$/.exec(value);
+  const agentSkillMatch = /^agent-skill:([^@]+)@([^@]+)$/.exec(value);
+  if (agentSkillMatch?.[1] !== undefined && agentSkillMatch[2] !== undefined) {
+    return Object.freeze({
+      kind: "agent-skill-activation" as const,
+      candidateId: agentSkillMatch[1],
+      candidateVersion: agentSkillMatch[2],
+    });
+  }
+  const match = /^([^:@]+)@([^@]+)$/.exec(value);
   if (match?.[1] === undefined || match[2] === undefined) {
     throw new CliUsageError(
-      "activation rollback target must be baseline or <candidate-id>@<exact-version>",
+      "activation rollback target must be baseline, <candidate-id>@<exact-version>, or agent-skill:<candidate-id>@<exact-version>",
     );
   }
   return Object.freeze({ candidateId: match[1], candidateVersion: match[2] });
@@ -2335,7 +2430,7 @@ async function approvalDecisionCommand(
         }),
   });
 
-  io.stdout(JSON.stringify(state, null, 2));
+  io.stdout(JSON.stringify(projectPublicRunOutput(state), null, 2));
   return 0;
 }
 
@@ -2420,7 +2515,7 @@ async function resumeCommand(
     ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
   });
 
-  io.stdout(JSON.stringify(state, null, 2));
+  io.stdout(JSON.stringify(projectPublicRunOutput(state), null, 2));
   return runStateExitCode(state.status);
 }
 
@@ -2437,7 +2532,11 @@ async function validateCommand(
   const dependencies = dependenciesFrom(overrides);
   const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
   const admitted = await admitWorkflowArgument(workflowArgument, config, dependencies);
-  const supplementalSnapshot = await resolveWorkflowCapabilitySnapshot(admitted.workflow, config);
+  const supplementalSnapshot = await resolveWorkflowCapabilitySnapshot(
+    admitted.workflow,
+    config,
+    admitted.capabilitySnapshot,
+  );
   const capabilitySnapshot = combineOptionalCapabilitySnapshots([
     admitted.capabilitySnapshot,
     supplementalSnapshot,
@@ -2480,7 +2579,11 @@ async function runCommand(
   const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
   // Admission and immutable compilation precede run-store construction and executor invocation.
   const admitted = await admitWorkflowArgument(workflowArgument, config, dependencies);
-  const supplementalSnapshot = await resolveWorkflowCapabilitySnapshot(admitted.workflow, config);
+  const supplementalSnapshot = await resolveWorkflowCapabilitySnapshot(
+    admitted.workflow,
+    config,
+    admitted.capabilitySnapshot,
+  );
   const capabilitySnapshot = combineOptionalCapabilitySnapshots([
     admitted.capabilitySnapshot,
     supplementalSnapshot,
@@ -2532,7 +2635,7 @@ async function runCommand(
     runId,
   });
 
-  io.stdout(JSON.stringify(state, null, 2));
+  io.stdout(JSON.stringify(projectPublicRunOutput(state), null, 2));
   return runStateExitCode(state.status);
 }
 
@@ -2551,7 +2654,7 @@ async function inspectCommand(
   const events = await dependencies.createStore(runsDirectory).read(runId);
   const state = reduceRunEvents(events);
 
-  io.stdout(JSON.stringify(state, null, 2));
+  io.stdout(JSON.stringify(projectPublicRunOutput(state), null, 2));
   return 0;
 }
 
@@ -2653,11 +2756,11 @@ async function eventsCommand(
       );
     }
     if (!follow.enabled) {
-      io.stdout(JSON.stringify(result, null, 2));
+      io.stdout(JSON.stringify(projectPublicRunOutput(result), null, 2));
       return 0;
     }
     for (const event of result.events) {
-      io.stdout(JSON.stringify(event));
+      io.stdout(JSON.stringify(projectPublicRunOutput(event)));
     }
     cursor = result.cursor;
     if (result.terminal) {
@@ -2967,10 +3070,32 @@ function requireStringOption(value: string | undefined, message: string): string
 async function resolveWorkflowCapabilitySnapshot(
   workflow: CompiledWorkflow,
   config: EffectiveFlowConfig,
+  admittedSnapshot?: CapabilitySnapshot,
 ): Promise<CapabilitySnapshot | undefined> {
-  const names = collectWorkflowAgentSkillNames(workflow);
-  const verifierReferences = collectWorkflowVerifierPackageReferences(workflow);
-  const toolReferences = collectWorkflowToolPackageReferences(workflow);
+  const admittedSkills = new Set(
+    (admittedSnapshot?.packages ?? [])
+      .filter((item) => item.kind === "agent-skill")
+      .map((item) => item.name),
+  );
+  const admittedVerifiers = new Set(
+    (admittedSnapshot?.packages ?? [])
+      .filter((item) => item.kind === "verifier-package")
+      .map((item) => `${item.name}\0${item.version}`),
+  );
+  const admittedTools = new Set(
+    (admittedSnapshot?.packages ?? [])
+      .filter((item) => item.kind === "tool-package")
+      .map((item) => `${item.name}\0${item.version}`),
+  );
+  const names = collectWorkflowAgentSkillNames(workflow).filter(
+    (name) => !admittedSkills.has(name),
+  );
+  const verifierReferences = collectWorkflowVerifierPackageReferences(workflow).filter(
+    (reference) => !admittedVerifiers.has(`${reference.name}\0${reference.version}`),
+  );
+  const toolReferences = collectWorkflowToolPackageReferences(workflow).filter(
+    (reference) => !admittedTools.has(`${reference.name}\0${reference.version}`),
+  );
   if (names.length === 0 && verifierReferences.length === 0 && toolReferences.length === 0) {
     return config.policyPackages?.snapshot;
   }
@@ -3039,7 +3164,7 @@ async function admitWorkflowArgument(
     const loaded = await new LocalPromptActivationStore(config.projectRoot).loadActive(
       activationLocator.workflowId,
     );
-    const source = promptActivationSource(loaded.snapshot);
+    const source = adaptiveActivationSource(loaded.snapshot);
     const sourceName = `activation:${activationLocator.workflowId}`;
     const admitted = await admitWorkflowPackages({
       source: { kind: "inline", content: source, sourceName },
@@ -3111,7 +3236,7 @@ async function admitResumeWorkflowArgument(
       );
     }
     sourceName = `activation:${activationLocator.workflowId}`;
-    source = promptActivationSource(selected);
+    source = adaptiveActivationSource(selected);
   } else if (locator === null) {
     sourceName = resolve(dependencies.cwd, argument);
     source = await dependencies.readTextFile(sourceName);
@@ -3498,6 +3623,22 @@ function parseInstalledFlowVersion(input: unknown): string {
 function throwIfAborted(signal: AbortSignal | undefined, message: string): void {
   if (signal?.aborted === true) {
     throw signal.reason ?? new Error(message);
+  }
+}
+
+async function awaitWithCancellationPrecedence<T>(
+  operation: () => Promise<T>,
+  signal: AbortSignal | undefined,
+  message: string,
+): Promise<T> {
+  throwIfAborted(signal, message);
+  try {
+    const result = await operation();
+    throwIfAborted(signal, message);
+    return result;
+  } catch (error) {
+    throwIfAborted(signal, message);
+    throw error;
   }
 }
 

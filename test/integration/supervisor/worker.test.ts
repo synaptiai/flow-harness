@@ -26,6 +26,10 @@ import type {
 import { runWorkflow } from "../../../src/application/run-workflow.js";
 import { compileWorkflowFromSnapshot } from "../../../src/application/workflow-package-admission.js";
 import {
+  agentSkillActivationWorkflow,
+  createAgentSkillActivationSnapshot,
+} from "../../../src/domain/adaptation/agent-skill-activation.js";
+import {
   createPromptActivationSnapshot,
   promptActivationSource,
 } from "../../../src/domain/adaptation/prompt-activation.js";
@@ -34,6 +38,7 @@ import {
   normalizeAgentCommandRequest,
 } from "../../../src/domain/agent-command.js";
 import {
+  type AgentSkillPackageSnapshot,
   calculateCapabilitySnapshotDigest,
   createAgentCapabilityEvidence,
   createCapabilitySnapshot,
@@ -53,6 +58,7 @@ import { createProductionNodeEffectReconciler } from "../../../src/infrastructur
 import { createProductionWorkspaceIsolator } from "../../../src/infrastructure/runtime/production-workspace-isolator.js";
 import { createActiveRunClaim, createJobRecord } from "../../../src/supervisor/records.js";
 import { executeWorkerJob, requestWorker } from "../../../src/supervisor/worker.js";
+import { agentSkillActivationInput } from "../../fixtures/agent-skill-activation.js";
 import { promptActivationInput } from "../../fixtures/prompt-activation.js";
 
 const temporaryDirectories: string[] = [];
@@ -294,6 +300,92 @@ nodes:
     expect(events[0]).toMatchObject({
       type: "run_started",
       capabilitySnapshot: {
+        activations: [{ activationDigest: activation.activationDigest }],
+      },
+    });
+    expect(reduceRunEvents(events).status).toBe("succeeded");
+  });
+
+  it("executes an Agent Skill active root from the frozen detached snapshot", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-worker-skill-activation-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    const store = new LocalSupervisorStore(runsDirectory);
+    await store.initialize();
+    const activation = createAgentSkillActivationSnapshot(agentSkillActivationInput());
+    const packages = [activation.skill];
+    const activations = [activation];
+    const capabilitySnapshot = validateCapabilitySnapshot({
+      version: 1,
+      packages,
+      activations,
+      digest: calculateCapabilitySnapshotDigest(packages, activations),
+    });
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "worker-skill-activation",
+      mode: "run",
+      sourceName: "activation:adaptive-skill-workflow",
+      workflowSource: agentSkillActivationWorkflow(activation),
+      cwd: directory,
+      token: "9".repeat(64),
+      createdAt: "2026-08-15T12:00:00.000Z",
+      capabilitySnapshot,
+    });
+    await store.reserveSubmission(
+      job,
+      createActiveRunClaim({
+        runId: job.runId,
+        jobId: job.jobId,
+        workerId: job.workerId,
+        claimedAt: job.createdAt,
+      }),
+    );
+    let observedResource: string | undefined;
+
+    const worker = executeWorkerJob(job.jobId, {
+      store,
+      executor: {
+        async execute(node, context) {
+          if (node.type !== "agent" || context.capabilitySnapshot === undefined) {
+            throw new Error("Agent Skill active root executed an unexpected node");
+          }
+          const skill = context.capabilitySnapshot.packages.find(
+            (item): item is AgentSkillPackageSnapshot =>
+              item.kind === "agent-skill" && item.name === "review",
+          );
+          const resource = skill?.files.find((file) => file.path === "references/checklist.md");
+          if (resource === undefined) {
+            throw new Error("Agent Skill active root is missing its frozen resource");
+          }
+          observedResource = Buffer.from(resource.contentBase64, "base64").toString("utf8");
+          return {
+            status: "succeeded",
+            evidence: {
+              ...successfulAgentEvidence(),
+              capabilities: createAgentCapabilityEvidence(context.capabilitySnapshot, ["review"]),
+            },
+          };
+        },
+      },
+      effectReconciler: createProductionNodeEffectReconciler(),
+      createRunStore: (root) => new JsonlRunStore(root),
+      pid: 4393,
+    });
+    const descriptor = await waitForDescriptor(store, job.workerId);
+    await expect(requestWorker(descriptor, { type: "identify" })).resolves.toMatchObject({
+      ok: true,
+      result: { runId: job.runId, status: "running" },
+    });
+
+    await expect(worker).resolves.toBe(0);
+    expect(observedResource).toBe("Check correctness, security, and evidence.\n");
+    const events = await new JsonlRunStore(runsDirectory).read(job.runId);
+    expect(events[0]).toMatchObject({
+      type: "run_started",
+      capabilitySnapshot: {
+        packages: [{ digest: activation.skill.digest }],
         activations: [{ activationDigest: activation.activationDigest }],
       },
     });

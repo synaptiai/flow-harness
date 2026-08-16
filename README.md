@@ -507,8 +507,9 @@ verifier. Package metadata, requested tools, trust, provenance, and file set can
 
 The public candidate identity contains hashes and portable provenance, not resource contents or
 absolute paths. Inspection remains available after the live candidate and skill files are removed.
-Agent Skill candidate generation, activation, rollback, installation, and publication are not
-implemented. A favorable evaluation grants no package or execution authority.
+Agent Skill candidate generation, installation, and publication are not implemented. A favorable
+evaluation grants no package or execution authority until an operator applies its exact reviewed
+activation proposal.
 
 Activation requires a complete superior evaluation. First, request a preview:
 
@@ -528,9 +529,11 @@ node dist/cli/main.js activation inspect evaluated-profile
 node dist/cli/main.js run activation:evaluated-profile --run-id active-candidate-run
 ```
 
-Activation does not change the baseline file. Flow stores one candidate artifact and one baseline
-artifact from the same reviewed evaluation. Each run stores only the exact selected artifact in its
-durable capability snapshot. A later activation or rollback does not change that run.
+Activation accepts prompt and Agent Skill candidates. It does not change the baseline workflow or
+the live skill package. Flow stores one candidate artifact and one baseline artifact from the same
+reviewed evaluation. An Agent Skill artifact contains the unchanged workflow and the exact selected
+package. Each run stores only the exact selected artifact and package in its durable capability
+snapshot. A later activation or rollback does not change that run.
 
 Rollback selects an earlier candidate artifact or the exact stored baseline artifact for future
 runs. It does not delete stored activation artifacts:
@@ -540,6 +543,8 @@ node dist/cli/main.js activation rollback evaluated-profile \
   --to baseline --actor operator:test --dry-run
 node dist/cli/main.js activation rollback evaluated-profile \
   --to baseline --actor operator:test --expected-digest <proposal-sha256>
+node dist/cli/main.js activation rollback evaluated-profile \
+  --to agent-skill:better-review@1.0.0 --actor operator:test --dry-run
 ```
 
 Model-authorized evaluation and activation remain unavailable.

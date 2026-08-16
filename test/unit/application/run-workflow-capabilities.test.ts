@@ -10,13 +10,20 @@ import type {
 } from "../../../src/application/ports.js";
 import { resumeWorkflow, runWorkflow } from "../../../src/application/run-workflow.js";
 import {
+  agentSkillActivationWorkflow,
+  createAgentSkillActivationSnapshot,
+} from "../../../src/domain/adaptation/agent-skill-activation.js";
+import {
   type CapabilitySnapshot,
+  calculateCapabilitySnapshotDigest,
   createAgentCapabilityEvidence,
   createCapabilitySnapshot,
+  validateCapabilitySnapshot,
 } from "../../../src/domain/capability/agent-skills.js";
 import type { ToolPackageSnapshotInput } from "../../../src/domain/capability/tool-packages.js";
 import { calculateChildRunId, type RunEvent } from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
+import { agentSkillActivationInput } from "../../fixtures/agent-skill-activation.js";
 
 describe("run workflow capability snapshots", () => {
   it("persists and passes the exact bound snapshot to selected agent execution", async () => {
@@ -120,6 +127,55 @@ describe("run workflow capability snapshots", () => {
       type: "run_started",
       capabilitySnapshot: { digest: parentSnapshot.digest },
       executionWorkspace: { parentRunId: "parent-run" },
+    });
+  });
+
+  it("persists one Agent Skill activation and package in an isolated child ledger", async () => {
+    const activation = createAgentSkillActivationSnapshot(agentSkillActivationInput());
+    const packages = [activation.skill];
+    const activations = [activation];
+    const snapshot = validateCapabilitySnapshot({
+      version: 1,
+      packages,
+      activations,
+      digest: calculateCapabilitySnapshotDigest(packages, activations),
+    });
+    const store = new MemoryStore();
+    const childRunId = calculateChildRunId("parent-skill-run", "delegate", 1);
+
+    const state = await runWorkflow(
+      compileWorkflowText(
+        agentSkillActivationWorkflow(activation),
+        "activation:adaptive-skill-workflow",
+      ),
+      {
+        ...options(
+          store,
+          executorFrom((_node, context) => agentSuccess(context.capabilitySnapshot)),
+        ),
+        runId: childRunId,
+        capabilitySnapshot: snapshot,
+        executionWorkspace: {
+          backend: "reflink-copy-v1",
+          snapshotDigest: "b".repeat(64),
+          parentRunId: "parent-skill-run",
+          parentNodeId: "delegate",
+          parentAttempt: 1,
+        },
+      },
+    );
+
+    expect(store.events[0]).toMatchObject({
+      type: "run_started",
+      executionWorkspace: { parentRunId: "parent-skill-run" },
+      capabilitySnapshot: {
+        packages: [{ digest: activation.skill.digest }],
+        activations: [{ activationDigest: activation.activationDigest }],
+      },
+    });
+    expect(state).toMatchObject({
+      status: "succeeded",
+      capabilitySnapshot: { digest: snapshot.digest },
     });
   });
 

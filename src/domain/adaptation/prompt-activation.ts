@@ -214,7 +214,7 @@ export function createPromptActivationSnapshot(
   input: CreatePromptActivationSnapshotInput,
 ): PromptActivationSnapshot {
   const candidate = parsePromptCandidateIdentity(input.candidate);
-  const evaluation = parseEvaluationProof(input.evaluation);
+  const evaluation = parsePromptActivationEvaluationProof(input.evaluation);
   const content = Buffer.from(input.source, "utf8");
   if (content.byteLength > MAX_PROMPT_ACTIVATION_SOURCE_BYTES) {
     throw new PromptActivationError(
@@ -332,7 +332,7 @@ export function parsePromptActivationSnapshot(input: unknown): PromptActivationS
   const snapshot: PromptActivationSnapshot = {
     ...parsed.data,
     candidate,
-    evaluation: parseEvaluationProof(parsed.data.evaluation),
+    evaluation: parsePromptActivationEvaluationProof(parsed.data.evaluation),
   };
   if (calculatePromptActivationDigest(snapshot) !== snapshot.activationDigest) {
     throw new PromptActivationError(
@@ -367,7 +367,9 @@ export function promptActivationSource(snapshot: PromptActivationSnapshot): stri
   );
 }
 
-function parseEvaluationProof(input: unknown): PromptActivationEvaluationProof {
+export function parsePromptActivationEvaluationProof(
+  input: unknown,
+): PromptActivationEvaluationProof {
   const parsed = evaluationProofSchema.safeParse(input);
   if (!parsed.success) {
     throw new PromptActivationError(

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -13,11 +13,11 @@ import {
 } from "../../../src/domain/capability/agent-skills.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { calculateWorkflowDigest } from "../../../src/domain/workflow/digest.js";
+import { loadEffectiveFlowConfig } from "../../../src/infrastructure/fs/flow-config-store.js";
 import {
   discoverProjectAgentSkills,
   snapshotSelectedAgentSkills,
 } from "../../../src/infrastructure/fs/local-agent-skill-catalog.js";
-import { loadEffectiveFlowConfig } from "../../../src/infrastructure/fs/flow-config-store.js";
 import { promptCandidateTuningEvidence } from "../../fixtures/prompt-candidate-generation.js";
 
 const temporaryDirectories: string[] = [];
@@ -181,6 +181,285 @@ describe("Agent Skill candidate CLI", () => {
     expect(exportText).not.toContain(fixture.project);
   }, 20_000);
 
+  it("activates a superior skill projection and runs it after every live source is removed", async () => {
+    const fixture = await candidateEvaluationProject();
+    const evaluations = join(fixture.project, "activation-evaluations");
+    const observed: Array<{ readonly digest: string; readonly resource: string }> = [];
+    const evaluation = capture();
+    expect(
+      await main(
+        [
+          "eval",
+          "run",
+          fixture.planPath,
+          "--evaluation-id",
+          "skill-activation-evaluation",
+          "--evaluations-dir",
+          evaluations,
+        ],
+        evaluation.io,
+        {
+          cwd: fixture.project,
+          executor: evaluationExecutor(observed, undefined, (resource) =>
+            resource.includes("PRIVATE CANDIDATE") ? "verified\n" : "baseline failed\n",
+          ),
+        },
+      ),
+      evaluation.stderr.join("\n"),
+    ).toBe(0);
+
+    const dryRun = capture();
+    expect(
+      await main(
+        [
+          "candidate",
+          "activate",
+          fixture.candidatePath,
+          "--evaluation",
+          "skill-activation-evaluation",
+          "--evaluations-dir",
+          evaluations,
+          "--actor",
+          "release-operator",
+          "--dry-run",
+        ],
+        dryRun.io,
+        { cwd: fixture.project },
+      ),
+      dryRun.stderr.join("\n"),
+    ).toBe(0);
+    const preview = JSON.parse(dryRun.stdout.join("\n"));
+    expect(preview).toMatchObject({
+      dryRun: true,
+      activation: {
+        kind: "agent-skill-activation",
+        selection: "candidate",
+        workflowId: "skill-evaluation-workflow",
+        skill: { name: "review", digest: expect.stringMatching(/^[a-f0-9]{64}$/) },
+      },
+      proposal: { action: "activate", proposalDigest: expect.stringMatching(/^[a-f0-9]{64}$/) },
+    });
+    expect(dryRun.stdout.join("\n")).not.toContain("PRIVATE CANDIDATE REVIEW INSTRUCTIONS");
+
+    const applied = capture();
+    expect(
+      await main(
+        [
+          "candidate",
+          "activate",
+          fixture.candidatePath,
+          "--evaluation",
+          "skill-activation-evaluation",
+          "--evaluations-dir",
+          evaluations,
+          "--actor",
+          "release-operator",
+          "--expected-digest",
+          preview.proposal.proposalDigest,
+        ],
+        applied.io,
+        { cwd: fixture.project },
+      ),
+      applied.stderr.join("\n"),
+    ).toBe(0);
+
+    const inspectedActivation = capture();
+    expect(
+      await main(["activation", "inspect", "skill-evaluation-workflow"], inspectedActivation.io, {
+        cwd: fixture.project,
+      }),
+      inspectedActivation.stderr.join("\n"),
+    ).toBe(0);
+    expect(JSON.parse(inspectedActivation.stdout.join("\n"))).toMatchObject({
+      workflowId: "skill-evaluation-workflow",
+      active: {
+        kind: "agent-skill-activation",
+        selection: "candidate",
+        candidateId: "better-review",
+        candidateVersion: "1.0.0",
+        candidate: {
+          scope: { skillName: "review" },
+          projectedSkill: { packageDigest: expect.stringMatching(/^[a-f0-9]{64}$/) },
+        },
+        skill: { name: "review", digest: expect.stringMatching(/^[a-f0-9]{64}$/) },
+      },
+    });
+    expect(inspectedActivation.stdout.join("\n")).not.toContain("contentBase64");
+    expect(inspectedActivation.stdout.join("\n")).not.toContain(
+      "PRIVATE CANDIDATE REVIEW INSTRUCTIONS",
+    );
+
+    await rm(fixture.candidatePath);
+    await rm(join(fixture.project, "baseline.workflow.yaml"));
+    await rm(join(fixture.project, "tuning.json"));
+    await rm(join(fixture.project, ".flow", "skills", "review"), { recursive: true });
+    const runObserved: Array<{ readonly digest: string; readonly resource: string }> = [];
+    const run = capture();
+    expect(
+      await main(
+        ["run", "activation:skill-evaluation-workflow", "--run-id", "activated-skill-run"],
+        run.io,
+        { cwd: fixture.project, executor: evaluationExecutor(runObserved) },
+      ),
+      run.stderr.join("\n"),
+    ).toBe(0);
+    expect(runObserved).toEqual([
+      {
+        digest: expect.stringMatching(/^[a-f0-9]{64}$/),
+        resource: "PRIVATE CANDIDATE REVIEW INSTRUCTIONS\n",
+      },
+    ]);
+    expect(run.stdout.join("\n")).not.toContain("PRIVATE CANDIDATE REVIEW INSTRUCTIONS");
+
+    const baselinePreviewOutput = capture();
+    expect(
+      await main(
+        [
+          "activation",
+          "rollback",
+          "skill-evaluation-workflow",
+          "--to",
+          "baseline",
+          "--actor",
+          "release-operator",
+          "--dry-run",
+        ],
+        baselinePreviewOutput.io,
+        { cwd: fixture.project },
+      ),
+      baselinePreviewOutput.stderr.join("\n"),
+    ).toBe(0);
+    const baselinePreview = JSON.parse(baselinePreviewOutput.stdout.join("\n"));
+    expect(baselinePreview).toMatchObject({
+      proposal: {
+        target: { kind: "agent-skill-activation", selection: "baseline" },
+      },
+    });
+    const baselineApplyOutput = capture();
+    expect(
+      await main(
+        [
+          "activation",
+          "rollback",
+          "skill-evaluation-workflow",
+          "--to",
+          "baseline",
+          "--actor",
+          "release-operator",
+          "--expected-digest",
+          baselinePreview.proposal.proposalDigest,
+        ],
+        baselineApplyOutput.io,
+        { cwd: fixture.project },
+      ),
+      baselineApplyOutput.stderr.join("\n"),
+    ).toBe(0);
+
+    const baselineObserved: Array<{ readonly digest: string; readonly resource: string }> = [];
+    const baselineRun = capture();
+    expect(
+      await main(
+        ["run", "activation:skill-evaluation-workflow", "--run-id", "activated-skill-baseline-run"],
+        baselineRun.io,
+        { cwd: fixture.project, executor: evaluationExecutor(baselineObserved) },
+      ),
+      baselineRun.stderr.join("\n"),
+    ).toBe(0);
+    expect(baselineObserved).toEqual([
+      {
+        digest: expect.stringMatching(/^[a-f0-9]{64}$/),
+        resource: "Check evidence.\n",
+      },
+    ]);
+
+    const candidatePreviewOutput = capture();
+    expect(
+      await main(
+        [
+          "activation",
+          "rollback",
+          "skill-evaluation-workflow",
+          "--to",
+          "agent-skill:better-review@1.0.0",
+          "--actor",
+          "release-operator",
+          "--dry-run",
+        ],
+        candidatePreviewOutput.io,
+        { cwd: fixture.project },
+      ),
+      candidatePreviewOutput.stderr.join("\n"),
+    ).toBe(0);
+    expect(JSON.parse(candidatePreviewOutput.stdout.join("\n"))).toMatchObject({
+      proposal: {
+        target: {
+          kind: "agent-skill-activation",
+          candidateId: "better-review",
+          candidateVersion: "1.0.0",
+          selection: "candidate",
+        },
+      },
+    });
+
+    const cancelledRollback = capture();
+    const rollbackController = new AbortController();
+    const rollbackReason = new Error("operator cancelled Agent Skill rollback");
+    rollbackController.abort(rollbackReason);
+    expect(
+      await main(
+        [
+          "activation",
+          "rollback",
+          "skill-evaluation-workflow",
+          "--to",
+          "agent-skill:better-review@1.0.0",
+          "--actor",
+          "release-operator",
+          "--expected-digest",
+          JSON.parse(candidatePreviewOutput.stdout.join("\n")).proposal.proposalDigest,
+        ],
+        cancelledRollback.io,
+        { cwd: fixture.project, signal: rollbackController.signal },
+      ),
+    ).toBe(1);
+    expect(cancelledRollback.stderr).toEqual([rollbackReason.message]);
+    const afterCancelledRollback = capture();
+    expect(
+      await main(
+        ["activation", "inspect", "skill-evaluation-workflow"],
+        afterCancelledRollback.io,
+        { cwd: fixture.project },
+      ),
+    ).toBe(0);
+    expect(JSON.parse(afterCancelledRollback.stdout.join("\n"))).toMatchObject({
+      active: { kind: "agent-skill-activation", selection: "baseline" },
+      head: { generation: 2 },
+    });
+
+    const invalidTargetOutput = capture();
+    expect(
+      await main(
+        [
+          "activation",
+          "rollback",
+          "skill-evaluation-workflow",
+          "--to",
+          "agent-skill:better-review@1.0.0@PRIVATE_TARGET",
+          "--actor",
+          "release-operator",
+          "--dry-run",
+        ],
+        invalidTargetOutput.io,
+        { cwd: fixture.project },
+      ),
+    ).toBe(2);
+    expect(invalidTargetOutput.stdout).toEqual([]);
+    expect(invalidTargetOutput.stderr.join("\n")).toContain(
+      "activation rollback target must be baseline",
+    );
+    expect(invalidTargetOutput.stderr.join("\n")).not.toContain("PRIVATE_TARGET");
+  }, 20_000);
+
   it("keeps invalid baseline diagnostics private and validation read-only", async () => {
     const fixture = await candidateEvaluationProject();
     const privateWorkflow = JSON.stringify({
@@ -219,6 +498,149 @@ describe("Agent Skill candidate CLI", () => {
     expect(output.stderr.join("\n")).not.toContain("PRIVATE");
     expect(output.stderr.join("\n")).not.toContain(fixture.project);
     expect(await snapshotTree(fixture.project)).toEqual(before);
+  });
+
+  it("preserves cancellation before activation mutation", async () => {
+    const fixture = await candidateEvaluationProject();
+    const evaluations = join(fixture.project, "cancelled-activation-evaluations");
+    const evaluation = capture();
+    expect(
+      await main(
+        [
+          "eval",
+          "run",
+          fixture.planPath,
+          "--evaluation-id",
+          "cancelled-activation-evaluation",
+          "--evaluations-dir",
+          evaluations,
+        ],
+        evaluation.io,
+        {
+          cwd: fixture.project,
+          executor: evaluationExecutor([], undefined, (resource) =>
+            resource.includes("PRIVATE CANDIDATE") ? "verified\n" : "baseline failed\n",
+          ),
+        },
+      ),
+      evaluation.stderr.join("\n"),
+    ).toBe(0);
+    const controller = new AbortController();
+    const reason = new Error("operator cancelled Agent Skill activation");
+    const output = capture();
+
+    expect(
+      await main(
+        [
+          "candidate",
+          "activate",
+          fixture.candidatePath,
+          "--evaluation",
+          "cancelled-activation-evaluation",
+          "--evaluations-dir",
+          evaluations,
+          "--actor",
+          "release-operator",
+          "--dry-run",
+        ],
+        output.io,
+        {
+          cwd: fixture.project,
+          signal: controller.signal,
+          loadConfig: async (options) => {
+            const config = await loadEffectiveFlowConfig(options);
+            queueMicrotask(() => controller.abort(reason));
+            return config;
+          },
+        },
+      ),
+    ).toBe(1);
+    expect(output.stderr).toEqual([reason.message]);
+    await expect(
+      readFile(join(fixture.project, ".flow", "activations", "index.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each([
+    {
+      name: "candidate activation",
+      args: [
+        "candidate",
+        "activate",
+        "candidate.json",
+        "--evaluation",
+        "evaluation-1",
+        "--actor",
+        "release-operator",
+        "--dry-run",
+      ],
+    },
+    {
+      name: "activation rollback",
+      args: [
+        "activation",
+        "rollback",
+        "adaptive-workflow",
+        "--to",
+        "baseline",
+        "--actor",
+        "release-operator",
+        "--dry-run",
+      ],
+    },
+  ])("gives $name cancellation precedence over a simultaneous config failure", async ({ args }) => {
+    const fixture = await candidateEvaluationProject();
+    const controller = new AbortController();
+    const reason = new Error("operator cancelled before activation configuration settled");
+    const output = capture();
+
+    expect(
+      await main(args, output.io, {
+        cwd: fixture.project,
+        signal: controller.signal,
+        loadConfig: async () => {
+          controller.abort(reason);
+          throw new Error("PRIVATE_CONFIG_FAILURE");
+        },
+      }),
+    ).toBe(1);
+    expect(output.stderr).toEqual([reason.message]);
+    expect(output.stderr.join("\n")).not.toContain("PRIVATE_CONFIG_FAILURE");
+  });
+
+  it("does not start activation configuration after cancellation", async () => {
+    const fixture = await candidateEvaluationProject();
+    const controller = new AbortController();
+    const reason = new Error("operator cancelled before activation configuration");
+    controller.abort(reason);
+    let configCalls = 0;
+    const output = capture();
+
+    expect(
+      await main(
+        [
+          "activation",
+          "rollback",
+          "adaptive-workflow",
+          "--to",
+          "baseline",
+          "--actor",
+          "release-operator",
+          "--dry-run",
+        ],
+        output.io,
+        {
+          cwd: fixture.project,
+          signal: controller.signal,
+          loadConfig: async () => {
+            configCalls += 1;
+            throw new Error("PRIVATE_CONFIG_CALL");
+          },
+        },
+      ),
+    ).toBe(1);
+    expect(configCalls).toBe(0);
+    expect(output.stderr).toEqual([reason.message]);
   });
 
   it("cancels after plan admission without publishing an evaluation", async () => {
@@ -449,6 +871,7 @@ comparison:
 function evaluationExecutor(
   observed: Array<{ readonly digest: string; readonly resource: string }>,
   afterFirstExecution?: () => Promise<void>,
+  resultForResource: (resource: string) => string = () => "verified\n",
 ): NodeExecutor {
   return {
     execute: async (node, context) => {
@@ -469,7 +892,8 @@ function evaluationExecutor(
       if (observed.length === 1) {
         await afterFirstExecution?.();
       }
-      await writeFile(join(context.cwd, "RESULT.md"), "verified\n");
+      const resourceText = Buffer.from(resource.contentBase64, "base64").toString("utf8");
+      await writeFile(join(context.cwd, "RESULT.md"), resultForResource(resourceText));
       const text = '"done"';
       return {
         status: "succeeded",
