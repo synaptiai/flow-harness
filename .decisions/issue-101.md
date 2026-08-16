@@ -33,9 +33,9 @@ Other operating-system users and untrusted web origins do not.
   carry an authorization header and consume bounded newline-delimited JSON without cookies.
 
 - Browser `sessionStorage` is scoped to one top-level browsing context. User agents can preserve it
-  when they restore that context after a browser-process restart. Flow therefore treats it as
-  tab-scoped reload state, discloses that lifetime, and removes the capability after terminal
-  observation.
+  when they restore that context after a browser-process restart. A newly created related context
+  can also receive an initial copy. Flow treats it as tab-scoped reload state, discloses that
+  lifetime, and removes the capability after terminal observation.
 
 ## Architecture alternatives
 
@@ -145,8 +145,8 @@ The browser host also does not replace these existing boundaries:
 
 - Replacing the JSON CLI, terminal host, supervisor protocol, event reducer, approval channel, or
   cancellation command.
-- Long-lived or cross-tab browser credentials, user accounts, cookies, remote authentication, or
-  authorization between same-UID processes.
+- Browser credentials beyond the disclosed tab-scoped reload state, user accounts, cookies, remote
+  authentication, or authorization between same-UID processes.
 - General A2UI basic-catalog rendering or migration to the A2UI v1.0 candidate.
 
 ### Failure modes

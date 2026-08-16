@@ -1147,8 +1147,9 @@ browser for the same operator account. The capability is 256 random bits.
 
 The fixed client copies it to tab-scoped `sessionStorage`, removes it from the address bar, and sends
 it only in authorization headers after startup. This storage supports reload and can follow browser
-session restoration. The client removes it when terminal observation settles. It never enters a
-cookie, `localStorage`, a request URL, or durable Flow state.
+session restoration. A related browser context can receive an initial copy. The fixed client never
+opens such a context. The client removes the value when terminal observation settles. It never
+enters a cookie, `localStorage`, a request URL, or durable Flow state.
 
 The listener accepts only explicit IPv4 loopback traffic, the exact host and browser request
 context, and one observer. It sets a closed content policy, serves no external resource, uses no

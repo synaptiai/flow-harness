@@ -149,7 +149,8 @@ run authority and does not enter replay.
 listener on an ephemeral port. A 256-bit session capability enters the initial URL fragment. The
 fixed client moves it to tab-scoped `sessionStorage`, removes the fragment, authenticates a bounded
 streaming fetch, and renders with DOM node creation and text insertion. Tab storage supports reload
-and can follow browser session restoration. Terminal observation removes the capability. It never
+and can follow browser session restoration. A related browser context can receive an initial copy,
+but the fixed client never opens one. Terminal observation removes the capability, which never
 enters a cookie, `localStorage`, a request URL, or durable Flow state.
 
 Exact host, origin, Fetch Metadata, bearer, header, body, JSON, observer, write, and reconnect checks
