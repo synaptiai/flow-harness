@@ -180,9 +180,18 @@ describe.skipIf(!linux)("container command sandbox runtime", () => {
 
   it("terminates descendants and removes the container after timeout", async () => {
     const projectRoot = await createPreparedProject();
+    const descendantScript = `
+      const fs = require("node:fs");
+      fs.writeFileSync("/workspace/descendant-ready.txt", "ready");
+      const pause = new Int32Array(new SharedArrayBuffer(4));
+      while (!fs.existsSync("/workspace/post-cleanup-arm.txt")) {
+        Atomics.wait(pause, 0, 0, 25);
+      }
+      fs.writeFileSync("/workspace/post-cleanup-write.txt", "survived");
+    `;
     const script = `
       const { spawn } = require("node:child_process");
-      spawn(process.execPath, ["-e", "setTimeout(() => require('node:fs').writeFileSync('/workspace/late.txt', 'late'), 8000)"], { stdio: "ignore" });
+      spawn(process.execPath, ["-e", ${JSON.stringify(descendantScript)}], { stdio: "ignore" });
       setInterval(() => {}, 1000);
     `;
 
@@ -193,10 +202,14 @@ describe.skipIf(!linux)("container command sandbox runtime", () => {
       error: { code: "command_timeout" },
       evidence: { timedOut: true, terminationStatus: "confirmed" },
     });
-    await new Promise((resolveWait) => setTimeout(resolveWait, 8_500));
-    await expect(readFile(join(projectRoot, "late.txt"), "utf8")).rejects.toMatchObject({
-      code: "ENOENT",
-    });
+    await expect(readFile(join(projectRoot, "descendant-ready.txt"), "utf8")).resolves.toBe(
+      "ready",
+    );
+    await writeFile(join(projectRoot, "post-cleanup-arm.txt"), "armed", "utf8");
+    await new Promise((resolveWait) => setTimeout(resolveWait, 1_000));
+    await expect(
+      readFile(join(projectRoot, "post-cleanup-write.txt"), "utf8"),
+    ).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readIntentRecords(projectRoot)).resolves.toEqual([]);
   }, 60_000);
 
