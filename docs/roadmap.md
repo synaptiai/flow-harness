@@ -25,8 +25,8 @@ Gate 7 includes tuning-only prompt and Agent Skill candidates. It also includes 
 generation, exact prompt overlays, authority-preserving skill-resource projections, paired
 evaluation, reviewed prompt activation, durable run snapshots, and rollback.
 
-Remaining targets include executable extensions, automatic package updates, policy and UI
-packages, and stronger isolation. Explicit signed project metadata now provides local-clock
+Remaining targets include executable extensions, automatic package updates, UI packages, and
+stronger isolation. Explicit signed project metadata now provides local-clock
 expiry, revocation, exact-target admission, and monotonic rollback refusal. An explicit signed
 public channel stages inert candidates for reviewed activation. Flow does not poll, activate, or
 install automatically.

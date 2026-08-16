@@ -273,8 +273,8 @@ unless a package was explicitly selected.
 This is composition, not a second runtime. Package source remains subject to the ordinary compiler,
 scheduler, budgets, approvals, child isolation, policy, containment, evidence, and replay rules.
 Packages cannot load executable modules, register hooks or tools, choose providers, add credentials,
-or widen policy. Parameterized templates, compatibility solving, and policy/UI packages require
-separate public contracts.
+or widen policy. Policy packages use a separate inert narrowing contract. Parameterized templates,
+compatibility solving, and UI packages require separate public contracts.
 
 ### Tool broker
 
