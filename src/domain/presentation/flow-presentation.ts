@@ -140,6 +140,10 @@ const flowPresentationDocumentSchema = z
         sequence: z.number().int().positive(),
       })
       .strict(),
+    layout: z
+      .object({ density: z.enum(["compact", "comfortable"]) })
+      .strict()
+      .optional(),
     sections: z
       .array(
         z

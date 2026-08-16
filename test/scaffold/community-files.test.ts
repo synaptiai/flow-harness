@@ -3,7 +3,10 @@ import { readdir, readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-
+import {
+  FLOW_A2UI_CATALOG_ID,
+  PRESENTATION_PACKAGE_A2UI_VERSION,
+} from "../../src/domain/capability/presentation-packages.js";
 import { parseToolPackageManifest } from "../../src/domain/capability/tool-packages.js";
 import { parseVerifierPackageManifest } from "../../src/domain/capability/verifier-packages.js";
 import { parseWorkflowPackageManifest } from "../../src/domain/capability/workflow-packages.js";
@@ -26,7 +29,7 @@ describe("public repository contracts", () => {
     expect(readme).toContain("[Security](SECURITY.md)");
   });
 
-  it("reports implemented policy packages separately from planned UI packages", async () => {
+  it("reports policy and inert presentation packages as implemented", async () => {
     const documentationEntries = await readdir(new URL("../../docs/", import.meta.url), {
       withFileTypes: true,
     });
@@ -45,12 +48,47 @@ describe("public repository contracts", () => {
 
     expect(readme).toMatch(/Versioned policy packages.*Implemented/is);
     expect(roadmap).toMatch(/Policy contributions use versioned manifests.*Flow implements/is);
-    expect(roadmap).toMatch(/UI contribution manifests remain planned/i);
+    expect(readme).toMatch(/Inert A2UI-profile presentation packages.*Implemented/is);
+    expect(roadmap).toMatch(/accepts exact inert A2UI-profile presentation packages/i);
     expect(roadmap).not.toMatch(/Remaining targets include[^.]*\bpolicy\b/i);
+    expect(roadmap).not.toMatch(/Remaining targets include[^.]*\bUI packages\b/i);
     expect(corpus).not.toMatch(/policy\/UI/i);
     expect(corpus).not.toMatch(
       /\bpolicy(?: packages?)?\s+(?:and|or)\s+UI packages?[^.]{0,80}\b(?:planned|future|deferred|unsupported|remain)\b/i,
     );
+  });
+
+  it("publishes the closed A2UI catalog used by presentation packages", async () => {
+    const catalogText = await readText("docs/specs/flow-a2ui-run-presentation-v1.catalog.json");
+    const catalog = JSON.parse(catalogText) as {
+      readonly $id?: string;
+      readonly catalogId?: string;
+      readonly components?: Record<string, unknown>;
+      readonly functions?: Record<string, unknown>;
+      readonly $defs?: { readonly anyFunction?: unknown; readonly theme?: unknown };
+    };
+
+    expect(PRESENTATION_PACKAGE_A2UI_VERSION).toBe("v0.9");
+    expect(catalog.$id).toBe(FLOW_A2UI_CATALOG_ID);
+    expect(catalog.catalogId).toBe(FLOW_A2UI_CATALOG_ID);
+    expect(Object.keys(catalog.components ?? {})).toEqual([
+      "FlowLayout",
+      "FlowGroup",
+      "FlowRunSummary",
+      "FlowGraphProgress",
+      "FlowNodeTable",
+      "FlowResourceFacts",
+      "FlowPendingApprovals",
+      "FlowOutcomeNotice",
+    ]);
+    expect(catalog.functions).toEqual({});
+    expect(catalog.$defs?.anyFunction).toBe(false);
+    expect(catalog.$defs?.theme).toBe(false);
+    expect(catalogText).toContain(
+      "https://a2ui.org/specification/v0_9/common_types.json#/$defs/ChildList",
+    );
+    expect(catalogText).not.toContain("DynamicString");
+    expect(catalogText).not.toContain("Action");
   });
 
   it("documents the operator-only container command profile and its residual boundary", async () => {

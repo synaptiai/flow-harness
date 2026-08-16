@@ -19,6 +19,13 @@ import {
   type ProjectPolicyPackageCatalog,
 } from "./local-policy-package-catalog.js";
 import {
+  assertPresentationPackageCatalog,
+  createInstalledDiscoveredPresentationPackage,
+  type DiscoveredPresentationPackage,
+  discoverProjectPresentationPackages,
+  type ProjectPresentationPackageCatalog,
+} from "./local-presentation-package-catalog.js";
+import {
   createInstalledDiscoveredToolPackage,
   type DiscoveredToolPackage,
   discoverProjectToolPackages,
@@ -47,6 +54,7 @@ export interface ProjectCapabilityCatalogs {
   readonly tools: ProjectToolPackageCatalog;
   readonly workflows: ProjectWorkflowPackageCatalog;
   readonly policies: ProjectPolicyPackageCatalog;
+  readonly presentations: ProjectPresentationPackageCatalog;
 }
 
 export interface ProjectCapabilityCatalogOptions {
@@ -54,6 +62,7 @@ export interface ProjectCapabilityCatalogOptions {
   readonly capabilityPackageStoreHooks?: CapabilityPackageStoreHooks;
   readonly includeNonPolicies?: boolean;
   readonly includePolicies?: boolean;
+  readonly includePresentations?: boolean;
   readonly signal?: AbortSignal;
 }
 
@@ -64,12 +73,14 @@ export async function discoverProjectCapabilityCatalogs(
   options.signal?.throwIfAborted();
   const includeNonPolicies = options.includeNonPolicies !== false;
   const includePolicies = options.includePolicies !== false;
+  const includePresentations = options.includePresentations === true;
   const [
     localAgentSkills,
     localVerifiers,
     localTools,
     localWorkflows,
     localPolicies,
+    localPresentations,
     installedBundles,
   ] = await Promise.all([
     includeNonPolicies ? discoverProjectAgentSkills(projectRoot) : Promise.resolve(undefined),
@@ -79,12 +90,16 @@ export async function discoverProjectCapabilityCatalogs(
     includePolicies
       ? discoverProjectPolicyPackages(projectRoot, options)
       : Promise.resolve(undefined),
+    includePresentations
+      ? discoverProjectPresentationPackages(projectRoot, options)
+      : Promise.resolve(undefined),
     new LocalCapabilityPackageStore(projectRoot, options.capabilityPackageStoreHooks).verify(
       options.signal === undefined ? {} : { signal: options.signal },
     ),
   ]);
   options.signal?.throwIfAborted();
-  const catalogProjectRoot = localAgentSkills?.projectRoot ?? localPolicies?.projectRoot;
+  const catalogProjectRoot =
+    localAgentSkills?.projectRoot ?? localPolicies?.projectRoot ?? localPresentations?.projectRoot;
   if (catalogProjectRoot === undefined) {
     throw new Error("capability catalog discovery must include at least one capability family");
   }
@@ -123,11 +138,19 @@ export async function discoverProjectCapabilityCatalogs(
       root: join(catalogProjectRoot, ".flow", "policies"),
       packages: [],
     });
+  const resolvedLocalPresentations: ProjectPresentationPackageCatalog =
+    localPresentations ??
+    deepFreeze({
+      projectRoot: catalogProjectRoot,
+      root: join(catalogProjectRoot, ".flow", "presentations"),
+      packages: [],
+    });
   const agentSkills = [...resolvedLocalAgentSkills.skills];
   const verifiers = [...resolvedLocalVerifiers.packages];
   const tools = [...resolvedLocalTools.packages];
   const workflows = [...resolvedLocalWorkflows.packages];
   const policies = [...resolvedLocalPolicies.packages];
+  const presentations: DiscoveredPresentationPackage[] = [...resolvedLocalPresentations.packages];
   for (const installed of installedBundles) {
     options.signal?.throwIfAborted();
     for (const item of installed.bundle.packages) {
@@ -171,6 +194,14 @@ export async function discoverProjectCapabilityCatalogs(
             package: item,
           }),
         );
+      } else if (includePresentations && item.kind === "presentation-package") {
+        presentations.push(
+          createInstalledDiscoveredPresentationPackage({
+            projectRoot: resolvedLocalPresentations.projectRoot,
+            bundleDigest: installed.entry.digest,
+            package: item,
+          }),
+        );
       }
     }
   }
@@ -179,6 +210,7 @@ export async function discoverProjectCapabilityCatalogs(
   tools.sort(compareByName);
   workflows.sort(compareByName);
   policies.sort(compareByName);
+  presentations.sort(compareByName);
   if (includeNonPolicies) {
     assertAgentSkillCatalog(agentSkills);
     assertVerifierCatalog(verifiers);
@@ -187,6 +219,9 @@ export async function discoverProjectCapabilityCatalogs(
   }
   if (includePolicies) {
     assertPolicyPackageCatalog(policies);
+  }
+  if (includePresentations) {
+    assertPresentationPackageCatalog(presentations);
   }
   options.signal?.throwIfAborted();
   return deepFreeze({
@@ -209,6 +244,10 @@ export async function discoverProjectCapabilityCatalogs(
     policies: {
       ...resolvedLocalPolicies,
       packages: policies,
+    },
+    presentations: {
+      ...resolvedLocalPresentations,
+      packages: presentations,
     },
   });
 }

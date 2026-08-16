@@ -1,22 +1,24 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { rmSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
-
-import { type CliIo, main } from "../../../src/cli/main.js";
 import type { RecoverableRunEventStore } from "../../../src/application/ports.js";
+import { type CliIo, main } from "../../../src/cli/main.js";
 import { normalizeAgentCommandRequest } from "../../../src/domain/agent-command.js";
 import {
   calculateAgentCommandApprovalRequestDigest,
   calculateCommandApprovalOperationDigest,
   createAgentCommandApprovalRequest,
 } from "../../../src/domain/approval/command-approval.js";
+import { createCapabilityBundleSource } from "../../../src/domain/capability/capability-bundles.js";
 import { resolveFlowConfig } from "../../../src/domain/config/resolver.js";
 import type { FlowPresentationDocument } from "../../../src/domain/presentation/flow-presentation.js";
 import type { RunEvent, RunStartedEvent } from "../../../src/domain/run/events.js";
 import { JsonlRunStore } from "../../../src/infrastructure/fs/jsonl-run-store.js";
+import { LocalCapabilityPackageStore } from "../../../src/infrastructure/fs/local-capability-package-store.js";
 import { LocalSupervisorStore } from "../../../src/infrastructure/fs/local-supervisor-store.js";
 import type { InteractiveRunPresentationRenderer } from "../../../src/infrastructure/terminal/flow-terminal-renderer.js";
 import { requestSupervisor, startSupervisorServer } from "../../../src/supervisor/daemon.js";
@@ -130,9 +132,170 @@ describe("flow tui", () => {
         run: { runId, sequence: 2, status: "cancelled" },
         actions: [],
       });
+      expect(renderer.documents[0]?.layout).toBeUndefined();
     } finally {
       await harness.running.close();
     }
+  });
+
+  it("selects an exact presentation from an installed inert bundle", async () => {
+    const harness = await createSupervisorHarness();
+    const runId = "tui-installed-presentation-run";
+    await appendEvents(harness.runsDirectory, terminalRunEvents(runId));
+    const bundle = createCapabilityBundleSource({
+      name: "operations-presentation",
+      version: "1.0.0",
+      description: "Installed terminal presentation",
+      packages: [
+        { kind: "presentation-package", manifest: Buffer.from(presentationPackageSource()) },
+      ],
+    });
+    await mkdir(join(harness.directory, ".flow"));
+    await new LocalCapabilityPackageStore(harness.directory).install({
+      source: "https://packages.example.test/operations-presentation.flowpkg",
+      expectedSha256: bundle.bundle.digest.slice("sha256:".length),
+      content: bundle.content,
+    });
+    const renderer = new RecordingRenderer();
+    const capture = createCapture();
+
+    try {
+      const exitCode = await main(
+        [
+          "tui",
+          runId,
+          "--actor",
+          "operator:test",
+          "--runs-dir",
+          harness.runsDirectory,
+          "--presentation",
+          "operations@1.0.0",
+        ],
+        capture.io,
+        {
+          cwd: harness.directory,
+          isInteractiveTerminal: () => true,
+          loadConfig: async () => resolveFlowConfig({ projectRoot: harness.directory }),
+          createTerminalPresentationRenderer: () => renderer,
+        },
+      );
+
+      expect(exitCode, capture.stderr.join("\n")).toBe(1);
+      expect(renderer.documents[0]).toMatchObject({ layout: { density: "compact" } });
+      expect(renderer.documents[0]?.sections[0]?.id).toBe("resource-facts");
+    } finally {
+      await harness.running.close();
+    }
+  });
+
+  it("freezes an exact presentation package before rendering the run", async () => {
+    const harness = await createSupervisorHarness();
+    const runId = "tui-packaged-run";
+    await appendEvents(harness.runsDirectory, terminalRunEvents(runId));
+    await writePresentationPackage(harness.directory);
+    const renderer = new RecordingRenderer();
+    const capture = createCapture();
+
+    try {
+      const exitCode = await main(
+        [
+          "tui",
+          runId,
+          "--actor",
+          "operator:test",
+          "--runs-dir",
+          harness.runsDirectory,
+          "--presentation",
+          "operations@1.0.0",
+        ],
+        capture.io,
+        {
+          cwd: harness.directory,
+          isInteractiveTerminal: () => true,
+          loadConfig: async () => resolveFlowConfig({ projectRoot: harness.directory }),
+          createTerminalPresentationRenderer: () => {
+            rmSync(join(harness.directory, ".flow", "presentations"), {
+              recursive: true,
+              force: true,
+            });
+            return renderer;
+          },
+        },
+      );
+
+      expect(exitCode, capture.stderr.join("\n")).toBe(1);
+      expect(renderer.documents[0]).toMatchObject({ layout: { density: "compact" } });
+      expect(renderer.documents[0]?.sections.map((section) => section.id)).toEqual([
+        "resource-facts",
+        "run-summary",
+        "graph-progress",
+        "node-table",
+        "outcome-notice",
+      ]);
+    } finally {
+      await harness.running.close();
+    }
+  });
+
+  it("rejects a missing presentation before supervisor or terminal mutation", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-tui-missing-presentation-"));
+    temporaryDirectories.push(directory);
+    await mkdir(join(directory, ".flow"));
+    let rendererCalls = 0;
+    const output = createCapture();
+
+    expect(
+      await main(
+        ["tui", "run-1", "--actor", "operator:test", "--presentation", "missing@1.0.0"],
+        output.io,
+        {
+          cwd: directory,
+          isInteractiveTerminal: () => true,
+          loadConfig: async () => resolveFlowConfig({ projectRoot: directory }),
+          createTerminalPresentationRenderer: () => {
+            rendererCalls += 1;
+            throw new Error("renderer must not be created");
+          },
+        },
+      ),
+    ).toBe(1);
+    expect(rendererCalls).toBe(0);
+    expect(output.stderr).toEqual(["missing_package: presentation package is missing"]);
+  });
+
+  it("rejects repeated presentation selection before configuration or terminal mutation", async () => {
+    const output = createCapture();
+    let loadConfigCalls = 0;
+    let rendererCalls = 0;
+
+    expect(
+      await main(
+        [
+          "tui",
+          "run-1",
+          "--actor",
+          "operator:test",
+          "--presentation",
+          "operations@1.0.0",
+          "--presentation=private@2.0.0",
+        ],
+        output.io,
+        {
+          isInteractiveTerminal: () => true,
+          loadConfig: async () => {
+            loadConfigCalls += 1;
+            throw new Error("configuration must not be loaded");
+          },
+          createTerminalPresentationRenderer: () => {
+            rendererCalls += 1;
+            throw new Error("renderer must not be constructed");
+          },
+        },
+      ),
+    ).toBe(2);
+    expect(loadConfigCalls).toBe(0);
+    expect(rendererCalls).toBe(0);
+    expect(output.stderr.join("\n")).not.toContain("private@2.0.0");
   });
 
   it("follows a live run until the operator exits and restores the terminal once", async () => {
@@ -676,6 +839,35 @@ async function createSupervisorHarness() {
   const store = new LocalSupervisorStore(runsDirectory);
   const running = await startSupervisorServer({ store, launcher: unavailableLauncher });
   return { directory, runsDirectory, running };
+}
+
+async function writePresentationPackage(root: string): Promise<void> {
+  const directory = join(root, ".flow", "presentations", "operations");
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, "PRESENTATION.yaml"), presentationPackageSource());
+}
+
+function presentationPackageSource(): string {
+  return `apiVersion: flow.synapti.ai/v1alpha1
+kind: PresentationPackage
+metadata: { name: operations, version: 1.0.0, description: Operator layout }
+spec:
+  messages:
+    - version: v0.9
+      createSurface: { surfaceId: flow-run, catalogId: https://flow.synapti.ai/a2ui/catalogs/run-presentation/v1 }
+    - version: v0.9
+      updateComponents:
+        surfaceId: flow-run
+        components:
+          - { id: root, component: FlowLayout, density: compact, children: [group-1] }
+          - { id: group-1, component: FlowGroup, variant: stack, children: [resource-facts, run-summary, graph-progress, node-table, pending-approvals, outcome-notice] }
+          - { id: run-summary, component: FlowRunSummary }
+          - { id: graph-progress, component: FlowGraphProgress }
+          - { id: node-table, component: FlowNodeTable }
+          - { id: resource-facts, component: FlowResourceFacts }
+          - { id: pending-approvals, component: FlowPendingApprovals }
+          - { id: outcome-notice, component: FlowOutcomeNotice }
+`;
 }
 
 const unavailableLauncher: WorkerLauncher = {

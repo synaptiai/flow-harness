@@ -1078,6 +1078,7 @@ describe("capability package CLI", () => {
     await writeBundleSource(source);
     await writeWorkflowBundlePackage(source);
     await writePolicyBundlePackage(source);
+    await writePresentationBundlePackage(source);
     const first = join(project, "review-a.flowpkg");
     const second = join(project, "review-b.flowpkg");
     const firstOutput = captureIo();
@@ -1106,6 +1107,7 @@ describe("capability package CLI", () => {
       version: "1.0.0",
       packages: [
         { kind: "policy-package", name: "restricted-review", version: "1.0.0" },
+        { kind: "presentation-package", name: "operations", version: "1.0.0" },
         { kind: "verifier-package", name: "evidence-review", version: "1.2.0" },
         { kind: "workflow-package", name: "release-check", version: "1.0.0" },
       ],
@@ -1422,6 +1424,35 @@ async function writePolicyBundlePackage(source: string): Promise<void> {
   const policyRoot = join(source, "policies", "restricted-review");
   await mkdir(policyRoot, { recursive: true });
   await writeFile(join(policyRoot, "POLICY.yaml"), policyManifest());
+}
+
+async function writePresentationBundlePackage(source: string): Promise<void> {
+  const presentationRoot = join(source, "presentations", "operations");
+  await mkdir(presentationRoot, { recursive: true });
+  await writeFile(join(presentationRoot, "PRESENTATION.yaml"), presentationManifest());
+}
+
+function presentationManifest(): string {
+  return `apiVersion: flow.synapti.ai/v1alpha1
+kind: PresentationPackage
+metadata: { name: operations, version: 1.0.0, description: Operator layout }
+spec:
+  messages:
+    - version: v0.9
+      createSurface: { surfaceId: flow-run, catalogId: https://flow.synapti.ai/a2ui/catalogs/run-presentation/v1 }
+    - version: v0.9
+      updateComponents:
+        surfaceId: flow-run
+        components:
+          - { id: root, component: FlowLayout, density: compact, children: [group-1] }
+          - { id: group-1, component: FlowGroup, variant: stack, children: [run-summary, graph-progress, node-table, resource-facts, pending-approvals, outcome-notice] }
+          - { id: run-summary, component: FlowRunSummary }
+          - { id: graph-progress, component: FlowGraphProgress }
+          - { id: node-table, component: FlowNodeTable }
+          - { id: resource-facts, component: FlowResourceFacts }
+          - { id: pending-approvals, component: FlowPendingApprovals }
+          - { id: outcome-notice, component: FlowOutcomeNotice }
+`;
 }
 
 async function createEmptyDirectories(root: string, count: number): Promise<void> {

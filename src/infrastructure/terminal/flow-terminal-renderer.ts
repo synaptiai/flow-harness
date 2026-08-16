@@ -193,7 +193,7 @@ export function formatFlowPresentation(
     for (const component of section.components) {
       lines.push(...formatComponent(component));
     }
-    lines.push("");
+    lines.push(...presentationSpacing(document.layout?.density));
   }
   if (document.truncated) {
     lines.push(
@@ -218,6 +218,10 @@ export function formatFlowPresentation(
     );
   }
   return lines.join("\n").trimEnd();
+}
+
+function presentationSpacing(density: "compact" | "comfortable" | undefined): readonly string[] {
+  return density === "compact" ? [] : density === "comfortable" ? ["", ""] : [""];
 }
 
 function formatComponent(component: FlowPresentationComponent): readonly string[] {

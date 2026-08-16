@@ -136,8 +136,9 @@ SemVer bounds, no-follow discovery and source-race refusal, local/installed coll
 transitive snapshot capture, cycle/depth failure, unchanged inline digests, ordinary child
 compilation, typed package requirements and control-graph reconciliation, attached and detached
 execution, live-catalog removal immunity, and snapshot-only resume/replay. These tests do not claim
-template parameters, version solving, executable extension containment, UI packages, or benchmark
-superiority. Policy packages have a separate focused suite.
+template parameters, version solving, executable extension containment, unrestricted UI
+extensions, or benchmark superiority. The inert A2UI-profile presentation package suite has a
+separate focused contract. Policy packages also have a separate focused suite.
 
 The bundle-distribution suite proves deterministic packing, strict content parsing,
 public-HTTPS-only digest-before-parse acquisition, DNS rebinding defenses, redirect refusal,

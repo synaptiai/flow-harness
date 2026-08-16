@@ -52,9 +52,10 @@ Pi is MIT-licensed. Its fast release cadence and breaking changes create meaning
 
 The terminal adapter imports `@earendil-works/pi-tui` only from Flow infrastructure. Domain and
 application modules do not import it. Flow does not use Pi Markdown, hyperlinks, clipboard, image,
-URL-opening, or mouse features. A future UI package can target the Flow presentation contract only
-after a separate package-authority design. The current host does not discover or execute UI package
-content.
+URL-opening, or mouse features. Flow discovers inert A2UI-profile presentation manifests through a
+separate, explicit catalog. Those manifests can arrange only the closed Flow terminal widget set.
+They cannot supply content, actions, data bindings, functions, themes, assets, code, or dynamic
+children.
 
 ## Imported containment primitive
 
@@ -224,8 +225,8 @@ and digest; replay cross-checks that identity with the compiled control graph an
 requirement. Listing, inspection, and validation invoke no verifier, and inspection omits a model
 rubric.
 
-Executable extensions and UI package manifests remain later Gate 6 work. Evaluator
-manifests are implemented only for the current command/model verifier
+Executable extensions remain later Gate 6 work. Inert A2UI-profile presentation manifests are
+implemented separately. Evaluator manifests are implemented only for the current command/model verifier
 drivers; arbitrary evaluator code and reward environments remain out of scope.
 
 ## Command tool packages
@@ -278,15 +279,46 @@ and resume carry exact package requirements and reject live-catalog substitution
 Workflow packages are inert source capabilities, not Pi/OMP-style executable extensions. They
 cannot register hooks, tools, drivers, providers, credentials, policies, sandbox profiles, or
 dynamic graph factories. Policy packages use a separate inert narrowing contract. Exact source
-reuse is the initial ABI. Parameters, version ranges, dependency solving, compatibility
-negotiation, and UI packages remain separate designs.
+reuse is the initial ABI. Parameters, version ranges, dependency solving, and compatibility
+negotiation remain separate designs. Inert presentation packages use their own closed A2UI profile
+and do not enter workflow capability snapshots.
+
+## Presentation packages
+
+**Implemented for exact local and digest-pinned installed inert manifests.** Flow reads one
+`PRESENTATION.yaml` below `.flow/presentations/<name>` or the corresponding path in an installed
+bundle. `flow presentations validate [<manifest-path>]`, `list`, and `inspect` perform no run, model, package action,
+or terminal mutation. `flow tui --presentation <name>@<version>` resolves one exact package before
+supervisor startup and terminal takeover.
+
+The manifest uses the production A2UI v0.9.1 release. Each message uses the wire discriminator
+`version: v0.9`. The manifest contains one `createSurface` for the fixed `flow-run` surface and one
+`updateComponents` for the fixed Flow catalog. Its root and optional groups arrange each host-owned
+widget exactly once. The widgets cover run summary, graph progress, node table, resource facts,
+pending approvals, and outcome notice.
+
+Flow supplies every displayed fact and action from the
+validated public presentation document. Optional widgets may disappear when the host has no
+corresponding fact. The package cannot invent one.
+
+The profile rejects literal content, model data, data bindings, functions, actions, themes, inline
+catalogs, dynamic child lists, assets, scripts, and unknown components. The public catalog schema is
+[`specs/flow-a2ui-run-presentation-v1.catalog.json`](specs/flow-a2ui-run-presentation-v1.catalog.json).
+The schema describes the A2UI custom catalog. Flow's manifest validator narrows general A2UI child
+lists to static component-id arrays.
+
+Package selection is session-local. It is not workflow authority and is absent from durable run
+state, capability snapshots, worker requests, child ledgers, and recovery identity. The default
+terminal presentation remains governed by the existing host projection when no package is
+selected. An Agent Client Protocol adapter could later carry the sanitized document or interaction
+across a session. ACP does not replace this package profile or grant presentation authority.
 
 ## Digest-pinned bundle distribution
 
-**Implemented for the four existing inert package ABIs.** `flow packages pack` reads one strict
-`BUNDLE.json` plus optional `skills/`, `verifiers/`, `tools/`, and `workflows/` source roots. It rejects unknown
-top-level entries, symlinks, special files, unsafe paths, source races, and extra verifier, tool, or
-workflow payloads, then emits canonical strict JSON with bounded canonical base64 content. There is no tar,
+**Implemented for the six existing inert package ABIs.** `flow packages pack` reads one strict
+`BUNDLE.json` plus optional `skills/`, `verifiers/`, `tools/`, `workflows/`, `policies/`, and
+`presentations/` source roots. It rejects unknown top-level entries, links, special files, unsafe
+paths, source races, and extra manifest payloads. It emits canonical strict JSON with bounded canonical base64 content. There is no tar,
 zip, dependency graph, executable extension, hook, or install script. Rebuilding the same source
 produces the same bytes and SHA-256.
 

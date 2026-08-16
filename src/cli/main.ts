@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants, realpathSync } from "node:fs";
 import { open, readFile, realpath } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -106,6 +106,7 @@ import {
   MAX_CAPABILITY_METADATA_BYTES,
 } from "../domain/capability/capability-metadata.js";
 import { MAX_SIGSTORE_BUNDLE_BYTES } from "../domain/capability/oci-capability-artifacts.js";
+import { parsePresentationPackageReference } from "../domain/capability/presentation-packages.js";
 import { SignedCapabilityMetadataEnvelopeError } from "../domain/capability/signed-capability-metadata-envelope.js";
 import {
   OfflineSigstoreCapabilityVerifier,
@@ -142,6 +143,7 @@ import {
   assertWorkflowSatisfiesPolicyPackages,
   PolicyPackageAdmissionError,
 } from "../domain/policy/policy-package-admission.js";
+import { applyPresentationPackage } from "../domain/presentation/presentation-package-projector.js";
 import { type RunStatus, reduceRunEvents } from "../domain/run/events.js";
 import {
   WorkflowCompilationError,
@@ -200,6 +202,11 @@ import {
   type ProjectPolicyPackageCatalog,
   snapshotSelectedPolicyPackages,
 } from "../infrastructure/fs/local-policy-package-catalog.js";
+import {
+  PresentationPackageCatalogError,
+  type ProjectPresentationPackageCatalog,
+  snapshotSelectedPresentationPackage,
+} from "../infrastructure/fs/local-presentation-package-catalog.js";
 import {
   LocalPromptActivationStore,
   PromptActivationStoreError,
@@ -300,6 +307,9 @@ Usage:
   flow policies list
   flow policies inspect <name> --version <exact>
   flow policies validate
+  flow presentations list
+  flow presentations inspect <name> --version <exact>
+  flow presentations validate [<manifest-path>]
   flow packages install <https-url> --sha256 <64-lowercase-hex>
   flow packages install-oci <registry/repository@sha256:digest> --certificate-issuer <https-url> --certificate-identity <exact> [--username <exact> --password-stdin]
   flow packages pack <source-directory> --output <bundle.flowpkg>
@@ -333,7 +343,7 @@ Usage:
   flow deny <run-id> <request-id> --actor <label> [--reason <text>] [--runs-dir <path>]
   flow cancel <run-id> --actor <label> [--reason <text>] [--command-id <uuid>] [--runs-dir <path>]
   flow events <run-id> [--after <sequence>] [--limit <count>] [--follow] [--runs-dir <path>]
-  flow tui <run-id> --actor <label> [--runs-dir <path>]
+  flow tui <run-id> --actor <label> [--presentation <name>@<exact-version>] [--runs-dir <path>]
   flow inspect <run-id> [--runs-dir <path>]
   flow supervisor status [--runs-dir <path>]
   flow supervisor shutdown [--runs-dir <path>]
@@ -464,6 +474,8 @@ export async function main(
         return await workflowsCommand(args.slice(1), io, dependencyOverrides);
       case "policies":
         return await policiesCommand(args.slice(1), io, dependencyOverrides);
+      case "presentations":
+        return await presentationsCommand(args.slice(1), io, dependencyOverrides);
       case "packages":
         return await packagesCommand(args.slice(1), io, dependencyOverrides);
       case "candidate":
@@ -551,6 +563,10 @@ export async function main(
     }
     if (error instanceof PolicyPackageCatalogError) {
       io.stderr(`${error.code}: ${publicPolicyPackageCatalogMessage(error.code)}`);
+      return 1;
+    }
+    if (error instanceof PresentationPackageCatalogError) {
+      io.stderr(`${error.code}: ${publicPresentationPackageCatalogMessage(error.code)}`);
       return 1;
     }
     if (error instanceof RunStoreError) {
@@ -1060,6 +1076,107 @@ async function policiesCommand(
     await snapshotSelectedPolicyPackages(
       catalog,
       [{ name: item.name, version: item.version }],
+      dependencies.signal === undefined ? {} : { signal: dependencies.signal },
+    );
+  }
+  io.stdout(
+    JSON.stringify(
+      {
+        valid: true,
+        root: catalog.root,
+        packages: catalog.packages.map((item) => `${item.name}@${item.version}`),
+      },
+      null,
+      2,
+    ),
+  );
+  return 0;
+}
+
+async function presentationsCommand(
+  args: readonly string[],
+  io: CliIo,
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  assertStringOptionAtMostOnce(args, "version");
+  const { positionals, values } = parseCommandArgs(args, {
+    version: { type: "string" },
+  });
+  const subcommand = positionals[0];
+  if (
+    (subcommand !== "list" && subcommand !== "validate" && subcommand !== "inspect") ||
+    (subcommand === "inspect"
+      ? positionals.length !== 2
+      : subcommand === "validate"
+        ? positionals.length < 1 || positionals.length > 2
+        : positionals.length !== 1) ||
+    (subcommand === "inspect" ? values.version === undefined : values.version !== undefined)
+  ) {
+    throw new CliUsageError(
+      "presentations requires list, validate [<manifest-path>], or inspect <name> --version <exact>",
+    );
+  }
+  const dependencies = configDependenciesFrom(overrides);
+  const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
+  const catalog = await discoverConfiguredPresentationPackages(config, dependencies.signal);
+  if (subcommand === "list") {
+    io.stdout(
+      JSON.stringify(
+        {
+          root: catalog.root,
+          packages: catalog.packages.map(({ directory: _directory, ...item }) => item),
+        },
+        null,
+        2,
+      ),
+    );
+    return 0;
+  }
+  if (subcommand === "inspect") {
+    const name = positionals[1];
+    const version = values.version;
+    if (name === undefined || version === undefined) {
+      throw new CliUsageError("presentations inspect requires <name> --version <exact>");
+    }
+    const selected = await snapshotSelectedPresentationPackage(
+      catalog,
+      { name, version },
+      dependencies.signal === undefined ? {} : { signal: dependencies.signal },
+    );
+    const { contentBase64: _contentBase64, ...manifest } = selected.manifest;
+    io.stdout(JSON.stringify({ ...selected, manifest }, null, 2));
+    return 0;
+  }
+  const manifestPath = positionals[1];
+  if (manifestPath !== undefined) {
+    const selectedPath = resolve(
+      catalog.projectRoot,
+      relative(
+        resolve(config.projectRoot ?? catalog.projectRoot),
+        resolve(dependencies.cwd, manifestPath),
+      ),
+    );
+    const item = catalog.packages.find(
+      (candidate) => join(candidate.directory, "PRESENTATION.yaml") === selectedPath,
+    );
+    if (item === undefined) {
+      throw new PresentationPackageCatalogError(
+        "missing_package",
+        "presentation package manifest is not in the project catalog",
+      );
+    }
+    await snapshotSelectedPresentationPackage(
+      catalog,
+      { name: item.name, version: item.version },
+      dependencies.signal === undefined ? {} : { signal: dependencies.signal },
+    );
+    io.stdout(JSON.stringify({ valid: true, package: `${item.name}@${item.version}` }, null, 2));
+    return 0;
+  }
+  for (const item of catalog.packages) {
+    await snapshotSelectedPresentationPackage(
+      catalog,
+      { name: item.name, version: item.version },
       dependencies.signal === undefined ? {} : { signal: dependencies.signal },
     );
   }
@@ -2835,8 +2952,10 @@ async function tuiCommand(
   args: readonly string[],
   overrides: Partial<CliDependencies>,
 ): Promise<number> {
+  assertStringOptionAtMostOnce(args, "presentation");
   const { positionals, values } = parseCommandArgs(args, {
     actor: { type: "string" },
+    presentation: { type: "string" },
     "runs-dir": { type: "string" },
   });
   const runId = requireSinglePositional(positionals, "tui requires one run id");
@@ -2854,6 +2973,15 @@ async function tuiCommand(
       : AbortSignal.any([dependencies.signal, exitController.signal]);
   signal.throwIfAborted();
   const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
+  signal.throwIfAborted();
+  const selectedPresentation =
+    values.presentation === undefined
+      ? undefined
+      : await snapshotSelectedPresentationPackage(
+          await discoverConfiguredPresentationPackages(config, signal),
+          parsePresentationPackageReference(values.presentation),
+          { signal },
+        );
   signal.throwIfAborted();
   const runsDirectory = resolveRunsDirectory(dependencies.cwd, values["runs-dir"], config);
   const supervisorStore = new LocalSupervisorStore(runsDirectory);
@@ -2907,8 +3035,12 @@ async function tuiCommand(
   });
   const sessionRenderer: RunPresentationRenderer = {
     render: async (document) => {
-      actionController.update(document);
-      await renderer.render(document);
+      const projected =
+        selectedPresentation === undefined
+          ? document
+          : applyPresentationPackage(document, selectedPresentation);
+      actionController.update(projected);
+      await renderer.render(projected);
     },
     close: async () => {
       await actionTail;
@@ -3156,6 +3288,16 @@ function parseCommandArgs(
     };
   } catch (error) {
     throw new CliUsageError(error instanceof Error ? error.message : String(error));
+  }
+}
+
+function assertStringOptionAtMostOnce(args: readonly string[], option: string): void {
+  const flag = `--${option}`;
+  const occurrences = args.filter(
+    (argument) => argument === flag || argument.startsWith(`${flag}=`),
+  ).length;
+  if (occurrences > 1) {
+    throw new CliUsageError(`${flag} may be specified only once`);
   }
 }
 
@@ -3594,6 +3736,26 @@ async function discoverConfiguredPolicyPackages(
   ).policies;
 }
 
+async function discoverConfiguredPresentationPackages(
+  config: EffectiveFlowConfig,
+  signal: AbortSignal | undefined,
+): Promise<ProjectPresentationPackageCatalog> {
+  if (config.projectRoot === null) {
+    throw new PresentationPackageCatalogError(
+      "missing_package",
+      "presentation packages require a Flow project root",
+    );
+  }
+  return (
+    await discoverProjectCapabilityCatalogs(config.projectRoot, {
+      includeNonPolicies: false,
+      includePolicies: false,
+      includePresentations: true,
+      ...(signal === undefined ? {} : { signal }),
+    })
+  ).presentations;
+}
+
 function workflowPackageLoader(
   catalog: ProjectWorkflowPackageCatalog,
 ): (reference: WorkflowPackageReference) => Promise<WorkflowPackageSnapshot> {
@@ -3701,6 +3863,29 @@ function publicPolicyPackageCatalogMessage(code: PolicyPackageCatalogError["code
       return "policy package catalog contains an unsafe entry";
     case "version_mismatch":
       return "policy package version does not match";
+  }
+}
+
+function publicPresentationPackageCatalogMessage(
+  code: PresentationPackageCatalogError["code"],
+): string {
+  switch (code) {
+    case "duplicate_package":
+      return "presentation package names conflict";
+    case "invalid_package":
+      return "presentation package is invalid";
+    case "io":
+      return "presentation package storage failed";
+    case "limit_exceeded":
+      return "presentation package limit exceeded";
+    case "missing_package":
+      return "presentation package is missing";
+    case "source_changed":
+      return "presentation package source changed";
+    case "unsafe_entry":
+      return "presentation package source is unsafe";
+    case "version_mismatch":
+      return "presentation package version does not match";
   }
 }
 

@@ -12,6 +12,10 @@ import {
   MAX_POLICY_PACKAGE_MANIFEST_BYTES,
   parsePolicyPackageManifest,
 } from "./policy-packages.js";
+import {
+  MAX_PRESENTATION_PACKAGE_MANIFEST_BYTES,
+  parsePresentationPackageManifest,
+} from "./presentation-packages.js";
 import { MAX_TOOL_PACKAGE_MANIFEST_BYTES, parseToolPackageManifest } from "./tool-packages.js";
 import {
   MAX_VERIFIER_PACKAGE_MANIFEST_BYTES,
@@ -65,6 +69,15 @@ const policyEntrySchema = z
       .max(Math.ceil((MAX_POLICY_PACKAGE_MANIFEST_BYTES * 4) / 3) + 4),
   })
   .strict();
+const presentationEntrySchema = z
+  .object({
+    kind: z.literal("presentation-package"),
+    manifestBase64: z
+      .string()
+      .min(1)
+      .max(Math.ceil((MAX_PRESENTATION_PACKAGE_MANIFEST_BYTES * 4) / 3) + 4),
+  })
+  .strict();
 const agentSkillEntrySchema = z
   .object({
     kind: z.literal("agent-skill"),
@@ -87,6 +100,7 @@ const bundleEntrySchema = z.discriminatedUnion("kind", [
   toolEntrySchema,
   workflowEntrySchema,
   policyEntrySchema,
+  presentationEntrySchema,
 ]);
 const bundleMetadataSchema = z
   .object({
@@ -139,6 +153,13 @@ export interface CapabilityBundlePolicyPackage {
   readonly manifestBase64: string;
 }
 
+export interface CapabilityBundlePresentationPackage {
+  readonly kind: "presentation-package";
+  readonly name: string;
+  readonly version: string;
+  readonly manifestBase64: string;
+}
+
 export interface CapabilityBundleAgentSkillPackage {
   readonly kind: "agent-skill";
   readonly name: string;
@@ -158,7 +179,8 @@ export type CapabilityBundlePackage =
   | CapabilityBundleVerifierPackage
   | CapabilityBundleToolPackage
   | CapabilityBundleWorkflowPackage
-  | CapabilityBundlePolicyPackage;
+  | CapabilityBundlePolicyPackage
+  | CapabilityBundlePresentationPackage;
 
 export interface CapabilityBundle {
   readonly apiVersion: typeof CAPABILITY_BUNDLE_API_VERSION;
@@ -184,7 +206,8 @@ export type CapabilityBundleSourcePackage =
   | { readonly kind: "verifier-package"; readonly manifest: Uint8Array }
   | { readonly kind: "tool-package"; readonly manifest: Uint8Array }
   | { readonly kind: "workflow-package"; readonly manifest: Uint8Array }
-  | { readonly kind: "policy-package"; readonly manifest: Uint8Array };
+  | { readonly kind: "policy-package"; readonly manifest: Uint8Array }
+  | { readonly kind: "presentation-package"; readonly manifest: Uint8Array };
 
 export interface CapabilityBundleSourceInput {
   readonly name: string;
@@ -383,6 +406,20 @@ function parseBundlePackageEntry(entry: EncodedCapabilityBundleEntry): Capabilit
       "bundled policy package manifest",
     );
     const definition = parsePolicyPackageManifest(manifest, "bundled policy package manifest");
+    return Object.freeze({
+      kind: entry.kind,
+      name: definition.metadata.name,
+      version: definition.metadata.version,
+      manifestBase64: entry.manifestBase64,
+    });
+  }
+  if (entry.kind === "presentation-package") {
+    const manifest = decodeCanonicalBase64(
+      entry.manifestBase64,
+      MAX_PRESENTATION_PACKAGE_MANIFEST_BYTES,
+      "bundled presentation package manifest",
+    );
+    const definition = parsePresentationPackageManifest(manifest);
     return Object.freeze({
       kind: entry.kind,
       name: definition.metadata.name,

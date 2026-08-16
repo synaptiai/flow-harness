@@ -44,7 +44,8 @@ through an optional external profile.
 | Proof-safe fresh recovery of interrupted agent attempts | Implemented as explicit opt-in for read-only attempts and edit attempts proven not applied |
 | Fail-closed sandboxed command isolation | Flow implements filesystem and network isolation on Linux and macOS. Linux alone provides strict agent-command descendant lifecycle containment |
 | Higher-isolation container command profile | Implemented behind operator-only selection; the pinned Linux x64 engine runtime gate passes |
-| Automatic updates, UI packages, and model network tools | Planned |
+| Inert A2UI-profile presentation packages | Implemented for exact local or installed manifests that arrange a closed host-owned terminal widget catalog without supplying data, actions, code, or bindings |
+| Automatic updates, executable UI extensions, and model network tools | Planned |
 | VM-grade isolation of the host-side agent runtime | Planned |
 
 The executable format is `flow.synapti.ai/v1alpha1`. There is no compatibility or migration
@@ -684,7 +685,34 @@ races, and snapshot mismatches fail closed.
 `WorkflowPackage` contains only bounded workflow source. It cannot register code, hooks, drivers,
 providers, credentials, policy, sandbox permissions, or dynamic graph factories. It has exactly
 the authority of the ordinary workflow nodes an operator explicitly selects. Template inputs,
-version solving, executable extensions, and UI packages remain unsupported.
+version solving, and executable extensions remain unsupported.
+
+### Select an inert terminal presentation package
+
+Flow accepts a strict profile of the production A2UI v0.9.1 release for terminal presentation.
+Messages use the standard `version: v0.9` wire discriminator. A local package is one
+`.flow/presentations/<name>/PRESENTATION.yaml` file. It may arrange the six fixed Flow run widgets,
+group them, and select compact or comfortable spacing. It cannot supply run data, text, actions,
+data bindings, functions, themes, assets, code, or dynamic children.
+
+```sh
+node dist/cli/main.js presentations validate .flow/presentations/concise/PRESENTATION.yaml
+node dist/cli/main.js presentations list
+node dist/cli/main.js presentations inspect concise --version 1.0.0
+node dist/cli/main.js tui run-id --actor operator \
+  --presentation concise@1.0.0
+```
+
+Selection uses an exact name and SemVer before Flow starts the supervisor or takes terminal
+control. It is session-local presentation state: run history, capability snapshots, approvals,
+policy, and replay identity do not change. Without `--presentation`, the default terminal document
+and layout remain unchanged. Installed `.flowpkg` bundles may contribute the same inert manifest
+under `presentations/<name>/PRESENTATION.yaml`.
+
+The public Flow catalog is
+[`docs/specs/flow-a2ui-run-presentation-v1.catalog.json`](docs/specs/flow-a2ui-run-presentation-v1.catalog.json).
+This profile deliberately excludes optional general A2UI features. ACP is not the package ABI.
+It may later transport Flow-owned presentation updates across an agent-client session.
 
 ### Apply a versioned policy package
 
@@ -741,9 +769,9 @@ behavior remain unchanged.
 
 ### Distribute exact capability bundles
 
-Flow can pack the five existing inert package ABIs into one deterministic strict-JSON `.flowpkg`.
+Flow can pack the six existing inert package ABIs into one deterministic strict-JSON `.flowpkg`.
 Bundle sources contain `BUNDLE.json` plus any of the conventional `skills/`, `verifiers/`, `tools/`,
-`workflows/`, or `policies/` trees:
+`workflows/`, `policies/`, or `presentations/` trees:
 
 ```sh
 node dist/cli/main.js packages pack examples/capability-bundle-source \
