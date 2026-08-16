@@ -1522,6 +1522,28 @@ changes:
       value: Review correctness, security, and evidence.
 ```
 
+Flow can create the resource-delta document with one bounded provider-neutral model call:
+
+```text
+flow candidate generate <baseline> <evidence>... --output <candidate.yaml> \
+  --id <id> --version <semver> --skill <name> --allow-resources <path,...> \
+  --provider <provider> --model <model> \
+  [--thinking <level>] [--timeout-ms <count>] [--max-output-tokens <count>]
+```
+
+The command requires 1 through 16 tuning-evidence files and 1 through 16 unique existing inert UTF-8
+resources. `SKILL.md` and files below the top-level `scripts/` directory are excluded. The workflow
+must select exactly the named skill and no other package capability.
+
+The rendered input is at most 1 MiB. Raw output is at most 64 KiB. The default timeout is 300000 ms.
+The default and maximum output limit is 8192 tokens.
+
+The strict response contains only `changes`, with `path` and non-empty `value` in each item. Flow
+rejects unknown fields, duplicate or unselected paths, unchanged content, invalid UTF-8, excessive
+bytes, and any source drift. The optional generation identity records the exact provider, model,
+thinking level, bounds, usage, request digest, response digest, and selected target hashes. It does
+not retain the raw provider transcript.
+
 The source is at most 1 MiB. It declares 1–16 unique evidence packets and 1–16 unique existing
 UTF-8 resource replacements. Each resource value is non-empty, is bounded by the Agent Skill file
 limit, and contributes to the package limit. Candidate, workflow, evidence, and skill paths are
@@ -1540,7 +1562,8 @@ binds each snapshot to the workflow before execution. The public identity contai
 provenance and hashes. Durable inspection remains available after live source removal.
 
 `flow candidate validate <candidate.yaml>` accepts prompt or Agent Skill candidates and is read-only.
-Agent Skill generation, installation, publication, and automatic selection remain unavailable.
+Generation publishes one inert candidate file without replacement. It does not evaluate, activate,
+install, publish a package, add or delete a package file, or select a candidate automatically.
 Evaluation success grants no authority until an operator applies the exact activation proposal.
 
 ### Adaptive activation

@@ -501,6 +501,22 @@ changes:
       value: Review correctness, security, and evidence.
 ```
 
+Flow can generate that resource-only candidate from an exact selected skill and resource allowlist:
+
+```sh
+node dist/cli/main.js candidate generate baseline.workflow.yaml tuning-evidence.json \
+  --output better-review.agent-skill-candidate.yaml \
+  --id better-review --version 1.0.0 \
+  --skill review --allow-resources reference.md \
+  --provider provider-name --model model-name --thinking medium
+```
+
+The model sees the exact workflow identity, public package identity, tuning-only evidence, and only
+the selected current UTF-8 resource bytes. It gets no tools, skills, packages, workspace access, or
+unselected package files. The allowlist cannot contain `SKILL.md` or a file below the top-level
+`scripts/` directory. It returns replacements only for the allowlist. Flow then validates the
+ordinary Agent Skill candidate and publishes one new file without replacement.
+
 The workflow must select exactly that one skill. Flow admits the workflow, baseline package, and
 tuning evidence in one stable transaction. The baseline profile receives the original immutable
 skill snapshot. The candidate profile receives a projected snapshot with only the declared existing
@@ -509,9 +525,10 @@ verifier. Package metadata, requested tools, trust, provenance, and file set can
 
 The public candidate identity contains hashes and portable provenance, not resource contents or
 absolute paths. Inspection remains available after the live candidate and skill files are removed.
-Agent Skill candidate generation, installation, and publication are not implemented. A favorable
-evaluation grants no package or execution authority until an operator applies its exact reviewed
-activation proposal.
+Generation does not change `SKILL.md`, change a `scripts/` file, add files, evaluate, activate,
+install, or publish a package. A favorable evaluation grants no package or execution authority until
+an operator applies its exact reviewed activation proposal. Agent Skill package installation and
+publication remain separate.
 
 Activation requires a complete superior evaluation. First, request a preview:
 

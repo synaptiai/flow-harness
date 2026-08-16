@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants, realpathSync } from "node:fs";
 import { open, readFile, realpath } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -35,6 +35,10 @@ import {
   ExternalHarnessEvaluationAdapter,
   type ExternalHarnessRuntime,
 } from "../application/external-harness-adapter.js";
+import {
+  AgentSkillCandidateGenerationExecutionError,
+  generateAgentSkillCandidate,
+} from "../application/generate-agent-skill-candidate.js";
 import {
   generatePromptCandidate,
   PromptCandidateGenerationExecutionError,
@@ -76,6 +80,15 @@ import {
   AgentSkillActivationError,
   agentSkillActivationWorkflow,
 } from "../domain/adaptation/agent-skill-activation.js";
+import {
+  AgentSkillCandidateError,
+  projectAgentSkillCandidate,
+} from "../domain/adaptation/agent-skill-candidate.js";
+import {
+  AgentSkillCandidateGenerationError,
+  MAX_AGENT_SKILL_CANDIDATE_GENERATION_OUTPUT_TOKENS,
+  prepareAgentSkillCandidateGeneration,
+} from "../domain/adaptation/agent-skill-candidate-generation.js";
 import {
   PromptActivationError,
   parsePromptActivationLocator,
@@ -175,6 +188,10 @@ import {
   LocalAgentCommandApprovalChannelError,
 } from "../infrastructure/fs/local-agent-command-approval-channel.js";
 import { LocalAgentSkillCandidateError } from "../infrastructure/fs/local-agent-skill-candidate.js";
+import {
+  admitLocalAgentSkillCandidateGenerationSources,
+  LocalAgentSkillCandidateGenerationSourceError,
+} from "../infrastructure/fs/local-agent-skill-candidate-generation.js";
 import {
   AgentSkillCatalogError,
   type ProjectAgentSkillCatalog,
@@ -330,6 +347,7 @@ Usage:
   flow packages verify
   flow packages remove <name> --version <exact>
   flow candidate generate <baseline> <evidence>... --output <candidate.yaml> --id <id> --version <semver> --allow-nodes <id,...> --provider <provider> --model <model> [--thinking <level>] [--timeout-ms <count>] [--max-output-tokens <count>]
+  flow candidate generate <baseline> <evidence>... --output <candidate.yaml> --id <id> --version <semver> --skill <name> --allow-resources <path,...> --provider <provider> --model <model> [--thinking <level>] [--timeout-ms <count>] [--max-output-tokens <count>]
   flow candidate validate <candidate.yaml>
   flow candidate activate <candidate.yaml> --evaluation <id> --actor <label> [--reason <text>] [--evaluations-dir <path>] <--dry-run|--expected-digest <sha256>>
   flow activation list
@@ -632,11 +650,18 @@ export async function main(
       error instanceof PromptCandidateError ||
       error instanceof PromptCandidateGenerationError ||
       error instanceof PromptCandidateGenerationExecutionError ||
+      error instanceof AgentSkillCandidateError ||
+      error instanceof AgentSkillCandidateGenerationError ||
+      error instanceof AgentSkillCandidateGenerationExecutionError ||
       error instanceof LocalAgentSkillCandidateError ||
-      error instanceof LocalPromptCandidateError ||
-      error instanceof LocalPromptCandidatePublisherError
+      error instanceof LocalAgentSkillCandidateGenerationSourceError ||
+      error instanceof LocalPromptCandidateError
     ) {
       io.stderr(boundedCliDiagnostic(error.message));
+      return 1;
+    }
+    if (error instanceof LocalPromptCandidatePublisherError) {
+      io.stderr(`${error.code}: ${publicCandidatePublisherMessage(error.code)}`);
       return 1;
     }
     if (
@@ -2059,13 +2084,30 @@ async function candidateCommand(
 ): Promise<number> {
   const subcommand = args[0];
   if (subcommand === "generate") {
+    for (const option of [
+      "allow-nodes",
+      "allow-resources",
+      "id",
+      "max-output-tokens",
+      "model",
+      "output",
+      "provider",
+      "skill",
+      "thinking",
+      "timeout-ms",
+      "version",
+    ]) {
+      assertStringOptionAtMostOnce(args.slice(1), option);
+    }
     const { positionals, values } = parseCommandArgs(args.slice(1), {
       "allow-nodes": { type: "string" },
+      "allow-resources": { type: "string" },
       "max-output-tokens": { type: "string" },
       id: { type: "string" },
       model: { type: "string" },
       output: { type: "string" },
       provider: { type: "string" },
+      skill: { type: "string" },
       thinking: { type: "string" },
       "timeout-ms": { type: "string" },
       version: { type: "string" },
@@ -2079,6 +2121,8 @@ async function candidateCommand(
     if (baseline === undefined) {
       throw new CliUsageError("candidate generate requires one baseline path");
     }
+    const usesAgentSkillMode =
+      values.skill !== undefined || values["allow-resources"] !== undefined;
     const dependencies = dependenciesFrom(overrides);
     const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
     const outputPath = resolve(
@@ -2086,6 +2130,129 @@ async function candidateCommand(
       requireStringOption(values.output, "candidate generate requires --output <path>"),
     );
     await assertLocalPromptCandidateOutputAvailable(outputPath);
+    if (
+      (usesAgentSkillMode &&
+        (values.skill === undefined ||
+          values["allow-resources"] === undefined ||
+          values["allow-nodes"] !== undefined)) ||
+      (!usesAgentSkillMode && values["allow-nodes"] === undefined)
+    ) {
+      throw new CliUsageError(
+        "candidate generation mode requires either --allow-nodes or both --skill and --allow-resources",
+      );
+    }
+    if (usesAgentSkillMode) {
+      const admitted = await admitLocalAgentSkillCandidateGenerationSources({
+        outputPath,
+        baselinePath: resolve(dependencies.cwd, baseline),
+        evidencePaths: evidence.map((path) => resolve(dependencies.cwd, path)),
+        skillName: requireStringOption(values.skill, "candidate generate requires --skill <name>"),
+        resourcePaths: requireStringOption(
+          values["allow-resources"],
+          "candidate generate requires --allow-resources <path,...>",
+        )
+          .split(",")
+          .map((path) => path.trim()),
+        ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
+      });
+      const prepared = prepareAgentSkillCandidateGeneration({
+        candidate: {
+          id: requireStringOption(values.id, "candidate generate requires --id <id>"),
+          version: requireStringOption(
+            values.version,
+            "candidate generate requires --version <semver>",
+          ),
+        },
+        baseline: admitted.baseline,
+        skill: admitted.skill,
+        evidence: admitted.evidence,
+        allowedResourcePaths: admitted.resourcePaths,
+        model: {
+          provider: requireStringOption(
+            values.provider,
+            "candidate generate requires --provider <provider>",
+          ),
+          id: requireStringOption(values.model, "candidate generate requires --model <model>"),
+          thinking: parseThinkingLevel(values.thinking),
+        },
+        limits: {
+          timeoutMs: parsePositiveIntegerOption(values["timeout-ms"], "--timeout-ms", 300_000),
+          maxOutputTokens: parsePositiveIntegerOption(
+            values["max-output-tokens"],
+            "--max-output-tokens",
+            MAX_AGENT_SKILL_CANDIDATE_GENERATION_OUTPUT_TOKENS,
+          ),
+        },
+      });
+      const source = await generateAgentSkillCandidate(
+        {
+          prepared,
+          cwd: admitted.root,
+          projectRoot: admitted.root,
+          protectedPaths: [],
+          ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
+        },
+        dependencies.createNodeExecutor(config.sandbox.profile, admitted.root),
+      );
+      throwIfAborted(dependencies.signal, "candidate generation was cancelled");
+      await admitted.revalidate();
+      throwIfAborted(dependencies.signal, "candidate generation was cancelled");
+      const sourceText = `${JSON.stringify(source, null, 2)}\n`;
+      const projected = projectAgentSkillCandidate({
+        manifestProvenance: basename(admitted.outputPath),
+        source,
+        sourceSha256: sha256Text(sourceText),
+        baseline: {
+          workflow: {
+            provenance: admitted.baseline.provenance,
+            sourceSha256: admitted.baseline.sourceSha256,
+            compiled: admitted.baseline.compiled,
+          },
+          skill: admitted.skill,
+        },
+        evidence: admitted.evidence.map((item) => ({
+          provenance: item.provenance,
+          sourceSha256: item.sourceSha256,
+          packet: item.packet,
+        })),
+      });
+      await admitted.revalidate();
+      throwIfAborted(dependencies.signal, "candidate generation was cancelled");
+      await publishLocalPromptCandidate(admitted.outputPath, sourceText, {
+        ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
+        beforePublish: async () => {
+          await admitted.revalidate();
+          throwIfAborted(dependencies.signal, "candidate generation was cancelled");
+        },
+      });
+      io.stdout(
+        JSON.stringify(
+          {
+            generated: true,
+            output: relative(admitted.root, admitted.outputPath).split(sep).join("/"),
+            candidate: {
+              kind: projected.identity.kind,
+              id: projected.identity.id,
+              version: projected.identity.candidateVersion,
+              skill: projected.identity.scope.skillName,
+              provider: projected.identity.generation?.provider,
+              model: projected.identity.generation?.model,
+              limits: projected.identity.generation?.limits,
+              usage: projected.identity.generation?.usage,
+              requestDigest: projected.identity.generation?.requestDigest,
+              responseDigest: projected.identity.generation?.responseDigest,
+              baselinePackageDigest: projected.identity.baseline.skill.packageDigest,
+              projectedPackageDigest: projected.identity.projectedSkill.packageDigest,
+              candidateDigest: projected.identity.candidateDigest,
+              changes: projected.identity.changes.map((change) => change.path),
+            },
+          },
+          null,
+          2,
+        ),
+      );
+      return 0;
+    }
     const admitted = await admitLocalPromptCandidateGenerationSources(
       outputPath,
       resolve(dependencies.cwd, baseline),
@@ -3982,6 +4149,25 @@ function configDependenciesFrom(
 
 function boundedCliDiagnostic(message: string): string {
   return message.length <= 8_192 ? message : `${message.slice(0, 8_192)}…`;
+}
+
+function publicCandidatePublisherMessage(code: LocalPromptCandidatePublisherError["code"]): string {
+  switch (code) {
+    case "cleanup_uncertain":
+      return "candidate publication cleanup is uncertain";
+    case "invalid_output":
+      return "candidate output path is invalid";
+    case "invalid_source":
+      return "generated candidate is invalid";
+    case "io":
+      return "candidate publication failed";
+    case "output_exists":
+      return "candidate output already exists";
+    case "publication_uncertain":
+      return "candidate publication is uncertain after commit";
+    case "temporary_limit":
+      return "candidate publication temporary state exceeds its limit";
+  }
 }
 
 function publicPolicyPackageCatalogMessage(code: PolicyPackageCatalogError["code"]): string {

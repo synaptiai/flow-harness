@@ -205,6 +205,7 @@ export async function snapshotProjectAgentSkillPath(input: {
 }): Promise<{
   readonly snapshot: AgentSkillCapabilitySnapshot;
   readonly revalidate: () => Promise<void>;
+  readonly revalidateForPublication: () => Promise<void>;
 }> {
   input.signal?.throwIfAborted();
   if (!isAgentSkillName(input.expectedName)) {
@@ -242,6 +243,29 @@ export async function snapshotProjectAgentSkillPath(input: {
             input.afterRevalidationObservation?.(
               path === canonicalProject ? "" : portableRelative(canonicalProject, path),
             ),
+    );
+  };
+  const revalidateForPublication = async (): Promise<void> => {
+    input.signal?.throwIfAborted();
+    let currentRoot: BigIntStats;
+    try {
+      currentRoot = await lstat(canonicalProject, { bigint: true });
+    } catch (error) {
+      input.signal?.throwIfAborted();
+      throw new AgentSkillCatalogError("source_changed", "Agent Skill project root changed", {
+        cause: error,
+      });
+    }
+    input.signal?.throwIfAborted();
+    if (!sameDirectoryNodeIdentity(projectIdentity, currentRoot)) {
+      throw new AgentSkillCatalogError("source_changed", "Agent Skill project root changed");
+    }
+    await revalidateDirectObservations(
+      new Map([...observations].filter(([path]) => path !== canonicalProject)),
+      input.signal,
+      input.afterRevalidationObservation === undefined
+        ? undefined
+        : (path) => input.afterRevalidationObservation?.(portableRelative(canonicalProject, path)),
     );
   };
   await revalidate();
@@ -295,7 +319,7 @@ export async function snapshotProjectAgentSkillPath(input: {
     },
   ]) as AgentSkillCapabilitySnapshot;
   await revalidate();
-  return deepFreeze({ snapshot, revalidate });
+  return deepFreeze({ snapshot, revalidate, revalidateForPublication });
 }
 
 interface DirectPackageCaptureState {
@@ -588,6 +612,17 @@ function sameDirectIdentity(left: BigIntStats, right: BigIntStats): boolean {
     left.isDirectory() === right.isDirectory() &&
     !left.isSymbolicLink() &&
     !right.isSymbolicLink()
+  );
+}
+
+function sameDirectoryNodeIdentity(left: BigIntStats, right: BigIntStats): boolean {
+  return (
+    left.isDirectory() &&
+    !left.isSymbolicLink() &&
+    right.isDirectory() &&
+    !right.isSymbolicLink() &&
+    left.dev === right.dev &&
+    left.ino === right.ino
   );
 }
 

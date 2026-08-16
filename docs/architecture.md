@@ -1001,17 +1001,22 @@ workflow and one selected Agent Skill package. Admission snapshots the baseline 
 projects only declared existing UTF-8 resource replacements, and produces immutable baseline and
 candidate capability snapshots. Package authority fields and the workflow identity cannot change.
 
-The generation service uses the provider-neutral `AgentExecutor` port. The Pi adapter is the first
-implementation. Flow creates one agent request with no tools, skills, or packages. The request
-contains only selected root-agent prompts and tuning-only packets. A future model adapter can use
-the same application port and domain contract.
+The generation services use the provider-neutral `AgentExecutor` port. The Pi adapter is the first
+implementation. Flow creates one agent request with no tools, skills, or packages. Prompt
+generation includes only selected root-agent prompts and tuning-only packets. Agent Skill
+generation includes the closed workflow identity, exact public package identity, tuning-only
+packets, and only the selected existing UTF-8 resource bytes. A future model adapter can use the
+same application port and strict domain contracts.
 
-The model returns one strict prompt-replacement object. Flow adds trusted source hashes and
-generation provenance. Flow checks all source identities again, validates the projected workflow,
-and publishes through a same-directory no-replace operation. A failure before the hard-link commit
-leaves no final candidate file. A failure after the commit returns `publication_uncertain`. One
-complete final file can exist in this state. A pre-commit failure with an unsettled lock returns
-`cleanup_uncertain`. No candidate commits in that state, but the lock can block another publication.
+The model returns one strict prompt-replacement or Agent Skill resource-replacement object. Flow
+adds trusted source hashes and generation provenance. Flow checks all source identities again,
+validates the ordinary candidate projection, and publishes through a same-directory no-replace
+operation.
+
+A failure before the hard-link commit leaves no final candidate file. A failure after the commit
+returns `publication_uncertain`. One complete final file can exist in this state. A pre-commit
+failure with an unsettled lock returns `cleanup_uncertain`. No candidate commits in that state, but
+the lock can block another publication.
 
 The standard compiler creates the projected workflow. The `flow-workflow-v1` adapter evaluates that
 projection against the exact declared baseline. The evaluation header stores the complete public
@@ -1049,8 +1054,8 @@ baseline file, or delete artifacts.
 A prompt candidate cannot change graphs, tools, skills, packages, models, policy, approvals,
 budgets, verifiers, retries, or routing. An Agent Skill candidate can change only declared existing
 resource bytes while preserving skill selection and package authority.
-Model-authorized evaluation and activation remain unavailable. Agent Skill generation,
-installation, and publication remain unavailable.
+Model-authorized evaluation and activation remain unavailable. Agent Skill package synthesis,
+installation, publication, and executable-resource generation remain unavailable.
 
 ## Non-goals
 

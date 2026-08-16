@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { type BigIntStats, constants } from "node:fs";
 import { type FileHandle, lstat, open, realpath } from "node:fs/promises";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, parse, relative, resolve, sep } from "node:path";
 
 import {
   MAX_PROMPT_CANDIDATE_BYTES,
@@ -118,6 +118,7 @@ export async function admitLocalPromptCandidateGenerationSources(
   evidencePaths: readonly string[],
   options: LocalPromptCandidateAdmissionOptions = {},
 ): Promise<AdmittedLocalPromptCandidateGenerationSources> {
+  options.signal?.throwIfAborted();
   if (evidencePaths.length === 0 || evidencePaths.length > 16) {
     throw new LocalPromptCandidateError(
       "limit_exceeded",
@@ -125,35 +126,72 @@ export async function admitLocalPromptCandidateGenerationSources(
     );
   }
   const absoluteOutputPath = resolve(outputPath);
-  const root = await realpath(dirname(absoluteOutputPath));
-  const rootObservation = await observeDirectory(root, "prompt candidate generation root");
+  const lexicalRoot = dirname(absoluteOutputPath);
+  const lexicalRootObservations = await observeDirectoryAncestry(
+    lexicalRoot,
+    "prompt candidate generation root",
+    options.signal,
+  );
+  const lexicalRootObservation = requiredDirectoryObservation(lexicalRootObservations);
+  options.signal?.throwIfAborted();
+  let root: string;
+  try {
+    root = await realpath(lexicalRoot);
+  } catch (error) {
+    options.signal?.throwIfAborted();
+    throw new LocalPromptCandidateError(
+      "invalid_source",
+      "prompt candidate generation root cannot be resolved",
+      { cause: error },
+    );
+  }
+  options.signal?.throwIfAborted();
+  const rootObservation = await observeDirectory(
+    root,
+    "prompt candidate generation root",
+    options.signal,
+  );
+  options.signal?.throwIfAborted();
+  if (!sameDirectoryIdentity(lexicalRootObservation, rootObservation)) {
+    throw new LocalPromptCandidateError("source_changed", "candidate generation root changed");
+  }
   const canonicalOutputPath = join(root, basename(absoluteOutputPath));
-  const baselineProvenance = await sourceProvenance(root, baselinePath, "baseline workflow");
+  const baselineProvenance = sourceProvenance(lexicalRoot, root, baselinePath, "baseline workflow");
   const baselineAdmission = await resolveAdmittedFile(root, rootObservation, baselineProvenance);
+  options.signal?.throwIfAborted();
   await options.afterPathValidation?.(baselineProvenance);
+  options.signal?.throwIfAborted();
   const baselineFile = await stableReadFile(
     baselineAdmission.path,
     MAX_LOCAL_WORKFLOW_BYTES,
     "candidate baseline workflow",
     requiredFinalObservation(baselineAdmission),
   );
+  options.signal?.throwIfAborted();
   await revalidatePathObservations(baselineAdmission.observations);
+  options.signal?.throwIfAborted();
   const baselineText = decodeUtf8(baselineFile.content, "candidate baseline workflow");
   const baselineSource = parseWorkflowSourceText(baselineText, baselineProvenance);
   const baselineCompiled = compileWorkflowText(baselineText, baselineProvenance);
+  options.signal?.throwIfAborted();
 
   const evidenceAdmissions = await Promise.all(
     evidencePaths.map(async (evidencePath) => {
-      const provenance = await sourceProvenance(root, evidencePath, "tuning evidence");
+      options.signal?.throwIfAborted();
+      const provenance = sourceProvenance(lexicalRoot, root, evidencePath, "tuning evidence");
       const admission = await resolveAdmittedFile(root, rootObservation, provenance);
+      options.signal?.throwIfAborted();
       await options.afterPathValidation?.(provenance);
+      options.signal?.throwIfAborted();
       const file = await stableReadFile(
         admission.path,
         MAX_TUNING_EVIDENCE_BYTES,
         `candidate evidence "${provenance}"`,
         requiredFinalObservation(admission),
       );
+      options.signal?.throwIfAborted();
       await revalidatePathObservations(admission.observations);
+      options.signal?.throwIfAborted();
       const sourceText = decodeUtf8(file.content, `candidate evidence "${provenance}"`);
       let raw: unknown;
       try {
@@ -169,6 +207,7 @@ export async function admitLocalPromptCandidateGenerationSources(
           { cause: error },
         );
       }
+      options.signal?.throwIfAborted();
       return {
         provenance,
         admission,
@@ -179,6 +218,7 @@ export async function admitLocalPromptCandidateGenerationSources(
       };
     }),
   );
+  options.signal?.throwIfAborted();
   if (
     new Set(evidenceAdmissions.map((item) => item.provenance)).size !== evidenceAdmissions.length
   ) {
@@ -188,12 +228,15 @@ export async function admitLocalPromptCandidateGenerationSources(
     );
   }
   const observations = [
+    ...lexicalRootObservations,
     { path: root, identity: rootObservation },
     ...baselineAdmission.observations,
     ...evidenceAdmissions.flatMap((item) => item.admission.observations),
   ];
   const revalidate = async () => {
+    options.signal?.throwIfAborted();
     await revalidatePathObservations(observations);
+    options.signal?.throwIfAborted();
   };
   await revalidate();
   return deepFreeze({
@@ -431,27 +474,31 @@ async function resolveAdmittedFile(
   return { path: candidate, observations: Object.freeze(observations) };
 }
 
-async function sourceProvenance(root: string, sourcePath: string, label: string): Promise<string> {
+function sourceProvenance(
+  lexicalRoot: string,
+  canonicalRoot: string,
+  sourcePath: string,
+  label: string,
+): string {
   const absolute = resolve(sourcePath);
-  let canonicalParent: string;
-  try {
-    canonicalParent = await realpath(dirname(absolute));
-  } catch (error) {
-    throw new LocalPromptCandidateError(
-      "invalid_path",
-      `${label} parent cannot be resolved: ${boundedMessage(error)}`,
-      { cause: error },
-    );
-  }
-  const canonicalSource = join(canonicalParent, basename(absolute));
-  const fromRoot = relative(root, canonicalSource);
-  if (fromRoot === "" || fromRoot === ".." || fromRoot.startsWith(`..${sep}`)) {
+  const fromLexicalRoot = relative(lexicalRoot, absolute);
+  const fromCanonicalRoot = relative(canonicalRoot, absolute);
+  const fromRoot = pathIsWithinRoot(fromLexicalRoot)
+    ? fromLexicalRoot
+    : pathIsWithinRoot(fromCanonicalRoot)
+      ? fromCanonicalRoot
+      : undefined;
+  if (fromRoot === undefined) {
     throw new LocalPromptCandidateError(
       "invalid_path",
       `${label} path "${sourcePath}" escapes or aliases the candidate root`,
     );
   }
   return fromRoot.split(sep).join("/");
+}
+
+function pathIsWithinRoot(value: string): boolean {
+  return value !== "" && value !== ".." && !value.startsWith(`..${sep}`);
 }
 
 async function stableReadFile(
@@ -538,17 +585,23 @@ async function observeRegularFile(path: string, label: string): Promise<BigIntSt
   return entry;
 }
 
-async function observeDirectory(path: string, label: string): Promise<BigIntStats> {
+async function observeDirectory(
+  path: string,
+  label: string,
+  signal?: AbortSignal,
+): Promise<BigIntStats> {
   let entry: BigIntStats;
   try {
     entry = await lstat(path, { bigint: true });
   } catch (error) {
+    signal?.throwIfAborted();
     throw new LocalPromptCandidateError(
       "invalid_source",
       `${label} cannot be observed: ${boundedMessage(error)}`,
       { cause: error },
     );
   }
+  signal?.throwIfAborted();
   if (entry.isSymbolicLink() || !entry.isDirectory()) {
     throw new LocalPromptCandidateError(
       "invalid_source",
@@ -556,6 +609,39 @@ async function observeDirectory(path: string, label: string): Promise<BigIntStat
     );
   }
   return entry;
+}
+
+async function observeDirectoryAncestry(
+  path: string,
+  label: string,
+  signal?: AbortSignal,
+): Promise<PathObservation[]> {
+  signal?.throwIfAborted();
+  const absolute = resolve(path);
+  const anchor = parse(absolute).root;
+  const components = relative(anchor, absolute).split(sep).filter(Boolean);
+  const observations: PathObservation[] = [];
+  let current = anchor;
+  for (const component of ["", ...components]) {
+    signal?.throwIfAborted();
+    if (component !== "") {
+      current = join(current, component);
+    }
+    const identity = await observeDirectory(current, label, signal);
+    observations.push({ path: current, identity });
+  }
+  return observations;
+}
+
+function requiredDirectoryObservation(observations: readonly PathObservation[]): BigIntStats {
+  const identity = observations.at(-1)?.identity;
+  if (identity === undefined) {
+    throw new LocalPromptCandidateError(
+      "invalid_path",
+      "prompt candidate generation root observation is incomplete",
+    );
+  }
+  return identity;
 }
 
 async function revalidatePathObservations(observations: readonly PathObservation[]): Promise<void> {

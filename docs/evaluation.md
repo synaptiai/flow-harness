@@ -335,6 +335,21 @@ An `AgentSkillCandidate` binds the same tuning-only evidence to one exact workfl
 selected local Agent Skill package. It declares one through sixteen replacements for unique
 existing UTF-8 package resources. Every replacement includes the expected current SHA-256.
 
+An operator can generate one such candidate with one zero-tool model turn:
+
+```text
+flow candidate generate <baseline> <evidence>... --output <candidate.yaml> \
+  --id <id> --version <semver> --skill <name> --allow-resources <path,...> \
+  --provider <provider> --model <model> [--thinking <level>]
+```
+
+Flow admits the closed workflow, exact selected package, tuning packets, and 1 through 16 unique
+existing inert UTF-8 resource targets before execution. `SKILL.md` and files below the top-level
+`scripts/` directory are not generation targets. The request omits absolute paths, unrelated package
+files, regression data, holdout data, verifier evidence, credentials, and live run state. The
+response can replace only selected resources. It cannot select a package, add a file, or change
+package authority.
+
 Admission performs stable no-follow reads of the candidate, workflow, evidence, and baseline skill
 package. It rejects path escape, links, special files, source drift, and missing or binary
 resources. It also rejects stale hashes, unrelated evidence, and changes to package authority.
@@ -351,9 +366,10 @@ and absolute paths. The durable header distinguishes `agent-skill-candidate-proj
 projection while retaining legacy direct and prompt encodings. Inspection and export need no live
 candidate, package directory, network, registry, or credential.
 
-Flow does not generate, install, publish, or automatically select an Agent Skill candidate. A
-favorable result is evidence, not authority. An operator can separately preview and apply an exact
-activation proposal from the complete superior evaluation.
+Generation publishes one inert candidate file without replacement. It does not evaluate,
+automatically select, activate, install, or publish an Agent Skill package. A favorable result is
+evidence, not authority. An operator can separately preview and apply an exact activation proposal
+from the complete superior evaluation.
 
 ## Activation gate
 
