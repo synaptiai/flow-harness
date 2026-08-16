@@ -147,11 +147,15 @@ run authority and does not enter replay.
 
 `flow web <run-id> --actor <label>` serves the same document from one explicit IPv4 loopback
 listener on an ephemeral port. A 256-bit session capability enters the initial URL fragment. The
-fixed client removes the fragment, authenticates a bounded streaming fetch, and renders with DOM
-node creation and text insertion. Exact host, origin, Fetch Metadata, bearer, header, body, JSON,
-observer, write, and reconnect checks precede data or action authority. Static HTML, CSS, and
-JavaScript are fixed first-party constants. The host provides no CORS, cookie, service worker,
-external resource, package code, package content, raw event, remote listener, or proxy mode.
+fixed client moves it to tab-scoped `sessionStorage`, removes the fragment, authenticates a bounded
+streaming fetch, and renders with DOM node creation and text insertion. Tab storage supports reload
+and can follow browser session restoration. Terminal observation removes the capability. It never
+enters a cookie, `localStorage`, a request URL, or durable Flow state.
+
+Exact host, origin, Fetch Metadata, bearer, header, body, JSON, observer, write, and reconnect checks
+precede data or action authority. Static HTML, CSS, and JavaScript are fixed first-party constants.
+The host provides no CORS, cookie, service worker, external resource, package code, package content,
+raw event, remote listener, or proxy mode.
 
 Browser actions carry the latest positive document sequence and one opaque action id. The existing
 application controller rebinds both before the approval or cancellation boundary. Only a settled

@@ -67,9 +67,11 @@ The embedded Pi runtime runs with the invoking user's operating-system permissio
   before any later create. The durable scanner correctly treats the same process as live.
 
 - `flow web` binds one explicit IPv4 loopback listener to an ephemeral port. A random 256-bit
-  capability enters only the initial URL fragment and later authorization headers. API requests
-  also require the exact host and browser Fetch Metadata context. Action requests require the exact
-  origin.
+  capability enters the initial URL fragment, tab-scoped `sessionStorage`, and later authorization
+  headers. The fixed client clears the fragment after startup and clears the stored capability when
+  terminal observation settles. It never uses a cookie, `localStorage`, a request URL, or durable
+  Flow state. API requests also require the exact host and browser Fetch Metadata context. Action
+  requests require the exact origin.
 
 - The browser host serves fixed offline assets under a closed content policy. It exposes no CORS,
   cookie, service worker, external resource, raw event, or package code. It retains one bounded

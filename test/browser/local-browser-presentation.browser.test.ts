@@ -151,6 +151,37 @@ describe("local browser presentation", () => {
       .poll(async () => await unavailablePage.locator("#connection-status").textContent())
       .toBe("Private session is unavailable");
   }, 20_000);
+
+  it("removes the tab-scoped capability after terminal observation", async () => {
+    const capability = Buffer.alloc(32, 0x66);
+    host = new LocalBrowserPresentationHost({
+      actionController: new CaptureBrowserActions(),
+      createCapability: () => capability,
+    });
+    const session = await host.start();
+    browser = await launchBrowser();
+    const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+
+    await page.goto(session.url);
+    await expect
+      .poll(async () => await page.locator("#connection-status").textContent())
+      .toBe("Connected");
+    expect(new URL(page.url()).hash).toBe("");
+    expect(await page.evaluate(() => sessionStorage.getItem("flow-browser-session"))).toBe(
+      capability.toString("hex"),
+    );
+
+    const presentation = completeDocument();
+    await host.render({
+      ...presentation,
+      run: { ...presentation.run, status: "succeeded", sequence: 5 },
+      actions: [],
+    });
+    await expect
+      .poll(async () => await page.locator("#connection-status").textContent())
+      .toBe("Run observation ended");
+    expect(await page.evaluate(() => sessionStorage.getItem("flow-browser-session"))).toBeNull();
+  }, 20_000);
 });
 
 class CaptureBrowserActions {

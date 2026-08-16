@@ -32,6 +32,11 @@ Other operating-system users and untrusted web origins do not.
 - Browser `EventSource` cannot attach the required bearer header. A streaming `fetch` response can
   carry an authorization header and consume bounded newline-delimited JSON without cookies.
 
+- Browser `sessionStorage` is scoped to one top-level browsing context. User agents can preserve it
+  when they restore that context after a browser-process restart. Flow therefore treats it as
+  tab-scoped reload state, discloses that lifetime, and removes the capability after terminal
+  observation.
+
 ## Architecture alternatives
 
 | Approach | Roadmap leverage | Authority fit | Standards fit | Cost | Decision |
@@ -54,8 +59,10 @@ independent.
 - Command: `flow web <run-id> --actor <label> [--presentation <name>@<exact-version>]`.
 - Explicit IPv4 loopback listener on an ephemeral port. No wildcard, hostname, Unix-socket proxy,
   forwarded-host, or remote-listen mode.
-- A random 256-bit session capability appears only in the initial URL fragment. The fixed client
-  removes the fragment and sends the capability in authorization headers.
+- A random 256-bit session capability appears in the initial URL fragment. The fixed client moves it
+  to tab-scoped `sessionStorage`, removes the fragment, and sends the capability in authorization
+  headers. It clears the stored capability after terminal observation and never uses cookies,
+  `localStorage`, request URLs, or durable Flow state.
 
 ### Stream defaults
 
@@ -138,8 +145,8 @@ The browser host also does not replace these existing boundaries:
 
 - Replacing the JSON CLI, terminal host, supervisor protocol, event reducer, approval channel, or
   cancellation command.
-- Persistent browser credentials, user accounts, cookies, remote authentication, or authorization
-  between same-UID processes.
+- Long-lived or cross-tab browser credentials, user accounts, cookies, remote authentication, or
+  authorization between same-UID processes.
 - General A2UI basic-catalog rendering or migration to the A2UI v1.0 candidate.
 
 ### Failure modes
@@ -241,8 +248,9 @@ The browser and release gates provide these tests:
 - 2026-08-16: The strict action protocol and one-shot loopback host were implemented. Fixed browser
   assets and `flow web` CLI composition followed with RED/GREEN tests.
 
-- 2026-08-16: Pinned Chromium verified fragment removal, capability use, text-only rendering,
-  reload, keyboard steering, denied storage, and the three responsive viewports.
+- 2026-08-16: Pinned Chromium verified fragment removal, tab-scoped capability use, and terminal
+  removal. It also verified text-only rendering, reload, keyboard steering, storage-denial fallback,
+  and the three responsive viewports.
 
 - 2026-08-16: Compiled and packed CLI traces created a terminal run and opened `flow web`. They
   authenticated, received the final document, and settled the process and supervisor.
@@ -279,7 +287,9 @@ npx vitest run \
   test/scaffold/community-files.test.ts
 ```
 
-The real browser gate passed one test:
+The real browser gate passed two tests. A temporary removal of terminal capability cleanup made the
+new lifecycle regression fail with the retained 256-bit value, then the restored implementation
+passed:
 
 ```sh
 npm run test:browser

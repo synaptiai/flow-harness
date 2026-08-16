@@ -1143,10 +1143,16 @@ node dist/cli/main.js web background-run --actor local:daniel
 ```
 
 Flow prints one `http://127.0.0.1:<ephemeral-port>/#<capability>` URL. Open that URL in the local
-browser for the same operator account. The capability is 256 random bits. It is removed from the
-address bar and sent only in authorization headers. The listener accepts only explicit IPv4
-loopback traffic, the exact host and browser request context, and one observer. It sets a closed
-content policy, serves no external resource, uses no cookie, and exposes no cross-origin API.
+browser for the same operator account. The capability is 256 random bits.
+
+The fixed client copies it to tab-scoped `sessionStorage`, removes it from the address bar, and sends
+it only in authorization headers after startup. This storage supports reload and can follow browser
+session restoration. The client removes it when terminal observation settles. It never enters a
+cookie, `localStorage`, a request URL, or durable Flow state.
+
+The listener accepts only explicit IPv4 loopback traffic, the exact host and browser request
+context, and one observer. It sets a closed content policy, serves no external resource, uses no
+cookie, and exposes no cross-origin API.
 
 The client renders only the closed public presentation document with DOM node creation and text
 insertion. It does not render package HTML, Markdown, URLs, JavaScript, assets, bindings, or raw run
