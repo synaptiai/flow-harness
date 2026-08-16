@@ -383,11 +383,12 @@ JSONL records are committed only when newline-terminated. Recovery ignores a fin
 fragment and truncates it immediately before the next append. An invalid earlier record, mismatched
 run directory, or corrupt owner record fails closed and is preserved for diagnosis.
 
-## Prompt candidate, activation, and evaluation recovery
+## Adaptive candidate, activation, and evaluation recovery
 
 Candidate admission is a read-only, complete observation of the manifest, baseline, and tuning
-evidence. A source change stops admission. The operator must inspect and validate the new bytes.
-Candidate validation never changes the baseline.
+evidence. Agent Skill candidate admission also observes the complete baseline package. A source
+change stops admission. The operator must inspect and validate the new bytes. Candidate validation
+never changes the baseline workflow or package.
 
 An evaluation header binds the candidate, baseline, evidence, prompt changes, and projected workflow.
 Evaluation resume re-admits the supplied plan. It rejects candidate removal, replacement, and source
@@ -436,9 +437,12 @@ The index contains a hash-chained transition history. Store admission rejects ma
 missing selected artifacts, changed artifacts, invalid UTF-8, symbolic links, and exceeded limits.
 An exact retry after an uncertain commit returns the current selected state.
 
-Each run saves the complete activation snapshot in its `run_started` event. Recovery uses that
-snapshot after the live index changes or disappears. Detached workers also receive the saved
-snapshot. Replay rejects changed snapshot bytes or digests.
+Each run saves the complete activation snapshot in its `run_started` event. An Agent Skill
+activation also saves the exact selected package.
+Recovery uses those bytes after the live index changes or disappears. It also uses them after the
+candidate, evidence, or skill directory changes or disappears. Detached workers and child ledgers
+receive the saved snapshot. Replay rejects changed workflow, package, activation, or capability
+digests.
 
 Rollback changes only the live head for future runs. It selects a verified candidate or baseline
 artifact. It does not change an existing run or delete its source artifact. Tuning-evidence export

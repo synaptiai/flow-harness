@@ -56,7 +56,9 @@ describe("prompt activation snapshots", () => {
         contentBase64: Buffer.from(projectedPromptActivationSource, "utf8").toString("base64"),
       },
     });
-    expect(first.activationDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(first.activationDigest).toBe(
+      "53b3814a98af9eb1ad28f8eaba020adafa194fbc647f2dd004da1a4d1ab40a82",
+    );
   });
 
   it("creates a separate exact baseline selection", () => {
@@ -193,6 +195,9 @@ describe("prompt activation snapshots", () => {
     const activation = createPromptActivationSnapshot(promptActivationInput());
     const snapshot = activationCapabilitySnapshot(activation);
 
+    expect(snapshot.digest).toBe(
+      "23d31a24ffd5e7e6c7c09cca09f68e406e892ecb9f4b6ceb41f9ba0af1e7cc16",
+    );
     expect(validateCapabilitySnapshot(snapshot)).toEqual(snapshot);
   });
 

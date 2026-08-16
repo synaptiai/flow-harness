@@ -930,7 +930,7 @@ It does not make task selection representative, control provider stochasticity t
 seed, or turn a bootstrap interval into a universal performance claim. See
 [Reproducible harness evaluation](evaluation.md).
 
-## Adaptive candidate and prompt activation layer
+## Adaptive candidate and activation layer
 
 Gate 7 sits above evaluation. A complete evaluation can produce a canonical tuning-only evidence
 packet. The packet omits regression data, holdout data, verifier evidence, run handles, and schedule
@@ -978,9 +978,10 @@ artifact. The index selects one exact artifact for each workflow. The store vali
 it publishes both artifacts and replaces the index.
 
 New runs can use `activation:<workflow-id>`. Run admission validates the selected artifact and
-requires one matching activation in the capability snapshot. It verifies the exact decoded source
-bytes and compiles the saved source. The run then stores the exact artifact in its capability
-snapshot. Detached execution and resume use that saved snapshot, not the current index.
+requires one matching activation in the capability snapshot. Prompt artifacts bind exact decoded
+source bytes. Agent Skill artifacts bind the unchanged workflow and exact selected package. The run
+stores the artifact and package in its capability snapshot. Detached execution and resume use that
+saved snapshot, not the current index or live skill catalog.
 
 Attached execution protects the canonical project `.flow` directory. A detached job stores the same
 protected path in its immutable record. The worker gives the saved path to each node executor.
@@ -992,8 +993,8 @@ baseline file, or delete artifacts.
 A prompt candidate cannot change graphs, tools, skills, packages, models, policy, approvals,
 budgets, verifiers, retries, or routing. An Agent Skill candidate can change only declared existing
 resource bytes while preserving skill selection and package authority.
-Model-authorized evaluation and activation remain unavailable. Agent Skill activation is also
-unavailable.
+Model-authorized evaluation and activation remain unavailable. Agent Skill generation,
+installation, and publication remain unavailable.
 
 ## Non-goals
 

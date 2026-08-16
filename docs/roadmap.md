@@ -128,9 +128,9 @@ containment milestone. It is not VM-grade or multi-tenant isolation.
 ## Gate 7: Adaptive harness
 
 - Flow can produce evidence-bound prompt candidates from canonical tuning-only evaluation evidence. *(Implemented for exact prompt-only manifests and zero-tool model generation.)*
-- Flow can validate and evaluate one evidence-bound Agent Skill resource candidate against its exact immutable baseline package. *(Implemented without generation or activation authority.)*
-- Memory, sub-agent, and routing candidates remain planned. Agent Skill generation, activation,
-  rollback, installation, publication, and multi-skill candidates remain planned.
+- Flow can validate, evaluate, activate, and roll back one evidence-bound Agent Skill resource candidate against its exact immutable baseline package. *(Implemented with operator preview and exact apply. Generation remains unavailable.)*
+- Memory, sub-agent, and routing candidates remain planned. Agent Skill generation, installation,
+  publication, and multi-skill candidates remain planned.
 - Prompt and Agent Skill candidates use the paired held-out and regression evaluation gate. *(Implemented.)*
 - Activation is versioned, reviewable, scoped, and rollbackable. *(Implemented with operator preview, exact apply, paired candidate and baseline artifacts, and baseline or version rollback.)*
 - Base safety, workflow semantics, and evaluator definitions remain immutable during a candidate

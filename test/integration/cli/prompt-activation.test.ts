@@ -56,6 +56,59 @@ describe("prompt activation CLI", () => {
     expect(conflicting.stderr.join("\n")).toMatch(/requires exactly one/);
   });
 
+  it("preserves the exact legacy prompt inspection JSON field order", async () => {
+    const project = await temporaryProject();
+    const store = new LocalPromptActivationStore(project, {
+      now: () => new Date("2026-08-15T00:00:00.000Z"),
+    });
+    const snapshot = createPromptActivationSnapshot(promptActivationInput());
+    const activation = {
+      snapshot,
+      baselineSnapshot: createPromptActivationSnapshot(
+        promptActivationInput({ selection: "baseline" }),
+      ),
+      actor: "release-operator",
+    };
+    const preview = await store.previewActivate(activation);
+    await store.applyActivate({ ...activation, expectedDigest: preview.proposalDigest });
+    const expectedStore = await store.list();
+    const expectedHead = expectedStore.heads.find(
+      (item) => item.workflowId === snapshot.workflowId,
+    );
+    const output = captureIo();
+
+    expect(
+      await main(["activation", "inspect", snapshot.workflowId], output.io, {
+        cwd: project,
+        loadConfig: async () => effectiveConfig(project),
+      }),
+      output.stderr.join("\n"),
+    ).toBe(0);
+    expect(output.stdout).toEqual([
+      JSON.stringify(
+        {
+          workflowId: snapshot.workflowId,
+          head: expectedHead,
+          activations: expectedStore.activations,
+          active: {
+            version: snapshot.version,
+            kind: snapshot.kind,
+            selection: snapshot.selection,
+            workflowId: snapshot.workflowId,
+            candidateId: snapshot.candidateId,
+            candidateVersion: snapshot.candidateVersion,
+            candidate: snapshot.candidate,
+            evaluation: snapshot.evaluation,
+            source: { bytes: snapshot.source.bytes, sha256: snapshot.source.sha256 },
+            activationDigest: snapshot.activationDigest,
+          },
+        },
+        null,
+        2,
+      ),
+    ]);
+  });
+
   it("runs the exact active source and saves it before a later rollback", async () => {
     const project = await temporaryProject();
     const baselinePath = join(project, "baseline.workflow.yaml");
@@ -96,6 +149,7 @@ describe("prompt activation CLI", () => {
         dependencies(project, { executor, createStore: () => runStore }),
       ),
     ).toBe(0);
+    expectPromptContentPreserved(output, snapshot.source.contentBase64);
     expect(observed?.capabilitySnapshot?.activations).toEqual([snapshot]);
     expect(runStore.events[0]).toMatchObject({
       type: "run_started",
@@ -176,6 +230,7 @@ describe("prompt activation CLI", () => {
     expect(calls).toEqual([]);
     const waitingState = JSON.parse(runOutput.stdout[0] ?? "null");
     const requestId = waitingState.nodes.gate.approval.requestId as string;
+    expectPromptContentPreserved(runOutput, snapshot.source.contentBase64);
 
     const rollbackInput = {
       workflowId: "adaptive-workflow",
@@ -189,6 +244,7 @@ describe("prompt activation CLI", () => {
     });
     await rm(join(project, ".flow", "activations"), { recursive: true });
 
+    const approvalOutput = captureIo();
     expect(
       await main(
         [
@@ -200,10 +256,11 @@ describe("prompt activation CLI", () => {
           "--runs-dir",
           runsDirectory,
         ],
-        captureIo().io,
+        approvalOutput.io,
         dependencies(project),
       ),
     ).toBe(0);
+    expectPromptContentPreserved(approvalOutput, snapshot.source.contentBase64);
     const resumeOutput = captureIo();
     expect(
       await main(
@@ -221,6 +278,17 @@ describe("prompt activation CLI", () => {
     ).toBe(0);
     expect(calls).toEqual(["gate", "implement"]);
     expect(JSON.parse(resumeOutput.stdout[0] ?? "null")).toMatchObject({ status: "succeeded" });
+    expectPromptContentPreserved(resumeOutput, snapshot.source.contentBase64);
+
+    const inspectOutput = captureIo();
+    expect(
+      await main(
+        ["inspect", "durable-activation-run", "--runs-dir", runsDirectory],
+        inspectOutput.io,
+        dependencies(project),
+      ),
+    ).toBe(0);
+    expectPromptContentPreserved(inspectOutput, snapshot.source.contentBase64);
   });
 });
 
@@ -326,4 +394,12 @@ function captureIo(): { readonly io: CliIo; readonly stdout: string[]; readonly 
       stderr: (text) => stderr.push(text),
     },
   };
+}
+
+function expectPromptContentPreserved(
+  output: ReturnType<typeof captureIo>,
+  contentBase64: string,
+): void {
+  const state = JSON.parse(output.stdout[0] ?? "null");
+  expect(state.capabilitySnapshot.activations[0].source.contentBase64).toBe(contentBase64);
 }

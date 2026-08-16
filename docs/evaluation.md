@@ -351,8 +351,9 @@ and absolute paths. The durable header distinguishes `agent-skill-candidate-proj
 projection while retaining legacy direct and prompt encodings. Inspection and export need no live
 candidate, package directory, network, registry, or credential.
 
-This slice is evaluation-only. Flow does not generate, activate, roll back, install, publish, or
-automatically select an Agent Skill candidate. A favorable result is evidence, not authority.
+Flow does not generate, install, publish, or automatically select an Agent Skill candidate. A
+favorable result is evidence, not authority. An operator can separately preview and apply an exact
+activation proposal from the complete superior evaluation.
 
 ## Activation gate
 
@@ -360,9 +361,10 @@ Activation requires a complete evaluation with the `superior` verdict. Flow reca
 from the stored schedule and record chain. All declared safety constraints must pass. Missing,
 corrupt, or unavailable comparison evidence stops activation.
 
-The evaluation candidate must match the live candidate identity. The evaluation baseline and
-projected workflow must also match the live candidate. Flow stores the plan digest, terminal record
-digest, report digest, release criteria, and aggregate comparison result.
+The evaluation candidate must match the live candidate identity. Prompt activation binds the exact
+baseline and projected workflows. Agent Skill activation binds the unchanged workflow and the exact
+baseline and projected package snapshots. Flow stores the plan digest, terminal record digest,
+report digest, release criteria, and aggregate comparison result.
 
 The activation proof contains no task text, fixture path, assertion, holdout identity, trial record,
 or run identifier. It contains aggregate comparison values only.

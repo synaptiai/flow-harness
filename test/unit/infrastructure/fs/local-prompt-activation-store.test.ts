@@ -17,6 +17,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { createAgentSkillActivationSnapshot } from "../../../../src/domain/adaptation/agent-skill-activation.js";
 import {
   createPromptActivationSnapshot,
   MAX_PROMPT_ACTIVATION_SOURCE_BYTES,
@@ -29,6 +30,7 @@ import {
   MAX_PROMPT_ACTIVATION_TEMPORARY_FILES,
   MAX_PROMPT_ACTIVATION_TRANSITIONS,
 } from "../../../../src/infrastructure/fs/local-prompt-activation-store.js";
+import { agentSkillActivationInput } from "../../../fixtures/agent-skill-activation.js";
 import {
   baselinePromptActivationSource,
   promptActivationInput,
@@ -43,6 +45,22 @@ afterEach(async () => {
 });
 
 describe("local prompt activation store", () => {
+  it("preserves the exact legacy prompt index bytes and omits variant tags", async () => {
+    const project = await temporaryProject();
+    const store = new LocalPromptActivationStore(project, {
+      now: () => new Date("2026-08-15T00:00:00.000Z"),
+    });
+    const snapshot = createPromptActivationSnapshot(promptActivationInput());
+    const input = storeActivationInput(snapshot, "release-operator");
+    const preview = await store.previewActivate(input);
+
+    await store.applyActivate({ ...input, expectedDigest: preview.proposalDigest });
+
+    expect(await readFile(join(project, ".flow", "activations", "index.json"), "utf8")).toBe(
+      '{"version":1,"activations":[{"workflowId":"adaptive-workflow","candidateId":"better-instructions","candidateVersion":"1.0.0","selection":"baseline","activationDigest":"9f08a731cdfefd732ab4dd98cee6bc8b34e7552ffd959a80467cb8d665ee7728","bytes":3119},{"workflowId":"adaptive-workflow","candidateId":"better-instructions","candidateVersion":"1.0.0","selection":"candidate","activationDigest":"53b3814a98af9eb1ad28f8eaba020adafa194fbc647f2dd004da1a4d1ab40a82","bytes":3140}],"heads":[{"workflowId":"adaptive-workflow","generation":1,"activationDigest":"53b3814a98af9eb1ad28f8eaba020adafa194fbc647f2dd004da1a4d1ab40a82","lastTransitionDigest":"f26aab5d994acc69e6d27b53631b8a5528810aa17ebcaa0234a4ee475a90f37b"}],"history":[{"sequence":1,"workflowId":"adaptive-workflow","generation":1,"fromActivationDigest":null,"toActivationDigest":"53b3814a98af9eb1ad28f8eaba020adafa194fbc647f2dd004da1a4d1ab40a82","actor":"release-operator","changedAt":"2026-08-15T00:00:00.000Z","previousDigest":null,"transitionDigest":"f26aab5d994acc69e6d27b53631b8a5528810aa17ebcaa0234a4ee475a90f37b"}],"digest":"0942c6db0de43439fa3c834f5e051e7ab68a29466b02289cf0cb2f1a96c118cd"}\n',
+    );
+  });
+
   it("previews one deterministic activation without changing store state", async () => {
     const project = await temporaryProject();
     const store = new LocalPromptActivationStore(project);
@@ -144,6 +162,236 @@ describe("local prompt activation store", () => {
           toActivationDigest: snapshot.activationDigest,
         },
       ],
+    });
+  });
+
+  it("preserves exact cancellation before activation mutation ownership", async () => {
+    const project = await temporaryProject();
+    const controller = new AbortController();
+    const reason = new Error("operator cancelled before activation lock ownership");
+    const store = new LocalPromptActivationStore(project, {
+      hooks: {
+        beforeMutationLockLinked: async () => {
+          controller.abort(reason);
+        },
+      },
+    });
+    const snapshot = createPromptActivationSnapshot(promptActivationInput());
+    const input = storeActivationInput(snapshot, "release-operator");
+    const preview = await store.previewActivate(input);
+
+    await expect(
+      store.applyActivate({
+        ...input,
+        expectedDigest: preview.proposalDigest,
+        signal: controller.signal,
+      }),
+    ).rejects.toBe(reason);
+    await expect(store.list()).resolves.toEqual({
+      version: 1,
+      activations: [],
+      heads: [],
+      history: [],
+    });
+  });
+
+  it("preserves exact pre-aborted rollback without changing the selected head", async () => {
+    const project = await temporaryProject();
+    const store = new LocalPromptActivationStore(project);
+    const snapshot = createPromptActivationSnapshot(promptActivationInput());
+    const activation = storeActivationInput(snapshot, "release-operator");
+    const activationPreview = await store.previewActivate(activation);
+    await store.applyActivate({
+      ...activation,
+      expectedDigest: activationPreview.proposalDigest,
+    });
+    const rollback = {
+      workflowId: snapshot.workflowId,
+      target: null,
+      actor: "release-operator",
+    };
+    const rollbackPreview = await store.previewRollback(rollback);
+    const controller = new AbortController();
+    const reason = new Error("operator cancelled rollback");
+    controller.abort(reason);
+
+    await expect(
+      store.applyRollback({
+        ...rollback,
+        expectedDigest: rollbackPreview.proposalDigest,
+        signal: controller.signal,
+      }),
+    ).rejects.toBe(reason);
+    await expect(store.list()).resolves.toMatchObject({
+      heads: [{ generation: 1, activationDigest: snapshot.activationDigest }],
+      history: [{ sequence: 1 }],
+    });
+  });
+
+  it("returns the settled activation when cancellation follows mutation ownership", async () => {
+    const project = await temporaryProject();
+    const controller = new AbortController();
+    const reason = new Error("late operator cancellation");
+    const store = new LocalPromptActivationStore(project, {
+      hooks: {
+        beforeIndexRenamed: async () => {
+          controller.abort(reason);
+        },
+      },
+    });
+    const snapshot = createPromptActivationSnapshot(promptActivationInput());
+    const input = storeActivationInput(snapshot, "release-operator");
+    const preview = await store.previewActivate(input);
+
+    await expect(
+      store.applyActivate({
+        ...input,
+        expectedDigest: preview.proposalDigest,
+        signal: controller.signal,
+      }),
+    ).resolves.toMatchObject({ status: "activated" });
+    await expect(store.list()).resolves.toMatchObject({
+      heads: [{ generation: 1, activationDigest: snapshot.activationDigest }],
+      history: [{ sequence: 1 }],
+    });
+  });
+
+  it("applies and loads one Agent Skill revision through the shared workflow head", async () => {
+    const project = await temporaryProject();
+    const store = new LocalPromptActivationStore(project);
+    const snapshot = createAgentSkillActivationSnapshot(agentSkillActivationInput());
+    const baselineSnapshot = createAgentSkillActivationSnapshot(
+      agentSkillActivationInput("baseline"),
+    );
+    const input = {
+      snapshot,
+      baselineSnapshot,
+      actor: "release-operator",
+      reason: "Agent Skill candidate passed the declared evaluation.",
+    };
+    const preview = await store.previewActivate(input);
+
+    await store.applyActivate({
+      ...input,
+      expectedDigest: preview.proposalDigest,
+    });
+    const loaded = await store.loadActive("adaptive-skill-workflow");
+
+    expect(await store.list()).toMatchObject({
+      activations: [
+        { kind: "agent-skill-activation", selection: "baseline" },
+        { kind: "agent-skill-activation", selection: "candidate" },
+      ],
+      heads: [
+        { workflowId: "adaptive-skill-workflow", activationDigest: snapshot.activationDigest },
+      ],
+      history: [{ fromActivationDigest: null, toActivationDigest: snapshot.activationDigest }],
+    });
+    expect(loaded.snapshot).toEqual(snapshot);
+    expect(loaded.capabilitySnapshot).toMatchObject({
+      packages: [{ digest: snapshot.skill.digest }],
+      activations: [snapshot],
+    });
+  });
+
+  it("rolls an Agent Skill revision back to its exact evaluated baseline kind", async () => {
+    const project = await temporaryProject();
+    const store = new LocalPromptActivationStore(project);
+    const snapshot = createAgentSkillActivationSnapshot(agentSkillActivationInput());
+    const baselineSnapshot = createAgentSkillActivationSnapshot(
+      agentSkillActivationInput("baseline"),
+    );
+    const activation = { snapshot, baselineSnapshot, actor: "release-operator" };
+    const activationPreview = await store.previewActivate(activation);
+    await store.applyActivate({
+      ...activation,
+      expectedDigest: activationPreview.proposalDigest,
+    });
+    const rollback = {
+      workflowId: snapshot.workflowId,
+      target: null,
+      actor: "release-operator",
+    };
+    const rollbackPreview = await store.previewRollback(rollback);
+
+    expect(rollbackPreview.target).toMatchObject({
+      kind: "agent-skill-activation",
+      candidateId: snapshot.candidateId,
+      candidateVersion: snapshot.candidateVersion,
+      selection: "baseline",
+      activationDigest: baselineSnapshot.activationDigest,
+    });
+    await store.applyRollback({
+      ...rollback,
+      expectedDigest: rollbackPreview.proposalDigest,
+    });
+    await expect(store.loadActive(snapshot.workflowId)).resolves.toMatchObject({
+      snapshot: { kind: "agent-skill-activation", selection: "baseline" },
+      capabilitySnapshot: { packages: [{ digest: baselineSnapshot.skill.digest }] },
+    });
+  });
+
+  it("uses one workflow head for prompt and Agent Skill revisions", async () => {
+    const project = await temporaryProject();
+    const store = new LocalPromptActivationStore(project, {
+      now: () => new Date("2026-08-15T01:00:00.000Z"),
+    });
+    const prompt = createPromptActivationSnapshot(promptActivationInput());
+    const promptInput = storeActivationInput(prompt, "release-operator");
+    const promptPreview = await store.previewActivate(promptInput);
+    await store.applyActivate({ ...promptInput, expectedDigest: promptPreview.proposalDigest });
+
+    const skill = createAgentSkillActivationSnapshot(
+      agentSkillActivationInput("candidate", { workflowId: "adaptive-workflow" }),
+    );
+    const skillBaseline = createAgentSkillActivationSnapshot(
+      agentSkillActivationInput("baseline", { workflowId: "adaptive-workflow" }),
+    );
+    const skillInput = {
+      snapshot: skill,
+      baselineSnapshot: skillBaseline,
+      actor: "release-operator",
+    };
+    const skillPreview = await store.previewActivate(skillInput);
+    expect(skillPreview.current).toEqual({
+      generation: 1,
+      activationDigest: prompt.activationDigest,
+    });
+    await store.applyActivate({ ...skillInput, expectedDigest: skillPreview.proposalDigest });
+
+    expect(await store.list()).toMatchObject({
+      heads: [
+        {
+          workflowId: "adaptive-workflow",
+          generation: 2,
+          activationDigest: skill.activationDigest,
+        },
+      ],
+      history: [
+        { generation: 1, fromActivationDigest: null, toActivationDigest: prompt.activationDigest },
+        {
+          generation: 2,
+          fromActivationDigest: prompt.activationDigest,
+          toActivationDigest: skill.activationDigest,
+        },
+      ],
+    });
+
+    const rollback = {
+      workflowId: "adaptive-workflow",
+      target: { candidateId: prompt.candidateId, candidateVersion: prompt.candidateVersion },
+      actor: "release-operator",
+    };
+    const rollbackPreview = await store.previewRollback(rollback);
+    expect(rollbackPreview.target).toMatchObject({
+      candidateId: prompt.candidateId,
+      selection: "candidate",
+      activationDigest: prompt.activationDigest,
+    });
+    await store.applyRollback({ ...rollback, expectedDigest: rollbackPreview.proposalDigest });
+    await expect(store.loadActive("adaptive-workflow")).resolves.toMatchObject({
+      snapshot: { kind: "prompt-activation", activationDigest: prompt.activationDigest },
+      capabilitySnapshot: { packages: [] },
     });
   });
 

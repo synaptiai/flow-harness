@@ -4,6 +4,10 @@ import {
   compileWorkflowFromSnapshot,
   createSnapshotWorkflowPackageResolver,
 } from "../../../src/application/workflow-package-admission.js";
+import {
+  agentSkillActivationWorkflow,
+  createAgentSkillActivationSnapshot,
+} from "../../../src/domain/adaptation/agent-skill-activation.js";
 import { createPromptActivationSnapshot } from "../../../src/domain/adaptation/prompt-activation.js";
 import {
   type CapabilitySnapshot,
@@ -14,6 +18,7 @@ import {
   createWorkflowPackageSnapshot,
   type WorkflowPackageSnapshot,
 } from "../../../src/domain/capability/workflow-packages.js";
+import { agentSkillActivationInput } from "../../fixtures/agent-skill-activation.js";
 import {
   projectedPromptActivationSource,
   promptActivationInput,
@@ -152,6 +157,34 @@ describe("workflow package admission", () => {
       compileWorkflowFromSnapshot({
         source: projectedPromptActivationSource.replace("verify", "publish"),
         sourceName: "activation:adaptive-workflow",
+        capabilitySnapshot,
+      }),
+    ).toThrow(/source does not match/i);
+  });
+
+  it("compiles one Agent Skill activation only from its exact frozen source and package", () => {
+    const activation = createAgentSkillActivationSnapshot(agentSkillActivationInput());
+    const packages = [activation.skill];
+    const activations = [activation];
+    const capabilitySnapshot = validateCapabilitySnapshot({
+      version: 1,
+      packages,
+      activations,
+      digest: calculateCapabilitySnapshotDigest(packages, activations),
+    });
+    const source = agentSkillActivationWorkflow(activation);
+
+    expect(
+      compileWorkflowFromSnapshot({
+        source,
+        sourceName: "activation:adaptive-skill-workflow",
+        capabilitySnapshot,
+      }).id,
+    ).toBe("adaptive-skill-workflow");
+    expect(() =>
+      compileWorkflowFromSnapshot({
+        source: `${source} `,
+        sourceName: "activation:adaptive-skill-workflow",
         capabilitySnapshot,
       }),
     ).toThrow(/source does not match/i);

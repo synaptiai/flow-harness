@@ -7,12 +7,10 @@ import { join, resolve } from "node:path";
 import { z } from "zod";
 
 import {
-  type PromptActivationSnapshot,
-  parsePromptActivationSnapshot,
-} from "../../domain/adaptation/prompt-activation.js";
-import {
+  type AdaptiveActivationSnapshot,
   type CapabilitySnapshot,
   calculateCapabilitySnapshotDigest,
+  parseAdaptiveActivationSnapshot,
   validateCapabilitySnapshot,
 } from "../../domain/capability/agent-skills.js";
 import { parseStrictJson } from "../../domain/strict-json.js";
@@ -60,6 +58,7 @@ const reasonSchema = z
 
 const artifactEntrySchema = z
   .object({
+    kind: z.literal("agent-skill-activation").optional(),
     workflowId: identifierSchema,
     candidateId: identifierSchema,
     candidateVersion: semverSchema,
@@ -117,6 +116,7 @@ const indexSchema = z
   .strict();
 
 export interface PromptActivationArtifactEntry {
+  readonly kind?: "agent-skill-activation" | undefined;
   readonly workflowId: string;
   readonly candidateId: string;
   readonly candidateVersion: string;
@@ -169,6 +169,7 @@ export interface PromptActivationProposal {
     readonly activationDigest: string | null;
   };
   readonly target: {
+    readonly kind?: "agent-skill-activation" | undefined;
     readonly candidateId: string;
     readonly candidateVersion: string;
     readonly selection: "baseline" | "candidate";
@@ -181,10 +182,11 @@ export interface PromptActivationProposal {
 }
 
 export interface PreviewPromptActivationInput {
-  readonly snapshot: PromptActivationSnapshot;
-  readonly baselineSnapshot: PromptActivationSnapshot;
+  readonly snapshot: AdaptiveActivationSnapshot;
+  readonly baselineSnapshot: AdaptiveActivationSnapshot;
   readonly actor: string;
   readonly reason?: string;
+  readonly signal?: AbortSignal;
 }
 
 export interface ApplyPromptActivationInput extends PreviewPromptActivationInput {
@@ -199,6 +201,7 @@ export interface PromptActivationApplyResult {
 }
 
 export interface PromptActivationRollbackTarget {
+  readonly kind?: "agent-skill-activation" | undefined;
   readonly candidateId: string;
   readonly candidateVersion: string;
 }
@@ -208,6 +211,7 @@ export interface PreviewPromptActivationRollbackInput {
   readonly target: PromptActivationRollbackTarget | null;
   readonly actor: string;
   readonly reason?: string;
+  readonly signal?: AbortSignal;
 }
 
 export interface ApplyPromptActivationRollbackInput extends PreviewPromptActivationRollbackInput {
@@ -221,7 +225,7 @@ export interface PromptActivationRollbackResult {
 }
 
 export interface LoadedPromptActivation {
-  readonly snapshot: PromptActivationSnapshot;
+  readonly snapshot: AdaptiveActivationSnapshot;
   readonly capabilitySnapshot: CapabilitySnapshot;
 }
 
@@ -230,6 +234,7 @@ export interface PromptActivationStoreHooks {
   readonly beforeIndexRenamed?: () => Promise<void>;
   readonly afterIndexRenamed?: () => Promise<void>;
   readonly beforeMutationTemporaryObserved?: () => Promise<void>;
+  readonly beforeMutationLockLinked?: () => Promise<void>;
   readonly beforeMutationLockRelease?: () => Promise<void>;
 }
 
@@ -276,20 +281,22 @@ export class LocalPromptActivationStore {
   }
 
   async previewActivate(input: PreviewPromptActivationInput): Promise<PromptActivationProposal> {
+    input.signal?.throwIfAborted();
     const { snapshot, baselineSnapshot } = parseActivationSelections(input);
     const actor = parseActor(input.actor);
     const reason = parseReason(input.reason);
-    const index = await this.#readIndex();
+    const index = await awaitBeforeMutationOwnership(this.#readIndex(), input.signal);
     return createActivationProposal(index, snapshot, baselineSnapshot, actor, reason);
   }
 
   async applyActivate(input: ApplyPromptActivationInput): Promise<PromptActivationApplyResult> {
+    input.signal?.throwIfAborted();
     const { snapshot, baselineSnapshot } = parseActivationSelections(input);
     const actor = parseActor(input.actor);
     const reason = parseReason(input.reason);
     const expectedDigest = parseDigest(input.expectedDigest, "activation proposal digest");
-    const paths = await storePaths(this.projectRoot);
-    const lock = await acquireMutationLock(paths.flowDirectory, this.#hooks);
+    const paths = await awaitBeforeMutationOwnership(storePaths(this.projectRoot), input.signal);
+    const lock = await acquireMutationLock(paths.flowDirectory, this.#hooks, input.signal);
     return await withMutationLock(lock, this.#hooks, async () => {
       await ensureRealDirectory(paths.activationDirectory, paths.flowDirectory);
       await recoverIndexTemporaryFiles(paths);
@@ -418,23 +425,31 @@ export class LocalPromptActivationStore {
   async previewRollback(
     input: PreviewPromptActivationRollbackInput,
   ): Promise<PromptActivationProposal> {
+    input.signal?.throwIfAborted();
     const workflowId = parseIdentifier(input.workflowId, "rollback workflow id");
     const target = parseRollbackTarget(input.target);
     const actor = parseActor(input.actor);
     const reason = parseReason(input.reason);
-    return createRollbackProposal(await this.#readIndex(), workflowId, target, actor, reason);
+    return createRollbackProposal(
+      await awaitBeforeMutationOwnership(this.#readIndex(), input.signal),
+      workflowId,
+      target,
+      actor,
+      reason,
+    );
   }
 
   async applyRollback(
     input: ApplyPromptActivationRollbackInput,
   ): Promise<PromptActivationRollbackResult> {
+    input.signal?.throwIfAborted();
     const workflowId = parseIdentifier(input.workflowId, "rollback workflow id");
     const target = parseRollbackTarget(input.target);
     const actor = parseActor(input.actor);
     const reason = parseReason(input.reason);
     const expectedDigest = parseDigest(input.expectedDigest, "rollback proposal digest");
-    const paths = await storePaths(this.projectRoot);
-    const lock = await acquireMutationLock(paths.flowDirectory, this.#hooks);
+    const paths = await awaitBeforeMutationOwnership(storePaths(this.projectRoot), input.signal);
+    const lock = await acquireMutationLock(paths.flowDirectory, this.#hooks, input.signal);
     return await withMutationLock(lock, this.#hooks, async () => {
       await ensureRealDirectory(paths.activationDirectory, paths.flowDirectory);
       await recoverIndexTemporaryFiles(paths);
@@ -568,7 +583,7 @@ export class LocalPromptActivationStore {
     }
     const paths = await storePaths(this.projectRoot);
     const snapshot = await readVerifiedBlob(paths, entry);
-    const packages: never[] = [];
+    const packages = snapshot.kind === "agent-skill-activation" ? [snapshot.skill] : ([] as const);
     const activations = [snapshot];
     const capabilitySnapshot = validateCapabilitySnapshot({
       version: 1,
@@ -809,8 +824,8 @@ function validateIndex(index: PromptActivationIndex): void {
 
 function createActivationProposal(
   index: PromptActivationIndex,
-  snapshot: PromptActivationSnapshot,
-  baselineSnapshot: PromptActivationSnapshot,
+  snapshot: AdaptiveActivationSnapshot,
+  baselineSnapshot: AdaptiveActivationSnapshot,
   actor: string,
   reason: string | undefined,
 ): PromptActivationProposal {
@@ -839,8 +854,8 @@ function createActivationProposal(
 }
 
 function createActivationProposalForCurrent(
-  snapshot: PromptActivationSnapshot,
-  baselineSnapshot: PromptActivationSnapshot,
+  snapshot: AdaptiveActivationSnapshot,
+  baselineSnapshot: AdaptiveActivationSnapshot,
   actor: string,
   reason: string | undefined,
   current: PromptActivationProposal["current"],
@@ -851,6 +866,7 @@ function createActivationProposalForCurrent(
     workflowId: snapshot.workflowId,
     current,
     target: {
+      ...(snapshot.kind === "prompt-activation" ? {} : { kind: snapshot.kind }),
       candidateId: snapshot.candidateId,
       candidateVersion: snapshot.candidateVersion,
       selection: "candidate" as const,
@@ -903,8 +919,13 @@ function createRollbackProposal(
       `workflow "${workflowId}" selects a missing activation artifact`,
     );
   }
+  const targetKind =
+    target === null
+      ? artifactActivationKind(currentArtifact)
+      : (target.kind ?? "prompt-activation");
   const targetArtifact = index.activations.find(
     (item) =>
+      artifactActivationKind(item) === targetKind &&
       item.workflowId === workflowId &&
       item.candidateId === (target?.candidateId ?? currentArtifact.candidateId) &&
       item.candidateVersion === (target?.candidateVersion ?? currentArtifact.candidateVersion) &&
@@ -921,6 +942,7 @@ function createRollbackProposal(
   return createRollbackProposalForCurrent(
     workflowId,
     {
+      ...(targetArtifact.kind === undefined ? {} : { kind: targetArtifact.kind }),
       candidateId: targetArtifact.candidateId,
       candidateVersion: targetArtifact.candidateVersion,
       selection: targetArtifact.selection,
@@ -956,10 +978,11 @@ function createRollbackProposalForCurrent(
 
 function matchingArtifact(
   index: PromptActivationIndex,
-  snapshot: PromptActivationSnapshot,
+  snapshot: AdaptiveActivationSnapshot,
 ): PromptActivationArtifactEntry | undefined {
   return index.activations.find(
     (item) =>
+      artifactActivationKind(item) === snapshot.kind &&
       item.workflowId === snapshot.workflowId &&
       item.candidateId === snapshot.candidateId &&
       item.candidateVersion === snapshot.candidateVersion &&
@@ -969,7 +992,7 @@ function matchingArtifact(
 
 async function publishBlob(
   paths: PromptActivationStorePaths,
-  snapshot: PromptActivationSnapshot,
+  snapshot: AdaptiveActivationSnapshot,
   prepared: PreparedPromptActivationBlob,
   hooks: PromptActivationStoreHooks,
 ): Promise<PublishedPromptActivationBlob> {
@@ -1004,11 +1027,12 @@ interface PublishedPromptActivationBlob {
   readonly created: boolean;
 }
 
-function prepareBlob(snapshot: PromptActivationSnapshot): PreparedPromptActivationBlob {
+function prepareBlob(snapshot: AdaptiveActivationSnapshot): PreparedPromptActivationBlob {
   const content = Buffer.from(`${canonicalize(snapshot)}\n`, "utf8");
   return Object.freeze({
     content,
     entry: Object.freeze({
+      ...(snapshot.kind === "prompt-activation" ? {} : { kind: snapshot.kind }),
       workflowId: snapshot.workflowId,
       candidateId: snapshot.candidateId,
       candidateVersion: snapshot.candidateVersion,
@@ -1053,7 +1077,7 @@ async function assertPhysicalBlobCapacity(
 async function removePublishedBlob(
   paths: PromptActivationStorePaths,
   entry: PromptActivationArtifactEntry,
-  snapshot: PromptActivationSnapshot,
+  snapshot: AdaptiveActivationSnapshot,
 ): Promise<void> {
   await requireExactBlob(paths, entry, snapshot);
   await unlink(activationBlobPath(paths, entry.activationDigest));
@@ -1062,7 +1086,7 @@ async function removePublishedBlob(
 
 async function publishNewBlob(
   paths: PromptActivationStorePaths,
-  snapshot: PromptActivationSnapshot,
+  snapshot: AdaptiveActivationSnapshot,
   entry: PromptActivationArtifactEntry,
   target: string,
   content: Buffer,
@@ -1116,7 +1140,7 @@ async function publishNewBlob(
 async function requireExactBlob(
   paths: PromptActivationStorePaths,
   entry: PromptActivationArtifactEntry,
-  snapshot: PromptActivationSnapshot,
+  snapshot: AdaptiveActivationSnapshot,
 ): Promise<void> {
   const parsed = await readVerifiedBlob(paths, entry);
   if (canonicalize(parsed) !== canonicalize(snapshot)) {
@@ -1130,7 +1154,7 @@ async function requireExactBlob(
 async function readVerifiedBlob(
   paths: PromptActivationStorePaths,
   entry: PromptActivationArtifactEntry,
-): Promise<PromptActivationSnapshot> {
+): Promise<AdaptiveActivationSnapshot> {
   let content: Buffer;
   try {
     await requireActivationDirectory(paths, true);
@@ -1152,10 +1176,10 @@ async function readVerifiedBlob(
       `prompt activation blob ${entry.activationDigest} has the wrong byte count`,
     );
   }
-  let parsed: PromptActivationSnapshot;
+  let parsed: AdaptiveActivationSnapshot;
   try {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(content);
-    parsed = parsePromptActivationSnapshot(
+    parsed = parseAdaptiveActivationSnapshot(
       parseStrictJson(text, {
         maxDepth: 64,
         maxNodes: 300_000,
@@ -1171,6 +1195,7 @@ async function readVerifiedBlob(
   }
   if (
     parsed.activationDigest !== entry.activationDigest ||
+    parsed.kind !== artifactActivationKind(entry) ||
     parsed.workflowId !== entry.workflowId ||
     parsed.candidateId !== entry.candidateId ||
     parsed.candidateVersion !== entry.candidateVersion ||
@@ -1526,7 +1551,9 @@ interface MutationLock {
 async function acquireMutationLock(
   flowDirectory: string,
   hooks: PromptActivationStoreHooks,
+  signal?: AbortSignal,
 ): Promise<MutationLock> {
+  signal?.throwIfAborted();
   const path = join(flowDirectory, "activations.mutation.lock");
   const ownerValue = Object.freeze({
     version: 1 as const,
@@ -1535,7 +1562,10 @@ async function acquireMutationLock(
     token: randomUUID(),
   });
   const owner = `${JSON.stringify(ownerValue)}\n`;
-  await recoverMutationLockTemporaryFiles(flowDirectory, Buffer.byteLength(owner, "utf8"), hooks);
+  await awaitBeforeMutationOwnership(
+    recoverMutationLockTemporaryFiles(flowDirectory, Buffer.byteLength(owner, "utf8"), hooks),
+    signal,
+  );
   const temporary = join(
     flowDirectory,
     `.activations.mutation.${ownerValue.pid}.${mutationHostIdentity(ownerValue.hostname)}.${randomUUID()}.tmp`,
@@ -1543,13 +1573,18 @@ async function acquireMutationLock(
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
     handle = await open(temporary, "wx", 0o600);
+    signal?.throwIfAborted();
     await handle.writeFile(owner, "utf8");
+    signal?.throwIfAborted();
     await handle.sync();
+    signal?.throwIfAborted();
     await handle.close();
     handle = undefined;
+    signal?.throwIfAborted();
   } catch (error) {
     await handle?.close().catch(() => undefined);
     await unlink(temporary).catch(() => undefined);
+    signal?.throwIfAborted();
     throw new PromptActivationStoreError(
       "io",
       "could not prepare prompt activation mutation lock",
@@ -1560,18 +1595,24 @@ async function acquireMutationLock(
   }
   let published = false;
   try {
+    await awaitBeforeMutationOwnership(
+      hooks.beforeMutationLockLinked?.() ?? Promise.resolve(),
+      signal,
+    );
     for (let attempt = 0; attempt < 4; attempt += 1) {
+      signal?.throwIfAborted();
       try {
         await link(temporary, path);
         published = true;
         break;
       } catch (error) {
+        signal?.throwIfAborted();
         if (!(isNodeError(error) && error.code === "EEXIST")) {
           throw error;
         }
         let observed: ObservedMutationLock;
         try {
-          observed = await readMutationLock(path);
+          observed = await awaitBeforeMutationOwnership(readMutationLock(path), signal);
         } catch (readError) {
           if (isNodeError(readError) && readError.code === "ENOENT") {
             continue;
@@ -1583,7 +1624,10 @@ async function acquireMutationLock(
           !isProcessAlive(observed.owner.pid)
         ) {
           try {
-            await retireObservedMutationLock(path, observed, flowDirectory);
+            await awaitBeforeMutationOwnership(
+              retireObservedMutationLock(path, observed, flowDirectory),
+              signal,
+            );
           } catch (retireError) {
             if (!(isNodeError(retireError) && retireError.code === "ENOENT")) {
               throw retireError;
@@ -1609,6 +1653,8 @@ async function acquireMutationLock(
     await unlink(temporary).catch(() => undefined);
     if (published) {
       await removeOwnedMutationLock(path, owner, flowDirectory).catch(() => undefined);
+    } else {
+      signal?.throwIfAborted();
     }
     if (error instanceof PromptActivationStoreError) {
       throw error;
@@ -1632,6 +1678,20 @@ async function acquireMutationLock(
       await syncDirectory(flowDirectory);
     },
   });
+}
+
+async function awaitBeforeMutationOwnership<T>(
+  operation: Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  try {
+    const result = await operation;
+    signal?.throwIfAborted();
+    return result;
+  } catch (error) {
+    signal?.throwIfAborted();
+    throw error;
+  }
 }
 
 function mutationHostIdentity(value: string): string {
@@ -1869,7 +1929,16 @@ function calculateTransitionDigest(transition: PromptActivationTransition): stri
 }
 
 function artifactKey(entry: PromptActivationArtifactEntry): string {
+  if (entry.kind !== undefined) {
+    return `${entry.workflowId}\0${entry.kind}\0${entry.candidateId}\0${entry.candidateVersion}\0${entry.selection}`;
+  }
   return `${entry.workflowId}\0${entry.candidateId}\0${entry.candidateVersion}\0${entry.selection}`;
+}
+
+function artifactActivationKind(
+  entry: PromptActivationArtifactEntry,
+): AdaptiveActivationSnapshot["kind"] {
+  return entry.kind ?? "prompt-activation";
 }
 
 async function readBoundedRegularFile(path: string, maxBytes: number): Promise<Buffer> {
@@ -1903,12 +1972,13 @@ function parseActor(value: string): string {
 }
 
 function parseActivationSelections(input: PreviewPromptActivationInput): {
-  readonly snapshot: PromptActivationSnapshot;
-  readonly baselineSnapshot: PromptActivationSnapshot;
+  readonly snapshot: AdaptiveActivationSnapshot;
+  readonly baselineSnapshot: AdaptiveActivationSnapshot;
 } {
-  const snapshot = parsePromptActivationSnapshot(input.snapshot);
-  const baselineSnapshot = parsePromptActivationSnapshot(input.baselineSnapshot);
+  const snapshot = parseAdaptiveActivationSnapshot(input.snapshot);
+  const baselineSnapshot = parseAdaptiveActivationSnapshot(input.baselineSnapshot);
   if (
+    snapshot.kind !== baselineSnapshot.kind ||
     snapshot.selection !== "candidate" ||
     baselineSnapshot.selection !== "baseline" ||
     snapshot.workflowId !== baselineSnapshot.workflowId ||
@@ -1959,6 +2029,7 @@ function parseRollbackTarget(
     return null;
   }
   return Object.freeze({
+    ...(value.kind === undefined ? {} : { kind: value.kind }),
     candidateId: parseIdentifier(value.candidateId, "rollback candidate id"),
     candidateVersion: parseSemanticVersion(value.candidateVersion, "rollback candidate version"),
   });

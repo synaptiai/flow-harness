@@ -1540,13 +1540,13 @@ binds each snapshot to the workflow before execution. The public identity contai
 provenance and hashes. Durable inspection remains available after live source removal.
 
 `flow candidate validate <candidate.yaml>` accepts prompt or Agent Skill candidates and is read-only.
-Agent Skill generation, activation, rollback, installation, publication, and automatic selection
-remain unavailable. Evaluation success grants no authority.
+Agent Skill generation, installation, publication, and automatic selection remain unavailable.
+Evaluation success grants no authority until an operator applies the exact activation proposal.
 
-### Prompt activation
+### Adaptive activation
 
-An operator can activate a prompt candidate after a complete superior evaluation. Preview creates a
-proposal without changing state:
+An operator can activate a prompt or Agent Skill candidate after a complete superior evaluation.
+Preview creates a proposal without changing state:
 
 ```text
 flow candidate activate <candidate.yaml> --evaluation <id> --actor <label> --dry-run
@@ -1559,10 +1559,10 @@ flow candidate activate <candidate.yaml> --evaluation <id> --actor <label> \
   --expected-digest <sha256>
 ```
 
-Each activation snapshot contains the selection role, complete candidate identity, aggregate
-evaluation proof, and exact selected source. Candidate selection binds the projected workflow.
-Baseline selection binds the exact baseline workflow. A source is at most 8 MiB. The complete
-capability snapshot is at most 16 MiB.
+Each activation snapshot contains the selection role, complete candidate identity, and aggregate
+evaluation proof. A prompt snapshot binds the exact selected source. An Agent Skill snapshot binds
+the unchanged workflow and the exact selected skill package. A workflow source is at most 8 MiB.
+The complete capability snapshot is at most 16 MiB.
 
 Flow stores one candidate artifact and one baseline artifact below `.flow/activations/sha256` for
 each approval. One atomic index contains sorted artifact entries, workflow heads, and a hash-chained
@@ -1587,13 +1587,15 @@ Rollback selects an earlier stored candidate artifact or the stored baseline art
 current lineage:
 
 ```text
-flow activation rollback <workflow-id> --to <candidate-id>@<version>|baseline \
+flow activation rollback <workflow-id> \
+  --to <candidate-id>@<version>|agent-skill:<candidate-id>@<version>|baseline \
   --actor <label> --dry-run
 ```
 
-Apply requires the exact rollback proposal digest. Flow verifies the target artifact before it
-changes the head. Rollback does not rewrite the baseline file, change active runs, or delete
-artifacts.
+The unqualified version locator preserves the legacy prompt meaning. The `agent-skill:` locator
+selects a stored Agent Skill candidate revision. Apply requires the exact rollback proposal digest.
+Flow verifies the target artifact before it changes the head. Rollback does not rewrite a baseline
+file or package, change active runs, or delete artifacts.
 
 ## Current limitations
 
