@@ -326,10 +326,10 @@ outcome and failure contract. The user confirmed Approach A and the defaults bel
   The compiled smoke test and clean package installation passed. The production dependency audit
   reported zero vulnerabilities. The Prime audit passed for the Node lock and 60 Python packages.
 
-- `npm run ci:local` passed formatting, lint, type checking, and build before it reached the expected
-  host guard: Prime OCI preparation requires Linux on x64. This macOS arm64 host uses Docker Desktop
-  with a Linux arm64 Docker 29.7.2 daemon. Hosted CI uses Linux x64, Docker 28.3.3, and the attested
-  `flow-prime-runc`; it remains the authority for that boundary.
+- `npm run ci:local` passed formatting, lint, type checking, and build. It then reached the expected
+  host guard. Prime OCI preparation requires Linux on x64. This macOS arm64 host uses Docker Desktop
+  with a Linux arm64 Docker 29.7.2 daemon. Hosted CI uses Linux x64 and Docker 28.3.3. The attested
+  flow-prime-runc remains the authority for that boundary.
 
 - Adversarial correctness, security, specification, and holdout review completed with zero current
   P1, P2, or P3 findings.
