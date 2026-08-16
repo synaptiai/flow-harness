@@ -23,6 +23,7 @@ export function applyPresentationPackage(
 ): FlowPresentationDocument {
   try {
     const document = parseFlowPresentationDocument(input);
+    assertProjectableDocument(document);
     const ordered = orderedPresentationWidgets(snapshot);
     const available = ordered.flatMap((item) => {
       const section = sectionForWidget(document, item.widget);
@@ -46,6 +47,25 @@ export function applyPresentationPackage(
       sections,
     });
   } catch {
+    throw new PresentationPackageProjectionError();
+  }
+}
+
+function assertProjectableDocument(document: FlowPresentationDocument): void {
+  const supportedSections = new Set(["overview", "nodes", "resources", "approvals", "outcome"]);
+  if (document.sections.some((section) => !supportedSections.has(section.id))) {
+    throw new PresentationPackageProjectionError();
+  }
+  const overview = document.sections.find((section) => section.id === "overview");
+  if (overview === undefined || overview.components.length !== 3) {
+    throw new PresentationPackageProjectionError();
+  }
+  const kinds = overview.components.map((component) => component.kind);
+  if (
+    kinds.filter((kind) => kind === "heading").length !== 1 ||
+    kinds.filter((kind) => kind === "facts").length !== 1 ||
+    kinds.filter((kind) => kind === "progress").length !== 1
+  ) {
     throw new PresentationPackageProjectionError();
   }
 }

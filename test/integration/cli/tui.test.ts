@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { rmSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -212,7 +213,13 @@ describe("flow tui", () => {
           cwd: harness.directory,
           isInteractiveTerminal: () => true,
           loadConfig: async () => resolveFlowConfig({ projectRoot: harness.directory }),
-          createTerminalPresentationRenderer: () => renderer,
+          createTerminalPresentationRenderer: () => {
+            rmSync(join(harness.directory, ".flow", "presentations"), {
+              recursive: true,
+              force: true,
+            });
+            return renderer;
+          },
         },
       );
 

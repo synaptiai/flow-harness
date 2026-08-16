@@ -186,16 +186,14 @@ export function formatFlowPresentation(
 ): string {
   const document = parseFlowPresentationDocument(input);
   const lines: string[] = [];
-  for (const [sectionIndex, section] of document.sections.entries()) {
+  for (const section of document.sections) {
     if (section.title !== undefined) {
       lines.push(`${BOLD}${CYAN}${section.title}${RESET}`);
     }
     for (const component of section.components) {
       lines.push(...formatComponent(component));
     }
-    if (sectionIndex < document.sections.length - 1) {
-      lines.push(...presentationSpacing(document.layout?.density));
-    }
+    lines.push(...presentationSpacing(document.layout?.density));
   }
   if (document.truncated) {
     lines.push(

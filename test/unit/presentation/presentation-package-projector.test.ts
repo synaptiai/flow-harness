@@ -47,6 +47,52 @@ describe("presentation package projection", () => {
       "node-table",
     ]);
   });
+
+  it.each([
+    [
+      "an unfamiliar overview component",
+      () => {
+        const source = document();
+        return {
+          ...source,
+          sections: source.sections.map((section) =>
+            section.id === "overview"
+              ? {
+                  ...section,
+                  components: [
+                    ...section.components,
+                    { kind: "notice" as const, tone: "danger" as const, text: "Host warning" },
+                  ],
+                }
+              : section,
+          ),
+        };
+      },
+    ],
+    [
+      "an unfamiliar host section",
+      () => {
+        const source = document();
+        return {
+          ...source,
+          sections: [
+            ...source.sections,
+            {
+              id: "new-host-evidence",
+              title: "New host evidence",
+              components: [
+                { kind: "notice" as const, tone: "danger" as const, text: "Host warning" },
+              ],
+            },
+          ],
+        };
+      },
+    ],
+  ])("fails closed instead of suppressing %s", (_label, changed) => {
+    expect(() => applyPresentationPackage(changed(), snapshot("compact", "stack"))).toThrow(
+      "Cannot apply Flow presentation package",
+    );
+  });
 });
 
 function snapshot(density: "compact" | "comfortable", variant: "stack" | "separated") {

@@ -171,6 +171,12 @@ describe("Flow terminal renderer", () => {
     expect(formatted).not.toContain("https://");
     expect(formatted).toContain("Cancel run");
   });
+
+  it("preserves the default section-to-action separator when no layout is selected", () => {
+    const formatted = stripTerminalSequences(formatFlowPresentation(completeDocument(), 0));
+
+    expect(formatted).toContain(`${"─".repeat(48)}\n\nActions`);
+  });
 });
 
 class CaptureTerminal implements Terminal {

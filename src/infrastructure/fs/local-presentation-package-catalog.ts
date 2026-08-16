@@ -33,9 +33,8 @@ export class PresentationPackageCatalogError extends Error {
   constructor(
     readonly code: PresentationPackageCatalogErrorCode,
     message: string,
-    options?: ErrorOptions,
   ) {
-    super(message.slice(0, 16_384), options);
+    super(message.slice(0, 16_384));
   }
 }
 
@@ -69,6 +68,12 @@ export interface PresentationPackageCatalogOptions {
   readonly afterPackageDirectoryObserved?: (directory: string) => void | Promise<void>;
   /** @internal Test seam for deterministic bounded-read coverage. */
   readonly afterManifestStat?: (path: string) => void | Promise<void>;
+  /** @internal Test seam for cancellation after manifest handle ownership. */
+  readonly afterManifestOpen?: (path: string) => void | Promise<void>;
+  /** @internal Test seam for cancellation immediately before the physical manifest read. */
+  readonly beforeManifestRead?: (path: string) => void | Promise<void>;
+  /** @internal Test seam for manifest handle settlement coverage. */
+  readonly afterManifestClose?: (path: string) => void | Promise<void>;
 }
 
 export interface InstalledPresentationPackage {
@@ -184,6 +189,9 @@ export async function discoverProjectPresentationPackages(
         options.signal,
         options.afterPackageDirectoryObserved,
         options.afterManifestStat,
+        options.afterManifestOpen,
+        options.beforeManifestRead,
+        options.afterManifestClose,
       ),
     );
   }
@@ -238,6 +246,9 @@ export async function snapshotSelectedPresentationPackage(
       options.signal,
       options.afterPackageDirectoryObserved,
       options.afterManifestStat,
+      options.afterManifestOpen,
+      options.beforeManifestRead,
+      options.afterManifestClose,
     );
     if (!sameDiscoveredPackage(discovered, current)) {
       throw new PresentationPackageCatalogError(
@@ -249,6 +260,9 @@ export async function snapshotSelectedPresentationPackage(
       join(discovered.directory, MANIFEST_NAME),
       options.signal,
       options.afterManifestStat,
+      options.afterManifestOpen,
+      options.beforeManifestRead,
+      options.afterManifestClose,
     );
     if (sha256(source) !== discovered.manifestSha256) {
       throw new PresentationPackageCatalogError(
@@ -265,11 +279,10 @@ export async function snapshotSelectedPresentationPackage(
       provenance: discovered.provenance,
       manifest: { content: source },
     });
-  } catch (error) {
+  } catch {
     throw new PresentationPackageCatalogError(
       "invalid_package",
       "presentation package snapshot is invalid",
-      { cause: error },
     );
   }
 }
@@ -302,6 +315,9 @@ async function readDiscoveredPackage(
   signal: AbortSignal | undefined,
   afterPackageDirectoryObserved?: (directory: string) => void | Promise<void>,
   afterManifestStat?: (path: string) => void | Promise<void>,
+  afterManifestOpen?: (path: string) => void | Promise<void>,
+  beforeManifestRead?: (path: string) => void | Promise<void>,
+  afterManifestClose?: (path: string) => void | Promise<void>,
 ): Promise<DiscoveredPresentationPackage> {
   throwIfAborted(signal);
   const directory = join(catalogRoot, name);
@@ -326,6 +342,9 @@ async function readDiscoveredPackage(
     join(directory, MANIFEST_NAME),
     signal,
     afterManifestStat,
+    afterManifestOpen,
+    beforeManifestRead,
+    afterManifestClose,
   );
   const directoryAfter = await requiredLstat(
     directory,
@@ -374,17 +393,17 @@ async function readRegularManifest(
   path: string,
   signal: AbortSignal | undefined,
   afterManifestStat?: (path: string) => void | Promise<void>,
+  afterManifestOpen?: (path: string) => void | Promise<void>,
+  beforeManifestRead?: (path: string) => void | Promise<void>,
+  afterManifestClose?: (path: string) => void | Promise<void>,
 ): Promise<Buffer> {
   throwIfAborted(signal);
   let handle: FileHandle;
   try {
     handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch {
     throwIfAborted(signal);
-  } catch (error) {
-    throwIfAborted(signal);
-    throw new PresentationPackageCatalogError("io", "open presentation package manifest", {
-      cause: error,
-    });
+    throw new PresentationPackageCatalogError("io", "open presentation package manifest");
   }
   let readOutcome:
     | { readonly ok: true; readonly value: Buffer }
@@ -392,7 +411,14 @@ async function readRegularManifest(
   try {
     readOutcome = {
       ok: true,
-      value: await readOpenedManifest(handle, path, signal, afterManifestStat),
+      value: await readOpenedManifest(
+        handle,
+        path,
+        signal,
+        afterManifestStat,
+        afterManifestOpen,
+        beforeManifestRead,
+      ),
     };
   } catch (error) {
     readOutcome = { ok: false, error };
@@ -400,6 +426,7 @@ async function readRegularManifest(
   let closeOutcome: { readonly ok: true } | { readonly ok: false; readonly error: unknown };
   try {
     await handle.close();
+    await afterManifestClose?.(path);
     closeOutcome = { ok: true };
   } catch (error) {
     closeOutcome = { ok: false, error };
@@ -409,14 +436,10 @@ async function readRegularManifest(
     if (readOutcome.error instanceof PresentationPackageCatalogError) {
       throw readOutcome.error;
     }
-    throw new PresentationPackageCatalogError("io", "read presentation package manifest", {
-      cause: readOutcome.error,
-    });
+    throw new PresentationPackageCatalogError("io", "read presentation package manifest");
   }
   if (!closeOutcome.ok) {
-    throw new PresentationPackageCatalogError("io", "close presentation package manifest", {
-      cause: closeOutcome.error,
-    });
+    throw new PresentationPackageCatalogError("io", "close presentation package manifest");
   }
   return readOutcome.value;
 }
@@ -426,11 +449,17 @@ async function readOpenedManifest(
   path: string,
   signal: AbortSignal | undefined,
   afterManifestStat?: (path: string) => void | Promise<void>,
+  afterManifestOpen?: (path: string) => void | Promise<void>,
+  beforeManifestRead?: (path: string) => void | Promise<void>,
 ): Promise<Buffer> {
+  await afterManifestOpen?.(path);
+  throwIfAborted(signal);
   const before = await handle.stat({ bigint: true });
   throwIfAborted(signal);
   assertRegularBounded(before);
   await afterManifestStat?.(path);
+  throwIfAborted(signal);
+  await beforeManifestRead?.(path);
   throwIfAborted(signal);
   const source = Buffer.allocUnsafe(MAX_PRESENTATION_PACKAGE_MANIFEST_BYTES + 1);
   let total = 0;
@@ -469,9 +498,9 @@ async function requiredRealpath(
     const result = await realpath(path);
     throwIfAborted(signal);
     return result;
-  } catch (error) {
+  } catch {
     throwIfAborted(signal);
-    throw new PresentationPackageCatalogError("io", stage, { cause: error });
+    throw new PresentationPackageCatalogError("io", stage);
   }
 }
 
@@ -484,9 +513,9 @@ async function requiredLstat(
     const result = await lstat(path, { bigint: true });
     throwIfAborted(signal);
     return result;
-  } catch (error) {
+  } catch {
     throwIfAborted(signal);
-    throw new PresentationPackageCatalogError("io", stage, { cause: error });
+    throw new PresentationPackageCatalogError("io", stage);
   }
 }
 
@@ -511,15 +540,13 @@ async function readDirectory(
   let directory: Dir;
   try {
     directory = await opendir(path);
+  } catch {
     throwIfAborted(signal);
-  } catch (error) {
-    throwIfAborted(signal);
-    throw new PresentationPackageCatalogError("io", "open presentation package directory", {
-      cause: error,
-    });
+    throw new PresentationPackageCatalogError("io", "open presentation package directory");
   }
   const entries: Dirent[] = [];
   try {
+    throwIfAborted(signal);
     for await (const entry of directory) {
       throwIfAborted(signal);
       entries.push(entry);
@@ -535,9 +562,7 @@ async function readDirectory(
     if (error instanceof PresentationPackageCatalogError) {
       throw error;
     }
-    throw new PresentationPackageCatalogError("io", "read presentation package directory", {
-      cause: error,
-    });
+    throw new PresentationPackageCatalogError("io", "read presentation package directory");
   } finally {
     await directory.close().catch(() => undefined);
   }
@@ -558,20 +583,17 @@ async function optionalLstat(
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return null;
     }
-    throw new PresentationPackageCatalogError("io", "inspect presentation package path", {
-      cause: error,
-    });
+    throw new PresentationPackageCatalogError("io", "inspect presentation package path");
   }
 }
 
 function parseManifest(source: Buffer): PresentationPackageManifest {
   try {
     return parsePresentationPackageManifest(source);
-  } catch (error) {
+  } catch {
     throw new PresentationPackageCatalogError(
       "invalid_package",
       "presentation package manifest is invalid",
-      { cause: error },
     );
   }
 }

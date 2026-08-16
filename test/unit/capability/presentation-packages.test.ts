@@ -153,6 +153,26 @@ describe("presentation package contract", () => {
   });
 
   it.each([
+    [
+      "a seventh layout group",
+      [
+        ...maximumComponents(),
+        { id: "group-7", component: "FlowGroup", variant: "stack", children: ["run-summary"] },
+      ],
+    ],
+    [
+      "nested groups beyond the closed depth",
+      validComponents().map((component) =>
+        component.id === "group-1" ? { ...component, children: ["group-2"] } : component,
+      ),
+    ],
+  ])("rejects %s", (_label, components) => {
+    expect(() => parsePresentationPackageManifest(encoder.encode(manifest(components)))).toThrow(
+      "presentation package manifest is invalid",
+    );
+  });
+
+  it.each([
     ["invalid UTF-8", Uint8Array.from([0xff])],
     ["invalid YAML", encoder.encode("[PRIVATE_INVALID_YAML")],
   ])("rejects %s without exposing source values", (_label, source) => {
@@ -272,6 +292,18 @@ describe("presentation package contract", () => {
         item.id === "run-summary" ? { ...item, action: { event: { name: "PRIVATE" } } } : item,
       ),
     ],
+    [
+      "package data",
+      validComponents().map((item) =>
+        item.id === "run-summary" ? { ...item, data: { value: "PRIVATE" } } : item,
+      ),
+    ],
+    [
+      "package function",
+      validComponents().map((item) =>
+        item.id === "run-summary" ? { ...item, functionCall: { call: "PRIVATE_FUNCTION" } } : item,
+      ),
+    ],
   ])("rejects %s without exposing private values", (_label, components) => {
     expect(() => parsePresentationPackageManifest(encoder.encode(manifest(components)))).toThrow(
       "presentation package manifest is invalid",
@@ -286,6 +318,7 @@ describe("presentation package contract", () => {
   it("rejects protocol, catalog, theme, and client-data-model authority", () => {
     for (const changed of [
       manifest().replace("version: v0.9", "version: v1.0"),
+      manifest().replace("kind: PresentationPackage", "kind: PresentationPackage\nPRIVATE: true"),
       manifest().replace(FLOW_A2UI_CATALOG_ID, "https://private.example/catalog"),
       manifest().replace(
         "catalogId:",

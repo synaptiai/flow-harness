@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://a2ui.org/specification/v0_9/server_to_client.json",
-  "$comment": "Exact A2UI v0.9 createSurface and updateComponents definitions used by the Flow presentation profile. Source: https://github.com/a2ui-project/a2ui/blob/main/specification/v0_9/json/server_to_client.json",
+  "$comment": "Frozen subset of the A2UI v0.9.1 createSurface and updateComponents definitions used by the Flow profile. Source: https://github.com/google/A2UI/blob/main/specification/v0_9_1/json/server_to_client.json",
   "type": "object",
   "oneOf": [
     { "$ref": "#/$defs/CreateSurfaceMessage" },

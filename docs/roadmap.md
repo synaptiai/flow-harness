@@ -125,7 +125,8 @@ containment milestone. It is not VM-grade or multi-tenant isolation.
 - Flow has a stable, bounded first-party terminal presentation host. *(Implemented with a
   renderer-neutral Flow document, terminal-safe text, durable cursor replay, and steering through
   the existing approval and cancellation controls.)*
-- UI contribution manifests remain planned.
+- Content-bearing or executable UI contribution manifests remain planned. The inert A2UI-profile
+  presentation manifest above is implemented.
 - The first-party host does not admit package markup, code, or renderers.
 - OMP-inspired high-value tools are benchmarked before adoption.
 

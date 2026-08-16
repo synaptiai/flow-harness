@@ -18,15 +18,17 @@ agent-client transport seam, not as the presentation schema.
 
 - [A2UI v0.9.1](https://a2ui.org/) is the current production release. It defines declarative
   surfaces and client-owned catalogs without executing arbitrary code.
+
 - [A2UI custom catalogs](https://a2ui.org/guides/defining-your-own-catalog/) let a client restrict
   surfaces to the exact native components it implements.
+
 - The general [A2UI v0.9.1 protocol](https://a2ui.org/specification/v0.9.1-a2ui/) also permits literals,
   JSON-pointer bindings, functions, dynamic children, themes, and action context. The Flow package
   profile forbids those broader features.
+
 - [ACP v1](https://agentclientprotocol.com/protocol/v1/overview) standardizes JSON-RPC communication
-  between coding agents and clients. Its sessions, prompts, updates, plans, permissions, filesystem,
-  terminals, and cancellation fit a future editor adapter. ACP does not define this static layout
-  package ABI.
+  between coding agents and clients. Its session features fit a future editor adapter. ACP does not
+  define this static layout package ABI.
 
 ## Architecture alternatives
 
@@ -46,20 +48,26 @@ Flow supplies all public values and action identities at render time.
 
 ### Non-goals
 
-- Full A2UI basic-catalog support, runtime agent-generated surfaces, arbitrary text, bindings,
-  functions, actions, themes, data models, inline catalogs, code, assets, or remote resources.
+- Full A2UI basic-catalog support or runtime agent-generated surfaces.
+- Arbitrary text, bindings, functions, actions, themes, data models, inline catalogs, code, assets,
+  or remote resources.
+
 - ACP client/server support or a custom ACP extension.
+
 - Durable presentation selection, workflow authority, policy authority, replay coupling, automatic
-  updates, version ranges, executable extensions, or a browser host.
+  updates, version ranges, or executable extensions.
 
 ### Failure modes
 
 - Cancellation wins before later reads or mutation. Atomic publication/settlement wins after
   ownership, and uncertain commits remain explicit.
+
 - Invalid, excessive, ambiguous, drifted, raced, symlinked, or colliding sources fail closed before
   terminal ownership or supervisor mutation.
+
 - Package values and nested causes never enter public output. No invalid selected package silently
   falls back after the session starts.
+
 - Renderer, action, event, and cleanup failures retain Issue #95 precedence and exact-once cleanup.
 
 ### Interface contracts
@@ -67,11 +75,15 @@ Flow supplies all public values and action identities at render time.
 - `PresentationPackage` uses `flow.synapti.ai/v1alpha1` and embeds exactly one A2UI v0.9
   `createSurface` followed by one `updateComponents` for the fixed Flow catalog and surface. The
   profile targets the production A2UI v0.9.1 release.
+
 - The component graph contains one root layout, bounded groups, and exactly one of every opaque Flow
   widget. It is acyclic, reachable, duplicate-free, and contains no runtime data or actions.
+
 - `PresentationPackageSnapshot` is immutable, digest-addressed, exact-version selected, and scoped to
   one TUI session. It is not a `CapabilitySnapshot` member.
+
 - Local and installed discovery reuse Flow's no-follow, bounded, exact-snapshot package boundaries.
+
 - `flow tui --presentation <name>@<version>` resolves before supervisor or terminal mutation.
 
 ## Criterion verification map
@@ -82,29 +94,36 @@ Flow supplies all public values and action identities at render time.
 | Local and installed discovery | `test/unit/capability/local-presentation-packages.test.ts` | Links, races, cancellation, collisions, drift |
 | Bundle distribution | `test/unit/capability/capability-bundles.test.ts test/integration/cli/capability-packages.test.ts` | Wrong kind, invalid manifest, decoded bounds, deterministic packing |
 | CLI review and TUI selection | `test/integration/cli/presentation-packages.test.ts test/integration/cli/tui.test.ts` | Grammar, privacy, pre-mutation failure, default parity |
-| Layout and authority invariance | `test/unit/presentation/presentation-package-projector.test.ts test/unit/application/run-presentation-session.test.ts` | Missing/duplicate widgets, action mutation, runtime data |
+| Layout and host parity | `test/unit/presentation/presentation-package-projector.test.ts test/unit/application/run-presentation-session.test.ts test/unit/infrastructure/terminal/flow-terminal-renderer.test.ts` | Missing/duplicate widgets, action mutation, runtime data, default spacing |
 | Dependency boundaries | `test/integration/package/dependency-boundaries.test.ts` | Domain/application imports infrastructure or A2UI renderer runtime |
 | Public documentation | `npm run docs:ste && npx vitest run test/scaffold/community-files.test.ts` | Planned/implemented status conflict |
 
 ## Activity log
 
 - 2026-08-16: PR #98 merged after all hosted checks passed. Issue #97 was closed.
+
 - 2026-08-16: User approved Approach A and requested standards alignment. Official A2UI and ACP
-  specifications were reviewed; the strict custom-catalog profile was selected.
+  specifications were reviewed. The strict custom-catalog profile was selected.
+
 - 2026-08-16: Domain RED tests added before production implementation.
-- 2026-08-16: Local and installed catalog discovery, deterministic bundle distribution, exact TUI
-  selection, host-owned projection, strict public catalog schema, documentation, and source-race
-  defenses were implemented.
-- 2026-08-16: Final adversarial review added a physically bounded manifest reader, full authority-
-  chain revalidation, fixed filesystem diagnostics, and mutation-resistant privacy and projection
-  evidence.
+
+- 2026-08-16: Local and installed catalog discovery and deterministic bundle distribution were
+  implemented. The change also added exact TUI selection and host-owned projection.
+- 2026-08-16: The public catalog schema, documentation, and source-race defenses were completed.
+
+- 2026-08-16: Final adversarial review added a physically bounded manifest reader and full
+  authority-chain revalidation. It also added fixed diagnostics and mutation-resistant evidence.
+
 - 2026-08-16: Official A2UI schema validation corrected the patch-release distinction. The profile
-  now emits `version: v0.9`, uses canonical `/v0_9/` references, and validates offline through the
-  standard envelope plus Flow catalog seam.
+  now emits `version: v0.9` and uses canonical `/v0_9/` references. It validates offline through the
+  standard envelope and the Flow catalog seam.
+
+- 2026-08-16: Final review restored default-host spacing and closed future projection drift. It also
+  added exact manifest-handle settlement and value-free filesystem diagnostics.
 
 ## Verification evidence
 
-The exact mapped selector passed 170 tests across 11 files:
+The exact mapped selector passed 191 tests across 12 files:
 
 ```sh
 npx vitest run test/unit/capability/presentation-packages.test.ts \
@@ -113,6 +132,7 @@ npx vitest run test/unit/capability/presentation-packages.test.ts \
   test/unit/capability/installed-capability-catalog.test.ts \
   test/unit/presentation/presentation-package-projector.test.ts \
   test/unit/application/run-presentation-session.test.ts \
+  test/unit/infrastructure/terminal/flow-terminal-renderer.test.ts \
   test/integration/cli/presentation-packages.test.ts \
   test/integration/cli/capability-packages.test.ts \
   test/integration/cli/tui.test.ts \
@@ -120,8 +140,8 @@ npx vitest run test/unit/capability/presentation-packages.test.ts \
   test/scaffold/community-files.test.ts
 ```
 
-The frozen full serial coverage suite passed 3,641 tests with 4 platform skips across 258 files.
-Coverage was 83.70% statements, 77.87% branches, 90.13% functions, and 83.81% lines.
+The frozen full serial coverage suite passed 3,655 tests with 4 platform skips across 258 files.
+Coverage was 83.75% statements, 77.91% branches, 90.24% functions, and 83.86% lines.
 
 `npm run typecheck`, `npm run build`, `npm run format:check`, `npm run lint`, `npm run docs:ste`,
 and `git diff --check` passed. Lint reported only the inherited informational constructor note in

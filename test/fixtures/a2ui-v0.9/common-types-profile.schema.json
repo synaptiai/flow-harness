@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://a2ui.org/specification/v0_9/common_types.json",
-  "$comment": "Exact A2UI v0.9 definitions used by the Flow presentation profile. Source: https://github.com/a2ui-project/a2ui/blob/main/specification/v0_9/json/common_types.json",
+  "$comment": "Frozen subset of the A2UI v0.9.1 common definitions used by the Flow profile. Source: https://github.com/google/A2UI/blob/main/specification/v0_9_1/json/common_types.json",
   "$defs": {
     "ComponentId": {
       "type": "string"
