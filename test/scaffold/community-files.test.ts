@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
@@ -24,6 +24,33 @@ describe("public repository contracts", () => {
     expect(readme).toContain("[Contributing](CONTRIBUTING.md)");
     expect(readme).toContain("[Support](SUPPORT.md)");
     expect(readme).toContain("[Security](SECURITY.md)");
+  });
+
+  it("reports implemented policy packages separately from planned UI packages", async () => {
+    const documentationEntries = await readdir(new URL("../../docs/", import.meta.url), {
+      withFileTypes: true,
+    });
+    const publicPaths = [
+      "README.md",
+      ...documentationEntries
+        .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
+        .map((entry) => `docs/${entry.name}`),
+    ];
+    const publicDocuments = Object.fromEntries(
+      await Promise.all(publicPaths.map(async (path) => [path, await readText(path)] as const)),
+    );
+    const corpus = Object.values(publicDocuments).join("\n");
+    const roadmap = publicDocuments["docs/roadmap.md"] ?? "";
+    const readme = publicDocuments["README.md"] ?? "";
+
+    expect(readme).toMatch(/Versioned policy packages.*Implemented/is);
+    expect(roadmap).toMatch(/Policy contributions use versioned manifests.*Flow implements/is);
+    expect(roadmap).toMatch(/UI contribution manifests remain planned/i);
+    expect(roadmap).not.toMatch(/Remaining targets include[^.]*\bpolicy\b/i);
+    expect(corpus).not.toMatch(/policy\/UI/i);
+    expect(corpus).not.toMatch(
+      /\bpolicy(?: packages?)?\s+(?:and|or)\s+UI packages?[^.]{0,80}\b(?:planned|future|deferred|unsupported|remain)\b/i,
+    );
   });
 
   it("documents the operator-only container command profile and its residual boundary", async () => {

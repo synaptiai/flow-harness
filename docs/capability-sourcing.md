@@ -224,7 +224,7 @@ and digest; replay cross-checks that identity with the compiled control graph an
 requirement. Listing, inspection, and validation invoke no verifier, and inspection omits a model
 rubric.
 
-Executable extensions and policy/UI package manifests remain later Gate 6 work. Evaluator
+Executable extensions and UI package manifests remain later Gate 6 work. Evaluator
 manifests are implemented only for the current command/model verifier
 drivers; arbitrary evaluator code and reward environments remain out of scope.
 
@@ -277,8 +277,9 @@ and resume carry exact package requirements and reject live-catalog substitution
 
 Workflow packages are inert source capabilities, not Pi/OMP-style executable extensions. They
 cannot register hooks, tools, drivers, providers, credentials, policies, sandbox profiles, or
-dynamic graph factories. Exact source reuse is the initial ABI; parameters, version ranges,
-dependency solving, compatibility negotiation, and policy/UI packages remain separate designs.
+dynamic graph factories. Policy packages use a separate inert narrowing contract. Exact source
+reuse is the initial ABI. Parameters, version ranges, dependency solving, compatibility
+negotiation, and UI packages remain separate designs.
 
 ## Digest-pinned bundle distribution
 
