@@ -19,8 +19,8 @@ weaker release signal.
   process. A delayed host callback could let the descendant write before correct cleanup began.
 
 - The cross-process test required the winning run to execute a sandboxed command successfully.
-  Its target contract is one durable run identifier, but an unrelated command failure made both
-  public processes exit with code 1.
+  Its target contract is one durable run identifier. An unrelated command failure made both public
+  processes exit with code 1.
 
 - The old ownership test failed deterministically in the restricted desktop environment because
   SRT could not create its Unix socket. The revised test passes there because it no longer invokes
@@ -54,8 +54,11 @@ executing a command.
 
 - A descendant that survives confirmed cleanup observes the post-cleanup arm and writes the
   survival marker. The test fails.
+
 - A descendant that never reaches the ready boundary cannot prove termination. The test fails.
+
 - Zero or two public run creators produce the wrong exit-code pair or event ledger. The test fails.
+
 - A command sandbox failure cannot decide the run-ID test because the admitted command is never
   executed.
 
@@ -81,12 +84,18 @@ executing a command.
 
 - 2026-08-16: Hosted run 31959528278 attempt 1 failed because `late.txt` already existed. The
   unchanged attempt 2 passed.
+
 - 2026-08-16: Hosted run 31961261541 failed because both shared-run processes exited with code 1.
   The earlier container test passed in this run.
+
 - 2026-08-16: Twenty unrestricted repetitions of the original ownership test passed locally. The
   restricted environment reproduced its unrelated SRT socket dependency.
+
 - 2026-08-16: The causal descendant and approval-boundary designs were implemented in a disposable
   main-based worktree. The revised ownership test passed twenty restricted repetitions.
+
+- 2026-08-16: PR #104 run 31965485267 passed all 73 hosted runtime tests. The quality job then
+  failed because this journal had three prose-limit violations.
 
 ## Verification evidence
 
@@ -100,6 +109,6 @@ scoped Biome, and `git diff --check` passed. The clean package-install check pas
 `5dfe0f1ccb0084305d1785bff67aeb9b9dc3c8a22a63e8ea44a5d780f8b053b4`. The root audit reported zero
 vulnerabilities, and the Prime dependency audit passed for the Node lock and 60 Python packages.
 
-The Linux x64 Docker descendant test and complete hosted gate remain pending. Local Darwin cannot
-prove this boundary. The pull request must pass the hosted quality job on its first attempt before
-the issue can close.
+Hosted run 31965485267 passed all 73 runtime tests in 18 files. The new ownership and descendant
+tests passed on that first execution. The quality job then failed on three prose-limit violations in
+this journal. The corrected commit must pass the complete hosted quality job without a rerun.
