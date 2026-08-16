@@ -22,6 +22,7 @@ import {
   PolicyPackageCatalogError,
   snapshotSelectedPolicyPackages,
 } from "../../../src/infrastructure/fs/local-policy-package-catalog.js";
+import { snapshotSelectedPresentationPackage } from "../../../src/infrastructure/fs/local-presentation-package-catalog.js";
 import { snapshotSelectedToolPackages } from "../../../src/infrastructure/fs/local-tool-package-catalog.js";
 import { snapshotSelectedVerifierPackages } from "../../../src/infrastructure/fs/local-verifier-package-catalog.js";
 import {
@@ -144,6 +145,7 @@ Review the evidence.
         { kind: "verifier-package", manifest: Buffer.from(verifierManifest()) },
         { kind: "workflow-package", manifest: Buffer.from(workflowManifest()) },
         { kind: "policy-package", manifest: Buffer.from(policyManifest()) },
+        { kind: "presentation-package", manifest: Buffer.from(presentationManifest()) },
       ],
     });
     const sha256 = created.bundle.digest.slice("sha256:".length);
@@ -191,6 +193,28 @@ Review the evidence.
         provenance: `.flow/packages/sha256/${sha256}/policy-package/restricted-review`,
       },
     ]);
+    expect(catalogs.presentations.packages).toEqual([]);
+
+    const presentationCatalogs = await discoverProjectCapabilityCatalogs(project, {
+      includeNonPolicies: false,
+      includePolicies: false,
+      includePresentations: true,
+    });
+    expect(presentationCatalogs.presentations.packages).toMatchObject([
+      {
+        name: "operations",
+        version: "1.0.0",
+        provenance: `.flow/packages/sha256/${sha256}/presentation-package/operations`,
+      },
+    ]);
+    await expect(
+      snapshotSelectedPresentationPackage(presentationCatalogs.presentations, {
+        name: "operations",
+        version: "1.0.0",
+      }),
+    ).resolves.toMatchObject({
+      provenance: `.flow/packages/sha256/${sha256}/presentation-package/operations`,
+    });
 
     const agentSnapshot = await snapshotSelectedAgentSkills(catalogs.agentSkills, ["review"]);
     const verifierSnapshot = await snapshotSelectedVerifierPackages(catalogs.verifiers, [
@@ -497,6 +521,29 @@ metadata:
 spec:
   tools:
     allowed: [read]
+`;
+}
+
+function presentationManifest(): string {
+  return `apiVersion: flow.synapti.ai/v1alpha1
+kind: PresentationPackage
+metadata: { name: operations, version: 1.0.0, description: Operator layout }
+spec:
+  messages:
+    - version: v0.9
+      createSurface: { surfaceId: flow-run, catalogId: https://flow.synapti.ai/a2ui/catalogs/run-presentation/v1 }
+    - version: v0.9
+      updateComponents:
+        surfaceId: flow-run
+        components:
+          - { id: root, component: FlowLayout, density: compact, children: [group-1] }
+          - { id: group-1, component: FlowGroup, variant: stack, children: [run-summary, graph-progress, node-table, resource-facts, pending-approvals, outcome-notice] }
+          - { id: run-summary, component: FlowRunSummary }
+          - { id: graph-progress, component: FlowGraphProgress }
+          - { id: node-table, component: FlowNodeTable }
+          - { id: resource-facts, component: FlowResourceFacts }
+          - { id: pending-approvals, component: FlowPendingApprovals }
+          - { id: outcome-notice, component: FlowOutcomeNotice }
 `;
 }
 

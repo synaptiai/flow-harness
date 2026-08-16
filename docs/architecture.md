@@ -21,8 +21,9 @@ tool packages. It also adds inert workflow packages and deterministic bundle dis
 publisher-authenticated OCI acquisition, a content-addressed project store, and immutable snapshots
 are included.
 
-Flow includes a first-party terminal presentation host over the public run projection. UI package
-types, executable extensions, and automatic package updates remain later work.
+Flow includes a first-party terminal presentation host over the public run projection. A strict
+A2UI v0.9.1 profile lets an exact inert package arrange the closed host-owned widget catalog for one
+terminal session. Executable UI extensions and automatic package updates remain later work.
 Explicit signed capability metadata provides project-local freshness and revocation. One explicit
 public HTTPS check can stage inert signed candidates for review, while activation remains a
 separate explicit command. Background polling, private channels, online trust-root refresh, and
@@ -135,6 +136,13 @@ them. The Pi terminal package supplies alternate-screen, input, and layout primi
 not parse source data, sanitize text, retain run history, or route actions. Flow disables mouse and
 does not use Markdown, hyperlinks, clipboard controls, images, or URL opening. The renderer adds
 only Flow-owned ANSI styling after strict document validation.
+
+An optional presentation package is resolved before supervisor startup or terminal takeover. Its
+A2UI messages select the fixed `flow-run` surface and Flow catalog, then arrange the six opaque
+host widgets. The projector never reads package-provided display content because the profile has no
+content, binding, function, theme, action, asset, or dynamic-child fields. Selection is not durable
+run authority and does not enter replay. A future ACP adapter may carry the already-sanitized
+presentation and input messages, but ACP is a transport boundary rather than the package ABI.
 
 An approval, denial, or cancellation keypress carries one current opaque action id. The application
 rebinds that id to the latest validated document and invokes the existing approval or supervisor
@@ -274,7 +282,8 @@ This is composition, not a second runtime. Package source remains subject to the
 scheduler, budgets, approvals, child isolation, policy, containment, evidence, and replay rules.
 Packages cannot load executable modules, register hooks or tools, choose providers, add credentials,
 or widen policy. Policy packages use a separate inert narrowing contract. Parameterized templates,
-compatibility solving, and UI packages require separate public contracts.
+compatibility solving, and executable UI extensions require separate public contracts. The inert
+A2UI-profile terminal package has its own closed contract.
 
 ### Tool broker
 

@@ -108,6 +108,26 @@ describe("capability bundles", () => {
     expect(parseCapabilityBundle(created.content)).toEqual(created.bundle);
   });
 
+  it("round-trips an inert A2UI-profile presentation package", () => {
+    const presentation = Buffer.from(presentationManifest());
+    const created = createCapabilityBundleSource({
+      name: "presentation-suite",
+      version: "1.0.0",
+      description: "Reviewable terminal layouts.",
+      packages: [{ kind: "presentation-package", manifest: presentation }],
+    });
+
+    expect(created.bundle.packages).toEqual([
+      {
+        kind: "presentation-package",
+        name: "operations",
+        version: "1.0.0",
+        manifestBase64: presentation.toString("base64"),
+      },
+    ]);
+    expect(parseCapabilityBundle(created.content)).toEqual(created.bundle);
+  });
+
   it("derives Agent Skill metadata and requested tools from canonical package files", () => {
     const skill = `---
 name: review
@@ -460,5 +480,45 @@ spec:
     allowed: [read]
   commands:
     requireApproval: true
+`;
+}
+
+function presentationManifest(): string {
+  return `apiVersion: flow.synapti.ai/v1alpha1
+kind: PresentationPackage
+metadata:
+  name: operations
+  version: 1.0.0
+  description: Operator layout.
+spec:
+  messages:
+    - version: v0.9
+      createSurface:
+        surfaceId: flow-run
+        catalogId: https://flow.synapti.ai/a2ui/catalogs/run-presentation/v1
+    - version: v0.9
+      updateComponents:
+        surfaceId: flow-run
+        components:
+          - id: root
+            component: FlowLayout
+            density: compact
+            children: [group-1]
+          - id: group-1
+            component: FlowGroup
+            variant: stack
+            children: [run-summary, graph-progress, node-table, resource-facts, pending-approvals, outcome-notice]
+          - id: run-summary
+            component: FlowRunSummary
+          - id: graph-progress
+            component: FlowGraphProgress
+          - id: node-table
+            component: FlowNodeTable
+          - id: resource-facts
+            component: FlowResourceFacts
+          - id: pending-approvals
+            component: FlowPendingApprovals
+          - id: outcome-notice
+            component: FlowOutcomeNotice
 `;
 }

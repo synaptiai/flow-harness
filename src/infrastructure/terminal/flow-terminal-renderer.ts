@@ -186,14 +186,16 @@ export function formatFlowPresentation(
 ): string {
   const document = parseFlowPresentationDocument(input);
   const lines: string[] = [];
-  for (const section of document.sections) {
+  for (const [sectionIndex, section] of document.sections.entries()) {
     if (section.title !== undefined) {
       lines.push(`${BOLD}${CYAN}${section.title}${RESET}`);
     }
     for (const component of section.components) {
       lines.push(...formatComponent(component));
     }
-    lines.push("");
+    if (sectionIndex < document.sections.length - 1) {
+      lines.push(...presentationSpacing(document.layout?.density));
+    }
   }
   if (document.truncated) {
     lines.push(
@@ -218,6 +220,10 @@ export function formatFlowPresentation(
     );
   }
   return lines.join("\n").trimEnd();
+}
+
+function presentationSpacing(density: "compact" | "comfortable" | undefined): readonly string[] {
+  return density === "compact" ? [] : density === "comfortable" ? ["", ""] : [""];
 }
 
 function formatComponent(component: FlowPresentationComponent): readonly string[] {

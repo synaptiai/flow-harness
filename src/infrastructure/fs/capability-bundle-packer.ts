@@ -20,6 +20,7 @@ import {
   MAX_CAPABILITY_BUNDLE_PACKAGES,
 } from "../../domain/capability/capability-bundles.js";
 import { MAX_POLICY_PACKAGE_MANIFEST_BYTES } from "../../domain/capability/policy-packages.js";
+import { MAX_PRESENTATION_PACKAGE_MANIFEST_BYTES } from "../../domain/capability/presentation-packages.js";
 import { MAX_TOOL_PACKAGE_MANIFEST_BYTES } from "../../domain/capability/tool-packages.js";
 import {
   MAX_VERIFIER_PACKAGE_MANIFEST_BYTES,
@@ -96,9 +97,15 @@ export async function packCapabilityBundleDirectory(
   const entries = await readDirectory(sourceRoot, budget);
   for (const entry of entries) {
     if (
-      ![SOURCE_MANIFEST_NAME, "skills", "verifiers", "tools", "workflows", "policies"].includes(
-        entry.name,
-      )
+      ![
+        SOURCE_MANIFEST_NAME,
+        "skills",
+        "verifiers",
+        "tools",
+        "workflows",
+        "policies",
+        "presentations",
+      ].includes(entry.name)
     ) {
       throw unsafeError(`unsupported capability bundle source entry "${entry.name}"`);
     }
@@ -124,6 +131,17 @@ export async function packCapabilityBundleDirectory(
     "VERIFIER.yaml",
     "verifier-package",
     MAX_VERIFIER_PACKAGE_MANIFEST_BYTES,
+    packages,
+    budget,
+    hooks,
+  );
+  await collectManifestPackages(
+    sourceRoot,
+    entries,
+    "presentations",
+    "PRESENTATION.yaml",
+    "presentation-package",
+    MAX_PRESENTATION_PACKAGE_MANIFEST_BYTES,
     packages,
     budget,
     hooks,
@@ -310,9 +328,19 @@ async function collectSkillFiles(
 async function collectManifestPackages(
   sourceRoot: string,
   rootEntries: readonly Dirent[],
-  rootName: "verifiers" | "tools" | "workflows" | "policies",
-  manifestName: "VERIFIER.yaml" | "TOOL.yaml" | "WORKFLOW.yaml" | "POLICY.yaml",
-  kind: "verifier-package" | "tool-package" | "workflow-package" | "policy-package",
+  rootName: "verifiers" | "tools" | "workflows" | "policies" | "presentations",
+  manifestName:
+    | "VERIFIER.yaml"
+    | "TOOL.yaml"
+    | "WORKFLOW.yaml"
+    | "POLICY.yaml"
+    | "PRESENTATION.yaml",
+  kind:
+    | "verifier-package"
+    | "tool-package"
+    | "workflow-package"
+    | "policy-package"
+    | "presentation-package",
   maximumBytes: number,
   packages: CapabilityBundleSourcePackage[],
   budget: SourceTraversalBudget,

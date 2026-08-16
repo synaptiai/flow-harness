@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://a2ui.org/specification/v0_9/server_to_client.json",
+  "$comment": "Exact A2UI v0.9 createSurface and updateComponents definitions used by the Flow presentation profile. Source: https://github.com/a2ui-project/a2ui/blob/main/specification/v0_9/json/server_to_client.json",
+  "type": "object",
+  "oneOf": [
+    { "$ref": "#/$defs/CreateSurfaceMessage" },
+    { "$ref": "#/$defs/UpdateComponentsMessage" }
+  ],
+  "$defs": {
+    "CreateSurfaceMessage": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "const": "v0.9"
+        },
+        "createSurface": {
+          "type": "object",
+          "properties": {
+            "surfaceId": {
+              "type": "string"
+            },
+            "catalogId": {
+              "type": "string"
+            },
+            "theme": {
+              "$ref": "catalog.json#/$defs/theme"
+            },
+            "sendDataModel": {
+              "type": "boolean"
+            }
+          },
+          "required": ["surfaceId", "catalogId"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["createSurface", "version"],
+      "additionalProperties": false
+    },
+    "UpdateComponentsMessage": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "const": "v0.9"
+        },
+        "updateComponents": {
+          "type": "object",
+          "properties": {
+            "surfaceId": {
+              "type": "string"
+            },
+            "components": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "catalog.json#/$defs/anyComponent"
+              }
+            }
+          },
+          "required": ["surfaceId", "components"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["updateComponents", "version"],
+      "additionalProperties": false
+    }
+  }
+}
