@@ -44,8 +44,9 @@ through an optional external profile.
 | Proof-safe fresh recovery of interrupted agent attempts | Implemented as explicit opt-in for read-only attempts and edit attempts proven not applied |
 | Fail-closed sandboxed command isolation | Flow implements filesystem and network isolation on Linux and macOS. Linux alone provides strict agent-command descendant lifecycle containment |
 | Higher-isolation container command profile | Implemented behind operator-only selection; the pinned Linux x64 engine runtime gate passes |
-| Inert A2UI-profile presentation packages | Implemented for exact local or installed manifests that arrange a closed host-owned terminal widget catalog without supplying data, actions, code, or bindings |
-| Automatic updates, executable UI extensions, and model network tools | Planned |
+| Inert A2UI-profile presentation packages | Implemented for exact local or installed manifests that arrange a closed host-owned terminal or browser widget catalog without supplying data, actions, code, or bindings |
+| Local browser presentation host | Implemented as a one-session IPv4 loopback host with a fragment-bootstrapped capability, fixed first-party assets, authenticated full-document streaming, and current-action steering |
+| Automatic updates, executable or remote UI extensions, and model network tools | Planned |
 | VM-grade isolation of the host-side agent runtime | Planned |
 
 The executable format is `flow.synapti.ai/v1alpha1`. There is no compatibility or migration
@@ -687,9 +688,10 @@ providers, credentials, policy, sandbox permissions, or dynamic graph factories.
 the authority of the ordinary workflow nodes an operator explicitly selects. Template inputs,
 version solving, and executable extensions remain unsupported.
 
-### Select an inert terminal presentation package
+### Select an inert presentation package
 
-Flow accepts a strict profile of the production A2UI v0.9.1 release for terminal presentation.
+Flow accepts a strict profile of the production A2UI v0.9.1 release for terminal and browser
+presentation.
 Messages use the standard `version: v0.9` wire discriminator. A local package is one
 `.flow/presentations/<name>/PRESENTATION.yaml` file. It may arrange the six fixed Flow run widgets,
 group them, and select compact or comfortable spacing. It cannot supply run data, text, actions,
@@ -701,13 +703,15 @@ node dist/cli/main.js presentations list
 node dist/cli/main.js presentations inspect concise --version 1.0.0
 node dist/cli/main.js tui run-id --actor operator \
   --presentation concise@1.0.0
+node dist/cli/main.js web run-id --actor operator \
+  --presentation concise@1.0.0
 ```
 
-Selection uses an exact name and SemVer before Flow starts the supervisor or takes terminal
-control. It is session-local presentation state: run history, capability snapshots, approvals,
-policy, and replay identity do not change. Without `--presentation`, the default terminal document
-and layout remain unchanged. Installed `.flowpkg` bundles may contribute the same inert manifest
-under `presentations/<name>/PRESENTATION.yaml`.
+Selection uses an exact name and SemVer before Flow starts the supervisor, takes terminal control,
+or creates the browser listener. It is session-local presentation state: run history, capability
+snapshots, approvals, policy, and replay identity do not change. Without `--presentation`, each
+host uses the default Flow document and layout. Installed `.flowpkg` bundles may contribute the
+same inert manifest under `presentations/<name>/PRESENTATION.yaml`.
 
 The public Flow catalog is
 [`docs/specs/flow-a2ui-run-presentation-v1.catalog.json`](docs/specs/flow-a2ui-run-presentation-v1.catalog.json).
@@ -1129,6 +1133,40 @@ The command requires interactive stdin and stdout. It rejects redirected or non-
 before configuration, supervisor, storage, or terminal mutation. Use the unchanged JSON `inspect`,
 `events`, `approve`, `deny`, and `cancel` commands for scripts, redirected output, or explicit
 recovery.
+
+### Follow and steer a run in a local browser
+
+Use the fixed first-party browser host for a graphical view:
+
+```sh
+node dist/cli/main.js web background-run --actor local:daniel
+```
+
+Flow prints one `http://127.0.0.1:<ephemeral-port>/#<capability>` URL. Open that URL in the local
+browser for the same operator account. The capability is 256 random bits.
+
+The fixed client copies it to tab-scoped `sessionStorage`, removes it from the address bar, and sends
+it only in authorization headers after startup. This storage supports reload and can follow browser
+session restoration. A related browser context can receive an initial copy. The fixed client never
+opens such a context. The client removes the value when terminal observation settles. It never
+enters a cookie, `localStorage`, a request URL, or durable Flow state.
+
+The listener accepts only explicit IPv4 loopback traffic, the exact host and browser request
+context, and one observer. It sets a closed content policy, serves no external resource, uses no
+cookie, and exposes no cross-origin API.
+
+The client renders only the closed public presentation document with DOM node creation and text
+insertion. It does not render package HTML, Markdown, URLs, JavaScript, assets, bindings, or raw run
+events. A button sends the current document sequence and opaque action id through the same approval
+or cancellation controller as the terminal host. Closing or reloading the page does not cancel the
+run. Flow retains only the latest bounded complete document for one bounded reconnect interval.
+
+This host is for one local operator. The session capability protects against other operating-system
+users, ambient web origins, and accidental disclosure. It is not an isolation boundary against a
+malicious process running as that same operator. Remote listening, TLS termination, reverse
+proxies, shared users, executable UI extensions, AG-UI, and ACP sessions remain unsupported. A
+future ACP adapter may transport the same Flow-owned document and input messages to an editor. ACP
+does not replace the browser API, A2UI package profile, supervisor protocol, or durable ledger.
 
 ### Approve an exact command
 

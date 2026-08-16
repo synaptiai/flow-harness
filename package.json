@@ -58,6 +58,7 @@
     "pack:check": "node scripts/verify-package.mjs",
     "prime:image:verify": "npm run build && node scripts/verify-prime-image.mjs",
     "test": "vitest run",
+    "test:browser": "vitest run --config vitest.browser.config.ts",
     "test:coverage": "vitest run --coverage --maxWorkers=1",
     "test:live": "vitest run --config vitest.live.config.ts",
     "test:runtime": "vitest run --config vitest.runtime.config.ts",
@@ -82,6 +83,7 @@
     "@types/node": "26.2.0",
     "@vitest/coverage-v8": "4.1.10",
     "ajv": "8.20.0",
+    "playwright": "1.62.1",
     "typescript": "5.9.3",
     "vitest": "4.1.10"
   },

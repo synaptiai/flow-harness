@@ -490,6 +490,71 @@ describe("compiled Flow process", () => {
     }
   });
 
+  it("serves one terminal run through the compiled browser presentation CLI", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "browser.workflow.yaml");
+    const runsDirectory = join(directory, "runs");
+    await writeFile(
+      workflowPath,
+      commandWorkflow("compiled-browser-workflow", "process.stdout.write('browser-ready');"),
+      "utf8",
+    );
+    const run = await spawnFlow([
+      "run",
+      workflowPath,
+      "--run-id",
+      "compiled-browser-run",
+      "--runs-dir",
+      runsDirectory,
+      "--cwd",
+      directory,
+    ]).completed;
+    expect(run.code, run.stderr).toBe(0);
+    const web = spawnFlow([
+      "web",
+      "compiled-browser-run",
+      "--actor",
+      "runtime:test",
+      "--runs-dir",
+      runsDirectory,
+    ]);
+
+    try {
+      const sessionUrl = new URL(await waitForStdoutLine(web.child));
+      const capability = sessionUrl.hash.slice(1);
+      expect(sessionUrl.hostname).toBe("127.0.0.1");
+      expect(capability).toMatch(/^[0-9a-f]{64}$/);
+      const response = await fetch(`${sessionUrl.origin}/api/documents`, {
+        headers: {
+          authorization: `Bearer ${capability}`,
+          origin: sessionUrl.origin,
+          "sec-fetch-site": "same-origin",
+          "sec-fetch-mode": "cors",
+          "sec-fetch-dest": "empty",
+        },
+        signal: AbortSignal.timeout(5_000),
+      });
+      expect(response.status).toBe(200);
+      const line = (await response.text()).trim();
+      expect(JSON.parse(line)).toMatchObject({
+        apiVersion: "flow.synapti.ai/presentation/v1",
+        run: {
+          runId: "compiled-browser-run",
+          workflowId: "compiled-browser-workflow",
+          status: "succeeded",
+        },
+      });
+      const result = await web.completed;
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stdout.trim()).toBe(sessionUrl.href);
+    } finally {
+      web.child.kill("SIGTERM");
+      await spawnFlow(["supervisor", "shutdown", "--runs-dir", runsDirectory]).completed.catch(
+        () => undefined,
+      );
+    }
+  });
+
   it("coalesces concurrent supervisor auto-start into one generation", async () => {
     const directory = await createTemporaryDirectory();
     const runsDirectory = join(directory, "runs");
@@ -877,6 +942,41 @@ function spawnCaptured(
     });
   });
   return { child, completed };
+}
+
+async function waitForStdoutLine(child: ChildProcess): Promise<string> {
+  const stream = child.stdout;
+  if (stream === null) {
+    throw new Error("child stdout is unavailable");
+  }
+  return await new Promise((resolveLine, reject) => {
+    let pending = "";
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error("timed out waiting for child stdout"));
+    }, 5_000);
+    timeout.unref();
+    const onData = (chunk: string | Buffer) => {
+      pending += chunk.toString();
+      const newline = pending.indexOf("\n");
+      if (newline !== -1) {
+        const line = pending.slice(0, newline);
+        cleanup();
+        resolveLine(line);
+      }
+    };
+    const onClose = () => {
+      cleanup();
+      reject(new Error("child exited before writing a line"));
+    };
+    const cleanup = () => {
+      clearTimeout(timeout);
+      stream.off("data", onData);
+      child.off("close", onClose);
+    };
+    stream.on("data", onData);
+    child.once("close", onClose);
+  });
 }
 
 interface ProcessResult {

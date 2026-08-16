@@ -21,9 +21,10 @@ tool packages. It also adds inert workflow packages and deterministic bundle dis
 publisher-authenticated OCI acquisition, a content-addressed project store, and immutable snapshots
 are included.
 
-Flow includes a first-party terminal presentation host over the public run projection. A strict
-A2UI v0.9.1 profile lets an exact inert package arrange the closed host-owned widget catalog for one
-terminal session. Executable UI extensions and automatic package updates remain later work.
+Flow includes first-party terminal and local browser presentation hosts over the public run
+projection. A strict A2UI v0.9.1 profile lets an exact inert package arrange the closed host-owned
+widget catalog for one session. Executable or remote UI extensions and automatic package updates
+remain later work.
 Explicit signed capability metadata provides project-local freshness and revocation. One explicit
 public HTTPS check can stage inert signed candidates for review, while activation remains a
 separate explicit command. Background polling, private channels, online trust-root refresh, and
@@ -43,7 +44,7 @@ Architecture is derived from these flows.
 | --- | --- | --- |
 | Initialize | A user runs `flow init` in a repository | Validated project configuration and provider readiness |
 | Execute | A user selects a goal and workflow | Verified success, explicit failure, a durable wait state, or a precise blocker |
-| Observe | A user opens status or the TUI | Current graph position, attempts, evidence, costs, approvals, and blockers |
+| Observe | A user opens status, the TUI, or the local browser host | Current graph position, attempts, evidence, costs, approvals, and blockers |
 | Steer | A user pauses, cancels, supplies input, or approves an operation | A durable, attributable state transition |
 | Resume | A user reopens an interrupted run | Reconciled state and continuation from the next safe node |
 | Extend | A user installs a capability package | Validated and explicitly enabled skills, tools, workflows, evaluators, or policies |
@@ -91,7 +92,7 @@ The inner loop may propose a transition. It cannot authorize one.
 ## Components and dependency direction
 
 ```text
-CLI / terminal host
+CLI / presentation hosts
         |
         v
 local supervisor ------> detached worker
@@ -124,7 +125,7 @@ infrastructure implementations. The same state-based selector checks recovered h
 executes tools directly. Result, condition, join, loop-check, optimization-check, and controller
 nodes never enter an executor port.
 
-### Terminal presentation host
+### Presentation hosts
 
 `flow tui <run-id> --actor <label>` follows the same bounded supervisor event pages as `flow
 events`. The application reduces each page with the authoritative run reducer and projects only a
@@ -137,12 +138,37 @@ not parse source data, sanitize text, retain run history, or route actions. Flow
 does not use Markdown, hyperlinks, clipboard controls, images, or URL opening. The renderer adds
 only Flow-owned ANSI styling after strict document validation.
 
-An optional presentation package is resolved before supervisor startup or terminal takeover. Its
+An optional presentation package is resolved before supervisor startup, terminal takeover, or
+browser listener creation. Its
 A2UI messages select the fixed `flow-run` surface and Flow catalog, then arrange the six opaque
 host widgets. The projector never reads package-provided display content because the profile has no
 content, binding, function, theme, action, asset, or dynamic-child fields. Selection is not durable
-run authority and does not enter replay. A future ACP adapter may carry the already-sanitized
-presentation and input messages, but ACP is a transport boundary rather than the package ABI.
+run authority and does not enter replay.
+
+`flow web <run-id> --actor <label>` serves the same document from one explicit IPv4 loopback
+listener on an ephemeral port. A 256-bit session capability enters the initial URL fragment. The
+fixed client moves it to tab-scoped `sessionStorage`, removes the fragment, authenticates a bounded
+streaming fetch, and renders with DOM node creation and text insertion. Tab storage supports reload
+and can follow browser session restoration. A related browser context can receive an initial copy,
+but the fixed client never opens one. Terminal observation removes the capability, which never
+enters a cookie, `localStorage`, a request URL, or durable Flow state.
+
+Exact host, origin, Fetch Metadata, bearer, header, body, JSON, observer, write, and reconnect checks
+precede data or action authority. Static HTML, CSS, and JavaScript are fixed first-party constants.
+The host provides no CORS, cookie, service worker, external resource, package code, package content,
+raw event, remote listener, or proxy mode.
+
+Browser actions carry the latest positive document sequence and one opaque action id. The existing
+application controller rebinds both before the approval or cancellation boundary. Only a settled
+action is consumed. An uncertain failed attempt can be retried and is revalidated.
+
+Browser close or reload ends observation, not the run. One bounded latest complete document supports reload. A
+terminal document has a bounded delivery rendezvous before listener cleanup.
+
+The loopback capability is not an isolation boundary against a malicious same-UID process. A
+future ACP adapter may carry the already-sanitized presentation and input messages to an editor.
+ACP is a transport boundary rather than the package ABI, browser API, supervisor protocol, or
+durable event model.
 
 An approval, denial, or cancellation keypress carries one current opaque action id. The application
 rebinds that id to the latest validated document and invokes the existing approval or supervisor

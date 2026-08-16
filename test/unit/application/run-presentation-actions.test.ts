@@ -58,6 +58,25 @@ describe("run presentation actions", () => {
     expect(control.cancellations).toEqual([]);
   });
 
+  it("requires the exact current document sequence before a browser action", async () => {
+    const control = new CaptureControl();
+    const controller = createController(control);
+    controller.update(documentWithActions());
+
+    await expect(controller.executeCurrent(3, "approve:request-1")).rejects.toThrow(
+      "Cannot steer Flow run presentation: document is stale",
+    );
+    await expect(controller.executeCurrent(5, "approve:request-1")).rejects.toThrow(
+      "Cannot steer Flow run presentation: document is stale",
+    );
+    expect(control.decisions).toEqual([]);
+
+    await expect(controller.executeCurrent(4, "approve:request-1")).resolves.toEqual({
+      outcome: "approved",
+    });
+    expect(control.decisions).toHaveLength(1);
+  });
+
   it("rejects a cancel action that carries a different run identity", () => {
     const control = new CaptureControl();
     const controller = createController(control);
