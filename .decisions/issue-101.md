@@ -253,9 +253,14 @@ The browser and release gates provide these tests:
 - 2026-08-16: Final startup-order review moved actor admission before supervisor startup. The
   regression proves that an invalid actor creates no supervisor control state or browser host.
 
+- 2026-08-16: Hosted Linux x64 CI passed on the unchanged Issue #101 commit. The first quality
+  attempt exposed one unrelated timing failure in the existing container-command timeout runtime
+  test. An unchanged rerun passed the complete quality job in 16 minutes 39 seconds. The dependency
+  audit passed in 53 seconds.
+
 ## Verification evidence
 
-Implementation and portable verification are complete. Native hosted Linux x64 CI remains pending.
+Implementation, portable verification, and native hosted Linux x64 verification are complete.
 
 The mapped selector passed 111 tests in 11 files:
 
@@ -329,5 +334,5 @@ and 60 Python packages.
 
 `npm run ci:local` passed formatting, lint, type checking, and build. It then stopped at the explicit
 `Prime OCI runtime preparation requires Linux on x64` boundary on macOS. The remaining portable
-commands above passed independently. The native Prime, browser-install, and complete Linux x64 job
-must pass in hosted CI before merge.
+commands above passed independently. Hosted Linux x64 CI then passed the native Prime,
+browser-install, complete quality, and dependency-audit jobs on the unchanged commit.
