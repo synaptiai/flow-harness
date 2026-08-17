@@ -226,6 +226,7 @@ export interface PromptActivationRollbackResult {
 
 export interface LoadedPromptActivation {
   readonly snapshot: AdaptiveActivationSnapshot;
+  readonly head: PromptActivationHead;
   readonly capabilitySnapshot: CapabilitySnapshot;
 }
 
@@ -596,7 +597,7 @@ export class LocalPromptActivationStore {
       activations,
       digest: calculateCapabilitySnapshotDigest(packages, activations),
     });
-    return deepFreeze({ snapshot, capabilitySnapshot });
+    return deepFreeze({ snapshot, head, capabilitySnapshot });
   }
 
   async #readIndex(): Promise<PromptActivationIndex> {
