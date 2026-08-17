@@ -14,6 +14,7 @@ import {
 } from "../../domain/adaptation/effective-harness-candidate.js";
 import {
   calculateEffectiveHarnessStateDigest,
+  createEffectiveHarnessHeadIdentity,
   type EffectiveHarnessHeadIdentity,
   type EffectiveHarnessState,
   MAX_EFFECTIVE_HARNESS_STATE_BYTES,
@@ -236,6 +237,10 @@ export class LocalEffectiveHarnessStore {
       async (flowDirectory) => {
         const paths = await ensureStorePaths(flowDirectory);
         const index = await this.#readIndexFrom(paths);
+        const settled = settledActivation(index, input.prepared, actor, reason, expectedDigest);
+        if (settled !== undefined) {
+          return deepFreeze({ status: "already_active" as const, ...settled });
+        }
         const prior = await this.#currentHead(index, artifact);
         const proposal = activationProposal(prior, input.prepared, actor, reason);
         if (proposal.proposalDigest !== expectedDigest) {
@@ -407,6 +412,15 @@ export class LocalEffectiveHarnessStore {
   }
 }
 
+export async function hasEffectiveHarnessHead(
+  projectRoot: string,
+  workflowId: string,
+): Promise<boolean> {
+  const parsedWorkflowId = parseIdentifier(workflowId);
+  const index = await new LocalEffectiveHarnessStore(projectRoot).list();
+  return index.heads.some((item) => item.workflowId === parsedWorkflowId);
+}
+
 interface EffectiveHarnessStorePaths {
   readonly root: string;
   readonly states: string;
@@ -558,6 +572,60 @@ function activationProposal(
     ...(reason === undefined ? {} : { reason }),
   };
   return deepFreeze({ ...content, proposalDigest: sha256(canonicalize(content)) });
+}
+
+function settledActivation(
+  index: EffectiveHarnessIndex,
+  prepared: PreparedEffectiveHarnessActivation,
+  actor: string,
+  reason: string | undefined,
+  expectedDigest: string,
+):
+  | {
+      readonly head: EffectiveHarnessHeadIdentity;
+      readonly transition: EffectiveHarnessTransition;
+    }
+  | undefined {
+  const artifact = prepared.artifact;
+  const head = index.heads.find((item) => item.workflowId === artifact.workflowId);
+  const transition =
+    head === undefined
+      ? undefined
+      : index.history.find((item) => item.transitionDigest === head.transitionDigest);
+  if (
+    head === undefined ||
+    transition?.action !== "activate" ||
+    head.activationDigest !== artifact.artifactDigest ||
+    head.stateDigest !== artifact.candidateState.stateDigest ||
+    transition.toActivationDigest !== artifact.artifactDigest ||
+    transition.toStateDigest !== artifact.candidateState.stateDigest ||
+    transition.surface !== artifact.surface ||
+    transition.candidate.kind !== candidateKind(artifact) ||
+    transition.candidate.digest !== artifact.candidate.candidateDigest ||
+    transition.evaluation.id !== prepared.evaluation.id ||
+    transition.evaluation.planDigest !== prepared.evaluation.planDigest ||
+    transition.evaluation.terminalRecordDigest !== prepared.evaluation.terminalRecordDigest ||
+    transition.evaluation.reportDigest !== prepared.evaluation.reportDigest ||
+    transition.actor !== actor ||
+    transition.reason !== reason
+  ) {
+    return undefined;
+  }
+  const prior = createEffectiveHarnessHeadIdentity({
+    scopeDigest: transition.scopeDigest,
+    workflowId: transition.workflowId,
+    generation: transition.generation - 1,
+    activationDigest: transition.fromActivationDigest,
+    transitionDigest: transition.previousTransitionDigest,
+    stateDigest: transition.fromStateDigest,
+  });
+  if (
+    prior.headDigest !== artifact.baselineHead.headDigest ||
+    activationProposal(prior, prepared, actor, reason).proposalDigest !== expectedDigest
+  ) {
+    return undefined;
+  }
+  return { head, transition };
 }
 
 function rollbackProposal(

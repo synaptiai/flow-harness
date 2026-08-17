@@ -303,6 +303,7 @@ export class LocalPromptActivationStore {
       await recoverIndexTemporaryFiles(paths);
       await recoverBlobTemporaryFiles(paths);
       const index = await this.#readIndex();
+      await assertNoEffectiveHarnessHead(this.projectRoot, snapshot.workflowId);
       const proposal = createActivationProposal(index, snapshot, baselineSnapshot, actor, reason);
       const existing = matchingArtifact(index, snapshot);
       const existingBaseline = matchingArtifact(index, baselineSnapshot);
@@ -456,6 +457,7 @@ export class LocalPromptActivationStore {
       await recoverIndexTemporaryFiles(paths);
       await recoverBlobTemporaryFiles(paths);
       const index = await this.#readIndex();
+      await assertNoEffectiveHarnessHead(this.projectRoot, workflowId);
       const proposal = createRollbackProposal(index, workflowId, target, actor, reason);
       const currentHead = index.heads.find((item) => item.workflowId === workflowId);
       if (currentHead === undefined) {
@@ -657,6 +659,28 @@ export async function withLocalActivationMutationOwnership<Value>(
   const paths = await awaitBeforeMutationOwnership(storePaths(projectRoot), signal);
   const lock = await acquireMutationLock(paths.flowDirectory, {}, signal);
   return await withMutationLock(lock, {}, () => operation(paths.flowDirectory));
+}
+
+async function assertNoEffectiveHarnessHead(
+  projectRoot: string,
+  workflowId: string,
+): Promise<void> {
+  try {
+    const { hasEffectiveHarnessHead } = await import("./local-effective-harness-store.js");
+    if (await hasEffectiveHarnessHead(projectRoot, workflowId)) {
+      throw new PromptActivationStoreError(
+        "identity_conflict",
+        "legacy activation cannot replace an effective harness head",
+      );
+    }
+  } catch (error) {
+    if (error instanceof PromptActivationStoreError) throw error;
+    throw new PromptActivationStoreError(
+      "unsafe_state",
+      "effective harness authority cannot be verified",
+      { cause: error },
+    );
+  }
 }
 
 interface PromptActivationStorePaths {
