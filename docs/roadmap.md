@@ -26,7 +26,7 @@ and selected-resource Agent Skill generation, exact prompt overlays, authority-p
 skill-resource projections, paired
 evaluation, reviewed prompt activation, durable run snapshots, and rollback.
 
-Remaining targets include executable extensions, automatic package updates, remote or multi-user
+Remaining targets include executable extensions, automatic package activation, remote or multi-user
 UI hosts, and stronger isolation.
 Each first-party host accepts exact inert A2UI-profile presentation packages.
 These packages arrange a closed Flow-owned widget catalog without content or behavior. Explicit
@@ -115,9 +115,11 @@ containment milestone. It is not VM-grade or multi-tenant isolation.
   execution.
 
   Explicit offline-imported signed metadata adds expiry, revocation, exact-target admission, and
-  rollback refusal. Signed-channel discovery adds bounded inert candidate staging. Mutable tags,
-  private credentials, helpers, delegation, polling, automatic activation, and package updates remain
-  deferred.
+  rollback refusal. Signed-channel discovery adds bounded inert candidate staging. A
+  standards-based TUF repository adds explicit local root trust, threshold rotation, and
+  freshness. It also adds consistent snapshots, bounded delegated targets, atomic offline
+  generations, reviewed activation, and an optional no-overlap check scheduler. Mutable tags and private repository
+  credentials remain deferred. Online root bootstrap and automatic activation also remain deferred.
 - Workflow contributions use versioned manifests. *(Implemented for inert exact-version workflow source with packaged root/child selection, ordinary recursive compilation, immutable transitive snapshots, deterministic bundle distribution, detached execution, and fail-closed recovery. Parameterized templates and executable modules remain deferred.)*
 - Policy contributions use versioned manifests.
   Flow implements strict local and digest-pinned installed inert narrowing packages.

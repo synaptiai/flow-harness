@@ -13,6 +13,10 @@ import {
 } from "./strict-capability-bundle-fetcher.js";
 import { createStrictCapabilityMetadataChannel } from "./strict-capability-metadata-channel.js";
 import {
+  createStrictCapabilityRepositoryFetcher,
+  type StrictCapabilityRepositoryFetcher,
+} from "./strict-capability-repository-fetcher.js";
+import {
   createStrictOciCapabilityRegistry,
   type StrictOciCapabilityRegistry,
 } from "./strict-oci-capability-registry.js";
@@ -128,6 +132,10 @@ export function createProductionCapabilityBundleFetcher(): CapabilityBundleFetch
 
 export function createProductionCapabilityMetadataChannel(): CapabilityMetadataChannel {
   return createStrictCapabilityMetadataChannel(createProductionNodeHttpsTransport());
+}
+
+export function createProductionCapabilityRepositoryFetcher(): StrictCapabilityRepositoryFetcher {
+  return createStrictCapabilityRepositoryFetcher(createProductionNodeHttpsTransport());
 }
 
 export function createProductionOciCapabilityRegistry(): StrictOciCapabilityRegistry {

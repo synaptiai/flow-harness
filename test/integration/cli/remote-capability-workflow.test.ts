@@ -130,6 +130,9 @@ describe("installed capability workflow", () => {
       writeFile(join(inertCandidateDirectory, "metadata.json"), inertCandidateMetadataBytes),
       writeFile(join(inertCandidateDirectory, "sigstore.bundle.json"), inertCandidateCanary),
     ]);
+    const repositoryRuntimeCanary = Buffer.from("PRIVATE_REPOSITORY_RUNTIME_TRAP");
+    const repositoryRuntimePath = join(project, ".flow", "capability.repository");
+    await writeFile(repositoryRuntimePath, repositoryRuntimeCanary);
     const provenanceRoot = `.flow/packages/sha256/${bundleDigest}`;
     const fetch = vi.fn(async () => {
       throw new Error("workflow and replay must not fetch capability bundles");
@@ -394,6 +397,7 @@ describe("installed capability workflow", () => {
     await expect(readFile(join(inertCandidateDirectory, "sigstore.bundle.json"))).resolves.toEqual(
       inertCandidateCanary,
     );
+    await expect(readFile(repositoryRuntimePath)).resolves.toEqual(repositoryRuntimeCanary);
   });
 });
 

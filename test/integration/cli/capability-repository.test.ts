@@ -1,0 +1,459 @@
+import { createHash, generateKeyPairSync, type KeyObject, sign } from "node:crypto";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { type CliIo, main } from "../../../src/cli/main.js";
+import { createCapabilityBundleSource } from "../../../src/domain/capability/capability-bundles.js";
+import { parseCapabilityMetadata } from "../../../src/domain/capability/capability-metadata.js";
+import { encodeCapabilityRepositoryIndex } from "../../../src/domain/capability/capability-repository.js";
+import { encodeSignedCapabilityBundleEnvelope } from "../../../src/domain/capability/signed-capability-bundle-envelope.js";
+import type { SigstoreCapabilityVerifier } from "../../../src/domain/capability/sigstore-capability-verifier.js";
+import {
+  BUILT_IN_FLOW_CONFIG,
+  calculateFlowPolicyDigest,
+  type EffectiveFlowConfig,
+  FLOW_CONFIG_API_VERSION,
+} from "../../../src/domain/config/resolver.js";
+import { LocalCapabilityPackageStore } from "../../../src/infrastructure/fs/local-capability-package-store.js";
+import type { StrictCapabilityRepositoryFetcher } from "../../../src/infrastructure/http/strict-capability-repository-fetcher.js";
+
+const temporaryDirectories: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(
+    temporaryDirectories.splice(0).map(async (directory) => rm(directory, { recursive: true })),
+  );
+});
+
+describe("capability repository CLI", () => {
+  it("initializes one explicit trusted root offline and reports content-free status", async () => {
+    const project = await projectDirectory();
+    const rootPath = join(project, "PRIVATE_TRUSTED_ROOT.json");
+    const root = trustedRoot();
+    await writeFile(rootPath, root, { mode: 0o600 });
+    const dependencies = {
+      cwd: project,
+      loadConfig: async () => effectiveConfig(project),
+      sigstoreCapabilityVerifier: {
+        verify: vi.fn(),
+      } satisfies SigstoreCapabilityVerifier,
+    };
+    const before = captureIo();
+    const initialized = captureIo();
+    const after = captureIo();
+
+    expect(await main(["packages", "repository", "status"], before.io, dependencies)).toBe(0);
+    expect(JSON.parse(before.stdout[0] ?? "null")).toEqual({ repository: null });
+
+    expect(
+      await main(
+        [
+          "packages",
+          "repository",
+          "init",
+          "https://updates.example.test/repository/",
+          "--trusted-root",
+          rootPath,
+        ],
+        initialized.io,
+        dependencies,
+      ),
+    ).toBe(0);
+    const initializedOutput = initialized.stdout[0] ?? "";
+    expect(JSON.parse(initializedOutput)).toMatchObject({
+      status: "initialized",
+      repository: {
+        apiVersion: "flow.synapti.ai/v1alpha1",
+        kind: "CapabilityRepositoryState",
+        status: "initialized",
+        candidates: [],
+      },
+    });
+
+    expect(await main(["packages", "repository", "status"], after.io, dependencies)).toBe(0);
+    expect(JSON.parse(after.stdout[0] ?? "null")).toMatchObject({
+      repository: { status: "initialized", candidates: [] },
+    });
+    const publicOutput = `${initializedOutput}\n${after.stdout.join("\n")}\n${initialized.stderr.join("\n")}`;
+    expect(publicOutput).not.toContain("updates.example.test");
+    expect(publicOutput).not.toContain("PRIVATE_TRUSTED_ROOT");
+    expect(publicOutput).not.toContain(root.toString("base64"));
+  });
+
+  it("checks, reviews, activates offline, and removes one repository candidate", async () => {
+    const project = await projectDirectory();
+    const fixture = repositoryFixture();
+    const rootPath = join(project, "trusted-root.json");
+    await writeFile(rootPath, fixture.root, { mode: 0o600 });
+    const read = vi.fn<StrictCapabilityRepositoryFetcher["read"]>(
+      async (url, maximumBytes, signal) => {
+        signal.throwIfAborted();
+        const content = fixture.remote.get(url);
+        return content === undefined
+          ? { statusCode: 404, bytes: Buffer.alloc(0) }
+          : {
+              statusCode: 200,
+              bytes:
+                content.byteLength <= maximumBytes
+                  ? Buffer.from(content)
+                  : Buffer.alloc(maximumBytes + 1),
+            };
+      },
+    );
+    const dependencies = {
+      cwd: project,
+      loadConfig: async () => effectiveConfig(project),
+      capabilityRepositoryFetcher: { read } satisfies StrictCapabilityRepositoryFetcher,
+      sigstoreCapabilityVerifier: {
+        verify: vi.fn(() => ({ ...fixture.publisher })),
+      } satisfies SigstoreCapabilityVerifier,
+    };
+    const initialized = captureIo();
+    const checked = captureIo();
+    const listed = captureIo();
+    const inspected = captureIo();
+    const activated = captureIo();
+    const removed = captureIo();
+
+    expect(
+      await main(
+        ["packages", "repository", "init", fixture.repositoryBaseUrl, "--trusted-root", rootPath],
+        initialized.io,
+        dependencies,
+      ),
+    ).toBe(0);
+    expect(await main(["packages", "repository", "check"], checked.io, dependencies)).toBe(0);
+    expect(
+      await main(["packages", "repository", "candidates", "list"], listed.io, dependencies),
+    ).toBe(0);
+    const candidates = JSON.parse(listed.stdout[0] ?? "null") as {
+      candidates: readonly { candidateDigest: string }[];
+    };
+    const candidateDigest = candidates.candidates[0]?.candidateDigest;
+    expect(candidateDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
+    if (candidateDigest === undefined) {
+      throw new Error("repository check did not stage one candidate");
+    }
+    expect(
+      await main(
+        ["packages", "repository", "candidate", "inspect", candidateDigest],
+        inspected.io,
+        dependencies,
+      ),
+    ).toBe(0);
+    const privateInspection = inspected.stdout.join("\n");
+    expect(privateInspection).not.toContain(fixture.targetSource);
+    expect(privateInspection).not.toContain(fixture.envelope.toString("base64"));
+    expect(privateInspection).not.toContain("contentBase64");
+
+    await new LocalCapabilityPackageStore(project, {
+      now: () => new Date("2026-08-17T00:00:00.000Z"),
+    }).refreshMetadata({
+      metadata: fixture.activeMetadata,
+      authority: {
+        kind: "sigstore-keyless-v0.3",
+        ...fixture.publisher,
+        signatureBundleDigest: `sha256:${"f".repeat(64)}`,
+      },
+    });
+    const networkCallsAfterCheck = read.mock.calls.length;
+    expect(
+      await main(
+        [
+          "packages",
+          "repository",
+          "candidate",
+          "activate",
+          candidateDigest,
+          "--certificate-issuer",
+          fixture.publisher.certificateIssuer,
+          "--certificate-identity",
+          fixture.publisher.certificateIdentity,
+        ],
+        activated.io,
+        dependencies,
+      ),
+    ).toBe(0);
+    expect(read).toHaveBeenCalledTimes(networkCallsAfterCheck);
+    await expect(new LocalCapabilityPackageStore(project).list()).resolves.toMatchObject({
+      bundles: [{ name: "review-suite", version: "1.0.0", source: fixture.targetSource }],
+    });
+
+    expect(
+      await main(
+        ["packages", "repository", "candidate", "remove", candidateDigest],
+        removed.io,
+        dependencies,
+      ),
+    ).toBe(0);
+    await expect(new LocalCapabilityPackageStore(project).list()).resolves.toMatchObject({
+      bundles: [{ name: "review-suite", version: "1.0.0" }],
+    });
+  });
+});
+
+async function projectDirectory(): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), "flow-repository-cli-"));
+  temporaryDirectories.push(directory);
+  await mkdir(join(directory, ".flow"));
+  return directory;
+}
+
+function effectiveConfig(projectRoot: string): EffectiveFlowConfig {
+  const supervisor = { ...BUILT_IN_FLOW_CONFIG };
+  return {
+    apiVersion: FLOW_CONFIG_API_VERSION,
+    supervisor,
+    sandbox: { profile: "native" },
+    policyDigest: calculateFlowPolicyDigest(supervisor),
+    projectRoot,
+    sources: {
+      builtIn: BUILT_IN_FLOW_CONFIG,
+      operator: null,
+      project: { path: join(projectRoot, ".flow", "config.yaml"), values: {} },
+    },
+  };
+}
+
+function captureIo(): { readonly io: CliIo; readonly stdout: string[]; readonly stderr: string[] } {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  return {
+    stdout,
+    stderr,
+    io: {
+      stdout: (text) => stdout.push(text),
+      stderr: (text) => stderr.push(text),
+    },
+  };
+}
+
+function trustedRoot(): Buffer {
+  const key = createSigningKey();
+  const signed = {
+    _type: "root",
+    spec_version: "1.0.31",
+    version: 1,
+    expires: "2030-01-01T00:00:00.000Z",
+    keys: { [key.id]: key.publicMetadata },
+    roles: {
+      root: role(key.id),
+      timestamp: role(key.id),
+      snapshot: role(key.id),
+      targets: role(key.id),
+    },
+    consistent_snapshot: true,
+  };
+  const signature = sign(null, Buffer.from(canonicalJson(signed)), key.privateKey).toString("hex");
+  return Buffer.from(JSON.stringify({ signatures: [{ keyid: key.id, sig: signature }], signed }));
+}
+
+function repositoryFixture() {
+  const key = createSigningKey();
+  const repositoryBaseUrl = "https://updates.example.test/repository/";
+  const metadataBaseUrl = `${repositoryBaseUrl}metadata/`;
+  const targetBaseUrl = `${repositoryBaseUrl}targets/`;
+  const publisher = Object.freeze({
+    certificateIssuer: "https://token.actions.githubusercontent.com/",
+    certificateIdentity:
+      "https://github.com/synaptiai/flow-harness/.github/workflows/publish.yml@refs/tags/v1.0.0",
+  });
+  const bundle = createCapabilityBundleSource({
+    name: "review-suite",
+    version: "1.0.0",
+    description: "Review capabilities.",
+    packages: [
+      {
+        kind: "verifier-package",
+        manifest: Buffer.from(`apiVersion: flow.synapti.ai/v1alpha1
+kind: VerifierPackage
+metadata:
+  name: evidence-review
+  version: 1.0.0
+  description: Review evidence.
+spec:
+  kind: model
+  prompt: Review evidence.
+`),
+      },
+    ],
+  });
+  const sigstoreBundle = Buffer.from("PRIVATE_SIGSTORE_BUNDLE");
+  const envelope = encodeSignedCapabilityBundleEnvelope({
+    capabilityBundle: bundle.content,
+    sigstoreBundle,
+  });
+  const packagePath = "flow/packages/review-suite/1.0.0.flowpkg.json";
+  const indexBytes = encodeCapabilityRepositoryIndex({
+    packages: [{ name: "review-suite", version: "1.0.0", targetPath: packagePath }],
+  });
+  const root = signedMetadata(
+    {
+      _type: "root",
+      spec_version: "1.0.31",
+      version: 1,
+      expires: "2030-01-01T00:00:00.000Z",
+      keys: { [key.id]: key.publicMetadata },
+      roles: {
+        root: role(key.id),
+        timestamp: role(key.id),
+        snapshot: role(key.id),
+        targets: role(key.id),
+      },
+      consistent_snapshot: true,
+    },
+    key,
+  );
+  const targets = signedMetadata(
+    {
+      _type: "targets",
+      spec_version: "1.0.31",
+      version: 1,
+      expires: "2030-01-01T00:00:00.000Z",
+      targets: {
+        "flow/capability-index.json": targetDescriptor(indexBytes, {}),
+        [packagePath]: targetDescriptor(envelope, {
+          flow: {
+            apiVersion: "flow.synapti.ai/v1alpha1",
+            kind: "CapabilityPackageTarget",
+            name: "review-suite",
+            version: "1.0.0",
+            publisher,
+          },
+        }),
+      },
+    },
+    key,
+  );
+  const snapshot = signedMetadata(
+    {
+      _type: "snapshot",
+      spec_version: "1.0.31",
+      version: 1,
+      expires: "2030-01-01T00:00:00.000Z",
+      meta: { "targets.json": metadataDescriptor(1, targets) },
+    },
+    key,
+  );
+  const timestamp = signedMetadata(
+    {
+      _type: "timestamp",
+      spec_version: "1.0.31",
+      version: 1,
+      expires: "2030-01-01T00:00:00.000Z",
+      meta: { "snapshot.json": metadataDescriptor(1, snapshot) },
+    },
+    key,
+  );
+  const targetSource = consistentTargetUrl(targetBaseUrl, packagePath, envelope);
+  const activeMetadata = JSON.parse(
+    JSON.stringify({
+      apiVersion: "flow.synapti.ai/v1alpha1",
+      kind: "CapabilityMetadata",
+      metadata: {
+        name: "project-capabilities",
+        version: 1,
+        expiresAt: "2030-01-01T00:00:00.000Z",
+      },
+      spec: {
+        targets: [
+          {
+            name: bundle.bundle.name,
+            version: bundle.bundle.version,
+            digest: bundle.bundle.digest,
+            bytes: bundle.content.byteLength,
+            source: targetSource,
+            status: "active",
+            publisher,
+          },
+        ],
+      },
+    }),
+  );
+  return {
+    repositoryBaseUrl,
+    root,
+    envelope,
+    publisher,
+    targetSource,
+    activeMetadata: parseActiveMetadata(Buffer.from(JSON.stringify(activeMetadata))),
+    remote: new Map<string, Buffer>([
+      [`${metadataBaseUrl}timestamp.json`, timestamp],
+      [`${metadataBaseUrl}1.snapshot.json`, snapshot],
+      [`${metadataBaseUrl}1.targets.json`, targets],
+      [consistentTargetUrl(targetBaseUrl, "flow/capability-index.json", indexBytes), indexBytes],
+      [targetSource, envelope],
+    ]),
+  };
+}
+
+function parseActiveMetadata(content: Buffer) {
+  return parseCapabilityMetadata(content, new Date("2026-08-17T00:00:00.000Z"));
+}
+
+function targetDescriptor(content: Buffer, custom: Record<string, unknown>) {
+  return { length: content.byteLength, hashes: { sha256: sha256(content) }, custom };
+}
+
+function metadataDescriptor(version: number, content: Buffer) {
+  return { version, length: content.byteLength, hashes: { sha256: sha256(content) } };
+}
+
+function consistentTargetUrl(base: string, path: string, content: Buffer): string {
+  const slash = path.lastIndexOf("/");
+  const directory = slash === -1 ? "" : path.slice(0, slash + 1);
+  const name = slash === -1 ? path : path.slice(slash + 1);
+  return `${base}${directory}${sha256(content)}.${name}`;
+}
+
+function signedMetadata(
+  signed: Record<string, unknown>,
+  key: ReturnType<typeof createSigningKey>,
+): Buffer {
+  const signature = sign(null, Buffer.from(canonicalJson(signed)), key.privateKey).toString("hex");
+  return Buffer.from(JSON.stringify({ signatures: [{ keyid: key.id, sig: signature }], signed }));
+}
+
+function sha256(content: Uint8Array): string {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+function role(keyID: string): Record<string, unknown> {
+  return { keyids: [keyID], threshold: 1 };
+}
+
+function createSigningKey(): {
+  readonly id: string;
+  readonly privateKey: KeyObject;
+  readonly publicMetadata: Record<string, unknown>;
+} {
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const publicDer = publicKey.export({ format: "der", type: "spki" });
+  const publicMetadata = {
+    keytype: "ed25519",
+    scheme: "ed25519",
+    keyval: { public: publicDer.subarray(publicDer.byteLength - 32).toString("hex") },
+  };
+  return {
+    id: createHash("sha256").update(canonicalJson(publicMetadata)).digest("hex"),
+    privateKey,
+    publicMetadata,
+  };
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(",")}]`;
+  }
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+    .join(",")}}`;
+}

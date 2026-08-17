@@ -23,12 +23,16 @@ are included.
 
 Flow includes first-party terminal and local browser presentation hosts over the public run
 projection. A strict A2UI v0.9.1 profile lets an exact inert package arrange the closed host-owned
-widget catalog for one session. Executable or remote UI extensions and automatic package updates
-remain later work.
+widget catalog for one session. Executable or remote UI extensions and automatic package
+activation remain later work.
 Explicit signed capability metadata provides project-local freshness and revocation. One explicit
 public HTTPS check can stage inert signed candidates for review, while activation remains a
-separate explicit command. Background polling, private channels, online trust-root refresh, and
-delegated metadata roles remain later work.
+separate explicit command. A standards-based TUF repository can now select exact signed package
+envelopes through threshold roles, sequential root rotation, freshness metadata, consistent
+snapshots, and bounded delegations. The operator supplies the initial root locally. Flow contains
+the standard client in disposable staging, reopens its output, repeats package and Sigstore
+verification, and publishes only inert Flow-owned candidates. Private repositories, online root
+bootstrap, and automatic activation remain later work.
 Opaque Pi session continuation and general failure or fallback
 retries also remain later work. The same is true for broader configurable policy, model network
 tools, and arbitrary evaluator runtimes. Stronger VM or managed sandbox backends also remain later
@@ -51,6 +55,8 @@ Architecture is derived from these flows.
 | Distribute | A publisher packs inert capability sources and an operator installs exact HTTPS bytes | Reproducible bundle identity, reviewable lock state, and no runtime/provider lock-in |
 | Discover metadata | An operator or external scheduler invokes one explicit signed-channel check | One authenticated inert candidate and a bounded latest-check observation; no package or active-policy mutation |
 | Activate metadata | An operator reviews and activates one exact candidate | Reverified monotonic active metadata for future admission; installed packages and existing run snapshots stay unchanged |
+| Discover repository packages | An operator initializes an explicit trusted root and invokes a repository check | One atomically committed verified repository generation plus bounded inert candidates; no package installation or activation |
+| Activate a repository candidate | An operator supplies one exact candidate digest and publisher policy | Offline TUF replay, repeated Sigstore verification, and one ordinary package-store installation under active metadata authority |
 
 ### Operator flows
 

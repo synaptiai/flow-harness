@@ -71,6 +71,30 @@ mutation owner. Handle an activation `commit_uncertain` outcome like explicit lo
 refresh. Inspect active metadata before retrying. Reconcile its exact version, digest, and signer
 policy. Candidate removal never repairs, rolls back, or changes active metadata.
 
+TUF repository state below `.flow/capability.repository/` is also admission-time authority only.
+Runs, workers, children, resume, recovery, replay, inspect, and export use their frozen capability
+snapshots and never consult repository generations or candidates. A pre-commit repository failure
+leaves the current generation unchanged. A
+`capability_repository_store_failed` result during `settle repository store commit` means the
+new current record may be durable. Run `flow packages repository status` and inspect the exact
+candidate digests before retrying.
+
+Repository operations fail closed when
+`.flow/capability.repository/repository.lock`,
+`.flow/capability.repository/.generation.pending`, or
+`.flow/capability.repository/.current.pending` already exists. Confirm that no initialization,
+check, list, inspect, activation, or removal operation owns the state before removing only the
+exact blocking entry. Do not remove a generation directory to repair a pending record. First
+reconcile the current generation digest and candidate list from public status. Repository
+activation is offline. A network request during activation indicates a boundary violation rather
+than a recovery mechanism.
+
+An optional repository scheduler records a fixed startup status. Its caller can supply the prior
+completed-check timestamp after restart. The scheduler reports elapsed missed intervals but waits a
+new full interval and never catches up. A current clock behind the prior completion reports
+`clock_rollback` and stops before network work. Consecutive `check_failed` records expose a prolonged
+outage without preserving private transport or repository errors.
+
 For a workflow package, resume accepts `workflow:<name>@<exact-version>` and reconstructs the root
 and every transitive packaged child from the durable snapshot before claiming the run. It verifies
 manifest/source hashes, package digest, compiled source-package identity, run-start requirements,

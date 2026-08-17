@@ -22,6 +22,7 @@ import { createCapabilityBundleSource } from "../../../../src/domain/capability/
 import { parseCapabilityMetadata } from "../../../../src/domain/capability/capability-metadata.js";
 import {
   CapabilityPackageStoreError,
+  type CapabilityPackageStoreHooks,
   LocalCapabilityPackageStore,
 } from "../../../../src/infrastructure/fs/local-capability-package-store.js";
 
@@ -243,6 +244,73 @@ describe("local capability package store", () => {
     await expect(store.verify()).rejects.toMatchObject({ code: "metadata_target" });
     await expect(store.remove("review-suite", "1.0.0")).resolves.toMatchObject({
       status: "removed",
+    });
+  });
+
+  it("preserves exact pre-abort before package installation mutation", async () => {
+    const projectRoot = await projectDirectory();
+    const created = bundle("Review cancellation evidence.");
+    const controller = new AbortController();
+    const reason = new Error("PRIVATE_INSTALL_CANCELLATION");
+    controller.abort(reason);
+
+    await expect(
+      new LocalCapabilityPackageStore(projectRoot).install({
+        source: "https://packages.example.test/review-suite-1.0.0.flowpkg",
+        expectedSha256: digest(created.content),
+        content: created.content,
+        signal: controller.signal,
+      }),
+    ).rejects.toBe(reason);
+    await expect(readdir(join(projectRoot, ".flow"))).resolves.toEqual([]);
+  });
+
+  it("cancels exactly before package-lock publication and leaves no active package", async () => {
+    const projectRoot = await projectDirectory();
+    const created = bundle("Review pre-commit cancellation.");
+    const controller = new AbortController();
+    const reason = new Error("PRIVATE_PRE_COMMIT_CANCELLATION");
+    const hooks = {
+      beforeCapabilityLockRename: async () => controller.abort(reason),
+    } as CapabilityPackageStoreHooks;
+    const store = new LocalCapabilityPackageStore(projectRoot, hooks);
+
+    await expect(
+      store.install({
+        source: "https://packages.example.test/review-suite-1.0.0.flowpkg",
+        expectedSha256: digest(created.content),
+        content: created.content,
+        signal: controller.signal,
+      }),
+    ).rejects.toBe(reason);
+    await expect(store.list()).resolves.toMatchObject({ bundles: [] });
+    await expect(stat(join(projectRoot, ".flow", "packages.lock.json"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("reports uncertainty when cancellation follows package-lock publication", async () => {
+    const projectRoot = await projectDirectory();
+    const created = bundle("Review post-commit cancellation.");
+    const controller = new AbortController();
+    const reason = new Error("PRIVATE_POST_COMMIT_CANCELLATION");
+    const store = new LocalCapabilityPackageStore(projectRoot, {
+      afterCapabilityLockRenamed: async () => {
+        controller.abort(reason);
+        throw reason;
+      },
+    });
+
+    await expect(
+      store.install({
+        source: "https://packages.example.test/review-suite-1.0.0.flowpkg",
+        expectedSha256: digest(created.content),
+        content: created.content,
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ code: "commit_uncertain" });
+    await expect(store.list()).resolves.toMatchObject({
+      bundles: [{ name: "review-suite", version: "1.0.0" }],
     });
   });
 
@@ -728,21 +796,49 @@ describe("local capability package store", () => {
     );
   });
 
+  it("installs publisher-verified HTTPS bytes only under exact active metadata", async () => {
+    const projectRoot = await projectDirectory();
+    const created = bundle("Review repository evidence.");
+    const source =
+      "https://packages.example.test/targets/7f/7fd4c3.review-suite-1.0.0.flowpkg.json";
+    const publisher = {
+      kind: "sigstore-keyless-v0.3" as const,
+      certificateIssuer: "https://token.actions.githubusercontent.com/",
+      certificateIdentity:
+        "https://github.com/synaptiai/flow-harness/.github/workflows/release.yml@refs/tags/v1.0.0",
+      signatureBundleDigest: `sha256:${"2".repeat(64)}`,
+    };
+    const store = new LocalCapabilityPackageStore(projectRoot, {
+      now: () => new Date("2026-08-14T00:00:00.000Z"),
+    });
+    await store.refreshMetadata({
+      metadata: capabilityMetadata(created.content, {
+        version: 1,
+        source,
+        publisher: {
+          certificateIssuer: publisher.certificateIssuer,
+          certificateIdentity: publisher.certificateIdentity,
+        },
+      }),
+      authority: metadataAuthority(),
+    });
+
+    await expect(
+      store.install({
+        source,
+        expectedSha256: digest(created.content),
+        content: created.content,
+        publisher,
+      }),
+    ).resolves.toMatchObject({ status: "installed" });
+    await expect(store.verify()).resolves.toMatchObject([{ entry: { source, publisher } }]);
+  });
+
   it.each([
     {
       label: "an OCI source without publisher evidence",
       source: `registry.example.test/flow/review-suite@sha256:${"1".repeat(64)}`,
       publisher: undefined,
-    },
-    {
-      label: "publisher evidence on an HTTPS source",
-      source: "https://packages.example.test/review-suite-1.0.0.flowpkg",
-      publisher: {
-        kind: "sigstore-keyless-v0.3" as const,
-        certificateIssuer: "https://token.actions.githubusercontent.com/",
-        certificateIdentity: "PRIVATE_IDENTITY",
-        signatureBundleDigest: `sha256:${"2".repeat(64)}`,
-      },
     },
     {
       label: "a malformed signature-bundle digest",
