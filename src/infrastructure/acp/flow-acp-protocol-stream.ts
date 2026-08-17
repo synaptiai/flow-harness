@@ -3,6 +3,7 @@ import type { AnyMessage, Stream } from "@agentclientprotocol/sdk";
 import { StrictAcpStreamError } from "./strict-acp-stream.js";
 
 export const MAX_ACP_IN_FLIGHT_REQUESTS = 64;
+export const DEFAULT_ACP_OPERATION_TIMEOUT_MS = 30_000;
 
 export type FlowAcpProtocolStreamErrorCode =
   | "duplicate_request"
@@ -20,6 +21,14 @@ export class FlowAcpProtocolStreamError extends Error {
   }
 }
 
+export interface FlowAcpProtocolStream extends Stream {
+  readonly settle: () => Promise<Error | undefined>;
+}
+
+export interface FlowAcpProtocolStreamOptions {
+  readonly operationTimeoutMs?: number;
+}
+
 type ProtocolPhase = "await_initialize" | "initializing" | "ready" | "failed";
 
 const CLIENT_REQUEST_METHODS = new Set([
@@ -34,7 +43,11 @@ const CLIENT_NOTIFICATION_METHODS = new Set(["$/cancel_request", "session/cancel
 const AGENT_REQUEST_METHODS = new Set(["session/request_permission"]);
 const AGENT_NOTIFICATION_METHODS = new Set(["$/cancel_request", "session/update"]);
 
-export function createFlowAcpProtocolStream(base: Stream): Stream {
+export function createFlowAcpProtocolStream(
+  base: Stream,
+  options: FlowAcpProtocolStreamOptions = {},
+): FlowAcpProtocolStream {
+  const operationTimeoutMs = parseOperationTimeout(options.operationTimeoutMs);
   const reader = base.readable.getReader();
   const writer = base.writable.getWriter();
   const incomingRequests = new Set<string>();
@@ -42,7 +55,10 @@ export function createFlowAcpProtocolStream(base: Stream): Stream {
   const initialization = deferred();
   let phase: ProtocolPhase = "await_initialize";
   let initializeId: string | undefined;
+  let primaryFailure: Error | undefined;
   let readerSettled = false;
+  let settlement: Promise<Error | undefined> | undefined;
+  let writeTail: Promise<void> = Promise.resolve();
   let writerSettled = false;
 
   const failInitialization = (): void => {
@@ -55,16 +71,27 @@ export function createFlowAcpProtocolStream(base: Stream): Stream {
   const settleReader = (): void => {
     if (!readerSettled) {
       readerSettled = true;
-      reader.releaseLock();
+      try {
+        reader.releaseLock();
+      } catch {
+        // A timed-out transport operation can retain its Web Streams lock.
+      }
     }
   };
 
   const settleWriter = (): void => {
     if (!writerSettled) {
       writerSettled = true;
-      writer.releaseLock();
+      try {
+        writer.releaseLock();
+      } catch {
+        // A timed-out transport operation can retain its Web Streams lock.
+      }
     }
   };
+
+  const awaitTransport = async <T>(operation: Promise<T>): Promise<T> =>
+    await withOperationTimeout(operation, operationTimeoutMs);
 
   const settleReaderAfterFailure = async (): Promise<void> => {
     failInitialization();
@@ -72,7 +99,7 @@ export function createFlowAcpProtocolStream(base: Stream): Stream {
       return;
     }
     try {
-      await reader.cancel();
+      await awaitTransport(reader.cancel());
     } catch {
       // The protocol failure retains precedence over transport settlement.
     } finally {
@@ -80,7 +107,54 @@ export function createFlowAcpProtocolStream(base: Stream): Stream {
     }
   };
 
+  const recordFailure = (error: unknown): Error => {
+    const normalized = normalizeProtocolError(error);
+    primaryFailure ??= normalized;
+    return normalized;
+  };
+
+  const settleOutput = async (mode: "abort" | "close"): Promise<Error | undefined> => {
+    try {
+      await awaitTransport(writeTail);
+    } catch (error) {
+      recordFailure(error);
+    }
+    if (writerSettled) {
+      return primaryFailure;
+    }
+    try {
+      if (mode === "abort") {
+        await awaitTransport(writer.abort());
+      } else {
+        await awaitTransport(writer.close());
+      }
+    } catch (error) {
+      recordFailure(error);
+    } finally {
+      settleWriter();
+    }
+    return primaryFailure;
+  };
+
+  const settle = async (): Promise<Error | undefined> => {
+    settlement ??= (async () => {
+      failInitialization();
+      if (!readerSettled) {
+        try {
+          await awaitTransport(reader.cancel());
+        } catch (error) {
+          recordFailure(error);
+        } finally {
+          settleReader();
+        }
+      }
+      return await settleOutput("abort");
+    })();
+    return await settlement;
+  };
+
   return {
+    settle,
     readable: new ReadableStream<AnyMessage>({
       async pull(controller) {
         try {
@@ -100,8 +174,9 @@ export function createFlowAcpProtocolStream(base: Stream): Stream {
           admitIncoming(result.value);
           controller.enqueue(result.value);
         } catch (error) {
+          const failure = recordFailure(error);
           await settleReaderAfterFailure();
-          throw normalizeProtocolError(error);
+          throw failure;
         }
       },
       async cancel() {
@@ -110,9 +185,9 @@ export function createFlowAcpProtocolStream(base: Stream): Stream {
           return;
         }
         try {
-          await reader.cancel();
-        } catch {
-          throw new FlowAcpProtocolStreamError("io");
+          await awaitTransport(reader.cancel());
+        } catch (error) {
+          throw recordFailure(error);
         } finally {
           settleReader();
         }
@@ -120,34 +195,36 @@ export function createFlowAcpProtocolStream(base: Stream): Stream {
     }),
     writable: new WritableStream<AnyMessage>({
       async write(message) {
-        let settlement: OutgoingSettlement;
-        try {
-          settlement = inspectOutgoing(message);
-          await writer.write(message);
-          commitOutgoing(settlement);
-        } catch (error) {
-          failInitialization();
-          throw normalizeProtocolError(error);
-        }
+        const operation = (async () => {
+          let outgoing: OutgoingSettlement | undefined;
+          try {
+            outgoing = inspectOutgoing(message);
+            reserveOutgoing(outgoing);
+            await awaitTransport(writer.write(message));
+            commitOutgoing(outgoing);
+          } catch (error) {
+            if (outgoing !== undefined) {
+              rollbackOutgoing(outgoing);
+            }
+            failInitialization();
+            throw recordFailure(error);
+          }
+        })();
+        writeTail = operation.catch(() => undefined);
+        await operation;
       },
       async close() {
         failInitialization();
-        try {
-          await writer.close();
-        } catch {
-          throw new FlowAcpProtocolStreamError("io");
-        } finally {
-          settleWriter();
+        const failure = await settleOutput("close");
+        if (failure !== undefined) {
+          throw failure;
         }
       },
       async abort() {
         failInitialization();
-        try {
-          await writer.abort();
-        } catch {
-          throw new FlowAcpProtocolStreamError("io");
-        } finally {
-          settleWriter();
+        const failure = await settleOutput("abort");
+        if (failure !== undefined) {
+          throw failure;
         }
       },
     }),
@@ -214,7 +291,10 @@ export function createFlowAcpProtocolStream(base: Stream): Stream {
       if (!AGENT_NOTIFICATION_METHODS.has(message.method)) {
         throw new FlowAcpProtocolStreamError("unsupported_message");
       }
-      return { kind: "notification" };
+      return {
+        kind: "notification",
+        cancelledRequestKey: cancelledAgentRequestKey(message),
+      };
     }
 
     const key = requestKey(message.id);
@@ -235,7 +315,6 @@ export function createFlowAcpProtocolStream(base: Stream): Stream {
   function commitOutgoing(settlement: OutgoingSettlement): void {
     switch (settlement.kind) {
       case "agent_request":
-        outgoingRequests.add(settlement.key);
         return;
       case "client_response":
         incomingRequests.delete(settlement.key);
@@ -245,7 +324,22 @@ export function createFlowAcpProtocolStream(base: Stream): Stream {
         }
         return;
       case "notification":
+        if (settlement.cancelledRequestKey !== undefined) {
+          outgoingRequests.delete(settlement.cancelledRequestKey);
+        }
         return;
+    }
+  }
+
+  function reserveOutgoing(settlement: OutgoingSettlement): void {
+    if (settlement.kind === "agent_request") {
+      outgoingRequests.add(settlement.key);
+    }
+  }
+
+  function rollbackOutgoing(settlement: OutgoingSettlement): void {
+    if (settlement.kind === "agent_request") {
+      outgoingRequests.delete(settlement.key);
     }
   }
 }
@@ -258,7 +352,7 @@ type OutgoingSettlement =
       readonly key: string;
       readonly successful: boolean;
     }
-  | { readonly kind: "notification" };
+  | { readonly kind: "notification"; readonly cancelledRequestKey: string | undefined };
 
 function isCall(message: AnyMessage): message is Extract<AnyMessage, { method: string }> {
   return Object.hasOwn(message, "method");
@@ -277,6 +371,29 @@ function requestKey(id: string | number | null): string {
   return `${typeof id}:${String(id)}`;
 }
 
+function cancelledAgentRequestKey(
+  message: Extract<AnyMessage, { method: string }>,
+): string | undefined {
+  if (message.method !== "$/cancel_request") {
+    return undefined;
+  }
+  const params = message.params;
+  if (
+    typeof params !== "object" ||
+    params === null ||
+    Array.isArray(params) ||
+    Object.keys(params).length !== 1 ||
+    !("requestId" in params)
+  ) {
+    throw new FlowAcpProtocolStreamError("unsupported_message");
+  }
+  const requestId = params.requestId;
+  if (typeof requestId !== "string" && typeof requestId !== "number" && requestId !== null) {
+    throw new FlowAcpProtocolStreamError("unsupported_message");
+  }
+  return requestKey(requestId);
+}
+
 function addRequest(requests: Set<string>, key: string): void {
   if (requests.has(key)) {
     throw new FlowAcpProtocolStreamError("duplicate_request");
@@ -293,6 +410,31 @@ function deferred(): { readonly promise: Promise<void>; readonly resolve: () => 
     resolve = settle;
   });
   return { promise, resolve };
+}
+
+function parseOperationTimeout(value: number | undefined): number {
+  const timeout = value ?? DEFAULT_ACP_OPERATION_TIMEOUT_MS;
+  if (!Number.isSafeInteger(timeout) || timeout <= 0 || timeout > 60_000) {
+    throw new Error("Flow ACP protocol stream options are invalid");
+  }
+  return timeout;
+}
+
+async function withOperationTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new FlowAcpProtocolStreamError("io")), timeoutMs);
+        timer.unref();
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  }
 }
 
 function normalizeProtocolError(error: unknown): Error {

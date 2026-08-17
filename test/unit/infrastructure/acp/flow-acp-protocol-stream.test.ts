@@ -118,6 +118,32 @@ describe("Flow ACP protocol stream", () => {
     await expect(reader.read()).rejects.toMatchObject({ code: "too_many_requests" });
   });
 
+  it("admits the exact outgoing concurrency bound and rejects one more request", async () => {
+    const base = memoryStream();
+    const stream = createFlowAcpProtocolStream(base.stream);
+    const reader = stream.readable.getReader();
+    const writer = stream.writable.getWriter();
+    await initialize(base, reader, writer);
+    for (let index = 0; index < MAX_ACP_IN_FLIGHT_REQUESTS; index += 1) {
+      await writer.write({
+        jsonrpc: "2.0",
+        id: `permission-${index}`,
+        method: "session/request_permission",
+        params: {},
+      });
+    }
+
+    await expect(
+      writer.write({
+        jsonrpc: "2.0",
+        id: `permission-${MAX_ACP_IN_FLIGHT_REQUESTS}`,
+        method: "session/request_permission",
+        params: {},
+      }),
+    ).rejects.toMatchObject({ code: "too_many_requests" });
+    expect(base.written).toHaveLength(MAX_ACP_IN_FLIGHT_REQUESTS + 1);
+  });
+
   it("admits only responses to exact outstanding agent requests", async () => {
     const base = memoryStream();
     const stream = createFlowAcpProtocolStream(base.stream);
@@ -139,6 +165,74 @@ describe("Flow ACP protocol stream", () => {
     const error = await reader.read().catch((caught: unknown) => caught);
     expect(error).toMatchObject({ code: "unknown_response" });
     expect(JSON.stringify(error)).not.toContain("PRIVATE_UNKNOWN");
+  });
+
+  it("retires an agent request after its cancellation notification is written", async () => {
+    const base = memoryStream();
+    const stream = createFlowAcpProtocolStream(base.stream);
+    const reader = stream.readable.getReader();
+    const writer = stream.writable.getWriter();
+    await initialize(base, reader, writer);
+    await writer.write({
+      jsonrpc: "2.0",
+      id: "permission-cancelled",
+      method: "session/request_permission",
+      params: {},
+    });
+
+    await writer.write({
+      jsonrpc: "2.0",
+      method: "$/cancel_request",
+      params: { requestId: "permission-cancelled" },
+    });
+    await expect(
+      writer.write({
+        jsonrpc: "2.0",
+        id: "permission-cancelled",
+        method: "session/request_permission",
+        params: {},
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("reserves an agent request before a fast peer can return its response", async () => {
+    const writeRelease = deferred();
+    let base: ReturnType<typeof memoryStream>;
+    base = memoryStream({
+      onWrite: async (message) => {
+        if ("method" in message && message.method === "session/request_permission") {
+          base.push({
+            jsonrpc: "2.0",
+            id: "permission-fast",
+            result: { outcome: { outcome: "cancelled" } },
+          });
+          await writeRelease.promise;
+        }
+      },
+    });
+    const stream = createFlowAcpProtocolStream(base.stream);
+    const reader = stream.readable.getReader();
+    const writer = stream.writable.getWriter();
+    await initialize(base, reader, writer);
+
+    const response = reader.read().catch((error: unknown) => error);
+    const write = writer
+      .write({
+        jsonrpc: "2.0",
+        id: "permission-fast",
+        method: "session/request_permission",
+        params: {},
+      })
+      .catch((error: unknown) => error);
+    const observed = await response;
+    writeRelease.resolve();
+    const writeResult = await write;
+
+    expect(observed).toMatchObject({
+      done: false,
+      value: { id: "permission-fast", result: { outcome: { outcome: "cancelled" } } },
+    });
+    expect(writeResult).toBeUndefined();
   });
 
   it("does not release pipelined traffic after a failed initialize response", async () => {
@@ -179,6 +273,65 @@ describe("Flow ACP protocol stream", () => {
     expect(JSON.stringify(writeError)).not.toContain("PRIVATE_WRITE_FAILURE");
     await expect(second).rejects.toMatchObject({ code: "invalid_order" });
   });
+
+  it("settles the owned output after clean input settlement", async () => {
+    const base = memoryStream();
+    const stream = createFlowAcpProtocolStream(base.stream);
+    const reader = stream.readable.getReader();
+    base.closeInput();
+
+    await expect(reader.read()).resolves.toEqual({ done: true, value: undefined });
+    await expect(stream.settle()).resolves.toBeUndefined();
+    expect(base.outputAbortCalls()).toBe(1);
+  });
+
+  it("preserves the primary protocol error when output cleanup also fails", async () => {
+    const base = memoryStream({ abortError: new Error("PRIVATE_CLOSE_FAILURE") });
+    const stream = createFlowAcpProtocolStream(base.stream);
+    const reader = stream.readable.getReader();
+    base.push({ jsonrpc: "2.0", id: 1, method: "PRIVATE_BEFORE_INITIALIZE", params: {} });
+
+    const primary = await reader.read().catch((caught: unknown) => caught);
+    const settled = await stream.settle();
+
+    expect(primary).toMatchObject({ code: "invalid_order" });
+    expect(settled).toBe(primary);
+    expect(base.outputAbortCalls()).toBe(1);
+    expect(JSON.stringify(settled)).not.toContain("PRIVATE_");
+  });
+
+  it("bounds a stalled output write and its cleanup", async () => {
+    const stalled = deferred();
+    const base = memoryStream({
+      onWrite: async (message) => {
+        if ("method" in message && message.method === "session/request_permission") {
+          await stalled.promise;
+        }
+      },
+    });
+    const stream = createFlowAcpProtocolStream(base.stream, { operationTimeoutMs: 10 });
+    const reader = stream.readable.getReader();
+    const writer = stream.writable.getWriter();
+    await initialize(base, reader, writer);
+
+    const writeFailure = await Promise.race([
+      writer
+        .write({
+          jsonrpc: "2.0",
+          id: "permission-stalled",
+          method: "session/request_permission",
+          params: {},
+        })
+        .catch((error: unknown) => error),
+      delay(250, "PRIVATE_WRITE_TIMEOUT"),
+    ]);
+    const settled = await Promise.race([stream.settle(), delay(250, "PRIVATE_SETTLE_TIMEOUT")]);
+    stalled.resolve();
+
+    expect(writeFailure).toMatchObject({ code: "io" });
+    expect(settled).toBe(writeFailure);
+    expect(JSON.stringify({ writeFailure, settled })).not.toContain("PRIVATE_");
+  });
 });
 
 async function initialize(
@@ -191,14 +344,25 @@ async function initialize(
   await writer.write({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } });
 }
 
-function memoryStream(options: { readonly writeError?: Error } = {}): {
+function memoryStream(
+  options: {
+    readonly abortError?: Error;
+    readonly onWrite?: (message: AnyMessage) => void | Promise<void>;
+    readonly writeError?: Error;
+  } = {},
+): {
+  readonly outputAbortCalls: () => number;
+  readonly closeInput: () => void;
   readonly stream: Stream;
   readonly written: AnyMessage[];
   readonly push: (message: AnyMessage) => void;
 } {
   let input: ReadableStreamDefaultController<AnyMessage> | undefined;
+  let outputAbortCalls = 0;
   const written: AnyMessage[] = [];
   return {
+    closeInput: () => input?.close(),
+    outputAbortCalls: () => outputAbortCalls,
     stream: {
       readable: new ReadableStream<AnyMessage>({
         start(controller) {
@@ -206,11 +370,18 @@ function memoryStream(options: { readonly writeError?: Error } = {}): {
         },
       }),
       writable: new WritableStream<AnyMessage>({
-        write(message) {
+        abort() {
+          outputAbortCalls += 1;
+          if (options.abortError !== undefined) {
+            throw options.abortError;
+          }
+        },
+        async write(message) {
           if (options.writeError !== undefined) {
             throw options.writeError;
           }
           written.push(message);
+          await options.onWrite?.(message);
         },
       }),
     },
@@ -222,4 +393,12 @@ function memoryStream(options: { readonly writeError?: Error } = {}): {
 async function delay(milliseconds: number, value: string): Promise<string> {
   await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
   return value;
+}
+
+function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {
+  let settle = (): void => undefined;
+  const promise = new Promise<void>((resolve) => {
+    settle = resolve;
+  });
+  return { promise, resolve: settle };
 }

@@ -57,12 +57,20 @@ describe("source dependency boundaries", () => {
       await readFile(join(repositoryRoot, "package-lock.json"), "utf8"),
     ) as {
       readonly packages?: Readonly<
-        Record<string, { readonly version?: string; readonly license?: string }>
+        Record<
+          string,
+          { readonly version?: string; readonly license?: string; readonly integrity?: string }
+        >
       >;
     };
     expect(packageManifest.dependencies?.["@agentclientprotocol/sdk"]).toBe("1.3.0");
     expect(packageLock.packages?.["node_modules/@agentclientprotocol/sdk"]).toEqual(
-      expect.objectContaining({ version: "1.3.0", license: "Apache-2.0" }),
+      expect.objectContaining({
+        version: "1.3.0",
+        license: "Apache-2.0",
+        integrity:
+          "sha512-i3h/efaeuMUFAO1HSfo97QZQnnvMd7wWBYtBsdL6UMZg3a78sk3Ffya5Xu7C7tYsXomXoDXJBAzQF2PcFKAhIQ==",
+      }),
     );
 
     const violations: string[] = [];

@@ -172,9 +172,18 @@ Browser close or reload ends observation, not the run. One bounded latest comple
 terminal document has a bounded delivery rendezvous before listener cleanup.
 
 The loopback capability is not an isolation boundary against a malicious same-UID process. A
-future ACP adapter may carry the already-sanitized presentation and input messages to an editor.
-ACP is a transport boundary rather than the package ABI, browser API, supervisor protocol, or
-durable event model.
+local ACP v1 stdio adapter can carry the already-sanitized presentation and exact input actions to
+an editor. Its durable session descriptor binds one ACP session id to the same Flow run id,
+canonical project, admitted policy digest, and actor. The supervisor command and run ledger bind
+the selected workflow after `/flow-run`. Load and replay use those durable records.
+
+The ACP adapter accepts only its two Flow commands, project-confined workflow sources, and the
+implemented standard session methods. It does not consume editor filesystem, terminal, MCP, or
+extension authority. Its strict byte and protocol streams bound frames, JSON structure, active
+requests, cancellation-notification work, permission waits, output ordering, and cleanup. The
+bridge captures one policy configuration for its lifetime. It reconciles the bounded gap between
+supervisor acceptance and the first ledger event without resubmitting work. ACP remains a transport
+boundary rather than the package ABI, browser API, supervisor protocol, or durable event model.
 
 An approval, denial, or cancellation keypress carries one current opaque action id. The application
 rebinds that id to the latest validated document and invokes the existing approval or supervisor

@@ -1,6 +1,7 @@
 import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -185,6 +186,64 @@ describe("local ACP session store", () => {
       store.list({ projectRoot: PROJECT, policyDigest: POLICY_ONE, limit: 2 }),
     ).rejects.toMatchObject({ code: "limit_exceeded" });
   });
+
+  it("rejects session publication after the exact store-entry bound", async () => {
+    const root = await temporaryRoot();
+    const store = new LocalAcpSessionStore(root, { maxEntries: 2 });
+    await store.create(sessionInput(SESSION_ONE, "2026-08-17T12:00:00.000Z"));
+    await store.create(sessionInput(SESSION_TWO, "2026-08-17T12:00:01.000Z"));
+
+    await expect(
+      store.create(
+        sessionInput("33333333-3333-4333-8333-333333333333", "2026-08-17T12:00:02.000Z"),
+      ),
+    ).rejects.toMatchObject({ code: "limit_exceeded" });
+    await expect(
+      store.list({ projectRoot: PROJECT, policyDigest: POLICY_ONE, limit: 2 }),
+    ).resolves.toMatchObject({
+      sessions: [{ sessionId: SESSION_ONE }, { sessionId: SESSION_TWO }],
+    });
+  });
+
+  it("does not let a later publication bypass an aborted queued turn", async () => {
+    const root = await temporaryRoot();
+    const firstAtPublish = deferred();
+    const releaseFirst = deferred();
+    const first = new LocalAcpSessionStore(root, {
+      maxEntries: 3,
+      beforePublish: async () => {
+        firstAtPublish.resolve();
+        await releaseFirst.promise;
+      },
+    }).create(sessionInput(SESSION_ONE, "2026-08-17T12:00:00.000Z"));
+    await firstAtPublish.promise;
+
+    const cancellation = new Error("PRIVATE_QUEUED_CANCEL");
+    const controller = new AbortController();
+    const secondQueued = deferred();
+    const queued = new LocalAcpSessionStore(root, {
+      maxEntries: 3,
+      afterCreationQueued: () => secondQueued.resolve(),
+    }).create(sessionInput(SESSION_TWO, "2026-08-17T12:00:01.000Z"), { signal: controller.signal });
+    await secondQueued.promise;
+    controller.abort(cancellation);
+    await expect(queued).rejects.toBe(cancellation);
+
+    const thirdAtPublish = deferred();
+    const third = new LocalAcpSessionStore(root, {
+      maxEntries: 3,
+      beforePublish: () => thirdAtPublish.resolve(),
+    }).create(sessionInput("33333333-3333-4333-8333-333333333333", "2026-08-17T12:00:02.000Z"));
+    await expect(
+      Promise.race([thirdAtPublish.promise.then(() => "started"), delay(20).then(() => "blocked")]),
+    ).resolves.toBe("blocked");
+
+    releaseFirst.resolve();
+    await expect(first).resolves.toMatchObject({ sessionId: SESSION_ONE });
+    await expect(third).resolves.toMatchObject({
+      sessionId: "33333333-3333-4333-8333-333333333333",
+    });
+  });
 });
 
 function sessionInput(sessionId: string, createdAt: string) {
@@ -202,4 +261,12 @@ async function temporaryRoot(): Promise<string> {
   roots.push(root);
   await mkdir(root, { recursive: true });
   return root;
+}
+
+function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {
+  let resolve = (): void => undefined;
+  const promise = new Promise<void>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
 }

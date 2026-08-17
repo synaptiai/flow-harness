@@ -6,6 +6,35 @@ attempt applied no effects. Recovery remains conservative: ambiguous work is rep
 operator and is never repeated automatically. Agent attempts that select `exec`, command attempts, and model verifier attempts never opt into
 fresh recovery; an open verifier start is refused as uncertain.
 
+## ACP editor sessions
+
+`flow acp --actor <label>` stores its bounded session index below the selected runs directory. One
+ACP session id is also the Flow run id. The descriptor fixes the canonical project, policy digest,
+actor, and creation time. The durable supervisor command and `run_started` event bind the workflow
+selected by `/flow-run`.
+
+After a bridge restart, connect from the same canonical project with the same admitted policy.
+Use ACP `session/list` to discover a session and `session/load` to replay its public durable state.
+Use `session/resume` to restore the adapter without replay. Load and replay read only the session
+descriptor and run ledger. They do not read live workflow, activation, candidate, capability,
+registry, credential, or network sources.
+
+Input EOF, an editor crash, a partial protocol write, or bridge process loss does not cancel an
+already durable run. Restart the bridge and load the same session. An explicit ACP cancel or
+`session/close` submits the existing deterministic durable cancellation command when a submission
+exists. Closing an empty session creates no command. Repeating either operation is safe under the
+supervisor command identity rules. Close blocks prompts only in that bridge connection.
+
+A successful `session/load` or `session/resume` reopens the adapter from durable state. Use load
+when the editor also needs public replay. Use resume when it needs only a new active adapter for
+the same durable session.
+
+A changed project or policy identity refuses the stored session. Do not edit the ACP descriptor or
+run records to repair the mismatch. Restore the admitted project and policy, or inspect the run
+with the ordinary `inspect` and `events` commands. A session-publication uncertainty requires the
+same read-only reconciliation: list sessions and inspect the matching run before retrying. The
+bridge has no remote, shared-user, or network recovery mode.
+
 ## Operator workflow
 
 Inspecting a run is read-only and does not acquire execution ownership:

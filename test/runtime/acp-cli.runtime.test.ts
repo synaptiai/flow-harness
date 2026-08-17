@@ -113,6 +113,55 @@ describe("compiled Flow ACP bridge", () => {
     expect(publicOutput).not.toContain("rawInput");
     expect(publicOutput).not.toContain("rawOutput");
   });
+
+  it("settles an initialized bridge on SIGINT with shell-standard status", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-acp-signal-")));
+    temporaryDirectories.push(root);
+    const bridge = startBridge(root, join(root, ".flow", "runs"));
+    const connection = client({ name: "signal-editor" }).connect(bridge.stream);
+
+    try {
+      await initialize(connection.agent);
+      bridge.interrupt();
+
+      await expect(withDeadline(bridge.completed, "signal bridge exit")).resolves.toEqual({
+        code: 130,
+        stderr: "Flow received SIGINT\n",
+      });
+    } finally {
+      connection.close();
+      bridge.terminate();
+    }
+  });
+
+  it("exits nonzero with one fixed error for unsupported pre-initialize traffic", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-acp-invalid-")));
+    temporaryDirectories.push(root);
+    const bridge = startBridge(root, join(root, ".flow", "runs"));
+    const writer = bridge.stream.writable.getWriter();
+
+    try {
+      await writer.write({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "PRIVATE_UNSUPPORTED_METHOD",
+        params: { PRIVATE_VALUE: true },
+      });
+      writer.releaseLock();
+      bridge.closeInput();
+
+      const result = await withDeadline(bridge.completed, "invalid bridge exit");
+      expect(result).toEqual({ code: 1, stderr: "ACP message order is invalid\n" });
+      expect(result.stderr).not.toContain("PRIVATE_");
+    } finally {
+      try {
+        writer.releaseLock();
+      } catch {
+        // The successful path already released the writer.
+      }
+      bridge.terminate();
+    }
+  });
 });
 
 function startBridge(
@@ -121,6 +170,7 @@ function startBridge(
 ): {
   readonly completed: Promise<{ readonly code: number | null; readonly stderr: string }>;
   readonly closeInput: () => void;
+  readonly interrupt: () => void;
   readonly stream: ReturnType<typeof ndJsonStream>;
   readonly terminate: () => void;
 } {
@@ -139,6 +189,7 @@ function startBridge(
   return {
     completed,
     closeInput: () => child.stdin.end(),
+    interrupt: () => child.kill("SIGINT"),
     stream: ndJsonStream(
       Writable.toWeb(child.stdin) as WritableStream<Uint8Array>,
       Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>,

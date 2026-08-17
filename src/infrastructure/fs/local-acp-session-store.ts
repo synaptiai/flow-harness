@@ -28,6 +28,7 @@ const RECORD_KEYS = [
   "runId",
   "sessionId",
 ] as const;
+const sessionCreationTails = new Map<string, Promise<void>>();
 
 export interface AcpSessionDescriptor {
   readonly apiVersion: typeof ACP_SESSION_API_VERSION;
@@ -54,6 +55,7 @@ export interface AcpSessionExpectedIdentity {
 }
 
 export interface LocalAcpSessionStoreHooks {
+  readonly afterCreationQueued?: () => void | Promise<void>;
   readonly beforePublish?: () => void | Promise<void>;
   readonly afterPublish?: () => void | Promise<void>;
 }
@@ -113,6 +115,28 @@ export class LocalAcpSessionStore {
     await this.#ensureRoot(options.signal);
     options.signal?.throwIfAborted();
 
+    return await withSessionCreationTurn(
+      this.#sessionsRoot,
+      options.signal,
+      this.#hooks.afterCreationQueued,
+      async () => {
+        const existing = await this.#readExistingForCreate(descriptor, options.signal);
+        if (existing !== undefined) {
+          return existing;
+        }
+        await this.#assertCreationCapacity(options.signal);
+        return await this.#publish(descriptor, encoded, options.signal);
+      },
+    );
+  }
+
+  async #publish(
+    descriptor: AcpSessionDescriptor,
+    encoded: Buffer,
+    signal: AbortSignal | undefined,
+  ): Promise<AcpSessionDescriptor> {
+    signal?.throwIfAborted();
+
     const target = this.#recordPath(descriptor.sessionId);
     const temporary = join(this.#sessionsRoot, `.pending-${randomUUID()}`);
     let handle: FileHandle | undefined;
@@ -126,15 +150,15 @@ export class LocalAcpSessionStore {
         constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
         0o600,
       );
-      options.signal?.throwIfAborted();
+      signal?.throwIfAborted();
       await handle.writeFile(encoded);
-      options.signal?.throwIfAborted();
+      signal?.throwIfAborted();
       await handle.sync();
-      options.signal?.throwIfAborted();
+      signal?.throwIfAborted();
       await handle.close();
       handle = undefined;
       await this.#hooks.beforePublish?.();
-      options.signal?.throwIfAborted();
+      signal?.throwIfAborted();
       try {
         await link(temporary, target);
         durable = true;
@@ -181,13 +205,50 @@ export class LocalAcpSessionStore {
       if (durable) {
         throw new LocalAcpSessionStoreError("publication_uncertain");
       }
-      options.signal?.throwIfAborted();
+      signal?.throwIfAborted();
       throw normalizeStoreError(primaryError);
     }
     if (result === undefined) {
       throw new LocalAcpSessionStoreError("io");
     }
     return result;
+  }
+
+  async #readExistingForCreate(
+    descriptor: AcpSessionDescriptor,
+    signal: AbortSignal | undefined,
+  ): Promise<AcpSessionDescriptor | undefined> {
+    try {
+      const existing = await this.#readRecord(descriptor.sessionId, signal);
+      if (!isDeepStrictEqual(existing, descriptor)) {
+        throw new LocalAcpSessionStoreError("conflict");
+      }
+      return existing;
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (error instanceof LocalAcpSessionStoreError && error.code === "not_found") {
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
+  async #assertCreationCapacity(signal: AbortSignal | undefined): Promise<void> {
+    let entries = 0;
+    try {
+      const directory = await opendir(this.#sessionsRoot);
+      signal?.throwIfAborted();
+      for await (const _entry of directory) {
+        signal?.throwIfAborted();
+        entries += 1;
+        if (entries >= this.#maxEntries) {
+          throw new LocalAcpSessionStoreError("limit_exceeded");
+        }
+      }
+    } catch (error) {
+      signal?.throwIfAborted();
+      throw normalizeStoreError(error);
+    }
   }
 
   async read(
@@ -311,6 +372,56 @@ export class LocalAcpSessionStore {
 
   #recordPath(sessionId: string): string {
     return join(this.#sessionsRoot, `${sessionId}.json`);
+  }
+}
+
+async function withSessionCreationTurn<T>(
+  key: string,
+  signal: AbortSignal | undefined,
+  afterQueued: (() => void | Promise<void>) | undefined,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous = sessionCreationTails.get(key) ?? Promise.resolve();
+  let release = (): void => undefined;
+  const turn = new Promise<void>((resolveTurn) => {
+    release = resolveTurn;
+  });
+  const tail = previous.then(() => turn);
+  sessionCreationTails.set(key, tail);
+  void tail.then(() => {
+    if (sessionCreationTails.get(key) === tail) {
+      sessionCreationTails.delete(key);
+    }
+  });
+  try {
+    await afterQueued?.();
+    await waitForCreationTurn(previous, signal);
+    signal?.throwIfAborted();
+    return await operation();
+  } finally {
+    release();
+  }
+}
+
+async function waitForCreationTurn(
+  previous: Promise<void>,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  if (signal === undefined) {
+    await previous;
+    return;
+  }
+  signal.throwIfAborted();
+  let rejectAbort = (_error: unknown): void => undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    rejectAbort = reject;
+  });
+  const onAbort = () => rejectAbort(signal.reason);
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    await Promise.race([previous, aborted]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
   }
 }
 

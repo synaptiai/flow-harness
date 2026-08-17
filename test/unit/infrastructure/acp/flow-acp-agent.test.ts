@@ -108,6 +108,30 @@ describe("Flow ACP agent", () => {
     expect(JSON.stringify(updates)).not.toContain("PRIVATE_VERSION");
   });
 
+  it("rejects an unsupported protocol version without initializing the connection", async () => {
+    const harness = await createHarness(roots);
+    const peer = client({ name: "test-editor" });
+
+    await peer.connectWith(harness.agent, async (connection) => {
+      await expect(
+        connection.request(methods.agent.initialize, { protocolVersion: 2 }),
+      ).rejects.toMatchObject({ message: "Flow ACP protocol version is not supported" });
+      await expect(
+        connection.request(methods.agent.session.new, {
+          cwd: harness.projectRoot,
+          mcpServers: [],
+        }),
+      ).rejects.toMatchObject({ message: "Flow ACP connection is not initialized" });
+      await initialize(connection);
+      await expect(
+        connection.request(methods.agent.session.new, {
+          cwd: harness.projectRoot,
+          mcpServers: [],
+        }),
+      ).resolves.toEqual({ sessionId: SESSION_ID });
+    });
+  });
+
   it("submits one explicit workflow and maps presentation approval through the current action", async () => {
     const harness = await createHarness(roots);
     const updates: unknown[] = [];
@@ -283,9 +307,82 @@ describe("Flow ACP agent", () => {
     expect(harness.runtime.submissions).toEqual([]);
   });
 
-  it("maps cancel and close to one stable durable cancellation identity", async () => {
+  it.each(["/PRIVATE_ABSOLUTE.workflow.yaml", "../PRIVATE_PARENT.workflow.yaml"])(
+    "rejects an escaped text workflow source before runtime submission: %s",
+    async (workflowSource) => {
+      const harness = await createHarness(roots);
+      const peer = client({ name: "test-editor" });
+
+      await peer.connectWith(harness.agent, async (connection) => {
+        await initialize(connection);
+        await connection.request(methods.agent.session.new, {
+          cwd: harness.projectRoot,
+          mcpServers: [],
+        });
+        await expect(
+          connection.request(methods.agent.session.prompt, {
+            sessionId: SESSION_ID,
+            prompt: [{ type: "text", text: `/flow-run ${workflowSource}` }],
+          }),
+        ).rejects.toMatchObject({ message: "Flow ACP prompt is invalid" });
+      });
+
+      expect(harness.runtime.submissions).toEqual([]);
+      expect(JSON.stringify(harness.runtime)).not.toContain("PRIVATE_");
+    },
+  );
+
+  it.each(["workflow:release@1.2.3", "activation:release"])(
+    "preserves an admitted non-file workflow locator: %s",
+    async (workflowSource) => {
+      const harness = await createHarness(roots);
+      const peer = cancellingPermissionClient();
+
+      await peer.connectWith(harness.agent, async (connection) => {
+        await initialize(connection);
+        await connection.request(methods.agent.session.new, {
+          cwd: harness.projectRoot,
+          mcpServers: [],
+        });
+        await expect(
+          connection.request(methods.agent.session.prompt, {
+            sessionId: SESSION_ID,
+            prompt: [{ type: "text", text: `/flow-run ${workflowSource}` }],
+          }),
+        ).resolves.toEqual({ stopReason: "end_turn" });
+      });
+
+      expect(harness.runtime.submissions).toEqual([{ sessionId: SESSION_ID, workflowSource }]);
+    },
+  );
+
+  it.each(["workflow:release", "activation:"])(
+    "rejects a malformed non-file workflow locator: %s",
+    async (workflowSource) => {
+      const harness = await createHarness(roots);
+      const peer = client({ name: "test-editor" });
+
+      await peer.connectWith(harness.agent, async (connection) => {
+        await initialize(connection);
+        await connection.request(methods.agent.session.new, {
+          cwd: harness.projectRoot,
+          mcpServers: [],
+        });
+        await expect(
+          connection.request(methods.agent.session.prompt, {
+            sessionId: SESSION_ID,
+            prompt: [{ type: "text", text: `/flow-run ${workflowSource}` }],
+          }),
+        ).rejects.toMatchObject({ message: "Flow ACP prompt is invalid" });
+      });
+
+      expect(harness.runtime.submissions).toEqual([]);
+    },
+  );
+
+  it("maps cancel and close to one stable durable cancellation identity and requires resume", async () => {
     const harness = await createHarness(roots);
-    const peer = client({ name: "test-editor" });
+    const peer = cancellingPermissionClient();
 
     await peer.connectWith(harness.agent, async (connection) => {
       await initialize(connection);
@@ -294,7 +391,28 @@ describe("Flow ACP agent", () => {
         mcpServers: [],
       });
       await connection.notify(methods.agent.session.cancel, { sessionId: SESSION_ID });
+      await harness.runtime.cancellationStarted;
       await connection.request(methods.agent.session.close, { sessionId: SESSION_ID });
+      await expect(
+        connection.request(methods.agent.session.prompt, {
+          sessionId: SESSION_ID,
+          prompt: [{ type: "text", text: "/flow-continue" }],
+        }),
+      ).rejects.toMatchObject({ message: "Flow ACP session is closed" });
+      await expect(
+        connection.request(methods.agent.session.close, { sessionId: SESSION_ID }),
+      ).resolves.toEqual({});
+      await connection.request(methods.agent.session.resume, {
+        sessionId: SESSION_ID,
+        cwd: harness.projectRoot,
+        mcpServers: [],
+      });
+      await expect(
+        connection.request(methods.agent.session.prompt, {
+          sessionId: SESSION_ID,
+          prompt: [{ type: "text", text: "/flow-continue" }],
+        }),
+      ).resolves.toEqual({ stopReason: "end_turn" });
     });
 
     expect(harness.runtime.cancellations).toEqual([
@@ -331,6 +449,79 @@ describe("Flow ACP agent", () => {
     ]);
   });
 
+  it("waits for an in-flight submission before settling durable cancellation", async () => {
+    const harness = await createHarness(roots, { holdSubmission: true });
+    const peer = cancellingPermissionClient();
+
+    await peer.connectWith(harness.agent, async (connection) => {
+      await initialize(connection);
+      await connection.request(methods.agent.session.new, {
+        cwd: harness.projectRoot,
+        mcpServers: [],
+      });
+      const prompt = connection.request(methods.agent.session.prompt, {
+        sessionId: SESSION_ID,
+        prompt: [{ type: "text", text: "/flow-run workflows/release.yaml" }],
+      });
+      await harness.runtime.submissionStarted;
+
+      await connection.notify(methods.agent.session.cancel, { sessionId: SESSION_ID });
+      await expect(
+        Promise.race([
+          harness.runtime.cancellationStarted.then(() => "cancelled"),
+          delay(25, "pending"),
+        ]),
+      ).resolves.toBe("pending");
+      harness.runtime.releaseSubmission();
+      await harness.runtime.cancellationStarted;
+
+      await expect(prompt).resolves.toEqual({ stopReason: "cancelled" });
+    });
+
+    expect(harness.runtime.cancellations).toEqual([
+      { runId: SESSION_ID, commandId: CANCEL_ID, actor: "editor-user" },
+    ]);
+  });
+
+  it("coalesces repeated cancellation and bounds concurrent cancellation notifications", async () => {
+    const harness = await createHarness(roots, {
+      cancellationConcurrency: 1,
+      holdCancellation: true,
+    });
+    const secondSessionId = "30000000-0000-4000-8000-000000000003";
+    await harness.sessionStore.create({
+      sessionId: secondSessionId,
+      projectRoot: harness.projectRoot,
+      policyDigest: POLICY_DIGEST,
+      actor: "editor-user",
+      createdAt: "2026-08-17T10:00:01.000Z",
+    });
+    const peer = client({ name: "test-editor" });
+
+    await peer.connectWith(harness.agent, async (connection) => {
+      await initialize(connection);
+      await connection.request(methods.agent.session.new, {
+        cwd: harness.projectRoot,
+        mcpServers: [],
+      });
+      await connection.notify(methods.agent.session.cancel, { sessionId: SESSION_ID });
+      await harness.runtime.cancellationStarted;
+      await Promise.all([
+        connection.notify(methods.agent.session.cancel, { sessionId: SESSION_ID }),
+        connection.notify(methods.agent.session.cancel, { sessionId: secondSessionId }),
+      ]);
+      await delay(25, undefined);
+
+      expect(harness.runtime.cancellations).toEqual([
+        { runId: SESSION_ID, commandId: CANCEL_ID, actor: "editor-user" },
+      ]);
+      harness.runtime.releaseCancellation();
+      await delay(25, undefined);
+      await connection.notify(methods.agent.session.cancel, { sessionId: secondSessionId });
+      await waitFor(() => harness.runtime.cancellations.length === 2);
+    });
+  });
+
   it("does not expose a private peer permission failure", async () => {
     const harness = await createHarness(roots);
     const peer = client({ name: "test-editor" }).onRequest(
@@ -354,9 +545,37 @@ describe("Flow ACP agent", () => {
         .catch((caught: unknown) => caught);
 
       expect(error).toBeInstanceOf(RequestError);
-      expect(error).toMatchObject({ message: "Cannot process Flow ACP prompt" });
+      expect(error).toMatchObject({ message: "Cannot observe Flow ACP session" });
       expect(error).not.toHaveProperty("cause");
       expect(JSON.stringify(error)).not.toContain("PRIVATE_PERMISSION_FAILURE");
+    });
+  });
+
+  it("bounds a stalled permission response with a fixed observation failure", async () => {
+    const harness = await createHarness(roots, { permissionTimeoutMs: 10 });
+    const peer = client({ name: "test-editor" }).onRequest(
+      methods.client.session.requestPermission,
+      async () => await new Promise<never>(() => undefined),
+    );
+
+    await peer.connectWith(harness.agent, async (connection) => {
+      await initialize(connection);
+      await connection.request(methods.agent.session.new, {
+        cwd: harness.projectRoot,
+        mcpServers: [],
+      });
+      const outcome = await Promise.race([
+        connection
+          .request(methods.agent.session.prompt, {
+            sessionId: SESSION_ID,
+            prompt: [{ type: "text", text: "/flow-continue" }],
+          })
+          .catch((error: unknown) => error),
+        delay(250, "PRIVATE_PERMISSION_TIMEOUT"),
+      ]);
+
+      expect(outcome).toMatchObject({ message: "Cannot observe Flow ACP session" });
+      expect(JSON.stringify(outcome)).not.toContain("PRIVATE_");
     });
   });
 });
@@ -369,18 +588,30 @@ async function initialize(connection: {
 
 async function createHarness(
   roots: string[],
-  options: { readonly holdObservation?: boolean } = {},
+  options: {
+    readonly cancellationConcurrency?: number;
+    readonly holdCancellation?: boolean;
+    readonly holdObservation?: boolean;
+    readonly holdSubmission?: boolean;
+    readonly permissionTimeoutMs?: number;
+  } = {},
 ): Promise<{
   readonly agent: ReturnType<typeof createFlowAcpAgent>;
   readonly projectRoot: string;
   readonly runtime: RuntimeHarness;
+  readonly sessionStore: LocalAcpSessionStore;
 }> {
   const root = await mkdtemp(join(tmpdir(), "flow-acp-agent-"));
   roots.push(root);
   const projectRoot = await realpath(root);
-  const runtime = new RuntimeHarness(options.holdObservation ?? false);
+  const runtime = new RuntimeHarness(
+    options.holdCancellation ?? false,
+    options.holdObservation ?? false,
+    options.holdSubmission ?? false,
+  );
+  const sessionStore = new LocalAcpSessionStore(root);
   const agent = createFlowAcpAgent({
-    sessionStore: new LocalAcpSessionStore(root),
+    sessionStore,
     projectRoot,
     policyDigest: POLICY_DIGEST,
     actor: "editor-user",
@@ -389,8 +620,14 @@ async function createHarness(
     createCancellationCommandId: () => CANCEL_ID,
     now: () => "2026-08-17T10:00:00.000Z",
     runtime,
+    ...(options.cancellationConcurrency === undefined
+      ? {}
+      : { cancellationConcurrency: options.cancellationConcurrency }),
+    ...(options.permissionTimeoutMs === undefined
+      ? {}
+      : { permissionTimeoutMs: options.permissionTimeoutMs }),
   });
-  return { agent, projectRoot, runtime };
+  return { agent, projectRoot, runtime, sessionStore };
 }
 
 class RuntimeHarness implements FlowAcpAgentRuntime {
@@ -400,15 +637,25 @@ class RuntimeHarness implements FlowAcpAgentRuntime {
   readonly decisions: unknown[] = [];
   readonly cancellations: unknown[] = [];
   readonly observationStarted: Promise<void>;
+  readonly submissionStarted: Promise<void>;
   readonly cancellationStarted: Promise<void>;
   readonly #holdObservation: boolean;
+  readonly #holdSubmission: boolean;
+  readonly #holdCancellation: boolean;
   readonly #markObservationStarted: () => void;
   readonly #observationRelease: Promise<void>;
   readonly #releaseObservation: () => void;
   readonly #markCancellationStarted: () => void;
+  readonly #cancellationRelease: Promise<void>;
+  readonly #releaseCancellation: () => void;
+  readonly #markSubmissionStarted: () => void;
+  readonly #submissionRelease: Promise<void>;
+  readonly #releaseSubmission: () => void;
 
-  constructor(holdObservation: boolean) {
+  constructor(holdCancellation: boolean, holdObservation: boolean, holdSubmission: boolean) {
+    this.#holdCancellation = holdCancellation;
     this.#holdObservation = holdObservation;
+    this.#holdSubmission = holdSubmission;
     const started = deferred();
     this.observationStarted = started.promise;
     this.#markObservationStarted = started.resolve;
@@ -418,6 +665,15 @@ class RuntimeHarness implements FlowAcpAgentRuntime {
     const cancellation = deferred();
     this.cancellationStarted = cancellation.promise;
     this.#markCancellationStarted = cancellation.resolve;
+    const cancellationRelease = deferred();
+    this.#cancellationRelease = cancellationRelease.promise;
+    this.#releaseCancellation = cancellationRelease.resolve;
+    const submission = deferred();
+    this.submissionStarted = submission.promise;
+    this.#markSubmissionStarted = submission.resolve;
+    const submissionRelease = deferred();
+    this.#submissionRelease = submissionRelease.promise;
+    this.#releaseSubmission = submissionRelease.resolve;
   }
 
   async submit(input: {
@@ -425,6 +681,10 @@ class RuntimeHarness implements FlowAcpAgentRuntime {
     readonly workflowSource: string;
   }): Promise<void> {
     this.submissions.push({ sessionId: input.sessionId, workflowSource: input.workflowSource });
+    this.#markSubmissionStarted();
+    if (this.#holdSubmission) {
+      await this.#submissionRelease;
+    }
   }
 
   async observe(input: {
@@ -454,10 +714,21 @@ class RuntimeHarness implements FlowAcpAgentRuntime {
   async cancel(input: unknown): Promise<void> {
     this.cancellations.push(input);
     this.#markCancellationStarted();
+    if (this.#holdCancellation) {
+      await this.#cancellationRelease;
+    }
   }
 
   releaseObservation(): void {
     this.#releaseObservation();
+  }
+
+  releaseSubmission(): void {
+    this.#releaseSubmission();
+  }
+
+  releaseCancellation(): void {
+    this.#releaseCancellation();
   }
 }
 
@@ -470,6 +741,21 @@ function deferred(): { readonly promise: Promise<void>; readonly resolve: () => 
     throw new Error("Cannot create test deferred");
   }
   return { promise, resolve: resolvePromise };
+}
+
+async function delay<T>(milliseconds: number, value: T): Promise<T> {
+  await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+  return value;
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) {
+      return;
+    }
+    await delay(5, undefined);
+  }
+  throw new Error("ACP test condition did not settle");
 }
 
 function cancellingPermissionClient(): ReturnType<typeof client> {
