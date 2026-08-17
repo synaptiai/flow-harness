@@ -316,10 +316,10 @@ lists to static component-id arrays.
 
 Package selection is session-local. It is not workflow authority and is absent from durable run
 state, capability snapshots, worker requests, child ledgers, and recovery identity. The default
-presentation remains governed by the existing host projection when no package is selected. An
-Agent Client Protocol adapter could later carry the sanitized document or interaction to an editor.
-ACP does not replace this package profile, browser API, durable run state, or presentation
-authority.
+presentation remains governed by the existing host projection when no package is selected. The
+local Agent Client Protocol v1 adapter can carry the sanitized document and exact interaction to
+an editor. ACP does not replace this package profile, browser API, durable run state, or
+presentation authority. The editor cannot select package content through ACP.
 
 ## Digest-pinned bundle distribution
 

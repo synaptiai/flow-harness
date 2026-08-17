@@ -5,6 +5,7 @@ import { constants, realpathSync } from "node:fs";
 import { open, readFile, realpath } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { Readable, Writable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -166,12 +167,19 @@ import {
   PolicyPackageAdmissionError,
 } from "../domain/policy/policy-package-admission.js";
 import { applyPresentationPackage } from "../domain/presentation/presentation-package-projector.js";
+import { projectRunPresentation } from "../domain/presentation/run-presentation-projector.js";
 import { type RunEvent, type RunStatus, reduceRunEvents } from "../domain/run/events.js";
 import {
   WorkflowCompilationError,
   type WorkflowPackageReference,
 } from "../domain/workflow/compiler.js";
 import type { CompiledWorkflow, ThinkingLevel } from "../domain/workflow/types.js";
+import {
+  createFlowAcpAgent,
+  type FlowAcpAgentRuntime,
+} from "../infrastructure/acp/flow-acp-agent.js";
+import { createFlowAcpProtocolStream } from "../infrastructure/acp/flow-acp-protocol-stream.js";
+import { createStrictAcpStream } from "../infrastructure/acp/strict-acp-stream.js";
 import {
   CapabilityBundlePackError,
   packCapabilityBundleDirectory,
@@ -191,6 +199,7 @@ import {
 } from "../infrastructure/fs/flow-config-store.js";
 import { AdmissionStoreError } from "../infrastructure/fs/jsonl-admission-store.js";
 import { JsonlRunStore, RunStoreError } from "../infrastructure/fs/jsonl-run-store.js";
+import { LocalAcpSessionStore } from "../infrastructure/fs/local-acp-session-store.js";
 import { admitLocalAdaptationCandidate } from "../infrastructure/fs/local-adaptation-candidate.js";
 import {
   LocalAgentCommandApprovalChannel,
@@ -394,11 +403,14 @@ Usage:
   flow events <run-id> [--after <sequence>] [--limit <count>] [--follow] [--runs-dir <path>]
   flow tui <run-id> --actor <label> [--presentation <name>@<exact-version>] [--runs-dir <path>]
   flow web <run-id> --actor <label> [--presentation <name>@<exact-version>] [--runs-dir <path>]
+  flow acp --actor <label> [--runs-dir <path>]
   flow inspect <run-id> [--runs-dir <path>]
   flow supervisor status [--runs-dir <path>]
   flow supervisor shutdown [--runs-dir <path>]
   flow --help
 `;
+
+const MAX_ACP_RUN_START_WAIT_MS = 30_000;
 
 const installedPackageMetadata = createRequire(import.meta.url)("../../package.json") as unknown;
 const installedFlowVersion = parseInstalledFlowVersion(installedPackageMetadata);
@@ -479,6 +491,11 @@ export interface CliDependencies {
   readonly createBrowserPresentationHost: (
     options: LocalBrowserPresentationHostOptions,
   ) => BrowserPresentationHost;
+  readonly createAcpByteTransport: () => {
+    readonly input: ReadableStream<Uint8Array>;
+    readonly output: WritableStream<Uint8Array>;
+    readonly dispose?: () => void;
+  };
   readonly signal?: AbortSignal;
 }
 
@@ -558,6 +575,8 @@ export async function main(
         return await tuiCommand(args.slice(1), dependencyOverrides);
       case "web":
         return await webCommand(args.slice(1), io, dependencyOverrides);
+      case "acp":
+        return await acpCommand(args.slice(1), dependencyOverrides);
       case "inspect":
         return await inspectCommand(args.slice(1), io, dependencyOverrides);
       case "supervisor":
@@ -3355,6 +3374,327 @@ async function eventsCommand(
   }
 }
 
+async function acpCommand(
+  args: readonly string[],
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  const { positionals, values } = parseCommandArgs(args, {
+    actor: { type: "string" },
+    "runs-dir": { type: "string" },
+  });
+  if (positionals.length !== 0) {
+    throw new CliUsageError("acp does not accept positional arguments");
+  }
+  const actor = requireStringOption(values.actor, "acp requires --actor <label>");
+  const dependencies = dependenciesFrom(overrides);
+  let config: EffectiveFlowConfig;
+  try {
+    dependencies.signal?.throwIfAborted();
+    config = await dependencies.loadConfig({ cwd: dependencies.cwd });
+    dependencies.signal?.throwIfAborted();
+  } catch {
+    throw new FlowAcpBridgeSetupError();
+  }
+  let projectRoot: string;
+  try {
+    projectRoot = await realpath(config.projectRoot ?? dependencies.cwd);
+  } catch {
+    dependencies.signal?.throwIfAborted();
+    throw new Error("Cannot start Flow ACP bridge: resolve project root");
+  }
+  dependencies.signal?.throwIfAborted();
+  const runsDirectory = resolveRunsDirectory(dependencies.cwd, values["runs-dir"], config);
+  const runtime = createCliAcpRuntime({
+    projectRoot,
+    runsDirectory,
+    config,
+    dependencies,
+    overrides,
+  });
+  const byteTransport = dependencies.createAcpByteTransport();
+  const app = createFlowAcpAgent({
+    sessionStore: new LocalAcpSessionStore(runsDirectory),
+    projectRoot,
+    policyDigest: config.policyDigest,
+    actor,
+    version: installedFlowVersion,
+    createSessionId: randomUUID,
+    createCancellationCommandId: deterministicAcpCancellationCommandId,
+    now: () => new Date().toISOString(),
+    runtime,
+  });
+  const protocolStream = createFlowAcpProtocolStream(createStrictAcpStream(byteTransport));
+  const connection = app.connect(protocolStream);
+  const signal = dependencies.signal;
+  const closeForSignal = () => connection.close();
+  if (signal?.aborted) {
+    closeForSignal();
+  } else {
+    signal?.addEventListener("abort", closeForSignal, { once: true });
+  }
+  let connectionFailure: Error | undefined;
+  try {
+    await connection.closed;
+  } catch {
+    connectionFailure = new Error("Flow ACP connection failed");
+  } finally {
+    signal?.removeEventListener("abort", closeForSignal);
+  }
+  let protocolFailure: Error | undefined;
+  let disposalFailure: Error | undefined;
+  try {
+    protocolFailure = await protocolStream.settle();
+  } finally {
+    try {
+      byteTransport.dispose?.();
+    } catch {
+      disposalFailure = new Error("Cannot settle Flow ACP byte transport");
+    }
+  }
+  signal?.throwIfAborted();
+  if (protocolFailure !== undefined) {
+    throw protocolFailure;
+  }
+  if (connectionFailure !== undefined) {
+    throw connectionFailure;
+  }
+  if (disposalFailure !== undefined) {
+    throw disposalFailure;
+  }
+  return 0;
+}
+
+function createCliAcpRuntime(input: {
+  readonly projectRoot: string;
+  readonly runsDirectory: string;
+  readonly config: EffectiveFlowConfig;
+  readonly dependencies: CliDependencies;
+  readonly overrides: Partial<CliDependencies>;
+}): FlowAcpAgentRuntime {
+  const supervisorStore = new LocalSupervisorStore(input.runsDirectory);
+  const runStore = input.dependencies.createStore(input.runsDirectory);
+  const approvalChannel = input.dependencies.createAgentCommandApprovalChannel(input.runsDirectory);
+  return {
+    submit: async ({ sessionId, workflowSource, signal }) => {
+      signal?.throwIfAborted();
+      let exitCode: number;
+      try {
+        exitCode = await runCommand(
+          [
+            workflowSource,
+            "--detach",
+            "--command-id",
+            sessionId,
+            "--run-id",
+            sessionId,
+            "--runs-dir",
+            input.runsDirectory,
+            "--cwd",
+            input.projectRoot,
+          ],
+          { stdout: () => undefined, stderr: () => undefined },
+          {
+            ...input.overrides,
+            cwd: input.projectRoot,
+            loadConfig: async () => input.config,
+            ...(signal === undefined ? {} : { signal }),
+          },
+        );
+      } catch (error) {
+        signal?.throwIfAborted();
+        if (
+          !(await isCompletedAcpSubmission({
+            store: supervisorStore,
+            sessionId,
+            workflowSource,
+            projectRoot: input.projectRoot,
+            policy: input.config,
+            ...(signal === undefined ? {} : { signal }),
+          }))
+        ) {
+          throw error;
+        }
+        return;
+      }
+      signal?.throwIfAborted();
+      if (exitCode !== 0) {
+        throw new Error("Cannot submit Flow run through ACP");
+      }
+    },
+    replay: async ({ sessionId, render, signal }) => {
+      signal?.throwIfAborted();
+      if (runStore.exists !== undefined && !(await runStore.exists(sessionId))) {
+        signal?.throwIfAborted();
+        return;
+      }
+      let events: readonly RunEvent[];
+      try {
+        events = await runStore.read(sessionId);
+      } catch (error) {
+        signal?.throwIfAborted();
+        if (error instanceof RunStoreError && error.code === "not_found") {
+          return;
+        }
+        throw error;
+      }
+      signal?.throwIfAborted();
+      await render(projectRunPresentation(projectPublicRunOutput(reduceRunEvents(events))));
+      signal?.throwIfAborted();
+    },
+    observe: async ({ sessionId, awaitRunStart, render, signal }) => {
+      signal?.throwIfAborted();
+      await ensureSupervisor(supervisorStore, fileURLToPath(import.meta.url), input.config);
+      signal?.throwIfAborted();
+      await runPresentationSession({
+        runId: sessionId,
+        source: createAcpPresentationSource({
+          supervisorStore,
+          policyDigest: input.config.policyDigest,
+          awaitRunStart,
+          ...(signal === undefined ? {} : { signal }),
+        }),
+        renderer: { render, close: async () => undefined },
+        waitForMore: async (waitSignal) => {
+          await delay(
+            100,
+            undefined,
+            waitSignal === undefined ? undefined : { signal: waitSignal },
+          );
+        },
+        ...(signal === undefined ? {} : { signal }),
+      });
+    },
+    decide: async (decision) =>
+      await submitApprovalDecision({
+        ...decision,
+        store: runStore,
+        sink: approvalChannel,
+      }),
+    cancel: async (cancellation) => {
+      try {
+        await supervisorStore.readCommand(cancellation.runId);
+      } catch (error) {
+        if (error instanceof LocalSupervisorStoreError && error.code === "not_found") {
+          return;
+        }
+        throw error;
+      }
+      await submitSupervisorCancellation({
+        ...cancellation,
+        store: supervisorStore,
+        config: input.config,
+      });
+    },
+  };
+}
+
+function createAcpPresentationSource(input: {
+  readonly supervisorStore: LocalSupervisorStore;
+  readonly policyDigest: string;
+  readonly awaitRunStart: boolean;
+  readonly signal?: AbortSignal;
+}): RunPresentationEventSource {
+  let awaitingRunStart = input.awaitRunStart;
+  const runStartDeadline = Date.now() + MAX_ACP_RUN_START_WAIT_MS;
+  return {
+    readPage: async (request) => {
+      for (;;) {
+        input.signal?.throwIfAborted();
+        try {
+          const result = requireSupervisorSuccess(
+            await requestSupervisor(input.supervisorStore, {
+              type: "events",
+              policyDigest: input.policyDigest,
+              runId: request.runId,
+              afterSequence: request.afterSequence,
+              limit: request.limit,
+            }),
+          );
+          if (result.type !== "events") {
+            throw new SupervisorCommandError(
+              "protocol_invalid",
+              "supervisor returned a non-event result",
+            );
+          }
+          awaitingRunStart = false;
+          return {
+            type: result.type,
+            events: result.events,
+            cursor: result.cursor,
+            terminal: result.terminal,
+          };
+        } catch (error) {
+          input.signal?.throwIfAborted();
+          if (
+            !awaitingRunStart ||
+            !(error instanceof SupervisorCommandError) ||
+            error.code !== "not_found" ||
+            Date.now() >= runStartDeadline
+          ) {
+            throw error;
+          }
+          await delay(
+            100,
+            undefined,
+            input.signal === undefined ? undefined : { signal: input.signal },
+          );
+        }
+      }
+    },
+  };
+}
+
+async function isCompletedAcpSubmission(input: {
+  readonly store: LocalSupervisorStore;
+  readonly sessionId: string;
+  readonly workflowSource: string;
+  readonly projectRoot: string;
+  readonly policy: EffectiveFlowConfig;
+  readonly signal?: AbortSignal;
+}): Promise<boolean> {
+  input.signal?.throwIfAborted();
+  let command: Awaited<ReturnType<LocalSupervisorStore["readCommand"]>>;
+  try {
+    command = await input.store.readCommand(input.sessionId);
+  } catch {
+    input.signal?.throwIfAborted();
+    return false;
+  }
+  input.signal?.throwIfAborted();
+  const locator =
+    parseWorkflowPackageLocator(input.workflowSource) ??
+    parsePromptActivationLocator(input.workflowSource);
+  const sourceName =
+    locator === null ? resolve(input.projectRoot, input.workflowSource) : input.workflowSource;
+  return (
+    command.type === "submit" &&
+    command.status === "completed" &&
+    command.commandId === input.sessionId &&
+    command.runId === input.sessionId &&
+    command.mode === "run" &&
+    command.policyDigest === input.policy.policyDigest &&
+    command.sourceName === sourceName &&
+    command.cwd === input.projectRoot &&
+    (command.projectRoot ?? null) === input.policy.projectRoot
+  );
+}
+
+function deterministicAcpCancellationCommandId(sessionId: string): string {
+  const bytes = createHash("sha256")
+    .update("flow-acp-cancellation-v1\0")
+    .update(sessionId)
+    .digest();
+  const versionByte = bytes[6];
+  const variantByte = bytes[8];
+  if (versionByte === undefined || variantByte === undefined) {
+    throw new Error("Cannot create Flow ACP cancellation identity");
+  }
+  bytes[6] = (versionByte & 0x0f) | 0x40;
+  bytes[8] = (variantByte & 0x3f) | 0x80;
+  const hex = bytes.subarray(0, 16).toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 async function tuiCommand(
   args: readonly string[],
   overrides: Partial<CliDependencies>,
@@ -4346,6 +4686,16 @@ function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies 
     createBrowserPresentationHost:
       overrides.createBrowserPresentationHost ??
       ((options) => new LocalBrowserPresentationHost(options)),
+    createAcpByteTransport:
+      overrides.createAcpByteTransport ??
+      (() => ({
+        input: Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>,
+        output: Writable.toWeb(process.stdout) as WritableStream<Uint8Array>,
+        dispose: () => {
+          process.stdin.destroy();
+          process.stdout.destroy();
+        },
+      })),
     ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
   };
 }
@@ -4622,6 +4972,14 @@ class SupervisorCommandError extends Error {
     message: string,
   ) {
     super(message);
+  }
+}
+
+class FlowAcpBridgeSetupError extends Error {
+  override readonly name = "FlowAcpBridgeSetupError";
+
+  constructor() {
+    super("Cannot start Flow ACP bridge");
   }
 }
 

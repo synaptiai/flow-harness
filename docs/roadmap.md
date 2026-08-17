@@ -135,8 +135,10 @@ containment milestone. It is not VM-grade or multi-tenant isolation.
   authenticated document streaming, current-action binding, reload, and responsive Chromium
   evidence.)*
 - Content-bearing or executable UI contribution manifests remain planned. The inert A2UI-profile
-  presentation manifest above is implemented for both first-party hosts. Remote, multi-user,
-  reverse-proxied, ACP, and AG-UI hosts remain separate work.
+  presentation manifest above is implemented for both first-party presentation hosts. A local
+  ACP v1 stdio bridge now carries the same public presentation and exact controls to an editor. It
+  uses captured policy, bounded peer waits, durable close/cancel settlement, and restart replay.
+  Remote, multi-user, reverse-proxied, ACP v2, A2A, and AG-UI hosts remain separate work.
 - The first-party host does not admit package markup, code, or renderers.
 - OMP-inspired high-value tools are benchmarked before adoption.
 

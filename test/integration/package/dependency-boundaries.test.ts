@@ -49,6 +49,88 @@ describe("source dependency boundaries", () => {
     expect(violations).toEqual([]);
   });
 
+  it("pins the official ACP SDK to infrastructure under its reviewed license", async () => {
+    const packageManifest = JSON.parse(
+      await readFile(join(repositoryRoot, "package.json"), "utf8"),
+    ) as { readonly dependencies?: Readonly<Record<string, string>> };
+    const packageLock = JSON.parse(
+      await readFile(join(repositoryRoot, "package-lock.json"), "utf8"),
+    ) as {
+      readonly packages?: Readonly<
+        Record<
+          string,
+          { readonly version?: string; readonly license?: string; readonly integrity?: string }
+        >
+      >;
+    };
+    expect(packageManifest.dependencies?.["@agentclientprotocol/sdk"]).toBe("1.3.0");
+    expect(packageLock.packages?.["node_modules/@agentclientprotocol/sdk"]).toEqual(
+      expect.objectContaining({
+        version: "1.3.0",
+        license: "Apache-2.0",
+        integrity:
+          "sha512-i3h/efaeuMUFAO1HSfo97QZQnnvMd7wWBYtBsdL6UMZg3a78sk3Ffya5Xu7C7tYsXomXoDXJBAzQF2PcFKAhIQ==",
+      }),
+    );
+
+    const violations: string[] = [];
+    for (const root of [domainRoot, applicationRoot]) {
+      for (const path of await typescriptFiles(root)) {
+        const source = await readFile(path, "utf8");
+        if (source.includes('"@agentclientprotocol/sdk"')) {
+          violations.push(relative(repositoryRoot, path));
+        }
+      }
+    }
+    expect(violations).toEqual([]);
+  });
+
+  it("pins audited development transitive dependencies to fixed releases", async () => {
+    const packageManifest = JSON.parse(
+      await readFile(join(repositoryRoot, "package.json"), "utf8"),
+    ) as { readonly overrides?: Readonly<Record<string, string>> };
+    const packageLock = JSON.parse(
+      await readFile(join(repositoryRoot, "package-lock.json"), "utf8"),
+    ) as {
+      readonly packages?: Readonly<
+        Record<
+          string,
+          { readonly version?: string; readonly license?: string; readonly integrity?: string }
+        >
+      >;
+    };
+
+    expect(packageManifest.overrides).toEqual({
+      "adm-zip": "0.6.0",
+      nanoid: "3.3.18",
+      sharp: "0.35.3",
+    });
+    expect(packageLock.packages?.["node_modules/adm-zip"]).toEqual(
+      expect.objectContaining({
+        version: "0.6.0",
+        license: "MIT",
+        integrity:
+          "sha512-XleryMhbuksdKtofnWZ9Sk+4CUTbms4Mb/EU32SZwToAyZ5RgVos/ki8n+yr0LWHOGKuakbXTuuYNHLQjhddgg==",
+      }),
+    );
+    expect(packageLock.packages?.["node_modules/nanoid"]).toEqual(
+      expect.objectContaining({
+        version: "3.3.18",
+        license: "MIT",
+        integrity:
+          "sha512-DTg4MJbGMWkfi6VZFdNt2/caMbQy4Ou+Op/hJQvGEWcnVfoA1QA+xzRKAzw9jD6+GVOOeYr/mIcuDSdug6F6+w==",
+      }),
+    );
+    expect(packageLock.packages?.["node_modules/sharp"]).toEqual(
+      expect.objectContaining({
+        version: "0.35.3",
+        license: "Apache-2.0",
+        integrity:
+          "sha512-ej0zVHuZGHCiABXcNxeYhpRnPNPAcvbG8RMdBAhDAxLKkCRVSpK3Iyu7qbqw3JMzoj0REeM6f3tJLtVwl0023Q==",
+      }),
+    );
+  });
+
   it("contains tuf-js and its compatibility imports in two repository infrastructure adapters", async () => {
     const imports: { readonly path: string; readonly sources: readonly string[] }[] = [];
     for (const path of await typescriptFiles(sourceRoot)) {

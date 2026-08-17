@@ -46,6 +46,7 @@ through an optional external profile.
 | Higher-isolation container command profile | Implemented behind operator-only selection; the pinned Linux x64 engine runtime gate passes |
 | Inert A2UI-profile presentation packages | Implemented for exact local or installed manifests that arrange a closed host-owned terminal or browser widget catalog without supplying data, actions, code, or bindings |
 | Local browser presentation host | Implemented as a one-session IPv4 loopback host with a fragment-bootstrapped capability, fixed first-party assets, authenticated full-document streaming, and current-action steering |
+| Local ACP v1 editor bridge | Implemented over strict bounded stdio with durable session discovery, restart replay, public-safe updates, and exact Flow approval and cancellation controls |
 | Automatic package activation, executable or remote UI extensions, and model network tools | Planned |
 | VM-grade isolation of the host-side agent runtime | Planned |
 
@@ -733,7 +734,8 @@ same inert manifest under `presentations/<name>/PRESENTATION.yaml`.
 The public Flow catalog is
 [`docs/specs/flow-a2ui-run-presentation-v1.catalog.json`](docs/specs/flow-a2ui-run-presentation-v1.catalog.json).
 This profile deliberately excludes optional general A2UI features. ACP is not the package ABI.
-It may later transport Flow-owned presentation updates across an agent-client session.
+The local ACP bridge transports Flow-owned presentation updates across an editor session. It does
+not let the editor change the selected package or supply presentation content.
 
 ### Apply a versioned policy package
 
@@ -1181,9 +1183,41 @@ run. Flow retains only the latest bounded complete document for one bounded reco
 This host is for one local operator. The session capability protects against other operating-system
 users, ambient web origins, and accidental disclosure. It is not an isolation boundary against a
 malicious process running as that same operator. Remote listening, TLS termination, reverse
-proxies, shared users, executable UI extensions, AG-UI, and ACP sessions remain unsupported. A
-future ACP adapter may transport the same Flow-owned document and input messages to an editor. ACP
-does not replace the browser API, A2UI package profile, supervisor protocol, or durable ledger.
+proxies, shared users, executable UI extensions, and AG-UI remain unsupported. The local ACP
+bridge can transport the same Flow-owned document and input messages to an editor. ACP does not
+replace the browser API, A2UI package profile, supervisor protocol, or durable ledger.
+
+### Observe and steer a run from an ACP v1 editor
+
+Start the local stdio bridge from the selected Flow project:
+
+```sh
+node dist/cli/main.js acp --actor local:daniel
+```
+
+Standard input and output contain only ACP v1 newline-delimited JSON-RPC. The editor can create,
+list, load, resume, close, and prompt Flow sessions. A new session reserves one UUID that is also
+the Flow run id. Use `/flow-run <source>` once to select a project-relative workflow,
+`workflow:<name>@<exact-version>`, or `activation:<workflow-id>`. An editor can instead send
+`/flow-run` with one project-local `file:` resource link. Use `/flow-continue` to observe and steer
+the bound run.
+
+Flow sends standard ACP updates for its public run status, plan, messages, and approval tools. A
+permission selection invokes the same current-action controller as the terminal and browser
+hosts. ACP cancel and close use the existing durable supervisor cancellation command. Input EOF or
+an editor disconnect closes only the bridge. It does not cancel an already durable run.
+
+The bridge captures one effective policy at startup. Restart it to adopt a policy change. Closing
+an empty ACP session creates no supervisor command. Closing a submitted session is idempotent and
+blocks later prompts on that connection until the editor loads or resumes the durable session.
+After submission, the adapter waits for the first ledger event without retrying workflow execution.
+
+The bridge does not call editor filesystem or terminal methods. It rejects MCP servers, extra
+directories, custom methods, unsupported protocol versions, absolute workflow paths, and paths
+outside the canonical project. It exposes no network listener and supports one local operating-
+system user. Remote, reverse-proxied, shared-user, ACP v2, A2A, AG-UI, and custom A2UI-over-ACP
+hosting remain outside this contract. See [Local ACP v1 bridge](docs/acp.md) and
+[Recovery and interruption safety](docs/recovery.md).
 
 ### Approve an exact command
 
@@ -1542,6 +1576,7 @@ override missing or failing evidence.
 ## Documentation
 
 - [Architecture](docs/architecture.md)
+- [Local ACP v1 bridge](docs/acp.md)
 - [Capability sourcing](docs/capability-sourcing.md)
 - [Configuration](docs/configuration.md)
 - [Workflow specification](docs/workflow-spec.md)

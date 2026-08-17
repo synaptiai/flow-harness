@@ -65,6 +65,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@agentclientprotocol/sdk": "1.3.0",
     "@anthropic-ai/sandbox-runtime": "0.0.70",
     "@earendil-works/pi-ai": "0.84.0",
     "@earendil-works/pi-coding-agent": "0.84.0",
@@ -87,6 +88,11 @@
     "playwright": "1.62.1",
     "typescript": "5.9.3",
     "vitest": "4.1.10"
+  },
+  "overrides": {
+    "adm-zip": "0.6.0",
+    "nanoid": "3.3.18",
+    "sharp": "0.35.3"
   },
   "peerDependencies": {
     "@oh-my-pi/pi-ai": "17.2.12",
