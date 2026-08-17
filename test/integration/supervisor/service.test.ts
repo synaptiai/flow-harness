@@ -11,6 +11,11 @@ import {
   agentSkillActivationWorkflow,
   createAgentSkillActivationSnapshot,
 } from "../../../src/domain/adaptation/agent-skill-activation.js";
+import { createEffectiveHarnessRuntimeSnapshot } from "../../../src/domain/adaptation/effective-harness-runtime.js";
+import {
+  createEffectiveHarnessHeadIdentity,
+  effectiveHarnessWorkflowSource,
+} from "../../../src/domain/adaptation/effective-harness-state.js";
 import {
   calculateCapabilitySnapshotDigest,
   createCapabilitySnapshot,
@@ -53,6 +58,7 @@ import {
   type WorkerLauncher,
 } from "../../../src/supervisor/service.js";
 import { agentSkillActivationInput } from "../../fixtures/agent-skill-activation.js";
+import { effectiveHarnessCandidateArtifactFixture } from "../../fixtures/effective-harness-evaluation.js";
 import { projectedPromptActivationSource } from "../../fixtures/prompt-activation.js";
 
 const temporaryDirectories: string[] = [];
@@ -181,6 +187,63 @@ describe("LocalSupervisorService", () => {
     expect(admitted.launcher.jobs[0]).toMatchObject({
       sourceName: "activation:adaptive-skill-workflow",
       capabilitySnapshot: { digest: capabilitySnapshot.digest },
+    });
+  });
+
+  it("admits only the exact effective harness state carried by a detached submission", async () => {
+    const artifact = effectiveHarnessCandidateArtifactFixture();
+    const head = createEffectiveHarnessHeadIdentity({
+      scopeDigest: artifact.scopeDigest,
+      workflowId: artifact.workflowId,
+      generation: artifact.baselineHead.generation + 1,
+      activationDigest: artifact.artifactDigest,
+      transitionDigest: "d".repeat(64),
+      stateDigest: artifact.candidateState.stateDigest,
+    });
+    const effectiveHarness = createEffectiveHarnessRuntimeSnapshot({
+      state: artifact.candidateState,
+      head,
+    });
+    const capabilitySnapshot = validateCapabilitySnapshot({
+      version: 1,
+      packages: artifact.candidateState.packages,
+      effectiveHarness,
+      digest: calculateCapabilitySnapshotDigest(
+        artifact.candidateState.packages,
+        [],
+        effectiveHarness,
+      ),
+    });
+    const source = effectiveHarnessWorkflowSource(artifact.candidateState);
+    const rejected = await createHarness();
+
+    await expect(
+      rejected.service.submit({
+        ...submitCommand(randomUUID(), rejected.directory, "changed-effective-harness"),
+        sourceName: `activation:${artifact.workflowId}`,
+        workflowSource: `${source} `,
+        capabilitySnapshot,
+      }),
+    ).rejects.toThrow(/source does not match/i);
+    await expect(rejected.store.listActiveRunClaims()).resolves.toEqual([]);
+    expect(rejected.launcher.jobs).toEqual([]);
+
+    const admitted = await createHarness();
+    await expect(
+      admitted.service.submit({
+        ...submitCommand(randomUUID(), admitted.directory, "exact-effective-harness"),
+        sourceName: `activation:${artifact.workflowId}`,
+        workflowSource: source,
+        capabilitySnapshot,
+      }),
+    ).resolves.toMatchObject({ type: "accepted", runId: "exact-effective-harness" });
+    expect(admitted.launcher.jobs).toHaveLength(1);
+    expect(admitted.launcher.jobs[0]).toMatchObject({
+      sourceName: `activation:${artifact.workflowId}`,
+      capabilitySnapshot: {
+        digest: capabilitySnapshot.digest,
+        effectiveHarness: { runtimeDigest: effectiveHarness.runtimeDigest },
+      },
     });
   });
 

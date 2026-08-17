@@ -449,9 +449,27 @@ describe("effective harness runtime CLI", () => {
       resumeOutput.stderr.join("\n"),
     ).toBe(0);
     expect(calls).toEqual(["gate", "implement"]);
+    const inspectOutput = captureIo();
+    expect(
+      await main(
+        ["inspect", "effective-runtime-recovery", "--runs-dir", runsDirectory],
+        inspectOutput.io,
+        { cwd: project, loadConfig: async () => effectiveConfig(project) },
+      ),
+    ).toBe(0);
+    expect(JSON.parse(inspectOutput.stdout.join("\n"))).toMatchObject({
+      status: "succeeded",
+      capabilitySnapshot: {
+        effectiveHarness: {
+          workflowId: artifact.workflowId,
+          runtimeDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+        },
+      },
+    });
     expectContentFree(runOutput, []);
     expectContentFree(approvalOutput, []);
     expectContentFree(resumeOutput, []);
+    expectContentFree(inspectOutput, []);
   });
 });
 

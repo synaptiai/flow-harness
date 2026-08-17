@@ -13,17 +13,25 @@ import {
   agentSkillActivationWorkflow,
   createAgentSkillActivationSnapshot,
 } from "../../../src/domain/adaptation/agent-skill-activation.js";
+import { createEffectiveHarnessRuntimeSnapshot } from "../../../src/domain/adaptation/effective-harness-runtime.js";
+import {
+  createEffectiveHarnessHeadIdentity,
+  effectiveHarnessWorkflowSource,
+} from "../../../src/domain/adaptation/effective-harness-state.js";
 import {
   type CapabilitySnapshot,
   calculateCapabilitySnapshotDigest,
+  combineCapabilitySnapshots,
   createAgentCapabilityEvidence,
   createCapabilitySnapshot,
   validateCapabilitySnapshot,
 } from "../../../src/domain/capability/agent-skills.js";
+import type { PolicyPackageSnapshotInput } from "../../../src/domain/capability/policy-packages.js";
 import type { ToolPackageSnapshotInput } from "../../../src/domain/capability/tool-packages.js";
 import { calculateChildRunId, type RunEvent } from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { agentSkillActivationInput } from "../../fixtures/agent-skill-activation.js";
+import { effectiveHarnessCandidateArtifactFixture } from "../../fixtures/effective-harness-evaluation.js";
 
 describe("run workflow capability snapshots", () => {
   it("persists and passes the exact bound snapshot to selected agent execution", async () => {
@@ -177,6 +185,102 @@ describe("run workflow capability snapshots", () => {
       status: "succeeded",
       capabilitySnapshot: { digest: snapshot.digest },
     });
+  });
+
+  it("persists one complete effective harness in an isolated child ledger", async () => {
+    const snapshot = effectiveHarnessCapabilitySnapshot();
+    const effectiveHarness = snapshot.effectiveHarness;
+    if (effectiveHarness === undefined) throw new Error("effective harness fixture is missing");
+    const store = new MemoryStore();
+    const childRunId = calculateChildRunId("parent-effective-run", "delegate", 1);
+    const workflow = compileWorkflowText(
+      Buffer.from(effectiveHarness.workflow.contentBase64, "base64").toString("utf8"),
+      `activation:${effectiveHarness.workflowId}`,
+    );
+
+    const state = await runWorkflow(workflow, {
+      ...options(
+        store,
+        executorFrom((node, context) => {
+          if (node.type !== "agent" || context.capabilitySnapshot === undefined) {
+            throw new Error("effective child fixture executed an unexpected node");
+          }
+          const text = JSON.stringify("done");
+          return {
+            status: "succeeded",
+            evidence: {
+              kind: "agent",
+              provider: "test",
+              model: "deterministic",
+              text,
+              textHash: createHash("sha256").update(text).digest("hex"),
+              textTruncated: false,
+              durationMs: 1,
+              policyDecisions: [],
+              effectReceipts: [],
+              ...(node.agent.skills.length === 0
+                ? {}
+                : {
+                    capabilities: createAgentCapabilityEvidence(
+                      context.capabilitySnapshot,
+                      node.agent.skills,
+                    ),
+                  }),
+            },
+          };
+        }),
+      ),
+      runId: childRunId,
+      capabilitySnapshot: snapshot,
+      executionWorkspace: {
+        backend: "reflink-copy-v1",
+        snapshotDigest: "c".repeat(64),
+        parentRunId: "parent-effective-run",
+        parentNodeId: "delegate",
+        parentAttempt: 1,
+      },
+    });
+
+    expect(store.events[0]).toMatchObject({
+      type: "run_started",
+      executionWorkspace: { parentRunId: "parent-effective-run" },
+      capabilitySnapshot: {
+        effectiveHarness: {
+          runtimeDigest: effectiveHarness.runtimeDigest,
+          head: { headDigest: effectiveHarness.head.headDigest },
+        },
+      },
+    });
+    expect(state).toMatchObject({
+      status: "succeeded",
+      capabilitySnapshot: { digest: snapshot.digest },
+    });
+  });
+
+  it("applies current policy after loading a historical effective state", async () => {
+    const snapshot = effectiveHarnessCapabilitySnapshot();
+    const policy = createCapabilitySnapshot([], [], [], [], [currentPolicyInput()]);
+    const combined = combineCapabilitySnapshots([snapshot, policy]);
+    if (combined === undefined) throw new Error("combined capability fixture is missing");
+    const effectiveHarness = combined.effectiveHarness;
+    if (effectiveHarness === undefined) throw new Error("effective harness fixture is missing");
+    const store = new MemoryStore();
+    const workflow = compileWorkflowText(
+      effectiveHarnessWorkflowSource(effectiveHarnessCandidateArtifactFixture().candidateState),
+      `activation:${effectiveHarness.workflowId}`,
+    );
+
+    await expect(
+      runWorkflow(workflow, {
+        ...options(
+          store,
+          executorFrom(() => agentSuccess()),
+        ),
+        runId: "effective-current-policy",
+        capabilitySnapshot: combined,
+      }),
+    ).rejects.toMatchObject({ code: "policy_violation" });
+    expect(store.events).toEqual([]);
   });
 
   it("resumes from the durable snapshot without reading live package sources", async () => {
@@ -445,6 +549,51 @@ nodes:
 
 function capabilitySnapshot(name: string): CapabilitySnapshot {
   return createCapabilitySnapshot([skill(name)]);
+}
+
+function effectiveHarnessCapabilitySnapshot(): CapabilitySnapshot {
+  const artifact = effectiveHarnessCandidateArtifactFixture();
+  const head = createEffectiveHarnessHeadIdentity({
+    scopeDigest: artifact.scopeDigest,
+    workflowId: artifact.workflowId,
+    generation: artifact.baselineHead.generation + 1,
+    activationDigest: artifact.artifactDigest,
+    transitionDigest: "d".repeat(64),
+    stateDigest: artifact.candidateState.stateDigest,
+  });
+  const effectiveHarness = createEffectiveHarnessRuntimeSnapshot({
+    state: artifact.candidateState,
+    head,
+  });
+  return validateCapabilitySnapshot({
+    version: 1,
+    packages: artifact.candidateState.packages,
+    effectiveHarness,
+    digest: calculateCapabilitySnapshotDigest(
+      artifact.candidateState.packages,
+      [],
+      effectiveHarness,
+    ),
+  });
+}
+
+function currentPolicyInput(): PolicyPackageSnapshotInput {
+  return {
+    kind: "policy-package",
+    trust: "project-explicit",
+    provenance: ".flow/policies/current-effective-policy",
+    manifest: {
+      content: Buffer.from(`apiVersion: flow.synapti.ai/v1alpha1
+kind: PolicyPackage
+metadata:
+  name: current-effective-policy
+  version: 1.0.0
+  description: Current policy rejects editing.
+spec:
+  tools: { allowed: [read] }
+`),
+    },
+  };
 }
 
 function skill(name: string) {

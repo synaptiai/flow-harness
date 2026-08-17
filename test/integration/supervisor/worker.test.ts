@@ -29,6 +29,11 @@ import {
   agentSkillActivationWorkflow,
   createAgentSkillActivationSnapshot,
 } from "../../../src/domain/adaptation/agent-skill-activation.js";
+import { createEffectiveHarnessRuntimeSnapshot } from "../../../src/domain/adaptation/effective-harness-runtime.js";
+import {
+  createEffectiveHarnessHeadIdentity,
+  effectiveHarnessWorkflowSource,
+} from "../../../src/domain/adaptation/effective-harness-state.js";
 import {
   createPromptActivationSnapshot,
   promptActivationSource,
@@ -59,6 +64,7 @@ import { createProductionWorkspaceIsolator } from "../../../src/infrastructure/r
 import { createActiveRunClaim, createJobRecord } from "../../../src/supervisor/records.js";
 import { executeWorkerJob, requestWorker } from "../../../src/supervisor/worker.js";
 import { agentSkillActivationInput } from "../../fixtures/agent-skill-activation.js";
+import { effectiveHarnessCandidateArtifactFixture } from "../../fixtures/effective-harness-evaluation.js";
 import { promptActivationInput } from "../../fixtures/prompt-activation.js";
 
 const temporaryDirectories: string[] = [];
@@ -387,6 +393,119 @@ nodes:
       capabilitySnapshot: {
         packages: [{ digest: activation.skill.digest }],
         activations: [{ activationDigest: activation.activationDigest }],
+      },
+    });
+    expect(reduceRunEvents(events).status).toBe("succeeded");
+  });
+
+  it("executes the complete effective harness from the frozen detached snapshot", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-worker-effective-harness-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    const store = new LocalSupervisorStore(runsDirectory);
+    await store.initialize();
+    const artifact = effectiveHarnessCandidateArtifactFixture();
+    const head = createEffectiveHarnessHeadIdentity({
+      scopeDigest: artifact.scopeDigest,
+      workflowId: artifact.workflowId,
+      generation: artifact.baselineHead.generation + 1,
+      activationDigest: artifact.artifactDigest,
+      transitionDigest: "d".repeat(64),
+      stateDigest: artifact.candidateState.stateDigest,
+    });
+    const effectiveHarness = createEffectiveHarnessRuntimeSnapshot({
+      state: artifact.candidateState,
+      head,
+    });
+    const capabilitySnapshot = validateCapabilitySnapshot({
+      version: 1,
+      packages: artifact.candidateState.packages,
+      effectiveHarness,
+      digest: calculateCapabilitySnapshotDigest(
+        artifact.candidateState.packages,
+        [],
+        effectiveHarness,
+      ),
+    });
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "worker-effective-harness",
+      mode: "run",
+      sourceName: `activation:${artifact.workflowId}`,
+      workflowSource: effectiveHarnessWorkflowSource(artifact.candidateState),
+      cwd: directory,
+      token: "9".repeat(64),
+      createdAt: "2026-08-17T12:00:00.000Z",
+      capabilitySnapshot,
+    });
+    await store.reserveSubmission(
+      job,
+      createActiveRunClaim({
+        runId: job.runId,
+        jobId: job.jobId,
+        workerId: job.workerId,
+        claimedAt: job.createdAt,
+      }),
+    );
+    await mkdir(join(directory, ".flow", "skills", "review-helper"), { recursive: true });
+    await writeFile(
+      join(directory, ".flow", "skills", "review-helper", "SKILL.md"),
+      "PRIVATE CHANGED LIVE EFFECTIVE HARNESS\n",
+    );
+    let observedResource: string | undefined;
+    const worker = executeWorkerJob(job.jobId, {
+      store,
+      executor: {
+        async execute(node, context) {
+          if (node.type !== "agent" || context.capabilitySnapshot === undefined) {
+            throw new Error("effective harness worker executed an unexpected node");
+          }
+          const selected = context.capabilitySnapshot.packages.find(
+            (item): item is AgentSkillPackageSnapshot =>
+              item.kind === "agent-skill" && node.agent.skills.includes(item.name),
+          );
+          if (node.agent.skills.length === 0) {
+            return { status: "succeeded", evidence: successfulAgentEvidence() };
+          }
+          const resource = selected?.files.find((file) => file.path !== "SKILL.md");
+          if (selected === undefined || resource === undefined) {
+            throw new Error("effective harness worker is missing its frozen package");
+          }
+          observedResource = Buffer.from(resource.contentBase64, "base64").toString("utf8");
+          return {
+            status: "succeeded",
+            evidence: {
+              ...successfulAgentEvidence(),
+              capabilities: createAgentCapabilityEvidence(context.capabilitySnapshot, [
+                selected.name,
+              ]),
+            },
+          };
+        },
+      },
+      effectReconciler: createProductionNodeEffectReconciler(),
+      createRunStore: (root) => new JsonlRunStore(root),
+      pid: 4394,
+    });
+    const descriptor = await waitForDescriptor(store, job.workerId);
+    await expect(requestWorker(descriptor, { type: "identify" })).resolves.toMatchObject({
+      ok: true,
+      result: { runId: job.runId, status: "running" },
+    });
+
+    await expect(worker).resolves.toBe(0);
+    expect(observedResource).toBeDefined();
+    expect(observedResource).not.toContain("PRIVATE CHANGED LIVE");
+    const events = await new JsonlRunStore(runsDirectory).read(job.runId);
+    expect(events[0]).toMatchObject({
+      type: "run_started",
+      capabilitySnapshot: {
+        digest: capabilitySnapshot.digest,
+        effectiveHarness: {
+          runtimeDigest: effectiveHarness.runtimeDigest,
+          head: { headDigest: head.headDigest },
+        },
       },
     });
     expect(reduceRunEvents(events).status).toBe("succeeded");
