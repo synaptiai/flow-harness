@@ -359,16 +359,16 @@ Every row inherits the issue non-goals. Commands are planned before production i
 | 2. Locator and live-dependency compatibility | Behavioral and error | `npx vitest run test/unit/adaptation/effective-harness-state.test.ts test/integration/cli/effective-harness-composition.test.ts` | Existing locator works, live-dependent legacy state is identified, and closed state composes | New locator syntax or automatic catalog migration |
 | 3. Candidate against active state | Behavioral | `npx vitest run test/unit/application/prepare-effective-harness-candidate.test.ts test/integration/cli/effective-harness-composition.test.ts` | Prompt-after-skill and skill-after-prompt admission bind exact complete baselines | Memory, routing, sub-agent, or concurrent merge semantics |
 | 4. Second activation retains first | Behavioral | `npx vitest run test/integration/cli/effective-harness-composition.test.ts` | Both activation orders preserve both observable improvements | Automatic activation or traffic splitting |
-| 5. Stale baseline before mutation | Error and data | `npx vitest run test/unit/application/prepare-effective-harness-activation.test.ts test/unit/infrastructure/fs/local-prompt-activation-store.test.ts` | Changed head rejects with zero artifact, transition, or head publication | Distributed writers outside Flow's project lock |
-| 6. ABA and substitution resistance | Error and contract | `npx vitest run test/unit/adaptation/effective-harness-transition.test.ts test/unit/infrastructure/fs/local-prompt-activation-store.test.ts` | Independent project, workflow, generation, transition, activation, and state mutations reject | Cryptographic security beyond existing SHA-256 assumptions |
-| 7. Complete offline durable execution | Behavioral and data | `npx vitest run test/integration/cli/effective-harness-composition.test.ts test/integration/supervisor/service.test.ts test/integration/supervisor/worker.test.ts` | Attached, detached, child, resume, recovery, replay, inspect, and export use frozen bytes after live-source traps | Remote multi-host execution or external artifact storage |
-| 8. Complete rollback | Behavioral | `npx vitest run test/unit/infrastructure/fs/local-prompt-activation-store.test.ts test/integration/cli/effective-harness-composition.test.ts` | Every retained state restores exact workflow and package identities | Automatic rollback or garbage collection |
-| 9. Missing and corrupt dependencies | Error and data | `npx vitest run test/unit/infrastructure/fs/local-prompt-activation-store.test.ts test/unit/adaptation/effective-harness-state.test.ts` | Missing, extra, changed, redigested, and cross-bound blobs fail closed without live reads | Repair of manually corrupted stores |
-| 10. Content-free preview and output | Contract and error | `npx vitest run test/unit/cli/public-output.test.ts test/integration/cli/effective-harness-composition.test.ts` | Preview keeps exact public identity while recursive canary checks find no private bytes or causes | Encryption of local durable artifacts |
-| 11. Failure, cancellation, and atomicity | Error and data | `npx vitest run test/unit/infrastructure/fs/local-prompt-activation-store.test.ts test/unit/application/prepare-effective-harness-activation.test.ts` | Pre-ownership exact reasons and post-boundary settled or uncertain results pass exact mutation checks | Distributed filesystem atomicity |
+| 5. Stale baseline before mutation | Error and data | `npx vitest run test/unit/application/prepare-effective-harness-activation.test.ts test/unit/infrastructure/fs/local-effective-harness-store.test.ts` | Changed head rejects with zero artifact, transition, or head publication | Distributed writers outside Flow's project lock |
+| 6. ABA and substitution resistance | Error and contract | `npx vitest run test/unit/adaptation/effective-harness-transition.test.ts test/unit/infrastructure/fs/local-effective-harness-store.test.ts` | Independent project, workflow, generation, transition, activation, and state mutations reject | Cryptographic security beyond existing SHA-256 assumptions |
+| 7. Complete offline durable execution | Behavioral and data | `npx vitest run test/integration/cli/effective-harness-runtime.test.ts test/integration/supervisor/service.test.ts test/integration/supervisor/worker.test.ts test/unit/application/run-workflow-capabilities.test.ts test/unit/application/workflow-package-admission.test.ts` | Attached, detached, child, resume, recovery, replay, and inspect use frozen bytes after live-source traps | Remote multi-host execution, run export, or external artifact storage |
+| 8. Complete rollback | Behavioral | `npx vitest run test/unit/infrastructure/fs/local-effective-harness-store.test.ts test/integration/cli/effective-harness-runtime.test.ts` | Every retained state restores exact workflow and package identities | Automatic rollback or garbage collection |
+| 9. Missing and corrupt dependencies | Error and data | `npx vitest run test/unit/infrastructure/fs/local-effective-harness-store.test.ts test/unit/adaptation/effective-harness-state.test.ts` | Missing, extra, changed, redigested, and cross-bound blobs fail closed without live reads | Repair of manually corrupted stores |
+| 10. Content-free preview and output | Contract and error | `npx vitest run test/unit/cli/public-output.test.ts test/integration/cli/effective-harness-composition.test.ts test/integration/cli/effective-harness-runtime.test.ts` | Preview, list, inspect, run, and resume keep exact public identity while recursive canary checks find no private bytes or causes | Encryption of local durable artifacts |
+| 11. Failure, cancellation, and atomicity | Error and data | `npx vitest run test/unit/infrastructure/fs/local-effective-harness-store.test.ts test/unit/infrastructure/fs/local-effective-harness-candidate.test.ts test/unit/application/prepare-effective-harness-activation.test.ts` | Pre-ownership exact reasons and post-boundary settled or uncertain results pass exact mutation checks | Distributed filesystem atomicity |
 | 12. Immutable controls and one surface | Contract | `npx vitest run test/unit/application/prepare-effective-harness-candidate.test.ts test/unit/adaptation/effective-harness-state.test.ts` | Independently redigested graph, model, tool, approval, budget, verifier, retry, sandbox, evaluator, and unrelated-package mutations reject | Semantics for future adaptive surfaces |
 | 13. Policy outside state | Contract | `npx vitest run test/unit/adaptation/effective-harness-state.test.ts test/unit/application/run-workflow-capabilities.test.ts` | State parser rejects policy packages and exact state digest excludes no hidden policy selector | Policy-package feature changes |
-| 14. Current policy after state load | Behavioral and error | `npx vitest run test/unit/application/run-workflow-capabilities.test.ts test/integration/cli/effective-harness-composition.test.ts test/integration/supervisor/worker.test.ts` | New run and rollback target fail current policy before execution while old admitted runs remain stable | Retroactive mutation of existing durable runs |
+| 14. Current policy after state load | Behavioral and error | `npx vitest run test/unit/application/run-workflow-capabilities.test.ts test/integration/cli/effective-harness-runtime.test.ts test/integration/supervisor/service.test.ts test/integration/supervisor/worker.test.ts` | New run and rollback target fail current policy before execution while old admitted runs remain stable | Retroactive mutation of existing durable runs |
 | 15. Public documentation | Documentation | `npm run docs:ste && npx vitest run test/scaffold/community-files.test.ts && git diff --check` | README, roadmap, activation, recovery, architecture, and testing claims agree and pass STE | External standards certification |
 | Dependency direction | Contract | `npx vitest run test/integration/package/dependency-boundaries.test.ts` | Domain and application layers retain allowed dependency direction | Unrelated package refactors |
 | Full release gate | Configuration and runtime | `npm run format:check && npm run lint && npm run typecheck && npm test -- --maxWorkers=1 && npm run build && npm run test:runtime && npm run test:coverage && npm run pack:check && npm audit --omit=dev` | Every command passes and exact counts are recorded on the frozen tree | Unsupported platforms or unpublished packages |
@@ -505,8 +505,17 @@ state untested paths, evidence limitations, and exact adversarial cases.
   the store. A legacy activation apply cannot replace a workflow after an effective head exists.
   The focused effective and legacy store selector passed 59 tests across two files.
 
-- **Evidence limitation**: rollback idempotency, cancellation at each mutation boundary, aggregate
-  physical store limits, and exhaustive symlink/race cases remain pending.
+- **Failure and cancellation coverage**: exact apply and rollback retries append no transition.
+  Pre-ownership cancellation preserves the caller reason. Cancellation after ownership settles the
+  durable result. Tests cover failures before and after the index rename.
+
+- **Filesystem coverage**: store reads bind the canonical project scope and reject a symbolic-link
+  root. Candidate admission rejects linked ancestors and a valid byte-equivalent leaf replacement
+  after its stable read. Missing retained dependencies fail closed.
+
+- **Evidence limitation**: the slice relies on same-host atomic rename and the shared local
+  activation lock. It does not implement distributed filesystem coordination or automatic garbage
+  collection.
 
 ### Durable effective runtime selection
 
@@ -534,9 +543,69 @@ state untested paths, evidence limitations, and exact adversarial cases.
   one Unix-socket-backed legacy test. Its socket-permitted rerun passed. Typecheck, scoped Biome,
   and diff checks passed.
 
-- **Evidence limitation**: detached supervisor and worker execution remain later TDD cycles. Child
-  runs, replay/export, current-policy rejection, runtime cancellation, CLI composition commands,
-  and public effective head inspection also remain.
+- **Detached and child coverage**: service admission accepts exact source and runtime proof. It
+  rejects a mismatch before durable mutation. The worker executes the frozen Agent Skill package
+  after a hostile live-catalog replacement. Child binding uses the same proof.
+
+- **Policy coverage**: a current policy package remains an overlay outside the complete state. A
+  new run and worker submission reject an incompatible current policy before execution. A run that
+  was admitted earlier remains stable after the live state store disappears.
+
+- **CLI and history coverage**: composition stages an immutable candidate without activating it.
+  Both sequential surface orders preserve both reviewed improvements. Activation list and inspect
+  expose content-free effective history. Rollback selects a retained state digest, and a legacy
+  selector cannot replace an effective head.
+
+- **Evidence limitation**: Flow has no public run-export command. Evaluation export remains covered
+  by its existing durable evidence contract. This slice does not add remote artifact storage.
+
+### Frozen acceptance and release evidence
+
+- **Mapped selector**: the combined Issue #113 selector passed 204 tests across 20 files. Domain
+  tests covered state, transition, candidate, runtime, and legacy closure. Application tests covered
+  preparation, capability binding, and workflow package admission. Infrastructure tests covered
+  both stores and stable candidate reads.
+
+  Integration tests covered CLI composition, runtime, compatibility, service admission, and worker
+  execution. Eighteen files passed in the desktop sandbox. The two socket-backed files passed with
+  host socket permission.
+
+```sh
+npx vitest run \
+  test/unit/adaptation/effective-harness-state.test.ts \
+  test/unit/adaptation/effective-harness-transition.test.ts \
+  test/unit/adaptation/effective-harness-candidate.test.ts \
+  test/unit/adaptation/effective-harness-runtime.test.ts \
+  test/unit/application/legacy-effective-harness-state.test.ts \
+  test/unit/application/prepare-effective-harness-candidate.test.ts \
+  test/unit/application/prepare-effective-harness-activation.test.ts \
+  test/unit/application/run-workflow-capabilities.test.ts \
+  test/unit/application/workflow-package-admission.test.ts \
+  test/unit/cli/public-output.test.ts \
+  test/unit/infrastructure/fs/local-effective-harness-candidate.test.ts \
+  test/unit/infrastructure/fs/local-effective-harness-store.test.ts \
+  test/unit/infrastructure/fs/local-prompt-activation-store.test.ts \
+  test/integration/cli/effective-harness-composition.test.ts \
+  test/integration/cli/effective-harness-runtime.test.ts \
+  test/integration/cli/prompt-activation.test.ts \
+  test/integration/cli/agent-skill-activation.test.ts \
+  test/integration/cli/agent-skill-package-candidate-generation.test.ts \
+  test/integration/supervisor/service.test.ts \
+  test/integration/supervisor/worker.test.ts
+```
+
+- **Full suite**: `npm test -- --maxWorkers=1` passed 4,139 tests. Four tests skipped. The runtime
+  gate passed 43 tests. Thirty-four platform or environment cases skipped.
+
+- **Coverage**: `npm run test:coverage` passed the same 4,139 tests with four skips. Coverage was
+  84.27 percent statements, 78.49 percent branches, 91.05 percent functions, and 84.4 percent
+  lines. One offline Prime test needed a 30-second test-only bound under full V8 instrumentation.
+  It keeps the same offline import traps, privacy checks, and production behavior.
+
+- **Static and package gates**: format, lint, typecheck, build, documentation STE, dependency
+  boundaries, community-file contracts, package verification, and diff checks passed. Lint retained
+  one pre-existing informational constructor notice. The clean package install executed the CLI and
+  local presentation path. The production dependency audit reported zero vulnerabilities.
 
 ## Activity log
 
@@ -567,3 +636,17 @@ state untested paths, evidence limitations, and exact adversarial cases.
 - 2026-08-17 — Added exact apply settlement, missing-blob rejection, and legacy-writer exclusion.
   Added the compact durable runtime proof, effective-first locator admission, package-closed
   reconstruction, content-free projection, and offline approval-boundary resume.
+
+- 2026-08-17 — Added public candidate composition, effective activation, list, inspect, and
+  state-digest rollback. Verified prompt-then-skill and skill-then-prompt composition.
+
+- 2026-08-17 — Propagated complete effective authority through attached admission, detached service
+  admission, worker execution, child binding, resume, replay, and current-policy checks.
+
+- 2026-08-17 — Bound canonical project scope and no-follow candidate reads. Added cancellation,
+  exact retry, pre-head failure, post-head settlement, cross-project, missing-dependency, ancestor
+  link, and source-replacement evidence.
+
+- 2026-08-17 — Updated public composition, architecture, recovery, sourcing, roadmap, and testing
+  documentation. Ran the mapped, full, runtime, coverage, build, package, and audit gates on the
+  completed implementation.

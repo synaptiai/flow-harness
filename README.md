@@ -574,10 +574,24 @@ baseline, evidence, and blueprint files named by `CANDIDATE.json`. After explici
 runs use the durable projected workflow and package bytes. They do not read the candidate directory,
 generation sources, network, registry, or credentials.
 
-Activation requires a complete superior evaluation. First, request a preview:
+Activation requires a complete superior evaluation. An existing prompt, Agent Skill resource, or
+Agent Skill package candidate can still use the legacy activation path. That path keeps its current
+bytes, digest, output, and rollback behavior.
+
+To retain more than one reviewed improvement, compose the ordinary candidate against the current
+complete harness state first:
 
 ```sh
-node dist/cli/main.js candidate activate better.prompt-candidate.yaml \
+node dist/cli/main.js candidate compose better.prompt-candidate.yaml
+```
+
+The command publishes one immutable effective candidate below `.flow/effective-harness/artifacts/`.
+It does not change the active head. Evaluate that staged candidate, then request an activation
+preview:
+
+```sh
+node dist/cli/main.js candidate activate \
+  .flow/effective-harness/artifacts/<artifact-sha256>.json \
   --evaluation candidate-evaluation --actor operator:test --dry-run
 ```
 
@@ -585,25 +599,41 @@ Review the candidate identity, evaluation proof, current selection, and proposal
 that digest:
 
 ```sh
-node dist/cli/main.js candidate activate better.prompt-candidate.yaml \
+node dist/cli/main.js candidate activate \
+  .flow/effective-harness/artifacts/<artifact-sha256>.json \
   --evaluation candidate-evaluation --actor operator:test \
   --expected-digest <proposal-sha256>
 node dist/cli/main.js activation inspect evaluated-profile
 node dist/cli/main.js run activation:evaluated-profile --run-id active-candidate-run
 ```
 
-Activation accepts prompt, Agent Skill resource, and Agent Skill package candidates. It does not
-change the baseline workflow or a live skill package. Flow stores one candidate artifact and one
-baseline artifact from the same reviewed evaluation. A resource-candidate artifact contains the
-unchanged workflow and the exact selected package.
+Composition accepts prompt, Agent Skill resource, and Agent Skill package candidates. It projects
+only the declared surface onto the current complete state. A prompt change keeps selected packages.
+An Agent Skill resource change keeps prior prompt changes. A generated package change keeps every
+unrelated reviewed field. Graphs, models, tools, approvals, budgets, verifiers, retries, sandbox
+settings, evaluators, and unrelated packages cannot change.
 
-A package-candidate artifact contains the projected workflow and exact generated package. Its paired
-baseline contains the original workflow and no package. Each run stores only the exact selected
-artifact and package state in its durable capability snapshot. A later activation or rollback does
-not change that run.
+Each effective candidate contains the complete before and after states plus one content-free surface
+delta. Activation publishes immutable dependencies before one atomic head change. Each run stores
+the selected workflow, package closure, head proof, and runtime proof in its durable capability
+snapshot. Attached runs, detached workers, child runs, resume, and replay use those frozen bytes.
+They do not reopen the effective-state store. A later activation or rollback does not change an
+existing run.
 
-Rollback selects an earlier candidate artifact or the exact stored baseline artifact for future
-runs. It does not delete stored activation artifacts:
+Rollback selects any retained complete state for future runs. Use `activation inspect` to read a
+state digest, preview the exact transition, and apply that proposal. Rollback does not delete stored
+states, artifacts, or history. It does not restore an old policy. Current policy admission runs
+after state selection:
+
+```sh
+node dist/cli/main.js activation rollback evaluated-profile \
+  --to state:<state-sha256> --actor operator:test --dry-run
+node dist/cli/main.js activation rollback evaluated-profile \
+  --to state:<state-sha256> --actor operator:test \
+  --expected-digest <proposal-sha256>
+```
+
+Before a workflow has an effective head, the existing legacy rollback selectors remain available:
 
 ```sh
 node dist/cli/main.js activation rollback evaluated-profile \

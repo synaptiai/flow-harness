@@ -166,6 +166,11 @@ containment milestone. It is not VM-grade or multi-tenant isolation.
 - Activation is versioned, reviewable, scoped, and rollbackable. *(Implemented with operator
   preview, exact apply, paired artifacts, and baseline or version rollback.)*
 
+- Reviewed changes compose into one complete effective harness state. *(Implemented for prompt,
+  Agent Skill resource, and Agent Skill package surfaces. Both activation orders retain both
+  improvements. Runs store exact offline state, and rollback selects any retained state while
+  current policy remains separate.)*
+
 - Base safety, workflow semantics, and evaluator definitions remain immutable during a candidate
   run. *(Implemented for prompt projection, one-skill resource projection, and one new-skill
   package projection. Candidates cannot change the graph, models, tools, package authority, policy,
