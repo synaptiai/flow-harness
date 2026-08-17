@@ -34,8 +34,8 @@ reviewable candidate directory and keeps evaluation and activation as separate a
   define package authority, evaluation evidence, or durable activation.
 
 - [A2UI](https://a2ui.org/) defines declarative presentation messages. It can inform a future
-  content-bearing UI package, but it does not replace the Agent Skills package contract or Flow's
-  candidate boundary.
+  content-bearing UI package. It does not replace the Agent Skills package contract. It also does
+  not replace Flow's candidate boundary.
 
 ## Roadmap choice
 
@@ -72,10 +72,12 @@ candidate-output/
         └── assets/...
 ```
 
-- **Strengths**: matches the Agent Skills package shape, is directly reviewable, gives future
-  install and pack commands a real package tree, and keeps all path authority outside the model.
-- **Costs**: needs directory-level stable admission, atomic publication, a new candidate identity,
-  and a new activation variant that binds both workflow and package state.
+- **Strengths**: matches the Agent Skills package shape and supports direct review. Future install
+  and pack commands get a real package tree. The model gets no path authority.
+
+- **Costs**: needs directory-level stable admission and atomic publication. It also needs a new
+  candidate identity and activation variant. The variant binds workflow and package state.
+
 - **Boundary**: generated files are inert UTF-8. They cannot add tools, policies, scripts, or
   executable authority. Runtime use remains limited to the workflow's already-admitted tools.
 
@@ -84,8 +86,8 @@ candidate-output/
 Store every file inside `CANDIDATE.json` as an array of path and content.
 
 - **Strengths**: reuses single-file candidate publication.
-- **Failure**: weakens human review and package provenance, duplicates extraction logic, and makes a
-  future installer consume a private candidate encoding instead of the standard package tree.
+- **Failure**: weakens human review and package provenance. It also duplicates extraction logic.
+  A future installer would consume a private candidate encoding instead of the standard tree.
 
 ### A2-F. Generate an installable `.flowpkg` — rejected
 
@@ -100,8 +102,8 @@ Generate a signed or install-ready capability bundle immediately.
 Generate a single required file and defer all supporting resources.
 
 - **Strengths**: smallest implementation.
-- **Failure**: does not satisfy the approved standards-fidelity objective for bounded references
-  and textual assets, and would create a second package-synthesis transition later.
+- **Failure**: does not support bounded references and textual assets. It would also require a
+  second package-synthesis transition.
 
 ## Specification
 
@@ -122,44 +124,60 @@ _Captured by specification-capture on 2026-08-17. Source: Issue #111 and user-ap
 
 - **Invalid blueprint** — missing `SKILL.md`, forbidden directory, duplicate or ambiguous path,
   traversal, excessive entries, or excessive declared bytes fails before model execution.
-- **Invalid model result** — malformed JSON, missing or duplicate file, unknown path, invalid UTF-8,
-  excessive content, or authority-bearing output fails with a fixed value-free stage.
+
+- **Invalid model result** — malformed JSON or invalid UTF-8 fails with a fixed stage. Missing,
+  duplicate, unknown, excessive, or authority-bearing output also fails there.
+
 - **Source drift** — workflow, evidence, or blueprint identity changes before publication. Flow
   rejects the proposal instead of mixing source states.
-- **Cancellation and timeout** — a controlling signal before commit stops the next phase, returns
-  the exact reason, and leaves no final candidate.
+
+- **Cancellation and timeout** — a controlling signal before commit stops the next phase. Flow
+  returns the exact reason and leaves no final candidate.
+
 - **Publication uncertainty** — a failure after atomic directory rename reports uncertain
   settlement. Flow never regenerates or replaces the directory automatically.
+
 - **Evaluation mismatch** — baseline and candidate profiles differ outside the one skill selection
   and exact package snapshot. Admission rejects before trials start.
+
 - **Activation mismatch** — stale workflow, package, evaluation, or activation identity rejects
   before durable mutation. A partial commit remains inspectable and recoverable.
+
 - **Privacy failure** — public output never includes generated text, encoded text, private paths,
   provider responses, credentials, or nested private causes.
 
 ### Interface contracts
 
-- The operator selects one baseline workflow, one root agent node, one or more tuning-evidence
-  packets, one package blueprint, one output directory, one candidate identity, one provider/model,
-  and bounded execution limits.
+- The operator selects one baseline workflow, one root agent node, and tuning-evidence packets. The
+  operator also selects a blueprint, output directory, candidate identity, provider/model, and
+  execution limits.
+
 - The blueprint is strict, canonical, versioned, and content-free. It declares skill authority and
   every relative path. Paths use portable separators and are never model-selected.
+
 - A package contains one through sixteen inert UTF-8 files. `SKILL.md` is required. Other files are
   under `references/` or textual `assets/`. `scripts/`, executable modes, links, special files,
   binary content, and undeclared paths reject.
+
 - Generation uses one model turn, at most 8,192 output tokens and 65,536 response bytes. It has no
   tools, skills, packages, workspace reads, commands, effects, retries, evaluation, or activation.
+
 - The model response supplies text for every declared path exactly once and no other fields.
+
 - Projection changes one root agent's `skills` from `[]` to `[name]`. The target must already admit
   `read`. Every other workflow and runtime-authority field is byte-equivalent after canonical parse.
+
 - The candidate directory contains `CANDIDATE.json` and the exact generated package tree. Its public
   identity binds baseline, evidence, blueprint, generation, package, workflow, capability, and
   candidate digests without content.
+
 - Evaluation compares the original workflow with no package against the projected workflow and
-  exact generated package under identical tasks, controls, verifiers, policy, and limits.
+  generated package. Both profiles use identical tasks, controls, verifiers, policy, and limits.
+
 - Activation stores both baseline workflow/no-package and projected workflow/package states.
   Rollback restores the original workflow with no package. Existing persisted variants retain their
   encoding and digest.
+
 - Public success output contains only portable identities, declared paths, hashes, limits, usage,
   and settlement status. Public errors are fixed and value-free.
 
@@ -200,9 +218,9 @@ manifest, and package files without following links. It enforces regular-file id
 bounds, UTF-8, entry counts, portable paths, executable-mode rejection, and source revalidation.
 
 Publication creates a private same-parent staging directory, writes and syncs every exact file,
-reopens and validates the complete candidate, revalidates sources, syncs the staging directory, and
-renames the complete directory without replacement. Parent-directory sync settles the commit. A
-post-rename failure is uncertain and recoverable by exact inspection.
+then reopens the complete candidate. Flow validates the candidate and revalidates each source. Flow
+then syncs and renames the complete directory without replacement. Parent-directory sync settles the
+commit. Exact inspection can recover from an uncertain post-rename failure.
 
 ### Durable evaluation and activation
 
@@ -212,7 +230,7 @@ workflow and generated package. The store recomputes all nested and cross-layer 
 
 Activation adds one package-introduction snapshot variant. It stores exact baseline and candidate
 workflow packages plus activation snapshots. The baseline activation may contain zero capability
-packages; the candidate activation contains exactly the generated package. Apply, idempotency,
+packages. The candidate activation contains exactly the generated package. Apply, idempotency,
 rollback, recovery, detached execution, child execution, export, and replay consult durable bytes
 only.
 
@@ -237,17 +255,24 @@ only.
 
 1. RED/GREEN the strict content-free blueprint, exact path grammar, bounds, canonical frontmatter,
    request/response closure, generation provenance, and privacy.
+
 2. RED/GREEN one-turn zero-tool execution, exact provider/model, timeout, cancellation, usage, and
    invalid-output precedence.
+
 3. RED/GREEN no-follow multi-file candidate admission, source stability, exact entry/byte bounds,
    executable rejection, and atomic directory publication settlement.
+
 4. RED/GREEN package-introduction candidate projection and generic candidate discrimination while
    preserving prompt and resource-candidate bytes.
+
 5. RED/GREEN evaluation plan/store cross-binding for original no-package and projected exact-package
    profiles, including interrupted claim, recovery, inspect, and export.
+
 6. RED/GREEN activation apply, idempotency, stale rejection, rollback to no package, recovery, and
    persisted backward compatibility.
+
 7. RED/GREEN CLI grammar, public redaction, attached/detached/child execution, and offline replay.
+
 8. Update public documentation and run the complete verification and adversarial review gates.
 
 ## Acceptance-criterion verification map
@@ -264,7 +289,7 @@ Every command is planned before implementation. Each row inherits the issue non-
 | Activation and rollback | Behavioral and data | `npx vitest run test/unit/adaptation/agent-skill-package-activation.test.ts test/unit/adaptation/agent-skill-package-activation-admission.test.ts test/unit/infrastructure/fs/local-prompt-activation-store.test.ts` | Exact apply, idempotency, stale rejection, rollback, recovery, and old-encoding fixtures pass | Automatic activation or remote installation |
 | CLI, runtime, offline replay, and privacy | Behavioral and error | `npx vitest run test/integration/cli/agent-skill-package-candidate-generation.test.ts test/integration/cli/agent-skill-package-candidate.test.ts test/integration/cli/agent-skill-package-activation.test.ts test/integration/cli/remote-capability-workflow.test.ts test/integration/supervisor/service.test.ts test/integration/supervisor/worker.test.ts test/unit/cli/public-output.test.ts` | Exact grammar, review directory, content-free outputs, attached/detached/child/recovery/replay, and no-live-source rows pass | Registry publication or remote UI |
 | Documentation and dependency direction | Documentation and contract | `npm run docs:ste && npx vitest run test/integration/package/dependency-boundaries.test.ts && git diff --check` | Changed prose passes STE, dependency boundary passes, and diff has no whitespace errors | External standards certification |
-| Full release gate | Configuration and runtime | `npm run format:check && npm run lint && npm run typecheck && npm test -- --maxWorkers=1 && npm run build && npm run test:runtime && npm run test:coverage && npm run pack:check && npm audit --omit=dev` | All commands pass; runtime CLI smoke test and package verification report success | Unsupported operating systems or unpublished registry artifacts |
+| Full release gate | Configuration and runtime | `npm run format:check && npm run lint && npm run typecheck && npm test -- --maxWorkers=1 && npm run build && npm run test:runtime && npm run test:coverage && npm run pack:check && npm audit --omit=dev` | All commands pass. Runtime CLI smoke test and package verification report success | Unsupported operating systems or unpublished registry artifacts |
 | Live provider contract | Behavioral integration | `npm run test:live -- --run test/live/agent-skill-package-candidate-generation.live.test.ts` | Credential-gated live test performs one provider call and validates the bounded content-only result | Repeatability of model quality |
 
 ## Verification evidence
@@ -272,9 +297,40 @@ Every command is planned before implementation. Each row inherits the issue non-
 Evidence is recorded only after the frozen tree runs each mapped command. Every criterion entry will
 include what was not tested, known evidence limitations, and the exact adversarial cases covered.
 
+### Blueprint and zero-tool generation contract
+
+- **RED**: The first focused test failed because the new domain module did not exist. A later
+  control-byte test failed alone while the other 16 domain tests passed.
+
+- **GREEN/REFACTOR**: the two-file focused selector passed 33 tests. Typecheck and scoped Biome
+  passed. The three existing prompt and Agent Skill resource-generation files passed 31 tests.
+
+- **Adversarial blueprint coverage**: missing or duplicate `SKILL.md`, scripts, top-level files,
+  binary extensions, traversal, duplicate requested tools, and control bytes.
+
+- **Adversarial bound coverage**: exact 16/+1 files and exact/+1 blueprint and response bytes.
+
+- **Adversarial response coverage**: missing, unknown, and duplicate paths. Tests also cover private
+  provider failures, model substitution, truncated evidence, and token overflow.
+
+- **Adversarial authority coverage**: policy, effect, capability, turn, tool, and cancellation
+  evidence.
+
+- **Not tested by this slice**: filesystem admission, directory modes, source races, or publication
+  settlement. Evaluation, activation, CLI grammar, live providers, and runtime replay also remain.
+
+- **Evidence limitation**: executor behavior is exercised through the application port fake. The
+  live-provider and real CLI paths remain release-gate work.
+
 ## Activity log
 
 - 2026-08-17 — User approved Approach A2-D with the proposed defaults.
-- 2026-08-17 — Created Issue #111 after a duplicate search and branched from exact `origin/main`.
+
+- 2026-08-17 — Created Issue #111 after a duplicate search. The branch starts from exact
+  `origin/main`.
+
 - 2026-08-17 — Recorded the full specification, alternatives, coupling analysis, TDD sequence, and
   plan-time verification map before production implementation.
+
+- 2026-08-17 — Committed the bounded blueprint and canonical package completion. The one-turn
+  application contract also passed 33 focused and 31 unchanged-generation tests.
