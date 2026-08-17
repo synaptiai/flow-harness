@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createAgentSkillActivationSnapshot } from "../../../../src/domain/adaptation/agent-skill-activation.js";
+import { createAgentSkillPackageActivationSnapshot } from "../../../../src/domain/adaptation/agent-skill-package-activation.js";
 import {
   createPromptActivationSnapshot,
   MAX_PROMPT_ACTIVATION_SOURCE_BYTES,
@@ -31,6 +32,10 @@ import {
   MAX_PROMPT_ACTIVATION_TRANSITIONS,
 } from "../../../../src/infrastructure/fs/local-prompt-activation-store.js";
 import { agentSkillActivationInput } from "../../../fixtures/agent-skill-activation.js";
+import {
+  agentSkillPackageActivationFixture,
+  agentSkillPackageEvaluationProof,
+} from "../../../fixtures/agent-skill-package-activation.js";
 import {
   baselinePromptActivationSource,
   promptActivationInput,
@@ -391,6 +396,66 @@ describe("local prompt activation store", () => {
     await store.applyRollback({ ...rollback, expectedDigest: rollbackPreview.proposalDigest });
     await expect(store.loadActive("adaptive-workflow")).resolves.toMatchObject({
       snapshot: { kind: "prompt-activation", activationDigest: prompt.activationDigest },
+      capabilitySnapshot: { packages: [] },
+    });
+  });
+
+  it("activates one generated package and rolls back to the package-free baseline", async () => {
+    const project = await temporaryProject();
+    const store = new LocalPromptActivationStore(project);
+    const fixture = agentSkillPackageActivationFixture();
+    const candidate = createAgentSkillPackageActivationSnapshot({
+      selection: "candidate",
+      candidate: fixture.projected.identity,
+      evaluation: agentSkillPackageEvaluationProof(),
+      workflowSource: fixture.projected.workflow.source,
+      skill: fixture.completed.package,
+    });
+    const baseline = createAgentSkillPackageActivationSnapshot({
+      selection: "baseline",
+      candidate: fixture.projected.identity,
+      evaluation: agentSkillPackageEvaluationProof(),
+      workflowSource: fixture.prompt.baselineText,
+    });
+    const activation = {
+      snapshot: candidate,
+      baselineSnapshot: baseline,
+      actor: "release-operator",
+    };
+    const preview = await store.previewActivate(activation);
+
+    await store.applyActivate({ ...activation, expectedDigest: preview.proposalDigest });
+
+    await expect(store.loadActive(candidate.workflowId)).resolves.toMatchObject({
+      snapshot: {
+        kind: "agent-skill-package-activation",
+        selection: "candidate",
+        activationDigest: candidate.activationDigest,
+      },
+      capabilitySnapshot: {
+        packages: [{ name: "review-helper", digest: fixture.completed.package.digest }],
+      },
+    });
+
+    const rollback = {
+      workflowId: candidate.workflowId,
+      target: null,
+      actor: "release-operator",
+    };
+    const rollbackPreview = await store.previewRollback(rollback);
+    expect(rollbackPreview.target).toMatchObject({
+      kind: "agent-skill-package-activation",
+      selection: "baseline",
+      activationDigest: baseline.activationDigest,
+    });
+    await store.applyRollback({ ...rollback, expectedDigest: rollbackPreview.proposalDigest });
+
+    await expect(store.loadActive(candidate.workflowId)).resolves.toMatchObject({
+      snapshot: {
+        kind: "agent-skill-package-activation",
+        selection: "baseline",
+        activationDigest: baseline.activationDigest,
+      },
       capabilitySnapshot: { packages: [] },
     });
   });

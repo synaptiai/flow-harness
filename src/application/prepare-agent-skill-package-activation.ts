@@ -1,117 +1,72 @@
 import { createHash } from "node:crypto";
+import { posix } from "node:path";
 
 import {
-  createPromptActivationSnapshot,
-  type PromptActivationSnapshot,
-} from "../domain/adaptation/prompt-activation.js";
+  type AgentSkillPackageActivationSnapshot,
+  createAgentSkillPackageActivationSnapshot,
+} from "../domain/adaptation/agent-skill-package-activation.js";
 import {
-  type PromptCandidateIdentity,
-  parsePromptCandidateIdentity,
-} from "../domain/adaptation/prompt-candidate.js";
+  type AgentSkillPackageCandidateIdentity,
+  parseAgentSkillPackageCandidateIdentity,
+} from "../domain/adaptation/agent-skill-package-candidate.js";
+import {
+  type AgentSkillPackageSnapshot,
+  calculateCapabilitySnapshotDigest,
+} from "../domain/capability/agent-skills.js";
 import {
   aggregateEvaluation,
   EvaluationAggregationError,
   type EvaluationReportInput,
 } from "../domain/evaluation/aggregate.js";
-import type { EvaluationTrialScheduleItem } from "../domain/evaluation/plan.js";
 import type { EvaluationTrialRecord } from "../domain/evaluation/records.js";
+import type { PromptActivationStoredEvaluation } from "./prepare-prompt-activation.js";
 
 const MAX_ADMISSION_ERROR_BYTES = 16 * 1024;
 
-export interface PromptActivationCandidate {
-  readonly identity: PromptCandidateIdentity;
-  readonly baseline: {
-    readonly sourceText: string;
-    readonly sourceSha256: string;
-    readonly workflowDigest: string;
-  };
-  readonly workflow: {
+export interface AgentSkillPackageActivationCandidate {
+  readonly identity: AgentSkillPackageCandidateIdentity;
+  readonly baselineWorkflow: {
     readonly source: string;
     readonly sourceSha256: string;
     readonly workflowDigest: string;
   };
-}
-
-export interface PromptActivationStoredEvaluation {
-  readonly header: {
-    readonly evaluationId: string;
-    readonly planDigest: string;
-    readonly suite: {
-      readonly tasks: readonly {
-        readonly id: string;
-        readonly partition: "tuning" | "regression" | "holdout";
-        readonly verifier: {
-          readonly digest: string;
-          readonly assertionCount: number;
-        };
-      }[];
-    };
-    readonly profiles: readonly (
-      | {
-          readonly id: string;
-          readonly adapter: "flow-workflow-v1";
-          readonly workflow: {
-            readonly provenance: string;
-            readonly sourceSha256: string;
-            readonly workflowDigest: string;
-            readonly sourceKind?:
-              | "prompt-candidate-projection"
-              | "agent-skill-candidate-projection"
-              | "agent-skill-package-candidate-projection"
-              | undefined;
-          };
-          readonly capabilitySnapshotDigest?: string | undefined;
-          readonly capabilityPackageDigests?: readonly string[] | undefined;
-          readonly candidate?:
-            | {
-                readonly provenance: string;
-                readonly identity: unknown;
-              }
-            | undefined;
-        }
-      | {
-          readonly id: string;
-          readonly adapter: "pi-native-v1" | "omp-native-v1" | "prime-agent-native-v1";
-          readonly harness: unknown;
-        }
-    )[];
-    readonly comparison: EvaluationReportInput["comparison"];
-    readonly schedule: readonly EvaluationTrialScheduleItem[];
+  readonly candidateWorkflow: {
+    readonly source: string;
+    readonly sourceSha256: string;
+    readonly workflowDigest: string;
   };
-  readonly records: readonly EvaluationTrialRecord[];
+  readonly candidateSkill: AgentSkillPackageSnapshot;
 }
 
-export type PromptActivationAdmissionErrorCode =
+export type AgentSkillPackageActivationAdmissionErrorCode =
   | "evaluation_incomplete"
   | "evaluation_not_superior"
   | "identity_mismatch"
   | "invalid_evaluation";
 
-export class PromptActivationAdmissionError extends Error {
-  override readonly name = "PromptActivationAdmissionError";
+export class AgentSkillPackageActivationAdmissionError extends Error {
+  override readonly name = "AgentSkillPackageActivationAdmissionError";
 
   constructor(
-    readonly code: PromptActivationAdmissionErrorCode,
+    readonly code: AgentSkillPackageActivationAdmissionErrorCode,
     message: string,
-    options?: ErrorOptions,
   ) {
-    super(`${code}: ${boundedText(message, MAX_ADMISSION_ERROR_BYTES)}`, options);
+    super(`${code}: ${boundedText(message, MAX_ADMISSION_ERROR_BYTES)}`);
   }
 }
 
-export function createPromptActivationFromEvaluation(
-  rawCandidate: PromptActivationCandidate,
+export function createAgentSkillPackageActivationFromEvaluation(
+  rawCandidate: AgentSkillPackageActivationCandidate,
   stored: PromptActivationStoredEvaluation,
 ): {
-  readonly candidate: PromptActivationSnapshot;
-  readonly baseline: PromptActivationSnapshot;
+  readonly candidate: AgentSkillPackageActivationSnapshot;
+  readonly baseline: AgentSkillPackageActivationSnapshot;
 } {
-  const candidate = parsePromptCandidateIdentity(rawCandidate.identity);
+  const candidate = parseCandidate(rawCandidate.identity);
   validateLiveCandidate(candidate, rawCandidate);
-  const input = reportInput(stored);
-  const report = aggregateStoredEvaluation(input, stored.records);
+  const report = aggregateStoredEvaluation(reportInput(stored), stored.records);
   if (stored.records.length !== stored.header.schedule.length) {
-    throw new PromptActivationAdmissionError(
+    throw new AgentSkillPackageActivationAdmissionError(
       "evaluation_incomplete",
       "the evaluation does not contain every scheduled trial",
     );
@@ -126,14 +81,14 @@ export function createPromptActivationFromEvaluation(
     comparison.constraints.policyViolations !== true ||
     comparison.constraints.verifiedSuccessRegression !== true
   ) {
-    throw new PromptActivationAdmissionError(
+    throw new AgentSkillPackageActivationAdmissionError(
       "evaluation_not_superior",
-      `the evaluation verdict is ${comparison.verdict}`,
+      "the evaluation is not a complete superior comparison",
     );
   }
   const terminalRecord = stored.records.at(-1);
   if (terminalRecord === undefined) {
-    throw new PromptActivationAdmissionError(
+    throw new AgentSkillPackageActivationAdmissionError(
       "evaluation_incomplete",
       "the evaluation has no committed trial",
     );
@@ -170,34 +125,50 @@ export function createPromptActivationFromEvaluation(
     },
   } as const;
   return Object.freeze({
-    candidate: createPromptActivationSnapshot({
+    candidate: createAgentSkillPackageActivationSnapshot({
       selection: "candidate",
       candidate,
-      source: rawCandidate.workflow.source,
       evaluation,
+      workflowSource: rawCandidate.candidateWorkflow.source,
+      skill: rawCandidate.candidateSkill,
     }),
-    baseline: createPromptActivationSnapshot({
+    baseline: createAgentSkillPackageActivationSnapshot({
       selection: "baseline",
       candidate,
-      source: rawCandidate.baseline.sourceText,
       evaluation,
+      workflowSource: rawCandidate.baselineWorkflow.source,
     }),
   });
 }
 
+function parseCandidate(input: unknown): AgentSkillPackageCandidateIdentity {
+  try {
+    return parseAgentSkillPackageCandidateIdentity(input);
+  } catch {
+    throw new AgentSkillPackageActivationAdmissionError(
+      "identity_mismatch",
+      "the live Agent Skill package candidate identity is invalid",
+    );
+  }
+}
+
 function validateLiveCandidate(
-  candidate: PromptCandidateIdentity,
-  live: PromptActivationCandidate,
+  candidate: AgentSkillPackageCandidateIdentity,
+  live: AgentSkillPackageActivationCandidate,
 ): void {
   if (
-    live.baseline.sourceSha256 !== candidate.baseline.sourceSha256 ||
-    live.baseline.workflowDigest !== candidate.baseline.workflowDigest ||
-    live.workflow.sourceSha256 !== candidate.projectedWorkflow.sourceSha256 ||
-    live.workflow.workflowDigest !== candidate.projectedWorkflow.workflowDigest
+    live.baselineWorkflow.sourceSha256 !== candidate.baseline.workflow.sourceSha256 ||
+    live.baselineWorkflow.workflowDigest !== candidate.baseline.workflow.workflowDigest ||
+    live.candidateWorkflow.sourceSha256 !== candidate.projectedWorkflow.sourceSha256 ||
+    live.candidateWorkflow.workflowDigest !== candidate.projectedWorkflow.workflowDigest ||
+    live.candidateSkill.name !== candidate.package.name ||
+    live.candidateSkill.provenance !== candidate.package.provenance ||
+    live.candidateSkill.digest !== candidate.package.packageDigest ||
+    calculateCapabilitySnapshotDigest([live.candidateSkill]) !== candidate.package.capabilityDigest
   ) {
-    throw new PromptActivationAdmissionError(
+    throw new AgentSkillPackageActivationAdmissionError(
       "identity_mismatch",
-      "the live candidate workflow does not match its identity",
+      "the live Agent Skill package candidate does not match its evaluated identities",
     );
   }
 }
@@ -209,7 +180,7 @@ function reportInput(stored: PromptActivationStoredEvaluation): EvaluationReport
     firstProfile === undefined ||
     secondProfile === undefined
   ) {
-    throw new PromptActivationAdmissionError(
+    throw new AgentSkillPackageActivationAdmissionError(
       "invalid_evaluation",
       "the evaluation must contain two profiles",
     );
@@ -240,27 +211,19 @@ function aggregateStoredEvaluation(
     return aggregateEvaluation(input, records);
   } catch (error) {
     if (error instanceof EvaluationAggregationError) {
-      throw new PromptActivationAdmissionError("invalid_evaluation", error.message, {
-        cause: error,
-      });
+      throw new AgentSkillPackageActivationAdmissionError(
+        "invalid_evaluation",
+        "the evaluation records are invalid",
+      );
     }
     throw error;
   }
 }
 
 function validateEvaluationProfiles(
-  candidate: PromptCandidateIdentity,
+  candidate: AgentSkillPackageCandidateIdentity,
   stored: PromptActivationStoredEvaluation,
-): {
-  readonly baseline: Extract<
-    PromptActivationStoredEvaluation["header"]["profiles"][number],
-    { readonly adapter: "flow-workflow-v1" }
-  >;
-  readonly candidate: Extract<
-    PromptActivationStoredEvaluation["header"]["profiles"][number],
-    { readonly adapter: "flow-workflow-v1" }
-  >;
-} {
+) {
   const baseline = stored.header.profiles.find(
     (profile) => profile.id === stored.header.comparison.baselineProfileId,
   );
@@ -274,31 +237,40 @@ function validateEvaluationProfiles(
     selected.adapter !== "flow-workflow-v1" ||
     selected.candidate === undefined
   ) {
-    throw new PromptActivationAdmissionError(
+    throw new AgentSkillPackageActivationAdmissionError(
       "identity_mismatch",
-      "the evaluation does not contain the selected candidate profiles",
+      "the evaluation does not contain the selected Agent Skill package profiles",
     );
   }
-  const storedCandidate = parsePromptCandidateIdentity(selected.candidate.identity);
+  const storedCandidate = parseCandidate(selected.candidate.identity);
   if (
     storedCandidate.candidateDigest !== candidate.candidateDigest ||
-    selected.candidate.provenance !== candidate.manifest.provenance ||
-    selected.workflow.sourceKind !== "prompt-candidate-projection" ||
-    selected.workflow.provenance !== candidate.manifest.provenance ||
+    selected.candidate.provenance !== selected.workflow.provenance ||
+    `${posix.basename(selected.candidate.provenance)}/CANDIDATE.json` !==
+      candidate.manifest.provenance ||
+    selected.workflow.sourceKind !== "agent-skill-package-candidate-projection" ||
     selected.workflow.sourceSha256 !== candidate.projectedWorkflow.sourceSha256 ||
     selected.workflow.workflowDigest !== candidate.projectedWorkflow.workflowDigest ||
+    selected.capabilitySnapshotDigest !== candidate.package.capabilityDigest ||
+    !sameSingleDigest(selected.capabilityPackageDigests, candidate.package.packageDigest) ||
     baseline.candidate !== undefined ||
     baseline.workflow.sourceKind !== undefined ||
-    baseline.workflow.provenance !== candidate.baseline.provenance ||
-    baseline.workflow.sourceSha256 !== candidate.baseline.sourceSha256 ||
-    baseline.workflow.workflowDigest !== candidate.baseline.workflowDigest
+    baseline.workflow.provenance !== candidate.baseline.workflow.provenance ||
+    baseline.workflow.sourceSha256 !== candidate.baseline.workflow.sourceSha256 ||
+    baseline.workflow.workflowDigest !== candidate.baseline.workflow.workflowDigest ||
+    baseline.capabilitySnapshotDigest !== undefined ||
+    baseline.capabilityPackageDigests !== undefined
   ) {
-    throw new PromptActivationAdmissionError(
+    throw new AgentSkillPackageActivationAdmissionError(
       "identity_mismatch",
-      "the evaluation profiles do not match the live candidate and baseline",
+      "the evaluation profiles do not match the live Agent Skill package candidate",
     );
   }
   return { baseline, candidate: selected };
+}
+
+function sameSingleDigest(value: readonly string[] | undefined, expected: string): boolean {
+  return value?.length === 1 && value[0] === expected;
 }
 
 function canonicalize(value: unknown): string {
@@ -321,7 +293,7 @@ function canonicalize(value: unknown): string {
       )
       .join(",")}}`;
   }
-  throw new PromptActivationAdmissionError(
+  throw new AgentSkillPackageActivationAdmissionError(
     "invalid_evaluation",
     "the evaluation report is not canonical JSON",
   );

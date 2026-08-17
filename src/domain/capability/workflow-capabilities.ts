@@ -336,9 +336,13 @@ function assertPromptActivationBinding(
   const expectedWorkflowDigest =
     activation.kind === "agent-skill-activation"
       ? activation.candidate.baseline.workflow.workflowDigest
-      : activation.selection === "candidate"
-        ? activation.candidate.projectedWorkflow.workflowDigest
-        : activation.candidate.baseline.workflowDigest;
+      : activation.kind === "agent-skill-package-activation"
+        ? activation.selection === "candidate"
+          ? activation.candidate.projectedWorkflow.workflowDigest
+          : activation.candidate.baseline.workflow.workflowDigest
+        : activation.selection === "candidate"
+          ? activation.candidate.projectedWorkflow.workflowDigest
+          : activation.candidate.baseline.workflowDigest;
   if (expectedWorkflowDigest !== workflowDigest) {
     throw new WorkflowCapabilityError(
       "digest_mismatch",

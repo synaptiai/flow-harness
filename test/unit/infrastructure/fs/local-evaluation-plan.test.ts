@@ -341,7 +341,11 @@ describe("local evaluation plan admission", () => {
       workflowDigest: fixture.workflowDigest,
     });
     const candidateIdentity = candidate.candidate;
-    if (candidateIdentity === undefined || !("kind" in candidateIdentity)) {
+    if (
+      candidateIdentity === undefined ||
+      !("kind" in candidateIdentity) ||
+      candidateIdentity.kind !== "agent-skill-candidate"
+    ) {
       throw new Error("Agent Skill evaluation fixture has no Agent Skill candidate identity");
     }
     expect(baseline.capabilitySnapshot?.digest).toBe(
@@ -1072,11 +1076,15 @@ type MutableFlowProfile = Extract<
 
 type DeepMutable<Value> = Value extends (...args: never[]) => unknown
   ? Value
-  : Value extends readonly (infer Item)[]
-    ? DeepMutable<Item>[]
-    : Value extends object
-      ? { -readonly [Key in keyof Value]: DeepMutable<Value[Key]> }
-      : Value;
+  : Value extends readonly []
+    ? []
+    : Value extends readonly [infer Item]
+      ? [DeepMutable<Item>]
+      : Value extends readonly (infer Item)[]
+        ? DeepMutable<Item>[]
+        : Value extends object
+          ? { -readonly [Key in keyof Value]: DeepMutable<Value[Key]> }
+          : Value;
 
 function requiredFlowProfile(header: MutablePublicHeader, id: string): MutableFlowProfile {
   const profile = header.profiles.find(
@@ -1092,7 +1100,11 @@ function requiredSkillCandidateIdentity(
   header: MutablePublicHeader,
 ): DeepMutable<AgentSkillCandidateIdentity> {
   const identity = requiredFlowProfile(header, "candidate").candidate?.identity;
-  if (identity === undefined || !("kind" in identity)) {
+  if (
+    identity === undefined ||
+    !("kind" in identity) ||
+    identity.kind !== "agent-skill-candidate"
+  ) {
     throw new Error("Agent Skill durable fixture has no skill candidate identity");
   }
   return identity;

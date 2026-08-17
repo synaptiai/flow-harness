@@ -3,6 +3,7 @@ import { constants, type Stats } from "node:fs";
 import { type FileHandle, lstat, open, opendir, realpath } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import type { AgentSkillCandidateIdentity } from "../../domain/adaptation/agent-skill-candidate.js";
+import type { AgentSkillPackageCandidateIdentity } from "../../domain/adaptation/agent-skill-package-candidate.js";
 import type { PromptCandidateIdentity } from "../../domain/adaptation/prompt-candidate.js";
 import type {
   AgentSkillCapabilitySnapshot,
@@ -84,7 +85,8 @@ export interface AdmittedFlowEvaluationProfile {
     readonly sourceKind:
       | "file"
       | "prompt-candidate-projection"
-      | "agent-skill-candidate-projection";
+      | "agent-skill-candidate-projection"
+      | "agent-skill-package-candidate-projection";
     readonly sourcePath: string | null;
     readonly provenance: string;
     readonly source: string;
@@ -92,7 +94,11 @@ export interface AdmittedFlowEvaluationProfile {
     readonly workflowDigest: string;
     readonly compiled: CompiledWorkflow;
   };
-  readonly candidate?: (PromptCandidateIdentity | AgentSkillCandidateIdentity) & {
+  readonly candidate?: (
+    | PromptCandidateIdentity
+    | AgentSkillCandidateIdentity
+    | AgentSkillPackageCandidateIdentity
+  ) & {
     readonly selectionProvenance: string;
   };
   readonly capabilitySnapshot?: CapabilitySnapshot;
@@ -133,7 +139,10 @@ export function projectEvaluationCandidateIdentity(
   candidate: NonNullable<AdmittedFlowEvaluationProfile["candidate"]>,
 ): {
   readonly provenance: string;
-  readonly identity: PromptCandidateIdentity | AgentSkillCandidateIdentity;
+  readonly identity:
+    | PromptCandidateIdentity
+    | AgentSkillCandidateIdentity
+    | AgentSkillPackageCandidateIdentity;
 } {
   const { selectionProvenance, ...identity } = candidate;
   return Object.freeze({ provenance: selectionProvenance, identity: Object.freeze(identity) });
@@ -285,7 +294,7 @@ export async function admitLocalEvaluationPlan(
         });
       }
 
-      const candidatePath = await resolveAdmittedPath(planRoot, profile.candidate, "file");
+      const candidatePath = await resolveAdmittedPath(planRoot, profile.candidate, "entry");
       dependencies?.signal?.throwIfAborted();
       let admittedCandidate: Awaited<ReturnType<typeof admitLocalAdaptationCandidate>>;
       try {
@@ -327,6 +336,28 @@ export async function admitLocalEvaluationPlan(
           }),
           capabilitySnapshot: skillCandidate.candidateCapabilitySnapshot,
           baselineCapabilitySnapshot: skillCandidate.baselineCapabilitySnapshot,
+        });
+      }
+      if (admittedCandidate.kind === "agent-skill-package-candidate") {
+        const packageCandidate = admittedCandidate.candidate;
+        assertWorkflowControls(profile.id, packageCandidate.workflow.compiled, source.controls);
+        return Object.freeze({
+          id: profile.id,
+          adapter: profile.adapter,
+          workflow: Object.freeze({
+            sourceKind: "agent-skill-package-candidate-projection" as const,
+            sourcePath: null,
+            provenance: profile.candidate,
+            source: packageCandidate.workflow.source,
+            sourceSha256: packageCandidate.workflow.sourceSha256,
+            workflowDigest: packageCandidate.workflow.workflowDigest,
+            compiled: packageCandidate.workflow.compiled,
+          }),
+          candidate: Object.freeze({
+            ...packageCandidate.identity,
+            selectionProvenance: profile.candidate,
+          }),
+          capabilitySnapshot: packageCandidate.candidateCapabilitySnapshot,
         });
       }
       const promptCandidate = admittedCandidate.candidate;
@@ -566,7 +597,7 @@ async function scanFixtureDirectory(
 async function resolveAdmittedPath(
   root: string,
   provenance: string,
-  expectedKind: "file" | "directory",
+  expectedKind: "file" | "directory" | "entry",
 ): Promise<string> {
   const candidate = resolve(root, provenance);
   const fromRoot = relative(root, candidate);
@@ -599,11 +630,12 @@ async function resolveAdmittedPath(
   const final = await lstat(candidate);
   if (
     (expectedKind === "file" && !final.isFile()) ||
-    (expectedKind === "directory" && !final.isDirectory())
+    (expectedKind === "directory" && !final.isDirectory()) ||
+    (expectedKind === "entry" && !final.isFile() && !final.isDirectory())
   ) {
     throw new EvaluationAdmissionError(
       "invalid_source",
-      `path "${provenance}" is not a regular ${expectedKind}`,
+      `path "${provenance}" is not an admitted ${expectedKind}`,
     );
   }
   return candidate;
@@ -677,6 +709,25 @@ function bindCandidateComparison(
       throw new EvaluationAdmissionError(
         "invalid_workflow",
         "the prompt candidate must overlay the exact comparison baseline workflow identity",
+      );
+    }
+    return [...profiles];
+  }
+  if (candidate.candidate.kind === "agent-skill-package-candidate") {
+    if (
+      candidate.candidate.baseline.workflow.sourceSha256 !== baseline.workflow.sourceSha256 ||
+      candidate.candidate.baseline.workflow.workflowDigest !== baseline.workflow.workflowDigest ||
+      candidate.candidate.projectedWorkflow.sourceSha256 !== candidate.workflow.sourceSha256 ||
+      candidate.candidate.projectedWorkflow.workflowDigest !== candidate.workflow.workflowDigest ||
+      baseline.capabilitySnapshot !== undefined ||
+      candidate.capabilitySnapshot === undefined ||
+      candidate.candidate.package.capabilityDigest !== candidate.capabilitySnapshot.digest ||
+      candidate.capabilitySnapshot.packages.length !== 1 ||
+      candidate.capabilitySnapshot.packages[0]?.digest !== candidate.candidate.package.packageDigest
+    ) {
+      throw new EvaluationAdmissionError(
+        "invalid_workflow",
+        "the Agent Skill package candidate must bind the exact baseline and projected package identities",
       );
     }
     return [...profiles];

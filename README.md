@@ -531,6 +531,49 @@ install, or publish a package. A favorable evaluation grants no package or execu
 an operator applies its exact reviewed activation proposal. Agent Skill package installation and
 publication remain separate.
 
+Flow can also synthesize one new inert Agent Skill package for a baseline workflow that selects no
+skills. The operator supplies a strict, content-free blueprint that fixes the package authority,
+one root agent target, and every output path:
+
+```sh
+node dist/cli/main.js candidate generate baseline.workflow.yaml tuning-evidence.json \
+  --output generated-review-helper \
+  --id generated-review-helper --version 1.0.0 \
+  --blueprint review-helper.blueprint.json \
+  --provider provider-name --model model-name --thinking medium
+```
+
+The command publishes a new review directory without replacing an existing path:
+
+```text
+generated-review-helper/
+├── CANDIDATE.json
+└── skill/
+    └── review-helper/
+        ├── SKILL.md
+        ├── references/...
+        └── assets/...
+```
+
+The blueprint declares 1–16 exact portable paths. `SKILL.md` is required. Optional files are inert
+UTF-8 references or textual assets. Scripts, executable files, binary content, links, special files,
+and model-selected paths reject.
+
+The model receives tuning-only evidence and returns file contents
+for the declared path set in one zero-tool turn. Flow renders package authority from the blueprint.
+The model cannot choose the skill name, description, tools, target, evidence, provider, model, or
+limits.
+
+The baseline workflow must select no skills. Projection changes one root agent with the `read` tool
+from `skills: []` to the exact generated skill. Paired evaluation runs the original workflow with no
+package and the projected workflow with the exact generated package. Generation remains inert: it
+does not evaluate, activate, install, sign, or publish the package.
+
+`candidate validate` accepts the review directory. Validation depends on the still-present sibling
+baseline, evidence, and blueprint files named by `CANDIDATE.json`. After explicit activation, new
+runs use the durable projected workflow and package bytes. They do not read the candidate directory,
+generation sources, network, registry, or credentials.
+
 Activation requires a complete superior evaluation. First, request a preview:
 
 ```sh
@@ -549,11 +592,15 @@ node dist/cli/main.js activation inspect evaluated-profile
 node dist/cli/main.js run activation:evaluated-profile --run-id active-candidate-run
 ```
 
-Activation accepts prompt and Agent Skill candidates. It does not change the baseline workflow or
-the live skill package. Flow stores one candidate artifact and one baseline artifact from the same
-reviewed evaluation. An Agent Skill artifact contains the unchanged workflow and the exact selected
-package. Each run stores only the exact selected artifact and package in its durable capability
-snapshot. A later activation or rollback does not change that run.
+Activation accepts prompt, Agent Skill resource, and Agent Skill package candidates. It does not
+change the baseline workflow or a live skill package. Flow stores one candidate artifact and one
+baseline artifact from the same reviewed evaluation. A resource-candidate artifact contains the
+unchanged workflow and the exact selected package.
+
+A package-candidate artifact contains the projected workflow and exact generated package. Its paired
+baseline contains the original workflow and no package. Each run stores only the exact selected
+artifact and package state in its durable capability snapshot. A later activation or rollback does
+not change that run.
 
 Rollback selects an earlier candidate artifact or the exact stored baseline artifact for future
 runs. It does not delete stored activation artifacts:
@@ -565,6 +612,9 @@ node dist/cli/main.js activation rollback evaluated-profile \
   --to baseline --actor operator:test --expected-digest <proposal-sha256>
 node dist/cli/main.js activation rollback evaluated-profile \
   --to agent-skill:better-review@1.0.0 --actor operator:test --dry-run
+node dist/cli/main.js activation rollback evaluated-profile \
+  --to agent-skill-package:generated-review-helper@1.0.0 \
+  --actor operator:test --dry-run
 ```
 
 Model-authorized evaluation and activation remain unavailable.

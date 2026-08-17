@@ -381,6 +381,11 @@ no activation or package authority.
 generation and public-output path.
 `test/integration/cli/agent-skill-candidate.test.ts` covers the Agent Skill validation, paired
 execution, activation, rollback, recovery, privacy, and offline-inspection path.
+`test/integration/cli/agent-skill-package-candidate-generation.test.ts` covers the A2-D review
+directory end to end. It proves one zero-tool content-only generation, exact published bytes, and
+content-free public output. It also proves read-only validation and paired no-package/package
+evaluation. The test then covers explicit activation, source deletion, offline active execution,
+rollback to no package, and grammar isolation from the two older generation modes.
 
 The production CLI integration runs the complete composition with a deterministic fake executor, so
 unit and integration suites need no provider credentials or network. Live provider comparisons are

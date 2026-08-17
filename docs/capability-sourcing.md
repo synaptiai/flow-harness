@@ -122,7 +122,7 @@ Prime Agent proves that Pi can support a distinct long-running harness. Its prod
 | Persistent IPython | Implemented only in the fixed Prime OCI evaluation profile. Docker policy, not IPython, supplies the containment boundary |
 | Recursive subagents | Use narrow contexts but keep recursion and joins graph-owned |
 | Executable Python skills | Defer because installation expands the supply-chain boundary |
-| Continual harness refinement | **Partially implemented independently** for bounded prompt and Agent Skill resource candidates, paired evaluation, reviewed activation, durable run snapshots, and rollback. Other adaptation surfaces remain future work |
+| Continual harness refinement | **Partially implemented independently** for bounded prompt candidates, Agent Skill resource candidates, Agent Skill package candidates, paired evaluation, reviewed activation, durable run snapshots, and rollback. Other adaptation surfaces remain future work |
 | Immutable base plus supplemental state | Adopt as the boundary for any future learning system |
 
 See [Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent), its [architecture](https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/architecture.md), and its [RLM trust model](https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/rlm.md). Prime Agent is MIT-licensed; substantial copied portions require preservation of both Pi and Prime notices.
@@ -131,9 +131,22 @@ Prime Agent shows the value of an immutable base with supplemental refinements. 
 pattern. A prompt or Agent Skill resource candidate has no Python or runtime authority. It cannot
 apply itself. It must bind the exact tuning evidence and baseline.
 
-Agent Skill generation also binds one exact package snapshot and an operator-selected allowlist of existing UTF-8 resources.
-The allowlist excludes `SKILL.md` and the top-level `scripts/` directory. The model receives no live
-catalog, unselected resource, package-selection authority, tool, or workspace access.
+Agent Skill resource generation binds one exact package snapshot and an operator-selected allowlist
+of existing UTF-8 resources. The allowlist excludes `SKILL.md` and the top-level `scripts/`
+directory. The model receives no live catalog, unselected resource, package-selection authority,
+tool, or workspace access.
+
+Agent Skill package generation starts from a workflow that selects no Agent Skill. The operator
+supplies one content-free blueprint that fixes the skill authority, one root agent target, and one
+through sixteen exact paths. `SKILL.md` is required. Other files may be inert UTF-8 references or
+textual assets. Flow rejects scripts, executable modes, links, special files, binary content, and
+undeclared paths. One zero-tool model turn supplies only the declared file contents.
+
+The review artifact is a private candidate directory with `CANDIDATE.json` and
+`skill/<operator-selected-name>/`. It is not an installed package. Paired evaluation compares the
+original workflow with no package against the projected workflow with the exact generated package.
+Reviewed activation stores both states durably. Rollback restores the package-free baseline.
+Generation does not sign, install, publish, distribute, or execute the candidate.
 
 Flow uses its standard compiler and paired evaluation gate. An operator can activate only a complete
 superior evaluation. The activation store keeps immutable artifacts, durable run snapshots, and
