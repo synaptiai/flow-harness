@@ -458,6 +458,48 @@ state untested paths, evidence limitations, and exact adversarial cases.
   candidate-file admission against an active baseline and durable evaluation-store cross-binding
   remain later cycles.
 
+### Immutable candidate artifact and paired evaluation
+
+- **RED and GREEN**: local evaluation admission initially rejected the new plan grammar. It now
+  accepts two explicit selections from one effective-harness candidate artifact and rejects mixed
+  pairing before schedule authority is created.
+
+- **Offline evidence**: admission captures both complete states. It compiles each workflow through
+  its embedded workflow-package resolver. It creates exact capability snapshots from the selected
+  package closure. The admitted plan remains usable after the candidate file is removed.
+
+- **Durable public identity**: evaluation headers retain the artifact, state, baseline-head,
+  workflow, package, surface, and candidate digests. They omit workflow and package
+  `contentBase64` values. The local evaluation store reopens and cross-binds the repeated public
+  identities.
+
+- **Activation evidence**: preparation aggregates the complete paired ledger. It accepts only a
+  superior result whose two profiles match the exact candidate artifact. Independent authority
+  substitutions reject. The matrix covers the artifact, both states, the baseline head, and the
+  candidate digest.
+
+### Effective transition and mutation store
+
+- **Transition variants**: activation and rollback are distinct strict variants. Activation binds
+  candidate and evaluation evidence. Rollback instead binds the retained target transition and
+  cannot claim a new candidate evaluation.
+
+- **Publication**: the new effective-harness store shares the existing project activation mutation
+  lock. It publishes exact baseline state, candidate state, and candidate artifact blobs before an
+  atomic effective index rename.
+
+- **History**: one exact legacy head anchors the effective history. Index validation replays every
+  transition from that origin and compares the derived complete heads. Active load reopens and
+  revalidates the selected state blob.
+
+- **Focused evidence**: the combined foundation selector passed 99 tests across 11 files.
+  Typecheck passed. The new store tests bind dependency-before-head order, exact active-state load,
+  retained-state rollback, and stale-proposal rejection before blob publication.
+
+- **Evidence limitation**: idempotent apply and publication-failure settlement remain pending.
+  Corruption and missing-blob matrices also remain pending. Later cycles must cover legacy-writer
+  exclusion, CLI composition, runtime selection, current policy, and complete offline execution.
+
 ## Activity log
 
 - 2026-08-17 — PR #112 merged. Post-merge CI passed. Main was clean at merge commit `893af804`.
@@ -479,3 +521,7 @@ state untested paths, evidence limitations, and exact adversarial cases.
 
 - 2026-08-17 — Completed all three current surface projections. Verified prompt-after-skill and
   skill-after-prompt retention in complete state objects.
+
+- 2026-08-17 — Added one immutable candidate artifact and paired evaluation selection. Added
+  durable content-free identity and superior-evidence preparation. Added explicit rollback
+  transitions and the first shared-lock effective-state mutation store.

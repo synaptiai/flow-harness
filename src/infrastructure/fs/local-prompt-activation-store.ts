@@ -648,6 +648,17 @@ export class LocalPromptActivationStore {
   }
 }
 
+export async function withLocalActivationMutationOwnership<Value>(
+  projectRoot: string,
+  signal: AbortSignal | undefined,
+  operation: (flowDirectory: string) => Promise<Value>,
+): Promise<Value> {
+  signal?.throwIfAborted();
+  const paths = await awaitBeforeMutationOwnership(storePaths(projectRoot), signal);
+  const lock = await acquireMutationLock(paths.flowDirectory, {}, signal);
+  return await withMutationLock(lock, {}, () => operation(paths.flowDirectory));
+}
+
 interface PromptActivationStorePaths {
   readonly flowDirectory: string;
   readonly activationDirectory: string;

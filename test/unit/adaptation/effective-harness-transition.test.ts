@@ -6,6 +6,7 @@ import {
 } from "../../../src/domain/adaptation/effective-harness-state.js";
 import {
   calculateEffectiveHarnessTransitionDigest,
+  createEffectiveHarnessRollbackTransition,
   createEffectiveHarnessTransition,
   effectiveHarnessHeadFromTransition,
   parseEffectiveHarnessTransition,
@@ -59,6 +60,33 @@ describe("effective harness transitions", () => {
       transitionDigest: transition.transitionDigest,
       stateDigest: transition.toStateDigest,
     });
+  });
+
+  it("binds rollback to one retained state and the transition that introduced it", () => {
+    const prior = priorHead();
+
+    const transition = createEffectiveHarnessRollbackTransition({
+      prior,
+      toStateDigest: "f".repeat(64),
+      toActivationDigest: "1".repeat(64),
+      targetTransitionDigest: "2".repeat(64),
+      actor: "operator:test",
+      reason: "Restore the retained reviewed state.",
+      changedAt: "2026-08-17T17:40:00.000Z",
+    });
+
+    expect(
+      parseEffectiveHarnessTransition(structuredClone(transition), { scopeDigest, prior }),
+    ).toEqual(transition);
+    expect(transition).toMatchObject({
+      action: "rollback",
+      surface: "rollback",
+      targetTransitionDigest: "2".repeat(64),
+      toStateDigest: "f".repeat(64),
+    });
+    expect(transition).not.toHaveProperty("candidate");
+    expect(transition).not.toHaveProperty("evaluation");
+    expect(effectiveHarnessHeadFromTransition(transition).stateDigest).toBe("f".repeat(64));
   });
 
   it.each([

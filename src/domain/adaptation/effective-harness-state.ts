@@ -269,6 +269,17 @@ export function effectiveHarnessWorkflowSource(state: EffectiveHarnessState): st
   return decodeWorkflowSource(decodeCanonicalBase64(state.workflow.contentBase64));
 }
 
+export function compileEffectiveHarnessState(state: EffectiveHarnessState) {
+  const parsed = parseEffectiveHarnessState(state, { scopeDigest: state.scopeDigest });
+  const compiled = compileEffectiveWorkflow(
+    effectiveHarnessWorkflowSource(parsed),
+    parsed.packages,
+    parsed.rootPackage,
+  );
+  bindEffectiveWorkflow(compiled, parsed.packages);
+  return compiled;
+}
+
 export function createEffectiveHarnessHeadIdentity(
   input: CreateEffectiveHarnessHeadIdentityInput,
 ): EffectiveHarnessHeadIdentity {

@@ -40,7 +40,7 @@ const evaluationSchema = z
   })
   .strict();
 
-const effectiveHarnessTransitionSchema = z
+const effectiveHarnessTransitionCommonSchema = z
   .object({
     version: z.literal(1),
     kind: z.literal("effective-harness-transition"),
@@ -52,18 +52,34 @@ const effectiveHarnessTransitionSchema = z
     previousTransitionDigest: sha256Schema,
     toActivationDigest: sha256Schema,
     toStateDigest: sha256Schema,
-    surface: z.enum(["prompt", "agent-skill-resource", "agent-skill-package"]),
-    candidate: candidateSchema,
-    evaluation: evaluationSchema,
     actor: boundedPublicTextSchema.max(128),
     reason: boundedPublicTextSchema.optional(),
     changedAt: z
       .string()
       .datetime({ offset: true })
       .refine(isCanonicalTimestamp, "must be a canonical timestamp"),
-    transitionDigest: sha256Schema,
   })
   .strict();
+
+const effectiveHarnessActivationTransitionSchema = effectiveHarnessTransitionCommonSchema.extend({
+  action: z.literal("activate"),
+  surface: z.enum(["prompt", "agent-skill-resource", "agent-skill-package"]),
+  candidate: candidateSchema,
+  evaluation: evaluationSchema,
+  transitionDigest: sha256Schema,
+});
+
+const effectiveHarnessRollbackTransitionSchema = effectiveHarnessTransitionCommonSchema.extend({
+  action: z.literal("rollback"),
+  surface: z.literal("rollback"),
+  targetTransitionDigest: sha256Schema,
+  transitionDigest: sha256Schema,
+});
+
+const effectiveHarnessTransitionSchema = z.discriminatedUnion("action", [
+  effectiveHarnessActivationTransitionSchema,
+  effectiveHarnessRollbackTransitionSchema,
+]);
 
 export type EffectiveHarnessSurface = "prompt" | "agent-skill-resource" | "agent-skill-package";
 
@@ -72,7 +88,7 @@ export type EffectiveHarnessCandidateKind =
   | "agent-skill-candidate"
   | "agent-skill-package-candidate";
 
-export interface EffectiveHarnessTransition {
+export interface EffectiveHarnessTransitionBase {
   readonly version: 1;
   readonly kind: "effective-harness-transition";
   readonly scopeDigest: string;
@@ -83,6 +99,14 @@ export interface EffectiveHarnessTransition {
   readonly previousTransitionDigest: string;
   readonly toActivationDigest: string;
   readonly toStateDigest: string;
+  readonly actor: string;
+  readonly reason?: string | undefined;
+  readonly changedAt: string;
+  readonly transitionDigest: string;
+}
+
+export interface EffectiveHarnessActivationTransition extends EffectiveHarnessTransitionBase {
+  readonly action: "activate";
   readonly surface: EffectiveHarnessSurface;
   readonly candidate: {
     readonly kind: EffectiveHarnessCandidateKind;
@@ -94,19 +118,35 @@ export interface EffectiveHarnessTransition {
     readonly terminalRecordDigest: string;
     readonly reportDigest: string;
   };
-  readonly actor: string;
-  readonly reason?: string | undefined;
-  readonly changedAt: string;
-  readonly transitionDigest: string;
 }
+
+export interface EffectiveHarnessRollbackTransition extends EffectiveHarnessTransitionBase {
+  readonly action: "rollback";
+  readonly surface: "rollback";
+  readonly targetTransitionDigest: string;
+}
+
+export type EffectiveHarnessTransition =
+  | EffectiveHarnessActivationTransition
+  | EffectiveHarnessRollbackTransition;
 
 export interface CreateEffectiveHarnessTransitionInput {
   readonly prior: EffectiveHarnessHeadIdentity;
   readonly toActivationDigest: string;
   readonly toStateDigest: string;
   readonly surface: EffectiveHarnessSurface;
-  readonly candidate: EffectiveHarnessTransition["candidate"];
-  readonly evaluation: EffectiveHarnessTransition["evaluation"];
+  readonly candidate: EffectiveHarnessActivationTransition["candidate"];
+  readonly evaluation: EffectiveHarnessActivationTransition["evaluation"];
+  readonly actor: string;
+  readonly reason?: string | undefined;
+  readonly changedAt: string;
+}
+
+export interface CreateEffectiveHarnessRollbackTransitionInput {
+  readonly prior: EffectiveHarnessHeadIdentity;
+  readonly toActivationDigest: string;
+  readonly toStateDigest: string;
+  readonly targetTransitionDigest: string;
   readonly actor: string;
   readonly reason?: string | undefined;
   readonly changedAt: string;
@@ -118,13 +158,14 @@ export interface EffectiveHarnessTransitionContext extends EffectiveHarnessScope
 
 export function createEffectiveHarnessTransition(
   input: CreateEffectiveHarnessTransitionInput,
-): EffectiveHarnessTransition {
+): EffectiveHarnessActivationTransition {
   const prior = parseEffectiveHarnessHeadIdentity(input.prior, {
     scopeDigest: input.prior.scopeDigest,
   });
   const content = {
     version: 1 as const,
     kind: "effective-harness-transition" as const,
+    action: "activate" as const,
     scopeDigest: prior.scopeDigest,
     workflowId: prior.workflowId,
     generation: prior.generation + 1,
@@ -143,7 +184,37 @@ export function createEffectiveHarnessTransition(
   return parseEffectiveHarnessTransition(
     { ...content, transitionDigest: calculateEffectiveHarnessTransitionDigest(content) },
     { scopeDigest: prior.scopeDigest, prior },
-  );
+  ) as EffectiveHarnessActivationTransition;
+}
+
+export function createEffectiveHarnessRollbackTransition(
+  input: CreateEffectiveHarnessRollbackTransitionInput,
+): EffectiveHarnessRollbackTransition {
+  const prior = parseEffectiveHarnessHeadIdentity(input.prior, {
+    scopeDigest: input.prior.scopeDigest,
+  });
+  const content = {
+    version: 1 as const,
+    kind: "effective-harness-transition" as const,
+    action: "rollback" as const,
+    scopeDigest: prior.scopeDigest,
+    workflowId: prior.workflowId,
+    generation: prior.generation + 1,
+    fromActivationDigest: prior.activationDigest,
+    fromStateDigest: prior.stateDigest,
+    previousTransitionDigest: prior.transitionDigest,
+    toActivationDigest: input.toActivationDigest,
+    toStateDigest: input.toStateDigest,
+    surface: "rollback" as const,
+    targetTransitionDigest: input.targetTransitionDigest,
+    actor: input.actor,
+    ...(input.reason === undefined ? {} : { reason: input.reason }),
+    changedAt: input.changedAt,
+  };
+  return parseEffectiveHarnessTransition(
+    { ...content, transitionDigest: calculateEffectiveHarnessTransitionDigest(content) },
+    { scopeDigest: prior.scopeDigest, prior },
+  ) as EffectiveHarnessRollbackTransition;
 }
 
 export function parseEffectiveHarnessTransition(
@@ -186,7 +257,7 @@ export function parseEffectiveHarnessTransition(
 }
 
 export function calculateEffectiveHarnessTransitionDigest(
-  transition: Omit<EffectiveHarnessTransition, "transitionDigest"> | EffectiveHarnessTransition,
+  transition: EffectiveHarnessTransitionContent | EffectiveHarnessTransition,
 ): string {
   return sha256(
     canonicalize({
@@ -201,15 +272,22 @@ export function calculateEffectiveHarnessTransitionDigest(
       previousTransitionDigest: transition.previousTransitionDigest,
       toActivationDigest: transition.toActivationDigest,
       toStateDigest: transition.toStateDigest,
+      action: transition.action,
       surface: transition.surface,
-      candidate: transition.candidate,
-      evaluation: transition.evaluation,
+      candidate: transition.action === "activate" ? transition.candidate : null,
+      evaluation: transition.action === "activate" ? transition.evaluation : null,
+      targetTransitionDigest:
+        transition.action === "rollback" ? transition.targetTransitionDigest : null,
       actor: transition.actor,
       reason: transition.reason ?? null,
       changedAt: transition.changedAt,
     }),
   );
 }
+
+type EffectiveHarnessTransitionContent =
+  | Omit<EffectiveHarnessActivationTransition, "transitionDigest">
+  | Omit<EffectiveHarnessRollbackTransition, "transitionDigest">;
 
 export function effectiveHarnessHeadFromTransition(
   transition: EffectiveHarnessTransition,
@@ -242,7 +320,10 @@ function assertTransitionSemantics(transition: EffectiveHarnessTransition): void
       "effective harness transition does not change its state",
     );
   }
-  if (!surfaceMatchesCandidate(transition.surface, transition.candidate.kind)) {
+  if (
+    transition.action === "activate" &&
+    !surfaceMatchesCandidate(transition.surface, transition.candidate.kind)
+  ) {
     throw new EffectiveHarnessStateError(
       "identity_mismatch",
       "effective harness surface does not match its candidate",

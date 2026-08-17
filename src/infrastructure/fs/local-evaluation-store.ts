@@ -13,6 +13,7 @@ import {
   unlink,
 } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import { z } from "zod";
 
@@ -181,6 +182,8 @@ const flowProfileSchema = z
             "prompt-candidate-projection",
             "agent-skill-candidate-projection",
             "agent-skill-package-candidate-projection",
+            "effective-harness-baseline",
+            "effective-harness-candidate-projection",
           ])
           .optional(),
         provenance: relativePathSchema,
@@ -191,6 +194,20 @@ const flowProfileSchema = z
     capabilitySnapshotDigest: sha256Schema.optional(),
     capabilityPackageDigests: z.array(sha256Schema).min(1).max(128).readonly().optional(),
     candidate: candidateIdentitySchema.optional(),
+    effectiveHarness: z
+      .object({
+        selection: z.enum(["baseline", "candidate"]),
+        artifactDigest: sha256Schema,
+        stateDigest: sha256Schema,
+        baselineHeadDigest: sha256Schema,
+        workflowSha256: sha256Schema,
+        workflowDigest: sha256Schema,
+        packageDigests: z.array(sha256Schema).max(128).readonly(),
+        surface: z.enum(["prompt", "agent-skill-resource", "agent-skill-package"]),
+        candidateDigest: sha256Schema,
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -351,6 +368,9 @@ const publicHeaderSchema = z
     const capabilityProfiles = flowProfiles.filter(
       (profile) => profile.capabilitySnapshotDigest !== undefined,
     );
+    const effectiveProfiles = flowProfiles.filter(
+      (profile) => profile.effectiveHarness !== undefined,
+    );
     for (const [index, profile] of flowProfiles.entries()) {
       if (
         (profile.capabilitySnapshotDigest === undefined) !==
@@ -375,7 +395,49 @@ const publicHeaderSchema = z
         });
       }
     }
-    if (candidateProfiles.length > 0 || projectionProfiles.length > 0) {
+    if (effectiveProfiles.length > 0) {
+      const flowBaseline = baseline?.adapter === "flow-workflow-v1" ? baseline : undefined;
+      const flowCandidate = candidate?.adapter === "flow-workflow-v1" ? candidate : undefined;
+      const baselineBinding = flowBaseline?.effectiveHarness;
+      const candidateBinding = flowCandidate?.effectiveHarness;
+      const samePackages = (profile: z.infer<typeof flowProfileSchema>): boolean => {
+        const packageDigests = profile.effectiveHarness?.packageDigests ?? [];
+        return packageDigests.length === 0
+          ? profile.capabilitySnapshotDigest === undefined &&
+              profile.capabilityPackageDigests === undefined
+          : profile.capabilitySnapshotDigest !== undefined &&
+              profile.capabilityPackageDigests !== undefined &&
+              isDeepStrictEqual(profile.capabilityPackageDigests, packageDigests);
+      };
+      if (
+        effectiveProfiles.length !== 2 ||
+        flowBaseline === undefined ||
+        flowCandidate === undefined ||
+        baselineBinding?.selection !== "baseline" ||
+        candidateBinding?.selection !== "candidate" ||
+        flowBaseline.workflow.sourceKind !== "effective-harness-baseline" ||
+        flowCandidate.workflow.sourceKind !== "effective-harness-candidate-projection" ||
+        flowBaseline.candidate !== undefined ||
+        flowCandidate.candidate?.identity.candidateDigest !== candidateBinding.candidateDigest ||
+        flowBaseline.workflow.provenance !== flowCandidate.workflow.provenance ||
+        baselineBinding.artifactDigest !== candidateBinding.artifactDigest ||
+        baselineBinding.baselineHeadDigest !== candidateBinding.baselineHeadDigest ||
+        baselineBinding.surface !== candidateBinding.surface ||
+        baselineBinding.candidateDigest !== candidateBinding.candidateDigest ||
+        baselineBinding.workflowSha256 !== flowBaseline.workflow.sourceSha256 ||
+        baselineBinding.workflowDigest !== flowBaseline.workflow.workflowDigest ||
+        candidateBinding.workflowSha256 !== flowCandidate.workflow.sourceSha256 ||
+        candidateBinding.workflowDigest !== flowCandidate.workflow.workflowDigest ||
+        !samePackages(flowBaseline) ||
+        !samePackages(flowCandidate)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["profiles"],
+          message: "effective harness profiles must bind one exact baseline and candidate pair",
+        });
+      }
+    } else if (candidateProfiles.length > 0 || projectionProfiles.length > 0) {
       const flowBaseline = baseline?.adapter === "flow-workflow-v1" ? baseline : undefined;
       const flowCandidate = candidate?.adapter === "flow-workflow-v1" ? candidate : undefined;
       const identity = flowCandidate?.candidate?.identity;
@@ -619,6 +681,9 @@ export function createPublicEvaluationHeader(
           : {
               candidate: projectEvaluationCandidateIdentity(profile.candidate),
             }),
+        ...(profile.effectiveHarness === undefined
+          ? {}
+          : { effectiveHarness: profile.effectiveHarness }),
       };
     }),
     controls: admitted.controls,
@@ -1576,6 +1641,9 @@ function headerIdentity(header: PublicEvaluationHeader): EvaluationPlanIdentity 
           ? {}
           : { capabilityPackageDigests: profile.capabilityPackageDigests }),
         ...(profile.candidate === undefined ? {} : { candidate: profile.candidate }),
+        ...(profile.effectiveHarness === undefined
+          ? {}
+          : { effectiveHarness: profile.effectiveHarness }),
       };
     }),
     controls: header.controls,
