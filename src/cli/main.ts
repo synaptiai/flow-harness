@@ -120,6 +120,11 @@ import {
   MAX_AGENT_SKILL_PACKAGE_CANDIDATE_GENERATION_OUTPUT_TOKENS,
   prepareAgentSkillPackageCandidateGeneration,
 } from "../domain/adaptation/agent-skill-package-candidate-generation.js";
+import { restoreEffectiveHarnessRuntimeState } from "../domain/adaptation/effective-harness-runtime.js";
+import {
+  compileEffectiveHarnessState,
+  effectiveHarnessWorkflowSource,
+} from "../domain/adaptation/effective-harness-state.js";
 import {
   PromptActivationError,
   parsePromptActivationLocator,
@@ -141,6 +146,7 @@ import {
   type CapabilitySnapshot,
   calculateCapabilitySnapshotDigest,
   combineCapabilitySnapshots,
+  createEffectiveHarnessCapabilitySnapshot,
   type PolicyPackageCapabilitySnapshot,
   validateCapabilitySnapshot,
 } from "../domain/capability/agent-skills.js";
@@ -251,6 +257,10 @@ import {
   LocalCapabilityPackageStore,
 } from "../infrastructure/fs/local-capability-package-store.js";
 import { LocalCapabilityRepositoryStore } from "../infrastructure/fs/local-capability-repository-store.js";
+import {
+  EffectiveHarnessStoreError,
+  LocalEffectiveHarnessStore,
+} from "../infrastructure/fs/local-effective-harness-store.js";
 import {
   admitLocalEvaluationPlan,
   EvaluationAdmissionError,
@@ -759,7 +769,8 @@ export async function main(
       error instanceof AgentSkillPackageActivationAdmissionError ||
       error instanceof PromptActivationError ||
       error instanceof PromptActivationAdmissionError ||
-      error instanceof PromptActivationStoreError
+      error instanceof PromptActivationStoreError ||
+      error instanceof EffectiveHarnessStoreError
     ) {
       io.stderr(`${error.code}: ${boundedCliDiagnostic(error.message)}`);
       return 1;
@@ -4592,6 +4603,21 @@ async function admitWorkflowArgument(
         "activation locators require a Flow project root",
       );
     }
+    const effective = await loadEffectiveHarness(config.projectRoot, activationLocator.workflowId);
+    if (effective !== null) {
+      const source = effectiveHarnessWorkflowSource(effective.state);
+      const sourceName = `activation:${activationLocator.workflowId}`;
+      const capabilitySnapshot = createEffectiveHarnessCapabilitySnapshot(
+        effective.state,
+        effective.head,
+      );
+      return Object.freeze({
+        source,
+        sourceName,
+        capabilitySnapshot,
+        workflow: compileEffectiveHarnessState(effective.state),
+      });
+    }
     const loaded = await new LocalPromptActivationStore(config.projectRoot).loadActive(
       activationLocator.workflowId,
     );
@@ -4657,6 +4683,26 @@ async function admitResumeWorkflowArgument(
   let source: string;
   let sourceName: string;
   if (activationLocator !== null) {
+    const effectiveHarness = capabilitySnapshot?.effectiveHarness;
+    if (effectiveHarness !== undefined && capabilitySnapshot !== undefined) {
+      if (effectiveHarness.workflowId !== activationLocator.workflowId) {
+        throw new RunRecoveryError(
+          "workflow_mismatch",
+          `durable run history does not contain activation "${activationLocator.workflowId}"`,
+        );
+      }
+      const state = restoreEffectiveHarnessRuntimeState(
+        effectiveHarness,
+        capabilitySnapshot.packages,
+      );
+      sourceName = `activation:${activationLocator.workflowId}`;
+      source = effectiveHarnessWorkflowSource(state);
+      return Object.freeze({
+        source,
+        sourceName,
+        workflow: compileEffectiveHarnessState(state),
+      });
+    }
     const selected = capabilitySnapshot?.activations?.find(
       (item) => item.workflowId === activationLocator.workflowId,
     );
@@ -4696,6 +4742,15 @@ async function admitResumeWorkflowArgument(
       ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
     }),
   });
+}
+
+async function loadEffectiveHarness(projectRoot: string, workflowId: string) {
+  try {
+    return await new LocalEffectiveHarnessStore(projectRoot).loadActive(workflowId);
+  } catch (error) {
+    if (error instanceof EffectiveHarnessStoreError && error.code === "not_found") return null;
+    throw error;
+  }
 }
 
 function combineOptionalCapabilitySnapshots(

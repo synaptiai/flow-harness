@@ -1,13 +1,11 @@
 import { createHash } from "node:crypto";
 
 import { z } from "zod";
-
+import { MAX_AGENT_SKILL_PACKAGES } from "../capability/agent-skill-contract.js";
 import {
   type CapabilityPackageSnapshot,
   type CapabilitySnapshot,
   calculateCapabilitySnapshotDigest,
-  MAX_AGENT_SKILL_PACKAGES,
-  MAX_CAPABILITY_SNAPSHOT_SERIALIZED_BYTES,
   validateCapabilitySnapshot,
 } from "../capability/agent-skills.js";
 import { bindWorkflowCapabilities } from "../capability/workflow-capabilities.js";
@@ -25,7 +23,7 @@ import { calculateWorkflowDigest } from "../workflow/digest.js";
 import type { CompiledWorkflowPackageReference } from "../workflow/types.js";
 import { MAX_PROMPT_ACTIVATION_SOURCE_BYTES } from "./prompt-activation.js";
 
-export const MAX_EFFECTIVE_HARNESS_STATE_BYTES = MAX_CAPABILITY_SNAPSHOT_SERIALIZED_BYTES;
+export const MAX_EFFECTIVE_HARNESS_STATE_BYTES = 16 * 1024 * 1024;
 
 const STATE_DIGEST_DOMAIN = "flow-effective-harness-state-v1";
 const HEAD_DIGEST_DOMAIN = "flow-effective-harness-head-v1";

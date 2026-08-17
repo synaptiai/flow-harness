@@ -10,6 +10,15 @@ import {
   parseAgentSkillPackageActivationSnapshot,
 } from "../adaptation/agent-skill-package-activation.js";
 import {
+  createEffectiveHarnessRuntimeSnapshot,
+  type EffectiveHarnessRuntimeSnapshot,
+  parseEffectiveHarnessRuntimeSnapshot,
+} from "../adaptation/effective-harness-runtime.js";
+import type {
+  EffectiveHarnessHeadIdentity,
+  EffectiveHarnessState,
+} from "../adaptation/effective-harness-state.js";
+import {
   type PromptActivationSnapshot,
   parsePromptActivationSnapshot,
 } from "../adaptation/prompt-activation.js";
@@ -114,6 +123,7 @@ export interface CapabilitySnapshot {
   readonly version: 1;
   readonly packages: readonly CapabilityPackageSnapshot[];
   readonly activations?: readonly AdaptiveActivationSnapshot[];
+  readonly effectiveHarness?: EffectiveHarnessRuntimeSnapshot;
   readonly digest: string;
 }
 
@@ -212,12 +222,23 @@ const capabilitySnapshotSchema = z
       )
       .max(MAX_AGENT_SKILL_PACKAGES),
     activations: z.array(z.unknown()).min(1).max(MAX_PROMPT_ACTIVATIONS_PER_SNAPSHOT).optional(),
+    effectiveHarness: z.unknown().optional(),
     digest: sha256Schema,
   })
   .strict()
   .superRefine((snapshot, context) => {
-    if (snapshot.packages.length === 0 && snapshot.activations === undefined) {
+    if (
+      snapshot.packages.length === 0 &&
+      snapshot.activations === undefined &&
+      snapshot.effectiveHarness === undefined
+    ) {
       context.addIssue({ code: "custom", message: "capability snapshot cannot be empty" });
+    }
+    if (snapshot.activations !== undefined && snapshot.effectiveHarness !== undefined) {
+      context.addIssue({
+        code: "custom",
+        message: "legacy activation and effective harness authority cannot be combined",
+      });
     }
   });
 
@@ -444,7 +465,14 @@ export function validateCapabilitySnapshot(input: unknown): CapabilitySnapshot {
       throw new Error("Agent Skill activation does not match its selected capability package");
     }
   }
-  if (calculateCapabilitySnapshotDigest(parsed.packages, activations) !== parsed.digest) {
+  const effectiveHarness =
+    parsed.effectiveHarness === undefined
+      ? undefined
+      : parseEffectiveHarnessRuntimeSnapshot(parsed.effectiveHarness, parsed.packages);
+  if (
+    calculateCapabilitySnapshotDigest(parsed.packages, activations, effectiveHarness) !==
+    parsed.digest
+  ) {
     throw new Error("capability snapshot digest does not match");
   }
   if (
@@ -472,7 +500,21 @@ export function validateCapabilitySnapshot(input: unknown): CapabilitySnapshot {
     version: parsed.version,
     packages: parsed.packages,
     ...(activations.length === 0 ? {} : { activations }),
+    ...(effectiveHarness === undefined ? {} : { effectiveHarness }),
     digest: parsed.digest,
+  });
+}
+
+export function createEffectiveHarnessCapabilitySnapshot(
+  state: EffectiveHarnessState,
+  head: EffectiveHarnessHeadIdentity,
+): CapabilitySnapshot {
+  const effectiveHarness = createEffectiveHarnessRuntimeSnapshot({ state, head });
+  return validateCapabilitySnapshot({
+    version: 1,
+    packages: state.packages,
+    effectiveHarness,
+    digest: calculateCapabilitySnapshotDigest(state.packages, [], effectiveHarness),
   });
 }
 
@@ -501,6 +543,7 @@ export function calculateAgentSkillPackageDigest(
 export function calculateCapabilitySnapshotDigest(
   packages: readonly CapabilityPackageSnapshot[],
   activations: readonly AdaptiveActivationSnapshot[] = [],
+  effectiveHarness?: EffectiveHarnessRuntimeSnapshot,
 ): string {
   return sha256(
     JSON.stringify({
@@ -520,6 +563,9 @@ export function calculateCapabilitySnapshotDigest(
         : {
             activations: activations.map(activationDigestIdentity),
           }),
+      ...(effectiveHarness === undefined
+        ? {}
+        : { effectiveHarness: { runtimeDigest: effectiveHarness.runtimeDigest } }),
     }),
   );
 }
@@ -555,11 +601,19 @@ export function combineCapabilitySnapshots(
     .sort((left, right) =>
       compareStrings(adaptiveActivationKey(left), adaptiveActivationKey(right)),
     );
+  const effectiveHarnesses = snapshots
+    .map((snapshot) => snapshot.effectiveHarness)
+    .filter((item): item is EffectiveHarnessRuntimeSnapshot => item !== undefined);
+  const effectiveHarness = effectiveHarnesses[0];
+  if (effectiveHarnesses.some((item) => item.runtimeDigest !== effectiveHarness?.runtimeDigest)) {
+    throw new Error("capability snapshots contain conflicting effective harness selections");
+  }
   return validateCapabilitySnapshot({
     version: 1,
     packages,
     ...(activations.length === 0 ? {} : { activations }),
-    digest: calculateCapabilitySnapshotDigest(packages, activations),
+    ...(effectiveHarness === undefined ? {} : { effectiveHarness }),
+    digest: calculateCapabilitySnapshotDigest(packages, activations, effectiveHarness),
   });
 }
 

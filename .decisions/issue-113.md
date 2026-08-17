@@ -496,9 +496,47 @@ state untested paths, evidence limitations, and exact adversarial cases.
   Typecheck passed. The new store tests bind dependency-before-head order, exact active-state load,
   retained-state rollback, and stale-proposal rejection before blob publication.
 
-- **Evidence limitation**: idempotent apply and publication-failure settlement remain pending.
-  Corruption and missing-blob matrices also remain pending. Later cycles must cover legacy-writer
-  exclusion, CLI composition, runtime selection, current policy, and complete offline execution.
+- **Settlement coverage**: an exact apply retry returns the existing settled head and transition
+  without appending history. Failure before index rename keeps the prior head authoritative and
+  permits an exact retry. Failure after index rename reopens the committed index and returns the
+  settled activation.
+
+- **Corruption and writer coverage**: missing selected state or candidate artifact blobs invalidate
+  the store. A legacy activation apply cannot replace a workflow after an effective head exists.
+  The focused effective and legacy store selector passed 59 tests across two files.
+
+- **Evidence limitation**: rollback idempotency, cancellation at each mutation boundary, aggregate
+  physical store limits, and exhaustive symlink/race cases remain pending.
+
+### Durable effective runtime selection
+
+- **Compact proof**: durable capability state now carries one strict effective runtime proof. It
+  binds the head, workflow identity, optional root package, ordered non-policy package digests, and
+  domain-separated runtime digest. Package bytes remain in the existing array. The
+  proof does not duplicate them.
+
+- **Closed reconstruction**: runtime validation reconstructs the effective state from the proof and
+  package array. Missing, substituted, or ambient non-policy packages reject. A current policy
+  package is permitted only as an overlay outside the rollbackable closure.
+
+- **Execution and recovery**: `activation:<workflow-id>` prefers an effective head and falls back to
+  legacy only on exact absence. A package-bearing effective workflow executes from its selected
+  package. An approval-gated run also resumes after removal of the live effective store. Durable
+  admission contains the exact workflow and package authority.
+
+- **Public privacy**: run output retains the content-free head, workflow hashes, package identities,
+  and runtime digest. It removes effective workflow `contentBase64` and Agent Skill file payloads.
+  Tests reject both decoded and encoded private resource canaries.
+
+- **Focused evidence**: the effective runtime and capability domain selector passed 18 tests across
+  two files. The adjacent state, workflow admission, run capability, persistence, legacy CLI, and
+  public-output selector passed 76 tests across ten files. The desktop sandbox returned `EPERM` for
+  one Unix-socket-backed legacy test. Its socket-permitted rerun passed. Typecheck, scoped Biome,
+  and diff checks passed.
+
+- **Evidence limitation**: detached supervisor and worker execution remain later TDD cycles. Child
+  runs, replay/export, current-policy rejection, runtime cancellation, CLI composition commands,
+  and public effective head inspection also remain.
 
 ## Activity log
 
@@ -525,3 +563,7 @@ state untested paths, evidence limitations, and exact adversarial cases.
 - 2026-08-17 — Added one immutable candidate artifact and paired evaluation selection. Added
   durable content-free identity and superior-evidence preparation. Added explicit rollback
   transitions and the first shared-lock effective-state mutation store.
+
+- 2026-08-17 — Added exact apply settlement, missing-blob rejection, and legacy-writer exclusion.
+  Added the compact durable runtime proof, effective-first locator admission, package-closed
+  reconstruction, content-free projection, and offline approval-boundary resume.
