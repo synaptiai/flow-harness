@@ -130,7 +130,11 @@ describe("local evaluation plan admission", () => {
     });
     const projected = projectEffectiveHarnessCandidate({
       baseline: baselineState,
-      candidate: { kind: "prompt", projection: legacyCandidate.candidate },
+      candidate: {
+        kind: "prompt",
+        projection: legacyCandidate.candidate,
+        baselineWorkflowSource: baselineSource,
+      },
     });
     const artifact = createEffectiveHarnessCandidateArtifact({
       baselineHead: createEffectiveHarnessHeadIdentity({

@@ -530,7 +530,9 @@ digests.
 
 Effective composition uses `.flow/effective-harness/`. The `states/` directory contains immutable
 complete states. The `artifacts/` directory contains immutable composed candidates. The atomic index
-contains workflow origins, retained dependencies, heads, and hash-chained transitions.
+contains workflow origins, activated retained dependencies, heads, and hash-chained transitions.
+Staged states and artifacts are inert until an evaluated activation selects them. They still count
+toward the physical limits of 256 states and 256 artifacts.
 
 Activation publishes the complete baseline state, candidate state, and candidate artifact before
 the index rename. Apply rechecks the exact current head while it owns the shared activation lock. A
@@ -539,10 +541,19 @@ failure after the rename reopens the index. Flow returns the settled transition 
 the commit. Otherwise, it reports an uncertain commit and does not guess.
 
 The effective store validates canonical project scope, strict names, regular files, and stable file
-identity. It also validates exact digests, store limits, and the complete transition chain on every
-reopen. A symbolic link, cross-project state, missing dependency, changed dependency, or
-contradictory index fails closed. The operator must repair or restore the exact retained data. Flow
-does not consult live sources or remove a retained rollback target automatically.
+identity. Bounded chunked reads recheck the opened inode after reading. The store enumerates both
+physical directories with a streaming entry ceiling and validates indexed and inert staged blobs on
+every reopen. It also validates exact digests, store limits, and the complete transition chain. A
+symbolic link, unknown name, cross-project state, missing dependency, changed dependency, or
+contradictory index fails closed. The operator must repair or restore the exact retained data.
+
+Flow does not consult live sources.
+
+Flow does not garbage-collect staged candidates or remove a retained rollback target automatically.
+
+At a physical limit, preserve every activated dependency and retained rollback target. Remove only
+an exact inert staged artifact and any state that no retained artifact or index entry needs, then
+retry composition.
 
 Rollback changes only the live head for future runs. It selects a verified retained state by
 digest. It then appends a rollback transition. It does not change an existing run, restore old

@@ -511,7 +511,10 @@ state untested paths, evidence limitations, and exact adversarial cases.
 
 - **Filesystem coverage**: store reads bind the canonical project scope and reject a symbolic-link
   root. Candidate admission rejects linked ancestors and a valid byte-equivalent leaf replacement
-  after its stable read. Missing retained dependencies fail closed.
+  after its stable read. Missing retained dependencies fail closed. Streaming physical-inventory
+  validation includes both indexed dependencies and inert staged blobs. Exact-limit tests prove
+  that neither staging nor activation can create a 257th state or artifact. Opened-descriptor reads
+  bind device, inode, size, modification time, and change time before and after bounded reads.
 
 - **Evidence limitation**: the slice relies on same-host atomic rename and the shared local
   activation lock. It does not implement distributed filesystem coordination or automatic garbage
@@ -561,7 +564,7 @@ state untested paths, evidence limitations, and exact adversarial cases.
 
 ### Frozen acceptance and release evidence
 
-- **Mapped selector**: the combined Issue #113 selector passed 204 tests across 20 files. Domain
+- **Mapped selector**: the combined Issue #113 selector passed 214 tests across 20 files. Domain
   tests covered state, transition, candidate, runtime, and legacy closure. Application tests covered
   preparation, capability binding, and workflow package admission. Infrastructure tests covered
   both stores and stable candidate reads.
@@ -594,18 +597,20 @@ npx vitest run \
   test/integration/supervisor/worker.test.ts
 ```
 
-- **Full suite**: `npm test -- --maxWorkers=1` passed 4,139 tests. Four tests skipped. The runtime
+- **Full suite**: `npm test -- --maxWorkers=1` passed 4,149 tests. Four tests skipped. The runtime
   gate passed 43 tests. Thirty-four platform or environment cases skipped.
 
-- **Coverage**: `npm run test:coverage` passed the same 4,139 tests with four skips. Coverage was
-  84.27 percent statements, 78.49 percent branches, 91.05 percent functions, and 84.4 percent
+- **Coverage**: `npm run test:coverage` passed the same 4,149 tests with four skips. Coverage was
+  84.31 percent statements, 78.55 percent branches, 91.08 percent functions, and 84.43 percent
   lines. One offline Prime test needed a 30-second test-only bound under full V8 instrumentation.
   It keeps the same offline import traps, privacy checks, and production behavior.
 
 - **Static and package gates**: format, lint, typecheck, build, documentation STE, dependency
   boundaries, community-file contracts, package verification, and diff checks passed. Lint retained
   one pre-existing informational constructor notice. The clean package install executed the CLI and
-  local presentation path. The production dependency audit reported zero vulnerabilities.
+  local presentation path from package digest
+  `5dfe0fbdfa1a86627e8762bfc071594c1bccbd6a467fc3f3ea12ebddf9b053b4`. The production dependency
+  audit reported zero vulnerabilities.
 
 ## Activity log
 
@@ -650,3 +655,11 @@ npx vitest run \
 - 2026-08-17 — Updated public composition, architecture, recovery, sourcing, roadmap, and testing
   documentation. Ran the mapped, full, runtime, coverage, build, package, and audit gates on the
   completed implementation.
+
+- 2026-08-17 — Adversarial review found two gaps: composition required an ordinary candidate's
+  whole baseline to equal the current effective state. That blocked real sequential cross-surface
+  use. The store also counted only indexed dependencies, which allowed inert staged
+  files to bypass physical ceilings. Added authenticated surface-only rebasing and same-surface
+  stale guards. Added streaming inventory validation, bounded stable descriptor reads, exact-limit
+  tests, and public CLI regressions for both sequential orders. Re-ran every release gate on the
+  frozen post-review tree.

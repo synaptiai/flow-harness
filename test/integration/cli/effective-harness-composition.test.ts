@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -12,6 +12,12 @@ import {
   calculateAgentSkillCandidateIdentityDigest,
   type ProjectedAgentSkillCandidate,
 } from "../../../src/domain/adaptation/agent-skill-candidate.js";
+import {
+  completeAgentSkillCandidateGeneration,
+  prepareAgentSkillCandidateGeneration,
+} from "../../../src/domain/adaptation/agent-skill-candidate-generation.js";
+import { createAgentSkillPackageCandidateSource } from "../../../src/domain/adaptation/agent-skill-package-candidate.js";
+import { completeAgentSkillPackageCandidateGeneration } from "../../../src/domain/adaptation/agent-skill-package-candidate-generation.js";
 import { createEffectiveHarnessCandidateArtifact } from "../../../src/domain/adaptation/effective-harness-candidate.js";
 import {
   createEffectiveHarnessHeadIdentity,
@@ -39,6 +45,7 @@ import {
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { calculateWorkflowDigest } from "../../../src/domain/workflow/digest.js";
 import { admitLocalAdaptationCandidate } from "../../../src/infrastructure/fs/local-adaptation-candidate.js";
+import { publishLocalAgentSkillPackageCandidate } from "../../../src/infrastructure/fs/local-agent-skill-package-candidate-publisher.js";
 import { admitLocalEffectiveHarnessCandidate } from "../../../src/infrastructure/fs/local-effective-harness-candidate.js";
 import {
   calculateLocalEffectiveHarnessScopeDigest,
@@ -46,9 +53,21 @@ import {
 } from "../../../src/infrastructure/fs/local-effective-harness-store.js";
 import { LocalPromptActivationStore } from "../../../src/infrastructure/fs/local-prompt-activation-store.js";
 import { agentSkillActivationInput } from "../../fixtures/agent-skill-activation.js";
+import {
+  agentSkillCandidateGenerationFixture,
+  agentSkillGenerationWorkflowText,
+} from "../../fixtures/agent-skill-candidate-generation.js";
+import { agentSkillPackageActivationFixture } from "../../fixtures/agent-skill-package-activation.js";
+import {
+  agentSkillPackageCandidateGenerationFixture,
+  agentSkillPackageGenerationResponse,
+} from "../../fixtures/agent-skill-package-candidate-generation.js";
 import { superiorEffectiveHarnessEvaluation } from "../../fixtures/effective-harness-evaluation.js";
 import { promptActivationInput } from "../../fixtures/prompt-activation.js";
-import { promptCandidateGenerationFixture } from "../../fixtures/prompt-candidate-generation.js";
+import {
+  promptCandidateGenerationFixture,
+  promptCandidateWorkflowText,
+} from "../../fixtures/prompt-candidate-generation.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -202,10 +221,15 @@ describe("effective harness composition CLI", () => {
         baseline: state,
         candidate:
           surface === "prompt"
-            ? { kind: "prompt", projection: projection as ProjectedPromptCandidate }
+            ? {
+                kind: "prompt",
+                projection: projection as ProjectedPromptCandidate,
+                baselineWorkflowSource: effectiveHarnessWorkflowSource(state),
+              }
             : {
                 kind: "agent-skill-resource",
                 projection: projection as ProjectedAgentSkillCandidate,
+                baselineWorkflowSource: effectiveHarnessWorkflowSource(state),
               },
       });
       const artifact = createEffectiveHarnessCandidateArtifact({
@@ -244,13 +268,299 @@ describe("effective harness composition CLI", () => {
       order.map((surface) => (surface === "skill" ? "agent-skill-resource" : surface)),
     );
   });
+
+  it("composes a real ordinary skill candidate after an active prompt change", async () => {
+    const project = await realpath(await mkdtemp(join(tmpdir(), "flow-effective-cli-sequence-")));
+    temporaryDirectories.push(project);
+    await mkdir(join(project, ".flow"));
+    const fixture = agentSkillCandidateGenerationFixture();
+    const baselinePath = join(project, fixture.input.baseline.provenance);
+    const evidence = fixture.input.evidence[0];
+    if (evidence === undefined) throw new Error("skill candidate fixture has no evidence");
+    const evidencePath = join(project, evidence.provenance);
+    const candidatePath = join(project, "better.agent-skill-candidate.json");
+    await writeFile(baselinePath, agentSkillGenerationWorkflowText);
+    await writeFile(evidencePath, JSON.stringify(evidence.packet));
+    for (const file of fixture.skill.files) {
+      const path = join(project, fixture.skill.provenance, file.path);
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(path, Buffer.from(file.contentBase64, "base64"));
+    }
+    const generated = completeAgentSkillCandidateGeneration(
+      prepareAgentSkillCandidateGeneration(fixture.input),
+      JSON.stringify({
+        changes: [
+          {
+            path: "references/checklist.md",
+            value: "PRIVATE_REFINED_SKILL_RESOURCE\n",
+          },
+        ],
+      }),
+      {
+        inputTokens: 10,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        outputTokens: 10,
+        costUsdMicros: 1,
+      },
+    );
+    await writeFile(candidatePath, JSON.stringify(generated));
+
+    const scopeDigest = await calculateLocalEffectiveHarnessScopeDigest(project);
+    const baseline = createEffectiveHarnessState({
+      scopeDigest,
+      workflowSource: agentSkillGenerationWorkflowText,
+      packages: [fixture.skill],
+    });
+    const head = createEffectiveHarnessHeadIdentity({
+      scopeDigest,
+      workflowId: baseline.workflowId,
+      generation: 1,
+      activationDigest: "a".repeat(64),
+      transitionDigest: "b".repeat(64),
+      stateDigest: baseline.stateDigest,
+    });
+    const prompt = promptProjectionFor(baseline);
+    const afterPrompt = projectEffectiveHarnessCandidate({
+      baseline,
+      candidate: {
+        kind: "prompt",
+        projection: prompt,
+        baselineWorkflowSource: effectiveHarnessWorkflowSource(baseline),
+      },
+    });
+    const promptArtifact = createEffectiveHarnessCandidateArtifact({
+      baselineHead: head,
+      baselineState: baseline,
+      candidateState: afterPrompt.state,
+      candidate: prompt.identity,
+    });
+    const store = new LocalEffectiveHarnessStore(project, {
+      readInitialHead: async () => head,
+    });
+    const prepared = prepareEffectiveHarnessActivation({
+      artifact: promptArtifact,
+      stored: superiorEffectiveHarnessEvaluation(promptArtifact),
+    });
+    const proposal = await store.previewActivate({ prepared, actor: "operator:test" });
+    await store.applyActivate({
+      prepared,
+      actor: "operator:test",
+      expectedDigest: proposal.proposalDigest,
+    });
+
+    const output = captureIo();
+    expect(
+      await main(["candidate", "compose", candidatePath], output.io, {
+        cwd: project,
+        loadConfig: async () => effectiveConfig(project),
+      }),
+      output.stderr.join("\n"),
+    ).toBe(0);
+    const composed = JSON.parse(output.stdout.join("\n"));
+    const staged = await admitLocalEffectiveHarnessCandidate(join(project, composed.staged.path));
+    expect(effectiveHarnessWorkflowSource(staged.artifact.candidateState)).toContain(
+      "Use the refined review prompt.",
+    );
+    expect(staged.artifact.candidateState.packages[0]).toMatchObject({
+      kind: "agent-skill",
+      name: "review",
+      digest: expect.not.stringMatching(fixture.skill.digest),
+    });
+    expect([...output.stdout, ...output.stderr].join("\n")).not.toContain(
+      "PRIVATE_REFINED_SKILL_RESOURCE",
+    );
+  });
+
+  it("composes a real generated package candidate after an active prompt change", async () => {
+    const project = await realpath(
+      await mkdtemp(join(tmpdir(), "flow-effective-package-sequence-")),
+    );
+    temporaryDirectories.push(project);
+    await mkdir(join(project, ".flow"));
+    const generation = agentSkillPackageCandidateGenerationFixture();
+    const baselineSource = promptCandidateWorkflowText();
+    const evidence = generation.input.evidence[0];
+    if (evidence === undefined) throw new Error("package candidate fixture has no evidence");
+    await writeFile(join(project, generation.input.baseline.provenance), baselineSource);
+    await writeFile(join(project, evidence.provenance), JSON.stringify(evidence.packet));
+    await writeFile(join(project, generation.input.blueprint.provenance), generation.blueprintText);
+    const completed = completeAgentSkillPackageCandidateGeneration(
+      generation.prepared,
+      agentSkillPackageGenerationResponse,
+      {
+        inputTokens: 10,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        outputTokens: 10,
+        costUsdMicros: 1,
+      },
+    );
+    const source = createAgentSkillPackageCandidateSource(generation.prepared, completed);
+    const candidatePath = join(project, "generated-review-helper");
+    await publishLocalAgentSkillPackageCandidate(candidatePath, source, completed.package);
+
+    const scopeDigest = await calculateLocalEffectiveHarnessScopeDigest(project);
+    const baseline = createEffectiveHarnessState({
+      scopeDigest,
+      workflowSource: baselineSource,
+      packages: [],
+    });
+    const head = createEffectiveHarnessHeadIdentity({
+      scopeDigest,
+      workflowId: baseline.workflowId,
+      generation: 1,
+      activationDigest: "c".repeat(64),
+      transitionDigest: "d".repeat(64),
+      stateDigest: baseline.stateDigest,
+    });
+    const prompt = promptProjectionFor(baseline, "implement");
+    const afterPrompt = projectEffectiveHarnessCandidate({
+      baseline,
+      candidate: {
+        kind: "prompt",
+        projection: prompt,
+        baselineWorkflowSource: baselineSource,
+      },
+    });
+    const promptArtifact = createEffectiveHarnessCandidateArtifact({
+      baselineHead: head,
+      baselineState: baseline,
+      candidateState: afterPrompt.state,
+      candidate: prompt.identity,
+    });
+    const store = new LocalEffectiveHarnessStore(project, {
+      readInitialHead: async () => head,
+    });
+    const prepared = prepareEffectiveHarnessActivation({
+      artifact: promptArtifact,
+      stored: superiorEffectiveHarnessEvaluation(promptArtifact),
+    });
+    const proposal = await store.previewActivate({ prepared, actor: "operator:test" });
+    await store.applyActivate({
+      prepared,
+      actor: "operator:test",
+      expectedDigest: proposal.proposalDigest,
+    });
+
+    const output = captureIo();
+    expect(
+      await main(["candidate", "compose", candidatePath], output.io, {
+        cwd: project,
+        loadConfig: async () => effectiveConfig(project),
+      }),
+      output.stderr.join("\n"),
+    ).toBe(0);
+    const composed = JSON.parse(output.stdout.join("\n"));
+    const staged = await admitLocalEffectiveHarnessCandidate(join(project, composed.staged.path));
+    expect(effectiveHarnessWorkflowSource(staged.artifact.candidateState)).toContain(
+      "Use the refined review prompt.",
+    );
+    expect(staged.artifact.candidateState.packages).toEqual([completed.package]);
+    expect([...output.stdout, ...output.stderr].join("\n")).not.toContain(
+      "Read the checklist and report evidence-backed findings.",
+    );
+  });
+
+  it("composes a real prompt candidate after an active generated package", async () => {
+    const project = await realpath(
+      await mkdtemp(join(tmpdir(), "flow-effective-prompt-sequence-")),
+    );
+    temporaryDirectories.push(project);
+    await mkdir(join(project, ".flow"));
+    const promptFixture = promptCandidateGenerationFixture();
+    const evidence = promptFixture.input.evidence[0];
+    if (evidence === undefined) throw new Error("prompt candidate fixture has no evidence");
+    const candidatePath = join(project, "better.prompt-candidate.json");
+    await writeFile(
+      join(project, promptFixture.input.baseline.provenance),
+      promptFixture.baselineText,
+    );
+    await writeFile(join(project, evidence.provenance), JSON.stringify(evidence.packet));
+    const source = completePromptCandidateGeneration(
+      promptFixture.prepared,
+      JSON.stringify({
+        changes: [{ nodeId: "implement", value: "PRIVATE_REFINED_PROMPT" }],
+      }),
+      {
+        inputTokens: 10,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        outputTokens: 10,
+        costUsdMicros: 1,
+      },
+    );
+    await writeFile(candidatePath, JSON.stringify(source));
+
+    const packageFixture = agentSkillPackageActivationFixture();
+    const scopeDigest = await calculateLocalEffectiveHarnessScopeDigest(project);
+    const baseline = createEffectiveHarnessState({
+      scopeDigest,
+      workflowSource: packageFixture.prompt.baselineText,
+      packages: [],
+    });
+    const projectedPackage = projectEffectiveHarnessCandidate({
+      baseline,
+      candidate: {
+        kind: "agent-skill-package",
+        projection: packageFixture.projected,
+        baselineWorkflowSource: packageFixture.prompt.baselineText,
+      },
+    });
+    const head = createEffectiveHarnessHeadIdentity({
+      scopeDigest,
+      workflowId: baseline.workflowId,
+      generation: 1,
+      activationDigest: "e".repeat(64),
+      transitionDigest: "f".repeat(64),
+      stateDigest: baseline.stateDigest,
+    });
+    const packageArtifact = createEffectiveHarnessCandidateArtifact({
+      baselineHead: head,
+      baselineState: baseline,
+      candidateState: projectedPackage.state,
+      candidate: packageFixture.projected.identity,
+    });
+    const store = new LocalEffectiveHarnessStore(project, {
+      readInitialHead: async () => head,
+    });
+    const prepared = prepareEffectiveHarnessActivation({
+      artifact: packageArtifact,
+      stored: superiorEffectiveHarnessEvaluation(packageArtifact),
+    });
+    const proposal = await store.previewActivate({ prepared, actor: "operator:test" });
+    await store.applyActivate({
+      prepared,
+      actor: "operator:test",
+      expectedDigest: proposal.proposalDigest,
+    });
+
+    const output = captureIo();
+    expect(
+      await main(["candidate", "compose", candidatePath], output.io, {
+        cwd: project,
+        loadConfig: async () => effectiveConfig(project),
+      }),
+      output.stderr.join("\n"),
+    ).toBe(0);
+    const composed = JSON.parse(output.stdout.join("\n"));
+    const staged = await admitLocalEffectiveHarnessCandidate(join(project, composed.staged.path));
+    expect(effectiveHarnessWorkflowSource(staged.artifact.candidateState)).toContain(
+      "PRIVATE_REFINED_PROMPT",
+    );
+    expect(staged.artifact.candidateState.packages).toEqual([packageFixture.completed.package]);
+    expect([...output.stdout, ...output.stderr].join("\n")).not.toContain("PRIVATE_REFINED_PROMPT");
+  });
 });
 
-function promptProjectionFor(baseline: EffectiveHarnessState): ProjectedPromptCandidate {
+function promptProjectionFor(
+  baseline: EffectiveHarnessState,
+  nodeId = "review",
+): ProjectedPromptCandidate {
   const sourceValue = JSON.parse(effectiveHarnessWorkflowSource(baseline)) as {
     nodes: Array<{ id: string; type: string; agent?: { prompt: string } }>;
   };
-  const agent = sourceValue.nodes.find((node) => node.id === "review" && node.type === "agent");
+  const agent = sourceValue.nodes.find((node) => node.id === nodeId && node.type === "agent");
   if (agent?.agent === undefined) throw new Error("composition prompt target is missing");
   const before = agent.agent.prompt;
   agent.agent.prompt = "Use the refined review prompt.";
@@ -275,9 +585,7 @@ function promptProjectionFor(baseline: EffectiveHarnessState): ProjectedPromptCa
         planDigest: "4".repeat(64),
       },
     ],
-    changes: [
-      { nodeId: "review", beforeSha256: sha256(before), afterSha256: sha256(agent.agent.prompt) },
-    ],
+    changes: [{ nodeId, beforeSha256: sha256(before), afterSha256: sha256(agent.agent.prompt) }],
     projectedWorkflow: {
       sourceSha256: sha256(source),
       workflowDigest: calculateWorkflowDigest(compiled),

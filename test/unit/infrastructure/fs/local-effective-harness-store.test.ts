@@ -1,11 +1,16 @@
-import { mkdir, mkdtemp, rm, symlink, unlink } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import { prepareEffectiveHarnessActivation } from "../../../../src/application/prepare-effective-harness-activation.js";
-import { createEffectiveHarnessCandidateArtifact } from "../../../../src/domain/adaptation/effective-harness-candidate.js";
+import { calculateAgentSkillPackageCandidateIdentityDigest } from "../../../../src/domain/adaptation/agent-skill-package-candidate.js";
+import {
+  calculateEffectiveHarnessCandidateDigest,
+  createEffectiveHarnessCandidateArtifact,
+  encodeEffectiveHarnessCandidateArtifact,
+} from "../../../../src/domain/adaptation/effective-harness-candidate.js";
 import {
   createEffectiveHarnessHeadIdentity,
   createEffectiveHarnessState,
@@ -84,6 +89,128 @@ describe("local effective harness store", () => {
       artifact,
     });
     expect(await store.list()).toMatchObject({ heads: [], history: [] });
+  });
+
+  it("rejects unknown and over-budget physical blob inventories", async () => {
+    const unknownRoot = await temporaryDirectory();
+    const unknownArtifact = effectiveHarnessCandidateArtifactFixture();
+    const unknownStore = new LocalEffectiveHarnessStore(unknownRoot, {
+      scopeDigest: unknownArtifact.scopeDigest,
+      readInitialHead: async () => unknownArtifact.baselineHead,
+    });
+    await unknownStore.stageCandidate(unknownArtifact);
+    await writeFile(join(unknownRoot, ".flow/effective-harness/states/PRIVATE_UNKNOWN"), "x");
+
+    await expect(unknownStore.list()).rejects.toMatchObject({ code: "corrupt" });
+
+    const boundedRoot = await temporaryDirectory();
+    const boundedArtifact = effectiveHarnessCandidateArtifactFixture();
+    const boundedStore = new LocalEffectiveHarnessStore(boundedRoot, {
+      scopeDigest: boundedArtifact.scopeDigest,
+      readInitialHead: async () => boundedArtifact.baselineHead,
+    });
+    await boundedStore.stageCandidate(boundedArtifact);
+    await Promise.all(
+      Array.from({ length: 257 }, (_, index) =>
+        writeFile(
+          join(
+            boundedRoot,
+            ".flow/effective-harness/artifacts",
+            `${index.toString(16).padStart(64, "0")}.json`,
+          ),
+          "{}\n",
+        ),
+      ),
+    );
+
+    await expect(boundedStore.list()).rejects.toMatchObject({ code: "corrupt" });
+  });
+
+  it("enforces the index byte limit while the opened file is changing", async () => {
+    const root = await temporaryDirectory();
+    const artifact = effectiveHarnessCandidateArtifactFixture();
+    const prepared = prepareEffectiveHarnessActivation({
+      artifact,
+      stored: superiorEffectiveHarnessEvaluation(artifact),
+    });
+    const initial = new LocalEffectiveHarnessStore(root, {
+      scopeDigest: artifact.scopeDigest,
+      readInitialHead: async () => artifact.baselineHead,
+    });
+    const proposal = await initial.previewActivate({ prepared, actor: "operator:test" });
+    await initial.applyActivate({
+      prepared,
+      actor: "operator:test",
+      expectedDigest: proposal.proposalDigest,
+    });
+    let changed = false;
+    const raced = new LocalEffectiveHarnessStore(root, {
+      scopeDigest: artifact.scopeDigest,
+      hooks: {
+        afterFileObserved: async (kind) => {
+          if (kind !== "index" || changed) return;
+          changed = true;
+          await appendFile(
+            join(root, ".flow/effective-harness/index.json"),
+            Buffer.alloc(4 * 1024 * 1024, 0x20),
+          );
+        },
+      },
+    });
+
+    await expect(raced.list()).rejects.toMatchObject({ code: "unsafe_state" });
+  });
+
+  it("rejects staging beyond the physical artifact limit before publication", async () => {
+    const root = await temporaryDirectory();
+    const artifact = effectiveHarnessCandidateArtifactFixture();
+    const directory = join(root, ".flow/effective-harness/artifacts");
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    for (let index = 0; index < 256; index += 1) {
+      const retained = distinctArtifact(artifact, `retained-${index}`);
+      await writeFile(
+        join(directory, `${retained.artifactDigest}.json`),
+        encodeEffectiveHarnessCandidateArtifact(retained),
+      );
+    }
+    const next = distinctArtifact(artifact, "next-artifact");
+    const store = new LocalEffectiveHarnessStore(root, {
+      scopeDigest: artifact.scopeDigest,
+      readInitialHead: async () => artifact.baselineHead,
+    });
+
+    await expect(store.stageCandidate(next)).rejects.toMatchObject({ code: "invalid_input" });
+    await expect(
+      import("node:fs/promises").then(({ lstat }) =>
+        lstat(join(directory, `${next.artifactDigest}.json`)),
+      ),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects staging beyond the physical state limit before publication", async () => {
+    const root = await temporaryDirectory();
+    const artifact = effectiveHarnessCandidateArtifactFixture();
+    const directory = join(root, ".flow/effective-harness/states");
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    for (let index = 0; index < 256; index += 1) {
+      const state = createEffectiveHarnessState({
+        scopeDigest: artifact.scopeDigest,
+        workflowSource: workflowWithPrompt(artifact.baselineState, `Retained prompt ${index}.`),
+        packages: artifact.baselineState.packages,
+      });
+      await writeFile(join(directory, `${state.stateDigest}.json`), `${JSON.stringify(state)}\n`);
+    }
+    const store = new LocalEffectiveHarnessStore(root, {
+      scopeDigest: artifact.scopeDigest,
+      readInitialHead: async () => artifact.baselineHead,
+    });
+
+    await expect(store.stageCandidate(artifact)).rejects.toMatchObject({ code: "invalid_input" });
+    await expect(
+      import("node:fs/promises").then(({ lstat }) =>
+        lstat(join(directory, `${artifact.candidateState.stateDigest}.json`)),
+      ),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("publishes complete state before one authoritative transition and rolls back exactly", async () => {
@@ -485,4 +612,41 @@ function effectiveArtifactForScope(scopeDigest: string) {
     candidateState,
     candidate: fixture.candidate,
   });
+}
+
+function distinctArtifact(
+  artifact: ReturnType<typeof effectiveHarnessCandidateArtifactFixture>,
+  id: string,
+) {
+  if (
+    !("kind" in artifact.candidate) ||
+    artifact.candidate.kind !== "agent-skill-package-candidate"
+  ) {
+    throw new Error("effective artifact fixture has an unexpected candidate kind");
+  }
+  const { candidateDigest: _candidateDigest, ...identity } = artifact.candidate;
+  const candidate = {
+    ...identity,
+    id,
+    candidateDigest: calculateAgentSkillPackageCandidateIdentityDigest({ ...identity, id }),
+  };
+  const { artifactDigest: _artifactDigest, ...content } = artifact;
+  return {
+    ...content,
+    candidate,
+    artifactDigest: calculateEffectiveHarnessCandidateDigest({ ...content, candidate }),
+  };
+}
+
+function workflowWithPrompt(
+  state: ReturnType<typeof createEffectiveHarnessState>,
+  prompt: string,
+): string {
+  const source = JSON.parse(
+    Buffer.from(state.workflow.contentBase64, "base64").toString("utf8"),
+  ) as { nodes: Array<{ type: string; agent?: { prompt: string } }> };
+  const agent = source.nodes.find((node) => node.type === "agent");
+  if (agent?.agent === undefined) throw new Error("state fixture has no agent node");
+  agent.agent.prompt = prompt;
+  return JSON.stringify(source);
 }

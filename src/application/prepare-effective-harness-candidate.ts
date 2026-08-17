@@ -28,8 +28,9 @@ import {
   parseAdaptiveActivationSnapshot,
   validateCapabilitySnapshot,
 } from "../domain/capability/agent-skills.js";
-import { compileWorkflowText } from "../domain/workflow/compiler.js";
+import { compileWorkflowText, parseWorkflowSourceText } from "../domain/workflow/compiler.js";
 import { calculateWorkflowDigest } from "../domain/workflow/digest.js";
+import type { WorkflowSource } from "../domain/workflow/schema.js";
 import type { CompiledWorkflow } from "../domain/workflow/types.js";
 import {
   LegacyEffectiveHarnessStateError,
@@ -113,14 +114,17 @@ export type EffectiveHarnessCandidateProjection =
   | {
       readonly kind: "prompt";
       readonly projection: ProjectedPromptCandidate;
+      readonly baselineWorkflowSource: string;
     }
   | {
       readonly kind: "agent-skill-resource";
       readonly projection: ProjectedAgentSkillCandidate;
+      readonly baselineWorkflowSource: string;
     }
   | {
       readonly kind: "agent-skill-package";
       readonly projection: ProjectedAgentSkillPackageCandidate;
+      readonly baselineWorkflowSource: string;
     };
 
 export interface ProjectEffectiveHarnessCandidateInput {
@@ -150,11 +154,23 @@ export function projectEffectiveHarnessCandidate(
   const baseline = parseBaselineState(input.baseline);
   switch (input.candidate.kind) {
     case "prompt":
-      return projectPromptSurface(baseline, input.candidate.projection);
+      return projectPromptSurface(
+        baseline,
+        input.candidate.projection,
+        input.candidate.baselineWorkflowSource,
+      );
     case "agent-skill-resource":
-      return projectAgentSkillResourceSurface(baseline, input.candidate.projection);
+      return projectAgentSkillResourceSurface(
+        baseline,
+        input.candidate.projection,
+        input.candidate.baselineWorkflowSource,
+      );
     case "agent-skill-package":
-      return projectAgentSkillPackageSurface(baseline, input.candidate.projection);
+      return projectAgentSkillPackageSurface(
+        baseline,
+        input.candidate.projection,
+        input.candidate.baselineWorkflowSource,
+      );
   }
 }
 
@@ -225,31 +241,37 @@ function parseBaselineState(input: EffectiveHarnessState): EffectiveHarnessState
 function projectPromptSurface(
   baseline: EffectiveHarnessState,
   rawProjection: ProjectedPromptCandidate,
+  baselineWorkflowSource: string,
 ): ProjectedEffectiveHarnessCandidate {
   try {
     const identity = parsePromptCandidateIdentity(rawProjection.identity);
-    const source = rawProjection.workflow.source;
-    const sourceSha256 = sha256(source);
-    const compiled = compileWorkflowText(source, "effective harness prompt candidate");
-    const workflowDigest = calculateWorkflowDigest(compiled);
+    const ordinaryBaseline = compileWorkflowText(
+      baselineWorkflowSource,
+      "ordinary prompt candidate baseline",
+    );
+    const ordinaryBaselineSha256 = sha256(baselineWorkflowSource);
+    const ordinaryBaselineDigest = calculateWorkflowDigest(ordinaryBaseline);
+    const projectedSource = rawProjection.workflow.source;
+    const projectedSourceSha256 = sha256(projectedSource);
+    const projected = compileWorkflowText(projectedSource, "effective harness prompt candidate");
+    const projectedDigest = calculateWorkflowDigest(projected);
     if (
       identity.scope.workflowId !== baseline.workflowId ||
-      identity.baseline.sourceSha256 !== baseline.workflow.sha256 ||
-      identity.baseline.workflowDigest !== baseline.workflow.workflowDigest ||
-      identity.projectedWorkflow.sourceSha256 !== sourceSha256 ||
-      identity.projectedWorkflow.workflowDigest !== workflowDigest ||
-      rawProjection.workflow.sourceSha256 !== sourceSha256 ||
-      rawProjection.workflow.workflowDigest !== workflowDigest ||
-      calculateWorkflowDigest(rawProjection.workflow.compiled) !== workflowDigest
+      ordinaryBaseline.id !== identity.scope.workflowId ||
+      identity.baseline.sourceSha256 !== ordinaryBaselineSha256 ||
+      identity.baseline.workflowDigest !== ordinaryBaselineDigest ||
+      identity.projectedWorkflow.sourceSha256 !== projectedSourceSha256 ||
+      identity.projectedWorkflow.workflowDigest !== projectedDigest ||
+      rawProjection.workflow.sourceSha256 !== projectedSourceSha256 ||
+      rawProjection.workflow.workflowDigest !== projectedDigest ||
+      calculateWorkflowDigest(rawProjection.workflow.compiled) !== projectedDigest
     ) {
       throw new Error("prompt candidate identity mismatch");
     }
-    assertPromptOnlyChange(
-      compileWorkflowText(
-        effectiveHarnessWorkflowSource(baseline),
-        "effective harness prompt baseline",
-      ),
-      compiled,
+    assertPromptOnlyChange(ordinaryBaseline, projected, identity.changes);
+    const source = rebasePromptChanges(
+      effectiveHarnessWorkflowSource(baseline),
+      projectedSource,
       identity.changes,
     );
     const state = createEffectiveHarnessState({
@@ -278,19 +300,25 @@ function projectPromptSurface(
 function projectAgentSkillResourceSurface(
   baseline: EffectiveHarnessState,
   rawProjection: ProjectedAgentSkillCandidate,
+  baselineWorkflowSource: string,
 ): ProjectedEffectiveHarnessCandidate {
   try {
     const identity = parseAgentSkillCandidateIdentity(rawProjection.identity);
     const source = effectiveHarnessWorkflowSource(baseline);
-    const compiled = compileWorkflowText(source, "effective harness Agent Skill baseline");
-    const workflowDigest = calculateWorkflowDigest(compiled);
+    const ordinaryBaseline = compileWorkflowText(
+      baselineWorkflowSource,
+      "ordinary Agent Skill candidate baseline",
+    );
+    const ordinaryBaselineSha256 = sha256(baselineWorkflowSource);
+    const ordinaryBaselineDigest = calculateWorkflowDigest(ordinaryBaseline);
     if (
       identity.scope.workflowId !== baseline.workflowId ||
-      identity.baseline.workflow.sourceSha256 !== baseline.workflow.sha256 ||
-      identity.baseline.workflow.workflowDigest !== baseline.workflow.workflowDigest ||
-      rawProjection.workflow.sourceSha256 !== baseline.workflow.sha256 ||
-      rawProjection.workflow.workflowDigest !== workflowDigest ||
-      calculateWorkflowDigest(rawProjection.workflow.compiled) !== workflowDigest
+      ordinaryBaseline.id !== identity.scope.workflowId ||
+      identity.baseline.workflow.sourceSha256 !== ordinaryBaselineSha256 ||
+      identity.baseline.workflow.workflowDigest !== ordinaryBaselineDigest ||
+      rawProjection.workflow.sourceSha256 !== ordinaryBaselineSha256 ||
+      rawProjection.workflow.workflowDigest !== ordinaryBaselineDigest ||
+      calculateWorkflowDigest(rawProjection.workflow.compiled) !== ordinaryBaselineDigest
     ) {
       throw new Error("Agent Skill candidate workflow mismatch");
     }
@@ -344,22 +372,33 @@ function projectAgentSkillResourceSurface(
 function projectAgentSkillPackageSurface(
   baseline: EffectiveHarnessState,
   rawProjection: ProjectedAgentSkillPackageCandidate,
+  baselineWorkflowSource: string,
 ): ProjectedEffectiveHarnessCandidate {
   try {
     const identity = parseAgentSkillPackageCandidateIdentity(rawProjection.identity);
-    const source = rawProjection.workflow.source;
-    const sourceSha256 = sha256(source);
-    const compiled = compileWorkflowText(source, "effective harness Agent Skill package candidate");
-    const workflowDigest = calculateWorkflowDigest(compiled);
+    const ordinaryBaseline = compileWorkflowText(
+      baselineWorkflowSource,
+      "ordinary Agent Skill package candidate baseline",
+    );
+    const ordinaryBaselineSha256 = sha256(baselineWorkflowSource);
+    const ordinaryBaselineDigest = calculateWorkflowDigest(ordinaryBaseline);
+    const projectedSource = rawProjection.workflow.source;
+    const projectedSourceSha256 = sha256(projectedSource);
+    const projected = compileWorkflowText(
+      projectedSource,
+      "effective harness Agent Skill package candidate",
+    );
+    const projectedDigest = calculateWorkflowDigest(projected);
     if (
       identity.scope.workflowId !== baseline.workflowId ||
-      identity.baseline.workflow.sourceSha256 !== baseline.workflow.sha256 ||
-      identity.baseline.workflow.workflowDigest !== baseline.workflow.workflowDigest ||
-      identity.projectedWorkflow.sourceSha256 !== sourceSha256 ||
-      identity.projectedWorkflow.workflowDigest !== workflowDigest ||
-      rawProjection.workflow.sourceSha256 !== sourceSha256 ||
-      rawProjection.workflow.workflowDigest !== workflowDigest ||
-      calculateWorkflowDigest(rawProjection.workflow.compiled) !== workflowDigest ||
+      ordinaryBaseline.id !== identity.scope.workflowId ||
+      identity.baseline.workflow.sourceSha256 !== ordinaryBaselineSha256 ||
+      identity.baseline.workflow.workflowDigest !== ordinaryBaselineDigest ||
+      identity.projectedWorkflow.sourceSha256 !== projectedSourceSha256 ||
+      identity.projectedWorkflow.workflowDigest !== projectedDigest ||
+      rawProjection.workflow.sourceSha256 !== projectedSourceSha256 ||
+      rawProjection.workflow.workflowDigest !== projectedDigest ||
+      calculateWorkflowDigest(rawProjection.workflow.compiled) !== projectedDigest ||
       rawProjection.baselineCapabilitySnapshot !== undefined
     ) {
       throw new Error("Agent Skill package candidate workflow mismatch");
@@ -378,11 +417,14 @@ function projectAgentSkillPackageSurface(
       throw new Error("Agent Skill package candidate package mismatch");
     }
     assertAgentSkillPackageOnlyChange(
-      compileWorkflowText(
-        effectiveHarnessWorkflowSource(baseline),
-        "effective harness Agent Skill package baseline",
-      ),
-      compiled,
+      ordinaryBaseline,
+      projected,
+      identity.scope.nodeId,
+      identity.package.name,
+    );
+    const source = rebaseAgentSkillPackageSelection(
+      effectiveHarnessWorkflowSource(baseline),
+      baselineWorkflowSource,
       identity.scope.nodeId,
       identity.package.name,
     );
@@ -407,6 +449,67 @@ function projectAgentSkillPackageSurface(
       "Agent Skill package candidate changes authority outside its declared surface",
     );
   }
+}
+
+function rebasePromptChanges(
+  currentSource: string,
+  projectedSource: string,
+  changes: readonly {
+    readonly nodeId: string;
+    readonly beforeSha256: string;
+    readonly afterSha256: string;
+  }[],
+): string {
+  const current = structuredClone(
+    parseWorkflowSourceText(currentSource, "effective harness current prompt state"),
+  );
+  const projected = parseWorkflowSourceText(
+    projectedSource,
+    "ordinary prompt candidate projection",
+  );
+  for (const change of changes) {
+    const before = requiredAgentSourceNode(current, change.nodeId);
+    const after = requiredAgentSourceNode(projected, change.nodeId);
+    if (
+      sha256(before.agent.prompt) !== change.beforeSha256 ||
+      sha256(after.agent.prompt) !== change.afterSha256
+    ) {
+      throw new Error("prompt rebase target changed");
+    }
+    before.agent.prompt = after.agent.prompt;
+  }
+  return JSON.stringify(current);
+}
+
+function rebaseAgentSkillPackageSelection(
+  currentSource: string,
+  ordinaryBaselineSource: string,
+  nodeId: string,
+  skillName: string,
+): string {
+  const current = structuredClone(
+    parseWorkflowSourceText(currentSource, "effective harness current package state"),
+  );
+  const ordinaryBaseline = parseWorkflowSourceText(
+    ordinaryBaselineSource,
+    "ordinary Agent Skill package baseline",
+  );
+  const target = requiredAgentSourceNode(current, nodeId);
+  const ordinaryTarget = requiredAgentSourceNode(ordinaryBaseline, nodeId);
+  if (
+    ordinaryTarget.agent.skills.length !== 0 ||
+    !isDeepStrictEqual(target.agent.skills, ordinaryTarget.agent.skills)
+  ) {
+    throw new Error("Agent Skill package rebase target changed");
+  }
+  target.agent.skills = [skillName];
+  return JSON.stringify(current);
+}
+
+function requiredAgentSourceNode(source: WorkflowSource, nodeId: string) {
+  const node = source.nodes.find((item) => item.id === nodeId);
+  if (node?.type !== "agent") throw new Error("candidate target is not an agent node");
+  return node;
 }
 
 function assertPromptOnlyChange(

@@ -300,13 +300,7 @@ function assertPromptChange(
   baseline: EffectiveHarnessState,
   projected: EffectiveHarnessState,
 ): void {
-  if (
-    candidate.baseline.sourceSha256 !== baseline.workflow.sha256 ||
-    candidate.baseline.workflowDigest !== baseline.workflow.workflowDigest ||
-    candidate.projectedWorkflow.sourceSha256 !== projected.workflow.sha256 ||
-    candidate.projectedWorkflow.workflowDigest !== projected.workflow.workflowDigest ||
-    !isDeepStrictEqual(normalizeJson(baseline.packages), normalizeJson(projected.packages))
-  ) {
+  if (!isDeepStrictEqual(normalizeJson(baseline.packages), normalizeJson(projected.packages))) {
     throw new Error("prompt state identity mismatch");
   }
   const before = compileStateWorkflow(baseline);
@@ -333,9 +327,7 @@ function assertAgentSkillResourceChange(
 ): void {
   if (
     baseline.workflow.sha256 !== projected.workflow.sha256 ||
-    baseline.workflow.workflowDigest !== projected.workflow.workflowDigest ||
-    candidate.baseline.workflow.sourceSha256 !== baseline.workflow.sha256 ||
-    candidate.baseline.workflow.workflowDigest !== baseline.workflow.workflowDigest
+    baseline.workflow.workflowDigest !== projected.workflow.workflowDigest
   ) {
     throw new Error("Agent Skill workflow identity mismatch");
   }
@@ -359,10 +351,6 @@ function assertAgentSkillPackageChange(
   projected: EffectiveHarnessState,
 ): void {
   if (
-    candidate.baseline.workflow.sourceSha256 !== baseline.workflow.sha256 ||
-    candidate.baseline.workflow.workflowDigest !== baseline.workflow.workflowDigest ||
-    candidate.projectedWorkflow.sourceSha256 !== projected.workflow.sha256 ||
-    candidate.projectedWorkflow.workflowDigest !== projected.workflow.workflowDigest ||
     baseline.packages.some(
       (item) => item.kind === "agent-skill" && item.name === candidate.package.name,
     )

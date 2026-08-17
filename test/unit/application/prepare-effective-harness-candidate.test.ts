@@ -225,7 +225,11 @@ describe("effective harness candidate projection", () => {
 
     const afterPrompt = projectEffectiveHarnessCandidate({
       baseline,
-      candidate: { kind: "prompt", projection: promptProjection },
+      candidate: {
+        kind: "prompt",
+        projection: promptProjection,
+        baselineWorkflowSource: effectiveHarnessWorkflowSource(baseline),
+      },
     });
 
     expect(afterPrompt.delta).toEqual({
@@ -240,10 +244,14 @@ describe("effective harness candidate projection", () => {
       "Use the refined review prompt.",
     );
 
-    const skillProjection = skillProjectionFor(afterPrompt.state);
+    const skillProjection = skillProjectionFor(baseline);
     const afterSkill = projectEffectiveHarnessCandidate({
       baseline: afterPrompt.state,
-      candidate: { kind: "agent-skill-resource", projection: skillProjection },
+      candidate: {
+        kind: "agent-skill-resource",
+        projection: skillProjection,
+        baselineWorkflowSource: effectiveHarnessWorkflowSource(baseline),
+      },
     });
 
     expect(effectiveHarnessWorkflowSource(afterSkill.state)).toBe(
@@ -296,7 +304,11 @@ describe("effective harness candidate projection", () => {
     expect(() =>
       projectEffectiveHarnessCandidate({
         baseline,
-        candidate: { kind: "prompt", projection },
+        candidate: {
+          kind: "prompt",
+          projection,
+          baselineWorkflowSource: effectiveHarnessWorkflowSource(baseline),
+        },
       }),
     ).toThrowError(
       expect.objectContaining<Partial<EffectiveHarnessCandidateAdmissionError>>({
@@ -318,6 +330,7 @@ describe("effective harness candidate projection", () => {
       candidate: {
         kind: "agent-skill-package",
         projection: fixture.projected as ProjectedAgentSkillPackageCandidate,
+        baselineWorkflowSource: fixture.prompt.baselineText,
       },
     });
 
@@ -328,6 +341,114 @@ describe("effective harness candidate projection", () => {
     });
     expect(projected.state.packages).toEqual([fixture.completed.package]);
     expect(effectiveHarnessWorkflowSource(projected.state)).toBe(fixture.projected.workflow.source);
+  });
+
+  it.each([
+    ["prompt then generated package", ["prompt", "package"] as const],
+    ["generated package then prompt", ["package", "prompt"] as const],
+  ])("rebases only the declared surface for %s", (_label, order) => {
+    const fixture = agentSkillPackageActivationFixture();
+    const baseline = createEffectiveHarnessState({
+      scopeDigest,
+      workflowSource: fixture.prompt.baselineText,
+      packages: [],
+    });
+    const prompt = promptProjectionFor(
+      baseline,
+      "Use the refined implementation prompt.",
+      "implement",
+    );
+    let state = baseline;
+
+    for (const surface of order) {
+      state = projectEffectiveHarnessCandidate({
+        baseline: state,
+        candidate:
+          surface === "prompt"
+            ? {
+                kind: "prompt",
+                projection: prompt,
+                baselineWorkflowSource: effectiveHarnessWorkflowSource(baseline),
+              }
+            : {
+                kind: "agent-skill-package",
+                projection: fixture.projected as ProjectedAgentSkillPackageCandidate,
+                baselineWorkflowSource: fixture.prompt.baselineText,
+              },
+      }).state;
+    }
+
+    expect(effectiveHarnessWorkflowSource(state)).toContain(
+      "Use the refined implementation prompt.",
+    );
+    expect(state.packages).toEqual([fixture.completed.package]);
+  });
+
+  it("rejects a stale second change to each already-changed surface", () => {
+    const skill = agentSkillActivationInput("baseline");
+    const baseline = createEffectiveHarnessState({
+      scopeDigest,
+      workflowSource: skill.workflowSource,
+      packages: [skill.skill],
+    });
+    const prompt = promptProjectionFor(baseline, "Use the refined review prompt.");
+    const afterPrompt = projectEffectiveHarnessCandidate({
+      baseline,
+      candidate: {
+        kind: "prompt",
+        projection: prompt,
+        baselineWorkflowSource: effectiveHarnessWorkflowSource(baseline),
+      },
+    }).state;
+    expect(() =>
+      projectEffectiveHarnessCandidate({
+        baseline: afterPrompt,
+        candidate: {
+          kind: "prompt",
+          projection: prompt,
+          baselineWorkflowSource: effectiveHarnessWorkflowSource(baseline),
+        },
+      }),
+    ).toThrowError(expect.objectContaining({ code: "surface_mismatch" }));
+
+    const resource = skillProjectionFor(baseline);
+    const afterResource = projectEffectiveHarnessCandidate({
+      baseline,
+      candidate: {
+        kind: "agent-skill-resource",
+        projection: resource,
+        baselineWorkflowSource: effectiveHarnessWorkflowSource(baseline),
+      },
+    }).state;
+    expect(() =>
+      projectEffectiveHarnessCandidate({
+        baseline: afterResource,
+        candidate: {
+          kind: "agent-skill-resource",
+          projection: resource,
+          baselineWorkflowSource: effectiveHarnessWorkflowSource(baseline),
+        },
+      }),
+    ).toThrowError(expect.objectContaining({ code: "surface_mismatch" }));
+
+    const fixture = agentSkillPackageActivationFixture();
+    const packageBaseline = createEffectiveHarnessState({
+      scopeDigest,
+      workflowSource: fixture.prompt.baselineText,
+      packages: [],
+    });
+    const packageCandidate = {
+      kind: "agent-skill-package" as const,
+      projection: fixture.projected,
+      baselineWorkflowSource: fixture.prompt.baselineText,
+    };
+    const afterPackage = projectEffectiveHarnessCandidate({
+      baseline: packageBaseline,
+      candidate: packageCandidate,
+    }).state;
+    expect(() =>
+      projectEffectiveHarnessCandidate({ baseline: afterPackage, candidate: packageCandidate }),
+    ).toThrowError(expect.objectContaining({ code: "surface_mismatch" }));
   });
 });
 
@@ -353,12 +474,13 @@ function activeStore(
 function promptProjectionFor(
   baseline: ReturnType<typeof createEffectiveHarnessState>,
   replacement: string,
+  nodeId = "review",
 ): ProjectedPromptCandidate {
   const baselineSource = effectiveHarnessWorkflowSource(baseline);
   const sourceValue = JSON.parse(baselineSource) as {
     nodes: Array<{ id: string; type: string; agent?: { prompt: string } }>;
   };
-  const agent = sourceValue.nodes.find((node) => node.type === "agent" && node.id === "review");
+  const agent = sourceValue.nodes.find((node) => node.type === "agent" && node.id === nodeId);
   if (agent?.agent === undefined) {
     throw new Error("baseline prompt fixture is missing its review agent");
   }
@@ -387,7 +509,7 @@ function promptProjectionFor(
     ],
     changes: [
       {
-        nodeId: "review",
+        nodeId,
         beforeSha256: sha256(before),
         afterSha256: sha256(replacement),
       },

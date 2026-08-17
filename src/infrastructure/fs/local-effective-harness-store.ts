@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
-import { constants } from "node:fs";
+import { type BigIntStats, constants, type Dir } from "node:fs";
 import {
   type FileHandle,
   link,
   lstat,
   mkdir,
   open,
+  opendir,
   realpath,
   rename,
   unlink,
@@ -122,6 +123,8 @@ export interface EffectiveHarnessStoreHooks {
   ) => void | Promise<void>;
   readonly beforeIndexRenamed?: () => void | Promise<void>;
   readonly afterIndexRenamed?: () => void | Promise<void>;
+  /** @internal Deterministic stable-read race seam. */
+  readonly afterFileObserved?: (kind: "index" | "state" | "artifact") => void | Promise<void>;
 }
 
 export interface LocalEffectiveHarnessStoreOptions {
@@ -238,6 +241,7 @@ export class LocalEffectiveHarnessStore {
         const paths = await ensureStorePaths(flowDirectory);
         const index = await this.#readIndexFrom(paths);
         await this.#currentHead(index, artifact);
+        await assertBlobInventoryCapacity(paths, artifact);
         await publishState(paths, artifact.baselineState, "baseline-state", this.#hooks);
         await publishState(paths, artifact.candidateState, "candidate-state", this.#hooks);
         await publishArtifact(paths, artifact, this.#hooks);
@@ -301,6 +305,7 @@ export class LocalEffectiveHarnessStore {
             "effective harness activation proposal is stale",
           );
         }
+        await assertBlobInventoryCapacity(paths, artifact);
         const transition = createEffectiveHarnessTransition({
           prior,
           toActivationDigest: artifact.artifactDigest,
@@ -436,9 +441,18 @@ export class LocalEffectiveHarnessStore {
   async #readIndexFrom(paths: EffectiveHarnessStorePaths): Promise<EffectiveHarnessIndex> {
     let content: Buffer;
     try {
-      content = await readBounded(paths.indexPath, MAX_EFFECTIVE_HARNESS_INDEX_BYTES);
+      content = await readBounded(
+        paths.indexPath,
+        MAX_EFFECTIVE_HARNESS_INDEX_BYTES,
+        this.#hooks,
+        "index",
+      );
     } catch (error) {
-      if (isNodeError(error) && error.code === "ENOENT") return emptyIndex();
+      if (isNodeError(error) && error.code === "ENOENT") {
+        const empty = emptyIndex();
+        await validateBlobInventory(paths, empty, await this.#scopeDigest, this.#hooks);
+        return empty;
+      }
       if (error instanceof EffectiveHarnessStoreError) throw error;
       throw new EffectiveHarnessStoreError("io", "effective harness index cannot be read");
     }
@@ -460,8 +474,7 @@ export class LocalEffectiveHarnessStore {
         "effective harness index belongs to a different project scope",
       );
     }
-    for (const entry of parsed.states) await readState(paths, entry);
-    for (const entry of parsed.artifacts) await readArtifact(paths, entry);
+    await validateBlobInventory(paths, parsed, await this.#scopeDigest, this.#hooks);
     return parsed;
   }
 
@@ -626,6 +639,152 @@ function parseIndex(input: unknown): EffectiveHarnessIndex {
     }
   }
   return deepFreeze({ ...raw, origins, heads, history });
+}
+
+async function validateBlobInventory(
+  paths: EffectiveHarnessStorePaths,
+  index: EffectiveHarnessIndex,
+  scopeDigest: string,
+  hooks: EffectiveHarnessStoreHooks,
+): Promise<void> {
+  const stateNames = await boundedBlobNames(paths.states, MAX_EFFECTIVE_HARNESS_STATES);
+  const artifactNames = await boundedBlobNames(paths.artifacts, MAX_EFFECTIVE_HARNESS_ARTIFACTS);
+  const indexedStates = new Map(index.states.map((entry) => [`${entry.stateDigest}.json`, entry]));
+  const indexedArtifacts = new Map(
+    index.artifacts.map((entry) => [`${entry.artifactDigest}.json`, entry]),
+  );
+  if (
+    [...indexedStates.keys()].some((name) => !stateNames.includes(name)) ||
+    [...indexedArtifacts.keys()].some((name) => !artifactNames.includes(name))
+  ) {
+    throw new EffectiveHarnessStoreError("corrupt", "effective harness inventory is incomplete");
+  }
+  for (const name of stateNames) {
+    const indexed = indexedStates.get(name);
+    if (indexed === undefined) {
+      await readUnindexedState(paths, name, scopeDigest, hooks);
+    } else {
+      await readState(paths, indexed, hooks);
+    }
+  }
+  for (const name of artifactNames) {
+    const indexed = indexedArtifacts.get(name);
+    if (indexed === undefined) {
+      await readUnindexedArtifact(paths, name, scopeDigest, hooks);
+    } else {
+      await readArtifact(paths, indexed, hooks);
+    }
+  }
+}
+
+async function assertBlobInventoryCapacity(
+  paths: EffectiveHarnessStorePaths,
+  artifact: EffectiveHarnessCandidateArtifact,
+): Promise<void> {
+  const states = new Set(await boundedBlobNames(paths.states, MAX_EFFECTIVE_HARNESS_STATES));
+  states.add(`${artifact.baselineState.stateDigest}.json`);
+  states.add(`${artifact.candidateState.stateDigest}.json`);
+  const artifacts = new Set(
+    await boundedBlobNames(paths.artifacts, MAX_EFFECTIVE_HARNESS_ARTIFACTS),
+  );
+  artifacts.add(`${artifact.artifactDigest}.json`);
+  if (
+    states.size > MAX_EFFECTIVE_HARNESS_STATES ||
+    artifacts.size > MAX_EFFECTIVE_HARNESS_ARTIFACTS
+  ) {
+    throw new EffectiveHarnessStoreError(
+      "invalid_input",
+      "effective harness inventory exceeds its entry limit",
+    );
+  }
+}
+
+async function boundedBlobNames(directory: string, maximum: number): Promise<string[]> {
+  let opened: Dir;
+  try {
+    opened = await opendir(directory);
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") return [];
+    throw new EffectiveHarnessStoreError("corrupt", "effective harness inventory is invalid");
+  }
+  const names: string[] = [];
+  try {
+    for await (const entry of opened) {
+      if (!entry.isFile() || !/^[a-f0-9]{64}\.json$/.test(entry.name)) {
+        throw new EffectiveHarnessStoreError("corrupt", "effective harness inventory is invalid");
+      }
+      names.push(entry.name);
+      if (names.length > maximum) {
+        throw new EffectiveHarnessStoreError(
+          "corrupt",
+          "effective harness inventory exceeds its entry limit",
+        );
+      }
+    }
+  } catch (error) {
+    await opened.close().catch(() => undefined);
+    if (error instanceof EffectiveHarnessStoreError) throw error;
+    throw new EffectiveHarnessStoreError("corrupt", "effective harness inventory is invalid");
+  }
+  return names.sort();
+}
+
+async function readUnindexedState(
+  paths: EffectiveHarnessStorePaths,
+  name: string,
+  scopeDigest: string,
+  hooks: EffectiveHarnessStoreHooks,
+): Promise<void> {
+  try {
+    const digest = name.slice(0, -".json".length);
+    const content = await readBounded(
+      join(paths.states, name),
+      MAX_EFFECTIVE_HARNESS_STATE_BYTES,
+      hooks,
+      "state",
+    );
+    const state = parseEffectiveHarnessState(
+      parseStrictJson(new TextDecoder("utf-8", { fatal: true }).decode(content), {
+        maxDepth: 32,
+        maxNodes: 500_000,
+        valueLabel: "effective harness state",
+      }),
+      { scopeDigest },
+    );
+    if (state.stateDigest !== digest || calculateEffectiveHarnessStateDigest(state) !== digest) {
+      throw new Error("state identity mismatch");
+    }
+  } catch {
+    throw new EffectiveHarnessStoreError("corrupt", "effective harness state is invalid");
+  }
+}
+
+async function readUnindexedArtifact(
+  paths: EffectiveHarnessStorePaths,
+  name: string,
+  scopeDigest: string,
+  hooks: EffectiveHarnessStoreHooks,
+): Promise<void> {
+  try {
+    const digest = name.slice(0, -".json".length);
+    const content = await readBounded(
+      join(paths.artifacts, name),
+      MAX_EFFECTIVE_HARNESS_CANDIDATE_BYTES,
+      hooks,
+      "artifact",
+    );
+    const artifact = parseEffectiveHarnessCandidateArtifact(
+      parseStrictJson(new TextDecoder("utf-8", { fatal: true }).decode(content), {
+        maxDepth: 32,
+        maxNodes: 500_000,
+        valueLabel: "effective harness candidate",
+      }),
+      { scopeDigest },
+    );
+    if (artifact.artifactDigest !== digest) throw new Error("artifact identity mismatch");
+  } catch {
+    throw new EffectiveHarnessStoreError("corrupt", "effective harness candidate is invalid");
+  }
 }
 
 function nextActivationIndex(
@@ -997,9 +1156,12 @@ async function publishIndex(
     await handle?.close().catch(() => undefined);
     await unlink(temporary).catch(() => undefined);
     if (renamed) {
-      const reopened = await readBounded(paths.indexPath, MAX_EFFECTIVE_HARNESS_INDEX_BYTES).catch(
-        () => undefined,
-      );
+      const reopened = await readBounded(
+        paths.indexPath,
+        MAX_EFFECTIVE_HARNESS_INDEX_BYTES,
+        hooks,
+        "index",
+      ).catch(() => undefined);
       if (reopened?.equals(content)) return;
       throw new EffectiveHarnessStoreError(
         "commit_uncertain",
@@ -1010,9 +1172,18 @@ async function publishIndex(
   }
 }
 
-async function readState(paths: EffectiveHarnessStorePaths, entry: EffectiveHarnessStateEntry) {
+async function readState(
+  paths: EffectiveHarnessStorePaths,
+  entry: EffectiveHarnessStateEntry,
+  hooks: EffectiveHarnessStoreHooks = {},
+) {
   try {
-    const content = await readBounded(join(paths.states, `${entry.stateDigest}.json`), entry.bytes);
+    const content = await readBounded(
+      join(paths.states, `${entry.stateDigest}.json`),
+      entry.bytes,
+      hooks,
+      "state",
+    );
     if (content.byteLength !== entry.bytes) throw new Error("state size mismatch");
     const state = parseEffectiveHarnessState(
       parseStrictJson(new TextDecoder("utf-8", { fatal: true }).decode(content), {
@@ -1038,11 +1209,14 @@ async function readState(paths: EffectiveHarnessStorePaths, entry: EffectiveHarn
 async function readArtifact(
   paths: EffectiveHarnessStorePaths,
   entry: EffectiveHarnessArtifactEntry,
+  hooks: EffectiveHarnessStoreHooks = {},
 ) {
   try {
     const content = await readBounded(
       join(paths.artifacts, `${entry.artifactDigest}.json`),
       entry.bytes,
+      hooks,
+      "artifact",
     );
     if (content.byteLength !== entry.bytes) throw new Error("artifact size mismatch");
     const artifact = parseEffectiveHarnessCandidateArtifact(
@@ -1076,17 +1250,49 @@ function encodeState(state: EffectiveHarnessState): Buffer {
   return content;
 }
 
-async function readBounded(path: string, maximum: number): Promise<Buffer> {
+async function readBounded(
+  path: string,
+  maximum: number,
+  hooks: EffectiveHarnessStoreHooks = {},
+  kind?: "index" | "state" | "artifact",
+): Promise<Buffer> {
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
-    const metadata = await handle.stat();
+    const metadata = await handle.stat({ bigint: true });
     if (!metadata.isFile() || metadata.size > maximum) {
       throw new EffectiveHarnessStoreError("unsafe_state", "effective harness file is unsafe");
     }
-    return await handle.readFile();
+    if (kind !== undefined) await hooks.afterFileObserved?.(kind);
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for (;;) {
+      const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, maximum + 1 - total));
+      const { bytesRead } = await handle.read(chunk, 0, chunk.byteLength, null);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+      if (total > maximum) {
+        throw new EffectiveHarnessStoreError("unsafe_state", "effective harness file is unsafe");
+      }
+      chunks.push(chunk.subarray(0, bytesRead));
+    }
+    const settled = await handle.stat({ bigint: true });
+    if (!sameFileObservation(metadata, settled) || settled.size !== BigInt(total)) {
+      throw new EffectiveHarnessStoreError("unsafe_state", "effective harness file is unsafe");
+    }
+    return Buffer.concat(chunks, total);
   } finally {
     await handle.close();
   }
+}
+
+function sameFileObservation(before: BigIntStats, after: BigIntStats): boolean {
+  return (
+    before.dev === after.dev &&
+    before.ino === after.ino &&
+    before.size === after.size &&
+    before.mtimeNs === after.mtimeNs &&
+    before.ctimeNs === after.ctimeNs
+  );
 }
 
 async function syncDirectory(path: string): Promise<void> {

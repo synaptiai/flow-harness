@@ -1071,6 +1071,13 @@ Agent Skill resource, or generated Agent Skill package surface. The resulting im
 contains the complete baseline state, complete candidate state, baseline head, candidate identity,
 and one content-free surface delta.
 
+Composition authenticates the ordinary candidate against its own immutable baseline before it
+rebases that one declared surface onto the current complete state. Prompt rebasing copies only the
+declared prompt fields. Resource rebasing replaces only the exact selected package. Generated
+package rebasing changes only the declared empty-to-selected skill field and adds that package.
+The current target must equal the candidate's before-state, so an orthogonal reviewed change is
+retained while a stale same-surface candidate fails closed.
+
 An effective state contains exact workflow bytes and the complete ordered non-policy package
 closure. The state excludes policy packages and nested activation objects. Its digest binds the
 canonical project scope, workflow identity, optional root workflow package, and every package. The
@@ -1078,7 +1085,9 @@ head also binds the workflow, generation, selected state, selected activation, a
 This prevents an ABA change from presenting an old state as the current baseline.
 
 The effective store writes state and candidate dependencies before it replaces one atomic index.
-The index retains every state, artifact, transition, and workflow origin. History is hash-chained.
+The index retains every activated state, artifact, transition, and workflow origin. Staged states
+and artifacts remain inert physical inventory until activation and count toward the same fixed
+store ceilings. History is hash-chained.
 Apply rechecks the exact head under the shared activation mutation lock. A pre-head failure keeps
 the old head authoritative.
 

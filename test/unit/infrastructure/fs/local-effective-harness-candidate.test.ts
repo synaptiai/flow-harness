@@ -103,7 +103,11 @@ function candidateArtifact() {
   });
   const projected = projectEffectiveHarnessCandidate({
     baseline,
-    candidate: { kind: "agent-skill-package", projection: fixture.projected },
+    candidate: {
+      kind: "agent-skill-package",
+      projection: fixture.projected,
+      baselineWorkflowSource: fixture.prompt.baselineText,
+    },
   });
   return createEffectiveHarnessCandidateArtifact({
     baselineHead: createEffectiveHarnessHeadIdentity({

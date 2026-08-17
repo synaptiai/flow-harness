@@ -122,6 +122,7 @@ describe("effective harness runtime CLI", () => {
       baseline: baseline.state,
       candidate: {
         kind: "prompt",
+        baselineWorkflowSource: promptActivationInput({ selection: "baseline" }).source,
         projection: {
           identity: next.candidate,
           workflow: {

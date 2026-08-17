@@ -2855,11 +2855,20 @@ async function candidateCommand(
       baseline: baseline.state,
       candidate:
         admitted.kind === "prompt-candidate"
-          ? { kind: "prompt", projection: admitted.candidate }
+          ? {
+              kind: "prompt",
+              projection: admitted.candidate,
+              baselineWorkflowSource: admitted.candidate.baseline.sourceText,
+            }
           : admitted.kind === "agent-skill-candidate"
-            ? { kind: "agent-skill-resource", projection: admitted.candidate }
+            ? {
+                kind: "agent-skill-resource",
+                projection: admitted.candidate,
+                baselineWorkflowSource: admitted.candidate.baseline.workflow.sourceText,
+              }
             : {
                 kind: "agent-skill-package",
+                baselineWorkflowSource: admitted.candidate.baseline.sourceText,
                 projection: {
                   identity: admitted.candidate.identity,
                   workflow: admitted.candidate.workflow,

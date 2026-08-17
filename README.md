@@ -613,6 +613,13 @@ An Agent Skill resource change keeps prior prompt changes. A generated package c
 unrelated reviewed field. Graphs, models, tools, approvals, budgets, verifiers, retries, sandbox
 settings, evaluators, and unrelated packages cannot change.
 
+The ordinary candidate remains bound to its own admitted filesystem baseline. Composition verifies
+that candidate and its declared delta first. It then applies only that delta to the current complete
+state. This permits a prompt candidate created before a reviewed package change, or a skill
+candidate created before a reviewed prompt change, to retain both improvements. The exact target
+prompt, package, or empty skill selection must still match the candidate's original before-state.
+A stale second change to the same surface is rejected instead of overwriting the active review.
+
 Each effective candidate contains the complete before and after states plus one content-free surface
 delta. Activation publishes immutable dependencies before one atomic head change. Each run stores
 the selected workflow, package closure, head proof, and runtime proof in its durable capability
