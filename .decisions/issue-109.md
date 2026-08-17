@@ -162,11 +162,11 @@ reconciles the durable cancellation command.
 | 11 | Agent, protocol, CLI, and runtime tests cover permission and output deadlines, EOF, failed writes, reader cancellation, output cleanup, primary-error precedence, setup privacy, and signals. |
 | 12 | The compiled runtime test uses the official SDK `ndJsonStream` as an independent peer across two bridge processes. |
 | 13 | README, architecture, ACP, recovery, capability-sourcing, and roadmap documents define the local boundary and deferred standards. |
-| 14 | The dependency test checks the exact SDK version, Apache-2.0 license, lock integrity, and infrastructure-only imports. |
+| 14 | The dependency test checks the exact SDK version, Apache-2.0 license, lock integrity, infrastructure-only imports, and audited development overrides. |
 
 ## Verification evidence
 
-The mapped selector passed 103 tests across nine files:
+The mapped selector passed 104 tests across nine files:
 
 ```sh
 npx vitest run \
@@ -198,17 +198,24 @@ npm run docs:ste
 git diff --check
 npx vitest run --maxWorkers=1
 npm run test:coverage
-npm audit --omit=dev
+npm audit --audit-level=low
+npm audit --omit=dev --audit-level=low
 npm run pack:check
 ```
 
-The full serial suite passed 3,982 tests in 286 files, with four expected skipped tests and one
+The full serial suite passed 3,983 tests in 286 files, with four expected skipped tests and one
 skipped file. Coverage passed at 84.17 percent statements, 78.24 percent branches, 90.63 percent
-functions, and 84.29 percent lines. The production dependency audit reported zero known
-vulnerabilities.
+functions, and 84.29 percent lines. The complete and production-only dependency audits reported
+zero known vulnerabilities.
+
+The final dependency review retained OMP 17.2.12 and pinned its vulnerable transitive tools to
+`sharp` 0.35.3 and `adm-zip` 0.6.0. It also pinned the Vitest toolchain's `nanoid` dependency to
+3.3.18. The dependency test binds each version, license, and registry integrity. A clean
+`npm ci` reproduced the same patched graph with zero known vulnerabilities. Direct package
+smoke tests and 55 OMP adapter, protocol, identity, and runtime tests passed with these overrides.
 
 The clean package verifier installed and executed
-`synaptiai-flow-harness-0.0.0.tgz`. The package SHA-256 digest was
+`synaptiai-flow-harness-0.0.0.tgz`. It reported the effective Flow policy digest as
 `5dfe0fbdfa1a86627e8762bfc071594c1bccbd6a467fc3f3ea12ebddf9b053b4`. Repository-wide lint
 reported one inherited informational constructor note outside the Issue #109 change set and no
 error.

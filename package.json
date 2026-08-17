@@ -89,6 +89,11 @@
     "typescript": "5.9.3",
     "vitest": "4.1.10"
   },
+  "overrides": {
+    "adm-zip": "0.6.0",
+    "nanoid": "3.3.18",
+    "sharp": "0.35.3"
+  },
   "peerDependencies": {
     "@oh-my-pi/pi-ai": "17.2.12",
     "@oh-my-pi/pi-coding-agent": "17.2.12"
