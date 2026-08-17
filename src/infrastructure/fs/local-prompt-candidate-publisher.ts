@@ -3,7 +3,7 @@ import { type BigIntStats, constants } from "node:fs";
 import { link, lstat, open, readdir, readlink, realpath, symlink, unlink } from "node:fs/promises";
 import { hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-
+import { parseAgentSkillCandidateText } from "../../domain/adaptation/agent-skill-candidate.js";
 import {
   MAX_PROMPT_CANDIDATE_BYTES,
   parsePromptCandidateText,
@@ -103,13 +103,10 @@ export async function publishLocalPromptCandidate(
   sourceText: string,
   options: LocalPromptCandidatePublisherOptions = {},
 ): Promise<void> {
-  try {
-    parsePromptCandidateText(sourceText, "generated prompt candidate");
-  } catch (error) {
+  if (!isStrictGeneratedCandidate(sourceText)) {
     throw new LocalPromptCandidatePublisherError(
       "invalid_source",
-      `generated candidate is invalid: ${boundedMessage(error)}`,
-      { cause: error },
+      "generated candidate is invalid",
     );
   }
   const canonical = await canonicalOutputPath(outputPath);
@@ -260,6 +257,20 @@ export async function publishLocalPromptCandidate(
   }
   if (publicationError !== undefined) {
     throw publicationError;
+  }
+}
+
+function isStrictGeneratedCandidate(sourceText: string): boolean {
+  try {
+    parsePromptCandidateText(sourceText, "generated prompt candidate");
+    return true;
+  } catch {
+    try {
+      parseAgentSkillCandidateText(sourceText, "generated Agent Skill candidate");
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
 

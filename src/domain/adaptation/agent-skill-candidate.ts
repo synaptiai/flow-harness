@@ -21,6 +21,14 @@ import {
 import { calculateWorkflowDigest } from "../workflow/digest.js";
 import type { CompiledWorkflow } from "../workflow/types.js";
 import {
+  agentSkillCandidateGenerationProvenanceSchema,
+  calculateAgentSkillCandidateGenerationRequestDigest,
+  calculateAgentSkillCandidateGenerationResponseDigest,
+  isAgentSkillCandidateGenerationResourcePath,
+  renderAgentSkillCandidateGenerationRequest,
+  renderAgentSkillCandidateGenerationResponse,
+} from "./agent-skill-candidate-generation-contract.js";
+import {
   type AgentSkillCandidateIdentity,
   calculateAgentSkillCandidateIdentityDigest,
   MAX_AGENT_SKILL_CANDIDATE_CHANGES,
@@ -140,6 +148,7 @@ const agentSkillCandidateSourceSchema = z
           }),
       })
       .strict(),
+    generation: agentSkillCandidateGenerationProvenanceSchema.optional(),
   })
   .strict();
 
@@ -256,7 +265,7 @@ export function projectAgentSkillCandidate(
     );
   }
 
-  assertClosedSkillWorkflow(input.baseline.workflow.compiled, source.scope.skillName);
+  assertAgentSkillCandidateClosedWorkflow(input.baseline.workflow.compiled, source.scope.skillName);
   const baselineCapabilitySnapshot = singleSkillSnapshot(input.baseline.skill);
   const baselineSkill = requiredSkill(baselineCapabilitySnapshot);
   if (
@@ -271,6 +280,7 @@ export function projectAgentSkillCandidate(
   }
 
   const evidence = admitEvidence(source, input.evidence, workflowDigest);
+  validateGenerationProvenance(input, workflowDigest);
   const files = baselineSkill.files.map((file) => ({
     path: file.path,
     content: Buffer.from(file.contentBase64, "base64"),
@@ -376,6 +386,7 @@ export function projectAgentSkillCandidate(
       packageDigest: candidateSkill.digest,
       capabilityDigest: candidateCapabilitySnapshot.digest,
     },
+    ...(source.generation === undefined ? {} : { generation: source.generation }),
   };
   const identity = parseAgentSkillCandidateIdentity({
     ...identityWithoutDigest,
@@ -391,6 +402,112 @@ export function projectAgentSkillCandidate(
     baselineCapabilitySnapshot,
     candidateCapabilitySnapshot,
   });
+}
+
+function validateGenerationProvenance(
+  input: AgentSkillCandidateProjectionInput,
+  workflowDigest: string,
+): void {
+  const generation = input.source.generation;
+  if (generation === undefined) {
+    return;
+  }
+  const files = new Map(input.baseline.skill.files.map((file) => [file.path, file]));
+  const targets = generation.targets.map((target) => {
+    const file = files.get(target.path);
+    if (
+      file === undefined ||
+      file.sha256 !== target.expectedSha256 ||
+      !isAgentSkillCandidateGenerationResourcePath(target.path)
+    ) {
+      throw new AgentSkillCandidateError(
+        "identity_mismatch",
+        "generation target does not match the admitted baseline package",
+      );
+    }
+    let value: string;
+    try {
+      value = new TextDecoder("utf-8", { fatal: true }).decode(
+        Buffer.from(file.contentBase64, "base64"),
+      );
+    } catch {
+      throw new AgentSkillCandidateError(
+        "identity_mismatch",
+        "generation target is not admitted UTF-8 text",
+      );
+    }
+    return { path: target.path, value, expectedSha256: target.expectedSha256 };
+  });
+  const targetDigests = new Map(
+    generation.targets.map((target) => [target.path, target.expectedSha256]),
+  );
+  for (const change of input.source.changes.resources) {
+    if (targetDigests.get(change.path) !== change.expectedSha256) {
+      throw new AgentSkillCandidateError(
+        "identity_mismatch",
+        "candidate resource change does not match a generation target",
+      );
+    }
+  }
+  const request = {
+    baseline: {
+      workflowId: input.baseline.workflow.compiled.id,
+      sourceSha256: input.baseline.workflow.sourceSha256,
+      workflowDigest,
+    },
+    skill: {
+      name: input.baseline.skill.name,
+      packageDigest: input.baseline.skill.digest,
+      description: input.baseline.skill.description,
+      ...(input.baseline.skill.license === undefined
+        ? {}
+        : { license: input.baseline.skill.license }),
+      ...(input.baseline.skill.compatibility === undefined
+        ? {}
+        : { compatibility: input.baseline.skill.compatibility }),
+      metadata: input.baseline.skill.metadata,
+      requestedTools: input.baseline.skill.requestedTools,
+      trust: input.baseline.skill.trust,
+    },
+    targets,
+    evidence: input.evidence.map((item) => ({
+      sourceSha256: item.sourceSha256,
+      packet: item.packet,
+    })),
+    model: {
+      provider: generation.provider,
+      id: generation.model,
+      thinking: generation.thinking,
+    },
+    limits: {
+      timeoutMs: generation.limits.timeoutMs,
+      maxOutputTokens: generation.limits.maxOutputTokens,
+    },
+  };
+  if (
+    Buffer.byteLength(renderAgentSkillCandidateGenerationRequest(request), "utf8") >
+      generation.limits.maxInputBytes ||
+    calculateAgentSkillCandidateGenerationRequestDigest(request) !== generation.requestDigest
+  ) {
+    throw new AgentSkillCandidateError(
+      "identity_mismatch",
+      "generation request identity does not match the admitted inputs",
+    );
+  }
+  const response = input.source.changes.resources.map((change) => ({
+    path: change.path,
+    value: change.value,
+  }));
+  if (
+    Buffer.byteLength(renderAgentSkillCandidateGenerationResponse(response), "utf8") >
+      generation.limits.maxOutputBytes ||
+    calculateAgentSkillCandidateGenerationResponseDigest(response) !== generation.responseDigest
+  ) {
+    throw new AgentSkillCandidateError(
+      "identity_mismatch",
+      "generation response identity does not match the accepted resource changes",
+    );
+  }
 }
 
 function singleSkillSnapshot(skill: AgentSkillPackageSnapshot): AgentSkillCapabilitySnapshot {
@@ -485,7 +602,10 @@ function assertManifestAuthorityPreserved(
   }
 }
 
-function assertClosedSkillWorkflow(workflow: CompiledWorkflow, skillName: string): void {
+export function assertAgentSkillCandidateClosedWorkflow(
+  workflow: CompiledWorkflow,
+  skillName: string,
+): void {
   const selected = new Set<string>();
   const visit = (nested: CompiledWorkflow): void => {
     if (nested.sourcePackage !== undefined) {

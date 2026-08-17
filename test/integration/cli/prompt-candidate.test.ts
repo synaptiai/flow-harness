@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -492,7 +492,7 @@ describe("prompt candidate CLI", () => {
 });
 
 async function candidateEvaluationProject(): Promise<string> {
-  const project = await mkdtemp(join(tmpdir(), "flow-candidate-cli-"));
+  const project = await realpath(await mkdtemp(join(tmpdir(), "flow-candidate-cli-")));
   temporaryDirectories.push(project);
   await mkdir(join(project, ".flow"), { recursive: true });
   await writeFile(

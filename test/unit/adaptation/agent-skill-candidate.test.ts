@@ -7,14 +7,19 @@ import {
   type AgentSkillCandidateIdentity,
   type AgentSkillCandidateProjectionInput,
   type AgentSkillCandidateSource,
+  calculateAgentSkillCandidateIdentityDigest,
   MAX_AGENT_SKILL_CANDIDATE_BYTES,
   MAX_AGENT_SKILL_CANDIDATE_CHANGES,
   MAX_AGENT_SKILL_CANDIDATE_EVIDENCE,
-  calculateAgentSkillCandidateIdentityDigest,
   parseAgentSkillCandidateIdentity,
   parseAgentSkillCandidateText,
   projectAgentSkillCandidate,
 } from "../../../src/domain/adaptation/agent-skill-candidate.js";
+import {
+  completeAgentSkillCandidateGeneration,
+  prepareAgentSkillCandidateGeneration,
+} from "../../../src/domain/adaptation/agent-skill-candidate-generation.js";
+import { calculateAgentSkillCandidateGenerationRequestDigest } from "../../../src/domain/adaptation/agent-skill-candidate-generation-contract.js";
 import {
   type AgentSkillPackageSnapshot,
   createCapabilitySnapshot,
@@ -23,6 +28,7 @@ import {
 } from "../../../src/domain/capability/agent-skills.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { calculateWorkflowDigest } from "../../../src/domain/workflow/digest.js";
+import { agentSkillCandidateGenerationFixture } from "../../fixtures/agent-skill-candidate-generation.js";
 import { promptCandidateTuningEvidence } from "../../fixtures/prompt-candidate-generation.js";
 
 const baselineSkillText = `---
@@ -280,6 +286,71 @@ describe("Agent Skill candidates", () => {
     );
   });
 
+  it.each([
+    {
+      label: "request digest",
+      mutate: (context: MutableProjectionContext) => {
+        requiredGeneration(context).requestDigest = "f".repeat(64);
+      },
+    },
+    {
+      label: "response digest",
+      mutate: (context: MutableProjectionContext) => {
+        requiredGeneration(context).responseDigest = "f".repeat(64);
+      },
+    },
+    {
+      label: "selected target identity",
+      mutate: (context: MutableProjectionContext) => {
+        requiredItem(requiredGeneration(context).targets, 0, "generation target").expectedSha256 =
+          "f".repeat(64);
+      },
+    },
+    {
+      label: "selected model identity",
+      mutate: (context: MutableProjectionContext) => {
+        requiredGeneration(context).model = "substituted-model";
+      },
+    },
+  ])("rejects a redigested generated candidate with substituted $label", ({ mutate }) => {
+    const context = generatedProjectionContext();
+    mutate(context);
+    refreshCandidateSourceHash(context);
+
+    expect(() => projectAgentSkillCandidate(context)).toThrowError(
+      expect.objectContaining({ code: "identity_mismatch" }),
+    );
+  });
+
+  it("rejects an authority-bearing generation target during source parsing", () => {
+    const context = generatedProjectionContext();
+    requiredItem(requiredGeneration(context).targets, 0, "generation target").path =
+      "scripts/check.sh";
+
+    expect(() => parseAgentSkillCandidateText(JSON.stringify(context.source))).toThrowError(
+      expect.objectContaining({ code: "invalid_schema" }),
+    );
+  });
+
+  it("rejects a redigested change outside the recorded generation target allowlist", () => {
+    const context = generatedProjectionContext();
+    const privateResource = context.baseline.skill.files.find(
+      (file) => file.path === "references/private.md",
+    );
+    if (privateResource === undefined) {
+      throw new Error("generated candidate fixture has no private resource");
+    }
+    requiredGeneration(context).targets = [
+      { path: privateResource.path, expectedSha256: privateResource.sha256 },
+    ];
+    refreshGenerationRequestDigest(context);
+    refreshCandidateSourceHash(context);
+
+    expect(() => projectAgentSkillCandidate(context)).toThrowError(
+      expect.objectContaining({ code: "identity_mismatch" }),
+    );
+  });
+
   it("keeps parser diagnostics bounded and private", () => {
     const source = candidateSource() as Record<string, unknown>;
     source[`PRIVATE_${"x".repeat(900_000)}`] = true;
@@ -443,6 +514,40 @@ function projectionContext(): MutableProjectionContext {
   };
 }
 
+function generatedProjectionContext(): MutableProjectionContext {
+  const { input } = agentSkillCandidateGenerationFixture();
+  const prepared = prepareAgentSkillCandidateGeneration(input);
+  const source = structuredClone(
+    completeAgentSkillCandidateGeneration(
+      prepared,
+      JSON.stringify({
+        changes: [{ path: "references/checklist.md", value: "Check more carefully.\n" }],
+      }),
+      {
+        inputTokens: 100,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        outputTokens: 20,
+        costUsdMicros: 10,
+      },
+    ),
+  ) as DeepMutable<AgentSkillCandidateSource>;
+  return {
+    manifestProvenance: "generated.agent-skill-candidate.yaml",
+    source,
+    sourceSha256: sha256(JSON.stringify(source)),
+    baseline: {
+      workflow: {
+        provenance: input.baseline.provenance,
+        sourceSha256: input.baseline.sourceSha256,
+        compiled: input.baseline.compiled,
+      },
+      skill: input.skill,
+    },
+    evidence: input.evidence,
+  };
+}
+
 function baselineSkill(): AgentSkillPackageSnapshot {
   const snapshot = createCapabilitySnapshot([
     {
@@ -581,10 +686,72 @@ function refreshCandidateSourceHash(context: MutableProjectionContext): void {
   context.sourceSha256 = sha256(JSON.stringify(context.source));
 }
 
+function refreshGenerationRequestDigest(context: MutableProjectionContext): void {
+  const generation = requiredGeneration(context);
+  const files = new Map(context.baseline.skill.files.map((file) => [file.path, file]));
+  generation.requestDigest = calculateAgentSkillCandidateGenerationRequestDigest({
+    baseline: {
+      workflowId: context.baseline.workflow.compiled.id,
+      sourceSha256: context.baseline.workflow.sourceSha256,
+      workflowDigest: calculateWorkflowDigest(context.baseline.workflow.compiled),
+    },
+    skill: {
+      name: context.baseline.skill.name,
+      packageDigest: context.baseline.skill.digest,
+      description: context.baseline.skill.description,
+      ...(context.baseline.skill.license === undefined
+        ? {}
+        : { license: context.baseline.skill.license }),
+      ...(context.baseline.skill.compatibility === undefined
+        ? {}
+        : { compatibility: context.baseline.skill.compatibility }),
+      metadata: context.baseline.skill.metadata,
+      requestedTools: context.baseline.skill.requestedTools,
+      trust: context.baseline.skill.trust,
+    },
+    targets: generation.targets.map((target) => {
+      const file = files.get(target.path);
+      if (file === undefined) {
+        throw new Error("generation target fixture is missing its package file");
+      }
+      return {
+        path: target.path,
+        expectedSha256: target.expectedSha256,
+        value: new TextDecoder("utf-8", { fatal: true }).decode(
+          Buffer.from(file.contentBase64, "base64"),
+        ),
+      };
+    }),
+    evidence: context.evidence.map((item) => ({
+      sourceSha256: item.sourceSha256,
+      packet: item.packet,
+    })),
+    model: {
+      provider: generation.provider,
+      id: generation.model,
+      thinking: generation.thinking,
+    },
+    limits: {
+      timeoutMs: generation.limits.timeoutMs,
+      maxOutputTokens: generation.limits.maxOutputTokens,
+    },
+  });
+}
+
 function firstResource(
   context: MutableProjectionContext,
 ): MutableProjectionContext["source"]["changes"]["resources"][number] {
   return requiredItem(context.source.changes.resources, 0, "candidate resource");
+}
+
+function requiredGeneration(
+  context: MutableProjectionContext,
+): NonNullable<MutableProjectionContext["source"]["generation"]> {
+  const generation = context.source.generation;
+  if (generation === undefined) {
+    throw new Error("generated candidate fixture has no generation provenance");
+  }
+  return generation;
 }
 
 function requiredItem<Item>(items: readonly Item[], index: number, label: string): Item {

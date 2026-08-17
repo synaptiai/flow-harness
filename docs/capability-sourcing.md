@@ -122,14 +122,18 @@ Prime Agent proves that Pi can support a distinct long-running harness. Its prod
 | Persistent IPython | Implemented only in the fixed Prime OCI evaluation profile. Docker policy, not IPython, supplies the containment boundary |
 | Recursive subagents | Use narrow contexts but keep recursion and joins graph-owned |
 | Executable Python skills | Defer because installation expands the supply-chain boundary |
-| Continual harness refinement | **Partially implemented independently** for prompt candidates, paired evaluation, reviewed activation, durable run snapshots, and rollback. Model-driven proposals and other adaptation surfaces remain future work |
+| Continual harness refinement | **Partially implemented independently** for bounded prompt and Agent Skill resource candidates, paired evaluation, reviewed activation, durable run snapshots, and rollback. Other adaptation surfaces remain future work |
 | Immutable base plus supplemental state | Adopt as the boundary for any future learning system |
 
 See [Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent), its [architecture](https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/architecture.md), and its [RLM trust model](https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/rlm.md). Prime Agent is MIT-licensed; substantial copied portions require preservation of both Pi and Prime notices.
 
 Prime Agent shows the value of an immutable base with supplemental refinements. Flow narrows that
-pattern. A prompt candidate has no Python or runtime authority. It cannot apply itself. It must bind
-the exact tuning evidence and baseline.
+pattern. A prompt or Agent Skill resource candidate has no Python or runtime authority. It cannot
+apply itself. It must bind the exact tuning evidence and baseline.
+
+Agent Skill generation also binds one exact package snapshot and an operator-selected allowlist of existing UTF-8 resources.
+The allowlist excludes `SKILL.md` and the top-level `scripts/` directory. The model receives no live
+catalog, unselected resource, package-selection authority, tool, or workspace access.
 
 Flow uses its standard compiler and paired evaluation gate. An operator can activate only a complete
 superior evaluation. The activation store keeps immutable artifacts, durable run snapshots, and

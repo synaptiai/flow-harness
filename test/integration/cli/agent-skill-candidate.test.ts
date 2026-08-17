@@ -8,6 +8,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { NodeExecutor } from "../../../src/application/ports.js";
 import { type CliIo, main } from "../../../src/cli/main.js";
 import {
+  completeAgentSkillCandidateGeneration,
+  prepareAgentSkillCandidateGeneration,
+} from "../../../src/domain/adaptation/agent-skill-candidate-generation.js";
+import {
   type AgentSkillPackageSnapshot,
   createAgentCapabilityEvidence,
 } from "../../../src/domain/capability/agent-skills.js";
@@ -756,44 +760,40 @@ Check correctness.
     throw new Error("Agent Skill CLI fixture has no baseline package");
   }
   const candidatePath = join(project, "better.agent-skill-candidate.yaml");
-  await writeFile(
-    candidatePath,
+  const prepared = prepareAgentSkillCandidateGeneration({
+    candidate: { id: "better-review", version: "1.0.0" },
+    baseline: {
+      provenance: "baseline.workflow.yaml",
+      sourceSha256: sha256(workflowText),
+      workflowDigest,
+      compiled: compileWorkflowText(workflowText),
+    },
+    skill,
+    evidence: [
+      {
+        provenance: "tuning.json",
+        sourceSha256: sha256(evidenceText),
+        packet: evidence,
+      },
+    ],
+    allowedResourcePaths: ["reference.md"],
+    model: { provider: "test", id: "deterministic", thinking: "medium" },
+    limits: { timeoutMs: 300_000, maxOutputTokens: 8_192 },
+  });
+  const generatedCandidate = completeAgentSkillCandidateGeneration(
+    prepared,
     JSON.stringify({
-      apiVersion: "flow.synapti.ai/v1alpha1",
-      kind: "AgentSkillCandidate",
-      metadata: { id: "better-review", version: "1.0.0" },
-      scope: {
-        kind: "workflow-agent-skill",
-        workflowId: "skill-evaluation-workflow",
-        skillName: "review",
-      },
-      baseline: {
-        workflow: {
-          path: "baseline.workflow.yaml",
-          sourceSha256: sha256(workflowText),
-          workflowDigest,
-        },
-        skill: { path: ".flow/skills/review", packageDigest: skill.digest },
-      },
-      evidence: [
-        {
-          path: "tuning.json",
-          sourceSha256: sha256(evidenceText),
-          evidenceDigest: evidence.evidenceDigest,
-          planDigest: evidence.evaluation.planDigest,
-        },
-      ],
-      changes: {
-        resources: [
-          {
-            path: "reference.md",
-            expectedSha256: sha256(baselineResource),
-            value: "PRIVATE CANDIDATE REVIEW INSTRUCTIONS\n",
-          },
-        ],
-      },
+      changes: [{ path: "reference.md", value: "PRIVATE CANDIDATE REVIEW INSTRUCTIONS\n" }],
     }),
+    {
+      inputTokens: 100,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 20,
+      costUsdMicros: 10,
+    },
   );
+  await writeFile(candidatePath, JSON.stringify(generatedCandidate));
   const planPath = join(project, "evaluation.yaml");
   await writeFile(planPath, evaluationPlanSource());
   return { project, candidatePath, planPath, baselineSkillDigest: skill.digest };

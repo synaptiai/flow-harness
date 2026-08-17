@@ -3,6 +3,10 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 
 import { agentSkillNameSchema } from "../capability/agent-skill-contract.js";
+import {
+  type AgentSkillCandidateGenerationProvenance,
+  agentSkillCandidateGenerationProvenanceSchema,
+} from "./agent-skill-candidate-generation-contract.js";
 
 export const MAX_AGENT_SKILL_CANDIDATE_EVIDENCE = 16;
 export const MAX_AGENT_SKILL_CANDIDATE_CHANGES = 16;
@@ -63,6 +67,7 @@ export interface AgentSkillCandidateIdentity {
     readonly packageDigest: string;
     readonly capabilityDigest: string;
   };
+  readonly generation?: AgentSkillCandidateGenerationProvenance | undefined;
   readonly candidateDigest: string;
 }
 
@@ -129,6 +134,7 @@ const agentSkillCandidateIdentitySchema: z.ZodType<AgentSkillCandidateIdentity> 
     projectedSkill: z
       .object({ packageDigest: sha256Schema, capabilityDigest: sha256Schema })
       .strict(),
+    generation: agentSkillCandidateGenerationProvenanceSchema.optional(),
     candidateDigest: sha256Schema,
   })
   .strict()
