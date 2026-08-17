@@ -61,6 +61,21 @@ describe("local effective harness candidate admission", () => {
     ).rejects.toBe(reason);
   });
 
+  it("preserves exact cancellation after the candidate handle is closed", async () => {
+    const root = await temporaryDirectory();
+    const path = join(root, "candidate.json");
+    const reason = new Error("cancel after candidate close");
+    const controller = new AbortController();
+    await writeFile(path, encodeEffectiveHarnessCandidateArtifact(candidateArtifact()));
+
+    await expect(
+      admitLocalEffectiveHarnessCandidate(path, {
+        signal: controller.signal,
+        afterClose: () => controller.abort(reason),
+      }),
+    ).rejects.toBe(reason);
+  });
+
   it("rejects an ancestor link and a leaf replacement after the stable read", async () => {
     const root = await temporaryDirectory();
     const external = await temporaryDirectory();

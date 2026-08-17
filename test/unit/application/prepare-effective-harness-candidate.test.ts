@@ -30,6 +30,10 @@ import {
   createCapabilitySnapshot,
   validateCapabilitySnapshot,
 } from "../../../src/domain/capability/agent-skills.js";
+import {
+  createWorkflowPackageSnapshot,
+  workflowPackageSource,
+} from "../../../src/domain/capability/workflow-packages.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { calculateWorkflowDigest } from "../../../src/domain/workflow/digest.js";
 import { agentSkillActivationInput } from "../../fixtures/agent-skill-activation.js";
@@ -343,6 +347,52 @@ describe("effective harness candidate projection", () => {
     expect(effectiveHarnessWorkflowSource(projected.state)).toBe(fixture.projected.workflow.source);
   });
 
+  it("preserves packaged-root identity while updating an Agent Skill resource", () => {
+    const ordinaryBaseline = agentSkillActivationInput("baseline");
+    const ordinaryCandidate = agentSkillActivationInput("candidate");
+    const root = workflowPackage("adaptive-root", ordinaryBaseline.workflowSource);
+    const rootPackage = { name: root.name, version: root.version, digest: root.digest };
+    const baseline = createEffectiveHarnessState({
+      scopeDigest,
+      workflowSource: workflowPackageSource(root),
+      rootPackage,
+      packages: [ordinaryBaseline.skill, root],
+    });
+    const compiled = compileWorkflowText(ordinaryBaseline.workflowSource, "baseline.workflow.yaml");
+    const baselineCapabilitySnapshot = validateCapabilitySnapshot({
+      version: 1,
+      packages: [ordinaryBaseline.skill],
+      digest: calculateCapabilitySnapshotDigest([ordinaryBaseline.skill]),
+    }) as AgentSkillCapabilitySnapshot;
+    const candidateCapabilitySnapshot = validateCapabilitySnapshot({
+      version: 1,
+      packages: [ordinaryCandidate.skill],
+      digest: calculateCapabilitySnapshotDigest([ordinaryCandidate.skill]),
+    }) as AgentSkillCapabilitySnapshot;
+    const projection: ProjectedAgentSkillCandidate = {
+      identity: ordinaryCandidate.candidate,
+      workflow: {
+        sourceSha256: sha256(ordinaryBaseline.workflowSource),
+        workflowDigest: calculateWorkflowDigest(compiled),
+        compiled,
+      },
+      baselineCapabilitySnapshot,
+      candidateCapabilitySnapshot,
+    };
+
+    const projected = projectEffectiveHarnessCandidate({
+      baseline,
+      candidate: {
+        kind: "agent-skill-resource",
+        projection,
+        baselineWorkflowSource: ordinaryBaseline.workflowSource,
+      },
+    });
+
+    expect(projected.state.rootPackage).toEqual(rootPackage);
+    expect(projected.state.packages).toEqual([ordinaryCandidate.skill, root]);
+  });
+
   it.each([
     ["prompt then generated package", ["prompt", "package"] as const],
     ["generated package then prompt", ["package", "prompt"] as const],
@@ -602,4 +652,29 @@ type MutablePromptProjection = {
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function workflowPackage(name: string, workflow: string) {
+  const indented = workflow
+    .trim()
+    .split("\n")
+    .map((line) => `    ${line}`)
+    .join("\n");
+  return createWorkflowPackageSnapshot({
+    kind: "workflow-package",
+    trust: "project-explicit",
+    provenance: `.flow/workflows/${name}`,
+    manifest: {
+      content: Buffer.from(`apiVersion: flow.synapti.ai/v1alpha1
+kind: WorkflowPackage
+metadata:
+  name: ${name}
+  version: 1.0.0
+  description: Packaged effective root.
+spec:
+  workflow: |-
+${indented}
+`),
+    },
+  });
 }

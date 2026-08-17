@@ -564,7 +564,7 @@ state untested paths, evidence limitations, and exact adversarial cases.
 
 ### Frozen acceptance and release evidence
 
-- **Mapped selector**: the combined Issue #113 selector passed 214 tests across 20 files. Domain
+- **Mapped selector**: the combined Issue #113 selector passed 222 tests across 20 files. Domain
   tests covered state, transition, candidate, runtime, and legacy closure. Application tests covered
   preparation, capability binding, and workflow package admission. Infrastructure tests covered
   both stores and stable candidate reads.
@@ -597,18 +597,18 @@ npx vitest run \
   test/integration/supervisor/worker.test.ts
 ```
 
-- **Full suite**: `npm test -- --maxWorkers=1` passed 4,149 tests. Four tests skipped. The runtime
+- **Full suite**: `npm test -- --maxWorkers=1` passed 4,157 tests. Four tests skipped. The runtime
   gate passed 43 tests. Thirty-four platform or environment cases skipped.
 
-- **Coverage**: `npm run test:coverage` passed the same 4,149 tests with four skips. Coverage was
-  84.31 percent statements, 78.55 percent branches, 91.08 percent functions, and 84.43 percent
+- **Coverage**: `npm run test:coverage` passed the same 4,157 tests with four skips. Coverage was
+  84.33 percent statements, 78.59 percent branches, 91.09 percent functions, and 84.45 percent
   lines. One offline Prime test needed a 30-second test-only bound under full V8 instrumentation.
   It keeps the same offline import traps, privacy checks, and production behavior.
 
 - **Static and package gates**: format, lint, typecheck, build, documentation STE, dependency
   boundaries, community-file contracts, package verification, and diff checks passed. Lint retained
   one pre-existing informational constructor notice. The clean package install executed the CLI and
-  local presentation path from package digest
+  local presentation path with policy digest
   `5dfe0fbdfa1a86627e8762bfc071594c1bccbd6a467fc3f3ea12ebddf9b053b4`. The production dependency
   audit reported zero vulnerabilities.
 
@@ -663,3 +663,13 @@ npx vitest run \
   stale guards. Added streaming inventory validation, bounded stable descriptor reads, exact-limit
   tests, and public CLI regressions for both sequential orders. Re-ran every release gate on the
   frozen post-review tree.
+
+- 2026-08-17 — Final adversarial review closed package-aware candidate compilation and root-package
+  preservation. It also closed post-close cancellation precedence and retained-history binding.
+  Store fixes covered rollback, duplicate heads, artifact baselines, and directory-sync settlement.
+  Added mutation-resistant regressions for every branch. The runtime signal test now distinguishes
+  early CLI exit from slow cold startup. It retains the process-group cleanup checks.
+
+- 2026-08-17 — Re-ran the 222-test mapped selector and 4,157-test full and coverage suites. The 43-test runtime
+  gate also passed. Static checks, installed-package execution, dependency contracts, and the
+  production audit passed.

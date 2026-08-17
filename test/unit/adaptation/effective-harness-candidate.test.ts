@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { describe, expect, it } from "vitest";
 
 import { projectEffectiveHarnessCandidate } from "../../../src/application/prepare-effective-harness-candidate.js";
@@ -9,10 +11,17 @@ import {
 } from "../../../src/domain/adaptation/effective-harness-candidate.js";
 import {
   calculateEffectiveHarnessStateDigest,
+  compileEffectiveHarnessState,
   createEffectiveHarnessHeadIdentity,
   createEffectiveHarnessState,
 } from "../../../src/domain/adaptation/effective-harness-state.js";
+import {
+  calculatePromptCandidateIdentityDigest,
+  type PromptCandidateIdentity,
+} from "../../../src/domain/adaptation/prompt-candidate.js";
 import { createCapabilitySnapshot } from "../../../src/domain/capability/agent-skills.js";
+import { createWorkflowPackageSnapshot } from "../../../src/domain/capability/workflow-packages.js";
+import { calculateWorkflowDigest } from "../../../src/domain/workflow/digest.js";
 import { agentSkillPackageActivationFixture } from "../../fixtures/agent-skill-package-activation.js";
 
 const scopeDigest = "a".repeat(64);
@@ -185,6 +194,162 @@ describe("effective harness candidate artifacts", () => {
       expect((error as Error).cause).toBeUndefined();
     }
   });
+
+  it("validates prompt changes through the retained workflow-package closure", () => {
+    const child = workflowPackage("child", childWorkflow());
+    const baselineSource = packagedParentWorkflow("Implement the task carefully.");
+    const candidateSource = packagedParentWorkflow("Implement and verify the task carefully.");
+    const baseline = createEffectiveHarnessState({
+      scopeDigest,
+      workflowSource: baselineSource,
+      packages: [child],
+    });
+    const candidateState = createEffectiveHarnessState({
+      scopeDigest,
+      workflowSource: candidateSource,
+      packages: [child],
+    });
+    const identityWithoutDigest: Omit<PromptCandidateIdentity, "candidateDigest"> = {
+      version: 1,
+      id: "packaged-prompt",
+      candidateVersion: "1.0.0",
+      scope: { kind: "workflow", workflowId: baseline.workflowId },
+      manifest: { provenance: "candidate.yaml", sourceSha256: "1".repeat(64) },
+      baseline: {
+        provenance: "baseline.workflow.yaml",
+        sourceSha256: baseline.workflow.sha256,
+        workflowDigest: calculateWorkflowDigest(compileEffectiveHarnessState(baseline)),
+      },
+      evidence: [
+        {
+          provenance: "tuning.json",
+          sourceSha256: "2".repeat(64),
+          evidenceDigest: "3".repeat(64),
+          planDigest: "4".repeat(64),
+        },
+      ],
+      changes: [
+        {
+          nodeId: "implement",
+          beforeSha256: sha256("Implement the task carefully."),
+          afterSha256: sha256("Implement and verify the task carefully."),
+        },
+      ],
+      projectedWorkflow: {
+        sourceSha256: candidateState.workflow.sha256,
+        workflowDigest: calculateWorkflowDigest(compileEffectiveHarnessState(candidateState)),
+      },
+    };
+    const candidate: PromptCandidateIdentity = {
+      ...identityWithoutDigest,
+      candidateDigest: calculatePromptCandidateIdentityDigest(identityWithoutDigest),
+    };
+
+    expect(() =>
+      createEffectiveHarnessCandidateArtifact({
+        baselineHead: createEffectiveHarnessHeadIdentity({
+          scopeDigest,
+          workflowId: baseline.workflowId,
+          generation: 1,
+          activationDigest: "b".repeat(64),
+          transitionDigest: "c".repeat(64),
+          stateDigest: baseline.stateDigest,
+        }),
+        baselineState: baseline,
+        candidateState,
+        candidate,
+      }),
+    ).not.toThrow();
+  });
 });
 
 type MutableCandidateArtifact = ReturnType<typeof createEffectiveHarnessCandidateArtifact>;
+
+function workflowPackage(name: string, workflow: string) {
+  const indented = workflow
+    .trim()
+    .split("\n")
+    .map((line) => `    ${line}`)
+    .join("\n");
+  return createWorkflowPackageSnapshot({
+    kind: "workflow-package",
+    trust: "project-explicit",
+    provenance: `.flow/workflows/${name}`,
+    manifest: {
+      content: Buffer.from(`apiVersion: flow.synapti.ai/v1alpha1
+kind: WorkflowPackage
+metadata:
+  name: ${name}
+  version: 1.0.0
+  description: Reusable ${name} workflow.
+spec:
+  workflow: |-
+${indented}
+`),
+    },
+  });
+}
+
+function packagedParentWorkflow(prompt: string): string {
+  return JSON.stringify({
+    apiVersion: "flow.synapti.ai/v1alpha1",
+    kind: "Workflow",
+    metadata: { id: "packaged-parent" },
+    budget: {
+      maxNodeStarts: 8,
+      maxModelTokens: 1_000,
+      maxCostUsd: 1,
+      maxExecutionMs: 60_000,
+      maxArtifactBytes: 10_000,
+    },
+    nodes: [
+      {
+        id: "implement",
+        type: "agent",
+        dependsOn: [],
+        agent: {
+          prompt,
+          model: { provider: "test", id: "deterministic" },
+          tools: [],
+          skills: [],
+        },
+      },
+      {
+        id: "child",
+        type: "child",
+        dependsOn: ["implement"],
+        child: {
+          resultNodeId: "publish",
+          package: { name: "child", version: "1.0.0" },
+        },
+      },
+    ],
+  });
+}
+
+function childWorkflow(): string {
+  return `apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: child }
+budget:
+  maxNodeStarts: 2
+  maxModelTokens: 100
+  maxCostUsd: 1
+  maxExecutionMs: 60000
+  maxArtifactBytes: 10000
+nodes:
+  - id: collect
+    type: command
+    command: { executable: /usr/bin/true }
+  - id: publish
+    type: result
+    dependsOn: [collect]
+    result:
+      source: { nodeId: collect, field: command.stdout }
+      schema: { type: boolean }
+`;
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}

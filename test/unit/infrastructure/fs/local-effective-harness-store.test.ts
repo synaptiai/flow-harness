@@ -1,4 +1,14 @@
-import { appendFile, mkdir, mkdtemp, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+  appendFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -15,6 +25,11 @@ import {
   createEffectiveHarnessHeadIdentity,
   createEffectiveHarnessState,
 } from "../../../../src/domain/adaptation/effective-harness-state.js";
+import {
+  calculateEffectiveHarnessTransitionDigest,
+  type EffectiveHarnessRollbackTransition,
+  effectiveHarnessHeadFromTransition,
+} from "../../../../src/domain/adaptation/effective-harness-transition.js";
 import { createPromptActivationSnapshot } from "../../../../src/domain/adaptation/prompt-activation.js";
 import { admitLocalEffectiveHarnessCandidate } from "../../../../src/infrastructure/fs/local-effective-harness-candidate.js";
 import {
@@ -540,6 +555,256 @@ describe("local effective harness store", () => {
     });
   });
 
+  it("reports an uncertain commit when the index rename is not directory-synchronized", async () => {
+    const root = await temporaryDirectory();
+    const artifact = effectiveHarnessCandidateArtifactFixture();
+    const prepared = prepareEffectiveHarnessActivation({
+      artifact,
+      stored: superiorEffectiveHarnessEvaluation(artifact),
+    });
+    const store = new LocalEffectiveHarnessStore(root, {
+      scopeDigest: artifact.scopeDigest,
+      readInitialHead: async () => artifact.baselineHead,
+      hooks: {
+        beforeIndexDirectorySynced: () => {
+          throw new Error("PRIVATE_DIRECTORY_SYNC_FAILURE");
+        },
+      },
+    });
+    const proposal = await store.previewActivate({ prepared, actor: "operator:test" });
+
+    await expect(
+      store.applyActivate({
+        prepared,
+        actor: "operator:test",
+        expectedDigest: proposal.proposalDigest,
+      }),
+    ).rejects.toMatchObject({ code: "commit_uncertain" });
+    await expect(store.loadActive(artifact.workflowId)).resolves.toMatchObject({
+      state: artifact.candidateState,
+    });
+  });
+
+  it("requires every retained history state and activation artifact in the index", async () => {
+    for (const missing of ["historical-state", "activation-artifact"] as const) {
+      const root = await temporaryDirectory();
+      const artifact = effectiveHarnessCandidateArtifactFixture();
+      const prepared = prepareEffectiveHarnessActivation({
+        artifact,
+        stored: superiorEffectiveHarnessEvaluation(artifact),
+      });
+      const store = new LocalEffectiveHarnessStore(root, {
+        scopeDigest: artifact.scopeDigest,
+        readInitialHead: async () => artifact.baselineHead,
+      });
+      const activation = await store.previewActivate({ prepared, actor: "operator:test" });
+      await store.applyActivate({
+        prepared,
+        actor: "operator:test",
+        expectedDigest: activation.proposalDigest,
+      });
+      const rollback = await store.previewRollback({
+        workflowId: artifact.workflowId,
+        targetStateDigest: artifact.baselineState.stateDigest,
+        actor: "operator:test",
+      });
+      await store.applyRollback({
+        workflowId: artifact.workflowId,
+        targetStateDigest: artifact.baselineState.stateDigest,
+        actor: "operator:test",
+        expectedDigest: rollback.proposalDigest,
+      });
+
+      await mutateIndex(root, (index) => {
+        if (missing === "historical-state") {
+          index.states = index.states.filter(
+            (entry) => entry.stateDigest !== artifact.candidateState.stateDigest,
+          );
+        } else {
+          index.artifacts = index.artifacts.filter(
+            (entry) => entry.artifactDigest !== artifact.artifactDigest,
+          );
+        }
+      });
+
+      await expect(store.list()).rejects.toMatchObject({ code: "corrupt" });
+    }
+  });
+
+  it("binds rollback targets to an earlier retained state and activation", async () => {
+    const root = await temporaryDirectory();
+    const artifact = effectiveHarnessCandidateArtifactFixture();
+    const prepared = prepareEffectiveHarnessActivation({
+      artifact,
+      stored: superiorEffectiveHarnessEvaluation(artifact),
+    });
+    const store = new LocalEffectiveHarnessStore(root, {
+      scopeDigest: artifact.scopeDigest,
+      readInitialHead: async () => artifact.baselineHead,
+    });
+    const activation = await store.previewActivate({ prepared, actor: "operator:test" });
+    await store.applyActivate({
+      prepared,
+      actor: "operator:test",
+      expectedDigest: activation.proposalDigest,
+    });
+    const rollback = await store.previewRollback({
+      workflowId: artifact.workflowId,
+      targetStateDigest: artifact.baselineState.stateDigest,
+      actor: "operator:test",
+    });
+    await store.applyRollback({
+      workflowId: artifact.workflowId,
+      targetStateDigest: artifact.baselineState.stateDigest,
+      actor: "operator:test",
+      expectedDigest: rollback.proposalDigest,
+    });
+
+    await mutateIndex(root, (index) => {
+      const activationTransition = index.history[0];
+      const rollbackTransition = index.history[1] as MutableRollbackTransition | undefined;
+      if (activationTransition === undefined || rollbackTransition === undefined) {
+        throw new Error("transition fixture is incomplete");
+      }
+      rollbackTransition.targetTransitionDigest = activationTransition.transitionDigest;
+      rollbackTransition.transitionDigest = calculateEffectiveHarnessTransitionDigest(
+        rollbackTransition as unknown as EffectiveHarnessRollbackTransition,
+      );
+      index.heads = [
+        effectiveHarnessHeadFromTransition(
+          rollbackTransition as unknown as EffectiveHarnessRollbackTransition,
+        ),
+      ];
+    });
+
+    await expect(store.list()).rejects.toMatchObject({ code: "corrupt" });
+  });
+
+  it("rejects duplicate heads that omit another retained workflow", async () => {
+    const root = await temporaryDirectory();
+    const scope = await calculateLocalEffectiveHarnessScopeDigest(root);
+    const first = effectiveArtifactForScope(scope).baselineState;
+    const secondSource = JSON.parse(workflowWithPrompt(first, "Second workflow prompt.")) as {
+      metadata: { id: string };
+    };
+    secondSource.metadata.id = "second-workflow";
+    const second = createEffectiveHarnessState({
+      scopeDigest: scope,
+      workflowSource: JSON.stringify(secondSource),
+      packages: first.packages,
+    });
+    const firstHead = createEffectiveHarnessHeadIdentity({
+      scopeDigest: scope,
+      workflowId: first.workflowId,
+      generation: 1,
+      activationDigest: "1".repeat(64),
+      transitionDigest: "2".repeat(64),
+      stateDigest: first.stateDigest,
+    });
+    const secondHead = createEffectiveHarnessHeadIdentity({
+      scopeDigest: scope,
+      workflowId: second.workflowId,
+      generation: 1,
+      activationDigest: "3".repeat(64),
+      transitionDigest: "4".repeat(64),
+      stateDigest: second.stateDigest,
+    });
+    const storeRoot = join(root, ".flow/effective-harness");
+    const statesRoot = join(storeRoot, "states");
+    await mkdir(statesRoot, { recursive: true, mode: 0o700 });
+    await mkdir(join(storeRoot, "artifacts"), { recursive: true, mode: 0o700 });
+    const firstContent = Buffer.from(`${JSON.stringify(first)}\n`);
+    const secondContent = Buffer.from(`${JSON.stringify(second)}\n`);
+    await writeFile(join(statesRoot, `${first.stateDigest}.json`), firstContent);
+    await writeFile(join(statesRoot, `${second.stateDigest}.json`), secondContent);
+    const index: MutableEffectiveHarnessIndex = {
+      version: 1,
+      origins: [firstHead, secondHead],
+      states: [
+        {
+          scopeDigest: scope,
+          workflowId: first.workflowId,
+          stateDigest: first.stateDigest,
+          bytes: firstContent.byteLength,
+        },
+        {
+          scopeDigest: scope,
+          workflowId: second.workflowId,
+          stateDigest: second.stateDigest,
+          bytes: secondContent.byteLength,
+        },
+      ],
+      artifacts: [],
+      heads: [firstHead, firstHead],
+      history: [],
+      digest: "0".repeat(64),
+    };
+    index.digest = calculateTestIndexDigest(index);
+    await writeFile(join(storeRoot, "index.json"), `${JSON.stringify(index)}\n`);
+
+    await expect(new LocalEffectiveHarnessStore(root).list()).rejects.toMatchObject({
+      code: "corrupt",
+    });
+  });
+
+  it("binds each retained activation artifact to the head it reviewed", async () => {
+    const root = await temporaryDirectory();
+    const artifact = effectiveHarnessCandidateArtifactFixture();
+    const prepared = prepareEffectiveHarnessActivation({
+      artifact,
+      stored: superiorEffectiveHarnessEvaluation(artifact),
+    });
+    const store = new LocalEffectiveHarnessStore(root, {
+      scopeDigest: artifact.scopeDigest,
+      readInitialHead: async () => artifact.baselineHead,
+    });
+    const proposal = await store.previewActivate({ prepared, actor: "operator:test" });
+    await store.applyActivate({
+      prepared,
+      actor: "operator:test",
+      expectedDigest: proposal.proposalDigest,
+    });
+    const substituted = createEffectiveHarnessCandidateArtifact({
+      baselineHead: createEffectiveHarnessHeadIdentity({
+        scopeDigest: artifact.scopeDigest,
+        workflowId: artifact.workflowId,
+        generation: artifact.baselineHead.generation + 2,
+        activationDigest: artifact.baselineHead.activationDigest,
+        transitionDigest: "9".repeat(64),
+        stateDigest: artifact.baselineState.stateDigest,
+      }),
+      baselineState: artifact.baselineState,
+      candidateState: artifact.candidateState,
+      candidate: artifact.candidate,
+    });
+    const substitutedContent = encodeEffectiveHarnessCandidateArtifact(substituted);
+    await writeFile(
+      join(root, ".flow/effective-harness/artifacts", `${substituted.artifactDigest}.json`),
+      substitutedContent,
+    );
+
+    await mutateIndex(root, (index) => {
+      const entry = index.artifacts[0];
+      const transition = index.history[0];
+      if (entry === undefined || transition === undefined) {
+        throw new Error("activation fixture is incomplete");
+      }
+      entry.artifactDigest = substituted.artifactDigest;
+      entry.bytes = substitutedContent.byteLength;
+      transition.toActivationDigest = substituted.artifactDigest;
+      transition.transitionDigest = calculateEffectiveHarnessTransitionDigest(
+        transition as unknown as EffectiveHarnessRollbackTransition,
+      );
+      index.heads = [
+        effectiveHarnessHeadFromTransition(
+          transition as unknown as EffectiveHarnessRollbackTransition,
+        ),
+      ];
+    });
+
+    await expect(store.list()).rejects.toMatchObject({ code: "corrupt" });
+  });
+
   it("fails closed when a retained state or candidate artifact is missing", async () => {
     for (const missing of ["state", "artifact"] as const) {
       const root = await temporaryDirectory();
@@ -649,4 +914,65 @@ function workflowWithPrompt(
   if (agent?.agent === undefined) throw new Error("state fixture has no agent node");
   agent.agent.prompt = prompt;
   return JSON.stringify(source);
+}
+
+interface MutableEffectiveHarnessIndex {
+  version: 1;
+  origins: unknown[];
+  states: Array<{ stateDigest: string; [key: string]: unknown }>;
+  artifacts: Array<{ artifactDigest: string; [key: string]: unknown }>;
+  heads: unknown[];
+  history: Array<{ transitionDigest: string; [key: string]: unknown }>;
+  digest: string;
+}
+
+interface MutableRollbackTransition extends Record<string, unknown> {
+  targetTransitionDigest: string;
+  transitionDigest: string;
+}
+
+async function mutateIndex(
+  root: string,
+  mutate: (index: MutableEffectiveHarnessIndex) => void,
+): Promise<void> {
+  const path = join(root, ".flow/effective-harness/index.json");
+  const index = JSON.parse(await readFile(path, "utf8")) as MutableEffectiveHarnessIndex;
+  mutate(index);
+  index.digest = calculateTestIndexDigest(index);
+  await writeFile(path, `${JSON.stringify(index)}\n`);
+}
+
+function calculateTestIndexDigest(index: MutableEffectiveHarnessIndex): string {
+  return createHash("sha256")
+    .update(
+      canonicalize({
+        domain: "flow-effective-harness-index-v1",
+        version: index.version,
+        origins: index.origins,
+        states: index.states,
+        artifacts: index.artifacts,
+        heads: index.heads,
+        history: index.history,
+      }),
+    )
+    .digest("hex");
+}
+
+function canonicalize(value: unknown): string {
+  if (value === null) return "null";
+  if (typeof value === "string" || typeof value === "boolean") return JSON.stringify(value);
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new TypeError("non-finite number");
+    return Object.is(value, -0) ? "0" : JSON.stringify(value);
+  }
+  if (Array.isArray(value)) return `[${value.map(canonicalize).join(",")}]`;
+  if (typeof value === "object") {
+    return `{${Object.keys(value as Record<string, unknown>)
+      .sort()
+      .map(
+        (key) => `${JSON.stringify(key)}:${canonicalize((value as Record<string, unknown>)[key])}`,
+      )
+      .join(",")}}`;
+  }
+  throw new TypeError("unsupported canonical value");
 }

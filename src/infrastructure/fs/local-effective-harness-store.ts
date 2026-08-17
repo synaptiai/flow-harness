@@ -74,6 +74,7 @@ const artifactEntrySchema = z
     scopeDigest: sha256Schema,
     workflowId: identifierSchema,
     artifactDigest: sha256Schema,
+    baselineHeadDigest: sha256Schema,
     stateDigest: sha256Schema,
     candidateDigest: sha256Schema,
     bytes: z.number().int().positive().max(MAX_EFFECTIVE_HARNESS_CANDIDATE_BYTES),
@@ -102,6 +103,7 @@ interface EffectiveHarnessArtifactEntry {
   readonly scopeDigest: string;
   readonly workflowId: string;
   readonly artifactDigest: string;
+  readonly baselineHeadDigest: string;
   readonly stateDigest: string;
   readonly candidateDigest: string;
   readonly bytes: number;
@@ -122,6 +124,8 @@ export interface EffectiveHarnessStoreHooks {
     kind: "baseline-state" | "candidate-state" | "candidate-artifact",
   ) => void | Promise<void>;
   readonly beforeIndexRenamed?: () => void | Promise<void>;
+  /** @internal Deterministic rename-visible, pre-directory-sync settlement seam. */
+  readonly beforeIndexDirectorySynced?: () => void | Promise<void>;
   readonly afterIndexRenamed?: () => void | Promise<void>;
   /** @internal Deterministic stable-read race seam. */
   readonly afterFileObserved?: (kind: "index" | "state" | "artifact") => void | Promise<void>;
@@ -607,6 +611,43 @@ function parseIndex(input: unknown): EffectiveHarnessIndex {
       scopeDigest: (item as EffectiveHarnessHeadIdentity).scopeDigest,
     }),
   );
+  const states = new Map(
+    raw.states.map((item) => [
+      storeIdentityKey(item.scopeDigest, item.workflowId, item.stateDigest),
+      item,
+    ]),
+  );
+  const artifacts = new Map(
+    raw.artifacts.map((item) => [
+      storeIdentityKey(item.scopeDigest, item.workflowId, item.artifactDigest),
+      item,
+    ]),
+  );
+  if (
+    new Set(origins.map((item) => item.workflowId)).size !== origins.length ||
+    new Set(origins.map((item) => item.transitionDigest)).size !== origins.length ||
+    states.size !== raw.states.length ||
+    artifacts.size !== raw.artifacts.length
+  ) {
+    throw new Error("index identity duplicate");
+  }
+  const retained = new Map<
+    string,
+    { readonly workflowId: string; readonly stateDigest: string; readonly activationDigest: string }
+  >();
+  for (const origin of origins) {
+    if (
+      !states.has(storeIdentityKey(origin.scopeDigest, origin.workflowId, origin.stateDigest)) ||
+      retained.has(origin.transitionDigest)
+    ) {
+      throw new Error("origin dependency missing");
+    }
+    retained.set(origin.transitionDigest, {
+      workflowId: origin.workflowId,
+      stateDigest: origin.stateDigest,
+      activationDigest: origin.activationDigest,
+    });
+  }
   const history: EffectiveHarnessTransition[] = [];
   const current = new Map(origins.map((item) => [item.workflowId, item]));
   for (const rawTransition of raw.history) {
@@ -617,7 +658,45 @@ function parseIndex(input: unknown): EffectiveHarnessIndex {
       scopeDigest: prior.scopeDigest,
       prior,
     });
+    if (
+      !states.has(
+        storeIdentityKey(transition.scopeDigest, transition.workflowId, transition.toStateDigest),
+      ) ||
+      retained.has(transition.transitionDigest)
+    ) {
+      throw new Error("transition dependency missing");
+    }
+    if (transition.action === "activate") {
+      const artifact = artifacts.get(
+        storeIdentityKey(
+          transition.scopeDigest,
+          transition.workflowId,
+          transition.toActivationDigest,
+        ),
+      );
+      if (
+        artifact?.baselineHeadDigest !== prior.headDigest ||
+        artifact?.stateDigest !== transition.toStateDigest ||
+        artifact.candidateDigest !== transition.candidate.digest
+      ) {
+        throw new Error("activation artifact missing");
+      }
+    } else {
+      const target = retained.get(transition.targetTransitionDigest);
+      if (
+        target?.workflowId !== transition.workflowId ||
+        target.stateDigest !== transition.toStateDigest ||
+        target.activationDigest !== transition.toActivationDigest
+      ) {
+        throw new Error("rollback target mismatch");
+      }
+    }
     history.push(transition);
+    retained.set(transition.transitionDigest, {
+      workflowId: transition.workflowId,
+      stateDigest: transition.toStateDigest,
+      activationDigest: transition.toActivationDigest,
+    });
     current.set(workflowId, effectiveHarnessHeadFromTransition(transition));
   }
   const heads = raw.heads.map((item) =>
@@ -627,6 +706,7 @@ function parseIndex(input: unknown): EffectiveHarnessIndex {
   );
   if (
     heads.length !== current.size ||
+    new Set(heads.map((head) => head.workflowId)).size !== heads.length ||
     heads.some((head) => current.get(head.workflowId)?.headDigest !== head.headDigest) ||
     new Set(raw.states.map((item) => item.stateDigest)).size !== raw.states.length ||
     new Set(raw.artifacts.map((item) => item.artifactDigest)).size !== raw.artifacts.length
@@ -634,7 +714,7 @@ function parseIndex(input: unknown): EffectiveHarnessIndex {
     throw new Error("index history mismatch");
   }
   for (const head of heads) {
-    if (!raw.states.some((item) => item.stateDigest === head.stateDigest)) {
+    if (!states.has(storeIdentityKey(head.scopeDigest, head.workflowId, head.stateDigest))) {
       throw new Error("head state missing");
     }
   }
@@ -802,6 +882,7 @@ function nextActivationIndex(
     scopeDigest: artifact.scopeDigest,
     workflowId: artifact.workflowId,
     artifactDigest: artifact.artifactDigest,
+    baselineHeadDigest: artifact.baselineHead.headDigest,
     stateDigest: artifact.candidateState.stateDigest,
     candidateDigest: artifact.candidate.candidateDigest,
     bytes: artifactContent.byteLength,
@@ -1141,6 +1222,7 @@ async function publishIndex(
   const temporary = join(paths.root, `.index.${randomUUID()}.tmp`);
   let handle: FileHandle | undefined;
   let renamed = false;
+  let directorySynced = false;
   try {
     handle = await open(temporary, "wx", 0o600);
     await handle.writeFile(content);
@@ -1150,12 +1232,14 @@ async function publishIndex(
     await hooks.beforeIndexRenamed?.();
     await rename(temporary, paths.indexPath);
     renamed = true;
-    await hooks.afterIndexRenamed?.();
+    await hooks.beforeIndexDirectorySynced?.();
     await syncDirectory(paths.root);
+    directorySynced = true;
+    await hooks.afterIndexRenamed?.();
   } catch {
     await handle?.close().catch(() => undefined);
     await unlink(temporary).catch(() => undefined);
-    if (renamed) {
+    if (renamed && directorySynced) {
       const reopened = await readBounded(
         paths.indexPath,
         MAX_EFFECTIVE_HARNESS_INDEX_BYTES,
@@ -1163,6 +1247,12 @@ async function publishIndex(
         "index",
       ).catch(() => undefined);
       if (reopened?.equals(content)) return;
+      throw new EffectiveHarnessStoreError(
+        "commit_uncertain",
+        "effective harness index settlement is uncertain",
+      );
+    }
+    if (renamed) {
       throw new EffectiveHarnessStoreError(
         "commit_uncertain",
         "effective harness index settlement is uncertain",
@@ -1230,6 +1320,7 @@ async function readArtifact(
     if (
       artifact.workflowId !== entry.workflowId ||
       artifact.artifactDigest !== entry.artifactDigest ||
+      artifact.baselineHead.headDigest !== entry.baselineHeadDigest ||
       artifact.candidateState.stateDigest !== entry.stateDigest ||
       artifact.candidate.candidateDigest !== entry.candidateDigest
     ) {
@@ -1323,6 +1414,10 @@ function calculateIndexDigest(index: {
       history: index.history,
     }),
   );
+}
+
+function storeIdentityKey(scopeDigest: string, workflowId: string, digest: string): string {
+  return `${scopeDigest}\0${workflowId}\0${digest}`;
 }
 
 function candidateKind(artifact: EffectiveHarnessCandidateArtifact) {

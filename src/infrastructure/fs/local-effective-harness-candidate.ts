@@ -22,6 +22,8 @@ export interface LocalEffectiveHarnessCandidateOptions {
   readonly expectedSource?: { readonly identity: BigIntStats; readonly sha256: string } | undefined;
   /** @internal Deterministic cancellation and source-race seam. */
   readonly afterRead?: () => void | Promise<void>;
+  /** @internal Deterministic post-handle-settlement cancellation seam. */
+  readonly afterClose?: () => void | Promise<void>;
 }
 
 export type LocalEffectiveHarnessCandidateErrorCode =
@@ -52,6 +54,8 @@ export async function admitLocalEffectiveHarnessCandidate(
     options.signal,
   );
   let lexical: BigIntStats;
+  let admitted: AdmittedLocalEffectiveHarnessCandidate | undefined;
+  let operationError: unknown;
   try {
     lexical = await lstat(absolutePath, { bigint: true });
   } catch {
@@ -160,14 +164,35 @@ export async function admitLocalEffectiveHarnessCandidate(
         "effective harness candidate source is invalid",
       );
     }
-    return Object.freeze({
+    admitted = Object.freeze({
       provenance: basename(absolutePath),
       sourceSha256,
       artifact,
     });
-  } finally {
-    await handle.close();
+  } catch (error) {
+    operationError = error;
   }
+  let closeError: unknown;
+  try {
+    await handle.close();
+  } catch (error) {
+    closeError = error;
+  }
+  let boundaryError: unknown;
+  try {
+    await options.afterClose?.();
+  } catch (error) {
+    boundaryError = error;
+  }
+  options.signal?.throwIfAborted();
+  if (operationError !== undefined) throw operationError;
+  if (closeError !== undefined || boundaryError !== undefined || admitted === undefined) {
+    throw new LocalEffectiveHarnessCandidateError(
+      "invalid_source",
+      "effective harness candidate source could not be settled",
+    );
+  }
+  return admitted;
 }
 
 interface DirectoryObservation {

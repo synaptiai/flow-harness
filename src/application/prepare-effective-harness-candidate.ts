@@ -277,6 +277,7 @@ function projectPromptSurface(
     const state = createEffectiveHarnessState({
       scopeDigest: baseline.scopeDigest,
       workflowSource: source,
+      ...(baseline.rootPackage === undefined ? {} : { rootPackage: baseline.rootPackage }),
       packages: baseline.packages,
     });
     return freezeProjection({
@@ -349,6 +350,7 @@ function projectAgentSkillResourceSurface(
     const state = createEffectiveHarnessState({
       scopeDigest: baseline.scopeDigest,
       workflowSource: source,
+      ...(baseline.rootPackage === undefined ? {} : { rootPackage: baseline.rootPackage }),
       packages,
     });
     return freezeProjection({
@@ -431,6 +433,7 @@ function projectAgentSkillPackageSurface(
     const state = createEffectiveHarnessState({
       scopeDigest: baseline.scopeDigest,
       workflowSource: source,
+      ...(baseline.rootPackage === undefined ? {} : { rootPackage: baseline.rootPackage }),
       packages: [...baseline.packages, skill],
     });
     return freezeProjection({

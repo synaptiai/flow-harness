@@ -166,7 +166,14 @@ describe("compiled Flow process", () => {
       "--cwd",
       directory,
     ]);
-    await waitForFile(grandchildStarted);
+    await Promise.race([
+      waitForFile(grandchildStarted, 15_000),
+      execution.completed.then((result) => {
+        throw new Error(
+          `Flow exited before the command grandchild started: ${JSON.stringify(result)}`,
+        );
+      }),
+    ]);
     execution.child.kill("SIGINT");
     const result = await execution.completed;
 
@@ -994,8 +1001,8 @@ async function readLedger(path: string): Promise<Array<Record<string, unknown>>>
     .map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
-async function waitForFile(path: string): Promise<void> {
-  const deadline = Date.now() + 5_000;
+async function waitForFile(path: string, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
       await stat(path);

@@ -7,7 +7,6 @@ import {
   type CapabilityPackageSnapshot,
   calculateCapabilitySnapshotDigest,
 } from "../capability/agent-skills.js";
-import { compileWorkflowText } from "../workflow/compiler.js";
 import type { CompiledWorkflow } from "../workflow/types.js";
 import {
   type AgentSkillCandidateIdentity,
@@ -18,9 +17,9 @@ import {
   parseAgentSkillPackageCandidateIdentity,
 } from "./agent-skill-package-candidate.js";
 import {
+  compileEffectiveHarnessState,
   type EffectiveHarnessHeadIdentity,
   type EffectiveHarnessState,
-  effectiveHarnessWorkflowSource,
   parseEffectiveHarnessHeadIdentity,
   parseEffectiveHarnessState,
 } from "./effective-harness-state.js";
@@ -410,7 +409,7 @@ function requiredSkill(
 }
 
 function compileStateWorkflow(state: EffectiveHarnessState): CompiledWorkflow {
-  return compileWorkflowText(effectiveHarnessWorkflowSource(state), "effective harness state");
+  return compileEffectiveHarnessState(state);
 }
 
 function requiredAgentNode(workflow: CompiledWorkflow, nodeId: string) {
