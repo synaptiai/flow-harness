@@ -31,7 +31,10 @@ import {
   FLOW_CONFIG_API_VERSION,
 } from "../../../src/domain/config/resolver.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
-import { LocalEffectiveHarnessStore } from "../../../src/infrastructure/fs/local-effective-harness-store.js";
+import {
+  calculateLocalEffectiveHarnessScopeDigest,
+  LocalEffectiveHarnessStore,
+} from "../../../src/infrastructure/fs/local-effective-harness-store.js";
 import { LocalEvaluationStore } from "../../../src/infrastructure/fs/local-evaluation-store.js";
 import { LocalPromptActivationStore } from "../../../src/infrastructure/fs/local-prompt-activation-store.js";
 import {
@@ -110,7 +113,7 @@ describe("effective harness runtime CLI", () => {
       expectedDigest: rollbackProposal.proposalDigest,
     });
     const baseline = await loadEffectiveHarnessCandidateBaseline({
-      scopeDigest: "a".repeat(64),
+      scopeDigest: await calculateLocalEffectiveHarnessScopeDigest(project),
       workflowId: baselineSnapshot.workflowId,
       store: legacy,
     });
@@ -206,12 +209,103 @@ describe("effective harness runtime CLI", () => {
       },
     });
     expectContentFree(applyOutput, [next.source]);
+
+    const listOutput = captureIo();
+    const inspectOutput = captureIo();
+    const cliDependencies = {
+      cwd: project,
+      loadConfig: async () => effectiveConfig(project),
+    };
+    expect(await main(["activation", "list"], listOutput.io, cliDependencies)).toBe(0);
+    expect(
+      await main(["activation", "inspect", artifact.workflowId], inspectOutput.io, cliDependencies),
+    ).toBe(0);
+    expect(JSON.parse(listOutput.stdout.join("\n"))).toMatchObject({
+      effectiveHarness: {
+        heads: [
+          {
+            workflowId: artifact.workflowId,
+            stateDigest: artifact.candidateState.stateDigest,
+          },
+        ],
+        history: [{ action: "activate", artifactDigest: artifact.artifactDigest }],
+      },
+    });
+    expect(JSON.parse(inspectOutput.stdout.join("\n"))).toMatchObject({
+      workflowId: artifact.workflowId,
+      effectiveHarness: {
+        head: { stateDigest: artifact.candidateState.stateDigest },
+        active: {
+          kind: "effective-harness-state",
+          stateDigest: artifact.candidateState.stateDigest,
+          workflow: {
+            bytes: artifact.candidateState.workflow.bytes,
+            sha256: artifact.candidateState.workflow.sha256,
+          },
+        },
+      },
+    });
+    expectContentFree(listOutput, [next.source]);
+    expectContentFree(inspectOutput, [next.source]);
+
+    const rollbackPreviewOutput = captureIo();
+    expect(
+      await main(
+        [
+          "activation",
+          "rollback",
+          artifact.workflowId,
+          "--to",
+          `state:${artifact.baselineState.stateDigest}`,
+          "--actor",
+          "operator:test",
+          "--dry-run",
+        ],
+        rollbackPreviewOutput.io,
+        cliDependencies,
+      ),
+    ).toBe(0);
+    const rollbackPreview = JSON.parse(rollbackPreviewOutput.stdout.join("\n"));
+    expect(rollbackPreview).toMatchObject({
+      dryRun: true,
+      proposal: {
+        action: "rollback",
+        targetStateDigest: artifact.baselineState.stateDigest,
+        proposalDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+    });
+    const rollbackApplyOutput = captureIo();
+    expect(
+      await main(
+        [
+          "activation",
+          "rollback",
+          artifact.workflowId,
+          "--to",
+          `state:${artifact.baselineState.stateDigest}`,
+          "--actor",
+          "operator:test",
+          "--expected-digest",
+          rollbackPreview.proposal.proposalDigest,
+        ],
+        rollbackApplyOutput.io,
+        cliDependencies,
+      ),
+    ).toBe(0);
+    expect(JSON.parse(rollbackApplyOutput.stdout.join("\n"))).toMatchObject({
+      status: "rolled_back",
+      head: { stateDigest: artifact.baselineState.stateDigest },
+    });
+    expectContentFree(rollbackPreviewOutput, [next.source]);
+    expectContentFree(rollbackApplyOutput, [next.source]);
   });
 
   it("runs the exact effective workflow and package closure", async () => {
     const project = await temporaryProject();
     const runsDirectory = join(project, "runs");
-    const artifact = effectiveHarnessCandidateArtifactFixture();
+    const artifact = effectiveArtifactForScope(
+      await calculateLocalEffectiveHarnessScopeDigest(project),
+    );
     const prepared = prepareEffectiveHarnessActivation({
       artifact,
       stored: superiorEffectiveHarnessEvaluation(artifact),
@@ -287,7 +381,9 @@ describe("effective harness runtime CLI", () => {
   it("resumes from durable effective authority after the live store is removed", async () => {
     const project = await temporaryProject();
     const runsDirectory = join(project, "runs");
-    const artifact = approvalEffectiveHarnessArtifact();
+    const artifact = approvalEffectiveHarnessArtifact(
+      await calculateLocalEffectiveHarnessScopeDigest(project),
+    );
     await activateArtifact(project, artifact);
     const calls: string[] = [];
     const executor: NodeExecutor = {
@@ -391,8 +487,7 @@ async function persistEvaluation(
   await store.release(stored.header.evaluationId);
 }
 
-function approvalEffectiveHarnessArtifact() {
-  const scopeDigest = "a".repeat(64);
+function approvalEffectiveHarnessArtifact(scopeDigest: string) {
   const baselineInput = promptActivationInput({
     requiresApproval: true,
     selection: "baseline",
@@ -420,6 +515,38 @@ function approvalEffectiveHarnessArtifact() {
     baselineState,
     candidateState,
     candidate: candidateInput.candidate,
+  });
+}
+
+function effectiveArtifactForScope(scopeDigest: string) {
+  const fixture = effectiveHarnessCandidateArtifactFixture();
+  const baselineState = createEffectiveHarnessState({
+    scopeDigest,
+    workflowSource: Buffer.from(fixture.baselineState.workflow.contentBase64, "base64").toString(
+      "utf8",
+    ),
+    packages: fixture.baselineState.packages,
+  });
+  const candidateState = createEffectiveHarnessState({
+    scopeDigest,
+    workflowSource: Buffer.from(fixture.candidateState.workflow.contentBase64, "base64").toString(
+      "utf8",
+    ),
+    rootPackage: fixture.candidateState.rootPackage,
+    packages: fixture.candidateState.packages,
+  });
+  return createEffectiveHarnessCandidateArtifact({
+    baselineHead: createEffectiveHarnessHeadIdentity({
+      scopeDigest,
+      workflowId: baselineState.workflowId,
+      generation: fixture.baselineHead.generation,
+      activationDigest: fixture.baselineHead.activationDigest,
+      transitionDigest: fixture.baselineHead.transitionDigest,
+      stateDigest: baselineState.stateDigest,
+    }),
+    baselineState,
+    candidateState,
+    candidate: fixture.candidate,
   });
 }
 

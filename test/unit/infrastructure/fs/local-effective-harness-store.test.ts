@@ -5,9 +5,15 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { prepareEffectiveHarnessActivation } from "../../../../src/application/prepare-effective-harness-activation.js";
+import { createEffectiveHarnessCandidateArtifact } from "../../../../src/domain/adaptation/effective-harness-candidate.js";
+import {
+  createEffectiveHarnessHeadIdentity,
+  createEffectiveHarnessState,
+} from "../../../../src/domain/adaptation/effective-harness-state.js";
 import { createPromptActivationSnapshot } from "../../../../src/domain/adaptation/prompt-activation.js";
 import { admitLocalEffectiveHarnessCandidate } from "../../../../src/infrastructure/fs/local-effective-harness-candidate.js";
 import {
+  calculateLocalEffectiveHarnessScopeDigest,
   type EffectiveHarnessStoreHooks,
   LocalEffectiveHarnessStore,
 } from "../../../../src/infrastructure/fs/local-effective-harness-store.js";
@@ -27,10 +33,34 @@ afterEach(async () => {
 });
 
 describe("local effective harness store", () => {
+  it("rejects a complete candidate from another canonical project scope", async () => {
+    const sourceRoot = await temporaryDirectory();
+    const targetRoot = await temporaryDirectory();
+    const sourceScope = await calculateLocalEffectiveHarnessScopeDigest(sourceRoot);
+    const targetScope = await calculateLocalEffectiveHarnessScopeDigest(targetRoot);
+    const artifact = effectiveArtifactForScope(sourceScope);
+    const source = new LocalEffectiveHarnessStore(sourceRoot, {
+      readInitialHead: async () => artifact.baselineHead,
+    });
+    const target = new LocalEffectiveHarnessStore(targetRoot, {
+      readInitialHead: async () => artifact.baselineHead,
+    });
+
+    expect(sourceScope).not.toBe(targetScope);
+    await expect(source.stageCandidate(artifact)).resolves.toMatchObject({
+      artifactDigest: artifact.artifactDigest,
+    });
+    await expect(target.stageCandidate(artifact)).rejects.toMatchObject({
+      code: "invalid_input",
+    });
+    expect(await target.list()).toMatchObject({ heads: [], history: [] });
+  });
+
   it("stages a complete candidate without creating activation authority", async () => {
     const root = await temporaryDirectory();
     const artifact = effectiveHarnessCandidateArtifactFixture();
     const store = new LocalEffectiveHarnessStore(root, {
+      scopeDigest: artifact.scopeDigest,
       readInitialHead: async () => artifact.baselineHead,
     });
 
@@ -65,6 +95,7 @@ describe("local effective harness store", () => {
     const store = new LocalEffectiveHarnessStore(root, {
       hooks,
       now: () => new Date("2026-08-17T18:00:00.000Z"),
+      scopeDigest: artifact.scopeDigest,
       readInitialHead: async () => artifact.baselineHead,
     });
     const proposal = await store.previewActivate({
@@ -135,6 +166,7 @@ describe("local effective harness store", () => {
     });
     let publications = 0;
     const store = new LocalEffectiveHarnessStore(root, {
+      scopeDigest: artifact.scopeDigest,
       hooks: {
         afterBlobPublished: () => {
           publications += 1;
@@ -155,7 +187,9 @@ describe("local effective harness store", () => {
 
   it("rejects a legacy activation after the effective workflow head exists", async () => {
     const root = await temporaryDirectory();
-    const artifact = effectiveHarnessCandidateArtifactFixture();
+    const artifact = effectiveArtifactForScope(
+      await calculateLocalEffectiveHarnessScopeDigest(root),
+    );
     const prepared = prepareEffectiveHarnessActivation({
       artifact,
       stored: superiorEffectiveHarnessEvaluation(artifact),
@@ -199,6 +233,7 @@ describe("local effective harness store", () => {
       stored: superiorEffectiveHarnessEvaluation(artifact),
     });
     const store = new LocalEffectiveHarnessStore(root, {
+      scopeDigest: artifact.scopeDigest,
       readInitialHead: async () => artifact.baselineHead,
     });
     const proposal = await store.previewActivate({ prepared, actor: "operator:test" });
@@ -226,6 +261,7 @@ describe("local effective harness store", () => {
       stored: superiorEffectiveHarnessEvaluation(artifact),
     });
     const store = new LocalEffectiveHarnessStore(root, {
+      scopeDigest: artifact.scopeDigest,
       readInitialHead: async () => artifact.baselineHead,
     });
     const activation = await store.previewActivate({ prepared, actor: "operator:test" });
@@ -263,6 +299,7 @@ describe("local effective harness store", () => {
     const reason = new Error("PRIVATE_CANCEL_REASON");
     cancelled.abort(reason);
     const untouched = new LocalEffectiveHarnessStore(root, {
+      scopeDigest: artifact.scopeDigest,
       readInitialHead: async () => artifact.baselineHead,
     });
 
@@ -278,6 +315,7 @@ describe("local effective harness store", () => {
 
     const afterOwnership = new AbortController();
     const settling = new LocalEffectiveHarnessStore(root, {
+      scopeDigest: artifact.scopeDigest,
       readInitialHead: async () => artifact.baselineHead,
       hooks: {
         afterBlobPublished: (kind) => {
@@ -308,6 +346,7 @@ describe("local effective harness store", () => {
     });
     let beforeAttempts = 0;
     const preBoundary = new LocalEffectiveHarnessStore(root, {
+      scopeDigest: artifact.scopeDigest,
       readInitialHead: async () => artifact.baselineHead,
       hooks: {
         beforeIndexRenamed: () => {
@@ -339,6 +378,7 @@ describe("local effective harness store", () => {
     const secondRoot = await temporaryDirectory();
     let afterAttempts = 0;
     const postBoundary = new LocalEffectiveHarnessStore(secondRoot, {
+      scopeDigest: artifact.scopeDigest,
       readInitialHead: async () => artifact.baselineHead,
       hooks: {
         afterIndexRenamed: () => {
@@ -372,6 +412,7 @@ describe("local effective harness store", () => {
         stored: superiorEffectiveHarnessEvaluation(artifact),
       });
       const store = new LocalEffectiveHarnessStore(root, {
+        scopeDigest: artifact.scopeDigest,
         readInitialHead: async () => artifact.baselineHead,
       });
       const proposal = await store.previewActivate({ prepared, actor: "operator:test" });
@@ -402,4 +443,36 @@ async function temporaryDirectory(): Promise<string> {
   await mkdir(join(path, ".flow"), { mode: 0o700 });
   temporaryDirectories.push(path);
   return path;
+}
+
+function effectiveArtifactForScope(scopeDigest: string) {
+  const fixture = effectiveHarnessCandidateArtifactFixture();
+  const baselineState = createEffectiveHarnessState({
+    scopeDigest,
+    workflowSource: Buffer.from(fixture.baselineState.workflow.contentBase64, "base64").toString(
+      "utf8",
+    ),
+    packages: fixture.baselineState.packages,
+  });
+  const candidateState = createEffectiveHarnessState({
+    scopeDigest,
+    workflowSource: Buffer.from(fixture.candidateState.workflow.contentBase64, "base64").toString(
+      "utf8",
+    ),
+    rootPackage: fixture.candidateState.rootPackage,
+    packages: fixture.candidateState.packages,
+  });
+  return createEffectiveHarnessCandidateArtifact({
+    baselineHead: createEffectiveHarnessHeadIdentity({
+      scopeDigest,
+      workflowId: baselineState.workflowId,
+      generation: fixture.baselineHead.generation,
+      activationDigest: fixture.baselineHead.activationDigest,
+      transitionDigest: fixture.baselineHead.transitionDigest,
+      stateDigest: baselineState.stateDigest,
+    }),
+    baselineState,
+    candidateState,
+    candidate: fixture.candidate,
+  });
 }

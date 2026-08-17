@@ -38,6 +38,7 @@ const MAX_EFFECTIVE_HARNESS_STATES = 256;
 const MAX_EFFECTIVE_HARNESS_ARTIFACTS = 256;
 const MAX_EFFECTIVE_HARNESS_TRANSITIONS = 4_096;
 const MAX_EFFECTIVE_HARNESS_INDEX_BYTES = 4 * 1024 * 1024;
+const LOCAL_EFFECTIVE_HARNESS_SCOPE_DOMAIN = "flow-local-effective-harness-scope-v1";
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const identifierSchema = z
   .string()
@@ -117,6 +118,8 @@ export interface EffectiveHarnessStoreHooks {
 export interface LocalEffectiveHarnessStoreOptions {
   readonly hooks?: EffectiveHarnessStoreHooks;
   readonly now?: () => Date;
+  /** @internal Deterministic synthetic scope seam for domain fixtures. */
+  readonly scopeDigest?: string;
   readonly readInitialHead?: (
     artifact: EffectiveHarnessCandidateArtifact,
   ) => Promise<EffectiveHarnessHeadIdentity>;
@@ -171,6 +174,7 @@ export class EffectiveHarnessStoreError extends Error {
 export class LocalEffectiveHarnessStore {
   readonly #hooks: EffectiveHarnessStoreHooks;
   readonly #now: () => Date;
+  readonly #scopeDigest: Promise<string>;
   readonly #readInitialHead: (
     artifact: EffectiveHarnessCandidateArtifact,
   ) => Promise<EffectiveHarnessHeadIdentity>;
@@ -181,6 +185,10 @@ export class LocalEffectiveHarnessStore {
   ) {
     this.#hooks = options.hooks ?? {};
     this.#now = options.now ?? (() => new Date());
+    this.#scopeDigest =
+      options.scopeDigest === undefined
+        ? calculateLocalEffectiveHarnessScopeDigest(this.projectRoot)
+        : Promise.resolve(parseDigest(options.scopeDigest));
     this.#readInitialHead =
       options.readInitialHead ??
       (async (artifact) => {
@@ -212,6 +220,8 @@ export class LocalEffectiveHarnessStore {
   }> {
     signal?.throwIfAborted();
     const artifact = parseEffectiveHarnessCandidateArtifact(input);
+    await this.#assertArtifactScope(artifact);
+    signal?.throwIfAborted();
     return await withLocalActivationMutationOwnership(
       this.projectRoot,
       signal,
@@ -239,6 +249,8 @@ export class LocalEffectiveHarnessStore {
   }): Promise<EffectiveHarnessActivationProposal> {
     input.signal?.throwIfAborted();
     const artifact = parseEffectiveHarnessCandidateArtifact(input.prepared.artifact);
+    await this.#assertArtifactScope(artifact);
+    input.signal?.throwIfAborted();
     const actor = parsePublicText(input.actor, "actor", 128);
     const reason = parseOptionalReason(input.reason);
     const index = await this.#readIndex();
@@ -257,6 +269,8 @@ export class LocalEffectiveHarnessStore {
   }) {
     input.signal?.throwIfAborted();
     const artifact = parseEffectiveHarnessCandidateArtifact(input.prepared.artifact);
+    await this.#assertArtifactScope(artifact);
+    input.signal?.throwIfAborted();
     const actor = parsePublicText(input.actor, "actor", 128);
     const reason = parseOptionalReason(input.reason);
     const expectedDigest = parseDigest(input.expectedDigest);
@@ -431,6 +445,12 @@ export class LocalEffectiveHarnessStore {
     } catch {
       throw new EffectiveHarnessStoreError("corrupt", "effective harness index is invalid");
     }
+    if (!indexHasOnlyScope(parsed, await this.#scopeDigest)) {
+      throw new EffectiveHarnessStoreError(
+        "corrupt",
+        "effective harness index belongs to a different project scope",
+      );
+    }
     for (const entry of parsed.states) await readState(paths, entry);
     for (const entry of parsed.artifacts) await readArtifact(paths, entry);
     return parsed;
@@ -450,6 +470,30 @@ export class LocalEffectiveHarnessStore {
     }
     return prior;
   }
+
+  async #assertArtifactScope(artifact: EffectiveHarnessCandidateArtifact): Promise<void> {
+    if (artifact.scopeDigest !== (await this.#scopeDigest)) {
+      throw new EffectiveHarnessStoreError(
+        "invalid_input",
+        "effective harness candidate belongs to a different project scope",
+      );
+    }
+  }
+}
+
+export async function calculateLocalEffectiveHarnessScopeDigest(
+  projectRoot: string,
+): Promise<string> {
+  let canonicalRoot: string;
+  try {
+    canonicalRoot = await realpath(projectRoot);
+  } catch {
+    throw new EffectiveHarnessStoreError(
+      "unsafe_state",
+      "effective harness project root is unavailable",
+    );
+  }
+  return sha256(`${LOCAL_EFFECTIVE_HARNESS_SCOPE_DOMAIN}\0${canonicalRoot}`);
 }
 
 export async function hasEffectiveHarnessHead(
@@ -504,6 +548,16 @@ function emptyIndex(): EffectiveHarnessIndex {
     history: [],
   };
   return deepFreeze({ ...content, digest: calculateIndexDigest(content) });
+}
+
+function indexHasOnlyScope(index: EffectiveHarnessIndex, scopeDigest: string): boolean {
+  return [
+    ...index.origins,
+    ...index.states,
+    ...index.artifacts,
+    ...index.heads,
+    ...index.history,
+  ].every((item) => item.scopeDigest === scopeDigest);
 }
 
 function parseIndex(input: unknown): EffectiveHarnessIndex {
