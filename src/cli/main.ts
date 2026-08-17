@@ -178,6 +178,7 @@ import {
   createFlowAcpAgent,
   type FlowAcpAgentRuntime,
 } from "../infrastructure/acp/flow-acp-agent.js";
+import { createFlowAcpProtocolStream } from "../infrastructure/acp/flow-acp-protocol-stream.js";
 import { createStrictAcpStream } from "../infrastructure/acp/strict-acp-stream.js";
 import {
   CapabilityBundlePackError,
@@ -3415,7 +3416,7 @@ async function acpCommand(
     now: () => new Date().toISOString(),
     runtime,
   });
-  const connection = app.connect(createStrictAcpStream(byteTransport));
+  const connection = app.connect(createFlowAcpProtocolStream(createStrictAcpStream(byteTransport)));
   const signal = dependencies.signal;
   const closeForSignal = () => connection.close();
   if (signal?.aborted) {
