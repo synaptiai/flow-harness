@@ -42,7 +42,8 @@ function projectPackages(value: unknown): unknown {
 function projectActivations(value: unknown): unknown {
   return Array.isArray(value)
     ? value.map((item) =>
-        isRecord(item) && item.kind === "agent-skill-activation"
+        isRecord(item) &&
+        (item.kind === "agent-skill-activation" || item.kind === "agent-skill-package-activation")
           ? projectAgentSkillActivation(item)
           : item,
       )

@@ -58,7 +58,7 @@ const reasonSchema = z
 
 const artifactEntrySchema = z
   .object({
-    kind: z.literal("agent-skill-activation").optional(),
+    kind: z.enum(["agent-skill-activation", "agent-skill-package-activation"]).optional(),
     workflowId: identifierSchema,
     candidateId: identifierSchema,
     candidateVersion: semverSchema,
@@ -116,7 +116,7 @@ const indexSchema = z
   .strict();
 
 export interface PromptActivationArtifactEntry {
-  readonly kind?: "agent-skill-activation" | undefined;
+  readonly kind?: "agent-skill-activation" | "agent-skill-package-activation" | undefined;
   readonly workflowId: string;
   readonly candidateId: string;
   readonly candidateVersion: string;
@@ -169,7 +169,7 @@ export interface PromptActivationProposal {
     readonly activationDigest: string | null;
   };
   readonly target: {
-    readonly kind?: "agent-skill-activation" | undefined;
+    readonly kind?: "agent-skill-activation" | "agent-skill-package-activation" | undefined;
     readonly candidateId: string;
     readonly candidateVersion: string;
     readonly selection: "baseline" | "candidate";
@@ -201,7 +201,7 @@ export interface PromptActivationApplyResult {
 }
 
 export interface PromptActivationRollbackTarget {
-  readonly kind?: "agent-skill-activation" | undefined;
+  readonly kind?: "agent-skill-activation" | "agent-skill-package-activation" | undefined;
   readonly candidateId: string;
   readonly candidateVersion: string;
 }
@@ -583,7 +583,12 @@ export class LocalPromptActivationStore {
     }
     const paths = await storePaths(this.projectRoot);
     const snapshot = await readVerifiedBlob(paths, entry);
-    const packages = snapshot.kind === "agent-skill-activation" ? [snapshot.skill] : ([] as const);
+    const packages =
+      snapshot.kind === "agent-skill-activation"
+        ? [snapshot.skill]
+        : snapshot.kind === "agent-skill-package-activation" && snapshot.skill !== undefined
+          ? [snapshot.skill]
+          : ([] as const);
     const activations = [snapshot];
     const capabilitySnapshot = validateCapabilitySnapshot({
       version: 1,

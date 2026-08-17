@@ -230,7 +230,9 @@ async function observeSourcePath(
       "candidate generation root is not a direct directory",
     );
   }
-  observations.push({ path: root, identity: rootIdentity });
+  // Common source admission already revalidates this output root by no-follow
+  // directory identity. Do not duplicate it with timestamp-sensitive checks:
+  // the publisher's own same-parent lock and staging entries change those timestamps.
   for (const [index, segment] of segments.entries()) {
     signal?.throwIfAborted();
     current = join(current, segment);

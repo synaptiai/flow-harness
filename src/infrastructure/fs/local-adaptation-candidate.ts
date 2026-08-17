@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { type BigIntStats, constants } from "node:fs";
-import { type FileHandle, open } from "node:fs/promises";
+import { type FileHandle, lstat, open } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import { parseDocument } from "yaml";
@@ -11,6 +11,10 @@ import {
   type AdmittedLocalAgentSkillCandidate,
   admitLocalAgentSkillCandidate,
 } from "./local-agent-skill-candidate.js";
+import {
+  type AdmittedLocalAgentSkillPackageCandidate,
+  admitLocalAgentSkillPackageCandidate,
+} from "./local-agent-skill-package-candidate.js";
 import {
   type AdmittedLocalPromptCandidate,
   admitLocalPromptCandidate,
@@ -30,6 +34,10 @@ export type AdmittedLocalAdaptationCandidate =
   | {
       readonly kind: "agent-skill-candidate";
       readonly candidate: AdmittedLocalAgentSkillCandidate;
+    }
+  | {
+      readonly kind: "agent-skill-package-candidate";
+      readonly candidate: AdmittedLocalAgentSkillPackageCandidate;
     };
 
 export interface LocalAdaptationCandidateOptions {
@@ -48,6 +56,27 @@ export async function admitLocalAdaptationCandidate(
 ): Promise<AdmittedLocalAdaptationCandidate> {
   const absolutePath = resolve(candidatePath);
   options.signal?.throwIfAborted();
+  let pathIdentity: BigIntStats;
+  try {
+    pathIdentity = await lstat(absolutePath, { bigint: true });
+  } catch (error) {
+    options.signal?.throwIfAborted();
+    throw new Error("candidate discriminator source is unavailable", { cause: error });
+  }
+  options.signal?.throwIfAborted();
+  if (pathIdentity.isSymbolicLink()) {
+    throw new Error("candidate discriminator source cannot be a link");
+  }
+  if (pathIdentity.isDirectory()) {
+    const candidate = await admitLocalAgentSkillPackageCandidate(absolutePath, {
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    });
+    options.signal?.throwIfAborted();
+    return Object.freeze({ kind: "agent-skill-package-candidate", candidate });
+  }
+  if (!pathIdentity.isFile()) {
+    throw new Error("candidate discriminator source is not an admitted regular file");
+  }
   let handle: FileHandle;
   try {
     handle = await open(absolutePath, constants.O_RDONLY | constants.O_NOFOLLOW);

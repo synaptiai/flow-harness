@@ -50,6 +50,10 @@ import {
   generateAgentSkillCandidate,
 } from "../application/generate-agent-skill-candidate.js";
 import {
+  AgentSkillPackageCandidateGenerationExecutionError,
+  generateAgentSkillPackageCandidate,
+} from "../application/generate-agent-skill-package-candidate.js";
+import {
   generatePromptCandidate,
   PromptCandidateGenerationExecutionError,
 } from "../application/generate-prompt-candidate.js";
@@ -66,6 +70,10 @@ import {
   AgentSkillActivationAdmissionError,
   createAgentSkillActivationFromEvaluation,
 } from "../application/prepare-agent-skill-activation.js";
+import {
+  AgentSkillPackageActivationAdmissionError,
+  createAgentSkillPackageActivationFromEvaluation,
+} from "../application/prepare-agent-skill-package-activation.js";
 import {
   createPromptActivationFromEvaluation,
   PromptActivationAdmissionError,
@@ -99,6 +107,19 @@ import {
   MAX_AGENT_SKILL_CANDIDATE_GENERATION_OUTPUT_TOKENS,
   prepareAgentSkillCandidateGeneration,
 } from "../domain/adaptation/agent-skill-candidate-generation.js";
+import {
+  AgentSkillPackageActivationError,
+  agentSkillPackageActivationWorkflow,
+} from "../domain/adaptation/agent-skill-package-activation.js";
+import {
+  createAgentSkillPackageCandidateSource,
+  projectAgentSkillPackageCandidate,
+} from "../domain/adaptation/agent-skill-package-candidate.js";
+import {
+  AgentSkillPackageCandidateGenerationError,
+  MAX_AGENT_SKILL_PACKAGE_CANDIDATE_GENERATION_OUTPUT_TOKENS,
+  prepareAgentSkillPackageCandidateGeneration,
+} from "../domain/adaptation/agent-skill-package-candidate-generation.js";
 import {
   PromptActivationError,
   parsePromptActivationLocator,
@@ -215,6 +236,15 @@ import {
   type ProjectAgentSkillCatalog,
   snapshotSelectedAgentSkills,
 } from "../infrastructure/fs/local-agent-skill-catalog.js";
+import {
+  admitLocalAgentSkillPackageCandidateGenerationSources,
+  LocalAgentSkillPackageCandidateGenerationSourceError,
+} from "../infrastructure/fs/local-agent-skill-package-candidate-generation.js";
+import {
+  assertLocalAgentSkillPackageCandidateOutputAvailable,
+  LocalAgentSkillPackageCandidatePublisherError,
+  publishLocalAgentSkillPackageCandidate,
+} from "../infrastructure/fs/local-agent-skill-package-candidate-publisher.js";
 import { LocalCapabilityMetadataCandidateStore } from "../infrastructure/fs/local-capability-metadata-candidate-store.js";
 import {
   CapabilityPackageStoreError,
@@ -383,6 +413,7 @@ Usage:
   flow packages remove <name> --version <exact>
   flow candidate generate <baseline> <evidence>... --output <candidate.yaml> --id <id> --version <semver> --allow-nodes <id,...> --provider <provider> --model <model> [--thinking <level>] [--timeout-ms <count>] [--max-output-tokens <count>]
   flow candidate generate <baseline> <evidence>... --output <candidate.yaml> --id <id> --version <semver> --skill <name> --allow-resources <path,...> --provider <provider> --model <model> [--thinking <level>] [--timeout-ms <count>] [--max-output-tokens <count>]
+  flow candidate generate <baseline> <evidence>... --output <candidate-directory> --id <id> --version <semver> --blueprint <blueprint.json> --provider <provider> --model <model> [--thinking <level>] [--timeout-ms <count>] [--max-output-tokens <count>]
   flow candidate validate <candidate.yaml>
   flow candidate activate <candidate.yaml> --evaluation <id> --actor <label> [--reason <text>] [--evaluations-dir <path>] <--dry-run|--expected-digest <sha256>>
   flow activation list
@@ -703,8 +734,11 @@ export async function main(
       error instanceof AgentSkillCandidateError ||
       error instanceof AgentSkillCandidateGenerationError ||
       error instanceof AgentSkillCandidateGenerationExecutionError ||
+      error instanceof AgentSkillPackageCandidateGenerationError ||
+      error instanceof AgentSkillPackageCandidateGenerationExecutionError ||
       error instanceof LocalAgentSkillCandidateError ||
       error instanceof LocalAgentSkillCandidateGenerationSourceError ||
+      error instanceof LocalAgentSkillPackageCandidateGenerationSourceError ||
       error instanceof LocalPromptCandidateError
     ) {
       io.stderr(boundedCliDiagnostic(error.message));
@@ -714,9 +748,15 @@ export async function main(
       io.stderr(`${error.code}: ${publicCandidatePublisherMessage(error.code)}`);
       return 1;
     }
+    if (error instanceof LocalAgentSkillPackageCandidatePublisherError) {
+      io.stderr(`${error.code}: ${publicCandidatePublisherMessage(error.code)}`);
+      return 1;
+    }
     if (
       error instanceof AgentSkillActivationError ||
       error instanceof AgentSkillActivationAdmissionError ||
+      error instanceof AgentSkillPackageActivationError ||
+      error instanceof AgentSkillPackageActivationAdmissionError ||
       error instanceof PromptActivationError ||
       error instanceof PromptActivationAdmissionError ||
       error instanceof PromptActivationStoreError
@@ -2335,6 +2375,7 @@ async function candidateCommand(
     for (const option of [
       "allow-nodes",
       "allow-resources",
+      "blueprint",
       "id",
       "max-output-tokens",
       "model",
@@ -2350,6 +2391,7 @@ async function candidateCommand(
     const { positionals, values } = parseCommandArgs(args.slice(1), {
       "allow-nodes": { type: "string" },
       "allow-resources": { type: "string" },
+      blueprint: { type: "string" },
       "max-output-tokens": { type: "string" },
       id: { type: "string" },
       model: { type: "string" },
@@ -2371,23 +2413,147 @@ async function candidateCommand(
     }
     const usesAgentSkillMode =
       values.skill !== undefined || values["allow-resources"] !== undefined;
+    const usesAgentSkillPackageMode = values.blueprint !== undefined;
     const dependencies = dependenciesFrom(overrides);
     const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
     const outputPath = resolve(
       dependencies.cwd,
       requireStringOption(values.output, "candidate generate requires --output <path>"),
     );
-    await assertLocalPromptCandidateOutputAvailable(outputPath);
+    if (usesAgentSkillPackageMode) {
+      await assertLocalAgentSkillPackageCandidateOutputAvailable(outputPath, dependencies.signal);
+    } else {
+      await assertLocalPromptCandidateOutputAvailable(outputPath);
+    }
     if (
-      (usesAgentSkillMode &&
+      (usesAgentSkillPackageMode && (usesAgentSkillMode || values["allow-nodes"] !== undefined)) ||
+      (!usesAgentSkillPackageMode &&
+        usesAgentSkillMode &&
         (values.skill === undefined ||
           values["allow-resources"] === undefined ||
           values["allow-nodes"] !== undefined)) ||
-      (!usesAgentSkillMode && values["allow-nodes"] === undefined)
+      (!usesAgentSkillPackageMode && !usesAgentSkillMode && values["allow-nodes"] === undefined)
     ) {
       throw new CliUsageError(
-        "candidate generation mode requires either --allow-nodes or both --skill and --allow-resources",
+        "candidate generation mode requires exactly one of --allow-nodes, both --skill and --allow-resources, or --blueprint",
       );
+    }
+    if (usesAgentSkillPackageMode) {
+      const admitted = await admitLocalAgentSkillPackageCandidateGenerationSources({
+        outputPath,
+        baselinePath: resolve(dependencies.cwd, baseline),
+        evidencePaths: evidence.map((path) => resolve(dependencies.cwd, path)),
+        blueprintPath: resolve(
+          dependencies.cwd,
+          requireStringOption(values.blueprint, "candidate generate requires --blueprint <path>"),
+        ),
+        ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
+      });
+      const prepared = prepareAgentSkillPackageCandidateGeneration({
+        candidate: {
+          id: requireStringOption(values.id, "candidate generate requires --id <id>"),
+          version: requireStringOption(
+            values.version,
+            "candidate generate requires --version <semver>",
+          ),
+        },
+        baseline: {
+          provenance: admitted.baseline.provenance,
+          sourceSha256: admitted.baseline.sourceSha256,
+          workflowDigest: admitted.baseline.workflowDigest,
+          compiled: admitted.baseline.compiled,
+        },
+        targetNodeId: admitted.blueprint.document.scope.nodeId,
+        blueprint: {
+          provenance: admitted.blueprint.provenance,
+          sourceSha256: admitted.blueprint.sourceSha256,
+          document: admitted.blueprint.document,
+        },
+        evidence: admitted.evidence.map((item) => ({
+          provenance: item.provenance,
+          sourceSha256: item.sourceSha256,
+          packet: item.packet,
+        })),
+        model: {
+          provider: requireStringOption(
+            values.provider,
+            "candidate generate requires --provider <provider>",
+          ),
+          id: requireStringOption(values.model, "candidate generate requires --model <model>"),
+          thinking: parseThinkingLevel(values.thinking),
+        },
+        limits: {
+          timeoutMs: parsePositiveIntegerOption(values["timeout-ms"], "--timeout-ms", 300_000),
+          maxOutputTokens: parsePositiveIntegerOption(
+            values["max-output-tokens"],
+            "--max-output-tokens",
+            MAX_AGENT_SKILL_PACKAGE_CANDIDATE_GENERATION_OUTPUT_TOKENS,
+          ),
+        },
+      });
+      const completed = await generateAgentSkillPackageCandidate(
+        {
+          prepared,
+          cwd: admitted.root,
+          projectRoot: admitted.root,
+          protectedPaths: [],
+          ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
+        },
+        dependencies.createNodeExecutor(config.sandbox.profile, admitted.root),
+      );
+      throwIfAborted(dependencies.signal, "candidate generation was cancelled");
+      await admitted.revalidate();
+      throwIfAborted(dependencies.signal, "candidate generation was cancelled");
+      const source = createAgentSkillPackageCandidateSource(prepared, completed);
+      const sourceText = `${JSON.stringify(source, null, 2)}\n`;
+      const projected = projectAgentSkillPackageCandidate({
+        manifestProvenance: `${basename(admitted.outputPath)}/CANDIDATE.json`,
+        source,
+        sourceSha256: sha256Text(sourceText),
+        baseline: {
+          provenance: admitted.baseline.provenance,
+          source: admitted.baseline.source,
+          sourceSha256: admitted.baseline.sourceSha256,
+          compiled: admitted.baseline.compiled,
+        },
+        evidence: admitted.evidence,
+        package: completed.package,
+      });
+      await publishLocalAgentSkillPackageCandidate(admitted.outputPath, source, completed.package, {
+        ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
+        revalidate: admitted.revalidate,
+        beforePublish: async () => {
+          await admitted.revalidate();
+          throwIfAborted(dependencies.signal, "candidate generation was cancelled");
+        },
+      });
+      io.stdout(
+        JSON.stringify(
+          {
+            generated: true,
+            output: relative(admitted.root, admitted.outputPath).split(sep).join("/"),
+            candidate: {
+              kind: projected.identity.kind,
+              id: projected.identity.id,
+              version: projected.identity.candidateVersion,
+              skill: projected.identity.package.name,
+              paths: source.blueprint.document.files.map((file) => file.path),
+              provider: projected.identity.generation.provider,
+              model: projected.identity.generation.model,
+              limits: projected.identity.generation.limits,
+              usage: projected.identity.generation.usage,
+              requestDigest: projected.identity.generation.requestDigest,
+              responseDigest: projected.identity.generation.responseDigest,
+              packageDigest: projected.identity.package.packageDigest,
+              workflowDigest: projected.identity.projectedWorkflow.workflowDigest,
+              candidateDigest: projected.identity.candidateDigest,
+            },
+          },
+          null,
+          2,
+        ),
+      );
+      return 0;
     }
     if (usesAgentSkillMode) {
       const admitted = await admitLocalAgentSkillCandidateGenerationSources({
@@ -2670,23 +2836,43 @@ async function candidateCommand(
     const snapshots =
       admitted.kind === "prompt-candidate"
         ? createPromptActivationFromEvaluation(admitted.candidate, evaluation)
-        : createAgentSkillActivationFromEvaluation(
-            {
-              identity: admitted.candidate.identity,
-              workflow: {
-                source: admitted.candidate.baseline.workflow.sourceText,
-                sourceSha256: admitted.candidate.baseline.workflow.sourceSha256,
-                workflowDigest: admitted.candidate.baseline.workflow.workflowDigest,
+        : admitted.kind === "agent-skill-candidate"
+          ? createAgentSkillActivationFromEvaluation(
+              {
+                identity: admitted.candidate.identity,
+                workflow: {
+                  source: admitted.candidate.baseline.workflow.sourceText,
+                  sourceSha256: admitted.candidate.baseline.workflow.sourceSha256,
+                  workflowDigest: admitted.candidate.baseline.workflow.workflowDigest,
+                },
+                baselineSkill: requiredSingleAgentSkill(
+                  admitted.candidate.baselineCapabilitySnapshot,
+                ),
+                candidateSkill: requiredSingleAgentSkill(
+                  admitted.candidate.candidateCapabilitySnapshot,
+                ),
               },
-              baselineSkill: requiredSingleAgentSkill(
-                admitted.candidate.baselineCapabilitySnapshot,
-              ),
-              candidateSkill: requiredSingleAgentSkill(
-                admitted.candidate.candidateCapabilitySnapshot,
-              ),
-            },
-            evaluation,
-          );
+              evaluation,
+            )
+          : createAgentSkillPackageActivationFromEvaluation(
+              {
+                identity: admitted.candidate.identity,
+                baselineWorkflow: {
+                  source: admitted.candidate.baseline.sourceText,
+                  sourceSha256: admitted.candidate.identity.baseline.workflow.sourceSha256,
+                  workflowDigest: admitted.candidate.identity.baseline.workflow.workflowDigest,
+                },
+                candidateWorkflow: {
+                  source: admitted.candidate.workflow.source,
+                  sourceSha256: admitted.candidate.identity.projectedWorkflow.sourceSha256,
+                  workflowDigest: admitted.candidate.identity.projectedWorkflow.workflowDigest,
+                },
+                candidateSkill: requiredSingleAgentSkill(
+                  admitted.candidate.candidateCapabilitySnapshot,
+                ),
+              },
+              evaluation,
+            );
     throwIfAborted(overrides.signal, "candidate activation was cancelled");
     const input = {
       snapshot: snapshots.candidate,
@@ -2832,38 +3018,45 @@ function promptActivationStore(config: EffectiveFlowConfig): LocalPromptActivati
 }
 
 function adaptiveActivationView(snapshot: AdaptiveActivationSnapshot) {
-  return snapshot.kind === "prompt-activation"
-    ? Object.freeze({
-        version: snapshot.version,
-        kind: snapshot.kind,
-        selection: snapshot.selection,
-        workflowId: snapshot.workflowId,
-        candidateId: snapshot.candidateId,
-        candidateVersion: snapshot.candidateVersion,
-        candidate: snapshot.candidate,
-        evaluation: snapshot.evaluation,
-        source: { bytes: snapshot.source.bytes, sha256: snapshot.source.sha256 },
-        activationDigest: snapshot.activationDigest,
-      })
-    : Object.freeze({
-        version: snapshot.version,
-        kind: snapshot.kind,
-        selection: snapshot.selection,
-        workflowId: snapshot.workflowId,
-        candidateId: snapshot.candidateId,
-        candidateVersion: snapshot.candidateVersion,
-        candidate: snapshot.candidate,
-        evaluation: snapshot.evaluation,
-        activationDigest: snapshot.activationDigest,
-        workflow: { bytes: snapshot.workflow.bytes, sha256: snapshot.workflow.sha256 },
-        skill: { name: snapshot.skill.name, digest: snapshot.skill.digest },
-      });
+  if (snapshot.kind === "prompt-activation") {
+    return Object.freeze({
+      version: snapshot.version,
+      kind: snapshot.kind,
+      selection: snapshot.selection,
+      workflowId: snapshot.workflowId,
+      candidateId: snapshot.candidateId,
+      candidateVersion: snapshot.candidateVersion,
+      candidate: snapshot.candidate,
+      evaluation: snapshot.evaluation,
+      source: { bytes: snapshot.source.bytes, sha256: snapshot.source.sha256 },
+      activationDigest: snapshot.activationDigest,
+    });
+  }
+  return Object.freeze({
+    version: snapshot.version,
+    kind: snapshot.kind,
+    selection: snapshot.selection,
+    workflowId: snapshot.workflowId,
+    candidateId: snapshot.candidateId,
+    candidateVersion: snapshot.candidateVersion,
+    candidate: snapshot.candidate,
+    evaluation: snapshot.evaluation,
+    activationDigest: snapshot.activationDigest,
+    workflow: { bytes: snapshot.workflow.bytes, sha256: snapshot.workflow.sha256 },
+    ...(snapshot.skill === undefined
+      ? {}
+      : { skill: { name: snapshot.skill.name, digest: snapshot.skill.digest } }),
+  });
 }
 
 function adaptiveActivationSource(snapshot: AdaptiveActivationSnapshot): string {
-  return snapshot.kind === "agent-skill-activation"
-    ? agentSkillActivationWorkflow(snapshot)
-    : promptActivationSource(snapshot);
+  if (snapshot.kind === "agent-skill-activation") {
+    return agentSkillActivationWorkflow(snapshot);
+  }
+  if (snapshot.kind === "agent-skill-package-activation") {
+    return agentSkillPackageActivationWorkflow(snapshot);
+  }
+  return promptActivationSource(snapshot);
 }
 
 function requiredSingleAgentSkill(
@@ -2900,10 +3093,18 @@ function parseRollbackSelection(value: string) {
       candidateVersion: agentSkillMatch[2],
     });
   }
+  const agentSkillPackageMatch = /^agent-skill-package:([^@]+)@([^@]+)$/.exec(value);
+  if (agentSkillPackageMatch?.[1] !== undefined && agentSkillPackageMatch[2] !== undefined) {
+    return Object.freeze({
+      kind: "agent-skill-package-activation" as const,
+      candidateId: agentSkillPackageMatch[1],
+      candidateVersion: agentSkillPackageMatch[2],
+    });
+  }
   const match = /^([^:@]+)@([^@]+)$/.exec(value);
   if (match?.[1] === undefined || match[2] === undefined) {
     throw new CliUsageError(
-      "activation rollback target must be baseline, <candidate-id>@<exact-version>, or agent-skill:<candidate-id>@<exact-version>",
+      "activation rollback target must be baseline, <candidate-id>@<exact-version>, agent-skill:<candidate-id>@<exact-version>, or agent-skill-package:<candidate-id>@<exact-version>",
     );
   }
   return Object.freeze({ candidateId: match[1], candidateVersion: match[2] });

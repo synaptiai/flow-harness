@@ -6,6 +6,10 @@ import {
   parseAgentSkillActivationSnapshot,
 } from "../adaptation/agent-skill-activation.js";
 import {
+  type AgentSkillPackageActivationSnapshot,
+  parseAgentSkillPackageActivationSnapshot,
+} from "../adaptation/agent-skill-package-activation.js";
+import {
   type PromptActivationSnapshot,
   parsePromptActivationSnapshot,
 } from "../adaptation/prompt-activation.js";
@@ -113,7 +117,10 @@ export interface CapabilitySnapshot {
   readonly digest: string;
 }
 
-export type AdaptiveActivationSnapshot = PromptActivationSnapshot | AgentSkillActivationSnapshot;
+export type AdaptiveActivationSnapshot =
+  | PromptActivationSnapshot
+  | AgentSkillActivationSnapshot
+  | AgentSkillPackageActivationSnapshot;
 
 export interface AgentSkillCapabilitySnapshot extends CapabilitySnapshot {
   readonly packages: readonly AgentSkillPackageSnapshot[];
@@ -412,7 +419,22 @@ export function validateCapabilitySnapshot(input: unknown): CapabilitySnapshot {
     }
   }
   for (const activation of activations) {
-    if (activation.kind !== "agent-skill-activation") {
+    if (activation.kind === "prompt-activation") {
+      continue;
+    }
+    if (activation.kind === "agent-skill-package-activation") {
+      const selected = parsed.packages.find(
+        (item) => item.kind === "agent-skill" && item.name === activation.candidate.package.name,
+      );
+      if (
+        activation.selection === "candidate"
+          ? activation.skill === undefined || selected?.digest !== activation.skill.digest
+          : activation.skill !== undefined || selected !== undefined
+      ) {
+        throw new Error(
+          "Agent Skill package activation does not match its selected capability package",
+        );
+      }
       continue;
     }
     const selected = parsed.packages.find(
@@ -585,13 +607,22 @@ export function parseAdaptiveActivationSnapshot(input: unknown): AdaptiveActivat
   ) {
     return parseAgentSkillActivationSnapshot(input);
   }
+  if (
+    typeof input === "object" &&
+    input !== null &&
+    "kind" in input &&
+    input.kind === "agent-skill-package-activation"
+  ) {
+    return parseAgentSkillPackageActivationSnapshot(input);
+  }
   return parsePromptActivationSnapshot(input);
 }
 
 function adaptiveActivationKey(value: AdaptiveActivationSnapshot): string {
-  return value.kind === "prompt-activation"
-    ? `${value.workflowId}\0${value.candidateId}\0${value.candidateVersion}`
-    : `${value.workflowId}\0agent-skill\0${value.candidateId}\0${value.candidateVersion}`;
+  if (value.kind === "prompt-activation") {
+    return `${value.workflowId}\0${value.candidateId}\0${value.candidateVersion}`;
+  }
+  return `${value.workflowId}\0${value.kind}\0${value.candidateId}\0${value.candidateVersion}`;
 }
 
 function activationDigestIdentity(value: AdaptiveActivationSnapshot) {

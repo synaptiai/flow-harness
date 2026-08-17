@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { parseDocument } from "yaml";
 import { z } from "zod";
 import type { AgentSkillCandidateIdentity } from "../adaptation/agent-skill-candidate.js";
+import type { AgentSkillPackageCandidateIdentity } from "../adaptation/agent-skill-package-candidate.js";
 import type { PromptCandidateIdentity } from "../adaptation/prompt-candidate.js";
 import type { ExternalHarnessIdentity } from "./external-harness.js";
 
@@ -265,7 +266,10 @@ export type EvaluationProfileIdentity =
       readonly id: string;
       readonly adapter: "flow-workflow-v1";
       readonly workflow: {
-        readonly sourceKind?: "prompt-candidate-projection" | "agent-skill-candidate-projection";
+        readonly sourceKind?:
+          | "prompt-candidate-projection"
+          | "agent-skill-candidate-projection"
+          | "agent-skill-package-candidate-projection";
         readonly provenance: string;
         readonly sourceSha256: string;
         readonly workflowDigest: string;
@@ -274,7 +278,10 @@ export type EvaluationProfileIdentity =
       readonly capabilityPackageDigests?: readonly string[];
       readonly candidate?: {
         readonly provenance: string;
-        readonly identity: PromptCandidateIdentity | AgentSkillCandidateIdentity;
+        readonly identity:
+          | PromptCandidateIdentity
+          | AgentSkillCandidateIdentity
+          | AgentSkillPackageCandidateIdentity;
       };
     }
   | ExternalEvaluationProfileIdentity;

@@ -21,6 +21,10 @@ import {
   parseAgentSkillCandidateIdentity,
 } from "../../domain/adaptation/agent-skill-candidate.js";
 import {
+  type AgentSkillPackageCandidateIdentity,
+  parseAgentSkillPackageCandidateIdentity,
+} from "../../domain/adaptation/agent-skill-package-candidate.js";
+import {
   type PromptCandidateIdentity,
   parsePromptCandidateIdentity,
 } from "../../domain/adaptation/prompt-candidate.js";
@@ -143,7 +147,9 @@ const taskSchema = z
 const candidateIdentitySchema = z
   .object({
     provenance: relativePathSchema,
-    identity: z.custom<PromptCandidateIdentity | AgentSkillCandidateIdentity>((value) => {
+    identity: z.custom<
+      PromptCandidateIdentity | AgentSkillCandidateIdentity | AgentSkillPackageCandidateIdentity
+    >((value) => {
       try {
         parsePromptCandidateIdentity(value);
         return true;
@@ -152,7 +158,12 @@ const candidateIdentitySchema = z
           parseAgentSkillCandidateIdentity(value);
           return true;
         } catch {
-          return false;
+          try {
+            parseAgentSkillPackageCandidateIdentity(value);
+            return true;
+          } catch {
+            return false;
+          }
         }
       }
     }, "candidate identity is invalid or internally inconsistent"),
@@ -166,7 +177,11 @@ const flowProfileSchema = z
     workflow: z
       .object({
         sourceKind: z
-          .enum(["prompt-candidate-projection", "agent-skill-candidate-projection"])
+          .enum([
+            "prompt-candidate-projection",
+            "agent-skill-candidate-projection",
+            "agent-skill-package-candidate-projection",
+          ])
           .optional(),
         provenance: relativePathSchema,
         sourceSha256: sha256Schema,
@@ -364,7 +379,12 @@ const publicHeaderSchema = z
       const flowBaseline = baseline?.adapter === "flow-workflow-v1" ? baseline : undefined;
       const flowCandidate = candidate?.adapter === "flow-workflow-v1" ? candidate : undefined;
       const identity = flowCandidate?.candidate?.identity;
-      const isAgentSkillCandidate = identity !== undefined && "kind" in identity;
+      const isAgentSkillCandidate =
+        identity !== undefined && "kind" in identity && identity.kind === "agent-skill-candidate";
+      const isAgentSkillPackageCandidate =
+        identity !== undefined &&
+        "kind" in identity &&
+        identity.kind === "agent-skill-package-candidate";
       const baselineAgentSkillCapabilityDigest = isAgentSkillCandidate
         ? calculateAgentSkillCapabilitySnapshotDigest([
             {
@@ -381,33 +401,62 @@ const publicHeaderSchema = z
             },
           ])
         : undefined;
-      const baselineMatches =
-        identity === undefined
-          ? false
-          : isAgentSkillCandidate
-            ? identity.baseline.workflow.sourceSha256 === flowBaseline?.workflow.sourceSha256 &&
-              identity.baseline.workflow.workflowDigest === flowBaseline?.workflow.workflowDigest &&
-              flowCandidate?.workflow.sourceSha256 === flowBaseline?.workflow.sourceSha256 &&
-              flowCandidate?.workflow.workflowDigest === flowBaseline?.workflow.workflowDigest &&
-              identity.baseline.skill.capabilityDigest === flowBaseline?.capabilitySnapshotDigest &&
-              identity.baseline.skill.capabilityDigest === baselineAgentSkillCapabilityDigest &&
-              identity.projectedSkill.capabilityDigest ===
-                flowCandidate?.capabilitySnapshotDigest &&
-              identity.projectedSkill.capabilityDigest === projectedAgentSkillCapabilityDigest &&
-              flowBaseline?.capabilityPackageDigests?.length === 1 &&
-              flowBaseline.capabilityPackageDigests[0] === identity.baseline.skill.packageDigest &&
-              flowCandidate?.capabilityPackageDigests?.length === 1 &&
-              flowCandidate.capabilityPackageDigests[0] === identity.projectedSkill.packageDigest &&
-              identity.manifest.provenance === basename(flowCandidate.candidate?.provenance ?? "")
-            : identity.baseline.sourceSha256 === flowBaseline?.workflow.sourceSha256 &&
-              identity.baseline.workflowDigest === flowBaseline?.workflow.workflowDigest &&
-              identity.projectedWorkflow.sourceSha256 === flowCandidate?.workflow.sourceSha256 &&
-              identity.projectedWorkflow.workflowDigest ===
-                flowCandidate?.workflow.workflowDigest &&
-              flowBaseline?.capabilitySnapshotDigest === undefined &&
-              flowCandidate?.capabilitySnapshotDigest === undefined &&
-              flowBaseline?.capabilityPackageDigests === undefined &&
-              flowCandidate?.capabilityPackageDigests === undefined;
+      const generatedAgentSkillCapabilityDigest = isAgentSkillPackageCandidate
+        ? calculateAgentSkillCapabilitySnapshotDigest([
+            {
+              name: identity.package.name,
+              digest: identity.package.packageDigest,
+            },
+          ])
+        : undefined;
+      const baselineMatches = (() => {
+        if (identity === undefined) {
+          return false;
+        }
+        if ("kind" in identity && identity.kind === "agent-skill-package-candidate") {
+          return (
+            identity.baseline.workflow.sourceSha256 === flowBaseline?.workflow.sourceSha256 &&
+            identity.baseline.workflow.workflowDigest === flowBaseline?.workflow.workflowDigest &&
+            identity.projectedWorkflow.sourceSha256 === flowCandidate?.workflow.sourceSha256 &&
+            identity.projectedWorkflow.workflowDigest === flowCandidate?.workflow.workflowDigest &&
+            flowBaseline?.capabilitySnapshotDigest === undefined &&
+            flowBaseline?.capabilityPackageDigests === undefined &&
+            identity.package.capabilityDigest === flowCandidate?.capabilitySnapshotDigest &&
+            identity.package.capabilityDigest === generatedAgentSkillCapabilityDigest &&
+            flowCandidate?.capabilityPackageDigests?.length === 1 &&
+            flowCandidate.capabilityPackageDigests[0] === identity.package.packageDigest &&
+            identity.manifest.provenance ===
+              `${basename(flowCandidate.candidate?.provenance ?? "")}/CANDIDATE.json`
+          );
+        }
+        if ("kind" in identity && identity.kind === "agent-skill-candidate") {
+          return (
+            identity.baseline.workflow.sourceSha256 === flowBaseline?.workflow.sourceSha256 &&
+            identity.baseline.workflow.workflowDigest === flowBaseline?.workflow.workflowDigest &&
+            flowCandidate?.workflow.sourceSha256 === flowBaseline?.workflow.sourceSha256 &&
+            flowCandidate?.workflow.workflowDigest === flowBaseline?.workflow.workflowDigest &&
+            identity.baseline.skill.capabilityDigest === flowBaseline?.capabilitySnapshotDigest &&
+            identity.baseline.skill.capabilityDigest === baselineAgentSkillCapabilityDigest &&
+            identity.projectedSkill.capabilityDigest === flowCandidate?.capabilitySnapshotDigest &&
+            identity.projectedSkill.capabilityDigest === projectedAgentSkillCapabilityDigest &&
+            flowBaseline?.capabilityPackageDigests?.length === 1 &&
+            flowBaseline.capabilityPackageDigests[0] === identity.baseline.skill.packageDigest &&
+            flowCandidate?.capabilityPackageDigests?.length === 1 &&
+            flowCandidate.capabilityPackageDigests[0] === identity.projectedSkill.packageDigest &&
+            identity.manifest.provenance === basename(flowCandidate.candidate?.provenance ?? "")
+          );
+        }
+        return (
+          identity.baseline.sourceSha256 === flowBaseline?.workflow.sourceSha256 &&
+          identity.baseline.workflowDigest === flowBaseline?.workflow.workflowDigest &&
+          identity.projectedWorkflow.sourceSha256 === flowCandidate?.workflow.sourceSha256 &&
+          identity.projectedWorkflow.workflowDigest === flowCandidate?.workflow.workflowDigest &&
+          flowBaseline?.capabilitySnapshotDigest === undefined &&
+          flowCandidate?.capabilitySnapshotDigest === undefined &&
+          flowBaseline?.capabilityPackageDigests === undefined &&
+          flowCandidate?.capabilityPackageDigests === undefined
+        );
+      })();
       if (
         candidateProfiles.length !== 1 ||
         projectionProfiles.length !== 1 ||
@@ -419,9 +468,11 @@ const publicHeaderSchema = z
         baseline.workflow.sourceKind !== undefined ||
         candidate.candidate === undefined ||
         candidate.workflow.sourceKind !==
-          (isAgentSkillCandidate
-            ? "agent-skill-candidate-projection"
-            : "prompt-candidate-projection") ||
+          (isAgentSkillPackageCandidate
+            ? "agent-skill-package-candidate-projection"
+            : isAgentSkillCandidate
+              ? "agent-skill-candidate-projection"
+              : "prompt-candidate-projection") ||
         candidate.candidate.provenance !== candidate.workflow.provenance ||
         !baselineMatches
       ) {
