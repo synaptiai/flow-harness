@@ -49,6 +49,34 @@ describe("source dependency boundaries", () => {
     expect(violations).toEqual([]);
   });
 
+  it("pins the official ACP SDK to infrastructure under its reviewed license", async () => {
+    const packageManifest = JSON.parse(
+      await readFile(join(repositoryRoot, "package.json"), "utf8"),
+    ) as { readonly dependencies?: Readonly<Record<string, string>> };
+    const packageLock = JSON.parse(
+      await readFile(join(repositoryRoot, "package-lock.json"), "utf8"),
+    ) as {
+      readonly packages?: Readonly<
+        Record<string, { readonly version?: string; readonly license?: string }>
+      >;
+    };
+    expect(packageManifest.dependencies?.["@agentclientprotocol/sdk"]).toBe("1.3.0");
+    expect(packageLock.packages?.["node_modules/@agentclientprotocol/sdk"]).toEqual(
+      expect.objectContaining({ version: "1.3.0", license: "Apache-2.0" }),
+    );
+
+    const violations: string[] = [];
+    for (const root of [domainRoot, applicationRoot]) {
+      for (const path of await typescriptFiles(root)) {
+        const source = await readFile(path, "utf8");
+        if (source.includes('"@agentclientprotocol/sdk"')) {
+          violations.push(relative(repositoryRoot, path));
+        }
+      }
+    }
+    expect(violations).toEqual([]);
+  });
+
   it("contains tuf-js and its compatibility imports in two repository infrastructure adapters", async () => {
     const imports: { readonly path: string; readonly sources: readonly string[] }[] = [];
     for (const path of await typescriptFiles(sourceRoot)) {
