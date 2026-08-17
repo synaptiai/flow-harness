@@ -223,7 +223,7 @@ function isValidTargetSource(source: string, hasPublisher: boolean): boolean {
       url.search === "" &&
       url.hash === ""
     ) {
-      return !hasPublisher;
+      return true;
     }
   } catch {
     // The exact OCI parser below owns non-URL source validation.

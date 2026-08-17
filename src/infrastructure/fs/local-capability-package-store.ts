@@ -192,6 +192,7 @@ export interface VerifiedInstalledCapabilityBundle {
 
 export interface CapabilityPackageStoreHooks {
   readonly afterCapabilityLockRenamed?: () => Promise<void>;
+  readonly beforeCapabilityLockRename?: () => Promise<void>;
   readonly beforeMutationLockRelease?: () => Promise<void>;
   readonly beforeStoreDirectoryParentSync?: (path: string, parent: string) => Promise<void>;
   readonly afterStoreDirectoryParentSynced?: (path: string, parent: string) => Promise<void>;
@@ -254,6 +255,7 @@ export class LocalCapabilityPackageStore {
   }
 
   async install(input: InstallCapabilityBundleInput): Promise<InstallCapabilityBundleResult> {
+    throwIfAborted(input.signal);
     if (
       !isValidCapabilitySource(input.source, input.publisher !== undefined) ||
       (input.publisher !== undefined &&
@@ -278,12 +280,17 @@ export class LocalCapabilityPackageStore {
         { cause: error },
       );
     }
+    throwIfAborted(input.signal);
     const paths = await storePaths(this.projectRoot);
+    throwIfAborted(input.signal);
     const mutationLock = await acquireMutationLock(paths.flowDirectory, this.hooks);
     return await withMutationLock(mutationLock, async () => {
+      throwIfAborted(input.signal);
       const metadata = await readCapabilityMetadataState(paths.metadataPath);
+      throwIfAborted(input.signal);
       requireTrustedTarget(metadata, bundle, input.source, publisher, this.now());
       const lock = await readCapabilityLock(paths.lockPath);
+      throwIfAborted(input.signal);
       const existing = lock.bundles.find(
         (entry) => entry.name === bundle.name && entry.version === bundle.version,
       );
@@ -307,6 +314,7 @@ export class LocalCapabilityPackageStore {
         }
         requireTrustedTarget(metadata, bundle, existing.source, existing.publisher, this.now());
         await requireExactBlob(paths, existing, Buffer.from(input.content));
+        throwIfAborted(input.signal);
         return Object.freeze({ status: "already_installed" as const, bundle });
       }
       const entry: CapabilityLockEntry = Object.freeze({
@@ -317,7 +325,8 @@ export class LocalCapabilityPackageStore {
         bytes: bundle.bytes,
         ...(publisher === undefined ? {} : { publisher }),
       });
-      await publishBlob(paths, entry, Buffer.from(input.content), this.hooks);
+      await publishBlob(paths, entry, Buffer.from(input.content), this.hooks, input.signal);
+      throwIfAborted(input.signal);
       requireTrustedTarget(metadata, bundle, input.source, publisher, this.now());
       const bundles = [...lock.bundles, entry].sort(compareLockEntries);
       assertCanonicalLockEntries(bundles);
@@ -329,6 +338,7 @@ export class LocalCapabilityPackageStore {
           bundles,
         },
         this.hooks,
+        input.signal,
       );
       return Object.freeze({ status: "installed" as const, bundle });
     });
@@ -670,14 +680,19 @@ async function publishBlob(
   entry: CapabilityLockEntry,
   content: Buffer,
   hooks: CapabilityPackageStoreHooks,
+  signal?: AbortSignal,
 ): Promise<void> {
+  throwIfAborted(signal);
   await ensureDirectory(paths.packagesDirectory, paths.flowDirectory, hooks);
+  throwIfAborted(signal);
   await ensureDirectory(paths.blobDirectory, paths.packagesDirectory, hooks);
+  throwIfAborted(signal);
   await requireCanonicalBlobStore(paths);
   const digest = entry.digest.slice("sha256:".length);
   const target = join(paths.blobDirectory, `${digest}.flowpkg`);
   try {
     await requireExactBlob(paths, entry, content);
+    throwIfAborted(signal);
     return;
   } catch (error) {
     if (!(isNodeError(error) && error.code === "ENOENT")) {
@@ -688,10 +703,14 @@ async function publishBlob(
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
     handle = await open(temporary, "wx", 0o600);
+    throwIfAborted(signal);
     await handle.writeFile(content);
+    throwIfAborted(signal);
     await handle.sync();
     await handle.close();
     handle = undefined;
+    await hooks.beforeCapabilityLockRename?.();
+    throwIfAborted(signal);
     try {
       await link(temporary, target);
     } catch (error) {
@@ -705,6 +724,9 @@ async function publishBlob(
   } catch (error) {
     await handle?.close().catch(() => undefined);
     await unlink(temporary).catch(() => undefined);
+    if (signal?.aborted === true) {
+      throw signal.reason;
+    }
     if (error instanceof CapabilityPackageStoreError) {
       throw error;
     }
@@ -756,6 +778,7 @@ async function publishCapabilityLock(
   paths: CapabilityStorePaths,
   lock: CapabilityLock,
   hooks: CapabilityPackageStoreHooks,
+  signal?: AbortSignal,
 ): Promise<void> {
   const content = Buffer.from(`${JSON.stringify(lock)}\n`, "utf8");
   if (content.byteLength > MAX_CAPABILITY_LOCK_BYTES) {
@@ -770,6 +793,7 @@ async function publishCapabilityLock(
     await handle.sync();
     await handle.close();
     handle = undefined;
+    throwIfAborted(signal);
     await rename(temporary, paths.lockPath);
     renamed = true;
     await hooks.afterCapabilityLockRenamed?.();
@@ -786,6 +810,9 @@ async function publishCapabilityLock(
         "capability package lock was replaced but its directory sync failed; inspect packages.lock.json before retrying",
         { cause: error },
       );
+    }
+    if (signal?.aborted === true) {
+      throw signal.reason;
     }
     throw ioError("could not publish capability package lock", error);
   }
@@ -1374,7 +1401,7 @@ function isCanonicalHttpsSource(source: string): boolean {
 
 function isValidCapabilitySource(source: string, hasPublisher: boolean): boolean {
   if (isCanonicalHttpsSource(source)) {
-    return !hasPublisher;
+    return true;
   }
   if (!hasPublisher) {
     return false;

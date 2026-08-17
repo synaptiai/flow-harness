@@ -170,9 +170,25 @@ identity, capacity, tamper checks, explicit review, and fresh activation. No che
 or run. The CLI composition test spans check, list, inspect, inactive-state proof, activation,
 removal, and retained active state across separate invocations.
 
-The suite does not claim a trustworthy host clock. It does not claim delegation or private channel
-credentials. It also does not claim background polling, automatic activation, automatic package
-updates, or online trust-root refresh.
+The capability-repository suite proves explicit local-root initialization and sequential
+dual-authorized rotation. It covers threshold failure, role expiry, rollback, freeze, and
+mix-and-match rejection. It proves consistent target URLs and bounded delegation cycles, depth,
+and fan-out. It also covers atomic generations, offline candidate activation, cancellation,
+concurrency, and fixed public output.
+
+A fixture comes from the independent `theupdateframework/tuf-conformance` repository. It proves
+delegated-target interoperability through Flow's production staging adapter. The runtime-isolation
+test places a failing repository-state tripwire beside the package store.
+
+That test proves that attached execution and detached workers remain snapshot-only. It also proves
+that inspect and resume remain snapshot-only.
+
+The scheduler unit suite proves a full interval after every settled check. It proves no overlap,
+no catch-up burst, observable startup and restart gaps, missed-interval counting, consecutive
+outage status, and exact cancellation. It also proves in-process and cross-restart clock-rollback
+stop behavior.
+The suite does not claim a trustworthy host clock or private repository credentials. It does not
+claim automatic activation, automatic rollback, or online trust-root refresh.
 
 Validating `examples/agent-command-approval.workflow.yaml` is credential-free. Running it requires
 a configured model provider and a second local client to approve or deny each exact `flow_exec`

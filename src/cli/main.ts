@@ -12,16 +12,25 @@ import {
   activateCapabilityMetadataCandidate,
   CapabilityMetadataActivationError,
 } from "../application/activate-capability-metadata-candidate.js";
+import {
+  activateCapabilityRepositoryCandidate,
+  CapabilityRepositoryActivationError,
+} from "../application/activate-capability-repository-candidate.js";
 import { CapabilityMetadataCandidateError } from "../application/capability-metadata-candidate.js";
 import { CapabilityMetadataCandidateStoreError } from "../application/capability-metadata-candidate-store.js";
 import {
   type CapabilityMetadataChannel,
   CapabilityMetadataChannelError,
 } from "../application/capability-metadata-channel.js";
+import { CapabilityRepositoryStoreError } from "../application/capability-repository-store.js";
 import {
   CapabilityMetadataCheckError,
   createCapabilityMetadataChannelChecker,
 } from "../application/check-capability-metadata-channel.js";
+import {
+  CapabilityRepositoryCheckError,
+  createCapabilityRepositoryChecker,
+} from "../application/check-capability-repository.js";
 import {
   ApprovalDecisionError,
   decideApproval,
@@ -202,6 +211,7 @@ import {
   CapabilityPackageStoreError,
   LocalCapabilityPackageStore,
 } from "../infrastructure/fs/local-capability-package-store.js";
+import { LocalCapabilityRepositoryStore } from "../infrastructure/fs/local-capability-repository-store.js";
 import {
   admitLocalEvaluationPlan,
   EvaluationAdmissionError,
@@ -265,12 +275,14 @@ import {
 import {
   createProductionCapabilityBundleFetcher,
   createProductionCapabilityMetadataChannel,
+  createProductionCapabilityRepositoryFetcher,
   createProductionOciCapabilityRegistry,
 } from "../infrastructure/http/node-https-capability-bundle-transport.js";
 import {
   CapabilityBundleFetchError,
   type CapabilityBundleFetcher,
 } from "../infrastructure/http/strict-capability-bundle-fetcher.js";
+import type { StrictCapabilityRepositoryFetcher } from "../infrastructure/http/strict-capability-repository-fetcher.js";
 import {
   isValidOciRegistryUsername,
   OciCapabilityRegistryError,
@@ -292,6 +304,13 @@ import {
   type InteractiveRunPresentationRenderer,
   isProcessTerminalInteractive,
 } from "../infrastructure/terminal/flow-terminal-renderer.js";
+import { createCapabilityRepositoryGenerationAuthenticator } from "../infrastructure/tuf/capability-repository-generation-authenticator.js";
+import {
+  CapabilityRepositoryInitializationError,
+  createLocalCapabilityRepositoryInitializer,
+} from "../infrastructure/tuf/local-capability-repository-initializer.js";
+import { createLocalCapabilityRepositoryRefresher } from "../infrastructure/tuf/local-capability-repository-refresher.js";
+import { MAX_CAPABILITY_REPOSITORY_TRUSTED_ROOT_BYTES } from "../infrastructure/tuf/staged-tuf-repository.js";
 import {
   ensureSupervisor,
   requestSupervisor,
@@ -342,6 +361,13 @@ Usage:
   flow packages metadata candidate inspect <sha256:digest>
   flow packages metadata candidate remove <sha256:digest>
   flow packages metadata activate <sha256:digest> --certificate-issuer <https-url> --certificate-identity <exact>
+  flow packages repository init <canonical-public-https-base> --trusted-root <local-root.json>
+  flow packages repository status
+  flow packages repository check
+  flow packages repository candidates list
+  flow packages repository candidate inspect <sha256:digest>
+  flow packages repository candidate remove <sha256:digest>
+  flow packages repository candidate activate <sha256:digest> --certificate-issuer <https-url> --certificate-identity <exact>
   flow packages list
   flow packages inspect <name> --version <exact>
   flow packages verify
@@ -434,6 +460,7 @@ export interface CliDependencies {
   readonly loadConfig: (options?: LoadEffectiveFlowConfigOptions) => Promise<EffectiveFlowConfig>;
   readonly capabilityBundleFetcher: CapabilityBundleFetcher;
   readonly capabilityMetadataChannel: CapabilityMetadataChannel;
+  readonly capabilityRepositoryFetcher: StrictCapabilityRepositoryFetcher;
   readonly ociCapabilityRegistry: StrictOciCapabilityRegistry;
   readonly sigstoreCapabilityVerifier: SigstoreCapabilityVerifier;
   readonly readRegistrySecret: (signal: AbortSignal) => Promise<Buffer>;
@@ -572,6 +599,10 @@ export async function main(
       error instanceof CapabilityMetadataCheckError ||
       error instanceof CapabilityMetadataError ||
       error instanceof CapabilityPackageStoreError ||
+      error instanceof CapabilityRepositoryActivationError ||
+      error instanceof CapabilityRepositoryCheckError ||
+      error instanceof CapabilityRepositoryInitializationError ||
+      error instanceof CapabilityRepositoryStoreError ||
       error instanceof OciCapabilityRegistryError ||
       error instanceof SigstoreCapabilityVerificationError ||
       error instanceof SignedCapabilityMetadataEnvelopeError ||
@@ -904,6 +935,9 @@ async function toolsCommand(
     version: { type: "string" },
   });
   const subcommand = positionals[0];
+  if (values["trusted-root"] !== undefined && subcommand !== "repository") {
+    throw new CliUsageError("--trusted-root is accepted only by packages repository init");
+  }
   if (
     (subcommand !== "list" && subcommand !== "validate" && subcommand !== "inspect") ||
     (subcommand === "inspect" ? positionals.length !== 2 : positionals.length !== 1) ||
@@ -1250,6 +1284,7 @@ async function packagesCommand(
     output: { type: "string" },
     sha256: { type: "string" },
     "sigstore-bundle": { type: "string" },
+    "trusted-root": { type: "string" },
     username: { type: "string" },
     version: { type: "string" },
   });
@@ -1320,6 +1355,75 @@ async function packagesCommand(
       !hasNoSigstoreBundle &&
       hasNoCredentials &&
       values.version === undefined) ||
+    (subcommand === "repository" &&
+      positionals[1] === "init" &&
+      positionals.length === 3 &&
+      values["trusted-root"] !== undefined &&
+      values["certificate-identity"] === undefined &&
+      values["certificate-issuer"] === undefined &&
+      values.output === undefined &&
+      values.sha256 === undefined &&
+      hasNoSigstoreBundle &&
+      hasNoCredentials &&
+      values.version === undefined) ||
+    (subcommand === "repository" &&
+      positionals[1] === "status" &&
+      positionals.length === 2 &&
+      values["trusted-root"] === undefined &&
+      values["certificate-identity"] === undefined &&
+      values["certificate-issuer"] === undefined &&
+      values.output === undefined &&
+      values.sha256 === undefined &&
+      hasNoSigstoreBundle &&
+      hasNoCredentials &&
+      values.version === undefined) ||
+    (subcommand === "repository" &&
+      positionals[1] === "check" &&
+      positionals.length === 2 &&
+      values["trusted-root"] === undefined &&
+      values["certificate-identity"] === undefined &&
+      values["certificate-issuer"] === undefined &&
+      values.output === undefined &&
+      values.sha256 === undefined &&
+      hasNoSigstoreBundle &&
+      hasNoCredentials &&
+      values.version === undefined) ||
+    (subcommand === "repository" &&
+      positionals[1] === "candidates" &&
+      positionals[2] === "list" &&
+      positionals.length === 3 &&
+      values["trusted-root"] === undefined &&
+      values["certificate-identity"] === undefined &&
+      values["certificate-issuer"] === undefined &&
+      values.output === undefined &&
+      values.sha256 === undefined &&
+      hasNoSigstoreBundle &&
+      hasNoCredentials &&
+      values.version === undefined) ||
+    (subcommand === "repository" &&
+      positionals[1] === "candidate" &&
+      (positionals[2] === "inspect" || positionals[2] === "remove") &&
+      positionals.length === 4 &&
+      values["trusted-root"] === undefined &&
+      values["certificate-identity"] === undefined &&
+      values["certificate-issuer"] === undefined &&
+      values.output === undefined &&
+      values.sha256 === undefined &&
+      hasNoSigstoreBundle &&
+      hasNoCredentials &&
+      values.version === undefined) ||
+    (subcommand === "repository" &&
+      positionals[1] === "candidate" &&
+      positionals[2] === "activate" &&
+      positionals.length === 4 &&
+      values["trusted-root"] === undefined &&
+      values["certificate-identity"] !== undefined &&
+      values["certificate-issuer"] !== undefined &&
+      values.output === undefined &&
+      values.sha256 === undefined &&
+      hasNoSigstoreBundle &&
+      hasNoCredentials &&
+      values.version === undefined) ||
     (subcommand === "metadata" &&
       positionals[1] === "inspect" &&
       positionals.length === 2 &&
@@ -1374,7 +1478,7 @@ async function packagesCommand(
       values.version === undefined);
   if (!valid) {
     throw new CliUsageError(
-      "packages requires pack, install, install-oci, metadata refresh, metadata inspect, metadata check, metadata candidates list, metadata candidate inspect/remove, metadata activate, list, inspect, verify, or remove with the documented exact arguments",
+      "packages requires pack, install, install-oci, metadata refresh, metadata inspect, metadata check, metadata candidates list, metadata candidate inspect/remove, metadata activate, repository init/status/check/candidates/candidate inspect/remove/activate, list, inspect, verify, or remove with the documented exact arguments",
     );
   }
   const dependencies = configDependenciesFrom(overrides);
@@ -1414,6 +1518,131 @@ async function packagesCommand(
     );
   }
   const store = new LocalCapabilityPackageStore(config.projectRoot);
+  if (subcommand === "repository") {
+    const sigstoreVerifier =
+      overrides.sigstoreCapabilityVerifier ??
+      new OfflineSigstoreCapabilityVerifier(createSigstorePublicGoodTrustedRoot());
+    const repositoryStore = new LocalCapabilityRepositoryStore(
+      config.projectRoot,
+      createCapabilityRepositoryGenerationAuthenticator({ verifier: sigstoreVerifier }),
+    );
+    if (positionals[1] === "status") {
+      const repository = await repositoryStore.status(overrides.signal);
+      io.stdout(JSON.stringify({ repository: repository ?? null }, null, 2));
+      return 0;
+    }
+    if (positionals[1] === "check") {
+      const checked = await createCapabilityRepositoryChecker({
+        refresher: createLocalCapabilityRepositoryRefresher({
+          stateReader: repositoryStore,
+          fetcher:
+            overrides.capabilityRepositoryFetcher ?? createProductionCapabilityRepositoryFetcher(),
+        }),
+        verifier: sigstoreVerifier,
+        publisher: repositoryStore,
+        now: () => new Date(),
+      }).check(overrides.signal === undefined ? {} : { signal: overrides.signal });
+      io.stdout(JSON.stringify(checked, null, 2));
+      return 0;
+    }
+    if (positionals[1] === "candidates") {
+      io.stdout(
+        JSON.stringify(
+          { candidates: await repositoryStore.listCandidates(overrides.signal) },
+          null,
+          2,
+        ),
+      );
+      return 0;
+    }
+    if (positionals[1] === "candidate") {
+      const action = positionals[2];
+      const candidateDigest = positionals[3];
+      if (candidateDigest === undefined) {
+        throw new CliUsageError(
+          "packages repository candidate requires inspect, remove, or activate <sha256:digest>",
+        );
+      }
+      if (action === "inspect") {
+        const candidate = (await repositoryStore.listCandidates(overrides.signal)).find(
+          (entry) => entry.candidateDigest === candidateDigest,
+        );
+        if (candidate === undefined) {
+          throw new CapabilityRepositoryStoreError("read repository candidate");
+        }
+        io.stdout(JSON.stringify({ candidate }, null, 2));
+        return 0;
+      }
+      if (action === "remove") {
+        const repository = await repositoryStore.removeCandidate(candidateDigest, overrides.signal);
+        io.stdout(JSON.stringify({ status: "removed", candidateDigest, repository }, null, 2));
+        return 0;
+      }
+      const certificateIssuer = values["certificate-issuer"];
+      const certificateIdentity = values["certificate-identity"];
+      if (certificateIssuer === undefined || certificateIdentity === undefined) {
+        throw new CliUsageError(
+          "packages repository candidate activate requires <sha256:digest> --certificate-issuer <https-url> --certificate-identity <exact>",
+        );
+      }
+      const activated = await activateCapabilityRepositoryCandidate(
+        {
+          candidates: repositoryStore,
+          verifier: sigstoreVerifier,
+          packages: store,
+        },
+        {
+          candidateDigest,
+          certificateIssuer,
+          certificateIdentity,
+          ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
+        },
+      );
+      io.stdout(
+        JSON.stringify(
+          {
+            status: activated.status,
+            candidateDigest,
+            bundle: {
+              name: activated.bundle.name,
+              version: activated.bundle.version,
+              bytes: activated.bundle.bytes,
+              digest: activated.bundle.digest,
+            },
+          },
+          null,
+          2,
+        ),
+      );
+      return 0;
+    }
+    const repositoryBaseUrl = positionals[2];
+    const trustedRootPath = values["trusted-root"];
+    if (repositoryBaseUrl === undefined || trustedRootPath === undefined) {
+      throw new CliUsageError(
+        "packages repository init requires <canonical-public-https-base> --trusted-root <local-root.json>",
+      );
+    }
+    let trustedRoot: Buffer;
+    try {
+      trustedRoot = await readBoundedCommandInput(
+        resolve(dependencies.cwd, trustedRootPath),
+        MAX_CAPABILITY_REPOSITORY_TRUSTED_ROOT_BYTES,
+      );
+    } catch {
+      throw new CapabilityRepositoryInitializationError("validate trusted root");
+    }
+    const repository = await createLocalCapabilityRepositoryInitializer({
+      store: repositoryStore,
+      now: () => new Date(),
+    }).initialize({
+      repositoryBaseUrl,
+      trustedRoot,
+      ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
+    });
+    io.stdout(JSON.stringify({ status: "initialized", repository }, null, 2));
+    return 0;
+  }
   if (subcommand === "metadata") {
     const sigstoreVerifier =
       overrides.sigstoreCapabilityVerifier ??
@@ -4098,6 +4327,8 @@ function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies 
       overrides.capabilityBundleFetcher ?? createProductionCapabilityBundleFetcher(),
     capabilityMetadataChannel:
       overrides.capabilityMetadataChannel ?? createProductionCapabilityMetadataChannel(),
+    capabilityRepositoryFetcher:
+      overrides.capabilityRepositoryFetcher ?? createProductionCapabilityRepositoryFetcher(),
     ociCapabilityRegistry:
       overrides.ociCapabilityRegistry ?? createProductionOciCapabilityRegistry(),
     sigstoreCapabilityVerifier:

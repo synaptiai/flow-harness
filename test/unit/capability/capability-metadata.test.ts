@@ -38,6 +38,21 @@ describe("capability metadata", () => {
     expect(Object.isFrozen(parsed.targets[0])).toBe(true);
   });
 
+  it("binds an exact publisher policy to a canonical HTTPS target", () => {
+    const fixture = metadataFixture();
+    const target = fixture.spec.targets[0] as MetadataTargetFixture;
+    target.publisher = publisherPolicy();
+
+    expect(parseCapabilityMetadata(Buffer.from(JSON.stringify(fixture)), NOW)).toMatchObject({
+      targets: [
+        {
+          source: "https://packages.example.test/review-suite-1.0.0.flowpkg",
+          publisher: publisherPolicy(),
+        },
+      ],
+    });
+  });
+
   it("rejects metadata at its exact expiry instant", () => {
     expect(() => parseCapabilityMetadata(metadataBytes(), new Date(EXPIRES_AT))).toThrowError(
       new CapabilityMetadataError("validate freshness"),
@@ -101,12 +116,6 @@ describe("capability metadata", () => {
           ...(structuredClone(value.spec.targets[0]) as MetadataTargetFixture),
           name: "z-last",
         });
-      },
-    ],
-    [
-      "HTTPS target with a publisher policy",
-      (value: MetadataFixture) => {
-        (value.spec.targets[0] as MetadataTargetFixture).publisher = publisherPolicy();
       },
     ],
     [

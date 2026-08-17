@@ -62,6 +62,22 @@ Flow also embeds one immutable Sigstore public-good trusted-root target from
 material, not executable code. Its recorded SHA-256 is
 `6494e21ea73fa7ee769f85f57d5a3e6a08725eae1e38c755fc3517c9e6bc0b66`.
 
+## The Update Framework JavaScript client
+
+- Project: [theupdateframework/tuf-js](https://github.com/theupdateframework/tuf-js)
+- Package: `tuf-js` 6.0.0
+- License: MIT
+- Use: standards-based repository metadata and delegated-target verification inside disposable
+  Flow staging.
+- Copied source: the minimal `tuf-on-ci-0.11` signed conformance fixture under
+  `test/fixtures/tuf-conformance/`.
+- Fixture revision: `theupdateframework/tuf-conformance` commit
+  `672d7c00051efc97b3a9fa6f4ffa0aeb6647af03`.
+
+tuf-js and its dependency packages retain their own license metadata in the installed dependency
+tree. Flow owns the strict network adapter, durable repository state, package verification, and
+activation boundaries.
+
 ## OMP
 
 - Project: [can1357/oh-my-pi](https://github.com/can1357/oh-my-pi)

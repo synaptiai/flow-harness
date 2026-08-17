@@ -18,6 +18,7 @@ export interface InstallCapabilityBundleInput {
   readonly expectedSha256: string;
   readonly content: Uint8Array;
   readonly publisher?: CapabilityPublisherVerification;
+  readonly signal?: AbortSignal;
 }
 
 export interface InstallCapabilityBundleResult {

@@ -38,7 +38,7 @@ through an optional external profile.
 | Versioned command tool packages | Implemented for strict local or exact installed declarative manifests, including publisher-authenticated OCI sources, exact per-agent selection, deterministic argv rendering, and the existing policy/approval/sandbox/journal boundary |
 | Versioned workflow packages | Implemented for strict local or exact installed inert source manifests, including publisher-authenticated OCI sources, exact packaged roots and children, closed snapshot-only compilation, and durable replay identity |
 | Versioned policy packages | Implemented for strict local or exact installed inert narrowing manifests, including operator-required and project-additional exact selection, deterministic composition, pre-mutation workflow admission, and durable replay identity |
-| Remote capability bundle distribution | Implemented with deterministic inert `.flowpkg` files, explicit public HTTPS plus SHA-256 installation, exact publisher-authenticated OCI installation with optional challenge-scoped private credentials, opt-in signed freshness/revocation metadata, a content-addressed project store, deterministic locks, local audit/removal commands, and offline execution/recovery |
+| Remote capability bundle distribution and update discovery | Implemented with deterministic inert `.flowpkg` files, explicit public HTTPS plus SHA-256 installation, exact publisher-authenticated OCI installation, opt-in signed freshness/revocation metadata, and standards-based TUF repository checks with explicit local root trust, delegated targets, consistent snapshots, inert review candidates, reviewed offline activation, and frozen execution/recovery |
 | Reproducible harness evaluation | Implemented for paired Flow, native Pi, native OMP, and Prime Agent profiles. Flow records exact identities, fresh workspaces, private checks, evidence, and constrained reports. |
 | Evidence-bound prompt candidates | Flow implements zero-tool model generation from tuning-only evidence, strict prompt overlays, paired evaluation, reviewed activation, durable run snapshots, and rollback |
 | Proof-safe fresh recovery of interrupted agent attempts | Implemented as explicit opt-in for read-only attempts and edit attempts proven not applied |
@@ -46,7 +46,7 @@ through an optional external profile.
 | Higher-isolation container command profile | Implemented behind operator-only selection; the pinned Linux x64 engine runtime gate passes |
 | Inert A2UI-profile presentation packages | Implemented for exact local or installed manifests that arrange a closed host-owned terminal or browser widget catalog without supplying data, actions, code, or bindings |
 | Local browser presentation host | Implemented as a one-session IPv4 loopback host with a fragment-bootstrapped capability, fixed first-party assets, authenticated full-document streaming, and current-action steering |
-| Automatic updates, executable or remote UI extensions, and model network tools | Planned |
+| Automatic package activation, executable or remote UI extensions, and model network tools | Planned |
 | VM-grade isolation of the host-side agent runtime | Planned |
 
 The executable format is `flow.synapti.ai/v1alpha1`. There is no compatibility or migration

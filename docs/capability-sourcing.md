@@ -502,11 +502,63 @@ not prove package safety or correctness.
 
 The opt-in signed metadata layer adds project-local expiry, revocation, exact-target admission,
 monotonic rollback refusal, and explicit signed-channel discovery with inert review staging. It
-relies on the local clock and explicit operator activation. Delegation, credential helpers,
-federated identity, private channel credentials, background polling, automatic activation,
-automatic package updates, and online trust-root refresh remain outside this contract. The design
-is TUF-like but is not a general
-[TUF repository](https://theupdateframework.github.io/specification/).
+relies on the local clock and explicit operator activation.
+
+## Standards-based capability repositories
+
+An operator can initialize one repository from an explicit local trusted-root file and one
+canonical public HTTPS base:
+
+```sh
+flow packages repository init https://updates.example.test/ \
+  --trusted-root ./root.json
+flow packages repository status
+flow packages repository check
+flow packages repository candidates list
+flow packages repository candidate inspect sha256:<digest>
+flow packages repository candidate activate sha256:<digest> \
+  --certificate-issuer <exact-https-issuer> \
+  --certificate-identity <exact>
+flow packages repository candidate remove sha256:<digest>
+```
+
+Flow uses `tuf-js` 6.0.0 for the
+[TUF specification](https://theupdateframework.github.io/specification/) workflow. This workflow
+covers root, timestamp, snapshot, targets, and delegated-target roles. The client runs only in a
+disposable private directory through Flow's strict public HTTPS fetcher. Flow disables retries and
+bounds every role and response. It requires consistent
+snapshots and reopens all staged files without following links. Flow then translates verified
+evidence into its own immutable generation and candidate records.
+
+The fixed logical index target is `flow/capability-index.json`. Each selected target is a strict
+signed capability-bundle envelope. TUF authorizes the exact repository target bytes. Offline
+Sigstore verification authenticates the exact publisher. Current Flow metadata decides whether
+the exact package may be installed. None of those layers substitutes for another.
+
+The portable index format permits at most 64 sorted unique entries. This Flow client stages at most
+four selected candidates per check. A larger selection fails immediately after index
+authentication and before package target downloads.
+
+A successful check atomically advances repository freshness and stages at most four inert
+content-addressed candidates. It does not change active metadata, installed packages, workflows,
+policies, runs, or evaluations. Activation reopens and authenticates the complete generation
+without network access. It requires a newly supplied exact publisher policy and repeats Sigstore
+verification. It delegates the only package mutation to the ordinary package store.
+
+Candidate removal creates a new repository generation. It does not remove an installed package.
+
+An optional application scheduler can request checks at a bounded interval. It waits one full
+interval after each settled check. It never overlaps or catches up missed checks. The scheduler
+exposes only fixed status records and stops on clock rollback.
+
+Startup and an optional prior completion expose restart gaps. Status records include
+missed-interval and consecutive-failure counters. Delayed work and prolonged outages are visible
+without catch-up retries. The scheduler has no activation port.
+
+Private repository credentials, credential helpers, online root bootstrap, automatic activation,
+automatic rollback, and online Sigstore trust-root refresh remain outside this contract. ACP,
+AG-UI, and A2UI are separate transport or presentation standards and do not change repository,
+package, runtime, or activation authority.
 
 ## Coupling rules
 

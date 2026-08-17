@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
 const applicationRoot = join(repositoryRoot, "src", "application");
 const domainRoot = join(repositoryRoot, "src", "domain");
+const sourceRoot = join(repositoryRoot, "src");
 
 describe("source dependency boundaries", () => {
   it.each([
@@ -46,6 +47,31 @@ describe("source dependency boundaries", () => {
     }
 
     expect(violations).toEqual([]);
+  });
+
+  it("contains tuf-js and its compatibility imports in two repository infrastructure adapters", async () => {
+    const imports: { readonly path: string; readonly sources: readonly string[] }[] = [];
+    for (const path of await typescriptFiles(sourceRoot)) {
+      const source = await readFile(path, "utf8");
+      const tufSources = Array.from(
+        source.matchAll(/\bfrom\s*["'](?<source>tuf-js(?:\/[^"']*)?)["']/gu),
+        (match) => match.groups?.source,
+      ).filter((value): value is string => value !== undefined);
+      if (tufSources.length > 0) {
+        imports.push({ path: relative(repositoryRoot, path), sources: tufSources });
+      }
+    }
+
+    expect(imports).toEqual([
+      {
+        path: "src/infrastructure/tuf/capability-repository-generation-authenticator.ts",
+        sources: ["tuf-js", "tuf-js", "tuf-js/dist/error.js"],
+      },
+      {
+        path: "src/infrastructure/tuf/staged-tuf-repository.ts",
+        sources: ["tuf-js", "tuf-js", "tuf-js/dist/error.js"],
+      },
+    ]);
   });
 });
 
