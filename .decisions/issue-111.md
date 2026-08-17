@@ -60,7 +60,9 @@ The operator supplies one strict content-free blueprint. It declares the skill a
 root agent target, and between one and sixteen exact relative file paths. `SKILL.md` is mandatory.
 Optional files may be below `references/` or textual `assets/`. The model returns content for every
 declared path exactly once. Flow canonicalizes the package, projects the workflow selection, and
-publishes this review directory without replacement:
+publishes this review directory under one exact output lock.
+
+Flow rejects an observed existing output and never intentionally replaces it:
 
 ```text
 candidate-output/
@@ -219,8 +221,9 @@ bounds, UTF-8, entry counts, portable paths, executable-mode rejection, and sour
 
 Publication creates a private same-parent staging directory, writes and syncs every exact file,
 then reopens the complete candidate. Flow validates the candidate and revalidates each source. Flow
-then syncs and renames the complete directory without replacement. Parent-directory sync settles the
-commit. Exact inspection can recover from an uncertain post-rename failure.
+then confirms that the final path is absent and atomically renames the complete directory while it
+owns the exact output lock. Parent-directory sync settles the commit. Exact inspection can recover
+from an uncertain post-rename failure.
 
 ### Durable evaluation and activation
 
@@ -241,7 +244,7 @@ only.
 | Generation domain | Blueprint, request, response, completion, provenance | No filesystem, executor, catalog, evaluation, or activation imports |
 | Generation application | One zero-tool execution | Exact provider/model and one turn; no tool or capability evidence |
 | Filesystem admission | Stable blueprint/workflow/evidence/package directory capture | No links, special files, live fallback, mixed identity, or unbounded enumeration |
-| Publisher | Atomic no-replace directory publication | Preserve single-file prompt and resource-candidate behavior |
+| Publisher | Locked atomic directory publication with existing-output refusal | Preserve single-file prompt and resource-candidate behavior |
 | Candidate union | Add package-introduction identity | Old prompt and resource candidate bytes and digests remain unchanged |
 | Workflow projection | Select one new skill on one root agent | No graph, model, prompt, tool, policy, sandbox, budget, or approval change |
 | Evaluation plan/store | Bind baseline no-package and candidate exact-package states | Recompute nested and cross-layer identities during reopen |
@@ -283,11 +286,11 @@ Every command is planned before implementation. Each row inherits the issue non-
 | --- | --- | --- | --- | --- |
 | Blueprint, exact files, bounds, inert content, authority | Contract and error | `npx vitest run test/unit/adaptation/agent-skill-package-candidate.test.ts test/unit/adaptation/agent-skill-package-candidate-generation.test.ts` | Exact-bound positives and +1, malformed path, script, binary, executable, duplicate, missing, unknown, and authority mutation rows pass | Signing, install, executable resources |
 | One-turn zero-tool generation and data minimization | Behavioral | `npx vitest run test/unit/application/generate-agent-skill-package-candidate.test.ts` | Exact provider/model/limits, one call, zero tools/effects, request allowlist, timeout, cancellation, usage, privacy rows pass | Model quality or superiority |
-| Stable source admission and atomic publication | Data and error | `npx vitest run test/unit/infrastructure/fs/local-agent-skill-package-candidate.test.ts test/unit/infrastructure/fs/local-agent-skill-package-candidate-publication.test.ts` | No-follow, source-race, entry/byte bounds, cancellation, no-replace, settled and uncertain publication rows pass | Distributed filesystem atomicity |
+| Stable source admission and atomic publication | Data and error | `npx vitest run test/unit/infrastructure/fs/local-agent-skill-package-candidate.test.ts test/unit/infrastructure/fs/local-agent-skill-package-candidate-publication.test.ts` | No-follow, source-race, entry/byte bounds, cancellation, output-lock, existing-output, settled, and uncertain publication rows pass | Distributed filesystem atomicity or coordination with non-Flow writers |
 | Projection, identity, and old candidate compatibility | Behavioral and contract | `npx vitest run test/unit/adaptation/agent-skill-package-candidate.test.ts test/unit/infrastructure/fs/local-adaptation-candidate.test.ts` | Exact one-field workflow delta, package/capability/candidate redigest mutations, and unchanged old fixtures pass | Multi-skill or existing-skill edits |
 | Durable paired evaluation | Behavioral and data | `npx vitest run test/unit/infrastructure/fs/local-evaluation-plan.test.ts test/unit/infrastructure/fs/local-evaluation-store.test.ts` | Baseline no-package, candidate exact-package, nested identity mutations, claim/recovery/inspect/export rows pass | Evaluation result superiority |
 | Activation and rollback | Behavioral and data | `npx vitest run test/unit/adaptation/agent-skill-package-activation.test.ts test/unit/adaptation/agent-skill-package-activation-admission.test.ts test/unit/infrastructure/fs/local-prompt-activation-store.test.ts` | Exact apply, idempotency, stale rejection, rollback, recovery, and old-encoding fixtures pass | Automatic activation or remote installation |
-| CLI, runtime, offline replay, and privacy | Behavioral and error | `npx vitest run test/integration/cli/agent-skill-package-candidate-generation.test.ts test/integration/cli/agent-skill-package-candidate.test.ts test/integration/cli/agent-skill-package-activation.test.ts test/integration/cli/remote-capability-workflow.test.ts test/integration/supervisor/service.test.ts test/integration/supervisor/worker.test.ts test/unit/cli/public-output.test.ts` | Exact grammar, review directory, content-free outputs, attached/detached/child/recovery/replay, and no-live-source rows pass | Registry publication or remote UI |
+| CLI lifecycle, offline reuse, and privacy | Behavioral and error | `npx vitest run test/integration/cli/agent-skill-package-candidate-generation.test.ts test/unit/application/run-workflow-capabilities.test.ts test/unit/cli/public-output.test.ts` | Exact grammar, review directory, content-free outputs, attached offline execution, rollback, durable capability reuse, and structural redaction rows pass | Package-specific detached or child transport |
 | Documentation and dependency direction | Documentation and contract | `npm run docs:ste && npx vitest run test/integration/package/dependency-boundaries.test.ts && git diff --check` | Changed prose passes STE, dependency boundary passes, and diff has no whitespace errors | External standards certification |
 | Full release gate | Configuration and runtime | `npm run format:check && npm run lint && npm run typecheck && npm test -- --maxWorkers=1 && npm run build && npm run test:runtime && npm run test:coverage && npm run pack:check && npm audit --omit=dev` | All commands pass. Runtime CLI smoke test and package verification report success | Unsupported operating systems or unpublished registry artifacts |
 | Live provider contract | Behavioral integration | `npm run test:live -- --run test/live/agent-skill-package-candidate-generation.live.test.ts` | Credential-gated live test performs one provider call and validates the bounded content-only result | Repeatability of model quality |
@@ -322,12 +325,73 @@ include what was not tested, known evidence limitations, and the exact adversari
 - **Evidence limitation**: executor behavior is exercised through the application port fake. The
   live-provider and real CLI paths remain release-gate work.
 
+### Frozen implementation verification
+
+The exact mapped selector passed 241 tests across 19 files:
+
+```sh
+npx vitest run \
+  test/unit/adaptation/agent-skill-package-candidate-generation.test.ts \
+  test/unit/application/generate-agent-skill-package-candidate.test.ts \
+  test/unit/infrastructure/fs/local-agent-skill-package-candidate-generation.test.ts \
+  test/unit/infrastructure/fs/local-agent-skill-package-candidate-publication.test.ts \
+  test/unit/adaptation/agent-skill-package-candidate.test.ts \
+  test/unit/infrastructure/fs/local-agent-skill-package-candidate.test.ts \
+  test/unit/infrastructure/fs/local-adaptation-candidate.test.ts \
+  test/unit/infrastructure/fs/local-evaluation-plan.test.ts \
+  test/unit/infrastructure/fs/local-evaluation-store.test.ts \
+  test/unit/adaptation/agent-skill-package-activation.test.ts \
+  test/unit/adaptation/agent-skill-package-activation-admission.test.ts \
+  test/unit/infrastructure/fs/local-prompt-activation-store.test.ts \
+  test/unit/application/workflow-package-admission.test.ts \
+  test/unit/application/run-workflow-capabilities.test.ts \
+  test/unit/cli/public-output.test.ts \
+  test/integration/cli/agent-skill-package-candidate-generation.test.ts \
+  test/integration/cli/prompt-candidate-generation.test.ts \
+  test/integration/cli/agent-skill-candidate-generation.test.ts \
+  test/integration/package/dependency-boundaries.test.ts \
+  --reporter=dot
+```
+
+- **Package lifecycle**: the package-specific CLI test publishes and reopens the review directory.
+  It runs the paired evaluation and applies the exact activation. It then deletes every live
+  generation source and executes from durable bytes. Finally, it rolls back to the package-free
+  baseline.
+
+- **Mutation resistance**: focused rows independently redigest candidate, evaluation, and activation
+  identities. Other rows bind source identity, file and directory bounds, and publication
+  settlement. Existing prompt suites remain green. Existing Agent Skill resource-generation suites
+  also remain green.
+
+- **Privacy**: public-output tests remove generated and encoded file bytes from run and event
+  structures. The CLI lifecycle excludes both plain and Base64 content while retaining portable
+  paths, hashes, limits, usage, and package identity.
+
+- **Serial and coverage gates**: `npm test -- --maxWorkers=1` passed 4,064 tests with four expected
+  skips. `npm run test:coverage` passed the same tests with 84.2% statements, 78.36% branches, 90.88%
+  functions, and 84.31% lines.
+
+- **Runtime and package gates**: `npm run test:runtime` passed 43 tests with 34 platform or
+  environment skips. `npm run pack:check` installed the generated tarball in a clean consumer and
+  executed its CLI. `npm audit --omit=dev` reported zero vulnerabilities.
+
+- **Static gates**: formatting, typecheck, build, changed-document STE, and diff checks passed.
+  Lint passed with one inherited informational `noUselessConstructor` note in
+  `src/application/external-harness-adapter.ts`.
+
+- **Live-provider limitation**: the new credential-gated live test was discovered and skipped
+  because `FLOW_LIVE_PI_PROVIDER` and `FLOW_LIVE_PI_MODEL` were not configured. No live-provider
+  compatibility claim is made from this machine.
+
 ## Activity log
 
 - 2026-08-17 — User approved Approach A2-D with the proposed defaults.
 
 - 2026-08-17 — Created Issue #111 after a duplicate search. The branch starts from exact
   `origin/main`.
+
+- 2026-08-17 — Completed A2-D implementation and the frozen local verification gates. The
+  credential-gated live-provider criterion remains unexecuted because credentials are unavailable.
 
 - 2026-08-17 — Recorded the full specification, alternatives, coupling analysis, TDD sequence, and
   plan-time verification map before production implementation.

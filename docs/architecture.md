@@ -1016,6 +1016,12 @@ workflow and one selected Agent Skill package. Admission snapshots the baseline 
 projects only declared existing UTF-8 resource replacements, and produces immutable baseline and
 candidate capability snapshots. Package authority fields and the workflow identity cannot change.
 
+An `AgentSkillPackageCandidate` is a third inert source. An operator-owned content-free blueprint
+fixes one package authority, one root agent target, and 1–16 exact paths. One zero-tool model turn
+returns only inert UTF-8 contents. Flow publishes `CANDIDATE.json` beside the exact generated
+`skill/<name>/` tree. It excludes scripts, executable or binary files, links, special files, and
+model-selected paths.
+
 The generation services use the provider-neutral `AgentExecutor` port. The Pi adapter is the first
 implementation. Flow creates one agent request with no tools, skills, or packages. Prompt
 generation includes only selected root-agent prompts and tuning-only packets. Agent Skill
@@ -1023,10 +1029,12 @@ generation includes the closed workflow identity, exact public package identity,
 packets, and only the selected existing UTF-8 resource bytes. A future model adapter can use the
 same application port and strict domain contracts.
 
-The model returns one strict prompt-replacement or Agent Skill resource-replacement object. Flow
-adds trusted source hashes and generation provenance. Flow checks all source identities again,
-validates the ordinary candidate projection, and publishes through a same-directory no-replace
-operation.
+The model returns one strict prompt-replacement, Agent Skill resource-replacement, or declared-file
+content object. Flow adds trusted source hashes and generation provenance. Flow checks all source
+identities again, validates the ordinary candidate projection, and publishes through a
+same-directory no-replace operation. Package synthesis uses a private staged directory and an exact
+output lock. It syncs and reopens the complete tree, refuses an observed existing output, and then
+uses one same-parent rename.
 
 A failure before the hard-link commit leaves no final candidate file. A failure after the commit
 returns `publication_uncertain`. One complete final file can exist in this state. A pre-commit
@@ -1044,6 +1052,11 @@ executor, verifier, policy, sandbox, and result contracts do not branch on candi
 identity stores both capability digests without resource contents. Trial execution and offline
 inspection do not consult live catalogs.
 
+For an Agent Skill package candidate, the baseline profile compiles the original workflow and has no
+capability package. The candidate profile compiles the one-field skill-selection projection and has
+exactly the generated package. The durable plan and store recompute both workflow identities, both
+capability states, and the candidate cross-bindings before execution or replay.
+
 An operator can activate only a complete superior evaluation. Preview creates a deterministic
 proposal from the current head, target, actor, and reason. Apply holds one cross-process mutation
 lock and requires the exact proposal digest.
@@ -1055,9 +1068,11 @@ it publishes both artifacts and replaces the index.
 
 New runs can use `activation:<workflow-id>`. Run admission validates the selected artifact and
 requires one matching activation in the capability snapshot. Prompt artifacts bind exact decoded
-source bytes. Agent Skill artifacts bind the unchanged workflow and exact selected package. The run
-stores the artifact and package in its capability snapshot. Detached execution and resume use that
-saved snapshot, not the current index or live skill catalog.
+source bytes. Agent Skill resource artifacts bind the unchanged workflow and exact selected package.
+Agent Skill package artifacts bind the projected workflow and exact generated package. Their paired
+baseline artifacts bind the original workflow and no package. The run stores the artifact and
+package state in its capability snapshot. Detached execution and resume use that saved snapshot,
+not the current index, review directory, blueprint, evidence, or live skill catalog.
 
 Attached execution protects the canonical project `.flow` directory. A detached job stores the same
 protected path in its immutable record. The worker gives the saved path to each node executor.
@@ -1068,9 +1083,13 @@ baseline file, or delete artifacts.
 
 A prompt candidate cannot change graphs, tools, skills, packages, models, policy, approvals,
 budgets, verifiers, retries, or routing. An Agent Skill candidate can change only declared existing
-resource bytes while preserving skill selection and package authority.
-Model-authorized evaluation and activation remain unavailable. Agent Skill package synthesis,
-installation, publication, and executable-resource generation remain unavailable.
+resource bytes while preserving skill selection and package authority. An Agent Skill package
+candidate can change only one root agent selection. It changes the selection from no skill to one
+exact generated skill and introduces that exact inert package.
+
+Model-authorized evaluation and activation remain unavailable. Agent Skill package installation,
+signing, publication, and executable-resource generation remain unavailable. Multi-skill generation
+also remains unavailable.
 
 ## Non-goals
 

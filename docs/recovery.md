@@ -450,6 +450,24 @@ evidence. Agent Skill candidate admission also observes the complete baseline pa
 change stops admission. The operator must inspect and validate the new bytes. Candidate validation
 never changes the baseline workflow or package.
 
+An Agent Skill package candidate is a directory publication. Flow writes a private same-parent
+staging directory and syncs the exact manifest and package tree. Flow reopens and validates the
+complete candidate. It revalidates every generation source, confirms that the final path is absent,
+and publishes under the exact output lock.
+
+A failure before rename leaves no final candidate. A failure after rename but before parent-directory sync reports
+`publication_uncertain`. The operator inspects the exact final directory before retry. Flow does not
+regenerate or replace it automatically.
+
+The publisher lock is `.<output-name>.generation.lock`. A private staging directory uses
+`.<output-name>.generation.<uuid>.tmp`. Flow does not retire these paths by age or PID guess. After a
+crash, first verify that no generation process owns the exact output. If the final directory exists,
+run `candidate validate` against it and treat it as an uncertain committed candidate. If the final
+directory is absent, inspect and remove only the exact lock and staging directory before a new
+generation attempt.
+
+Never remove a lock while its generation process may still be active.
+
 An evaluation header binds the candidate, baseline, evidence, prompt changes, and projected workflow.
 Evaluation resume re-admits the supplied plan. It rejects candidate removal, replacement, and source
 changes. It continues only the missing schedule suffix.
@@ -477,6 +495,12 @@ writes the immutable candidate and baseline artifacts before it writes the selec
 failure before index replacement removes new unindexed artifacts and keeps the old head. A failure
 after replacement but before directory sync returns `commit_uncertain`. The operator must inspect
 the index before retry.
+
+For package introduction, the paired baseline artifact contains the original workflow and no
+package. The candidate artifact contains the projected workflow and exact generated package. Once
+activation commits, attached runs, detached workers, resume, recovery, replay, inspect, export, and
+rollback use these durable bytes. They do not reopen the review directory, blueprint, evidence,
+baseline file, network, registry, or credential source.
 
 The mutation lock identifies its host, process, and random token. Flow retires it only after the
 same host reports that the process does not exist. A live, foreign, changed, or invalid lock owner

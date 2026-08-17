@@ -371,6 +371,46 @@ automatically select, activate, install, or publish an Agent Skill package. A fa
 evidence, not authority. An operator can separately preview and apply an exact activation proposal
 from the complete superior evaluation.
 
+### Agent Skill package candidates
+
+An `AgentSkillPackageCandidate` introduces one new inert package into a workflow that selects no
+skills. The operator supplies a strict content-free blueprint that fixes the skill authority, one
+root agent target, and 1 through 16 exact output paths. `SKILL.md` is required. Optional files are
+below `references/` or textual `assets/`. Scripts, executable files, binary content, links, special
+files, and model-selected paths reject.
+
+One zero-tool model turn returns content for every declared path exactly once. The request contains
+only the portable baseline identity, public blueprint, tuning-only evidence, target identity, and
+fixed limits. Flow renders the `SKILL.md` authority from the blueprint and publishes this inert
+review directory under an exact output lock. It refuses an observed existing output and never
+intentionally replaces one:
+
+```text
+candidate-output/
+├── CANDIDATE.json
+└── skill/
+    └── <operator-selected-name>/
+        ├── SKILL.md
+        ├── references/...
+        └── assets/...
+```
+
+The baseline workflow must select no skills. Projection changes one root agent that already has the
+`read` tool from `skills: []` to `[<operator-selected-name>]`. It does not change the graph, prompts,
+models, tools, policy, approvals, budgets, verifiers, retries, or runtime semantics.
+
+Paired evaluation compiles the original workflow with no capability package for the baseline
+profile. It compiles the projected workflow and supplies exactly the generated package for the
+candidate profile. The plan and durable store bind both workflow identities and both capability
+states. They also bind the blueprint, evidence, generation provenance, and candidate digest. Trials
+never discover a live skill catalog.
+
+The review directory remains inert and source-dependent until activation. Validation reopens its
+sibling baseline, evidence, and blueprint sources. A complete superior evaluation can produce an
+exact activation proposal. Applied activation stores the original workflow with no package and the
+projected workflow with the generated package. New runs, detached workers, resume, replay, and
+rollback then use durable bytes only.
+
 ## Activation gate
 
 Activation requires a complete evaluation with the `superior` verdict. Flow recalculates the report
@@ -378,9 +418,11 @@ from the stored schedule and record chain. All declared safety constraints must 
 corrupt, or unavailable comparison evidence stops activation.
 
 The evaluation candidate must match the live candidate identity. Prompt activation binds the exact
-baseline and projected workflows. Agent Skill activation binds the unchanged workflow and the exact
-baseline and projected package snapshots. Flow stores the plan digest, terminal record digest,
-report digest, release criteria, and aggregate comparison result.
+baseline and projected workflows. Agent Skill resource activation binds the unchanged workflow and
+the exact baseline and projected package snapshots. Agent Skill package activation binds the
+original workflow with no package and the projected workflow with exactly one generated package.
+Flow stores the plan digest, terminal record digest, report digest, release criteria, and aggregate
+comparison result.
 
 The activation proof contains no task text, fixture path, assertion, holdout identity, trial record,
 or run identifier. It contains aggregate comparison values only.

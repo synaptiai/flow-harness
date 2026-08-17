@@ -1566,9 +1566,71 @@ Generation publishes one inert candidate file without replacement. It does not e
 install, publish a package, add or delete a package file, or select a candidate automatically.
 Evaluation success grants no authority until an operator applies the exact activation proposal.
 
+### Agent Skill package candidates
+
+An Agent Skill package candidate is a bounded review directory that introduces one new inert
+package into a workflow that selects no skills:
+
+```text
+candidate-output/
+├── CANDIDATE.json
+└── skill/
+    └── <skill-name>/
+        ├── SKILL.md
+        ├── references/...
+        └── assets/...
+```
+
+The operator creates a strict content-free blueprint and selects the baseline, tuning evidence,
+output directory, candidate id/version, provider, model, and limits:
+
+```text
+flow candidate generate <baseline> <evidence>... --output <candidate-directory> \
+  --id <id> --version <semver> --blueprint <blueprint.json> \
+  --provider <provider> --model <model> \
+  [--thinking <level>] [--timeout-ms <count>] [--max-output-tokens <count>]
+```
+
+The blueprint fixes the skill name, description, optional license, compatibility, and public
+metadata. It also fixes requested tools, workflow id, one root agent target, and 1–16 exact portable
+file paths. It contains no proposed content. `SKILL.md` is required. Other paths must be below
+`references/` or textual `assets/`.
+
+Scripts, executable modes, binary extensions, and binary bytes reject. Links, special files, and
+traversal also reject. Duplicate paths and undeclared files reject.
+
+Generation uses one model turn with no tools, skills, packages, workspace reads, commands, effects,
+or retries. The default and maximum model output limit is 8192 tokens. Raw output is at most 65536
+bytes. The strict response contains content for every declared path exactly once. Flow renders the
+`SKILL.md` frontmatter from the blueprint and uses the model result only as file body content.
+
+The baseline workflow must select no Agent Skills. The target must be one root agent that already
+has the `read` tool. Projection changes only that node's `skills` field from `[]` to the generated
+skill name. Every other workflow field remains exact. The projected capability snapshot contains
+exactly the generated package.
+
+`CANDIDATE.json` binds the baseline, evidence, blueprint, generation request and response, exact
+package, projected workflow, capability state, and candidate identity. It contains hashes and
+portable provenance, not generated file contents or absolute paths. Candidate admission uses
+stable no-follow reads, exact entry and byte bounds, source revalidation, and executable-mode
+rejection. Publication uses a private same-parent staging directory and one no-replace directory
+rename. A post-rename settlement failure reports publication uncertainty instead of regenerating.
+
+Paired evaluation gives the baseline profile the original workflow and zero packages. It gives the
+candidate profile the projected workflow and exact generated package. Activation stores both
+states. Rollback to `baseline` restores the original workflow with no package. The selector
+`agent-skill-package:<candidate-id>@<version>` identifies a stored package-introduction candidate.
+Existing prompt and resource-candidate encodings and digests are unchanged.
+
+Generation and validation do not install, sign, publish, or execute the review directory. Before
+activation, validation depends on the sibling source files named by the candidate. After activation,
+new runs, detached workers, resume, recovery, replay, inspect, and export use only durable workflow
+and package bytes.
+
 ### Adaptive activation
 
-An operator can activate a prompt or Agent Skill candidate after a complete superior evaluation.
+An operator can activate a prompt, Agent Skill resource, or Agent Skill package candidate after a
+complete superior evaluation.
 Preview creates a proposal without changing state:
 
 ```text
@@ -1583,9 +1645,12 @@ flow candidate activate <candidate.yaml> --evaluation <id> --actor <label> \
 ```
 
 Each activation snapshot contains the selection role, complete candidate identity, and aggregate
-evaluation proof. A prompt snapshot binds the exact selected source. An Agent Skill snapshot binds
-the unchanged workflow and the exact selected skill package. A workflow source is at most 8 MiB.
-The complete capability snapshot is at most 16 MiB.
+evaluation proof. A prompt snapshot binds the exact selected source. An Agent Skill resource
+snapshot binds the unchanged workflow and exact selected skill package. An Agent Skill package
+snapshot binds the projected workflow and generated package. Its paired baseline binds the original
+workflow and no package.
+
+A workflow source is at most 8 MiB. The complete capability snapshot is at most 16 MiB.
 
 Flow stores one candidate artifact and one baseline artifact below `.flow/activations/sha256` for
 each approval. One atomic index contains sorted artifact entries, workflow heads, and a hash-chained
@@ -1611,14 +1676,15 @@ current lineage:
 
 ```text
 flow activation rollback <workflow-id> \
-  --to <candidate-id>@<version>|agent-skill:<candidate-id>@<version>|baseline \
+  --to <candidate-id>@<version>|agent-skill:<candidate-id>@<version>|agent-skill-package:<candidate-id>@<version>|baseline \
   --actor <label> --dry-run
 ```
 
 The unqualified version locator preserves the legacy prompt meaning. The `agent-skill:` locator
-selects a stored Agent Skill candidate revision. Apply requires the exact rollback proposal digest.
-Flow verifies the target artifact before it changes the head. Rollback does not rewrite a baseline
-file or package, change active runs, or delete artifacts.
+selects a stored Agent Skill resource candidate revision. The `agent-skill-package:` locator selects
+a stored package-introduction revision. Apply requires the exact rollback proposal digest. Flow
+verifies the target artifact before it changes the head. Rollback does not rewrite a baseline file
+or package, change active runs, or delete artifacts.
 
 ## Current limitations
 
@@ -1631,7 +1697,10 @@ file or package, change active runs, or delete artifacts.
 - Agent mutation is limited to exact single-file edit of an existing UTF-8 file plus explicitly selected, argv-only sandboxed commands. No direct create, delete, rename, shell, network, fuzzy patch, environment/cwd override, interactive process, background job, or multi-file transaction tool is exposed.
 - No opaque continuation after a process dies during an in-flight Pi tool call. Live approval works only while the owning attached process or detached worker retains that Pi session. A fresh retry is a new attempt and is allowed only by the persisted proof gate; it is not a substitute for restoring a live session.
 - Model verifiers, including packaged rubrics, are zero-tool and evidence-bounded but remain probabilistic and not prompt-injection-proof. Arbitrary evaluator code and reward/evaluation environments are not supported.
-- Adaptive candidates are prompt-only, root-agent overlays. Automatic skill, memory, sub-agent, and
-  routing candidates remain unavailable. Traffic splitting and staged rollout remain unavailable.
+- Adaptive candidates support root-agent prompt overlays, selected-resource changes in one existing
+  Agent Skill, and one new inert Agent Skill package. One root agent selects that new package.
+  Automatic skill, memory, sub-agent, and routing candidates remain unavailable. Package
+  installation, signing, publication, executable generation, and multi-skill candidates remain
+  unavailable. Traffic splitting and staged rollout also remain unavailable.
 - No prepaid hard model-cost cap, provider invoice reconciliation, or CPU/memory/disk quota. `maxArtifactBytes` bounds logical retained evidence, not physical storage, spill, or disk usage. Per-run graph-node concurrency, detached worker count, and queue depth are separate bounded controls.
 - No schema migration path is promised while the format remains `v1alpha1`.

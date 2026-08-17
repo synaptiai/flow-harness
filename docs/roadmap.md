@@ -21,10 +21,11 @@ installation are implemented.
 Flow supports paired harness evaluation with fixed controls, fresh fixtures, private verification,
 digest-chained evidence, offline reports, and constrained comparison.
 
-Gate 7 includes tuning-only prompt and Agent Skill candidates. It also includes zero-tool prompt
-and selected-resource Agent Skill generation, exact prompt overlays, authority-preserving
-skill-resource projections, paired
-evaluation, reviewed prompt activation, durable run snapshots, and rollback.
+Gate 7 includes tuning-only prompt and Agent Skill candidates. It includes zero-tool prompt,
+selected-resource Agent Skill, and bounded Agent Skill package generation. It also includes exact
+prompt overlays and authority-preserving skill-resource projections. New single-skill package
+projections, paired evaluation, reviewed activation, durable run snapshots, and rollback are also
+implemented.
 
 Remaining targets include executable extensions, automatic package activation, remote or multi-user
 UI hosts, and stronger isolation.
@@ -152,9 +153,13 @@ containment milestone. It is not VM-grade or multi-tenant isolation.
   with an explicit existing-resource allowlist and one zero-tool model turn. Activation uses
   operator preview and exact apply.)*
 
-- Memory, sub-agent, and routing candidates remain planned. Agent Skill package synthesis,
-  installation, publication, executable-resource generation, and multi-skill candidates remain
-  planned.
+- Flow can generate and validate one evidence-bound Agent Skill package candidate for a workflow
+  that selects no skill. *(Implemented as a bounded review directory and one zero-tool model turn.
+  The operator owns a content-free blueprint for 1–16 inert UTF-8 files. Exact paired evaluation,
+  reviewed activation, durable offline execution, and rollback restore the package-free baseline.)*
+
+- Memory, sub-agent, and routing candidates remain planned. Agent Skill installation, signing,
+  publication, executable-resource generation, and multi-skill candidates remain planned.
 
 - Prompt and Agent Skill candidates use the paired held-out and regression evaluation gate. *(Implemented.)*
 
@@ -162,9 +167,10 @@ containment milestone. It is not VM-grade or multi-tenant isolation.
   preview, exact apply, paired artifacts, and baseline or version rollback.)*
 
 - Base safety, workflow semantics, and evaluator definitions remain immutable during a candidate
-  run. *(Implemented for prompt projection and one-skill resource projection. Candidates cannot
-  change the graph, models, tools, selection, or package authority. They cannot change policy,
-  approvals, budgets, verifiers, retry behavior, or runtime semantics.)*
+  run. *(Implemented for prompt projection, one-skill resource projection, and one new-skill
+  package projection. Candidates cannot change the graph, models, tools, package authority, policy,
+  approvals, budgets, verifiers, retry behavior, or runtime semantics. Package introduction changes
+  only one root agent selection from no skill to the exact generated skill.)*
 
 ## Product benchmark gate
 
