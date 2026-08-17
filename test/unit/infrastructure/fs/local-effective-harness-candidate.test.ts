@@ -1,4 +1,4 @@
-import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -60,6 +60,38 @@ describe("local effective harness candidate admission", () => {
       }),
     ).rejects.toBe(reason);
   });
+
+  it("rejects an ancestor link and a leaf replacement after the stable read", async () => {
+    const root = await temporaryDirectory();
+    const external = await temporaryDirectory();
+    const nested = join(external, "nested");
+    await mkdir(nested);
+    const externalCandidate = join(nested, "candidate.json");
+    await writeFile(
+      externalCandidate,
+      encodeEffectiveHarnessCandidateArtifact(candidateArtifact()),
+    );
+    await symlink(external, join(root, "alias"), "dir");
+
+    await expect(
+      admitLocalEffectiveHarnessCandidate(join(root, "alias", "nested", "candidate.json")),
+    ).rejects.toMatchObject({ code: "invalid_path" });
+
+    const directCandidate = join(root, "candidate.json");
+    const movedCandidate = join(root, "candidate.original.json");
+    await writeFile(directCandidate, encodeEffectiveHarnessCandidateArtifact(candidateArtifact()));
+    await expect(
+      admitLocalEffectiveHarnessCandidate(directCandidate, {
+        afterRead: async () => {
+          await rename(directCandidate, movedCandidate);
+          await writeFile(
+            directCandidate,
+            encodeEffectiveHarnessCandidateArtifact(candidateArtifact()),
+          );
+        },
+      }),
+    ).rejects.toMatchObject({ code: "source_changed" });
+  });
 });
 
 function candidateArtifact() {
@@ -89,7 +121,7 @@ function candidateArtifact() {
 }
 
 async function temporaryDirectory(): Promise<string> {
-  const path = await mkdtemp(join(tmpdir(), "flow-effective-candidate-"));
+  const path = await realpath(await mkdtemp(join(tmpdir(), "flow-effective-candidate-")));
   temporaryDirectories.push(path);
   return path;
 }

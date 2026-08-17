@@ -1,6 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { type FileHandle, link, mkdir, open, realpath, rename, unlink } from "node:fs/promises";
+import {
+  type FileHandle,
+  link,
+  lstat,
+  mkdir,
+  open,
+  realpath,
+  rename,
+  unlink,
+} from "node:fs/promises";
 import { join } from "node:path";
 
 import { z } from "zod";
@@ -514,12 +523,29 @@ interface EffectiveHarnessStorePaths {
 
 async function storePaths(projectRoot: string): Promise<EffectiveHarnessStorePaths> {
   const flowDirectory = join(await realpath(projectRoot), ".flow");
-  return {
+  const paths = {
     root: join(flowDirectory, "effective-harness"),
     states: join(flowDirectory, "effective-harness", "states"),
     artifacts: join(flowDirectory, "effective-harness", "artifacts"),
     indexPath: join(flowDirectory, "effective-harness", "index.json"),
   };
+  for (const path of [flowDirectory, paths.root, paths.states, paths.artifacts]) {
+    await assertSafeExistingDirectory(path);
+  }
+  return paths;
+}
+
+async function assertSafeExistingDirectory(path: string): Promise<void> {
+  try {
+    const metadata = await lstat(path);
+    if (metadata.isSymbolicLink() || !metadata.isDirectory() || (await realpath(path)) !== path) {
+      throw new EffectiveHarnessStoreError("unsafe_state", "effective harness path is unsafe");
+    }
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") return;
+    if (error instanceof EffectiveHarnessStoreError) throw error;
+    throw new EffectiveHarnessStoreError("unsafe_state", "effective harness path is unsafe");
+  }
 }
 
 async function ensureStorePaths(flowDirectory: string): Promise<EffectiveHarnessStorePaths> {

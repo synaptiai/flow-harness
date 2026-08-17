@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -21,7 +21,7 @@ afterEach(async () => {
 
 describe("local adaptation candidate dispatch", () => {
   it("dispatches one exact effective harness artifact and rejects replacement", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "flow-adaptation-candidate-"));
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "flow-adaptation-candidate-")));
     temporaryDirectories.push(directory);
     const path = join(directory, "candidate.json");
     const artifact = effectiveHarnessCandidateArtifactFixture();

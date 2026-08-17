@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, unlink } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -33,6 +33,16 @@ afterEach(async () => {
 });
 
 describe("local effective harness store", () => {
+  it("rejects a symbolic-link store root before reading an index", async () => {
+    const root = await temporaryDirectory();
+    const external = await temporaryDirectory();
+    await symlink(external, join(root, ".flow", "effective-harness"), "dir");
+
+    await expect(new LocalEffectiveHarnessStore(root).list()).rejects.toMatchObject({
+      code: "unsafe_state",
+    });
+  });
+
   it("rejects a complete candidate from another canonical project scope", async () => {
     const sourceRoot = await temporaryDirectory();
     const targetRoot = await temporaryDirectory();

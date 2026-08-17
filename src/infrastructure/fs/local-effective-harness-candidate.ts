@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { type BigIntStats, constants } from "node:fs";
 import { type FileHandle, lstat, open } from "node:fs/promises";
-import { basename, resolve } from "node:path";
+import { basename, dirname, join, parse, relative, resolve, sep } from "node:path";
 
 import {
   type EffectiveHarnessCandidateArtifact,
@@ -47,6 +47,10 @@ export async function admitLocalEffectiveHarnessCandidate(
 ): Promise<AdmittedLocalEffectiveHarnessCandidate> {
   options.signal?.throwIfAborted();
   const absolutePath = resolve(candidatePath);
+  const directoryObservations = await observeLexicalDirectories(
+    dirname(absolutePath),
+    options.signal,
+  );
   let lexical: BigIntStats;
   try {
     lexical = await lstat(absolutePath, { bigint: true });
@@ -116,6 +120,24 @@ export async function admitLocalEffectiveHarnessCandidate(
     }
     await options.afterRead?.();
     options.signal?.throwIfAborted();
+    await revalidateLexicalDirectories(directoryObservations, options.signal);
+    let current: BigIntStats;
+    try {
+      current = await lstat(absolutePath, { bigint: true });
+    } catch {
+      options.signal?.throwIfAborted();
+      throw new LocalEffectiveHarnessCandidateError(
+        "source_changed",
+        "effective harness candidate source changed after it was read",
+      );
+    }
+    options.signal?.throwIfAborted();
+    if (current.isSymbolicLink() || !sameIdentity(lexical, current)) {
+      throw new LocalEffectiveHarnessCandidateError(
+        "source_changed",
+        "effective harness candidate source changed after it was read",
+      );
+    }
     let raw: unknown;
     try {
       raw = parseStrictJson(new TextDecoder("utf-8", { fatal: true }).decode(content), {
@@ -145,6 +167,76 @@ export async function admitLocalEffectiveHarnessCandidate(
     });
   } finally {
     await handle.close();
+  }
+}
+
+interface DirectoryObservation {
+  readonly path: string;
+  readonly identity: BigIntStats;
+}
+
+async function observeLexicalDirectories(
+  path: string,
+  signal?: AbortSignal,
+): Promise<readonly DirectoryObservation[]> {
+  signal?.throwIfAborted();
+  const anchor = parse(path).root;
+  const components = relative(anchor, path).split(sep).filter(Boolean);
+  const observations: DirectoryObservation[] = [];
+  let current = anchor;
+  for (const component of ["", ...components]) {
+    signal?.throwIfAborted();
+    if (component !== "") current = join(current, component);
+    let identity: BigIntStats;
+    try {
+      identity = await lstat(current, { bigint: true });
+    } catch {
+      signal?.throwIfAborted();
+      throw new LocalEffectiveHarnessCandidateError(
+        "invalid_path",
+        "effective harness candidate ancestry is unavailable",
+      );
+    }
+    signal?.throwIfAborted();
+    if (identity.isSymbolicLink() || !identity.isDirectory()) {
+      throw new LocalEffectiveHarnessCandidateError(
+        "invalid_path",
+        "effective harness candidate ancestry must contain only direct directories",
+      );
+    }
+    observations.push({ path: current, identity });
+  }
+  return observations;
+}
+
+async function revalidateLexicalDirectories(
+  observations: readonly DirectoryObservation[],
+  signal?: AbortSignal,
+): Promise<void> {
+  for (const observation of observations) {
+    signal?.throwIfAborted();
+    let current: BigIntStats;
+    try {
+      current = await lstat(observation.path, { bigint: true });
+    } catch {
+      signal?.throwIfAborted();
+      throw new LocalEffectiveHarnessCandidateError(
+        "source_changed",
+        "effective harness candidate ancestry changed",
+      );
+    }
+    signal?.throwIfAborted();
+    if (
+      current.isSymbolicLink() ||
+      !current.isDirectory() ||
+      current.dev !== observation.identity.dev ||
+      current.ino !== observation.identity.ino
+    ) {
+      throw new LocalEffectiveHarnessCandidateError(
+        "source_changed",
+        "effective harness candidate ancestry changed",
+      );
+    }
   }
 }
 
