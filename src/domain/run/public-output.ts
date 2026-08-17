@@ -26,8 +26,22 @@ function projectCapabilitySnapshot(
       if (key === "activations") {
         return [key, projectActivations(item)];
       }
+      if (key === "effectiveHarness") {
+        return [key, projectEffectiveHarness(item)];
+      }
       return [key, item];
     }),
+  );
+}
+
+function projectEffectiveHarness(value: unknown): unknown {
+  if (!isRecord(value) || value.kind !== "effective-harness-runtime") {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) =>
+      key === "workflow" ? [key, omitContentBase64(item)] : [key, item],
+    ),
   );
 }
 

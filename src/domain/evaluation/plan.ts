@@ -83,6 +83,14 @@ const profileSchema = z.union([
   z
     .object({
       id: identifierSchema,
+      adapter: z.literal("flow-workflow-v1"),
+      effectiveCandidate: canonicalRelativePathSchema,
+      selection: z.enum(["baseline", "candidate"]),
+    })
+    .strict(),
+  z
+    .object({
+      id: identifierSchema,
       adapter: z.literal("pi-native-v1"),
       harness: z.object({ config: z.literal("pi-evaluation-v1") }).strict(),
     })
@@ -269,7 +277,9 @@ export type EvaluationProfileIdentity =
         readonly sourceKind?:
           | "prompt-candidate-projection"
           | "agent-skill-candidate-projection"
-          | "agent-skill-package-candidate-projection";
+          | "agent-skill-package-candidate-projection"
+          | "effective-harness-baseline"
+          | "effective-harness-candidate-projection";
         readonly provenance: string;
         readonly sourceSha256: string;
         readonly workflowDigest: string;
@@ -282,6 +292,17 @@ export type EvaluationProfileIdentity =
           | PromptCandidateIdentity
           | AgentSkillCandidateIdentity
           | AgentSkillPackageCandidateIdentity;
+      };
+      readonly effectiveHarness?: {
+        readonly selection: "baseline" | "candidate";
+        readonly artifactDigest: string;
+        readonly stateDigest: string;
+        readonly baselineHeadDigest: string;
+        readonly workflowSha256: string;
+        readonly workflowDigest: string;
+        readonly packageDigests: readonly string[];
+        readonly surface: "prompt" | "agent-skill-resource" | "agent-skill-package";
+        readonly candidateDigest: string;
       };
     }
   | ExternalEvaluationProfileIdentity;

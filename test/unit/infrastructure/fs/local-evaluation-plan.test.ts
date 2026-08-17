@@ -4,10 +4,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { projectEffectiveHarnessCandidate } from "../../../../src/application/prepare-effective-harness-candidate.js";
 import {
   type AgentSkillCandidateIdentity,
   calculateAgentSkillCandidateIdentityDigest,
 } from "../../../../src/domain/adaptation/agent-skill-candidate.js";
+import {
+  createEffectiveHarnessCandidateArtifact,
+  encodeEffectiveHarnessCandidateArtifact,
+} from "../../../../src/domain/adaptation/effective-harness-candidate.js";
+import {
+  createEffectiveHarnessHeadIdentity,
+  createEffectiveHarnessState,
+} from "../../../../src/domain/adaptation/effective-harness-state.js";
 import {
   calculateEvaluationPlanDigest,
   createEvaluationSchedule,
@@ -17,6 +26,7 @@ import { createEvaluationTrialRecord } from "../../../../src/domain/evaluation/r
 import { createTuningEvidencePacket } from "../../../../src/domain/evaluation/tuning-evidence.js";
 import { compileWorkflowText } from "../../../../src/domain/workflow/compiler.js";
 import { calculateWorkflowDigest } from "../../../../src/domain/workflow/digest.js";
+import { admitLocalAdaptationCandidate } from "../../../../src/infrastructure/fs/local-adaptation-candidate.js";
 import {
   discoverProjectAgentSkills,
   snapshotSelectedAgentSkills,
@@ -30,6 +40,7 @@ import {
   LocalEvaluationStore,
   type PublicEvaluationHeader,
 } from "../../../../src/infrastructure/fs/local-evaluation-store.js";
+import { effectiveHarnessCandidateArtifactFixture } from "../../../fixtures/effective-harness-evaluation.js";
 import { primeExternalHarnessIdentity } from "../../../fixtures/evaluation/prime-external-harness-identity.js";
 
 const temporaryDirectories: string[] = [];
@@ -100,6 +111,135 @@ describe("local evaluation plan admission", () => {
       "baseline",
     ]);
     expect(Object.isFrozen(admitted)).toBe(true);
+  });
+
+  it("selects one immutable effective harness artifact as the exact baseline and candidate pair", async () => {
+    const project = await evaluationProject();
+    await configureCandidateProfile(project);
+    const legacyCandidate = await admitLocalAdaptationCandidate(
+      join(project, "better.prompt-candidate.yaml"),
+    );
+    if (legacyCandidate.kind !== "prompt-candidate") {
+      throw new Error("effective harness evaluation fixture is not a prompt candidate");
+    }
+    const baselineSource = await readFile(join(project, "baseline.workflow.yaml"), "utf8");
+    const baselineState = createEffectiveHarnessState({
+      scopeDigest: "a".repeat(64),
+      workflowSource: baselineSource,
+      packages: [],
+    });
+    const projected = projectEffectiveHarnessCandidate({
+      baseline: baselineState,
+      candidate: {
+        kind: "prompt",
+        projection: legacyCandidate.candidate,
+        baselineWorkflowSource: baselineSource,
+      },
+    });
+    const artifact = createEffectiveHarnessCandidateArtifact({
+      baselineHead: createEffectiveHarnessHeadIdentity({
+        scopeDigest: baselineState.scopeDigest,
+        workflowId: baselineState.workflowId,
+        generation: 7,
+        activationDigest: "b".repeat(64),
+        transitionDigest: "c".repeat(64),
+        stateDigest: baselineState.stateDigest,
+      }),
+      baselineState,
+      candidateState: projected.state,
+      candidate: legacyCandidate.candidate.identity,
+    });
+    await writeFile(
+      join(project, "candidate.effective-harness.json"),
+      encodeEffectiveHarnessCandidateArtifact(artifact),
+    );
+    const plan = await readFile(join(project, "evaluation.yaml"), "utf8");
+    await writeFile(
+      join(project, "evaluation.yaml"),
+      plan.replace(
+        /profiles:[\s\S]*?controls:/,
+        `profiles:
+  - { id: baseline, adapter: flow-workflow-v1, effectiveCandidate: candidate.effective-harness.json, selection: baseline }
+  - { id: candidate, adapter: flow-workflow-v1, effectiveCandidate: candidate.effective-harness.json, selection: candidate }
+controls:`,
+      ),
+    );
+
+    const admitted = await admitLocalEvaluationPlan(join(project, "evaluation.yaml"));
+    await rm(join(project, "candidate.effective-harness.json"));
+
+    const [baseline, candidate] = admitted.profiles;
+    expect(baseline).toMatchObject({
+      id: "baseline",
+      adapter: "flow-workflow-v1",
+      workflow: {
+        sourceKind: "effective-harness-baseline",
+        workflowDigest: artifact.baselineState.workflow.workflowDigest,
+      },
+      effectiveHarness: {
+        selection: "baseline",
+        artifactDigest: artifact.artifactDigest,
+        stateDigest: artifact.baselineState.stateDigest,
+        baselineHeadDigest: artifact.baselineHead.headDigest,
+      },
+    });
+    expect(candidate).toMatchObject({
+      id: "candidate",
+      adapter: "flow-workflow-v1",
+      workflow: {
+        sourceKind: "effective-harness-candidate-projection",
+        workflowDigest: artifact.candidateState.workflow.workflowDigest,
+      },
+      candidate: { candidateDigest: artifact.candidate.candidateDigest },
+      effectiveHarness: {
+        selection: "candidate",
+        artifactDigest: artifact.artifactDigest,
+        stateDigest: artifact.candidateState.stateDigest,
+        baselineHeadDigest: artifact.baselineHead.headDigest,
+      },
+    });
+    expect(admitted.planDigest).toMatch(/^[a-f0-9]{64}$/);
+    const header = createPublicEvaluationHeader(admitted, "effective-harness-evaluation");
+    expect(JSON.stringify(header)).not.toContain("contentBase64");
+    expect(header.profiles).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "baseline",
+          effectiveHarness: expect.objectContaining({
+            selection: "baseline",
+            stateDigest: artifact.baselineState.stateDigest,
+          }),
+        }),
+        expect.objectContaining({
+          id: "candidate",
+          effectiveHarness: expect.objectContaining({
+            selection: "candidate",
+            stateDigest: artifact.candidateState.stateDigest,
+          }),
+        }),
+      ]),
+    );
+    const store = new LocalEvaluationStore(join(project, "evaluations"));
+    await store.create(header);
+    await expect(store.read("effective-harness-evaluation")).resolves.toMatchObject({ header });
+  });
+
+  it("rejects an effective harness artifact through the legacy candidate field", async () => {
+    const project = await evaluationProject();
+    await configureCandidateProfile(project);
+    await writeFile(
+      join(project, "candidate.effective-harness.json"),
+      encodeEffectiveHarnessCandidateArtifact(effectiveHarnessCandidateArtifactFixture()),
+    );
+    const plan = await readFile(join(project, "evaluation.yaml"), "utf8");
+    await writeFile(
+      join(project, "evaluation.yaml"),
+      plan.replace("better.prompt-candidate.yaml", "candidate.effective-harness.json"),
+    );
+
+    await expect(admitLocalEvaluationPlan(join(project, "evaluation.yaml"))).rejects.toThrow(
+      /requires the effectiveCandidate field/i,
+    );
   });
 
   it("keeps plan identity portable across different absolute project roots", async () => {

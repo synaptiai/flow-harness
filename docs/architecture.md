@@ -1061,25 +1061,57 @@ An operator can activate only a complete superior evaluation. Preview creates a 
 proposal from the current head, target, actor, and reason. Apply holds one cross-process mutation
 lock and requires the exact proposal digest.
 
-The activation store contains immutable content-addressed artifacts, one atomic index, and a
-hash-chained transition history. Each approval stores one candidate artifact and its exact baseline
-artifact. The index selects one exact artifact for each workflow. The store validates limits before
-it publishes both artifacts and replaces the index.
+Legacy activation remains unchanged. Its store contains immutable content-addressed artifacts, one
+atomic index, and a hash-chained transition history. Existing readers preserve the original bytes,
+digests, public views, execution behavior, and rollback selectors.
 
-New runs can use `activation:<workflow-id>`. Run admission validates the selected artifact and
-requires one matching activation in the capability snapshot. Prompt artifacts bind exact decoded
-source bytes. Agent Skill resource artifacts bind the unchanged workflow and exact selected package.
-Agent Skill package artifacts bind the projected workflow and exact generated package. Their paired
-baseline artifacts bind the original workflow and no package. The run stores the artifact and
-package state in its capability snapshot. Detached execution and resume use that saved snapshot,
-not the current index, review directory, blueprint, evidence, or live skill catalog.
+The effective harness layer composes later reviewed changes. `candidate compose` reads one ordinary
+candidate, the exact current head, and its complete state. It projects only the declared prompt,
+Agent Skill resource, or generated Agent Skill package surface. The resulting immutable artifact
+contains the complete baseline state, complete candidate state, baseline head, candidate identity,
+and one content-free surface delta.
+
+Composition authenticates the ordinary candidate against its own immutable baseline before it
+rebases that one declared surface onto the current complete state. Prompt rebasing copies only the
+declared prompt fields. Resource rebasing replaces only the exact selected package. Generated
+package rebasing changes only the declared empty-to-selected skill field and adds that package.
+The current target must equal the candidate's before-state, so an orthogonal reviewed change is
+retained while a stale same-surface candidate fails closed.
+
+An effective state contains exact workflow bytes and the complete ordered non-policy package
+closure. The state excludes policy packages and nested activation objects. Its digest binds the
+canonical project scope, workflow identity, optional root workflow package, and every package. The
+head also binds the workflow, generation, selected state, selected activation, and last transition.
+This prevents an ABA change from presenting an old state as the current baseline.
+
+The effective store writes state and candidate dependencies before it replaces one atomic index.
+The index retains every activated state, artifact, transition, and workflow origin. Staged states
+and artifacts remain inert physical inventory until activation and count toward the same fixed
+store ceilings. History is hash-chained.
+Apply rechecks the exact head under the shared activation mutation lock. A pre-head failure keeps
+the old head authoritative.
+
+A post-head failure reopens the durable index. It reports a settled or uncertain result. This
+release performs no automatic garbage collection.
+
+New runs can use `activation:<workflow-id>`. Admission prefers an effective head and falls back to
+the legacy store only when no effective head exists. Effective admission reconstructs the selected
+state from its workflow bytes, ordered package closure, and compact runtime proof. It rejects
+missing, extra, reordered, or substituted packages. Current policy packages are then applied as a
+separate overlay and are not part of the rollbackable state.
+
+The run stores the complete selected workflow, packages, content-free head, and runtime proof in its
+capability snapshot. Attached execution, detached workers, child ledgers, resume, recovery, replay,
+and public inspection use that saved snapshot. They do not read the current index, review directory,
+blueprint, evidence, registry, credentials, or live skill catalog.
 
 Attached execution protects the canonical project `.flow` directory. A detached job stores the same
 protected path in its immutable record. The worker gives the saved path to each node executor.
 
-Rollback changes the index head for future runs. It selects an earlier candidate artifact or the
-stored baseline artifact for the current lineage. It does not change active runs, rewrite the
-baseline file, or delete artifacts.
+Effective rollback appends a distinct transition and selects any retained complete state by digest.
+It changes only the head for future runs. It does not change active runs, restore prior policy,
+rewrite source files, or delete retained dependencies. Once a workflow has an effective head, the
+legacy writer and legacy rollback selectors cannot replace it.
 
 A prompt candidate cannot change graphs, tools, skills, packages, models, policy, approvals,
 budgets, verifiers, retries, or routing. An Agent Skill candidate can change only declared existing

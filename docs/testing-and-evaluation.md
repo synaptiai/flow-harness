@@ -339,6 +339,15 @@ They reject aggregate temporary bytes above each index and blob limit.
 They reject a blob temporary file that is one byte above its per-file limit.
 They also cover history tampering, source bounds, resource bounds, transition limits, and unknown rollback targets.
 
+Effective-harness tests evaluate complete before and after states. They do not evaluate isolated
+surface deltas. They cover both composition orders and exact current-head revalidation. Store tests
+cover publication order, exact retry settlement, retained-state rollback, and project-scope binding.
+They also cover ancestor links, source replacement, cancellation, and content-free public views.
+
+Runtime tests remove the live effective store. They exercise attached resume, detached worker
+execution, and child capability binding. They also cover replay and current-policy rejection from
+the frozen snapshot.
+
 Run tests cover durable activation replay, source loss, live-head changes, detached execution, and resume.
 Detached admission tests reject activation locators with missing evidence or changed source bytes.
 Model-context tests reject candidate, evaluation, activation, and source data in the model system prompt.

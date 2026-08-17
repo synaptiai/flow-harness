@@ -1,5 +1,7 @@
 import { agentSkillActivationWorkflow } from "../domain/adaptation/agent-skill-activation.js";
 import { agentSkillPackageActivationWorkflow } from "../domain/adaptation/agent-skill-package-activation.js";
+import { restoreEffectiveHarnessRuntimeState } from "../domain/adaptation/effective-harness-runtime.js";
+import { effectiveHarnessWorkflowSource } from "../domain/adaptation/effective-harness-state.js";
 import {
   parsePromptActivationLocator,
   promptActivationSource,
@@ -67,30 +69,41 @@ export function compileWorkflowFromSnapshot(
       ? undefined
       : validateCapabilitySnapshot(input.capabilitySnapshot);
   const activationLocator = parsePromptActivationLocator(input.sourceName);
+  let sourcePackage: CompiledWorkflowPackageReference | undefined;
   if (activationLocator !== null) {
-    const selected =
-      snapshot?.activations?.filter((item) => item.workflowId === activationLocator.workflowId) ??
-      [];
-    const exactActivation = selected[0];
-    if (selected.length !== 1 || exactActivation === undefined) {
-      throw new Error(
-        `capability snapshot does not contain one exact activation for workflow "${activationLocator.workflowId}"`,
-      );
-    }
-    const activationSource =
-      exactActivation.kind === "agent-skill-activation"
-        ? agentSkillActivationWorkflow(exactActivation)
-        : exactActivation.kind === "agent-skill-package-activation"
-          ? agentSkillPackageActivationWorkflow(exactActivation)
-          : promptActivationSource(exactActivation);
-    if (activationSource !== input.source) {
-      throw new Error(
-        `activation for workflow "${activationLocator.workflowId}" source does not match its exact snapshot`,
-      );
+    const effectiveHarness = snapshot?.effectiveHarness;
+    if (effectiveHarness?.workflowId === activationLocator.workflowId && snapshot !== undefined) {
+      const state = restoreEffectiveHarnessRuntimeState(effectiveHarness, snapshot.packages);
+      if (effectiveHarnessWorkflowSource(state) !== input.source) {
+        throw new Error(
+          `activation for workflow "${activationLocator.workflowId}" source does not match its exact snapshot`,
+        );
+      }
+      sourcePackage = state.rootPackage;
+    } else {
+      const selected =
+        snapshot?.activations?.filter((item) => item.workflowId === activationLocator.workflowId) ??
+        [];
+      const exactActivation = selected[0];
+      if (selected.length !== 1 || exactActivation === undefined) {
+        throw new Error(
+          `capability snapshot does not contain one exact activation for workflow "${activationLocator.workflowId}"`,
+        );
+      }
+      const activationSource =
+        exactActivation.kind === "agent-skill-activation"
+          ? agentSkillActivationWorkflow(exactActivation)
+          : exactActivation.kind === "agent-skill-package-activation"
+            ? agentSkillPackageActivationWorkflow(exactActivation)
+            : promptActivationSource(exactActivation);
+      if (activationSource !== input.source) {
+        throw new Error(
+          `activation for workflow "${activationLocator.workflowId}" source does not match its exact snapshot`,
+        );
+      }
     }
   }
   const locator = parseWorkflowPackageLocator(input.sourceName);
-  let sourcePackage: CompiledWorkflowPackageReference | undefined;
   if (locator !== null) {
     const selected = snapshot?.packages.find(
       (item): item is WorkflowPackageSnapshot =>

@@ -75,6 +75,14 @@ import {
   createAgentSkillPackageActivationFromEvaluation,
 } from "../application/prepare-agent-skill-package-activation.js";
 import {
+  EffectiveHarnessActivationAdmissionError,
+  prepareEffectiveHarnessActivation,
+} from "../application/prepare-effective-harness-activation.js";
+import {
+  loadEffectiveHarnessCandidateBaseline,
+  projectEffectiveHarnessCandidate,
+} from "../application/prepare-effective-harness-candidate.js";
+import {
   createPromptActivationFromEvaluation,
   PromptActivationAdmissionError,
 } from "../application/prepare-prompt-activation.js";
@@ -121,6 +129,17 @@ import {
   prepareAgentSkillPackageCandidateGeneration,
 } from "../domain/adaptation/agent-skill-package-candidate-generation.js";
 import {
+  createEffectiveHarnessCandidateArtifact,
+  type EffectiveHarnessCandidateArtifact,
+} from "../domain/adaptation/effective-harness-candidate.js";
+import { restoreEffectiveHarnessRuntimeState } from "../domain/adaptation/effective-harness-runtime.js";
+import {
+  compileEffectiveHarnessState,
+  type EffectiveHarnessHeadIdentity,
+  type EffectiveHarnessState,
+  effectiveHarnessWorkflowSource,
+} from "../domain/adaptation/effective-harness-state.js";
+import {
   PromptActivationError,
   parsePromptActivationLocator,
   promptActivationSource,
@@ -141,6 +160,7 @@ import {
   type CapabilitySnapshot,
   calculateCapabilitySnapshotDigest,
   combineCapabilitySnapshots,
+  createEffectiveHarnessCapabilitySnapshot,
   type PolicyPackageCapabilitySnapshot,
   validateCapabilitySnapshot,
 } from "../domain/capability/agent-skills.js";
@@ -251,6 +271,11 @@ import {
   LocalCapabilityPackageStore,
 } from "../infrastructure/fs/local-capability-package-store.js";
 import { LocalCapabilityRepositoryStore } from "../infrastructure/fs/local-capability-repository-store.js";
+import {
+  calculateLocalEffectiveHarnessScopeDigest,
+  EffectiveHarnessStoreError,
+  LocalEffectiveHarnessStore,
+} from "../infrastructure/fs/local-effective-harness-store.js";
 import {
   admitLocalEvaluationPlan,
   EvaluationAdmissionError,
@@ -414,11 +439,12 @@ Usage:
   flow candidate generate <baseline> <evidence>... --output <candidate.yaml> --id <id> --version <semver> --allow-nodes <id,...> --provider <provider> --model <model> [--thinking <level>] [--timeout-ms <count>] [--max-output-tokens <count>]
   flow candidate generate <baseline> <evidence>... --output <candidate.yaml> --id <id> --version <semver> --skill <name> --allow-resources <path,...> --provider <provider> --model <model> [--thinking <level>] [--timeout-ms <count>] [--max-output-tokens <count>]
   flow candidate generate <baseline> <evidence>... --output <candidate-directory> --id <id> --version <semver> --blueprint <blueprint.json> --provider <provider> --model <model> [--thinking <level>] [--timeout-ms <count>] [--max-output-tokens <count>]
+  flow candidate compose <candidate.yaml>
   flow candidate validate <candidate.yaml>
   flow candidate activate <candidate.yaml> --evaluation <id> --actor <label> [--reason <text>] [--evaluations-dir <path>] <--dry-run|--expected-digest <sha256>>
   flow activation list
   flow activation inspect <workflow-id>
-  flow activation rollback <workflow-id> --to <candidate-id>@<version>|agent-skill:<candidate-id>@<version>|baseline --actor <label> [--reason <text>] <--dry-run|--expected-digest <sha256>>
+  flow activation rollback <workflow-id> --to state:<sha256>|<candidate-id>@<version>|agent-skill:<candidate-id>@<version>|baseline --actor <label> [--reason <text>] <--dry-run|--expected-digest <sha256>>
   flow eval validate <plan.yaml>
   flow eval run <plan.yaml> [--evaluation-id <id>] [--evaluations-dir <path>]
   flow eval inspect <evaluation-id> [--evaluations-dir <path>]
@@ -757,9 +783,11 @@ export async function main(
       error instanceof AgentSkillActivationAdmissionError ||
       error instanceof AgentSkillPackageActivationError ||
       error instanceof AgentSkillPackageActivationAdmissionError ||
+      error instanceof EffectiveHarnessActivationAdmissionError ||
       error instanceof PromptActivationError ||
       error instanceof PromptActivationAdmissionError ||
-      error instanceof PromptActivationStoreError
+      error instanceof PromptActivationStoreError ||
+      error instanceof EffectiveHarnessStoreError
     ) {
       io.stderr(`${error.code}: ${boundedCliDiagnostic(error.message)}`);
       return 1;
@@ -2786,7 +2814,93 @@ async function candidateCommand(
     const admitted = await admitLocalAdaptationCandidate(resolve(cwd, candidatePath), {
       ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
     });
-    io.stdout(JSON.stringify({ valid: true, candidate: admitted.candidate.identity }, null, 2));
+    io.stdout(
+      JSON.stringify({ valid: true, candidate: adaptationCandidateView(admitted) }, null, 2),
+    );
+    return 0;
+  }
+  if (subcommand === "compose") {
+    const { positionals } = parseCommandArgs(args.slice(1), {});
+    const candidatePath = requireSinglePositional(
+      positionals,
+      "candidate compose requires one candidate path",
+    );
+    const dependencies = configDependenciesFrom(overrides);
+    const config = await awaitWithCancellationPrecedence(
+      () => dependencies.loadConfig({ cwd: dependencies.cwd }),
+      overrides.signal,
+      "candidate composition was cancelled",
+    );
+    if (config.projectRoot === null) {
+      throw new EffectiveHarnessStoreError(
+        "not_found",
+        "effective harness composition requires a Flow project root",
+      );
+    }
+    const admitted = await admitLocalAdaptationCandidate(resolve(dependencies.cwd, candidatePath), {
+      ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
+    });
+    if (admitted.kind === "effective-harness-candidate") {
+      throw new EffectiveHarnessStoreError(
+        "invalid_input",
+        "effective harness composition requires one ordinary adaptation candidate",
+      );
+    }
+    const baseline = await loadCurrentEffectiveHarnessBaseline(
+      admitted.candidate.identity.scope.workflowId,
+      config,
+      overrides.signal,
+    );
+    const projected = projectEffectiveHarnessCandidate({
+      baseline: baseline.state,
+      candidate:
+        admitted.kind === "prompt-candidate"
+          ? {
+              kind: "prompt",
+              projection: admitted.candidate,
+              baselineWorkflowSource: admitted.candidate.baseline.sourceText,
+            }
+          : admitted.kind === "agent-skill-candidate"
+            ? {
+                kind: "agent-skill-resource",
+                projection: admitted.candidate,
+                baselineWorkflowSource: admitted.candidate.baseline.workflow.sourceText,
+              }
+            : {
+                kind: "agent-skill-package",
+                baselineWorkflowSource: admitted.candidate.baseline.sourceText,
+                projection: {
+                  identity: admitted.candidate.identity,
+                  workflow: admitted.candidate.workflow,
+                  baselineCapabilitySnapshot: undefined,
+                  candidateCapabilitySnapshot: admitted.candidate.candidateCapabilitySnapshot,
+                },
+              },
+    });
+    const artifact = createEffectiveHarnessCandidateArtifact({
+      baselineHead: baseline.head,
+      baselineState: baseline.state,
+      candidateState: projected.state,
+      candidate: admitted.candidate.identity,
+    });
+    throwIfAborted(overrides.signal, "candidate composition was cancelled");
+    const store = new LocalEffectiveHarnessStore(config.projectRoot);
+    const staged = await store.stageCandidate(artifact, overrides.signal);
+    io.stdout(
+      JSON.stringify(
+        {
+          composed: true,
+          candidate: effectiveHarnessCandidateView(artifact),
+          staged: {
+            path: relative(config.projectRoot, staged.path),
+            artifactDigest: staged.artifactDigest,
+            stateDigest: staged.stateDigest,
+          },
+        },
+        null,
+        2,
+      ),
+    );
     return 0;
   }
   if (subcommand === "activate") {
@@ -2814,7 +2928,6 @@ async function candidateCommand(
       overrides.signal,
       "candidate activation was cancelled",
     );
-    const store = promptActivationStore(config);
     const admitted = await awaitWithCancellationPrecedence(
       () =>
         admitLocalAdaptationCandidate(resolve(dependencies.cwd, candidatePath), {
@@ -2833,6 +2946,51 @@ async function candidateCommand(
       overrides.signal,
       "candidate activation was cancelled",
     );
+    if (admitted.kind === "effective-harness-candidate") {
+      const prepared = prepareEffectiveHarnessActivation({
+        artifact: admitted.candidate.artifact,
+        stored: evaluation,
+      });
+      const store = effectiveHarnessStore(config);
+      const input = {
+        prepared,
+        actor,
+        ...(values.reason === undefined ? {} : { reason: values.reason }),
+        ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
+      };
+      throwIfAborted(overrides.signal, "candidate activation was cancelled");
+      if (dryRun.enabled) {
+        const proposal = await store.previewActivate(input);
+        throwIfAborted(overrides.signal, "candidate activation was cancelled");
+        io.stdout(
+          JSON.stringify(
+            {
+              dryRun: true,
+              activation: adaptationCandidateView(admitted),
+              proposal,
+            },
+            null,
+            2,
+          ),
+        );
+        return 0;
+      }
+      io.stdout(
+        JSON.stringify(
+          await store.applyActivate({
+            ...input,
+            expectedDigest: requireStringOption(
+              values["expected-digest"],
+              "candidate activate requires --expected-digest <sha256>",
+            ),
+          }),
+          null,
+          2,
+        ),
+      );
+      return 0;
+    }
+    const store = promptActivationStore(config);
     const snapshots =
       admitted.kind === "prompt-candidate"
         ? createPromptActivationFromEvaluation(admitted.candidate, evaluation)
@@ -2913,7 +3071,7 @@ async function candidateCommand(
     );
     return 0;
   }
-  throw new CliUsageError("candidate requires generate, validate, or activate");
+  throw new CliUsageError("candidate requires generate, compose, validate, or activate");
 }
 
 async function activationCommand(
@@ -2929,12 +3087,25 @@ async function activationCommand(
     "activation command was cancelled",
   );
   const store = promptActivationStore(config);
+  const harnessStore = effectiveHarnessStore(config);
   if (subcommand === "list") {
     const { positionals } = parseCommandArgs(args.slice(1), {});
     if (positionals.length !== 0) {
       throw new CliUsageError("activation list accepts no arguments");
     }
-    io.stdout(JSON.stringify(await store.list(), null, 2));
+    const legacy = await store.list();
+    overrides.signal?.throwIfAborted();
+    const effectiveHarness = await harnessStore.list();
+    overrides.signal?.throwIfAborted();
+    io.stdout(
+      JSON.stringify(
+        effectiveHarness.heads.length === 0
+          ? legacy
+          : { ...legacy, effectiveHarness: effectiveHarnessIndexView(effectiveHarness) },
+        null,
+        2,
+      ),
+    );
     return 0;
   }
   if (subcommand === "inspect") {
@@ -2943,6 +3114,28 @@ async function activationCommand(
       positionals,
       "activation inspect requires one workflow id",
     );
+    const effectiveIndex = await harnessStore.list();
+    overrides.signal?.throwIfAborted();
+    const effectiveHead = effectiveIndex.heads.find((item) => item.workflowId === workflowId);
+    if (effectiveHead !== undefined) {
+      const active = await harnessStore.loadActive(workflowId);
+      overrides.signal?.throwIfAborted();
+      io.stdout(
+        JSON.stringify(
+          {
+            workflowId,
+            effectiveHarness: {
+              head: active.head,
+              history: effectiveIndex.history.filter((item) => item.workflowId === workflowId),
+              active: effectiveHarnessStateView(active.state),
+            },
+          },
+          null,
+          2,
+        ),
+      );
+      return 0;
+    }
     const index = await store.list();
     const head = index.heads.find((item) => item.workflowId === workflowId);
     if (head === undefined) {
@@ -2972,10 +3165,51 @@ async function activationCommand(
       "activation rollback requires one workflow id",
     );
     const actor = requireStringOption(values.actor, "activation rollback requires --actor <label>");
-    const target = parseRollbackSelection(
-      requireStringOption(values.to, "activation rollback requires --to <target>"),
+    const targetValue = requireStringOption(
+      values.to,
+      "activation rollback requires --to <target>",
     );
     requireMutationMode(dryRun.enabled, values["expected-digest"], "activation rollback");
+    const stateTargetDigest = parseEffectiveHarnessRollbackState(targetValue);
+    if (stateTargetDigest !== undefined) {
+      const input = {
+        workflowId,
+        targetStateDigest: stateTargetDigest,
+        actor,
+        ...(values.reason === undefined ? {} : { reason: values.reason }),
+        ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
+      };
+      if (dryRun.enabled) {
+        io.stdout(
+          JSON.stringify(
+            { dryRun: true, proposal: await harnessStore.previewRollback(input) },
+            null,
+            2,
+          ),
+        );
+        return 0;
+      }
+      io.stdout(
+        JSON.stringify(
+          await harnessStore.applyRollback({
+            ...input,
+            expectedDigest: requireStringOption(
+              values["expected-digest"],
+              "activation rollback requires --expected-digest <sha256>",
+            ),
+          }),
+          null,
+          2,
+        ),
+      );
+      return 0;
+    }
+    const effectiveIndex = await harnessStore.list();
+    overrides.signal?.throwIfAborted();
+    if (effectiveIndex.heads.some((item) => item.workflowId === workflowId)) {
+      throw new CliUsageError("effective harness rollback requires --to state:<sha256>");
+    }
+    const target = parseRollbackSelection(targetValue);
     const input = {
       workflowId,
       target,
@@ -3017,6 +3251,16 @@ function promptActivationStore(config: EffectiveFlowConfig): LocalPromptActivati
   return new LocalPromptActivationStore(config.projectRoot);
 }
 
+function effectiveHarnessStore(config: EffectiveFlowConfig): LocalEffectiveHarnessStore {
+  if (config.projectRoot === null) {
+    throw new EffectiveHarnessStoreError(
+      "not_found",
+      "effective harness activation requires a Flow project root",
+    );
+  }
+  return new LocalEffectiveHarnessStore(config.projectRoot);
+}
+
 function adaptiveActivationView(snapshot: AdaptiveActivationSnapshot) {
   if (snapshot.kind === "prompt-activation") {
     return Object.freeze({
@@ -3046,6 +3290,71 @@ function adaptiveActivationView(snapshot: AdaptiveActivationSnapshot) {
     ...(snapshot.skill === undefined
       ? {}
       : { skill: { name: snapshot.skill.name, digest: snapshot.skill.digest } }),
+  });
+}
+
+function adaptationCandidateView(
+  admitted: Awaited<ReturnType<typeof admitLocalAdaptationCandidate>>,
+) {
+  if (admitted.kind !== "effective-harness-candidate") {
+    return admitted.candidate.identity;
+  }
+  return effectiveHarnessCandidateView(admitted.candidate.artifact);
+}
+
+function effectiveHarnessCandidateView(artifact: EffectiveHarnessCandidateArtifact) {
+  return Object.freeze({
+    kind: artifact.kind,
+    artifactDigest: artifact.artifactDigest,
+    scopeDigest: artifact.scopeDigest,
+    workflowId: artifact.workflowId,
+    surface: artifact.surface,
+    candidate: artifact.candidate,
+    baselineHeadDigest: artifact.baselineHead.headDigest,
+    baselineStateDigest: artifact.baselineState.stateDigest,
+    candidateStateDigest: artifact.candidateState.stateDigest,
+  });
+}
+
+function effectiveHarnessIndexView(index: Awaited<ReturnType<LocalEffectiveHarnessStore["list"]>>) {
+  return Object.freeze({
+    version: index.version,
+    origins: index.origins,
+    states: index.states,
+    artifacts: index.artifacts,
+    heads: index.heads,
+    history: index.history.map((transition) =>
+      transition.action === "activate"
+        ? Object.freeze({ ...transition, artifactDigest: transition.toActivationDigest })
+        : transition,
+    ),
+    digest: index.digest,
+  });
+}
+
+function effectiveHarnessStateView(state: EffectiveHarnessState) {
+  return Object.freeze({
+    version: state.version,
+    kind: state.kind,
+    scopeDigest: state.scopeDigest,
+    workflowId: state.workflowId,
+    workflow: {
+      bytes: state.workflow.bytes,
+      sha256: state.workflow.sha256,
+      workflowDigest: state.workflow.workflowDigest,
+    },
+    ...(state.rootPackage === undefined ? {} : { rootPackage: state.rootPackage }),
+    packages: state.packages.map((item) =>
+      item.kind === "agent-skill"
+        ? Object.freeze({ kind: item.kind, name: item.name, digest: item.digest })
+        : Object.freeze({
+            kind: item.kind,
+            name: item.name,
+            version: item.version,
+            digest: item.digest,
+          }),
+    ),
+    stateDigest: state.stateDigest,
   });
 }
 
@@ -3108,6 +3417,15 @@ function parseRollbackSelection(value: string) {
     );
   }
   return Object.freeze({ candidateId: match[1], candidateVersion: match[2] });
+}
+
+function parseEffectiveHarnessRollbackState(value: string): string | undefined {
+  if (!value.startsWith("state:")) return undefined;
+  const stateDigest = value.slice("state:".length);
+  if (!/^[a-f0-9]{64}$/.test(stateDigest)) {
+    throw new CliUsageError("effective harness rollback target must be state:<sha256>");
+  }
+  return stateDigest;
 }
 
 function tuningEvidence(stored: StoredEvaluation) {
@@ -4592,6 +4910,21 @@ async function admitWorkflowArgument(
         "activation locators require a Flow project root",
       );
     }
+    const effective = await loadEffectiveHarness(config.projectRoot, activationLocator.workflowId);
+    if (effective !== null) {
+      const source = effectiveHarnessWorkflowSource(effective.state);
+      const sourceName = `activation:${activationLocator.workflowId}`;
+      const capabilitySnapshot = createEffectiveHarnessCapabilitySnapshot(
+        effective.state,
+        effective.head,
+      );
+      return Object.freeze({
+        source,
+        sourceName,
+        capabilitySnapshot,
+        workflow: compileEffectiveHarnessState(effective.state),
+      });
+    }
     const loaded = await new LocalPromptActivationStore(config.projectRoot).loadActive(
       activationLocator.workflowId,
     );
@@ -4657,6 +4990,26 @@ async function admitResumeWorkflowArgument(
   let source: string;
   let sourceName: string;
   if (activationLocator !== null) {
+    const effectiveHarness = capabilitySnapshot?.effectiveHarness;
+    if (effectiveHarness !== undefined && capabilitySnapshot !== undefined) {
+      if (effectiveHarness.workflowId !== activationLocator.workflowId) {
+        throw new RunRecoveryError(
+          "workflow_mismatch",
+          `durable run history does not contain activation "${activationLocator.workflowId}"`,
+        );
+      }
+      const state = restoreEffectiveHarnessRuntimeState(
+        effectiveHarness,
+        capabilitySnapshot.packages,
+      );
+      sourceName = `activation:${activationLocator.workflowId}`;
+      source = effectiveHarnessWorkflowSource(state);
+      return Object.freeze({
+        source,
+        sourceName,
+        workflow: compileEffectiveHarnessState(state),
+      });
+    }
     const selected = capabilitySnapshot?.activations?.find(
       (item) => item.workflowId === activationLocator.workflowId,
     );
@@ -4696,6 +5049,62 @@ async function admitResumeWorkflowArgument(
       ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
     }),
   });
+}
+
+async function loadCurrentEffectiveHarnessBaseline(
+  workflowId: string,
+  config: EffectiveFlowConfig,
+  signal?: AbortSignal,
+): Promise<{
+  readonly state: EffectiveHarnessState;
+  readonly head: EffectiveHarnessHeadIdentity;
+}> {
+  signal?.throwIfAborted();
+  const projectRoot = config.projectRoot;
+  if (projectRoot === null) {
+    throw new EffectiveHarnessStoreError(
+      "not_found",
+      "effective harness composition requires a Flow project root",
+    );
+  }
+  const effective = await loadEffectiveHarness(projectRoot, workflowId);
+  signal?.throwIfAborted();
+  if (effective !== null) return effective;
+
+  const legacyStore = new LocalPromptActivationStore(projectRoot);
+  const loaded = await legacyStore.loadActive(workflowId);
+  signal?.throwIfAborted();
+  const source = adaptiveActivationSource(loaded.snapshot);
+  const sourceName = `activation:${workflowId}`;
+  const workflow = compileWorkflowFromSnapshot({
+    source,
+    sourceName,
+    capabilitySnapshot: loaded.capabilitySnapshot,
+  });
+  const supplemental = await resolveWorkflowCapabilitySnapshot(
+    workflow,
+    config,
+    loaded.capabilitySnapshot,
+  );
+  signal?.throwIfAborted();
+  return await loadEffectiveHarnessCandidateBaseline({
+    scopeDigest: await calculateLocalEffectiveHarnessScopeDigest(projectRoot),
+    workflowId,
+    store: legacyStore,
+    supplementalPackages: (supplemental?.packages ?? []).filter(
+      (item) => item.kind !== "policy-package",
+    ),
+    ...(signal === undefined ? {} : { signal }),
+  });
+}
+
+async function loadEffectiveHarness(projectRoot: string, workflowId: string) {
+  try {
+    return await new LocalEffectiveHarnessStore(projectRoot).loadActive(workflowId);
+  } catch (error) {
+    if (error instanceof EffectiveHarnessStoreError && error.code === "not_found") return null;
+    throw error;
+  }
 }
 
 function combineOptionalCapabilitySnapshots(

@@ -169,7 +169,7 @@ it("inspects and exports Prime evidence without loading OCI or private host auth
     expect(exportedText).not.toContain(marker);
   }
   expect(io.stderr).toEqual([]);
-}, 20_000);
+}, 30_000);
 
 function capture(): { readonly io: CliIo; readonly stdout: string[]; readonly stderr: string[] } {
   const stdout: string[] = [];

@@ -4,10 +4,20 @@ import { type FileHandle, lstat, open, opendir, realpath } from "node:fs/promise
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import type { AgentSkillCandidateIdentity } from "../../domain/adaptation/agent-skill-candidate.js";
 import type { AgentSkillPackageCandidateIdentity } from "../../domain/adaptation/agent-skill-package-candidate.js";
+import type { EffectiveHarnessCandidateSurface } from "../../domain/adaptation/effective-harness-candidate.js";
+import {
+  compileEffectiveHarnessState,
+  type EffectiveHarnessState,
+  effectiveHarnessWorkflowSource,
+} from "../../domain/adaptation/effective-harness-state.js";
 import type { PromptCandidateIdentity } from "../../domain/adaptation/prompt-candidate.js";
 import type {
   AgentSkillCapabilitySnapshot,
   CapabilitySnapshot,
+} from "../../domain/capability/agent-skills.js";
+import {
+  calculateCapabilitySnapshotDigest,
+  validateCapabilitySnapshot,
 } from "../../domain/capability/agent-skills.js";
 import { bindWorkflowCapabilities } from "../../domain/capability/workflow-capabilities.js";
 import {
@@ -30,6 +40,7 @@ import { compileWorkflowText } from "../../domain/workflow/compiler.js";
 import { calculateWorkflowDigest } from "../../domain/workflow/digest.js";
 import type { CompiledRunBudget, CompiledWorkflow } from "../../domain/workflow/types.js";
 import { admitLocalAdaptationCandidate } from "./local-adaptation-candidate.js";
+import { admitLocalEffectiveHarnessCandidate } from "./local-effective-harness-candidate.js";
 
 export const MAX_EVALUATION_FIXTURE_ENTRIES = 4_096;
 export const MAX_EVALUATION_FIXTURE_BYTES = 256 * 1024 * 1024;
@@ -86,7 +97,9 @@ export interface AdmittedFlowEvaluationProfile {
       | "file"
       | "prompt-candidate-projection"
       | "agent-skill-candidate-projection"
-      | "agent-skill-package-candidate-projection";
+      | "agent-skill-package-candidate-projection"
+      | "effective-harness-baseline"
+      | "effective-harness-candidate-projection";
     readonly sourcePath: string | null;
     readonly provenance: string;
     readonly source: string;
@@ -103,6 +116,18 @@ export interface AdmittedFlowEvaluationProfile {
   };
   readonly capabilitySnapshot?: CapabilitySnapshot;
   readonly baselineCapabilitySnapshot?: AgentSkillCapabilitySnapshot;
+  readonly effectiveHarness?: {
+    readonly selection: "baseline" | "candidate";
+    readonly artifactDigest: string;
+    readonly stateDigest: string;
+    readonly baselineHeadDigest: string;
+    readonly workflowSha256: string;
+    readonly workflowDigest: string;
+    readonly packageDigests: readonly string[];
+    readonly surface: EffectiveHarnessCandidateSurface;
+    readonly candidateDigest: string;
+  };
+  readonly effectiveHarnessState?: EffectiveHarnessState;
 }
 
 export type AdmittedExternalEvaluationProfile = {
@@ -294,6 +319,74 @@ export async function admitLocalEvaluationPlan(
         });
       }
 
+      if ("effectiveCandidate" in profile) {
+        const candidatePath = await resolveAdmittedPath(
+          planRoot,
+          profile.effectiveCandidate,
+          "file",
+        );
+        dependencies?.signal?.throwIfAborted();
+        let admitted: Awaited<ReturnType<typeof admitLocalEffectiveHarnessCandidate>>;
+        try {
+          admitted = await admitLocalEffectiveHarnessCandidate(candidatePath, {
+            ...(dependencies?.signal === undefined ? {} : { signal: dependencies.signal }),
+          });
+        } catch (error) {
+          dependencies?.signal?.throwIfAborted();
+          throw new EvaluationAdmissionError(
+            "invalid_workflow",
+            `profile "${profile.id}" effective harness candidate cannot be admitted`,
+            { cause: error },
+          );
+        }
+        dependencies?.signal?.throwIfAborted();
+        const artifact = admitted.artifact;
+        const state =
+          profile.selection === "baseline" ? artifact.baselineState : artifact.candidateState;
+        const workflowSource = effectiveHarnessWorkflowSource(state);
+        const compiled = compileEffectiveHarnessState(state);
+        assertWorkflowControls(profile.id, compiled, source.controls);
+        return Object.freeze({
+          id: profile.id,
+          adapter: profile.adapter,
+          workflow: Object.freeze({
+            sourceKind:
+              profile.selection === "baseline"
+                ? ("effective-harness-baseline" as const)
+                : ("effective-harness-candidate-projection" as const),
+            sourcePath: null,
+            provenance: profile.effectiveCandidate,
+            source: workflowSource,
+            sourceSha256: state.workflow.sha256,
+            workflowDigest: state.workflow.workflowDigest,
+            compiled,
+          }),
+          ...(profile.selection === "candidate"
+            ? {
+                candidate: Object.freeze({
+                  ...artifact.candidate,
+                  selectionProvenance: profile.effectiveCandidate,
+                }),
+              }
+            : {}),
+          ...(state.packages.length === 0
+            ? {}
+            : { capabilitySnapshot: capabilitySnapshotForState(state) }),
+          effectiveHarness: Object.freeze({
+            selection: profile.selection,
+            artifactDigest: artifact.artifactDigest,
+            stateDigest: state.stateDigest,
+            baselineHeadDigest: artifact.baselineHead.headDigest,
+            workflowSha256: state.workflow.sha256,
+            workflowDigest: state.workflow.workflowDigest,
+            packageDigests: Object.freeze(state.packages.map((item) => item.digest)),
+            surface: artifact.surface,
+            candidateDigest: artifact.candidate.candidateDigest,
+          }),
+          effectiveHarnessState: state,
+        });
+      }
+
       const candidatePath = await resolveAdmittedPath(planRoot, profile.candidate, "entry");
       dependencies?.signal?.throwIfAborted();
       let admittedCandidate: Awaited<ReturnType<typeof admitLocalAdaptationCandidate>>;
@@ -313,6 +406,12 @@ export async function admitLocalEvaluationPlan(
           "invalid_workflow",
           `profile "${profile.id}" candidate cannot be admitted: ${boundedMessage(error)}`,
           { cause: error },
+        );
+      }
+      if (admittedCandidate.kind === "effective-harness-candidate") {
+        throw new EvaluationAdmissionError(
+          "invalid_workflow",
+          `profile "${profile.id}" effective harness artifact requires the effectiveCandidate field`,
         );
       }
       if (admittedCandidate.kind === "agent-skill-candidate") {
@@ -455,6 +554,9 @@ export async function admitLocalEvaluationPlan(
           : {
               candidate: projectEvaluationCandidateIdentity(profile.candidate),
             }),
+        ...(profile.effectiveHarness === undefined
+          ? {}
+          : { effectiveHarness: profile.effectiveHarness }),
       };
     }),
     controls: source.controls,
@@ -678,6 +780,42 @@ function bindCandidateComparison(
   profiles: readonly [AdmittedEvaluationProfile, AdmittedEvaluationProfile],
   comparison: EvaluationPlanSource["comparison"],
 ): [AdmittedEvaluationProfile, AdmittedEvaluationProfile] {
+  const effectiveProfiles = profiles.filter(
+    (profile): profile is AdmittedFlowEvaluationProfile =>
+      profile.adapter === "flow-workflow-v1" && profile.effectiveHarness !== undefined,
+  );
+  if (effectiveProfiles.length > 0) {
+    const baseline = profiles.find((profile) => profile.id === comparison.baselineProfileId);
+    const candidate = profiles.find((profile) => profile.id === comparison.candidateProfileId);
+    if (
+      effectiveProfiles.length !== 2 ||
+      baseline === undefined ||
+      candidate === undefined ||
+      baseline.adapter !== "flow-workflow-v1" ||
+      candidate.adapter !== "flow-workflow-v1" ||
+      baseline.effectiveHarness?.selection !== "baseline" ||
+      candidate.effectiveHarness?.selection !== "candidate" ||
+      baseline.candidate !== undefined ||
+      candidate.candidate === undefined ||
+      baseline.effectiveHarnessState === undefined ||
+      candidate.effectiveHarnessState === undefined ||
+      baseline.workflow.provenance !== candidate.workflow.provenance ||
+      baseline.effectiveHarness.artifactDigest !== candidate.effectiveHarness.artifactDigest ||
+      baseline.effectiveHarness.baselineHeadDigest !==
+        candidate.effectiveHarness.baselineHeadDigest ||
+      baseline.effectiveHarness.surface !== candidate.effectiveHarness.surface ||
+      baseline.effectiveHarness.candidateDigest !== candidate.effectiveHarness.candidateDigest ||
+      baseline.effectiveHarness.stateDigest !== baseline.effectiveHarnessState.stateDigest ||
+      candidate.effectiveHarness.stateDigest !== candidate.effectiveHarnessState.stateDigest ||
+      candidate.effectiveHarness.candidateDigest !== candidate.candidate.candidateDigest
+    ) {
+      throw new EvaluationAdmissionError(
+        "invalid_workflow",
+        "effective harness comparison profiles must select one exact baseline and candidate pair",
+      );
+    }
+    return [...profiles];
+  }
   const candidateProfiles = profiles.filter(
     (profile): profile is AdmittedFlowEvaluationProfile =>
       profile.adapter === "flow-workflow-v1" && profile.candidate !== undefined,
@@ -753,6 +891,14 @@ function bindCandidateComparison(
         })
       : profile,
   ) as [AdmittedEvaluationProfile, AdmittedEvaluationProfile];
+}
+
+function capabilitySnapshotForState(state: EffectiveHarnessState): CapabilitySnapshot {
+  return validateCapabilitySnapshot({
+    version: 1,
+    packages: state.packages,
+    digest: calculateCapabilitySnapshotDigest(state.packages),
+  });
 }
 
 function assertWorkflowControls(

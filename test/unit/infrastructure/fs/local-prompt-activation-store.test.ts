@@ -293,6 +293,12 @@ describe("local prompt activation store", () => {
       history: [{ fromActivationDigest: null, toActivationDigest: snapshot.activationDigest }],
     });
     expect(loaded.snapshot).toEqual(snapshot);
+    expect(loaded.head).toMatchObject({
+      workflowId: "adaptive-skill-workflow",
+      generation: 1,
+      activationDigest: snapshot.activationDigest,
+      lastTransitionDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
     expect(loaded.capabilitySnapshot).toMatchObject({
       packages: [{ digest: snapshot.skill.digest }],
       activations: [snapshot],

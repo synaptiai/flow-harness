@@ -1036,9 +1036,11 @@ describe("public repository contracts", () => {
     expect(readme).toMatch(/(?:flow|main\.js) candidate validate/);
     expect(readme).toMatch(/(?:flow|main\.js) candidate generate/);
     expect(readme).toMatch(/(?:flow|main\.js) eval tuning-evidence/);
+    expect(readme).toMatch(/(?:flow|main\.js) candidate compose/);
     expect(readme).toMatch(/(?:flow|main\.js) candidate activate/);
     expect(readme).toMatch(/(?:flow|main\.js) activation rollback/);
-    expect(architecture).toMatch(/activation store contains immutable.*saved snapshot/is);
+    expect(architecture).toMatch(/effective store writes state.*atomic index/is);
+    expect(architecture).toMatch(/run stores the complete selected workflow.*saved snapshot/is);
     expect(sourcing).toMatch(/Prime Agent.*supplemental.*Flow.*activate/is);
     expect(evaluation).toMatch(/activation gate.*complete.*superior/is);
     expect(workflowSpec).toContain("kind: PromptCandidate");

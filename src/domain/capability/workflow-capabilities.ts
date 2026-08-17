@@ -157,6 +157,7 @@ export function bindWorkflowCapabilities(
       }
       if (
         (boundSnapshot.activations?.length ?? 0) === 0 &&
+        boundSnapshot.effectiveHarness === undefined &&
         !boundSnapshot.packages.some((item) => item.kind === "policy-package")
       ) {
         throw new WorkflowCapabilityError(
@@ -319,6 +320,22 @@ function assertPromptActivationBinding(
   snapshot: CapabilitySnapshot | undefined,
   allowUnexpected: boolean,
 ): void {
+  const effectiveHarness = snapshot?.effectiveHarness;
+  if (effectiveHarness !== undefined) {
+    if (effectiveHarness.workflowId !== workflow.id) {
+      if (allowUnexpected) return;
+      throw new WorkflowCapabilityError(
+        "unexpected_activation",
+        `capability snapshot contains an effective harness for workflow "${effectiveHarness.workflowId}", not "${workflow.id}"`,
+      );
+    }
+    if (effectiveHarness.workflow.workflowDigest !== calculateWorkflowDigest(workflow)) {
+      throw new WorkflowCapabilityError(
+        "digest_mismatch",
+        `workflow "${workflow.id}" does not match effective harness runtime digest "${effectiveHarness.runtimeDigest}"`,
+      );
+    }
+  }
   const activation = snapshot?.activations?.[0];
   if (activation === undefined) {
     return;
