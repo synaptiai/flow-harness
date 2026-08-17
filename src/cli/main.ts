@@ -75,6 +75,10 @@ import {
   createAgentSkillPackageActivationFromEvaluation,
 } from "../application/prepare-agent-skill-package-activation.js";
 import {
+  EffectiveHarnessActivationAdmissionError,
+  prepareEffectiveHarnessActivation,
+} from "../application/prepare-effective-harness-activation.js";
+import {
   createPromptActivationFromEvaluation,
   PromptActivationAdmissionError,
 } from "../application/prepare-prompt-activation.js";
@@ -767,6 +771,7 @@ export async function main(
       error instanceof AgentSkillActivationAdmissionError ||
       error instanceof AgentSkillPackageActivationError ||
       error instanceof AgentSkillPackageActivationAdmissionError ||
+      error instanceof EffectiveHarnessActivationAdmissionError ||
       error instanceof PromptActivationError ||
       error instanceof PromptActivationAdmissionError ||
       error instanceof PromptActivationStoreError ||
@@ -2797,7 +2802,9 @@ async function candidateCommand(
     const admitted = await admitLocalAdaptationCandidate(resolve(cwd, candidatePath), {
       ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
     });
-    io.stdout(JSON.stringify({ valid: true, candidate: admitted.candidate.identity }, null, 2));
+    io.stdout(
+      JSON.stringify({ valid: true, candidate: adaptationCandidateView(admitted) }, null, 2),
+    );
     return 0;
   }
   if (subcommand === "activate") {
@@ -2825,7 +2832,6 @@ async function candidateCommand(
       overrides.signal,
       "candidate activation was cancelled",
     );
-    const store = promptActivationStore(config);
     const admitted = await awaitWithCancellationPrecedence(
       () =>
         admitLocalAdaptationCandidate(resolve(dependencies.cwd, candidatePath), {
@@ -2844,6 +2850,51 @@ async function candidateCommand(
       overrides.signal,
       "candidate activation was cancelled",
     );
+    if (admitted.kind === "effective-harness-candidate") {
+      const prepared = prepareEffectiveHarnessActivation({
+        artifact: admitted.candidate.artifact,
+        stored: evaluation,
+      });
+      const store = effectiveHarnessStore(config);
+      const input = {
+        prepared,
+        actor,
+        ...(values.reason === undefined ? {} : { reason: values.reason }),
+        ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
+      };
+      throwIfAborted(overrides.signal, "candidate activation was cancelled");
+      if (dryRun.enabled) {
+        const proposal = await store.previewActivate(input);
+        throwIfAborted(overrides.signal, "candidate activation was cancelled");
+        io.stdout(
+          JSON.stringify(
+            {
+              dryRun: true,
+              activation: adaptationCandidateView(admitted),
+              proposal,
+            },
+            null,
+            2,
+          ),
+        );
+        return 0;
+      }
+      io.stdout(
+        JSON.stringify(
+          await store.applyActivate({
+            ...input,
+            expectedDigest: requireStringOption(
+              values["expected-digest"],
+              "candidate activate requires --expected-digest <sha256>",
+            ),
+          }),
+          null,
+          2,
+        ),
+      );
+      return 0;
+    }
+    const store = promptActivationStore(config);
     const snapshots =
       admitted.kind === "prompt-candidate"
         ? createPromptActivationFromEvaluation(admitted.candidate, evaluation)
@@ -3028,6 +3079,16 @@ function promptActivationStore(config: EffectiveFlowConfig): LocalPromptActivati
   return new LocalPromptActivationStore(config.projectRoot);
 }
 
+function effectiveHarnessStore(config: EffectiveFlowConfig): LocalEffectiveHarnessStore {
+  if (config.projectRoot === null) {
+    throw new EffectiveHarnessStoreError(
+      "not_found",
+      "effective harness activation requires a Flow project root",
+    );
+  }
+  return new LocalEffectiveHarnessStore(config.projectRoot);
+}
+
 function adaptiveActivationView(snapshot: AdaptiveActivationSnapshot) {
   if (snapshot.kind === "prompt-activation") {
     return Object.freeze({
@@ -3057,6 +3118,26 @@ function adaptiveActivationView(snapshot: AdaptiveActivationSnapshot) {
     ...(snapshot.skill === undefined
       ? {}
       : { skill: { name: snapshot.skill.name, digest: snapshot.skill.digest } }),
+  });
+}
+
+function adaptationCandidateView(
+  admitted: Awaited<ReturnType<typeof admitLocalAdaptationCandidate>>,
+) {
+  if (admitted.kind !== "effective-harness-candidate") {
+    return admitted.candidate.identity;
+  }
+  const artifact = admitted.candidate.artifact;
+  return Object.freeze({
+    kind: artifact.kind,
+    artifactDigest: artifact.artifactDigest,
+    scopeDigest: artifact.scopeDigest,
+    workflowId: artifact.workflowId,
+    surface: artifact.surface,
+    candidate: artifact.candidate,
+    baselineHeadDigest: artifact.baselineHead.headDigest,
+    baselineStateDigest: artifact.baselineState.stateDigest,
+    candidateStateDigest: artifact.candidateState.stateDigest,
   });
 }
 

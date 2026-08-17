@@ -1,17 +1,25 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 import type { NodeExecutionOutcome, NodeExecutor } from "../../../src/application/ports.js";
 import { prepareEffectiveHarnessActivation } from "../../../src/application/prepare-effective-harness-activation.js";
+import {
+  loadEffectiveHarnessCandidateBaseline,
+  projectEffectiveHarnessCandidate,
+} from "../../../src/application/prepare-effective-harness-candidate.js";
 import { type CliIo, main } from "../../../src/cli/main.js";
-import { createEffectiveHarnessCandidateArtifact } from "../../../src/domain/adaptation/effective-harness-candidate.js";
+import {
+  createEffectiveHarnessCandidateArtifact,
+  encodeEffectiveHarnessCandidateArtifact,
+} from "../../../src/domain/adaptation/effective-harness-candidate.js";
 import {
   createEffectiveHarnessHeadIdentity,
   createEffectiveHarnessState,
 } from "../../../src/domain/adaptation/effective-harness-state.js";
+import { createPromptActivationSnapshot } from "../../../src/domain/adaptation/prompt-activation.js";
 import {
   type AgentSkillPackageSnapshot,
   createAgentCapabilityEvidence,
@@ -22,7 +30,10 @@ import {
   type EffectiveFlowConfig,
   FLOW_CONFIG_API_VERSION,
 } from "../../../src/domain/config/resolver.js";
+import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { LocalEffectiveHarnessStore } from "../../../src/infrastructure/fs/local-effective-harness-store.js";
+import { LocalEvaluationStore } from "../../../src/infrastructure/fs/local-evaluation-store.js";
+import { LocalPromptActivationStore } from "../../../src/infrastructure/fs/local-prompt-activation-store.js";
 import {
   effectiveHarnessCandidateArtifactFixture,
   superiorEffectiveHarnessEvaluation,
@@ -38,6 +49,165 @@ afterEach(async () => {
 });
 
 describe("effective harness runtime CLI", () => {
+  it("validates an effective harness artifact through a content-free public view", async () => {
+    const project = await temporaryProject();
+    const artifact = effectiveHarnessCandidateArtifactFixture();
+    const candidatePath = join(project, "candidate.effective-harness.json");
+    await writeFile(candidatePath, encodeEffectiveHarnessCandidateArtifact(artifact));
+    const output = captureIo();
+
+    expect(
+      await main(["candidate", "validate", candidatePath], output.io, { cwd: project }),
+      output.stderr.join("\n"),
+    ).toBe(0);
+    expect(JSON.parse(output.stdout.join("\n"))).toEqual({
+      valid: true,
+      candidate: {
+        kind: artifact.kind,
+        artifactDigest: artifact.artifactDigest,
+        scopeDigest: artifact.scopeDigest,
+        workflowId: artifact.workflowId,
+        surface: artifact.surface,
+        candidate: artifact.candidate,
+        baselineHeadDigest: artifact.baselineHead.headDigest,
+        baselineStateDigest: artifact.baselineState.stateDigest,
+        candidateStateDigest: artifact.candidateState.stateDigest,
+      },
+    });
+    expectContentFree(output, [
+      Buffer.from(artifact.baselineState.workflow.contentBase64, "base64").toString("utf8"),
+      Buffer.from(artifact.candidateState.workflow.contentBase64, "base64").toString("utf8"),
+    ]);
+  });
+
+  it("previews and activates an evaluated effective harness artifact", async () => {
+    const project = await temporaryProject();
+    const evaluations = join(project, "evaluations");
+    const legacy = new LocalPromptActivationStore(project);
+    const candidateSnapshot = createPromptActivationSnapshot(promptActivationInput());
+    const baselineSnapshot = createPromptActivationSnapshot(
+      promptActivationInput({ selection: "baseline" }),
+    );
+    const legacyProposal = await legacy.previewActivate({
+      snapshot: candidateSnapshot,
+      baselineSnapshot,
+      actor: "operator:legacy",
+    });
+    await legacy.applyActivate({
+      snapshot: candidateSnapshot,
+      baselineSnapshot,
+      actor: "operator:legacy",
+      expectedDigest: legacyProposal.proposalDigest,
+    });
+    const rollbackInput = {
+      workflowId: baselineSnapshot.workflowId,
+      target: null,
+      actor: "operator:legacy",
+    } as const;
+    const rollbackProposal = await legacy.previewRollback(rollbackInput);
+    await legacy.applyRollback({
+      ...rollbackInput,
+      expectedDigest: rollbackProposal.proposalDigest,
+    });
+    const baseline = await loadEffectiveHarnessCandidateBaseline({
+      scopeDigest: "a".repeat(64),
+      workflowId: baselineSnapshot.workflowId,
+      store: legacy,
+    });
+    const next = promptActivationInput();
+    const projected = projectEffectiveHarnessCandidate({
+      baseline: baseline.state,
+      candidate: {
+        kind: "prompt",
+        projection: {
+          identity: next.candidate,
+          workflow: {
+            source: next.source,
+            sourceSha256: next.candidate.projectedWorkflow.sourceSha256,
+            compiled: compileWorkflowText(next.source, "candidate.effective-harness.json"),
+            workflowDigest: next.candidate.projectedWorkflow.workflowDigest,
+          },
+        },
+      },
+    });
+    const artifact = createEffectiveHarnessCandidateArtifact({
+      baselineHead: baseline.head,
+      baselineState: baseline.state,
+      candidateState: projected.state,
+      candidate: next.candidate,
+    });
+    const candidatePath = join(project, "candidate.effective-harness.json");
+    await writeFile(candidatePath, encodeEffectiveHarnessCandidateArtifact(artifact));
+    await persistEvaluation(evaluations, superiorEffectiveHarnessEvaluation(artifact));
+
+    const previewOutput = captureIo();
+    expect(
+      await main(
+        [
+          "candidate",
+          "activate",
+          candidatePath,
+          "--evaluation",
+          "effective-harness-evaluation",
+          "--evaluations-dir",
+          evaluations,
+          "--actor",
+          "operator:test",
+          "--dry-run",
+        ],
+        previewOutput.io,
+        { cwd: project, loadConfig: async () => effectiveConfig(project) },
+      ),
+      previewOutput.stderr.join("\n"),
+    ).toBe(0);
+    const preview = JSON.parse(previewOutput.stdout.join("\n"));
+    expect(preview).toMatchObject({
+      dryRun: true,
+      activation: {
+        kind: artifact.kind,
+        artifactDigest: artifact.artifactDigest,
+        candidateStateDigest: artifact.candidateState.stateDigest,
+      },
+      proposal: {
+        action: "activate",
+        workflowId: artifact.workflowId,
+        artifactDigest: artifact.artifactDigest,
+        proposalDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+    });
+    expectContentFree(previewOutput, [next.source]);
+
+    const applyOutput = captureIo();
+    expect(
+      await main(
+        [
+          "candidate",
+          "activate",
+          candidatePath,
+          "--evaluation",
+          "effective-harness-evaluation",
+          "--evaluations-dir",
+          evaluations,
+          "--actor",
+          "operator:test",
+          "--expected-digest",
+          preview.proposal.proposalDigest,
+        ],
+        applyOutput.io,
+        { cwd: project, loadConfig: async () => effectiveConfig(project) },
+      ),
+      applyOutput.stderr.join("\n"),
+    ).toBe(0);
+    expect(JSON.parse(applyOutput.stdout.join("\n"))).toMatchObject({
+      status: "activated",
+      head: {
+        workflowId: artifact.workflowId,
+        stateDigest: artifact.candidateState.stateDigest,
+      },
+    });
+    expectContentFree(applyOutput, [next.source]);
+  });
+
   it("runs the exact effective workflow and package closure", async () => {
     const project = await temporaryProject();
     const runsDirectory = join(project, "runs");
@@ -206,6 +376,19 @@ async function activateArtifact(
     actor: "operator:test",
     expectedDigest: proposal.proposalDigest,
   });
+}
+
+async function persistEvaluation(
+  directory: string,
+  stored: ReturnType<typeof superiorEffectiveHarnessEvaluation>,
+): Promise<void> {
+  const store = new LocalEvaluationStore(directory);
+  await store.create(stored.header);
+  await store.claim(stored.header.evaluationId, stored.header.planDigest);
+  for (const record of stored.records) {
+    await store.append(stored.header.evaluationId, record);
+  }
+  await store.release(stored.header.evaluationId);
 }
 
 function approvalEffectiveHarnessArtifact() {

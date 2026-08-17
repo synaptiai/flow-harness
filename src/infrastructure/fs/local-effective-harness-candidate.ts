@@ -18,6 +18,8 @@ export interface AdmittedLocalEffectiveHarnessCandidate {
 
 export interface LocalEffectiveHarnessCandidateOptions {
   readonly signal?: AbortSignal | undefined;
+  /** @internal Exact source identity captured by a stable discriminator read. */
+  readonly expectedSource?: { readonly identity: BigIntStats; readonly sha256: string } | undefined;
   /** @internal Deterministic cancellation and source-race seam. */
   readonly afterRead?: () => void | Promise<void>;
 }
@@ -62,6 +64,15 @@ export async function admitLocalEffectiveHarnessCandidate(
       "effective harness candidate source must be a regular file without links",
     );
   }
+  if (
+    options.expectedSource !== undefined &&
+    !sameIdentity(options.expectedSource.identity, lexical)
+  ) {
+    throw new LocalEffectiveHarnessCandidateError(
+      "source_changed",
+      "effective harness candidate source changed before it was reopened",
+    );
+  }
   let handle: FileHandle;
   try {
     handle = await open(absolutePath, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -96,6 +107,13 @@ export async function admitLocalEffectiveHarnessCandidate(
         "effective harness candidate source changed while it was read",
       );
     }
+    const sourceSha256 = createHash("sha256").update(content).digest("hex");
+    if (options.expectedSource !== undefined && options.expectedSource.sha256 !== sourceSha256) {
+      throw new LocalEffectiveHarnessCandidateError(
+        "source_changed",
+        "effective harness candidate source changed while it was reopened",
+      );
+    }
     await options.afterRead?.();
     options.signal?.throwIfAborted();
     let raw: unknown;
@@ -122,7 +140,7 @@ export async function admitLocalEffectiveHarnessCandidate(
     }
     return Object.freeze({
       provenance: basename(absolutePath),
-      sourceSha256: createHash("sha256").update(content).digest("hex"),
+      sourceSha256,
       artifact,
     });
   } finally {

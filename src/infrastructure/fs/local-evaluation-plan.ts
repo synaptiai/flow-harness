@@ -408,6 +408,12 @@ export async function admitLocalEvaluationPlan(
           { cause: error },
         );
       }
+      if (admittedCandidate.kind === "effective-harness-candidate") {
+        throw new EvaluationAdmissionError(
+          "invalid_workflow",
+          `profile "${profile.id}" effective harness artifact requires the effectiveCandidate field`,
+        );
+      }
       if (admittedCandidate.kind === "agent-skill-candidate") {
         const skillCandidate = admittedCandidate.candidate;
         assertWorkflowControls(profile.id, skillCandidate.workflow.compiled, source.controls);

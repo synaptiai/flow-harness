@@ -40,6 +40,7 @@ import {
   LocalEvaluationStore,
   type PublicEvaluationHeader,
 } from "../../../../src/infrastructure/fs/local-evaluation-store.js";
+import { effectiveHarnessCandidateArtifactFixture } from "../../../fixtures/effective-harness-evaluation.js";
 import { primeExternalHarnessIdentity } from "../../../fixtures/evaluation/prime-external-harness-identity.js";
 
 const temporaryDirectories: string[] = [];
@@ -217,6 +218,24 @@ controls:`,
     const store = new LocalEvaluationStore(join(project, "evaluations"));
     await store.create(header);
     await expect(store.read("effective-harness-evaluation")).resolves.toMatchObject({ header });
+  });
+
+  it("rejects an effective harness artifact through the legacy candidate field", async () => {
+    const project = await evaluationProject();
+    await configureCandidateProfile(project);
+    await writeFile(
+      join(project, "candidate.effective-harness.json"),
+      encodeEffectiveHarnessCandidateArtifact(effectiveHarnessCandidateArtifactFixture()),
+    );
+    const plan = await readFile(join(project, "evaluation.yaml"), "utf8");
+    await writeFile(
+      join(project, "evaluation.yaml"),
+      plan.replace("better.prompt-candidate.yaml", "candidate.effective-harness.json"),
+    );
+
+    await expect(admitLocalEvaluationPlan(join(project, "evaluation.yaml"))).rejects.toThrow(
+      /requires the effectiveCandidate field/i,
+    );
   });
 
   it("keeps plan identity portable across different absolute project roots", async () => {

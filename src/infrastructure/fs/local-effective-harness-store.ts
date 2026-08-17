@@ -202,6 +202,35 @@ export class LocalEffectiveHarnessStore {
       });
   }
 
+  async stageCandidate(
+    input: EffectiveHarnessCandidateArtifact,
+    signal?: AbortSignal,
+  ): Promise<{
+    readonly path: string;
+    readonly artifactDigest: string;
+    readonly stateDigest: string;
+  }> {
+    signal?.throwIfAborted();
+    const artifact = parseEffectiveHarnessCandidateArtifact(input);
+    return await withLocalActivationMutationOwnership(
+      this.projectRoot,
+      signal,
+      async (flowDirectory) => {
+        const paths = await ensureStorePaths(flowDirectory);
+        const index = await this.#readIndexFrom(paths);
+        await this.#currentHead(index, artifact);
+        await publishState(paths, artifact.baselineState, "baseline-state", this.#hooks);
+        await publishState(paths, artifact.candidateState, "candidate-state", this.#hooks);
+        await publishArtifact(paths, artifact, this.#hooks);
+        return deepFreeze({
+          path: join(paths.artifacts, `${artifact.artifactDigest}.json`),
+          artifactDigest: artifact.artifactDigest,
+          stateDigest: artifact.candidateState.stateDigest,
+        });
+      },
+    );
+  }
+
   async previewActivate(input: {
     readonly prepared: PreparedEffectiveHarnessActivation;
     readonly actor: string;
@@ -311,6 +340,17 @@ export class LocalEffectiveHarnessStore {
       async (flowDirectory) => {
         const paths = await ensureStorePaths(flowDirectory);
         const index = await this.#readIndexFrom(paths);
+        const settled = settledRollback(
+          index,
+          workflowId,
+          targetStateDigest,
+          actor,
+          reason,
+          expectedDigest,
+        );
+        if (settled !== undefined) {
+          return deepFreeze({ status: "already_rolled_back" as const, ...settled });
+        }
         const proposal = rollbackProposal(index, workflowId, targetStateDigest, actor, reason);
         if (proposal.proposalDigest !== expectedDigest) {
           throw new EffectiveHarnessStoreError(
@@ -640,17 +680,107 @@ function rollbackProposal(
   if (head.stateDigest === targetStateDigest) {
     throw new EffectiveHarnessStoreError("invalid_input", "effective harness rollback is a no-op");
   }
+  return rollbackProposalFromHead(
+    head,
+    workflowId,
+    targetStateDigest,
+    target.transitionDigest,
+    actor,
+    reason,
+  );
+}
+
+function rollbackProposalFromHead(
+  head: EffectiveHarnessHeadIdentity,
+  workflowId: string,
+  targetStateDigest: string,
+  targetTransitionDigest: string,
+  actor: string,
+  reason: string | undefined,
+): EffectiveHarnessRollbackProposal {
   const content = {
     version: 1 as const,
     action: "rollback" as const,
     workflowId,
     currentHeadDigest: head.headDigest,
     targetStateDigest,
-    targetTransitionDigest: target.transitionDigest,
+    targetTransitionDigest,
     actor,
     ...(reason === undefined ? {} : { reason }),
   };
   return deepFreeze({ ...content, proposalDigest: sha256(canonicalize(content)) });
+}
+
+function settledRollback(
+  index: EffectiveHarnessIndex,
+  workflowId: string,
+  targetStateDigest: string,
+  actor: string,
+  reason: string | undefined,
+  expectedDigest: string,
+):
+  | {
+      readonly head: EffectiveHarnessHeadIdentity;
+      readonly transition: EffectiveHarnessTransition;
+    }
+  | undefined {
+  const head = index.heads.find((item) => item.workflowId === workflowId);
+  const transition =
+    head === undefined
+      ? undefined
+      : index.history.find((item) => item.transitionDigest === head.transitionDigest);
+  if (
+    head === undefined ||
+    transition?.action !== "rollback" ||
+    transition.toStateDigest !== targetStateDigest ||
+    head.stateDigest !== targetStateDigest ||
+    head.activationDigest !== transition.toActivationDigest ||
+    transition.actor !== actor ||
+    transition.reason !== reason
+  ) {
+    return undefined;
+  }
+  const targetOrigin = index.origins.find(
+    (item) =>
+      item.workflowId === workflowId &&
+      item.stateDigest === targetStateDigest &&
+      item.transitionDigest === transition.targetTransitionDigest,
+  );
+  const targetTransition = index.history.find(
+    (item) =>
+      item.workflowId === workflowId &&
+      item.toStateDigest === targetStateDigest &&
+      item.transitionDigest === transition.targetTransitionDigest,
+  );
+  const targetActivationDigest =
+    targetOrigin?.activationDigest ?? targetTransition?.toActivationDigest;
+  if (
+    targetActivationDigest === undefined ||
+    targetActivationDigest !== transition.toActivationDigest
+  ) {
+    return undefined;
+  }
+  const prior = createEffectiveHarnessHeadIdentity({
+    scopeDigest: transition.scopeDigest,
+    workflowId: transition.workflowId,
+    generation: transition.generation - 1,
+    activationDigest: transition.fromActivationDigest,
+    transitionDigest: transition.previousTransitionDigest,
+    stateDigest: transition.fromStateDigest,
+  });
+  if (
+    rollbackProposalFromHead(
+      prior,
+      workflowId,
+      targetStateDigest,
+      transition.targetTransitionDigest,
+      actor,
+      reason,
+    ).proposalDigest !== expectedDigest
+  ) {
+    return undefined;
+  }
+  return { head, transition };
 }
 
 function rollbackTarget(index: EffectiveHarnessIndex, workflowId: string, stateDigest: string) {

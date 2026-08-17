@@ -180,7 +180,7 @@ function assertEvaluationProfiles(
       candidateBinding.packageDigests,
       artifact.candidateState.packages.map((item) => item.digest),
     ) ||
-    !isDeepStrictEqual(candidate.candidate.identity, artifact.candidate)
+    canonicalize(candidate.candidate.identity) !== canonicalize(artifact.candidate)
   ) {
     throw new EffectiveHarnessActivationAdmissionError(
       "identity_mismatch",

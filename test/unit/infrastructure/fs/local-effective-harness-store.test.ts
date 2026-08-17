@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { prepareEffectiveHarnessActivation } from "../../../../src/application/prepare-effective-harness-activation.js";
 import { createPromptActivationSnapshot } from "../../../../src/domain/adaptation/prompt-activation.js";
+import { admitLocalEffectiveHarnessCandidate } from "../../../../src/infrastructure/fs/local-effective-harness-candidate.js";
 import {
   type EffectiveHarnessStoreHooks,
   LocalEffectiveHarnessStore,
@@ -26,6 +27,25 @@ afterEach(async () => {
 });
 
 describe("local effective harness store", () => {
+  it("stages a complete candidate without creating activation authority", async () => {
+    const root = await temporaryDirectory();
+    const artifact = effectiveHarnessCandidateArtifactFixture();
+    const store = new LocalEffectiveHarnessStore(root, {
+      readInitialHead: async () => artifact.baselineHead,
+    });
+
+    const staged = await store.stageCandidate(artifact);
+
+    expect(staged).toMatchObject({
+      artifactDigest: artifact.artifactDigest,
+      stateDigest: artifact.candidateState.stateDigest,
+    });
+    await expect(admitLocalEffectiveHarnessCandidate(staged.path)).resolves.toMatchObject({
+      artifact,
+    });
+    expect(await store.list()).toMatchObject({ heads: [], history: [] });
+  });
+
   it("publishes complete state before one authoritative transition and rolls back exactly", async () => {
     const root = await temporaryDirectory();
     const artifact = effectiveHarnessCandidateArtifactFixture();
@@ -196,6 +216,87 @@ describe("local effective harness store", () => {
       }),
     ).resolves.toEqual({ ...first, status: "already_active" });
     expect((await store.list()).history).toHaveLength(1);
+  });
+
+  it("settles an exact rollback retry without another transition", async () => {
+    const root = await temporaryDirectory();
+    const artifact = effectiveHarnessCandidateArtifactFixture();
+    const prepared = prepareEffectiveHarnessActivation({
+      artifact,
+      stored: superiorEffectiveHarnessEvaluation(artifact),
+    });
+    const store = new LocalEffectiveHarnessStore(root, {
+      readInitialHead: async () => artifact.baselineHead,
+    });
+    const activation = await store.previewActivate({ prepared, actor: "operator:test" });
+    await store.applyActivate({
+      prepared,
+      actor: "operator:test",
+      expectedDigest: activation.proposalDigest,
+    });
+    const input = {
+      workflowId: artifact.workflowId,
+      targetStateDigest: artifact.baselineState.stateDigest,
+      actor: "operator:test",
+      reason: "Restore exact reviewed authority.",
+    };
+    const proposal = await store.previewRollback(input);
+    const first = await store.applyRollback({
+      ...input,
+      expectedDigest: proposal.proposalDigest,
+    });
+
+    await expect(
+      store.applyRollback({ ...input, expectedDigest: proposal.proposalDigest }),
+    ).resolves.toEqual({ ...first, status: "already_rolled_back" });
+    expect((await store.list()).history).toHaveLength(2);
+  });
+
+  it("preserves pre-ownership cancellation and settles cancellation after ownership", async () => {
+    const root = await temporaryDirectory();
+    const artifact = effectiveHarnessCandidateArtifactFixture();
+    const prepared = prepareEffectiveHarnessActivation({
+      artifact,
+      stored: superiorEffectiveHarnessEvaluation(artifact),
+    });
+    const cancelled = new AbortController();
+    const reason = new Error("PRIVATE_CANCEL_REASON");
+    cancelled.abort(reason);
+    const untouched = new LocalEffectiveHarnessStore(root, {
+      readInitialHead: async () => artifact.baselineHead,
+    });
+
+    await expect(
+      untouched.applyActivate({
+        prepared,
+        actor: "operator:test",
+        expectedDigest: "9".repeat(64),
+        signal: cancelled.signal,
+      }),
+    ).rejects.toBe(reason);
+    expect((await untouched.list()).history).toEqual([]);
+
+    const afterOwnership = new AbortController();
+    const settling = new LocalEffectiveHarnessStore(root, {
+      readInitialHead: async () => artifact.baselineHead,
+      hooks: {
+        afterBlobPublished: (kind) => {
+          if (kind === "baseline-state") afterOwnership.abort(new Error("PRIVATE_LATE_CANCEL"));
+        },
+      },
+    });
+    const proposal = await settling.previewActivate({ prepared, actor: "operator:test" });
+    await expect(
+      settling.applyActivate({
+        prepared,
+        actor: "operator:test",
+        expectedDigest: proposal.proposalDigest,
+        signal: afterOwnership.signal,
+      }),
+    ).resolves.toMatchObject({ status: "activated" });
+    await expect(settling.loadActive(artifact.workflowId)).resolves.toMatchObject({
+      state: artifact.candidateState,
+    });
   });
 
   it("keeps the old head authoritative before rename and settles after rename", async () => {

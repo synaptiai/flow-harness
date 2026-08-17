@@ -99,8 +99,14 @@ export function superiorEffectiveHarnessEvaluation(
         sourceSha256: artifact.candidateState.workflow.sha256,
         workflowDigest: artifact.candidateState.workflow.workflowDigest,
       },
-      capabilitySnapshotDigest: calculateCapabilitySnapshotDigest(artifact.candidateState.packages),
-      capabilityPackageDigests: candidatePackageDigests,
+      ...(candidatePackageDigests.length === 0
+        ? {}
+        : {
+            capabilitySnapshotDigest: calculateCapabilitySnapshotDigest(
+              artifact.candidateState.packages,
+            ),
+            capabilityPackageDigests: candidatePackageDigests,
+          }),
       candidate: {
         provenance: "candidate.effective-harness.json",
         identity: artifact.candidate,

@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { parseDocument } from "yaml";
 
 import { MAX_AGENT_SKILL_CANDIDATE_BYTES } from "../../domain/adaptation/agent-skill-candidate.js";
+import { MAX_EFFECTIVE_HARNESS_CANDIDATE_BYTES } from "../../domain/adaptation/effective-harness-candidate.js";
 import { MAX_PROMPT_CANDIDATE_BYTES } from "../../domain/adaptation/prompt-candidate.js";
 import {
   type AdmittedLocalAgentSkillCandidate,
@@ -16,12 +17,17 @@ import {
   admitLocalAgentSkillPackageCandidate,
 } from "./local-agent-skill-package-candidate.js";
 import {
+  type AdmittedLocalEffectiveHarnessCandidate,
+  admitLocalEffectiveHarnessCandidate,
+} from "./local-effective-harness-candidate.js";
+import {
   type AdmittedLocalPromptCandidate,
   admitLocalPromptCandidate,
 } from "./local-prompt-candidate.js";
 
 const MAX_LOCAL_ADAPTATION_CANDIDATE_BYTES = Math.max(
   MAX_AGENT_SKILL_CANDIDATE_BYTES,
+  MAX_EFFECTIVE_HARNESS_CANDIDATE_BYTES,
   MAX_PROMPT_CANDIDATE_BYTES,
 );
 const fatalUtf8Decoder = new TextDecoder("utf-8", { fatal: true });
@@ -38,6 +44,10 @@ export type AdmittedLocalAdaptationCandidate =
   | {
       readonly kind: "agent-skill-package-candidate";
       readonly candidate: AdmittedLocalAgentSkillPackageCandidate;
+    }
+  | {
+      readonly kind: "effective-harness-candidate";
+      readonly candidate: AdmittedLocalEffectiveHarnessCandidate;
     };
 
 export interface LocalAdaptationCandidateOptions {
@@ -48,6 +58,8 @@ export interface LocalAdaptationCandidateOptions {
   readonly afterAgentSkillPathValidation?: (provenance: string) => void | Promise<void>;
   /** @internal Deterministic nested prompt-candidate cancellation seam. */
   readonly afterPromptPathValidation?: (provenance: string) => void | Promise<void>;
+  /** @internal Deterministic stable-dispatch replacement seam. */
+  readonly afterDiscriminatorRead?: () => void | Promise<void>;
 }
 
 export async function admitLocalAdaptationCandidate(
@@ -118,8 +130,16 @@ export async function admitLocalAdaptationCandidate(
   } finally {
     await handle.close();
   }
+  await options.afterDiscriminatorRead?.();
   options.signal?.throwIfAborted();
   const kind = parseCandidateKind(source);
+  if (kind === "effective-harness-candidate") {
+    const candidate = await admitLocalEffectiveHarnessCandidate(absolutePath, {
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+      expectedSource: { identity: sourceIdentity, sha256: sourceSha256 },
+    });
+    return Object.freeze({ kind, candidate });
+  }
   if (kind === "AgentSkillCandidate") {
     const candidate = await admitLocalAgentSkillCandidate(absolutePath, {
       ...(options.signal === undefined ? {} : { signal: options.signal }),
@@ -162,7 +182,9 @@ async function readBoundedDiscriminator(handle: FileHandle, signal?: AbortSignal
   return Buffer.concat(chunks, totalBytes);
 }
 
-function parseCandidateKind(source: string): "PromptCandidate" | "AgentSkillCandidate" {
+function parseCandidateKind(
+  source: string,
+): "PromptCandidate" | "AgentSkillCandidate" | "effective-harness-candidate" {
   const document = parseDocument(source, {
     prettyErrors: false,
     strict: true,
@@ -176,7 +198,9 @@ function parseCandidateKind(source: string): "PromptCandidate" | "AgentSkillCand
     typeof value === "object" &&
     value !== null &&
     "kind" in value &&
-    (value.kind === "PromptCandidate" || value.kind === "AgentSkillCandidate")
+    (value.kind === "PromptCandidate" ||
+      value.kind === "AgentSkillCandidate" ||
+      value.kind === "effective-harness-candidate")
   ) {
     return value.kind;
   }
