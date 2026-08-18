@@ -109,7 +109,7 @@ describe("capability bundles", () => {
     expect(parseCapabilityBundle(created.content)).toEqual(created.bundle);
   });
 
-  it("round-trips an inert A2UI-profile presentation package", () => {
+  it("round-trips a bounded content-bearing A2UI-profile presentation package", () => {
     const presentation = Buffer.from(presentationManifest());
     const created = createCapabilityBundleSource({
       name: "presentation-suite",
@@ -127,6 +127,8 @@ describe("capability bundles", () => {
       },
     ]);
     expect(parseCapabilityBundle(created.content)).toEqual(created.bundle);
+    expect(presentation.toString("utf8")).toContain("FlowPackageNotes");
+    expect(presentation.toString("utf8")).toContain("This text is package-provided information.");
   });
 
   it("derives Agent Skill metadata and requested tools from canonical package files", () => {
@@ -496,7 +498,7 @@ spec:
     - version: v0.9
       createSurface:
         surfaceId: flow-run
-        catalogId: https://flow.synapti.ai/a2ui/catalogs/run-presentation/v1
+        catalogId: https://flow.synapti.ai/a2ui/catalogs/run-presentation/v2
     - version: v0.9
       updateComponents:
         surfaceId: flow-run
@@ -504,11 +506,16 @@ spec:
           - id: root
             component: FlowLayout
             density: compact
-            children: [group-1]
+            children: [group-1, package-notes]
           - id: group-1
             component: FlowGroup
             variant: stack
             children: [run-summary, graph-progress, node-table, resource-facts, pending-approvals, outcome-notice]
+          - id: package-notes
+            component: FlowPackageNotes
+            notes:
+              - title: Operator context
+                body: This text is package-provided information.
           - id: run-summary
             component: FlowRunSummary
           - id: graph-progress

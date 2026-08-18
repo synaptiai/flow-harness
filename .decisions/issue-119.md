@@ -180,3 +180,7 @@ _Captured by specification-capture skill on 2026-08-18. Source: user-confirmed._
 - 2026-08-18: Terminal and ACP host checks passed 20 tests. The real authenticated browser host
   passed two tests with loopback permission. Desktop, tablet, and mobile screenshots show visible
   attribution, literal markup text, responsive layout, separate actions, and no console errors.
+
+- 2026-08-18: Distribution and selection checks passed 46 tests across four files. Evidence covers
+  public inspect output and deterministic bundle bytes. It also covers installed offline TUI use
+  and local browser use. Invalid content rejects before supervisor or renderer ownership.

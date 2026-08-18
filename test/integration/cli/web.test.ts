@@ -171,7 +171,14 @@ describe("flow web", () => {
         "graph-progress",
         "node-table",
         "outcome-notice",
+        "presentation-package-content",
       ]);
+      expect(host.documents[0]?.sections.at(-1)).toMatchObject({
+        title: "Package-provided information — operations@1.0.0",
+        components: expect.arrayContaining([
+          { kind: "notice", tone: "info", text: "This text is package-provided information." },
+        ]),
+      });
     } finally {
       await running.close();
     }
@@ -341,13 +348,18 @@ metadata: { name: operations, version: 1.0.0, description: Browser operator layo
 spec:
   messages:
     - version: v0.9
-      createSurface: { surfaceId: flow-run, catalogId: https://flow.synapti.ai/a2ui/catalogs/run-presentation/v1 }
+      createSurface: { surfaceId: flow-run, catalogId: https://flow.synapti.ai/a2ui/catalogs/run-presentation/v2 }
     - version: v0.9
       updateComponents:
         surfaceId: flow-run
         components:
-          - { id: root, component: FlowLayout, density: compact, children: [group-1] }
+          - { id: root, component: FlowLayout, density: compact, children: [group-1, package-notes] }
           - { id: group-1, component: FlowGroup, variant: stack, children: [resource-facts, run-summary, graph-progress, node-table, pending-approvals, outcome-notice] }
+          - id: package-notes
+            component: FlowPackageNotes
+            notes:
+              - title: Operator context
+                body: This text is package-provided information.
           - { id: run-summary, component: FlowRunSummary }
           - { id: graph-progress, component: FlowGraphProgress }
           - { id: node-table, component: FlowNodeTable }
