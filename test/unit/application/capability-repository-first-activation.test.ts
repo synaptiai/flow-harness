@@ -104,7 +104,10 @@ describe("capability repository first activation", () => {
         }),
         install: vi.fn(async () => {
           trace.push("install");
-          return { status: "installed" as const, bundle: bundle.bundle };
+          return {
+            outcome: "settled" as const,
+            result: { status: "installed" as const, bundle: bundle.bundle },
+          };
         }),
         observe: vi.fn(async (status: { readonly outcome: string }) => {
           trace.push(`observe:${status.outcome}`);
@@ -123,8 +126,8 @@ describe("capability repository first activation", () => {
       },
     });
     expect(trace).toEqual([
-      "state:read",
       "installed:read",
+      "state:read",
       "state:waiting",
       "observe:activation_started",
       "wait",
@@ -315,6 +318,7 @@ describe("capability repository first activation", () => {
         check,
         reopen: vi.fn(),
         install,
+        settlePackageMutation: vi.fn().mockResolvedValue(undefined),
         observe: vi.fn(),
       },
       activationInput(),
@@ -356,6 +360,7 @@ describe("capability repository first activation", () => {
         check: vi.fn(),
         reopen: vi.fn(),
         install: vi.fn(),
+        settlePackageMutation: vi.fn().mockResolvedValue(undefined),
         observe,
       },
       activationInput(),
@@ -417,7 +422,10 @@ describe("capability repository first activation", () => {
     const state = inMemoryState(activationState("prepared", bundle.bundle));
     const wait = vi.fn();
     const check = vi.fn();
-    const install = vi.fn().mockResolvedValue({ status: "installed", bundle: bundle.bundle });
+    const install = vi.fn().mockResolvedValue({
+      outcome: "settled",
+      result: { status: "installed", bundle: bundle.bundle },
+    });
     const readInstalled = vi.fn().mockResolvedValue([]);
 
     const result = await runCapabilityRepositoryFirstActivation(
@@ -588,7 +596,7 @@ describe("capability repository first activation", () => {
     expect(check).not.toHaveBeenCalled();
   });
 
-  it("reconciles an install error only when the exact prepared package committed", async () => {
+  it("does not reconcile an ordinary precommit install rejection", async () => {
     const bundle = capabilityBundle();
     const candidate = repositoryCandidate(bundle.bundle);
     const state = inMemoryState();
@@ -598,44 +606,378 @@ describe("capability repository first activation", () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([exactInstalled(bundle.bundle)]);
 
-    const result = await runCapabilityRepositoryFirstActivation(
-      {
-        state,
-        readInstalled,
-        wait: vi.fn().mockResolvedValue(undefined),
-        now: sequenceClock([
-          "2027-01-01T00:00:00.000Z",
-          "2027-01-01T00:01:00.000Z",
-          "2027-01-01T00:01:01.000Z",
-          "2027-01-01T00:01:02.000Z",
-        ]),
-        check: vi.fn().mockResolvedValue({
-          status: "staged",
-          checkedAt: "2027-01-01T00:01:00.000Z",
-          candidates: [candidate],
-        }),
-        reopen: vi
-          .fn()
-          .mockResolvedValue({ identity: candidate, capabilityBundle: bundle.content }),
-        install: vi.fn().mockRejectedValue(new Error("PRIVATE_INSTALL_SETTLEMENT")),
-        observe: vi.fn(),
-      },
-      { ...activationInput(), maxChecks: 1 },
-    );
+    await expect(
+      runCapabilityRepositoryFirstActivation(
+        {
+          state,
+          readInstalled,
+          wait: vi.fn().mockResolvedValue(undefined),
+          now: sequenceClock([
+            "2027-01-01T00:00:00.000Z",
+            "2027-01-01T00:01:00.000Z",
+            "2027-01-01T00:01:01.000Z",
+          ]),
+          check: vi.fn().mockResolvedValue({
+            status: "staged",
+            checkedAt: "2027-01-01T00:01:00.000Z",
+            candidates: [candidate],
+          }),
+          reopen: vi
+            .fn()
+            .mockResolvedValue({ identity: candidate, capabilityBundle: bundle.content }),
+          install: vi.fn().mockRejectedValue(new Error("PRIVATE_PRECOMMIT_REJECTION")),
+          observe: vi.fn(),
+        },
+        { ...activationInput(), maxChecks: 1 },
+      ),
+    ).rejects.toEqual(new CapabilityRepositoryFirstActivationError("install candidate"));
 
-    expect(result).toEqual({
-      outcome: "activated",
-      attempts: 1,
-      package: {
-        name: bundle.bundle.name,
-        version: bundle.bundle.version,
-        digest: bundle.bundle.digest,
-      },
-    });
+    expect(readInstalled).toHaveBeenCalledTimes(2);
+    await expect(
+      state.read(activationInput(), new AbortController().signal),
+    ).resolves.toMatchObject({ status: "prepared" });
+  });
+
+  it("reconciles only an explicitly commit-uncertain install outcome", async () => {
+    const bundle = capabilityBundle();
+    const candidate = repositoryCandidate(bundle.bundle);
+    const state = inMemoryState();
+    const readInstalled = vi
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([exactInstalled(bundle.bundle)]);
+    const settlePackageMutation = vi.fn().mockResolvedValue(undefined);
+    await expect(
+      runCapabilityRepositoryFirstActivation(
+        {
+          state,
+          readInstalled,
+          wait: vi.fn().mockResolvedValue(undefined),
+          now: sequenceClock([
+            "2027-01-01T00:00:00.000Z",
+            "2027-01-01T00:01:00.000Z",
+            "2027-01-01T00:01:01.000Z",
+          ]),
+          check: vi.fn().mockResolvedValue({
+            status: "staged",
+            checkedAt: "2027-01-01T00:01:00.000Z",
+            candidates: [candidate],
+          }),
+          reopen: vi
+            .fn()
+            .mockResolvedValue({ identity: candidate, capabilityBundle: bundle.content }),
+          install: vi.fn().mockResolvedValue({ outcome: "commit_uncertain" }),
+          settlePackageMutation,
+          observe: vi.fn(),
+        },
+        { ...activationInput(), maxChecks: 1 },
+      ),
+    ).resolves.toMatchObject({ outcome: "activated" });
+
     expect(readInstalled).toHaveBeenCalledTimes(3);
+    expect(settlePackageMutation).toHaveBeenCalledOnce();
     await expect(
       state.read(activationInput(), new AbortController().signal),
     ).resolves.toMatchObject({ status: "settled" });
+  });
+
+  it("durably advances the prepared trusted-clock high-water before a precommit rejection", async () => {
+    const bundle = capabilityBundle();
+    const candidate = repositoryCandidate(bundle.bundle);
+    const state = inMemoryState(activationState("prepared", bundle.bundle));
+    const install = vi.fn(async (input: unknown) => {
+      const advance = (
+        input as {
+          readonly advanceTrustedClockHighWater?: (observedAt: string) => Promise<void>;
+        }
+      ).advanceTrustedClockHighWater;
+      if (advance === undefined) {
+        throw new Error("trusted-clock advancement is missing");
+      }
+      await advance("2027-01-01T00:02:00.000Z");
+      throw new Error("PRIVATE_PRECOMMIT_REJECTION");
+    });
+
+    await expect(
+      runCapabilityRepositoryFirstActivation(
+        {
+          state,
+          readInstalled: vi.fn().mockResolvedValue([]),
+          wait: vi.fn(),
+          now: vi.fn(),
+          check: vi.fn(),
+          reopen: vi
+            .fn()
+            .mockResolvedValue({ identity: candidate, capabilityBundle: bundle.content }),
+          install,
+          observe: vi.fn(),
+        },
+        activationInput(),
+      ),
+    ).rejects.toEqual(new CapabilityRepositoryFirstActivationError("install candidate"));
+
+    await expect(
+      state.read(activationInput(), new AbortController().signal),
+    ).resolves.toMatchObject({
+      status: "prepared",
+      lastObservedAt: "2027-01-01T00:02:00.000Z",
+    });
+  });
+
+  it("reports mutation-lock settlement uncertainty after settling an exact recovered package", async () => {
+    const bundle = capabilityBundle();
+    const candidate = repositoryCandidate(bundle.bundle);
+    const state = inMemoryState();
+    const readInstalled = vi
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([exactInstalled(bundle.bundle)]);
+    const settlePackageMutation = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      runCapabilityRepositoryFirstActivation(
+        {
+          state,
+          readInstalled,
+          wait: vi.fn().mockResolvedValue(undefined),
+          now: sequenceClock([
+            "2027-01-01T00:00:00.000Z",
+            "2027-01-01T00:01:00.000Z",
+            "2027-01-01T00:01:01.000Z",
+          ]),
+          check: vi.fn().mockResolvedValue({
+            status: "staged",
+            checkedAt: "2027-01-01T00:01:00.000Z",
+            candidates: [candidate],
+          }),
+          reopen: vi
+            .fn()
+            .mockResolvedValue({ identity: candidate, capabilityBundle: bundle.content }),
+          install: vi.fn().mockResolvedValue({ outcome: "settlement_uncertain" }),
+          settlePackageMutation,
+          observe: vi.fn(),
+        },
+        { ...activationInput(), maxChecks: 1 },
+      ),
+    ).rejects.toEqual(new CapabilityRepositoryFirstActivationError("settle activation"));
+
+    expect(readInstalled).toHaveBeenCalledTimes(3);
+    expect(settlePackageMutation).toHaveBeenCalledOnce();
+    await expect(
+      state.read(activationInput(), new AbortController().signal),
+    ).resolves.toMatchObject({ status: "settled" });
+  });
+
+  it.each([
+    { label: "missing", reconciliation: [] },
+    { label: "failed", reconciliation: new Error("PRIVATE_INSTALLED_READ_FAILURE") },
+  ])(
+    "preserves unresolved commit uncertainty over late cancellation when installed state is $label",
+    async ({ reconciliation }) => {
+      const bundle = capabilityBundle();
+      const candidate = repositoryCandidate(bundle.bundle);
+      const state = inMemoryState();
+      const controller = new AbortController();
+      const readInstalled = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+      if (reconciliation instanceof Error) {
+        readInstalled.mockRejectedValueOnce(reconciliation);
+      } else {
+        readInstalled.mockResolvedValueOnce(reconciliation);
+      }
+
+      await expect(
+        runCapabilityRepositoryFirstActivation(
+          {
+            state,
+            readInstalled,
+            wait: vi.fn().mockResolvedValue(undefined),
+            now: sequenceClock([
+              "2027-01-01T00:00:00.000Z",
+              "2027-01-01T00:01:00.000Z",
+              "2027-01-01T00:01:01.000Z",
+            ]),
+            check: vi.fn().mockResolvedValue({
+              status: "staged",
+              checkedAt: "2027-01-01T00:01:00.000Z",
+              candidates: [candidate],
+            }),
+            reopen: vi
+              .fn()
+              .mockResolvedValue({ identity: candidate, capabilityBundle: bundle.content }),
+            install: vi.fn(async () => {
+              controller.abort(new Error("operator cancelled"));
+              return { outcome: "commit_uncertain" as const };
+            }),
+            observe: vi.fn(),
+          },
+          { ...activationInput(), maxChecks: 1, signal: controller.signal },
+        ),
+      ).rejects.toEqual(new CapabilityRepositoryFirstActivationError("settle activation"));
+
+      await expect(
+        state.read(activationInput(), new AbortController().signal),
+      ).resolves.toMatchObject({ status: "prepared" });
+    },
+  );
+
+  it("re-enters package mutation settlement before accepting a prepared exact installation", async () => {
+    const bundle = capabilityBundle();
+    const candidate = repositoryCandidate(bundle.bundle);
+    const state = inMemoryState(activationState("prepared", bundle.bundle));
+    const install = vi.fn();
+    const settlePackageMutation = vi
+      .fn()
+      .mockRejectedValue(new Error("PRIVATE_STALE_MUTATION_LOCK"));
+
+    await expect(
+      runCapabilityRepositoryFirstActivation(
+        {
+          state,
+          readInstalled: vi.fn().mockResolvedValue([exactInstalled(bundle.bundle)]),
+          wait: vi.fn(),
+          now: vi.fn(),
+          check: vi.fn(),
+          reopen: vi
+            .fn()
+            .mockResolvedValue({ identity: candidate, capabilityBundle: bundle.content }),
+          install,
+          settlePackageMutation,
+          observe: vi.fn(),
+        },
+        activationInput(),
+      ),
+    ).rejects.toEqual(new CapabilityRepositoryFirstActivationError("settle activation"));
+
+    expect(settlePackageMutation).toHaveBeenCalledOnce();
+    expect(install).not.toHaveBeenCalled();
+    await expect(
+      state.read(activationInput(), new AbortController().signal),
+    ).resolves.toMatchObject({ status: "prepared" });
+  });
+
+  it("preserves prepared restart settlement uncertainty over late cancellation", async () => {
+    const bundle = capabilityBundle();
+    const state = inMemoryState(activationState("prepared", bundle.bundle));
+    const controller = new AbortController();
+    const reason = new Error("operator cancelled");
+    const settlePackageMutation = vi.fn(async (signal: AbortSignal) => {
+      controller.abort(reason);
+      expect(signal).not.toBe(controller.signal);
+      throw new Error("PRIVATE_STALE_MUTATION_LOCK");
+    });
+
+    await expect(
+      runCapabilityRepositoryFirstActivation(
+        {
+          state,
+          readInstalled: vi.fn().mockResolvedValue([exactInstalled(bundle.bundle)]),
+          wait: vi.fn(),
+          now: vi.fn(),
+          check: vi.fn(),
+          reopen: vi.fn(),
+          install: vi.fn(),
+          settlePackageMutation,
+          observe: vi.fn(),
+        },
+        { ...activationInput(), signal: controller.signal },
+      ),
+    ).rejects.toEqual(new CapabilityRepositoryFirstActivationError("settle activation"));
+
+    expect(settlePackageMutation).toHaveBeenCalledOnce();
+    await expect(
+      state.read(activationInput(), new AbortController().signal),
+    ).resolves.toMatchObject({ status: "prepared" });
+  });
+
+  it("settles a prepared exact restart before restoring late cancellation", async () => {
+    const bundle = capabilityBundle();
+    const state = inMemoryState(activationState("prepared", bundle.bundle));
+    const controller = new AbortController();
+    const reason = new Error("operator cancelled");
+    const install = vi.fn();
+    const check = vi.fn();
+    const settlePackageMutation = vi.fn(async (signal: AbortSignal) => {
+      controller.abort(reason);
+      expect(signal).not.toBe(controller.signal);
+    });
+
+    await expect(
+      runCapabilityRepositoryFirstActivation(
+        {
+          state,
+          readInstalled: vi.fn().mockResolvedValue([exactInstalled(bundle.bundle)]),
+          wait: vi.fn(),
+          now: vi.fn(),
+          check,
+          reopen: vi.fn(),
+          install,
+          settlePackageMutation,
+          observe: vi.fn(),
+        },
+        { ...activationInput(), signal: controller.signal },
+      ),
+    ).rejects.toBe(reason);
+
+    await expect(
+      state.read(activationInput(), new AbortController().signal),
+    ).resolves.toMatchObject({ status: "settled" });
+    expect(state.publish.mock.calls.at(-1)?.[0]?.signal).not.toBe(controller.signal);
+    expect(install).not.toHaveBeenCalled();
+    expect(check).not.toHaveBeenCalled();
+  });
+
+  it("preserves settlement uncertainty over late cancellation when mutation settlement fails", async () => {
+    const bundle = capabilityBundle();
+    const candidate = repositoryCandidate(bundle.bundle);
+    const state = inMemoryState();
+    const controller = new AbortController();
+    const reason = new Error("operator cancelled");
+    const readInstalled = vi
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([exactInstalled(bundle.bundle)]);
+    const settlePackageMutation = vi.fn(async (signal: AbortSignal) => {
+      expect(signal).not.toBe(controller.signal);
+      throw new Error("PRIVATE_STALE_MUTATION_LOCK");
+    });
+
+    await expect(
+      runCapabilityRepositoryFirstActivation(
+        {
+          state,
+          readInstalled,
+          wait: vi.fn().mockResolvedValue(undefined),
+          now: sequenceClock([
+            "2027-01-01T00:00:00.000Z",
+            "2027-01-01T00:01:00.000Z",
+            "2027-01-01T00:01:01.000Z",
+          ]),
+          check: vi.fn().mockResolvedValue({
+            status: "staged",
+            checkedAt: "2027-01-01T00:01:00.000Z",
+            candidates: [candidate],
+          }),
+          reopen: vi
+            .fn()
+            .mockResolvedValue({ identity: candidate, capabilityBundle: bundle.content }),
+          install: vi.fn(async () => {
+            controller.abort(reason);
+            return { outcome: "settlement_uncertain" as const };
+          }),
+          settlePackageMutation,
+          observe: vi.fn(),
+        },
+        { ...activationInput(), maxChecks: 1, signal: controller.signal },
+      ),
+    ).rejects.toEqual(new CapabilityRepositoryFirstActivationError("settle activation"));
+
+    expect(settlePackageMutation).toHaveBeenCalledOnce();
+    await expect(
+      state.read(activationInput(), new AbortController().signal),
+    ).resolves.toMatchObject({ status: "prepared" });
   });
 
   it("settles a successful late-cancelled install before preserving the exact reason", async () => {
@@ -667,7 +1009,10 @@ describe("capability repository first activation", () => {
             .mockResolvedValue({ identity: candidate, capabilityBundle: bundle.content }),
           install: vi.fn(async () => {
             controller.abort(reason);
-            return { status: "installed" as const, bundle: bundle.bundle };
+            return {
+              outcome: "settled" as const,
+              result: { status: "installed" as const, bundle: bundle.bundle },
+            };
           }),
           observe: vi.fn(),
         },
@@ -680,6 +1025,134 @@ describe("capability repository first activation", () => {
     ).resolves.toMatchObject({ status: "settled" });
     const finalPublish = state.publish.mock.calls.at(-1)?.[0];
     expect(finalPublish?.signal).not.toBe(controller.signal);
+  });
+
+  it("settles from the prepared clock high-water after package commit and never reinstalls", async () => {
+    const bundle = capabilityBundle();
+    const candidate = repositoryCandidate(bundle.bundle);
+    const state = inMemoryState();
+    let installed = false;
+    const install = vi.fn(async () => {
+      installed = true;
+      return {
+        outcome: "settled" as const,
+        result: { status: "installed" as const, bundle: bundle.bundle },
+      };
+    });
+    const readInstalled = vi.fn(async () => (installed ? [exactInstalled(bundle.bundle)] : []));
+
+    await expect(
+      runCapabilityRepositoryFirstActivation(
+        {
+          state,
+          readInstalled,
+          wait: vi.fn().mockResolvedValue(undefined),
+          now: sequenceClock([
+            "2027-01-01T00:00:00.000Z",
+            "2027-01-01T00:01:00.000Z",
+            "2027-01-01T00:01:01.000Z",
+          ]),
+          check: vi.fn().mockResolvedValue({
+            status: "staged",
+            checkedAt: "2027-01-01T00:01:00.000Z",
+            candidates: [candidate],
+          }),
+          reopen: vi
+            .fn()
+            .mockResolvedValue({ identity: candidate, capabilityBundle: bundle.content }),
+          install,
+          observe: vi.fn(),
+        },
+        { ...activationInput(), maxChecks: 1 },
+      ),
+    ).resolves.toMatchObject({ outcome: "activated" });
+    await expect(
+      state.read(activationInput(), new AbortController().signal),
+    ).resolves.toMatchObject({
+      status: "settled",
+      settledAt: "2027-01-01T00:01:01.000Z",
+    });
+
+    installed = false;
+    await expect(
+      runCapabilityRepositoryFirstActivation(
+        {
+          state,
+          readInstalled,
+          wait: vi.fn(),
+          now: vi.fn(() => new Date("2026-12-31T23:59:59.000Z")),
+          check: vi.fn(),
+          reopen: vi.fn(),
+          install,
+          observe: vi.fn(),
+        },
+        { ...activationInput(), maxChecks: 1 },
+      ),
+    ).rejects.toEqual(new CapabilityRepositoryFirstActivationError("read installed package"));
+    expect(install).toHaveBeenCalledOnce();
+  });
+
+  it("requires exact repository currentness again at the package mutation boundary", async () => {
+    const bundle = capabilityBundle();
+    const candidate = repositoryCandidate(bundle.bundle);
+    const state = inMemoryState();
+    const reopen = vi
+      .fn()
+      .mockResolvedValueOnce({ identity: candidate, capabilityBundle: bundle.content })
+      .mockResolvedValueOnce({
+        identity: { ...candidate, candidateDigest: `sha256:${"a".repeat(64)}` },
+        capabilityBundle: bundle.content,
+      });
+    let packageMutationStarted = false;
+    const install = vi.fn(async (input: unknown) => {
+      const assertCurrent = (
+        input as {
+          readonly assertCurrent?: (signal: AbortSignal) => Promise<void>;
+          readonly signal?: AbortSignal;
+        }
+      ).assertCurrent;
+      if (assertCurrent === undefined) {
+        throw new Error("repository currentness fence is missing");
+      }
+      await assertCurrent(
+        (input as { readonly signal?: AbortSignal }).signal ?? new AbortController().signal,
+      );
+      packageMutationStarted = true;
+      return {
+        outcome: "settled" as const,
+        result: { status: "installed" as const, bundle: bundle.bundle },
+      };
+    });
+
+    await expect(
+      runCapabilityRepositoryFirstActivation(
+        {
+          state,
+          readInstalled: vi.fn().mockResolvedValue([]),
+          wait: vi.fn().mockResolvedValue(undefined),
+          now: sequenceClock([
+            "2027-01-01T00:00:00.000Z",
+            "2027-01-01T00:01:00.000Z",
+            "2027-01-01T00:01:01.000Z",
+          ]),
+          check: vi.fn().mockResolvedValue({
+            status: "staged",
+            checkedAt: "2027-01-01T00:01:00.000Z",
+            candidates: [candidate],
+          }),
+          reopen,
+          install,
+          observe: vi.fn(),
+        },
+        { ...activationInput(), maxChecks: 1 },
+      ),
+    ).rejects.toEqual(new CapabilityRepositoryFirstActivationError("install candidate"));
+
+    expect(reopen).toHaveBeenCalledTimes(2);
+    expect(packageMutationStarted).toBe(false);
+    await expect(
+      state.read(activationInput(), new AbortController().signal),
+    ).resolves.toMatchObject({ status: "prepared" });
   });
 });
 

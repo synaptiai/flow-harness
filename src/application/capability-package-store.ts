@@ -21,6 +21,14 @@ export interface InstallCapabilityBundleInput {
   readonly signal?: AbortSignal;
 }
 
+export interface InstallCapabilityBundleFromRepositoryInput
+  extends Omit<InstallCapabilityBundleInput, "signal"> {
+  readonly signal: AbortSignal;
+  readonly trustedClockHighWater: string;
+  readonly advanceTrustedClockHighWater: (observedAt: string) => Promise<void>;
+  readonly assertCurrent: (signal: AbortSignal) => Promise<void>;
+}
+
 export interface InstallCapabilityBundleResult {
   readonly status: "installed" | "already_installed";
   readonly bundle: CapabilityBundle;
@@ -74,8 +82,9 @@ export interface RefreshCapabilityMetadataResult {
 export interface CapabilityPackageMutationStore {
   install(input: InstallCapabilityBundleInput): Promise<InstallCapabilityBundleResult>;
   installFromRepository(
-    input: InstallCapabilityBundleInput,
+    input: InstallCapabilityBundleFromRepositoryInput,
   ): Promise<InstallCapabilityBundleResult>;
+  settleMutation(signal: AbortSignal): Promise<void>;
   replace(input: ReplaceCapabilityBundleInput): Promise<ReplaceCapabilityBundleResult>;
   refreshMetadata(input: RefreshCapabilityMetadataInput): Promise<RefreshCapabilityMetadataResult>;
 }

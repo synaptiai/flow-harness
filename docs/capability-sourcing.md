@@ -430,9 +430,12 @@ lock before best-effort orphan cleanup.
 
 Mutation locks fail closed and are not retired automatically. If the recorded process has exited,
 an operator must first verify that no package mutation is active, then remove only the exact
-`.flow/packages.mutation.lock`. `commit_uncertain` means a replacement became visible or a mutation
-completed but directory durability or lock cleanup could not be confirmed. Inspect the live lock,
-run `flow packages verify`, and reconcile the requested exact versions before retrying.
+`.flow/packages.mutation.lock`. `commit_uncertain` means an active package-lock replacement became
+visible but its directory durability could not be confirmed. Inspect the exact package versions and
+run `flow packages verify` before retrying. `settlement_uncertain` means the package operation and
+mutation-lock cleanup did not both settle. Inspect the live mutation-lock owner and verify that its
+process is inactive. Reconcile the requested exact package state, remove only the exact mutation
+lock, and run `flow packages verify` before retrying.
 
 An arbitrary HTTPS or OCI upgrade has no atomic command. Pause new admissions, retain the old source
 and digest, install the new exact bundle version, remove the old exact version, verify, then resume.
@@ -611,8 +614,14 @@ exact missing bundle name, exact version, and exact publisher. It requires an ex
 root and a full interval before every check. The limit is 1 to 1000 checks. The command requires
 offline Sigstore verification, an inert non-policy bundle, and one current active metadata target.
 
-It records a waiting intent before scheduling and a prepared receipt before package mutation. It records a
-settled receipt after an exact installed package is visible.
+It records a waiting intent before scheduling and a prepared receipt before package mutation. Under
+the package mutation lock, strict installation rejects another active version with the same name.
+It checks the prepared clock high-water. It reopens the exact repository candidate before inert
+blob publication and active-lock publication. It records a settled receipt after an exact installed
+package is visible.
+
+Settlement reuses the prepared high-water. It does not depend on a later clock read after package
+commit.
 
 The command then terminates. The
 settled receipt cannot authorize an update or reinstall after removal.

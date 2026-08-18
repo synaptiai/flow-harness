@@ -136,10 +136,13 @@ than a recovery mechanism.
 
 Repository replacement is also offline. Before the active lock rename, cancellation returns the
 exact caller reason and the established generation remains active. A replacement
-`commit_uncertain` result means the new lock may already be visible but its directory durability or
-mutation-lock settlement was not confirmed. Run `flow packages list`, inspect both exact versions,
-and run `flow packages verify` before retrying. Do not reinstall or remove either version until the
-active lock is reconciled.
+`commit_uncertain` result means the new lock may already be visible but its directory durability was
+not confirmed. Run `flow packages list`, inspect both exact versions, and run
+`flow packages verify` before retrying. A `settlement_uncertain` result means mutation-lock cleanup
+also did not settle. Inspect `.flow/packages.mutation.lock`, verify that its recorded owner is no
+longer active, reconcile both exact versions, remove only that exact mutation-lock file, and verify
+again before retrying. Do not reinstall or remove either version until the active lock and mutation
+owner are reconciled.
 
 A settled `replaced` result reports `cleanup: retained`. The new lock is authoritative, while the
 old immutable blob remains available to a reader with the prior lock. Existing runs, workers,
@@ -177,6 +180,13 @@ If the exact package is already visible, the
 restart records settlement without a second install. A settled restart returns
 `already_activated` only while the exact package is still visible. A missing or conflicting settled
 package fails without a repository request or reinstall.
+
+Strict first installation rejects another active version with the same package name while it owns
+the package mutation lock. It also checks the prepared clock high-water and exact authenticated
+repository candidate immediately before package publication. After package commit, settlement uses
+the prepared high-water instead of consulting a fresh clock. A watcher-lock release failure does
+not replace an earlier operation or cancellation failure. A release-only failure reports fixed
+settlement failure. It requires watcher-lock remediation.
 
 A failed pre-rename write retains
 `.first-activation-<identity>.json.pending` and blocks later inference. Confirm that no repository

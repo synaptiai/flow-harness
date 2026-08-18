@@ -1819,9 +1819,63 @@ async function packagesCommand(
         );
       }
       const signal = overrides.signal ?? new AbortController().signal;
-      const repository = await repositoryStore.status(signal);
-      if (repository === undefined) {
-        throw new CapabilityRepositoryFirstActivationError("read activation state");
+      signal.throwIfAborted();
+      let installedEntries: Awaited<ReturnType<LocalCapabilityPackageStore["list"]>>["bundles"];
+      try {
+        installedEntries = (await store.list()).bundles.filter(
+          (entry) => entry.name === firstActivationPackageName,
+        );
+        signal.throwIfAborted();
+      } catch {
+        signal.throwIfAborted();
+        throw new CapabilityRepositoryFirstActivationError("read installed package");
+      }
+      const activationAuthorization = Object.freeze({
+        packageName: firstActivationPackageName,
+        version: firstActivationVersion,
+        certificateIssuer: firstActivationCertificateIssuer,
+        certificateIdentity: firstActivationCertificateIdentity,
+      });
+      const activationStateStore = new LocalCapabilityRepositoryFirstActivationStore(
+        config.projectRoot,
+      );
+      let activationState: Awaited<ReturnType<typeof activationStateStore.read>>;
+      try {
+        activationState = await activationStateStore.read(activationAuthorization, signal);
+        signal.throwIfAborted();
+      } catch {
+        signal.throwIfAborted();
+        throw new CapabilityRepositoryFirstActivationError(
+          installedEntries.length > 0 ? "read installed package" : "read activation state",
+        );
+      }
+      const receipt = activationState?.status === "waiting" ? undefined : activationState?.receipt;
+      const installedEntry = installedEntries[0];
+      const hasExactInstalledReceipt =
+        installedEntries.length === 1 &&
+        installedEntry !== undefined &&
+        receipt !== undefined &&
+        installedEntry.name === receipt.bundle.name &&
+        installedEntry.version === receipt.bundle.version &&
+        installedEntry.source === receipt.source &&
+        installedEntry.digest === receipt.bundle.digest &&
+        installedEntry.bytes === receipt.bundle.bytes &&
+        installedEntry.publisher !== undefined &&
+        installedEntry.publisher.kind === receipt.publisher.kind &&
+        installedEntry.publisher.certificateIssuer === receipt.publisher.certificateIssuer &&
+        installedEntry.publisher.certificateIdentity === receipt.publisher.certificateIdentity &&
+        installedEntry.publisher.signatureBundleDigest === receipt.publisher.signatureBundleDigest;
+      if (
+        (installedEntries.length > 0 && !hasExactInstalledReceipt) ||
+        (activationState?.status === "settled" && !hasExactInstalledReceipt)
+      ) {
+        throw new CapabilityRepositoryFirstActivationError("read installed package");
+      }
+      if (activationState === undefined || activationState.status === "waiting") {
+        const repository = await repositoryStore.status(signal);
+        if (repository === undefined) {
+          throw new CapabilityRepositoryFirstActivationError("read activation state");
+        }
       }
       const lease = await new LocalCapabilityRepositoryWatcherLock(config.projectRoot).acquire(
         signal,
@@ -1831,7 +1885,7 @@ async function packagesCommand(
       try {
         result = await runCapabilityRepositoryFirstActivation(
           {
-            state: new LocalCapabilityRepositoryFirstActivationStore(config.projectRoot),
+            state: activationStateStore,
             readInstalled: async (name, activeSignal) => {
               activeSignal.throwIfAborted();
               const entries = (await store.list()).bundles.filter((entry) => entry.name === name);
@@ -1861,7 +1915,31 @@ async function packagesCommand(
                 { candidates: repositoryStore, verifier: sigstoreVerifier },
                 input,
               ),
-            install: async (input) => await store.installFromRepository(input),
+            install: async (input) => {
+              try {
+                return Object.freeze({
+                  outcome: "settled" as const,
+                  result: await store.installFromRepository(input),
+                });
+              } catch (error) {
+                if (
+                  error instanceof CapabilityPackageStoreError &&
+                  error.code === "commit_uncertain"
+                ) {
+                  return Object.freeze({ outcome: "commit_uncertain" as const });
+                }
+                if (
+                  error instanceof CapabilityPackageStoreError &&
+                  error.code === "settlement_uncertain"
+                ) {
+                  return Object.freeze({ outcome: "settlement_uncertain" as const });
+                }
+                throw error;
+              }
+            },
+            settlePackageMutation: async (activeSignal) => {
+              await store.settleMutation(activeSignal);
+            },
             now: overrides.capabilityRepositoryWatcherNow ?? (() => new Date()),
             wait:
               overrides.capabilityRepositoryWatcherWait ??
@@ -1885,13 +1963,21 @@ async function packagesCommand(
       } catch (error) {
         operationError = error;
       }
+      let releaseError: unknown;
       try {
         await lease.release();
-      } catch {
-        throw new CapabilityRepositoryFirstActivationError("settle activation");
+      } catch (error) {
+        releaseError = error;
       }
       if (operationError !== undefined) {
+        if (releaseError !== undefined) {
+          const settlementError = new CapabilityRepositoryFirstActivationError("settle activation");
+          io.stderr(`${settlementError.code}: ${settlementError.message}`);
+        }
         throw operationError;
+      }
+      if (releaseError !== undefined) {
+        throw new CapabilityRepositoryFirstActivationError("settle activation");
       }
       if (result === undefined) {
         throw new CapabilityRepositoryFirstActivationError("settle activation");

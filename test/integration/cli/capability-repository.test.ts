@@ -1,5 +1,5 @@
 import { createHash, generateKeyPairSync, type KeyObject, sign } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -381,10 +381,9 @@ spec:
         verify: vi.fn(() => ({ ...fixture.publisher })),
       } satisfies SigstoreCapabilityVerifier,
       capabilityRepositoryWatcherNow: sequenceClock([
-        "2027-01-01T00:00:00.000Z",
-        "2027-01-01T00:01:00.000Z",
-        "2027-01-01T00:01:01.000Z",
-        "2027-01-01T00:01:02.000Z",
+        "2026-08-18T00:00:00.000Z",
+        "2026-08-18T00:01:00.000Z",
+        "2026-08-18T00:01:01.000Z",
       ]),
       capabilityRepositoryWatcherWait: vi.fn().mockResolvedValue(undefined),
     };
@@ -396,7 +395,7 @@ spec:
       ),
     ).toBe(0);
     await new LocalCapabilityPackageStore(project, {
-      now: () => new Date("2027-01-01T00:00:00.000Z"),
+      now: () => new Date("2026-08-18T00:00:00.000Z"),
     }).refreshMetadata({
       metadata: fixture.activeMetadata,
       authority: {
@@ -441,6 +440,7 @@ spec:
     });
 
     const networkCalls = read.mock.calls.length;
+    await unlink(join(project, ".flow", "capability.repository", "current.json"));
     const repeated = captureIo();
     expect(await main(command, repeated.io, dependencies)).toBe(0);
     expect(repeated.stdout.map((line) => JSON.parse(line))).toMatchObject([
@@ -508,12 +508,216 @@ spec:
     await expect(new LocalCapabilityPackageStore(project).list()).resolves.toMatchObject({
       bundles: [],
     });
-    expect(await readdir(join(project, ".flow", "capability.repository"))).not.toEqual(
+    const repositoryEntries = await readdir(join(project, ".flow", "capability.repository")).catch(
+      (error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          return [];
+        }
+        throw error;
+      },
+    );
+    expect(repositoryEntries).not.toEqual(
       expect.arrayContaining([expect.stringMatching(/^first-activation-/)]),
     );
     expect(`${output.stdout.join("\n")}\n${output.stderr.join("\n")}`).not.toContain(
       "PRIVATE_IDENTITY",
     );
+  });
+
+  it("rejects an existing package-name conflict before repository status access", async () => {
+    const project = await projectDirectory();
+    const existing = repositoryFixture({ version: "2.0.0" });
+    await new LocalCapabilityPackageStore(project).install({
+      source: "https://packages.example.test/review-suite-2.0.0.flowpkg.json",
+      expectedSha256: sha256(existing.envelopeCapabilityBundle),
+      content: existing.envelopeCapabilityBundle,
+    });
+    const output = captureIo();
+    const read = vi.fn<StrictCapabilityRepositoryFetcher["read"]>(() => {
+      throw new Error("PRIVATE_REPOSITORY_STATUS_ACCESS");
+    });
+
+    expect(
+      await main(
+        [
+          "packages",
+          "repository",
+          "first-activate",
+          "review-suite",
+          "--version",
+          "1.0.0",
+          "--max-checks",
+          "1",
+          "--certificate-issuer",
+          "https://issuer.example.test/",
+          "--certificate-identity",
+          "PRIVATE_IDENTITY",
+        ],
+        output.io,
+        {
+          cwd: project,
+          loadConfig: async () => effectiveConfig(project),
+          capabilityRepositoryFetcher: { read },
+        },
+      ),
+    ).toBe(1);
+    expect(output.stderr).toEqual([
+      "capability_repository_first_activation_failed: Capability repository first activation failed during read installed package",
+    ]);
+    expect(read).not.toHaveBeenCalled();
+    expect(`${output.stdout.join("\n")}\n${output.stderr.join("\n")}`).not.toContain("PRIVATE_");
+  });
+
+  it("rejects a same-version package without an exact durable receipt before repository status", async () => {
+    const project = await projectDirectory();
+    const existing = repositoryFixture();
+    await new LocalCapabilityPackageStore(project).install({
+      source: existing.targetSource,
+      expectedSha256: sha256(existing.envelopeCapabilityBundle),
+      content: existing.envelopeCapabilityBundle,
+      publisher: {
+        kind: "sigstore-keyless-v0.3",
+        ...existing.publisher,
+        signatureBundleDigest: `sha256:${"d".repeat(64)}`,
+      },
+    });
+    const output = captureIo();
+    const read = vi.fn<StrictCapabilityRepositoryFetcher["read"]>(() => {
+      throw new Error("PRIVATE_REPOSITORY_STATUS_ACCESS");
+    });
+
+    expect(
+      await main(
+        [
+          "packages",
+          "repository",
+          "first-activate",
+          "review-suite",
+          "--version",
+          "1.0.0",
+          "--max-checks",
+          "1",
+          "--certificate-issuer",
+          existing.publisher.certificateIssuer,
+          "--certificate-identity",
+          existing.publisher.certificateIdentity,
+        ],
+        output.io,
+        {
+          cwd: project,
+          loadConfig: async () => effectiveConfig(project),
+          capabilityRepositoryFetcher: { read },
+        },
+      ),
+    ).toBe(1);
+    expect(output.stderr).toEqual([
+      "capability_repository_first_activation_failed: Capability repository first activation failed during read installed package",
+    ]);
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it("preserves cancellation before package-conflict classification", async () => {
+    const project = await projectDirectory();
+    const existing = repositoryFixture({ version: "2.0.0" });
+    await new LocalCapabilityPackageStore(project).install({
+      source: "https://packages.example.test/review-suite-2.0.0.flowpkg.json",
+      expectedSha256: sha256(existing.envelopeCapabilityBundle),
+      content: existing.envelopeCapabilityBundle,
+    });
+    const controller = new AbortController();
+    controller.abort(new Error("operator cancelled"));
+    const output = captureIo();
+
+    expect(
+      await main(
+        [
+          "packages",
+          "repository",
+          "first-activate",
+          "review-suite",
+          "--version",
+          "1.0.0",
+          "--max-checks",
+          "1",
+          "--certificate-issuer",
+          "https://issuer.example.test/",
+          "--certificate-identity",
+          "https://publisher.example.test/release",
+        ],
+        output.io,
+        {
+          cwd: project,
+          loadConfig: async () => effectiveConfig(project),
+          signal: controller.signal,
+        },
+      ),
+    ).toBe(1);
+    expect(output.stderr).toEqual(["operator cancelled"]);
+  });
+
+  it("preserves the primary activation error when watcher-lock release also fails", async () => {
+    const project = await projectDirectory();
+    const fixture = repositoryFixture();
+    const rootPath = join(project, "trusted-root.json");
+    await writeFile(rootPath, fixture.root, { mode: 0o600 });
+    const read = vi.fn<StrictCapabilityRepositoryFetcher["read"]>(
+      async (url, maximumBytes, signal) => {
+        signal.throwIfAborted();
+        const content = fixture.remote.get(url);
+        return content === undefined
+          ? { statusCode: 404, bytes: Buffer.alloc(0) }
+          : { statusCode: 200, bytes: Buffer.from(content.subarray(0, maximumBytes + 1)) };
+      },
+    );
+    const dependencies = {
+      cwd: project,
+      loadConfig: async () => effectiveConfig(project),
+      capabilityRepositoryFetcher: { read } satisfies StrictCapabilityRepositoryFetcher,
+      sigstoreCapabilityVerifier: {
+        verify: vi.fn(() => ({ ...fixture.publisher })),
+      } satisfies SigstoreCapabilityVerifier,
+    };
+    expect(
+      await main(
+        ["packages", "repository", "init", fixture.repositoryBaseUrl, "--trusted-root", rootPath],
+        captureIo().io,
+        dependencies,
+      ),
+    ).toBe(0);
+    const output = captureIo();
+    const command = [
+      "packages",
+      "repository",
+      "first-activate",
+      "review-suite",
+      "--version",
+      "1.0.0",
+      "--max-checks",
+      "1",
+      "--interval-ms",
+      "60000",
+      "--certificate-issuer",
+      fixture.publisher.certificateIssuer,
+      "--certificate-identity",
+      fixture.publisher.certificateIdentity,
+    ];
+
+    expect(
+      await main(command, output.io, {
+        ...dependencies,
+        capabilityRepositoryWatcherNow: sequenceClock([
+          "2026-08-18T00:00:00.000Z",
+          "2026-08-17T23:59:59.000Z",
+        ]),
+        capabilityRepositoryWatcherWait: async () => {
+          await unlink(join(project, ".flow", "capability.repository", "watcher.lock"));
+        },
+      }),
+    ).toBe(1);
+    expect(output.stderr).toEqual([
+      "capability_repository_first_activation_failed: Capability repository first activation failed during settle activation",
+      "capability_repository_first_activation_failed: Capability repository first activation failed during observe clock",
+    ]);
   });
 
   it("exhausts finite first-activation checks when the exact version is unavailable", async () => {
@@ -545,11 +749,11 @@ spec:
         verify: vi.fn(() => ({ ...fixture.publisher })),
       } satisfies SigstoreCapabilityVerifier,
       capabilityRepositoryWatcherNow: sequenceClock([
-        "2027-01-01T00:00:00.000Z",
-        "2027-01-01T00:01:00.000Z",
-        "2027-01-01T00:01:01.000Z",
-        "2027-01-01T00:02:00.000Z",
-        "2027-01-01T00:02:01.000Z",
+        "2026-08-18T00:00:00.000Z",
+        "2026-08-18T00:01:00.000Z",
+        "2026-08-18T00:01:01.000Z",
+        "2026-08-18T00:02:00.000Z",
+        "2026-08-18T00:02:01.000Z",
       ]),
       capabilityRepositoryWatcherWait: wait,
     };
@@ -626,9 +830,9 @@ spec:
         verify: vi.fn(() => ({ ...fixture.publisher })),
       } satisfies SigstoreCapabilityVerifier,
       capabilityRepositoryWatcherNow: sequenceClock([
-        "2027-01-01T00:00:00.000Z",
-        "2027-01-01T00:01:00.000Z",
-        "2027-01-01T00:01:01.000Z",
+        "2026-08-18T00:00:00.000Z",
+        "2026-08-18T00:01:00.000Z",
+        "2026-08-18T00:01:01.000Z",
       ]),
       capabilityRepositoryWatcherWait: vi.fn().mockResolvedValue(undefined),
     };
@@ -697,9 +901,9 @@ spec:
     const controller = new AbortController();
     const stopReason = new Error("stop watcher after one settled cycle");
     const clock = sequenceClock([
-      "2027-01-01T00:00:00.000Z",
-      "2027-01-01T00:01:00.000Z",
-      "2027-01-01T00:01:01.000Z",
+      "2026-08-18T00:00:00.000Z",
+      "2026-08-18T00:01:00.000Z",
+      "2026-08-18T00:01:01.000Z",
     ]);
     const dependencies = {
       cwd: project,

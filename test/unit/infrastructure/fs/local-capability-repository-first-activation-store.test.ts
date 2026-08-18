@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   appendFile,
+  link,
   lstat,
   mkdir,
   mkdtemp,
@@ -84,12 +85,48 @@ describe("local capability repository first activation store", () => {
       signal,
     });
     requireStatus(prepared, "prepared");
-    const settled = await store.publish({
+    await expect(
+      store.publish({
+        expectedRecordDigest: prepared.recordDigest,
+        state: {
+          ...withoutDigest(prepared),
+          lastObservedAt: "2027-01-01T00:00:59.000Z",
+        },
+        signal,
+      }),
+    ).rejects.toEqual(
+      new LocalCapabilityRepositoryFirstActivationStoreError("publish activation state"),
+    );
+    await expect(
+      store.publish({
+        expectedRecordDigest: prepared.recordDigest,
+        state: {
+          ...withoutDigest(prepared),
+          receipt: { ...prepared.receipt, source: "https://packages.example.test/substitute" },
+          lastObservedAt: "2027-01-01T00:02:00.000Z",
+        },
+        signal,
+      }),
+    ).rejects.toEqual(
+      new LocalCapabilityRepositoryFirstActivationStoreError("publish activation state"),
+    );
+    await expect(store.read(prepared.authorization, signal)).resolves.toEqual(prepared);
+    const advanced = await store.publish({
       expectedRecordDigest: prepared.recordDigest,
       state: {
         ...withoutDigest(prepared),
+        lastObservedAt: "2027-01-01T00:02:00.000Z",
+      },
+      signal,
+    });
+    requireStatus(advanced, "prepared");
+    expect(advanced.receipt).toEqual(prepared.receipt);
+    const settled = await store.publish({
+      expectedRecordDigest: advanced.recordDigest,
+      state: {
+        ...withoutDigest(advanced),
         status: "settled",
-        settledAt: "2027-01-01T00:01:02.000Z",
+        settledAt: "2027-01-01T00:02:01.000Z",
       },
       signal,
     });
@@ -266,6 +303,27 @@ describe("local capability repository first activation store", () => {
     await expect(store.read(waitingState().authorization, signal)).rejects.toEqual(
       new LocalCapabilityRepositoryFirstActivationStoreError("inspect activation state"),
     );
+  });
+
+  it("rejects a hard-linked durable activation record", async () => {
+    const project = await projectDirectory();
+    const store = new LocalCapabilityRepositoryFirstActivationStore(project);
+    const signal = new AbortController().signal;
+    await store.publish({ expectedRecordDigest: null, state: waitingState(), signal });
+    const root = join(project, ".flow", "capability.repository");
+    const recordName = (await readdir(root)).find((entry) => entry.startsWith("first-activation-"));
+    if (recordName === undefined) {
+      throw new Error("test requires a first activation record");
+    }
+    const recordPath = join(root, recordName);
+    const externalLink = join(project, "PRIVATE_ACTIVATION_RECORD_LINK");
+    await link(recordPath, externalLink);
+    const before = await readFile(externalLink);
+
+    await expect(store.read(waitingState().authorization, signal)).rejects.toEqual(
+      new LocalCapabilityRepositoryFirstActivationStoreError("inspect activation state"),
+    );
+    await expect(readFile(externalLink)).resolves.toEqual(before);
   });
 
   it("rejects a symbolic-link directory below the project trust anchor", async () => {

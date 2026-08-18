@@ -298,6 +298,7 @@ async function readRecord(
     if (
       !before.isFile() ||
       before.isSymbolicLink() ||
+      before.nlink !== 1n ||
       before.size < 1n ||
       before.size > BigInt(MAX_CAPABILITY_REPOSITORY_FIRST_ACTIVATION_RECORD_BYTES)
     ) {
@@ -411,6 +412,11 @@ function assertTransition(
     current.status === "waiting" &&
     next.status === "prepared" &&
     next.attempts === current.attempts;
+  const preparedClockAdvance =
+    current.status === "prepared" &&
+    next.status === "prepared" &&
+    next.attempts === current.attempts &&
+    isDeepStrictEqual(next.receipt, current.receipt);
   const settlement =
     current.status === "prepared" &&
     next.status === "settled" &&
@@ -419,7 +425,7 @@ function assertTransition(
   if (
     !samePolicy ||
     Date.parse(next.lastObservedAt) < Date.parse(current.lastObservedAt) ||
-    (!waitingAdvance && !preparation && !settlement)
+    (!waitingAdvance && !preparation && !preparedClockAdvance && !settlement)
   ) {
     throw new Error("first activation transition is invalid");
   }
@@ -526,6 +532,8 @@ function sameFile(left: BigIntStats, right: BigIntStats): boolean {
     left.size === right.size &&
     left.mtimeNs === right.mtimeNs &&
     left.ctimeNs === right.ctimeNs &&
+    left.nlink === 1n &&
+    right.nlink === 1n &&
     right.isFile() &&
     !right.isSymbolicLink()
   );

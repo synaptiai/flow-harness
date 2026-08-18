@@ -11,7 +11,7 @@ import {
 } from "../domain/capability/verifier-packages.js";
 import type {
   CapabilityPublisherVerification,
-  InstallCapabilityBundleInput,
+  InstallCapabilityBundleFromRepositoryInput,
   InstallCapabilityBundleResult,
 } from "./capability-package-store.js";
 import type { PublicCapabilityRepositoryCandidate } from "./capability-repository-candidate.js";
@@ -139,6 +139,18 @@ export interface InstalledCapabilityRepositoryFirstActivationPackage {
   readonly bundle: CapabilityBundle;
 }
 
+export type CapabilityRepositoryFirstActivationInstallOutcome =
+  | Readonly<{
+      readonly outcome: "settled";
+      readonly result: InstallCapabilityBundleResult;
+    }>
+  | Readonly<{
+      readonly outcome: "commit_uncertain";
+    }>
+  | Readonly<{
+      readonly outcome: "settlement_uncertain";
+    }>;
+
 export interface CapabilityRepositoryFirstActivationDependencies {
   readonly state: CapabilityRepositoryFirstActivationStatePort;
   readonly readInstalled: (
@@ -152,7 +164,10 @@ export interface CapabilityRepositoryFirstActivationDependencies {
     readonly certificateIdentity: string;
     readonly signal: AbortSignal;
   }) => Promise<ReopenedCapabilityRepositoryCandidate>;
-  readonly install: (input: InstallCapabilityBundleInput) => Promise<InstallCapabilityBundleResult>;
+  readonly install: (
+    input: InstallCapabilityBundleFromRepositoryInput,
+  ) => Promise<CapabilityRepositoryFirstActivationInstallOutcome>;
+  readonly settlePackageMutation?: (signal: AbortSignal) => Promise<void>;
   readonly now: () => Date;
   readonly wait: (milliseconds: number, signal: AbortSignal) => Promise<void>;
   readonly observe: (status: CapabilityRepositoryFirstActivationStatus) => void | Promise<void>;
@@ -204,8 +219,8 @@ export async function runCapabilityRepositoryFirstActivation(
   validateInput(input);
   input.signal.throwIfAborted();
   const authorization = activationAuthorization(input);
-  let state = await readState(dependencies, authorization, input.signal);
   const installed = await readInstalled(dependencies, input.packageName, input.signal);
+  let state = await readState(dependencies, authorization, input.signal);
 
   if (state === undefined) {
     if (installed.length !== 0) {
@@ -248,7 +263,10 @@ export async function runCapabilityRepositoryFirstActivation(
         installedOnly !== undefined &&
         isExactFirstActivationReceipt(installedOnly, state.receipt)
       ) {
-        const settled = await settlePreparedState(dependencies, state, input.signal);
+        const settlementSignal = new AbortController().signal;
+        await settlePackageMutation(dependencies, settlementSignal);
+        const settled = await settlePreparedState(dependencies, state, settlementSignal);
+        input.signal.throwIfAborted();
         return await reportAlreadyActivated(dependencies, settled, input.signal);
       }
       if (installed.length !== 0) {
@@ -577,8 +595,7 @@ async function settlePreparedState(
   state: CapabilityRepositoryFirstActivationState & { readonly status: "prepared" },
   signal: AbortSignal,
 ): Promise<CapabilityRepositoryFirstActivationState & { readonly status: "settled" }> {
-  const settledAt = readClock(dependencies.now);
-  requireMonotonicClock(state.lastObservedAt, settledAt);
+  const settledAt = state.lastObservedAt;
   const { recordDigest: _recordDigest, ...prepared } = state;
   const settled = await publishState(
     dependencies,
@@ -632,23 +649,53 @@ async function installPreparedCandidate(
   callerSignal: AbortSignal,
 ): Promise<Extract<CapabilityRepositoryFirstActivationResult, { outcome: "activated" }>> {
   const settlementSignal = new AbortController().signal;
-  let installedResult: InstallCapabilityBundleResult | undefined;
-  let installFailed = false;
+  let preparedState = state;
+  let installOutcome: CapabilityRepositoryFirstActivationInstallOutcome;
   try {
-    installedResult = await dependencies.install({
-      source: state.receipt.source,
-      expectedSha256: state.receipt.bundle.digest.slice("sha256:".length),
+    installOutcome = await dependencies.install({
+      source: preparedState.receipt.source,
+      expectedSha256: preparedState.receipt.bundle.digest.slice("sha256:".length),
       content,
-      publisher: state.receipt.publisher,
+      publisher: preparedState.receipt.publisher,
       signal: callerSignal,
+      trustedClockHighWater: preparedState.lastObservedAt,
+      advanceTrustedClockHighWater: async (observedAt) => {
+        preparedState = await advancePreparedClockHighWater(
+          dependencies,
+          preparedState,
+          observedAt,
+          settlementSignal,
+        );
+      },
+      assertCurrent: async (activeSignal) => {
+        let current: ReopenedCapabilityRepositoryCandidate;
+        try {
+          current = await dependencies.reopen({
+            candidateDigest: preparedState.receipt.candidateDigest,
+            certificateIssuer: preparedState.authorization.certificateIssuer,
+            certificateIdentity: preparedState.authorization.certificateIdentity,
+            signal: activeSignal,
+          });
+          activeSignal.throwIfAborted();
+          requirePreparedCandidate(current, preparedState);
+        } catch {
+          activeSignal.throwIfAborted();
+          throw new CapabilityRepositoryFirstActivationError("verify candidate package");
+        }
+      },
     });
   } catch {
-    installFailed = true;
+    callerSignal.throwIfAborted();
+    throw new CapabilityRepositoryFirstActivationError("install candidate");
   }
 
   let committed =
-    installedResult !== undefined && isExactInstalledResult(installedResult, state.receipt);
-  if (installFailed || !committed) {
+    installOutcome.outcome === "settled" &&
+    isExactInstalledResult(installOutcome.result, preparedState.receipt);
+  if (
+    installOutcome.outcome === "commit_uncertain" ||
+    installOutcome.outcome === "settlement_uncertain"
+  ) {
     try {
       const observed = await dependencies.readInstalled(
         state.authorization.packageName,
@@ -658,21 +705,79 @@ async function installPreparedCandidate(
       committed =
         observed.length === 1 &&
         observedOnly !== undefined &&
-        isExactFirstActivationReceipt(observedOnly, state.receipt);
+        isExactFirstActivationReceipt(observedOnly, preparedState.receipt);
     } catch {
       committed = false;
     }
   }
   if (!committed) {
+    if (installOutcome.outcome !== "settled") {
+      throw new CapabilityRepositoryFirstActivationError("settle activation");
+    }
     callerSignal.throwIfAborted();
     throw new CapabilityRepositoryFirstActivationError("install candidate");
   }
 
-  const settled = await settlePreparedState(dependencies, state, settlementSignal);
+  if (installOutcome.outcome === "commit_uncertain") {
+    await settlePackageMutation(dependencies, settlementSignal);
+  }
+  if (installOutcome.outcome === "settlement_uncertain") {
+    await settlePackageMutation(dependencies, settlementSignal);
+    await settlePreparedState(dependencies, preparedState, settlementSignal);
+    throw new CapabilityRepositoryFirstActivationError("settle activation");
+  }
+
+  const settled = await settlePreparedState(dependencies, preparedState, settlementSignal);
   callerSignal.throwIfAborted();
   const result = activatedResult(settled.attempts, bundle);
   await reportStatus(dependencies, result, callerSignal);
   return result;
+}
+
+async function advancePreparedClockHighWater(
+  dependencies: CapabilityRepositoryFirstActivationDependencies,
+  state: CapabilityRepositoryFirstActivationState & { readonly status: "prepared" },
+  observedAt: string,
+  signal: AbortSignal,
+): Promise<CapabilityRepositoryFirstActivationState & { readonly status: "prepared" }> {
+  const observed = new Date(observedAt);
+  if (
+    !Number.isFinite(observed.getTime()) ||
+    observed.toISOString() !== observedAt ||
+    observed.getTime() < Date.parse(state.lastObservedAt)
+  ) {
+    throw new CapabilityRepositoryFirstActivationError("observe clock");
+  }
+  if (observedAt === state.lastObservedAt) {
+    return state;
+  }
+  const { recordDigest: _recordDigest, ...prepared } = state;
+  const advanced = await publishState(
+    dependencies,
+    state.recordDigest,
+    { ...prepared, lastObservedAt: observedAt },
+    signal,
+  );
+  if (advanced.status !== "prepared") {
+    throw new CapabilityRepositoryFirstActivationError("publish activation state");
+  }
+  return advanced;
+}
+
+async function settlePackageMutation(
+  dependencies: CapabilityRepositoryFirstActivationDependencies,
+  signal: AbortSignal,
+): Promise<void> {
+  if (dependencies.settlePackageMutation === undefined) {
+    throw new CapabilityRepositoryFirstActivationError("settle activation");
+  }
+  try {
+    await dependencies.settlePackageMutation(signal);
+    signal.throwIfAborted();
+  } catch {
+    signal.throwIfAborted();
+    throw new CapabilityRepositoryFirstActivationError("settle activation");
+  }
 }
 
 function requirePreparedCandidate(

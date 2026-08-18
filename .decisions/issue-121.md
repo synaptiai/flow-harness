@@ -33,11 +33,11 @@ _Captured after the user approved A1, the one-shot exact first-activation approa
 | Cancellation after package commit | Settle the exact durable receipt before preserving the caller reason |
 | Package commit uncertainty | Reopen installed state; settle only an exact prepared receipt, otherwise stop as uncertain |
 | Activation-state commit uncertainty | Reopen the state and continue only when the exact requested transition is durable |
-| Clock rollback | Emit a fixed status and stop before a later check or mutation |
+| Clock rollback | Emit a fixed status and stop before a later check or package-authority mutation; package-commit settlement reuses the prepared high-water |
 | Observer failure | Stop; after package commit, settle the receipt before reporting failure |
 | Settled package later removed | Reject without repository access or reinstallation |
 | Corrupt, linked, replaced, oversized, or unsettled durable state | Fail closed with fixed remediation; do not infer authority |
-| Ownership conflict or release failure | Run no overlapping attempt; preserve the primary operation outcome and report fixed settlement failure |
+| Ownership conflict or release failure | Run no overlapping attempt; retain the primary failure internally and report fixed settlement uncertainty until the exact mutation lock is reconciled |
 
 ### Interface contracts
 
@@ -57,8 +57,10 @@ _Captured after the user approved A1, the one-shot exact first-activation approa
 
 #### Composition
 
-- A metadata-required package-install port is distinct from explicit bootstrap installation. It checks current active metadata under the existing package mutation lock immediately before publication and again at commit.
-- The application controller depends only on ports. They cover state, package inspection, repository checks, candidate reopen, strict install, clock, waiting, and observation. The controller imports no local filesystem or network implementation.
+- A metadata-required package-install port is distinct from explicit bootstrap installation. Under the package mutation lock, it rejects another active version with the same name. Every accepted clock observation durably advances the prepared trusted-clock high-water. It reopens the exact repository candidate before blob publication and active-lock publication. Exact idempotent success repeats the same currentness fence.
+
+- The application controller depends only on ports. They cover state, package inspection, repository checks, candidate reopen, strict install, package-mutation settlement, clock, waiting, and observation. Package-commit uncertainty and mutation-lock settlement uncertainty remain distinct. The controller imports no local filesystem or network implementation.
+
 - The shared foreground owner prevents overlap between first activation and continuous watching.
 
 ## Decision
@@ -118,8 +120,8 @@ exact name + exact version + exact publisher
 | Criteria | Type | Verification command | Required evidence | Does not promise |
 | --- | --- | --- | --- | --- |
 | 1–2, 4–5, 8–12 | Behavioral/error | `npx vitest run test/unit/application/capability-repository-first-activation.test.ts` | Exact authorization; full waits; finite attempts; deterministic candidate selection; conflict-before-check; inert-only policy; fixed statuses; observer and clock behavior | Filesystem settlement |
-| 6–7, 9–14 | Data/atomicity | `npx vitest run test/unit/infrastructure/fs/local-capability-package-store.test.ts test/unit/application/activate-capability-repository-candidate.test.ts` | Active metadata is mandatory under the mutation lock; exact idempotence; precommit absence; postcommit reopen and settlement | Repository polling |
-| 12–16 | Recovery/concurrency | `npx vitest run test/unit/infrastructure/fs/local-capability-repository-first-activation-store.test.ts test/unit/infrastructure/fs/local-capability-repository-watcher-lock.test.ts` | Bounded no-follow records; waiting/prepared/settled transitions; exact/+1 bounds; cancellation; uncertainty; no-overlap; settled removal cannot mint authority | Hostile same-user filesystem isolation |
+| 6–7, 9–14 | Data/atomicity | `npx vitest run test/unit/infrastructure/fs/local-capability-package-store.test.ts test/unit/application/activate-capability-repository-candidate.test.ts` | Active metadata, same-name uniqueness, prepared clock high-water, and exact repository currentness are mandatory under the mutation lock; exact idempotence; precommit absence; postcommit settlement | Repository polling outside the supplied currentness fence |
+| 12–16 | Recovery/concurrency | `npx vitest run test/unit/infrastructure/fs/local-capability-repository-first-activation-store.test.ts test/unit/infrastructure/fs/local-capability-repository-watcher-lock.test.ts` | Bounded no-follow, single-link records; waiting/prepared/settled transitions; exact/+1 bounds; cancellation; uncertainty; no-overlap; settled removal cannot mint authority | Hostile same-user filesystem isolation |
 | 1–17 | CLI/integration | `npx vitest run test/integration/cli/capability-repository.test.ts` | Exact grammar; initialized-root requirement; real check/reopen/strict-install composition; JSONL statuses; finite exhaustion; restart reconciliation; existing watcher unchanged | A packaged OS service unit |
 | 18 | Regression/recovery | `npx vitest run test/integration/cli/remote-capability-workflow.test.ts test/integration/cli/agent-skill-candidate.test.ts test/integration/supervisor/service.test.ts test/integration/supervisor/worker.test.ts` | Attached, detached, child, recovery, replay, and evaluation remain frozen and ignore automation records | Migration of already-admitted state |
 | 19 | Documentation/static | `npm run docs:ste && npm run typecheck && npm run lint && npm run format:check && git diff --check` | Public authority, lifecycle, recovery, remediation, non-goals, and exact commands agree with source | Runtime behavior |
@@ -130,7 +132,7 @@ exact name + exact version + exact publisher
 
 ### Frozen acceptance map
 
-The mapped command passed 200 tests across 10 files:
+The mapped command passed 226 tests across 10 files:
 
 ```text
 npx vitest run --maxWorkers=1 test/unit/application/capability-repository-first-activation.test.ts test/unit/infrastructure/fs/local-capability-package-store.test.ts test/unit/application/activate-capability-repository-candidate.test.ts test/unit/infrastructure/fs/local-capability-repository-first-activation-store.test.ts test/unit/infrastructure/fs/local-capability-repository-watcher-lock.test.ts test/integration/cli/capability-repository.test.ts test/integration/cli/remote-capability-workflow.test.ts test/integration/cli/agent-skill-candidate.test.ts test/integration/supervisor/service.test.ts test/integration/supervisor/worker.test.ts
@@ -138,7 +140,7 @@ npx vitest run --maxWorkers=1 test/unit/application/capability-repository-first-
 
 ### Complete suite and coverage
 
-The single-process serial suite exceeded this host's memory limit. Four sequential shards covered the same 313-file inventory without overlap. They passed 4,300 tests and skipped 4 tests:
+The single-process serial suite exceeded this host's memory limit. Four sequential shards covered the same 313-file inventory without overlap. They passed 4,326 tests and skipped 4 tests:
 
 ```text
 npm run test -- --maxWorkers=1 --testTimeout=60000 --shard=1/4
@@ -147,7 +149,22 @@ npm run test -- --maxWorkers=1 --testTimeout=60000 --shard=3/4
 npm run test -- --maxWorkers=1 --testTimeout=60000 --shard=4/4
 ```
 
-The same four shards passed with V8 coverage enabled, one coverage-processing thread, and separate JSON reports. Merging the four Istanbul maps produced 84.46% statements, 78.87% branches, 91.13% functions, and 84.6% lines. These values exceed the configured 75%, 65%, 70%, and 75% thresholds.
+The same four shards passed with V8 coverage enabled, one coverage-processing thread, and separate JSON reports:
+
+```text
+npx vitest run --coverage --coverage.reporter=json --coverage.reportsDirectory=/private/tmp/flow-issue121-final-coverage-1 --coverage.thresholds.statements=0 --coverage.thresholds.branches=0 --coverage.thresholds.functions=0 --coverage.thresholds.lines=0 --coverage.processingConcurrency=1 --maxWorkers=1 --testTimeout=60000 --shard=1/4
+npx vitest run --coverage --coverage.reporter=json --coverage.reportsDirectory=/private/tmp/flow-issue121-final-coverage-2 --coverage.thresholds.statements=0 --coverage.thresholds.branches=0 --coverage.thresholds.functions=0 --coverage.thresholds.lines=0 --coverage.processingConcurrency=1 --maxWorkers=1 --testTimeout=60000 --shard=2/4
+npx vitest run --coverage --coverage.reporter=json --coverage.reportsDirectory=/private/tmp/flow-issue121-final-coverage-3 --coverage.thresholds.statements=0 --coverage.thresholds.branches=0 --coverage.thresholds.functions=0 --coverage.thresholds.lines=0 --coverage.processingConcurrency=1 --maxWorkers=1 --testTimeout=60000 --shard=3/4
+npx vitest run --coverage --coverage.reporter=json --coverage.reportsDirectory=/private/tmp/flow-issue121-final-coverage-4 --coverage.thresholds.statements=0 --coverage.thresholds.branches=0 --coverage.thresholds.functions=0 --coverage.thresholds.lines=0 --coverage.processingConcurrency=1 --maxWorkers=1 --testTimeout=60000 --shard=4/4
+```
+
+The following command merges the four Istanbul maps and checks the configured thresholds:
+
+```text
+node -e 'const fs=require("node:fs"); const {createCoverageMap}=require("istanbul-lib-coverage"); const map=createCoverageMap({}); for(let i=1;i<=4;i++){map.merge(JSON.parse(fs.readFileSync(`/private/tmp/flow-issue121-final-coverage-${i}/coverage-final.json`,"utf8")));} const s=map.getCoverageSummary().toJSON(); const minimum={statements:75,branches:65,functions:70,lines:75}; console.log(JSON.stringify(s)); for(const [key,value] of Object.entries(minimum)){if(s[key].pct<value)process.exitCode=1;}'
+```
+
+The merged maps produced 84.49% statements, 78.92% branches, 91.12% functions, and 84.63% lines. These values exceed the configured 75%, 65%, 70%, and 75% thresholds.
 
 ### Static, runtime, package, and dependency gates
 
@@ -161,6 +178,6 @@ The same four shards passed with V8 coverage enabled, one coverage-processing th
 
 - `npm audit --omit=dev --audit-level=low` reported zero vulnerabilities.
 
-- The local runtime aggregate passed 41 tests and skipped 34 tests. Two unrelated timing cases failed only in the aggregate. Both passed independently. Project-capacity cancellation passed in 21.1 seconds. The native Pi smoke test passed in 30.5 seconds with a 60-second limit.
+- The local runtime aggregate passed 43 tests and skipped 34 tests.
 
 Hosted Linux x64 CI remains the canonical runtime gate. Hosted CI and adversarial review remain pending until the pull request is open.

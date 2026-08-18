@@ -11,6 +11,7 @@ import {
   CAPABILITY_METADATA_STATE_API_VERSION,
   type CapabilityMetadataState,
   type CapabilityPublisherVerification,
+  type InstallCapabilityBundleFromRepositoryInput,
   type InstallCapabilityBundleInput,
   type InstallCapabilityBundleResult,
   type RefreshCapabilityMetadataInput,
@@ -46,6 +47,7 @@ export {
   CAPABILITY_METADATA_STATE_API_VERSION,
   type CapabilityMetadataState,
   type CapabilityPublisherVerification,
+  type InstallCapabilityBundleFromRepositoryInput,
   type InstallCapabilityBundleInput,
   type InstallCapabilityBundleResult,
   type RefreshCapabilityMetadataInput,
@@ -173,6 +175,7 @@ export type CapabilityPackageStoreErrorCode =
   | "busy"
   | "not_found"
   | "commit_uncertain"
+  | "settlement_uncertain"
   | "io";
 
 export class CapabilityPackageStoreError extends Error {
@@ -268,13 +271,23 @@ export class LocalCapabilityPackageStore {
   }
 
   async installFromRepository(
-    input: InstallCapabilityBundleInput,
+    input: InstallCapabilityBundleFromRepositoryInput,
   ): Promise<InstallCapabilityBundleResult> {
     return await this.#install(input, true);
   }
 
+  async settleMutation(signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
+    const paths = await storePaths(this.projectRoot);
+    signal.throwIfAborted();
+    const mutationLock = await acquireMutationLock(paths.flowDirectory, this.hooks);
+    await withMutationLock(mutationLock, async () => {
+      signal.throwIfAborted();
+    });
+  }
+
   async #install(
-    input: InstallCapabilityBundleInput,
+    input: InstallCapabilityBundleInput | InstallCapabilityBundleFromRepositoryInput,
     metadataRequired: boolean,
   ): Promise<InstallCapabilityBundleResult> {
     throwIfAborted(input.signal);
@@ -308,6 +321,13 @@ export class LocalCapabilityPackageStore {
     const mutationLock = await acquireMutationLock(paths.flowDirectory, this.hooks);
     return await withMutationLock(mutationLock, async () => {
       throwIfAborted(input.signal);
+      const repositoryInput = metadataRequired
+        ? (input as InstallCapabilityBundleFromRepositoryInput)
+        : undefined;
+      const observeNow =
+        repositoryInput === undefined
+          ? async () => this.now()
+          : createRepositoryClockObserver(repositoryInput, () => this.now());
       const metadata = await readCapabilityMetadataState(paths.metadataPath);
       throwIfAborted(input.signal);
       if (metadataRequired && metadata === null) {
@@ -316,12 +336,36 @@ export class LocalCapabilityPackageStore {
           "capability bundle does not match one active trusted metadata target",
         );
       }
-      requireTrustedTarget(metadata, bundle, input.source, publisher, this.now());
+      requireTrustedTarget(metadata, bundle, input.source, publisher, await observeNow());
+      const assertRepositoryCurrent =
+        repositoryInput === undefined
+          ? undefined
+          : async () => {
+              await assertRepositoryInstallCurrent(repositoryInput, observeNow);
+              requireTrustedTarget(metadata, bundle, input.source, publisher, await observeNow());
+            };
+      const assertPublicationCurrent =
+        assertRepositoryCurrent ??
+        (metadata === null
+          ? undefined
+          : async () => {
+              requireTrustedTarget(metadata, bundle, input.source, publisher, await observeNow());
+            });
       const lock = await readCapabilityLock(paths.lockPath);
       throwIfAborted(input.signal);
-      const existing = lock.bundles.find(
+      const sameName = lock.bundles.filter((entry) => entry.name === bundle.name);
+      const existing = sameName.find(
         (entry) => entry.name === bundle.name && entry.version === bundle.version,
       );
+      if (
+        metadataRequired &&
+        (sameName.length > 1 || (sameName.length === 1 && existing === undefined))
+      ) {
+        throw new CapabilityPackageStoreError(
+          "identity_conflict",
+          `capability package ${bundle.name} already has a different active version`,
+        );
+      }
       if (existing !== undefined) {
         if (existing.digest !== bundle.digest) {
           throw new CapabilityPackageStoreError(
@@ -340,9 +384,19 @@ export class LocalCapabilityPackageStore {
             `capability bundle ${bundle.name}@${bundle.version} is already locked with different acquisition evidence`,
           );
         }
-        requireTrustedTarget(metadata, bundle, existing.source, existing.publisher, this.now());
         await requireExactBlob(paths, existing, Buffer.from(input.content));
         throwIfAborted(input.signal);
+        if (assertRepositoryCurrent !== undefined) {
+          await assertRepositoryCurrent();
+        } else {
+          requireTrustedTarget(
+            metadata,
+            bundle,
+            existing.source,
+            existing.publisher,
+            await observeNow(),
+          );
+        }
         return Object.freeze({ status: "already_installed" as const, bundle });
       }
       const entry: CapabilityLockEntry = Object.freeze({
@@ -353,9 +407,15 @@ export class LocalCapabilityPackageStore {
         bytes: bundle.bytes,
         ...(publisher === undefined ? {} : { publisher }),
       });
-      await publishBlob(paths, entry, Buffer.from(input.content), this.hooks, input.signal);
+      await publishBlob(
+        paths,
+        entry,
+        Buffer.from(input.content),
+        this.hooks,
+        input.signal,
+        assertPublicationCurrent,
+      );
       throwIfAborted(input.signal);
-      requireTrustedTarget(metadata, bundle, input.source, publisher, this.now());
       const bundles = [...lock.bundles, entry].sort(compareLockEntries);
       assertCanonicalLockEntries(bundles);
       await publishCapabilityLock(
@@ -367,6 +427,7 @@ export class LocalCapabilityPackageStore {
         },
         this.hooks,
         input.signal,
+        assertPublicationCurrent,
       );
       return Object.freeze({ status: "installed" as const, bundle });
     });
@@ -827,6 +888,7 @@ async function publishBlob(
   content: Buffer,
   hooks: CapabilityPackageStoreHooks,
   signal?: AbortSignal,
+  beforePublish?: () => Promise<void>,
 ): Promise<void> {
   throwIfAborted(signal);
   await ensureDirectory(paths.packagesDirectory, paths.flowDirectory, hooks);
@@ -856,6 +918,8 @@ async function publishBlob(
     await handle.close();
     handle = undefined;
     await hooks.beforeCapabilityLockRename?.();
+    throwIfAborted(signal);
+    await beforePublish?.();
     throwIfAborted(signal);
     try {
       await link(temporary, target);
@@ -925,6 +989,7 @@ async function publishCapabilityLock(
   lock: CapabilityLock,
   hooks: CapabilityPackageStoreHooks,
   signal?: AbortSignal,
+  beforeRename?: () => Promise<void>,
 ): Promise<void> {
   const content = Buffer.from(`${JSON.stringify(lock)}\n`, "utf8");
   if (content.byteLength > MAX_CAPABILITY_LOCK_BYTES) {
@@ -940,6 +1005,8 @@ async function publishCapabilityLock(
     await handle.close();
     handle = undefined;
     await hooks.beforeCapabilityLockPublished?.();
+    throwIfAborted(signal);
+    await beforeRename?.();
     throwIfAborted(signal);
     await rename(temporary, paths.lockPath);
     renamed = true;
@@ -1106,6 +1173,71 @@ function requireCurrentMetadata(state: CapabilityMetadataState, now: Date): void
     throw new CapabilityPackageStoreError(
       "metadata_expired",
       "trusted capability metadata is expired or the trusted clock is invalid",
+    );
+  }
+}
+
+async function assertRepositoryInstallCurrent(
+  input: InstallCapabilityBundleFromRepositoryInput,
+  now: () => Promise<Date>,
+): Promise<void> {
+  input.signal.throwIfAborted();
+  await now();
+  try {
+    await input.assertCurrent(input.signal);
+  } catch {
+    input.signal.throwIfAborted();
+    throw new CapabilityPackageStoreError(
+      "metadata_target",
+      "capability repository candidate changed before package publication",
+    );
+  }
+  input.signal.throwIfAborted();
+  await now();
+}
+
+function createRepositoryClockObserver(
+  input: InstallCapabilityBundleFromRepositoryInput,
+  now: () => Date,
+): () => Promise<Date> {
+  let highWater = input.trustedClockHighWater;
+  requireRepositoryClockHighWater(highWater, new Date(highWater));
+  return async () => {
+    let observed: Date;
+    try {
+      observed = now();
+    } catch {
+      throw new CapabilityPackageStoreError(
+        "metadata_rollback",
+        "trusted capability repository installation clock moved backwards",
+      );
+    }
+    requireRepositoryClockHighWater(highWater, observed);
+    const observedAt = observed.toISOString();
+    try {
+      await input.advanceTrustedClockHighWater(observedAt);
+    } catch {
+      throw new CapabilityPackageStoreError(
+        "metadata_target",
+        "trusted capability repository installation clock could not be persisted",
+      );
+    }
+    highWater = observedAt;
+    return new Date(observed.getTime());
+  };
+}
+
+function requireRepositoryClockHighWater(trustedClockHighWater: string, now: Date): void {
+  const highWater = new Date(trustedClockHighWater);
+  if (
+    !Number.isFinite(highWater.getTime()) ||
+    highWater.toISOString() !== trustedClockHighWater ||
+    !Number.isFinite(now.getTime()) ||
+    now.getTime() < highWater.getTime()
+  ) {
+    throw new CapabilityPackageStoreError(
+      "metadata_rollback",
+      "trusted capability repository installation clock moved backwards",
     );
   }
 }
@@ -1483,7 +1615,7 @@ async function withMutationLock<T>(lock: MutationLock, operation: () => Promise<
   }
   if (releaseFailure !== undefined) {
     throw new CapabilityPackageStoreError(
-      "commit_uncertain",
+      "settlement_uncertain",
       "capability package mutation completed but its mutation lock could not be released; inspect state before retrying",
       { cause: releaseFailure },
     );
@@ -1496,10 +1628,11 @@ function preservePrimaryFailure(primary: unknown, cleanup: unknown): Error {
     [primary, cleanup],
     "capability package mutation and lock cleanup both failed",
   );
-  if (primary instanceof CapabilityPackageStoreError) {
-    return new CapabilityPackageStoreError(primary.code, primary.message, { cause });
-  }
-  return cause;
+  return new CapabilityPackageStoreError(
+    "settlement_uncertain",
+    "capability package mutation and its mutation lock cleanup both require settlement",
+    { cause },
+  );
 }
 
 async function syncDirectory(path: string): Promise<void> {
