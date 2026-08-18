@@ -1,0 +1,202 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://flow.synapti.ai/a2ui/catalogs/run-presentation/v2",
+  "title": "Flow A2UI Run Presentation Catalog v2",
+  "description": "A2UI v0.9.1 catalog for arranging opaque Flow-owned run widgets and one bounded static package-note leaf. Flow's package profile further requires static child arrays, every host widget exactly once, and the package-note leaf exactly once as the final direct root child.",
+  "catalogId": "https://flow.synapti.ai/a2ui/catalogs/run-presentation/v2",
+  "components": {
+    "FlowLayout": {
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "https://a2ui.org/specification/v0_9/common_types.json#/$defs/ComponentCommon"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "component": { "const": "FlowLayout" },
+            "density": { "type": "string", "enum": ["compact", "comfortable"] },
+            "children": {
+              "$ref": "https://a2ui.org/specification/v0_9/common_types.json#/$defs/ChildList"
+            }
+          },
+          "required": ["component", "density", "children"]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "FlowGroup": {
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "https://a2ui.org/specification/v0_9/common_types.json#/$defs/ComponentCommon"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "component": { "const": "FlowGroup" },
+            "variant": { "type": "string", "enum": ["stack", "separated"] },
+            "children": {
+              "$ref": "https://a2ui.org/specification/v0_9/common_types.json#/$defs/ChildList"
+            }
+          },
+          "required": ["component", "variant", "children"]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "FlowRunSummary": {
+      "$ref": "#/$defs/flowRunSummary"
+    },
+    "FlowGraphProgress": {
+      "$ref": "#/$defs/flowGraphProgress"
+    },
+    "FlowNodeTable": {
+      "$ref": "#/$defs/flowNodeTable"
+    },
+    "FlowResourceFacts": {
+      "$ref": "#/$defs/flowResourceFacts"
+    },
+    "FlowPendingApprovals": {
+      "$ref": "#/$defs/flowPendingApprovals"
+    },
+    "FlowOutcomeNotice": {
+      "$ref": "#/$defs/flowOutcomeNotice"
+    },
+    "FlowPackageNotes": {
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "https://a2ui.org/specification/v0_9/common_types.json#/$defs/ComponentCommon"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "component": { "const": "FlowPackageNotes" },
+            "notes": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 4,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "title": { "type": "string", "minLength": 1, "maxLength": 128 },
+                  "body": { "type": "string", "minLength": 1, "maxLength": 1024 }
+                },
+                "required": ["title", "body"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": ["component", "notes"]
+        }
+      ],
+      "unevaluatedProperties": false
+    }
+  },
+  "functions": {},
+  "$defs": {
+    "flowRunSummary": {
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "https://a2ui.org/specification/v0_9/common_types.json#/$defs/ComponentCommon"
+        },
+        {
+          "type": "object",
+          "properties": { "component": { "const": "FlowRunSummary" } },
+          "required": ["component"]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "flowGraphProgress": {
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "https://a2ui.org/specification/v0_9/common_types.json#/$defs/ComponentCommon"
+        },
+        {
+          "type": "object",
+          "properties": { "component": { "const": "FlowGraphProgress" } },
+          "required": ["component"]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "flowNodeTable": {
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "https://a2ui.org/specification/v0_9/common_types.json#/$defs/ComponentCommon"
+        },
+        {
+          "type": "object",
+          "properties": { "component": { "const": "FlowNodeTable" } },
+          "required": ["component"]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "flowResourceFacts": {
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "https://a2ui.org/specification/v0_9/common_types.json#/$defs/ComponentCommon"
+        },
+        {
+          "type": "object",
+          "properties": { "component": { "const": "FlowResourceFacts" } },
+          "required": ["component"]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "flowPendingApprovals": {
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "https://a2ui.org/specification/v0_9/common_types.json#/$defs/ComponentCommon"
+        },
+        {
+          "type": "object",
+          "properties": { "component": { "const": "FlowPendingApprovals" } },
+          "required": ["component"]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "flowOutcomeNotice": {
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "https://a2ui.org/specification/v0_9/common_types.json#/$defs/ComponentCommon"
+        },
+        {
+          "type": "object",
+          "properties": { "component": { "const": "FlowOutcomeNotice" } },
+          "required": ["component"]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "theme": false,
+    "anyComponent": {
+      "oneOf": [
+        { "$ref": "#/components/FlowLayout" },
+        { "$ref": "#/components/FlowGroup" },
+        { "$ref": "#/components/FlowRunSummary" },
+        { "$ref": "#/components/FlowGraphProgress" },
+        { "$ref": "#/components/FlowNodeTable" },
+        { "$ref": "#/components/FlowResourceFacts" },
+        { "$ref": "#/components/FlowPendingApprovals" },
+        { "$ref": "#/components/FlowOutcomeNotice" },
+        { "$ref": "#/components/FlowPackageNotes" }
+      ],
+      "discriminator": {
+        "propertyName": "component"
+      }
+    },
+    "anyFunction": false
+  }
+}

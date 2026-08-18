@@ -16,7 +16,7 @@ afterEach(async () => {
 });
 
 describe("presentation package CLI", () => {
-  it("lists, inspects, and validates content-free exact package evidence", async () => {
+  it("lists, inspects, and validates exact content-bearing package evidence", async () => {
     const project = await fixture();
     const config = resolveFlowConfig({ projectRoot: project });
     const listed = capture();
@@ -55,7 +55,15 @@ describe("presentation package CLI", () => {
         },
       ],
     });
-    expect(JSON.parse(inspected.stdout[0] ?? "null")).toMatchObject({
+    const inspectedPackage = JSON.parse(inspected.stdout[0] ?? "null") as {
+      readonly definition?: {
+        readonly messages?: readonly [
+          unknown,
+          { readonly updateComponents?: { readonly components?: unknown[] } },
+        ];
+      };
+    };
+    expect(inspectedPackage).toMatchObject({
       kind: "presentation-package",
       name: "operations",
       version: "1.0.0",
@@ -65,6 +73,20 @@ describe("presentation package CLI", () => {
         sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       },
     });
+    expect(inspectedPackage.definition?.messages?.[1].updateComponents?.components).toEqual(
+      expect.arrayContaining([
+        {
+          id: "package-notes",
+          component: "FlowPackageNotes",
+          notes: [
+            {
+              title: "Operator context",
+              body: "This text is package-provided information.",
+            },
+          ],
+        },
+      ]),
+    );
     expect(inspected.stdout.join("\n")).not.toContain("contentBase64");
     expect(inspected.stdout.join("\n")).not.toContain("PRIVATE");
     expect(JSON.parse(validated.stdout[0] ?? "null")).toMatchObject({
@@ -147,13 +169,18 @@ metadata: { name: operations, version: 1.0.0, description: Operator layout }
 spec:
   messages:
     - version: v0.9
-      createSurface: { surfaceId: flow-run, catalogId: https://flow.synapti.ai/a2ui/catalogs/run-presentation/v1 }
+      createSurface: { surfaceId: flow-run, catalogId: https://flow.synapti.ai/a2ui/catalogs/run-presentation/v2 }
     - version: v0.9
       updateComponents:
         surfaceId: flow-run
         components:
-          - { id: root, component: FlowLayout, density: compact, children: [group-1] }
+          - { id: root, component: FlowLayout, density: compact, children: [group-1, package-notes] }
           - { id: group-1, component: FlowGroup, variant: stack, children: [resource-facts, run-summary, graph-progress, node-table, pending-approvals, outcome-notice] }
+          - id: package-notes
+            component: FlowPackageNotes
+            notes:
+              - title: Operator context
+                body: This text is package-provided information.
           - { id: run-summary, component: FlowRunSummary }
           - { id: graph-progress, component: FlowGraphProgress }
           - { id: node-table, component: FlowNodeTable }

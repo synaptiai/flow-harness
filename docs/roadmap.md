@@ -29,8 +29,9 @@ implemented.
 
 Remaining targets include executable extensions, automatic first package activation, remote or multi-user
 UI hosts, and stronger isolation.
-Each first-party host accepts exact inert A2UI-profile presentation packages.
-These packages arrange a closed Flow-owned widget catalog without content or behavior. Explicit
+Each first-party host accepts exact A2UI-profile presentation packages.
+These packages arrange a closed Flow-owned widget catalog. Catalog v2 also adds bounded attributed
+static notes without behavior or run authority. Explicit
 signed project metadata now provides local-clock
 expiry, revocation, exact-target admission, and monotonic rollback refusal. An explicit signed
 public channel stages inert candidates for reviewed activation. A standards-based TUF repository
@@ -142,8 +143,9 @@ containment milestone. It is not VM-grade or multi-tenant isolation.
   explicit IPv4 loopback, a fragment-held 256-bit capability, and fixed offline assets. It also has
   authenticated document streaming, current-action binding, reload, and responsive Chromium
   evidence.)*
-- Content-bearing or executable UI contribution manifests remain planned. The inert A2UI-profile
-  presentation manifest above is implemented for both first-party presentation hosts. A local
+- Bounded static content is implemented through the attributed A2UI catalog-v2 note leaf.
+  Executable, dynamic, remote, or package-rendered UI contributions remain planned. The A2UI-profile
+  presentation manifest is implemented for both first-party presentation hosts. A local
   ACP v1 stdio bridge now carries the same public presentation and exact controls to an editor. It
   uses captured policy, bounded peer waits, durable close/cancel settlement, and restart replay.
   Remote, multi-user, reverse-proxied, ACP v2, A2A, and AG-UI hosts remain separate work.

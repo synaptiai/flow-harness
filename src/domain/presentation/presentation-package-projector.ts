@@ -1,8 +1,10 @@
 import {
   type FlowPresentationWidget,
   orderedPresentationWidgets,
+  type PresentationPackageNote,
   type PresentationPackageSnapshot,
   presentationPackageDensity,
+  presentationPackageNotes,
 } from "../capability/presentation-packages.js";
 import {
   type FlowPresentationDocument,
@@ -41,14 +43,39 @@ export function applyPresentationPackage(
         ],
       };
     });
+    const notes = presentationPackageNotes(snapshot);
     return parseFlowPresentationDocument({
       ...document,
       layout: { density: presentationPackageDensity(snapshot) },
-      sections,
+      sections: [
+        ...sections,
+        ...(notes.length === 0 ? [] : [packageContentSection(snapshot, notes)]),
+      ],
     });
   } catch {
     throw new PresentationPackageProjectionError();
   }
+}
+
+function packageContentSection(
+  snapshot: PresentationPackageSnapshot,
+  notes: readonly PresentationPackageNote[],
+): FlowPresentationDocument["sections"][number] {
+  return {
+    id: "presentation-package-content",
+    title: `Package-provided information — ${snapshot.name}@${snapshot.version}`,
+    components: [
+      {
+        kind: "notice",
+        tone: "info",
+        text: "The selected presentation package provides this information. It is not Flow status or an action.",
+      },
+      ...notes.flatMap((note) => [
+        { kind: "heading" as const, level: 2 as const, text: note.title },
+        { kind: "notice" as const, tone: "info" as const, text: note.body },
+      ]),
+    ],
+  };
 }
 
 function assertProjectableDocument(document: FlowPresentationDocument): void {

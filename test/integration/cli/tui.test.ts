@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -183,6 +183,10 @@ describe("flow tui", () => {
       expect(exitCode, capture.stderr.join("\n")).toBe(1);
       expect(renderer.documents[0]).toMatchObject({ layout: { density: "compact" } });
       expect(renderer.documents[0]?.sections[0]?.id).toBe("resource-facts");
+      expect(renderer.documents[0]?.sections.at(-1)).toMatchObject({
+        id: "presentation-package-content",
+        title: "Package-provided information — operations@1.0.0",
+      });
     } finally {
       await harness.running.close();
     }
@@ -231,6 +235,7 @@ describe("flow tui", () => {
         "graph-progress",
         "node-table",
         "outcome-notice",
+        "presentation-package-content",
       ]);
     } finally {
       await harness.running.close();
@@ -261,6 +266,53 @@ describe("flow tui", () => {
     ).toBe(1);
     expect(rendererCalls).toBe(0);
     expect(output.stderr).toEqual(["missing_package: presentation package is missing"]);
+  });
+
+  it("rejects invalid package content before supervisor or terminal mutation", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-tui-invalid-content-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    await writePresentationPackage(directory);
+    await writeFile(
+      join(directory, ".flow", "presentations", "operations", "PRESENTATION.yaml"),
+      presentationPackageSource().replace(
+        "body: This text is package-provided information.",
+        "body:\n                  path: /PRIVATE/package-note",
+      ),
+    );
+    let rendererCalls = 0;
+    const output = createCapture();
+
+    expect(
+      await main(
+        [
+          "tui",
+          "run-1",
+          "--actor",
+          "operator:test",
+          "--runs-dir",
+          runsDirectory,
+          "--presentation",
+          "operations@1.0.0",
+        ],
+        output.io,
+        {
+          cwd: directory,
+          isInteractiveTerminal: () => true,
+          loadConfig: async () => resolveFlowConfig({ projectRoot: directory }),
+          createTerminalPresentationRenderer: () => {
+            rendererCalls += 1;
+            throw new Error("renderer must not be constructed");
+          },
+        },
+      ),
+    ).toBe(1);
+    expect(output.stderr).toEqual(["invalid_package: presentation package is invalid"]);
+    expect(output.stderr.join("\n")).not.toContain("PRIVATE");
+    expect(rendererCalls).toBe(0);
+    await expect(
+      access(new LocalSupervisorStore(runsDirectory).controlDirectory),
+    ).rejects.toThrow();
   });
 
   it("rejects repeated presentation selection before configuration or terminal mutation", async () => {
@@ -854,13 +906,18 @@ metadata: { name: operations, version: 1.0.0, description: Operator layout }
 spec:
   messages:
     - version: v0.9
-      createSurface: { surfaceId: flow-run, catalogId: https://flow.synapti.ai/a2ui/catalogs/run-presentation/v1 }
+      createSurface: { surfaceId: flow-run, catalogId: https://flow.synapti.ai/a2ui/catalogs/run-presentation/v2 }
     - version: v0.9
       updateComponents:
         surfaceId: flow-run
         components:
-          - { id: root, component: FlowLayout, density: compact, children: [group-1] }
+          - { id: root, component: FlowLayout, density: compact, children: [group-1, package-notes] }
           - { id: group-1, component: FlowGroup, variant: stack, children: [resource-facts, run-summary, graph-progress, node-table, pending-approvals, outcome-notice] }
+          - id: package-notes
+            component: FlowPackageNotes
+            notes:
+              - title: Operator context
+                body: This text is package-provided information.
           - { id: run-summary, component: FlowRunSummary }
           - { id: graph-progress, component: FlowGraphProgress }
           - { id: node-table, component: FlowNodeTable }

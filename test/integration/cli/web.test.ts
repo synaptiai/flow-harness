@@ -68,6 +68,45 @@ describe("flow web", () => {
     expect(hostCalls).toBe(0);
   });
 
+  it("rejects invalid package content before supervisor or browser-host mutation", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-web-invalid-content-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    await writePresentationPackage(directory, "\n                  path: /PRIVATE/package-note");
+    let hostCalls = 0;
+    const output = captureIo();
+
+    const exitCode = await main(
+      [
+        "web",
+        "run-1",
+        "--actor",
+        "operator:test",
+        "--runs-dir",
+        runsDirectory,
+        "--presentation",
+        "operations@1.0.0",
+      ],
+      output.io,
+      {
+        cwd: directory,
+        loadConfig: async () => resolveFlowConfig({ projectRoot: directory }),
+        createBrowserPresentationHost: () => {
+          hostCalls += 1;
+          throw new Error("browser host must not be constructed");
+        },
+      },
+    );
+
+    expect(exitCode).toBe(1);
+    expect(output.stderr).toEqual(["invalid_package: presentation package is invalid"]);
+    expect(output.stderr.join("\n")).not.toContain("PRIVATE");
+    expect(hostCalls).toBe(0);
+    await expect(
+      access(new LocalSupervisorStore(runsDirectory).controlDirectory),
+    ).rejects.toThrow();
+  });
+
   it("preserves exact cancellation when configuration rejects after the abort", async () => {
     const controller = new AbortController();
     const reason = new Error("PRIVATE_WEB_CANCELLATION");
@@ -127,7 +166,7 @@ describe("flow web", () => {
     }
   });
 
-  it("applies one exact inert presentation package before browser rendering", async () => {
+  it("applies one exact content-bearing presentation package before browser rendering", async () => {
     const directory = await mkdtemp(join(tmpdir(), "flow-web-presentation-"));
     temporaryDirectories.push(directory);
     const runsDirectory = join(directory, "runs");
@@ -171,7 +210,14 @@ describe("flow web", () => {
         "graph-progress",
         "node-table",
         "outcome-notice",
+        "presentation-package-content",
       ]);
+      expect(host.documents[0]?.sections.at(-1)).toMatchObject({
+        title: "Package-provided information — operations@1.0.0",
+        components: expect.arrayContaining([
+          { kind: "notice", tone: "info", text: "This text is package-provided information." },
+        ]),
+      });
     } finally {
       await running.close();
     }
@@ -330,7 +376,10 @@ async function appendEvents(runsDirectory: string, events: readonly RunEvent[]):
   await store.release(events[0]?.runId ?? "missing");
 }
 
-async function writePresentationPackage(root: string): Promise<void> {
+async function writePresentationPackage(
+  root: string,
+  noteBody = "This text is package-provided information.",
+): Promise<void> {
   const directory = join(root, ".flow", "presentations", "operations");
   await mkdir(directory, { recursive: true });
   await writeFile(
@@ -341,13 +390,18 @@ metadata: { name: operations, version: 1.0.0, description: Browser operator layo
 spec:
   messages:
     - version: v0.9
-      createSurface: { surfaceId: flow-run, catalogId: https://flow.synapti.ai/a2ui/catalogs/run-presentation/v1 }
+      createSurface: { surfaceId: flow-run, catalogId: https://flow.synapti.ai/a2ui/catalogs/run-presentation/v2 }
     - version: v0.9
       updateComponents:
         surfaceId: flow-run
         components:
-          - { id: root, component: FlowLayout, density: compact, children: [group-1] }
+          - { id: root, component: FlowLayout, density: compact, children: [group-1, package-notes] }
           - { id: group-1, component: FlowGroup, variant: stack, children: [resource-facts, run-summary, graph-progress, node-table, pending-approvals, outcome-notice] }
+          - id: package-notes
+            component: FlowPackageNotes
+            notes:
+              - title: Operator context
+                body: ${noteBody}
           - { id: run-summary, component: FlowRunSummary }
           - { id: graph-progress, component: FlowGraphProgress }
           - { id: node-table, component: FlowNodeTable }

@@ -3,16 +3,24 @@ import { createHash } from "node:crypto";
 import { parseDocument } from "yaml";
 import { z } from "zod";
 
+import { isSafeDisplayText } from "../presentation/safe-display-text.js";
 import { verifierPackageNameSchema, verifierPackageVersionSchema } from "./verifier-packages.js";
 
 export const PRESENTATION_PACKAGE_API_VERSION = "flow.synapti.ai/v1alpha1" as const;
 export const PRESENTATION_PACKAGE_A2UI_VERSION = "v0.9" as const;
 export const FLOW_A2UI_CATALOG_ID =
   "https://flow.synapti.ai/a2ui/catalogs/run-presentation/v1" as const;
+export const FLOW_A2UI_CATALOG_V2_ID =
+  "https://flow.synapti.ai/a2ui/catalogs/run-presentation/v2" as const;
 export const FLOW_A2UI_SURFACE_ID = "flow-run" as const;
 export const MAX_PRESENTATION_PACKAGE_MANIFEST_BYTES = 64 * 1024;
-export const MAX_PRESENTATION_PACKAGE_COMPONENTS = 13;
+const MAX_PRESENTATION_PACKAGE_V1_COMPONENTS = 13;
+export const MAX_PRESENTATION_PACKAGE_COMPONENTS = 14;
 export const MAX_PRESENTATION_PACKAGE_GROUPS = 6;
+export const MAX_PRESENTATION_PACKAGE_NOTES = 4;
+export const MAX_PRESENTATION_PACKAGE_NOTE_TITLE_BYTES = 128;
+export const MAX_PRESENTATION_PACKAGE_NOTE_BODY_BYTES = 1024;
+export const MAX_PRESENTATION_PACKAGE_NOTE_TEXT_BYTES = 4096;
 
 export const FLOW_PRESENTATION_WIDGETS = Object.freeze([
   "run-summary",
@@ -29,14 +37,27 @@ const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const portablePathSchema = z.string().min(1).max(1024).refine(isPortableRelativePath);
 const groupIdSchema = z.string().regex(/^group-[1-6]$/);
 const widgetIdSchema = z.enum(FLOW_PRESENTATION_WIDGETS);
-const childIdSchema = z.union([groupIdSchema, widgetIdSchema]);
+const packageNotesIdSchema = z.literal("package-notes");
+const legacyChildIdSchema = z.union([groupIdSchema, widgetIdSchema]);
+const contentChildIdSchema = z.union([groupIdSchema, widgetIdSchema, packageNotesIdSchema]);
 
-const layoutComponentSchema = z
+const legacyLayoutComponentSchema = z
   .object({
     id: z.literal("root"),
     component: z.literal("FlowLayout"),
     density: z.enum(["compact", "comfortable"]),
-    children: z.array(childIdSchema).min(1).max(FLOW_PRESENTATION_WIDGETS.length),
+    children: z.array(legacyChildIdSchema).min(1).max(FLOW_PRESENTATION_WIDGETS.length),
+  })
+  .strict();
+const contentLayoutComponentSchema = z
+  .object({
+    id: z.literal("root"),
+    component: z.literal("FlowLayout"),
+    density: z.enum(["compact", "comfortable"]),
+    children: z
+      .array(contentChildIdSchema)
+      .min(2)
+      .max(FLOW_PRESENTATION_WIDGETS.length + 1),
   })
   .strict();
 const groupComponentSchema = z
@@ -62,90 +83,182 @@ const leafComponentSchema = z.discriminatedUnion("id", [
   z.object({ id: z.literal("outcome-notice"), component: z.literal("FlowOutcomeNotice") }).strict(),
 ]);
 
-const componentSchema = z.union([layoutComponentSchema, groupComponentSchema, leafComponentSchema]);
-const createSurfaceMessageSchema = z
+const noteTitleSchema = boundedSafeDisplayTextSchema(MAX_PRESENTATION_PACKAGE_NOTE_TITLE_BYTES);
+const noteBodySchema = boundedSafeDisplayTextSchema(MAX_PRESENTATION_PACKAGE_NOTE_BODY_BYTES);
+const packageNoteSchema = z.object({ title: noteTitleSchema, body: noteBodySchema }).strict();
+const packageNotesComponentSchema = z
   .object({
-    version: z.literal(PRESENTATION_PACKAGE_A2UI_VERSION),
-    createSurface: z
-      .object({
-        surfaceId: z.literal(FLOW_A2UI_SURFACE_ID),
-        catalogId: z.literal(FLOW_A2UI_CATALOG_ID),
-      })
-      .strict(),
+    id: packageNotesIdSchema,
+    component: z.literal("FlowPackageNotes"),
+    notes: z.array(packageNoteSchema).min(1).max(MAX_PRESENTATION_PACKAGE_NOTES),
   })
-  .strict();
-const updateComponentsMessageSchema = z
+  .strict()
+  .superRefine((component, context) => {
+    const bytes = component.notes.reduce(
+      (total, note) =>
+        total + Buffer.byteLength(note.title, "utf8") + Buffer.byteLength(note.body, "utf8"),
+      0,
+    );
+    if (bytes > MAX_PRESENTATION_PACKAGE_NOTE_TEXT_BYTES) {
+      context.addIssue({
+        code: "custom",
+        message: "package note text exceeds its aggregate limit",
+      });
+    }
+  });
+
+const legacyComponentSchema = z.union([
+  legacyLayoutComponentSchema,
+  groupComponentSchema,
+  leafComponentSchema,
+]);
+const contentComponentSchema = z.union([
+  contentLayoutComponentSchema,
+  groupComponentSchema,
+  leafComponentSchema,
+  packageNotesComponentSchema,
+]);
+
+function createSurfaceMessageSchema(catalogId: string) {
+  return z
+    .object({
+      version: z.literal(PRESENTATION_PACKAGE_A2UI_VERSION),
+      createSurface: z
+        .object({
+          surfaceId: z.literal(FLOW_A2UI_SURFACE_ID),
+          catalogId: z.literal(catalogId),
+        })
+        .strict(),
+    })
+    .strict();
+}
+
+const legacyCreateSurfaceMessageSchema = createSurfaceMessageSchema(FLOW_A2UI_CATALOG_ID);
+const contentCreateSurfaceMessageSchema = createSurfaceMessageSchema(FLOW_A2UI_CATALOG_V2_ID);
+const legacyUpdateComponentsMessageSchema = z
   .object({
     version: z.literal(PRESENTATION_PACKAGE_A2UI_VERSION),
     updateComponents: z
       .object({
         surfaceId: z.literal(FLOW_A2UI_SURFACE_ID),
         components: z
-          .array(componentSchema)
+          .array(legacyComponentSchema)
           .min(FLOW_PRESENTATION_WIDGETS.length + 1)
+          .max(MAX_PRESENTATION_PACKAGE_V1_COMPONENTS),
+      })
+      .strict(),
+  })
+  .strict();
+const contentUpdateComponentsMessageSchema = z
+  .object({
+    version: z.literal(PRESENTATION_PACKAGE_A2UI_VERSION),
+    updateComponents: z
+      .object({
+        surfaceId: z.literal(FLOW_A2UI_SURFACE_ID),
+        components: z
+          .array(contentComponentSchema)
+          .min(FLOW_PRESENTATION_WIDGETS.length + 2)
           .max(MAX_PRESENTATION_PACKAGE_COMPONENTS),
       })
       .strict(),
   })
   .strict();
 
-const presentationDefinitionSchema = z
+const legacyPresentationDefinitionSchema = z
   .object({
-    messages: z.tuple([createSurfaceMessageSchema, updateComponentsMessageSchema]),
+    messages: z.tuple([legacyCreateSurfaceMessageSchema, legacyUpdateComponentsMessageSchema]),
   })
   .strict()
   .superRefine((definition, context) => {
-    const components = definition.messages[1].updateComponents.components;
-    const byId = new Map<string, z.infer<typeof componentSchema>>();
-    for (const [index, component] of components.entries()) {
-      if (byId.has(component.id)) {
-        context.addIssue({
-          code: "custom",
-          path: ["messages", 1, "updateComponents", "components", index, "id"],
-          message: "component ids must be unique",
-        });
-      }
-      byId.set(component.id, component);
+    validatePresentationGraph(definition.messages[1].updateComponents.components, context, false);
+  });
+const contentPresentationDefinitionSchema = z
+  .object({
+    messages: z.tuple([contentCreateSurfaceMessageSchema, contentUpdateComponentsMessageSchema]),
+  })
+  .strict()
+  .superRefine((definition, context) => {
+    validatePresentationGraph(definition.messages[1].updateComponents.components, context, true);
+  });
+const presentationDefinitionSchema = z.union([
+  legacyPresentationDefinitionSchema,
+  contentPresentationDefinitionSchema,
+]);
+
+function boundedSafeDisplayTextSchema(maxBytes: number) {
+  return z
+    .string()
+    .min(1)
+    .refine((value) => value.trim().length > 0)
+    .refine((value) => Buffer.byteLength(value, "utf8") <= maxBytes)
+    .refine(isSafeDisplayText);
+}
+
+function validatePresentationGraph(
+  components: readonly Readonly<{
+    readonly id: string;
+    readonly component: string;
+    readonly children?: readonly string[];
+  }>[],
+  context: z.RefinementCtx,
+  requiresPackageNotes: boolean,
+): void {
+  const byId = new Map<string, (typeof components)[number]>();
+  for (const [index, component] of components.entries()) {
+    if (byId.has(component.id)) {
+      context.addIssue({
+        code: "custom",
+        path: ["messages", 1, "updateComponents", "components", index, "id"],
+        message: "component ids must be unique",
+      });
     }
-    const root = byId.get("root");
-    if (root?.component !== "FlowLayout") {
-      context.addIssue({ code: "custom", message: "the Flow layout root is required" });
+    byId.set(component.id, component);
+  }
+  const root = byId.get("root");
+  if (root?.component !== "FlowLayout" || root.children === undefined) {
+    context.addIssue({ code: "custom", message: "the Flow layout root is required" });
+    return;
+  }
+  if (requiresPackageNotes && root.children.at(-1) !== "package-notes") {
+    context.addIssue({
+      code: "custom",
+      message: "package notes must be the final direct child of the Flow layout root",
+    });
+  }
+  const visited = new Set<string>(["root"]);
+  const widgets: string[] = [];
+  const visit = (id: string) => {
+    if (visited.has(id)) {
+      context.addIssue({ code: "custom", message: "component references must be unique" });
       return;
     }
-    const visited = new Set<string>(["root"]);
-    const widgets: string[] = [];
-    const visit = (id: string) => {
-      if (visited.has(id)) {
-        context.addIssue({ code: "custom", message: "component references must be unique" });
-        return;
-      }
-      const component = byId.get(id);
-      if (component === undefined) {
-        context.addIssue({ code: "custom", message: "component references must resolve" });
-        return;
-      }
-      visited.add(id);
-      if (component.component === "FlowGroup") {
-        for (const child of component.children) {
-          visit(child);
-        }
-      } else if (component.component !== "FlowLayout") {
-        widgets.push(component.id);
-      }
-    };
-    for (const child of root.children) {
-      visit(child);
+    const component = byId.get(id);
+    if (component === undefined) {
+      context.addIssue({ code: "custom", message: "component references must resolve" });
+      return;
     }
-    if (visited.size !== byId.size) {
-      context.addIssue({ code: "custom", message: "every component must be reachable from root" });
+    visited.add(id);
+    if (component.component === "FlowGroup" && component.children !== undefined) {
+      for (const child of component.children) {
+        visit(child);
+      }
+    } else if (component.component !== "FlowLayout" && component.component !== "FlowPackageNotes") {
+      widgets.push(component.id);
     }
-    if (
-      widgets.length !== FLOW_PRESENTATION_WIDGETS.length ||
-      FLOW_PRESENTATION_WIDGETS.some((widget) => !widgets.includes(widget))
-    ) {
-      context.addIssue({ code: "custom", message: "every Flow widget must appear exactly once" });
-    }
-  });
+  };
+  for (const child of root.children) {
+    visit(child);
+  }
+  if (visited.size !== byId.size) {
+    context.addIssue({ code: "custom", message: "every component must be reachable from root" });
+  }
+  if (
+    widgets.length !== FLOW_PRESENTATION_WIDGETS.length ||
+    FLOW_PRESENTATION_WIDGETS.some((widget) => !widgets.includes(widget))
+  ) {
+    context.addIssue({ code: "custom", message: "every Flow widget must appear exactly once" });
+  }
+}
 
 export const presentationPackageManifestSchema = z
   .object({
@@ -192,7 +305,8 @@ export const presentationPackageSnapshotSchema = z
 export type PresentationPackageDefinition = z.infer<typeof presentationDefinitionSchema>;
 export type PresentationPackageManifest = z.infer<typeof presentationPackageManifestSchema>;
 export type PresentationPackageSnapshot = z.infer<typeof presentationPackageSnapshotSchema>;
-export type PresentationPackageComponent = z.infer<typeof componentSchema>;
+export type PresentationPackageComponent = z.infer<typeof contentComponentSchema>;
+export type PresentationPackageNote = z.infer<typeof packageNoteSchema>;
 
 export interface PresentationPackageSnapshotInput {
   readonly kind: "presentation-package";
@@ -332,6 +446,24 @@ export function calculatePresentationPackageDigest(
   );
 }
 
+const NO_PRESENTATION_PACKAGE_NOTES: readonly PresentationPackageNote[] = Object.freeze([]);
+
+export function presentationPackageNotes(
+  snapshot: PresentationPackageSnapshot,
+): readonly PresentationPackageNote[] {
+  const components =
+    validatePresentationPackageSnapshot(snapshot).definition.messages[1].updateComponents
+      .components;
+  const component = components.find((item) => item.id === "package-notes");
+  if (component === undefined) {
+    return NO_PRESENTATION_PACKAGE_NOTES;
+  }
+  if (component.component !== "FlowPackageNotes") {
+    throw new Error("presentation package snapshot is invalid");
+  }
+  return component.notes;
+}
+
 export function orderedPresentationWidgets(
   snapshot: PresentationPackageSnapshot,
 ): readonly Readonly<{
@@ -357,7 +489,10 @@ export function orderedPresentationWidgets(
       for (const widget of component.children) {
         ordered.push({ widget, group: component.id, variant: component.variant });
       }
-    } else {
+    } else if (component?.component !== "FlowPackageNotes") {
+      if (component === undefined || !widgetIdSchema.safeParse(child).success) {
+        throw new Error("presentation package snapshot is invalid");
+      }
       ordered.push({ widget: child as FlowPresentationWidget, group: null, variant: "stack" });
     }
   }

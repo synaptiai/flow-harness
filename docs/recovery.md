@@ -77,6 +77,22 @@ credential input or repeat registry authentication.
 The same rule applies inside a child ledger, which may carry the parent snapshot but can bind only
 its own compiled selections.
 
+## Recover a presentation host
+
+Presentation selection is session-local and is not run recovery authority. A restarted `flow tui`
+or `flow web` command resolves a new exact `<name>@<version>` selection before host ownership. The
+run ledger, replay identity, approvals, actions, workers, and child ledgers do not store that
+selection or package note text.
+
+An exact installed presentation package remains available offline through the content-addressed
+package store. A restarted host does not contact the recorded HTTPS or OCI source. Run `flow
+packages verify` after uncertain package-store settlement. Then use `flow presentations inspect
+<name> --version <version>` before selecting the package again.
+
+A changed local manifest, invalid note, missing exact version, local and installed collision, or
+package-store mismatch rejects before supervisor, terminal, or browser ownership. Flow does not
+restore a stale layout or silently use the default layout after an explicit selection fails.
+
 Signed metadata candidates below `.flow/packages.metadata.candidates/sha256/` are inert review
 state. Recovery, resume, replay, workers, and child runs never read them. A failed check before the
 candidate rename leaves no candidate.

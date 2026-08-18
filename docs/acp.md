@@ -114,9 +114,14 @@ permission timeout cancels only that peer request. It does not cancel the durabl
 ## Standards boundary
 
 ACP transports editor-to-agent sessions. The A2UI profile is an inert package ABI that arranges
-Flow-owned terminal and browser widgets. A2UI does not define ACP sessions, and ACP does not change
-or replace presentation packages. A2A and AG-UI address different remote or application event
-boundaries and are outside this local version 1 bridge.
+Flow-owned terminal and browser widgets. Its catalog v2 can add bounded attributed static notes to
+those two hosts. A2UI does not define ACP sessions, and ACP does not change or replace presentation
+packages.
+
+The ACP projector deliberately ignores the package-note section. It emits only Flow-owned plan,
+status, and permission updates. No custom ACP method or extension carries package content.
+A2A and AG-UI address different remote or application event boundaries. They are outside this local
+version 1 bridge.
 
 See [Architecture](architecture.md) for the ownership model and
 [Recovery and interruption safety](recovery.md) for restart guidance.

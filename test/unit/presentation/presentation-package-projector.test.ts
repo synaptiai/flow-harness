@@ -48,6 +48,31 @@ describe("presentation package projection", () => {
     ]);
   });
 
+  it("appends visibly attributed package notes without changing host authority", () => {
+    const source = document();
+    const projected = applyPresentationPackage(source, contentSnapshot());
+
+    expect(projected.sections.at(-1)).toEqual({
+      id: "presentation-package-content",
+      title: "Package-provided information — operations@1.0.0",
+      components: [
+        {
+          kind: "notice",
+          tone: "info",
+          text: "The selected presentation package provides this information. It is not Flow status or an action.",
+        },
+        { kind: "heading", level: 2, text: "Operator context" },
+        { kind: "notice", tone: "info", text: "Use <b>literal text</b> during review." },
+        { kind: "heading", level: 2, text: "Authority" },
+        { kind: "notice", tone: "info", text: "Flow still owns run status and actions." },
+      ],
+    });
+    expect(projected.run).toEqual(source.run);
+    expect(projected.actions).toEqual(source.actions);
+    expect(projected.truncated).toBe(source.truncated);
+    expect(projected.layout).toEqual({ density: "compact" });
+  });
+
   it.each([
     [
       "an unfamiliar overview component",
@@ -120,6 +145,59 @@ spec:
             component: FlowGroup
             variant: ${variant}
             children: [resource-facts, run-summary, graph-progress, node-table, pending-approvals, outcome-notice]
+          - id: run-summary
+            component: FlowRunSummary
+          - id: graph-progress
+            component: FlowGraphProgress
+          - id: node-table
+            component: FlowNodeTable
+          - id: resource-facts
+            component: FlowResourceFacts
+          - id: pending-approvals
+            component: FlowPendingApprovals
+          - id: outcome-notice
+            component: FlowOutcomeNotice
+`;
+  return createPresentationPackageSnapshot({
+    kind: "presentation-package",
+    trust: "project-explicit",
+    provenance: "presentations/operations",
+    manifest: { content: encoder.encode(content) },
+  });
+}
+
+function contentSnapshot() {
+  const content = `apiVersion: flow.synapti.ai/v1alpha1
+kind: PresentationPackage
+metadata:
+  name: operations
+  version: 1.0.0
+  description: Operator layout with attributed information
+spec:
+  messages:
+    - version: v0.9
+      createSurface:
+        surfaceId: flow-run
+        catalogId: https://flow.synapti.ai/a2ui/catalogs/run-presentation/v2
+    - version: v0.9
+      updateComponents:
+        surfaceId: flow-run
+        components:
+          - id: root
+            component: FlowLayout
+            density: compact
+            children: [group-1, package-notes]
+          - id: group-1
+            component: FlowGroup
+            variant: stack
+            children: [resource-facts, run-summary, graph-progress, node-table, pending-approvals, outcome-notice]
+          - id: package-notes
+            component: FlowPackageNotes
+            notes:
+              - title: Operator context
+                body: Use <b>literal text</b> during review.
+              - title: Authority
+                body: Flow still owns run status and actions.
           - id: run-summary
             component: FlowRunSummary
           - id: graph-progress
