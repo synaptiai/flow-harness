@@ -177,8 +177,8 @@ and fan-out. It also covers atomic generations, offline candidate activation, ca
 concurrency, and fixed public output.
 
 The replacement suite also proves semantic version ordering and capability-surface continuity. It
-covers policy rejection, old-or-new lock visibility, cancellation, settlement, cleanup, repeat, and
-content-free CLI output.
+covers two-target metadata, policy rejection, old-or-new readers, retained prior content,
+cancellation, settlement, repeat, and content-free CLI output.
 
 A fixture comes from the independent `theupdateframework/tuf-conformance` repository. It proves
 delegated-target interoperability through Flow's production staging adapter. The runtime-isolation

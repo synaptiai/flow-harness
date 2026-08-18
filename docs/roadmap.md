@@ -119,8 +119,10 @@ containment milestone. It is not VM-grade or multi-tenant isolation.
   rollback refusal. Signed-channel discovery adds bounded inert candidate staging. A
   standards-based TUF repository adds explicit local root trust, threshold rotation, and
   freshness. It also adds consistent snapshots, bounded delegated targets, atomic offline
-  generations, reviewed activation, explicit atomic same-surface replacement, and an optional
-  no-overlap check scheduler. Mutable tags and private repository credentials remain deferred.
+  generations, reviewed activation, and explicit atomic same-surface replacement. Replacement uses
+  two-target transition metadata and retains old immutable content for prior readers. The gate also
+  includes an optional no-overlap check scheduler. Mutable tags and private credentials remain
+  deferred.
   Online root bootstrap and automatic activation or replacement also remain deferred. A later
   opt-in watcher can compose the settled check and replacement primitives without widening their
   authority or allowing overlapping work.

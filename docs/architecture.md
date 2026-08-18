@@ -59,7 +59,7 @@ Architecture is derived from these flows.
 | Activate metadata | An operator reviews and activates one exact candidate | Reverified monotonic active metadata for future admission; installed packages and existing run snapshots stay unchanged |
 | Discover repository packages | An operator initializes an explicit trusted root and invokes a repository check | One atomically committed verified repository generation plus bounded inert candidates; no package installation or activation |
 | Activate a repository candidate | An operator supplies one exact candidate digest and publisher policy | Offline TUF replay, repeated Sigstore verification, and one ordinary package-store installation under active metadata authority |
-| Replace an established repository package | An operator supplies one exact candidate digest, current version, and publisher policy | Offline TUF and Sigstore replay, strict same-surface and higher-version checks, and one atomic old-to-new active lock generation |
+| Replace an established repository package | An operator supplies one exact candidate digest, current version, and publisher policy | Two-target metadata, offline TUF and Sigstore replay, one atomic active lock switch, and retained prior content for old readers |
 
 ### Operator flows
 

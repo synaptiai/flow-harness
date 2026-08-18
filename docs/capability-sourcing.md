@@ -432,11 +432,13 @@ versions are locked.
 A reviewed TUF candidate has a narrower atomic replacement path. It replaces one exact established
 version only when the capability surface is unchanged. This surface includes the bundle name,
 publisher, package identities, requested tools, and provider-facing tool names. The new outer
-version must have higher semantic-version precedence. Policy packages reject.
+version must have higher semantic-version precedence. Policy packages reject. One current metadata
+state must authorize both exact targets during the lock switch.
 
-Flow publishes the new immutable blob and replaces one lock entry. It then attempts bounded cleanup
-of the old blob. Readers observe the complete old or new lock. Existing durable snapshots remain
-unchanged. An exact repeat returns `already_current`.
+Flow publishes the new immutable blob and replaces one lock entry. Readers observe the complete old
+or new lock. The old immutable blob remains available to readers that captured the prior lock.
+Replacement reports `cleanup: retained`. Existing durable snapshots remain unchanged. An exact
+repeat returns `already_current`.
 
 Rollback remains a reviewed forward replacement or the paused manual procedure. Same-name and
 same-version bytes remain immutable. Flow performs no automatic update discovery, rollback, or
@@ -577,11 +579,10 @@ without network access. It requires a newly supplied exact publisher policy and 
 verification. It delegates the only package mutation to the ordinary package store.
 
 Replacement performs the same offline generation replay and Sigstore verification as activation.
-The package store then reopens the exact established blob, requires publisher continuity and a
-strictly higher same-surface bundle, and atomically replaces one active lock entry. A known failure
-before lock rename preserves the old active generation. A post-rename durability failure is
-`commit_uncertain`. Old-blob cleanup is reported separately and cannot roll back or obscure a
-committed replacement.
+The package store reopens the established blob and requires publisher continuity. Current metadata
+must authorize both targets before the store replaces one active lock entry. A known
+pre-rename failure preserves the old generation. A post-rename durability failure is
+`commit_uncertain`. The settled result reports retained old content.
 
 Candidate removal creates a new repository generation. It does not remove an installed package.
 

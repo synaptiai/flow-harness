@@ -1012,12 +1012,16 @@ node dist/cli/main.js packages repository candidate replace sha256:<candidate-di
 The established and candidate bundles must keep the same capability surface. This surface includes
 the bundle name, publisher, package identities, requested tools, and provider-facing tool names.
 The candidate version must have higher semantic-version precedence. Policy-bearing bundles do not
-use this path.
+use this path. One current metadata state must authorize both exact versions during the switch.
 
 Flow publishes the new immutable blob first. One lock rename then exposes the complete old or new
 generation. A settled result is `replaced` with bounded cleanup evidence. An exact repeat returns
 `already_current`. Existing runs and evaluations keep their frozen package snapshots. Only later
 admission reads the new lock.
+
+Replacement returns `cleanup: retained` and keeps the old immutable blob. This lets a reader that
+captured the old lock finish safely. The retained blob is not active because the new lock does not
+reference it.
 
 Rollback remains a separate reviewed forward replacement or the paused manual procedure. Flow does
 not automatically check, replace, roll back, or collect unrelated orphan blobs.

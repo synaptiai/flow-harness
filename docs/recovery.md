@@ -125,9 +125,9 @@ mutation-lock settlement was not confirmed. Run `flow packages list`, inspect bo
 and run `flow packages verify` before retrying. Do not reinstall or remove either version until the
 active lock is reconciled.
 
-A settled `replaced` result with `cleanup: failed` still means the new generation is authoritative.
-Old-blob cleanup did not roll it back. Existing runs, workers, children, evaluations, recovery, and
-replay continue from their frozen package snapshots.
+A settled `replaced` result reports `cleanup: retained`. The new lock is authoritative, while the
+old immutable blob remains available to a reader with the prior lock. Existing runs, workers,
+children, evaluations, recovery, and replay continue from their frozen package snapshots.
 
 An optional repository scheduler records a fixed startup status. Its caller can supply the prior
 completed-check timestamp after restart. The scheduler reports elapsed missed intervals but waits a
