@@ -27,14 +27,15 @@ prompt overlays and authority-preserving skill-resource projections. New single-
 projections, paired evaluation, reviewed activation, durable run snapshots, and rollback are also
 implemented.
 
-Remaining targets include executable extensions, automatic package activation, remote or multi-user
+Remaining targets include executable extensions, automatic first package activation, remote or multi-user
 UI hosts, and stronger isolation.
 Each first-party host accepts exact inert A2UI-profile presentation packages.
 These packages arrange a closed Flow-owned widget catalog without content or behavior. Explicit
 signed project metadata now provides local-clock
 expiry, revocation, exact-target admission, and monotonic rollback refusal. An explicit signed
-public channel stages inert candidates for reviewed activation. Flow does not poll, activate, or
-install automatically.
+public channel stages inert candidates for reviewed activation. A standards-based TUF repository
+can optionally watch one already-installed package and atomically apply patch updates. Same-major
+minor updates require explicit policy. Flow does not install a first package automatically.
 
 The operator-selectable container command profile is implemented behind the Flow-owned sandbox
 port. Its pinned Linux x64 runtime gate passed in hosted CI. This profile is a shared-kernel
@@ -121,11 +122,12 @@ containment milestone. It is not VM-grade or multi-tenant isolation.
   freshness. It also adds consistent snapshots, bounded delegated targets, atomic offline
   generations, reviewed activation, and explicit atomic same-surface replacement. Replacement uses
   two-target transition metadata and retains old immutable content for prior readers. The gate also
-  includes an optional no-overlap check scheduler. Mutable tags and private credentials remain
-  deferred.
-  Online root bootstrap and automatic activation or replacement also remain deferred. A later
-  opt-in watcher can compose the settled check and replacement primitives without widening their
-  authority or allowing overlapping work.
+  includes an optional no-overlap check scheduler and a foreground single-package watcher. The
+  watcher binds an exact installed package and publisher, defaults to patch-only updates, can
+  explicitly allow same-major minor updates, and stops on replacement uncertainty. Mutable tags and
+  private credentials remain deferred.
+  Online root bootstrap, automatic first activation, major or policy-package replacement,
+  automatic rollback, and retired-blob maintenance also remain deferred.
 - Workflow contributions use versioned manifests. *(Implemented for inert exact-version workflow source with packaged root/child selection, ordinary recursive compilation, immutable transitive snapshots, deterministic bundle distribution, detached execution, and fail-closed recovery. Parameterized templates and executable modules remain deferred.)*
 - Policy contributions use versioned manifests.
   Flow implements strict local and digest-pinned installed inert narrowing packages.

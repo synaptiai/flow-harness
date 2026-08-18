@@ -188,7 +188,7 @@ async function waitForLine(stream) {
     const timeout = setTimeout(() => {
       cleanup();
       rejectLine(new Error("installed browser presentation did not publish its URL"));
-    }, 5_000);
+    }, 15_000);
     timeout.unref();
     const onData = (chunk) => {
       pending += chunk;

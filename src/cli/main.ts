@@ -23,7 +23,16 @@ import {
   type CapabilityMetadataChannel,
   CapabilityMetadataChannelError,
 } from "../application/capability-metadata-channel.js";
+import {
+  CapabilityRepositorySchedulerError,
+  MAX_CAPABILITY_REPOSITORY_CHECK_INTERVAL_MS,
+  MIN_CAPABILITY_REPOSITORY_CHECK_INTERVAL_MS,
+} from "../application/capability-repository-scheduler.js";
 import { CapabilityRepositoryStoreError } from "../application/capability-repository-store.js";
+import {
+  CapabilityRepositoryWatcherError,
+  runCapabilityRepositoryWatcher,
+} from "../application/capability-repository-watcher.js";
 import {
   CapabilityMetadataCheckError,
   createCapabilityMetadataChannelChecker,
@@ -180,8 +189,12 @@ import {
   OfflineSigstoreCapabilityVerifier,
   SigstoreCapabilityVerificationError,
   type SigstoreCapabilityVerifier,
+  validateSigstoreCapabilityPublisherPolicy,
 } from "../domain/capability/sigstore-capability-verifier.js";
-import { verifierPackageVersionSchema } from "../domain/capability/verifier-packages.js";
+import {
+  verifierPackageNameSchema,
+  verifierPackageVersionSchema,
+} from "../domain/capability/verifier-packages.js";
 import {
   collectWorkflowAgentSkillNames,
   collectWorkflowToolPackageReferences,
@@ -276,6 +289,10 @@ import {
   LocalCapabilityPackageStore,
 } from "../infrastructure/fs/local-capability-package-store.js";
 import { LocalCapabilityRepositoryStore } from "../infrastructure/fs/local-capability-repository-store.js";
+import {
+  LocalCapabilityRepositoryWatcherLock,
+  LocalCapabilityRepositoryWatcherLockError,
+} from "../infrastructure/fs/local-capability-repository-watcher-lock.js";
 import {
   calculateLocalEffectiveHarnessScopeDigest,
   EffectiveHarnessStoreError,
@@ -433,6 +450,7 @@ Usage:
   flow packages repository init <canonical-public-https-base> --trusted-root <local-root.json>
   flow packages repository status
   flow packages repository check
+  flow packages repository watch <installed-bundle-name> [--interval-ms <60000..86400000>] [--update-policy <patch|minor>] --certificate-issuer <https-url> --certificate-identity <exact>
   flow packages repository candidates list
   flow packages repository candidate inspect <sha256:digest>
   flow packages repository candidate remove <sha256:digest>
@@ -536,6 +554,11 @@ export interface CliDependencies {
   readonly capabilityBundleFetcher: CapabilityBundleFetcher;
   readonly capabilityMetadataChannel: CapabilityMetadataChannel;
   readonly capabilityRepositoryFetcher: StrictCapabilityRepositoryFetcher;
+  readonly capabilityRepositoryWatcherNow: () => Date;
+  readonly capabilityRepositoryWatcherWait: (
+    milliseconds: number,
+    signal: AbortSignal,
+  ) => Promise<void>;
   readonly ociCapabilityRegistry: StrictOciCapabilityRegistry;
   readonly sigstoreCapabilityVerifier: SigstoreCapabilityVerifier;
   readonly readRegistrySecret: (signal: AbortSignal) => Promise<Buffer>;
@@ -683,9 +706,12 @@ export async function main(
       error instanceof CapabilityPackageStoreError ||
       error instanceof CapabilityRepositoryActivationError ||
       error instanceof CapabilityRepositoryReplacementError ||
+      error instanceof CapabilityRepositoryWatcherError ||
+      error instanceof CapabilityRepositorySchedulerError ||
       error instanceof CapabilityRepositoryCheckError ||
       error instanceof CapabilityRepositoryInitializationError ||
       error instanceof CapabilityRepositoryStoreError ||
+      error instanceof LocalCapabilityRepositoryWatcherLockError ||
       error instanceof OciCapabilityRegistryError ||
       error instanceof SigstoreCapabilityVerificationError ||
       error instanceof SignedCapabilityMetadataEnvelopeError ||
@@ -1368,6 +1394,8 @@ async function packagesCommand(
     "certificate-issuer",
     "certificate-identity",
     "from-version",
+    "interval-ms",
+    "update-policy",
   ] as const) {
     const occurrences = args.filter(
       (argument) => argument === `--${option}` || argument.startsWith(`--${option}=`),
@@ -1381,10 +1409,12 @@ async function packagesCommand(
     "certificate-identity": { type: "string" },
     "certificate-issuer": { type: "string" },
     "from-version": { type: "string" },
+    "interval-ms": { type: "string" },
     output: { type: "string" },
     sha256: { type: "string" },
     "sigstore-bundle": { type: "string" },
     "trusted-root": { type: "string" },
+    "update-policy": { type: "string" },
     username: { type: "string" },
     version: { type: "string" },
   });
@@ -1405,6 +1435,8 @@ async function packagesCommand(
     (values.username !== undefined && passwordInput.enabled);
   const hasNoCredentials = values.username === undefined && !passwordInput.enabled;
   const hasNoSigstoreBundle = values["sigstore-bundle"] === undefined;
+  const hasNoWatcherOptions =
+    values["interval-ms"] === undefined && values["update-policy"] === undefined;
   const standardValid =
     (subcommand === "install" &&
       positionals.length === 2 &&
@@ -1596,11 +1628,57 @@ async function packagesCommand(
     hasNoSigstoreBundle &&
     hasNoCredentials &&
     values.version === undefined;
-  const valid = (values["from-version"] === undefined && standardValid) || replacementValid;
+  const watcherValid =
+    subcommand === "repository" &&
+    positionals[1] === "watch" &&
+    positionals.length === 3 &&
+    values["trusted-root"] === undefined &&
+    values["certificate-identity"] !== undefined &&
+    values["certificate-issuer"] !== undefined &&
+    values["from-version"] === undefined &&
+    values.output === undefined &&
+    values.sha256 === undefined &&
+    hasNoSigstoreBundle &&
+    hasNoCredentials &&
+    values.version === undefined;
+  const valid =
+    (hasNoWatcherOptions &&
+      ((values["from-version"] === undefined && standardValid) || replacementValid)) ||
+    watcherValid;
   if (!valid) {
     throw new CliUsageError(
-      "packages requires pack, install, install-oci, metadata refresh, metadata inspect, metadata check, metadata candidates list, metadata candidate inspect/remove, metadata activate, repository init/status/check/candidates/candidate inspect/remove/activate/replace, list, inspect, verify, or remove with the documented exact arguments",
+      "packages requires pack, install, install-oci, metadata refresh, metadata inspect, metadata check, metadata candidates list, metadata candidate inspect/remove, metadata activate, repository init/status/check/watch/candidates/candidate inspect/remove/activate/replace, list, inspect, verify, or remove with the documented exact arguments",
     );
+  }
+  const watcherPackageName = watcherValid ? positionals[2] : undefined;
+  const watcherCertificateIssuer = watcherValid ? values["certificate-issuer"] : undefined;
+  const watcherCertificateIdentity = watcherValid ? values["certificate-identity"] : undefined;
+  const watcherUpdatePolicy = watcherValid ? (values["update-policy"] ?? "patch") : undefined;
+  const watcherIntervalMs = watcherValid
+    ? parseRepositoryWatcherInterval(values["interval-ms"])
+    : undefined;
+  if (watcherValid) {
+    if (
+      watcherPackageName === undefined ||
+      watcherCertificateIssuer === undefined ||
+      watcherCertificateIdentity === undefined ||
+      !verifierPackageNameSchema.safeParse(watcherPackageName).success ||
+      (watcherUpdatePolicy !== "patch" && watcherUpdatePolicy !== "minor")
+    ) {
+      throw new CliUsageError(
+        "packages repository watch requires one installed bundle, exact publisher authority, a bounded interval, and patch or minor policy",
+      );
+    }
+    try {
+      validateSigstoreCapabilityPublisherPolicy({
+        certificateIssuer: watcherCertificateIssuer,
+        certificateIdentity: watcherCertificateIdentity,
+      });
+    } catch {
+      throw new CliUsageError(
+        "packages repository watch requires one installed bundle, exact publisher authority, a bounded interval, and patch or minor policy",
+      );
+    }
   }
   const dependencies = configDependenciesFrom(overrides);
   if (subcommand === "pack") {
@@ -1651,6 +1729,85 @@ async function packagesCommand(
       const repository = await repositoryStore.status(overrides.signal);
       io.stdout(JSON.stringify({ repository: repository ?? null }, null, 2));
       return 0;
+    }
+    if (positionals[1] === "watch") {
+      if (
+        watcherPackageName === undefined ||
+        watcherCertificateIssuer === undefined ||
+        watcherCertificateIdentity === undefined ||
+        (watcherUpdatePolicy !== "patch" && watcherUpdatePolicy !== "minor") ||
+        watcherIntervalMs === undefined
+      ) {
+        throw new CliUsageError(
+          "packages repository watch requires one installed bundle, exact publisher authority, a bounded interval, and patch or minor policy",
+        );
+      }
+      const signal = overrides.signal ?? new AbortController().signal;
+      const lease = await new LocalCapabilityRepositoryWatcherLock(config.projectRoot).acquire(
+        signal,
+      );
+      let operationError: unknown;
+      try {
+        const repository = await repositoryStore.status(signal);
+        await runCapabilityRepositoryWatcher(
+          {
+            readInstalled: async (name, activeSignal) => {
+              activeSignal.throwIfAborted();
+              const installed = (await store.list()).bundles.find((entry) => entry.name === name);
+              activeSignal.throwIfAborted();
+              return installed;
+            },
+            check: async (activeSignal) =>
+              await createCapabilityRepositoryChecker({
+                refresher: createLocalCapabilityRepositoryRefresher({
+                  stateReader: repositoryStore,
+                  fetcher:
+                    overrides.capabilityRepositoryFetcher ??
+                    createProductionCapabilityRepositoryFetcher(),
+                }),
+                verifier: sigstoreVerifier,
+                publisher: repositoryStore,
+                now: () => new Date(),
+              }).check({ signal: activeSignal }),
+            replace: async (input) =>
+              await replaceCapabilityRepositoryCandidate(
+                { candidates: repositoryStore, verifier: sigstoreVerifier, packages: store },
+                input,
+              ),
+            now: overrides.capabilityRepositoryWatcherNow ?? (() => new Date()),
+            wait:
+              overrides.capabilityRepositoryWatcherWait ??
+              (async (milliseconds, activeSignal) => {
+                await delay(milliseconds, undefined, { signal: activeSignal });
+              }),
+            observe: (status) => {
+              io.stdout(JSON.stringify(status));
+            },
+          },
+          {
+            packageName: watcherPackageName,
+            certificateIssuer: watcherCertificateIssuer,
+            certificateIdentity: watcherCertificateIdentity,
+            updatePolicy: watcherUpdatePolicy,
+            intervalMs: watcherIntervalMs,
+            ...(repository?.checkedAt === undefined
+              ? {}
+              : { previousCompletedAt: repository.checkedAt }),
+            signal,
+          },
+        );
+      } catch (error) {
+        operationError = error;
+      }
+      try {
+        await lease.release();
+      } catch (error) {
+        if (operationError === undefined) {
+          throw error;
+        }
+        throw new CapabilityRepositoryWatcherError("settle watcher ownership");
+      }
+      throw operationError;
     }
     if (positionals[1] === "check") {
       const checked = await createCapabilityRepositoryChecker({
@@ -2122,6 +2279,26 @@ async function packagesCommand(
     ),
   );
   return 0;
+}
+
+function parseRepositoryWatcherInterval(value: string | undefined): number {
+  if (value === undefined) {
+    return 60 * 60 * 1_000;
+  }
+  if (!/^[1-9]\d*$/.test(value)) {
+    throw new CliUsageError("--interval-ms requires a bounded positive integer");
+  }
+  const intervalMs = Number(value);
+  if (
+    !Number.isSafeInteger(intervalMs) ||
+    intervalMs < MIN_CAPABILITY_REPOSITORY_CHECK_INTERVAL_MS ||
+    intervalMs > MAX_CAPABILITY_REPOSITORY_CHECK_INTERVAL_MS
+  ) {
+    throw new CliUsageError(
+      `--interval-ms requires ${MIN_CAPABILITY_REPOSITORY_CHECK_INTERVAL_MS}..${MAX_CAPABILITY_REPOSITORY_CHECK_INTERVAL_MS}`,
+    );
+  }
+  return intervalMs;
 }
 
 async function readBoundedCommandInput(path: string, maximumBytes: number): Promise<Buffer> {
@@ -5352,6 +5529,12 @@ function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies 
       overrides.capabilityMetadataChannel ?? createProductionCapabilityMetadataChannel(),
     capabilityRepositoryFetcher:
       overrides.capabilityRepositoryFetcher ?? createProductionCapabilityRepositoryFetcher(),
+    capabilityRepositoryWatcherNow: overrides.capabilityRepositoryWatcherNow ?? (() => new Date()),
+    capabilityRepositoryWatcherWait:
+      overrides.capabilityRepositoryWatcherWait ??
+      (async (milliseconds, signal) => {
+        await delay(milliseconds, undefined, { signal });
+      }),
     ociCapabilityRegistry:
       overrides.ociCapabilityRegistry ?? createProductionOciCapabilityRegistry(),
     sigstoreCapabilityVerifier:

@@ -135,6 +135,18 @@ new full interval and never catches up. A current clock behind the prior complet
 `clock_rollback` and stops before network work. Consecutive `check_failed` records expose a prolonged
 outage without preserving private transport or repository errors.
 
+The foreground repository watcher holds
+`.flow/capability.repository/watcher.lock` across restart-state inspection, checks, replacement, and
+shutdown. A live or uncertain record blocks another watcher before network work. Flow does not
+retire it automatically. Confirm that no watcher is active before removing only that exact file.
+Then inspect repository status, run `flow packages verify`, and reconcile the installed version
+before restarting.
+
+A watcher can continue after one inert check failure only after another full interval. It stops on
+baseline drift, clock rollback, status failure, replacement failure, or commit uncertainty. Do not
+restart after replacement failure until repository and package state are inspected. A settled
+replacement retains the prior immutable blob for readers with an older frozen snapshot.
+
 For a workflow package, resume accepts `workflow:<name>@<exact-version>` and reconstructs the root
 and every transitive packaged child from the durable snapshot before claiming the run. It verifies
 manifest/source hashes, package digest, compiled source-package identity, run-start requirements,
