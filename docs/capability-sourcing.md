@@ -56,8 +56,9 @@ application modules do not import it. Flow does not use Pi Markdown, hyperlinks,
 URL-opening, or mouse features. The browser adapter uses fixed Flow HTML, CSS, and JavaScript. It
 accepts no package resource or renderer. Flow discovers inert A2UI-profile presentation manifests
 through a separate, explicit catalog. Those manifests can arrange only the closed Flow widget set
-that both first-party hosts project. They cannot supply content, actions, data bindings, functions,
-themes, assets, code, or dynamic children.
+that both first-party hosts project. Catalog v2 can also supply bounded static note literals. The
+manifests cannot supply actions, data bindings, functions, themes, links, assets, code, remote
+resources, or dynamic children.
 
 ## Imported containment primitive
 
@@ -316,18 +317,27 @@ supervisor startup and host creation.
 
 The manifest uses the production A2UI v0.9.1 release. Each message uses the wire discriminator
 `version: v0.9`. The manifest contains one `createSurface` for the fixed `flow-run` surface and one
-`updateComponents` for the fixed Flow catalog. Its root and optional groups arrange each host-owned
-widget exactly once. The widgets cover run summary, graph progress, node table, resource facts,
-pending approvals, and outcome notice.
+`updateComponents` for one versioned Flow catalog. Catalog v1 arranges each host-owned widget
+exactly once. The widgets cover run summary, graph progress, node table, resource facts, pending
+approvals, and outcome notice.
+
+Catalog v2 preserves that graph and requires one final direct `FlowPackageNotes` root child. It has
+one to four direct literal `{title, body}` entries. Title, body, and aggregate limits are 128,
+1,024, and 4,096 UTF-8 bytes. Safe display-text validation rejects controls, bidirectional
+formatting, terminal escapes, unsafe Unicode, and line breaks.
 
 Flow supplies every displayed fact and action from the
 validated public presentation document. Optional widgets may disappear when the host has no
-corresponding fact. The package cannot invent one.
+corresponding fact. The package cannot invent one. Flow projects valid notes into a fixed final
+section. The section names the exact package and states that its text is not Flow status or an
+action.
 
-The profile rejects literal content, model data, data bindings, functions, actions, themes, inline
-catalogs, dynamic child lists, assets, scripts, and unknown components. The public catalog schema is
-[`specs/flow-a2ui-run-presentation-v1.catalog.json`](specs/flow-a2ui-run-presentation-v1.catalog.json).
-The schema describes the A2UI custom catalog. Flow's manifest validator narrows general A2UI child
+Catalog v1 rejects all package content. Catalog v2 accepts only the bounded note literals. Both
+profiles reject model data, bindings, functions, actions, themes, inline catalogs, dynamic child
+lists, links, assets, scripts, remote resources, and unknown components. The public catalog schemas
+are [`specs/flow-a2ui-run-presentation-v1.catalog.json`](specs/flow-a2ui-run-presentation-v1.catalog.json)
+and [`specs/flow-a2ui-run-presentation-v2.catalog.json`](specs/flow-a2ui-run-presentation-v2.catalog.json).
+The schemas describe the A2UI custom catalogs. Flow's manifest validator narrows general A2UI child
 lists to static component-id arrays.
 
 Package selection is session-local. It is not workflow authority and is absent from durable run

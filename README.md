@@ -44,7 +44,7 @@ through an optional external profile.
 | Proof-safe fresh recovery of interrupted agent attempts | Implemented as explicit opt-in for read-only attempts and edit attempts proven not applied |
 | Fail-closed sandboxed command isolation | Flow implements filesystem and network isolation on Linux and macOS. Linux alone provides strict agent-command descendant lifecycle containment |
 | Higher-isolation container command profile | Implemented behind operator-only selection; the pinned Linux x64 engine runtime gate passes |
-| Inert A2UI-profile presentation packages | Implemented for exact local or installed manifests that arrange a closed host-owned terminal or browser widget catalog without supplying data, actions, code, or bindings |
+| A2UI-profile presentation packages | Implemented for exact local or installed manifests that arrange a closed host-owned terminal or browser widget catalog; catalog v2 can also supply bounded attributed static notes without data, actions, code, or bindings |
 | Local browser presentation host | Implemented as a one-session IPv4 loopback host with a fragment-bootstrapped capability, fixed first-party assets, authenticated full-document streaming, and current-action steering |
 | Local ACP v1 editor bridge | Implemented over strict bounded stdio with durable session discovery, restart replay, public-safe updates, and exact Flow approval and cancellation controls |
 | Automatic package activation, executable or remote UI extensions, and model network tools | Planned |
@@ -793,14 +793,23 @@ providers, credentials, policy, sandbox permissions, or dynamic graph factories.
 the authority of the ordinary workflow nodes an operator explicitly selects. Template inputs,
 version solving, and executable extensions remain unsupported.
 
-### Select an inert presentation package
+### Select a presentation package
 
 Flow accepts a strict profile of the production A2UI v0.9.1 release for terminal and browser
 presentation.
 Messages use the standard `version: v0.9` wire discriminator. A local package is one
-`.flow/presentations/<name>/PRESENTATION.yaml` file. It may arrange the six fixed Flow run widgets,
-group them, and select compact or comfortable spacing. It cannot supply run data, text, actions,
-data bindings, functions, themes, assets, code, or dynamic children.
+`.flow/presentations/<name>/PRESENTATION.yaml` file. Catalog v1 arranges the six fixed Flow run
+widgets. It can group them and select compact or comfortable spacing.
+
+Catalog v2 preserves those widgets and adds one final `FlowPackageNotes` leaf. The leaf contains
+one to four static `{title, body}` entries. A title has at most 128 UTF-8 bytes. A body has at most
+1,024 UTF-8 bytes. All note text has at most 4,096 UTF-8 bytes. Flow applies its safe display-text
+rules to every string.
+
+The terminal and browser append one section named `Package-provided information — <name>@<version>`.
+A fixed notice states that the section is not Flow status or an action. Both hosts render note text
+literally. They do not interpret Markdown or HTML. A package cannot supply run data, actions, data
+bindings, functions, themes, links, assets, code, remote resources, or dynamic children.
 
 ```sh
 node dist/cli/main.js presentations validate .flow/presentations/concise/PRESENTATION.yaml
@@ -816,13 +825,17 @@ Selection uses an exact name and SemVer before Flow starts the supervisor, takes
 or creates the browser listener. It is session-local presentation state: run history, capability
 snapshots, approvals, policy, and replay identity do not change. Without `--presentation`, each
 host uses the default Flow document and layout. Installed `.flowpkg` bundles may contribute the
-same inert manifest under `presentations/<name>/PRESENTATION.yaml`.
+same manifest under `presentations/<name>/PRESENTATION.yaml`. Exact installed snapshots remain
+available offline after admission. Note text is reviewable through `presentations inspect`. Raw
+manifest bytes remain excluded from public output.
 
-The public Flow catalog is
-[`docs/specs/flow-a2ui-run-presentation-v1.catalog.json`](docs/specs/flow-a2ui-run-presentation-v1.catalog.json).
-This profile deliberately excludes optional general A2UI features. ACP is not the package ABI.
-The local ACP bridge transports Flow-owned presentation updates across an editor session. It does
-not let the editor change the selected package or supply presentation content.
+The public Flow catalogs are
+[`docs/specs/flow-a2ui-run-presentation-v1.catalog.json`](docs/specs/flow-a2ui-run-presentation-v1.catalog.json)
+and
+[`docs/specs/flow-a2ui-run-presentation-v2.catalog.json`](docs/specs/flow-a2ui-run-presentation-v2.catalog.json).
+Both profiles exclude optional general A2UI features. ACP is not the package ABI. The local ACP
+bridge transports Flow-owned plan, status, and permission updates. It does not project package
+notes or let the editor change a selected package.
 
 ### Apply a versioned policy package
 

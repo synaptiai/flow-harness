@@ -153,10 +153,14 @@ only Flow-owned ANSI styling after strict document validation.
 
 An optional presentation package is resolved before supervisor startup, terminal takeover, or
 browser listener creation. Its
-A2UI messages select the fixed `flow-run` surface and Flow catalog, then arrange the six opaque
-host widgets. The projector never reads package-provided display content because the profile has no
-content, binding, function, theme, action, asset, or dynamic-child fields. Selection is not durable
-run authority and does not enter replay.
+A2UI messages select the fixed `flow-run` surface and one versioned Flow catalog. Catalog v1 only
+arranges the six opaque host widgets. Catalog v2 also contains one final bounded `FlowPackageNotes`
+leaf.
+
+The projector maps its static strings to one attributed section of existing headings and
+informational notices. Packages control no section id, component kind, tone, or action. Neither
+catalog accepts bindings, functions, themes, actions, assets, links, remote resources, or dynamic
+children. Selection is not durable run authority and does not enter replay.
 
 `flow web <run-id> --actor <label>` serves the same document from one explicit IPv4 loopback
 listener on an ephemeral port. A 256-bit session capability enters the initial URL fragment. The
@@ -168,8 +172,9 @@ enters a cookie, `localStorage`, a request URL, or durable Flow state.
 
 Exact host, origin, Fetch Metadata, bearer, header, body, JSON, observer, write, and reconnect checks
 precede data or action authority. Static HTML, CSS, and JavaScript are fixed first-party constants.
-The host provides no CORS, cookie, service worker, external resource, package code, package content,
-raw event, remote listener, or proxy mode.
+The host provides no CORS, cookie, service worker, external resource, package code, raw event,
+remote listener, or proxy mode. It renders validated package note strings only through DOM text
+insertion in the public presentation document.
 
 Browser actions carry the latest positive document sequence and one opaque action id. The existing
 application controller rebinds both before the approval or cancellation boundary. Only a settled
