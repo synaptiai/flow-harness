@@ -128,4 +128,39 @@ exact name + exact version + exact publisher
 
 ## Evidence
 
-Implementation evidence is intentionally empty until each RED/GREEN/REFACTOR slice and the final frozen-tree gates run.
+### Frozen acceptance map
+
+The mapped command passed 200 tests across 10 files:
+
+```text
+npx vitest run --maxWorkers=1 test/unit/application/capability-repository-first-activation.test.ts test/unit/infrastructure/fs/local-capability-package-store.test.ts test/unit/application/activate-capability-repository-candidate.test.ts test/unit/infrastructure/fs/local-capability-repository-first-activation-store.test.ts test/unit/infrastructure/fs/local-capability-repository-watcher-lock.test.ts test/integration/cli/capability-repository.test.ts test/integration/cli/remote-capability-workflow.test.ts test/integration/cli/agent-skill-candidate.test.ts test/integration/supervisor/service.test.ts test/integration/supervisor/worker.test.ts
+```
+
+### Complete suite and coverage
+
+The single-process serial suite exceeded this host's memory limit. Four sequential shards covered the same 313-file inventory without overlap. They passed 4,300 tests and skipped 4 tests:
+
+```text
+npm run test -- --maxWorkers=1 --testTimeout=60000 --shard=1/4
+npm run test -- --maxWorkers=1 --testTimeout=60000 --shard=2/4
+npm run test -- --maxWorkers=1 --testTimeout=60000 --shard=3/4
+npm run test -- --maxWorkers=1 --testTimeout=60000 --shard=4/4
+```
+
+The same four shards passed with V8 coverage enabled, one coverage-processing thread, and separate JSON reports. Merging the four Istanbul maps produced 84.46% statements, 78.87% branches, 91.13% functions, and 84.6% lines. These values exceed the configured 75%, 65%, 70%, and 75% thresholds.
+
+### Static, runtime, package, and dependency gates
+
+- `npm run format:check`, `npm run lint`, `npm run typecheck`, `npm run build`, `npm run docs:ste`, and `git diff --check` passed. Lint retained one unrelated informational note in `src/application/external-harness-adapter.ts`.
+
+- `npm run test:browser` passed 2 tests.
+
+- `npm run pack:check` verified a clean tarball install and CLI execution.
+
+- `node scripts/audit-prime-dependencies.mjs` passed the Prime Node lock and 60 Python packages.
+
+- `npm audit --omit=dev --audit-level=low` reported zero vulnerabilities.
+
+- The local runtime aggregate passed 41 tests and skipped 34 tests. Two unrelated timing cases failed only in the aggregate. Both passed independently. Project-capacity cancellation passed in 21.1 seconds. The native Pi smoke test passed in 30.5 seconds with a 60-second limit.
+
+Hosted Linux x64 CI remains the canonical runtime gate. Hosted CI and adversarial review remain pending until the pull request is open.

@@ -115,6 +115,7 @@ describe("local capability repository first activation store", () => {
       state: waitingState(),
       signal,
     });
+    requireStatus(waiting, "waiting");
     const attempted = await store.publish({
       expectedRecordDigest: waiting.recordDigest,
       state: {
