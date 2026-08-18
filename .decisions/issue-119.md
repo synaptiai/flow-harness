@@ -172,3 +172,7 @@ _Captured by specification-capture skill on 2026-08-18. Source: user-confirmed._
 
 - 2026-08-18: Catalog-v2 GREEN passed 33 domain tests. Type checking, scoped Biome, and diff checks
   also passed. The slice preserves a fixed catalog-v1 digest.
+
+- 2026-08-18: Projection RED proved that parsed v2 notes did not reach the public document.
+  Projection GREEN appends one attributed host-owned section and preserves run, action, truncation,
+  and layout authority. The combined domain and projector selector passed 38 tests.
