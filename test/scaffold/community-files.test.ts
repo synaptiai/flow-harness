@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import {
   FLOW_A2UI_CATALOG_ID,
+  FLOW_A2UI_CATALOG_V2_ID,
   PRESENTATION_PACKAGE_A2UI_VERSION,
 } from "../../src/domain/capability/presentation-packages.js";
 import { parseToolPackageManifest } from "../../src/domain/capability/tool-packages.js";
@@ -29,7 +30,7 @@ describe("public repository contracts", () => {
     expect(readme).toContain("[Security](SECURITY.md)");
   });
 
-  it("reports policy and inert presentation packages as implemented", async () => {
+  it("reports policy and attributed presentation packages as implemented", async () => {
     const documentationEntries = await readdir(new URL("../../docs/", import.meta.url), {
       withFileTypes: true,
     });
@@ -48,8 +49,9 @@ describe("public repository contracts", () => {
 
     expect(readme).toMatch(/Versioned policy packages.*Implemented/is);
     expect(roadmap).toMatch(/Policy contributions use versioned manifests.*Flow implements/is);
-    expect(readme).toMatch(/Inert A2UI-profile presentation packages.*Implemented/is);
-    expect(roadmap).toMatch(/accepts exact inert A2UI-profile presentation packages/i);
+    expect(readme).toMatch(/A2UI-profile presentation packages.*catalog v2.*bounded attributed/is);
+    expect(roadmap).toMatch(/accepts exact A2UI-profile presentation packages/i);
+    expect(roadmap).toMatch(/Catalog v2 also adds bounded attributed\s+static notes/i);
     expect(roadmap).not.toMatch(/Remaining targets include[^.]*\bpolicy\b/i);
     expect(roadmap).not.toMatch(/Remaining targets include[^.]*\bUI packages\b/i);
     expect(corpus).not.toMatch(/policy\/UI/i);
@@ -89,6 +91,25 @@ describe("public repository contracts", () => {
     );
     expect(catalogText).not.toContain("DynamicString");
     expect(catalogText).not.toContain("Action");
+
+    const contentCatalogText = await readText(
+      "docs/specs/flow-a2ui-run-presentation-v2.catalog.json",
+    );
+    const contentCatalog = JSON.parse(contentCatalogText) as {
+      readonly $id?: string;
+      readonly catalogId?: string;
+      readonly components?: Record<string, unknown>;
+      readonly functions?: Record<string, unknown>;
+      readonly $defs?: { readonly anyFunction?: unknown; readonly theme?: unknown };
+    };
+    expect(contentCatalog.$id).toBe(FLOW_A2UI_CATALOG_V2_ID);
+    expect(contentCatalog.catalogId).toBe(FLOW_A2UI_CATALOG_V2_ID);
+    expect(Object.keys(contentCatalog.components ?? {}).at(-1)).toBe("FlowPackageNotes");
+    expect(contentCatalog.functions).toEqual({});
+    expect(contentCatalog.$defs?.anyFunction).toBe(false);
+    expect(contentCatalog.$defs?.theme).toBe(false);
+    expect(contentCatalogText).not.toContain("DynamicString");
+    expect(contentCatalogText).not.toContain("Action");
   });
 
   it("documents the operator-only container command profile and its residual boundary", async () => {

@@ -184,3 +184,8 @@ _Captured by specification-capture skill on 2026-08-18. Source: user-confirmed._
 - 2026-08-18: Distribution and selection checks passed 46 tests across four files. Evidence covers
   public inspect output and deterministic bundle bytes. It also covers installed offline TUI use
   and local browser use. Invalid content rejects before supervisor or renderer ownership.
+
+- 2026-08-18: Public authoring, trust, ACP, recovery, and testing documentation is updated. It now
+  distinguishes the layout-only v1 catalog from the bounded attributed-content v2 catalog. The repository prose
+  gate and the 29-test community contract pass. Recovery remains session-local. An exact installed
+  package remains available offline through the existing content-addressed store.
