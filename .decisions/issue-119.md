@@ -166,3 +166,9 @@ _Captured by specification-capture skill on 2026-08-18. Source: user-confirmed._
   predecessor, not a duplicate.
 
 - 2026-08-18: Clean branch created from `origin/main` at `8ed8816281ea40a42f2e0df10aeedab3e217cea4`.
+
+- 2026-08-18: Domain RED produced four expected failures. Catalog v2 was unsupported, its public
+  schema was absent, and the note accessor was absent. All 29 legacy tests passed in the RED run.
+
+- 2026-08-18: Catalog-v2 GREEN passed 33 domain tests. Type checking, scoped Biome, and diff checks
+  also passed. The slice preserves a fixed catalog-v1 digest.
