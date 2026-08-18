@@ -163,6 +163,32 @@ baseline drift, clock rollback, status failure, replacement failure, or commit u
 restart after replacement failure until repository and package state are inspected. A settled
 replacement retains the prior immutable blob for readers with an older frozen snapshot.
 
+The first-activation command uses the same owner record. Its state is one
+`first-activation-<identity>.json` file below `.flow/capability.repository/`. A waiting record binds
+the exact package, version, publisher, interval, attempt limit, consumed attempts, and clock
+high-water. A prepared record also binds the exact candidate, source, bundle, and Sigstore receipt.
+A settled record consumes the one-shot authority permanently.
+
+Restart with the same exact arguments. A waiting restart waits a new full interval. A prepared
+restart reopens the exact candidate without network access. It installs only when the package is
+missing and active metadata still authorizes it.
+
+If the exact package is already visible, the
+restart records settlement without a second install. A settled restart returns
+`already_activated` only while the exact package is still visible. A missing or conflicting settled
+package fails without a repository request or reinstall.
+
+A failed pre-rename write retains
+`.first-activation-<identity>.json.pending` and blocks later inference. Confirm that no repository
+watcher or first-activation command is active. Preserve the pending file for diagnosis. Inspect
+repository status and run `flow packages list` and `flow packages verify`.
+
+If the installed package
+and current record are safe, remove only that exact pending file and restart with the same
+arguments. The controller will reconcile from the prior durable state. Never remove a settled
+record as routine cleanup. Removing it would discard the proof that the one-shot authority was
+consumed.
+
 For a workflow package, resume accepts `workflow:<name>@<exact-version>` and reconstructs the root
 and every transitive packaged child from the durable snapshot before claiming the run. It verifies
 manifest/source hashes, package digest, compiled source-package identity, run-start requirements,

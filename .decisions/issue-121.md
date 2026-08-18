@@ -41,17 +41,25 @@ _Captured after the user approved A1, the one-shot exact first-activation approa
 
 ### Interface contracts
 
+#### Command and output
+
 - Public command: `flow packages repository first-activate <bundle-name> --version <exact> --max-checks <1..1000> [--interval-ms <60000..86400000>] --certificate-issuer <https-url> --certificate-identity <exact>`.
-- The default interval is one hour. There is no default attempt limit.
+- The default interval is one hour, but the command has no default attempt limit.
 - The command waits one complete interval before every repository check, including the first.
-- Public output is newline-delimited fixed status records. The terminal result is `activated`, `already_activated`, or `attempts_exhausted`; failures use fixed value-free stages.
+- Public output is newline-delimited fixed status records. The terminal result is `activated`, `already_activated`, or `attempts_exhausted`. Failures use fixed value-free stages.
+
+#### Durable records
+
 - The durable operation identity binds only the exact package name, exact version, and exact publisher. Scheduling options cannot mint a second authority for the same package identity.
 - A pending record binds the complete authorization, scheduling policy, consumed attempts, and trusted clock high-water.
-- A prepared record additionally binds candidate digest, repository check time, target source, bundle bytes and digest, and complete Sigstore receipt.
+- A prepared record also binds candidate digest, check time, target source, bundle identity, and the Sigstore receipt.
 - A settled record binds the same prepared receipt and the exact installed package result. It remains durable after later package removal.
+
+#### Composition
+
 - A metadata-required package-install port is distinct from explicit bootstrap installation. It checks current active metadata under the existing package mutation lock immediately before publication and again at commit.
-- The application controller depends on ports for state, installed package inspection, repository check, candidate reopen, strict install, clock, waiting, and observation. It imports no local filesystem or network implementation.
-- Repository automation uses the existing single foreground ownership boundary so first activation and continuous watching cannot overlap.
+- The application controller depends only on ports. They cover state, package inspection, repository checks, candidate reopen, strict install, clock, waiting, and observation. The controller imports no local filesystem or network implementation.
+- The shared foreground owner prevents overlap between first activation and continuous watching.
 
 ## Decision
 
@@ -85,19 +93,25 @@ exact name + exact version + exact publisher
 ### Standards and dependency cross-check
 
 - TUF authenticates metadata and target bytes but leaves target selection and activation to the application. A1 is therefore an application authorization layered after TUF verification.
-- Sigstore publisher verification remains offline and exact. A1 stores only the verified receipt needed for reconciliation; it does not refresh trust roots online.
+- Sigstore publisher verification remains offline and exact. A1 stores only the verified receipt needed for reconciliation. It does not refresh trust roots online.
+
 - Atomic immutable-package publication remains the package-store responsibility. A1 records intent around that boundary rather than implementing a second package mutation path.
 - The existing watcher remains the compatible-update controller for an already-established package. A1 terminates and grants no later update authority.
 - ACP, A2UI, A2A, and AG-UI do not supply this package-activation policy boundary. Run and presentation protocols remain consumers of frozen active package snapshots only.
 
 ## Plan
 
+### Implementation slices
+
 1. RED/GREEN the exact authorization parser, candidate selector, finite scheduling, fixed statuses, and installed-state reconciliation.
 2. RED/GREEN a bounded no-follow durable waiting/prepared/settled store with atomic transition and uncertainty evidence.
 3. RED/GREEN metadata-required package installation under the existing mutation lock without changing explicit bootstrap installation.
 4. Compose the controller, repository checker, candidate reopener, strict installer, shared automation ownership, and exact CLI grammar.
+
+### Verification slices
+
 5. Prove settled removal never reinstalls and that attached, detached, child, recovery, replay, and evaluation paths ignore automation state.
-6. Keep README, roadmap, architecture, sourcing, recovery, and testing documentation synchronized; run all release and hosted Linux x64 gates; perform adversarial review.
+6. Keep README, roadmap, architecture, sourcing, recovery, and testing documentation synchronized. Run all release and hosted Linux x64 gates. Perform adversarial review.
 
 ## Verification map
 

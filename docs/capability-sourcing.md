@@ -562,6 +562,12 @@ flow packages repository candidate replace sha256:<digest> \
   --from-version <exact-current-version> \
   --certificate-issuer <exact-https-issuer> \
   --certificate-identity <exact>
+flow packages repository first-activate <bundle-name> \
+  --version <exact-version> \
+  --max-checks <1..1000> \
+  --interval-ms 3600000 \
+  --certificate-issuer <exact-https-issuer> \
+  --certificate-identity <exact>
 flow packages repository watch <installed-bundle-name> \
   --interval-ms 3600000 \
   --certificate-issuer <exact-https-issuer> \
@@ -600,6 +606,17 @@ pre-rename failure preserves the old generation. A post-rename durability failur
 
 Candidate removal creates a new repository generation. It does not remove an installed package.
 
+The finite first-activation command is the only automatic first-install boundary. It binds one
+exact missing bundle name, exact version, and exact publisher. It requires an explicit local TUF
+root and a full interval before every check. The limit is 1 to 1000 checks. The command requires
+offline Sigstore verification, an inert non-policy bundle, and one current active metadata target.
+
+It records a waiting intent before scheduling and a prepared receipt before package mutation. It records a
+settled receipt after an exact installed package is visible.
+
+The command then terminates. The
+settled receipt cannot authorize an update or reinstall after removal.
+
 An optional application scheduler can request checks at a bounded interval. It waits one full
 interval after each settled check. It never overlaps or catches up missed checks. The scheduler
 exposes only fixed status records and stops on clock rollback.
@@ -616,13 +633,14 @@ admissible candidate. It never installs a first version or accepts a major updat
 A check failure
 can continue only after a new full interval. Any replacement failure or commit uncertainty stops.
 
-One bounded project-local owner record prevents overlapping Flow watcher processes. The record is
+One bounded project-local owner record prevents overlapping Flow watcher and first-activation
+processes. The record is
 cooperative local coordination, not same-user isolation. Flow never guesses that it is stale and
 never removes it automatically. Retained old blobs remain available to frozen readers.
 
 Private repository credentials, credential helpers, and online root bootstrap remain outside this
-contract. The same is true for automatic first activation, major or policy-package replacement,
-automatic rollback, retained-blob collection, and online Sigstore trust-root refresh. ACP,
+contract. The same is true for major or policy-package replacement, automatic rollback,
+retained-blob collection, and online Sigstore trust-root refresh. ACP,
 AG-UI, and A2UI are separate transport or presentation standards and do not change repository,
 package, runtime, or activation authority.
 

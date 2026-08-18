@@ -38,7 +38,7 @@ through an optional external profile.
 | Versioned command tool packages | Implemented for strict local or exact installed declarative manifests, including publisher-authenticated OCI sources, exact per-agent selection, deterministic argv rendering, and the existing policy/approval/sandbox/journal boundary |
 | Versioned workflow packages | Implemented for strict local or exact installed inert source manifests, including publisher-authenticated OCI sources, exact packaged roots and children, closed snapshot-only compilation, and durable replay identity |
 | Versioned policy packages | Implemented for strict local or exact installed inert narrowing manifests, including operator-required and project-additional exact selection, deterministic composition, pre-mutation workflow admission, and durable replay identity |
-| Remote capability bundle distribution and update discovery | Implemented with deterministic inert `.flowpkg` files, explicit public HTTPS plus SHA-256 installation, exact publisher-authenticated OCI installation, opt-in signed freshness/revocation metadata, and standards-based TUF repository checks with explicit local root trust, delegated targets, consistent snapshots, inert review candidates, reviewed offline activation or atomic same-surface replacement, and frozen execution/recovery |
+| Remote capability bundle distribution and update discovery | Implemented with deterministic inert `.flowpkg` files, explicit public HTTPS plus SHA-256 installation, exact publisher-authenticated OCI installation, opt-in signed freshness/revocation metadata, and standards-based TUF repository checks with explicit local root trust, delegated targets, consistent snapshots, inert review candidates, finite exact first activation, reviewed offline activation or atomic same-surface replacement, and frozen execution/recovery |
 | Reproducible harness evaluation | Implemented for paired Flow, native Pi, native OMP, and Prime Agent profiles. Flow records exact identities, fresh workspaces, private checks, evidence, and constrained reports. |
 | Evidence-bound prompt candidates | Flow implements zero-tool model generation from tuning-only evidence, strict prompt overlays, paired evaluation, reviewed activation, durable run snapshots, and rollback |
 | Proof-safe fresh recovery of interrupted agent attempts | Implemented as explicit opt-in for read-only attempts and edit attempts proven not applied |
@@ -47,7 +47,7 @@ through an optional external profile.
 | A2UI-profile presentation packages | Implemented for exact local or installed manifests that arrange a closed host-owned terminal or browser widget catalog; catalog v2 can also supply bounded attributed static notes without data, actions, code, or bindings |
 | Local browser presentation host | Implemented as a one-session IPv4 loopback host with a fragment-bootstrapped capability, fixed first-party assets, authenticated full-document streaming, and current-action steering |
 | Local ACP v1 editor bridge | Implemented over strict bounded stdio with durable session discovery, restart replay, public-safe updates, and exact Flow approval and cancellation controls |
-| Automatic package activation, executable or remote UI extensions, and model network tools | Planned |
+| Executable or remote UI extensions and model network tools | Planned |
 | VM-grade isolation of the host-side agent runtime | Planned |
 
 The executable format is `flow.synapti.ai/v1alpha1`. There is no compatibility or migration
@@ -1111,6 +1111,9 @@ node dist/cli/main.js packages repository candidate activate sha256:<candidate-d
 node dist/cli/main.js packages repository candidate replace sha256:<candidate-digest> \
   --from-version <exact-current-version> \
   --certificate-issuer <exact-https-issuer> --certificate-identity <exact>
+node dist/cli/main.js packages repository first-activate <bundle-name> \
+  --version <exact-version> --max-checks <finite-count> --interval-ms 3600000 \
+  --certificate-issuer <exact-https-issuer> --certificate-identity <exact>
 node dist/cli/main.js packages repository watch <installed-bundle-name> \
   --interval-ms 3600000 \
   --certificate-issuer <exact-https-issuer> --certificate-identity <exact>
@@ -1120,6 +1123,16 @@ Repository activation and replacement are offline. Candidate removal changes onl
 repository generation. The bounded check scheduler has no activation or replacement port. The
 foreground watcher is a separate controller that composes one scheduled check with the existing
 offline replacement boundary.
+
+The one-shot first activator is also a separate controller. It requires an initialized repository,
+one exact name and version, one exact publisher, a finite check count, and current active Flow
+metadata. It waits one full interval before each check. It accepts only inert non-policy bundles.
+It writes a durable waiting intent before the first wait and a prepared receipt before package
+mutation.
+
+It writes a settled receipt after the exact installation is visible. The command then
+terminates and grants no update or reinstall authority. A later package removal causes the same
+command to fail without a repository request or reinstall.
 
 An authenticated metadata state may contain no targets. That is an established deny-all state:
 every new package installation and catalog admission rejects, while metadata inspection and
