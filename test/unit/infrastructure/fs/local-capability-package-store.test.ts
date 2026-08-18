@@ -247,6 +247,40 @@ describe("local capability package store", () => {
     });
   });
 
+  it("requires active metadata for repository first activation under package mutation ownership", async () => {
+    const projectRoot = await projectDirectory();
+    const created = bundle("Review first activation evidence.");
+    const source = "https://packages.example.test/targets/10/review-suite-1.0.0.flowpkg.json";
+    const publisher = packagePublisher("1");
+    const store = new LocalCapabilityPackageStore(projectRoot, {
+      now: () => new Date("2026-08-14T00:00:00.000Z"),
+    });
+    const input = {
+      source,
+      expectedSha256: digest(created.content),
+      content: created.content,
+      publisher,
+    };
+
+    await expect(store.installFromRepository(input)).rejects.toMatchObject({
+      code: "metadata_target",
+    });
+    await expect(store.list()).resolves.toMatchObject({ bundles: [] });
+
+    await store.refreshMetadata({
+      metadata: capabilityMetadata(created.content, {
+        version: 1,
+        source,
+        publisher: publisherPolicy(publisher),
+      }),
+      authority: metadataAuthority(),
+    });
+    await expect(store.installFromRepository(input)).resolves.toMatchObject({
+      status: "installed",
+      bundle: { name: "review-suite", version: "1.0.0" },
+    });
+  });
+
   it("preserves exact pre-abort before package installation mutation", async () => {
     const projectRoot = await projectDirectory();
     const created = bundle("Review cancellation evidence.");

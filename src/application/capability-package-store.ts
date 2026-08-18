@@ -73,6 +73,9 @@ export interface RefreshCapabilityMetadataResult {
 
 export interface CapabilityPackageMutationStore {
   install(input: InstallCapabilityBundleInput): Promise<InstallCapabilityBundleResult>;
+  installFromRepository(
+    input: InstallCapabilityBundleInput,
+  ): Promise<InstallCapabilityBundleResult>;
   replace(input: ReplaceCapabilityBundleInput): Promise<ReplaceCapabilityBundleResult>;
   refreshMetadata(input: RefreshCapabilityMetadataInput): Promise<RefreshCapabilityMetadataResult>;
 }

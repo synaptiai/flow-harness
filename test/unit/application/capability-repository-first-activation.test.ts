@@ -727,9 +727,13 @@ function inMemoryState(initial?: CapabilityRepositoryFirstActivationStateContent
       : Object.freeze({ ...initial, recordDigest: `sha256:${"8".repeat(64)}` });
   let version = initial === undefined ? 0 : 8;
   return {
-    read: vi.fn(async () => current),
+    read: vi.fn(async (_authorization: unknown, _signal: AbortSignal) => current),
     publish: vi.fn(
-      async (input: { readonly state: CapabilityRepositoryFirstActivationStateContent }) => {
+      async (input: {
+        readonly expectedRecordDigest: `sha256:${string}` | null;
+        readonly state: CapabilityRepositoryFirstActivationStateContent;
+        readonly signal: AbortSignal;
+      }) => {
         version += 1;
         current = Object.freeze({
           ...input.state,

@@ -264,6 +264,19 @@ export class LocalCapabilityPackageStore {
   }
 
   async install(input: InstallCapabilityBundleInput): Promise<InstallCapabilityBundleResult> {
+    return await this.#install(input, false);
+  }
+
+  async installFromRepository(
+    input: InstallCapabilityBundleInput,
+  ): Promise<InstallCapabilityBundleResult> {
+    return await this.#install(input, true);
+  }
+
+  async #install(
+    input: InstallCapabilityBundleInput,
+    metadataRequired: boolean,
+  ): Promise<InstallCapabilityBundleResult> {
     throwIfAborted(input.signal);
     if (
       !isValidCapabilitySource(input.source, input.publisher !== undefined) ||
@@ -297,6 +310,12 @@ export class LocalCapabilityPackageStore {
       throwIfAborted(input.signal);
       const metadata = await readCapabilityMetadataState(paths.metadataPath);
       throwIfAborted(input.signal);
+      if (metadataRequired && metadata === null) {
+        throw new CapabilityPackageStoreError(
+          "metadata_target",
+          "capability bundle does not match one active trusted metadata target",
+        );
+      }
       requireTrustedTarget(metadata, bundle, input.source, publisher, this.now());
       const lock = await readCapabilityLock(paths.lockPath);
       throwIfAborted(input.signal);
