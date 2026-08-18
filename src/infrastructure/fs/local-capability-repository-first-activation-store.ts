@@ -43,6 +43,7 @@ export class LocalCapabilityRepositoryFirstActivationStoreError extends Error {
 export interface LocalCapabilityRepositoryFirstActivationStoreHooks {
   readonly beforeRecordRename?: () => void | Promise<void>;
   readonly afterRecordRenamed?: () => void | Promise<void>;
+  readonly afterRecordStat?: () => void | Promise<void>;
 }
 
 const digestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
@@ -117,13 +118,15 @@ type StoredRecord = z.infer<typeof recordSchema>;
 export class LocalCapabilityRepositoryFirstActivationStore
   implements CapabilityRepositoryFirstActivationStatePort
 {
+  readonly #flow: string;
   readonly #root: string;
 
   constructor(
     projectRoot: string,
     private readonly hooks: LocalCapabilityRepositoryFirstActivationStoreHooks = {},
   ) {
-    this.#root = join(resolve(projectRoot), ".flow", "capability.repository");
+    this.#flow = join(resolve(projectRoot), ".flow");
+    this.#root = join(this.#flow, "capability.repository");
   }
 
   async read(
@@ -131,14 +134,21 @@ export class LocalCapabilityRepositoryFirstActivationStore
     signal: AbortSignal,
   ): Promise<CapabilityRepositoryFirstActivationState | undefined> {
     throwIfAborted(signal);
-    const paths = statePaths(this.#root, authorization);
     try {
-      await requireDirectRoot(this.#root);
+      const roots = await observeDirectRoots(this.#flow, this.#root);
       throwIfAborted(signal);
+      const paths = statePaths(this.#root, authorization);
       if (await pathExists(paths.pending)) {
         throw new Error("first activation state has unsettled pending evidence");
       }
-      const state = await readRecord(paths.record, authorization);
+      const state = await readRecord(
+        paths.record,
+        authorization,
+        signal,
+        this.hooks.afterRecordStat,
+      );
+      throwIfAborted(signal);
+      await requireSameDirectRoots(this.#flow, this.#root, roots);
       throwIfAborted(signal);
       return state;
     } catch {
@@ -153,18 +163,29 @@ export class LocalCapabilityRepositoryFirstActivationStore
     readonly signal: AbortSignal;
   }): Promise<CapabilityRepositoryFirstActivationState> {
     throwIfAborted(input.signal);
-    const materialized = materializeState(input.state);
+    let materialized: ReturnType<typeof materializeState>;
+    try {
+      materialized = materializeState(input.state);
+    } catch {
+      throwIfAborted(input.signal);
+      throw new LocalCapabilityRepositoryFirstActivationStoreError("publish activation state");
+    }
     const paths = statePaths(this.#root, materialized.state.authorization);
     let handle: Awaited<ReturnType<typeof open>> | undefined;
     let pendingObservation: BigIntStats | undefined;
     let renamed = false;
     try {
-      await requireDirectRoot(this.#root);
+      const roots = await observeDirectRoots(this.#flow, this.#root);
       throwIfAborted(input.signal);
       if (await pathExists(paths.pending)) {
         throw new Error("first activation state has unsettled pending evidence");
       }
-      const current = await readRecord(paths.record, materialized.state.authorization);
+      const current = await readRecord(
+        paths.record,
+        materialized.state.authorization,
+        input.signal,
+        this.hooks.afterRecordStat,
+      );
       throwIfAborted(input.signal);
       if (
         (input.expectedRecordDigest === null && current !== undefined) ||
@@ -194,6 +215,8 @@ export class LocalCapabilityRepositoryFirstActivationStore
       }
       await this.hooks.beforeRecordRename?.();
       throwIfAborted(input.signal);
+      await requireSameDirectRoots(this.#flow, this.#root, roots);
+      throwIfAborted(input.signal);
       const currentPending = await lstat(paths.pending, { bigint: true });
       if (!sameFile(pendingObservation, currentPending)) {
         throw new Error("first activation pending state changed");
@@ -201,6 +224,7 @@ export class LocalCapabilityRepositoryFirstActivationStore
       await rename(paths.pending, paths.record);
       renamed = true;
       await this.hooks.afterRecordRenamed?.();
+      await requireSameDirectRoots(this.#flow, this.#root, roots);
       await syncDirectory(this.#root);
       throwIfAborted(input.signal);
       return materialized.state;
@@ -256,12 +280,15 @@ function materializeState(state: CapabilityRepositoryFirstActivationStateContent
 async function readRecord(
   path: string,
   authorization: CapabilityRepositoryFirstActivationAuthorization,
+  signal: AbortSignal,
+  afterRecordStat: (() => void | Promise<void>) | undefined,
 ): Promise<CapabilityRepositoryFirstActivationState | undefined> {
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
     handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   } catch (error) {
     if (isEnoent(error)) {
+      throwIfAborted(signal);
       return undefined;
     }
     throw error;
@@ -276,14 +303,32 @@ async function readRecord(
     ) {
       throw new Error("first activation record is not a bounded regular file");
     }
-    const content = await handle.readFile();
+    await afterRecordStat?.();
+    throwIfAborted(signal);
+    const buffer = Buffer.alloc(MAX_CAPABILITY_REPOSITORY_FIRST_ACTIVATION_RECORD_BYTES + 1);
+    let offset = 0;
+    while (offset < buffer.byteLength) {
+      const { bytesRead } = await handle.read(buffer, offset, buffer.byteLength - offset, null);
+      throwIfAborted(signal);
+      if (bytesRead === 0) {
+        break;
+      }
+      offset += bytesRead;
+    }
+    if (offset > MAX_CAPABILITY_REPOSITORY_FIRST_ACTIVATION_RECORD_BYTES) {
+      throw new Error("first activation record exceeds its byte limit");
+    }
+    const content = buffer.subarray(0, offset);
     const after = await handle.stat({ bigint: true });
+    throwIfAborted(signal);
     if (!sameFile(before, after) || after.size !== BigInt(content.byteLength)) {
       throw new Error("first activation record changed while reading");
     }
     await handle.close();
     handle = undefined;
+    throwIfAborted(signal);
     const pathObservation = await lstat(path, { bigint: true });
+    throwIfAborted(signal);
     if (!sameFile(after, pathObservation)) {
       throw new Error("first activation record path changed");
     }
@@ -329,7 +374,8 @@ function validateRecord(record: StoredRecord): void {
       record.receipt.bundle.version !== record.authorization.version ||
       record.receipt.publisher.certificateIssuer !== record.authorization.certificateIssuer ||
       record.receipt.publisher.certificateIdentity !== record.authorization.certificateIdentity ||
-      !isCanonicalHttpsUrl(record.receipt.source)
+      !isCanonicalHttpsUrl(record.receipt.source) ||
+      record.attempts < 1
     ) {
       throw new Error("first activation receipt contradicts its authority");
     }
@@ -425,10 +471,39 @@ function isCanonicalHttpsUrl(value: string): boolean {
   }
 }
 
-async function requireDirectRoot(path: string): Promise<void> {
-  const observed = await lstat(path);
-  if (!observed.isDirectory() || observed.isSymbolicLink()) {
+interface DirectRootObservation {
+  readonly flow: BigIntStats;
+  readonly repository: BigIntStats;
+}
+
+async function observeDirectRoots(
+  flowPath: string,
+  repositoryPath: string,
+): Promise<DirectRootObservation> {
+  const flow = await lstat(flowPath, { bigint: true });
+  const repository = await lstat(repositoryPath, { bigint: true });
+  if (
+    !flow.isDirectory() ||
+    flow.isSymbolicLink() ||
+    !repository.isDirectory() ||
+    repository.isSymbolicLink()
+  ) {
     throw new Error("capability repository root is not a direct directory");
+  }
+  return Object.freeze({ flow, repository });
+}
+
+async function requireSameDirectRoots(
+  flowPath: string,
+  repositoryPath: string,
+  expected: DirectRootObservation,
+): Promise<void> {
+  const current = await observeDirectRoots(flowPath, repositoryPath);
+  if (
+    !sameDirectory(expected.flow, current.flow) ||
+    !sameDirectory(expected.repository, current.repository)
+  ) {
+    throw new Error("capability repository root changed");
   }
 }
 
@@ -452,6 +527,15 @@ function sameFile(left: BigIntStats, right: BigIntStats): boolean {
     left.mtimeNs === right.mtimeNs &&
     left.ctimeNs === right.ctimeNs &&
     right.isFile() &&
+    !right.isSymbolicLink()
+  );
+}
+
+function sameDirectory(left: BigIntStats, right: BigIntStats): boolean {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    right.isDirectory() &&
     !right.isSymbolicLink()
   );
 }

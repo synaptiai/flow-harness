@@ -338,6 +338,79 @@ describe("capability repository first activation", () => {
     expect(install).not.toHaveBeenCalled();
   });
 
+  it("reopens an exact settled transition after state publication becomes uncertain", async () => {
+    const bundle = capabilityBundle();
+    const durable = inMemoryState(activationState("prepared", bundle.bundle));
+    const publish = vi.fn(async (input: Parameters<typeof durable.publish>[0]) => {
+      await durable.publish(input);
+      throw new Error("PRIVATE_STATE_SETTLEMENT");
+    });
+    const observe = vi.fn();
+
+    const result = await runCapabilityRepositoryFirstActivation(
+      {
+        state: { read: durable.read, publish },
+        readInstalled: vi.fn().mockResolvedValue([exactInstalled(bundle.bundle)]),
+        wait: vi.fn(),
+        now: sequenceClock(["2027-01-01T00:02:00.000Z"]),
+        check: vi.fn(),
+        reopen: vi.fn(),
+        install: vi.fn(),
+        observe,
+      },
+      activationInput(),
+    );
+
+    expect(result).toEqual({
+      outcome: "already_activated",
+      attempts: 1,
+      package: {
+        name: bundle.bundle.name,
+        version: bundle.bundle.version,
+        digest: bundle.bundle.digest,
+      },
+    });
+    expect(publish).toHaveBeenCalledOnce();
+    expect(durable.read).toHaveBeenCalledTimes(2);
+    await expect(
+      durable.read(activationInput(), new AbortController().signal),
+    ).resolves.toMatchObject({ status: "settled" });
+    expect(observe).toHaveBeenCalledWith(result);
+  });
+
+  it("rejects a successful state response that contradicts the requested transition", async () => {
+    const wait = vi.fn();
+    const check = vi.fn();
+    const read = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      runCapabilityRepositoryFirstActivation(
+        {
+          state: {
+            read,
+            publish: vi.fn(async ({ state }) => ({
+              ...state,
+              intervalMs: state.intervalMs + 1,
+              recordDigest: `sha256:${"6".repeat(64)}` as const,
+            })),
+          },
+          readInstalled: vi.fn().mockResolvedValue([]),
+          wait,
+          now: sequenceClock(["2027-01-01T00:00:00.000Z"]),
+          check,
+          reopen: vi.fn(),
+          install: vi.fn(),
+          observe: vi.fn(),
+        },
+        activationInput(),
+      ),
+    ).rejects.toEqual(new CapabilityRepositoryFirstActivationError("publish activation state"));
+
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(wait).not.toHaveBeenCalled();
+    expect(check).not.toHaveBeenCalled();
+  });
+
   it("resumes a prepared missing installation without another wait or check", async () => {
     const bundle = capabilityBundle();
     const candidate = repositoryCandidate(bundle.bundle);

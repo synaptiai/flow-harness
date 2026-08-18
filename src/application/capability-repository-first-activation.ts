@@ -462,11 +462,33 @@ async function publishState(
   try {
     const published = await dependencies.state.publish({ expectedRecordDigest, state, signal });
     signal.throwIfAborted();
+    if (!isExactPublishedState(published, state)) {
+      throw new Error("published first activation state changed");
+    }
     return published;
   } catch {
     signal.throwIfAborted();
+    try {
+      const recovered = await dependencies.state.read(state.authorization, signal);
+      signal.throwIfAborted();
+      if (recovered !== undefined && isExactPublishedState(recovered, state)) {
+        return recovered;
+      }
+    } catch {
+      signal.throwIfAborted();
+    }
     throw new CapabilityRepositoryFirstActivationError("publish activation state");
   }
+}
+
+function isExactPublishedState(
+  published: CapabilityRepositoryFirstActivationState,
+  expected: CapabilityRepositoryFirstActivationStateContent,
+): boolean {
+  return (
+    /^sha256:[a-f0-9]{64}$/.test(published.recordDigest) &&
+    isDeepStrictEqual(withoutRecordDigest(published), expected)
+  );
 }
 
 async function readInstalled(
