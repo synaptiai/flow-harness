@@ -172,6 +172,22 @@ describe("Flow terminal renderer", () => {
     expect(formatted).toContain("Cancel run");
   });
 
+  it("renders attributed package information as literal text before host actions", () => {
+    const formatted = stripTerminalSequences(
+      formatFlowPresentation(withPackageContent(completeDocument()), 0),
+    );
+
+    expect(formatted).toContain("Package-provided information — operations@1.0.0");
+    expect(formatted).toContain(
+      "The selected presentation package provides this information. It is not Flow status or an action.",
+    );
+    expect(formatted).toContain("Use <b>literal text</b> during review.");
+    expect(formatted.indexOf("Package-provided information")).toBeLessThan(
+      formatted.indexOf("Actions"),
+    );
+    expect(formatted).not.toContain("\u001b]8;");
+  });
+
   it("preserves the default section-to-action separator when no layout is selected", () => {
     const formatted = stripTerminalSequences(formatFlowPresentation(completeDocument(), 0));
 
@@ -312,5 +328,27 @@ function completeDocument(): FlowPresentationDocument {
       { kind: "cancel", actionId: "cancel:run-1", runId: "run-1", label: "Cancel run" },
     ],
     truncated: false,
+  };
+}
+
+function withPackageContent(document: FlowPresentationDocument): FlowPresentationDocument {
+  return {
+    ...document,
+    sections: [
+      ...document.sections,
+      {
+        id: "presentation-package-content",
+        title: "Package-provided information — operations@1.0.0",
+        components: [
+          {
+            kind: "notice",
+            tone: "info",
+            text: "The selected presentation package provides this information. It is not Flow status or an action.",
+          },
+          { kind: "heading", level: 2, text: "Operator context" },
+          { kind: "notice", tone: "info", text: "Use <b>literal text</b> during review." },
+        ],
+      },
+    ],
   };
 }

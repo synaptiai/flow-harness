@@ -67,6 +67,31 @@ describe("Flow ACP presentation", () => {
     expect(encoded).not.toContain("_meta");
   });
 
+  it("ignores attributed package content without changing ACP output", () => {
+    const source = document();
+    const projected = projectFlowAcpPresentation(source);
+    const withContent = projectFlowAcpPresentation({
+      ...source,
+      sections: [
+        ...source.sections,
+        {
+          id: "presentation-package-content",
+          title: "Package-provided information — operations@1.0.0",
+          components: [
+            {
+              kind: "notice" as const,
+              tone: "info" as const,
+              text: "PRIVATE_PACKAGE_NOTE_CANARY",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(withContent).toEqual(projected);
+    expect(JSON.stringify(withContent)).not.toContain("PRIVATE_PACKAGE_NOTE_CANARY");
+  });
+
   it.each([
     ["approve", "approve:approval-7", "approve:approval-7"],
     ["deny", "deny:approval-7", "deny:approval-7"],

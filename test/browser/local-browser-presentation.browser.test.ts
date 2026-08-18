@@ -40,7 +40,7 @@ describe("local browser presentation", () => {
       .toBe("Connected");
     expect(new URL(page.url()).hash).toBe("");
 
-    const presentation = completeDocument();
+    const presentation = withPackageContent(completeDocument());
     await host.render(presentation);
     await expect
       .poll(async () => await page.locator("#run-title").textContent())
@@ -48,7 +48,23 @@ describe("local browser presentation", () => {
     await expect
       .poll(async () => await page.getByText("PRIVATE <img src=x onerror=alert(1)>").count())
       .toBe(1);
+    expect(
+      await page
+        .getByRole("heading", {
+          name: "Package-provided information — operations@1.0.0",
+        })
+        .count(),
+    ).toBe(1);
+    expect(
+      await page
+        .getByText(
+          "The selected presentation package provides this information. It is not Flow status or an action.",
+        )
+        .count(),
+    ).toBe(1);
+    expect(await page.getByText("Use <b>literal text</b> during review.").count()).toBe(1);
     expect(await page.locator("img").count()).toBe(0);
+    expect(await page.locator("b").count()).toBe(0);
     expect(await page.getByRole("progressbar").getAttribute("max")).toBe("4");
     expect(await page.getByRole("table").count()).toBe(1);
     expect(await page.getByRole("button", { name: "Approve exact request" }).count()).toBe(1);
@@ -246,5 +262,27 @@ function completeDocument(): FlowPresentationDocument {
       },
     ],
     truncated: false,
+  };
+}
+
+function withPackageContent(document: FlowPresentationDocument): FlowPresentationDocument {
+  return {
+    ...document,
+    sections: [
+      ...document.sections,
+      {
+        id: "presentation-package-content",
+        title: "Package-provided information — operations@1.0.0",
+        components: [
+          {
+            kind: "notice",
+            tone: "info",
+            text: "The selected presentation package provides this information. It is not Flow status or an action.",
+          },
+          { kind: "heading", level: 2, text: "Operator context" },
+          { kind: "notice", tone: "info", text: "Use <b>literal text</b> during review." },
+        ],
+      },
+    ],
   };
 }

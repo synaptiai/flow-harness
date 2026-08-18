@@ -176,3 +176,7 @@ _Captured by specification-capture skill on 2026-08-18. Source: user-confirmed._
 - 2026-08-18: Projection RED proved that parsed v2 notes did not reach the public document.
   Projection GREEN appends one attributed host-owned section and preserves run, action, truncation,
   and layout authority. The combined domain and projector selector passed 38 tests.
+
+- 2026-08-18: Terminal and ACP host checks passed 20 tests. The real authenticated browser host
+  passed two tests with loopback permission. Desktop, tablet, and mobile screenshots show visible
+  attribution, literal markup text, responsive layout, separate actions, and no console errors.
