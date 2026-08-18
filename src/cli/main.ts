@@ -24,6 +24,11 @@ import {
   CapabilityMetadataChannelError,
 } from "../application/capability-metadata-channel.js";
 import {
+  CapabilityRepositoryFirstActivationError,
+  MAX_CAPABILITY_REPOSITORY_FIRST_ACTIVATION_CHECKS,
+  runCapabilityRepositoryFirstActivation,
+} from "../application/capability-repository-first-activation.js";
+import {
   CapabilityRepositorySchedulerError,
   MAX_CAPABILITY_REPOSITORY_CHECK_INTERVAL_MS,
   MIN_CAPABILITY_REPOSITORY_CHECK_INTERVAL_MS,
@@ -95,6 +100,7 @@ import {
   createPromptActivationFromEvaluation,
   PromptActivationAdmissionError,
 } from "../application/prepare-prompt-activation.js";
+import { reopenCapabilityRepositoryCandidate } from "../application/reopen-capability-repository-candidate.js";
 import {
   CapabilityRepositoryReplacementError,
   replaceCapabilityRepositoryCandidate,
@@ -288,6 +294,10 @@ import {
   CapabilityPackageStoreError,
   LocalCapabilityPackageStore,
 } from "../infrastructure/fs/local-capability-package-store.js";
+import {
+  LocalCapabilityRepositoryFirstActivationStore,
+  LocalCapabilityRepositoryFirstActivationStoreError,
+} from "../infrastructure/fs/local-capability-repository-first-activation-store.js";
 import { LocalCapabilityRepositoryStore } from "../infrastructure/fs/local-capability-repository-store.js";
 import {
   LocalCapabilityRepositoryWatcherLock,
@@ -450,6 +460,7 @@ Usage:
   flow packages repository init <canonical-public-https-base> --trusted-root <local-root.json>
   flow packages repository status
   flow packages repository check
+  flow packages repository first-activate <bundle-name> --version <exact> --max-checks <1..1000> [--interval-ms <60000..86400000>] --certificate-issuer <https-url> --certificate-identity <exact>
   flow packages repository watch <installed-bundle-name> [--interval-ms <60000..86400000>] [--update-policy <patch|minor>] --certificate-issuer <https-url> --certificate-identity <exact>
   flow packages repository candidates list
   flow packages repository candidate inspect <sha256:digest>
@@ -704,6 +715,7 @@ export async function main(
       error instanceof CapabilityMetadataCheckError ||
       error instanceof CapabilityMetadataError ||
       error instanceof CapabilityPackageStoreError ||
+      error instanceof CapabilityRepositoryFirstActivationError ||
       error instanceof CapabilityRepositoryActivationError ||
       error instanceof CapabilityRepositoryReplacementError ||
       error instanceof CapabilityRepositoryWatcherError ||
@@ -711,6 +723,7 @@ export async function main(
       error instanceof CapabilityRepositoryCheckError ||
       error instanceof CapabilityRepositoryInitializationError ||
       error instanceof CapabilityRepositoryStoreError ||
+      error instanceof LocalCapabilityRepositoryFirstActivationStoreError ||
       error instanceof LocalCapabilityRepositoryWatcherLockError ||
       error instanceof OciCapabilityRegistryError ||
       error instanceof SigstoreCapabilityVerificationError ||
@@ -1395,7 +1408,9 @@ async function packagesCommand(
     "certificate-identity",
     "from-version",
     "interval-ms",
+    "max-checks",
     "update-policy",
+    "version",
   ] as const) {
     const occurrences = args.filter(
       (argument) => argument === `--${option}` || argument.startsWith(`--${option}=`),
@@ -1410,6 +1425,7 @@ async function packagesCommand(
     "certificate-issuer": { type: "string" },
     "from-version": { type: "string" },
     "interval-ms": { type: "string" },
+    "max-checks": { type: "string" },
     output: { type: "string" },
     sha256: { type: "string" },
     "sigstore-bundle": { type: "string" },
@@ -1435,8 +1451,10 @@ async function packagesCommand(
     (values.username !== undefined && passwordInput.enabled);
   const hasNoCredentials = values.username === undefined && !passwordInput.enabled;
   const hasNoSigstoreBundle = values["sigstore-bundle"] === undefined;
-  const hasNoWatcherOptions =
-    values["interval-ms"] === undefined && values["update-policy"] === undefined;
+  const hasNoAutomatedRepositoryOptions =
+    values["interval-ms"] === undefined &&
+    values["max-checks"] === undefined &&
+    values["update-policy"] === undefined;
   const standardValid =
     (subcommand === "install" &&
       positionals.length === 2 &&
@@ -1640,14 +1658,31 @@ async function packagesCommand(
     values.sha256 === undefined &&
     hasNoSigstoreBundle &&
     hasNoCredentials &&
+    values["max-checks"] === undefined &&
     values.version === undefined;
+  const firstActivationValid =
+    subcommand === "repository" &&
+    positionals[1] === "first-activate" &&
+    positionals.length === 3 &&
+    values["trusted-root"] === undefined &&
+    values["certificate-identity"] !== undefined &&
+    values["certificate-issuer"] !== undefined &&
+    values["from-version"] === undefined &&
+    values["max-checks"] !== undefined &&
+    values["update-policy"] === undefined &&
+    values.output === undefined &&
+    values.sha256 === undefined &&
+    hasNoSigstoreBundle &&
+    hasNoCredentials &&
+    values.version !== undefined;
   const valid =
-    (hasNoWatcherOptions &&
+    (hasNoAutomatedRepositoryOptions &&
       ((values["from-version"] === undefined && standardValid) || replacementValid)) ||
-    watcherValid;
+    watcherValid ||
+    firstActivationValid;
   if (!valid) {
     throw new CliUsageError(
-      "packages requires pack, install, install-oci, metadata refresh, metadata inspect, metadata check, metadata candidates list, metadata candidate inspect/remove, metadata activate, repository init/status/check/watch/candidates/candidate inspect/remove/activate/replace, list, inspect, verify, or remove with the documented exact arguments",
+      "packages requires pack, install, install-oci, metadata refresh, metadata inspect, metadata check, metadata candidates list, metadata candidate inspect/remove, metadata activate, repository init/status/check/first-activate/watch/candidates/candidate inspect/remove/activate/replace, list, inspect, verify, or remove with the documented exact arguments",
     );
   }
   const watcherPackageName = watcherValid ? positionals[2] : undefined;
@@ -1656,6 +1691,20 @@ async function packagesCommand(
   const watcherUpdatePolicy = watcherValid ? (values["update-policy"] ?? "patch") : undefined;
   const watcherIntervalMs = watcherValid
     ? parseRepositoryWatcherInterval(values["interval-ms"])
+    : undefined;
+  const firstActivationPackageName = firstActivationValid ? positionals[2] : undefined;
+  const firstActivationVersion = firstActivationValid ? values.version : undefined;
+  const firstActivationCertificateIssuer = firstActivationValid
+    ? values["certificate-issuer"]
+    : undefined;
+  const firstActivationCertificateIdentity = firstActivationValid
+    ? values["certificate-identity"]
+    : undefined;
+  const firstActivationIntervalMs = firstActivationValid
+    ? parseRepositoryWatcherInterval(values["interval-ms"])
+    : undefined;
+  const firstActivationMaxChecks = firstActivationValid
+    ? parseRepositoryFirstActivationMaxChecks(values["max-checks"])
     : undefined;
   if (watcherValid) {
     if (
@@ -1677,6 +1726,32 @@ async function packagesCommand(
     } catch {
       throw new CliUsageError(
         "packages repository watch requires one installed bundle, exact publisher authority, a bounded interval, and patch or minor policy",
+      );
+    }
+  }
+  if (firstActivationValid) {
+    if (
+      firstActivationPackageName === undefined ||
+      firstActivationVersion === undefined ||
+      firstActivationCertificateIssuer === undefined ||
+      firstActivationCertificateIdentity === undefined ||
+      firstActivationIntervalMs === undefined ||
+      firstActivationMaxChecks === undefined ||
+      !verifierPackageNameSchema.safeParse(firstActivationPackageName).success ||
+      !verifierPackageVersionSchema.safeParse(firstActivationVersion).success
+    ) {
+      throw new CliUsageError(
+        "packages repository first-activate requires one exact bundle, exact publisher authority, a bounded interval, and finite checks",
+      );
+    }
+    try {
+      validateSigstoreCapabilityPublisherPolicy({
+        certificateIssuer: firstActivationCertificateIssuer,
+        certificateIdentity: firstActivationCertificateIdentity,
+      });
+    } catch {
+      throw new CliUsageError(
+        "packages repository first-activate requires one exact bundle, exact publisher authority, a bounded interval, and finite checks",
       );
     }
   }
@@ -1729,6 +1804,99 @@ async function packagesCommand(
       const repository = await repositoryStore.status(overrides.signal);
       io.stdout(JSON.stringify({ repository: repository ?? null }, null, 2));
       return 0;
+    }
+    if (positionals[1] === "first-activate") {
+      if (
+        firstActivationPackageName === undefined ||
+        firstActivationVersion === undefined ||
+        firstActivationCertificateIssuer === undefined ||
+        firstActivationCertificateIdentity === undefined ||
+        firstActivationIntervalMs === undefined ||
+        firstActivationMaxChecks === undefined
+      ) {
+        throw new CliUsageError(
+          "packages repository first-activate requires one exact bundle, exact publisher authority, a bounded interval, and finite checks",
+        );
+      }
+      const signal = overrides.signal ?? new AbortController().signal;
+      const repository = await repositoryStore.status(signal);
+      if (repository === undefined) {
+        throw new CapabilityRepositoryFirstActivationError("read activation state");
+      }
+      const lease = await new LocalCapabilityRepositoryWatcherLock(config.projectRoot).acquire(
+        signal,
+      );
+      let result: Awaited<ReturnType<typeof runCapabilityRepositoryFirstActivation>> | undefined;
+      let operationError: unknown;
+      try {
+        result = await runCapabilityRepositoryFirstActivation(
+          {
+            state: new LocalCapabilityRepositoryFirstActivationStore(config.projectRoot),
+            readInstalled: async (name, activeSignal) => {
+              activeSignal.throwIfAborted();
+              const entries = (await store.list()).bundles.filter((entry) => entry.name === name);
+              const installed = [];
+              for (const entry of entries) {
+                installed.push(
+                  await store.inspect(entry.name, entry.version, { signal: activeSignal }),
+                );
+              }
+              activeSignal.throwIfAborted();
+              return installed;
+            },
+            check: async (activeSignal) =>
+              await createCapabilityRepositoryChecker({
+                refresher: createLocalCapabilityRepositoryRefresher({
+                  stateReader: repositoryStore,
+                  fetcher:
+                    overrides.capabilityRepositoryFetcher ??
+                    createProductionCapabilityRepositoryFetcher(),
+                }),
+                verifier: sigstoreVerifier,
+                publisher: repositoryStore,
+                now: () => new Date(),
+              }).check({ signal: activeSignal }),
+            reopen: async (input) =>
+              await reopenCapabilityRepositoryCandidate(
+                { candidates: repositoryStore, verifier: sigstoreVerifier },
+                input,
+              ),
+            install: async (input) => await store.installFromRepository(input),
+            now: overrides.capabilityRepositoryWatcherNow ?? (() => new Date()),
+            wait:
+              overrides.capabilityRepositoryWatcherWait ??
+              (async (milliseconds, activeSignal) => {
+                await delay(milliseconds, undefined, { signal: activeSignal });
+              }),
+            observe: (status) => {
+              io.stdout(JSON.stringify(status));
+            },
+          },
+          {
+            packageName: firstActivationPackageName,
+            version: firstActivationVersion,
+            certificateIssuer: firstActivationCertificateIssuer,
+            certificateIdentity: firstActivationCertificateIdentity,
+            intervalMs: firstActivationIntervalMs,
+            maxChecks: firstActivationMaxChecks,
+            signal,
+          },
+        );
+      } catch (error) {
+        operationError = error;
+      }
+      try {
+        await lease.release();
+      } catch {
+        throw new CapabilityRepositoryFirstActivationError("settle activation");
+      }
+      if (operationError !== undefined) {
+        throw operationError;
+      }
+      if (result === undefined) {
+        throw new CapabilityRepositoryFirstActivationError("settle activation");
+      }
+      return result.outcome === "attempts_exhausted" ? 1 : 0;
     }
     if (positionals[1] === "watch") {
       if (
@@ -2299,6 +2467,22 @@ function parseRepositoryWatcherInterval(value: string | undefined): number {
     );
   }
   return intervalMs;
+}
+
+function parseRepositoryFirstActivationMaxChecks(value: string | undefined): number {
+  if (value === undefined || !/^[1-9]\d*$/.test(value)) {
+    throw new CliUsageError("--max-checks requires a bounded positive integer");
+  }
+  const maximumChecks = Number(value);
+  if (
+    !Number.isSafeInteger(maximumChecks) ||
+    maximumChecks > MAX_CAPABILITY_REPOSITORY_FIRST_ACTIVATION_CHECKS
+  ) {
+    throw new CliUsageError(
+      `--max-checks requires 1..${MAX_CAPABILITY_REPOSITORY_FIRST_ACTIVATION_CHECKS}`,
+    );
+  }
+  return maximumChecks;
 }
 
 async function readBoundedCommandInput(path: string, maximumBytes: number): Promise<Buffer> {
