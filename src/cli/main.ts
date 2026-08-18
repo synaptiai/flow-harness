@@ -86,6 +86,10 @@ import {
   createPromptActivationFromEvaluation,
   PromptActivationAdmissionError,
 } from "../application/prepare-prompt-activation.js";
+import {
+  CapabilityRepositoryReplacementError,
+  replaceCapabilityRepositoryCandidate,
+} from "../application/replace-capability-repository-candidate.js";
 import { runEvaluationTrials } from "../application/run-evaluation.js";
 import {
   RunPresentationActionController,
@@ -177,6 +181,7 @@ import {
   SigstoreCapabilityVerificationError,
   type SigstoreCapabilityVerifier,
 } from "../domain/capability/sigstore-capability-verifier.js";
+import { verifierPackageVersionSchema } from "../domain/capability/verifier-packages.js";
 import {
   collectWorkflowAgentSkillNames,
   collectWorkflowToolPackageReferences,
@@ -432,6 +437,7 @@ Usage:
   flow packages repository candidate inspect <sha256:digest>
   flow packages repository candidate remove <sha256:digest>
   flow packages repository candidate activate <sha256:digest> --certificate-issuer <https-url> --certificate-identity <exact>
+  flow packages repository candidate replace <sha256:digest> --from-version <exact> --certificate-issuer <https-url> --certificate-identity <exact>
   flow packages list
   flow packages inspect <name> --version <exact>
   flow packages verify
@@ -676,6 +682,7 @@ export async function main(
       error instanceof CapabilityMetadataError ||
       error instanceof CapabilityPackageStoreError ||
       error instanceof CapabilityRepositoryActivationError ||
+      error instanceof CapabilityRepositoryReplacementError ||
       error instanceof CapabilityRepositoryCheckError ||
       error instanceof CapabilityRepositoryInitializationError ||
       error instanceof CapabilityRepositoryStoreError ||
@@ -1356,7 +1363,12 @@ async function packagesCommand(
   io: CliIo,
   overrides: Partial<CliDependencies>,
 ): Promise<number> {
-  for (const option of ["username", "certificate-issuer", "certificate-identity"] as const) {
+  for (const option of [
+    "username",
+    "certificate-issuer",
+    "certificate-identity",
+    "from-version",
+  ] as const) {
     const occurrences = args.filter(
       (argument) => argument === `--${option}` || argument.startsWith(`--${option}=`),
     ).length;
@@ -1368,6 +1380,7 @@ async function packagesCommand(
   const { positionals, values } = parseCommandArgs(passwordInput.args, {
     "certificate-identity": { type: "string" },
     "certificate-issuer": { type: "string" },
+    "from-version": { type: "string" },
     output: { type: "string" },
     sha256: { type: "string" },
     "sigstore-bundle": { type: "string" },
@@ -1376,6 +1389,12 @@ async function packagesCommand(
     version: { type: "string" },
   });
   const subcommand = positionals[0];
+  if (
+    values["from-version"] !== undefined &&
+    !verifierPackageVersionSchema.safeParse(values["from-version"]).success
+  ) {
+    throw new CliUsageError("--from-version requires an exact semantic version");
+  }
   if (values.username !== undefined && !isValidOciRegistryUsername(values.username)) {
     throw new CliUsageError(
       "--username requires 1 to 256 visible non-space ASCII characters without a colon",
@@ -1386,7 +1405,7 @@ async function packagesCommand(
     (values.username !== undefined && passwordInput.enabled);
   const hasNoCredentials = values.username === undefined && !passwordInput.enabled;
   const hasNoSigstoreBundle = values["sigstore-bundle"] === undefined;
-  const valid =
+  const standardValid =
     (subcommand === "install" &&
       positionals.length === 2 &&
       values["certificate-identity"] === undefined &&
@@ -1563,9 +1582,24 @@ async function packagesCommand(
       hasNoSigstoreBundle &&
       hasNoCredentials &&
       values.version === undefined);
+  const replacementValid =
+    subcommand === "repository" &&
+    positionals[1] === "candidate" &&
+    positionals[2] === "replace" &&
+    positionals.length === 4 &&
+    values["trusted-root"] === undefined &&
+    values["certificate-identity"] !== undefined &&
+    values["certificate-issuer"] !== undefined &&
+    values["from-version"] !== undefined &&
+    values.output === undefined &&
+    values.sha256 === undefined &&
+    hasNoSigstoreBundle &&
+    hasNoCredentials &&
+    values.version === undefined;
+  const valid = (values["from-version"] === undefined && standardValid) || replacementValid;
   if (!valid) {
     throw new CliUsageError(
-      "packages requires pack, install, install-oci, metadata refresh, metadata inspect, metadata check, metadata candidates list, metadata candidate inspect/remove, metadata activate, repository init/status/check/candidates/candidate inspect/remove/activate, list, inspect, verify, or remove with the documented exact arguments",
+      "packages requires pack, install, install-oci, metadata refresh, metadata inspect, metadata check, metadata candidates list, metadata candidate inspect/remove, metadata activate, repository init/status/check/candidates/candidate inspect/remove/activate/replace, list, inspect, verify, or remove with the documented exact arguments",
     );
   }
   const dependencies = configDependenciesFrom(overrides);
@@ -1647,7 +1681,7 @@ async function packagesCommand(
       const candidateDigest = positionals[3];
       if (candidateDigest === undefined) {
         throw new CliUsageError(
-          "packages repository candidate requires inspect, remove, or activate <sha256:digest>",
+          "packages repository candidate requires inspect, remove, activate, or replace <sha256:digest>",
         );
       }
       if (action === "inspect") {
@@ -1669,8 +1703,46 @@ async function packagesCommand(
       const certificateIdentity = values["certificate-identity"];
       if (certificateIssuer === undefined || certificateIdentity === undefined) {
         throw new CliUsageError(
-          "packages repository candidate activate requires <sha256:digest> --certificate-issuer <https-url> --certificate-identity <exact>",
+          "packages repository candidate activate or replace requires <sha256:digest> and exact publisher authority",
         );
+      }
+      if (action === "replace") {
+        const expectedCurrentVersion = values["from-version"];
+        if (expectedCurrentVersion === undefined) {
+          throw new CliUsageError(
+            "packages repository candidate replace requires --from-version <exact>",
+          );
+        }
+        const replaced = await replaceCapabilityRepositoryCandidate(
+          { candidates: repositoryStore, verifier: sigstoreVerifier, packages: store },
+          {
+            candidateDigest,
+            expectedCurrentVersion,
+            certificateIssuer,
+            certificateIdentity,
+            ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
+          },
+        );
+        io.stdout(
+          JSON.stringify(
+            {
+              status: replaced.status,
+              candidateDigest,
+              ...(replaced.status === "replaced"
+                ? { cleanup: replaced.cleanup, previous: replaced.previous }
+                : {}),
+              bundle: {
+                name: replaced.bundle.name,
+                version: replaced.bundle.version,
+                bytes: replaced.bundle.bytes,
+                digest: replaced.bundle.digest,
+              },
+            },
+            null,
+            2,
+          ),
+        );
+        return 0;
       }
       const activated = await activateCapabilityRepositoryCandidate(
         {
