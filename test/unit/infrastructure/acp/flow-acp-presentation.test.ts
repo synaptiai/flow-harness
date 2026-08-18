@@ -89,6 +89,7 @@ describe("Flow ACP presentation", () => {
     });
 
     expect(withContent).toEqual(projected);
+    expect(JSON.stringify(withContent)).toBe(JSON.stringify(projected));
     expect(JSON.stringify(withContent)).not.toContain("PRIVATE_PACKAGE_NOTE_CANARY");
   });
 

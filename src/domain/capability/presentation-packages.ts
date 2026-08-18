@@ -14,7 +14,8 @@ export const FLOW_A2UI_CATALOG_V2_ID =
   "https://flow.synapti.ai/a2ui/catalogs/run-presentation/v2" as const;
 export const FLOW_A2UI_SURFACE_ID = "flow-run" as const;
 export const MAX_PRESENTATION_PACKAGE_MANIFEST_BYTES = 64 * 1024;
-export const MAX_PRESENTATION_PACKAGE_COMPONENTS = 13;
+const MAX_PRESENTATION_PACKAGE_V1_COMPONENTS = 13;
+export const MAX_PRESENTATION_PACKAGE_COMPONENTS = 14;
 export const MAX_PRESENTATION_PACKAGE_GROUPS = 6;
 export const MAX_PRESENTATION_PACKAGE_NOTES = 4;
 export const MAX_PRESENTATION_PACKAGE_NOTE_TITLE_BYTES = 128;
@@ -143,7 +144,7 @@ const legacyUpdateComponentsMessageSchema = z
         components: z
           .array(legacyComponentSchema)
           .min(FLOW_PRESENTATION_WIDGETS.length + 1)
-          .max(MAX_PRESENTATION_PACKAGE_COMPONENTS),
+          .max(MAX_PRESENTATION_PACKAGE_V1_COMPONENTS),
       })
       .strict(),
   })
@@ -157,7 +158,7 @@ const contentUpdateComponentsMessageSchema = z
         components: z
           .array(contentComponentSchema)
           .min(FLOW_PRESENTATION_WIDGETS.length + 2)
-          .max(MAX_PRESENTATION_PACKAGE_COMPONENTS + 1),
+          .max(MAX_PRESENTATION_PACKAGE_COMPONENTS),
       })
       .strict(),
   })

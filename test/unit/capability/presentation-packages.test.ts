@@ -8,6 +8,7 @@ import {
   createPresentationPackageSnapshot,
   FLOW_A2UI_CATALOG_ID,
   FLOW_A2UI_CATALOG_V2_ID,
+  MAX_PRESENTATION_PACKAGE_COMPONENTS,
   MAX_PRESENTATION_PACKAGE_MANIFEST_BYTES,
   MAX_PRESENTATION_PACKAGE_NOTE_BODY_BYTES,
   MAX_PRESENTATION_PACKAGE_NOTE_TEXT_BYTES,
@@ -260,6 +261,31 @@ describe("presentation package contract", () => {
     expect(presentationPackageNotes(snapshot)).toEqual([]);
   });
 
+  it("binds exact note text into the content-bearing package identity", () => {
+    const first = createPresentationPackageSnapshot({
+      kind: "presentation-package",
+      trust: "project-explicit",
+      provenance: "presentations/operations",
+      manifest: {
+        content: encoder.encode(contentManifest([{ title: "Context", body: "Review alpha." }])),
+      },
+    });
+    const second = createPresentationPackageSnapshot({
+      kind: "presentation-package",
+      trust: "project-explicit",
+      provenance: "presentations/operations",
+      manifest: {
+        content: encoder.encode(contentManifest([{ title: "Context", body: "Review bravo." }])),
+      },
+    });
+
+    expect(first.manifest.bytes).toBe(second.manifest.bytes);
+    expect(first.manifest.sha256).not.toBe(second.manifest.sha256);
+    expect(first.digest).not.toBe(second.digest);
+    expect(presentationPackageNotes(first)).toEqual([{ title: "Context", body: "Review alpha." }]);
+    expect(presentationPackageNotes(second)).toEqual([{ title: "Context", body: "Review bravo." }]);
+  });
+
   it("enforces exact UTF-8 and aggregate note limits", () => {
     const exactTitle = "é".repeat(MAX_PRESENTATION_PACKAGE_NOTE_TITLE_BYTES / 2);
     const exactBody = "é".repeat(MAX_PRESENTATION_PACKAGE_NOTE_BODY_BYTES / 2);
@@ -295,13 +321,49 @@ describe("presentation package contract", () => {
 
   it.each([
     ["an unsafe title", () => contentManifest([{ title: "PRIVATE\nTITLE", body: "body" }])],
+    ["an unsafe body", () => contentManifest([{ title: "title", body: "PRIVATE\u202eBODY" }])],
+    ["a blank title", () => contentManifest([{ title: "   ", body: "body" }])],
+    ["a blank body", () => contentManifest([{ title: "title", body: "   " }])],
     ["an empty note list", () => contentManifest([])],
+    ["a content catalog without its note leaf", () => contentManifestWithoutNotes()],
     [
       "a binding in note text",
       () =>
         contentManifest().replace(
           'body: "This text is package-provided information."',
           "body:\n                  path: /PRIVATE/note",
+        ),
+    ],
+    [
+      "a package link",
+      () =>
+        contentManifest().replace(
+          'body: "This text is package-provided information."',
+          'body: "This text is package-provided information."\n                link: https://PRIVATE.example',
+        ),
+    ],
+    [
+      "a remote package resource",
+      () =>
+        contentManifest().replace(
+          'body: "This text is package-provided information."',
+          'body: "This text is package-provided information."\n                resource: https://PRIVATE.example/note.json',
+        ),
+    ],
+    [
+      "a package function",
+      () =>
+        contentManifest().replace(
+          'body: "This text is package-provided information."',
+          'body: "This text is package-provided information."\n                functionCall: PRIVATE_FUNCTION',
+        ),
+    ],
+    [
+      "an executable package field",
+      () =>
+        contentManifest().replace(
+          'body: "This text is package-provided information."',
+          'body: "This text is package-provided information."\n                script: PRIVATE_EXECUTABLE',
         ),
     ],
     [
@@ -353,6 +415,15 @@ describe("presentation package contract", () => {
     const parsed = parsePresentationPackageManifest(encoder.encode(manifest(maximumComponents())));
 
     expect(parsed.spec.messages[1].updateComponents.components).toHaveLength(13);
+  });
+
+  it("accepts the exact content-bearing graph maximum", () => {
+    const parsed = parsePresentationPackageManifest(encoder.encode(maximumContentManifest()));
+
+    expect(MAX_PRESENTATION_PACKAGE_COMPONENTS).toBe(14);
+    expect(parsed.spec.messages[1].updateComponents.components).toHaveLength(
+      MAX_PRESENTATION_PACKAGE_COMPONENTS,
+    );
   });
 
   it.each([
@@ -575,6 +646,38 @@ function yamlComponent(component: Readonly<Record<string, unknown>>): string {
     }
   }
   return lines.join("\n");
+}
+
+function contentManifestWithoutNotes(): string {
+  const source = contentManifest().replace(
+    "children: [group-1, group-2, package-notes]",
+    "children: [group-1, group-2]",
+  );
+  const start = source.indexOf("          - id: package-notes\n");
+  const end = source.indexOf("          - id: run-summary\n");
+  if (start === -1 || end === -1 || end <= start) {
+    throw new Error("test fixture is invalid");
+  }
+  return `${source.slice(0, start)}${source.slice(end)}`;
+}
+
+function maximumContentManifest(): string {
+  return manifest(maximumComponents())
+    .replace(FLOW_A2UI_CATALOG_ID, FLOW_A2UI_CATALOG_V2_ID)
+    .replace(
+      "children: [group-1, group-2, group-3, group-4, group-5, group-6]",
+      "children: [group-1, group-2, group-3, group-4, group-5, group-6, package-notes]",
+    )
+    .replace(
+      "          - id: run-summary\n",
+      `          - id: package-notes
+            component: FlowPackageNotes
+            notes:
+              - title: Operator context
+                body: This text is package-provided information.
+          - id: run-summary
+`,
+    );
 }
 
 function readJson(path: URL): Record<string, unknown> {
