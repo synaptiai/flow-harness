@@ -10,32 +10,41 @@ _Captured from Issue #117 and the user-approved refined TUF program._
 
 ### User, operator, and system flows
 
-1. **Operator start** — The operator names one installed bundle, exact Sigstore certificate issuer
-   and identity, a bounded interval, and an automatic version policy. Flow acquires one project-local
-   watcher ownership record and emits a fixed startup status.
-2. **Scheduled reconciliation** — Flow waits one complete interval, reopens the current installed
-   package state, performs one ordinary TUF repository check, selects the highest admissible
-   candidate, and invokes the existing offline atomic replacement operation.
-3. **No update** — If no candidate matches the exact name, publisher, and update policy, Flow emits a
-   fixed no-update or policy-blocked status and waits another complete interval.
+1. **Operator start** — The operator names one installed bundle and one exact Sigstore publisher.
+   The input also sets a bounded interval and update policy. Flow acquires one project-local owner
+   record and emits a fixed startup status.
+
+2. **Scheduled reconciliation** — Flow waits one complete interval. It reopens current installed
+   state and performs one ordinary TUF repository check. It selects the highest admissible candidate.
+   It then invokes the existing offline atomic replacement operation.
+
+3. **No update** — Flow can find no candidate that matches the name, publisher, and update policy.
+   It emits a fixed no-update or policy-blocked status. It then waits another complete interval.
+
 4. **Settled update** — A settled replacement or exact repeat emits its portable package result and
    waits another complete interval. Existing runs continue from frozen snapshots.
+
 5. **Failure or cancellation** — Ordinary check failure is observable and may be followed only by a
    new full interval. Clock rollback, ownership uncertainty, replacement failure, or commit
-   uncertainty stops. Operator cancellation remains the exact reason and settles owned boundaries.
+   uncertainty stops. Operator cancellation remains exact. Flow settles owned boundaries first.
 
 ### Non-goals
 
 - Do not install the first trusted package version automatically.
-- Do not automatically update major versions, policy packages, publisher identity, capability
-  identity surface, provider-facing tools, requested authority, workflows, or durable runs.
+
+- Do not update major versions, policy packages, publisher identity, capability surface, tools,
+  requested authority, workflows, or durable runs automatically.
+
 - Do not add a hidden background daemon, supervisor updater, multi-package transaction, or remote
   controller.
+
 - Do not add private repository credentials, online root bootstrap, online Sigstore trust refresh,
   mutable tags, rollback, or executable extensions.
+
 - Do not delete repository candidates, retired package blobs, frozen run snapshots, evaluation
   evidence, or rollback material.
-- Do not claim that a cooperative local lease defeats a hostile same-user filesystem writer.
+
+- Do not claim that a cooperative lease resists a hostile filesystem writer.
 
 ### Failure modes
 
@@ -57,13 +66,17 @@ _Captured from Issue #117 and the user-approved refined TUF program._
 
 ### Interface contracts
 
-- Watch input contains one package name, exact publisher policy, bounded interval, update policy,
-  abort signal, and optional prior durable check high-water time.
+- Watch input contains one package name, exact publisher policy, bounded interval, and update policy.
+  It also contains an abort signal and optional prior durable check high-water time.
+
 - `patch` is the default automatic policy. `minor` must be explicit. Major transitions are rejected.
-- One reconciliation reads the active baseline, consumes one settled check publication, chooses at
-  most one deterministic candidate, and invokes only the existing replacement boundary.
+
+- One reconciliation reads the active baseline and consumes one settled check publication. It
+  chooses at most one deterministic candidate. It invokes only the existing replacement boundary.
+
 - Scheduler status and reconciliation status are distinct closed records. Neither record is an
   authorization token.
+
 - The foreground CLI owns process signals, status serialization, concrete stores, TUF client, and
   local watcher ownership. The application controller imports no infrastructure implementation.
 
@@ -99,27 +112,34 @@ existing independent single-writer locks.
 
 ### Standards cross-check
 
-- The TUF client workflow requires aborted updates to remain recoverable; Flow keeps check and
-  replacement separate and never retries an uncertain mutation.
-- The controller pattern separates desired policy from observed actual state; the watcher input is
-  desired policy, while package/repository stores are reopened actual state on every cycle.
+- The TUF client workflow requires aborted updates to remain recoverable. Flow keeps check and
+  replacement separate. It never retries an uncertain mutation.
+
+- The controller pattern separates desired policy from observed actual state. The watcher input is
+  desired policy. Package and repository stores provide actual state on every cycle.
+
 - Immutable-store garbage collection requires complete roots. Flow has durable frozen package
-  snapshots but no single enumerated reader-root index, so replacement continues to retain old
-  blobs and automatic maintenance remains a separate design.
+  snapshots but no complete reader-root index. Replacement therefore retains old blobs. Automatic
+  maintenance remains a separate design.
 
 ## Plan
 
 1. RED/GREEN a pure automatic-update policy and deterministic candidate selector.
+
 2. RED/GREEN a one-cycle application reconciler that preserves phase order, cancellation, fixed
    status, and stop-vs-continue semantics.
+
 3. RED/GREEN cooperative project-local watcher ownership with no-follow bounded records and
    fail-closed stale-state remediation.
-4. Compose the existing scheduler and reconciler in a foreground CLI command with exact grammar,
-   JSON Lines output, signal cleanup, and durable restart high-water.
+
+4. Compose the existing scheduler and reconciler in a foreground CLI command. Require exact
+   grammar, JSON Lines output, signal cleanup, and durable restart high-water.
+
 5. Prove frozen attached/detached/recovery/evaluation behavior and no supervisor/package authority
    widening, then update all named public documents.
-6. Run focused, full, coverage, build, runtime, package, supply-chain, documentation, and hosted
-   Linux x64 gates; perform adversarial Flow review before merge.
+
+6. Run focused, full, coverage, build, runtime, package, supply-chain, and documentation gates. Run
+   the hosted Linux x64 gates. Perform adversarial Flow review before merge.
 
 ## Verification map
 
@@ -155,20 +175,22 @@ The complete serial suite passed **4,235 tests**, with the four established plat
 Coverage passed at 84.39% statements, 78.69% branches, 91.08% functions, and 84.52% lines.
 The watcher module measured 94.87% statements and lines, 87.5% branches, and 100% functions.
 
-The clean build, direct compiled runtime suite (43 passed, 34 platform-skipped), browser suite
-(2 passed), package installation/browser/Prime-boundary check, TypeScript check, lint, formatting,
-changed-document STE check, and diff check passed. The Prime dependency audit passed for the Node
-lock and 60 Python packages. The root production dependency audit reported zero vulnerabilities.
-The package check needed its local browser URL deadline increased from 5 to 15 seconds because the
-same packaged browser scenario consistently completed in about 6 seconds; the bound remains fixed.
+The clean build passed. The compiled runtime suite passed 43 tests and skipped 34 platform tests.
+The browser suite passed two tests. The package installation, browser, and Prime-boundary check
+passed. TypeScript, lint, formatting, STE, and diff checks passed.
 
-The macOS compiled smoke command reached the compiled CLI and completed its Node-version node, but
-the nested Anthropic Sandbox Runtime did not complete `tsc --noEmit` within the workflow's fixed
-120-second command deadline. Direct TypeScript checking completes successfully, and the compiled
-runtime suite passes. The workflow deadline was not weakened. Hosted Linux x64 CI is therefore the
-remaining platform acceptance gate and must pass before merge.
+The Prime dependency audit passed for the Node lock and 60 Python packages. The root production
+dependency audit reported zero vulnerabilities.
+The local package check needed a browser URL deadline of 15 seconds. The same packaged browser
+scenario consistently completed in about 6 seconds. The bound remains fixed.
 
-The adversarial review found and fixed four issues before publication: replacement-failure
-cancellation precedence, malformed-publisher validation after lock acquisition, equal-precedence
-SemVer candidate ambiguity, and incomplete default/boundary verification evidence. No known P1,
-P2, or P3 finding remains in the frozen local tree.
+The macOS compiled smoke command reached the compiled CLI. It completed its Node-version node. The
+nested Anthropic Sandbox Runtime did not complete `tsc --noEmit` within the fixed 120-second limit.
+Direct TypeScript checking and the compiled runtime suite pass. The workflow deadline was not
+weakened.
+
+Hosted Linux x64 CI remains the platform acceptance gate. It must pass before merge.
+
+The adversarial review found and fixed four issues before publication. They covered cancellation
+precedence, publisher preflight, SemVer ambiguity, and default/boundary evidence. No known P1, P2,
+or P3 finding remains in the frozen local tree.
