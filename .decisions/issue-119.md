@@ -135,8 +135,8 @@ _Captured by specification-capture skill on 2026-08-18. Source: user-confirmed._
 
 | # | Acceptance criterion | Type | Verification command | Expected evidence | Does not promise |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Exact selection renders bounded static notes in terminal and browser | UI / behavioral | `npx vitest run test/unit/presentation/presentation-package-projector.test.ts test/unit/infrastructure/terminal/flow-terminal-renderer.test.ts test/browser/local-browser-presentation.browser.test.ts` | Attributed note title/body render as inert text in both hosts | Remote or third-party renderers |
-| 2 | Content is visibly attributed and distinct from Flow authority | Behavioral / UI | `npx vitest run test/unit/presentation/presentation-package-projector.test.ts test/unit/infrastructure/terminal/flow-terminal-renderer.test.ts test/browser/local-browser-presentation.browser.test.ts` | Fixed package identity and provenance notice appear; actions/run remain exact | Custom package styling or tone |
+| 1 | Exact selection renders bounded static notes in terminal and browser | UI / behavioral | `npx vitest run test/unit/presentation/presentation-package-projector.test.ts test/unit/infrastructure/terminal/flow-terminal-renderer.test.ts && npx vitest run --config vitest.browser.config.ts test/browser/local-browser-presentation.browser.test.ts` | Attributed note title/body render as inert text in both hosts | Remote or third-party renderers |
+| 2 | Content is visibly attributed and distinct from Flow authority | Behavioral / UI | `npx vitest run test/unit/presentation/presentation-package-projector.test.ts test/unit/infrastructure/terminal/flow-terminal-renderer.test.ts && npx vitest run --config vitest.browser.config.ts test/browser/local-browser-presentation.browser.test.ts` | Fixed package identity and provenance notice appear; actions/run remain exact | Custom package styling or tone |
 | 3 | Existing packages preserve identity and rendering | Contract | `npx vitest run test/unit/capability/presentation-packages.test.ts test/unit/presentation/presentation-package-projector.test.ts` | Fixed v1 digest/snapshot and v1 projection regressions pass | Compatibility with unrestricted A2UI catalogs |
 | 4 | Content remains plain, static, and closed | Contract / error | `npx vitest run test/unit/capability/presentation-packages.test.ts` | Official envelope/catalog validation passes; dynamic/markup/action/binding/theme/resource mutations reject | Markdown or rich text |
 | 5 | UTF-8, count, aggregate, safety, and placement limits fail closed | Contract / error | `npx vitest run test/unit/capability/presentation-packages.test.ts` | Exact-bound positives and +1/unsafe/duplicate/misplaced negatives pass | Locale-specific typography beyond safe text |
@@ -189,3 +189,23 @@ _Captured by specification-capture skill on 2026-08-18. Source: user-confirmed._
   distinguishes the layout-only v1 catalog from the bounded attributed-content v2 catalog. The repository prose
   gate and the 29-test community contract pass. Recovery remains session-local. An exact installed
   package remains available offline through the existing content-addressed store.
+
+- 2026-08-18: The exact mapped selector passed 204 tests across 12 non-browser files. The dedicated
+  Chromium selector passed two tests in one browser file. The combined mapped result is 206 tests
+  across 13 files.
+
+- 2026-08-18: The complete serial suite passed 4,249 tests in 310 files. Four tests were skipped,
+  and one file contained only skipped tests. Browser verification passed two tests.
+
+- 2026-08-18: Runtime verification passed 43 tests. It recorded 34 platform-specific skips. The
+  compiled CLI smoke and Prime dependency audit passed. The dependency audit covered the Node lock
+  and 60 Python packages.
+
+- 2026-08-18: Coverage passed with 84.41% statements, 78.69% branches, 91.10% functions, and 84.54%
+  lines. The clean installed tarball and browser-host check passed. The production dependency audit
+  found zero vulnerabilities.
+
+- 2026-08-18: The local-CI wrapper passed formatting, lint, type checking, and build. It then
+  reached its native Linux x64 Prime guard. This host and its Docker daemon are Linux ARM64 for
+  container work. An emulated client would not prove the required x64 daemon and kernel boundary.
+  The native Prime gate therefore remains hosted-CI evidence.
