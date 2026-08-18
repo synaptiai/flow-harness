@@ -1731,6 +1731,7 @@ async function packagesCommand(
               ...(replaced.status === "replaced"
                 ? { cleanup: replaced.cleanup, previous: replaced.previous }
                 : {}),
+              publisher: replaced.publisher,
               bundle: {
                 name: replaced.bundle.name,
                 version: replaced.bundle.version,

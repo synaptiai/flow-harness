@@ -26,7 +26,7 @@ describe("replace capability repository candidate", () => {
     const verify = vi.fn(() => ({ ...policy }));
     const replace = vi.fn(async () => ({
       status: "replaced" as const,
-      cleanup: "deleted" as const,
+      cleanup: "retained" as const,
       bundle: fixture.candidate.bundle,
       previous: {
         name: fixture.candidate.bundle.name,
@@ -56,6 +56,7 @@ describe("replace capability repository candidate", () => {
     );
 
     expect(result.status).toBe("replaced");
+    expect(result.publisher).toEqual(policy);
     expect(verify).toHaveBeenCalledWith(
       fixture.candidate.capabilityBundleBytes(),
       fixture.candidate.sigstoreBundleBytes(),
@@ -94,6 +95,71 @@ describe("replace capability repository candidate", () => {
         },
       ),
     ).rejects.toEqual(new CapabilityRepositoryReplacementError("verify candidate package"));
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["issuer", { certificateIssuer: "https://issuer.example.test/PRIVATE_SUBSTITUTE" }],
+    ["identity", { certificateIdentity: "PRIVATE_SUBSTITUTED_IDENTITY" }],
+  ] as const)("rejects a substituted requested publisher %s", async (_label, mutation) => {
+    const fixture = candidateFixture();
+    const verify = vi.fn();
+    const replace = vi.fn();
+
+    const failure = await replaceCapabilityRepositoryCandidate(
+      {
+        candidates: {
+          readCandidate: vi.fn(async () => ({
+            identity: fixture.candidate.identity,
+            envelopeBytes: () => fixture.candidate.envelopeBytes(),
+          })),
+        },
+        verifier: { verify },
+        packages: { replace },
+      },
+      {
+        candidateDigest: fixture.candidate.identity.candidateDigest,
+        expectedCurrentVersion: "1.0.0",
+        ...policy,
+        ...mutation,
+      },
+    ).catch((error: unknown) => error);
+
+    expect(failure).toEqual(
+      new CapabilityRepositoryReplacementError("validate candidate authority"),
+    );
+    expect((failure as Error).message).not.toContain("PRIVATE");
+    expect(verify).not.toHaveBeenCalled();
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["issuer", { certificateIssuer: "https://issuer.example.test/PRIVATE_VERIFIED" }],
+    ["identity", { certificateIdentity: "PRIVATE_VERIFIED_IDENTITY" }],
+  ] as const)("rejects a substituted verified publisher %s", async (_label, mutation) => {
+    const fixture = candidateFixture();
+    const replace = vi.fn();
+
+    const failure = await replaceCapabilityRepositoryCandidate(
+      {
+        candidates: {
+          readCandidate: vi.fn(async () => ({
+            identity: fixture.candidate.identity,
+            envelopeBytes: () => fixture.candidate.envelopeBytes(),
+          })),
+        },
+        verifier: { verify: vi.fn(() => ({ ...policy, ...mutation })) },
+        packages: { replace },
+      },
+      {
+        candidateDigest: fixture.candidate.identity.candidateDigest,
+        expectedCurrentVersion: "1.0.0",
+        ...policy,
+      },
+    ).catch((error: unknown) => error);
+
+    expect(failure).toEqual(new CapabilityRepositoryReplacementError("verify candidate package"));
+    expect((failure as Error).message).not.toContain("PRIVATE");
     expect(replace).not.toHaveBeenCalled();
   });
 });

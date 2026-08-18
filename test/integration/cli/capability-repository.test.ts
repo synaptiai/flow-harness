@@ -291,7 +291,18 @@ spec:
       throw new Error("repository check did not stage one replacement candidate");
     }
     await packageStore.refreshMetadata({
-      metadata: fixture.activeMetadata,
+      metadata: activeMetadata({
+        content: fixture.envelopeCapabilityBundle,
+        version: "1.0.0",
+        source: fixture.targetSource,
+        publisher: fixture.publisher,
+        metadataVersion: 2,
+        prior: {
+          content: current.content,
+          version: "0.9.0",
+          source: currentSource,
+        },
+      }),
       authority: {
         kind: "sigstore-keyless-v0.3",
         ...fixture.publisher,
@@ -318,8 +329,9 @@ spec:
     expect(JSON.parse(replacement.stdout[0] ?? "null")).toMatchObject({
       status: "replaced",
       candidateDigest,
-      cleanup: "deleted",
+      cleanup: "retained",
       bundle: { name: "review-suite", version: "1.0.0" },
+      publisher: fixture.publisher,
       previous: { name: "review-suite", version: "0.9.0" },
     });
     const repeated = captureIo();
@@ -328,6 +340,7 @@ spec:
       status: "already_current",
       candidateDigest,
       bundle: { name: "review-suite", version: "1.0.0" },
+      publisher: fixture.publisher,
     });
     expect(read).toHaveBeenCalledTimes(networkCallsAfterCheck);
     await expect(packageStore.list()).resolves.toMatchObject({
@@ -336,7 +349,7 @@ spec:
     const publicOutput = `${replacement.stdout.join("\n")}\n${repeated.stdout.join("\n")}`;
     expect(publicOutput).not.toContain(fixture.targetSource);
     expect(publicOutput).not.toContain(fixture.envelope.toString("base64"));
-    expect(publicOutput).not.toContain(fixture.publisher.certificateIdentity);
+    expect(publicOutput).not.toContain("signatureBundleDigest");
     expect(publicOutput).not.toContain("PRIVATE_SIGSTORE_BUNDLE");
   });
 
@@ -575,6 +588,7 @@ spec:
     publisher,
     targetSource,
     activeMetadata: parseActiveMetadata(Buffer.from(JSON.stringify(activeMetadata))),
+    envelopeCapabilityBundle: bundle.content,
     remote: new Map<string, Buffer>([
       [`${metadataBaseUrl}timestamp.json`, timestamp],
       [`${metadataBaseUrl}1.snapshot.json`, snapshot],
@@ -594,6 +608,11 @@ function activeMetadata(input: {
     readonly certificateIdentity: string;
   };
   readonly metadataVersion: number;
+  readonly prior?: {
+    readonly content: Uint8Array;
+    readonly version: string;
+    readonly source: string;
+  };
 }) {
   return parseActiveMetadata(
     Buffer.from(
@@ -607,6 +626,19 @@ function activeMetadata(input: {
         },
         spec: {
           targets: [
+            ...(input.prior === undefined
+              ? []
+              : [
+                  {
+                    name: "review-suite",
+                    version: input.prior.version,
+                    digest: `sha256:${sha256(input.prior.content)}`,
+                    bytes: input.prior.content.byteLength,
+                    source: input.prior.source,
+                    status: "active",
+                    publisher: input.publisher,
+                  },
+                ]),
             {
               name: "review-suite",
               version: input.version,

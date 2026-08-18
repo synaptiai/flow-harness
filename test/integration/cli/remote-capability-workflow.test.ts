@@ -306,6 +306,7 @@ describe("installed capability workflow", () => {
         { source: replacementSource, publisher: acquisition.publisher },
         3,
         "active",
+        [{ bundle: created.bundle, acquisition }],
       ),
       authority: metadataAuthority,
     });
@@ -321,7 +322,7 @@ describe("installed capability workflow", () => {
           signatureBundleDigest: `sha256:${"d".repeat(64)}`,
         },
       }),
-    ).resolves.toMatchObject({ status: "replaced", cleanup: "deleted" });
+    ).resolves.toMatchObject({ status: "replaced", cleanup: "retained" });
     const replacementDigest = replacement.bundle.digest.slice("sha256:".length);
     const replacementProvenanceRoot = `.flow/packages/sha256/${replacementDigest}`;
     const replacementRunStore = new MemoryStore();
@@ -661,6 +662,16 @@ function packageMetadata(
   },
   version: number,
   status: "active" | "revoked",
+  priorTargets: readonly {
+    readonly bundle: ReturnType<typeof mixedBundle>["bundle"];
+    readonly acquisition: {
+      readonly source: string;
+      readonly publisher: {
+        readonly certificateIssuer: string;
+        readonly certificateIdentity: string;
+      };
+    };
+  }[] = [],
 ) {
   return parseCapabilityMetadata(
     Buffer.from(
@@ -674,6 +685,15 @@ function packageMetadata(
         },
         spec: {
           targets: [
+            ...priorTargets.map((target) => ({
+              name: target.bundle.name,
+              version: target.bundle.version,
+              digest: target.bundle.digest,
+              bytes: target.bundle.bytes,
+              source: target.acquisition.source,
+              status: "active",
+              publisher: target.acquisition.publisher,
+            })),
             {
               name: bundle.name,
               version: bundle.version,

@@ -411,6 +411,13 @@ export class LocalCapabilityPackageStore {
       }
       const installed = await readVerifiedLockedBundle(paths, current, input.signal, this.hooks);
       throwIfAborted(input.signal);
+      requireTrustedTarget(
+        metadata,
+        installed.bundle,
+        current.source,
+        current.publisher,
+        this.now(),
+      );
       if (
         current.publisher === undefined ||
         current.publisher.certificateIssuer !== publisher.certificateIssuer ||
@@ -447,10 +454,9 @@ export class LocalCapabilityPackageStore {
         this.hooks,
         input.signal,
       );
-      const cleanup = await cleanupOrphanBlob(paths, current);
       return deepFreeze({
         status: "replaced" as const,
-        cleanup,
+        cleanup: "retained" as const,
         bundle,
         previous: { name: current.name, version: current.version, digest: current.digest },
       });

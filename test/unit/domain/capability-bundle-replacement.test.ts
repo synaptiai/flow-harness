@@ -54,6 +54,15 @@ describe("capability bundle replacement", () => {
     ).toThrow(new CapabilityBundleReplacementError("validate capability surface"));
   });
 
+  it("rejects a changed Agent Skill name", () => {
+    expect(() =>
+      assertCapabilityBundleReplacement(
+        agentSkillBundle("1.0.0", "Read"),
+        agentSkillBundle("1.0.1", "Read", "private-review"),
+      ),
+    ).toThrow(new CapabilityBundleReplacementError("validate capability surface"));
+  });
+
   it("rejects a changed provider-facing packaged tool name", () => {
     expect(() =>
       assertCapabilityBundleReplacement(
@@ -63,11 +72,50 @@ describe("capability bundle replacement", () => {
     ).toThrow(new CapabilityBundleReplacementError("validate capability surface"));
   });
 
-  it("rejects replacement when either generation contains a policy package", () => {
+  it.each([
+    ["package name", { packageName: "private-status" }],
+    ["package version", { packageVersion: "2.0.0" }],
+  ] as const)("rejects a changed packaged-tool %s", (_label, mutation) => {
     expect(() =>
-      assertCapabilityBundleReplacement(policyBundle("1.0.0"), policyBundle("1.0.1")),
-    ).toThrow(new CapabilityBundleReplacementError("reject policy packages"));
+      assertCapabilityBundleReplacement(
+        toolBundle("1.0.0", "project_git_status"),
+        toolBundle("1.0.1", "project_git_status", mutation),
+      ),
+    ).toThrow(new CapabilityBundleReplacementError("validate capability surface"));
   });
+
+  it.each([
+    ["added", verifierBundle("1.0.0"), twoPackageBundle("1.0.1")],
+    ["removed", twoPackageBundle("1.0.0"), verifierBundle("1.0.1")],
+  ])("rejects an %s contained package", (_label, current, candidate) => {
+    expect(() => assertCapabilityBundleReplacement(current, candidate)).toThrow(
+      new CapabilityBundleReplacementError("validate capability surface"),
+    );
+  });
+
+  it("rejects a changed contained package kind", () => {
+    expect(() =>
+      assertCapabilityBundleReplacement(
+        verifierBundle("1.0.0"),
+        toolBundle("1.0.1", "evidence_review", {
+          packageName: "evidence-review",
+          packageVersion: "1.0.0",
+        }),
+      ),
+    ).toThrow(new CapabilityBundleReplacementError("validate capability surface"));
+  });
+
+  it.each([
+    [policyBundle("1.0.0"), verifierBundle("1.0.1")],
+    [verifierBundle("1.0.0"), policyBundle("1.0.1")],
+  ])(
+    "rejects replacement when either generation contains a policy package",
+    (current, candidate) => {
+      expect(() => assertCapabilityBundleReplacement(current, candidate)).toThrow(
+        new CapabilityBundleReplacementError("reject policy packages"),
+      );
+    },
+  );
 });
 
 function verifierBundle(
@@ -104,7 +152,7 @@ spec:
   }).bundle;
 }
 
-function agentSkillBundle(version: string, requestedTools: string) {
+function agentSkillBundle(version: string, requestedTools: string, name = "evidence-review") {
   return createCapabilityBundleSource({
     name: "review-suite",
     version,
@@ -116,7 +164,7 @@ function agentSkillBundle(version: string, requestedTools: string) {
           {
             path: "SKILL.md",
             content: Buffer.from(`---
-name: evidence-review
+name: ${name}
 description: Review declared evidence.
 allowed-tools: ${requestedTools}
 ---
@@ -129,7 +177,11 @@ Review evidence.
   }).bundle;
 }
 
-function toolBundle(version: string, toolName: string) {
+function toolBundle(
+  version: string,
+  toolName: string,
+  options: { readonly packageName?: string; readonly packageVersion?: string } = {},
+) {
   return createCapabilityBundleSource({
     name: "review-suite",
     version,
@@ -140,8 +192,8 @@ function toolBundle(version: string, toolName: string) {
         manifest: Buffer.from(`apiVersion: flow.synapti.ai/v1alpha1
 kind: ToolPackage
 metadata:
-  name: git-status
-  version: 1.0.0
+  name: ${options.packageName ?? "git-status"}
+  version: ${options.packageVersion ?? "1.0.0"}
   description: Show a bounded project status.
 spec:
   tool:
@@ -181,6 +233,42 @@ spec:
     allowed: [read]
   commands:
     requireApproval: true
+`),
+      },
+    ],
+  }).bundle;
+}
+
+function twoPackageBundle(version: string) {
+  return createCapabilityBundleSource({
+    name: "review-suite",
+    version,
+    description: "Review capabilities.",
+    packages: [
+      {
+        kind: "verifier-package",
+        manifest: Buffer.from(`apiVersion: flow.synapti.ai/v1alpha1
+kind: VerifierPackage
+metadata:
+  name: evidence-review
+  version: 1.0.0
+  description: Review declared evidence.
+spec:
+  kind: model
+  prompt: Review evidence.
+`),
+      },
+      {
+        kind: "verifier-package",
+        manifest: Buffer.from(`apiVersion: flow.synapti.ai/v1alpha1
+kind: VerifierPackage
+metadata:
+  name: release-review
+  version: 1.0.0
+  description: Review release evidence.
+spec:
+  kind: model
+  prompt: Review release evidence.
 `),
       },
     ],

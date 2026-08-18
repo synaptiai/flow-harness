@@ -38,10 +38,14 @@ export interface ReplaceCapabilityRepositoryCandidateInput
   readonly signal?: AbortSignal;
 }
 
+export type ReplaceCapabilityRepositoryCandidateResult = ReplaceCapabilityBundleResult & {
+  readonly publisher: SigstoreCapabilityPublisherPolicy;
+};
+
 export async function replaceCapabilityRepositoryCandidate(
   dependencies: ReplaceCapabilityRepositoryCandidateDependencies,
   input: ReplaceCapabilityRepositoryCandidateInput,
-): Promise<ReplaceCapabilityBundleResult> {
+): Promise<ReplaceCapabilityRepositoryCandidateResult> {
   let reopened: Awaited<ReturnType<typeof reopenCapabilityRepositoryCandidate>>;
   try {
     reopened = await reopenCapabilityRepositoryCandidate(dependencies, input);
@@ -53,7 +57,7 @@ export async function replaceCapabilityRepositoryCandidate(
   }
 
   throwIfAborted(input.signal);
-  return await dependencies.packages.replace({
+  const replaced = await dependencies.packages.replace({
     expectedCurrentVersion: input.expectedCurrentVersion,
     source: reopened.identity.target.source,
     expectedSha256: reopened.identity.bundle.digest.slice("sha256:".length),
@@ -61,6 +65,13 @@ export async function replaceCapabilityRepositoryCandidate(
     publisher: { ...reopened.identity.publisher },
     ...(input.signal === undefined ? {} : { signal: input.signal }),
   });
+  return {
+    ...replaced,
+    publisher: {
+      certificateIssuer: reopened.identity.publisher.certificateIssuer,
+      certificateIdentity: reopened.identity.publisher.certificateIdentity,
+    },
+  };
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {

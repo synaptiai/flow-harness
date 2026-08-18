@@ -35,7 +35,7 @@ export interface ReplaceCapabilityBundleInput
 export type ReplaceCapabilityBundleResult =
   | {
       readonly status: "replaced";
-      readonly cleanup: "deleted" | "missing" | "failed";
+      readonly cleanup: "retained";
       readonly bundle: CapabilityBundle;
       readonly previous: Readonly<{
         readonly name: string;
