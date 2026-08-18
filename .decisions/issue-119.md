@@ -138,13 +138,13 @@ _Captured by specification-capture skill on 2026-08-18. Source: user-confirmed._
 | 1 | Exact selection renders bounded static notes in terminal and browser | UI / behavioral | `npx vitest run test/unit/presentation/presentation-package-projector.test.ts test/unit/infrastructure/terminal/flow-terminal-renderer.test.ts && npx vitest run --config vitest.browser.config.ts test/browser/local-browser-presentation.browser.test.ts` | Attributed note title/body render as inert text in both hosts | Remote or third-party renderers |
 | 2 | Content is visibly attributed and distinct from Flow authority | Behavioral / UI | `npx vitest run test/unit/presentation/presentation-package-projector.test.ts test/unit/infrastructure/terminal/flow-terminal-renderer.test.ts && npx vitest run --config vitest.browser.config.ts test/browser/local-browser-presentation.browser.test.ts` | Fixed package identity and provenance notice appear; actions/run remain exact | Custom package styling or tone |
 | 3 | Existing packages preserve identity and rendering | Contract | `npx vitest run test/unit/capability/presentation-packages.test.ts test/unit/presentation/presentation-package-projector.test.ts` | Fixed v1 digest/snapshot and v1 projection regressions pass | Compatibility with unrestricted A2UI catalogs |
-| 4 | Content remains plain, static, and closed | Contract / error | `npx vitest run test/unit/capability/presentation-packages.test.ts` | Official envelope/catalog validation passes; dynamic/markup/action/binding/theme/resource mutations reject | Markdown or rich text |
+| 4 | Content remains plain, static, and closed | Contract / error | `npx vitest run test/unit/capability/presentation-packages.test.ts` | Structured dynamic, action, binding, theme, and resource mutations reject; markup-looking strings render literally | Markdown or rich text |
 | 5 | UTF-8, count, aggregate, safety, and placement limits fail closed | Contract / error | `npx vitest run test/unit/capability/presentation-packages.test.ts` | Exact-bound positives and +1/unsafe/duplicate/misplaced negatives pass | Locale-specific typography beyond safe text |
 | 6 | Invalid selection fails before host or supervisor mutation | Error handling | `npx vitest run test/integration/cli/tui.test.ts test/integration/cli/web.test.ts test/integration/cli/presentation-packages.test.ts` | Invalid v2 content produces fixed errors with zero renderer/listener/supervisor mutations | Recovery after host ownership |
 | 7 | Content does not alter run, actions, replay, recovery, workers, or events | Behavioral | `npx vitest run test/unit/presentation/presentation-package-projector.test.ts test/integration/cli/tui.test.ts test/integration/cli/web.test.ts` | Run/actions/truncation remain exact and no durable selection is recorded | Persisted UI preferences |
 | 8 | ACP behavior and output remain unchanged | Contract / behavioral | `npx vitest run test/unit/infrastructure/acp/flow-acp-presentation.test.ts` | ACP projections are byte-equivalent with and without package content; note canaries are absent | A custom ACP presentation extension |
 | 9 | Distribution and offline review preserve exact identity | Data / behavioral | `npx vitest run test/unit/capability/capability-bundles.test.ts test/unit/capability/local-presentation-packages.test.ts test/integration/cli/capability-packages.test.ts test/integration/cli/presentation-packages.test.ts` | Local/installed/bundled v2 snapshots retain exact digest/content and work offline | Automatic updates or version ranges |
-| 10 | Cancellation, races, links, collisions, and partial installs remain fail closed | Error handling | `npx vitest run test/unit/capability/local-presentation-packages.test.ts test/unit/capability/capability-bundles.test.ts test/integration/cli/capability-packages.test.ts` | Existing source/store adversarial matrix also exercises v2 without publication or network fallback | Cross-host filesystem guarantees |
+| 10 | Cancellation, races, links, collisions, and partial installs remain fail closed | Error handling | `npx vitest run test/unit/capability/local-presentation-packages.test.ts test/unit/capability/capability-bundles.test.ts test/integration/cli/capability-packages.test.ts` | Common source/store adversarial tests remain green; v2 bundle and offline tests use those closed paths | Cross-host filesystem guarantees |
 | 11 | Public documentation matches authoring, trust, limits, recovery, and ACP boundaries | Documentation | `npm run docs:ste && npx vitest run test/scaffold/community-files.test.ts` | Changed prose passes STE checks and repository-contract assertions name both catalogs and boundaries | A2UI v1.0 migration guidance |
 | 12 | Mapped, schema, UI, package, runtime, dependency, and full gates pass | Configuration / runtime | `npm run typecheck && npm run build && npm run format:check && npm run lint && npm run test -- --maxWorkers=1 && npm run test:browser && npm run test:runtime && npm run pack:check && npm audit --omit=dev --audit-level=low && npm run docs:ste && git diff --check` | Every command exits zero; platform skips are recorded honestly | Hosted Prime authority on non-Linux platforms |
 
@@ -190,11 +190,11 @@ _Captured by specification-capture skill on 2026-08-18. Source: user-confirmed._
   gate and the 29-test community contract pass. Recovery remains session-local. An exact installed
   package remains available offline through the existing content-addressed store.
 
-- 2026-08-18: The exact mapped selector passed 204 tests across 12 non-browser files. The dedicated
-  Chromium selector passed two tests in one browser file. The combined mapped result is 206 tests
+- 2026-08-18: The exact mapped selector passed 215 tests across 12 non-browser files. The dedicated
+  Chromium selector passed two tests in one browser file. The combined mapped result is 217 tests
   across 13 files.
 
-- 2026-08-18: The complete serial suite passed 4,249 tests in 310 files. Four tests were skipped,
+- 2026-08-18: The complete serial suite passed 4,260 tests in 310 files. Four tests were skipped,
   and one file contained only skipped tests. Browser verification passed two tests.
 
 - 2026-08-18: Runtime verification passed 43 tests. It recorded 34 platform-specific skips. The
@@ -209,3 +209,10 @@ _Captured by specification-capture skill on 2026-08-18. Source: user-confirmed._
   reached its native Linux x64 Prime guard. This host and its Docker daemon are Linux ARM64 for
   container work. An emulated client would not prove the required x64 daemon and kernel boundary.
   The native Prime gate therefore remains hosted-CI evidence.
+
+- 2026-08-18: Adversarial review corrected the exported v2 component maximum. It expanded closed
+  content mutations and added invalid-browser pre-host evidence. Equal-length note changes now bind
+  semantic identity. ACP tests now prove serialized output equality.
+
+- 2026-08-18: Final self-review and hidden holdout validation found no P1, P2, or P3 issues. The
+  frozen mapped, browser, full serial, and coverage gates passed after all review fixes.
