@@ -71,7 +71,54 @@ This issue implements only the first step.
 | 1, 3, 4 | `npx vitest run test/unit/domain/capability/capability-bundle-replacement.test.ts` | Exact SemVer precedence, policy rejection, publisher continuity inputs, and a mutation table over every capability-surface leaf | Scheduler behavior or automatic selection |
 | 2 | `npx vitest run test/unit/application/replace-capability-repository-candidate.test.ts test/unit/infrastructure/fs/local-capability-repository-store.test.ts` | Reopened generation authentication, envelope and Sigstore re-verification, and zero package mutation for changed evidence | Online refresh during replacement |
 | 1, 5, 7, 8, 9 | `npx vitest run test/unit/infrastructure/fs/local-capability-package-store.test.ts` | Two-target metadata, old-or-new reader observations, retained old content, serialized mutation, cancellation, uncertainty, and primary-error precedence | Automatic garbage collection |
-| 6 | `npx vitest run test/integration/cli/remote-capability-workflow.test.ts test/integration/supervisor/service.test.ts test/integration/supervisor/worker.test.ts` | Existing attached, detached, child, recovery, replay, and evaluation state retain frozen package bytes while later admission observes only the new generation | Migration of already-admitted durable state |
+| 6 | `npx vitest run test/integration/cli/remote-capability-workflow.test.ts test/integration/cli/agent-skill-candidate.test.ts test/integration/supervisor/service.test.ts test/integration/supervisor/worker.test.ts` | Existing attached, detached, child, recovery, replay, and evaluation state retain frozen package bytes while later admission observes only the new generation | Migration of already-admitted durable state |
 | 1, 7, 10 | `npx vitest run test/integration/cli/capability-repository.test.ts` | Offline replacement, idempotent repeat, portable publisher evidence, and absence of private proof material | Background repository polling |
 | 11 | `npm run docs:ste && git diff --check` | All named public documents and this journal agree with implemented behavior and recovery | A future scheduler design |
 | 12 | `npm run typecheck && npm run lint && npm run format:check && npm run test -- --run && npm run test:coverage && npm run build && npm run test:runtime && npm run pack:check` | Full frozen-tree release evidence, including coverage and packaged-artifact verification | Hosted environment availability beyond recorded gates |
+
+## Evidence
+
+### Focused acceptance
+
+The mapped selector passed 207 tests across 11 files:
+
+```text
+npx vitest run \
+  test/unit/domain/capability-bundle-replacement.test.ts \
+  test/unit/capability/capability-bundles.test.ts \
+  test/unit/application/activate-capability-repository-candidate.test.ts \
+  test/unit/application/replace-capability-repository-candidate.test.ts \
+  test/unit/infrastructure/fs/local-capability-package-store.test.ts \
+  test/unit/infrastructure/fs/local-capability-repository-store.test.ts \
+  test/integration/cli/capability-repository.test.ts \
+  test/integration/cli/remote-capability-workflow.test.ts \
+  test/integration/cli/agent-skill-candidate.test.ts \
+  test/integration/supervisor/service.test.ts \
+  test/integration/supervisor/worker.test.ts
+```
+
+The dependency-boundary selector passed 14 tests:
+
+```text
+npx vitest run test/integration/package/dependency-boundaries.test.ts
+```
+
+### Frozen-tree release gates
+
+- `npm run test -- --run` passed 4,203 tests and skipped four platform-specific tests.
+- `npm run test:coverage` passed with 84.37% statements, 78.65% branches, 91.12% functions, and 84.50% lines.
+- `npm run build` passed from a clean `dist` directory.
+- `npm run test:runtime` passed 43 runnable tests and skipped 34 platform-specific tests.
+- `npm run test:browser` passed two browser tests.
+- `npm run pack:check` passed a clean tarball installation and packaged CLI execution.
+
+The remaining static and supply-chain gates also passed:
+
+- `node scripts/smoke-compiled.mjs` passed against compiled output.
+- `node scripts/audit-prime-dependencies.mjs` passed for the Node lock and 60 Python packages.
+- `npm audit --omit=dev --audit-level=low` reported zero vulnerabilities.
+- Type checking, lint, formatting, documentation prose, and diff checks passed.
+
+The local `npm run ci:local` mirror reached its intentional Linux x64 guard during Prime preparation.
+This macOS ARM64 host cannot reproduce the pinned Docker, containerd, runc, kernel, and second-user contract.
+The pull request Ubuntu x64 job owns that remaining exact-host gate.
