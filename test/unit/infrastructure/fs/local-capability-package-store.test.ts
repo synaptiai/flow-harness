@@ -834,6 +834,235 @@ describe("local capability package store", () => {
     await expect(store.verify()).resolves.toMatchObject([{ entry: { source, publisher } }]);
   });
 
+  it("replaces one established publisher-verified bundle in a single active generation", async () => {
+    const projectRoot = await projectDirectory();
+    const current = versionedBundle("1.0.0", "Review original evidence.");
+    const candidate = versionedBundle("1.1.0", "Review updated evidence.");
+    const currentSource =
+      "https://packages.example.test/targets/10/review-suite-1.0.0.flowpkg.json";
+    const candidateSource =
+      "https://packages.example.test/targets/11/review-suite-1.1.0.flowpkg.json";
+    const currentPublisher = packagePublisher("1");
+    const candidatePublisher = packagePublisher("2");
+    const store = new LocalCapabilityPackageStore(projectRoot, {
+      now: () => new Date("2026-08-14T00:00:00.000Z"),
+    });
+    await store.refreshMetadata({
+      metadata: capabilityMetadata(current.content, {
+        version: 1,
+        source: currentSource,
+        publisher: publisherPolicy(currentPublisher),
+      }),
+      authority: metadataAuthority(),
+    });
+    await store.install({
+      source: currentSource,
+      expectedSha256: digest(current.content),
+      content: current.content,
+      publisher: currentPublisher,
+    });
+    await store.refreshMetadata({
+      metadata: capabilityMetadata(candidate.content, {
+        version: 2,
+        source: candidateSource,
+        targetVersion: "1.1.0",
+        publisher: publisherPolicy(candidatePublisher),
+      }),
+      authority: metadataAuthority(),
+    });
+
+    await expect(
+      store.replace({
+        expectedCurrentVersion: "1.0.0",
+        source: candidateSource,
+        expectedSha256: digest(candidate.content),
+        content: candidate.content,
+        publisher: candidatePublisher,
+      }),
+    ).resolves.toMatchObject({
+      status: "replaced",
+      cleanup: "deleted",
+      bundle: { name: "review-suite", version: "1.1.0" },
+      previous: { name: "review-suite", version: "1.0.0" },
+    });
+    await expect(store.list()).resolves.toMatchObject({
+      bundles: [
+        {
+          name: "review-suite",
+          version: "1.1.0",
+          digest: candidate.bundle.digest,
+          publisher: candidatePublisher,
+        },
+      ],
+    });
+    await expect(
+      stat(join(projectRoot, ".flow", "packages", "sha256", `${digest(current.content)}.flowpkg`)),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("treats an exact repeated replacement as already current", async () => {
+    const fixture = await replacementFixture();
+
+    await fixture.store.replace(fixture.input);
+    await expect(fixture.store.replace(fixture.input)).resolves.toMatchObject({
+      status: "already_current",
+      bundle: { name: "review-suite", version: "1.1.0" },
+    });
+    await expect(fixture.store.list()).resolves.toMatchObject({
+      bundles: [{ name: "review-suite", version: "1.1.0" }],
+    });
+  });
+
+  it("rejects publisher substitution before publishing candidate state", async () => {
+    const fixture = await replacementFixture({
+      candidatePublisher: {
+        ...packagePublisher("2"),
+        certificateIdentity:
+          "https://github.com/synaptiai/flow-harness/.github/workflows/private.yml@refs/tags/v2",
+      },
+    });
+    const lockBefore = await readFile(join(fixture.projectRoot, ".flow", "packages.lock.json"));
+
+    const failure = await fixture.store.replace(fixture.input).catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({ code: "identity_conflict" });
+    expect((failure as Error).message).not.toContain("private");
+    await expect(
+      readFile(join(fixture.projectRoot, ".flow", "packages.lock.json")),
+    ).resolves.toEqual(lockBefore);
+    await expect(
+      stat(
+        join(
+          fixture.projectRoot,
+          ".flow",
+          "packages",
+          "sha256",
+          `${digest(fixture.candidate.content)}.flowpkg`,
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("exposes only the complete old or complete new active generation", async () => {
+    const fixture = await replacementFixture();
+    const observedVersions: string[][] = [];
+    const observer = new LocalCapabilityPackageStore(fixture.projectRoot);
+    const store = new LocalCapabilityPackageStore(fixture.projectRoot, {
+      now: () => new Date("2026-08-14T00:00:00.000Z"),
+      beforeCapabilityLockPublished: async () => {
+        observedVersions.push((await observer.list()).bundles.map((entry) => entry.version));
+      },
+      afterCapabilityLockRenamed: async () => {
+        observedVersions.push((await observer.list()).bundles.map((entry) => entry.version));
+      },
+    });
+
+    await store.replace(fixture.input);
+
+    expect(observedVersions).toEqual([["1.0.0"], ["1.1.0"]]);
+  });
+
+  it("preserves the old generation and exact reason for pre-commit cancellation", async () => {
+    const fixture = await replacementFixture();
+    const controller = new AbortController();
+    const reason = new Error("PRIVATE_REPLACEMENT_CANCELLATION");
+    const store = new LocalCapabilityPackageStore(fixture.projectRoot, {
+      now: () => new Date("2026-08-14T00:00:00.000Z"),
+      beforeCapabilityLockPublished: async () => {
+        controller.abort(reason);
+      },
+    });
+
+    await expect(store.replace({ ...fixture.input, signal: controller.signal })).rejects.toBe(
+      reason,
+    );
+    await expect(store.list()).resolves.toMatchObject({
+      bundles: [{ name: "review-suite", version: "1.0.0" }],
+    });
+  });
+
+  it("settles a committed replacement when cancellation arrives after lock rename", async () => {
+    const fixture = await replacementFixture();
+    const controller = new AbortController();
+    const reason = new Error("PRIVATE_POST_COMMIT_CANCELLATION");
+    const store = new LocalCapabilityPackageStore(fixture.projectRoot, {
+      now: () => new Date("2026-08-14T00:00:00.000Z"),
+      afterCapabilityLockRenamed: async () => {
+        controller.abort(reason);
+      },
+    });
+
+    await expect(
+      store.replace({ ...fixture.input, signal: controller.signal }),
+    ).resolves.toMatchObject({ status: "replaced" });
+    await expect(store.list()).resolves.toMatchObject({
+      bundles: [{ name: "review-suite", version: "1.1.0" }],
+    });
+  });
+
+  it("reports old-blob cleanup failure without rolling back the new generation", async () => {
+    const fixture = await replacementFixture();
+    const oldBlob = join(
+      fixture.projectRoot,
+      ".flow",
+      "packages",
+      "sha256",
+      `${digest(fixture.current.content)}.flowpkg`,
+    );
+    const store = new LocalCapabilityPackageStore(fixture.projectRoot, {
+      now: () => new Date("2026-08-14T00:00:00.000Z"),
+      afterCapabilityLockRenamed: async () => {
+        await rm(oldBlob);
+        await mkdir(oldBlob);
+      },
+    });
+
+    await expect(store.replace(fixture.input)).resolves.toMatchObject({
+      status: "replaced",
+      cleanup: "failed",
+    });
+    await expect(store.list()).resolves.toMatchObject({
+      bundles: [{ name: "review-suite", version: "1.1.0" }],
+    });
+    expect((await stat(oldBlob)).isDirectory()).toBe(true);
+  });
+
+  it("publishes no candidate blob or lock when the exact established version is missing", async () => {
+    const projectRoot = await projectDirectory();
+    const candidate = versionedBundle("1.1.0", "Review updated evidence.");
+    const candidateSource =
+      "https://packages.example.test/targets/11/review-suite-1.1.0.flowpkg.json";
+    const publisher = packagePublisher("2");
+    const store = new LocalCapabilityPackageStore(projectRoot, {
+      now: () => new Date("2026-08-14T00:00:00.000Z"),
+    });
+    await store.refreshMetadata({
+      metadata: capabilityMetadata(candidate.content, {
+        version: 1,
+        source: candidateSource,
+        targetVersion: "1.1.0",
+        publisher: publisherPolicy(publisher),
+      }),
+      authority: metadataAuthority(),
+    });
+
+    await expect(
+      store.replace({
+        expectedCurrentVersion: "1.0.0",
+        source: candidateSource,
+        expectedSha256: digest(candidate.content),
+        content: candidate.content,
+        publisher,
+      }),
+    ).rejects.toMatchObject({ code: "not_found" });
+    await expect(store.list()).resolves.toMatchObject({ bundles: [] });
+    await expect(
+      stat(
+        join(projectRoot, ".flow", "packages", "sha256", `${digest(candidate.content)}.flowpkg`),
+      ),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it.each([
     {
       label: "an OCI source without publisher evidence",
@@ -1425,6 +1654,85 @@ function bundle(prompt: string, name = "review-suite") {
     license: "Apache-2.0",
     packages: [{ kind: "verifier-package", manifest: Buffer.from(verifierManifest(prompt)) }],
   });
+}
+
+function versionedBundle(version: string, prompt: string) {
+  return createCapabilityBundleSource({
+    name: "review-suite",
+    version,
+    description: "Review capabilities for a Flow project.",
+    license: "Apache-2.0",
+    packages: [{ kind: "verifier-package", manifest: Buffer.from(verifierManifest(prompt)) }],
+  });
+}
+
+function packagePublisher(marker: string) {
+  return {
+    kind: "sigstore-keyless-v0.3" as const,
+    certificateIssuer: "https://token.actions.githubusercontent.com/",
+    certificateIdentity:
+      "https://github.com/synaptiai/flow-harness/.github/workflows/release.yml@refs/tags/v1",
+    signatureBundleDigest: `sha256:${marker.repeat(64)}`,
+  };
+}
+
+function publisherPolicy(publisher: ReturnType<typeof packagePublisher>) {
+  return {
+    certificateIssuer: publisher.certificateIssuer,
+    certificateIdentity: publisher.certificateIdentity,
+  };
+}
+
+async function replacementFixture(
+  options: { readonly candidatePublisher?: ReturnType<typeof packagePublisher> } = {},
+) {
+  const projectRoot = await projectDirectory();
+  const current = versionedBundle("1.0.0", "Review original evidence.");
+  const candidate = versionedBundle("1.1.0", "Review updated evidence.");
+  const currentSource = "https://packages.example.test/targets/10/review-suite-1.0.0.flowpkg.json";
+  const candidateSource =
+    "https://packages.example.test/targets/11/review-suite-1.1.0.flowpkg.json";
+  const currentPublisher = packagePublisher("1");
+  const candidatePublisher = options.candidatePublisher ?? packagePublisher("2");
+  const store = new LocalCapabilityPackageStore(projectRoot, {
+    now: () => new Date("2026-08-14T00:00:00.000Z"),
+  });
+  await store.refreshMetadata({
+    metadata: capabilityMetadata(current.content, {
+      version: 1,
+      source: currentSource,
+      publisher: publisherPolicy(currentPublisher),
+    }),
+    authority: metadataAuthority(),
+  });
+  await store.install({
+    source: currentSource,
+    expectedSha256: digest(current.content),
+    content: current.content,
+    publisher: currentPublisher,
+  });
+  await store.refreshMetadata({
+    metadata: capabilityMetadata(candidate.content, {
+      version: 2,
+      source: candidateSource,
+      targetVersion: "1.1.0",
+      publisher: publisherPolicy(candidatePublisher),
+    }),
+    authority: metadataAuthority(),
+  });
+  return {
+    projectRoot,
+    current,
+    candidate,
+    store,
+    input: {
+      expectedCurrentVersion: "1.0.0",
+      source: candidateSource,
+      expectedSha256: digest(candidate.content),
+      content: candidate.content,
+      publisher: candidatePublisher,
+    },
+  };
 }
 
 function verifierManifest(prompt: string): string {

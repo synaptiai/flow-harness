@@ -15,7 +15,13 @@ import {
   type InstallCapabilityBundleResult,
   type RefreshCapabilityMetadataInput,
   type RefreshCapabilityMetadataResult,
+  type ReplaceCapabilityBundleInput,
+  type ReplaceCapabilityBundleResult,
 } from "../../application/capability-package-store.js";
+import {
+  assertCapabilityBundleReplacement,
+  CapabilityBundleReplacementError,
+} from "../../domain/capability/capability-bundle-replacement.js";
 import {
   type CapabilityBundle,
   MAX_CAPABILITY_BUNDLE_BYTES,
@@ -44,6 +50,8 @@ export {
   type InstallCapabilityBundleResult,
   type RefreshCapabilityMetadataInput,
   type RefreshCapabilityMetadataResult,
+  type ReplaceCapabilityBundleInput,
+  type ReplaceCapabilityBundleResult,
 } from "../../application/capability-package-store.js";
 
 const MAX_CAPABILITY_LOCK_BYTES = 512 * 1024;
@@ -193,6 +201,7 @@ export interface VerifiedInstalledCapabilityBundle {
 export interface CapabilityPackageStoreHooks {
   readonly afterCapabilityLockRenamed?: () => Promise<void>;
   readonly beforeCapabilityLockRename?: () => Promise<void>;
+  readonly beforeCapabilityLockPublished?: () => Promise<void>;
   readonly beforeMutationLockRelease?: () => Promise<void>;
   readonly beforeStoreDirectoryParentSync?: (path: string, parent: string) => Promise<void>;
   readonly afterStoreDirectoryParentSynced?: (path: string, parent: string) => Promise<void>;
@@ -344,6 +353,110 @@ export class LocalCapabilityPackageStore {
     });
   }
 
+  async replace(input: ReplaceCapabilityBundleInput): Promise<ReplaceCapabilityBundleResult> {
+    throwIfAborted(input.signal);
+    if (
+      !verifierPackageVersionSchema.safeParse(input.expectedCurrentVersion).success ||
+      !isValidCapabilitySource(input.source, true) ||
+      !capabilityPublisherSchema.safeParse(input.publisher).success
+    ) {
+      throw new CapabilityPackageStoreError(
+        "invalid_source",
+        "capability bundle replacement input is invalid",
+      );
+    }
+    const publisher = canonicalPublisher(input.publisher);
+    let bundle: CapabilityBundle;
+    try {
+      bundle = parseDigestPinnedCapabilityBundle(input.content, input.expectedSha256);
+    } catch (error) {
+      throw new CapabilityPackageStoreError("invalid_bundle", "replacement bundle is invalid", {
+        cause: error,
+      });
+    }
+    throwIfAborted(input.signal);
+    const paths = await storePaths(this.projectRoot);
+    throwIfAborted(input.signal);
+    const mutationLock = await acquireMutationLock(paths.flowDirectory, this.hooks);
+    return await withMutationLock(mutationLock, async () => {
+      throwIfAborted(input.signal);
+      const metadata = await readCapabilityMetadataState(paths.metadataPath);
+      throwIfAborted(input.signal);
+      requireTrustedTarget(metadata, bundle, input.source, publisher, this.now());
+      const lock = await readCapabilityLock(paths.lockPath, input.signal, this.hooks);
+      throwIfAborted(input.signal);
+      const sameName = lock.bundles.filter((entry) => entry.name === bundle.name);
+      const alreadyCurrent = sameName.find((entry) => entry.version === bundle.version);
+      if (alreadyCurrent !== undefined) {
+        if (
+          sameName.length !== 1 ||
+          alreadyCurrent.digest !== bundle.digest ||
+          alreadyCurrent.bytes !== bundle.bytes ||
+          alreadyCurrent.source !== input.source ||
+          alreadyCurrent.publisher === undefined ||
+          !isDeepStrictEqual(alreadyCurrent.publisher, publisher)
+        ) {
+          throw replacementConflict();
+        }
+        await requireExactBlob(paths, alreadyCurrent, Buffer.from(input.content));
+        throwIfAborted(input.signal);
+        return deepFreeze({ status: "already_current" as const, bundle });
+      }
+      const current = sameName.find((entry) => entry.version === input.expectedCurrentVersion);
+      if (sameName.length !== 1 || current === undefined) {
+        throw new CapabilityPackageStoreError(
+          "not_found",
+          "established capability bundle version is not available for replacement",
+        );
+      }
+      const installed = await readVerifiedLockedBundle(paths, current, input.signal, this.hooks);
+      throwIfAborted(input.signal);
+      if (
+        current.publisher === undefined ||
+        current.publisher.certificateIssuer !== publisher.certificateIssuer ||
+        current.publisher.certificateIdentity !== publisher.certificateIdentity
+      ) {
+        throw replacementConflict();
+      }
+      try {
+        assertCapabilityBundleReplacement(installed.bundle, bundle);
+      } catch (error) {
+        if (error instanceof CapabilityBundleReplacementError) {
+          throw replacementConflict(error);
+        }
+        throw error;
+      }
+      const entry: CapabilityLockEntry = Object.freeze({
+        name: bundle.name,
+        version: bundle.version,
+        source: input.source,
+        digest: bundle.digest,
+        bytes: bundle.bytes,
+        publisher,
+      });
+      await publishBlob(paths, entry, Buffer.from(input.content), this.hooks, input.signal);
+      throwIfAborted(input.signal);
+      requireTrustedTarget(metadata, bundle, input.source, publisher, this.now());
+      const bundles = lock.bundles
+        .map((existing) => (existing === current ? entry : existing))
+        .sort(compareLockEntries);
+      assertCanonicalLockEntries(bundles);
+      await publishCapabilityLock(
+        paths,
+        { apiVersion: CAPABILITY_LOCK_API_VERSION, kind: "CapabilityLock", bundles },
+        this.hooks,
+        input.signal,
+      );
+      const cleanup = await cleanupOrphanBlob(paths, current);
+      return deepFreeze({
+        status: "replaced" as const,
+        cleanup,
+        bundle,
+        previous: { name: current.name, version: current.version, digest: current.digest },
+      });
+    });
+  }
+
   async list(): Promise<CapabilityLock> {
     const paths = await storePaths(this.projectRoot);
     return await readCapabilityLock(paths.lockPath);
@@ -457,6 +570,14 @@ interface CapabilityStorePaths {
   readonly blobDirectory: string;
   readonly lockPath: string;
   readonly metadataPath: string;
+}
+
+function replacementConflict(cause?: unknown): CapabilityPackageStoreError {
+  return new CapabilityPackageStoreError(
+    "identity_conflict",
+    "capability bundle replacement is incompatible with the established package",
+    cause === undefined ? undefined : { cause },
+  );
 }
 
 async function storePaths(projectRoot: string): Promise<CapabilityStorePaths> {
@@ -793,6 +914,7 @@ async function publishCapabilityLock(
     await handle.sync();
     await handle.close();
     handle = undefined;
+    await hooks.beforeCapabilityLockPublished?.();
     throwIfAborted(signal);
     await rename(temporary, paths.lockPath);
     renamed = true;

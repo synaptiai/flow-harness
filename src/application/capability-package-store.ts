@@ -26,6 +26,28 @@ export interface InstallCapabilityBundleResult {
   readonly bundle: CapabilityBundle;
 }
 
+export interface ReplaceCapabilityBundleInput
+  extends Omit<InstallCapabilityBundleInput, "publisher"> {
+  readonly expectedCurrentVersion: string;
+  readonly publisher: CapabilityPublisherVerification;
+}
+
+export type ReplaceCapabilityBundleResult =
+  | {
+      readonly status: "replaced";
+      readonly cleanup: "deleted" | "missing" | "failed";
+      readonly bundle: CapabilityBundle;
+      readonly previous: Readonly<{
+        readonly name: string;
+        readonly version: string;
+        readonly digest: string;
+      }>;
+    }
+  | {
+      readonly status: "already_current";
+      readonly bundle: CapabilityBundle;
+    };
+
 export interface CapabilityMetadataState {
   readonly apiVersion: typeof CAPABILITY_METADATA_STATE_API_VERSION;
   readonly kind: "CapabilityMetadataState";
@@ -51,5 +73,6 @@ export interface RefreshCapabilityMetadataResult {
 
 export interface CapabilityPackageMutationStore {
   install(input: InstallCapabilityBundleInput): Promise<InstallCapabilityBundleResult>;
+  replace(input: ReplaceCapabilityBundleInput): Promise<ReplaceCapabilityBundleResult>;
   refreshMetadata(input: RefreshCapabilityMetadataInput): Promise<RefreshCapabilityMetadataResult>;
 }
