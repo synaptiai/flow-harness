@@ -57,6 +57,7 @@ describe("capability bundles", () => {
         kind: "tool-package",
         name: "git-status",
         version: "1.0.0",
+        toolName: "project_git_status",
         manifestBase64: Buffer.from(tool).toString("base64"),
       },
       {
