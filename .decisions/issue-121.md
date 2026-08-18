@@ -180,4 +180,4 @@ The merged maps produced 84.49% statements, 78.92% branches, 91.12% functions, a
 
 - The local runtime aggregate passed 43 tests and skipped 34 tests.
 
-Hosted Linux x64 CI remains the canonical runtime gate. Hosted CI and adversarial review remain pending until the pull request is open.
+Hosted Linux x64 CI run `32197848802` passed the `quality` gate in 17 minutes 46 seconds and the `dependency-audit` gate in 45 seconds. Independent correctness, security, and holdout reviews reported zero P1, P2, or P3 findings on the frozen tree.
