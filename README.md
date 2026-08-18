@@ -1007,6 +1007,10 @@ node dist/cli/main.js packages repository candidate replace sha256:<candidate-di
   --from-version 1.0.0 \
   --certificate-issuer https://token.actions.githubusercontent.com/ \
   --certificate-identity <exact-certificate-identity>
+node dist/cli/main.js packages repository watch review-suite \
+  --interval-ms 3600000 \
+  --certificate-issuer https://token.actions.githubusercontent.com/ \
+  --certificate-identity <exact-certificate-identity>
 ```
 
 The established and candidate bundles must keep the same capability surface. This surface includes
@@ -1023,8 +1027,21 @@ Replacement returns `cleanup: retained` and keeps the old immutable blob. This l
 captured the old lock finish safely. The retained blob is not active because the new lock does not
 reference it.
 
-Rollback remains a separate reviewed forward replacement or the paused manual procedure. Flow does
-not automatically check, replace, roll back, or collect unrelated orphan blobs.
+Rollback remains a separate reviewed forward replacement or the paused manual procedure.
+
+The optional foreground watcher binds one already-installed bundle and one exact publisher. It
+waits one hour by default, then performs one ordinary TUF check. It automatically selects only the
+highest same-minor patch candidate. `--update-policy minor` explicitly permits same-major minor
+updates.
+
+The watcher never installs a first version or accepts a major update. It stops on any
+replacement failure or commit uncertainty. It may continue after an ordinary check failure only
+after another full interval.
+
+One project-local watcher lock prevents overlapping Flow watcher processes. Flow does not infer
+that a lock is stale. After confirming that no watcher is active, an operator can remove only the
+exact `.flow/capability.repository/watcher.lock`. Flow does not automatically roll back or collect
+retained or unrelated orphan blobs.
 
 An existing `.flow/packages.mutation.lock` always blocks mutation, even if its recorded same-host
 process has exited. After verifying that no package mutation is active, an operator may remove that
@@ -1081,10 +1098,15 @@ node dist/cli/main.js packages repository candidate activate sha256:<candidate-d
 node dist/cli/main.js packages repository candidate replace sha256:<candidate-digest> \
   --from-version <exact-current-version> \
   --certificate-issuer <exact-https-issuer> --certificate-identity <exact>
+node dist/cli/main.js packages repository watch <installed-bundle-name> \
+  --interval-ms 3600000 \
+  --certificate-issuer <exact-https-issuer> --certificate-identity <exact>
 ```
 
 Repository activation and replacement are offline. Candidate removal changes only the inert
-repository generation. The bounded check scheduler has no activation or replacement port.
+repository generation. The bounded check scheduler has no activation or replacement port. The
+foreground watcher is a separate controller that composes one scheduled check with the existing
+offline replacement boundary.
 
 An authenticated metadata state may contain no targets. That is an established deny-all state:
 every new package installation and catalog admission rejects, while metadata inspection and

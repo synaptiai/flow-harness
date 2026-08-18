@@ -25,6 +25,31 @@ describe("capability repository scheduler", () => {
     },
   );
 
+  it.each([INTERVAL_MS, 24 * 60 * 60 * 1_000])(
+    "accepts interval %d at the bounded schedule edge",
+    async (intervalMs) => {
+      const controller = new AbortController();
+      const reason = new Error("stop after bounded wait");
+      const wait = vi.fn(async () => {
+        controller.abort(reason);
+        throw reason;
+      });
+
+      await expect(
+        runCapabilityRepositoryScheduler({
+          intervalMs,
+          signal: controller.signal,
+          check: vi.fn(),
+          now: () => new Date("2027-01-01T00:00:00.000Z"),
+          wait,
+          observe: vi.fn(),
+        }),
+      ).rejects.toBe(reason);
+
+      expect(wait).toHaveBeenCalledWith(intervalMs, controller.signal);
+    },
+  );
+
   it("reports restart and missed intervals without catch-up work", async () => {
     const controller = new AbortController();
     const stopReason = new Error("stop scheduler");
@@ -196,6 +221,31 @@ describe("capability repository scheduler", () => {
     ]);
     expect(statuses.map(({ consecutiveFailures }) => consecutiveFailures)).toEqual([0, 1, 2, 0]);
     expect(JSON.stringify(statuses)).not.toContain("PRIVATE");
+  });
+
+  it("stops on a check failure that the caller marks non-retryable", async () => {
+    const terminalFailure = new Error("replacement settlement is uncertain");
+    const wait = vi.fn().mockResolvedValue(undefined);
+    const statuses: CapabilityRepositorySchedulerStatus[] = [];
+
+    await expect(
+      runCapabilityRepositoryScheduler({
+        intervalMs: INTERVAL_MS,
+        signal: new AbortController().signal,
+        now: sequenceClock(["2027-01-01T00:00:00.000Z", "2027-01-01T00:01:00.000Z"]),
+        wait,
+        check: async () => {
+          throw terminalFailure;
+        },
+        shouldRetryCheckFailure: (error) => error !== terminalFailure,
+        observe: async (status) => {
+          statuses.push(status);
+        },
+      }),
+    ).rejects.toBe(terminalFailure);
+
+    expect(wait).toHaveBeenCalledOnce();
+    expect(statuses.map(({ outcome }) => outcome)).toEqual(["scheduler_started"]);
   });
 
   it("reports and stops on a backward clock before requesting another check", async () => {

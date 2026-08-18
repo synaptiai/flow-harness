@@ -1,5 +1,5 @@
 import { createHash, generateKeyPairSync, type KeyObject, sign } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -353,6 +353,155 @@ spec:
     expect(publicOutput).not.toContain("PRIVATE_SIGSTORE_BUNDLE");
   });
 
+  it("watches one established bundle with the default interval and patch policy", async () => {
+    const project = await projectDirectory();
+    const fixture = repositoryFixture({ version: "1.0.1" });
+    const rootPath = join(project, "trusted-root.json");
+    await writeFile(rootPath, fixture.root, { mode: 0o600 });
+    const read = vi.fn<StrictCapabilityRepositoryFetcher["read"]>(
+      async (url, maximumBytes, signal) => {
+        signal.throwIfAborted();
+        const content = fixture.remote.get(url);
+        return content === undefined
+          ? { statusCode: 404, bytes: Buffer.alloc(0) }
+          : {
+              statusCode: 200,
+              bytes:
+                content.byteLength <= maximumBytes
+                  ? Buffer.from(content)
+                  : Buffer.alloc(maximumBytes + 1),
+            };
+      },
+    );
+    const controller = new AbortController();
+    const stopReason = new Error("stop watcher after one settled cycle");
+    const clock = sequenceClock([
+      "2027-01-01T00:00:00.000Z",
+      "2027-01-01T00:01:00.000Z",
+      "2027-01-01T00:01:01.000Z",
+    ]);
+    const dependencies = {
+      cwd: project,
+      loadConfig: async () => effectiveConfig(project),
+      capabilityRepositoryFetcher: { read } satisfies StrictCapabilityRepositoryFetcher,
+      sigstoreCapabilityVerifier: {
+        verify: vi.fn(() => ({ ...fixture.publisher })),
+      } satisfies SigstoreCapabilityVerifier,
+      capabilityRepositoryWatcherNow: clock,
+      capabilityRepositoryWatcherWait: vi.fn().mockResolvedValue(undefined),
+      signal: controller.signal,
+    };
+    const current = createCapabilityBundleSource({
+      name: "review-suite",
+      version: "1.0.0",
+      description: "Review capabilities.",
+      packages: [
+        {
+          kind: "verifier-package",
+          manifest: Buffer.from(`apiVersion: flow.synapti.ai/v1alpha1
+kind: VerifierPackage
+metadata:
+  name: evidence-review
+  version: 1.0.0
+  description: Review evidence.
+spec:
+  kind: model
+  prompt: Review evidence.
+`),
+        },
+      ],
+    });
+    const currentSource = "https://packages.example.test/review-suite-1.0.0.flowpkg";
+    const packageStore = new LocalCapabilityPackageStore(project, {
+      now: () => new Date("2026-08-17T00:00:00.000Z"),
+    });
+    await packageStore.refreshMetadata({
+      metadata: activeMetadata({
+        content: fixture.envelopeCapabilityBundle,
+        version: "1.0.1",
+        source: fixture.targetSource,
+        publisher: fixture.publisher,
+        metadataVersion: 1,
+        prior: { content: current.content, version: "1.0.0", source: currentSource },
+      }),
+      authority: {
+        kind: "sigstore-keyless-v0.3",
+        ...fixture.publisher,
+        signatureBundleDigest: `sha256:${"f".repeat(64)}`,
+      },
+    });
+    await packageStore.install({
+      source: currentSource,
+      expectedSha256: sha256(current.content),
+      content: current.content,
+      publisher: {
+        kind: "sigstore-keyless-v0.3",
+        ...fixture.publisher,
+        signatureBundleDigest: `sha256:${"d".repeat(64)}`,
+      },
+    });
+    expect(
+      await main(
+        ["packages", "repository", "init", fixture.repositoryBaseUrl, "--trusted-root", rootPath],
+        captureIo().io,
+        dependencies,
+      ),
+    ).toBe(0);
+    const output = captureIo();
+    const watcherIo: CliIo = {
+      stdout: (text) => {
+        output.stdout.push(text);
+        const status = JSON.parse(text) as { kind?: string; outcome?: string };
+        if (status.kind === "scheduler" && status.outcome === "checked") {
+          controller.abort(stopReason);
+        }
+      },
+      stderr: output.io.stderr,
+    };
+
+    expect(
+      await main(
+        [
+          "packages",
+          "repository",
+          "watch",
+          "review-suite",
+          "--certificate-issuer",
+          fixture.publisher.certificateIssuer,
+          "--certificate-identity",
+          fixture.publisher.certificateIdentity,
+        ],
+        watcherIo,
+        dependencies,
+      ),
+    ).toBe(1);
+
+    expect(dependencies.capabilityRepositoryWatcherWait).toHaveBeenCalledWith(
+      60 * 60 * 1_000,
+      controller.signal,
+    );
+    expect(output.stdout.map((entry) => JSON.parse(entry))).toMatchObject([
+      { kind: "scheduler", outcome: "scheduler_started" },
+      {
+        kind: "reconciliation",
+        outcome: "replaced",
+        package: { name: "review-suite", previousVersion: "1.0.0", version: "1.0.1" },
+        cleanup: "retained",
+      },
+      { kind: "scheduler", outcome: "checked" },
+    ]);
+    expect(output.stderr).toEqual([stopReason.message]);
+    await expect(packageStore.list()).resolves.toMatchObject({
+      bundles: [{ name: "review-suite", version: "1.0.1" }],
+    });
+    await expect(
+      readFile(join(project, ".flow", "capability.repository", "watcher.lock")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    const publicOutput = `${output.stdout.join("\n")}\n${output.stderr.join("\n")}`;
+    expect(publicOutput).not.toContain(fixture.targetSource);
+    expect(publicOutput).not.toContain("PRIVATE_SIGSTORE_BUNDLE");
+  });
+
   it.each([
     {
       label: "a missing current version",
@@ -398,6 +547,109 @@ spec:
         { cwd: project, loadConfig },
       ),
     ).toBe(2);
+    expect(loadConfig).not.toHaveBeenCalled();
+    expect(`${output.stdout.join("\n")}\n${output.stderr.join("\n")}`).not.toContain("PRIVATE_");
+  });
+
+  it.each([
+    {
+      label: "a missing publisher",
+      args: ["repository", "watch", "review-suite", "--interval-ms", "60000"],
+    },
+    {
+      label: "an interval below the bound",
+      args: [
+        "repository",
+        "watch",
+        "review-suite",
+        "--interval-ms",
+        "59999",
+        "--certificate-issuer",
+        "https://issuer.example.test/",
+        "--certificate-identity",
+        "PRIVATE_IDENTITY",
+      ],
+    },
+    {
+      label: "an interval above the bound",
+      args: [
+        "repository",
+        "watch",
+        "review-suite",
+        "--interval-ms",
+        "86400001",
+        "--certificate-issuer",
+        "https://issuer.example.test/",
+        "--certificate-identity",
+        "PRIVATE_IDENTITY",
+      ],
+    },
+    {
+      label: "a noncanonical interval",
+      args: [
+        "repository",
+        "watch",
+        "review-suite",
+        "--interval-ms",
+        "060000",
+        "--certificate-issuer",
+        "https://issuer.example.test/",
+        "--certificate-identity",
+        "PRIVATE_IDENTITY",
+      ],
+    },
+    {
+      label: "an unknown update policy",
+      args: [
+        "repository",
+        "watch",
+        "review-suite",
+        "--update-policy",
+        "PRIVATE_POLICY",
+        "--certificate-issuer",
+        "https://issuer.example.test/",
+        "--certificate-identity",
+        "PRIVATE_IDENTITY",
+      ],
+    },
+    {
+      label: "a malformed publisher authority",
+      args: [
+        "repository",
+        "watch",
+        "review-suite",
+        "--certificate-issuer",
+        "PRIVATE_NONCANONICAL_ISSUER",
+        "--certificate-identity",
+        "PRIVATE_IDENTITY",
+      ],
+    },
+    {
+      label: "a repeated update policy",
+      args: [
+        "repository",
+        "watch",
+        "review-suite",
+        "--update-policy",
+        "patch",
+        "--update-policy",
+        "PRIVATE_POLICY",
+        "--certificate-issuer",
+        "https://issuer.example.test/",
+        "--certificate-identity",
+        "PRIVATE_IDENTITY",
+      ],
+    },
+    {
+      label: "watcher options on package listing",
+      args: ["list", "--interval-ms", "60000", "--update-policy", "patch"],
+    },
+  ])("rejects $label before loading project state", async ({ args }) => {
+    const project = await projectDirectory();
+    const loadConfig = vi.fn(async () => effectiveConfig(project));
+    const output = captureIo();
+
+    expect(await main(["packages", ...args], output.io, { cwd: project, loadConfig })).toBe(2);
     expect(loadConfig).not.toHaveBeenCalled();
     expect(`${output.stdout.join("\n")}\n${output.stderr.join("\n")}`).not.toContain("PRIVATE_");
   });
@@ -459,7 +711,7 @@ function trustedRoot(): Buffer {
   return Buffer.from(JSON.stringify({ signatures: [{ keyid: key.id, sig: signature }], signed }));
 }
 
-function repositoryFixture() {
+function repositoryFixture(options: { readonly version?: string } = {}) {
   const key = createSigningKey();
   const repositoryBaseUrl = "https://updates.example.test/repository/";
   const metadataBaseUrl = `${repositoryBaseUrl}metadata/`;
@@ -469,9 +721,10 @@ function repositoryFixture() {
     certificateIdentity:
       "https://github.com/synaptiai/flow-harness/.github/workflows/publish.yml@refs/tags/v1.0.0",
   });
+  const version = options.version ?? "1.0.0";
   const bundle = createCapabilityBundleSource({
     name: "review-suite",
-    version: "1.0.0",
+    version,
     description: "Review capabilities.",
     packages: [
       {
@@ -494,9 +747,9 @@ spec:
     capabilityBundle: bundle.content,
     sigstoreBundle,
   });
-  const packagePath = "flow/packages/review-suite/1.0.0.flowpkg.json";
+  const packagePath = `flow/packages/review-suite/${version}.flowpkg.json`;
   const indexBytes = encodeCapabilityRepositoryIndex({
-    packages: [{ name: "review-suite", version: "1.0.0", targetPath: packagePath }],
+    packages: [{ name: "review-suite", version, targetPath: packagePath }],
   });
   const root = signedMetadata(
     {
@@ -528,7 +781,7 @@ spec:
             apiVersion: "flow.synapti.ai/v1alpha1",
             kind: "CapabilityPackageTarget",
             name: "review-suite",
-            version: "1.0.0",
+            version,
             publisher,
           },
         }),
@@ -596,6 +849,18 @@ spec:
       [consistentTargetUrl(targetBaseUrl, "flow/capability-index.json", indexBytes), indexBytes],
       [targetSource, envelope],
     ]),
+  };
+}
+
+function sequenceClock(values: readonly string[]): () => Date {
+  let index = 0;
+  return () => {
+    const value = values[index];
+    index += 1;
+    if (value === undefined) {
+      throw new Error("clock fixture exhausted");
+    }
+    return new Date(value);
   };
 }
 

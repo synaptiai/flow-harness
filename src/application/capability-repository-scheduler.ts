@@ -35,6 +35,7 @@ export interface RunCapabilityRepositorySchedulerInput {
   readonly previousCompletedAt?: string;
   readonly signal: AbortSignal;
   readonly check: (signal: AbortSignal) => Promise<void>;
+  readonly shouldRetryCheckFailure?: (error: unknown) => boolean;
   readonly now: () => Date;
   readonly wait: (milliseconds: number, signal: AbortSignal) => Promise<void>;
   readonly observe: (status: CapabilityRepositorySchedulerStatus) => void | Promise<void>;
@@ -96,8 +97,11 @@ export async function runCapabilityRepositoryScheduler(
       throwIfAborted(input.signal);
       await input.check(input.signal);
       throwIfAborted(input.signal);
-    } catch {
+    } catch (error) {
       throwIfAborted(input.signal);
+      if (input.shouldRetryCheckFailure !== undefined && !input.shouldRetryCheckFailure(error)) {
+        throw error;
+      }
       outcome = "check_failed";
     }
     consecutiveFailures = outcome === "checked" ? 0 : consecutiveFailures + 1;

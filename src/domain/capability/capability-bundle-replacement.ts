@@ -51,7 +51,7 @@ function replacementIdentity(item: CapabilityBundlePackage | undefined): string 
   return `${item.kind}\0${item.name}\0${item.version}`;
 }
 
-function compareExactSemanticVersions(left: string, right: string): number {
+export function compareExactSemanticVersions(left: string, right: string): number {
   const leftVersion = semanticVersionParts(left);
   const rightVersion = semanticVersionParts(right);
   for (let index = 0; index < 3; index += 1) {

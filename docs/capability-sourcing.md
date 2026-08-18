@@ -552,6 +552,10 @@ flow packages repository candidate replace sha256:<digest> \
   --from-version <exact-current-version> \
   --certificate-issuer <exact-https-issuer> \
   --certificate-identity <exact>
+flow packages repository watch <installed-bundle-name> \
+  --interval-ms 3600000 \
+  --certificate-issuer <exact-https-issuer> \
+  --certificate-identity <exact>
 flow packages repository candidate remove sha256:<digest>
 ```
 
@@ -594,9 +598,21 @@ Startup and an optional prior completion expose restart gaps. Status records inc
 missed-interval and consecutive-failure counters. Delayed work and prolonged outages are visible
 without catch-up retries. The scheduler has no activation port.
 
-Private repository credentials, credential helpers, online root bootstrap, automatic activation
-or replacement, automatic rollback, and online Sigstore trust-root refresh remain outside this
-contract. ACP,
+The optional foreground watcher composes that scheduler with the ordinary checker and replacement
+operation. It binds one installed bundle and exact publisher. Patch-only is the default automatic
+policy. An explicit `minor` policy permits same-major updates. The watcher selects the highest
+admissible candidate. It never installs a first version or accepts a major update.
+
+A check failure
+can continue only after a new full interval. Any replacement failure or commit uncertainty stops.
+
+One bounded project-local owner record prevents overlapping Flow watcher processes. The record is
+cooperative local coordination, not same-user isolation. Flow never guesses that it is stale and
+never removes it automatically. Retained old blobs remain available to frozen readers.
+
+Private repository credentials, credential helpers, and online root bootstrap remain outside this
+contract. The same is true for automatic first activation, major or policy-package replacement,
+automatic rollback, retained-blob collection, and online Sigstore trust-root refresh. ACP,
 AG-UI, and A2UI are separate transport or presentation standards and do not change repository,
 package, runtime, or activation authority.
 

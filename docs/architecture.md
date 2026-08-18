@@ -23,7 +23,7 @@ are included.
 
 Flow includes first-party terminal and local browser presentation hosts over the public run
 projection. A strict A2UI v0.9.1 profile lets an exact inert package arrange the closed host-owned
-widget catalog for one session. Executable or remote UI extensions and automatic package
+widget catalog for one session. Executable or remote UI extensions and automatic first package
 activation remain later work.
 Explicit signed capability metadata provides project-local freshness and revocation. One explicit
 public HTTPS check can stage inert signed candidates for review, while activation remains a
@@ -31,10 +31,13 @@ separate explicit command. A standards-based TUF repository can now select exact
 envelopes through threshold roles, sequential root rotation, freshness metadata, consistent
 snapshots, and bounded delegations. The operator supplies the initial root locally. Flow contains
 the standard client in disposable staging, reopens its output, repeats package and Sigstore
-verification, and publishes only inert Flow-owned candidates. Private repositories, online root
-bootstrap, and automatic activation remain later work. An operator can explicitly replace one
+verification, and publishes only inert Flow-owned candidates. Private repositories and online root
+bootstrap remain later work. An operator can explicitly replace one
 established same-surface bundle with a strictly newer reviewed candidate. Flow publishes the new
 immutable blob first and replaces the old active lock entry in one atomic lock generation.
+An optional foreground watcher can perform that replacement for one already-installed package.
+It binds the exact publisher and permits patch updates by default. Same-major minor updates require
+an explicit policy. It never installs a first version or accepts a major or policy-package update.
 Opaque Pi session continuation and general failure or fallback
 retries also remain later work. The same is true for broader configurable policy, model network
 tools, and arbitrary evaluator runtimes. Stronger VM or managed sandbox backends also remain later
@@ -60,6 +63,7 @@ Architecture is derived from these flows.
 | Discover repository packages | An operator initializes an explicit trusted root and invokes a repository check | One atomically committed verified repository generation plus bounded inert candidates; no package installation or activation |
 | Activate a repository candidate | An operator supplies one exact candidate digest and publisher policy | Offline TUF replay, repeated Sigstore verification, and one ordinary package-store installation under active metadata authority |
 | Replace an established repository package | An operator supplies one exact candidate digest, current version, and publisher policy | Two-target metadata, offline TUF and Sigstore replay, one atomic active lock switch, and retained prior content for old readers |
+| Watch one established repository package | An operator starts one foreground watcher with an exact package, publisher, interval, and update policy | Full-interval TUF checks, deterministic candidate selection, offline atomic replacement, fixed JSON Lines status, and no overlapping Flow watcher |
 
 ### Operator flows
 

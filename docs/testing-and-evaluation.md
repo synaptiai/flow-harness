@@ -193,8 +193,13 @@ The scheduler unit suite proves a full interval after every settled check. It pr
 no catch-up burst, observable startup and restart gaps, missed-interval counting, consecutive
 outage status, and exact cancellation. It also proves in-process and cross-restart clock-rollback
 stop behavior.
-The suite does not claim a trustworthy host clock or private repository credentials. It does not
-claim automatic activation or replacement, automatic rollback, or online trust-root refresh.
+Watcher tests prove exact installed-package and publisher binding, patch and minor policy, stable
+highest-version choice, check-only retry, replacement-failure stop, fixed status, and one
+project-local owner. CLI integration performs one real TUF check and offline atomic replacement.
+Frozen attached, detached, child, recovery, replay, and evaluation snapshots remain unchanged.
+The suite does not claim a trustworthy host clock or private repository credentials. It also does
+not claim automatic first activation, major or policy-package replacement, rollback,
+retained-blob collection, or online trust-root refresh.
 
 Validating `examples/agent-command-approval.workflow.yaml` is credential-free. Running it requires
 a configured model provider and a second local client to approve or deny each exact `flow_exec`
