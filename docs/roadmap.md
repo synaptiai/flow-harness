@@ -119,8 +119,11 @@ containment milestone. It is not VM-grade or multi-tenant isolation.
   rollback refusal. Signed-channel discovery adds bounded inert candidate staging. A
   standards-based TUF repository adds explicit local root trust, threshold rotation, and
   freshness. It also adds consistent snapshots, bounded delegated targets, atomic offline
-  generations, reviewed activation, and an optional no-overlap check scheduler. Mutable tags and private repository
-  credentials remain deferred. Online root bootstrap and automatic activation also remain deferred.
+  generations, reviewed activation, explicit atomic same-surface replacement, and an optional
+  no-overlap check scheduler. Mutable tags and private repository credentials remain deferred.
+  Online root bootstrap and automatic activation or replacement also remain deferred. A later
+  opt-in watcher can compose the settled check and replacement primitives without widening their
+  authority or allowing overlapping work.
 - Workflow contributions use versioned manifests. *(Implemented for inert exact-version workflow source with packaged root/child selection, ordinary recursive compilation, immutable transitive snapshots, deterministic bundle distribution, detached execution, and fail-closed recovery. Parameterized templates and executable modules remain deferred.)*
 - Policy contributions use versioned manifests.
   Flow implements strict local and digest-pinned installed inert narrowing packages.

@@ -19,18 +19,18 @@ _Captured by specification-capture skill on 2026-08-18. Source: extracted-from-i
 
 ### Failure modes
 
-- **Timeouts** — Repository-candidate activation remains offline, so no new transport timeout applies. Any controlling deadline that aborts before commit returns its exact reason and leaves the established generation active.
-- **Partial failures** — A failure before lock commit leaves the established generation active. A failure after lock rename reports explicit commit uncertainty and requires inspection before retry. Later orphan cleanup cannot roll back or obscure a committed generation.
-- **Invalid input** — Missing, stale, rolled-back, equal-version, publisher-substituted, identity-expanding, policy-bearing, corrupt, linked, non-regular, oversized, or concurrently changed input fails through a fixed stage before mutation.
-- **Missing context** — Missing project, repository generation, candidate, established package version, current metadata, or publisher authority yields a fixed error and no mutation.
+- **Timeouts** — A pre-commit deadline returns its exact reason and leaves the established generation active.
+- **Partial failures** — Pre-commit failure preserves the old generation, post-rename failure reports uncertainty, and later cleanup cannot roll back a commit.
+- **Invalid input** — Invalid, stale, corrupt, linked, oversized, or changed input fails through a fixed stage before mutation.
+- **Missing context** — Missing project, generation, candidate, established version, metadata, or publisher authority yields a fixed error without mutation.
 
 ### Interface contracts
 
-- Replacement input identifies one reviewed candidate digest, the expected current bundle name and version, and the exact certificate issuer and identity.
-- Replacement yields an idempotent already-current result, a settled replacement result with cleanup evidence, or a fixed pre-commit or commit-uncertain failure.
-- The package mutation boundary validates the complete old and new bundle identities under the existing single-writer authority and publishes one canonical package-lock generation.
-- Repository authentication and package mutation remain separate application boundaries; repository evidence cannot bypass package schema, publisher, metadata, policy, approval, snapshot, or recovery checks.
-- Durable runs and evaluations consume only admitted snapshots. Replacement affects future capability discovery only.
+- Replacement input identifies one reviewed candidate digest, the expected current version, and the exact certificate authority.
+- Replacement returns `already_current`, a settled result with cleanup evidence, or a fixed failure.
+- The package mutation boundary validates both bundle identities and publishes one lock generation under the existing single-writer authority.
+- Repository authentication and package mutation remain separate, so repository evidence cannot bypass any package or recovery gate.
+- Durable runs and evaluations consume admitted snapshots, while replacement affects only future capability discovery.
 
 ## Decision
 
@@ -47,22 +47,22 @@ This issue implements only the first step.
 
 1. **Remove then install** — Rejected because a crash can expose a generation with neither version active.
 2. **Install then remove** — Rejected because capability discovery can observe duplicate identities and fail before cleanup.
-3. **Immutable new blob plus one atomic lock-generation replacement** — Selected because readers observe the old or new generation, frozen runs remain independent, and cleanup can occur after authority settles.
+3. **Immutable new blob plus one atomic lock-generation replacement** — Selected. Readers observe the old or new generation. Frozen runs remain independent. Cleanup follows authority settlement.
 
 ### Standards cross-check
 
 - TUF authenticates repository targets but intentionally leaves application update policy and file activation to the integrating application.
-- Nix profiles independently demonstrate the same useful storage pattern: immutable content plus one atomic active-generation switch.
+- Nix profiles independently show the same storage pattern: immutable content plus one atomic active-generation switch.
 - Flow keeps its own stricter Sigstore, current-metadata, package-schema, capability-identity, snapshot, cancellation, and recovery gates.
 
 ## Plan
 
-1. Define a bounded, canonical replacement-compatibility projection for parsed capability bundles. It rejects policy packages, publisher drift, non-increasing bundle versions, contained package identity changes, Agent Skill requested-tool changes, and packaged-tool name changes.
-2. Extend the package mutation boundary with one replacement operation. It must reopen the old locked blob, require the new target from current trusted metadata, publish the new immutable blob, and replace the old lock entry with the new entry in one atomic lock commit.
-3. Reopen and re-authenticate the reviewed repository candidate and its complete stored TUF generation before calling the replacement boundary. Preserve the existing offline Sigstore verification and candidate evidence checks.
-4. Expose an explicit CLI replacement command with an exact current version and exact publisher authority. Keep activation for first installation separate.
-5. Bind durable-run isolation and future-admission behavior, then update the README, architecture, capability-sourcing, recovery, testing, and roadmap documents with the implemented contract.
-6. Run focused, full, coverage, build, runtime, package, documentation, and adversarial review gates before PR creation and conditional merge.
+1. Define a bounded replacement projection that rejects policy packages, authority drift, rollback, identity changes, and tool-surface changes.
+2. Add one replacement operation that publishes an immutable blob and atomically replaces one lock entry.
+3. Reopen and authenticate the reviewed candidate and its complete TUF generation with offline Sigstore verification.
+4. Add an explicit CLI command with an exact current version and publisher authority, separate from first activation.
+5. Bind durable snapshot isolation and future admission behavior, then update the affected public documents.
+6. Run focused, full, coverage, build, runtime, package, documentation, and adversarial review gates.
 
 ## Verification map
 

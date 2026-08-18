@@ -118,6 +118,17 @@ reconcile the current generation digest and candidate list from public status. R
 activation is offline. A network request during activation indicates a boundary violation rather
 than a recovery mechanism.
 
+Repository replacement is also offline. Before the active lock rename, cancellation returns the
+exact caller reason and the established generation remains active. A replacement
+`commit_uncertain` result means the new lock may already be visible but its directory durability or
+mutation-lock settlement was not confirmed. Run `flow packages list`, inspect both exact versions,
+and run `flow packages verify` before retrying. Do not reinstall or remove either version until the
+active lock is reconciled.
+
+A settled `replaced` result with `cleanup: failed` still means the new generation is authoritative.
+Old-blob cleanup did not roll it back. Existing runs, workers, children, evaluations, recovery, and
+replay continue from their frozen package snapshots.
+
 An optional repository scheduler records a fixed startup status. Its caller can supply the prior
 completed-check timestamp after restart. The scheduler reports elapsed missed intervals but waits a
 new full interval and never catches up. A current clock behind the prior completion reports

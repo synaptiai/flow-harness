@@ -38,7 +38,7 @@ through an optional external profile.
 | Versioned command tool packages | Implemented for strict local or exact installed declarative manifests, including publisher-authenticated OCI sources, exact per-agent selection, deterministic argv rendering, and the existing policy/approval/sandbox/journal boundary |
 | Versioned workflow packages | Implemented for strict local or exact installed inert source manifests, including publisher-authenticated OCI sources, exact packaged roots and children, closed snapshot-only compilation, and durable replay identity |
 | Versioned policy packages | Implemented for strict local or exact installed inert narrowing manifests, including operator-required and project-additional exact selection, deterministic composition, pre-mutation workflow admission, and durable replay identity |
-| Remote capability bundle distribution and update discovery | Implemented with deterministic inert `.flowpkg` files, explicit public HTTPS plus SHA-256 installation, exact publisher-authenticated OCI installation, opt-in signed freshness/revocation metadata, and standards-based TUF repository checks with explicit local root trust, delegated targets, consistent snapshots, inert review candidates, reviewed offline activation, and frozen execution/recovery |
+| Remote capability bundle distribution and update discovery | Implemented with deterministic inert `.flowpkg` files, explicit public HTTPS plus SHA-256 installation, exact publisher-authenticated OCI installation, opt-in signed freshness/revocation metadata, and standards-based TUF repository checks with explicit local root trust, delegated targets, consistent snapshots, inert review candidates, reviewed offline activation or atomic same-surface replacement, and frozen execution/recovery |
 | Reproducible harness evaluation | Implemented for paired Flow, native Pi, native OMP, and Prime Agent profiles. Flow records exact identities, fresh workspaces, private checks, evidence, and constrained reports. |
 | Evidence-bound prompt candidates | Flow implements zero-tool model generation from tuning-only evidence, strict prompt overlays, paired evaluation, reviewed activation, durable run snapshots, and rollback |
 | Proof-safe fresh recovery of interrupted agent attempts | Implemented as explicit opt-in for read-only attempts and edit attempts proven not applied |
@@ -993,13 +993,34 @@ credential mode, password, Basic value, or Bearer token.
 Orphan blobs are inactive. Local and installed name or tool collisions fail instead of applying
 precedence.
 
-Upgrades are explicit and are not atomic in v1. Pause new admissions, retain the old bundle URL and
-digest, install a new exact bundle version, then remove the old exact version and run `packages
-verify` before resuming. If both versions contribute the same package or provider-facing tool name,
-catalog discovery fails closed between install and removal; unrelated packages may coexist. Flow
-never replaces different bytes at the same bundle name/version. Rollback repeats the procedure with
-the retained old URL and digest, then removes the newer version. There is no automatic update
-discovery, rollback, or garbage collection.
+An arbitrary HTTPS or OCI upgrade remains explicit and non-atomic. Pause new admissions, retain the
+old bundle source and digest, install a new exact bundle version, remove the old exact version, and
+run `packages verify` before resuming. Overlapping package or provider-facing tool names make
+catalog discovery fail closed between those mutations.
+
+A reviewed TUF repository candidate can instead replace one exact established version atomically.
+The command below reopens the complete stored repository generation, repeats offline Sigstore
+verification, and replaces one lock entry in one atomic generation:
+
+```sh
+node dist/cli/main.js packages repository candidate replace sha256:<candidate-digest> \
+  --from-version 1.0.0 \
+  --certificate-issuer https://token.actions.githubusercontent.com/ \
+  --certificate-identity <exact-certificate-identity>
+```
+
+The established and candidate bundles must keep the same capability surface. This surface includes
+the bundle name, publisher, package identities, requested tools, and provider-facing tool names.
+The candidate version must have higher semantic-version precedence. Policy-bearing bundles do not
+use this path.
+
+Flow publishes the new immutable blob first. One lock rename then exposes the complete old or new
+generation. A settled result is `replaced` with bounded cleanup evidence. An exact repeat returns
+`already_current`. Existing runs and evaluations keep their frozen package snapshots. Only later
+admission reads the new lock.
+
+Rollback remains a separate reviewed forward replacement or the paused manual procedure. Flow does
+not automatically check, replace, roll back, or collect unrelated orphan blobs.
 
 An existing `.flow/packages.mutation.lock` always blocks mutation, even if its recorded same-host
 process has exited. After verifying that no package mutation is active, an operator may remove that
@@ -1041,6 +1062,25 @@ installs, removes, downloads, or executes a package.
 Runs, workers, children, recovery, and replay never read candidate state. An external scheduler
 may invoke `metadata check`. Flow does not poll or activate metadata. It does not install, roll
 back, or resolve packages automatically.
+
+For a standards-based repository, initialize one explicit local TUF root, check, review, and then
+activate a first version or replace one established version:
+
+```sh
+node dist/cli/main.js packages repository init https://updates.example.test/ \
+  --trusted-root ./root.json
+node dist/cli/main.js packages repository check
+node dist/cli/main.js packages repository candidates list
+node dist/cli/main.js packages repository candidate inspect sha256:<candidate-digest>
+node dist/cli/main.js packages repository candidate activate sha256:<candidate-digest> \
+  --certificate-issuer <exact-https-issuer> --certificate-identity <exact>
+node dist/cli/main.js packages repository candidate replace sha256:<candidate-digest> \
+  --from-version <exact-current-version> \
+  --certificate-issuer <exact-https-issuer> --certificate-identity <exact>
+```
+
+Repository activation and replacement are offline. Candidate removal changes only the inert
+repository generation. The bounded check scheduler has no activation or replacement port.
 
 An authenticated metadata state may contain no targets. That is an established deny-all state:
 every new package installation and catalog admission rejects, while metadata inspection and
