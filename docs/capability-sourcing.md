@@ -424,12 +424,25 @@ an operator must first verify that no package mutation is active, then remove on
 completed but directory durability or lock cleanup could not be confirmed. Inspect the live lock,
 run `flow packages verify`, and reconcile the requested exact versions before retrying.
 
-There is no atomic upgrade command. Pause new admissions, retain the old source and digest, install
-the new exact bundle version, remove the old exact version, verify, then resume. Overlapping package
-or provider-facing tool names make catalog discovery fail closed while both versions are locked;
-non-overlapping versions may coexist. Rollback explicitly reinstalls the retained old version and
-removes the new one. Same-name/same-version bytes are immutable, and Flow performs no automatic
-update discovery, rollback, or garbage collection.
+An arbitrary HTTPS or OCI upgrade has no atomic command. Pause new admissions, retain the old source
+and digest, install the new exact bundle version, remove the old exact version, verify, then resume.
+Overlapping package or provider-facing tool names make catalog discovery fail closed while both
+versions are locked.
+
+A reviewed TUF candidate has a narrower atomic replacement path. It replaces one exact established
+version only when the capability surface is unchanged. This surface includes the bundle name,
+publisher, package identities, requested tools, and provider-facing tool names. The new outer
+version must have higher semantic-version precedence. Policy packages reject. One current metadata
+state must authorize both exact targets during the lock switch.
+
+Flow publishes the new immutable blob and replaces one lock entry. Readers observe the complete old
+or new lock. The old immutable blob remains available to readers that captured the prior lock.
+Replacement reports `cleanup: retained`. Existing durable snapshots remain unchanged. An exact
+repeat returns `already_current`.
+
+Rollback remains a reviewed forward replacement or the paused manual procedure. Same-name and
+same-version bytes remain immutable. Flow performs no automatic update discovery, rollback, or
+unrelated garbage collection.
 
 An operator may explicitly establish signed project metadata with `flow packages metadata refresh
 <metadata.json> --sigstore-bundle <bundle.json> --certificate-issuer <https-url>
@@ -535,6 +548,10 @@ flow packages repository candidate inspect sha256:<digest>
 flow packages repository candidate activate sha256:<digest> \
   --certificate-issuer <exact-https-issuer> \
   --certificate-identity <exact>
+flow packages repository candidate replace sha256:<digest> \
+  --from-version <exact-current-version> \
+  --certificate-issuer <exact-https-issuer> \
+  --certificate-identity <exact>
 flow packages repository candidate remove sha256:<digest>
 ```
 
@@ -561,6 +578,12 @@ policies, runs, or evaluations. Activation reopens and authenticates the complet
 without network access. It requires a newly supplied exact publisher policy and repeats Sigstore
 verification. It delegates the only package mutation to the ordinary package store.
 
+Replacement performs the same offline generation replay and Sigstore verification as activation.
+The package store reopens the established blob and requires publisher continuity. Current metadata
+must authorize both targets before the store replaces one active lock entry. A known
+pre-rename failure preserves the old generation. A post-rename durability failure is
+`commit_uncertain`. The settled result reports retained old content.
+
 Candidate removal creates a new repository generation. It does not remove an installed package.
 
 An optional application scheduler can request checks at a bounded interval. It waits one full
@@ -571,8 +594,9 @@ Startup and an optional prior completion expose restart gaps. Status records inc
 missed-interval and consecutive-failure counters. Delayed work and prolonged outages are visible
 without catch-up retries. The scheduler has no activation port.
 
-Private repository credentials, credential helpers, online root bootstrap, automatic activation,
-automatic rollback, and online Sigstore trust-root refresh remain outside this contract. ACP,
+Private repository credentials, credential helpers, online root bootstrap, automatic activation
+or replacement, automatic rollback, and online Sigstore trust-root refresh remain outside this
+contract. ACP,
 AG-UI, and A2UI are separate transport or presentation standards and do not change repository,
 package, runtime, or activation authority.
 

@@ -298,6 +298,69 @@ describe("installed capability workflow", () => {
       "metadata_target: capability bundle does not match one active trusted metadata target",
     ]);
 
+    const replacement = mixedBundle("2.0.0", "Review updated evidence.");
+    const replacementSource = "https://packages.example.test/targets/review-suite-2.0.0.flowpkg";
+    await packageStore.refreshMetadata({
+      metadata: packageMetadata(
+        replacement.bundle,
+        { source: replacementSource, publisher: acquisition.publisher },
+        3,
+        "active",
+        [{ bundle: created.bundle, acquisition }],
+      ),
+      authority: metadataAuthority,
+    });
+    await expect(
+      packageStore.replace({
+        expectedCurrentVersion: "1.0.0",
+        source: replacementSource,
+        expectedSha256: sha256Digest(replacement.content).slice("sha256:".length),
+        content: replacement.content,
+        publisher: {
+          kind: "sigstore-keyless-v0.3",
+          ...acquisition.publisher,
+          signatureBundleDigest: `sha256:${"d".repeat(64)}`,
+        },
+      }),
+    ).resolves.toMatchObject({ status: "replaced", cleanup: "retained" });
+    const replacementDigest = replacement.bundle.digest.slice("sha256:".length);
+    const replacementProvenanceRoot = `.flow/packages/sha256/${replacementDigest}`;
+    const replacementRunStore = new MemoryStore();
+    const replacementRun = await invoke(
+      ["run", workflowPath, "--run-id", "replacement-capability-run"],
+      dependencies(project, {
+        capabilityBundleFetcher: { fetch } satisfies CapabilityBundleFetcher,
+        executor,
+        createStore: () => replacementRunStore,
+      }),
+    );
+    expect(replacementRun.code).toBe(0);
+    const replacementStarted = replacementRunStore.events.find(
+      (event) => event.type === "run_started",
+    );
+    expect(replacementStarted?.type).toBe("run_started");
+    if (replacementStarted?.type !== "run_started") {
+      throw new Error("replacement run did not record run_started");
+    }
+    expect(replacementStarted.capabilitySnapshot?.packages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "agent-skill",
+          name: "review",
+          provenance: `${replacementProvenanceRoot}/agent-skill/review`,
+        }),
+      ]),
+    );
+    expect(started.capabilitySnapshot?.packages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "agent-skill",
+          name: "review",
+          provenance: `${provenanceRoot}/agent-skill/review`,
+        }),
+      ]),
+    );
+
     const detachedRunsDirectory = join(project, "detached-runs");
     const supervisorStore = new LocalSupervisorStore(detachedRunsDirectory);
     await supervisorStore.initialize();
@@ -360,7 +423,7 @@ describe("installed capability workflow", () => {
       ).status,
     ).toBe("succeeded");
 
-    await packageStore.remove("review-suite", "1.0.0");
+    await packageStore.remove("review-suite", "2.0.0");
     const inspectedRun = await invoke(
       ["inspect", "installed-capability-run"],
       dependencies(project, {
@@ -528,10 +591,10 @@ async function temporaryProject(): Promise<string> {
   return project;
 }
 
-function mixedBundle() {
+function mixedBundle(version = "1.0.0", skillInstruction = "Review the evidence.") {
   return createCapabilityBundleSource({
     name: "review-suite",
-    version: "1.0.0",
+    version,
     description: "Review capabilities.",
     packages: [
       {
@@ -544,7 +607,7 @@ name: review
 description: Review code when selected.
 allowed-tools: read
 ---
-Review the evidence.
+${skillInstruction}
 `),
           },
         ],
@@ -599,6 +662,16 @@ function packageMetadata(
   },
   version: number,
   status: "active" | "revoked",
+  priorTargets: readonly {
+    readonly bundle: ReturnType<typeof mixedBundle>["bundle"];
+    readonly acquisition: {
+      readonly source: string;
+      readonly publisher: {
+        readonly certificateIssuer: string;
+        readonly certificateIdentity: string;
+      };
+    };
+  }[] = [],
 ) {
   return parseCapabilityMetadata(
     Buffer.from(
@@ -612,6 +685,15 @@ function packageMetadata(
         },
         spec: {
           targets: [
+            ...priorTargets.map((target) => ({
+              name: target.bundle.name,
+              version: target.bundle.version,
+              digest: target.bundle.digest,
+              bytes: target.bundle.bytes,
+              source: target.acquisition.source,
+              status: "active",
+              publisher: target.acquisition.publisher,
+            })),
             {
               name: bundle.name,
               version: bundle.version,

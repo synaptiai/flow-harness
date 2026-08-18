@@ -136,6 +136,7 @@ export interface CapabilityBundleToolPackage {
   readonly kind: "tool-package";
   readonly name: string;
   readonly version: string;
+  readonly toolName: string;
   readonly manifestBase64: string;
 }
 
@@ -437,6 +438,7 @@ function parseBundlePackageEntry(entry: EncodedCapabilityBundleEntry): Capabilit
     kind: entry.kind,
     name: definition.metadata.name,
     version: definition.metadata.version,
+    toolName: definition.spec.tool.name,
     manifestBase64: entry.manifestBase64,
   });
 }

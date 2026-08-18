@@ -32,7 +32,9 @@ envelopes through threshold roles, sequential root rotation, freshness metadata,
 snapshots, and bounded delegations. The operator supplies the initial root locally. Flow contains
 the standard client in disposable staging, reopens its output, repeats package and Sigstore
 verification, and publishes only inert Flow-owned candidates. Private repositories, online root
-bootstrap, and automatic activation remain later work.
+bootstrap, and automatic activation remain later work. An operator can explicitly replace one
+established same-surface bundle with a strictly newer reviewed candidate. Flow publishes the new
+immutable blob first and replaces the old active lock entry in one atomic lock generation.
 Opaque Pi session continuation and general failure or fallback
 retries also remain later work. The same is true for broader configurable policy, model network
 tools, and arbitrary evaluator runtimes. Stronger VM or managed sandbox backends also remain later
@@ -57,6 +59,7 @@ Architecture is derived from these flows.
 | Activate metadata | An operator reviews and activates one exact candidate | Reverified monotonic active metadata for future admission; installed packages and existing run snapshots stay unchanged |
 | Discover repository packages | An operator initializes an explicit trusted root and invokes a repository check | One atomically committed verified repository generation plus bounded inert candidates; no package installation or activation |
 | Activate a repository candidate | An operator supplies one exact candidate digest and publisher policy | Offline TUF replay, repeated Sigstore verification, and one ordinary package-store installation under active metadata authority |
+| Replace an established repository package | An operator supplies one exact candidate digest, current version, and publisher policy | Two-target metadata, offline TUF and Sigstore replay, one atomic active lock switch, and retained prior content for old readers |
 
 ### Operator flows
 

@@ -193,6 +193,214 @@ describe("capability repository CLI", () => {
       bundles: [{ name: "review-suite", version: "1.0.0" }],
     });
   });
+
+  it("replaces an established bundle from one reviewed candidate and repeats offline", async () => {
+    const project = await projectDirectory();
+    const fixture = repositoryFixture();
+    const rootPath = join(project, "trusted-root.json");
+    await writeFile(rootPath, fixture.root, { mode: 0o600 });
+    const read = vi.fn<StrictCapabilityRepositoryFetcher["read"]>(
+      async (url, maximumBytes, signal) => {
+        signal.throwIfAborted();
+        const content = fixture.remote.get(url);
+        return content === undefined
+          ? { statusCode: 404, bytes: Buffer.alloc(0) }
+          : {
+              statusCode: 200,
+              bytes:
+                content.byteLength <= maximumBytes
+                  ? Buffer.from(content)
+                  : Buffer.alloc(maximumBytes + 1),
+            };
+      },
+    );
+    const dependencies = {
+      cwd: project,
+      loadConfig: async () => effectiveConfig(project),
+      capabilityRepositoryFetcher: { read } satisfies StrictCapabilityRepositoryFetcher,
+      sigstoreCapabilityVerifier: {
+        verify: vi.fn(() => ({ ...fixture.publisher })),
+      } satisfies SigstoreCapabilityVerifier,
+    };
+    const current = createCapabilityBundleSource({
+      name: "review-suite",
+      version: "0.9.0",
+      description: "Review capabilities.",
+      packages: [
+        {
+          kind: "verifier-package",
+          manifest: Buffer.from(`apiVersion: flow.synapti.ai/v1alpha1
+kind: VerifierPackage
+metadata:
+  name: evidence-review
+  version: 1.0.0
+  description: Review evidence.
+spec:
+  kind: model
+  prompt: Review original evidence.
+`),
+        },
+      ],
+    });
+    const currentSource = "https://packages.example.test/review-suite-0.9.0.flowpkg";
+    const packageStore = new LocalCapabilityPackageStore(project, {
+      now: () => new Date("2026-08-17T00:00:00.000Z"),
+    });
+    await packageStore.refreshMetadata({
+      metadata: activeMetadata({
+        content: current.content,
+        version: "0.9.0",
+        source: currentSource,
+        publisher: fixture.publisher,
+        metadataVersion: 1,
+      }),
+      authority: {
+        kind: "sigstore-keyless-v0.3",
+        ...fixture.publisher,
+        signatureBundleDigest: `sha256:${"e".repeat(64)}`,
+      },
+    });
+    await packageStore.install({
+      source: currentSource,
+      expectedSha256: sha256(current.content),
+      content: current.content,
+      publisher: {
+        kind: "sigstore-keyless-v0.3",
+        ...fixture.publisher,
+        signatureBundleDigest: `sha256:${"d".repeat(64)}`,
+      },
+    });
+    expect(
+      await main(
+        ["packages", "repository", "init", fixture.repositoryBaseUrl, "--trusted-root", rootPath],
+        captureIo().io,
+        dependencies,
+      ),
+    ).toBe(0);
+    expect(await main(["packages", "repository", "check"], captureIo().io, dependencies)).toBe(0);
+    const candidatesIo = captureIo();
+    expect(
+      await main(["packages", "repository", "candidates", "list"], candidatesIo.io, dependencies),
+    ).toBe(0);
+    const candidateDigest = (
+      JSON.parse(candidatesIo.stdout[0] ?? "null") as {
+        candidates: readonly { candidateDigest: string }[];
+      }
+    ).candidates[0]?.candidateDigest;
+    if (candidateDigest === undefined) {
+      throw new Error("repository check did not stage one replacement candidate");
+    }
+    await packageStore.refreshMetadata({
+      metadata: activeMetadata({
+        content: fixture.envelopeCapabilityBundle,
+        version: "1.0.0",
+        source: fixture.targetSource,
+        publisher: fixture.publisher,
+        metadataVersion: 2,
+        prior: {
+          content: current.content,
+          version: "0.9.0",
+          source: currentSource,
+        },
+      }),
+      authority: {
+        kind: "sigstore-keyless-v0.3",
+        ...fixture.publisher,
+        signatureBundleDigest: `sha256:${"f".repeat(64)}`,
+      },
+    });
+    const networkCallsAfterCheck = read.mock.calls.length;
+    const replacement = captureIo();
+    const command = [
+      "packages",
+      "repository",
+      "candidate",
+      "replace",
+      candidateDigest,
+      "--from-version",
+      "0.9.0",
+      "--certificate-issuer",
+      fixture.publisher.certificateIssuer,
+      "--certificate-identity",
+      fixture.publisher.certificateIdentity,
+    ];
+
+    expect(await main(command, replacement.io, dependencies)).toBe(0);
+    expect(JSON.parse(replacement.stdout[0] ?? "null")).toMatchObject({
+      status: "replaced",
+      candidateDigest,
+      cleanup: "retained",
+      bundle: { name: "review-suite", version: "1.0.0" },
+      publisher: fixture.publisher,
+      previous: { name: "review-suite", version: "0.9.0" },
+    });
+    const repeated = captureIo();
+    expect(await main(command, repeated.io, dependencies)).toBe(0);
+    expect(JSON.parse(repeated.stdout[0] ?? "null")).toMatchObject({
+      status: "already_current",
+      candidateDigest,
+      bundle: { name: "review-suite", version: "1.0.0" },
+      publisher: fixture.publisher,
+    });
+    expect(read).toHaveBeenCalledTimes(networkCallsAfterCheck);
+    await expect(packageStore.list()).resolves.toMatchObject({
+      bundles: [{ name: "review-suite", version: "1.0.0" }],
+    });
+    const publicOutput = `${replacement.stdout.join("\n")}\n${repeated.stdout.join("\n")}`;
+    expect(publicOutput).not.toContain(fixture.targetSource);
+    expect(publicOutput).not.toContain(fixture.envelope.toString("base64"));
+    expect(publicOutput).not.toContain("signatureBundleDigest");
+    expect(publicOutput).not.toContain("PRIVATE_SIGSTORE_BUNDLE");
+  });
+
+  it.each([
+    {
+      label: "a missing current version",
+      args: ["replace", `sha256:${"1".repeat(64)}`],
+    },
+    {
+      label: "a repeated current version",
+      args: [
+        "replace",
+        `sha256:${"1".repeat(64)}`,
+        "--from-version",
+        "1.0.0",
+        "--from-version",
+        "PRIVATE_DUPLICATE",
+      ],
+    },
+    {
+      label: "a non-semantic current version",
+      args: ["replace", `sha256:${"1".repeat(64)}`, "--from-version", "PRIVATE_LATEST"],
+    },
+    {
+      label: "a replacement version on activation",
+      args: ["activate", `sha256:${"1".repeat(64)}`, "--from-version", "PRIVATE_MISPLACED"],
+    },
+  ])("rejects $label before repository access", async ({ args }) => {
+    const project = await projectDirectory();
+    const loadConfig = vi.fn(async () => effectiveConfig(project));
+    const output = captureIo();
+
+    expect(
+      await main(
+        [
+          "packages",
+          "repository",
+          "candidate",
+          ...args,
+          "--certificate-issuer",
+          "https://token.actions.githubusercontent.com/",
+          "--certificate-identity",
+          "PRIVATE_IDENTITY",
+        ],
+        output.io,
+        { cwd: project, loadConfig },
+      ),
+    ).toBe(2);
+    expect(loadConfig).not.toHaveBeenCalled();
+    expect(`${output.stdout.join("\n")}\n${output.stderr.join("\n")}`).not.toContain("PRIVATE_");
+  });
 });
 
 async function projectDirectory(): Promise<string> {
@@ -355,7 +563,7 @@ spec:
       kind: "CapabilityMetadata",
       metadata: {
         name: "project-capabilities",
-        version: 1,
+        version: 2,
         expiresAt: "2030-01-01T00:00:00.000Z",
       },
       spec: {
@@ -380,6 +588,7 @@ spec:
     publisher,
     targetSource,
     activeMetadata: parseActiveMetadata(Buffer.from(JSON.stringify(activeMetadata))),
+    envelopeCapabilityBundle: bundle.content,
     remote: new Map<string, Buffer>([
       [`${metadataBaseUrl}timestamp.json`, timestamp],
       [`${metadataBaseUrl}1.snapshot.json`, snapshot],
@@ -388,6 +597,62 @@ spec:
       [targetSource, envelope],
     ]),
   };
+}
+
+function activeMetadata(input: {
+  readonly content: Uint8Array;
+  readonly version: string;
+  readonly source: string;
+  readonly publisher: {
+    readonly certificateIssuer: string;
+    readonly certificateIdentity: string;
+  };
+  readonly metadataVersion: number;
+  readonly prior?: {
+    readonly content: Uint8Array;
+    readonly version: string;
+    readonly source: string;
+  };
+}) {
+  return parseActiveMetadata(
+    Buffer.from(
+      JSON.stringify({
+        apiVersion: "flow.synapti.ai/v1alpha1",
+        kind: "CapabilityMetadata",
+        metadata: {
+          name: "project-capabilities",
+          version: input.metadataVersion,
+          expiresAt: "2030-01-01T00:00:00.000Z",
+        },
+        spec: {
+          targets: [
+            ...(input.prior === undefined
+              ? []
+              : [
+                  {
+                    name: "review-suite",
+                    version: input.prior.version,
+                    digest: `sha256:${sha256(input.prior.content)}`,
+                    bytes: input.prior.content.byteLength,
+                    source: input.prior.source,
+                    status: "active",
+                    publisher: input.publisher,
+                  },
+                ]),
+            {
+              name: "review-suite",
+              version: input.version,
+              digest: `sha256:${sha256(input.content)}`,
+              bytes: input.content.byteLength,
+              source: input.source,
+              status: "active",
+              publisher: input.publisher,
+            },
+          ],
+        },
+      }),
+    ),
+  );
 }
 
 function parseActiveMetadata(content: Buffer) {
