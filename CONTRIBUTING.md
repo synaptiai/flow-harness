@@ -52,6 +52,10 @@ The command intentionally fails when either required variable is absent; it neve
 
 Describe the user-visible outcome, the relevant architecture boundary, evidence for each acceptance criterion, failure modes considered, and the commands used for verification. Keep unrelated cleanup out of the change.
 
+Update the [architecture overview](docs/architecture.md#architecture-at-a-glance) and its repository
+map for structural changes. This requirement covers runtime modules, entry points, execution
+boundaries, durable stores, external trust dependencies, and ownership relationships.
+
 ## Documentation
 
 Follow the [documentation style policy](docs/documentation-style.md) and the linked Google Developer

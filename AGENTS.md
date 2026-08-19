@@ -12,6 +12,10 @@ These instructions apply to the entire repository.
 - Treat `README.md` as a concise landing page. Put detailed guidance in the canonical document
   selected by `docs/README.md`.
 
+- Update the architecture diagram and repository map in `docs/architecture.md` for structural
+  changes. This requirement covers runtime modules, entry points, execution boundaries, durable
+  stores, external trust dependencies, and ownership relationships.
+
 - Preserve exact code identifiers, CLI grammar, schema fields, error codes, quotations, and
   security requirements. Accuracy and compatibility take precedence over stylistic rewriting.
 

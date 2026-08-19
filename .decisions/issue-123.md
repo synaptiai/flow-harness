@@ -90,6 +90,28 @@ structure and sentence case, descriptive links, image alternatives, directional 
 small set of prohibited constructions. Human review remains responsible for active voice, second
 person, global readability, inclusive language, technical accuracy, and topic ownership.
 
+### Architecture visualization
+
+The canonical architecture document now starts with a C4-style context and component overview in
+stable Mermaid flowchart syntax. It answers six reader questions. The view shows who uses Flow,
+where requests enter, which components decide and execute, what survives interruption, and which
+systems remain external.
+
+Three approaches were evaluated:
+
+| Approach | Strengths | Costs and risks | Decision |
+| --- | --- | --- | --- |
+| One plain-language context/component flowchart plus the existing detailed reference | Accessible first view, standard Mermaid rendering, and direct mapping to the repository | Cannot show every subsystem or call | **Selected** |
+| Mermaid C4 diagram syntax | More formal architecture vocabulary | Newer syntax has less uniform renderer support and is harder for first-time readers | Rejected |
+| Separate diagram for every subsystem | Maximum local detail | Duplicates the existing prose, raises maintenance cost, and obscures the complete flow | Deferred until a subsystem needs a task-specific diagram |
+
+The diagram maps every top-level runtime module and `prime-container/`. Repository instructions,
+the style policy, and the contributor guide require updates for structural changes. These changes
+include entry points, runtime modules, execution boundaries, durable stores, external dependencies,
+and ownership relationships. A focused test enumerates the runtime modules. It also binds the
+diagram groups and maintenance contract. Official Mermaid CLI 11.16.0 rendered every diagram after
+the review replaced one legacy reserved node identifier.
+
 ## Implementation plan
 
 1. Add the documentation hub and current-status document.
@@ -109,6 +131,7 @@ person, global readability, inclusive language, technical accuracy, and topic ow
 | Safety and prerequisite preservation | Focused content tests and review | Pre-alpha, hostile-workload, Prime-host, recovery, and authority warnings remain discoverable |
 | Public prose | `npm run docs:ste` | Changed prose passes the repository style rules |
 | Google documentation style | `npm run docs:style` and `test/integration/package/docs-style.test.ts` | The complete public corpus passes objective style rules and each rule has a negative regression |
+| Architecture overview and currentness | `npx vitest run test/integration/package/architecture-documentation.test.ts` | Plain-language Mermaid overview; every runtime module and Prime container mapped; update contract retained |
 | Repository quality | `npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build && npm run pack:check` | No code, package, or release regression |
 
 ## Verification evidence
@@ -116,11 +139,12 @@ person, global readability, inclusive language, technical accuracy, and topic ow
 The final README has 154 lines and 6,683 bytes. The previous README had 1,776 lines and 100,936
 bytes.
 
-The focused public-documentation command passed 58 tests across five files:
+The focused public-documentation command passed 62 tests across six files:
 
 ```sh
 npx vitest run test/integration/package/docs-links.test.ts \
   test/integration/package/docs-style.test.ts \
+  test/integration/package/architecture-documentation.test.ts \
   test/integration/package/documentation-structure.test.ts \
   test/scaffold/community-files.test.ts \
   test/integration/package/prime-agent-package.test.ts
@@ -157,9 +181,10 @@ test, which installed the generated tarball and exercised the packaged CLI succe
 The final refinement made discovery automatic for root documents, `docs/`, contributor-facing
 `.github/` Markdown, and public example documentation. It excludes executable evaluation task and
 result artifacts, internal decision journals, test fixtures, generated files, and vendored content.
-The refinement also moved documentation checks earlier in local CI. The final-tree focused command
-passed 58 tests. A second complete run against that tree was killed with exit 137 while unrelated
-Vitest pools were active on the host. Four unchanged tests had reached their fixed timeouts.
+The refinement also moved documentation checks earlier in local CI. The architecture overview adds
+four focused currentness tests, bringing the final-tree command to 62 tests. A second complete run
+against the earlier tree was killed with exit 137 while unrelated Vitest pools were active on the
+host. Four unchanged tests had reached their fixed timeouts.
 
 One timed-out supervisor case passed an isolated rerun. Three filesystem-heavy cases reached the
 same timeout while the other pools remained active. No documentation test failed.

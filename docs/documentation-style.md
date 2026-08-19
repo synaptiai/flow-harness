@@ -118,13 +118,22 @@ second guide.
 Before you publish documentation:
 
 1. Confirm that the page names its audience, outcome, prerequisites, and relevant safety boundary.
+
 2. Confirm that the documentation hub links to the page and assigns one canonical owner.
+
 3. Check every command, path, option, version, limit, and compatibility claim against the current
    implementation.
-4. Remove duplicated contracts and link to their owner.
-5. Review the page for active voice, second person, accessibility, inclusive language, and global
+
+4. Update the [Mermaid architecture diagram](architecture.md#architecture-at-a-glance) and
+   repository map for a structural change. This requirement covers runtime modules, entry points,
+   execution boundaries, durable stores, external trust dependencies, and ownership relationships.
+
+5. Remove duplicated contracts and link to their owner.
+
+6. Review the page for active voice, second person, accessibility, inclusive language, and global
    readability.
-6. Run the documentation gates:
+
+7. Run the documentation gates:
 
    ```sh
    npm run docs:style

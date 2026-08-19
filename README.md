@@ -136,7 +136,7 @@ The [documentation hub](docs/README.md) routes each reader task to one canonical
 | [Use capability packages](docs/guides/capability-packages.md) | Skills, verifiers, tools, workflows, policies, presentations, bundles, and repositories |
 | [Prime runtime operations](docs/operations/prime-runtime.md) | Dedicated Linux x64 Prime and container-profile preparation |
 | [Workflow specification](docs/workflow-spec.md) | Normative executable and persisted contracts |
-| [Architecture](docs/architecture.md) | Components, trust boundaries, failure modes, and non-goals |
+| [Architecture](docs/architecture.md) | System diagram, component ownership, trust boundaries, failure modes, and non-goals |
 | [Recovery and interruption safety](docs/recovery.md) | Exact restart, uncertainty, and remediation rules |
 | [Reproducible harness evaluation](docs/evaluation.md) | Comparative plans, private verification, candidates, activation, and export |
 | [Testing and evaluation](docs/testing-and-evaluation.md) | Contributor gates, test layers, runtime proofs, and live-provider policy |
