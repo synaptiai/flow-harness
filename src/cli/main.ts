@@ -3476,8 +3476,7 @@ async function candidateCommand(
       "candidate activation was cancelled",
     );
     if (admitted.kind === "model-routing-candidate") {
-      throw new EffectiveHarnessStoreError(
-        "invalid_input",
+      throw new CliUsageError(
         "model-routing candidate activation requires a composed effective harness candidate",
       );
     }

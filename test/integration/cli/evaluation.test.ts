@@ -9,7 +9,12 @@ import type { ExternalHarnessRuntime } from "../../../src/application/external-h
 import type { NodeExecutor } from "../../../src/application/ports.js";
 import { type CliIo, main } from "../../../src/cli/main.js";
 import { unavailableEvaluationMetrics } from "../../../src/domain/evaluation/records.js";
+import { LocalEvaluationStore } from "../../../src/infrastructure/fs/local-evaluation-store.js";
 import { NativePiHarnessRegistry } from "../../../src/infrastructure/pi/native-pi-harness-registry.js";
+import {
+  modelRoutingEffectiveHarnessCandidateArtifactFixture,
+  superiorEffectiveHarnessEvaluation,
+} from "../../fixtures/effective-harness-evaluation.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -103,6 +108,92 @@ describe("evaluation CLI", () => {
     ).toBe(1);
     expect(refused.stderr.join("\n")).toMatch(/exists|overwrite/i);
     expect(JSON.parse(await readFile(output, "utf8"))).toEqual(runEvidence);
+  });
+
+  it("inspects and exports the exact paired model routes from durable evidence", async () => {
+    const project = await evaluationProject();
+    const evaluations = join(project, "route-evaluations");
+    const artifact = modelRoutingEffectiveHarnessCandidateArtifactFixture();
+    const routeCandidate = artifact.candidate;
+    if (
+      artifact.surface !== "model-routing" ||
+      !("kind" in routeCandidate) ||
+      routeCandidate.kind !== "model-routing-candidate"
+    ) {
+      throw new Error("model-routing evaluation fixture has the wrong surface");
+    }
+    const stored = superiorEffectiveHarnessEvaluation(artifact);
+    const store = new LocalEvaluationStore(evaluations);
+    await store.create(stored.header);
+    await store.claim(stored.header.evaluationId, stored.header.planDigest);
+    for (const record of stored.records) {
+      await store.append(stored.header.evaluationId, record);
+    }
+    await store.release(stored.header.evaluationId);
+
+    const inspect = capture();
+    expect(
+      await main(
+        ["eval", "inspect", stored.header.evaluationId, "--evaluations-dir", evaluations],
+        inspect.io,
+        { cwd: project },
+      ),
+    ).toBe(0);
+    const evidence = JSON.parse(inspect.stdout.join("\n"));
+    expect(evidence).toMatchObject({
+      header: {
+        planDigest: stored.header.planDigest,
+        controls: {
+          modelRoutes: [
+            {
+              profileId: "baseline",
+              nodeId: routeCandidate.scope.nodeId,
+              route: routeCandidate.route.before,
+            },
+            {
+              profileId: "candidate",
+              nodeId: routeCandidate.scope.nodeId,
+              route: routeCandidate.route.after,
+            },
+          ],
+        },
+        profiles: [
+          { effectiveHarness: { selection: "baseline", surface: "model-routing" } },
+          {
+            candidate: {
+              identity: {
+                kind: "model-routing-candidate",
+                candidateDigest: routeCandidate.candidateDigest,
+                route: routeCandidate.route,
+              },
+            },
+            effectiveHarness: { selection: "candidate", surface: "model-routing" },
+          },
+        ],
+      },
+    });
+    const publicText = [...inspect.stdout, ...inspect.stderr].join("\n");
+    expect(publicText).not.toContain("contentBase64");
+    expect(publicText).not.toContain(artifact.baselineState.workflow.contentBase64);
+    expect(publicText).not.toContain(artifact.candidateState.workflow.contentBase64);
+
+    const exportPath = join(project, "route-evidence.json");
+    expect(
+      await main(
+        [
+          "eval",
+          "export",
+          stored.header.evaluationId,
+          "--evaluations-dir",
+          evaluations,
+          "--output",
+          exportPath,
+        ],
+        capture().io,
+        { cwd: project },
+      ),
+    ).toBe(0);
+    expect(JSON.parse(await readFile(exportPath, "utf8"))).toEqual(evidence);
   });
 
   it("compares a Flow profile with the native Pi adapter boundary", async () => {

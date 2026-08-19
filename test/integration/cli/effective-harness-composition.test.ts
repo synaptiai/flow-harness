@@ -225,6 +225,31 @@ describe("effective harness composition CLI", () => {
       throw new Error("composition fixture is not a model-routing candidate");
     }
 
+    const directActivationOutput = captureIo();
+    expect(
+      await main(
+        [
+          "candidate",
+          "activate",
+          candidatePath,
+          "--evaluation",
+          "PRIVATE_MISSING_EVALUATION",
+          "--actor",
+          "operator:route",
+          "--dry-run",
+        ],
+        directActivationOutput.io,
+        { cwd: project, loadConfig: async () => effectiveConfig(project) },
+      ),
+    ).toBe(2);
+    expect(directActivationOutput.stderr).toHaveLength(1);
+    expect(directActivationOutput.stderr[0]?.split("\n")[0]).toBe(
+      "model-routing candidate activation requires a composed effective harness candidate",
+    );
+    expect(
+      [...directActivationOutput.stdout, ...directActivationOutput.stderr].join("\n"),
+    ).not.toContain("PRIVATE_MISSING_EVALUATION");
+
     const output = captureIo();
     expect(
       await main(["candidate", "compose", candidatePath], output.io, {
