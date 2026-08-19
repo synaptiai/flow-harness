@@ -47,7 +47,11 @@ jobs:
 
       - name: Install sandbox system dependencies
         run: |
-          sudo apt-get update
+          sudo apt-get \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30 \
+            update
           sudo apt-get install --yes bubblewrap ca-certificates curl ripgrep socat util-linux
           # GitHub's ephemeral Ubuntu 24.04 runner otherwise strips the user-namespace
           # capabilities required by SRT's bubblewrap and seccomp layers.
@@ -77,7 +81,11 @@ jobs:
             'Architectures: amd64' \
             'Signed-By: /etc/apt/keyrings/docker.asc' | \
             sudo tee /etc/apt/sources.list.d/docker.sources > /dev/null
-          sudo apt-get update
+          sudo apt-get \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30 \
+            update
           docker_version='5:28.3.3-1~ubuntu.24.04~noble'
           sudo apt-get install --yes --allow-downgrades \
             docker-ce="$docker_version" \
