@@ -31,7 +31,10 @@ import type { ToolPackageSnapshotInput } from "../../../src/domain/capability/to
 import { calculateChildRunId, type RunEvent } from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { agentSkillActivationInput } from "../../fixtures/agent-skill-activation.js";
-import { effectiveHarnessCandidateArtifactFixture } from "../../fixtures/effective-harness-evaluation.js";
+import {
+  effectiveHarnessCandidateArtifactFixture,
+  modelRoutingEffectiveHarnessCandidateArtifactFixture,
+} from "../../fixtures/effective-harness-evaluation.js";
 
 describe("run workflow capability snapshots", () => {
   it("persists and passes the exact bound snapshot to selected agent execution", async () => {
@@ -250,6 +253,76 @@ describe("run workflow capability snapshots", () => {
           head: { headDigest: effectiveHarness.head.headDigest },
         },
       },
+    });
+    expect(state).toMatchObject({
+      status: "succeeded",
+      capabilitySnapshot: { digest: snapshot.digest },
+    });
+  });
+
+  it("executes and resumes the selected route from one durable effective snapshot", async () => {
+    const artifact = modelRoutingEffectiveHarnessCandidateArtifactFixture();
+    const snapshot = effectiveHarnessCapabilitySnapshot(artifact);
+    const effectiveHarness = snapshot.effectiveHarness;
+    if (effectiveHarness === undefined) throw new Error("routing harness fixture is missing");
+    const workflow = compileWorkflowText(
+      Buffer.from(effectiveHarness.workflow.contentBase64, "base64").toString("utf8"),
+      `activation:${effectiveHarness.workflowId}`,
+    );
+    const interrupted = new MemoryStore("node_started");
+
+    await expect(
+      runWorkflow(workflow, {
+        ...options(
+          interrupted,
+          executorFrom(() => agentSuccess()),
+        ),
+        runId: "resume-model-route",
+        capabilitySnapshot: snapshot,
+      }),
+    ).rejects.toThrow("injected persistence failure");
+    expect(interrupted.events).toHaveLength(1);
+
+    const recovered = new MemoryStore(undefined, interrupted.events);
+    const observed = new Map<string, { provider: string; id: string; thinking: string }>();
+    const state = await resumeWorkflow(workflow, {
+      ...options(
+        recovered,
+        executorFrom((node, context) => {
+          if (node.type !== "agent") throw new Error("routing fixture executed a non-agent node");
+          observed.set(node.id, node.agent.model);
+          expect(context.capabilitySnapshot?.effectiveHarness?.runtimeDigest).toBe(
+            effectiveHarness.runtimeDigest,
+          );
+          const text = JSON.stringify("done");
+          return {
+            status: "succeeded",
+            evidence: {
+              kind: "agent",
+              provider: node.agent.model.provider,
+              model: node.agent.model.id,
+              text,
+              textHash: createHash("sha256").update(text).digest("hex"),
+              textTruncated: false,
+              durationMs: 1,
+              policyDecisions: [],
+              effectReceipts: [],
+            },
+          };
+        }),
+      ),
+      runId: "resume-model-route",
+    });
+
+    expect(observed.get("implement")).toEqual({
+      provider: "openai",
+      id: "gpt-5.4",
+      thinking: "high",
+    });
+    expect(observed.get("private-review")).toEqual({
+      provider: "test",
+      id: "deterministic",
+      thinking: "medium",
     });
     expect(state).toMatchObject({
       status: "succeeded",
@@ -551,8 +624,9 @@ function capabilitySnapshot(name: string): CapabilitySnapshot {
   return createCapabilitySnapshot([skill(name)]);
 }
 
-function effectiveHarnessCapabilitySnapshot(): CapabilitySnapshot {
-  const artifact = effectiveHarnessCandidateArtifactFixture();
+function effectiveHarnessCapabilitySnapshot(
+  artifact = effectiveHarnessCandidateArtifactFixture(),
+): CapabilitySnapshot {
   const head = createEffectiveHarnessHeadIdentity({
     scopeDigest: artifact.scopeDigest,
     workflowId: artifact.workflowId,
