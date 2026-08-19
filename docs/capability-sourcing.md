@@ -277,7 +277,7 @@ and the control graph independently records whether raw `exec` and which package
 Replay reconciles both. Detached jobs carry the bytes
 unchanged, children bind only their own subset, and recovery refuses live-source substitution.
 Sourced command events also record the exact tool name, typed input and digest, rendered argv, and
-package identity so replay can derive rather than trust what should have executed.
+package identity so replay can derive rather than trust the expected execution.
 
 This ABI is deliberately not a general plugin host. Packages cannot contribute JavaScript,
 Python, Wasm, native payloads, hooks, providers, result middleware, graph nodes, credentials,
@@ -391,7 +391,7 @@ secret input.
 The authenticated registry response is the authority that selects the token realm and service.
 Flow sends those exact challenge values in the token request. It cannot prove that a different
 realm origin has the same operator as the registry origin. The operator must trust both origins
-and should supply a registry-specific credential.
+to use the private registry. For narrower credential scope, use a registry-specific credential.
 
 Flow does not broaden this delegated authority
 to redirects, artifact endpoints, configuration, or later execution. The returned Bearer token is

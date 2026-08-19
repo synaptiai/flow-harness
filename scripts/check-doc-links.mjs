@@ -102,14 +102,9 @@ function readOption(args, option) {
 }
 
 async function publicMarkdownFiles(repositoryRoot) {
-  const rootFiles = [
-    "README.md",
-    "CODE_OF_CONDUCT.md",
-    "CONTRIBUTING.md",
-    "SECURITY.md",
-    "SUPPORT.md",
-    "THIRD_PARTY_NOTICES.md",
-  ];
+  const rootFiles = (await readdir(repositoryRoot, { withFileTypes: true }))
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
+    .map((entry) => entry.name);
   const documentationFiles = await markdownFiles(join(repositoryRoot, "docs"));
   return [
     ...rootFiles,

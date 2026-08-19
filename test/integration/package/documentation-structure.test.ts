@@ -59,6 +59,21 @@ describe("public documentation structure", () => {
       readFile(join(documentationRoot, "operations", "prime-runtime.md"), "utf8"),
     ).resolves.toMatch(/^# Prime runtime operations$/mu);
   });
+
+  it("persists the public documentation policy for contributors and automated agents", async () => {
+    const [agentInstructions, contributing, stylePolicy] = await Promise.all([
+      readFile(join(repositoryRoot, "AGENTS.md"), "utf8"),
+      readFile(join(repositoryRoot, "CONTRIBUTING.md"), "utf8"),
+      readFile(join(documentationRoot, "documentation-style.md"), "utf8"),
+    ]);
+
+    expect(agentInstructions).toContain("docs/documentation-style.md");
+    expect(agentInstructions).toContain("https://developers.google.com/style");
+    expect(agentInstructions).toContain("npm run docs:style");
+    expect(contributing).toContain("docs/documentation-style.md");
+    expect(stylePolicy).toContain("https://developers.google.com/style");
+    expect(stylePolicy).toContain("npm run docs:style");
+  });
 });
 
 async function markdownFiles(root: string): Promise<readonly string[]> {

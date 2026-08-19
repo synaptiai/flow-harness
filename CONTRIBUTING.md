@@ -51,3 +51,20 @@ The command intentionally fails when either required variable is absent; it neve
 ## Pull requests
 
 Describe the user-visible outcome, the relevant architecture boundary, evidence for each acceptance criterion, failure modes considered, and the commands used for verification. Keep unrelated cleanup out of the change.
+
+## Documentation
+
+Follow the [documentation style policy](docs/documentation-style.md) and the linked Google Developer
+Documentation Style Guide. Keep detailed content in the canonical document selected by the
+[documentation hub](docs/README.md), not in the root README.
+
+Validate public documentation with:
+
+```sh
+npm run docs:style
+npm run docs:links
+npm run docs:ste
+```
+
+The automated checks cover objective rules. Review active voice, second person, accessibility,
+global readability, technical accuracy, and topic ownership manually.

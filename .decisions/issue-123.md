@@ -76,6 +76,20 @@ The documentation hub owns audience routing and topic ownership. New task docume
 - New feature documentation must choose one owner in the hub before adding prose.
 - Link and structure checks become release gates.
 
+### Documentation style baseline
+
+Public documentation follows the Google Developer Documentation Style Guide after applying Flow's
+project-specific contract and security rules. The repository stores this decision in two durable
+forms:
+
+- `AGENTS.md` gives repository-scoped instructions to future automated contributors.
+- `docs/documentation-style.md` gives public guidance to human and automated contributors.
+
+The `docs:style` gate scans the complete public Markdown set for objective rules. It checks heading
+structure and sentence case, descriptive links, image alternatives, directional references, and a
+small set of prohibited constructions. Human review remains responsible for active voice, second
+person, global readability, inclusive language, technical accuracy, and topic ownership.
+
 ## Implementation plan
 
 1. Add the documentation hub and current-status document.
@@ -94,6 +108,7 @@ The documentation hub owns audience routing and topic ownership. New task docume
 | Link and anchor integrity | `npm run docs:links` | Every tracked relative Markdown link and local anchor resolves |
 | Safety and prerequisite preservation | Focused content tests and review | Pre-alpha, hostile-workload, Prime-host, recovery, and authority warnings remain discoverable |
 | Public prose | `npm run docs:ste` | Changed prose passes the repository style rules |
+| Google documentation style | `npm run docs:style` and `test/integration/package/docs-style.test.ts` | The complete public corpus passes objective style rules and each rule has a negative regression |
 | Repository quality | `npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build && npm run pack:check` | No code, package, or release regression |
 
 ## Verification evidence
@@ -101,17 +116,18 @@ The documentation hub owns audience routing and topic ownership. New task docume
 The final README has 154 lines and 6,683 bytes. The previous README had 1,776 lines and 100,936
 bytes.
 
-The focused public-documentation command passed 45 tests across four files:
+The focused public-documentation command passed 56 tests across five files:
 
 ```sh
 npx vitest run test/integration/package/docs-links.test.ts \
+  test/integration/package/docs-style.test.ts \
   test/integration/package/documentation-structure.test.ts \
   test/scaffold/community-files.test.ts \
   test/integration/package/prime-agent-package.test.ts
 ```
 
-The complete serial suite passed 4,333 tests across 314 files. Four tests were skipped by their
-declared platform or runtime conditions:
+The complete serial suite passed 4,344 tests across 315 files after the style policy and checker
+were implemented. Four tests were skipped by their declared platform or runtime conditions:
 
 ```sh
 npm test -- --maxWorkers=1
@@ -121,6 +137,7 @@ These final gates also passed:
 
 ```sh
 npm run docs:links
+npm run docs:style
 npm run docs:ste
 npm run typecheck
 npm run build
@@ -132,3 +149,15 @@ git diff --check
 
 Lint retained one pre-existing informational note in
 `src/application/external-harness-adapter.ts`. It produced no error or changed file.
+
+The first complete-suite attempt ran inside a desktop sandbox that denied temporary Unix sockets.
+The unrestricted local rerun passed. The same permission was required for the clean package smoke
+test, which installed the generated tarball and exercised the packaged CLI successfully.
+
+The final refinement made root Markdown discovery automatic and moved documentation checks earlier
+in local CI. The final-tree focused command passed 56 tests. A second complete run against that tree
+was killed with exit 137 while unrelated Vitest pools were active on the host. Four unchanged tests
+had reached their fixed timeouts.
+
+One timed-out supervisor case passed an isolated rerun. Three filesystem-heavy cases reached the
+same timeout while the other pools remained active. No documentation test failed.

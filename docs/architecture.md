@@ -279,8 +279,9 @@ unchanged, child ledgers use their declared subset, and recovery refuses any cal
 This is a declarative package boundary, not a general plugin host. Packages cannot execute hooks,
 register tools, add credentials or network, mutate policy or graph structure, select a model, or
 import Prime Verifiers environments. Digest-pinned remote distribution of this inert ABI uses the
-separate installation boundary described below. Future executable package sources require a
-separate out-of-process authority and containment design.
+[capability installation boundary](capability-sourcing.md#digest-pinned-bundle-distribution).
+Future executable package sources require a separate out-of-process authority and containment
+design.
 
 ### Versioned command tool packages
 

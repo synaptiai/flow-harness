@@ -46,6 +46,7 @@ Read the [security policy](../SECURITY.md) before unattended use.
 | --- | --- |
 | [Contributing](../CONTRIBUTING.md) | You want to prepare an issue, change, test, or pull request. |
 | [Testing and evaluation](testing-and-evaluation.md) | You need test layers, release gates, runtime smoke checks, or live-provider policy. |
+| [Documentation style](documentation-style.md) | You write or review public documentation. |
 | [Code of conduct](../CODE_OF_CONDUCT.md) | You need the contributor conduct contract. |
 | [Third-party notices](../THIRD_PARTY_NOTICES.md) | You need dependency attribution and copied-code notices. |
 

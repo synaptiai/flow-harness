@@ -9,7 +9,9 @@ apiVersion: flow.synapti.ai/v1alpha1
 kind: Workflow
 ```
 
-It is intentionally incompatible with the legacy Flow plugin format. The plugin's workflow metadata described how a host model should interpret Markdown; this format compiles directly into scheduler-owned graph state.
+It is intentionally incompatible with the legacy Flow plugin format. The plugin's workflow metadata
+described how a host model was expected to interpret Markdown. This format compiles directly into
+scheduler-owned graph state.
 
 ## Document shape
 
@@ -60,7 +62,11 @@ Criterion state is one of:
 
 Every non-missing decision records the run id, verifier node id, attempt, timestamp, and whether evidence is available. The evidence itself remains on that exact node attempt, retaining the existing size bounds and hashes. The overall goal becomes `accepted` only with a successful run and all criteria accepted; every other terminal run reports `not_accepted`.
 
-Criterion evaluation is a pure domain operation over the captured goal and durable node outcomes. It receives no model transcript, prompt, workspace handle, process executor, or tool. Verifier commands execute under the command-sandbox contract described below, while criterion evaluation itself remains a mutation-free domain operation rather than an operating-system boundary.
+Criterion evaluation is a pure domain operation over the captured goal and durable node outcomes.
+It receives no model transcript, prompt, workspace handle, process executor, or tool. Verifier
+commands execute under the [command-node sandbox contract](#command-node), while criterion
+evaluation itself remains a mutation-free domain operation rather than an operating-system
+boundary.
 
 ## Graph rules
 

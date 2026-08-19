@@ -38,7 +38,7 @@ The supervisor returns one of three admission results:
 Acceptance does not mean the workflow succeeded. Inspect the ledger or follow events to a terminal
 record.
 
-`--command-id` is optional. Automation should create and persist one UUID before submission. Reuse
+`--command-id` is optional. Automation must create and persist one UUID before submission. Reuse
 the same ID and exact input after an acknowledgement loss.
 
 Reusing an ID with different input is a conflict. Flow reconciles uncertain submission only from
