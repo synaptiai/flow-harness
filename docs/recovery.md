@@ -136,10 +136,13 @@ than a recovery mechanism.
 
 Repository replacement is also offline. Before the active lock rename, cancellation returns the
 exact caller reason and the established generation remains active. A replacement
-`commit_uncertain` result means the new lock may already be visible but its directory durability or
-mutation-lock settlement was not confirmed. Run `flow packages list`, inspect both exact versions,
-and run `flow packages verify` before retrying. Do not reinstall or remove either version until the
-active lock is reconciled.
+`commit_uncertain` result means the new lock may already be visible but its directory durability was
+not confirmed. Run `flow packages list`, inspect both exact versions, and run
+`flow packages verify` before retrying. A `settlement_uncertain` result means mutation-lock cleanup
+also did not settle. Inspect `.flow/packages.mutation.lock`, verify that its recorded owner is no
+longer active, reconcile both exact versions, remove only that exact mutation-lock file, and verify
+again before retrying. Do not reinstall or remove either version until the active lock and mutation
+owner are reconciled.
 
 A settled `replaced` result reports `cleanup: retained`. The new lock is authoritative, while the
 old immutable blob remains available to a reader with the prior lock. Existing runs, workers,
@@ -162,6 +165,39 @@ A watcher can continue after one inert check failure only after another full int
 baseline drift, clock rollback, status failure, replacement failure, or commit uncertainty. Do not
 restart after replacement failure until repository and package state are inspected. A settled
 replacement retains the prior immutable blob for readers with an older frozen snapshot.
+
+The first-activation command uses the same owner record. Its state is one
+`first-activation-<identity>.json` file below `.flow/capability.repository/`. A waiting record binds
+the exact package, version, publisher, interval, attempt limit, consumed attempts, and clock
+high-water. A prepared record also binds the exact candidate, source, bundle, and Sigstore receipt.
+A settled record consumes the one-shot authority permanently.
+
+Restart with the same exact arguments. A waiting restart waits a new full interval. A prepared
+restart reopens the exact candidate without network access. It installs only when the package is
+missing and active metadata still authorizes it.
+
+If the exact package is already visible, the
+restart records settlement without a second install. A settled restart returns
+`already_activated` only while the exact package is still visible. A missing or conflicting settled
+package fails without a repository request or reinstall.
+
+Strict first installation rejects another active version with the same package name while it owns
+the package mutation lock. It also checks the prepared clock high-water and exact authenticated
+repository candidate immediately before package publication. After package commit, settlement uses
+the prepared high-water instead of consulting a fresh clock. A watcher-lock release failure does
+not replace an earlier operation or cancellation failure. A release-only failure reports fixed
+settlement failure. It requires watcher-lock remediation.
+
+A failed pre-rename write retains
+`.first-activation-<identity>.json.pending` and blocks later inference. Confirm that no repository
+watcher or first-activation command is active. Preserve the pending file for diagnosis. Inspect
+repository status and run `flow packages list` and `flow packages verify`.
+
+If the installed package
+and current record are safe, remove only that exact pending file and restart with the same
+arguments. The controller will reconcile from the prior durable state. Never remove a settled
+record as routine cleanup. Removing it would discard the proof that the one-shot authority was
+consumed.
 
 For a workflow package, resume accepts `workflow:<name>@<exact-version>` and reconstructs the root
 and every transitive packaged child from the durable snapshot before claiming the run. It verifies

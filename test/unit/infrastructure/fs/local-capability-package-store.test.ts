@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createCapabilityBundleSource } from "../../../../src/domain/capability/capability-bundles.js";
 import { parseCapabilityMetadata } from "../../../../src/domain/capability/capability-metadata.js";
@@ -244,6 +244,383 @@ describe("local capability package store", () => {
     await expect(store.verify()).rejects.toMatchObject({ code: "metadata_target" });
     await expect(store.remove("review-suite", "1.0.0")).resolves.toMatchObject({
       status: "removed",
+    });
+  });
+
+  it("requires active metadata for repository first activation under package mutation ownership", async () => {
+    const projectRoot = await projectDirectory();
+    const created = bundle("Review first activation evidence.");
+    const source = "https://packages.example.test/targets/10/review-suite-1.0.0.flowpkg.json";
+    const publisher = packagePublisher("1");
+    const store = new LocalCapabilityPackageStore(projectRoot, {
+      now: () => new Date("2026-08-14T00:00:00.000Z"),
+    });
+    const input = {
+      source,
+      expectedSha256: digest(created.content),
+      content: created.content,
+      publisher,
+      ...repositoryInstallEvidence(),
+    };
+
+    await expect(store.installFromRepository(input)).rejects.toMatchObject({
+      code: "metadata_target",
+    });
+    await expect(store.list()).resolves.toMatchObject({ bundles: [] });
+
+    await store.refreshMetadata({
+      metadata: capabilityMetadata(created.content, {
+        version: 1,
+        source,
+        publisher: publisherPolicy(publisher),
+      }),
+      authority: metadataAuthority(),
+    });
+    await expect(store.installFromRepository(input)).resolves.toMatchObject({
+      status: "installed",
+      bundle: { name: "review-suite", version: "1.0.0" },
+    });
+  });
+
+  it("rejects a repository install when another version of the package is already active", async () => {
+    const projectRoot = await projectDirectory();
+    const first = versionedBundle("1.0.0", "Review first activation evidence.");
+    const existing = versionedBundle("2.0.0", "Review existing activation evidence.");
+    const firstSource = "https://packages.example.test/targets/10/review-suite-1.0.0.flowpkg.json";
+    const existingSource =
+      "https://packages.example.test/targets/20/review-suite-2.0.0.flowpkg.json";
+    const firstPublisher = packagePublisher("1");
+    const existingPublisher = packagePublisher("2");
+    const store = new LocalCapabilityPackageStore(projectRoot, {
+      now: () => new Date("2026-08-14T00:00:00.000Z"),
+    });
+    await store.refreshMetadata({
+      metadata: capabilityMetadataForTargets(1, [
+        {
+          content: first.content,
+          version: "1.0.0",
+          source: firstSource,
+          publisher: publisherPolicy(firstPublisher),
+        },
+        {
+          content: existing.content,
+          version: "2.0.0",
+          source: existingSource,
+          publisher: publisherPolicy(existingPublisher),
+        },
+      ]),
+      authority: metadataAuthority(),
+    });
+    await store.installFromRepository({
+      source: existingSource,
+      expectedSha256: digest(existing.content),
+      content: existing.content,
+      publisher: existingPublisher,
+      ...repositoryInstallEvidence(),
+    });
+
+    await expect(
+      store.installFromRepository({
+        source: firstSource,
+        expectedSha256: digest(first.content),
+        content: first.content,
+        publisher: firstPublisher,
+        ...repositoryInstallEvidence(),
+      }),
+    ).rejects.toMatchObject({ code: "identity_conflict" });
+    await expect(store.list()).resolves.toMatchObject({
+      bundles: [{ name: "review-suite", version: "2.0.0" }],
+    });
+  });
+
+  it("rejects repository clock rollback before publishing package bytes", async () => {
+    const projectRoot = await projectDirectory();
+    const created = bundle("Review repository clock evidence.");
+    const source = "https://packages.example.test/targets/10/review-suite-1.0.0.flowpkg.json";
+    const publisher = packagePublisher("1");
+    const store = new LocalCapabilityPackageStore(projectRoot, {
+      now: () => new Date("2026-08-13T23:59:59.000Z"),
+    });
+    await store.refreshMetadata({
+      metadata: capabilityMetadata(created.content, {
+        version: 1,
+        source,
+        publisher: publisherPolicy(publisher),
+      }),
+      authority: metadataAuthority(),
+    });
+    const assertCurrent = vi.fn().mockResolvedValue(undefined);
+    const input = {
+      source,
+      expectedSha256: digest(created.content),
+      content: created.content,
+      publisher,
+      signal: new AbortController().signal,
+      trustedClockHighWater: "2026-08-14T00:00:00.000Z",
+      advanceTrustedClockHighWater: async () => undefined,
+      assertCurrent,
+    };
+
+    await expect(store.installFromRepository(input)).rejects.toMatchObject({
+      code: "metadata_rollback",
+    });
+    expect(assertCurrent).not.toHaveBeenCalled();
+    await expect(store.list()).resolves.toMatchObject({ bundles: [] });
+  });
+
+  it("rechecks repository currentness before active lock publication", async () => {
+    const projectRoot = await projectDirectory();
+    const created = bundle("Review repository currentness evidence.");
+    const source = "https://packages.example.test/targets/10/review-suite-1.0.0.flowpkg.json";
+    const publisher = packagePublisher("1");
+    const store = new LocalCapabilityPackageStore(projectRoot, {
+      now: () => new Date("2026-08-14T00:00:00.000Z"),
+    });
+    await store.refreshMetadata({
+      metadata: capabilityMetadata(created.content, {
+        version: 1,
+        source,
+        publisher: publisherPolicy(publisher),
+      }),
+      authority: metadataAuthority(),
+    });
+    const assertCurrent = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("PRIVATE_REPOSITORY_CHANGED"));
+    const input = {
+      source,
+      expectedSha256: digest(created.content),
+      content: created.content,
+      publisher,
+      signal: new AbortController().signal,
+      trustedClockHighWater: "2026-08-14T00:00:00.000Z",
+      advanceTrustedClockHighWater: async () => undefined,
+      assertCurrent,
+    };
+
+    const caught = await store.installFromRepository(input).catch((error: unknown) => error);
+    expect(caught).toMatchObject({ code: "metadata_target" });
+    expect(String(caught)).not.toContain("PRIVATE_REPOSITORY_CHANGED");
+    expect(assertCurrent).toHaveBeenCalledTimes(2);
+    await expect(store.list()).resolves.toMatchObject({ bundles: [] });
+  });
+
+  it("requires current repository evidence before exact idempotent success", async () => {
+    const projectRoot = await projectDirectory();
+    const created = bundle("Review exact repository evidence.");
+    const source = "https://packages.example.test/targets/10/review-suite-1.0.0.flowpkg.json";
+    const publisher = packagePublisher("1");
+    const store = new LocalCapabilityPackageStore(projectRoot, {
+      now: () => new Date("2026-08-14T00:00:00.000Z"),
+    });
+    await store.refreshMetadata({
+      metadata: capabilityMetadata(created.content, {
+        version: 1,
+        source,
+        publisher: publisherPolicy(publisher),
+      }),
+      authority: metadataAuthority(),
+    });
+    await store.installFromRepository({
+      source,
+      expectedSha256: digest(created.content),
+      content: created.content,
+      publisher,
+      ...repositoryInstallEvidence(),
+    });
+    const assertCurrent = vi.fn().mockRejectedValue(new Error("PRIVATE_STALE_CANDIDATE"));
+
+    const caught = await store
+      .installFromRepository({
+        source,
+        expectedSha256: digest(created.content),
+        content: created.content,
+        publisher,
+        signal: new AbortController().signal,
+        trustedClockHighWater: "2026-08-14T00:00:00.000Z",
+        advanceTrustedClockHighWater: async () => undefined,
+        assertCurrent,
+      })
+      .catch((error: unknown) => error);
+
+    expect(caught).toMatchObject({ code: "metadata_target" });
+    expect(String(caught)).not.toContain("PRIVATE_STALE_CANDIDATE");
+    expect(assertCurrent).toHaveBeenCalledOnce();
+    await expect(store.list()).resolves.toMatchObject({
+      bundles: [{ name: "review-suite", version: "1.0.0" }],
+    });
+  });
+
+  it("rechecks repository currentness after blob preparation and before blob publication", async () => {
+    const projectRoot = await projectDirectory();
+    const created = bundle("Review blob publication currentness.");
+    const source = "https://packages.example.test/targets/10/review-suite-1.0.0.flowpkg.json";
+    const publisher = packagePublisher("1");
+    let current = true;
+    const store = new LocalCapabilityPackageStore(projectRoot, {
+      now: () => new Date("2026-08-14T00:00:00.000Z"),
+      beforeCapabilityLockRename: async () => {
+        current = false;
+      },
+    });
+    await store.refreshMetadata({
+      metadata: capabilityMetadata(created.content, {
+        version: 1,
+        source,
+        publisher: publisherPolicy(publisher),
+      }),
+      authority: metadataAuthority(),
+    });
+
+    await expect(
+      store.installFromRepository({
+        source,
+        expectedSha256: digest(created.content),
+        content: created.content,
+        publisher,
+        signal: new AbortController().signal,
+        trustedClockHighWater: "2026-08-14T00:00:00.000Z",
+        advanceTrustedClockHighWater: async () => undefined,
+        assertCurrent: async () => {
+          if (!current) {
+            throw new Error("PRIVATE_STALE_BLOB_CANDIDATE");
+          }
+        },
+      }),
+    ).rejects.toMatchObject({ code: "metadata_target" });
+    await expect(readdir(join(projectRoot, ".flow", "packages", "sha256"))).resolves.toEqual([]);
+    await expect(store.list()).resolves.toMatchObject({ bundles: [] });
+  });
+
+  it("rechecks repository currentness immediately before active-lock rename", async () => {
+    const projectRoot = await projectDirectory();
+    const created = bundle("Review active lock currentness.");
+    const source = "https://packages.example.test/targets/10/review-suite-1.0.0.flowpkg.json";
+    const publisher = packagePublisher("1");
+    let current = true;
+    const store = new LocalCapabilityPackageStore(projectRoot, {
+      now: () => new Date("2026-08-14T00:00:00.000Z"),
+      beforeCapabilityLockPublished: async () => {
+        current = false;
+      },
+    });
+    await store.refreshMetadata({
+      metadata: capabilityMetadata(created.content, {
+        version: 1,
+        source,
+        publisher: publisherPolicy(publisher),
+      }),
+      authority: metadataAuthority(),
+    });
+
+    await expect(
+      store.installFromRepository({
+        source,
+        expectedSha256: digest(created.content),
+        content: created.content,
+        publisher,
+        signal: new AbortController().signal,
+        trustedClockHighWater: "2026-08-14T00:00:00.000Z",
+        advanceTrustedClockHighWater: async () => undefined,
+        assertCurrent: async () => {
+          if (!current) {
+            throw new Error("PRIVATE_STALE_LOCK_CANDIDATE");
+          }
+        },
+      }),
+    ).rejects.toMatchObject({ code: "metadata_target" });
+    await expect(store.list()).resolves.toMatchObject({ bundles: [] });
+  });
+
+  it("advances the trusted clock high-water across repository fences", async () => {
+    const projectRoot = await projectDirectory();
+    const created = bundle("Review monotonic repository clock.");
+    const source = "https://packages.example.test/targets/10/review-suite-1.0.0.flowpkg.json";
+    const publisher = packagePublisher("1");
+    await new LocalCapabilityPackageStore(projectRoot, {
+      now: () => new Date("2026-08-14T10:00:00.000Z"),
+    }).refreshMetadata({
+      metadata: capabilityMetadata(created.content, {
+        version: 1,
+        source,
+        publisher: publisherPolicy(publisher),
+      }),
+      authority: metadataAuthority(),
+    });
+    const clock = vi.fn(
+      sequenceClock([
+        "2026-08-14T11:00:00.000Z",
+        "2026-08-14T12:00:00.000Z",
+        "2026-08-14T11:00:00.000Z",
+        "2026-08-14T13:00:00.000Z",
+        "2026-08-14T14:00:00.000Z",
+        "2026-08-14T15:00:00.000Z",
+        "2026-08-14T16:00:00.000Z",
+      ]),
+    );
+    const store = new LocalCapabilityPackageStore(projectRoot, { now: clock });
+    const advanceTrustedClockHighWater = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      store.installFromRepository({
+        source,
+        expectedSha256: digest(created.content),
+        content: created.content,
+        publisher,
+        signal: new AbortController().signal,
+        trustedClockHighWater: "2026-08-14T10:00:00.000Z",
+        advanceTrustedClockHighWater,
+        assertCurrent: async () => undefined,
+      }),
+    ).rejects.toMatchObject({ code: "metadata_rollback" });
+    expect(clock).toHaveBeenCalledTimes(3);
+    expect(advanceTrustedClockHighWater.mock.calls).toEqual([
+      ["2026-08-14T11:00:00.000Z"],
+      ["2026-08-14T12:00:00.000Z"],
+    ]);
+    await expect(store.list()).resolves.toMatchObject({ bundles: [] });
+  });
+
+  it("withholds publication when trusted-clock persistence fails", async () => {
+    const projectRoot = await projectDirectory();
+    const created = bundle("Review durable repository clock evidence.");
+    const source = "https://packages.example.test/targets/10/review-suite-1.0.0.flowpkg.json";
+    const publisher = packagePublisher("1");
+    const store = new LocalCapabilityPackageStore(projectRoot, {
+      now: () => new Date("2026-08-14T11:00:00.000Z"),
+    });
+    await new LocalCapabilityPackageStore(projectRoot, {
+      now: () => new Date("2026-08-14T10:00:00.000Z"),
+    }).refreshMetadata({
+      metadata: capabilityMetadata(created.content, {
+        version: 1,
+        source,
+        publisher: publisherPolicy(publisher),
+      }),
+      authority: metadataAuthority(),
+    });
+
+    const caught = await store
+      .installFromRepository({
+        source,
+        expectedSha256: digest(created.content),
+        content: created.content,
+        publisher,
+        signal: new AbortController().signal,
+        trustedClockHighWater: "2026-08-14T10:00:00.000Z",
+        advanceTrustedClockHighWater: async () => {
+          throw new Error("PRIVATE_CLOCK_STORE_FAILURE");
+        },
+        assertCurrent: async () => undefined,
+      })
+      .catch((error: unknown) => error);
+
+    expect(caught).toMatchObject({ code: "metadata_target" });
+    expect(String(caught)).not.toContain("PRIVATE_CLOCK_STORE_FAILURE");
+    await expect(store.list()).resolves.toMatchObject({ bundles: [] });
+    await expect(readdir(join(projectRoot, ".flow", "packages"))).rejects.toMatchObject({
+      code: "ENOENT",
     });
   });
 
@@ -1099,7 +1476,7 @@ describe("local capability package store", () => {
     });
   });
 
-  it("preserves a replacement failure when mutation-lock release also fails", async () => {
+  it("reports replacement settlement uncertainty while retaining the primary failure", async () => {
     const fixture = await replacementFixture();
     const store = new LocalCapabilityPackageStore(fixture.projectRoot, {
       now: () => new Date("2026-08-14T00:00:00.000Z"),
@@ -1108,9 +1485,14 @@ describe("local capability package store", () => {
       },
     });
 
-    await expect(
-      store.replace({ ...fixture.input, expectedCurrentVersion: "0.9.0" }),
-    ).rejects.toMatchObject({ code: "not_found" });
+    const failure = await store
+      .replace({ ...fixture.input, expectedCurrentVersion: "0.9.0" })
+      .catch((error: unknown) => error);
+    expect(failure).toMatchObject({ code: "settlement_uncertain" });
+    expect((failure as Error).cause).toBeInstanceOf(AggregateError);
+    expect(((failure as Error).cause as AggregateError).errors[0]).toMatchObject({
+      code: "not_found",
+    });
     await expect(fixture.store.list()).resolves.toMatchObject({
       bundles: [{ name: "review-suite", version: "1.0.0" }],
     });
@@ -1654,13 +2036,75 @@ describe("local capability package store", () => {
         expectedSha256: sha256,
         content: created.content,
       }),
-    ).rejects.toMatchObject({ code: "commit_uncertain" });
+    ).rejects.toMatchObject({ code: "settlement_uncertain" });
+    await expect(new LocalCapabilityPackageStore(projectRoot).list()).resolves.toMatchObject({
+      bundles: [{ name: "review-suite" }],
+    });
+    await expect(
+      new LocalCapabilityPackageStore(projectRoot).settleMutation(new AbortController().signal),
+    ).rejects.toMatchObject({ code: "busy" });
+  });
+
+  it("reports combined package-commit and mutation-lock-release uncertainty", async () => {
+    const projectRoot = await projectDirectory();
+    const created = bundle("Review combined package settlement.");
+    const store = new LocalCapabilityPackageStore(projectRoot, {
+      afterCapabilityLockRenamed: async () => {
+        throw new Error("PRIVATE_PACKAGE_COMMIT_SETTLEMENT");
+      },
+      beforeMutationLockRelease: async () => {
+        throw new Error("PRIVATE_MUTATION_LOCK_RELEASE");
+      },
+    });
+
+    const caught = await store
+      .install({
+        source: "https://packages.example.test/review-suite-1.0.0.flowpkg",
+        expectedSha256: digest(created.content),
+        content: created.content,
+      })
+      .catch((error: unknown) => error);
+
+    expect(caught).toMatchObject({ code: "settlement_uncertain" });
+    expect((caught as Error).cause).toBeInstanceOf(AggregateError);
+    expect(((caught as Error).cause as AggregateError).errors).toHaveLength(2);
     await expect(new LocalCapabilityPackageStore(projectRoot).list()).resolves.toMatchObject({
       bundles: [{ name: "review-suite" }],
     });
   });
 
-  it("preserves a primary domain failure when lock release also fails", async () => {
+  it("reports combined cancellation and mutation-lock-release uncertainty", async () => {
+    const projectRoot = await projectDirectory();
+    const created = bundle("Review cancelled package settlement.");
+    const controller = new AbortController();
+    const reason = new Error("operator cancelled");
+    const store = new LocalCapabilityPackageStore(projectRoot, {
+      beforeCapabilityLockRename: async () => {
+        controller.abort(reason);
+      },
+      beforeMutationLockRelease: async () => {
+        throw new Error("PRIVATE_MUTATION_LOCK_RELEASE");
+      },
+    });
+
+    const caught = await store
+      .install({
+        source: "https://packages.example.test/review-suite-1.0.0.flowpkg",
+        expectedSha256: digest(created.content),
+        content: created.content,
+        signal: controller.signal,
+      })
+      .catch((error: unknown) => error);
+
+    expect(caught).toMatchObject({ code: "settlement_uncertain" });
+    expect((caught as Error).cause).toBeInstanceOf(AggregateError);
+    expect(((caught as Error).cause as AggregateError).errors[0]).toBe(reason);
+    await expect(new LocalCapabilityPackageStore(projectRoot).list()).resolves.toMatchObject({
+      bundles: [],
+    });
+  });
+
+  it("reports settlement uncertainty while retaining a primary domain failure", async () => {
     const projectRoot = await projectDirectory();
     const first = bundle("Review evidence.");
     const conflicting = bundle("Use a different rubric.");
@@ -1683,9 +2127,12 @@ describe("local capability package store", () => {
       })
       .catch((error: unknown) => error);
 
-    expect(failure).toMatchObject({ code: "identity_conflict" });
+    expect(failure).toMatchObject({ code: "settlement_uncertain" });
     expect((failure as Error).cause).toBeInstanceOf(AggregateError);
     expect(((failure as Error).cause as AggregateError).errors).toHaveLength(2);
+    expect(((failure as Error).cause as AggregateError).errors[0]).toMatchObject({
+      code: "identity_conflict",
+    });
   });
 
   it("fails removal of an identity that is not installed", async () => {
@@ -1800,6 +2247,27 @@ function packagePublisher(marker: string) {
     certificateIdentity:
       "https://github.com/synaptiai/flow-harness/.github/workflows/release.yml@refs/tags/v1",
     signatureBundleDigest: `sha256:${marker.repeat(64)}`,
+  };
+}
+
+function repositoryInstallEvidence() {
+  return {
+    signal: new AbortController().signal,
+    trustedClockHighWater: "2026-08-14T00:00:00.000Z",
+    advanceTrustedClockHighWater: async () => undefined,
+    assertCurrent: async () => undefined,
+  } as const;
+}
+
+function sequenceClock(values: readonly string[]): () => Date {
+  let index = 0;
+  return () => {
+    const value = values[index];
+    index += 1;
+    if (value === undefined) {
+      throw new Error("clock fixture exhausted");
+    }
+    return new Date(value);
   };
 }
 

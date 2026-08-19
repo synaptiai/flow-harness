@@ -27,8 +27,8 @@ prompt overlays and authority-preserving skill-resource projections. New single-
 projections, paired evaluation, reviewed activation, durable run snapshots, and rollback are also
 implemented.
 
-Remaining targets include executable extensions, automatic first package activation, remote or multi-user
-UI hosts, and stronger isolation.
+Remaining targets include executable extensions, remote or multi-user UI hosts, and stronger
+isolation.
 Each first-party host accepts exact A2UI-profile presentation packages.
 These packages arrange a closed Flow-owned widget catalog. Catalog v2 also adds bounded attributed
 static notes without behavior or run authority. Explicit
@@ -36,7 +36,8 @@ signed project metadata now provides local-clock
 expiry, revocation, exact-target admission, and monotonic rollback refusal. An explicit signed
 public channel stages inert candidates for reviewed activation. A standards-based TUF repository
 can optionally watch one already-installed package and atomically apply patch updates. Same-major
-minor updates require explicit policy. Flow does not install a first package automatically.
+minor updates require explicit policy. A separate finite command can install one exact first
+version and then terminate.
 
 The operator-selectable container command profile is implemented behind the Flow-owned sandbox
 port. Its pinned Linux x64 runtime gate passed in hosted CI. This profile is a shared-kernel
@@ -126,8 +127,11 @@ containment milestone. It is not VM-grade or multi-tenant isolation.
   includes an optional no-overlap check scheduler and a foreground single-package watcher. The
   watcher binds an exact installed package and publisher, defaults to patch-only updates, can
   explicitly allow same-major minor updates, and stops on replacement uncertainty. Mutable tags and
-  private credentials remain deferred.
-  Online root bootstrap, automatic first activation, major or policy-package replacement,
+  private credentials remain deferred. A finite one-shot first activator binds one exact missing
+  package, exact version, exact publisher, full interval, and check limit. It requires current
+  active Flow metadata, consumes durable waiting, prepared, and settled states, and cannot reinstall
+  a removed settled package.
+  Online root bootstrap, major or policy-package replacement,
   automatic rollback, and retired-blob maintenance also remain deferred.
 - Workflow contributions use versioned manifests. *(Implemented for inert exact-version workflow source with packaged root/child selection, ordinary recursive compilation, immutable transitive snapshots, deterministic bundle distribution, detached execution, and fail-closed recovery. Parameterized templates and executable modules remain deferred.)*
 - Policy contributions use versioned manifests.

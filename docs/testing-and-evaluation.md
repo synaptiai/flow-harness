@@ -204,9 +204,14 @@ stop behavior.
 Watcher tests prove exact installed-package and publisher binding, patch and minor policy, stable
 highest-version choice, check-only retry, replacement-failure stop, fixed status, and one
 project-local owner. CLI integration performs one real TUF check and offline atomic replacement.
+First-activation tests prove exact grammar, full waits, finite exhaustion, conflict-before-check,
+and deterministic exact selection. They prove inert non-policy admission, active-metadata enforcement, durable
+waiting/prepared/settled recovery, and exact and excessive record bounds. They also prove
+settlement reconciliation and terminal no-reinstall behavior. CLI integration performs a real TUF
+check, offline Sigstore reopen, and metadata-required first installation.
 Frozen attached, detached, child, recovery, replay, and evaluation snapshots remain unchanged.
 The suite does not claim a trustworthy host clock or private repository credentials. It also does
-not claim automatic first activation, major or policy-package replacement, rollback,
+not claim major or policy-package replacement, rollback,
 retained-blob collection, or online trust-root refresh.
 
 Validating `examples/agent-command-approval.workflow.yaml` is credential-free. Running it requires
