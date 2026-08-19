@@ -298,6 +298,17 @@ const scheduleItemSchema = z
   })
   .strict();
 
+const evaluationModelSchema = z
+  .object({
+    provider: z.string().min(1).max(96),
+    id: z.string().min(1).max(256),
+    thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
+  })
+  .strict();
+const modelRouteControlSchema = z
+  .object({ profileId: identifierSchema, nodeId: identifierSchema, route: evaluationModelSchema })
+  .strict();
+
 const publicHeaderSchema = z
   .object({
     version: z.literal(1),
@@ -316,13 +327,11 @@ const publicHeaderSchema = z
     profiles: z.array(profileSchema).length(2),
     controls: z
       .object({
-        model: z
-          .object({
-            provider: z.string().min(1).max(96),
-            id: z.string().min(1).max(256),
-            thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
-          })
-          .strict(),
+        model: evaluationModelSchema,
+        modelRoutes: z
+          .tuple([modelRouteControlSchema, modelRouteControlSchema])
+          .readonly()
+          .optional(),
         budget: budgetSchema,
         network: z.literal("deny"),
         retry: z.object({ providerRetries: z.literal(0), harnessRetries: z.literal(0) }).strict(),
@@ -420,6 +429,22 @@ const publicHeaderSchema = z
       const flowCandidate = candidate?.adapter === "flow-workflow-v1" ? candidate : undefined;
       const baselineBinding = flowBaseline?.effectiveHarness;
       const candidateBinding = flowCandidate?.effectiveHarness;
+      const routeIdentity = flowCandidate?.candidate?.identity;
+      const modelRoutes = header.controls.modelRoutes;
+      const modelRoutesMatch =
+        modelRoutes === undefined
+          ? candidateBinding?.surface !== "model-routing"
+          : candidateBinding?.surface === "model-routing" &&
+            baselineBinding?.surface === "model-routing" &&
+            routeIdentity !== undefined &&
+            "kind" in routeIdentity &&
+            routeIdentity.kind === "model-routing-candidate" &&
+            modelRoutes[0].profileId === flowBaseline?.id &&
+            modelRoutes[1].profileId === flowCandidate?.id &&
+            modelRoutes[0].nodeId === routeIdentity.scope.nodeId &&
+            modelRoutes[1].nodeId === routeIdentity.scope.nodeId &&
+            sameModelRoute(modelRoutes[0].route, routeIdentity.route.before) &&
+            sameModelRoute(modelRoutes[1].route, routeIdentity.route.after);
       const samePackages = (profile: z.infer<typeof flowProfileSchema>): boolean => {
         const packageDigests = profile.effectiveHarness?.packageDigests ?? [];
         return packageDigests.length === 0
@@ -429,6 +454,13 @@ const publicHeaderSchema = z
               profile.capabilityPackageDigests !== undefined &&
               isDeepStrictEqual(profile.capabilityPackageDigests, packageDigests);
       };
+      if (!modelRoutesMatch) {
+        context.addIssue({
+          code: "custom",
+          path: ["controls", "modelRoutes"],
+          message: "model routes must bind the exact effective candidate route identities",
+        });
+      }
       if (
         effectiveProfiles.length !== 2 ||
         flowBaseline === undefined ||
@@ -1683,6 +1715,15 @@ function headerIdentity(header: PublicEvaluationHeader): EvaluationPlanIdentity 
     order: header.order,
     comparison: header.comparison,
   };
+}
+
+function sameModelRoute(
+  left: { readonly provider: string; readonly id: string; readonly thinking: string },
+  right: { readonly provider: string; readonly id: string; readonly thinking: string },
+): boolean {
+  return (
+    left.provider === right.provider && left.id === right.id && left.thinking === right.thinking
+  );
 }
 
 async function ensureCanonicalRoot(root: string): Promise<string> {

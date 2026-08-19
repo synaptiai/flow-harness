@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { constants, type Stats } from "node:fs";
 import { type FileHandle, lstat, open, opendir, realpath } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import type { AgentSkillCandidateIdentity } from "../../domain/adaptation/agent-skill-candidate.js";
 import type { AgentSkillPackageCandidateIdentity } from "../../domain/adaptation/agent-skill-package-candidate.js";
 import type { EffectiveHarnessCandidateSurface } from "../../domain/adaptation/effective-harness-candidate.js";
@@ -487,6 +488,7 @@ export async function admitLocalEvaluationPlan(
   const profiles = bindCandidateComparison(
     admittedProfiles as [AdmittedEvaluationProfile, AdmittedEvaluationProfile],
     source.comparison,
+    source.controls,
   );
   for (const profile of profiles) {
     if (profile.adapter === "flow-workflow-v1") {
@@ -782,6 +784,7 @@ async function stableReadFile(path: string, maxBytes: number, label: string): Pr
 function bindCandidateComparison(
   profiles: readonly [AdmittedEvaluationProfile, AdmittedEvaluationProfile],
   comparison: EvaluationPlanSource["comparison"],
+  controls: EvaluationPlanSource["controls"],
 ): [AdmittedEvaluationProfile, AdmittedEvaluationProfile] {
   const effectiveProfiles = profiles.filter(
     (profile): profile is AdmittedFlowEvaluationProfile =>
@@ -817,6 +820,7 @@ function bindCandidateComparison(
         "effective harness comparison profiles must select one exact baseline and candidate pair",
       );
     }
+    assertEffectiveModelRoutes(baseline, candidate, controls);
     return [...profiles];
   }
   const candidateProfiles = profiles.filter(
@@ -896,6 +900,44 @@ function bindCandidateComparison(
   ) as [AdmittedEvaluationProfile, AdmittedEvaluationProfile];
 }
 
+function assertEffectiveModelRoutes(
+  baseline: AdmittedFlowEvaluationProfile,
+  candidate: AdmittedFlowEvaluationProfile,
+  controls: EvaluationPlanSource["controls"],
+): void {
+  const routes = controls.modelRoutes;
+  const surface = candidate.effectiveHarness?.surface;
+  if (routes === undefined) {
+    if (surface === "model-routing") {
+      throw new EvaluationAdmissionError(
+        "invalid_workflow",
+        "model-routing comparison requires two explicit profile routes",
+      );
+    }
+    return;
+  }
+  const identity = candidate.candidate;
+  const [baselineRoute, candidateRoute] = routes;
+  if (
+    surface !== "model-routing" ||
+    baseline.effectiveHarness?.surface !== "model-routing" ||
+    identity === undefined ||
+    !("kind" in identity) ||
+    identity.kind !== "model-routing-candidate" ||
+    baselineRoute.profileId !== baseline.id ||
+    candidateRoute.profileId !== candidate.id ||
+    baselineRoute.nodeId !== identity.scope.nodeId ||
+    candidateRoute.nodeId !== identity.scope.nodeId ||
+    !isDeepStrictEqual(baselineRoute.route, identity.route.before) ||
+    !isDeepStrictEqual(candidateRoute.route, identity.route.after)
+  ) {
+    throw new EvaluationAdmissionError(
+      "invalid_workflow",
+      "model-routing controls must bind the exact effective candidate route identities",
+    );
+  }
+}
+
 function capabilitySnapshotForState(state: EffectiveHarnessState): CapabilitySnapshot {
   return validateCapabilitySnapshot({
     version: 1,
@@ -922,17 +964,35 @@ function assertWorkflowControls(
       `profile "${profileId}" requires at least one model-bearing node controlled by the evaluation plan`,
     );
   }
+  const configuredRoute = controls.modelRoutes?.find((item) => item.profileId === profileId);
+  if (controls.modelRoutes !== undefined && configuredRoute === undefined) {
+    throw new EvaluationAdmissionError(
+      "invalid_workflow",
+      `profile "${profileId}" has no explicit model route`,
+    );
+  }
+  let selectedTargets = 0;
   for (const model of models) {
+    const selected =
+      configuredRoute !== undefined && model.rootAgent && model.nodeId === configuredRoute.nodeId;
+    if (selected) selectedTargets += 1;
+    const expected = selected ? configuredRoute.route : controls.model;
     if (
-      model.provider !== controls.model.provider ||
-      model.id !== controls.model.id ||
-      model.thinking !== controls.model.thinking
+      model.route.provider !== expected.provider ||
+      model.route.id !== expected.id ||
+      model.route.thinking !== expected.thinking
     ) {
       throw new EvaluationAdmissionError(
         "invalid_workflow",
-        `profile "${profileId}" workflow model "${model.provider}/${model.id}/${model.thinking}" does not match evaluation controls`,
+        `profile "${profileId}" workflow model does not match evaluation controls`,
       );
     }
+  }
+  if (configuredRoute !== undefined && selectedTargets !== 1) {
+    throw new EvaluationAdmissionError(
+      "invalid_workflow",
+      `profile "${profileId}" model route must select one exact root agent node`,
+    );
   }
 }
 
@@ -1006,22 +1066,27 @@ function assertClosedWorkflowStructure(
 
 function workflowModels(
   workflow: CompiledWorkflow,
-): readonly { readonly provider: string; readonly id: string; readonly thinking: string }[] {
+  rootAgent = true,
+): readonly {
+  readonly nodeId: string;
+  readonly rootAgent: boolean;
+  readonly route: { readonly provider: string; readonly id: string; readonly thinking: string };
+}[] {
   const models: Array<{
-    readonly provider: string;
-    readonly id: string;
-    readonly thinking: string;
+    readonly nodeId: string;
+    readonly rootAgent: boolean;
+    readonly route: { readonly provider: string; readonly id: string; readonly thinking: string };
   }> = [];
   for (const node of workflow.nodes) {
     if (node.type === "agent") {
-      models.push(node.agent.model);
+      models.push({ nodeId: node.id, rootAgent, route: node.agent.model });
     } else if (
       node.type === "verifier" &&
       (node.verifier.kind === "model" || node.verifier.kind === "packaged-model")
     ) {
-      models.push(node.verifier.model);
+      models.push({ nodeId: node.id, rootAgent: false, route: node.verifier.model });
     } else if (node.type === "child") {
-      models.push(...workflowModels(node.child.workflow));
+      models.push(...workflowModels(node.child.workflow, false));
     }
   }
   return models;

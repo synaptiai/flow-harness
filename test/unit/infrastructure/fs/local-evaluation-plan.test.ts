@@ -42,6 +42,7 @@ import {
 } from "../../../../src/infrastructure/fs/local-evaluation-store.js";
 import { effectiveHarnessCandidateArtifactFixture } from "../../../fixtures/effective-harness-evaluation.js";
 import { primeExternalHarnessIdentity } from "../../../fixtures/evaluation/prime-external-harness-identity.js";
+import { modelRoutingCandidateFixture } from "../../../fixtures/model-routing-candidate.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -222,6 +223,126 @@ controls:`,
     const store = new LocalEvaluationStore(join(project, "evaluations"));
     await store.create(header);
     await expect(store.read("effective-harness-evaluation")).resolves.toMatchObject({ header });
+  });
+
+  it("binds two explicit profile routes to one exact model-routing artifact", async () => {
+    const project = await evaluationProject();
+    const baselineSource = routingWorkflowSource();
+    const baselineState = createEffectiveHarnessState({
+      scopeDigest: "a".repeat(64),
+      workflowSource: baselineSource,
+      packages: [],
+    });
+    const route = modelRoutingCandidateFixture(baselineSource);
+    const projected = projectEffectiveHarnessCandidate({
+      baseline: baselineState,
+      candidate: {
+        kind: "model-routing",
+        projection: route,
+        baselineWorkflowSource: baselineSource,
+      },
+    });
+    const artifact = createEffectiveHarnessCandidateArtifact({
+      baselineHead: createEffectiveHarnessHeadIdentity({
+        scopeDigest: baselineState.scopeDigest,
+        workflowId: baselineState.workflowId,
+        generation: 7,
+        activationDigest: "b".repeat(64),
+        transitionDigest: "c".repeat(64),
+        stateDigest: baselineState.stateDigest,
+      }),
+      baselineState,
+      candidateState: projected.state,
+      candidate: route.identity,
+    });
+    await writeFile(
+      join(project, "route.effective-harness.json"),
+      encodeEffectiveHarnessCandidateArtifact(artifact),
+    );
+    const plan = await readFile(join(project, "evaluation.yaml"), "utf8");
+    await writeFile(
+      join(project, "evaluation.yaml"),
+      plan
+        .replace(
+          /profiles:[\s\S]*?controls:/,
+          `profiles:
+  - { id: baseline, adapter: flow-workflow-v1, effectiveCandidate: route.effective-harness.json, selection: baseline }
+  - { id: candidate, adapter: flow-workflow-v1, effectiveCandidate: route.effective-harness.json, selection: candidate }
+controls:`,
+        )
+        .replace(
+          "  budget:",
+          `  modelRoutes:
+    - { profileId: baseline, nodeId: implement, route: { provider: test, id: deterministic, thinking: medium } }
+    - { profileId: candidate, nodeId: implement, route: { provider: openai, id: gpt-5.4, thinking: high } }
+  budget:`,
+        ),
+    );
+
+    const admitted = await admitLocalEvaluationPlan(join(project, "evaluation.yaml"));
+    expect(admitted.controls.modelRoutes).toEqual([
+      { profileId: "baseline", nodeId: "implement", route: route.identity.route.before },
+      { profileId: "candidate", nodeId: "implement", route: route.identity.route.after },
+    ]);
+    expect(admitted.profiles).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "baseline",
+          effectiveHarness: expect.objectContaining({ surface: "model-routing" }),
+        }),
+        expect.objectContaining({
+          id: "candidate",
+          candidate: expect.objectContaining({ kind: "model-routing-candidate" }),
+          effectiveHarness: expect.objectContaining({ surface: "model-routing" }),
+        }),
+      ]),
+    );
+    const header = createPublicEvaluationHeader(admitted, "route-evaluation");
+    expect((header.controls as typeof admitted.controls).modelRoutes).toEqual(
+      admitted.controls.modelRoutes,
+    );
+    expect(header.profiles).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "baseline",
+          effectiveHarness: expect.objectContaining({
+            selection: "baseline",
+            surface: "model-routing",
+          }),
+        }),
+        expect.objectContaining({
+          id: "candidate",
+          candidate: {
+            provenance: "route.effective-harness.json",
+            identity: expect.objectContaining({
+              kind: "model-routing-candidate",
+              scope: expect.objectContaining({ nodeId: "implement" }),
+              route: route.identity.route,
+            }),
+          },
+          effectiveHarness: expect.objectContaining({
+            selection: "candidate",
+            surface: "model-routing",
+          }),
+        }),
+      ]),
+    );
+    const store = new LocalEvaluationStore(join(project, "evaluations"));
+    await store.create(header);
+    await expect(store.read("route-evaluation")).resolves.toMatchObject({ header });
+
+    const forged = structuredClone(header) as MutablePublicHeader;
+    forged.evaluationId = "forged-route-evaluation";
+    const forgedRoutes = forged.controls.modelRoutes;
+    if (forgedRoutes === undefined) throw new Error("route header has no model routes");
+    const forgedCandidateRoute = forgedRoutes[1];
+    if (forgedCandidateRoute === undefined) throw new Error("route header has no candidate route");
+    forgedCandidateRoute.route.id = "gpt-5.5-private-canary";
+    redigestEvaluationHeader(forged);
+    await expect(store.create(forged as PublicEvaluationHeader)).rejects.toMatchObject({
+      code: "corrupt",
+      message: expect.not.stringContaining("gpt-5.5-private-canary"),
+    });
   });
 
   it("rejects an effective harness artifact through the legacy candidate field", async () => {
@@ -968,6 +1089,28 @@ nodes:
 `;
 }
 
+function routingWorkflowSource(): string {
+  return workflowSource("deterministic", 8).replace(
+    `  - id: publish
+    type: result
+    dependsOn: [implement]
+    result:
+      source: { nodeId: implement, field: agent.text }`,
+    `  - id: private-review
+    type: agent
+    dependsOn: [implement]
+    agent:
+      prompt: Review the result.
+      model: { provider: test, id: deterministic }
+      tools: [read]
+  - id: publish
+    type: result
+    dependsOn: [private-review]
+    result:
+      source: { nodeId: private-review, field: agent.text }`,
+  );
+}
+
 function planSource(workflowPath = "baseline.workflow.yaml"): string {
   return `apiVersion: flow.synapti.ai/v1alpha1
 kind: EvaluationPlan
@@ -1254,6 +1397,10 @@ function redigestSkillCandidateHeader(header: MutablePublicHeader): void {
   const candidateIdentity = requiredSkillCandidateIdentity(header);
   const { candidateDigest: _candidateDigest, ...identityContent } = candidateIdentity;
   candidateIdentity.candidateDigest = calculateAgentSkillCandidateIdentityDigest(identityContent);
+  redigestEvaluationHeader(header);
+}
+
+function redigestEvaluationHeader(header: MutablePublicHeader): void {
   const profiles: EvaluationPlanIdentity["profiles"] = header.profiles.map((profile) => {
     if (profile.adapter !== "flow-workflow-v1") {
       throw new Error("Agent Skill durable fixture unexpectedly contains an external profile");
@@ -1284,7 +1431,7 @@ function redigestSkillCandidateHeader(header: MutablePublicHeader): void {
     id: header.planId,
     suite: header.suite,
     profiles,
-    controls: header.controls,
+    controls: header.controls as EvaluationPlanIdentity["controls"],
     seeds: header.seeds,
     order: header.order,
     comparison: header.comparison,
