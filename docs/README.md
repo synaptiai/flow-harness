@@ -1,0 +1,62 @@
+# Flow documentation
+
+This page is the documentation hub for Flow. Start with the path that matches your task.
+
+Flow is a public pre-alpha source preview. Its contracts may change before the first stable release.
+Read the [security policy](../SECURITY.md) before unattended use.
+
+## Start here
+
+| Document | Use it when |
+| --- | --- |
+| [Getting started](getting-started.md) | You want to build Flow and complete one credential-free run. |
+| [Project status](project-status.md) | You need current maturity, platform support, and known limits. |
+| [Configuration](configuration.md) | You need project settings, operator ceilings, sandbox selection, or policy-change rules. |
+
+## Use Flow
+
+| Document | Use it when |
+| --- | --- |
+| [Run and control workflows](guides/run-and-control.md) | You need attached or detached runs, presentation hosts, approvals, budgets, cancellation, or recovery entry points. |
+| [Use capability packages](guides/capability-packages.md) | You need local packages, exact bundles, repository candidates, activation, replacement, or watching. |
+| [Reproducible harness evaluation](evaluation.md) | You need paired comparisons, private verification, adaptive candidates, activation, inspection, or export. |
+| [Local ACP v1 bridge](acp.md) | You need to observe and control Flow from a compatible local editor. |
+
+## Operate Flow
+
+| Document | Use it when |
+| --- | --- |
+| [Prime runtime operations](operations/prime-runtime.md) | You need the Linux x64 Prime profile or the higher-isolation container command profile. |
+| [Recovery and interruption safety](recovery.md) | You need restart rules, uncertain-state handling, remediation, or durable ownership details. |
+| [Security policy](../SECURITY.md) | You need supported security boundaries or private vulnerability reporting. |
+| [Support](../SUPPORT.md) | You need public support channels or issue-reporting guidance. |
+
+## Understand the system
+
+| Document | Use it when |
+| --- | --- |
+| [Architecture](architecture.md) | You need components, dependency direction, trust boundaries, failure modes, or non-goals. |
+| [Workflow specification](workflow-spec.md) | You need the normative executable graph, node, package, budget, approval, and ledger contracts. |
+| [Capability sourcing](capability-sourcing.md) | You need package authority, acquisition, TUF, Sigstore, metadata, storage, and coupling rules. |
+| [Delivery roadmap](roadmap.md) | You need completed gates, planned work, or the current product benchmark. |
+
+## Develop and verify
+
+| Document | Use it when |
+| --- | --- |
+| [Contributing](../CONTRIBUTING.md) | You want to prepare an issue, change, test, or pull request. |
+| [Testing and evaluation](testing-and-evaluation.md) | You need test layers, release gates, runtime smoke checks, or live-provider policy. |
+| [Code of conduct](../CODE_OF_CONDUCT.md) | You need the contributor conduct contract. |
+| [Third-party notices](../THIRD_PARTY_NOTICES.md) | You need dependency attribution and copied-code notices. |
+
+## Documentation ownership
+
+Each topic has one canonical owner:
+
+- Task guides explain how to complete an operator or author action.
+- Operations runbooks describe host preparation and recovery-sensitive procedures.
+- Specifications define executable and persisted contracts.
+- Architecture documents explain boundaries, dependencies, and non-goals.
+- The README introduces the project and routes readers here.
+
+Do not copy a detailed contract into another document. Summarize the decision and link to its owner.

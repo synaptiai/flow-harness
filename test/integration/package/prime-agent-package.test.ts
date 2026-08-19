@@ -354,7 +354,10 @@ describe("Prime Agent package boundary", () => {
   it("pins the Docker toolchain and runs the shared local CI command", async () => {
     const workflow = await readFile(resolve(repositoryRoot, ".github/workflows/ci.yml"), "utf8");
     const localCi = await readFile(resolve(repositoryRoot, "scripts/ci-local.mjs"), "utf8");
-    const readme = await readFile(resolve(repositoryRoot, "README.md"), "utf8");
+    const runbook = await readFile(
+      resolve(repositoryRoot, "docs/operations/prime-runtime.md"),
+      "utf8",
+    );
     const workflowCorePatternWrite = workflow.indexOf(
       "sudo sysctl --write kernel.core_pattern=core",
     );
@@ -363,8 +366,8 @@ describe("Prime Agent package boundary", () => {
     );
     const workflowReleaseGate = workflow.indexOf("run: npm run ci:local");
     const workflowDockerDiagnostic = workflow.indexOf("name: Diagnose Prime Docker availability");
-    const readmeCorePatternWrite = readme.indexOf("sudo sysctl --write kernel.core_pattern=core");
-    const readmePreparation = readme.indexOf("node dist/cli/main.js runtime prepare prime-agent");
+    const runbookCorePatternWrite = runbook.indexOf("sudo sysctl --write kernel.core_pattern=core");
+    const runbookPreparation = runbook.indexOf("node dist/cli/main.js runtime prepare prime-agent");
 
     expect(workflow).toContain("docker_version='5:28.3.3-1~ubuntu.24.04~noble'");
     expect(workflow).toContain(
@@ -427,21 +430,22 @@ describe("Prime Agent package boundary", () => {
     expect(localCi).toContain("FLOW_PRIME_PREPARED_ATTESTATION");
     expect(workflow).toContain("useradd --create-home --groups docker flow-prime-peer");
     expect(workflow).toContain("FLOW_PRIME_TEST_SECOND_USER=flow-prime-peer");
-    expect(readme).toContain("dedicated, reprovisionable Prime runner");
-    expect(readme).toContain("`containerd.io` 1.7.27-1 package");
-    expect(readme).toMatch(/`runc` 1\.2\.5 commit\s+`v1\.2\.5-0-g59923ef`/);
-    expect(readme).toContain("does not resolve `runc` through `PATH`");
-    expect(readme).not.toContain("Replace the path when your system uses a different");
-    expect(readme).toContain("chmod 0711 /run/docker /run/docker/containerd");
-    expect(readmeCorePatternWrite).toBeGreaterThan(-1);
-    expect(readmePreparation).toBeGreaterThan(readmeCorePatternWrite);
-    expect(readme).toContain("non-piped host core pattern");
-    expect(readme).toContain("/run/flow-prime-runtime-v1.json");
-    expect(readme).toContain('ps --no-headers --pid "$containerd_pid" --format ppid');
-    expect(readme).not.toContain('ps --no-headers --ppid "$docker_pid" --format pid');
-    expect(readme).toMatch(
-      /Do not use this setup on a\s+shared development host or on a host that serves Kubernetes or other `containerd` clients/,
+    expect(runbook).toContain("dedicated, reprovisionable runner");
+    expect(runbook).toContain("`containerd.io` 1.7.27-1");
+    expect(runbook).toMatch(/`runc` 1\.2\.5 commit\s+`v1\.2\.5-0-g59923ef`/);
+    expect(runbook).toContain("does not resolve `runc` through `PATH`");
+    expect(runbook).not.toContain("Replace the path when your system uses a different");
+    expect(runbook).toContain("chmod 0711 /run/docker /run/docker/containerd");
+    expect(runbookCorePatternWrite).toBeGreaterThan(-1);
+    expect(runbookPreparation).toBeGreaterThan(runbookCorePatternWrite);
+    expect(runbook).toContain("non-piped host core pattern");
+    expect(runbook).toContain("/run/flow-prime-runtime-v1.json");
+    expect(runbook).toContain('ps --no-headers --pid "$containerd_pid" --format ppid');
+    expect(runbook).not.toContain('ps --no-headers --ppid "$docker_pid" --format pid');
+    expect(runbook).toContain("Do not use a shared development host.");
+    expect(runbook).toContain(
+      "Do not use a host that serves Kubernetes or other `containerd` clients.",
     );
-    expect(readme).toContain("recreate the runner from its trusted base image");
+    expect(runbook).toMatch(/[Rr]ecreate the runner from its trusted base image/);
   });
 });

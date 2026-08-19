@@ -15,6 +15,7 @@ const verifiedGates = [
   ["npm", ["run", "test:browser"]],
   ["npm", ["run", "test:runtime"]],
   ["node", ["scripts/smoke-compiled.mjs"]],
+  ["npm", ["run", "docs:links"]],
   ["npm", ["run", "docs:ste"]],
   ["npm", ["run", "pack:check"]],
   ["npm", ["audit", "--omit=dev", "--audit-level=low"]],

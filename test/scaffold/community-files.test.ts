@@ -17,7 +17,7 @@ const rootUrl = new URL("../../", import.meta.url);
 
 describe("public repository contracts", () => {
   it("documents an honest source-based pre-alpha first run", async () => {
-    const readme = await readText("README.md");
+    const readme = await readPublicDocumentation();
 
     expect(readme).toMatch(/pre-alpha/i);
     expect(readme).toMatch(/not published to npm/i);
@@ -27,29 +27,16 @@ describe("public repository contracts", () => {
     expect(readme).toContain("node dist/cli/main.js run");
     expect(readme).toContain("[Contributing](CONTRIBUTING.md)");
     expect(readme).toContain("[Support](SUPPORT.md)");
-    expect(readme).toContain("[Security](SECURITY.md)");
+    expect(readme).toContain("[Security policy](SECURITY.md)");
   });
 
   it("reports policy and attributed presentation packages as implemented", async () => {
-    const documentationEntries = await readdir(new URL("../../docs/", import.meta.url), {
-      withFileTypes: true,
-    });
-    const publicPaths = [
-      "README.md",
-      ...documentationEntries
-        .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
-        .map((entry) => `docs/${entry.name}`),
-    ];
-    const publicDocuments = Object.fromEntries(
-      await Promise.all(publicPaths.map(async (path) => [path, await readText(path)] as const)),
-    );
-    const corpus = Object.values(publicDocuments).join("\n");
-    const roadmap = publicDocuments["docs/roadmap.md"] ?? "";
-    const readme = publicDocuments["README.md"] ?? "";
+    const corpus = await readPublicDocumentation();
+    const roadmap = await readText("docs/roadmap.md");
 
-    expect(readme).toMatch(/Versioned policy packages.*Implemented/is);
+    expect(corpus).toContain("Workflow, policy, and A2UI-profile presentation packages.");
     expect(roadmap).toMatch(/Policy contributions use versioned manifests.*Flow implements/is);
-    expect(readme).toMatch(/A2UI-profile presentation packages.*catalog v2.*bounded attributed/is);
+    expect(corpus).toMatch(/A2UI-profile presentation packages.*catalog v2.*bounded attributed/is);
     expect(roadmap).toMatch(/accepts exact A2UI-profile presentation packages/i);
     expect(roadmap).toMatch(/Catalog v2 also adds bounded attributed\s+static notes/i);
     expect(roadmap).not.toMatch(/Remaining targets include[^.]*\bpolicy\b/i);
@@ -114,7 +101,7 @@ describe("public repository contracts", () => {
 
   it("documents the operator-only container command profile and its residual boundary", async () => {
     const [readme, configuration, architecture, security, testing, roadmap] = await Promise.all([
-      readText("README.md"),
+      readPublicDocumentation(),
       readText("docs/configuration.md"),
       readText("docs/architecture.md"),
       readText("SECURITY.md"),
@@ -125,14 +112,14 @@ describe("public repository contracts", () => {
     expect(readme).toContain("sandbox:\n  profile: container");
     expect(readme).toContain("flow-container-v1");
     expect(readme).toContain(".flow/container-command-intents");
-    expect(readme).toMatch(/protected paths.*masked inside the workspace/is);
+    expect(readme).toMatch(/Flow masks protected.*credential.*environment paths/is);
     expect(readme).toMatch(/sensitive workspace.*masked/is);
     expect(readme).toMatch(/Git metadata.*read-only/is);
     expect(readme).toMatch(/complete submitted Docker configuration.*policy digest/is);
-    expect(readme).toMatch(/bounded workspace content snapshot.*immediately before launch/is);
+    expect(readme).toMatch(/bounded workspace\s+content snapshot.*immediately before launch/is);
     expect(readme).toMatch(/workspace.*contain.*configured project root.*reject/is);
-    expect(readme).toMatch(/container profile.*shared Linux kernel/is);
-    expect(readme).toMatch(/command-only seccomp.*socket creation.*cannot bind/is);
+    expect(readme).toMatch(/container profile.*shares the Linux kernel/is);
+    expect(readme).toMatch(/profile also denies local TCP and Unix socket creation/is);
 
     expect(configuration).toContain("sandbox:\n  profile: container");
     expect(configuration).toMatch(/project configuration cannot select.*sandbox profile/is);
@@ -170,7 +157,7 @@ describe("public repository contracts", () => {
 
   it("documents and configures the Ubuntu 24.04 sandbox prerequisite", async () => {
     const [readme, workflow] = await Promise.all([
-      readText("README.md"),
+      readPublicDocumentation(),
       readText(".github/workflows/ci.yml"),
     ]);
     const appArmorSetting = "kernel.apparmor_restrict_unprivileged_userns=0";
@@ -285,7 +272,7 @@ describe("public repository contracts", () => {
       testing,
       exampleSource,
     ] = await Promise.all([
-      readText("README.md"),
+      readPublicDocumentation(),
       readText("docs/architecture.md"),
       readText("docs/workflow-spec.md"),
       readText("docs/recovery.md"),
@@ -298,7 +285,7 @@ describe("public repository contracts", () => {
 
     expect(readme).toMatch(/hash-anchored/i);
     expect(readme).toContain("`read`, `ls`, and `edit`");
-    expect(readme).toMatch(/write-ahead durable evidence/i);
+    expect(readme).toContain("`node_effect_prepared`");
     expect(architecture).toContain("`node_effect_prepared`");
     expect(workflowSpec).toContain("expectedSha256");
     expect(workflowSpec).toMatch(/stale_version/);
@@ -339,7 +326,7 @@ describe("public repository contracts", () => {
       childExampleSource,
       optimizationExampleSource,
     ] = await Promise.all([
-      readText("README.md"),
+      readPublicDocumentation(),
       readText("docs/architecture.md"),
       readText("docs/workflow-spec.md"),
       readText("docs/recovery.md"),
@@ -353,8 +340,8 @@ describe("public repository contracts", () => {
     expect(readme).toContain("resource_exhausted");
     expect(readme).toContain("maxArtifactBytes");
     expect(readme).toMatch(/artifactBytes.*UTF-8.*stdout \+ stderr/is);
-    expect(readme).toMatch(/does not yet.*artifact store/is);
-    expect(readme).toMatch(/reported-cost.*hard billing cap/is);
+    expect(readme).toMatch(/do not claim an artifact store/is);
+    expect(readme).toMatch(/No prepaid hard model-cost cap/is);
     expect(architecture).toMatch(/durable resource accounting/i);
     expect(architecture).toMatch(/recursively re-reduces every settled child\s+ledger/i);
     expect(workflowSpec).toContain("maxCostUsd");
@@ -398,7 +385,7 @@ describe("public repository contracts", () => {
       testing,
       exampleSource,
     ] = await Promise.all([
-      readText("README.md"),
+      readPublicDocumentation(),
       readText("docs/architecture.md"),
       readText("docs/workflow-spec.md"),
       readText("docs/recovery.md"),
@@ -408,7 +395,7 @@ describe("public repository contracts", () => {
       readText("examples/concurrent-fork.workflow.yaml"),
     ]);
 
-    expect(readme).toMatch(/concurrency:\s*\{\s*maxNodes:\s*2\s*\}/);
+    expect(readme).toMatch(/concurrency:\s*\n\s*maxNodes:\s*2/);
     expect(readme).toMatch(/declaration order.*quiesc/is);
     expect(architecture).toMatch(/quiescent waves/i);
     expect(workflowSpec).toMatch(/maxNodes.*1 through 32/is);
@@ -437,7 +424,7 @@ describe("public repository contracts", () => {
       testing,
       source,
     ] = await Promise.all([
-      readText("README.md"),
+      readPublicDocumentation(),
       readText("docs/architecture.md"),
       readText("docs/workflow-spec.md"),
       readText("docs/recovery.md"),
@@ -448,7 +435,7 @@ describe("public repository contracts", () => {
       readText("examples/bounded-loop.workflow.yaml"),
     ]);
 
-    expect(readme).toMatch(/Replay-safe bounded loops.*Implemented/is);
+    expect(readme).toContain("## Replay-safe bounded loops");
     expect(readme).toContain("loop_limit_reached");
     expect(architecture).toContain("`node_loop_checked`");
     expect(workflowSpec).toMatch(/maxIterations.*1 through 32/is);
@@ -485,7 +472,7 @@ describe("public repository contracts", () => {
   it("documents replay-safe typed results with a valid credential-free example", async () => {
     const [readme, architecture, workflowSpec, recovery, roadmap, security, testing, source] =
       await Promise.all([
-        readText("README.md"),
+        readPublicDocumentation(),
         readText("docs/architecture.md"),
         readText("docs/workflow-spec.md"),
         readText("docs/recovery.md"),
@@ -529,7 +516,7 @@ describe("public repository contracts", () => {
   it("documents isolated child runs with a valid credential-free example", async () => {
     const [readme, architecture, workflowSpec, recovery, security, roadmap, testing, source] =
       await Promise.all([
-        readText("README.md"),
+        readPublicDocumentation(),
         readText("docs/architecture.md"),
         readText("docs/workflow-spec.md"),
         readText("docs/recovery.md"),
@@ -539,7 +526,7 @@ describe("public repository contracts", () => {
         readText("examples/isolated-child.workflow.yaml"),
       ]);
 
-    expect(readme).toMatch(/Isolated child workflow runs.*Implemented/is);
+    expect(readme).toContain("## Isolated child workflow node");
     expect(readme).toContain("examples/isolated-child.workflow.yaml");
     expect(architecture).toContain("### Isolated child run trees");
     expect(workflowSpec).toContain("## Isolated child workflow node");
@@ -566,7 +553,7 @@ describe("public repository contracts", () => {
   it("documents detached supervision without overstating its trust boundary", async () => {
     const [readme, architecture, workflowSpec, recovery, sourcing, roadmap, security] =
       await Promise.all([
-        readText("README.md"),
+        readPublicDocumentation(),
         readText("docs/architecture.md"),
         readText("docs/workflow-spec.md"),
         readText("docs/recovery.md"),
@@ -589,7 +576,7 @@ describe("public repository contracts", () => {
 
   it("documents strict project configuration and bounded admission", async () => {
     const [readme, configuration, architecture, recovery, roadmap, security] = await Promise.all([
-      readText("README.md"),
+      readPublicDocumentation(),
       readText("docs/configuration.md"),
       readText("docs/architecture.md"),
       readText("docs/recovery.md"),
@@ -597,7 +584,7 @@ describe("public repository contracts", () => {
       readText("SECURITY.md"),
     ]);
 
-    expect(readme).toMatch(/one worker.*32 additional jobs.*durable FIFO queue/is);
+    expect(readme).toMatch(/one active detached worker and 32 queued jobs/is);
     expect(readme).toMatch(/accepted.*queued.*queue_full/is);
     expect(configuration).toMatch(/project.*narrow.*operator ceiling/is);
     expect(configuration).toMatch(/invalid\s+versions or kinds.*source and field diagnostics/is);
@@ -610,7 +597,7 @@ describe("public repository contracts", () => {
   it("documents portable Agent Skills with a valid progressive-disclosure example", async () => {
     const [readme, architecture, workflowSpec, sourcing, roadmap, testing, workflowSource, skill] =
       await Promise.all([
-        readText("README.md"),
+        readPublicDocumentation(),
         readText("docs/architecture.md"),
         readText("docs/workflow-spec.md"),
         readText("docs/capability-sourcing.md"),
@@ -620,7 +607,7 @@ describe("public repository contracts", () => {
         readText("examples/agent-skills/review/SKILL.md"),
       ]);
 
-    expect(readme).toMatch(/Portable Agent Skills packages.*Implemented/is);
+    expect(readme).toContain("## Portable Agent Skills");
     expect(readme).toContain("skills validate");
     expect(readme).toContain("examples/portable-agent-skill.workflow.yaml");
     expect(architecture).toMatch(/immutable capability snapshot.*run_started/is);
@@ -654,7 +641,7 @@ describe("public repository contracts", () => {
       source,
       manifest,
     ] = await Promise.all([
-      readText("README.md"),
+      readPublicDocumentation(),
       readText("docs/architecture.md"),
       readText("docs/workflow-spec.md"),
       readText("docs/capability-sourcing.md"),
@@ -712,7 +699,7 @@ describe("public repository contracts", () => {
       source,
       manifest,
     ] = await Promise.all([
-      readText("README.md"),
+      readPublicDocumentation(),
       readText("docs/architecture.md"),
       readText("docs/workflow-spec.md"),
       readText("docs/capability-sourcing.md"),
@@ -790,7 +777,7 @@ describe("public repository contracts", () => {
       bundleSource,
       verifierManifest,
     ] = await Promise.all([
-      readText("README.md"),
+      readPublicDocumentation(),
       readText("docs/architecture.md"),
       readText("docs/workflow-spec.md"),
       readText("docs/recovery.md"),
@@ -803,11 +790,11 @@ describe("public repository contracts", () => {
       readText("examples/capability-bundle-source/verifiers/release-tests/VERIFIER.yaml"),
     ]);
 
-    expect(readme).toMatch(/Distribute exact capability bundles/i);
+    expect(readme).toContain("# Use capability packages");
     expect(readme).toContain("packages install");
     expect(readme).toContain("packages install-oci");
     expect(readme).toContain("--username registry-user --password-stdin");
-    expect(readme).toMatch(/HTTPS digest identifies bytes.*does not authenticate a publisher/is);
+    expect(readme).toMatch(/HTTPS digest identifies.*bytes.*does not authenticate a publisher/is);
     expect(readme).toMatch(/signed OCI form.*admitted publisher signed those bytes/is);
     expect(architecture).toMatch(/publisher-authenticated OCI acquisition/is);
     expect(workflowSpec).toContain("## Installed capability bundles");
@@ -869,7 +856,7 @@ describe("public repository contracts", () => {
       manifestSource,
       parentSource,
     ] = await Promise.all([
-      readText("README.md"),
+      readPublicDocumentation(),
       readText("docs/architecture.md"),
       readText("docs/workflow-spec.md"),
       readText("docs/recovery.md"),
@@ -881,7 +868,7 @@ describe("public repository contracts", () => {
       readText("examples/versioned-workflow-package.workflow.yaml"),
     ]);
 
-    expect(readme).toMatch(/Use a versioned workflow package/i);
+    expect(readme).toContain("## Versioned workflow packages");
     expect(readme).toContain("workflow:release-check@1.0.0");
     expect(architecture).toMatch(/closed\s+immutable snapshot.*standard workflow compiler/is);
     expect(workflowSpec).toContain("## Versioned workflow packages");
@@ -925,7 +912,7 @@ describe("public repository contracts", () => {
   it("documents live agent command approval with a valid provider-neutral example", async () => {
     const [readme, architecture, workflowSpec, recovery, roadmap, security, testing, source] =
       await Promise.all([
-        readText("README.md"),
+        readPublicDocumentation(),
         readText("docs/architecture.md"),
         readText("docs/workflow-spec.md"),
         readText("docs/recovery.md"),
@@ -969,7 +956,7 @@ describe("public repository contracts", () => {
       baseline,
       candidate,
     ] = await Promise.all([
-      readText("README.md"),
+      readPublicDocumentation(),
       readText("docs/architecture.md"),
       readText("docs/evaluation.md"),
       readText("docs/workflow-spec.md"),
@@ -983,7 +970,7 @@ describe("public repository contracts", () => {
       readText("examples/evaluation/candidate.workflow.yaml"),
     ]);
 
-    expect(readme).toContain("flow eval validate");
+    expect(readme).toMatch(/(?:flow|main\.js) eval validate/);
     expect(readme).toContain("docs/evaluation.md");
     expect(architecture).toMatch(/ordinary run\s+ledger.*separate evaluation ledger/is);
     expect(evaluation).toContain("paired-alternating-v1");
@@ -1043,7 +1030,7 @@ describe("public repository contracts", () => {
       security,
       testing,
     ] = await Promise.all([
-      readText("README.md"),
+      readPublicDocumentation(),
       readText("docs/architecture.md"),
       readText("docs/capability-sourcing.md"),
       readText("docs/evaluation.md"),
@@ -1082,6 +1069,24 @@ describe("public repository contracts", () => {
 
 async function readText(path: string): Promise<string> {
   return await readFile(new URL(path, rootUrl), "utf8");
+}
+
+let publicDocumentationPromise: Promise<string> | undefined;
+
+async function readPublicDocumentation(): Promise<string> {
+  publicDocumentationPromise ??= (async () => {
+    const documentationPaths = (
+      await readdir(new URL("../../docs/", import.meta.url), {
+        recursive: true,
+      })
+    )
+      .filter((path) => path.endsWith(".md"))
+      .map((path) => `docs/${path}`)
+      .sort();
+    const paths = ["README.md", ...documentationPaths];
+    return (await Promise.all(paths.map(readText))).join("\n");
+  })();
+  return await publicDocumentationPromise;
 }
 
 interface IssueForm {

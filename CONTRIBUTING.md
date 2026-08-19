@@ -9,8 +9,8 @@ Requirements:
 - Node.js 26.7 or newer
 - npm with lockfile support
 - Git
-- Linux or macOS with the native sandbox prerequisites listed in the
-  [README](README.md#prerequisites)
+- Linux or macOS with the native sandbox prerequisites listed in
+  [Getting started](docs/getting-started.md#before-you-begin)
 
 Install and verify:
 
