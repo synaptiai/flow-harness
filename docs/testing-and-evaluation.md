@@ -377,6 +377,13 @@ surface deltas. They cover both composition orders and exact current-head revali
 cover publication order, exact retry settlement, retained-state rollback, and project-scope binding.
 They also cover ancestor links, source replacement, cancellation, and content-free public views.
 
+Model-routing tests bind one existing root agent before and after tuple. They reject no-op routes,
+non-root targets, unrelated workflow changes, source races, links, stale heads, route substitution,
+and direct activation without composition. Paired-plan tests require ordered profile routes and
+shared non-route controls. Runtime tests observe the selected route in attached recovery and a
+detached worker without live candidate sources. CLI tests cover offline inspection, export,
+activation, public-output privacy, and state-digest rollback.
+
 Runtime tests remove the live effective store. They exercise attached resume, detached worker
 execution, and child capability binding. They also cover replay and current-policy rejection from
 the frozen snapshot.

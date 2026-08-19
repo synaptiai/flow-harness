@@ -546,6 +546,10 @@ evidence. Agent Skill candidate admission also observes the complete baseline pa
 change stops admission. The operator must inspect and validate the new bytes. Candidate validation
 never changes the baseline workflow or package.
 
+Model-route admission observes one candidate file and one exact baseline workflow. It binds the
+target root agent node and its before and after model tuples. A source change, target change, or
+route mismatch stops admission. The candidate contains no credential or provider response.
+
 An Agent Skill package candidate is a directory publication. Flow writes a private same-parent
 staging directory and syncs the exact manifest and package tree. Flow reopens and validates the
 complete candidate. It revalidates every generation source, confirms that the final path is absent,
@@ -564,9 +568,10 @@ generation attempt.
 
 Never remove a lock while its generation process may still be active.
 
-An evaluation header binds the candidate, baseline, evidence, prompt changes, and projected workflow.
-Evaluation resume re-admits the supplied plan. It rejects candidate removal, replacement, and source
-changes. It continues only the missing schedule suffix.
+An evaluation header binds the candidate, baseline, evidence, declared surface, and projected
+workflow. A model-route header also binds the ordered baseline and candidate route controls.
+Evaluation resume re-admits the supplied plan. It rejects removal, replacement, source changes, or
+route substitution. It continues only the missing schedule suffix.
 
 Each evaluation trial has one durable adapter-start record. Flow synchronizes this record before an
 adapter can contact a model or start an external harness. The record names the exact plan, schedule
@@ -597,6 +602,11 @@ package. The candidate artifact contains the projected workflow and exact genera
 activation commits, attached runs, detached workers, resume, recovery, replay, inspect, export, and
 rollback use these durable bytes. They do not reopen the review directory, blueprint, evidence,
 baseline file, network, registry, or credential source.
+
+For model routing, the paired artifact contains complete baseline and candidate workflows. The
+candidate workflow differs only at the declared root agent model tuple. After activation, runtime
+and recovery use the selected durable workflow. They do not reopen the route file, baseline file,
+evaluation directory, provider catalog, or credential source.
 
 The mutation lock identifies its host, process, and random token. Flow retires it only after the
 same host reports that the process does not exist. A live, foreign, changed, or invalid lock owner

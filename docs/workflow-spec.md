@@ -1395,6 +1395,11 @@ tuple, an exact run budget, `network: deny`, zero provider and harness retries, 
 `paired-alternating-v1`, and fixed comparison constraints. Each Flow workflow must contain at least
 one model-bearing node. It must match the declared model and budget at each graph level.
 
+A plan for one composed model-routing artifact also declares an ordered two-entry `modelRoutes`
+tuple. The entries name the baseline and candidate profiles, target the same root agent node, and
+match the candidate's before and after routes. The shared model still applies to every other agent
+and model verifier. Plans without `modelRoutes` keep the existing shared-model contract and digest.
+
 Evaluation admission rejects unknown fields, non-canonical identifiers and paths, duplicate task,
 profile, verifier, or seed identities, excess schedule size, symbolic links, special fixture entries,
 `.flow` fixture state, mutable source observations, and profile/control drift. Agent Skills, tool
@@ -1633,10 +1638,54 @@ activation, validation depends on the sibling source files named by the candidat
 new runs, detached workers, resume, recovery, replay, inspect, and export use only durable workflow
 and package bytes.
 
+### Model-routing candidates
+
+A model-routing candidate is a separate inert document. It changes one existing root agent model
+tuple and no other workflow field:
+
+```yaml
+apiVersion: flow.synapti.ai/v1alpha1
+kind: ModelRoutingCandidate
+metadata: { id: route-implement-to-gpt, version: 1.0.0 }
+scope:
+  kind: workflow-model-route
+  workflowId: evaluated-profile
+  nodeId: implement
+baseline:
+  workflow:
+    path: baseline.workflow.yaml
+    sourceSha256: <64-lowercase-hex>
+    workflowDigest: <64-lowercase-hex>
+route:
+  before: { provider: test, id: deterministic, thinking: medium }
+  after: { provider: openai, id: gpt-5.4, thinking: high }
+```
+
+Candidate source is at most 65536 UTF-8 bytes. Candidate and workflow paths are canonical portable
+relative paths. The provider is a canonical identifier. The model id is 1 through 256 trimmed
+characters. The thinking level is one closed workflow thinking value. The routes must differ.
+
+Admission uses stable no-follow reads and revalidates every observed directory and file identity.
+The baseline hash, compiled digest, workflow id, target node, and before route must match exactly.
+The target must be a root `agent` node. Projection replaces only its `agent.model` value, emits
+deterministic JSON, recompiles the workflow, and rejects any other difference.
+
+The public identity binds the source, baseline, target, before route, after route, projected workflow,
+and candidate digest. It contains no workflow body, credential, endpoint, price, availability rule,
+or provider response.
+
+`flow candidate validate <candidate.yaml>` is read-only. Use
+`flow candidate compose <candidate.yaml>` to bind the route to the exact current effective head.
+Direct activation of the ordinary route document fails. Evaluation binds the composed artifact and
+the exact ordered `modelRoutes` pair. Execution receives only the selected profile route.
+
+Flow does not discover models or choose a route from task content. It does not route child workflows
+or change model verifiers. It does not balance traffic, retry another route, or use a fallback.
+
 ### Adaptive activation
 
-An operator can activate a prompt, Agent Skill resource, or Agent Skill package candidate after a
-complete superior evaluation.
+An operator can activate a prompt, Agent Skill resource, Agent Skill package, or composed model-route
+candidate after a complete superior evaluation.
 Preview creates a proposal without changing state:
 
 ```text
@@ -1655,6 +1704,10 @@ evaluation proof. A prompt snapshot binds the exact selected source. An Agent Sk
 snapshot binds the unchanged workflow and exact selected skill package. An Agent Skill package
 snapshot binds the projected workflow and generated package. Its paired baseline binds the original
 workflow and no package.
+
+A composed model-route artifact uses the effective harness store. Preview and apply require the
+exact route pair from the evaluation header. The complete selected workflow becomes durable before
+the effective head changes.
 
 A workflow source is at most 8 MiB. The complete capability snapshot is at most 16 MiB.
 
@@ -1682,7 +1735,7 @@ current lineage:
 
 ```text
 flow activation rollback <workflow-id> \
-  --to <candidate-id>@<version>|agent-skill:<candidate-id>@<version>|agent-skill-package:<candidate-id>@<version>|baseline \
+  --to state:<sha256>|<candidate-id>@<version>|agent-skill:<candidate-id>@<version>|agent-skill-package:<candidate-id>@<version>|baseline \
   --actor <label> --dry-run
 ```
 
@@ -1704,8 +1757,9 @@ or package, change active runs, or delete artifacts.
 - No opaque continuation after a process dies during an in-flight Pi tool call. Live approval works only while the owning attached process or detached worker retains that Pi session. A fresh retry is a new attempt and is allowed only by the persisted proof gate; it is not a substitute for restoring a live session.
 - Model verifiers, including packaged rubrics, are zero-tool and evidence-bounded but remain probabilistic and not prompt-injection-proof. Arbitrary evaluator code and reward/evaluation environments are not supported.
 - Adaptive candidates support root-agent prompt overlays, selected-resource changes in one existing
-  Agent Skill, and one new inert Agent Skill package. One root agent selects that new package.
-  Automatic skill, memory, sub-agent, and routing candidates remain unavailable. Package
+  Agent Skill, one new inert Agent Skill package, and one static root-agent model route. One root
+  agent selects the new package or route. Automatic skill, memory, sub-agent, dynamic routing,
+  multi-node routing, and route fallback remain unavailable. Package
   installation, signing, publication, executable generation, and multi-skill candidates remain
   unavailable. Traffic splitting and staged rollout also remain unavailable.
 - No prepaid hard model-cost cap, provider invoice reconciliation, or CPU/memory/disk quota. `maxArtifactBytes` bounds logical retained evidence, not physical storage, spill, or disk usage. Per-run graph-node concurrency, detached worker count, and queue depth are separate bounded controls.

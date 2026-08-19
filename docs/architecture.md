@@ -21,6 +21,11 @@ tool packages. It also adds inert workflow packages and deterministic bundle dis
 publisher-authenticated OCI acquisition, a content-addressed project store, and immutable snapshots
 are included.
 
+Gate 7 adds reviewed adaptive changes above the evaluation layer. Prompt and Agent Skill candidates
+can change bounded prompt or package surfaces. A model-routing candidate can replace one exact model
+tuple on one existing root agent node. Flow evaluates each route under shared non-route controls,
+then activates one complete effective harness state.
+
 Flow includes first-party terminal and local browser presentation hosts over the public run
 projection. A strict A2UI v0.9.1 profile lets an exact inert package arrange the closed host-owned
 widget catalog for one session. Executable or remote UI extensions remain later work.
@@ -72,6 +77,7 @@ flowchart TB
         engine["Workflow engine<br/>Compiles the plan and selects the next safe step"]
         rules["Rules and safeguards<br/>Policy · approvals · budgets · verification"]
         capability["Capability governance<br/>Checks, freezes, and maintains exact package bytes"]
+        adaptation["Evaluation and adaptation<br/>Compares reviewed candidates and prepares activations"]
     end
 
     subgraph execution["3. Execution plane — performs bounded work"]
@@ -97,11 +103,14 @@ flowchart TB
     people -->|"Starts attached work"| cli
     people -->|"Observes and steers"| presentation
     cli -->|"Runs now"| engine
+    cli -->|"Reviews and compares candidates"| adaptation
     cli -->|"Queues detached work"| supervisor
     presentation -->|"Reads public state and sends bound actions"| supervisor
     supervisor -->|"Starts or resumes"| engine
     capability -->|"Fetches and authenticates inert bytes"| sources
     capability -->|"Supplies an immutable snapshot"| engine
+    adaptation -->|"Runs paired trials"| engine
+    adaptation -->|"Stores evaluation and activation evidence"| stores
     engine -->|"Asks what is legal"| rules
     rules -->|"Authorizes bounded agent work"| agents
     rules -->|"Authorizes bounded commands"| commands
@@ -147,7 +156,7 @@ before success. It stops on unresolved side-effect or settlement uncertainty.
 | --- | --- | --- |
 | Command line | `src/cli/` | Parses public commands, composes dependencies, and projects safe output. |
 | Workflow rules and safeguards | `src/domain/` | Defines provider-neutral workflows, state transitions, policy, evidence, budgets, and validation. |
-| Workflow engine and capability governance | `src/application/` | Coordinates use cases through ports, asks the domain for legal transitions, and defines bounded package-storage maintenance. |
+| Workflow engine, evaluation, adaptation, and capability governance | `src/application/` | Coordinates use cases through ports, asks the domain for legal transitions, and prepares evaluated state changes. |
 | Detached work and recovery | `src/supervisor/` | Owns bounded queueing, worker adoption, cancellation, event paging, and detached lifecycle. |
 | Presentation, storage, package, sandbox, and runtime adapters | `src/infrastructure/` | Implements application ports for local files, HTTP, OCI, TUF, ACP, Pi, OMP, Prime, SRT, terminal, and browser boundaries. |
 | Prime evaluation container | `prime-container/` | Provides the fixed Go supervisor, kernel bridge, driver protocol, and hardened image used by the Prime adapter. |
@@ -197,6 +206,8 @@ Architecture is derived from these flows.
 | Replace an established repository package | An operator supplies one exact candidate digest, current version, and publisher policy | Two-target metadata, offline TUF and Sigstore replay, one atomic active lock switch, and retained prior content for old readers |
 | Watch one established repository package | An operator starts one foreground watcher with an exact package, publisher, interval, and update policy | Full-interval TUF checks, deterministic candidate selection, offline atomic replacement, fixed JSON Lines status, and no overlapping Flow watcher |
 | Reclaim retired package blobs | An operator previews, reviews, and applies one exact prune plan | Active blobs and durable snapshots stay unchanged while retired content is unlinked with generation-safe reader settlement |
+| Compare one model route | An operator supplies one route candidate and a paired plan | Two ordered profiles use exact model tuples under shared tasks, budgets, retries, network policy, and verification |
+| Activate one reviewed adaptation | An operator previews and applies one superior evaluated candidate | One complete immutable harness state becomes the head for future runs. Retained states remain rollback targets. |
 
 ### Operator flows
 
@@ -1168,6 +1179,11 @@ returns only inert UTF-8 contents. Flow publishes `CANDIDATE.json` beside the ex
 `skill/<name>/` tree. It excludes scripts, executable or binary files, links, special files, and
 model-selected paths.
 
+A `ModelRoutingCandidate` is a fourth inert source. It identifies one existing root agent node and
+declares one exact before route and one exact after route. Each route contains a provider, model id,
+and thinking level. The candidate cannot contain credentials, endpoints, fallback routes, prices,
+or availability rules. Flow changes only the declared model tuple.
+
 The generation services use the provider-neutral `AgentExecutor` port. The Pi adapter is the first
 implementation. Flow creates one agent request with no tools, skills, or packages. Prompt
 generation includes only selected root-agent prompts and tuning-only packets. Agent Skill
@@ -1203,6 +1219,11 @@ capability package. The candidate profile compiles the one-field skill-selection
 exactly the generated package. The durable plan and store recompute both workflow identities, both
 capability states, and the candidate cross-bindings before execution or replay.
 
+For a model-routing candidate, the evaluation plan stores an ordered `modelRoutes` pair. The
+baseline entry must match the declared before route. The candidate entry must match the declared
+after route. Both entries target the same root agent node. The shared `model` control still applies
+to every other agent and model verifier. Trial adapters receive only their selected model tuple.
+
 An operator can activate only a complete superior evaluation. Preview creates a deterministic
 proposal from the current head, target, actor, and reason. Apply holds one cross-process mutation
 lock and requires the exact proposal digest.
@@ -1213,14 +1234,14 @@ digests, public views, execution behavior, and rollback selectors.
 
 The effective harness layer composes later reviewed changes. `candidate compose` reads one ordinary
 candidate, the exact current head, and its complete state. It projects only the declared prompt,
-Agent Skill resource, or generated Agent Skill package surface. The resulting immutable artifact
-contains the complete baseline state, complete candidate state, baseline head, candidate identity,
-and one content-free surface delta.
+Agent Skill resource, generated Agent Skill package, or model route surface. The resulting immutable
+artifact contains the complete states, baseline head, candidate identity, and content-free delta.
 
 Composition authenticates the ordinary candidate against its own immutable baseline before it
 rebases that one declared surface onto the current complete state. Prompt rebasing copies only the
 declared prompt fields. Resource rebasing replaces only the exact selected package. Generated
 package rebasing changes only the declared empty-to-selected skill field and adds that package.
+Model-route rebasing changes only the declared model tuple on the exact target node.
 The current target must equal the candidate's before-state, so an orthogonal reviewed change is
 retained while a stale same-surface candidate fails closed.
 
@@ -1264,6 +1285,10 @@ budgets, verifiers, retries, or routing. An Agent Skill candidate can change onl
 resource bytes while preserving skill selection and package authority. An Agent Skill package
 candidate can change only one root agent selection. It changes the selection from no skill to one
 exact generated skill and introduces that exact inert package.
+
+A model-routing candidate can change only one existing root agent model tuple. It cannot change a
+model verifier, child workflow, graph edge, prompt, tool, skill, package, budget, policy, retry, or
+sandbox field. Flow does not select a route dynamically and does not fall back to another route.
 
 Model-authorized evaluation and activation remain unavailable. Agent Skill package installation,
 signing, publication, and executable-resource generation remain unavailable. Multi-skill generation
