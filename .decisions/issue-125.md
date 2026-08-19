@@ -16,10 +16,12 @@ mark-and-sweep maintenance._
 - Do not treat retired blobs as rollback, recovery, replay, or update authority.
 - Do not add durable reader leases, a background garbage collector, time-based grace periods, or a
   second package mutation lock.
+
 - Do not change active package limits, package identity rules, repository trust, Sigstore policy,
   durable workflow snapshots, or durable evaluation snapshots.
 - Do not support Windows filesystems. The package store already requires local POSIX filesystem
   behavior for atomic rename, hard links, `fsync`, and no-follow access.
+
 - Do not claim that unlinking a file immediately returns disk blocks to the host.
 - Do not expose package contents, private paths, credentials, raw filesystem errors, or nested
   causes in public output.
@@ -53,45 +55,53 @@ mark-and-sweep maintenance._
 - Apply command: `flow packages prune --apply --expected-plan-digest <sha256>`.
 - `--apply` and `--expected-plan-digest` are required together. Duplicate or unexpected options are
   invalid.
+
 - Preview output contains `status: "preview"`, `planDigest`, `retiredBlobCount`, and
   `retiredBlobBytes`.
 - Apply output contains `status: "applied"`, `planDigest`, `unlinkedBlobCount`, and
   `unlinkedBlobBytes`.
+
 - Public output does not list blob digests or paths. Byte fields describe logical bytes unlinked,
   not immediate free-space recovery.
 
 #### Maintenance plan
 
-- The versioned plan binds the exact active-lock digest and the sorted set of retired canonical
-  blob digests with their verified byte lengths.
+- The versioned plan binds the exact active-lock digest. It also binds the sorted retired blob
+  digests and their verified byte lengths.
 - The plan digest is the SHA-256 digest of the canonical JSON plan payload.
-- Preview is read-only. Apply takes the existing package mutation lock, rebuilds the plan from
-  reopened state, compares the exact digest, and only then unlinks candidates.
+- Preview is read-only. Apply takes the existing package mutation lock and rebuilds the plan from
+  reopened state. It compares the exact digest before it unlinks candidates.
+
 - Apply unlinks candidates in lexical digest order. Each successfully unlinked retired blob is
   independently safe and does not require rollback.
-- After the first unlink, apply synchronizes the blob directory before returning success,
+- After the first unlink, apply synchronizes the blob directory. It does so before success,
   cancellation, or a later failure.
 
 #### Reader generations
 
-- A package snapshot reader binds one active-lock generation, opens every referenced blob with
-  no-follow semantics, and validates bytes, digest, identity, and metadata from the opened handles.
+- A package snapshot reader binds one active-lock generation. It opens every referenced blob with
+  no-follow semantics. It validates bytes, digest, identity, and metadata from the opened handles.
+
 - Open handles pin the selected inode on supported POSIX filesystems. A later unlink does not alter
   the bytes returned by that reader.
+
 - If a referenced blob cannot be opened and the active lock changed, the reader retries from the
   newer lock. If the lock did not change, the store is corrupt.
-- A reader performs at most two generation attempts and closes every opened handle on every exit.
+
+- A reader performs at most two generation attempts. It closes every opened handle on every exit.
 
 #### Storage bounds
 
 - Active authority remains limited to 128 packages and 64 MiB of canonical bundle bytes.
 - Physical blob storage is limited to 256 canonical blobs and 128 MiB.
-- Install and replacement inspect physical blob state under mutation ownership and reject before
+
+- Install and replacement inspect physical blob state under mutation ownership. They reject before
   publication when the resulting store would exceed either physical limit.
 - Maintenance may inspect up to 512 canonical blobs and 256 MiB so an oversized legacy store can
   be repaired. State beyond the recovery limit fails closed and requires manual remediation.
-- Unexpected directory entries are not included in a maintenance plan and cause the operation to
-  fail closed.
+
+- Unexpected directory entries cause the operation to fail closed. They are never included in a
+  maintenance plan.
 
 #### Durable composition
 
@@ -117,9 +127,9 @@ reader                                      operator maintenance
 ```
 
 The package store already depends on POSIX atomic filesystem behavior. An open file descriptor
-keeps its inode available after the pathname is unlinked, so readers do not need a long-lived
-mutation lock or a durable lease. The collector marks only the current active lock because durable
-workflow and evaluation records already embed the complete admitted capability snapshot.
+keeps its inode available after its pathname is unlinked. Readers therefore do not need a
+long-lived mutation lock or a durable lease. The collector marks only the current active lock.
+Durable workflow and evaluation records already embed the complete admitted capability snapshot.
 
 ### Approaches considered
 
@@ -132,16 +142,20 @@ workflow and evaluation records already embed the complete admitted capability s
 
 ### Standards and dependency cross-check
 
-- POSIX specifies that removing the final directory link does not discard file contents while a
-  process still has the file open.
+- POSIX keeps file contents available while a process has the file open. Removing the final
+  directory link does not discard the contents.
+
 - CNCF Distribution uses mark-and-sweep and requires mutation exclusion during collection. Flow
   uses its existing package mutation lock for the same authority boundary.
-- Nix garbage-collection roots are unnecessary here because Flow durable runs and evaluations
-  store the complete package snapshot rather than a live-store reference.
-- Git grace periods are unsuitable because Flow readers do not have a trusted maximum duration and
-  the security model rejects clock rollback.
-- TUF and Sigstore authenticate package metadata and bytes. Neither standard defines local
-  immutable-blob retention, so maintenance remains a Flow storage concern below trust admission.
+
+- Flow does not need Nix garbage-collection roots here. Durable runs and evaluations store the
+  complete package snapshot instead of a live-store reference.
+
+- Git grace periods are unsuitable because Flow readers have no trusted maximum duration. The
+  security model also rejects clock rollback.
+
+- TUF and Sigstore authenticate package metadata and bytes. Neither standard defines local blob
+  retention. Maintenance remains a Flow storage concern below trust admission.
 
 ## Plan
 
@@ -153,11 +167,13 @@ workflow and evaluation records already embed the complete admitted capability s
    replacement prepublication caps.
 3. RED/GREEN generation-pinned package snapshot reads, bounded retry, and complete handle
    settlement across success, failure, and cancellation.
+
 4. RED/GREEN mutation-locked ordered unlink, parent-directory settlement, partial-failure recovery,
    and exact cancellation precedence.
 5. Compose the application port and CLI grammar without adding watcher or supervisor authority.
 6. Update the canonical operator guide, sourcing contract, recovery runbook, architecture diagram,
-   testing guide, roadmap, project status, and concise README routing only when necessary.
+   and testing guide. Update the roadmap, project status, and concise README routing only when
+   necessary.
 
 ## Verification map
 
@@ -176,14 +192,16 @@ workflow and evaluation records already embed the complete admitted capability s
 
 ### TDD and review evidence
 
-- RED tests first established missing preview and apply behavior, physical and recovery bounds,
-  unsafe-entry rejection, generation retry, pinned-reader behavior, cancellation ordering, partial
-  settlement, empty-store behavior, and exact CLI grammar.
+- RED tests first established preview, apply, physical bounds, and recovery bounds. They also
+  established unsafe-entry rejection, generation retry, pinned-reader behavior, and cancellation
+  ordering. Further tests covered partial settlement, empty-store behavior, and exact CLI grammar.
+
 - An adversarial full-suite run found that bundle-read cancellation returned before closing a
   pinned generation handle. A focused RED test reproduced the lifecycle defect. The final reader
   captures cancellation, closes all retained handles, and then restores the exact caller reason.
   A second regression proves that handle-settlement uncertainty takes precedence when cancellation
   and cleanup fail together.
+
 - The exact mapped acceptance selector passed 231 tests across these eight files:
   `test/unit/application/capability-package-storage.test.ts`,
   `test/unit/infrastructure/fs/local-capability-package-store.test.ts`,
@@ -213,16 +231,20 @@ npx vitest run \
 - `npm run test:coverage` passed 4,388 tests across 317 files. Four tests and one file were skipped
   by their declared platform conditions. Coverage was 84.54% statements, 78.94% branches, 91.17%
   functions, and 84.67% lines. Vitest reported no unhandled errors.
+
 - `npm run format:check`, `npm run lint`, `npm run docs:style`, `npm run docs:links`,
   `npm run docs:ste`, `npm run typecheck`, `npm run build`, and `git diff --check` passed. Lint
   retained one informational finding in the unchanged external harness adapter and reported no
   error or warning.
+
 - `npm run test:runtime` passed 43 portable runtime tests and skipped 34 platform-specific tests.
   `npm run test:browser` passed two tests. `node scripts/smoke-compiled.mjs` passed against the
   rebuilt distribution.
+
 - `npm run pack:check` verified clean installation and CLI execution from
   `synaptiai-flow-harness-0.0.0.tgz` with SHA-256 digest
   `5dfe0fbdfa1a86627e8762bfc071594c1bccbd6a467fc3f3ea12ebddf9b053b4`.
+
 - The Prime dependency audit passed for the Node lock and 60 Python packages. The production npm
   audit found zero vulnerabilities.
 
