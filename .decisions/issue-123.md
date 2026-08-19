@@ -105,7 +105,7 @@ person, global readability, inclusive language, technical accuracy, and topic ow
 | --- | --- | --- |
 | README scope and first run | Documentation structure tests and command review | Concise landing page; no host runbook or exhaustive reference |
 | Hub and category coverage | Documentation structure tests | Every public document appears in one reader-oriented category |
-| Link and anchor integrity | `npm run docs:links` | Every tracked relative Markdown link and local anchor resolves |
+| Link and anchor integrity | `npm run docs:links` | Every relative Markdown link and local anchor in the defined public corpus resolves |
 | Safety and prerequisite preservation | Focused content tests and review | Pre-alpha, hostile-workload, Prime-host, recovery, and authority warnings remain discoverable |
 | Public prose | `npm run docs:ste` | Changed prose passes the repository style rules |
 | Google documentation style | `npm run docs:style` and `test/integration/package/docs-style.test.ts` | The complete public corpus passes objective style rules and each rule has a negative regression |
@@ -116,7 +116,7 @@ person, global readability, inclusive language, technical accuracy, and topic ow
 The final README has 154 lines and 6,683 bytes. The previous README had 1,776 lines and 100,936
 bytes.
 
-The focused public-documentation command passed 56 tests across five files:
+The focused public-documentation command passed 58 tests across five files:
 
 ```sh
 npx vitest run test/integration/package/docs-links.test.ts \
@@ -154,10 +154,12 @@ The first complete-suite attempt ran inside a desktop sandbox that denied tempor
 The unrestricted local rerun passed. The same permission was required for the clean package smoke
 test, which installed the generated tarball and exercised the packaged CLI successfully.
 
-The final refinement made root Markdown discovery automatic and moved documentation checks earlier
-in local CI. The final-tree focused command passed 56 tests. A second complete run against that tree
-was killed with exit 137 while unrelated Vitest pools were active on the host. Four unchanged tests
-had reached their fixed timeouts.
+The final refinement made discovery automatic for root documents, `docs/`, contributor-facing
+`.github/` Markdown, and public example documentation. It excludes executable evaluation task and
+result artifacts, internal decision journals, test fixtures, generated files, and vendored content.
+The refinement also moved documentation checks earlier in local CI. The final-tree focused command
+passed 58 tests. A second complete run against that tree was killed with exit 137 while unrelated
+Vitest pools were active on the host. Four unchanged tests had reached their fixed timeouts.
 
 One timed-out supervisor case passed an isolated rerun. Three filesystem-heavy cases reached the
 same timeout while the other pools remained active. No documentation test failed.

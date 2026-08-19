@@ -58,6 +58,39 @@ describe("documentation style gate", () => {
     });
   });
 
+  it("discovers public GitHub and example documentation but excludes evaluation artifacts", async () => {
+    const root = await temporaryRepository();
+    await mkdir(join(root, ".github"));
+    await mkdir(join(root, "examples", "guide"), { recursive: true });
+    await mkdir(join(root, "examples", "evaluation", "fixture"), { recursive: true });
+    await writeFile(join(root, "README.md"), "# Project\n");
+    await writeFile(join(root, "docs", "guide.md"), "# Guide\n");
+    await writeFile(
+      join(root, ".github", "pull_request_template.md"),
+      "# Pull request\n\n## Outcome\n",
+    );
+    await writeFile(join(root, "examples", "guide", "README.md"), "# Example guide\n");
+    await writeFile(
+      join(root, "examples", "evaluation", "fixture", "TASK.md"),
+      "This executable fixture intentionally has no page heading.\n",
+    );
+
+    await expect(
+      execute(process.execPath, [checker, "--root", root, "--all"]),
+    ).resolves.toMatchObject({ stdout: "DOC_STYLE=clean\n" });
+
+    await writeFile(
+      join(root, "examples", "guide", "README.md"),
+      "# Example guide\n\nPlease use [here](missing.md).\n",
+    );
+    await expect(
+      execute(process.execPath, [checker, "--root", root, "--all"]),
+    ).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining("examples/guide/README.md"),
+    });
+  });
+
   it.each([
     ["multiple level-one headings", ["# Guide", "", "# Another guide"], "exactly one H1"],
     ["a skipped heading level", ["# Guide", "", "### Configure Flow"], "heading level"],

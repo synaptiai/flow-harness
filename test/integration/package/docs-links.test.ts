@@ -63,6 +63,27 @@ describe("documentation link gate", () => {
       stderr: expect.stringContaining(expected),
     });
   });
+
+  it("discovers links in public GitHub and example documentation", async () => {
+    const root = await temporaryRepository();
+    await mkdir(join(root, "docs"));
+    await mkdir(join(root, ".github"));
+    await mkdir(join(root, "examples", "guide"), { recursive: true });
+    await writeFile(join(root, "README.md"), "# Project\n");
+    await writeFile(join(root, "docs", "guide.md"), "# Guide\n");
+    await writeFile(
+      join(root, ".github", "pull_request_template.md"),
+      "# Pull request\n\n[Missing guide](../docs/missing.md)\n",
+    );
+    await writeFile(join(root, "examples", "guide", "README.md"), "# Example guide\n");
+
+    await expect(
+      execute(process.execPath, [checker, "--root", root, "--all"]),
+    ).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining(".github/pull_request_template.md"),
+    });
+  });
 });
 
 async function temporaryRepository(): Promise<string> {

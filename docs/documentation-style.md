@@ -4,8 +4,11 @@ Flow documentation follows the
 [Google Developer Documentation Style Guide](https://developers.google.com/style) after applying
 the project-specific rules in this document.
 
-Use this policy for every public Markdown document in the repository. It also applies to
-user-facing examples, CLI help, and explanatory error guidance.
+Use this policy for every public Markdown document in the repository. The automated corpus includes
+root documents, `docs/`, contributor-facing `.github/` Markdown, and user-facing `examples/`
+Markdown. Executable evaluation `TASK.md` and `RESULT.md` payloads, internal decision journals,
+test fixtures, generated files, and vendored material follow their owning data or evidence
+contracts instead. This policy also applies to CLI help and explanatory error guidance.
 
 ## Apply the authority order
 
@@ -129,6 +132,7 @@ Before you publish documentation:
    npm run docs:ste
    ```
 
-`docs:style` checks the complete public Markdown set for objective structural and editorial rules.
-`docs:links` validates local files and anchors. `docs:ste` checks changed prose for the repository's
-clarity constraints. Passing these commands doesn't replace technical and editorial review.
+`docs:style` checks the complete public Markdown corpus defined in this document for objective
+structural and editorial rules. `docs:links` validates local files and anchors in the same corpus.
+`docs:ste` checks changed prose for the repository's clarity constraints. Passing these commands
+doesn't replace technical and editorial review.

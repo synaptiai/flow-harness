@@ -1,5 +1,7 @@
-import { lstat, readdir, readFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { lstat, readFile } from "node:fs/promises";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+
+import { publicDocumentationFiles } from "./public-documentation-files.mjs";
 
 const argumentsList = process.argv.slice(2);
 const root = resolve(readOption(argumentsList, "--root") ?? process.cwd());
@@ -11,7 +13,7 @@ if ((selectedFile === undefined) === !checkAll) {
   process.exit(2);
 }
 
-const files = selectedFile === undefined ? await publicMarkdownFiles(root) : [selectedFile];
+const files = selectedFile === undefined ? await publicDocumentationFiles(root) : [selectedFile];
 const issues = [];
 const anchorsByPath = new Map();
 
@@ -99,30 +101,6 @@ function readOption(args, option) {
     process.exit(2);
   }
   return value;
-}
-
-async function publicMarkdownFiles(repositoryRoot) {
-  const rootFiles = (await readdir(repositoryRoot, { withFileTypes: true }))
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
-    .map((entry) => entry.name);
-  const documentationFiles = await markdownFiles(join(repositoryRoot, "docs"));
-  return [
-    ...rootFiles,
-    ...documentationFiles.map((path) => normalizePath(relative(repositoryRoot, path))),
-  ].sort();
-}
-
-async function markdownFiles(rootPath) {
-  const paths = [];
-  for (const entry of await readdir(rootPath, { withFileTypes: true })) {
-    const path = join(rootPath, entry.name);
-    if (entry.isDirectory()) {
-      paths.push(...(await markdownFiles(path)));
-    } else if (entry.isFile() && entry.name.endsWith(".md")) {
-      paths.push(path);
-    }
-  }
-  return paths;
 }
 
 function markdownLinks(source) {
