@@ -63,6 +63,7 @@ import {
   agentSkillPackageGenerationResponse,
 } from "../../fixtures/agent-skill-package-candidate-generation.js";
 import { superiorEffectiveHarnessEvaluation } from "../../fixtures/effective-harness-evaluation.js";
+import { modelRoutingCandidateSourceFixture } from "../../fixtures/model-routing-candidate.js";
 import { promptActivationInput } from "../../fixtures/prompt-activation.js";
 import {
   promptCandidateGenerationFixture,
@@ -182,6 +183,80 @@ describe("effective harness composition CLI", () => {
         baselineHead: { headDigest: composed.candidate.baselineHeadDigest },
         baselineState: { stateDigest: composed.candidate.baselineStateDigest },
         candidateState: { stateDigest: composed.candidate.candidateStateDigest },
+        candidate: admitted.candidate.identity,
+      },
+    });
+  });
+
+  it("stages one complete model-routing candidate against the exact active baseline", async () => {
+    const project = await realpath(await mkdtemp(join(tmpdir(), "flow-effective-route-compose-")));
+    temporaryDirectories.push(project);
+    await mkdir(join(project, ".flow"));
+    const baselineInput = promptActivationInput({ selection: "baseline" });
+    const candidateInput = promptActivationInput({ selection: "candidate" });
+    const routeSource = modelRoutingCandidateSourceFixture(baselineInput.source);
+    const baselinePath = join(project, routeSource.baseline.workflow.path);
+    const candidatePath = join(project, "route.candidate.yaml");
+    await writeFile(baselinePath, baselineInput.source);
+    await writeFile(candidatePath, JSON.stringify(routeSource));
+
+    const baselineSnapshot = createPromptActivationSnapshot(baselineInput);
+    const candidateSnapshot = createPromptActivationSnapshot(candidateInput);
+    const legacy = new LocalPromptActivationStore(project);
+    const activation = {
+      snapshot: candidateSnapshot,
+      baselineSnapshot,
+      actor: "operator:legacy",
+    };
+    const activationProposal = await legacy.previewActivate(activation);
+    await legacy.applyActivate({
+      ...activation,
+      expectedDigest: activationProposal.proposalDigest,
+    });
+    const rollback = {
+      workflowId: baselineSnapshot.workflowId,
+      target: null,
+      actor: "operator:legacy",
+    } as const;
+    const rollbackProposal = await legacy.previewRollback(rollback);
+    await legacy.applyRollback({ ...rollback, expectedDigest: rollbackProposal.proposalDigest });
+    const admitted = await admitLocalAdaptationCandidate(candidatePath);
+    if (admitted.kind !== "model-routing-candidate") {
+      throw new Error("composition fixture is not a model-routing candidate");
+    }
+
+    const output = captureIo();
+    expect(
+      await main(["candidate", "compose", candidatePath], output.io, {
+        cwd: project,
+        loadConfig: async () => effectiveConfig(project),
+      }),
+      output.stderr.join("\n"),
+    ).toBe(0);
+    const composed = JSON.parse(output.stdout.join("\n"));
+    expect(composed).toMatchObject({
+      composed: true,
+      candidate: {
+        kind: "effective-harness-candidate",
+        workflowId: baselineSnapshot.workflowId,
+        surface: "model-routing",
+        candidate: {
+          kind: "model-routing-candidate",
+          route: routeSource.route,
+        },
+      },
+      staged: {
+        path: expect.stringMatching(/^\.flow\/effective-harness\/artifacts\/[a-f0-9]{64}\.json$/),
+      },
+    });
+    expect(composed.staged.artifactDigest).toBe(composed.candidate.artifactDigest);
+
+    await Promise.all([rm(candidatePath), rm(baselinePath)]);
+    await expect(
+      admitLocalEffectiveHarnessCandidate(join(project, composed.staged.path)),
+    ).resolves.toMatchObject({
+      artifact: {
+        surface: "model-routing",
         candidate: admitted.candidate.identity,
       },
     });

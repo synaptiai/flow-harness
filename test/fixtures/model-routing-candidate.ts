@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   calculateModelRoutingCandidateDigest,
   type ModelRoutingCandidateIdentity,
+  type ModelRoutingCandidateSource,
   type ProjectedModelRoutingCandidate,
 } from "../../src/domain/adaptation/model-routing-candidate.js";
 import {
@@ -62,6 +63,37 @@ export function modelRoutingCandidateFixture(
       sourceSha256: sha256(source),
       compiled,
       workflowDigest: calculateWorkflowDigest(compiled),
+    }),
+  });
+}
+
+export function modelRoutingCandidateSourceFixture(
+  baselineText: string,
+  nodeId = "implement",
+): ModelRoutingCandidateSource {
+  const baselineSource = parseWorkflowSourceText(baselineText, "baseline.workflow.yaml");
+  const baselineCompiled = compileWorkflowText(baselineText, "baseline.workflow.yaml");
+  const node = baselineSource.nodes.find((item) => item.id === nodeId);
+  if (node?.type !== "agent") throw new Error("routing source fixture has no target agent");
+  return Object.freeze({
+    apiVersion: "flow.synapti.ai/v1alpha1",
+    kind: "ModelRoutingCandidate",
+    metadata: Object.freeze({ id: "deterministic-to-gpt", version: "1.0.0" }),
+    scope: Object.freeze({
+      kind: "workflow-model-route",
+      workflowId: baselineCompiled.id,
+      nodeId,
+    }),
+    baseline: Object.freeze({
+      workflow: Object.freeze({
+        path: "baseline.workflow.yaml",
+        sourceSha256: sha256(baselineText),
+        workflowDigest: calculateWorkflowDigest(baselineCompiled),
+      }),
+    }),
+    route: Object.freeze({
+      before: structuredClone(node.agent.model),
+      after: Object.freeze({ provider: "openai", id: "gpt-5.4", thinking: "high" }),
     }),
   });
 }
