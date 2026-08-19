@@ -470,6 +470,7 @@ Usage:
   flow packages list
   flow packages inspect <name> --version <exact>
   flow packages verify
+  flow packages prune [--apply --expected-plan-digest <sha256>]
   flow packages remove <name> --version <exact>
   flow candidate generate <baseline> <evidence>... --output <candidate.yaml> --id <id> --version <semver> --allow-nodes <id,...> --provider <provider> --model <model> [--thinking <level>] [--timeout-ms <count>] [--max-output-tokens <count>]
   flow candidate generate <baseline> <evidence>... --output <candidate.yaml> --id <id> --version <semver> --skill <name> --allow-resources <path,...> --provider <provider> --model <model> [--thinking <level>] [--timeout-ms <count>] [--max-output-tokens <count>]
@@ -1406,6 +1407,7 @@ async function packagesCommand(
     "username",
     "certificate-issuer",
     "certificate-identity",
+    "expected-plan-digest",
     "from-version",
     "interval-ms",
     "max-checks",
@@ -1419,10 +1421,12 @@ async function packagesCommand(
       throw new CliUsageError(`--${option} may be specified only once`);
     }
   }
-  const passwordInput = extractBooleanFlag(args, "--password-stdin");
+  const applyPrune = extractBooleanFlag(args, "--apply");
+  const passwordInput = extractBooleanFlag(applyPrune.args, "--password-stdin");
   const { positionals, values } = parseCommandArgs(passwordInput.args, {
     "certificate-identity": { type: "string" },
     "certificate-issuer": { type: "string" },
+    "expected-plan-digest": { type: "string" },
     "from-version": { type: "string" },
     "interval-ms": { type: "string" },
     "max-checks": { type: "string" },
@@ -1455,6 +1459,26 @@ async function packagesCommand(
     values["interval-ms"] === undefined &&
     values["max-checks"] === undefined &&
     values["update-policy"] === undefined;
+  const hasNoPruneOptions = !applyPrune.enabled && values["expected-plan-digest"] === undefined;
+  const pruneValid =
+    subcommand === "prune" &&
+    positionals.length === 1 &&
+    values["certificate-identity"] === undefined &&
+    values["certificate-issuer"] === undefined &&
+    values["from-version"] === undefined &&
+    values["interval-ms"] === undefined &&
+    values["max-checks"] === undefined &&
+    values.output === undefined &&
+    values.sha256 === undefined &&
+    values["sigstore-bundle"] === undefined &&
+    values["trusted-root"] === undefined &&
+    values["update-policy"] === undefined &&
+    values.username === undefined &&
+    values.version === undefined &&
+    !passwordInput.enabled &&
+    applyPrune.enabled === (values["expected-plan-digest"] !== undefined) &&
+    (values["expected-plan-digest"] === undefined ||
+      /^sha256:[a-f0-9]{64}$/.test(values["expected-plan-digest"]));
   const standardValid =
     (subcommand === "install" &&
       positionals.length === 2 &&
@@ -1676,13 +1700,15 @@ async function packagesCommand(
     hasNoCredentials &&
     values.version !== undefined;
   const valid =
-    (hasNoAutomatedRepositoryOptions &&
-      ((values["from-version"] === undefined && standardValid) || replacementValid)) ||
-    watcherValid ||
-    firstActivationValid;
+    pruneValid ||
+    (hasNoPruneOptions &&
+      ((hasNoAutomatedRepositoryOptions &&
+        ((values["from-version"] === undefined && standardValid) || replacementValid)) ||
+        watcherValid ||
+        firstActivationValid));
   if (!valid) {
     throw new CliUsageError(
-      "packages requires pack, install, install-oci, metadata refresh, metadata inspect, metadata check, metadata candidates list, metadata candidate inspect/remove, metadata activate, repository init/status/check/first-activate/watch/candidates/candidate inspect/remove/activate/replace, list, inspect, verify, or remove with the documented exact arguments",
+      "packages requires pack, install, install-oci, metadata refresh, metadata inspect, metadata check, metadata candidates list, metadata candidate inspect/remove, metadata activate, repository init/status/check/first-activate/watch/candidates/candidate inspect/remove/activate/replace, list, inspect, verify, prune, or remove with the documented exact arguments",
     );
   }
   const watcherPackageName = watcherValid ? positionals[2] : undefined;
@@ -1792,6 +1818,20 @@ async function packagesCommand(
     );
   }
   const store = new LocalCapabilityPackageStore(config.projectRoot);
+  if (subcommand === "prune") {
+    const expectedPlanDigest = values["expected-plan-digest"];
+    const result =
+      expectedPlanDigest === undefined
+        ? await store.previewPrune({
+            ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
+          })
+        : await store.applyPrune({
+            expectedPlanDigest,
+            ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
+          });
+    io.stdout(JSON.stringify(result, null, 2));
+    return 0;
+  }
   if (subcommand === "repository") {
     const sigstoreVerifier =
       overrides.sigstoreCapabilityVerifier ??

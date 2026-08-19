@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -568,6 +568,106 @@ describe("capability package CLI", () => {
       name: "review-suite",
       version: "1.0.0",
     });
+  });
+
+  it("previews and explicitly applies retired capability package maintenance", async () => {
+    const project = await projectDirectory();
+    const active = bundle();
+    const retired = bundle("retired-suite", "PRIVATE_RETIRED_PACKAGE_CONTENT");
+    const store = new LocalCapabilityPackageStore(project);
+    await store.install({
+      source: "https://packages.example.test/review-suite-1.0.0.flowpkg",
+      expectedSha256: active.bundle.digest.slice("sha256:".length),
+      content: active.content,
+    });
+    const blobDirectory = join(project, ".flow", "packages", "sha256");
+    const retiredPath = join(
+      blobDirectory,
+      `${retired.bundle.digest.slice("sha256:".length)}.flowpkg`,
+    );
+    await writeFile(retiredPath, retired.content);
+    const cliDependencies = dependencies(project, { fetch: vi.fn() });
+    const previewed = captureIo();
+    const applied = captureIo();
+
+    expect(await main(["packages", "prune"], previewed.io, cliDependencies)).toBe(0);
+    const preview = JSON.parse(previewed.stdout[0] ?? "null") as {
+      planDigest: string;
+      retiredBlobCount: number;
+      retiredBlobBytes: number;
+    };
+    expect(preview).toEqual({
+      status: "preview",
+      planDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      retiredBlobCount: 1,
+      retiredBlobBytes: retired.content.byteLength,
+    });
+    expect(
+      await main(
+        ["packages", "prune", "--apply", "--expected-plan-digest", preview.planDigest],
+        applied.io,
+        cliDependencies,
+      ),
+    ).toBe(0);
+    expect(JSON.parse(applied.stdout[0] ?? "null")).toEqual({
+      status: "applied",
+      planDigest: preview.planDigest,
+      unlinkedBlobCount: 1,
+      unlinkedBlobBytes: retired.content.byteLength,
+    });
+    await expect(stat(retiredPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(store.verify()).resolves.toMatchObject([
+      { bundle: { name: "review-suite", version: "1.0.0" } },
+    ]);
+    const visible = [
+      ...previewed.stdout,
+      ...previewed.stderr,
+      ...applied.stdout,
+      ...applied.stderr,
+    ].join("\n");
+    expect(visible).not.toContain("PRIVATE_RETIRED_PACKAGE_CONTENT");
+    expect(visible).not.toContain(retired.bundle.digest);
+    expect(visible).not.toContain(retiredPath);
+  });
+
+  it.each([
+    ["apply without a plan", ["packages", "prune", "--apply"]],
+    [
+      "plan without apply",
+      ["packages", "prune", "--expected-plan-digest", `sha256:${"a".repeat(64)}`],
+    ],
+    [
+      "malformed plan",
+      ["packages", "prune", "--apply", "--expected-plan-digest", "PRIVATE_PLAN_DIGEST"],
+    ],
+    ["repeated apply", ["packages", "prune", "--apply", "--apply"]],
+    [
+      "repeated plan",
+      [
+        "packages",
+        "prune",
+        "--apply",
+        "--expected-plan-digest",
+        `sha256:${"a".repeat(64)}`,
+        "--expected-plan-digest",
+        `sha256:${"b".repeat(64)}`,
+      ],
+    ],
+  ] as const)("rejects prune %s before configuration or store work", async (_label, args) => {
+    const project = await projectDirectory();
+    const loadConfig = vi.fn(async () => effectiveConfig(project));
+    const output = captureIo();
+
+    expect(
+      await main(args, output.io, {
+        ...dependencies(project, { fetch: vi.fn() }),
+        loadConfig,
+      }),
+    ).toBe(2);
+
+    expect(loadConfig).not.toHaveBeenCalled();
+    expect([...output.stdout, ...output.stderr].join("\n")).not.toContain("PRIVATE_PLAN_DIGEST");
+    await expect(readdir(join(project, ".flow"))).resolves.toEqual([]);
   });
 
   it("installs a publisher-verified OCI bundle and keeps its audit identity offline", async () => {
@@ -1265,11 +1365,11 @@ async function projectDirectory(): Promise<string> {
   return directory;
 }
 
-function bundle() {
+function bundle(name = "review-suite", description = "Review capabilities.") {
   return createCapabilityBundleSource({
-    name: "review-suite",
+    name,
     version: "1.0.0",
-    description: "Review capabilities.",
+    description,
     packages: [
       { kind: "verifier-package", manifest: Buffer.from(verifierManifest()) },
       { kind: "policy-package", manifest: Buffer.from(policyManifest()) },

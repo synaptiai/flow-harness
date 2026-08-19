@@ -79,6 +79,8 @@ Read [Recovery and interruption safety](recovery.md), [Local ACP v1 bridge](acp.
 
 - Signed metadata, TUF repositories, review candidates, activation, replacement, finite first
   activation, and bounded update watching.
+- Explicit retired-blob preview and digest-bound pruning with bounded physical storage and
+  generation-safe readers on Linux and macOS.
 
 Read [Use capability packages](guides/capability-packages.md) and
 [Capability sourcing](capability-sourcing.md).

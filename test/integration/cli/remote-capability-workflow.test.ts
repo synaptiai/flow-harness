@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -360,6 +360,17 @@ describe("installed capability workflow", () => {
         }),
       ]),
     );
+    const prunePreview = await packageStore.previewPrune();
+    expect(prunePreview).toMatchObject({
+      retiredBlobCount: 1,
+      retiredBlobBytes: created.content.length,
+    });
+    await expect(
+      packageStore.applyPrune({ expectedPlanDigest: prunePreview.planDigest }),
+    ).resolves.toMatchObject({ status: "applied", unlinkedBlobCount: 1 });
+    await expect(
+      stat(join(project, ".flow", "packages", "sha256", `${bundleDigest}.flowpkg`)),
+    ).rejects.toMatchObject({ code: "ENOENT" });
 
     const detachedRunsDirectory = join(project, "detached-runs");
     const supervisorStore = new LocalSupervisorStore(detachedRunsDirectory);

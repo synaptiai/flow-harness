@@ -139,6 +139,42 @@ node dist/cli/main.js packages remove review-suite --version 1.0.0
 
 Removing one exact installed version does not grant replacement or reinstall authority.
 
+## Reclaim retired bundle blobs
+
+Replacement keeps the previous immutable blob until you explicitly prune retired content. Preview
+the maintenance plan before you change the store:
+
+```sh
+node dist/cli/main.js packages prune
+```
+
+The preview returns a plan digest, the number of retired blobs, and their logical byte total. It
+does not change the active package lock or any blob.
+
+If the preview matches the content that you intend to retire, apply that exact plan:
+
+```sh
+node dist/cli/main.js packages prune --apply \
+  --expected-plan-digest sha256:<64-lowercase-hex>
+```
+
+Flow rebuilds the plan while holding the package mutation lock. It refuses the operation if the
+active lock or retired candidate set changed after the preview. The result reports the blobs and
+logical bytes that Flow unlinked. The operating system might reclaim physical disk space later if
+an existing reader still has an unlinked blob open.
+
+Pruning never changes the active package lock or a durable run snapshot. Readers that already
+opened an old generation can finish from their pinned file handles. A reader that loses a race
+before opening a blob retries once from the current active generation.
+
+The package store admits at most 256 physical blobs and 128 MiB of physical blob content during
+ordinary installation and replacement. The maintenance scanner can inspect up to 512 blobs and
+256 MiB so you can recover from a store that crossed an ordinary limit. Unsafe links, special
+files, unexpected names, corrupt content, missing active blobs, and larger stores fail closed.
+
+Read [Recovery and interruption safety](../recovery.md#recover-retired-package-maintenance) before
+retrying interrupted or uncertain maintenance.
+
 ## Use signed metadata
 
 Establish metadata authority from explicit local files:

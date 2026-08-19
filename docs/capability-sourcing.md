@@ -453,9 +453,44 @@ or new lock. The old immutable blob remains available to readers that captured t
 Replacement reports `cleanup: retained`. Existing durable snapshots remain unchanged. An exact
 repeat returns `already_current`.
 
+Retired content remains inert until an operator invokes explicit maintenance. `flow packages
+prune` scans the bounded content-addressed blob directory. It validates every entry and returns a
+canonical plan digest, retired blob count, and logical byte total. It does not mutate the store.
+
+`flow packages prune --apply --expected-plan-digest <sha256>` takes the ordinary package
+mutation lock. It rebuilds the plan and unlinks only the exact reviewed candidates. An active-lock
+change returns `plan_mismatch` before the first unlink. A candidate-set change returns the same
+fixed error.
+
+The ordinary physical store ceiling is 256 blobs and 128 MiB. Installation and replacement inspect
+the complete physical store and refuse a publication that would cross either ceiling. Maintenance
+uses a larger recovery-only scan ceiling of 512 blobs and 256 MiB. This larger ceiling permits
+bounded repair. It does not permit new publication above the ordinary ceiling.
+
+The scan accepts
+only canonical digest filenames whose bytes reproduce that digest. Every blob must be a bounded,
+single-link regular file. Missing active blobs, links, special files, unexpected names, excess
+entries, excess bytes, and inconsistent content fail closed.
+
+Readers first capture one active lock and open every selected blob without following links. The
+open file handles pin that generation while the reader validates and parses it. POSIX unlink
+therefore cannot truncate an in-progress reader. If a retired path disappears before a reader can
+open it and the active lock changed, the reader retries once from the new complete generation. An
+unchanged lock with a missing blob is corruption.
+
+Durable runs, workers, children, evaluations, recovery, and replay use package bytes already stored
+in their immutable snapshots. Those snapshots are not garbage-collection roots.
+
+Before the first unlink, cancellation returns the exact caller reason without mutation. After an
+unlink, Flow ignores later cancellation until it syncs the blob directory, then restores the exact
+caller reason. A later candidate failure also settles earlier progress. Repeating maintenance is
+safe because a new preview contains only remaining retired blobs. `settlement_uncertain` means an
+unlink occurred but directory durability could not be confirmed. Follow the package-maintenance
+procedure in [Recovery and interruption safety](recovery.md#recover-retired-package-maintenance).
+
 Rollback remains a reviewed forward replacement or the paused manual procedure. Same-name and
 same-version bytes remain immutable. Flow performs no automatic update discovery, rollback, or
-unrelated garbage collection.
+background garbage collection.
 
 An operator may explicitly establish signed project metadata with `flow packages metadata refresh
 <metadata.json> --sigstore-bundle <bundle.json> --certificate-issuer <https-url>
@@ -645,11 +680,12 @@ can continue only after a new full interval. Any replacement failure or commit u
 One bounded project-local owner record prevents overlapping Flow watcher and first-activation
 processes. The record is
 cooperative local coordination, not same-user isolation. Flow never guesses that it is stale and
-never removes it automatically. Retained old blobs remain available to frozen readers.
+never removes it automatically. Retired blobs remain available until an operator applies an exact
+prune plan. A frozen reader that opened one remains valid after its path is unlinked.
 
 Private repository credentials, credential helpers, and online root bootstrap remain outside this
 contract. The same is true for major or policy-package replacement, automatic rollback,
-retained-blob collection, and online Sigstore trust-root refresh. ACP,
+background blob collection, and online Sigstore trust-root refresh. ACP,
 AG-UI, and A2UI are separate transport or presentation standards and do not change repository,
 package, runtime, or activation authority.
 
