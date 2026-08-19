@@ -5,6 +5,7 @@ import {
 import type { VerifyEvaluationWorkspaceRequest } from "../domain/evaluation/filesystem-verifier.js";
 import type {
   EvaluationFilesystemAssertion,
+  EvaluationPlanSource,
   EvaluationProfileSource,
   EvaluationTrialScheduleItem,
 } from "../domain/evaluation/plan.js";
@@ -32,7 +33,7 @@ import type { WorkspaceIsolator } from "./ports.js";
 export interface EvaluationExecutionPlan {
   readonly planDigest: string;
   readonly schedule: readonly EvaluationTrialScheduleItem[];
-  readonly controls: HarnessEvaluationRequest["controls"];
+  readonly controls: EvaluationPlanSource["controls"];
   readonly tasks: readonly {
     readonly id: string;
     readonly fixture: {
@@ -242,7 +243,7 @@ export async function runEvaluationTrials(
             path: task.fixture.instructionPath,
             sha256: task.fixture.instructionSha256,
           }),
-          controls: input.plan.controls,
+          controls: evaluationControlsForProfile(input.plan.controls, profile.id),
           ...(durability === undefined ? {} : { durability }),
         });
       } catch (error) {
@@ -359,6 +360,22 @@ export async function runEvaluationTrials(
     }
   }
   return Object.freeze(records);
+}
+
+function evaluationControlsForProfile(
+  controls: EvaluationPlanSource["controls"],
+  profileId: string,
+): HarnessEvaluationRequest["controls"] {
+  const configuredRoute = controls.modelRoutes?.find((item) => item.profileId === profileId);
+  if (controls.modelRoutes !== undefined && configuredRoute === undefined) {
+    throw new Error(`evaluation profile "${profileId}" has no admitted model route`);
+  }
+  return Object.freeze({
+    model: Object.freeze({ ...(configuredRoute?.route ?? controls.model) }),
+    budget: controls.budget,
+    network: controls.network,
+    retry: controls.retry,
+  });
 }
 
 async function recoverPrimeAttempt(

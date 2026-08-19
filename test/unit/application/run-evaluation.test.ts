@@ -72,6 +72,67 @@ afterEach(async () => {
 });
 
 describe("evaluation trial runner", () => {
+  it("sends each paired profile only its exact admitted model route", async () => {
+    const root = await temporaryDirectory();
+    const base = executionPlan(root);
+    const plan = {
+      ...base,
+      controls: Object.freeze({
+        ...base.controls,
+        modelRoutes: Object.freeze([
+          Object.freeze({
+            profileId: "baseline",
+            nodeId: "implement",
+            route: Object.freeze({ provider: "test", id: "deterministic", thinking: "medium" }),
+          }),
+          Object.freeze({
+            profileId: "candidate",
+            nodeId: "implement",
+            route: Object.freeze({ provider: "openai", id: "gpt-5.4", thinking: "high" }),
+          }),
+        ] as const),
+      }),
+    };
+    const observed = new Map<string, HarnessEvaluationRequest["controls"]>();
+
+    await runEvaluationTrials({
+      plan,
+      committedRecords: [],
+      append: async () => undefined,
+      workspaceIsolator: isolator(root),
+      observeFixture: async () => fixtureSnapshot(),
+      resolveAdapter: () => ({
+        kind: "flow-workflow-v1",
+        run: async (request) => {
+          observed.set(request.trial.profileId, request.controls);
+          return {
+            harness: { outcome: "completed", runId: "durable-run", reason: null },
+            metrics: unavailableEvaluationMetrics(),
+          };
+        },
+      }),
+      verifyWorkspace: async (request) => ({
+        outcome: "accepted",
+        verifierDigest: request.verifier.digest,
+        assertions: [{ kind: "exists", path: "RESULT.md", outcome: true }],
+      }),
+      now: monotonicDates(),
+      environment: testEnvironment(),
+    });
+
+    expect(observed.get("baseline")?.model).toEqual({
+      provider: "test",
+      id: "deterministic",
+      thinking: "medium",
+    });
+    expect(observed.get("candidate")?.model).toEqual({
+      provider: "openai",
+      id: "gpt-5.4",
+      thinking: "high",
+    });
+    expect(observed.get("candidate")).not.toHaveProperty("modelRoutes");
+  });
+
   it("keeps private verifier bodies outside the adapter and records verifier-authoritative failure", async () => {
     const root = await temporaryDirectory();
     const plan = executionPlan(root);

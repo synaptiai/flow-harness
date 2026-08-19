@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { parseDocument } from "yaml";
 import { z } from "zod";
 import type { AgentSkillCandidateIdentity } from "../adaptation/agent-skill-candidate.js";
@@ -31,6 +32,20 @@ const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const positiveSafeIntegerSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const nonNegativeSafeIntegerSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const rateSchema = z.number().min(0).max(1);
+const evaluationModelSchema = z
+  .object({
+    provider: z.string().min(1).max(96),
+    id: z.string().min(1).max(256),
+    thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
+  })
+  .strict();
+const modelRouteControlSchema = z
+  .object({
+    profileId: identifierSchema,
+    nodeId: identifierSchema,
+    route: evaluationModelSchema,
+  })
+  .strict();
 const canonicalRelativePathSchema = z
   .string()
   .min(1)
@@ -137,13 +152,11 @@ const evaluationPlanSourceSchema = z
     profiles: z.array(profileSchema).length(2).max(MAX_EVALUATION_PROFILES),
     controls: z
       .object({
-        model: z
-          .object({
-            provider: z.string().min(1).max(96),
-            id: z.string().min(1).max(256),
-            thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
-          })
-          .strict(),
+        model: evaluationModelSchema,
+        modelRoutes: z
+          .tuple([modelRouteControlSchema, modelRouteControlSchema])
+          .readonly()
+          .optional(),
         budget: budgetSchema,
         network: z.literal("deny"),
         retry: z
@@ -205,6 +218,54 @@ const evaluationPlanSourceSchema = z
         path: ["comparison"],
         message: "comparison baseline and candidate profiles must differ",
       });
+    }
+    if (plan.controls.modelRoutes !== undefined) {
+      const [baselineRoute, candidateRoute] = plan.controls.modelRoutes;
+      const baselineProfile = plan.profiles.find(
+        (profile) => profile.id === plan.comparison.baselineProfileId,
+      );
+      const candidateProfile = plan.profiles.find(
+        (profile) => profile.id === plan.comparison.candidateProfileId,
+      );
+      if (
+        baselineRoute.profileId !== plan.comparison.baselineProfileId ||
+        candidateRoute.profileId !== plan.comparison.candidateProfileId
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["controls", "modelRoutes"],
+          message: "model routes must be ordered by the comparison baseline and candidate profiles",
+        });
+      }
+      if (baselineRoute.nodeId !== candidateRoute.nodeId) {
+        context.addIssue({
+          code: "custom",
+          path: ["controls", "modelRoutes"],
+          message: "paired model routes must select one exact root agent node",
+        });
+      }
+      if (isDeepStrictEqual(baselineRoute.route, candidateRoute.route)) {
+        context.addIssue({
+          code: "custom",
+          path: ["controls", "modelRoutes"],
+          message: "paired model routes must contain distinct route identities",
+        });
+      }
+      if (
+        baselineProfile?.adapter !== "flow-workflow-v1" ||
+        candidateProfile?.adapter !== "flow-workflow-v1" ||
+        !("effectiveCandidate" in baselineProfile) ||
+        !("effectiveCandidate" in candidateProfile) ||
+        baselineProfile.selection !== "baseline" ||
+        candidateProfile.selection !== "candidate" ||
+        baselineProfile.effectiveCandidate !== candidateProfile.effectiveCandidate
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["controls", "modelRoutes"],
+          message: "model routes require one exact effective baseline and candidate profile pair",
+        });
+      }
     }
     const scheduled = plan.suite.tasks.length * plan.profiles.length * plan.seeds.length;
     if (!Number.isSafeInteger(scheduled) || scheduled > MAX_EVALUATION_TRIALS) {
