@@ -148,6 +148,26 @@ A settled `replaced` result reports `cleanup: retained`. The new lock is authori
 old immutable blob remains available to a reader with the prior lock. Existing runs, workers,
 children, evaluations, recovery, and replay continue from their frozen package snapshots.
 
+### Recover retired package maintenance
+
+`flow packages prune` is a read-only preview. You can repeat it after any preview failure. Apply a
+plan only with `flow packages prune --apply --expected-plan-digest <sha256>`. Flow rebuilds the plan
+under `.flow/packages.mutation.lock` and refuses drift before it unlinks content.
+
+If cancellation or a failure occurs before the first unlink, the candidate set is unchanged. Create
+a new preview before another apply attempt. If cancellation or a later-candidate failure occurs
+after an unlink, Flow syncs the blob directory before it returns. Create a new preview. It contains
+only the retired blobs that remain.
+
+If apply reports `settlement_uncertain`, don't assume that an unlinked name is durable. Confirm that
+no package mutation is active. Inspect `.flow/packages.mutation.lock` and remove it only after you
+verify that its recorded process has exited. Then run `flow packages verify` and create a new prune
+preview. Don't restore or delete a blob by guessing from the prior plan.
+
+Pruning reports logical bytes unlinked, not guaranteed physical disk space reclaimed. An existing
+reader can keep an unlinked inode alive through an open handle. Let that reader finish or stop it
+through its normal lifecycle. Don't modify the content-addressed directory manually.
+
 An optional repository scheduler records a fixed startup status. Its caller can supply the prior
 completed-check timestamp after restart. The scheduler reports elapsed missed intervals but waits a
 new full interval and never catches up. A current clock behind the prior completion reports
@@ -164,7 +184,8 @@ before restarting.
 A watcher can continue after one inert check failure only after another full interval. It stops on
 baseline drift, clock rollback, status failure, replacement failure, or commit uncertainty. Do not
 restart after replacement failure until repository and package state are inspected. A settled
-replacement retains the prior immutable blob for readers with an older frozen snapshot.
+replacement retains the prior immutable blob until an operator applies an exact prune plan. A
+reader that already opened the old blob can finish after that path is unlinked.
 
 The first-activation command uses the same owner record. Its state is one
 `first-activation-<identity>.json` file below `.flow/capability.repository/`. A waiting record binds

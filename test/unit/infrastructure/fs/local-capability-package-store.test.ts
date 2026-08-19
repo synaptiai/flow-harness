@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  link,
   mkdir,
   mkdtemp,
   readdir,
@@ -28,6 +29,28 @@ import {
 
 const temporaryDirectories: string[] = [];
 const execFileAsync = promisify(execFile);
+
+interface CapabilityPackagePrunePreview {
+  readonly status: "preview";
+  readonly planDigest: string;
+  readonly retiredBlobCount: number;
+  readonly retiredBlobBytes: number;
+}
+
+interface CapabilityPackagePruneApplyResult {
+  readonly status: "applied";
+  readonly planDigest: string;
+  readonly unlinkedBlobCount: number;
+  readonly unlinkedBlobBytes: number;
+}
+
+interface PrunableCapabilityPackageStore {
+  previewPrune(options?: { readonly signal?: AbortSignal }): Promise<CapabilityPackagePrunePreview>;
+  applyPrune(input: {
+    readonly expectedPlanDigest: string;
+    readonly signal?: AbortSignal;
+  }): Promise<CapabilityPackagePruneApplyResult>;
+}
 
 afterEach(async () => {
   await Promise.all(
@@ -1285,6 +1308,511 @@ describe("local capability package store", () => {
     ).resolves.toMatchObject({ size: current.content.byteLength });
   });
 
+  it("previews one deterministic empty retired-blob maintenance plan without mutation", async () => {
+    const projectRoot = await projectDirectory();
+    const store = new LocalCapabilityPackageStore(
+      projectRoot,
+    ) as unknown as PrunableCapabilityPackageStore;
+
+    const first = await store.previewPrune();
+    const second = await store.previewPrune();
+
+    expect(first).toEqual({
+      status: "preview",
+      planDigest: "sha256:c7509768378c08f5fc92c3bc461d298d1cf16dc827e33c4714732551e296e42e",
+      retiredBlobCount: 0,
+      retiredBlobBytes: 0,
+    });
+    expect(second).toEqual(first);
+    await expect(readdir(join(projectRoot, ".flow"))).resolves.toEqual([]);
+  });
+
+  it("applies the exact empty plan without publishing package state", async () => {
+    const projectRoot = await projectDirectory();
+    const maintenance = new LocalCapabilityPackageStore(
+      projectRoot,
+    ) as unknown as PrunableCapabilityPackageStore;
+    const preview = await maintenance.previewPrune();
+
+    await expect(
+      maintenance.applyPrune({ expectedPlanDigest: preview.planDigest }),
+    ).resolves.toEqual({
+      status: "applied",
+      planDigest: preview.planDigest,
+      unlinkedBlobCount: 0,
+      unlinkedBlobBytes: 0,
+    });
+    await expect(readdir(join(projectRoot, ".flow"))).resolves.toEqual([]);
+  });
+
+  it("verifies one empty active generation without creating a blob store", async () => {
+    const projectRoot = await projectDirectory();
+    const store = new LocalCapabilityPackageStore(projectRoot);
+
+    await expect(store.verify()).resolves.toEqual([]);
+    await expect(readdir(join(projectRoot, ".flow"))).resolves.toEqual([]);
+  });
+
+  it("previews only the retired blob after replacement and leaves both generations unchanged", async () => {
+    const fixture = await replacementFixture();
+    await fixture.store.replace(fixture.input);
+    const store = fixture.store as unknown as PrunableCapabilityPackageStore;
+    const blobDirectory = join(fixture.projectRoot, ".flow", "packages", "sha256");
+    const before = (await readdir(blobDirectory)).sort();
+
+    const first = await store.previewPrune();
+    const second = await store.previewPrune();
+
+    expect(first).toEqual({
+      status: "preview",
+      planDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      retiredBlobCount: 1,
+      retiredBlobBytes: fixture.current.content.byteLength,
+    });
+    expect(second).toEqual(first);
+    await expect(readdir(blobDirectory)).resolves.toEqual(before);
+    await expect(fixture.store.list()).resolves.toMatchObject({
+      bundles: [{ name: "review-suite", version: "1.1.0" }],
+    });
+  });
+
+  it("applies one exact plan by unlinking only the retired blob", async () => {
+    const fixture = await replacementFixture();
+    await fixture.store.replace(fixture.input);
+    const store = fixture.store as unknown as PrunableCapabilityPackageStore;
+    const blobDirectory = join(fixture.projectRoot, ".flow", "packages", "sha256");
+    const retiredPath = join(blobDirectory, `${digest(fixture.current.content)}.flowpkg`);
+    const activePath = join(blobDirectory, `${digest(fixture.candidate.content)}.flowpkg`);
+    const preview = await store.previewPrune();
+
+    await expect(store.applyPrune({ expectedPlanDigest: preview.planDigest })).resolves.toEqual({
+      status: "applied",
+      planDigest: preview.planDigest,
+      unlinkedBlobCount: 1,
+      unlinkedBlobBytes: fixture.current.content.byteLength,
+    });
+
+    await expect(stat(retiredPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(activePath)).resolves.toMatchObject({
+      size: fixture.candidate.content.length,
+    });
+    await expect(fixture.store.list()).resolves.toMatchObject({
+      bundles: [{ name: "review-suite", version: "1.1.0" }],
+    });
+    await expect(store.previewPrune()).resolves.toMatchObject({
+      retiredBlobCount: 0,
+      retiredBlobBytes: 0,
+    });
+  });
+
+  it("rejects a stale plan when the retired candidate set changes before apply", async () => {
+    const fixture = await replacementFixture();
+    await fixture.store.replace(fixture.input);
+    const store = fixture.store as unknown as PrunableCapabilityPackageStore;
+    const preview = await store.previewPrune();
+    const blobDirectory = join(fixture.projectRoot, ".flow", "packages", "sha256");
+    const additional = bundle("PRIVATE_UNREVIEWED_RETIRED_BLOB", "other-suite");
+    await writeFile(
+      join(blobDirectory, `${digest(additional.content)}.flowpkg`),
+      additional.content,
+    );
+    const before = (await readdir(blobDirectory)).sort();
+
+    const failure = await store
+      .applyPrune({ expectedPlanDigest: preview.planDigest })
+      .catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({ code: "plan_mismatch" });
+    expect((failure as Error).message).not.toContain("PRIVATE_UNREVIEWED_RETIRED_BLOB");
+    await expect(readdir(blobDirectory)).resolves.toEqual(before);
+    await expect(fixture.store.list()).resolves.toMatchObject({
+      bundles: [{ name: "review-suite", version: "1.1.0" }],
+    });
+  });
+
+  it("rejects a stale plan when only the active lock generation changes", async () => {
+    const projectRoot = await projectDirectory();
+    const store = new LocalCapabilityPackageStore(projectRoot);
+    const active = bundle("Review the active generation.");
+    await store.install({
+      source: "https://packages.example.test/review-suite-1.0.0.flowpkg",
+      expectedSha256: digest(active.content),
+      content: active.content,
+    });
+    const retired = Buffer.from("PRIVATE_RETIRED_ACTIVE_LOCK_DRIFT");
+    const retiredPath = join(
+      projectRoot,
+      ".flow",
+      "packages",
+      "sha256",
+      `${digest(retired)}.flowpkg`,
+    );
+    await writeFile(retiredPath, retired);
+    const maintenance = store as unknown as PrunableCapabilityPackageStore;
+    const preview = await maintenance.previewPrune();
+    const additional = bundle("Review another active package.", "other-suite");
+    await store.install({
+      source: "https://packages.example.test/other-suite-1.0.0.flowpkg",
+      expectedSha256: digest(additional.content),
+      content: additional.content,
+    });
+
+    await expect(
+      maintenance.applyPrune({ expectedPlanDigest: preview.planDigest }),
+    ).rejects.toMatchObject({ code: "plan_mismatch" });
+    await expect(readFile(retiredPath)).resolves.toEqual(retired);
+    await expect(maintenance.previewPrune()).resolves.toMatchObject({
+      retiredBlobCount: 1,
+      retiredBlobBytes: retired.byteLength,
+    });
+  });
+
+  it("unlinks retired candidates in lexical digest order", async () => {
+    const projectRoot = await projectDirectory();
+    const blobDirectory = join(projectRoot, ".flow", "packages", "sha256");
+    await mkdir(blobDirectory, { recursive: true });
+    const contents = [Buffer.from("retired order one"), Buffer.from("retired order two")];
+    const digests = contents.map((content) => `sha256:${digest(content)}`).sort();
+    for (const candidateDigest of [...digests].reverse()) {
+      const content = contents.find((item) => `sha256:${digest(item)}` === candidateDigest);
+      if (content === undefined) {
+        throw new Error("retired ordering fixture is incomplete");
+      }
+      await writeFile(
+        join(blobDirectory, `${candidateDigest.slice("sha256:".length)}.flowpkg`),
+        content,
+      );
+    }
+    const observed: string[] = [];
+    const maintenance = new LocalCapabilityPackageStore(projectRoot, {
+      beforePruneCandidateUnlink: async (candidate) => {
+        observed.push(candidate.digest);
+      },
+    }) as unknown as PrunableCapabilityPackageStore;
+    const preview = await maintenance.previewPrune();
+
+    await expect(
+      maintenance.applyPrune({ expectedPlanDigest: preview.planDigest }),
+    ).resolves.toMatchObject({ status: "applied", unlinkedBlobCount: 2 });
+    expect(observed).toEqual(digests);
+  });
+
+  it("preserves exact cancellation before the first retired blob unlink", async () => {
+    const fixture = await replacementFixture();
+    await fixture.store.replace(fixture.input);
+    const controller = new AbortController();
+    const reason = new Error("PRIVATE_PRE_UNLINK_CANCELLATION");
+    const hooks: CapabilityPackageStoreHooks & {
+      readonly beforePruneCandidateUnlink: () => Promise<void>;
+    } = {
+      now: () => new Date("2026-08-14T00:00:00.000Z"),
+      beforePruneCandidateUnlink: async () => controller.abort(reason),
+    };
+    const store = new LocalCapabilityPackageStore(
+      fixture.projectRoot,
+      hooks,
+    ) as unknown as PrunableCapabilityPackageStore;
+    const preview = await store.previewPrune();
+    const retiredPath = join(
+      fixture.projectRoot,
+      ".flow",
+      "packages",
+      "sha256",
+      `${digest(fixture.current.content)}.flowpkg`,
+    );
+
+    await expect(
+      store.applyPrune({ expectedPlanDigest: preview.planDigest, signal: controller.signal }),
+    ).rejects.toBe(reason);
+    await expect(stat(retiredPath)).resolves.toMatchObject({
+      size: fixture.current.content.byteLength,
+    });
+    await expect(
+      stat(join(fixture.projectRoot, ".flow", "packages.mutation.lock")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("settles one unlinked blob before restoring exact late cancellation", async () => {
+    const fixture = await replacementFixture();
+    await fixture.store.replace(fixture.input);
+    const controller = new AbortController();
+    const reason = new Error("PRIVATE_POST_UNLINK_CANCELLATION");
+    let directorySynced = false;
+    const hooks: CapabilityPackageStoreHooks & {
+      readonly afterPruneCandidateUnlinked: () => Promise<void>;
+      readonly afterPruneBlobDirectorySynced: () => Promise<void>;
+    } = {
+      now: () => new Date("2026-08-14T00:00:00.000Z"),
+      afterPruneCandidateUnlinked: async () => controller.abort(reason),
+      afterPruneBlobDirectorySynced: async () => {
+        directorySynced = true;
+      },
+    };
+    const store = new LocalCapabilityPackageStore(
+      fixture.projectRoot,
+      hooks,
+    ) as unknown as PrunableCapabilityPackageStore;
+    const preview = await store.previewPrune();
+    const retiredPath = join(
+      fixture.projectRoot,
+      ".flow",
+      "packages",
+      "sha256",
+      `${digest(fixture.current.content)}.flowpkg`,
+    );
+
+    await expect(
+      store.applyPrune({ expectedPlanDigest: preview.planDigest, signal: controller.signal }),
+    ).rejects.toBe(reason);
+    expect(directorySynced).toBe(true);
+    await expect(stat(retiredPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      stat(join(fixture.projectRoot, ".flow", "packages.mutation.lock")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(store.previewPrune()).resolves.toMatchObject({ retiredBlobCount: 0 });
+  });
+
+  it("settles partial progress and previews only remaining work after a later unlink failure", async () => {
+    const fixture = await replacementFixture();
+    await fixture.store.replace(fixture.input);
+    const blobDirectory = join(fixture.projectRoot, ".flow", "packages", "sha256");
+    const additional = bundle("PRIVATE_PARTIAL_PRUNE_CANDIDATE", "other-suite");
+    await writeFile(
+      join(blobDirectory, `${digest(additional.content)}.flowpkg`),
+      additional.content,
+    );
+    let candidateNumber = 0;
+    let directorySynced = false;
+    const hooks: CapabilityPackageStoreHooks & {
+      readonly beforePruneCandidateUnlink: () => Promise<void>;
+      readonly afterPruneBlobDirectorySynced: () => Promise<void>;
+    } = {
+      now: () => new Date("2026-08-14T00:00:00.000Z"),
+      beforePruneCandidateUnlink: async () => {
+        candidateNumber += 1;
+        if (candidateNumber === 2) {
+          throw new Error("PRIVATE_SECOND_UNLINK_FAILURE");
+        }
+      },
+      afterPruneBlobDirectorySynced: async () => {
+        directorySynced = true;
+      },
+    };
+    const store = new LocalCapabilityPackageStore(
+      fixture.projectRoot,
+      hooks,
+    ) as unknown as PrunableCapabilityPackageStore;
+    const preview = await store.previewPrune();
+    expect(preview.retiredBlobCount).toBe(2);
+
+    const failure = await store
+      .applyPrune({ expectedPlanDigest: preview.planDigest })
+      .catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({ code: "io" });
+    expect((failure as Error).message).not.toContain("PRIVATE_SECOND_UNLINK_FAILURE");
+    expect(directorySynced).toBe(true);
+    await expect(store.previewPrune()).resolves.toMatchObject({ retiredBlobCount: 1 });
+    await expect(fixture.store.verify()).resolves.toMatchObject([
+      { bundle: { name: "review-suite", version: "1.1.0" } },
+    ]);
+  });
+
+  it("reports settlement uncertainty when blob-directory persistence fails after unlink", async () => {
+    const fixture = await replacementFixture();
+    await fixture.store.replace(fixture.input);
+    const hooks: CapabilityPackageStoreHooks & {
+      readonly beforePruneBlobDirectorySync: () => Promise<void>;
+    } = {
+      now: () => new Date("2026-08-14T00:00:00.000Z"),
+      beforePruneBlobDirectorySync: async () => {
+        throw new Error("PRIVATE_PRUNE_DIRECTORY_SYNC_FAILURE");
+      },
+    };
+    const store = new LocalCapabilityPackageStore(
+      fixture.projectRoot,
+      hooks,
+    ) as unknown as PrunableCapabilityPackageStore;
+    const preview = await store.previewPrune();
+
+    const failure = await store
+      .applyPrune({ expectedPlanDigest: preview.planDigest })
+      .catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({ code: "settlement_uncertain" });
+    expect((failure as Error).message).not.toContain("PRIVATE_PRUNE_DIRECTORY_SYNC_FAILURE");
+    await expect(store.previewPrune()).resolves.toMatchObject({ retiredBlobCount: 0 });
+    await expect(fixture.store.verify()).resolves.toMatchObject([
+      { bundle: { name: "review-suite", version: "1.1.0" } },
+    ]);
+  });
+
+  it("rejects installation before publication when the physical blob count is full", async () => {
+    const projectRoot = await projectDirectory();
+    const blobDirectory = join(projectRoot, ".flow", "packages", "sha256");
+    await writeRetiredBlobs(blobDirectory, 256);
+    const created = bundle("PRIVATE_PHYSICAL_LIMIT_PUBLICATION");
+    const target = join(blobDirectory, `${digest(created.content)}.flowpkg`);
+    const store = new LocalCapabilityPackageStore(projectRoot);
+
+    const failure = await store
+      .install({
+        source: "https://packages.example.test/review-suite-1.0.0.flowpkg",
+        expectedSha256: digest(created.content),
+        content: created.content,
+      })
+      .catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({ code: "physical_limit" });
+    expect((failure as Error).message).not.toContain("PRIVATE_PHYSICAL_LIMIT_PUBLICATION");
+    await expect(stat(target)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(join(projectRoot, ".flow", "packages.lock.json"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(await readdir(blobDirectory)).toHaveLength(256);
+  });
+
+  it("accepts installation at the exact physical blob count boundary", async () => {
+    const projectRoot = await projectDirectory();
+    const blobDirectory = join(projectRoot, ".flow", "packages", "sha256");
+    await writeRetiredBlobs(blobDirectory, 255);
+    const created = bundle("Review the exact physical boundary.");
+    const store = new LocalCapabilityPackageStore(projectRoot);
+
+    await expect(
+      store.install({
+        source: "https://packages.example.test/review-suite-1.0.0.flowpkg",
+        expectedSha256: digest(created.content),
+        content: created.content,
+      }),
+    ).resolves.toMatchObject({ status: "installed" });
+
+    expect(await readdir(blobDirectory)).toHaveLength(256);
+    await expect(store.verify()).resolves.toMatchObject([
+      { bundle: { name: "review-suite", version: "1.0.0" } },
+    ]);
+  });
+
+  it("rejects replacement before publishing blob 257", async () => {
+    const fixture = await replacementFixture();
+    const blobDirectory = join(fixture.projectRoot, ".flow", "packages", "sha256");
+    await writeRetiredBlobs(blobDirectory, 255);
+    const target = join(blobDirectory, `${digest(fixture.candidate.content)}.flowpkg`);
+
+    await expect(fixture.store.replace(fixture.input)).rejects.toMatchObject({
+      code: "physical_limit",
+    });
+
+    await expect(stat(target)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readdir(blobDirectory)).toHaveLength(256);
+    await expect(fixture.store.list()).resolves.toMatchObject({
+      bundles: [{ name: "review-suite", version: "1.0.0" }],
+    });
+  });
+
+  it("previews the exact recovery entry boundary and rejects entry 513", async () => {
+    const projectRoot = await projectDirectory();
+    const blobDirectory = join(projectRoot, ".flow", "packages", "sha256");
+    await writeRetiredBlobs(blobDirectory, 512);
+    const store = new LocalCapabilityPackageStore(
+      projectRoot,
+    ) as unknown as PrunableCapabilityPackageStore;
+
+    await expect(store.previewPrune()).resolves.toMatchObject({ retiredBlobCount: 512 });
+
+    await writeRetiredBlobs(blobDirectory, 1, 512);
+    await expect(store.previewPrune()).rejects.toMatchObject({ code: "unsafe_state" });
+    expect(await readdir(blobDirectory)).toHaveLength(513);
+  });
+
+  it.each(["symbolic link", "hard link", "directory"] as const)(
+    "rejects a retired-blob %s without changing its external source",
+    async (kind) => {
+      const projectRoot = await projectDirectory();
+      const blobDirectory = join(projectRoot, ".flow", "packages", "sha256");
+      await mkdir(blobDirectory, { recursive: true });
+      const externalPath = join(projectRoot, "PRIVATE_EXTERNAL_RETIRED_BLOB");
+      const content = Buffer.from("PRIVATE_EXTERNAL_RETIRED_BLOB_CONTENT");
+      await writeFile(externalPath, content);
+      const blobPath = join(blobDirectory, `${digest(content)}.flowpkg`);
+      if (kind === "symbolic link") {
+        await symlink(externalPath, blobPath);
+      } else if (kind === "hard link") {
+        await link(externalPath, blobPath);
+      } else {
+        await mkdir(blobPath);
+      }
+      const store = new LocalCapabilityPackageStore(
+        projectRoot,
+      ) as unknown as PrunableCapabilityPackageStore;
+
+      const failure = await store.previewPrune().catch((error: unknown) => error);
+
+      expect(failure).toMatchObject({ code: "unsafe_state" });
+      expect((failure as Error).message).not.toContain("PRIVATE_EXTERNAL_RETIRED_BLOB");
+      await expect(readFile(externalPath)).resolves.toEqual(content);
+    },
+  );
+
+  it.each(["blob", "directory"] as const)(
+    "reports fixed settlement uncertainty when a prune %s handle does not settle",
+    async (failedKind) => {
+      const projectRoot = await projectDirectory();
+      const blobDirectory = join(projectRoot, ".flow", "packages", "sha256");
+      await writeRetiredBlobs(blobDirectory, 1);
+      const hooks: CapabilityPackageStoreHooks & {
+        readonly settlePruneHandle: (
+          kind: "blob" | "directory",
+          close: () => Promise<void>,
+        ) => Promise<void>;
+      } = {
+        settlePruneHandle: async (kind, close) => {
+          await close();
+          if (kind === failedKind) {
+            throw new Error("PRIVATE_PRUNE_HANDLE_CLOSE_FAILURE");
+          }
+        },
+      };
+      const store = new LocalCapabilityPackageStore(projectRoot, hooks);
+
+      const failure = await store.previewPrune().catch((error: unknown) => error);
+
+      expect(failure).toMatchObject({ code: "settlement_uncertain" });
+      expect((failure as Error).message).not.toContain("PRIVATE_PRUNE_HANDLE_CLOSE_FAILURE");
+    },
+  );
+
+  it("preserves a prune validation failure when directory handle settlement also fails", async () => {
+    const projectRoot = await projectDirectory();
+    const blobDirectory = join(projectRoot, ".flow", "packages", "sha256");
+    await mkdir(blobDirectory, { recursive: true });
+    const privateContent = Buffer.from("PRIVATE_CORRUPT_RETIRED_CONTENT");
+    await writeFile(join(blobDirectory, `${"a".repeat(64)}.flowpkg`), privateContent);
+    const hooks: CapabilityPackageStoreHooks & {
+      readonly settlePruneHandle: (
+        kind: "blob" | "directory",
+        close: () => Promise<void>,
+      ) => Promise<void>;
+    } = {
+      settlePruneHandle: async (kind, close) => {
+        await close();
+        if (kind === "directory") {
+          throw new Error("PRIVATE_DIRECTORY_CLOSE_FAILURE");
+        }
+      },
+    };
+    const store = new LocalCapabilityPackageStore(projectRoot, hooks);
+
+    const failure = await store.previewPrune().catch((error: unknown) => error);
+
+    expect(failure).toMatchObject({ code: "settlement_uncertain" });
+    expect((failure as Error).message).not.toContain("PRIVATE_");
+    expect((failure as Error & { cause?: unknown }).cause).toBeInstanceOf(AggregateError);
+    const causes = (failure as Error & { cause: AggregateError }).cause.errors;
+    expect(causes[0]).toMatchObject({ code: "corrupt_blob" });
+    expect(causes[1]).toMatchObject({ message: "PRIVATE_DIRECTORY_CLOSE_FAILURE" });
+  });
+
   it("treats an exact repeated replacement as already current", async () => {
     const fixture = await replacementFixture();
 
@@ -1379,7 +1907,7 @@ describe("local capability package store", () => {
     expect(observedVersions).toEqual([["1.0.0"], ["1.1.0"]]);
   });
 
-  it("retains the old blob for a reader that captured the established lock", async () => {
+  it("pins the old blob for a reader after replacement and maintenance unlink its path", async () => {
     const fixture = await replacementFixture();
     let releaseReader: (() => void) | undefined;
     let markReaderReady: (() => void) | undefined;
@@ -1405,6 +1933,22 @@ describe("local capability package store", () => {
       status: "replaced",
       cleanup: "retained",
     });
+    const maintenance = fixture.store as unknown as PrunableCapabilityPackageStore;
+    const preview = await maintenance.previewPrune();
+    await expect(
+      maintenance.applyPrune({ expectedPlanDigest: preview.planDigest }),
+    ).resolves.toMatchObject({ status: "applied", unlinkedBlobCount: 1 });
+    await expect(
+      stat(
+        join(
+          fixture.projectRoot,
+          ".flow",
+          "packages",
+          "sha256",
+          `${digest(fixture.current.content)}.flowpkg`,
+        ),
+      ),
+    ).rejects.toMatchObject({ code: "ENOENT" });
     releaseReader?.();
 
     await expect(oldGeneration).resolves.toMatchObject([
@@ -1415,6 +1959,32 @@ describe("local capability package store", () => {
         now: () => new Date("2026-08-14T00:00:00.000Z"),
       }).verify(),
     ).resolves.toMatchObject([{ bundle: { name: "review-suite", version: "1.1.0" } }]);
+  });
+
+  it("retries from the newer active generation when maintenance wins before blob open", async () => {
+    const fixture = await replacementFixture();
+    let raced = false;
+    const hooks: CapabilityPackageStoreHooks & {
+      readonly beforeVerifyBundleOpen: (entry: { readonly version: string }) => Promise<void>;
+    } = {
+      now: () => new Date("2026-08-14T00:00:00.000Z"),
+      beforeVerifyBundleOpen: async (entry) => {
+        if (entry.version !== "1.0.0" || raced) {
+          return;
+        }
+        raced = true;
+        await fixture.store.replace(fixture.input);
+        const maintenance = fixture.store as unknown as PrunableCapabilityPackageStore;
+        const preview = await maintenance.previewPrune();
+        await maintenance.applyPrune({ expectedPlanDigest: preview.planDigest });
+      },
+    };
+    const reader = new LocalCapabilityPackageStore(fixture.projectRoot, hooks);
+
+    await expect(reader.verify()).resolves.toMatchObject([
+      { bundle: { name: "review-suite", version: "1.1.0" } },
+    ]);
+    expect(raced).toBe(true);
   });
 
   it.each(["install", "remove", "replace"] as const)(
@@ -2218,6 +2788,18 @@ async function projectDirectory(): Promise<string> {
   temporaryDirectories.push(directory);
   await mkdir(join(directory, ".flow"));
   return directory;
+}
+
+async function writeRetiredBlobs(
+  blobDirectory: string,
+  count: number,
+  startIndex = 0,
+): Promise<void> {
+  await mkdir(blobDirectory, { recursive: true });
+  for (let index = 0; index < count; index += 1) {
+    const content = Buffer.from(`retired capability blob ${startIndex + index}`);
+    await writeFile(join(blobDirectory, `${digest(content)}.flowpkg`), content, { mode: 0o600 });
+  }
 }
 
 function bundle(prompt: string, name = "review-suite") {

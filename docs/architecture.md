@@ -41,7 +41,9 @@ A separate finite first-activation controller can install one exact missing pack
 exact version and publisher, waits a complete interval before each check, requires active Flow
 metadata, and accepts only inert non-policy package surfaces. Durable waiting, prepared, and settled
 records make the operation restart-safe. A settled record consumes the authority and prevents later
-reinstallation.
+reinstallation. Explicit retired-blob maintenance previews a bounded physical store and applies one
+digest-bound plan under the package mutation lock. POSIX open-file handles preserve complete reader
+generations.
 Opaque Pi session continuation and general failure or fallback
 retries also remain later work. The same is true for broader configurable policy, model network
 tools, and arbitrary evaluator runtimes. Stronger VM or managed sandbox backends also remain later
@@ -69,7 +71,7 @@ flowchart TB
         supervisor["Local supervisor<br/>Queues detached work and recovery"]
         engine["Workflow engine<br/>Compiles the plan and selects the next safe step"]
         rules["Rules and safeguards<br/>Policy · approvals · budgets · verification"]
-        capability["Capability admission<br/>Checks and freezes exact package bytes"]
+        capability["Capability governance<br/>Checks, freezes, and maintains exact package bytes"]
     end
 
     subgraph execution["3. Execution plane — performs bounded work"]
@@ -81,7 +83,7 @@ flowchart TB
     subgraph state["4. Durable project state — survives restart"]
         direction LR
         ledgers[("Run and evidence ledgers")]
-        stores[("Package, activation, and evaluation stores")]
+        stores[("Run, package, activation, and evaluation stores")]
         workspaces[("Isolated workspaces")]
     end
 
@@ -110,6 +112,7 @@ flowchart TB
     commands -->|"Uses isolated command files"| workspaces
     engine -->|"Appends events and replays prior state"| ledgers
     capability -->|"Publishes immutable packages"| stores
+    capability -->|"Prunes only reviewed retired package blobs"| stores
     supervisor -->|"Records queues and ownership"| stores
     presentation -->|"Reads a sanitized public projection"| ledgers
     agents -->|"Returns evidence for durable append"| ledgers
@@ -144,7 +147,7 @@ before success. It stops on unresolved side-effect or settlement uncertainty.
 | --- | --- | --- |
 | Command line | `src/cli/` | Parses public commands, composes dependencies, and projects safe output. |
 | Workflow rules and safeguards | `src/domain/` | Defines provider-neutral workflows, state transitions, policy, evidence, budgets, and validation. |
-| Workflow engine and capability admission | `src/application/` | Coordinates use cases through ports and asks the domain for legal transitions. |
+| Workflow engine and capability governance | `src/application/` | Coordinates use cases through ports, asks the domain for legal transitions, and defines bounded package-storage maintenance. |
 | Detached work and recovery | `src/supervisor/` | Owns bounded queueing, worker adoption, cancellation, event paging, and detached lifecycle. |
 | Presentation, storage, package, sandbox, and runtime adapters | `src/infrastructure/` | Implements application ports for local files, HTTP, OCI, TUF, ACP, Pi, OMP, Prime, SRT, terminal, and browser boundaries. |
 | Prime evaluation container | `prime-container/` | Provides the fixed Go supervisor, kernel bridge, driver protocol, and hardened image used by the Prime adapter. |
@@ -193,6 +196,7 @@ Architecture is derived from these flows.
 | First-activate one repository package | An operator supplies one exact missing package, version, publisher, full interval, and finite check count | Durable one-shot waiting, prepared, and settled states around TUF checks, offline Sigstore verification, and metadata-required installation |
 | Replace an established repository package | An operator supplies one exact candidate digest, current version, and publisher policy | Two-target metadata, offline TUF and Sigstore replay, one atomic active lock switch, and retained prior content for old readers |
 | Watch one established repository package | An operator starts one foreground watcher with an exact package, publisher, interval, and update policy | Full-interval TUF checks, deterministic candidate selection, offline atomic replacement, fixed JSON Lines status, and no overlapping Flow watcher |
+| Reclaim retired package blobs | An operator previews, reviews, and applies one exact prune plan | Active blobs and durable snapshots stay unchanged while retired content is unlinked with generation-safe reader settlement |
 
 ### Operator flows
 

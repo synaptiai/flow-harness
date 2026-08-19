@@ -131,8 +131,10 @@ containment milestone. It is not VM-grade or multi-tenant isolation.
   package, exact version, exact publisher, full interval, and check limit. It requires current
   active Flow metadata, consumes durable waiting, prepared, and settled states, and cannot reinstall
   a removed settled package.
-  Online root bootstrap, major or policy-package replacement,
-  automatic rollback, and retired-blob maintenance also remain deferred.
+  Explicit retired-blob maintenance now provides deterministic preview, digest-bound apply,
+  bounded physical storage, generation-pinned readers, and interruption settlement. Online root
+  bootstrap, major or policy-package replacement, automatic rollback, and background collection
+  remain deferred.
 - Workflow contributions use versioned manifests. *(Implemented for inert exact-version workflow source with packaged root/child selection, ordinary recursive compilation, immutable transitive snapshots, deterministic bundle distribution, detached execution, and fail-closed recovery. Parameterized templates and executable modules remain deferred.)*
 - Policy contributions use versioned manifests.
   Flow implements strict local and digest-pinned installed inert narrowing packages.

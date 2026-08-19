@@ -188,14 +188,23 @@ The replacement suite also proves semantic version ordering and capability-surfa
 covers two-target metadata, policy rejection, old-or-new readers, retained prior content,
 cancellation, settlement, repeat, and content-free CLI output.
 
+The package-maintenance suite proves deterministic preview, exact plan apply, and drift refusal. It
+also proves physical publication ceilings, recovery scan ceilings, and fail-closed handling of
+links, special entries, missing active blobs, and inconsistent content. Reader races
+prove that an open old generation remains complete after unlink and that a pre-open race retries
+the new generation once. Cancellation tests distinguish no-mutation cancellation from post-unlink
+directory settlement, partial progress, idempotent retry, and settlement uncertainty. CLI tests
+prove content-free aggregate output and exact grammar.
+
 A fixture comes from the independent `theupdateframework/tuf-conformance` repository. It proves
 delegated-target interoperability through Flow's production staging adapter. The runtime-isolation
 test places a failing repository-state tripwire beside the package store.
 
 That test proves that an attached run retains the old snapshot across an active replacement. A
 later admission receives only the new digest. A detached worker executes the old frozen snapshot
-while live package metadata is unreadable. Inspect and resume remain snapshot-only after removal of
-the replacement bundle.
+while live package metadata is unreadable. The test prunes the retired live-store blob before the
+detached and resumed paths. Inspect and resume remain snapshot-only because they use the immutable
+run snapshot instead of the live package store.
 
 The scheduler unit suite proves a full interval after every settled check. It proves no overlap,
 no catch-up burst, observable startup and restart gaps, missed-interval counting, consecutive
@@ -212,7 +221,7 @@ check, offline Sigstore reopen, and metadata-required first installation.
 Frozen attached, detached, child, recovery, replay, and evaluation snapshots remain unchanged.
 The suite does not claim a trustworthy host clock or private repository credentials. It also does
 not claim major or policy-package replacement, rollback,
-retained-blob collection, or online trust-root refresh.
+background blob collection, or online trust-root refresh.
 
 Validating `examples/agent-command-approval.workflow.yaml` is credential-free. Running it requires
 a configured model provider and a second local client to approve or deny each exact `flow_exec`

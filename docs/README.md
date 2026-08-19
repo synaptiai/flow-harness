@@ -18,7 +18,7 @@ Read the [security policy](../SECURITY.md) before unattended use.
 | Document | Use it when |
 | --- | --- |
 | [Run and control workflows](guides/run-and-control.md) | You need attached or detached runs, presentation hosts, approvals, budgets, cancellation, or recovery entry points. |
-| [Use capability packages](guides/capability-packages.md) | You need local packages, exact bundles, repository candidates, activation, replacement, or watching. |
+| [Use capability packages](guides/capability-packages.md) | You need local packages, exact bundles, repository candidates, activation, replacement, pruning, or watching. |
 | [Reproducible harness evaluation](evaluation.md) | You need paired comparisons, private verification, adaptive candidates, activation, inspection, or export. |
 | [Local ACP v1 bridge](acp.md) | You need to observe and control Flow from a compatible local editor. |
 

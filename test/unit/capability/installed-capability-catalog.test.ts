@@ -17,7 +17,10 @@ import {
   AgentSkillCatalogError,
   snapshotSelectedAgentSkills,
 } from "../../../src/infrastructure/fs/local-agent-skill-catalog.js";
-import { LocalCapabilityPackageStore } from "../../../src/infrastructure/fs/local-capability-package-store.js";
+import {
+  type CapabilityPackageStoreHooks,
+  LocalCapabilityPackageStore,
+} from "../../../src/infrastructure/fs/local-capability-package-store.js";
 import {
   PolicyPackageCatalogError,
   snapshotSelectedPolicyPackages,
@@ -58,6 +61,7 @@ describe("installed project capability catalog", () => {
       });
       const controller = new AbortController();
       const reason = new Error("cancel installed policy discovery");
+      let verifiedGenerationHandleSettled = false;
 
       const lockPath = join(project, ".flow", "packages.lock.json");
       const blobPath = join(project, ".flow", "packages", "sha256", `${digest}.flowpkg`);
@@ -73,11 +77,93 @@ describe("installed project capability catalog", () => {
             ...(boundary === "lock"
               ? { beforeVerifyLockRead: cancelRead }
               : { beforeVerifyBundleRead: cancelRead }),
-          },
+            settleVerifiedGenerationHandle: async (_entry, close) => {
+              await close();
+              verifiedGenerationHandleSettled = true;
+            },
+          } as CapabilityPackageStoreHooks,
         }),
       ).rejects.toBe(reason);
+      expect(verifiedGenerationHandleSettled).toBe(boundary === "bundle");
     },
   );
+
+  it("settles an installed-bundle handle when cancellation follows open", async () => {
+    const project = await projectDirectory();
+    const created = createCapabilityBundleSource({
+      name: "open-boundary-suite",
+      version: "1.0.0",
+      description: "Open-boundary fixture.",
+      packages: [{ kind: "policy-package", manifest: Buffer.from(policyManifest()) }],
+    });
+    await new LocalCapabilityPackageStore(project).install({
+      source: "https://packages.example.test/open-boundary-suite-1.0.0.flowpkg",
+      expectedSha256: created.bundle.digest.slice("sha256:".length),
+      content: created.content,
+    });
+    const controller = new AbortController();
+    const reason = new Error("cancel after opening installed package");
+    let handleSettled = false;
+
+    await expect(
+      discoverProjectCapabilityCatalogs(project, {
+        signal: controller.signal,
+        capabilityPackageStoreHooks: {
+          afterVerifyBundleOpened: async () => {
+            controller.abort(reason);
+          },
+          settleVerifiedGenerationHandle: async (_entry, close) => {
+            await close();
+            handleSettled = true;
+          },
+        } as CapabilityPackageStoreHooks,
+      }),
+    ).rejects.toBe(reason);
+    expect(handleSettled).toBe(true);
+  });
+
+  it("reports handle settlement uncertainty before a concurrent cancellation", async () => {
+    const project = await projectDirectory();
+    const created = createCapabilityBundleSource({
+      name: "settlement-suite",
+      version: "1.0.0",
+      description: "Settlement fixture.",
+      packages: [{ kind: "policy-package", manifest: Buffer.from(policyManifest()) }],
+    });
+    await new LocalCapabilityPackageStore(project).install({
+      source: "https://packages.example.test/settlement-suite-1.0.0.flowpkg",
+      expectedSha256: created.bundle.digest.slice("sha256:".length),
+      content: created.content,
+    });
+    const controller = new AbortController();
+    const cancellation = new Error("cancel installed package discovery");
+    const settlement = new Error("settle installed package handle");
+
+    const operation = discoverProjectCapabilityCatalogs(project, {
+      signal: controller.signal,
+      capabilityPackageStoreHooks: {
+        beforeVerifyBundleRead: async () => {
+          controller.abort(cancellation);
+        },
+        settleVerifiedGenerationHandle: async (_entry, close) => {
+          await close();
+          throw settlement;
+        },
+      },
+    });
+
+    const error = await operation.catch((cause: unknown) => cause);
+    expect(error).toMatchObject({
+      code: "settlement_uncertain",
+      message: "capability package blob handles could not be settled",
+    });
+    expect(error).not.toBe(cancellation);
+    expect((error as Error).cause).toBeInstanceOf(AggregateError);
+    expect([...(error as Error & { cause: AggregateError }).cause.errors]).toEqual([
+      cancellation,
+      settlement,
+    ]);
+  });
 
   it("keeps an admitted metadata snapshot while a revoked refresh blocks new admission", async () => {
     const project = await projectDirectory();
