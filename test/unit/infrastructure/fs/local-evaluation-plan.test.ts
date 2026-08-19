@@ -18,6 +18,10 @@ import {
   createEffectiveHarnessState,
 } from "../../../../src/domain/adaptation/effective-harness-state.js";
 import {
+  calculateModelRoutingCandidateDigest,
+  type ModelRoutingCandidateIdentity,
+} from "../../../../src/domain/adaptation/model-routing-candidate.js";
+import {
   calculateEvaluationPlanDigest,
   createEvaluationSchedule,
   type EvaluationPlanIdentity,
@@ -223,6 +227,14 @@ controls:`,
     const store = new LocalEvaluationStore(join(project, "evaluations"));
     await store.create(header);
     await expect(store.read("effective-harness-evaluation")).resolves.toMatchObject({ header });
+
+    const legacy = structuredClone(header) as MutablePublicHeader;
+    legacy.evaluationId = "legacy-effective-harness-evaluation";
+    delete requiredEffectiveBinding(legacy, "baseline").workflowId;
+    delete requiredEffectiveBinding(legacy, "candidate").workflowId;
+    redigestEvaluationHeader(legacy);
+    await store.create(legacy as PublicEvaluationHeader);
+    await expect(store.read(legacy.evaluationId)).resolves.toMatchObject({ header: legacy });
   });
 
   it("binds two explicit profile routes to one exact model-routing artifact", async () => {
@@ -308,6 +320,7 @@ controls:`,
           effectiveHarness: expect.objectContaining({
             selection: "baseline",
             surface: "model-routing",
+            workflowId: artifact.workflowId,
           }),
         }),
         expect.objectContaining({
@@ -323,6 +336,7 @@ controls:`,
           effectiveHarness: expect.objectContaining({
             selection: "candidate",
             surface: "model-routing",
+            workflowId: artifact.workflowId,
           }),
         }),
       ]),
@@ -331,17 +345,62 @@ controls:`,
     await store.create(header);
     await expect(store.read("route-evaluation")).resolves.toMatchObject({ header });
 
-    const forged = structuredClone(header) as MutablePublicHeader;
-    forged.evaluationId = "forged-route-evaluation";
-    const forgedRoutes = forged.controls.modelRoutes;
-    if (forgedRoutes === undefined) throw new Error("route header has no model routes");
-    const forgedCandidateRoute = forgedRoutes[1];
-    if (forgedCandidateRoute === undefined) throw new Error("route header has no candidate route");
-    forgedCandidateRoute.route.id = "gpt-5.5-private-canary";
-    redigestEvaluationHeader(forged);
-    await expect(store.create(forged as PublicEvaluationHeader)).rejects.toMatchObject({
+    const mutations: readonly ((value: MutablePublicHeader) => void)[] = [
+      (value) => {
+        requiredModelRoutes(value)[0].profileId = "private-profile";
+      },
+      (value) => {
+        requiredModelRoutes(value)[1].profileId = "private-profile";
+      },
+      (value) => {
+        requiredModelRoutes(value)[0].nodeId = "private-node";
+      },
+      (value) => {
+        requiredModelRoutes(value)[1].nodeId = "private-node";
+      },
+      (value) => {
+        requiredEffectiveBinding(value, "baseline").workflowId = "private-workflow";
+      },
+      (value) => {
+        requiredEffectiveBinding(value, "candidate").workflowId = "private-workflow";
+      },
+      ...([0, 1] as const).flatMap((routeIndex) =>
+        (["provider", "id", "thinking"] as const).map((field) => (value: MutablePublicHeader) => {
+          const route = requiredModelRoutes(value)[routeIndex].route;
+          if (field === "thinking") route.thinking = "xhigh";
+          else route[field] = `private-${field}`;
+        }),
+      ),
+    ];
+    for (const [index, mutate] of mutations.entries()) {
+      const forgedRoute = structuredClone(header) as MutablePublicHeader;
+      forgedRoute.evaluationId = `forged-route-evaluation-${index}`;
+      mutate(forgedRoute);
+      redigestEvaluationHeader(forgedRoute);
+      await expect(store.create(forgedRoute as PublicEvaluationHeader)).rejects.toMatchObject({
+        code: "corrupt",
+        message: "corrupt: invalid evaluation public header",
+      });
+      await expect(store.read(forgedRoute.evaluationId)).rejects.toMatchObject({
+        code: "not_found",
+      });
+    }
+
+    const forgedScope = structuredClone(header) as MutablePublicHeader;
+    forgedScope.evaluationId = "forged-route-scope-evaluation";
+    const forgedIdentity = requiredModelRoutingCandidateIdentity(forgedScope);
+    forgedIdentity.scope.workflowId = "private-forged-workflow";
+    const { candidateDigest: _candidateDigest, ...identityContent } = forgedIdentity;
+    forgedIdentity.candidateDigest = calculateModelRoutingCandidateDigest(identityContent);
+    for (const profile of forgedScope.profiles) {
+      if (profile.adapter === "flow-workflow-v1" && profile.effectiveHarness !== undefined) {
+        profile.effectiveHarness.candidateDigest = forgedIdentity.candidateDigest;
+      }
+    }
+    redigestEvaluationHeader(forgedScope);
+    await expect(store.create(forgedScope as PublicEvaluationHeader)).rejects.toMatchObject({
       code: "corrupt",
-      message: expect.not.stringContaining("gpt-5.5-private-canary"),
+      message: expect.not.stringContaining("private-forged-workflow"),
     });
   });
 
@@ -1361,13 +1420,15 @@ type DeepMutable<Value> = Value extends (...args: never[]) => unknown
   ? Value
   : Value extends readonly []
     ? []
-    : Value extends readonly [infer Item]
-      ? [DeepMutable<Item>]
-      : Value extends readonly (infer Item)[]
-        ? DeepMutable<Item>[]
-        : Value extends object
-          ? { -readonly [Key in keyof Value]: DeepMutable<Value[Key]> }
-          : Value;
+    : Value extends readonly [infer First, infer Second]
+      ? [DeepMutable<First>, DeepMutable<Second>]
+      : Value extends readonly [infer Item]
+        ? [DeepMutable<Item>]
+        : Value extends readonly (infer Item)[]
+          ? DeepMutable<Item>[]
+          : Value extends object
+            ? { -readonly [Key in keyof Value]: DeepMutable<Value[Key]> }
+            : Value;
 
 function requiredFlowProfile(header: MutablePublicHeader, id: string): MutableFlowProfile {
   const profile = header.profiles.find(
@@ -1377,6 +1438,20 @@ function requiredFlowProfile(header: MutablePublicHeader, id: string): MutableFl
     throw new Error(`Agent Skill durable fixture has no ${id} Flow profile`);
   }
   return profile;
+}
+
+function requiredModelRoutes(header: MutablePublicHeader) {
+  const routes = header.controls.modelRoutes;
+  if (routes === undefined) throw new Error("model-routing durable fixture has no routes");
+  return routes;
+}
+
+function requiredEffectiveBinding(header: MutablePublicHeader, id: "baseline" | "candidate") {
+  const binding = requiredFlowProfile(header, id).effectiveHarness;
+  if (binding === undefined) {
+    throw new Error(`model-routing durable fixture has no ${id} effective binding`);
+  }
+  return binding;
 }
 
 function requiredSkillCandidateIdentity(
@@ -1389,6 +1464,20 @@ function requiredSkillCandidateIdentity(
     identity.kind !== "agent-skill-candidate"
   ) {
     throw new Error("Agent Skill durable fixture has no skill candidate identity");
+  }
+  return identity;
+}
+
+function requiredModelRoutingCandidateIdentity(
+  header: MutablePublicHeader,
+): DeepMutable<ModelRoutingCandidateIdentity> {
+  const identity = requiredFlowProfile(header, "candidate").candidate?.identity;
+  if (
+    identity === undefined ||
+    !("kind" in identity) ||
+    identity.kind !== "model-routing-candidate"
+  ) {
+    throw new Error("model-routing durable fixture has no routing candidate identity");
   }
   return identity;
 }
@@ -1423,6 +1512,9 @@ function redigestEvaluationHeader(header: MutablePublicHeader): void {
         ? {}
         : { capabilityPackageDigests: profile.capabilityPackageDigests }),
       ...(profile.candidate === undefined ? {} : { candidate: profile.candidate }),
+      ...(profile.effectiveHarness === undefined
+        ? {}
+        : { effectiveHarness: profile.effectiveHarness }),
     };
   });
   const planIdentity: EvaluationPlanIdentity = {

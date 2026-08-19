@@ -225,7 +225,9 @@ Approach C decision._
   candidate states remain self-consistent and differ only at the declared tuple.
 
 - A routing evaluation records one explicit route per paired profile. All non-route controls remain
-  shared and exact. Legacy plans retain their existing single shared-model contract and bytes.
+  shared and exact. Each effective profile independently records the admitted workflow ID and binds
+  it to the candidate scope. Historical non-routing headers can omit this field. Legacy plans retain
+  their existing single shared-model contract and bytes.
 
 - Public candidate, evaluation, activation, run, event, inspection, and export views contain route
   identities and digests. They contain no workflow bodies, absolute filesystem paths, credentials,
@@ -245,7 +247,7 @@ Approach C decision._
 | 6, 9 | Activation and settlement | `npx vitest run test/unit/application/prepare-effective-harness-activation.test.ts test/unit/infrastructure/fs/local-effective-harness-store.test.ts` | Exact superior evidence gates activation. State, concurrency, cancellation, and commit-boundary matrices pass. | Distributed multi-host transactions |
 | 7–8 | Runtime and public output | `npx vitest run test/unit/application/run-workflow-capabilities.test.ts test/integration/supervisor/service.test.ts test/integration/supervisor/worker.test.ts test/unit/cli/public-output.test.ts` | Selected state reaches attached, detached, child, recovery, and replay paths without live fallback or private data | Dynamic route changes during a run |
 | 10 | Documentation | `npm run docs:style && npm run docs:links && npm run docs:ste && npx vitest run test/integration/package/architecture-documentation.test.ts` | Architecture, evaluation, recovery, testing, roadmap, and README routing remain accurate and linked | External standards certification |
-| All | Static and runtime | `npm run format:check && npm run lint && npm run typecheck && npm run build && npm test -- --maxWorkers=1 && npm run test:coverage -- --testTimeout=15000 && npm run test:runtime && npm run pack:check` | Repository quality, complete serial suite, coverage, runtime probes, and packaged CLI checks pass | Live paid-provider benchmark evidence |
+| All | Static and runtime | `npm run format:check && npm run lint && npm run typecheck && npm run build && npm test -- --maxWorkers=1 --testTimeout=15000 && npm run test:coverage -- --testTimeout=30000 && npm run test:runtime && npm run pack:check` | Repository quality, complete serial suite, coverage, runtime probes, and packaged CLI checks pass | Live paid-provider benchmark evidence |
 
 ## Implementation sequence
 
@@ -269,29 +271,30 @@ Approach C decision._
 
 ### Frozen acceptance map
 
-The exact Issue #127 selector passed 248 tests across 20 files:
+The exact Issue #127 selector passed 253 tests across 20 files:
 
 ```text
-npx vitest run test/unit/adaptation/model-routing-candidate.test.ts test/unit/application/prepare-effective-harness-candidate.test.ts test/unit/adaptation/effective-harness-candidate.test.ts test/unit/infrastructure/fs/local-model-routing-candidate.test.ts test/unit/infrastructure/fs/local-effective-harness-candidate.test.ts test/unit/evaluation/plan.test.ts test/unit/infrastructure/fs/local-evaluation-plan.test.ts test/unit/application/run-evaluation.test.ts test/unit/infrastructure/fs/local-evaluation-store.test.ts test/integration/cli/effective-harness-composition.test.ts test/integration/cli/evaluation.test.ts test/unit/application/prepare-effective-harness-activation.test.ts test/unit/infrastructure/fs/local-effective-harness-store.test.ts test/unit/application/run-workflow-capabilities.test.ts test/integration/supervisor/service.test.ts test/integration/supervisor/worker.test.ts test/unit/cli/public-output.test.ts test/unit/adaptation/effective-harness-transition.test.ts test/integration/cli/effective-harness-runtime.test.ts test/unit/infrastructure/fs/local-adaptation-candidate.test.ts
+npx vitest run --testTimeout=15000 test/unit/adaptation/model-routing-candidate.test.ts test/unit/application/prepare-effective-harness-candidate.test.ts test/unit/adaptation/effective-harness-candidate.test.ts test/unit/infrastructure/fs/local-model-routing-candidate.test.ts test/unit/infrastructure/fs/local-effective-harness-candidate.test.ts test/unit/evaluation/plan.test.ts test/unit/infrastructure/fs/local-evaluation-plan.test.ts test/unit/application/run-evaluation.test.ts test/unit/infrastructure/fs/local-evaluation-store.test.ts test/integration/cli/effective-harness-composition.test.ts test/integration/cli/evaluation.test.ts test/unit/application/prepare-effective-harness-activation.test.ts test/unit/infrastructure/fs/local-effective-harness-store.test.ts test/unit/application/run-workflow-capabilities.test.ts test/integration/supervisor/service.test.ts test/integration/supervisor/worker.test.ts test/unit/cli/public-output.test.ts test/unit/adaptation/effective-harness-transition.test.ts test/integration/cli/effective-harness-runtime.test.ts test/unit/infrastructure/fs/local-adaptation-candidate.test.ts
 ```
 
 ### Complete suite and coverage
 
-The single-worker complete suite passed 4,408 tests and skipped four platform-gated tests across 320
+The single-worker complete suite passed 4,413 tests and skipped four platform-gated tests across 320
 files:
 
 ```text
-npm test -- --maxWorkers=1
+npm test -- --maxWorkers=1 --testTimeout=15000
 ```
 
-The complete V8 coverage run passed the same 4,408 tests and four skips. The 15-second test timeout
-accounts for instrumentation overhead. It does not change a product deadline or assertion:
+The complete V8 coverage run passed the same 4,413 tests and four skips. The 30-second test timeout
+accounts for local instrumentation overhead and machine contention. It does not change a product
+deadline or assertion:
 
 ```text
-npm run test:coverage -- --testTimeout=15000
+npm run test:coverage -- --testTimeout=30000
 ```
 
-Coverage was 84.55% statements, 78.99% branches, 91.23% functions, and 84.68% lines. These values
+Coverage was 84.56% statements, 79.01% branches, 91.22% functions, and 84.70% lines. These values
 exceed the configured 75%, 65%, 70%, and 75% thresholds.
 
 ### Static, documentation, runtime, and package gates

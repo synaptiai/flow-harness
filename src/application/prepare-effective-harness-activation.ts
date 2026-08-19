@@ -46,6 +46,7 @@ export interface EffectiveHarnessStoredEvaluation {
                 readonly artifactDigest: string;
                 readonly stateDigest: string;
                 readonly baselineHeadDigest: string;
+                readonly workflowId?: string | undefined;
                 readonly workflowSha256: string;
                 readonly workflowDigest: string;
                 readonly packageDigests: readonly string[];
@@ -170,6 +171,14 @@ function assertEvaluationProfiles(
     baseline?.adapter === "flow-workflow-v1" ? baseline.effectiveHarness : undefined;
   const candidateBinding =
     candidate?.adapter === "flow-workflow-v1" ? candidate.effectiveHarness : undefined;
+  const workflowIdsMatch =
+    artifact.surface === "model-routing"
+      ? baselineBinding?.workflowId === artifact.workflowId &&
+        candidateBinding?.workflowId === artifact.workflowId
+      : baselineBinding?.workflowId === undefined && candidateBinding?.workflowId === undefined
+        ? true
+        : baselineBinding?.workflowId === artifact.workflowId &&
+          candidateBinding?.workflowId === artifact.workflowId;
   assertEvaluationModelRoutes(artifact, stored, baseline?.id, candidate?.id);
   if (
     baseline?.adapter !== "flow-workflow-v1" ||
@@ -190,6 +199,7 @@ function assertEvaluationProfiles(
     candidateBinding.surface !== artifact.surface ||
     baselineBinding.candidateDigest !== artifact.candidate.candidateDigest ||
     candidateBinding.candidateDigest !== artifact.candidate.candidateDigest ||
+    !workflowIdsMatch ||
     baselineBinding.workflowSha256 !== artifact.baselineState.workflow.sha256 ||
     baselineBinding.workflowDigest !== artifact.baselineState.workflow.workflowDigest ||
     candidateBinding.workflowSha256 !== artifact.candidateState.workflow.sha256 ||

@@ -361,6 +361,7 @@ export type EvaluationProfileIdentity =
         readonly artifactDigest: string;
         readonly stateDigest: string;
         readonly baselineHeadDigest: string;
+        readonly workflowId?: string | undefined;
         readonly workflowSha256: string;
         readonly workflowDigest: string;
         readonly packageDigests: readonly string[];

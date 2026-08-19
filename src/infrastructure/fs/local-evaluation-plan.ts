@@ -381,6 +381,7 @@ export async function admitLocalEvaluationPlan(
             artifactDigest: artifact.artifactDigest,
             stateDigest: state.stateDigest,
             baselineHeadDigest: artifact.baselineHead.headDigest,
+            workflowId: state.workflowId,
             workflowSha256: state.workflow.sha256,
             workflowDigest: state.workflow.workflowDigest,
             packageDigests: Object.freeze(state.packages.map((item) => item.digest)),

@@ -465,9 +465,14 @@ same declared node and match the candidate identity. The shared model still cont
 agent and model verifier. Tasks, fixtures, seeds, budgets, network policy, retries, schedule order,
 verification, and every non-route workflow field remain equal.
 
-The durable plan, header, records, inspection, and export retain the route pair and candidate digest.
-They omit workflow bodies, credentials, and provider responses. Trial execution receives one selected
-route, not the pair. Flow does not discover models, choose routes dynamically, or use fallbacks.
+The durable plan, header, records, inspection, and export retain the route pair, candidate digest,
+and workflow ID. The workflow ID appears independently in both profile bindings. Flow uses that
+redundancy to bind the candidate scope to the admitted baseline and candidate workflows. Historical
+non-routing evaluation headers can omit this field.
+
+The public evidence omits workflow bodies, credentials, and provider responses. Trial execution
+receives one selected route, not the pair. Flow does not discover models, choose routes dynamically,
+or use fallbacks.
 
 ## Activation gate
 

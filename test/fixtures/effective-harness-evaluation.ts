@@ -271,6 +271,7 @@ function effectiveBinding(
     artifactDigest: artifact.artifactDigest,
     stateDigest: state.stateDigest,
     baselineHeadDigest: artifact.baselineHead.headDigest,
+    workflowId: state.workflowId,
     workflowSha256: state.workflow.sha256,
     workflowDigest: state.workflow.workflowDigest,
     packageDigests: state.packages.map((item) => item.digest),

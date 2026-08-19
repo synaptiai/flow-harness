@@ -1398,7 +1398,11 @@ one model-bearing node. It must match the declared model and budget at each grap
 A plan for one composed model-routing artifact also declares an ordered two-entry `modelRoutes`
 tuple. The entries name the baseline and candidate profiles, target the same root agent node, and
 match the candidate's before and after routes. The shared model still applies to every other agent
-and model verifier. Plans without `modelRoutes` keep the existing shared-model contract and digest.
+and model verifier.
+
+Each effective profile also records the admitted workflow ID. A routing header must bind both values
+to the candidate scope. Historical non-routing headers can omit this field. Plans without
+`modelRoutes` keep the existing shared-model contract and digest.
 
 Evaluation admission rejects unknown fields, non-canonical identifiers and paths, duplicate task,
 profile, verifier, or seed identities, excess schedule size, symbolic links, special fixture entries,

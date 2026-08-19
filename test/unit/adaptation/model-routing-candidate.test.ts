@@ -172,6 +172,57 @@ describe("model-routing candidates", () => {
       "PRIVATE_SUBSTITUTED_MODEL",
     );
   });
+
+  it("enforces exact route-field and portable-path boundaries", () => {
+    const exactProvider = "p".repeat(96);
+    const exactModel = "m".repeat(256);
+    const exactPath = "b".repeat(1_024);
+    for (const mutate of [
+      (candidate: CandidateSource) => {
+        candidate.route.after.provider = exactProvider;
+      },
+      (candidate: CandidateSource) => {
+        candidate.route.after.id = exactModel;
+      },
+      (candidate: CandidateSource) => {
+        candidate.baseline.workflow.path = exactPath;
+      },
+    ]) {
+      const candidate = JSON.parse(candidateText()) as CandidateSource;
+      mutate(candidate);
+      expect(() => parseModelRoutingCandidateText(JSON.stringify(candidate))).not.toThrow();
+    }
+
+    for (const mutate of [
+      (candidate: CandidateSource) => {
+        candidate.route.after.provider = `${exactProvider}p`;
+      },
+      (candidate: CandidateSource) => {
+        candidate.route.after.id = `${exactModel}m`;
+      },
+      (candidate: CandidateSource) => {
+        candidate.route.after.id = " private-model";
+      },
+      (candidate: CandidateSource) => {
+        candidate.baseline.workflow.path = `${exactPath}b`;
+      },
+      ...[
+        "/private/workflow.yaml",
+        "../workflow.yaml",
+        "./workflow.yaml",
+        "a//workflow.yaml",
+        "a\\workflow.yaml",
+      ].map((path) => (candidate: CandidateSource) => {
+        candidate.baseline.workflow.path = path;
+      }),
+    ]) {
+      const candidate = JSON.parse(candidateText()) as CandidateSource;
+      mutate(candidate);
+      expect(() => parseModelRoutingCandidateText(JSON.stringify(candidate))).toThrowError(
+        expect.objectContaining<Partial<ModelRoutingCandidateError>>({ code: "invalid_schema" }),
+      );
+    }
+  });
 });
 
 function projectionInput() {
@@ -235,6 +286,7 @@ function catchError(operation: () => unknown): Error | undefined {
 
 type CandidateSource = ReturnType<typeof parseModelRoutingCandidateText> & {
   scope: { nodeId: string };
+  baseline: { workflow: { path: string } };
   route: {
     before: { provider: string; id: string; thinking: string };
     after: { provider: string; id: string; thinking: string };

@@ -353,7 +353,7 @@ describe("effective harness runtime CLI", () => {
     await Promise.all([rm(routePath), rm(baselinePath)]);
 
     const previewOutput = captureIo();
-    const dependencies = { cwd: project, loadConfig: async () => effectiveConfig(project) };
+    const cliDependencies = { cwd: project, loadConfig: async () => effectiveConfig(project) };
     expect(
       await main(
         [
@@ -369,7 +369,7 @@ describe("effective harness runtime CLI", () => {
           "--dry-run",
         ],
         previewOutput.io,
-        dependencies,
+        cliDependencies,
       ),
       previewOutput.stderr.join("\n"),
     ).toBe(0);
@@ -407,7 +407,7 @@ describe("effective harness runtime CLI", () => {
           preview.proposal.proposalDigest,
         ],
         applyOutput.io,
-        dependencies,
+        cliDependencies,
       ),
       applyOutput.stderr.join("\n"),
     ).toBe(0);
@@ -421,9 +421,36 @@ describe("effective harness runtime CLI", () => {
       ).nodes.find((node) => node.id === routeSource.scope.nodeId),
     ).toMatchObject({ type: "agent", agent: { model: routeSource.route.after } });
 
+    const observedRoutes: unknown[] = [];
+    const runOutput = captureIo();
+    expect(
+      await main(
+        [
+          "run",
+          `activation:${artifact.workflowId}`,
+          "--run-id",
+          "model-routing-runtime",
+          "--runs-dir",
+          join(project, "route-runs"),
+        ],
+        runOutput.io,
+        dependencies(project, {
+          execute: async (node) => {
+            if (node.type !== "agent") throw new Error("routing runtime expected an Agent node");
+            observedRoutes.push(node.agent.model);
+            return successfulAgentOutcome(undefined);
+          },
+        }),
+      ),
+      runOutput.stderr.join("\n"),
+    ).toBe(0);
+    expect(observedRoutes).toEqual([routeSource.route.after]);
+    expectContentFree(runOutput, [baselineInput.source, candidateInput.source]);
+    expect([...runOutput.stdout, ...runOutput.stderr].join("\n")).not.toContain(routePath);
+
     const inspectOutput = captureIo();
     expect(
-      await main(["activation", "inspect", artifact.workflowId], inspectOutput.io, dependencies),
+      await main(["activation", "inspect", artifact.workflowId], inspectOutput.io, cliDependencies),
     ).toBe(0);
     expect(JSON.parse(inspectOutput.stdout.join("\n"))).toMatchObject({
       effectiveHarness: {
@@ -446,7 +473,7 @@ describe("effective harness runtime CLI", () => {
           "--dry-run",
         ],
         rollbackPreviewOutput.io,
-        dependencies,
+        cliDependencies,
       ),
     ).toBe(0);
     const rollbackPreview = JSON.parse(rollbackPreviewOutput.stdout.join("\n"));
@@ -465,7 +492,7 @@ describe("effective harness runtime CLI", () => {
           rollbackPreview.proposal.proposalDigest,
         ],
         rollbackOutput.io,
-        dependencies,
+        cliDependencies,
       ),
     ).toBe(0);
     expect(JSON.parse(rollbackOutput.stdout.join("\n"))).toMatchObject({
@@ -476,6 +503,7 @@ describe("effective harness runtime CLI", () => {
       composeOutput,
       previewOutput,
       applyOutput,
+      runOutput,
       inspectOutput,
       rollbackOutput,
     ]) {

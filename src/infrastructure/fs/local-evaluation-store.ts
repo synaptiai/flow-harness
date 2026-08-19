@@ -220,6 +220,7 @@ const flowProfileSchema = z
         artifactDigest: sha256Schema,
         stateDigest: sha256Schema,
         baselineHeadDigest: sha256Schema,
+        workflowId: identifierSchema.optional(),
         workflowSha256: sha256Schema,
         workflowDigest: sha256Schema,
         packageDigests: z.array(sha256Schema).max(128).readonly(),
@@ -431,6 +432,11 @@ const publicHeaderSchema = z
       const candidateBinding = flowCandidate?.effectiveHarness;
       const routeIdentity = flowCandidate?.candidate?.identity;
       const modelRoutes = header.controls.modelRoutes;
+      const workflowIdsMatch =
+        baselineBinding?.workflowId === undefined && candidateBinding?.workflowId === undefined
+          ? true
+          : baselineBinding?.workflowId !== undefined &&
+            baselineBinding.workflowId === candidateBinding?.workflowId;
       const modelRoutesMatch =
         modelRoutes === undefined
           ? candidateBinding?.surface !== "model-routing"
@@ -439,6 +445,8 @@ const publicHeaderSchema = z
             routeIdentity !== undefined &&
             "kind" in routeIdentity &&
             routeIdentity.kind === "model-routing-candidate" &&
+            baselineBinding.workflowId === routeIdentity.scope.workflowId &&
+            candidateBinding.workflowId === routeIdentity.scope.workflowId &&
             modelRoutes[0].profileId === flowBaseline?.id &&
             modelRoutes[1].profileId === flowCandidate?.id &&
             modelRoutes[0].nodeId === routeIdentity.scope.nodeId &&
@@ -476,6 +484,7 @@ const publicHeaderSchema = z
         baselineBinding.baselineHeadDigest !== candidateBinding.baselineHeadDigest ||
         baselineBinding.surface !== candidateBinding.surface ||
         baselineBinding.candidateDigest !== candidateBinding.candidateDigest ||
+        !workflowIdsMatch ||
         baselineBinding.workflowSha256 !== flowBaseline.workflow.sourceSha256 ||
         baselineBinding.workflowDigest !== flowBaseline.workflow.workflowDigest ||
         candidateBinding.workflowSha256 !== flowCandidate.workflow.sourceSha256 ||

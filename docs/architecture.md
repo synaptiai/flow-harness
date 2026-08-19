@@ -1222,7 +1222,10 @@ capability states, and the candidate cross-bindings before execution or replay.
 For a model-routing candidate, the evaluation plan stores an ordered `modelRoutes` pair. The
 baseline entry must match the declared before route. The candidate entry must match the declared
 after route. Both entries target the same root agent node. The shared `model` control still applies
-to every other agent and model verifier. Trial adapters receive only their selected model tuple.
+to every other agent and model verifier.
+
+Both effective profile bindings also store the admitted workflow ID and must match the candidate
+scope. Trial adapters receive only their selected model tuple.
 
 An operator can activate only a complete superior evaluation. Preview creates a deterministic
 proposal from the current head, target, actor, and reason. Apply holds one cross-process mutation
