@@ -413,6 +413,27 @@ rollback then use durable bytes only.
 
 ## Activation gate
 
+### Review workflow
+
+Validate and inspect a candidate before it enters an evaluation:
+
+```sh
+flow candidate validate <candidate.yaml>
+flow candidate compose <candidate.yaml>
+```
+
+Export tuning evidence before model-assisted generation:
+
+```sh
+flow eval tuning-evidence <evaluation-id> --output <path>
+flow candidate generate <baseline> <path> --output <candidate.yaml> [generation options]
+```
+
+After a complete superior evaluation, preview activation and use the exact proposal digest to
+apply it. Use `flow candidate activate` for activation and `flow activation rollback` to restore an
+earlier stored revision. The command forms and persisted contracts are defined in
+[Adaptive activation](workflow-spec.md#adaptive-activation).
+
 Activation requires a complete evaluation with the `superior` verdict. Flow recalculates the report
 from the stored schedule and record chain. All declared safety constraints must pass. Missing,
 corrupt, or unavailable comparison evidence stops activation.

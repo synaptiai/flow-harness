@@ -6,6 +6,9 @@ import { join } from "node:path";
 const preliminaryGates = [
   ["npm", ["run", "format:check"]],
   ["npm", ["run", "lint"]],
+  ["npm", ["run", "docs:style"]],
+  ["npm", ["run", "docs:links"]],
+  ["npm", ["run", "docs:ste"]],
   ["npm", ["run", "typecheck"]],
   ["npm", ["run", "build"]],
 ];
@@ -15,7 +18,6 @@ const verifiedGates = [
   ["npm", ["run", "test:browser"]],
   ["npm", ["run", "test:runtime"]],
   ["node", ["scripts/smoke-compiled.mjs"]],
-  ["npm", ["run", "docs:ste"]],
   ["npm", ["run", "pack:check"]],
   ["npm", ["audit", "--omit=dev", "--audit-level=low"]],
 ];

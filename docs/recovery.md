@@ -50,9 +50,9 @@ flow resume <workflow.yaml|workflow:name@version> --run-id <run-id> [--runs-dir 
 ```
 
 Flow compiles the workflow before claiming the run. It then acquires exclusive local ownership,
-replays committed events, and checks compatibility before observing any target. At a safe boundary
-it appends `run_resumed`; successful nodes remain successful and are not executed again. An open
-typed edit is first reconciled as described below. The unfinished node remains refused unless its
+replays committed events, and checks compatibility before observing any target. At a safe boundary,
+it appends `run_resumed`. Successful nodes remain successful and are not executed again. Flow first
+reconciles an open typed edit. The unfinished node remains refused unless its
 persisted recovery policy and the resulting replay state satisfy every fresh-retry proof.
 Pending nodes retain their normal dependency order and use the lesser of their declared timeout
 and remaining active-execution budget. The command prints the same JSON `RunState` shape as

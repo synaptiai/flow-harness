@@ -9,8 +9,8 @@ Requirements:
 - Node.js 26.7 or newer
 - npm with lockfile support
 - Git
-- Linux or macOS with the native sandbox prerequisites listed in the
-  [README](README.md#prerequisites)
+- Linux or macOS with the native sandbox prerequisites listed in
+  [Getting started](docs/getting-started.md#before-you-begin)
 
 Install and verify:
 
@@ -51,3 +51,24 @@ The command intentionally fails when either required variable is absent; it neve
 ## Pull requests
 
 Describe the user-visible outcome, the relevant architecture boundary, evidence for each acceptance criterion, failure modes considered, and the commands used for verification. Keep unrelated cleanup out of the change.
+
+Update the [architecture overview](docs/architecture.md#architecture-at-a-glance) and its repository
+map for structural changes. This requirement covers runtime modules, entry points, execution
+boundaries, durable stores, external trust dependencies, and ownership relationships.
+
+## Documentation
+
+Follow the [documentation style policy](docs/documentation-style.md) and the linked Google Developer
+Documentation Style Guide. Keep detailed content in the canonical document selected by the
+[documentation hub](docs/README.md), not in the root README.
+
+Validate public documentation with:
+
+```sh
+npm run docs:style
+npm run docs:links
+npm run docs:ste
+```
+
+The automated checks cover objective rules. Review active voice, second person, accessibility,
+global readability, technical accuracy, and topic ownership manually.

@@ -424,7 +424,7 @@ The production CLI integration runs the complete composition with a deterministi
 unit and integration suites need no provider credentials or network. Live provider comparisons are
 operator-run evidence and are not part of `npm test`.
 
-Flow should be compared with the legacy plugin on held-out repository tasks using equivalent model,
+Compare Flow with the legacy plugin on held-out repository tasks by using equivalent model,
 thinking, budget, retry, network, fixture, verifier, seed, and order settings. A benchmark records
 verified task success, false completion, cost, context volume, turns, tool failures, duration, human
 intervention, policy violations, and recovery behavior when those metrics are available. Missing

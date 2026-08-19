@@ -47,6 +47,130 @@ retries also remain later work. The same is true for broader configurable policy
 tools, and arbitrary evaluator runtimes. Stronger VM or managed sandbox backends also remain later
 work.
 
+## Architecture at a glance
+
+Flow is distributed as one Node.js command-line package. It can start local supervisor and worker
+processes and, for Prime evaluation, a pinned local container. The diagram follows a request from
+the person or automation that starts it to the systems that perform work and the records that
+survive interruption.
+
+```mermaid
+flowchart TB
+    people["People and automation<br/>Developers · operators · CI"]
+
+    subgraph access["1. Ways to use Flow"]
+        direction LR
+        cli["Command line"]
+        presentation["Terminal, local web, and ACP editor views"]
+    end
+
+    subgraph control["2. Control plane — decides what can happen"]
+        direction LR
+        supervisor["Local supervisor<br/>Queues detached work and recovery"]
+        engine["Workflow engine<br/>Compiles the plan and selects the next safe step"]
+        rules["Rules and safeguards<br/>Policy · approvals · budgets · verification"]
+        capability["Capability admission<br/>Checks and freezes exact package bytes"]
+    end
+
+    subgraph execution["3. Execution plane — performs bounded work"]
+        direction LR
+        agents["Agent adapters<br/>Pi · OMP · Prime"]
+        commands["Command sandboxes<br/>SRT · Docker"]
+    end
+
+    subgraph state["4. Durable project state — survives restart"]
+        direction LR
+        ledgers[("Run and evidence ledgers")]
+        stores[("Package, activation, and evaluation stores")]
+        workspaces[("Isolated workspaces")]
+    end
+
+    subgraph external["5. External systems"]
+        direction LR
+        models["Model providers"]
+        project["Project files and Git"]
+        sources["HTTPS, OCI, and TUF package sources"]
+    end
+
+    people -->|"Starts attached work"| cli
+    people -->|"Observes and steers"| presentation
+    cli -->|"Runs now"| engine
+    cli -->|"Queues detached work"| supervisor
+    presentation -->|"Reads public state and sends bound actions"| supervisor
+    supervisor -->|"Starts or resumes"| engine
+    capability -->|"Fetches and authenticates inert bytes"| sources
+    capability -->|"Supplies an immutable snapshot"| engine
+    engine -->|"Asks what is legal"| rules
+    rules -->|"Authorizes bounded agent work"| agents
+    rules -->|"Authorizes bounded commands"| commands
+    agents -->|"Makes bounded model requests"| models
+    agents -->|"Uses workspace tools through Flow policy"| project
+    commands -->|"Performs contained file and process operations"| project
+    agents -->|"Uses isolated trial files"| workspaces
+    commands -->|"Uses isolated command files"| workspaces
+    engine -->|"Appends events and replays prior state"| ledgers
+    capability -->|"Publishes immutable packages"| stores
+    supervisor -->|"Records queues and ownership"| stores
+    presentation -->|"Reads a sanitized public projection"| ledgers
+    agents -->|"Returns evidence for durable append"| ledgers
+    commands -->|"Returns effect receipts for durable append"| ledgers
+```
+
+Read the diagram from top to bottom:
+
+1. People and automation use the command line or a first-party presentation view.
+
+2. The control plane compiles the workflow, reconstructs durable state, and decides which action is
+   legal. A model can request work, but it cannot authorize a transition.
+
+3. The execution plane performs only the bounded work that the control plane admits. Agent and
+   command adapters do not own workflow state.
+
+4. Durable project state records events, evidence, ownership, installed capabilities, evaluations,
+   and isolated workspace identity. Flow replays these records after interruption instead of
+   trusting process memory.
+
+5. Model providers, project files, Git, and package sources remain external dependencies. Flow
+   validates their input at the relevant boundary and does not treat a live external response as
+   durable authority.
+
+The arrows show authority and durable data flow, not every function call. Failures do not bypass
+the control plane. Flow records a transition before advancement and verifies deterministic evidence
+before success. It stops on unresolved side-effect or settlement uncertainty.
+
+### Map the diagram to the repository
+
+| Diagram area | Code owner | Responsibility |
+| --- | --- | --- |
+| Command line | `src/cli/` | Parses public commands, composes dependencies, and projects safe output. |
+| Workflow rules and safeguards | `src/domain/` | Defines provider-neutral workflows, state transitions, policy, evidence, budgets, and validation. |
+| Workflow engine and capability admission | `src/application/` | Coordinates use cases through ports and asks the domain for legal transitions. |
+| Detached work and recovery | `src/supervisor/` | Owns bounded queueing, worker adoption, cancellation, event paging, and detached lifecycle. |
+| Presentation, storage, package, sandbox, and runtime adapters | `src/infrastructure/` | Implements application ports for local files, HTTP, OCI, TUF, ACP, Pi, OMP, Prime, SRT, terminal, and browser boundaries. |
+| Prime evaluation container | `prime-container/` | Provides the fixed Go supervisor, kernel bridge, driver protocol, and hardened image used by the Prime adapter. |
+
+## Keep the architecture view current
+
+Update the Mermaid overview and repository map in the same change when you:
+
+- Add, remove, or rename a top-level runtime module.
+- Add a first-party entry point, presentation host, worker process, or deployable unit.
+- Add an execution adapter, sandbox boundary, durable store, or external trust dependency.
+- Change the owner of authorization, scheduling, persistence, recovery, or verification.
+
+Run the architecture documentation test with the public documentation gates:
+
+```sh
+npx vitest run test/integration/package/architecture-documentation.test.ts
+npm run docs:style
+npm run docs:links
+npm run docs:ste
+```
+
+The test enumerates the top-level `src/` modules and requires the plain-language diagram groups and
+maintenance policy. It detects structural additions and removals. Manual architecture review must
+still check semantic changes within an existing module.
+
 ## Target flows
 
 Architecture is derived from these flows.
@@ -83,8 +207,8 @@ Architecture is derived from these flows.
 ```mermaid
 flowchart TD
     trigger["User, CI, or scheduled trigger"] --> compiler["Workflow compiler"]
-    compiler --> graph["Typed executable graph"]
-    graph --> scheduler["Deterministic scheduler"]
+    compiler --> typedGraph["Typed executable graph"]
+    typedGraph --> scheduler["Deterministic scheduler"]
     scheduler --> context["Minimal node context"]
     context --> executor["Agent executor"]
     executor --> pi["Pi AgentSession"]
@@ -279,8 +403,9 @@ unchanged, child ledgers use their declared subset, and recovery refuses any cal
 This is a declarative package boundary, not a general plugin host. Packages cannot execute hooks,
 register tools, add credentials or network, mutate policy or graph structure, select a model, or
 import Prime Verifiers environments. Digest-pinned remote distribution of this inert ABI uses the
-separate installation boundary described below. Future executable package sources require a
-separate out-of-process authority and containment design.
+[capability installation boundary](capability-sourcing.md#digest-pinned-bundle-distribution).
+Future executable package sources require a separate out-of-process authority and containment
+design.
 
 ### Versioned command tool packages
 
