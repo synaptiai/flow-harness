@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { prepareEffectiveHarnessActivation } from "../../../src/application/prepare-effective-harness-activation.js";
 import {
   effectiveHarnessCandidateArtifactFixture,
+  modelRoutingEffectiveHarnessCandidateArtifactFixture,
   superiorEffectiveHarnessEvaluation,
 } from "../../fixtures/effective-harness-evaluation.js";
 
@@ -22,6 +23,39 @@ describe("effective harness activation preparation", () => {
         reportDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
       },
     });
+  });
+
+  it("requires the exact paired routes for a model-routing activation", () => {
+    const artifact = modelRoutingEffectiveHarnessCandidateArtifactFixture();
+    const stored = superiorEffectiveHarnessEvaluation(artifact);
+
+    expect(prepareEffectiveHarnessActivation({ artifact, stored }).artifact).toEqual(artifact);
+
+    const changed = structuredClone(stored);
+    const changedRoutes = changed.header.controls.modelRoutes;
+    if (changedRoutes === undefined) throw new Error("routing evaluation has no routes");
+    changedRoutes[1].route = {
+      ...changedRoutes[1].route,
+      id: "private-substitute-model",
+    };
+    expect(() => prepareEffectiveHarnessActivation({ artifact, stored: changed })).toThrowError(
+      expect.objectContaining({ code: "identity_mismatch" }),
+    );
+    const missing = structuredClone(stored);
+    delete missing.header.controls.modelRoutes;
+    expect(() => prepareEffectiveHarnessActivation({ artifact, stored: missing })).toThrowError(
+      expect.objectContaining({ code: "identity_mismatch" }),
+    );
+
+    const ordinaryArtifact = effectiveHarnessCandidateArtifactFixture();
+    const ordinaryStored = structuredClone(superiorEffectiveHarnessEvaluation(ordinaryArtifact));
+    ordinaryStored.header.controls.modelRoutes = stored.header.controls.modelRoutes;
+    expect(() =>
+      prepareEffectiveHarnessActivation({
+        artifact: ordinaryArtifact,
+        stored: ordinaryStored,
+      }),
+    ).toThrowError(expect.objectContaining({ code: "identity_mismatch" }));
   });
 
   it.each([
