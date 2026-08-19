@@ -89,10 +89,37 @@ describe("effective harness transitions", () => {
     expect(effectiveHarnessHeadFromTransition(transition).stateDigest).toBe("f".repeat(64));
   });
 
+  it("binds model-routing transitions to model-routing candidate authority", () => {
+    const prior = priorHead();
+    const transition = createEffectiveHarnessTransition({
+      prior,
+      toStateDigest: "f".repeat(64),
+      toActivationDigest: "1".repeat(64),
+      surface: "model-routing",
+      candidate: { kind: "model-routing-candidate", digest: "2".repeat(64) },
+      evaluation: {
+        id: "evaluation-1",
+        planDigest: "3".repeat(64),
+        terminalRecordDigest: "4".repeat(64),
+        reportDigest: "5".repeat(64),
+      },
+      actor: "operator:test",
+      changedAt: "2026-08-19T17:40:00.000Z",
+    });
+
+    expect(
+      parseEffectiveHarnessTransition(structuredClone(transition), { scopeDigest, prior }),
+    ).toMatchObject({
+      surface: "model-routing",
+      candidate: { kind: "model-routing-candidate", digest: "2".repeat(64) },
+    });
+  });
+
   it.each([
     ["prompt", "agent-skill-candidate"],
     ["agent-skill-resource", "prompt-candidate"],
     ["agent-skill-package", "agent-skill-candidate"],
+    ["model-routing", "prompt-candidate"],
   ] as const)("rejects %s surface with %s authority", (surface, kind) => {
     expect(() =>
       createEffectiveHarnessTransition({

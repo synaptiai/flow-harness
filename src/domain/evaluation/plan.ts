@@ -3,6 +3,7 @@ import { parseDocument } from "yaml";
 import { z } from "zod";
 import type { AgentSkillCandidateIdentity } from "../adaptation/agent-skill-candidate.js";
 import type { AgentSkillPackageCandidateIdentity } from "../adaptation/agent-skill-package-candidate.js";
+import type { ModelRoutingCandidateIdentity } from "../adaptation/model-routing-candidate.js";
 import type { PromptCandidateIdentity } from "../adaptation/prompt-candidate.js";
 import type { ExternalHarnessIdentity } from "./external-harness.js";
 
@@ -291,7 +292,8 @@ export type EvaluationProfileIdentity =
         readonly identity:
           | PromptCandidateIdentity
           | AgentSkillCandidateIdentity
-          | AgentSkillPackageCandidateIdentity;
+          | AgentSkillPackageCandidateIdentity
+          | ModelRoutingCandidateIdentity;
       };
       readonly effectiveHarness?: {
         readonly selection: "baseline" | "candidate";
@@ -301,7 +303,11 @@ export type EvaluationProfileIdentity =
         readonly workflowSha256: string;
         readonly workflowDigest: string;
         readonly packageDigests: readonly string[];
-        readonly surface: "prompt" | "agent-skill-resource" | "agent-skill-package";
+        readonly surface:
+          | "prompt"
+          | "agent-skill-resource"
+          | "agent-skill-package"
+          | "model-routing";
         readonly candidateDigest: string;
       };
     }

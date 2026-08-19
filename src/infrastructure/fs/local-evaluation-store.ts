@@ -26,6 +26,10 @@ import {
   parseAgentSkillPackageCandidateIdentity,
 } from "../../domain/adaptation/agent-skill-package-candidate.js";
 import {
+  type ModelRoutingCandidateIdentity,
+  parseModelRoutingCandidateIdentity,
+} from "../../domain/adaptation/model-routing-candidate.js";
+import {
   type PromptCandidateIdentity,
   parsePromptCandidateIdentity,
 } from "../../domain/adaptation/prompt-candidate.js";
@@ -149,8 +153,24 @@ const candidateIdentitySchema = z
   .object({
     provenance: relativePathSchema,
     identity: z.custom<
-      PromptCandidateIdentity | AgentSkillCandidateIdentity | AgentSkillPackageCandidateIdentity
+      | PromptCandidateIdentity
+      | AgentSkillCandidateIdentity
+      | AgentSkillPackageCandidateIdentity
+      | ModelRoutingCandidateIdentity
     >((value) => {
+      if (
+        typeof value === "object" &&
+        value !== null &&
+        "kind" in value &&
+        value.kind === "model-routing-candidate"
+      ) {
+        try {
+          parseModelRoutingCandidateIdentity(value);
+          return true;
+        } catch {
+          return false;
+        }
+      }
       try {
         parsePromptCandidateIdentity(value);
         return true;
@@ -203,7 +223,7 @@ const flowProfileSchema = z
         workflowSha256: sha256Schema,
         workflowDigest: sha256Schema,
         packageDigests: z.array(sha256Schema).max(128).readonly(),
-        surface: z.enum(["prompt", "agent-skill-resource", "agent-skill-package"]),
+        surface: z.enum(["prompt", "agent-skill-resource", "agent-skill-package", "model-routing"]),
         candidateDigest: sha256Schema,
       })
       .strict()
@@ -474,6 +494,18 @@ const publicHeaderSchema = z
       const baselineMatches = (() => {
         if (identity === undefined) {
           return false;
+        }
+        if ("kind" in identity && identity.kind === "model-routing-candidate") {
+          return (
+            identity.baseline.workflow.sourceSha256 === flowBaseline?.workflow.sourceSha256 &&
+            identity.baseline.workflow.workflowDigest === flowBaseline?.workflow.workflowDigest &&
+            identity.projectedWorkflow.sourceSha256 === flowCandidate?.workflow.sourceSha256 &&
+            identity.projectedWorkflow.workflowDigest === flowCandidate?.workflow.workflowDigest &&
+            flowBaseline?.capabilitySnapshotDigest === undefined &&
+            flowCandidate?.capabilitySnapshotDigest === undefined &&
+            flowBaseline?.capabilityPackageDigests === undefined &&
+            flowCandidate?.capabilityPackageDigests === undefined
+          );
         }
         if ("kind" in identity && identity.kind === "agent-skill-package-candidate") {
           return (

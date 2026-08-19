@@ -10,6 +10,7 @@ import {
   type EffectiveHarnessState,
   effectiveHarnessWorkflowSource,
 } from "../../domain/adaptation/effective-harness-state.js";
+import type { ModelRoutingCandidateIdentity } from "../../domain/adaptation/model-routing-candidate.js";
 import type { PromptCandidateIdentity } from "../../domain/adaptation/prompt-candidate.js";
 import type {
   AgentSkillCapabilitySnapshot,
@@ -111,6 +112,7 @@ export interface AdmittedFlowEvaluationProfile {
     | PromptCandidateIdentity
     | AgentSkillCandidateIdentity
     | AgentSkillPackageCandidateIdentity
+    | ModelRoutingCandidateIdentity
   ) & {
     readonly selectionProvenance: string;
   };
@@ -167,7 +169,8 @@ export function projectEvaluationCandidateIdentity(
   readonly identity:
     | PromptCandidateIdentity
     | AgentSkillCandidateIdentity
-    | AgentSkillPackageCandidateIdentity;
+    | AgentSkillPackageCandidateIdentity
+    | ModelRoutingCandidateIdentity;
 } {
   const { selectionProvenance, ...identity } = candidate;
   return Object.freeze({ provenance: selectionProvenance, identity: Object.freeze(identity) });

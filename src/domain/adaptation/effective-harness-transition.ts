@@ -26,7 +26,12 @@ const boundedPublicTextSchema = z
 
 const candidateSchema = z
   .object({
-    kind: z.enum(["prompt-candidate", "agent-skill-candidate", "agent-skill-package-candidate"]),
+    kind: z.enum([
+      "prompt-candidate",
+      "agent-skill-candidate",
+      "agent-skill-package-candidate",
+      "model-routing-candidate",
+    ]),
     digest: sha256Schema,
   })
   .strict();
@@ -63,7 +68,7 @@ const effectiveHarnessTransitionCommonSchema = z
 
 const effectiveHarnessActivationTransitionSchema = effectiveHarnessTransitionCommonSchema.extend({
   action: z.literal("activate"),
-  surface: z.enum(["prompt", "agent-skill-resource", "agent-skill-package"]),
+  surface: z.enum(["prompt", "agent-skill-resource", "agent-skill-package", "model-routing"]),
   candidate: candidateSchema,
   evaluation: evaluationSchema,
   transitionDigest: sha256Schema,
@@ -81,12 +86,17 @@ const effectiveHarnessTransitionSchema = z.discriminatedUnion("action", [
   effectiveHarnessRollbackTransitionSchema,
 ]);
 
-export type EffectiveHarnessSurface = "prompt" | "agent-skill-resource" | "agent-skill-package";
+export type EffectiveHarnessSurface =
+  | "prompt"
+  | "agent-skill-resource"
+  | "agent-skill-package"
+  | "model-routing";
 
 export type EffectiveHarnessCandidateKind =
   | "prompt-candidate"
   | "agent-skill-candidate"
-  | "agent-skill-package-candidate";
+  | "agent-skill-package-candidate"
+  | "model-routing-candidate";
 
 export interface EffectiveHarnessTransitionBase {
   readonly version: 1;
@@ -338,7 +348,8 @@ function surfaceMatchesCandidate(
   return (
     (surface === "prompt" && kind === "prompt-candidate") ||
     (surface === "agent-skill-resource" && kind === "agent-skill-candidate") ||
-    (surface === "agent-skill-package" && kind === "agent-skill-package-candidate")
+    (surface === "agent-skill-package" && kind === "agent-skill-package-candidate") ||
+    (surface === "model-routing" && kind === "model-routing-candidate")
   );
 }
 

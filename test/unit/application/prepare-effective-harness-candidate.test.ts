@@ -38,6 +38,7 @@ import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { calculateWorkflowDigest } from "../../../src/domain/workflow/digest.js";
 import { agentSkillActivationInput } from "../../fixtures/agent-skill-activation.js";
 import { agentSkillPackageActivationFixture } from "../../fixtures/agent-skill-package-activation.js";
+import { modelRoutingCandidateFixture } from "../../fixtures/model-routing-candidate.js";
 import { promptActivationInput } from "../../fixtures/prompt-activation.js";
 
 const scopeDigest = "a".repeat(64);
@@ -175,6 +176,45 @@ describe("effective harness candidate baseline admission", () => {
 });
 
 describe("effective harness candidate projection", () => {
+  it("rebases one reviewed model route while retaining composed prompt and package state", () => {
+    const skill = agentSkillActivationInput("baseline");
+    const baseline = createEffectiveHarnessState({
+      scopeDigest,
+      workflowSource: skill.workflowSource,
+      packages: [skill.skill],
+    });
+    const routing = modelRoutingCandidateFixture(skill.workflowSource, "review");
+
+    const projected = projectEffectiveHarnessCandidate({
+      baseline,
+      candidate: {
+        kind: "model-routing",
+        projection: routing,
+        baselineWorkflowSource: skill.workflowSource,
+      },
+    });
+
+    expect(projected.delta).toEqual({
+      surface: "model-routing",
+      candidateKind: "model-routing-candidate",
+      candidateDigest: routing.identity.candidateDigest,
+      beforeStateDigest: baseline.stateDigest,
+      afterStateDigest: projected.state.stateDigest,
+    });
+    expect(projected.state.packages).toEqual(baseline.packages);
+    expect(effectiveHarnessWorkflowSource(projected.state)).toContain('"provider":"openai"');
+    const compiled = compileWorkflowText(
+      effectiveHarnessWorkflowSource(projected.state),
+      "projected-state.json",
+    );
+    expect(compiled.nodes.find((node) => node.id === "review")).toMatchObject({
+      type: "agent",
+      agent: {
+        model: { provider: "openai", id: "gpt-5.4", thinking: "high" },
+      },
+    });
+  });
+
   it("retains a skill through prompt projection and the prompt through skill projection", () => {
     const skill = agentSkillActivationInput("baseline");
     const baseline = createEffectiveHarnessState({

@@ -18,6 +18,10 @@ import {
   parseEffectiveHarnessState,
 } from "../domain/adaptation/effective-harness-state.js";
 import {
+  type ProjectedModelRoutingCandidate,
+  parseModelRoutingCandidateIdentity,
+} from "../domain/adaptation/model-routing-candidate.js";
+import {
   type ProjectedPromptCandidate,
   parsePromptCandidateIdentity,
 } from "../domain/adaptation/prompt-candidate.js";
@@ -125,6 +129,11 @@ export type EffectiveHarnessCandidateProjection =
       readonly kind: "agent-skill-package";
       readonly projection: ProjectedAgentSkillPackageCandidate;
       readonly baselineWorkflowSource: string;
+    }
+  | {
+      readonly kind: "model-routing";
+      readonly projection: ProjectedModelRoutingCandidate;
+      readonly baselineWorkflowSource: string;
     };
 
 export interface ProjectEffectiveHarnessCandidateInput {
@@ -133,11 +142,12 @@ export interface ProjectEffectiveHarnessCandidateInput {
 }
 
 export interface EffectiveHarnessSurfaceDelta {
-  readonly surface: "prompt" | "agent-skill-resource" | "agent-skill-package";
+  readonly surface: "prompt" | "agent-skill-resource" | "agent-skill-package" | "model-routing";
   readonly candidateKind:
     | "prompt-candidate"
     | "agent-skill-candidate"
-    | "agent-skill-package-candidate";
+    | "agent-skill-package-candidate"
+    | "model-routing-candidate";
   readonly candidateDigest: string;
   readonly beforeStateDigest: string;
   readonly afterStateDigest: string;
@@ -167,6 +177,12 @@ export function projectEffectiveHarnessCandidate(
       );
     case "agent-skill-package":
       return projectAgentSkillPackageSurface(
+        baseline,
+        input.candidate.projection,
+        input.candidate.baselineWorkflowSource,
+      );
+    case "model-routing":
+      return projectModelRoutingSurface(
         baseline,
         input.candidate.projection,
         input.candidate.baselineWorkflowSource,
@@ -454,6 +470,96 @@ function projectAgentSkillPackageSurface(
   }
 }
 
+function projectModelRoutingSurface(
+  baseline: EffectiveHarnessState,
+  rawProjection: ProjectedModelRoutingCandidate,
+  baselineWorkflowSource: string,
+): ProjectedEffectiveHarnessCandidate {
+  try {
+    const identity = parseModelRoutingCandidateIdentity(rawProjection.identity);
+    const ordinaryBaseline = compileWorkflowText(
+      baselineWorkflowSource,
+      "ordinary model-routing candidate baseline",
+    );
+    const ordinaryBaselineSha256 = sha256(baselineWorkflowSource);
+    const ordinaryBaselineDigest = calculateWorkflowDigest(ordinaryBaseline);
+    const projectedSourceSha256 = sha256(rawProjection.workflow.source);
+    const projected = compileWorkflowText(
+      rawProjection.workflow.source,
+      "effective harness model-routing candidate",
+    );
+    const projectedDigest = calculateWorkflowDigest(projected);
+    if (
+      identity.scope.workflowId !== baseline.workflowId ||
+      ordinaryBaseline.id !== identity.scope.workflowId ||
+      identity.baseline.workflow.sourceSha256 !== ordinaryBaselineSha256 ||
+      identity.baseline.workflow.workflowDigest !== ordinaryBaselineDigest ||
+      identity.projectedWorkflow.sourceSha256 !== projectedSourceSha256 ||
+      identity.projectedWorkflow.workflowDigest !== projectedDigest ||
+      rawProjection.workflow.sourceSha256 !== projectedSourceSha256 ||
+      rawProjection.workflow.workflowDigest !== projectedDigest ||
+      calculateWorkflowDigest(rawProjection.workflow.compiled) !== projectedDigest
+    ) {
+      throw new Error("model-routing candidate workflow mismatch");
+    }
+    assertModelRoutingOnlyChange(
+      ordinaryBaseline,
+      projected,
+      identity.scope.nodeId,
+      identity.route.before,
+      identity.route.after,
+    );
+    const source = rebaseModelRoute(
+      effectiveHarnessWorkflowSource(baseline),
+      baselineWorkflowSource,
+      identity,
+    );
+    const state = createEffectiveHarnessState({
+      scopeDigest: baseline.scopeDigest,
+      workflowSource: source,
+      ...(baseline.rootPackage === undefined ? {} : { rootPackage: baseline.rootPackage }),
+      packages: baseline.packages,
+    });
+    return freezeProjection({
+      state,
+      surface: "model-routing",
+      candidateKind: "model-routing-candidate",
+      candidateDigest: identity.candidateDigest,
+      beforeStateDigest: baseline.stateDigest,
+    });
+  } catch (error) {
+    if (error instanceof EffectiveHarnessCandidateAdmissionError) throw error;
+    throw new EffectiveHarnessCandidateAdmissionError(
+      "surface_mismatch",
+      "model-routing candidate changes authority outside its declared surface",
+    );
+  }
+}
+
+function rebaseModelRoute(
+  currentSource: string,
+  ordinaryBaselineSource: string,
+  identity: ReturnType<typeof parseModelRoutingCandidateIdentity>,
+): string {
+  const current = structuredClone(
+    parseWorkflowSourceText(currentSource, "effective harness current model-routing state"),
+  );
+  const ordinaryBaseline = parseWorkflowSourceText(
+    ordinaryBaselineSource,
+    "ordinary model-routing candidate baseline",
+  );
+  const target = requiredAgentSourceNode(current, identity.scope.nodeId);
+  const ordinaryTarget = requiredAgentSourceNode(ordinaryBaseline, identity.scope.nodeId);
+  if (
+    !isDeepStrictEqual(ordinaryTarget.agent.model, identity.route.before) ||
+    !isDeepStrictEqual(target.agent.model, ordinaryTarget.agent.model)
+  ) {
+    throw new Error("model-routing candidate rebase target changed");
+  }
+  target.agent.model = structuredClone(identity.route.after);
+  return JSON.stringify(current);
+}
+
 function rebasePromptChanges(
   currentSource: string,
   projectedSource: string,
@@ -568,6 +674,28 @@ function assertAgentSkillPackageOnlyChange(
   (after.agent as unknown as { skills: string[] }).skills = [];
   if (!isDeepStrictEqual(normalizeJson(normalized), normalizeJson(baseline))) {
     throw new Error("Agent Skill package candidate changed immutable workflow controls");
+  }
+}
+
+function assertModelRoutingOnlyChange(
+  baseline: CompiledWorkflow,
+  projected: CompiledWorkflow,
+  nodeId: string,
+  beforeRoute: { readonly provider: string; readonly id: string; readonly thinking: string },
+  afterRoute: { readonly provider: string; readonly id: string; readonly thinking: string },
+): void {
+  const normalized = structuredClone(projected);
+  const before = requiredAgentNode(baseline.nodes, nodeId);
+  const after = requiredAgentNode(normalized.nodes, nodeId);
+  if (
+    !isDeepStrictEqual(before.agent.model, beforeRoute) ||
+    !isDeepStrictEqual(after.agent.model, afterRoute)
+  ) {
+    throw new Error("model-routing candidate route mismatch");
+  }
+  (after.agent as { model: typeof before.agent.model }).model = structuredClone(before.agent.model);
+  if (!isDeepStrictEqual(normalizeJson(normalized), normalizeJson(baseline))) {
+    throw new Error("model-routing candidate changed immutable workflow controls");
   }
 }
 

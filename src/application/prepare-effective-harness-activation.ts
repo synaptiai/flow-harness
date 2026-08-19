@@ -48,7 +48,11 @@ export interface EffectiveHarnessStoredEvaluation {
                 readonly workflowSha256: string;
                 readonly workflowDigest: string;
                 readonly packageDigests: readonly string[];
-                readonly surface: "prompt" | "agent-skill-resource" | "agent-skill-package";
+                readonly surface:
+                  | "prompt"
+                  | "agent-skill-resource"
+                  | "agent-skill-package"
+                  | "model-routing";
                 readonly candidateDigest: string;
               }
             | undefined;

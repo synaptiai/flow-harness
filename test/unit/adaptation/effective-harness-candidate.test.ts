@@ -23,10 +23,55 @@ import { createCapabilitySnapshot } from "../../../src/domain/capability/agent-s
 import { createWorkflowPackageSnapshot } from "../../../src/domain/capability/workflow-packages.js";
 import { calculateWorkflowDigest } from "../../../src/domain/workflow/digest.js";
 import { agentSkillPackageActivationFixture } from "../../fixtures/agent-skill-package-activation.js";
+import { modelRoutingCandidateFixture } from "../../fixtures/model-routing-candidate.js";
+import { promptActivationInput } from "../../fixtures/prompt-activation.js";
 
 const scopeDigest = "a".repeat(64);
 
 describe("effective harness candidate artifacts", () => {
+  it("stores and reparses one exact model-routing surface", () => {
+    const source = promptActivationInput({ selection: "baseline" }).source;
+    const baseline = createEffectiveHarnessState({
+      scopeDigest,
+      workflowSource: source,
+      packages: [],
+    });
+    const routing = modelRoutingCandidateFixture(source);
+    const projected = projectEffectiveHarnessCandidate({
+      baseline,
+      candidate: {
+        kind: "model-routing",
+        projection: routing,
+        baselineWorkflowSource: source,
+      },
+    });
+    const artifact = createEffectiveHarnessCandidateArtifact({
+      baselineHead: createEffectiveHarnessHeadIdentity({
+        scopeDigest,
+        workflowId: baseline.workflowId,
+        generation: 2,
+        activationDigest: "b".repeat(64),
+        transitionDigest: "c".repeat(64),
+        stateDigest: baseline.stateDigest,
+      }),
+      baselineState: baseline,
+      candidateState: projected.state,
+      candidate: routing.identity,
+    });
+
+    expect(parseEffectiveHarnessCandidateArtifact(structuredClone(artifact))).toEqual(artifact);
+    expect(artifact).toMatchObject({
+      surface: "model-routing",
+      candidate: {
+        kind: "model-routing-candidate",
+        route: {
+          before: { provider: "test", id: "deterministic", thinking: "medium" },
+          after: { provider: "openai", id: "gpt-5.4", thinking: "high" },
+        },
+      },
+    });
+  });
+
   it("stores one exact baseline head, complete state pair, and reviewed candidate", () => {
     const fixture = agentSkillPackageActivationFixture();
     const baseline = createEffectiveHarnessState({
