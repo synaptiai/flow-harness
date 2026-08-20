@@ -67,6 +67,9 @@ export function preparePackageReleaseEvidence(input: PreparePackageReleaseEviden
     ) {
       throw new Error("npm pack report does not match the archive");
     }
+    const files = [...report.files].sort((left, right) =>
+      left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
+    );
     return encodePackageReleaseEvidence({
       apiVersion: "flow.synapti.ai/v1alpha1",
       kind: "PackageReleaseEvidence",
@@ -81,7 +84,7 @@ export function preparePackageReleaseEvidence(input: PreparePackageReleaseEviden
         entryCount: report.entryCount,
         sha512: createHash("sha512").update(archive).digest("hex"),
       },
-      files: report.files.map((file) => ({
+      files: files.map((file) => ({
         path: file.path,
         bytes: file.size,
         mode: file.mode,

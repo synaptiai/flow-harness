@@ -41,6 +41,19 @@ describe("package release artifact preparation", () => {
     });
   });
 
+  it("canonicalizes npm file order before encoding release evidence", () => {
+    const archive = Buffer.from("exact preview archive");
+    const report = packReportFixture(archive);
+    const encoded = preparePackageReleaseEvidence({
+      archive,
+      packOutput: [{ ...report, files: [...report.files].reverse() }],
+      sourceRevision: "c".repeat(40),
+    });
+
+    const paths = parsePackageReleaseEvidence(encoded).files.map((file) => file.path);
+    expect(paths).toEqual([...paths].sort());
+  });
+
   it.each([
     ["zero reports", () => []],
     ["multiple reports", (report: PackReport) => [report, report]],
