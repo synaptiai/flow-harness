@@ -297,7 +297,7 @@ replayable, and visible in the selected profile.
   and criterion evaluator.
 - Persist workspace state without continuation authority and require an explicit run or resume
   action after recovery.
-- Present a content-safe view that excludes private evidence and supplemental-memory contents.
+- Present a public workspace view that excludes private evidence and supplemental-memory contents.
 
 ### Slice 9.2: Retain artifacts by reference
 
@@ -374,8 +374,8 @@ replayable, and visible in the selected profile.
 | Goal-workspace revision is stale | Reject the update without changing the current workspace. |
 | An artifact is missing, changed, or over its bound | Reject the read and preserve the reference as unresolved evidence. |
 | The language server fails, times out, or returns malformed data | Return a bounded tool failure without falling back to an uncontained server. |
-| Session persistence is interrupted | Preserve committed events, close or reject an incomplete tail, and never invent a successful tool result. |
-| Compaction loses a protected constraint or cannot reduce context | Reject the candidate surface and retain the prior surface. |
+| Session persistence is interrupted | Preserve committed events, append a typed interruption boundary, and never invent a successful tool result. |
+| Compaction loses a protected constraint or cannot reduce context | Reject the candidate surface and keep the prior surface unchanged for retry or inspection. |
 | Memories conflict or have unknown validity | Present no automatic conclusion and require review or deterministic resolution. |
 
 Gate 9 does not make conversation history, a goal workspace, an LSP response, retrieved memory, or a
@@ -440,7 +440,7 @@ executor receives only its declared workflow input and Flow-brokered capabilitie
 | An executor disconnects with an open effect | Record uncertainty and block automatic retry. |
 | A selected model is unavailable | Apply only an explicit recorded escalation rule or fail the call. |
 | A router returns malformed, ambiguous, or unattributed output | Reject the decision and use no inferred route. |
-| Lean accepts an unfaithful or incomplete specification | Keep deterministic and human verification requirements active; do not claim task completion from the proof alone. |
+| Lean accepts an unfaithful or incomplete specification | Keep deterministic and human verification requirements active. Do not claim task completion from the proof alone. |
 | A delegated or remote task exceeds a budget or loses identity | Cancel or block it and reject unattributed results. |
 
 Gate 10 does not make ACP a package ABI or durable event model. It does not make A2A, a routing
