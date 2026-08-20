@@ -1,20 +1,34 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-
-import { z } from "zod";
 import { parseDocument } from "yaml";
-
+import { z } from "zod";
+import { calculateCapabilitySnapshotDigest } from "../capability/agent-skills.js";
 import {
+  parseTuningEvidencePacket,
+  type TuningEvidencePacket,
+} from "../evaluation/tuning-evidence.js";
+import {
+  compileEffectiveHarnessState,
   createEffectiveHarnessState,
   type EffectiveHarnessState,
   effectiveHarnessWorkflowSource,
 } from "./effective-harness-state.js";
-import { calculateCapabilitySnapshotDigest } from "../capability/agent-skills.js";
 import {
-  supplementalMemoryContent,
   type SupplementalMemoryEntry,
   type SupplementalMemoryTarget,
+  supplementalMemoryContent,
 } from "./supplemental-memory.js";
+import {
+  calculateSupplementalMemoryCandidateGenerationRequestDigest,
+  calculateSupplementalMemoryCandidateGenerationResponseDigest,
+  MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_EVIDENCE,
+  MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_INPUT_BYTES,
+  MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_OUTPUT_BYTES,
+  MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_OUTPUT_TOKENS,
+  renderSupplementalMemoryCandidateGenerationRequest,
+  renderSupplementalMemoryCandidateGenerationResponse,
+  SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_SYSTEM_PROMPT,
+} from "./supplemental-memory-candidate-generation-contract.js";
 
 export const SUPPLEMENTAL_MEMORY_CANDIDATE_API_VERSION = "flow.synapti.ai/v1alpha1" as const;
 export const MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_BYTES = 1_048_576;
@@ -51,6 +65,76 @@ const replaceChangeSchema = z
 const removeChangeSchema = z
   .object({ kind: z.literal("remove"), beforeSha256: sha256Schema })
   .strict();
+const generationUsageSchema = z
+  .object({
+    inputTokens: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    cacheReadTokens: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    cacheWriteTokens: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    outputTokens: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    costUsdMicros: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  })
+  .strict();
+const generationSchema = z
+  .object({
+    version: z.literal(1),
+    kind: z.literal("model"),
+    provider: identifierSchema,
+    model: z
+      .string()
+      .min(1)
+      .max(256)
+      .refine((value) => value === value.trim(), "model must not contain outer whitespace"),
+    thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
+    systemPromptSha256: z.literal(sha256(SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_SYSTEM_PROMPT)),
+    requestDigest: sha256Schema,
+    responseDigest: sha256Schema,
+    limits: z
+      .object({
+        candidates: z.literal(1),
+        turns: z.literal(1),
+        maxInputBytes: z.literal(MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_INPUT_BYTES),
+        maxOutputBytes: z.literal(MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_OUTPUT_BYTES),
+        maxOutputTokens: z
+          .number()
+          .int()
+          .positive()
+          .max(MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_OUTPUT_TOKENS),
+        timeoutMs: z.number().int().positive().max(86_400_000),
+      })
+      .strict(),
+    operation: z.enum(["add", "replace"]),
+    priorSha256: sha256Schema.nullable(),
+    evidence: z
+      .array(
+        z
+          .object({
+            path: portableRelativePathSchema,
+            sourceSha256: sha256Schema,
+            evidenceDigest: sha256Schema,
+            planDigest: sha256Schema,
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_EVIDENCE)
+      .refine(
+        (evidence) =>
+          new Set(evidence.map((item) => item.path)).size === evidence.length &&
+          new Set(evidence.map((item) => item.evidenceDigest)).size === evidence.length,
+        "generation evidence must be unique",
+      ),
+    usage: generationUsageSchema,
+  })
+  .strict()
+  .superRefine((generation, context) => {
+    if (generation.usage.outputTokens > generation.limits.maxOutputTokens) {
+      context.addIssue({
+        code: "custom",
+        path: ["usage", "outputTokens"],
+        message: "reported output tokens cannot exceed the generation output-token limit",
+      });
+    }
+  });
 const sourceSchema = z
   .object({
     apiVersion: z.literal(SUPPLEMENTAL_MEMORY_CANDIDATE_API_VERSION),
@@ -69,6 +153,7 @@ const sourceSchema = z
       replaceChangeSchema,
       removeChangeSchema,
     ]),
+    generation: generationSchema.optional(),
   })
   .strict();
 
@@ -107,6 +192,7 @@ const identitySchema = z
         .strict(),
       z.object({ kind: z.literal("remove"), before: byteIdentitySchema, after: z.null() }).strict(),
     ]),
+    generation: generationSchema.optional(),
     projectedStateDigest: sha256Schema,
     candidateDigest: sha256Schema,
   })
@@ -120,6 +206,11 @@ export interface SupplementalMemoryCandidateProjectionInput {
   readonly sourceSha256: string;
   readonly source: SupplementalMemoryCandidateSource;
   readonly baseline: EffectiveHarnessState;
+  readonly evidence?: readonly {
+    readonly provenance: string;
+    readonly sourceSha256: string;
+    readonly packet: TuningEvidencePacket;
+  }[];
 }
 
 export interface ProjectedSupplementalMemoryCandidate {
@@ -216,6 +307,7 @@ export function projectSupplementalMemoryCandidate(
       "supplemental-memory prior entry identity does not match",
     );
   }
+  validateGenerationProvenance(input, selected);
   const retained = current
     .filter((entry) => entry !== selected)
     .map((entry) => ({
@@ -287,6 +379,7 @@ export function projectSupplementalMemoryCandidate(
       entry: before,
     },
     change: identityChange,
+    ...(input.source.generation === undefined ? {} : { generation: input.source.generation }),
     projectedStateDigest: state.stateDigest,
   };
   const identity = parseSupplementalMemoryCandidateIdentity({
@@ -295,6 +388,147 @@ export function projectSupplementalMemoryCandidate(
   });
   assertSupplementalMemoryCandidateSurface(identity, input.baseline, state);
   return deepFreeze({ identity, state });
+}
+
+function validateGenerationProvenance(
+  input: SupplementalMemoryCandidateProjectionInput,
+  selected: SupplementalMemoryEntry | undefined,
+): void {
+  const generation = input.source.generation;
+  if (generation === undefined) return;
+  if (input.source.change.kind === "remove" || input.source.change.kind !== generation.operation) {
+    throw new SupplementalMemoryCandidateError(
+      "identity_mismatch",
+      "supplemental-memory generation operation does not match",
+    );
+  }
+  const expectedPriorSha256 = selected?.sha256 ?? null;
+  if (generation.priorSha256 !== expectedPriorSha256) {
+    throw new SupplementalMemoryCandidateError(
+      "identity_mismatch",
+      "supplemental-memory generation prior identity does not match",
+    );
+  }
+  const evidence = input.evidence ?? [];
+  if (evidence.length !== generation.evidence.length) {
+    throw new SupplementalMemoryCandidateError(
+      "identity_mismatch",
+      "supplemental-memory generation evidence count does not match",
+    );
+  }
+  const admittedEvidence = evidence.map((actual, index) => {
+    const declared = generation.evidence[index];
+    if (declared === undefined) {
+      throw new SupplementalMemoryCandidateError(
+        "identity_mismatch",
+        "supplemental-memory generation evidence is incomplete",
+      );
+    }
+    const packet = parseTuningEvidencePacket(actual.packet);
+    if (
+      actual.provenance !== declared.path ||
+      actual.sourceSha256 !== declared.sourceSha256 ||
+      packet.evidenceDigest !== declared.evidenceDigest ||
+      packet.evaluation.planDigest !== declared.planDigest ||
+      !packet.profiles.some(
+        (profile) => profile.workflowDigest === input.baseline.workflow.workflowDigest,
+      )
+    ) {
+      throw new SupplementalMemoryCandidateError(
+        "identity_mismatch",
+        "supplemental-memory generation evidence does not match",
+      );
+    }
+    return { sourceSha256: actual.sourceSha256, packet };
+  });
+  const compiled = compileEffectiveHarnessState(input.baseline);
+  let selectedWorkflow = compiled;
+  for (const childNodeId of input.source.scope.childPath) {
+    const child = selectedWorkflow.nodes.find((node) => node.id === childNodeId);
+    if (child?.type !== "child" || child.child.workflow.sourcePackage !== undefined) {
+      throw new SupplementalMemoryCandidateError(
+        "identity_mismatch",
+        "supplemental-memory generation target does not match",
+      );
+    }
+    selectedWorkflow = child.child.workflow;
+  }
+  const agent = selectedWorkflow.nodes.find(
+    (node) => node.id === input.source.scope.agentNodeId && node.type === "agent",
+  );
+  if (agent?.type !== "agent") {
+    throw new SupplementalMemoryCandidateError(
+      "identity_mismatch",
+      "supplemental-memory generation target does not match",
+    );
+  }
+  const target: SupplementalMemoryTarget = {
+    workflowId: input.source.scope.workflowId,
+    childPath: input.source.scope.childPath,
+    agentNodeId: input.source.scope.agentNodeId,
+  };
+  const targetMemory = (input.baseline.supplementalMemory ?? [])
+    .filter((entry) => sameTarget(entry.target, target))
+    .map((entry) => ({
+      id: entry.id,
+      bytes: entry.bytes,
+      sha256: entry.sha256,
+      value: supplementalMemoryContent(entry),
+    }));
+  const request = {
+    baseline: {
+      stateDigest: input.baseline.stateDigest,
+      workflowDigest: input.baseline.workflow.workflowDigest,
+      packageClosureDigest: calculateCapabilitySnapshotDigest(input.baseline.packages),
+    },
+    target: {
+      scope: input.source.scope,
+      operation: generation.operation,
+      prior:
+        selected === undefined
+          ? null
+          : {
+              bytes: selected.bytes,
+              sha256: selected.sha256,
+              value: supplementalMemoryContent(selected),
+            },
+      agent: { prompt: agent.agent.prompt, promptSha256: sha256(agent.agent.prompt) },
+      memory: targetMemory,
+    },
+    evidence: admittedEvidence,
+    model: {
+      provider: generation.provider,
+      id: generation.model,
+      thinking: generation.thinking,
+    },
+    limits: {
+      timeoutMs: generation.limits.timeoutMs,
+      maxOutputTokens: generation.limits.maxOutputTokens,
+    },
+  };
+  if (
+    Buffer.byteLength(renderSupplementalMemoryCandidateGenerationRequest(request), "utf8") >
+      generation.limits.maxInputBytes ||
+    calculateSupplementalMemoryCandidateGenerationRequestDigest(request) !==
+      generation.requestDigest
+  ) {
+    throw new SupplementalMemoryCandidateError(
+      "identity_mismatch",
+      "supplemental-memory generation request identity does not match",
+    );
+  }
+  const value = input.source.change.value;
+  if (
+    Buffer.byteLength(renderSupplementalMemoryCandidateGenerationResponse(value), "utf8") >
+      generation.limits.maxOutputBytes ||
+    calculateSupplementalMemoryCandidateGenerationResponseDigest(value) !==
+      generation.responseDigest
+  ) {
+    throw new SupplementalMemoryCandidateError(
+      "identity_mismatch",
+      "supplemental-memory generation response identity does not match",
+    );
+  }
 }
 
 export function assertSupplementalMemoryCandidateSurface(
@@ -398,6 +632,15 @@ function findEntry(
       entry.target.agentNodeId === target.agentNodeId &&
       entry.target.childPath.length === target.childPath.length &&
       entry.target.childPath.every((item, index) => item === target.childPath[index]),
+  );
+}
+
+function sameTarget(left: SupplementalMemoryTarget, right: SupplementalMemoryTarget): boolean {
+  return (
+    left.workflowId === right.workflowId &&
+    left.agentNodeId === right.agentNodeId &&
+    left.childPath.length === right.childPath.length &&
+    left.childPath.every((item, index) => item === right.childPath[index])
   );
 }
 
