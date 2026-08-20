@@ -1773,10 +1773,95 @@ This candidate doesn't change graph topology, dependencies, results, budgets, mo
 packages, commands, approvals, verifiers, policy, retries, sandboxing, or workflow packages. It
 doesn't add runtime discovery, delegation, handoff, fallback, memory, or child workspace promotion.
 
+### Supplemental-memory candidates
+
+A supplemental-memory candidate is an inert document that changes one bounded reference entry for
+one existing agent:
+
+```yaml
+apiVersion: flow.synapti.ai/v1alpha1
+kind: SupplementalMemoryCandidate
+metadata: { id: reviewed-project-layout, version: 1.0.0 }
+scope:
+  kind: workflow-agent-memory
+  workflowId: adaptive-workflow
+  childPath: []
+  agentNodeId: implement
+  entryId: project-layout
+baseline:
+  stateDigest: <64-lowercase-hex>
+  workflowDigest: <64-lowercase-hex>
+  packageClosureDigest: <64-lowercase-hex>
+change:
+  kind: add
+  value: Use the reviewed package map when locating implementation owners.
+```
+
+The source is at most 1 MiB. Identifiers use the canonical workflow identifier grammar.
+`childPath` contains at most eight child-node IDs. It is empty for a root agent and contains the
+ordered path for an agent in an embedded child workflow.
+
+The `change` value is one strict discriminated union:
+
+- `add` contains one nonblank `value` and requires the target entry to be absent.
+- `replace` contains the exact current `beforeSha256` and one nonblank replacement `value`.
+- `remove` contains the exact current `beforeSha256` and no replacement value.
+
+One complete state contains at most 16 entries. One entry contains 1 through 16,384 UTF-8 bytes.
+The aggregate for one target is at most 16,384 bytes. The aggregate for one state is at most
+65,536 bytes. Entry identity is the root workflow ID, ordered child path, agent node ID, and entry
+ID. Entries are unique and sorted by this identity.
+
+Each durable entry stores the exact byte count, SHA-256 digest, and canonical base64 bytes. Parsing
+uses fatal UTF-8 decoding and rejects duplicate, reordered, malformed, stale, or noncanonical data.
+The state and runtime digests bind target and byte identity. Historical states without a memory
+catalog omit the field and keep their version-1 digest.
+
+Admission observes every lexical directory from the filesystem root and rejects links or
+replacement. It opens the candidate as a bounded regular file with no-follow semantics. It binds
+the device, inode, size, modification time, change time, and SHA-256 digest. Flow repeats the
+observations before return. Cancellation keeps the exact caller reason at each asynchronous
+boundary.
+
+The baseline must match the current effective state digest, workflow digest, package-closure
+digest, and root workflow ID. The target path must resolve to an existing compiled `agent` node.
+Projection changes only the declared entry. It preserves workflow bytes, root package, package
+order and bytes, and every unrelated memory entry. Add, replace, and remove each must change the
+complete state digest.
+
+The public candidate identity binds the source, baseline state, package identities, exact target,
+entry ID, operation, and projected state digest. It also binds the content-free before and after
+byte identities. It contains no memory content, encoded content, absolute path, or nested cause.
+
+`flow candidate validate <candidate.yaml>` is read-only. Use
+`flow candidate compose <candidate.yaml>` to bind the change to the exact current effective head.
+Direct activation of the raw document rejects. A paired evaluation selects the complete staged
+artifact through `effectiveCandidate`. The legacy `candidate` field doesn't admit this kind.
+
+Activation stores exact memory bytes in the complete effective state and runtime capability
+snapshot. Public run, event, activation, inspection, and export projections remove the encoded
+content and retain only target, byte-count, and digest identity. Attached and detached runs,
+children, resume, recovery, and replay use the retained bytes without reopening a source.
+
+Supplemental memory isn't a secret-storage boundary. It becomes model input for the targeted node,
+and generated node output can repeat or transform it. Public projection removes stored memory
+bytes. It doesn't classify or redact model-generated text.
+
+Before one agent attempt, the scheduler selects only entries whose root workflow, child path, and
+agent node match the current node. Flow renders escaped XML in canonical entry order. The Pi adapter
+places a fixed reference-context and authority notice after Flow's system instructions, then the
+memory block, then the selected Agent Skill catalog. An untargeted node receives no block.
+
+Supplemental memory cannot change prompts, models, tools, Agent Skills, packages, graph topology,
+budgets, policies, approvals, verifiers, retries, sandboxing, results, or workflow transitions. Flow
+doesn't provide retrieval, ranking, embeddings, model writes, conversation persistence, provider
+sessions, ACP session persistence, or automatic promotion.
+
 ### Adaptive activation
 
 An operator can activate a prompt, Agent Skill resource, Agent Skill package, composed model-route,
-or composed child-specialist candidate after a complete superior evaluation.
+composed child-specialist, or composed supplemental-memory candidate after a complete superior
+evaluation.
 Preview creates a proposal without changing state:
 
 ```text
@@ -1796,10 +1881,11 @@ snapshot binds the unchanged workflow and exact selected skill package. An Agent
 snapshot binds the projected workflow and generated package. Its paired baseline binds the original
 workflow and no package.
 
-A composed model-route or child-specialist artifact uses the effective harness store. Model-route
-preview and apply require the exact route pair from the evaluation header. Child-specialist preview
-and apply require the exact candidate and both complete state identities. The complete selected
-workflow becomes durable before the effective head changes.
+A composed model-route, child-specialist, or supplemental-memory artifact uses the effective harness
+store. Model-route preview and apply require the exact route pair from the evaluation header.
+Child-specialist and supplemental-memory preview and apply require the exact candidate and both
+complete state identities. The complete selected workflow, package closure, and optional memory
+catalog become durable before the effective head changes.
 
 A workflow source is at most 8 MiB. The complete capability snapshot is at most 16 MiB.
 

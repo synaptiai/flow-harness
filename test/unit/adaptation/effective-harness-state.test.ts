@@ -87,6 +87,46 @@ describe("effective harness states", () => {
     expect(parseEffectiveHarnessState(structuredClone(state), { scopeDigest })).toEqual(state);
   });
 
+  it("stores one exact supplemental-memory entry for one existing root agent", () => {
+    const content = "Use the reviewed fixture before changing generated output.";
+    const state = createEffectiveHarnessState({
+      scopeDigest,
+      workflowSource: rootAgentWorkflow(),
+      packages: [],
+      supplementalMemory: [
+        {
+          id: "reviewed-fixture",
+          target: {
+            workflowId: "memory-workflow",
+            childPath: [],
+            agentNodeId: "implement",
+          },
+          content,
+        },
+      ],
+    } as Parameters<typeof createEffectiveHarnessState>[0] & {
+      readonly supplementalMemory: readonly unknown[];
+    });
+
+    expect(state).toMatchObject({
+      supplementalMemory: [
+        {
+          id: "reviewed-fixture",
+          target: {
+            workflowId: "memory-workflow",
+            childPath: [],
+            agentNodeId: "implement",
+          },
+          bytes: Buffer.byteLength(content, "utf8"),
+          sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+          contentBase64: Buffer.from(content).toString("base64"),
+        },
+      ],
+    });
+    expect(parseEffectiveHarnessState(structuredClone(state), { scopeDigest })).toEqual(state);
+    expect(Object.isFrozen(state.supplementalMemory?.[0])).toBe(true);
+  });
+
   it("stores and recompiles a complete transitive workflow-package closure", () => {
     const first = workflowPackage("first", childWorkflow("first", "second"));
     const second = workflowPackage("second", childWorkflow("second"));
@@ -265,7 +305,7 @@ function workflowWithoutPackages(): string {
     kind: "Workflow",
     metadata: { id: "policy-free-workflow" },
     budget: {
-      maxNodeStarts: 1,
+      maxNodeStarts: 2,
       maxModelTokens: 1,
       maxCostUsd: 1,
       maxExecutionMs: 1_000,
@@ -276,6 +316,44 @@ function workflowWithoutPackages(): string {
         id: "done",
         type: "command",
         command: { executable: "/usr/bin/true", timeoutMs: 1_000 },
+      },
+    ],
+  });
+}
+
+function rootAgentWorkflow(): string {
+  return JSON.stringify({
+    apiVersion: "flow.synapti.ai/v1alpha1",
+    kind: "Workflow",
+    metadata: { id: "memory-workflow" },
+    budget: {
+      maxNodeStarts: 1,
+      maxModelTokens: 1_000,
+      maxCostUsd: 1,
+      maxExecutionMs: 10_000,
+      maxArtifactBytes: 1_024,
+    },
+    nodes: [
+      {
+        id: "implement",
+        type: "agent",
+        agent: {
+          prompt: "Implement the requested change.",
+          model: { provider: "test", id: "deterministic", thinking: "medium" },
+          tools: [],
+          skills: [],
+          toolPackages: [],
+          timeoutMs: 10_000,
+        },
+      },
+      {
+        id: "publish",
+        type: "result",
+        dependsOn: ["implement"],
+        result: {
+          source: { nodeId: "implement", field: "agent.text" },
+          schema: { type: "string", maxLength: 1_024 },
+        },
       },
     ],
   });

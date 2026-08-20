@@ -22,6 +22,13 @@ import {
 import { calculateWorkflowDigest } from "../workflow/digest.js";
 import type { CompiledWorkflowPackageReference } from "../workflow/types.js";
 import { MAX_PROMPT_ACTIVATION_SOURCE_BYTES } from "./prompt-activation.js";
+import {
+  createSupplementalMemoryEntries,
+  parseSupplementalMemoryEntries,
+  type SupplementalMemoryEntry,
+  type SupplementalMemoryEntryInput,
+  SupplementalMemoryError,
+} from "./supplemental-memory.js";
 
 export const MAX_EFFECTIVE_HARNESS_STATE_BYTES = 16 * 1024 * 1024;
 
@@ -63,6 +70,7 @@ const effectiveHarnessStateSchema = z
       .strict(),
     rootPackage: rootPackageSchema.optional(),
     packages: z.array(z.unknown()).max(MAX_AGENT_SKILL_PACKAGES),
+    supplementalMemory: z.array(z.unknown()).optional(),
     stateDigest: sha256Schema,
   })
   .strict();
@@ -94,6 +102,7 @@ export interface EffectiveHarnessState {
   };
   readonly rootPackage?: CompiledWorkflowPackageReference | undefined;
   readonly packages: readonly CapabilityPackageSnapshot[];
+  readonly supplementalMemory?: readonly SupplementalMemoryEntry[] | undefined;
   readonly stateDigest: string;
 }
 
@@ -114,6 +123,7 @@ export interface CreateEffectiveHarnessStateInput {
   readonly workflowSource: string;
   readonly rootPackage?: CompiledWorkflowPackageReference | undefined;
   readonly packages: readonly CapabilityPackageSnapshot[];
+  readonly supplementalMemory?: readonly SupplementalMemoryEntryInput[] | undefined;
 }
 
 export interface CreateEffectiveHarnessHeadIdentityInput {
@@ -168,6 +178,7 @@ export function createEffectiveHarnessState(
   const rootPackage = parseRootPackage(input.rootPackage, packages, input.workflowSource);
   const compiled = compileEffectiveWorkflow(input.workflowSource, packages, rootPackage);
   bindEffectiveWorkflow(compiled, packages);
+  const supplementalMemory = parseMemoryInput(input.supplementalMemory, compiled);
   const content = {
     version: 1 as const,
     kind: "effective-harness-state" as const,
@@ -181,6 +192,7 @@ export function createEffectiveHarnessState(
     },
     ...(rootPackage === undefined ? {} : { rootPackage }),
     packages,
+    ...(supplementalMemory.length === 0 ? {} : { supplementalMemory }),
   };
   return parseEffectiveHarnessState(
     { ...content, stateDigest: calculateEffectiveHarnessStateDigest(content) },
@@ -219,6 +231,7 @@ export function parseEffectiveHarnessState(
   const rootPackage = parseRootPackage(parsed.data.rootPackage, packages, source);
   const compiled = compileEffectiveWorkflow(source, packages, rootPackage);
   bindEffectiveWorkflow(compiled, packages);
+  const supplementalMemory = parseMemoryState(parsed.data.supplementalMemory, compiled);
   if (
     compiled.id !== parsed.data.workflowId ||
     calculateWorkflowDigest(compiled) !== parsed.data.workflow.workflowDigest
@@ -229,9 +242,15 @@ export function parseEffectiveHarnessState(
     );
   }
   const state: EffectiveHarnessState = {
-    ...parsed.data,
+    version: parsed.data.version,
+    kind: parsed.data.kind,
+    scopeDigest: parsed.data.scopeDigest,
+    workflowId: parsed.data.workflowId,
+    workflow: parsed.data.workflow,
     ...(rootPackage === undefined ? {} : { rootPackage }),
     packages,
+    ...(supplementalMemory.length === 0 ? {} : { supplementalMemory }),
+    stateDigest: parsed.data.stateDigest,
   };
   if (calculateEffectiveHarnessStateDigest(state) !== state.stateDigest) {
     throw new EffectiveHarnessStateError(
@@ -259,6 +278,16 @@ export function calculateEffectiveHarnessStateDigest(
       },
       rootPackage: state.rootPackage ?? null,
       packages: state.packages.map(capabilityPackageIdentity),
+      ...(state.supplementalMemory === undefined
+        ? {}
+        : {
+            supplementalMemory: state.supplementalMemory.map((entry) => ({
+              id: entry.id,
+              target: entry.target,
+              bytes: entry.bytes,
+              sha256: entry.sha256,
+            })),
+          }),
     }),
   );
 }
@@ -360,6 +389,48 @@ function parsePackageClosure(input: readonly unknown[]): readonly CapabilityPack
       "effective harness package closure is invalid",
     );
   }
+}
+
+function parseMemoryInput(
+  input: readonly SupplementalMemoryEntryInput[] | undefined,
+  workflow: ReturnType<typeof compileWorkflowText>,
+): readonly SupplementalMemoryEntry[] {
+  if (input === undefined || input.length === 0) return Object.freeze([]);
+  try {
+    return createSupplementalMemoryEntries(input, workflow);
+  } catch (error) {
+    throw mapSupplementalMemoryError(error);
+  }
+}
+
+function parseMemoryState(
+  input: readonly unknown[] | undefined,
+  workflow: ReturnType<typeof compileWorkflowText>,
+): readonly SupplementalMemoryEntry[] {
+  if (input === undefined || input.length === 0) return Object.freeze([]);
+  try {
+    return parseSupplementalMemoryEntries(input, workflow);
+  } catch (error) {
+    throw mapSupplementalMemoryError(error);
+  }
+}
+
+function mapSupplementalMemoryError(error: unknown): EffectiveHarnessStateError {
+  if (error instanceof SupplementalMemoryError) {
+    const code =
+      error.code === "limit_exceeded"
+        ? "limit_exceeded"
+        : error.code === "invalid_target"
+          ? "invalid_workflow"
+          : error.code === "identity_mismatch"
+            ? "identity_mismatch"
+            : "invalid_schema";
+    return new EffectiveHarnessStateError(code, "effective harness supplemental memory is invalid");
+  }
+  return new EffectiveHarnessStateError(
+    "invalid_schema",
+    "effective harness supplemental memory is invalid",
+  );
 }
 
 function compileEffectiveWorkflow(

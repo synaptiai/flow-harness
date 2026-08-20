@@ -59,13 +59,13 @@ import {
 } from "../../fixtures/agent-skill-candidate-generation.js";
 import { agentSkillPackageActivationFixture } from "../../fixtures/agent-skill-package-activation.js";
 import {
-  childSpecialistCandidateFixture,
-  childSpecialistCandidateInstructions,
-} from "../../fixtures/child-specialist-candidate.js";
-import {
   agentSkillPackageCandidateGenerationFixture,
   agentSkillPackageGenerationResponse,
 } from "../../fixtures/agent-skill-package-candidate-generation.js";
+import {
+  childSpecialistCandidateFixture,
+  childSpecialistCandidateInstructions,
+} from "../../fixtures/child-specialist-candidate.js";
 import { superiorEffectiveHarnessEvaluation } from "../../fixtures/effective-harness-evaluation.js";
 import { modelRoutingCandidateSourceFixture } from "../../fixtures/model-routing-candidate.js";
 import { promptActivationInput } from "../../fixtures/prompt-activation.js";
@@ -83,6 +83,190 @@ afterEach(async () => {
 });
 
 describe("effective harness composition CLI", () => {
+  it("validates and stages supplemental memory from the exact active closure", async () => {
+    const project = await realpath(await mkdtemp(join(tmpdir(), "flow-memory-compose-")));
+    temporaryDirectories.push(project);
+    await mkdir(join(project, ".flow"));
+    const baselineSource = promptCandidateWorkflowText();
+    const scopeDigest = await calculateLocalEffectiveHarnessScopeDigest(project);
+    const baseline = createEffectiveHarnessState({
+      scopeDigest,
+      workflowSource: baselineSource,
+      packages: [],
+    });
+    const initialHead = createEffectiveHarnessHeadIdentity({
+      scopeDigest,
+      workflowId: baseline.workflowId,
+      generation: 1,
+      activationDigest: "a".repeat(64),
+      transitionDigest: "b".repeat(64),
+      stateDigest: baseline.stateDigest,
+    });
+    const prompt = promptProjectionFor(baseline, "implement");
+    const afterPrompt = projectEffectiveHarnessCandidate({
+      baseline,
+      candidate: {
+        kind: "prompt",
+        projection: prompt,
+        baselineWorkflowSource: baselineSource,
+      },
+    });
+    const promptArtifact = createEffectiveHarnessCandidateArtifact({
+      baselineHead: initialHead,
+      baselineState: baseline,
+      candidateState: afterPrompt.state,
+      candidate: prompt.identity,
+    });
+    const store = new LocalEffectiveHarnessStore(project, {
+      readInitialHead: async () => initialHead,
+    });
+    const prepared = prepareEffectiveHarnessActivation({
+      artifact: promptArtifact,
+      stored: superiorEffectiveHarnessEvaluation(promptArtifact),
+    });
+    const activation = await store.previewActivate({ prepared, actor: "operator:test" });
+    await store.applyActivate({
+      prepared,
+      actor: "operator:test",
+      expectedDigest: activation.proposalDigest,
+    });
+    const rollback = {
+      workflowId: baseline.workflowId,
+      targetStateDigest: baseline.stateDigest,
+      actor: "operator:test",
+    };
+    const rollbackProposal = await store.previewRollback(rollback);
+    await store.applyRollback({
+      ...rollback,
+      expectedDigest: rollbackProposal.proposalDigest,
+    });
+
+    const privateMemory = "PRIVATE_REVIEWED_OPERATOR_GUIDANCE";
+    const encodedMemory = Buffer.from(privateMemory).toString("base64");
+    const candidatePath = join(project, "operator-memory.candidate.yaml");
+    const candidateSource = JSON.stringify({
+      apiVersion: "flow.synapti.ai/v1alpha1",
+      kind: "SupplementalMemoryCandidate",
+      metadata: { id: "operator-guidance", version: "1.0.0" },
+      scope: {
+        kind: "workflow-agent-memory",
+        workflowId: baseline.workflowId,
+        childPath: [],
+        agentNodeId: "implement",
+        entryId: "reviewed-constraints",
+      },
+      baseline: {
+        stateDigest: baseline.stateDigest,
+        workflowDigest: baseline.workflow.workflowDigest,
+        packageClosureDigest: calculateCapabilitySnapshotDigest(baseline.packages),
+      },
+      change: { kind: "add", value: privateMemory },
+    });
+    await writeFile(candidatePath, candidateSource);
+
+    const validation = captureIo();
+    expect(
+      await main(["candidate", "validate", candidatePath], validation.io, {
+        cwd: project,
+        loadConfig: async () => effectiveConfig(project),
+      }),
+      validation.stderr.join("\n"),
+    ).toBe(0);
+    expect(JSON.parse(validation.stdout.join("\n"))).toMatchObject({
+      valid: true,
+      candidate: {
+        kind: "supplemental-memory-candidate",
+        scope: {
+          workflowId: baseline.workflowId,
+          childPath: [],
+          agentNodeId: "implement",
+          entryId: "reviewed-constraints",
+        },
+        change: {
+          kind: "add",
+          before: null,
+          after: {
+            bytes: Buffer.byteLength(privateMemory),
+            sha256: sha256(privateMemory),
+          },
+        },
+      },
+    });
+
+    const directActivation = captureIo();
+    expect(
+      await main(
+        [
+          "candidate",
+          "activate",
+          candidatePath,
+          "--evaluation",
+          "PRIVATE_MISSING_EVALUATION",
+          "--actor",
+          "operator:test",
+          "--dry-run",
+        ],
+        directActivation.io,
+        { cwd: project, loadConfig: async () => effectiveConfig(project) },
+      ),
+    ).toBe(2);
+    expect(directActivation.stderr[0]?.split("\n")[0]).toBe(
+      "supplemental-memory candidate activation requires a composed effective harness candidate",
+    );
+
+    const output = captureIo();
+    expect(
+      await main(["candidate", "compose", candidatePath], output.io, {
+        cwd: project,
+        loadConfig: async () => effectiveConfig(project),
+      }),
+      output.stderr.join("\n"),
+    ).toBe(0);
+    const composed = JSON.parse(output.stdout.join("\n"));
+    expect(composed).toMatchObject({
+      composed: true,
+      candidate: {
+        surface: "supplemental-memory",
+        candidate: {
+          kind: "supplemental-memory-candidate",
+          scope: { entryId: "reviewed-constraints" },
+          change: {
+            kind: "add",
+            after: {
+              bytes: Buffer.byteLength(privateMemory),
+              sha256: sha256(privateMemory),
+            },
+          },
+        },
+      },
+      staged: {
+        path: expect.stringMatching(/^\.flow\/effective-harness\/artifacts\/[a-f0-9]{64}\.json$/),
+      },
+    });
+    const publicText = [
+      ...validation.stdout,
+      ...validation.stderr,
+      ...directActivation.stdout,
+      ...directActivation.stderr,
+      ...output.stdout,
+      ...output.stderr,
+    ].join("\n");
+    expect(publicText).not.toContain(privateMemory);
+    expect(publicText).not.toContain(encodedMemory);
+    expect(publicText).not.toContain(candidatePath);
+    expect(publicText).not.toContain("contentBase64");
+
+    await rm(candidatePath);
+    const staged = await admitLocalEffectiveHarnessCandidate(join(project, composed.staged.path));
+    expect(staged.artifact.candidateState.supplementalMemory).toEqual([
+      expect.objectContaining({
+        id: "reviewed-constraints",
+        contentBase64: encodedMemory,
+      }),
+    ]);
+    expect(staged.artifact.baselineState.stateDigest).toBe(baseline.stateDigest);
+  });
+
   it("validates and stages a child-specialist candidate from the exact active closure", async () => {
     const project = await realpath(await mkdtemp(join(tmpdir(), "flow-child-compose-")));
     temporaryDirectories.push(project);

@@ -10,8 +10,8 @@ import {
   calculateAgentSkillCandidateIdentityDigest,
 } from "../../../../src/domain/adaptation/agent-skill-candidate.js";
 import {
-  calculateChildSpecialistCandidateDigest,
   type ChildSpecialistCandidateIdentity,
+  calculateChildSpecialistCandidateDigest,
 } from "../../../../src/domain/adaptation/child-specialist-candidate.js";
 import {
   createEffectiveHarnessCandidateArtifact,
@@ -48,11 +48,12 @@ import {
   LocalEvaluationStore,
   type PublicEvaluationHeader,
 } from "../../../../src/infrastructure/fs/local-evaluation-store.js";
+import { childSpecialistCandidateInstructions } from "../../../fixtures/child-specialist-candidate.js";
 import {
   childSpecialistEffectiveHarnessCandidateArtifactFixture,
   effectiveHarnessCandidateArtifactFixture,
+  supplementalMemoryEffectiveHarnessCandidateArtifactFixture,
 } from "../../../fixtures/effective-harness-evaluation.js";
-import { childSpecialistCandidateInstructions } from "../../../fixtures/child-specialist-candidate.js";
 import { primeExternalHarnessIdentity } from "../../../fixtures/evaluation/prime-external-harness-identity.js";
 import { modelRoutingCandidateFixture } from "../../../fixtures/model-routing-candidate.js";
 
@@ -505,6 +506,64 @@ controls:`,
       });
       await expect(store.read(changed.evaluationId)).rejects.toMatchObject({ code: "not_found" });
     }
+  });
+
+  it("binds one supplemental-memory artifact without publishing its private bytes", async () => {
+    const project = await evaluationProject();
+    const artifact = supplementalMemoryEffectiveHarnessCandidateArtifactFixture();
+    const artifactPath = join(project, "memory.effective-harness.json");
+    await writeFile(artifactPath, encodeEffectiveHarnessCandidateArtifact(artifact));
+    const plan = await readFile(join(project, "evaluation.yaml"), "utf8");
+    await writeFile(
+      join(project, "evaluation.yaml"),
+      plan.replace(
+        /profiles:[\s\S]*?controls:/,
+        `profiles:
+  - { id: baseline, adapter: flow-workflow-v1, effectiveCandidate: memory.effective-harness.json, selection: baseline }
+  - { id: candidate, adapter: flow-workflow-v1, effectiveCandidate: memory.effective-harness.json, selection: candidate }
+controls:`,
+      ),
+    );
+
+    const admitted = await admitLocalEvaluationPlan(join(project, "evaluation.yaml"));
+    await rm(artifactPath);
+
+    expect(admitted.profiles).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "baseline",
+          effectiveHarness: expect.objectContaining({
+            selection: "baseline",
+            surface: "supplemental-memory",
+            stateDigest: artifact.baselineState.stateDigest,
+          }),
+        }),
+        expect.objectContaining({
+          id: "candidate",
+          candidate: expect.objectContaining({
+            kind: "supplemental-memory-candidate",
+            candidateDigest: artifact.candidate.candidateDigest,
+          }),
+          effectiveHarness: expect.objectContaining({
+            selection: "candidate",
+            surface: "supplemental-memory",
+            stateDigest: artifact.candidateState.stateDigest,
+          }),
+        }),
+      ]),
+    );
+    expect(artifact.candidateState.workflow).toEqual(artifact.baselineState.workflow);
+    expect(artifact.candidateState.packages).toEqual(artifact.baselineState.packages);
+    const header = createPublicEvaluationHeader(admitted, "supplemental-memory-evaluation");
+    const publicJson = JSON.stringify(header);
+    expect(publicJson).not.toContain("contentBase64");
+    expect(publicJson).not.toContain("PRIVATE_MEMORY_USE_THE_REVIEWED_FIXTURE");
+    expect(publicJson).not.toContain(
+      Buffer.from("PRIVATE_MEMORY_USE_THE_REVIEWED_FIXTURE").toString("base64"),
+    );
+    const store = new LocalEvaluationStore(join(project, "evaluations"));
+    await store.create(header);
+    await expect(store.read(header.evaluationId)).resolves.toMatchObject({ header });
   });
 
   it("rejects an effective harness artifact through the legacy candidate field", async () => {

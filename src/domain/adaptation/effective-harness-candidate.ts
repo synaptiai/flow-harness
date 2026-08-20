@@ -7,8 +7,8 @@ import {
   type CapabilityPackageSnapshot,
   calculateCapabilitySnapshotDigest,
 } from "../capability/agent-skills.js";
-import type { CompiledWorkflow } from "../workflow/types.js";
 import { parseWorkflowSourceText } from "../workflow/compiler.js";
+import type { CompiledWorkflow } from "../workflow/types.js";
 import {
   type AgentSkillCandidateIdentity,
   parseAgentSkillCandidateIdentity,
@@ -23,9 +23,9 @@ import {
 } from "./child-specialist-candidate.js";
 import {
   compileEffectiveHarnessState,
-  effectiveHarnessWorkflowSource,
   type EffectiveHarnessHeadIdentity,
   type EffectiveHarnessState,
+  effectiveHarnessWorkflowSource,
   parseEffectiveHarnessHeadIdentity,
   parseEffectiveHarnessState,
 } from "./effective-harness-state.js";
@@ -34,6 +34,11 @@ import {
   parseModelRoutingCandidateIdentity,
 } from "./model-routing-candidate.js";
 import { type PromptCandidateIdentity, parsePromptCandidateIdentity } from "./prompt-candidate.js";
+import {
+  assertSupplementalMemoryCandidateSurface,
+  parseSupplementalMemoryCandidateIdentity,
+  type SupplementalMemoryCandidateIdentity,
+} from "./supplemental-memory-candidate.js";
 
 export const MAX_EFFECTIVE_HARNESS_CANDIDATE_BYTES = 40 * 1024 * 1024;
 const CANDIDATE_DIGEST_DOMAIN = "flow-effective-harness-candidate-v1";
@@ -57,6 +62,7 @@ const artifactSchema = z
       "agent-skill-package",
       "model-routing",
       "child-specialist",
+      "supplemental-memory",
     ]),
     candidate: z.unknown(),
     baselineHead: z.unknown(),
@@ -71,14 +77,16 @@ export type EffectiveHarnessCandidateIdentity =
   | AgentSkillCandidateIdentity
   | AgentSkillPackageCandidateIdentity
   | ModelRoutingCandidateIdentity
-  | ChildSpecialistCandidateIdentity;
+  | ChildSpecialistCandidateIdentity
+  | SupplementalMemoryCandidateIdentity;
 
 export type EffectiveHarnessCandidateSurface =
   | "prompt"
   | "agent-skill-resource"
   | "agent-skill-package"
   | "model-routing"
-  | "child-specialist";
+  | "child-specialist"
+  | "supplemental-memory";
 
 export interface EffectiveHarnessCandidateArtifact {
   readonly version: 1;
@@ -283,6 +291,13 @@ function parseCandidate(input: unknown): EffectiveHarnessCandidateIdentity {
       throw invalidCandidateIdentity();
     }
   }
+  if (isObjectWithKind(input, "supplemental-memory-candidate")) {
+    try {
+      return parseSupplementalMemoryCandidateIdentity(input);
+    } catch {
+      throw invalidCandidateIdentity();
+    }
+  }
   try {
     return parsePromptCandidateIdentity(input);
   } catch {
@@ -322,6 +337,10 @@ function assertSurfaceChange(
     }
     if (surface === "child-specialist" && isChildSpecialistCandidate(candidate)) {
       assertChildSpecialistChange(candidate, baseline, projected);
+      return;
+    }
+    if (surface === "supplemental-memory" && isSupplementalMemoryCandidate(candidate)) {
+      assertSupplementalMemoryCandidateSurface(candidate, baseline, projected);
       return;
     }
   } catch {
@@ -573,7 +592,9 @@ function candidateSurface(
         ? "model-routing"
         : isChildSpecialistCandidate(candidate)
           ? "child-specialist"
-          : "prompt";
+          : isSupplementalMemoryCandidate(candidate)
+            ? "supplemental-memory"
+            : "prompt";
 }
 
 function candidateWorkflowId(candidate: EffectiveHarnessCandidateIdentity): string {
@@ -615,6 +636,12 @@ function isChildSpecialistCandidate(
   candidate: EffectiveHarnessCandidateIdentity,
 ): candidate is ChildSpecialistCandidateIdentity {
   return "kind" in candidate && candidate.kind === "child-specialist-candidate";
+}
+
+function isSupplementalMemoryCandidate(
+  candidate: EffectiveHarnessCandidateIdentity,
+): candidate is SupplementalMemoryCandidateIdentity {
+  return "kind" in candidate && candidate.kind === "supplemental-memory-candidate";
 }
 
 function isObjectWithKind(input: unknown, kind: string): boolean {

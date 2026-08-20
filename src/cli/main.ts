@@ -3387,6 +3387,20 @@ async function candidateCommand(
         );
         return baseline.state.packages;
       },
+      resolveSupplementalMemoryBaseline: async (source) => {
+        const config = await awaitWithCancellationPrecedence(
+          () => dependencies.loadConfig({ cwd: dependencies.cwd }),
+          overrides.signal,
+          "candidate validation was cancelled",
+        );
+        return (
+          await loadCurrentEffectiveHarnessBaseline(
+            source.scope.workflowId,
+            config,
+            overrides.signal,
+          )
+        ).state;
+      },
     });
     io.stdout(
       JSON.stringify({ valid: true, candidate: adaptationCandidateView(admitted) }, null, 2),
@@ -3421,6 +3435,14 @@ async function candidateCommand(
             overrides.signal,
           )
         ).state.packages,
+      resolveSupplementalMemoryBaseline: async (source) =>
+        (
+          await loadCurrentEffectiveHarnessBaseline(
+            source.scope.workflowId,
+            config,
+            overrides.signal,
+          )
+        ).state,
     });
     if (admitted.kind === "effective-harness-candidate") {
       throw new EffectiveHarnessStoreError(
@@ -3500,6 +3522,14 @@ async function candidateCommand(
                 overrides.signal,
               )
             ).state.packages,
+          resolveSupplementalMemoryBaseline: async (source) =>
+            (
+              await loadCurrentEffectiveHarnessBaseline(
+                source.scope.workflowId,
+                config,
+                overrides.signal,
+              )
+            ).state,
         }),
       overrides.signal,
       "candidate activation was cancelled",
@@ -3512,6 +3542,11 @@ async function candidateCommand(
     if (admitted.kind === "child-specialist-candidate") {
       throw new CliUsageError(
         "child-specialist candidate activation requires a composed effective harness candidate",
+      );
+    }
+    if (admitted.kind === "supplemental-memory-candidate") {
+      throw new CliUsageError(
+        "supplemental-memory candidate activation requires a composed effective harness candidate",
       );
     }
     const evaluationsDirectory = await awaitWithCancellationPrecedence(
@@ -3925,6 +3960,14 @@ function effectiveHarnessProjection(
         },
         baselineWorkflowSource: admitted.candidate.baseline.sourceText,
       };
+    case "supplemental-memory-candidate":
+      return {
+        kind: "supplemental-memory",
+        projection: {
+          identity: admitted.candidate.identity,
+          state: admitted.candidate.state,
+        },
+      };
   }
 }
 
@@ -3980,6 +4023,18 @@ function effectiveHarnessStateView(state: EffectiveHarnessState) {
             digest: item.digest,
           }),
     ),
+    ...(state.supplementalMemory === undefined
+      ? {}
+      : {
+          supplementalMemory: state.supplementalMemory.map((entry) =>
+            Object.freeze({
+              id: entry.id,
+              target: entry.target,
+              bytes: entry.bytes,
+              sha256: entry.sha256,
+            }),
+          ),
+        }),
     stateDigest: state.stateDigest,
   });
 }

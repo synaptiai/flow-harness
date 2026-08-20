@@ -67,6 +67,7 @@ import { agentSkillActivationInput } from "../../fixtures/agent-skill-activation
 import {
   effectiveHarnessCandidateArtifactFixture,
   modelRoutingEffectiveHarnessCandidateArtifactFixture,
+  supplementalMemoryEffectiveHarnessCandidateArtifactFixture,
 } from "../../fixtures/effective-harness-evaluation.js";
 import { promptActivationInput } from "../../fixtures/prompt-activation.js";
 
@@ -508,6 +509,92 @@ nodes:
         effectiveHarness: {
           runtimeDigest: effectiveHarness.runtimeDigest,
           head: { headDigest: head.headDigest },
+        },
+      },
+    });
+    expect(reduceRunEvents(events).status).toBe("succeeded");
+  });
+
+  it("executes supplemental memory from the frozen detached snapshot", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-worker-supplemental-memory-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    const store = new LocalSupervisorStore(runsDirectory);
+    await store.initialize();
+    const artifact = supplementalMemoryEffectiveHarnessCandidateArtifactFixture();
+    const head = createEffectiveHarnessHeadIdentity({
+      scopeDigest: artifact.scopeDigest,
+      workflowId: artifact.workflowId,
+      generation: artifact.baselineHead.generation + 1,
+      activationDigest: artifact.artifactDigest,
+      transitionDigest: "d".repeat(64),
+      stateDigest: artifact.candidateState.stateDigest,
+    });
+    const effectiveHarness = createEffectiveHarnessRuntimeSnapshot({
+      state: artifact.candidateState,
+      head,
+    });
+    const capabilitySnapshot = validateCapabilitySnapshot({
+      version: 1,
+      packages: [],
+      effectiveHarness,
+      digest: calculateCapabilitySnapshotDigest([], [], effectiveHarness),
+    });
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "worker-supplemental-memory",
+      mode: "run",
+      sourceName: `activation:${artifact.workflowId}`,
+      workflowSource: effectiveHarnessWorkflowSource(artifact.candidateState),
+      cwd: directory,
+      token: "8".repeat(64),
+      createdAt: "2026-08-20T12:00:00.000Z",
+      capabilitySnapshot,
+    });
+    await store.reserveSubmission(
+      job,
+      createActiveRunClaim({
+        runId: job.runId,
+        jobId: job.jobId,
+        workerId: job.workerId,
+        claimedAt: job.createdAt,
+      }),
+    );
+    let observedMemory: string | undefined;
+    const worker = executeWorkerJob(job.jobId, {
+      store,
+      executor: {
+        async execute(node, context) {
+          if (node.type !== "agent") {
+            throw new Error("supplemental-memory worker executed an unexpected node");
+          }
+          observedMemory = context.agentSupplementalMemory;
+          return { status: "succeeded", evidence: successfulAgentEvidence() };
+        },
+      },
+      effectReconciler: createProductionNodeEffectReconciler(),
+      createRunStore: (root) => new JsonlRunStore(root),
+      pid: 4395,
+    });
+    const descriptor = await waitForDescriptor(store, job.workerId);
+    await expect(requestWorker(descriptor, { type: "identify" })).resolves.toMatchObject({
+      ok: true,
+      result: { runId: job.runId, status: "running" },
+    });
+
+    await expect(worker).resolves.toBe(0);
+    expect(observedMemory).toContain("PRIVATE_MEMORY_USE_THE_REVIEWED_FIXTURE");
+    const events = await new JsonlRunStore(runsDirectory).read(job.runId);
+    expect(events[0]).toMatchObject({
+      type: "run_started",
+      capabilitySnapshot: {
+        digest: capabilitySnapshot.digest,
+        effectiveHarness: {
+          runtimeDigest: effectiveHarness.runtimeDigest,
+          supplementalMemory: [
+            expect.objectContaining({ id: "reviewed-fixture", contentBase64: expect.any(String) }),
+          ],
         },
       },
     });

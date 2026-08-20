@@ -54,7 +54,8 @@ Current capability groups include:
 - Inert skill, verifier, tool, workflow, policy, and presentation packages.
 - Exact HTTPS and publisher-authenticated OCI bundle acquisition.
 - Signed metadata and TUF repository review, activation, replacement, and bounded watching.
-- Reproducible Flow, Pi, OMP, and Prime evaluation profiles with reviewed root and child-specialist candidates.
+- Reproducible Flow, Pi, OMP, and Prime evaluation profiles with reviewed root,
+  child-specialist, and supplemental-memory candidates.
 
 Linux and macOS support ordinary workflow execution. Agent `exec`, the container command profile,
 and Prime Agent have narrower platform requirements.

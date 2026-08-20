@@ -25,6 +25,10 @@ import {
   parsePromptCandidateIdentity,
 } from "../../../src/domain/adaptation/prompt-candidate.js";
 import {
+  parseSupplementalMemoryCandidateText,
+  projectSupplementalMemoryCandidate,
+} from "../../../src/domain/adaptation/supplemental-memory-candidate.js";
+import {
   type AgentSkillCapabilitySnapshot,
   calculateCapabilitySnapshotDigest,
   createCapabilitySnapshot,
@@ -38,9 +42,9 @@ import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { calculateWorkflowDigest } from "../../../src/domain/workflow/digest.js";
 import { agentSkillActivationInput } from "../../fixtures/agent-skill-activation.js";
 import { agentSkillPackageActivationFixture } from "../../fixtures/agent-skill-package-activation.js";
+import { childSpecialistCandidateFixture } from "../../fixtures/child-specialist-candidate.js";
 import { modelRoutingCandidateFixture } from "../../fixtures/model-routing-candidate.js";
 import { promptActivationInput } from "../../fixtures/prompt-activation.js";
-import { childSpecialistCandidateFixture } from "../../fixtures/child-specialist-candidate.js";
 
 const scopeDigest = "a".repeat(64);
 
@@ -177,6 +181,34 @@ describe("effective harness candidate baseline admission", () => {
 });
 
 describe("effective harness candidate projection", () => {
+  it("composes one supplemental-memory entry while retaining prior effective state", () => {
+    const fixture = agentSkillActivationInput("baseline");
+    const baseline = createEffectiveHarnessState({
+      scopeDigest,
+      workflowSource: fixture.workflowSource,
+      packages: [fixture.skill],
+    });
+    const memory = memoryProjectionFor(baseline, "Remember the reviewed integration fixture.");
+
+    const projected = projectEffectiveHarnessCandidate({
+      baseline,
+      candidate: { kind: "supplemental-memory", projection: memory },
+    });
+
+    expect(projected.delta).toEqual({
+      surface: "supplemental-memory",
+      candidateKind: "supplemental-memory-candidate",
+      candidateDigest: memory.identity.candidateDigest,
+      beforeStateDigest: baseline.stateDigest,
+      afterStateDigest: memory.state.stateDigest,
+    });
+    expect(projected.state).toEqual(memory.state);
+    expect(effectiveHarnessWorkflowSource(projected.state)).toBe(
+      effectiveHarnessWorkflowSource(baseline),
+    );
+    expect(projected.state.packages).toEqual(baseline.packages);
+  });
+
   it("rebases one child-specialist axis while retaining prior effective state", () => {
     const fixture = childSpecialistCandidateFixture("instructions");
     const currentSource = JSON.parse(fixture.baselineText) as {
@@ -665,6 +697,36 @@ function promptProjectionFor(
       workflowDigest: calculateWorkflowDigest(compiled),
     },
   };
+}
+
+function memoryProjectionFor(
+  baseline: ReturnType<typeof createEffectiveHarnessState>,
+  content: string,
+) {
+  const sourceText = JSON.stringify({
+    apiVersion: "flow.synapti.ai/v1alpha1",
+    kind: "SupplementalMemoryCandidate",
+    metadata: { id: "remember-integration", version: "1.0.0" },
+    scope: {
+      kind: "workflow-agent-memory",
+      workflowId: baseline.workflowId,
+      childPath: [],
+      agentNodeId: "review",
+      entryId: "reviewed-integration",
+    },
+    baseline: {
+      stateDigest: baseline.stateDigest,
+      workflowDigest: baseline.workflow.workflowDigest,
+      packageClosureDigest: calculateCapabilitySnapshotDigest(baseline.packages),
+    },
+    change: { kind: "add", value: content },
+  });
+  return projectSupplementalMemoryCandidate({
+    manifestProvenance: "memory.candidate.json",
+    sourceSha256: sha256(sourceText),
+    source: parseSupplementalMemoryCandidateText(sourceText, "memory.candidate.json"),
+    baseline,
+  });
 }
 
 function skillProjectionFor(

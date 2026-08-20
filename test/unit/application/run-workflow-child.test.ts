@@ -18,7 +18,15 @@ import type {
 } from "../../../src/application/ports.js";
 import { resumeWorkflow, runWorkflow } from "../../../src/application/run-workflow.js";
 import { admitWorkflowPackages } from "../../../src/application/workflow-package-admission.js";
-import { createCapabilitySnapshot } from "../../../src/domain/capability/agent-skills.js";
+import {
+  compileEffectiveHarnessState,
+  createEffectiveHarnessHeadIdentity,
+  createEffectiveHarnessState,
+} from "../../../src/domain/adaptation/effective-harness-state.js";
+import {
+  createCapabilitySnapshot,
+  createEffectiveHarnessCapabilitySnapshot,
+} from "../../../src/domain/capability/agent-skills.js";
 import type { ToolPackageSnapshotInput } from "../../../src/domain/capability/tool-packages.js";
 import type { VerifierPackageSnapshotInput } from "../../../src/domain/capability/verifier-packages.js";
 import {
@@ -45,6 +53,75 @@ afterEach(async () => {
 });
 
 describe("child workflow execution", () => {
+  it("delivers child-targeted supplemental memory only to the exact nested agent", async () => {
+    const store = new TreeMemoryStore();
+    const isolator = new MemoryWorkspaceIsolator();
+    const source = memoryParentWorkflow();
+    const state = createEffectiveHarnessState({
+      scopeDigest: "a".repeat(64),
+      workflowSource: source,
+      packages: [],
+      supplementalMemory: [
+        {
+          id: "nested-fixture",
+          target: {
+            workflowId: "memory-parent-workflow",
+            childPath: ["delegate"],
+            agentNodeId: "inspect",
+          },
+          content: "PRIVATE_CHILD_MEMORY_CHECK_THE_NESTED_FIXTURE",
+        },
+      ],
+    });
+    const head = createEffectiveHarnessHeadIdentity({
+      scopeDigest: state.scopeDigest,
+      workflowId: state.workflowId,
+      generation: 1,
+      activationDigest: "b".repeat(64),
+      transitionDigest: "c".repeat(64),
+      stateDigest: state.stateDigest,
+    });
+    const snapshot = createEffectiveHarnessCapabilitySnapshot(state, head);
+    const observed = new Map<string, string | undefined>();
+    const executor: NodeExecutor = {
+      async execute(node, context) {
+        if (node.type !== "agent") throw new Error(`unexpected node type "${node.type}"`);
+        observed.set(node.id, context.agentSupplementalMemory);
+        const text = JSON.stringify("done");
+        return {
+          status: "succeeded",
+          evidence: {
+            kind: "agent",
+            provider: "test",
+            model: "deterministic",
+            text,
+            textHash: sha256(text),
+            textTruncated: false,
+            durationMs: 1,
+            policyDecisions: [],
+            effectReceipts: [],
+          },
+        };
+      },
+    };
+
+    const result = await runWorkflow(compileEffectiveHarnessState(state), {
+      runId: "parent-memory-workflow",
+      cwd: "/workspace",
+      protectedPaths: ["/state/runs"],
+      store,
+      executor,
+      workspaceIsolator: isolator,
+      capabilitySnapshot: snapshot,
+      now: clock(),
+    });
+
+    expect(result.status).toBe("succeeded");
+    expect(observed.get("root-check")).toBeUndefined();
+    expect(observed.get("inspect")).toContain("PRIVATE_CHILD_MEMORY_CHECK_THE_NESTED_FIXTURE");
+    expect(observed.get("inspect")).toContain('<entry id="nested-fixture"');
+  });
+
   it("runs a package-selected child through the ordinary isolated child lifecycle", async () => {
     const store = new TreeMemoryStore();
     const isolator = new MemoryWorkspaceIsolator();
@@ -1446,6 +1523,52 @@ budget:
   maxArtifactBytes: 1000000
 nodes:
 ${childNode("delegate", child)}
+`;
+}
+
+function memoryParentWorkflow(): string {
+  const child = `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: memory-child-workflow }
+budget:
+  maxNodeStarts: 4
+  maxModelTokens: 1000
+  maxCostUsd: 0.25
+  maxExecutionMs: 60000
+  maxArtifactBytes: 100000
+nodes:
+  - id: inspect
+    type: agent
+    agent:
+      prompt: Inspect the nested fixture.
+      model: { provider: test, id: deterministic }
+      tools: [read]
+  - id: publish
+    type: result
+    dependsOn: [inspect]
+    result:
+      source: { nodeId: inspect, field: agent.text }
+      schema: { type: string, maxLength: 1024 }
+`.trim();
+  return `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: memory-parent-workflow }
+budget:
+  maxNodeStarts: 8
+  maxModelTokens: 2000
+  maxCostUsd: 0.5
+  maxExecutionMs: 120000
+  maxArtifactBytes: 200000
+nodes:
+  - id: root-check
+    type: agent
+    agent:
+      prompt: Check the root fixture.
+      model: { provider: test, id: deterministic }
+      tools: [read]
+${childNode("delegate", child, ["root-check"])}
 `;
 }
 

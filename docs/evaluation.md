@@ -536,6 +536,76 @@ This surface doesn't add model-directed delegation, remote agents, session memor
 fallbacks, or child workspace promotion. The compiled parent graph continues to decide when the
 child runs and which typed result it returns.
 
+### Supplemental-memory candidates
+
+Supplemental memory is bounded reference context for one existing agent. It is part of the
+immutable effective harness state. It is not conversation history, a provider session, a retrieval
+service, or a model-writable store.
+
+A `SupplementalMemoryCandidate` declares one add, replace, or remove operation:
+
+```yaml
+apiVersion: flow.synapti.ai/v1alpha1
+kind: SupplementalMemoryCandidate
+metadata: { id: reviewed-project-layout, version: 1.0.0 }
+scope:
+  kind: workflow-agent-memory
+  workflowId: adaptive-workflow
+  childPath: []
+  agentNodeId: implement
+  entryId: project-layout
+baseline:
+  stateDigest: <64-lowercase-hex>
+  workflowDigest: <64-lowercase-hex>
+  packageClosureDigest: <64-lowercase-hex>
+change:
+  kind: add
+  value: Use the reviewed package map when locating implementation owners.
+```
+
+For a nested agent, `childPath` contains the ordered child-node IDs from the root workflow to the
+workflow that owns `agentNodeId`. An add requires the entry to be absent. A replace or remove also
+requires `beforeSha256` to equal the exact current entry digest. A no-op rejects.
+
+The candidate file is at most 1 MiB. One state contains at most 16 entries. Each entry contains
+1 through 16,384 UTF-8 bytes. One target receives at most 16,384 bytes, and one state contains at
+most 65,536 memory bytes. Flow rejects blank or malformed UTF-8, duplicate entry identities,
+noncanonical order, invalid targets, stale state or package identities, and unrelated changes.
+
+Admission reopens the source with bounded no-follow reads and revalidates every lexical ancestor and
+the source identity. It resolves the active complete state only after the source kind is known. The
+target must be an existing compiled `agent` node. Projection recompiles the complete state and
+proves that the workflow, root package, package closure, and every unrelated memory entry remain
+unchanged.
+
+Validate and compose the candidate before evaluation:
+
+```sh
+flow candidate validate <candidate.yaml>
+flow candidate compose <candidate.yaml>
+```
+
+Direct activation of the raw memory candidate fails. Composition binds the change to the exact
+current effective head and stages one complete artifact. A paired evaluation selects that artifact
+through `effectiveCandidate` for both profiles, with `selection: baseline` and
+`selection: candidate`. Tasks, fixtures, seeds, models, packages, budgets, network denial, retries,
+order, and verification remain equal.
+
+The public candidate and evaluation views contain the target, entry ID, operation, byte counts, and
+SHA-256 digests. They omit content, encoded content, absolute source paths, and nested causes. After
+activation, attached runs, detached workers, children, resume, recovery, replay, inspection, and
+export use the exact retained state. They don't reopen the candidate or consult a live memory source.
+
+Treat supplemental memory as model-visible context, not as a secret store. Flow removes stored
+memory bytes from its public state projections. A model can still repeat or transform context in
+its generated node output, just as it can repeat an ordinary node prompt or workspace file.
+
+Before an agent attempt, Flow places a fixed authority notice after its fixed system instructions.
+One canonical escaped memory block follows the notice and precedes the selected Agent Skill catalog.
+Only entries for the exact root workflow, child path, and agent node are included. Supplemental
+memory cannot add a tool, package, or model route. It cannot change policy, approval, graph
+transitions, or other execution authority.
+
 ## Activation gate
 
 ### Review workflow
@@ -574,6 +644,8 @@ Model-route activation also requires the exact ordered route controls stored in 
 The controls must match the composed artifact before preview and again before apply. A
 child-specialist activation uses the same complete-state proof and requires the evaluation's exact
 child candidate and state identities.
+A supplemental-memory activation requires the exact composed memory candidate, complete baseline
+and candidate states, and content-free evaluation identity.
 
 The activation proof contains no task text, fixture path, assertion, holdout identity, trial record,
 or run identifier. It contains aggregate comparison values only.

@@ -7,6 +7,7 @@ import type { AgentSkillPackageCandidateIdentity } from "../adaptation/agent-ski
 import type { ChildSpecialistCandidateIdentity } from "../adaptation/child-specialist-candidate.js";
 import type { ModelRoutingCandidateIdentity } from "../adaptation/model-routing-candidate.js";
 import type { PromptCandidateIdentity } from "../adaptation/prompt-candidate.js";
+import type { SupplementalMemoryCandidateIdentity } from "../adaptation/supplemental-memory-candidate.js";
 import type { ExternalHarnessIdentity } from "./external-harness.js";
 
 export const EVALUATION_PLAN_API_VERSION = "flow.synapti.ai/v1alpha1" as const;
@@ -356,7 +357,8 @@ export type EvaluationProfileIdentity =
           | AgentSkillCandidateIdentity
           | AgentSkillPackageCandidateIdentity
           | ModelRoutingCandidateIdentity
-          | ChildSpecialistCandidateIdentity;
+          | ChildSpecialistCandidateIdentity
+          | SupplementalMemoryCandidateIdentity;
       };
       readonly effectiveHarness?: {
         readonly selection: "baseline" | "candidate";
@@ -372,7 +374,8 @@ export type EvaluationProfileIdentity =
           | "agent-skill-resource"
           | "agent-skill-package"
           | "model-routing"
-          | "child-specialist";
+          | "child-specialist"
+          | "supplemental-memory";
         readonly candidateDigest: string;
       };
     }

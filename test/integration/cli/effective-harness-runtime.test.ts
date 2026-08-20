@@ -21,7 +21,12 @@ import {
 } from "../../../src/domain/adaptation/effective-harness-state.js";
 import { createPromptActivationSnapshot } from "../../../src/domain/adaptation/prompt-activation.js";
 import {
+  parseSupplementalMemoryCandidateText,
+  projectSupplementalMemoryCandidate,
+} from "../../../src/domain/adaptation/supplemental-memory-candidate.js";
+import {
   type AgentSkillPackageSnapshot,
+  calculateCapabilitySnapshotDigest,
   createAgentCapabilityEvidence,
 } from "../../../src/domain/capability/agent-skills.js";
 import {
@@ -38,12 +43,13 @@ import {
 } from "../../../src/infrastructure/fs/local-effective-harness-store.js";
 import { LocalEvaluationStore } from "../../../src/infrastructure/fs/local-evaluation-store.js";
 import { LocalPromptActivationStore } from "../../../src/infrastructure/fs/local-prompt-activation-store.js";
+import { childSpecialistCandidateInstructions } from "../../fixtures/child-specialist-candidate.js";
 import {
   childSpecialistEffectiveHarnessCandidateArtifactFixture,
   effectiveHarnessCandidateArtifactFixture,
   superiorEffectiveHarnessEvaluation,
+  supplementalMemoryEffectiveHarnessCandidateArtifactFixture,
 } from "../../fixtures/effective-harness-evaluation.js";
-import { childSpecialistCandidateInstructions } from "../../fixtures/child-specialist-candidate.js";
 import { modelRoutingCandidateSourceFixture } from "../../fixtures/model-routing-candidate.js";
 import { promptActivationInput } from "../../fixtures/prompt-activation.js";
 
@@ -658,17 +664,97 @@ describe("effective harness runtime CLI", () => {
     expect(state.capabilitySnapshot.activations).toBeUndefined();
   });
 
-  it("resumes from durable effective authority after the live store is removed", async () => {
+  it("runs activated supplemental memory and exposes only its review identity", async () => {
     const project = await temporaryProject();
-    const runsDirectory = join(project, "runs");
-    const artifact = approvalEffectiveHarnessArtifact(
+    const privateMemory = "PRIVATE_MEMORY_USE_THE_REVIEWED_FIXTURE";
+    const artifact = supplementalMemoryEffectiveHarnessCandidateArtifactFixture(
       await calculateLocalEffectiveHarnessScopeDigest(project),
     );
     await activateArtifact(project, artifact);
+    const observedMemory: Array<string | undefined> = [];
+    const runOutput = captureIo();
+
+    expect(
+      await main(
+        [
+          "run",
+          `activation:${artifact.workflowId}`,
+          "--run-id",
+          "supplemental-memory-runtime",
+          "--runs-dir",
+          join(project, "memory-runs"),
+        ],
+        runOutput.io,
+        dependencies(project, {
+          execute: async (node, context) => {
+            if (node.type !== "agent") {
+              throw new Error("supplemental-memory runtime expected one Agent node");
+            }
+            observedMemory.push(context.agentSupplementalMemory);
+            return successfulAgentOutcome(undefined);
+          },
+        }),
+      ),
+      runOutput.stderr.join("\n"),
+    ).toBe(0);
+    expect(observedMemory).toEqual([expect.stringContaining("<supplemental_memory>")]);
+    expect(observedMemory[0]).toContain(privateMemory);
+    const publicState = JSON.parse(runOutput.stdout.at(-1) ?? "null");
+    expect(publicState.capabilitySnapshot.effectiveHarness.supplementalMemory).toEqual([
+      {
+        id: "reviewed-fixture",
+        target: {
+          workflowId: artifact.workflowId,
+          childPath: [],
+          agentNodeId: "implement",
+        },
+        bytes: Buffer.byteLength(privateMemory),
+        sha256: sha256(privateMemory),
+      },
+    ]);
+    expectContentFree(runOutput, [privateMemory]);
+
+    const inspectOutput = captureIo();
+    expect(
+      await main(["activation", "inspect", artifact.workflowId], inspectOutput.io, {
+        cwd: project,
+        loadConfig: async () => effectiveConfig(project),
+      }),
+      inspectOutput.stderr.join("\n"),
+    ).toBe(0);
+    expect(JSON.parse(inspectOutput.stdout.join("\n"))).toMatchObject({
+      effectiveHarness: {
+        active: {
+          supplementalMemory: [
+            {
+              id: "reviewed-fixture",
+              target: { workflowId: artifact.workflowId, agentNodeId: "implement" },
+              bytes: Buffer.byteLength(privateMemory),
+              sha256: sha256(privateMemory),
+            },
+          ],
+        },
+      },
+    });
+    expectContentFree(inspectOutput, [privateMemory]);
+  });
+
+  it("resumes from durable effective authority after the live store is removed", async () => {
+    const project = await temporaryProject();
+    const runsDirectory = join(project, "runs");
+    const artifact = approvalSupplementalMemoryArtifact(
+      await calculateLocalEffectiveHarnessScopeDigest(project),
+    );
+    const privateMemory = "PRIVATE_DURABLE_APPROVAL_MEMORY";
+    await activateArtifact(project, artifact);
     const calls: string[] = [];
+    const observedMemory: string[] = [];
     const executor: NodeExecutor = {
-      execute: async (node) => {
+      execute: async (node, context) => {
         calls.push(node.id);
+        if (node.type === "agent" && context.agentSupplementalMemory !== undefined) {
+          observedMemory.push(context.agentSupplementalMemory);
+        }
         return node.type === "command"
           ? successfulCommandOutcome(node.command.executable, node.command.args)
           : successfulAgentOutcome(undefined);
@@ -729,6 +815,8 @@ describe("effective harness runtime CLI", () => {
       resumeOutput.stderr.join("\n"),
     ).toBe(0);
     expect(calls).toEqual(["gate", "implement"]);
+    expect(observedMemory).toHaveLength(1);
+    expect(observedMemory[0]).toContain(privateMemory);
     const inspectOutput = captureIo();
     expect(
       await main(
@@ -746,10 +834,10 @@ describe("effective harness runtime CLI", () => {
         },
       },
     });
-    expectContentFree(runOutput, []);
-    expectContentFree(approvalOutput, []);
-    expectContentFree(resumeOutput, []);
-    expectContentFree(inspectOutput, []);
+    expectContentFree(runOutput, [privateMemory]);
+    expectContentFree(approvalOutput, [privateMemory]);
+    expectContentFree(resumeOutput, [privateMemory]);
+    expectContentFree(inspectOutput, [privateMemory]);
   });
 });
 
@@ -816,6 +904,56 @@ function approvalEffectiveHarnessArtifact(scopeDigest: string) {
   });
 }
 
+function approvalSupplementalMemoryArtifact(scopeDigest: string) {
+  const baselineInput = promptActivationInput({
+    requiresApproval: true,
+    selection: "baseline",
+  });
+  const baselineState = createEffectiveHarnessState({
+    scopeDigest,
+    workflowSource: baselineInput.source,
+    packages: [],
+  });
+  const privateMemory = "PRIVATE_DURABLE_APPROVAL_MEMORY";
+  const sourceText = JSON.stringify({
+    apiVersion: "flow.synapti.ai/v1alpha1",
+    kind: "SupplementalMemoryCandidate",
+    metadata: { id: "durable-approval-memory", version: "1.0.0" },
+    scope: {
+      kind: "workflow-agent-memory",
+      workflowId: baselineState.workflowId,
+      childPath: [],
+      agentNodeId: "implement",
+      entryId: "approval-guidance",
+    },
+    baseline: {
+      stateDigest: baselineState.stateDigest,
+      workflowDigest: baselineState.workflow.workflowDigest,
+      packageClosureDigest: calculateCapabilitySnapshotDigest(baselineState.packages),
+    },
+    change: { kind: "add", value: privateMemory },
+  });
+  const projected = projectSupplementalMemoryCandidate({
+    manifestProvenance: "PRIVATE_MEMORY_CANDIDATE_PATH",
+    sourceSha256: sha256(sourceText),
+    source: parseSupplementalMemoryCandidateText(sourceText),
+    baseline: baselineState,
+  });
+  return createEffectiveHarnessCandidateArtifact({
+    baselineHead: createEffectiveHarnessHeadIdentity({
+      scopeDigest,
+      workflowId: baselineState.workflowId,
+      generation: 1,
+      activationDigest: "b".repeat(64),
+      transitionDigest: "c".repeat(64),
+      stateDigest: baselineState.stateDigest,
+    }),
+    baselineState,
+    candidateState: projected.state,
+    candidate: projected.identity,
+  });
+}
+
 function effectiveArtifactForScope(scopeDigest: string) {
   const fixture = effectiveHarnessCandidateArtifactFixture();
   const baselineState = createEffectiveHarnessState({
@@ -877,6 +1015,10 @@ function effectiveConfig(projectRoot: string): EffectiveFlowConfig {
       project: { path: join(projectRoot, ".flow", "config.yaml"), values: {} },
     },
   };
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function successfulAgentOutcome(
