@@ -27,6 +27,11 @@ prompt overlays and authority-preserving skill-resource projections. New single-
 projections, paired evaluation, reviewed activation, durable run snapshots, and rollback are also
 implemented.
 
+Gate 8 is the next delivery priority. It turns the source preview into an installable, diagnosable,
+and testable public preview. Gate 9 adds bounded long-horizon context and semantic code feedback.
+Gate 10 adds standards-based executor interoperability and evidence-gated specialized execution.
+Gate 8 must close before a Gate 9 or Gate 10 experiment becomes a default user path.
+
 Remaining targets include executable extensions, remote or multi-user UI hosts, and stronger
 isolation.
 Each first-party host accepts exact A2UI-profile presentation packages.
@@ -219,6 +224,231 @@ containment milestone. It is not VM-grade or multi-tenant isolation.
   No candidate can change unrelated graph, tool, package, policy, approval, budget, verifier, retry,
   or sandbox fields.)*
 
+## Gate 8: Usable public preview
+
+Gate 8 lets a new user install Flow, verify the local environment, and complete one useful run
+without building the repository or interpreting internal configuration. The preview retains the
+current pre-stable compatibility and security boundaries.
+
+### Slice 8.1: Install the preview
+
+- Publish one versioned preview package that provides the `flow` command on supported Linux and
+  macOS hosts. Build the package from the reviewed lockfile and verify its installed files before
+  release.
+- Publish release notes that name the supported Node.js range, platforms, upgrade limits, and known
+  security boundaries.
+- Verify installation, command discovery, help output, and the credential-free example from clean
+  Linux and macOS environments.
+
+### Slice 8.2: Diagnose the environment
+
+- Add `flow doctor` as a read-only preflight command.
+- Check the Node.js version, project discovery, configuration, filesystem access, selected sandbox,
+  and the requirements of the selected execution profile.
+- Check provider credentials, Docker, and Prime requirements only when the selected path needs
+  them. Never print a credential, private path, raw provider response, or nested private cause.
+- Return stable categories, actionable remediation, and a nonzero exit status for each blocking
+  requirement.
+
+### Slice 8.3: Complete a quick start
+
+- Add `flow quickstart` to create a minimal project without replacing an existing file.
+- Validate and run the credential-free foundation workflow, then show the resulting run identity
+  and evidence location.
+- Offer one explicit provider-backed path that validates configuration before model work.
+- Offer the local browser presentation after the first accepted run. A noninteractive invocation
+  must remain deterministic and must not open a browser.
+
+### Slice 8.4: Prove a useful agent path
+
+- Maintain one small provider-backed coding workflow that reads a fixture and makes an exact bounded
+  change.
+- Run deterministic verification and expose the resulting evidence through `flow inspect`.
+- Document provider setup, expected cost boundaries, cancellation, cleanup, and the recovery path
+  for each supported preview provider.
+- Record first-run failures without recording credentials, workspace contents, or provider-private
+  response text.
+
+### Gate 8 failure behavior and non-goals
+
+| Condition | Required behavior |
+| --- | --- |
+| Installation is incomplete or incompatible | Reject before project mutation and identify the missing public requirement. |
+| Quick start fails before publication | Remove private staging and leave existing files unchanged. |
+| Quick start has an uncertain publication | Report a fixed uncertain state and require inspection before retry. |
+| An optional provider or runtime is unavailable | Keep credential-free commands usable and fail only the selected dependent path. |
+| A diagnostic exceeds its deadline or output bound | Stop the check and return a fixed bounded diagnostic. |
+
+Gate 8 does not provide a stable workflow-format promise, a hosted Flow service, VM-grade
+isolation, or a hostile multi-tenant security boundary. It does not make optional providers,
+Docker, or Prime prerequisites for credential-free use.
+
+## Gate 9: Long-horizon context and semantic feedback
+
+Gate 9 helps an agent retain the objective, retrieve evidence, and use semantic code information
+without making conversation text or model summaries authoritative. Each capability remains bounded,
+replayable, and visible in the selected profile.
+
+### Slice 9.1: Maintain a durable goal workspace
+
+- Store one revisioned objective, bounded facts, invariants, evidence-backed verified facts, open
+  questions, and one next action.
+- Use compare-and-set revisions for every update and keep completion under the deterministic goal
+  and criterion evaluator.
+- Persist workspace state without continuation authority and require an explicit run or resume
+  action after recovery.
+- Present a public workspace view that excludes private evidence and supplemental-memory contents.
+
+### Slice 9.2: Retain artifacts by reference
+
+- Store an oversized tool result or intermediate artifact under a content digest.
+- Bind its exact byte count, media type, producer identity, and retention state.
+- Put only a bounded preview and opaque reference in model context. Reopening a reference must pass
+  through Flow policy and byte limits.
+- Add deterministic inspection, retention, pruning, and missing-artifact behavior.
+- Never reconstruct a missing or changed artifact from a model summary.
+
+### Slice 9.3: Add read-only semantic code tools
+
+- Add a Flow-owned language server protocol (LSP) port for diagnostics, definition, references, and
+  hover or type information.
+- Require an operator-selected language server with exact executable and configuration identity.
+  Run it under the selected containment profile with no undeclared network access.
+- Confine requests to admitted project paths, bound every request and response, and record result
+  provenance. The LSP port cannot edit files or advance the workflow.
+
+### Slice 9.4: Select an explicit work profile
+
+- Add visible `fast`, `standard`, and `long` work profiles. Record the selected profile in the run
+  ledger and show it in public inspection.
+- Keep profile selection under operator or workflow authority. The model cannot silently promote
+  its own profile.
+- Give the model a bounded view of remaining starts, tokens, reported cost, active time, and
+  retained-artifact capacity. Budget visibility cannot change the enforced budget.
+
+### Slice 9.5: Preserve a provider-neutral session record
+
+- Store a bounded append-only record of admitted user, model, tool, usage, and settlement events
+  separately from the authoritative workflow ledger.
+- Derive a model-visible surface from that record. A resumed session must start a fresh model turn.
+- Do not continue an interrupted provider stream or retry an uncertain effect.
+- Bind each request to its exact model route, system instructions, tool catalog, and authority
+  snapshot.
+- Use this identity to explain a changed request surface during replay.
+
+### Slice 9.6: Evaluate reference-first compaction
+
+- Remove or replace large tool results with artifact references before requesting a model summary.
+- Keep the original objective, active constraints, policy identity, unresolved approvals, and
+  effect uncertainty outside model-generated summaries.
+- Record compaction start, selected range, output identity, token change, and settlement without
+  rewriting the complete session record.
+- Detect interrupted compaction, require a smaller result, and bound attempts while retaining the
+  prior surface on failure.
+- Compare no compaction, reference-only context, and reference-plus-summary context through paired
+  held-out evaluation.
+- Measure constraint retention, task success, tokens, cost, and latency before enabling automatic
+  compaction.
+
+### Slice 9.7: Extend reviewed memory relationships
+
+- Let a supplemental-memory proposal declare a closed relationship such as `supports`,
+  `contradicts`, `refines`, `supersedes`, or `derived_from`.
+- Bind each relationship to exact source evidence, scope, and validity. Evaluate stale,
+  contradictory, and inapplicable retrieval before activation.
+- Keep generation, review, activation, rollback, and execution separate. A model cannot activate a
+  proposal or write runtime memory.
+
+### Slice 9.8: Generate capability reference documentation
+
+- Generate the public tool and capability catalog from the production composition.
+- Fail documentation verification when a registered public tool, schema, limit, or provider seam
+  differs from the generated reference.
+- Keep explanatory guidance in its canonical task or architecture document rather than copying the
+  generated catalog into the root README.
+
+### Gate 9 failure behavior and non-goals
+
+| Condition | Required behavior |
+| --- | --- |
+| Goal-workspace revision is stale | Reject the update without changing the current workspace. |
+| An artifact is missing, changed, or over its bound | Reject the read and preserve the reference as unresolved evidence. |
+| The language server fails, times out, or returns malformed data | Return a bounded tool failure without falling back to an uncontained server. |
+| Session persistence is interrupted | Preserve committed events, append a typed interruption boundary, and never invent a successful tool result. |
+| Compaction loses a protected constraint or cannot reduce context | Reject the candidate surface and keep the prior surface unchanged for retry or inspection. |
+| Memories conflict or have unknown validity | Present no automatic conclusion and require review or deterministic resolution. |
+
+Gate 9 does not make conversation history, a goal workspace, an LSP response, retrieved memory, or a
+model summary authoritative workflow evidence. It does not resume an interrupted model generation,
+grant a new tool, or let the model select its own budget, profile, or continuation authority.
+
+## Gate 10: Interoperable specialized execution
+
+Gate 10 evaluates standards-based and specialized executors behind existing Flow authority. A new
+executor receives only its declared workflow input and Flow-brokered capabilities.
+
+### Slice 10.1: Run a local ACP executor
+
+- Implement an Agent Client Protocol (ACP) v1 provider behind the existing `AgentExecutor` port.
+- Start one exact local agent subprocess and bind its session to the Flow run and attempt.
+- Translate committed results into provider-neutral evidence.
+- Do not forward ambient editor filesystem, terminal, credential, or Model Context Protocol (MCP)
+  authority. Route every permitted operation through existing Flow policy, approval, containment,
+  and settlement boundaries.
+- Evaluate at least two independent ACP agents against the same workflow and controls before
+  claiming interoperability.
+
+### Slice 10.2: Evaluate phase-aware model routing
+
+- Declare closed planner, executor, verifier, and escalation roles without letting the model create
+  a route.
+- Record each call's provider, model, reasoning setting, selection rule, route result, cost, latency,
+  and fallback or escalation decision.
+- Start with deterministic operator rules and paired candidates.
+- Enable no silent fallback or learned router until held-out evidence accepts its quality, cost, and
+  reliability tradeoff.
+- Keep routing algorithms provider-neutral.
+- Allow a research router or model only as an evaluation target, not as Flow's durable authority.
+
+### Slice 10.3: Add an optional proof verification profile
+
+- Run an exact Lean toolchain and optional proof-specialized model behind existing executor and
+  verifier ports.
+- Retain the source specification, generated statement, proof, compiler and kernel results, tool
+  versions, and dependency identity as bounded evidence.
+- Treat kernel acceptance as proof of the declared formal statement, not proof that the statement
+  matches the user's intent. Require separate specification-faithfulness evidence or human review.
+- Measure proof coverage, statement faithfulness, cost, latency, and ordinary test results. Formal
+  verification complements deterministic builds and tests and does not replace them.
+
+### Slice 10.4: Bound later delegation experiments
+
+- Define dynamic delegation as a reviewed evaluation candidate with an exact child objective and
+  package closure.
+- Bind its budget, depth, executor, result schema, and cancellation boundary.
+- Reuse existing child-run and detached-job evidence instead of creating an untracked background
+  task system.
+- Keep remote Agent2Agent (A2A) execution blocked until Flow defines remote identity and
+  authenticated authority propagation.
+- Require multi-host settlement, tenant isolation, and operator remediation before enabling A2A.
+
+### Gate 10 failure behavior and non-goals
+
+| Condition | Required behavior |
+| --- | --- |
+| An ACP agent requests undeclared client authority | Deny the request and record the fixed authority category. |
+| An executor disconnects with an open effect | Record uncertainty and block automatic retry. |
+| A selected model is unavailable | Apply only an explicit recorded escalation rule or fail the call. |
+| A router returns malformed, ambiguous, or unattributed output | Reject the decision and use no inferred route. |
+| Lean accepts an unfaithful or incomplete specification | Keep deterministic and human verification requirements active. Do not claim task completion from the proof alone. |
+| A delegated or remote task exceeds a budget or loses identity | Cancel or block it and reject unattributed results. |
+
+Gate 10 does not make ACP a package ABI or durable event model. It does not make A2A, a routing
+library, a specialized model, or a proof assistant mandatory. It does not allow executable package
+plugins, model-written control loops, unrestricted code-as-action, automatic memory activation, or
+unreviewed background delegation. These capabilities require separate evidence and, for executable
+authority, stronger isolation.
+
 ## Product benchmark gate
 
 - Reproducible harness evaluation is implemented for two Flow profiles. It includes paired
@@ -246,4 +476,12 @@ The standalone harness is compared against the legacy plugin on held-out reposit
 - Crash and resume success
 - Performance across multiple providers
 
-Hidden deterministic tests are preferred over LLM judges. A release claim that Flow beats the plugin requires measured improvement rather than feature count.
+For Gates 8–10, also record:
+
+- Time from installation to the first accepted credential-free and provider-backed runs.
+- Constraint retention across reference-only and compacted session surfaces.
+- Quality, cost, latency, attribution, and fallback behavior for each routing profile.
+- Formal-proof coverage and specification faithfulness for proof-enabled profiles.
+
+Prefer hidden deterministic tests over LLM judges. Require measured improvement before claiming
+that Flow beats the plugin. Feature count is not sufficient evidence.
