@@ -8,6 +8,7 @@ import {
   MAX_PROMPT_CANDIDATE_BYTES,
   parsePromptCandidateText,
 } from "../../domain/adaptation/prompt-candidate.js";
+import { parseSupplementalMemoryCandidateText } from "../../domain/adaptation/supplemental-memory-candidate.js";
 
 const MAX_TEMPORARY_FILES = 16;
 const MAX_TEMPORARY_BYTES = MAX_TEMPORARY_FILES * MAX_PROMPT_CANDIDATE_BYTES;
@@ -269,7 +270,16 @@ function isStrictGeneratedCandidate(sourceText: string): boolean {
       parseAgentSkillCandidateText(sourceText, "generated Agent Skill candidate");
       return true;
     } catch {
-      return false;
+      try {
+        return (
+          parseSupplementalMemoryCandidateText(
+            sourceText,
+            "generated supplemental-memory candidate",
+          ).generation !== undefined
+        );
+      } catch {
+        return false;
+      }
     }
   }
 }
