@@ -23,8 +23,10 @@ are included.
 
 Gate 7 adds reviewed adaptive changes above the evaluation layer. Prompt and Agent Skill candidates
 can change bounded prompt or package surfaces. A model-routing candidate can replace one exact model
-tuple on one existing root agent node. Flow evaluates each route under shared non-route controls,
-then activates one complete effective harness state.
+tuple on one existing root agent node. A child-specialist candidate can replace one embedded child
+agent's instructions or select an exact subset of Agent Skills already in the immutable closure.
+Flow evaluates each change under shared non-candidate controls, then activates one complete
+effective harness state.
 
 Flow includes first-party terminal and local browser presentation hosts over the public run
 projection. A strict A2UI v0.9.1 profile lets an exact inert package arrange the closed host-owned
@@ -77,7 +79,7 @@ flowchart TB
         engine["Workflow engine<br/>Compiles the plan and selects the next safe step"]
         rules["Rules and safeguards<br/>Policy · approvals · budgets · verification"]
         capability["Capability governance<br/>Checks, freezes, and maintains exact package bytes"]
-        adaptation["Evaluation and adaptation<br/>Compares reviewed candidates and prepares activations"]
+        adaptation["Evaluation and adaptation<br/>Compares reviewed root and child candidates"]
     end
 
     subgraph execution["3. Execution plane — performs bounded work"]
@@ -207,6 +209,7 @@ Architecture is derived from these flows.
 | Watch one established repository package | An operator starts one foreground watcher with an exact package, publisher, interval, and update policy | Full-interval TUF checks, deterministic candidate selection, offline atomic replacement, fixed JSON Lines status, and no overlapping Flow watcher |
 | Reclaim retired package blobs | An operator previews, reviews, and applies one exact prune plan | Active blobs and durable snapshots stay unchanged while retired content is unlinked with generation-safe reader settlement |
 | Compare one model route | An operator supplies one route candidate and a paired plan | Two ordered profiles use exact model tuples under shared tasks, budgets, retries, network policy, and verification |
+| Compare one child specialist | An operator supplies one candidate for one agent in an embedded child workflow | Two ordered profiles use exact complete harness states under one shared evaluation plan; only instructions or an existing skill selection differs |
 | Activate one reviewed adaptation | An operator previews and applies one superior evaluated candidate | One complete immutable harness state becomes the head for future runs. Retained states remain rollback targets. |
 
 ### Operator flows
@@ -1184,6 +1187,12 @@ declares one exact before route and one exact after route. Each route contains a
 and thinking level. The candidate cannot contain credentials, endpoints, fallback routes, prices,
 or availability rules. Flow changes only the declared model tuple.
 
+A `ChildSpecialistCandidate` is a fifth inert source. It identifies one agent in one embedded child
+workflow and declares exactly one change axis. The axis replaces bounded instructions or changes the
+agent's ordered Agent Skill selection to names already present in the effective state's immutable
+package closure. Flow rejects packaged-child targets, new package bytes, and every unrelated root or
+child field.
+
 The generation services use the provider-neutral `AgentExecutor` port. The Pi adapter is the first
 implementation. Flow creates one agent request with no tools, skills, or packages. Prompt
 generation includes only selected root-agent prompts and tuning-only packets. Agent Skill
@@ -1224,6 +1233,11 @@ baseline entry must match the declared before route. The candidate entry must ma
 after route. Both entries target the same root agent node. The shared `model` control still applies
 to every other agent and model verifier.
 
+For a child-specialist candidate, both profiles use the same package closure and ordinary child
+runtime. The baseline profile selects the complete pre-change effective state. The candidate
+profile selects the complete projected state. Shared model, task, fixture, seed, budget, network,
+retry, order, and verification controls remain exact.
+
 Both effective profile bindings also store the admitted workflow ID and must match the candidate
 scope. Trial adapters receive only their selected model tuple.
 
@@ -1237,14 +1251,17 @@ digests, public views, execution behavior, and rollback selectors.
 
 The effective harness layer composes later reviewed changes. `candidate compose` reads one ordinary
 candidate, the exact current head, and its complete state. It projects only the declared prompt,
-Agent Skill resource, generated Agent Skill package, or model route surface. The resulting immutable
-artifact contains the complete states, baseline head, candidate identity, and content-free delta.
+Agent Skill resource, generated Agent Skill package, model route, or child-specialist surface. The
+resulting immutable artifact contains the complete states, baseline head, candidate identity, and
+content-free delta.
 
 Composition authenticates the ordinary candidate against its own immutable baseline before it
 rebases that one declared surface onto the current complete state. Prompt rebasing copies only the
 declared prompt fields. Resource rebasing replaces only the exact selected package. Generated
 package rebasing changes only the declared empty-to-selected skill field and adds that package.
 Model-route rebasing changes only the declared model tuple on the exact target node.
+Child-specialist rebasing changes only the declared embedded agent instructions or skill selection
+and preserves the package closure.
 The current target must equal the candidate's before-state, so an orthogonal reviewed change is
 retained while a stale same-surface candidate fails closed.
 
@@ -1292,6 +1309,11 @@ exact generated skill and introduces that exact inert package.
 A model-routing candidate can change only one existing root agent model tuple. It cannot change a
 model verifier, child workflow, graph edge, prompt, tool, skill, package, budget, policy, retry, or
 sandbox field. Flow does not select a route dynamically and does not fall back to another route.
+
+A child-specialist candidate can change one agent inside one embedded child workflow. It cannot
+replace a packaged child, add or mutate a package, change graph topology, tools, models, budgets,
+results, policy, approvals, retries, or sandboxing. Flow does not discover, delegate to, or fall
+back to another agent at runtime.
 
 Model-authorized evaluation and activation remain unavailable. Agent Skill package installation,
 signing, publication, and executable-resource generation remain unavailable. Multi-skill generation

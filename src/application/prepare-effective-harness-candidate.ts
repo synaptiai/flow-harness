@@ -10,6 +10,12 @@ import {
   parseAgentSkillPackageCandidateIdentity,
 } from "../domain/adaptation/agent-skill-package-candidate.js";
 import {
+  type ChildSpecialistCandidateIdentity,
+  type ProjectedChildSpecialistCandidate,
+  parseChildSpecialistCandidateIdentity,
+} from "../domain/adaptation/child-specialist-candidate.js";
+import {
+  compileEffectiveHarnessState,
   createEffectiveHarnessHeadIdentity,
   createEffectiveHarnessState,
   type EffectiveHarnessHeadIdentity,
@@ -134,6 +140,11 @@ export type EffectiveHarnessCandidateProjection =
       readonly kind: "model-routing";
       readonly projection: ProjectedModelRoutingCandidate;
       readonly baselineWorkflowSource: string;
+    }
+  | {
+      readonly kind: "child-specialist";
+      readonly projection: ProjectedChildSpecialistCandidate;
+      readonly baselineWorkflowSource: string;
     };
 
 export interface ProjectEffectiveHarnessCandidateInput {
@@ -142,12 +153,18 @@ export interface ProjectEffectiveHarnessCandidateInput {
 }
 
 export interface EffectiveHarnessSurfaceDelta {
-  readonly surface: "prompt" | "agent-skill-resource" | "agent-skill-package" | "model-routing";
+  readonly surface:
+    | "prompt"
+    | "agent-skill-resource"
+    | "agent-skill-package"
+    | "model-routing"
+    | "child-specialist";
   readonly candidateKind:
     | "prompt-candidate"
     | "agent-skill-candidate"
     | "agent-skill-package-candidate"
-    | "model-routing-candidate";
+    | "model-routing-candidate"
+    | "child-specialist-candidate";
   readonly candidateDigest: string;
   readonly beforeStateDigest: string;
   readonly afterStateDigest: string;
@@ -183,6 +200,12 @@ export function projectEffectiveHarnessCandidate(
       );
     case "model-routing":
       return projectModelRoutingSurface(
+        baseline,
+        input.candidate.projection,
+        input.candidate.baselineWorkflowSource,
+      );
+    case "child-specialist":
+      return projectChildSpecialistSurface(
         baseline,
         input.candidate.projection,
         input.candidate.baselineWorkflowSource,
@@ -536,6 +559,129 @@ function projectModelRoutingSurface(
   }
 }
 
+function projectChildSpecialistSurface(
+  baseline: EffectiveHarnessState,
+  rawProjection: ProjectedChildSpecialistCandidate,
+  baselineWorkflowSource: string,
+): ProjectedEffectiveHarnessCandidate {
+  try {
+    const identity = parseChildSpecialistCandidateIdentity(rawProjection.identity);
+    if (baseline.rootPackage !== undefined) {
+      throw new Error("child-specialist candidate cannot change a packaged root workflow");
+    }
+    const ordinaryBaselineState = createEffectiveHarnessState({
+      scopeDigest: baseline.scopeDigest,
+      workflowSource: baselineWorkflowSource,
+      packages: baseline.packages,
+    });
+    const ordinaryBaseline = compileEffectiveHarnessState(ordinaryBaselineState);
+    const projectedOrdinaryState = createEffectiveHarnessState({
+      scopeDigest: baseline.scopeDigest,
+      workflowSource: rawProjection.workflow.source,
+      packages: baseline.packages,
+    });
+    const projectedOrdinary = compileEffectiveHarnessState(projectedOrdinaryState);
+    const projectedDigest = calculateWorkflowDigest(projectedOrdinary);
+    if (
+      identity.scope.workflowId !== baseline.workflowId ||
+      ordinaryBaseline.id !== identity.scope.workflowId ||
+      identity.baseline.workflow.sourceSha256 !== sha256(baselineWorkflowSource) ||
+      identity.baseline.workflow.workflowDigest !== calculateWorkflowDigest(ordinaryBaseline) ||
+      identity.baseline.packageClosureDigest !==
+        calculateCapabilitySnapshotDigest(baseline.packages) ||
+      identity.projectedWorkflow.sourceSha256 !== sha256(rawProjection.workflow.source) ||
+      identity.projectedWorkflow.workflowDigest !== projectedDigest ||
+      rawProjection.workflow.sourceSha256 !== sha256(rawProjection.workflow.source) ||
+      rawProjection.workflow.workflowDigest !== projectedDigest ||
+      calculateWorkflowDigest(rawProjection.workflow.compiled) !== projectedDigest
+    ) {
+      throw new Error("child-specialist candidate workflow identity mismatch");
+    }
+    const source = rebaseChildSpecialistChange(
+      effectiveHarnessWorkflowSource(baseline),
+      baselineWorkflowSource,
+      rawProjection.workflow.source,
+      identity,
+    );
+    const state = createEffectiveHarnessState({
+      scopeDigest: baseline.scopeDigest,
+      workflowSource: source,
+      packages: baseline.packages,
+    });
+    return freezeProjection({
+      state,
+      surface: "child-specialist",
+      candidateKind: "child-specialist-candidate",
+      candidateDigest: identity.candidateDigest,
+      beforeStateDigest: baseline.stateDigest,
+    });
+  } catch (error) {
+    if (error instanceof EffectiveHarnessCandidateAdmissionError) throw error;
+    throw new EffectiveHarnessCandidateAdmissionError(
+      "surface_mismatch",
+      "child-specialist candidate changes authority outside its declared surface",
+    );
+  }
+}
+
+function rebaseChildSpecialistChange(
+  currentSource: string,
+  ordinaryBaselineSource: string,
+  projectedSource: string,
+  identity: ChildSpecialistCandidateIdentity,
+): string {
+  const current = structuredClone(
+    parseWorkflowSourceText(currentSource, "effective harness current child-specialist state"),
+  );
+  const ordinaryBaseline = parseWorkflowSourceText(
+    ordinaryBaselineSource,
+    "ordinary child-specialist candidate baseline",
+  );
+  const projected = parseWorkflowSourceText(
+    projectedSource,
+    "ordinary child-specialist candidate projection",
+  );
+  const currentChild = requiredEmbeddedChildSource(current, identity.scope.childNodeId);
+  const baselineChild = requiredEmbeddedChildSource(ordinaryBaseline, identity.scope.childNodeId);
+  const projectedChild = requiredEmbeddedChildSource(projected, identity.scope.childNodeId);
+  const currentChildSource = parseWorkflowSourceText(
+    currentChild.child.workflow,
+    "effective harness current embedded child",
+  );
+  const baselineChildSource = parseWorkflowSourceText(
+    baselineChild.child.workflow,
+    "ordinary child-specialist embedded baseline",
+  );
+  const projectedChildSource = parseWorkflowSourceText(
+    projectedChild.child.workflow,
+    "ordinary child-specialist embedded projection",
+  );
+  const currentAgent = requiredAgentSourceNode(currentChildSource, identity.scope.agentNodeId);
+  const baselineAgent = requiredAgentSourceNode(baselineChildSource, identity.scope.agentNodeId);
+  const projectedAgent = requiredAgentSourceNode(projectedChildSource, identity.scope.agentNodeId);
+  if (identity.change.kind === "instructions") {
+    if (
+      sha256(baselineAgent.agent.prompt) !== identity.change.before.sha256 ||
+      sha256(currentAgent.agent.prompt) !== identity.change.before.sha256 ||
+      sha256(projectedAgent.agent.prompt) !== identity.change.after.sha256
+    ) {
+      throw new Error("child-specialist instructions target changed");
+    }
+    currentAgent.agent.prompt = projectedAgent.agent.prompt;
+  } else {
+    if (
+      !isDeepStrictEqual(baselineAgent.agent.skills, identity.change.before) ||
+      !isDeepStrictEqual(currentAgent.agent.skills, identity.change.before) ||
+      !isDeepStrictEqual(projectedAgent.agent.skills, identity.change.after)
+    ) {
+      throw new Error("child-specialist Agent Skill target changed");
+    }
+    currentAgent.agent.skills = [...projectedAgent.agent.skills];
+  }
+  currentChild.child.workflow = JSON.stringify(currentChildSource);
+  return JSON.stringify(current);
+}
+
 function rebaseModelRoute(
   currentSource: string,
   ordinaryBaselineSource: string,
@@ -619,6 +765,21 @@ function requiredAgentSourceNode(source: WorkflowSource, nodeId: string) {
   const node = source.nodes.find((item) => item.id === nodeId);
   if (node?.type !== "agent") throw new Error("candidate target is not an agent node");
   return node;
+}
+
+type EmbeddedChildSourceNode = Extract<WorkflowSource["nodes"][number], { type: "child" }> & {
+  child: { resultNodeId: string; workflow: string };
+};
+
+function requiredEmbeddedChildSource(
+  source: WorkflowSource,
+  nodeId: string,
+): EmbeddedChildSourceNode {
+  const node = source.nodes.find((item) => item.id === nodeId);
+  if (node?.type !== "child" || !("workflow" in node.child)) {
+    throw new Error("candidate target is not an embedded child node");
+  }
+  return node as EmbeddedChildSourceNode;
 }
 
 function assertPromptOnlyChange(

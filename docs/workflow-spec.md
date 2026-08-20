@@ -1686,10 +1686,97 @@ the exact ordered `modelRoutes` pair. Execution receives only the selected profi
 Flow does not discover models or choose a route from task content. It does not route child workflows
 or change model verifiers. It does not balance traffic, retry another route, or use a fallback.
 
+### Child-specialist candidates
+
+A child-specialist candidate is an inert document that changes one agent in one embedded child
+workflow:
+
+```yaml
+apiVersion: flow.synapti.ai/v1alpha1
+kind: ChildSpecialistCandidate
+metadata: { id: stricter-review-specialist, version: 1.0.0 }
+scope:
+  kind: workflow-child-specialist
+  workflowId: specialist-harness
+  childNodeId: delegate-review
+  agentNodeId: review
+baseline:
+  workflow:
+    path: baseline.workflow.yaml
+    sourceSha256: <64-lowercase-hex>
+    workflowDigest: <64-lowercase-hex>
+  child:
+    sourceSha256: <64-lowercase-hex>
+    workflowDigest: <64-lowercase-hex>
+  packageClosureDigest: <64-lowercase-hex>
+change:
+  kind: instructions
+  beforeSha256: <64-lowercase-hex>
+  value: Review the implementation and identify unsupported claims.
+```
+
+The source is at most 1 MiB. The declared baseline path and the public candidate provenance are
+canonical portable relative paths. The metadata id, workflow id, child node id, agent node id, and
+Agent Skill names use canonical identifiers. Replacement instructions are nonblank and at most
+262,144 UTF-8 bytes.
+
+The `change` value is one strict discriminated union:
+
+- `instructions` contains the exact baseline SHA-256 and one replacement value.
+- `skills` contains exact ordered `before` and `after` lists. Each list contains at most 32 unique
+  names. The lists must differ. Every name in `after` must identify an Agent Skill already present in
+  the complete immutable package closure.
+
+Unknown fields, both axes, a no-op, duplicate skill names, missing baseline identity, or an
+undeclared package reject. The source cannot add package bytes or change package authority.
+
+Admission observes every lexical ancestor and opens the candidate and baseline with no-follow
+semantics. Each regular file uses bounded chunked reads and pre-read, post-read, and final identity
+checks. Fatal UTF-8 decoding applies. Cancellation keeps the exact caller reason at each asynchronous
+boundary. Public admission errors contain one fixed stage without a path, source value, private
+cause, or rejected instructions.
+
+The baseline must compile to the declared root workflow. The selected root node must be an embedded
+child, not a workflow-package reference. Its exact source and compiled digest must match. The
+selected child node must be an agent, and the declared before value must match both source and
+compiled state.
+
+Projection changes only `agent.prompt` or `agent.skills` on that child agent. Flow serializes the
+child into the parent and recompiles the complete workflow tree. It restores the declared field and
+the derived child digest before it compares every other compiled field. The complete projected root
+workflow is at most 8 MiB.
+
+The version-1 public identity binds these values:
+
+- candidate id, version, source provenance, and source digest.
+- root and embedded-child source and compiled digests.
+- workflow, child, and agent scope plus the complete package-closure digest.
+- declared before and after identities plus projected root source and workflow digests.
+- canonical candidate digest.
+
+For an instructions change, the public before and after identities contain only UTF-8 byte counts
+and SHA-256 digests. A skill change contains the bounded ordered names. The identity contains no
+workflow body, instructions, package content, provider response, absolute path, or nested cause.
+
+`flow candidate validate <candidate.yaml>` checks the candidate against the current effective
+harness package closure. `flow candidate compose <candidate.yaml>` rebases only the declared axis
+onto the exact current effective head and stages a complete effective artifact. A stale target or
+closure rejects. Direct activation of the ordinary document rejects.
+
+Paired evaluation selects the artifact's complete baseline and candidate states. All non-candidate
+controls and package bytes remain equal. Activation and rollback use the effective harness store.
+Runs persist the selected complete state. Attached, detached, and child execution use that state.
+Resume, recovery, replay, inspect, and export don't reopen the ordinary candidate or a live package
+catalog.
+
+This candidate doesn't change graph topology, dependencies, results, budgets, models, tools, tool
+packages, commands, approvals, verifiers, policy, retries, sandboxing, or workflow packages. It
+doesn't add runtime discovery, delegation, handoff, fallback, memory, or child workspace promotion.
+
 ### Adaptive activation
 
-An operator can activate a prompt, Agent Skill resource, Agent Skill package, or composed model-route
-candidate after a complete superior evaluation.
+An operator can activate a prompt, Agent Skill resource, Agent Skill package, composed model-route,
+or composed child-specialist candidate after a complete superior evaluation.
 Preview creates a proposal without changing state:
 
 ```text
@@ -1709,9 +1796,10 @@ snapshot binds the unchanged workflow and exact selected skill package. An Agent
 snapshot binds the projected workflow and generated package. Its paired baseline binds the original
 workflow and no package.
 
-A composed model-route artifact uses the effective harness store. Preview and apply require the
-exact route pair from the evaluation header. The complete selected workflow becomes durable before
-the effective head changes.
+A composed model-route or child-specialist artifact uses the effective harness store. Model-route
+preview and apply require the exact route pair from the evaluation header. Child-specialist preview
+and apply require the exact candidate and both complete state identities. The complete selected
+workflow becomes durable before the effective head changes.
 
 A workflow source is at most 8 MiB. The complete capability snapshot is at most 16 MiB.
 
@@ -1760,11 +1848,14 @@ or package, change active runs, or delete artifacts.
 - Agent mutation is limited to exact single-file edit of an existing UTF-8 file plus explicitly selected, argv-only sandboxed commands. No direct create, delete, rename, shell, network, fuzzy patch, environment/cwd override, interactive process, background job, or multi-file transaction tool is exposed.
 - No opaque continuation after a process dies during an in-flight Pi tool call. Live approval works only while the owning attached process or detached worker retains that Pi session. A fresh retry is a new attempt and is allowed only by the persisted proof gate; it is not a substitute for restoring a live session.
 - Model verifiers, including packaged rubrics, are zero-tool and evidence-bounded but remain probabilistic and not prompt-injection-proof. Arbitrary evaluator code and reward/evaluation environments are not supported.
-- Adaptive candidates support root-agent prompt overlays, selected-resource changes in one existing
-  Agent Skill, one new inert Agent Skill package, and one static root-agent model route. One root
-  agent selects the new package or route. Automatic skill, memory, sub-agent, dynamic routing,
-  multi-node routing, and route fallback remain unavailable. Package
-  installation, signing, publication, executable generation, and multi-skill candidates remain
-  unavailable. Traffic splitting and staged rollout also remain unavailable.
+- Adaptive candidates support root-agent prompt overlays and selected-resource changes in one
+  existing Agent Skill. They also support one new inert Agent Skill package and one static
+  root-agent model route. One embedded child agent can receive an instructions or
+  existing-skill-selection change.
+
+- Automatic skill selection, memory, dynamic delegation, remote agents, and dynamic routing remain
+  unavailable. Multi-node routing and route fallback remain unavailable. Package installation,
+  signing, publication, executable generation, and multi-skill candidates remain unavailable.
+  Traffic splitting and staged rollout remain unavailable.
 - No prepaid hard model-cost cap, provider invoice reconciliation, or CPU/memory/disk quota. `maxArtifactBytes` bounds logical retained evidence, not physical storage, spill, or disk usage. Per-run graph-node concurrency, detached worker count, and queue depth are separate bounded controls.
 - No schema migration path is promised while the format remains `v1alpha1`.

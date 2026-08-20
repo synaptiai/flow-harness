@@ -9,6 +9,7 @@ import {
   MAX_EFFECTIVE_HARNESS_CANDIDATE_BYTES,
 } from "../../../../src/domain/adaptation/effective-harness-candidate.js";
 import { admitLocalAdaptationCandidate } from "../../../../src/infrastructure/fs/local-adaptation-candidate.js";
+import { childSpecialistCandidateFixture } from "../../../fixtures/child-specialist-candidate.js";
 import { effectiveHarnessCandidateArtifactFixture } from "../../../fixtures/effective-harness-evaluation.js";
 import { modelRoutingCandidateSourceFixture } from "../../../fixtures/model-routing-candidate.js";
 import { promptCandidateWorkflowText } from "../../../fixtures/prompt-candidate-generation.js";
@@ -22,6 +23,67 @@ afterEach(async () => {
 });
 
 describe("local adaptation candidate dispatch", () => {
+  it("dispatches a child-specialist candidate with its admitted package closure", async () => {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "flow-adaptation-candidate-")));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "specialist.candidate.yaml");
+    const baselinePath = join(directory, "baseline.workflow.yaml");
+    const fixture = childSpecialistCandidateFixture();
+    await writeFile(path, fixture.sourceText);
+    await writeFile(baselinePath, fixture.baselineText);
+
+    await expect(
+      admitLocalAdaptationCandidate(path, {
+        capabilityPackages: fixture.packages,
+      }),
+    ).resolves.toMatchObject({
+      kind: "child-specialist-candidate",
+      candidate: {
+        identity: fixture.projected.identity,
+        workflow: fixture.projected.workflow,
+      },
+    });
+    await expect(admitLocalAdaptationCandidate(path)).rejects.toThrow(
+      "child-specialist candidate requires an admitted package closure",
+    );
+  });
+
+  it("resolves child-specialist packages only after child discrimination", async () => {
+    const childDirectory = await realpath(
+      await mkdtemp(join(tmpdir(), "flow-adaptation-candidate-")),
+    );
+    const modelDirectory = await realpath(
+      await mkdtemp(join(tmpdir(), "flow-adaptation-candidate-")),
+    );
+    temporaryDirectories.push(childDirectory, modelDirectory);
+    const childPath = join(childDirectory, "specialist.candidate.yaml");
+    const modelPath = join(modelDirectory, "route.candidate.yaml");
+    const fixture = childSpecialistCandidateFixture();
+    const modelBaseline = promptCandidateWorkflowText();
+    await writeFile(childPath, fixture.sourceText);
+    await writeFile(join(childDirectory, "baseline.workflow.yaml"), fixture.baselineText);
+    await writeFile(modelPath, JSON.stringify(modelRoutingCandidateSourceFixture(modelBaseline)));
+    await writeFile(join(modelDirectory, "baseline.workflow.yaml"), modelBaseline);
+    const resolvedIds: string[] = [];
+
+    await expect(
+      admitLocalAdaptationCandidate(childPath, {
+        resolveChildSpecialistPackages: async (source) => {
+          resolvedIds.push(source.metadata.id);
+          return fixture.packages;
+        },
+      }),
+    ).resolves.toMatchObject({ kind: "child-specialist-candidate" });
+    await expect(
+      admitLocalAdaptationCandidate(modelPath, {
+        resolveChildSpecialistPackages: async () => {
+          throw new Error("PRIVATE_RESOLVER_MUST_NOT_RUN");
+        },
+      }),
+    ).resolves.toMatchObject({ kind: "model-routing-candidate" });
+    expect(resolvedIds).toEqual([fixture.projected.identity.id]);
+  });
+
   it("dispatches one exact model-routing candidate and rejects replacement", async () => {
     const directory = await realpath(await mkdtemp(join(tmpdir(), "flow-adaptation-candidate-")));
     temporaryDirectories.push(directory);

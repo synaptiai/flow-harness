@@ -2,12 +2,34 @@ import { describe, expect, it } from "vitest";
 
 import { prepareEffectiveHarnessActivation } from "../../../src/application/prepare-effective-harness-activation.js";
 import {
+  childSpecialistEffectiveHarnessCandidateArtifactFixture,
   effectiveHarnessCandidateArtifactFixture,
   modelRoutingEffectiveHarnessCandidateArtifactFixture,
   superiorEffectiveHarnessEvaluation,
 } from "../../fixtures/effective-harness-evaluation.js";
 
 describe("effective harness activation preparation", () => {
+  it("binds one superior child-specialist evaluation to both complete states", () => {
+    const artifact = childSpecialistEffectiveHarnessCandidateArtifactFixture();
+    const stored = superiorEffectiveHarnessEvaluation(artifact);
+
+    expect(prepareEffectiveHarnessActivation({ artifact, stored })).toEqual({
+      artifact,
+      evaluation: {
+        id: stored.header.evaluationId,
+        planDigest: stored.header.planDigest,
+        terminalRecordDigest: stored.records.at(-1)?.recordDigest,
+        reportDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+    });
+
+    const changed = structuredClone(stored) as MutableStoredEvaluation;
+    requiredBinding(changed, 1).candidateDigest = "9".repeat(64);
+    expect(() => prepareEffectiveHarnessActivation({ artifact, stored: changed })).toThrowError(
+      expect.objectContaining({ code: "identity_mismatch" }),
+    );
+  });
+
   it("binds one superior complete evaluation to the exact artifact and state pair", () => {
     const artifact = effectiveHarnessCandidateArtifactFixture();
     const stored = superiorEffectiveHarnessEvaluation(artifact);

@@ -177,26 +177,35 @@ containment milestone. It is not VM-grade or multi-tenant isolation.
   *(Implemented with exact before and after tuples, paired profile controls, durable evaluation,
   reviewed effective-state activation, offline execution, and state-digest rollback.)*
 
-- Memory, sub-agent, dynamic routing, multi-node routing, and fallback candidates remain planned.
+- Flow can validate and compose one child-specialist candidate for one agent in one embedded child
+  workflow. *(Implemented for one instructions replacement or one exact selection of Agent Skills
+  already present in the immutable package closure. Complete-state paired evaluation, reviewed
+  activation, attached child execution, offline evidence, and state-digest rollback use the
+  existing effective harness.)*
+
+- Memory, dynamic delegation, remote agents, dynamic routing, multi-node routing, and fallback
+  candidates remain planned.
   Agent Skill installation, signing, publication, executable-resource generation, and multi-skill
   candidates remain planned.
 
-- Prompt, Agent Skill, and model-route candidates use the paired held-out and regression evaluation
-  gate. *(Implemented.)*
+- Prompt, Agent Skill, model-route, and child-specialist candidates use the paired held-out and
+  regression evaluation gate. *(Implemented.)*
 
 - Activation is versioned, reviewable, scoped, and rollbackable. *(Implemented with operator
   preview, exact apply, paired artifacts, and baseline or version rollback.)*
 
 - Reviewed changes compose into one complete effective harness state. *(Implemented for prompt,
-  Agent Skill resource, Agent Skill package, and model-route surfaces. Activation order retains
-  improvements. Runs store exact offline state, and rollback selects any retained state while
-  current policy remains separate.)*
+  Agent Skill resource, Agent Skill package, model-route, and child-specialist surfaces. Activation
+  order retains improvements. Runs store exact offline state, and rollback selects any retained
+  state while current policy remains separate.)*
 
 - Base safety, workflow semantics, and evaluator definitions remain immutable during a candidate
   run. *(Implemented for prompt projection, one-skill resource projection, and one new-skill
-  package projection and one exact model-route projection. Non-routing candidates cannot change
-  models. A route candidate changes only one root agent tuple. No candidate can change unrelated
-  graph, tool, package, policy, approval, budget, verifier, retry, or sandbox fields.)*
+  package projection, one exact model-route projection, and one declared child agent axis.
+  Non-routing candidates cannot change models. A route candidate changes only one root agent tuple.
+  A child-specialist candidate changes only instructions or an exact selection from the existing
+  package closure. No candidate can change unrelated graph, tool, package, policy, approval,
+  budget, verifier, retry, or sandbox fields.)*
 
 ## Product benchmark gate
 

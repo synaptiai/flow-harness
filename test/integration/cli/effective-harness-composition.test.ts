@@ -59,6 +59,10 @@ import {
 } from "../../fixtures/agent-skill-candidate-generation.js";
 import { agentSkillPackageActivationFixture } from "../../fixtures/agent-skill-package-activation.js";
 import {
+  childSpecialistCandidateFixture,
+  childSpecialistCandidateInstructions,
+} from "../../fixtures/child-specialist-candidate.js";
+import {
   agentSkillPackageCandidateGenerationFixture,
   agentSkillPackageGenerationResponse,
 } from "../../fixtures/agent-skill-package-candidate-generation.js";
@@ -79,6 +83,148 @@ afterEach(async () => {
 });
 
 describe("effective harness composition CLI", () => {
+  it("validates and stages a child-specialist candidate from the exact active closure", async () => {
+    const project = await realpath(await mkdtemp(join(tmpdir(), "flow-child-compose-")));
+    temporaryDirectories.push(project);
+    await mkdir(join(project, ".flow"));
+    const fixture = childSpecialistCandidateFixture("instructions");
+    const candidatePath = join(project, "specialist.candidate.yaml");
+    const baselinePath = join(project, "baseline.workflow.yaml");
+    await writeFile(candidatePath, fixture.sourceText);
+    await writeFile(baselinePath, fixture.baselineText);
+
+    const scopeDigest = await calculateLocalEffectiveHarnessScopeDigest(project);
+    const baseline = createEffectiveHarnessState({
+      scopeDigest,
+      workflowSource: fixture.baselineText,
+      packages: fixture.packages,
+    });
+    const head = createEffectiveHarnessHeadIdentity({
+      scopeDigest,
+      workflowId: baseline.workflowId,
+      generation: 1,
+      activationDigest: "a".repeat(64),
+      transitionDigest: "b".repeat(64),
+      stateDigest: baseline.stateDigest,
+    });
+    const projected = projectEffectiveHarnessCandidate({
+      baseline,
+      candidate: {
+        kind: "child-specialist",
+        projection: fixture.projected,
+        baselineWorkflowSource: fixture.baselineText,
+      },
+    });
+    const artifact = createEffectiveHarnessCandidateArtifact({
+      baselineHead: head,
+      baselineState: baseline,
+      candidateState: projected.state,
+      candidate: fixture.projected.identity,
+    });
+    const store = new LocalEffectiveHarnessStore(project, {
+      readInitialHead: async () => head,
+    });
+    const prepared = prepareEffectiveHarnessActivation({
+      artifact,
+      stored: superiorEffectiveHarnessEvaluation(artifact),
+    });
+    const activation = await store.previewActivate({ prepared, actor: "operator:test" });
+    await store.applyActivate({
+      prepared,
+      actor: "operator:test",
+      expectedDigest: activation.proposalDigest,
+    });
+    const rollback = {
+      workflowId: baseline.workflowId,
+      targetStateDigest: baseline.stateDigest,
+      actor: "operator:test",
+    };
+    const rollbackProposal = await store.previewRollback(rollback);
+    await store.applyRollback({
+      ...rollback,
+      expectedDigest: rollbackProposal.proposalDigest,
+    });
+
+    const validation = captureIo();
+    expect(
+      await main(["candidate", "validate", candidatePath], validation.io, {
+        cwd: project,
+        loadConfig: async () => effectiveConfig(project),
+      }),
+      validation.stderr.join("\n"),
+    ).toBe(0);
+    expect(JSON.parse(validation.stdout.join("\n"))).toMatchObject({
+      valid: true,
+      candidate: {
+        kind: "child-specialist-candidate",
+        scope: {
+          workflowId: "specialist-harness",
+          childNodeId: "delegate-review",
+          agentNodeId: "review",
+        },
+        change: { kind: "instructions" },
+      },
+    });
+
+    const directActivation = captureIo();
+    expect(
+      await main(
+        [
+          "candidate",
+          "activate",
+          candidatePath,
+          "--evaluation",
+          "PRIVATE_MISSING_EVALUATION",
+          "--actor",
+          "operator:test",
+          "--dry-run",
+        ],
+        directActivation.io,
+        { cwd: project, loadConfig: async () => effectiveConfig(project) },
+      ),
+    ).toBe(2);
+    expect(directActivation.stderr[0]?.split("\n")[0]).toBe(
+      "child-specialist candidate activation requires a composed effective harness candidate",
+    );
+    expect([...directActivation.stdout, ...directActivation.stderr].join("\n")).not.toContain(
+      "PRIVATE_MISSING_EVALUATION",
+    );
+
+    const output = captureIo();
+    expect(
+      await main(["candidate", "compose", candidatePath], output.io, {
+        cwd: project,
+        loadConfig: async () => effectiveConfig(project),
+      }),
+      output.stderr.join("\n"),
+    ).toBe(0);
+    const composed = JSON.parse(output.stdout.join("\n"));
+    expect(composed).toMatchObject({
+      composed: true,
+      candidate: {
+        surface: "child-specialist",
+        candidate: fixture.projected.identity,
+      },
+      staged: {
+        path: expect.stringMatching(/^\.flow\/effective-harness\/artifacts\/[a-f0-9]{64}\.json$/),
+      },
+    });
+    expect([...validation.stdout, ...output.stdout, ...output.stderr].join("\n")).not.toContain(
+      childSpecialistCandidateInstructions,
+    );
+
+    await Promise.all([rm(candidatePath), rm(baselinePath)]);
+    await expect(
+      admitLocalEffectiveHarnessCandidate(join(project, composed.staged.path)),
+    ).resolves.toMatchObject({
+      artifact: {
+        surface: "child-specialist",
+        candidate: fixture.projected.identity,
+        baselineState: { stateDigest: baseline.stateDigest },
+      },
+    });
+  });
+
   it("stages one complete prompt candidate against the exact active baseline", async () => {
     const project = await realpath(await mkdtemp(join(tmpdir(), "flow-effective-compose-")));
     temporaryDirectories.push(project);

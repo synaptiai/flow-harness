@@ -6,9 +6,16 @@ import { resolve } from "node:path";
 import { parseDocument } from "yaml";
 
 import { MAX_AGENT_SKILL_CANDIDATE_BYTES } from "../../domain/adaptation/agent-skill-candidate.js";
+import { MAX_CHILD_SPECIALIST_CANDIDATE_BYTES } from "../../domain/adaptation/child-specialist-candidate.js";
+import type { ChildSpecialistCandidateSource } from "../../domain/adaptation/child-specialist-candidate.js";
 import { MAX_EFFECTIVE_HARNESS_CANDIDATE_BYTES } from "../../domain/adaptation/effective-harness-candidate.js";
 import { MAX_MODEL_ROUTING_CANDIDATE_BYTES } from "../../domain/adaptation/model-routing-candidate.js";
 import { MAX_PROMPT_CANDIDATE_BYTES } from "../../domain/adaptation/prompt-candidate.js";
+import type { CapabilityPackageSnapshot } from "../../domain/capability/agent-skills.js";
+import {
+  type AdmittedLocalChildSpecialistCandidate,
+  admitLocalChildSpecialistCandidate,
+} from "./local-child-specialist-candidate.js";
 import {
   type AdmittedLocalAgentSkillCandidate,
   admitLocalAgentSkillCandidate,
@@ -32,6 +39,7 @@ import {
 
 const MAX_LOCAL_ADAPTATION_CANDIDATE_BYTES = Math.max(
   MAX_AGENT_SKILL_CANDIDATE_BYTES,
+  MAX_CHILD_SPECIALIST_CANDIDATE_BYTES,
   MAX_EFFECTIVE_HARNESS_CANDIDATE_BYTES,
   MAX_MODEL_ROUTING_CANDIDATE_BYTES,
   MAX_PROMPT_CANDIDATE_BYTES,
@@ -39,6 +47,10 @@ const MAX_LOCAL_ADAPTATION_CANDIDATE_BYTES = Math.max(
 const fatalUtf8Decoder = new TextDecoder("utf-8", { fatal: true });
 
 export type AdmittedLocalAdaptationCandidate =
+  | {
+      readonly kind: "child-specialist-candidate";
+      readonly candidate: AdmittedLocalChildSpecialistCandidate;
+    }
   | {
       readonly kind: "prompt-candidate";
       readonly candidate: AdmittedLocalPromptCandidate;
@@ -62,6 +74,12 @@ export type AdmittedLocalAdaptationCandidate =
 
 export interface LocalAdaptationCandidateOptions {
   readonly signal?: AbortSignal;
+  /** Exact already-admitted package closure required by child-specialist projection. */
+  readonly capabilityPackages?: readonly CapabilityPackageSnapshot[];
+  /** Resolve the immutable active package closure only after child-specialist discrimination. */
+  readonly resolveChildSpecialistPackages?:
+    | ((source: ChildSpecialistCandidateSource) => Promise<readonly CapabilityPackageSnapshot[]>)
+    | undefined;
   /** @internal Deterministic discriminator race and cancellation seam. */
   readonly afterDiscriminatorStat?: () => void | Promise<void>;
   /** @internal Deterministic nested-admission cancellation seam. */
@@ -150,6 +168,24 @@ export async function admitLocalAdaptationCandidate(
     });
     return Object.freeze({ kind, candidate });
   }
+  if (kind === "ChildSpecialistCandidate") {
+    if (
+      options.capabilityPackages === undefined &&
+      options.resolveChildSpecialistPackages === undefined
+    ) {
+      throw new Error("child-specialist candidate requires an admitted package closure");
+    }
+    const candidate = await admitLocalChildSpecialistCandidate(absolutePath, {
+      ...(options.capabilityPackages === undefined ? {} : { packages: options.capabilityPackages }),
+      ...(options.resolveChildSpecialistPackages === undefined
+        ? {}
+        : { resolvePackages: options.resolveChildSpecialistPackages }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+      expectedSource: { identity: sourceIdentity, sha256: sourceSha256 },
+    });
+    options.signal?.throwIfAborted();
+    return Object.freeze({ kind: "child-specialist-candidate", candidate });
+  }
   if (kind === "ModelRoutingCandidate") {
     const candidate = await admitLocalModelRoutingCandidate(absolutePath, {
       ...(options.signal === undefined ? {} : { signal: options.signal }),
@@ -205,6 +241,7 @@ function parseCandidateKind(
 ):
   | "PromptCandidate"
   | "AgentSkillCandidate"
+  | "ChildSpecialistCandidate"
   | "ModelRoutingCandidate"
   | "effective-harness-candidate" {
   const document = parseDocument(source, {
@@ -222,6 +259,7 @@ function parseCandidateKind(
     "kind" in value &&
     (value.kind === "PromptCandidate" ||
       value.kind === "AgentSkillCandidate" ||
+      value.kind === "ChildSpecialistCandidate" ||
       value.kind === "ModelRoutingCandidate" ||
       value.kind === "effective-harness-candidate")
   ) {

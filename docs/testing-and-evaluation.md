@@ -384,6 +384,13 @@ shared non-route controls. Runtime tests observe the selected route in attached 
 detached worker without live candidate sources. CLI tests cover offline inspection, export,
 activation, public-output privacy, and state-digest rollback.
 
+Child-specialist tests bind one embedded child node and one child agent. They also bind the complete
+parent and child workflow identities and the immutable package-closure digest. The tests cover exact
+instructions and skill-selection bounds, no-op and multi-axis rejection, and undeclared skills.
+They cover stable no-follow source admission, source races, and cancellation precedence. They also
+cover complete-state composition, paired durable evidence, activation, rollback, attached child
+execution, live-source removal, and content-free public output.
+
 Runtime tests remove the live effective store. They exercise attached resume, detached worker
 execution, and child capability binding. They also cover replay and current-policy rejection from
 the frozen snapshot.

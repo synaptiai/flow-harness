@@ -8,6 +8,7 @@ import {
   calculateCapabilitySnapshotDigest,
 } from "../capability/agent-skills.js";
 import type { CompiledWorkflow } from "../workflow/types.js";
+import { parseWorkflowSourceText } from "../workflow/compiler.js";
 import {
   type AgentSkillCandidateIdentity,
   parseAgentSkillCandidateIdentity,
@@ -17,7 +18,12 @@ import {
   parseAgentSkillPackageCandidateIdentity,
 } from "./agent-skill-package-candidate.js";
 import {
+  type ChildSpecialistCandidateIdentity,
+  parseChildSpecialistCandidateIdentity,
+} from "./child-specialist-candidate.js";
+import {
   compileEffectiveHarnessState,
+  effectiveHarnessWorkflowSource,
   type EffectiveHarnessHeadIdentity,
   type EffectiveHarnessState,
   parseEffectiveHarnessHeadIdentity,
@@ -45,7 +51,13 @@ const artifactSchema = z
     kind: z.literal("effective-harness-candidate"),
     scopeDigest: sha256Schema,
     workflowId: identifierSchema,
-    surface: z.enum(["prompt", "agent-skill-resource", "agent-skill-package", "model-routing"]),
+    surface: z.enum([
+      "prompt",
+      "agent-skill-resource",
+      "agent-skill-package",
+      "model-routing",
+      "child-specialist",
+    ]),
     candidate: z.unknown(),
     baselineHead: z.unknown(),
     baselineState: z.unknown(),
@@ -58,13 +70,15 @@ export type EffectiveHarnessCandidateIdentity =
   | PromptCandidateIdentity
   | AgentSkillCandidateIdentity
   | AgentSkillPackageCandidateIdentity
-  | ModelRoutingCandidateIdentity;
+  | ModelRoutingCandidateIdentity
+  | ChildSpecialistCandidateIdentity;
 
 export type EffectiveHarnessCandidateSurface =
   | "prompt"
   | "agent-skill-resource"
   | "agent-skill-package"
-  | "model-routing";
+  | "model-routing"
+  | "child-specialist";
 
 export interface EffectiveHarnessCandidateArtifact {
   readonly version: 1;
@@ -262,6 +276,13 @@ function parseCandidate(input: unknown): EffectiveHarnessCandidateIdentity {
       throw invalidCandidateIdentity();
     }
   }
+  if (isObjectWithKind(input, "child-specialist-candidate")) {
+    try {
+      return parseChildSpecialistCandidateIdentity(input);
+    } catch {
+      throw invalidCandidateIdentity();
+    }
+  }
   try {
     return parsePromptCandidateIdentity(input);
   } catch {
@@ -297,6 +318,10 @@ function assertSurfaceChange(
     }
     if (surface === "model-routing" && isModelRoutingCandidate(candidate)) {
       assertModelRoutingChange(candidate, baseline, projected);
+      return;
+    }
+    if (surface === "child-specialist" && isChildSpecialistCandidate(candidate)) {
+      assertChildSpecialistChange(candidate, baseline, projected);
       return;
     }
   } catch {
@@ -423,6 +448,67 @@ function assertModelRoutingChange(
   assertNormalizedWorkflow(normalized, before);
 }
 
+function assertChildSpecialistChange(
+  candidate: ChildSpecialistCandidateIdentity,
+  baseline: EffectiveHarnessState,
+  projected: EffectiveHarnessState,
+): void {
+  if (!isDeepStrictEqual(normalizeJson(baseline.packages), normalizeJson(projected.packages))) {
+    throw new Error("child-specialist package state changed");
+  }
+  const before = compileStateWorkflow(baseline);
+  const after = compileStateWorkflow(projected);
+  const normalized = structuredClone(after);
+  const beforeChild = requiredChildNode(before, candidate.scope.childNodeId);
+  const afterChild = requiredChildNode(normalized, candidate.scope.childNodeId);
+  const baselineSource = parseWorkflowSourceText(
+    effectiveHarnessWorkflowSource(baseline),
+    "effective harness child-specialist baseline",
+  );
+  const beforeSourceChild = baselineSource.nodes.find(
+    (node) => node.id === candidate.scope.childNodeId,
+  );
+  if (beforeSourceChild?.type !== "child" || !("workflow" in beforeSourceChild.child)) {
+    throw new Error("child-specialist baseline has no exact embedded child source");
+  }
+  if (
+    candidate.baseline.workflow.sourceSha256 !== baseline.workflow.sha256 ||
+    candidate.baseline.workflow.workflowDigest !== baseline.workflow.workflowDigest ||
+    candidate.baseline.child.sourceSha256 !== sha256(beforeSourceChild.child.workflow) ||
+    candidate.baseline.child.workflowDigest !== beforeChild.child.workflowDigest ||
+    candidate.baseline.packageClosureDigest !==
+      calculateCapabilitySnapshotDigest(baseline.packages) ||
+    candidate.projectedWorkflow.sourceSha256 !== projected.workflow.sha256 ||
+    candidate.projectedWorkflow.workflowDigest !== projected.workflow.workflowDigest
+  ) {
+    throw new Error("child-specialist workflow identity mismatch");
+  }
+  const beforeAgent = requiredAgentNode(beforeChild.child.workflow, candidate.scope.agentNodeId);
+  const afterAgent = requiredAgentNode(afterChild.child.workflow, candidate.scope.agentNodeId);
+  if (candidate.change.kind === "instructions") {
+    if (
+      Buffer.byteLength(beforeAgent.agent.prompt, "utf8") !== candidate.change.before.bytes ||
+      sha256(beforeAgent.agent.prompt) !== candidate.change.before.sha256 ||
+      Buffer.byteLength(afterAgent.agent.prompt, "utf8") !== candidate.change.after.bytes ||
+      sha256(afterAgent.agent.prompt) !== candidate.change.after.sha256
+    ) {
+      throw new Error("child-specialist instructions identity mismatch");
+    }
+    (afterAgent.agent as { prompt: string }).prompt = beforeAgent.agent.prompt;
+  } else {
+    if (
+      !isDeepStrictEqual(beforeAgent.agent.skills, candidate.change.before) ||
+      !isDeepStrictEqual(afterAgent.agent.skills, candidate.change.after)
+    ) {
+      throw new Error("child-specialist Agent Skill identity mismatch");
+    }
+    (afterAgent.agent as { skills: readonly string[] }).skills = [...beforeAgent.agent.skills];
+  }
+  (afterChild.child as { workflowDigest: string }).workflowDigest =
+    beforeChild.child.workflowDigest;
+  assertNormalizedWorkflow(normalized, before);
+}
+
 function assertOtherPackagesEqual(
   baseline: readonly CapabilityPackageSnapshot[],
   projected: readonly CapabilityPackageSnapshot[],
@@ -462,6 +548,14 @@ function requiredAgentNode(workflow: CompiledWorkflow, nodeId: string) {
   return node;
 }
 
+function requiredChildNode(workflow: CompiledWorkflow, nodeId: string) {
+  const node = workflow.nodes.find((item) => item.id === nodeId);
+  if (node?.type !== "child") {
+    throw new Error("effective harness state has no exact selected child");
+  }
+  return node;
+}
+
 function assertNormalizedWorkflow(projected: CompiledWorkflow, baseline: CompiledWorkflow): void {
   if (!isDeepStrictEqual(normalizeJson(projected), normalizeJson(baseline))) {
     throw new Error("candidate changed immutable workflow authority");
@@ -477,7 +571,9 @@ function candidateSurface(
       ? "agent-skill-package"
       : isModelRoutingCandidate(candidate)
         ? "model-routing"
-        : "prompt";
+        : isChildSpecialistCandidate(candidate)
+          ? "child-specialist"
+          : "prompt";
 }
 
 function candidateWorkflowId(candidate: EffectiveHarnessCandidateIdentity): string {
@@ -513,6 +609,12 @@ function isModelRoutingCandidate(
   candidate: EffectiveHarnessCandidateIdentity,
 ): candidate is ModelRoutingCandidateIdentity {
   return "kind" in candidate && candidate.kind === "model-routing-candidate";
+}
+
+function isChildSpecialistCandidate(
+  candidate: EffectiveHarnessCandidateIdentity,
+): candidate is ChildSpecialistCandidateIdentity {
+  return "kind" in candidate && candidate.kind === "child-specialist-candidate";
 }
 
 function isObjectWithKind(input: unknown, kind: string): boolean {

@@ -474,6 +474,68 @@ The public evidence omits workflow bodies, credentials, and provider responses. 
 receives one selected route, not the pair. Flow does not discover models, choose routes dynamically,
 or use fallbacks.
 
+### Child-specialist candidates
+
+A `ChildSpecialistCandidate` changes one existing agent in one embedded child workflow. It declares
+the root workflow, child node, child agent, complete baseline identities, immutable package-closure
+digest, and exactly one change axis:
+
+```yaml
+apiVersion: flow.synapti.ai/v1alpha1
+kind: ChildSpecialistCandidate
+metadata: { id: stricter-review-specialist, version: 1.0.0 }
+scope:
+  kind: workflow-child-specialist
+  workflowId: specialist-harness
+  childNodeId: delegate-review
+  agentNodeId: review
+baseline:
+  workflow:
+    path: baseline.workflow.yaml
+    sourceSha256: <64-lowercase-hex>
+    workflowDigest: <64-lowercase-hex>
+  child:
+    sourceSha256: <64-lowercase-hex>
+    workflowDigest: <64-lowercase-hex>
+  packageClosureDigest: <64-lowercase-hex>
+change:
+  kind: instructions
+  beforeSha256: <64-lowercase-hex>
+  value: Review the implementation and identify unsupported claims.
+```
+
+The alternative `skills` change declares exact ordered `before` and `after` lists. Every selected
+name must already exist in the current effective state's immutable Agent Skill closure. The change
+doesn't install, generate, fetch, or modify package bytes.
+
+Admission reopens the candidate and sibling baseline with bounded no-follow reads. It checks the
+root workflow, embedded child workflow, target agent, selected axis, and package closure. It rejects
+a packaged child because the workflow package owns those immutable bytes. It also rejects a no-op,
+both axes, an undeclared skill, a stale identity, or any unrelated root or child change.
+
+The candidate source is at most 1 MiB. Replacement instructions are nonblank and at most 262,144
+UTF-8 bytes. A skill list has at most 32 unique canonical names. Flow recompiles the complete parent
+and child tree and accepts only the declared field difference.
+
+Use `flow candidate validate <candidate.yaml>` against the current effective harness. Then use
+`flow candidate compose <candidate.yaml>` to stage one complete effective harness artifact. Direct
+activation of the ordinary child-specialist document fails.
+
+Paired evaluation selects the staged artifact as the baseline and candidate profiles. Both profiles
+use the same tasks, fixtures, seeds, model controls, budgets, network denial, retries, order,
+verification, and immutable package bytes. Only the declared child axis differs. A complete superior
+result can enter the existing effective-harness preview, apply, and state-digest rollback flow.
+
+The public identity names the workflow, child, agent, axis, package-closure digest, complete state
+digests, and candidate digest. For instructions, it contains only UTF-8 byte counts and SHA-256
+digests. It contains no instructions, workflow body, package content, absolute path, provider
+response, or nested error cause. Inspection, export, attached or detached execution, recovery, and
+replay use durable state without reopening the candidate or a live skill catalog.
+
+This surface doesn't add model-directed delegation, remote agents, session memory, dynamic routing,
+fallbacks, or child workspace promotion. The compiled parent graph continues to decide when the
+child runs and which typed result it returns.
+
 ## Activation gate
 
 ### Review workflow
@@ -509,7 +571,9 @@ Flow stores the plan digest, terminal record digest, report digest, release crit
 comparison result.
 
 Model-route activation also requires the exact ordered route controls stored in the evaluation.
-The controls must match the composed artifact before preview and again before apply.
+The controls must match the composed artifact before preview and again before apply. A
+child-specialist activation uses the same complete-state proof and requires the evaluation's exact
+child candidate and state identities.
 
 The activation proof contains no task text, fixture path, assertion, holdout identity, trial record,
 or run identifier. It contains aggregate comparison values only.

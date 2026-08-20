@@ -40,6 +40,7 @@ import { agentSkillActivationInput } from "../../fixtures/agent-skill-activation
 import { agentSkillPackageActivationFixture } from "../../fixtures/agent-skill-package-activation.js";
 import { modelRoutingCandidateFixture } from "../../fixtures/model-routing-candidate.js";
 import { promptActivationInput } from "../../fixtures/prompt-activation.js";
+import { childSpecialistCandidateFixture } from "../../fixtures/child-specialist-candidate.js";
 
 const scopeDigest = "a".repeat(64);
 
@@ -176,6 +177,49 @@ describe("effective harness candidate baseline admission", () => {
 });
 
 describe("effective harness candidate projection", () => {
+  it("rebases one child-specialist axis while retaining prior effective state", () => {
+    const fixture = childSpecialistCandidateFixture("instructions");
+    const currentSource = JSON.parse(fixture.baselineText) as {
+      metadata: { description?: string };
+    };
+    currentSource.metadata.description = "Previously activated harness description.";
+    const baseline = createEffectiveHarnessState({
+      scopeDigest,
+      workflowSource: JSON.stringify(currentSource),
+      packages: fixture.packages,
+    });
+
+    const projected = projectEffectiveHarnessCandidate({
+      baseline,
+      candidate: {
+        kind: "child-specialist",
+        projection: fixture.projected,
+        baselineWorkflowSource: fixture.baselineText,
+      },
+    });
+
+    expect(projected.delta).toEqual({
+      surface: "child-specialist",
+      candidateKind: "child-specialist-candidate",
+      candidateDigest: fixture.projected.identity.candidateDigest,
+      beforeStateDigest: baseline.stateDigest,
+      afterStateDigest: projected.state.stateDigest,
+    });
+    expect(projected.state.packages).toEqual(baseline.packages);
+    const source = JSON.parse(effectiveHarnessWorkflowSource(projected.state)) as {
+      metadata: { description?: string };
+      nodes: { id: string; child?: { workflow?: string } }[];
+    };
+    expect(source.metadata.description).toBe("Previously activated harness description.");
+    const selected = source.nodes.find((node) => node.id === "delegate-review");
+    const child = JSON.parse(selected?.child?.workflow ?? "null") as {
+      nodes: { id: string; agent?: { prompt?: string } }[];
+    };
+    expect(child.nodes.find((node) => node.id === "review")?.agent?.prompt).toBe(
+      "Review the implementation and identify unsupported claims.",
+    );
+  });
+
   it("rebases one reviewed model route while retaining composed prompt and package state", () => {
     const skill = agentSkillActivationInput("baseline");
     const baseline = createEffectiveHarnessState({

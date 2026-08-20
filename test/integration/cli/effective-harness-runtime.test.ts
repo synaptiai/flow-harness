@@ -39,9 +39,11 @@ import {
 import { LocalEvaluationStore } from "../../../src/infrastructure/fs/local-evaluation-store.js";
 import { LocalPromptActivationStore } from "../../../src/infrastructure/fs/local-prompt-activation-store.js";
 import {
+  childSpecialistEffectiveHarnessCandidateArtifactFixture,
   effectiveHarnessCandidateArtifactFixture,
   superiorEffectiveHarnessEvaluation,
 } from "../../fixtures/effective-harness-evaluation.js";
+import { childSpecialistCandidateInstructions } from "../../fixtures/child-specialist-candidate.js";
 import { modelRoutingCandidateSourceFixture } from "../../fixtures/model-routing-candidate.js";
 import { promptActivationInput } from "../../fixtures/prompt-activation.js";
 
@@ -54,6 +56,72 @@ afterEach(async () => {
 });
 
 describe("effective harness runtime CLI", () => {
+  it("runs an activated child specialist from immutable state without live candidate input", async () => {
+    const project = await temporaryProject();
+    const runsDirectory = join(project, "runs");
+    const artifact = childSpecialistEffectiveHarnessCandidateArtifactFixture(
+      await calculateLocalEffectiveHarnessScopeDigest(project),
+    );
+    await activateArtifact(project, artifact);
+    const candidatePath = join(project, "PRIVATE_SPECIALIST_CANDIDATE");
+    const baselinePath = join(project, "PRIVATE_SPECIALIST_BASELINE");
+    await writeFile(candidatePath, childSpecialistCandidateInstructions);
+    await writeFile(baselinePath, "PRIVATE_BASELINE_CONTENT");
+    await Promise.all([rm(candidatePath), rm(baselinePath)]);
+    const observed: Array<{
+      readonly id: string;
+      readonly prompt: string;
+      readonly skills: string[];
+    }> = [];
+
+    const output = captureIo();
+    const exitCode = await main(
+      [
+        "run",
+        `activation:${artifact.workflowId}`,
+        "--run-id",
+        "child-specialist-runtime",
+        "--runs-dir",
+        runsDirectory,
+      ],
+      output.io,
+      dependencies(project, {
+        execute: async (node, context) => {
+          if (node.type !== "agent" || context.capabilitySnapshot === undefined) {
+            throw new Error("child-specialist runtime expected only Agent execution");
+          }
+          observed.push({
+            id: node.id,
+            prompt: node.agent.prompt,
+            skills: [...node.agent.skills],
+          });
+          return successfulAgentOutcome(
+            createAgentCapabilityEvidence(context.capabilitySnapshot, node.agent.skills),
+          );
+        },
+      }),
+    );
+    const publicState = JSON.parse(output.stdout.at(-1) ?? "null");
+    expect({
+      exitCode,
+      stderr: output.stderr,
+      state: publicState,
+    }).toMatchObject({ exitCode: 0, stderr: [], state: { status: "succeeded" } });
+    expect(observed).toEqual([
+      {
+        id: "review",
+        prompt: childSpecialistCandidateInstructions,
+        skills: ["review-checklist"],
+      },
+      {
+        id: "security-reference",
+        prompt: "Retain the admitted security review capability.",
+        skills: ["security-checklist"],
+      },
+    ]);
+    expectContentFree(output, [childSpecialistCandidateInstructions, "PRIVATE_BASELINE_CONTENT"]);
+  });
+
   it("validates an effective harness artifact through a content-free public view", async () => {
     const project = await temporaryProject();
     const artifact = effectiveHarnessCandidateArtifactFixture();

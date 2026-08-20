@@ -115,11 +115,38 @@ describe("effective harness transitions", () => {
     });
   });
 
+  it("binds child-specialist transitions to child-specialist candidate authority", () => {
+    const prior = priorHead();
+    const transition = createEffectiveHarnessTransition({
+      prior,
+      toStateDigest: "f".repeat(64),
+      toActivationDigest: "1".repeat(64),
+      surface: "child-specialist",
+      candidate: { kind: "child-specialist-candidate", digest: "2".repeat(64) },
+      evaluation: {
+        id: "evaluation-1",
+        planDigest: "3".repeat(64),
+        terminalRecordDigest: "4".repeat(64),
+        reportDigest: "5".repeat(64),
+      },
+      actor: "operator:test",
+      changedAt: "2026-08-20T17:40:00.000Z",
+    });
+
+    expect(
+      parseEffectiveHarnessTransition(structuredClone(transition), { scopeDigest, prior }),
+    ).toMatchObject({
+      surface: "child-specialist",
+      candidate: { kind: "child-specialist-candidate", digest: "2".repeat(64) },
+    });
+  });
+
   it.each([
     ["prompt", "agent-skill-candidate"],
     ["agent-skill-resource", "prompt-candidate"],
     ["agent-skill-package", "agent-skill-candidate"],
     ["model-routing", "prompt-candidate"],
+    ["child-specialist", "prompt-candidate"],
   ] as const)("rejects %s surface with %s authority", (surface, kind) => {
     expect(() =>
       createEffectiveHarnessTransition({

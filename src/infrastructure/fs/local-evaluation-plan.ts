@@ -5,6 +5,7 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { AgentSkillCandidateIdentity } from "../../domain/adaptation/agent-skill-candidate.js";
 import type { AgentSkillPackageCandidateIdentity } from "../../domain/adaptation/agent-skill-package-candidate.js";
+import type { ChildSpecialistCandidateIdentity } from "../../domain/adaptation/child-specialist-candidate.js";
 import type { EffectiveHarnessCandidateSurface } from "../../domain/adaptation/effective-harness-candidate.js";
 import {
   compileEffectiveHarnessState,
@@ -114,6 +115,7 @@ export interface AdmittedFlowEvaluationProfile {
     | AgentSkillCandidateIdentity
     | AgentSkillPackageCandidateIdentity
     | ModelRoutingCandidateIdentity
+    | ChildSpecialistCandidateIdentity
   ) & {
     readonly selectionProvenance: string;
   };
@@ -171,7 +173,8 @@ export function projectEvaluationCandidateIdentity(
     | PromptCandidateIdentity
     | AgentSkillCandidateIdentity
     | AgentSkillPackageCandidateIdentity
-    | ModelRoutingCandidateIdentity;
+    | ModelRoutingCandidateIdentity
+    | ChildSpecialistCandidateIdentity;
 } {
   const { selectionProvenance, ...identity } = candidate;
   return Object.freeze({ provenance: selectionProvenance, identity: Object.freeze(identity) });
