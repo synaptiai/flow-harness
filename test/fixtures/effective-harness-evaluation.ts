@@ -13,6 +13,10 @@ import {
   parseSupplementalMemoryCandidateText,
   projectSupplementalMemoryCandidate,
 } from "../../src/domain/adaptation/supplemental-memory-candidate.js";
+import {
+  completeSupplementalMemoryCandidateGeneration,
+  prepareSupplementalMemoryCandidateGeneration,
+} from "../../src/domain/adaptation/supplemental-memory-candidate-generation.js";
 import { calculateCapabilitySnapshotDigest } from "../../src/domain/capability/agent-skills.js";
 import {
   calculateEvaluationPlanDigest,
@@ -27,9 +31,13 @@ import type {
 import { agentSkillPackageActivationFixture } from "./agent-skill-package-activation.js";
 import { childSpecialistCandidateFixture } from "./child-specialist-candidate.js";
 import { modelRoutingCandidateFixture } from "./model-routing-candidate.js";
-import { promptCandidateWorkflowText } from "./prompt-candidate-generation.js";
+import {
+  promptCandidateTuningEvidence,
+  promptCandidateWorkflowText,
+} from "./prompt-candidate-generation.js";
 
 const scopeDigest = "a".repeat(64);
+export const supplementalMemoryGenerationEvidenceProvenance = "PRIVATE_MEMORY_TUNING_EVIDENCE.json";
 
 export function effectiveHarnessCandidateArtifactFixture(): EffectiveHarnessCandidateArtifact {
   const fixture = agentSkillPackageActivationFixture();
@@ -133,29 +141,46 @@ export function supplementalMemoryEffectiveHarnessCandidateArtifactFixture(
     workflowSource: baselineSource,
     packages: [],
   });
-  const sourceText = JSON.stringify({
-    apiVersion: "flow.synapti.ai/v1alpha1",
-    kind: "SupplementalMemoryCandidate",
-    metadata: { id: "reviewed-fixture-memory", version: "1.0.0" },
-    scope: {
-      kind: "workflow-agent-memory",
+  const evidence = promptCandidateTuningEvidence(baseline.workflow.workflowDigest);
+  const admittedEvidence = [
+    {
+      provenance: supplementalMemoryGenerationEvidenceProvenance,
+      sourceSha256: sha256(JSON.stringify(evidence)),
+      packet: evidence,
+    },
+  ];
+  const prepared = prepareSupplementalMemoryCandidateGeneration({
+    candidate: { id: "reviewed-fixture-memory", version: "1.0.0" },
+    baseline,
+    target: {
       workflowId: baseline.workflowId,
       childPath: [],
       agentNodeId: "implement",
       entryId: "reviewed-fixture",
+      operation: "add",
     },
-    baseline: {
-      stateDigest: baseline.stateDigest,
-      workflowDigest: baseline.workflow.workflowDigest,
-      packageClosureDigest: calculateCapabilitySnapshotDigest(baseline.packages),
-    },
-    change: { kind: "add", value: "PRIVATE_MEMORY_USE_THE_REVIEWED_FIXTURE" },
+    evidence: admittedEvidence,
+    model: { provider: "test", id: "deterministic", thinking: "medium" },
+    limits: { timeoutMs: 300_000, maxOutputTokens: 8_192 },
   });
+  const source = completeSupplementalMemoryCandidateGeneration(
+    prepared,
+    JSON.stringify({ value: "PRIVATE_MEMORY_USE_THE_REVIEWED_FIXTURE" }),
+    {
+      inputTokens: 100,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 20,
+      costUsdMicros: 10,
+    },
+  );
+  const sourceText = JSON.stringify(source);
   const projected = projectSupplementalMemoryCandidate({
     manifestProvenance: "memory.candidate.json",
     sourceSha256: sha256(sourceText),
     source: parseSupplementalMemoryCandidateText(sourceText),
     baseline,
+    evidence: admittedEvidence,
   });
   return createEffectiveHarnessCandidateArtifact({
     baselineHead: createEffectiveHarnessHeadIdentity({

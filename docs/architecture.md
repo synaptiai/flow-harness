@@ -26,7 +26,9 @@ can change bounded prompt or package surfaces. A model-routing candidate can rep
 tuple on one existing root agent node. A child-specialist candidate can replace one embedded child
 agent's instructions or select an exact subset of Agent Skills already in the immutable closure.
 One supplemental-memory candidate can add, replace, or remove one bounded reference entry for one
-existing root or embedded-child agent.
+existing root or embedded-child agent. An operator can also request one bounded model suggestion
+for an add or replacement. The operator fixes the target and operation, and the output remains an
+inert candidate under the same evaluation and activation gates.
 Flow evaluates each change under shared non-candidate controls, then activates one complete
 effective harness state.
 
@@ -81,6 +83,7 @@ flowchart TB
         engine["Workflow engine<br/>Compiles the plan and selects the next safe step"]
         rules["Rules and safeguards<br/>Policy · approvals · budgets · verification"]
         capability["Capability governance<br/>Checks, freezes, and maintains exact package bytes"]
+        proposals["Proposal generation<br/>Creates one bounded, inert model suggestion"]
         adaptation["Evaluation and adaptation<br/>Compares reviewed root and child candidates"]
         memory["Reviewed agent context<br/>Immutable per-agent supplemental memory"]
     end
@@ -109,11 +112,14 @@ flowchart TB
     people -->|"Observes and steers"| presentation
     cli -->|"Runs now"| engine
     cli -->|"Reviews and compares candidates"| adaptation
+    cli -->|"Requests one inert proposal"| proposals
     cli -->|"Queues detached work"| supervisor
     presentation -->|"Reads public state and sends bound actions"| supervisor
     supervisor -->|"Starts or resumes"| engine
     capability -->|"Fetches and authenticates inert bytes"| sources
     capability -->|"Supplies an immutable snapshot"| engine
+    proposals -->|"Uses one zero-tool model turn"| agents
+    proposals -->|"Returns an inert candidate for review"| adaptation
     adaptation -->|"Runs paired trials"| engine
     adaptation -->|"Stages one reviewed memory change"| memory
     memory -->|"Supplies exact target context"| engine
@@ -141,8 +147,9 @@ Read the diagram from top to bottom:
 1. People and automation use the command line or a first-party presentation view.
 
 2. The control plane compiles the workflow, reconstructs durable state, selects reviewed per-agent
-   context, and decides which action is legal. A model can request work, but it cannot authorize a
-   transition or write supplemental memory.
+   context, and decides which action is legal. Proposal generation can ask a model for one bounded
+   memory value, but the model cannot select its target, authorize a transition, or write runtime
+   memory.
 
 3. The execution plane performs only the bounded work that the control plane admits. Agent and
    command adapters do not own workflow state.
@@ -1207,6 +1214,11 @@ remove operation against the exact current state, package closure, target, and p
 Flow stores the accepted bytes inside the complete effective state. It doesn't create a live memory
 store, retrieval service, provider session, or model write path.
 
+For a generated memory source, the operator fixes the complete target and add or replace operation.
+One zero-tool model turn can return only one bounded value. Flow binds the canonical request,
+response, model, usage, evidence, prior entry, and active head before it publishes the same ordinary
+inert source. Generation never composes or activates the proposal.
+
 The generation services use the provider-neutral `AgentExecutor` port. The Pi adapter is the first
 implementation. Flow creates one agent request with no tools, skills, or packages. Prompt
 generation includes only selected root-agent prompts and tuning-only packets. Agent Skill
@@ -1214,12 +1226,12 @@ generation includes the closed workflow identity, exact public package identity,
 packets, and only the selected existing UTF-8 resource bytes. A future model adapter can use the
 same application port and strict domain contracts.
 
-The model returns one strict prompt-replacement, Agent Skill resource-replacement, or declared-file
-content object. Flow adds trusted source hashes and generation provenance. Flow checks all source
-identities again, validates the ordinary candidate projection, and publishes through a
-same-directory no-replace operation. Package synthesis uses a private staged directory and an exact
-output lock. It syncs and reopens the complete tree, refuses an observed existing output, and then
-uses one same-parent rename.
+The model returns one strict prompt-replacement, Agent Skill resource-replacement, declared-file
+content object, or supplemental-memory value object. Flow adds trusted source hashes and generation
+provenance. Flow checks all source identities again, validates the ordinary candidate projection,
+and publishes through a same-directory no-replace operation. Package synthesis uses a private
+staged directory and an exact output lock. It syncs and reopens the complete tree, refuses an
+observed existing output, and then uses one same-parent rename.
 
 A failure before the hard-link commit leaves no final candidate file. A failure after the commit
 returns `publication_uncertain`. One complete final file can exist in this state. A pre-commit

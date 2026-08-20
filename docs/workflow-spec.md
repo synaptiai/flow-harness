@@ -1833,6 +1833,41 @@ The public candidate identity binds the source, baseline state, package identiti
 entry ID, operation, and projected state digest. It also binds the content-free before and after
 byte identities. It contains no memory content, encoded content, absolute path, or nested cause.
 
+#### Generated supplemental-memory source
+
+`flow candidate generate` can create an `add` or `replace` source from the current effective state
+and admitted tuning evidence. The operator supplies the workflow ID, ordered child path, agent node
+ID, entry ID, operation, candidate identity, output path, and exact model tuple. The model supplies
+only the `value` string. Generated removal is invalid.
+
+The generator performs one turn with no tools, Agent Skills, tool packages, workspace authority,
+or retry. Its strict response schema is `{"value": string}`. Additional keys, explanations, and
+Markdown fences reject. Flow validates the provider, model, text hash, truncation status, and
+one-turn activity. It also requires zero tool activity, zero effects, zero policy decisions, and
+complete usage before it constructs the ordinary source.
+
+The optional source `generation` object has these fixed properties:
+
+| Field | Contract |
+| --- | --- |
+| `version`, `kind` | Version `1` and kind `model` |
+| `provider`, `model`, `thinking` | Exact selected model tuple |
+| `systemPromptSha256`, `requestDigest`, `responseDigest` | Canonical prompt and JSON exchange identities |
+| `limits` | One candidate, one turn, 1 MiB of input, 65,536 response bytes, and at most 8,192 output tokens |
+| `operation`, `priorSha256` | Add with no prior digest, or replace with the exact prior digest |
+| `evidence` | One through 16 unique portable paths, source hashes, evidence digests, and plan digests |
+| `usage` | Bounded nonnegative values |
+
+Admission reopens every declared evidence file with bounded no-follow reads. It reconstructs the
+canonical request from the admitted complete state, exact target agent prompt, target memory,
+tuning evidence, model tuple, and limits. It reconstructs the canonical response from the proposed
+value. Both digests must match. The evidence must cover the baseline workflow. Before publication,
+Flow revalidates the evidence and requires the active head and complete state to remain exact.
+
+Generated and hand-authored sources have the same projection, evaluation, activation, execution,
+recovery, replay, and rollback contracts. Public projections retain content-free identities and
+remove evidence paths. Generation cannot compose or activate its output.
+
 `flow candidate validate <candidate.yaml>` is read-only. Use
 `flow candidate compose <candidate.yaml>` to bind the change to the exact current effective head.
 Direct activation of the raw document rejects. A paired evaluation selects the complete staged

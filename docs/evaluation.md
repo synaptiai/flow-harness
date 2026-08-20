@@ -578,6 +578,50 @@ target must be an existing compiled `agent` node. Projection recompiles the comp
 proves that the workflow, root package, package closure, and every unrelated memory entry remain
 unchanged.
 
+#### Generate a model-suggested entry
+
+Use model-assisted generation when tuning evidence supports a new or replacement reference entry.
+You must have an active effective harness for the workflow and one through 16 tuning-evidence
+files. You choose the workflow, exact root or embedded-child agent, entry ID, add or replace
+operation, output path, and model tuple.
+
+This command generates an add proposal for a root agent:
+
+```sh
+flow candidate generate adaptive-workflow tuning-evidence.json \
+  --output reviewed-memory.candidate.json \
+  --id reviewed-memory \
+  --version 1.0.0 \
+  --memory-agent implement \
+  --memory-entry reviewed-fixture \
+  --memory-operation add \
+  --provider <provider> \
+  --model <model>
+```
+
+For an embedded child agent, add `--memory-child-path <child-id,...>`. For a replacement, use
+`--memory-operation replace`. The active state supplies and binds the exact prior entry digest.
+Generation doesn't support removal because the model doesn't need to produce content for that
+operation. Write a reviewed removal candidate directly instead.
+
+Flow sends one canonical request through one exact-model agent turn. The request contains the
+selected agent prompt, memory for that exact target, tuning evidence, and content-free baseline
+identities. The agent receives no tools, Agent Skills, capability packages, workspace authority,
+target-selection authority, or retry. It must return exactly one JSON object with one `value`
+string.
+
+The request is at most 1 MiB. The response is at most 65,536 UTF-8 bytes and 8,192 output tokens.
+The decoded value follows the existing 1-through-16,384-byte entry limit. The generated source
+records content-free request, response, model, usage, evidence, operation, and prior-entry
+identities. Flow rejects malformed output, extra response fields, a no-op replacement, changed
+evidence, a changed effective-harness head, or cancellation before publication.
+
+The command publishes one inert candidate with create-only semantics. It doesn't compose,
+evaluate, activate, or write runtime memory. Public generate, validate, compose, run, event,
+inspection, and export views omit the value, encoded value, evidence paths, provider response, and
+nested causes. The selected model receives the proposed context, so don't use supplemental memory
+as a secret store.
+
 Validate and compose the candidate before evaluation:
 
 ```sh
@@ -623,6 +667,9 @@ Export tuning evidence before model-assisted generation:
 flow eval tuning-evidence <evaluation-id> --output <path>
 flow candidate generate <baseline> <path> --output <candidate.yaml> [generation options]
 ```
+
+For the memory-specific command and review boundary, see
+[Generate a model-suggested entry](#generate-a-model-suggested-entry).
 
 After a complete superior evaluation, preview activation and use the exact proposal digest to
 apply it. Use `flow candidate activate` for activation and `flow activation rollback` to restore an

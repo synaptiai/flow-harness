@@ -71,6 +71,10 @@ import {
   generatePromptCandidate,
   PromptCandidateGenerationExecutionError,
 } from "../application/generate-prompt-candidate.js";
+import {
+  generateSupplementalMemoryCandidate,
+  SupplementalMemoryCandidateGenerationExecutionError,
+} from "../application/generate-supplemental-memory-candidate.js";
 import { createCapabilityMetadataImporter } from "../application/import-capability-metadata.js";
 import { createSignedOciCapabilityBundleInstaller } from "../application/install-signed-oci-capability-bundle.js";
 import type {
@@ -173,6 +177,16 @@ import {
   PromptCandidateGenerationError,
   preparePromptCandidateGeneration,
 } from "../domain/adaptation/prompt-candidate-generation.js";
+import {
+  projectSupplementalMemoryCandidate,
+  SupplementalMemoryCandidateError,
+  type SupplementalMemoryCandidateIdentity,
+} from "../domain/adaptation/supplemental-memory-candidate.js";
+import {
+  MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_OUTPUT_TOKENS,
+  prepareSupplementalMemoryCandidateGeneration,
+  SupplementalMemoryCandidateGenerationError,
+} from "../domain/adaptation/supplemental-memory-candidate-generation.js";
 import {
   type AdaptiveActivationSnapshot,
   type AgentSkillCapabilitySnapshot,
@@ -349,6 +363,10 @@ import {
   LocalSupervisorStoreError,
 } from "../infrastructure/fs/local-supervisor-store.js";
 import {
+  admitLocalSupplementalMemoryCandidateGenerationSources,
+  LocalSupplementalMemoryCandidateError,
+} from "../infrastructure/fs/local-supplemental-memory-candidate.js";
+import {
   type ProjectToolPackageCatalog,
   snapshotSelectedToolPackages,
   ToolPackageCatalogError,
@@ -476,6 +494,7 @@ Usage:
   flow candidate generate <baseline> <evidence>... --output <candidate.yaml> --id <id> --version <semver> --allow-nodes <id,...> --provider <provider> --model <model> [--thinking <level>] [--timeout-ms <count>] [--max-output-tokens <count>]
   flow candidate generate <baseline> <evidence>... --output <candidate.yaml> --id <id> --version <semver> --skill <name> --allow-resources <path,...> --provider <provider> --model <model> [--thinking <level>] [--timeout-ms <count>] [--max-output-tokens <count>]
   flow candidate generate <baseline> <evidence>... --output <candidate-directory> --id <id> --version <semver> --blueprint <blueprint.json> --provider <provider> --model <model> [--thinking <level>] [--timeout-ms <count>] [--max-output-tokens <count>]
+  flow candidate generate <workflow-id> <evidence>... --output <candidate.json> --id <id> --version <semver> --memory-agent <id> --memory-entry <id> --memory-operation <add|replace> [--memory-child-path <id,...>] --provider <provider> --model <model> [--thinking <level>] [--timeout-ms <count>] [--max-output-tokens <count>]
   flow candidate compose <candidate.yaml>
   flow candidate validate <candidate.yaml>
   flow candidate activate <candidate.yaml> --evaluation <id> --actor <label> [--reason <text>] [--evaluations-dir <path>] <--dry-run|--expected-digest <sha256>>
@@ -805,6 +824,9 @@ export async function main(
       error instanceof PromptCandidateError ||
       error instanceof PromptCandidateGenerationError ||
       error instanceof PromptCandidateGenerationExecutionError ||
+      error instanceof SupplementalMemoryCandidateError ||
+      error instanceof SupplementalMemoryCandidateGenerationError ||
+      error instanceof SupplementalMemoryCandidateGenerationExecutionError ||
       error instanceof AgentSkillCandidateError ||
       error instanceof AgentSkillCandidateGenerationError ||
       error instanceof AgentSkillCandidateGenerationExecutionError ||
@@ -813,7 +835,8 @@ export async function main(
       error instanceof LocalAgentSkillCandidateError ||
       error instanceof LocalAgentSkillCandidateGenerationSourceError ||
       error instanceof LocalAgentSkillPackageCandidateGenerationSourceError ||
-      error instanceof LocalPromptCandidateError
+      error instanceof LocalPromptCandidateError ||
+      error instanceof LocalSupplementalMemoryCandidateError
     ) {
       io.stderr(boundedCliDiagnostic(error.message));
       return 1;
@@ -2967,6 +2990,10 @@ async function candidateCommand(
       "blueprint",
       "id",
       "max-output-tokens",
+      "memory-agent",
+      "memory-child-path",
+      "memory-entry",
+      "memory-operation",
       "model",
       "output",
       "provider",
@@ -2982,6 +3009,10 @@ async function candidateCommand(
       "allow-resources": { type: "string" },
       blueprint: { type: "string" },
       "max-output-tokens": { type: "string" },
+      "memory-agent": { type: "string" },
+      "memory-child-path": { type: "string" },
+      "memory-entry": { type: "string" },
+      "memory-operation": { type: "string" },
       id: { type: "string" },
       model: { type: "string" },
       output: { type: "string" },
@@ -3003,6 +3034,12 @@ async function candidateCommand(
     const usesAgentSkillMode =
       values.skill !== undefined || values["allow-resources"] !== undefined;
     const usesAgentSkillPackageMode = values.blueprint !== undefined;
+    const usesSupplementalMemoryMode =
+      values["memory-agent"] !== undefined ||
+      values["memory-child-path"] !== undefined ||
+      values["memory-entry"] !== undefined ||
+      values["memory-operation"] !== undefined;
+    const usesPromptMode = values["allow-nodes"] !== undefined;
     const dependencies = dependenciesFrom(overrides);
     const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
     const outputPath = resolve(
@@ -3015,17 +3052,137 @@ async function candidateCommand(
       await assertLocalPromptCandidateOutputAvailable(outputPath);
     }
     if (
-      (usesAgentSkillPackageMode && (usesAgentSkillMode || values["allow-nodes"] !== undefined)) ||
-      (!usesAgentSkillPackageMode &&
-        usesAgentSkillMode &&
-        (values.skill === undefined ||
-          values["allow-resources"] === undefined ||
-          values["allow-nodes"] !== undefined)) ||
-      (!usesAgentSkillPackageMode && !usesAgentSkillMode && values["allow-nodes"] === undefined)
+      [
+        usesAgentSkillPackageMode,
+        usesAgentSkillMode,
+        usesSupplementalMemoryMode,
+        usesPromptMode,
+      ].filter(Boolean).length !== 1 ||
+      (usesAgentSkillMode &&
+        (values.skill === undefined || values["allow-resources"] === undefined)) ||
+      (usesSupplementalMemoryMode &&
+        (values["memory-agent"] === undefined ||
+          values["memory-entry"] === undefined ||
+          values["memory-operation"] === undefined))
     ) {
       throw new CliUsageError(
-        "candidate generation mode requires exactly one of --allow-nodes, both --skill and --allow-resources, or --blueprint",
+        "candidate generation mode requires exactly one of --allow-nodes, both --skill and --allow-resources, --blueprint, or --memory-agent with --memory-entry and --memory-operation",
       );
+    }
+    if (usesSupplementalMemoryMode) {
+      const admittedBaseline = await loadCurrentEffectiveHarnessBaseline(
+        baseline,
+        config,
+        dependencies.signal,
+      );
+      const baselineState = admittedBaseline.state;
+      const admitted = await admitLocalSupplementalMemoryCandidateGenerationSources(
+        outputPath,
+        evidence.map((path) => resolve(dependencies.cwd, path)),
+        dependencies.signal === undefined ? {} : { signal: dependencies.signal },
+      );
+      const prepared = prepareSupplementalMemoryCandidateGeneration({
+        candidate: {
+          id: requireStringOption(values.id, "candidate generate requires --id <id>"),
+          version: requireStringOption(
+            values.version,
+            "candidate generate requires --version <semver>",
+          ),
+        },
+        baseline: baselineState,
+        target: {
+          workflowId: baseline,
+          childPath:
+            values["memory-child-path"] === undefined
+              ? []
+              : values["memory-child-path"].split(",").map((nodeId) => nodeId.trim()),
+          agentNodeId: requireStringOption(
+            values["memory-agent"],
+            "candidate generate requires --memory-agent <id>",
+          ),
+          entryId: requireStringOption(
+            values["memory-entry"],
+            "candidate generate requires --memory-entry <id>",
+          ),
+          operation: parseSupplementalMemoryGenerationOperation(values["memory-operation"]),
+        },
+        evidence: admitted.evidence.map((item) => ({
+          provenance: item.provenance,
+          sourceSha256: item.sourceSha256,
+          packet: item.packet,
+        })),
+        model: {
+          provider: requireStringOption(
+            values.provider,
+            "candidate generate requires --provider <provider>",
+          ),
+          id: requireStringOption(values.model, "candidate generate requires --model <model>"),
+          thinking: parseThinkingLevel(values.thinking),
+        },
+        limits: {
+          timeoutMs: parsePositiveIntegerOption(values["timeout-ms"], "--timeout-ms", 300_000),
+          maxOutputTokens: parsePositiveIntegerOption(
+            values["max-output-tokens"],
+            "--max-output-tokens",
+            MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_OUTPUT_TOKENS,
+          ),
+        },
+      });
+      const source = await generateSupplementalMemoryCandidate(
+        {
+          prepared,
+          cwd: admitted.root,
+          ...(config.projectRoot === null ? {} : { projectRoot: config.projectRoot }),
+          protectedPaths: [],
+          ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
+        },
+        dependencies.createNodeExecutor(
+          config.sandbox.profile,
+          config.projectRoot ?? admitted.root,
+        ),
+      );
+      throwIfAborted(dependencies.signal, "candidate generation was cancelled");
+      await assertCurrentSupplementalMemoryGenerationBaseline(
+        baseline,
+        config,
+        admittedBaseline,
+        dependencies.signal,
+      );
+      await admitted.revalidate();
+      throwIfAborted(dependencies.signal, "candidate generation was cancelled");
+      const sourceText = `${JSON.stringify(source, null, 2)}\n`;
+      const projected = projectSupplementalMemoryCandidate({
+        manifestProvenance: basename(admitted.outputPath),
+        source,
+        sourceSha256: sha256Text(sourceText),
+        baseline: baselineState,
+        evidence: admitted.evidence,
+      });
+      await publishLocalPromptCandidate(admitted.outputPath, sourceText, {
+        ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
+        beforePublish: async () => {
+          await assertCurrentSupplementalMemoryGenerationBaseline(
+            baseline,
+            config,
+            admittedBaseline,
+            dependencies.signal,
+          );
+          await admitted.revalidate();
+          throwIfAborted(dependencies.signal, "candidate generation was cancelled");
+        },
+      });
+      io.stdout(
+        JSON.stringify(
+          {
+            generated: true,
+            output: admitted.outputPath,
+            candidate: supplementalMemoryCandidateView(projected.identity),
+          },
+          null,
+          2,
+        ),
+      );
+      return 0;
     }
     if (usesAgentSkillPackageMode) {
       const admitted = await admitLocalAgentSkillPackageCandidateGenerationSources({
@@ -3909,10 +4066,29 @@ function adaptiveActivationView(snapshot: AdaptiveActivationSnapshot) {
 function adaptationCandidateView(
   admitted: Awaited<ReturnType<typeof admitLocalAdaptationCandidate>>,
 ) {
+  if (admitted.kind === "supplemental-memory-candidate") {
+    return supplementalMemoryCandidateView(admitted.candidate.identity);
+  }
   if (admitted.kind !== "effective-harness-candidate") {
     return admitted.candidate.identity;
   }
   return effectiveHarnessCandidateView(admitted.candidate.artifact);
+}
+
+function supplementalMemoryCandidateView(identity: SupplementalMemoryCandidateIdentity) {
+  const { manifest, generation, ...publicIdentity } = identity;
+  return Object.freeze({
+    ...publicIdentity,
+    version: identity.candidateVersion,
+    operation: generation?.operation ?? identity.change.kind,
+    ...(generation === undefined ? {} : { provider: generation.provider, model: generation.model }),
+    manifest: { sourceSha256: manifest.sourceSha256 },
+    ...(generation === undefined
+      ? {}
+      : {
+          generation,
+        }),
+  });
 }
 
 function effectiveHarnessProjection(
@@ -3978,11 +4154,19 @@ function effectiveHarnessCandidateView(artifact: EffectiveHarnessCandidateArtifa
     scopeDigest: artifact.scopeDigest,
     workflowId: artifact.workflowId,
     surface: artifact.surface,
-    candidate: artifact.candidate,
+    candidate: isSupplementalMemoryCandidateIdentity(artifact.candidate)
+      ? supplementalMemoryCandidateView(artifact.candidate)
+      : artifact.candidate,
     baselineHeadDigest: artifact.baselineHead.headDigest,
     baselineStateDigest: artifact.baselineState.stateDigest,
     candidateStateDigest: artifact.candidateState.stateDigest,
   });
+}
+
+function isSupplementalMemoryCandidateIdentity(
+  identity: EffectiveHarnessCandidateArtifact["candidate"],
+): identity is SupplementalMemoryCandidateIdentity {
+  return "kind" in identity && identity.kind === "supplemental-memory-candidate";
 }
 
 function effectiveHarnessIndexView(index: Awaited<ReturnType<LocalEffectiveHarnessStore["list"]>>) {
@@ -5436,6 +5620,13 @@ function parseThinkingLevel(value: string | undefined): ThinkingLevel {
   return thinking;
 }
 
+function parseSupplementalMemoryGenerationOperation(value: string | undefined): "add" | "replace" {
+  if (value !== "add" && value !== "replace") {
+    throw new CliUsageError("--memory-operation requires add or replace");
+  }
+  return value;
+}
+
 function sha256Text(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -5777,6 +5968,27 @@ async function loadCurrentEffectiveHarnessBaseline(
     ),
     ...(signal === undefined ? {} : { signal }),
   });
+}
+
+async function assertCurrentSupplementalMemoryGenerationBaseline(
+  workflowId: string,
+  config: EffectiveFlowConfig,
+  expected: {
+    readonly state: EffectiveHarnessState;
+    readonly head: EffectiveHarnessHeadIdentity;
+  },
+  signal?: AbortSignal,
+): Promise<void> {
+  const current = await loadCurrentEffectiveHarnessBaseline(workflowId, config, signal);
+  if (
+    current.head.headDigest !== expected.head.headDigest ||
+    current.state.stateDigest !== expected.state.stateDigest
+  ) {
+    throw new SupplementalMemoryCandidateGenerationError(
+      "identity_mismatch",
+      "effective harness changed during generation",
+    );
+  }
 }
 
 async function loadEffectiveHarness(projectRoot: string, workflowId: string) {

@@ -400,6 +400,11 @@ memory entry, workflow field, and package. Runtime tests prove targeted prompt p
 isolation, content-free public output, attached recovery after live-store removal, and detached
 execution from the frozen snapshot.
 
+Generation tests add root and embedded-child targeting, exact add and replacement preconditions,
+one strict value-only response, and one exact-model zero-tool turn. They bind input, response,
+token, evidence, and memory bounds. They also cover source and active-head drift, cancellation,
+no-replace publication, content-free public views, and durable generated provenance.
+
 Runtime tests remove the live effective store. They exercise attached resume, detached worker
 execution, and child capability binding. They also cover replay and current-policy rejection from
 the frozen snapshot.
