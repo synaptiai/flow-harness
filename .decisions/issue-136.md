@@ -121,3 +121,38 @@ A check inside the existing CLI would load the complete command module graph fir
 therefore points to a minimal launcher. The launcher validates only the public Node.js and
 operating-system contract. It emits fixed value-free failures and imports the CLI only after
 success.
+
+## Acceptance verification map
+
+| Criterion | Evidence command | Expected result |
+| --- | --- | --- |
+| The package has one prerelease identity and an early host boundary. | `npx vitest run test/unit/cli/launcher.test.ts test/scaffold/package.test.ts` | Version, executable, Node.js minimum, and operating-system refusal pass. |
+| One clean revision creates one bounded canonical artifact. | `npx vitest run test/unit/release/package-release-evidence.test.ts test/unit/infrastructure/release/package-release-artifact.test.ts test/unit/infrastructure/release/local-package-release-builder.test.ts test/unit/infrastructure/release/package-release-command.test.ts` | Evidence parsing, npm output binding, atomic settlement, cancellation, conflict, and clean-source checks pass. |
+| The release verifier consumes exact bytes and an exact installed tree. | `npx vitest run test/unit/infrastructure/release/package-release-verifier.test.ts && npm run release:verify` | Archive identity, installed files, package metadata, command discovery, initialization, example execution, browser presentation, and Prime validation pass. |
+| Linux x64 and macOS x64 consume the same workflow artifact. | `npx vitest run test/scaffold/preview-release-workflow.test.ts` and the manual `Preview release` workflow | The workflow contract passes. Both hosted matrix jobs must pass before attestation. |
+| Publication is provenance-bound, protected, immutable, and not `latest`. | `npx vitest run test/scaffold/preview-release-workflow.test.ts` and the protected publication job | Pinned provenance runs after host verification. Publication requires the environment and immutable-release setting. |
+| The first npm bridge uses exact bytes and later authority is stage-only. | `npx vitest run test/scaffold/community-files.test.ts` and the operator steps in `docs/operations/release-preview.md` | No workflow npm token, direct npm publish, or `latest` assignment exists. The first interactive publication and later trust configuration use the documented archive and tags. |
+| Public guidance is segmented, linked, clear, and current. | `npm run docs:style && npm run docs:links && npm run docs:ste && npx vitest run test/integration/package/documentation-structure.test.ts` | Every page has a canonical route. The README remains a landing page. All documentation gates pass. |
+| The repository and packed product remain releasable. | `npm run check && npm run test:coverage && npm run test:browser && node scripts/smoke-compiled.mjs && npm run pack:check && node scripts/audit-prime-dependencies.mjs && npm audit --omit=dev --audit-level=low` | The complete default, runtime, coverage, browser, compiled, clean-install, and dependency gates pass. |
+
+## Local evidence
+
+Local verification on 2026-08-21 produced these results:
+
+- `npm run check` passed 4,615 default tests with four skips. It also passed 43 compiled-process
+  runtime tests with 34 platform skips.
+
+- `npm run test:coverage` passed the same 4,615 tests. Coverage was 84.75% statements, 79.37%
+  branches, 91.41% functions, and 84.89% lines.
+
+- `npm run test:browser` passed two real-browser tests.
+
+- `node scripts/smoke-compiled.mjs` and `npm run pack:check` passed.
+
+- `node scripts/audit-prime-dependencies.mjs` verified the Node lock and 60 Python packages.
+  `npm audit --omit=dev --audit-level=low` reported zero vulnerabilities.
+
+- Documentation structure, style, link, clarity, type, and diff checks passed.
+
+Hosted Ubuntu 24.04 x64 and macOS 15 Intel verification remains pending. GitHub prerelease and npm
+publication also remain pending. Local evidence does not satisfy those publication criteria.
