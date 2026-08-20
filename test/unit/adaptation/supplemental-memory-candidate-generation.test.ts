@@ -5,10 +5,14 @@ import { createEffectiveHarnessState } from "../../../src/domain/adaptation/effe
 import { MAX_SUPPLEMENTAL_MEMORY_ENTRY_BYTES } from "../../../src/domain/adaptation/supplemental-memory.js";
 import {
   completeSupplementalMemoryCandidateGeneration,
+  MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_EVIDENCE,
+  MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_INPUT_BYTES,
   MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_OUTPUT_BYTES,
+  MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_OUTPUT_TOKENS,
   prepareSupplementalMemoryCandidateGeneration,
   SupplementalMemoryCandidateGenerationError,
 } from "../../../src/domain/adaptation/supplemental-memory-candidate-generation.js";
+import type { TuningEvidencePacket } from "../../../src/domain/evaluation/tuning-evidence.js";
 import { childSpecialistCandidateFixture } from "../../fixtures/child-specialist-candidate.js";
 import { promptCandidateTuningEvidence } from "../../fixtures/prompt-candidate-generation.js";
 
@@ -114,6 +118,15 @@ describe("supplemental-memory candidate generation", () => {
         code: "limit_exceeded",
       }),
     );
+
+    const exactValue = "x".repeat(MAX_SUPPLEMENTAL_MEMORY_ENTRY_BYTES);
+    expect(
+      completeSupplementalMemoryCandidateGeneration(
+        prepared,
+        JSON.stringify({ value: exactValue }),
+        usage(),
+      ).change,
+    ).toMatchObject({ kind: "add", value: exactValue });
   });
 
   it("binds replacement generation to the exact prior entry and rejects a no-op", () => {
@@ -182,6 +195,165 @@ describe("supplemental-memory candidate generation", () => {
       scope: { childPath: ["delegate-review"], agentNodeId: "review" },
       change: { kind: "add", value: "Use the reviewed child fixture." },
     });
+  });
+
+  it("accepts exact request, evidence, and execution limits and rejects one over", () => {
+    const baseline = baselineState();
+    const baseEvidence = expandedEvidence(baseline.workflow.workflowDigest, 64);
+    const baseInput = { ...generationInput(baseline, "add"), evidence: baseEvidence };
+    const base = prepareSupplementalMemoryCandidateGeneration(baseInput);
+    const remaining =
+      MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_INPUT_BYTES -
+      Buffer.byteLength(base.renderedInput, "utf8");
+    expect(remaining).toBeGreaterThanOrEqual(0);
+
+    const exactEvidence = expandedEvidence(baseline.workflow.workflowDigest, 64);
+    addEvidenceReasonBytes(exactEvidence, remaining);
+    const exact = prepareSupplementalMemoryCandidateGeneration({
+      ...baseInput,
+      evidence: exactEvidence,
+    });
+    expect(Buffer.byteLength(exact.renderedInput, "utf8")).toBe(
+      MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_INPUT_BYTES,
+    );
+
+    const overflowEvidence = expandedEvidence(baseline.workflow.workflowDigest, 64);
+    addEvidenceReasonBytes(overflowEvidence, remaining + 1);
+    expect(() =>
+      prepareSupplementalMemoryCandidateGeneration({ ...baseInput, evidence: overflowEvidence }),
+    ).toThrowError(
+      expect.objectContaining<Partial<SupplementalMemoryCandidateGenerationError>>({
+        code: "limit_exceeded",
+      }),
+    );
+
+    const evidenceBoundary = Array.from(
+      { length: MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_EVIDENCE },
+      (_, index) => evidenceItem(baseline.workflow.workflowDigest, index),
+    );
+    expect(() =>
+      prepareSupplementalMemoryCandidateGeneration({
+        ...generationInput(baseline, "add"),
+        evidence: evidenceBoundary,
+        limits: {
+          timeoutMs: 86_400_000,
+          maxOutputTokens: MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_OUTPUT_TOKENS,
+        },
+      }),
+    ).not.toThrow();
+    expect(() =>
+      prepareSupplementalMemoryCandidateGeneration({
+        ...generationInput(baseline, "add"),
+        evidence: [
+          ...evidenceBoundary,
+          evidenceItem(
+            baseline.workflow.workflowDigest,
+            MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_EVIDENCE,
+          ),
+        ],
+      }),
+    ).toThrowError(/evidence set/);
+  });
+
+  it("rejects each invalid operator input before model execution", () => {
+    const baseline = baselineState();
+    const valid = generationInput(baseline, "add");
+    const firstEvidence = valid.evidence[0];
+    if (firstEvidence === undefined) throw new Error("generation evidence fixture is missing");
+    const otherEvidence = evidenceItem(baseline.workflow.workflowDigest, 1);
+    const cases = [
+      { ...valid, candidate: { ...valid.candidate, id: "Invalid" } },
+      { ...valid, candidate: { ...valid.candidate, version: "01.0.0" } },
+      { ...valid, target: { ...valid.target, workflowId: "other-workflow" } },
+      { ...valid, target: { ...valid.target, entryId: "invalid_entry" } },
+      { ...valid, target: { ...valid.target, childPath: Array(9).fill("child") } },
+      { ...valid, evidence: [] },
+      {
+        ...valid,
+        evidence: [firstEvidence, { ...otherEvidence, provenance: firstEvidence.provenance }],
+      },
+      { ...valid, evidence: [firstEvidence, { ...firstEvidence, provenance: "other.json" }] },
+      { ...valid, evidence: [{ ...firstEvidence, provenance: "../private.json" }] },
+      { ...valid, evidence: [{ ...firstEvidence, sourceSha256: "f".repeat(63) }] },
+      { ...valid, model: { ...valid.model, provider: "Invalid" } },
+      { ...valid, model: { ...valid.model, id: "" } },
+      { ...valid, model: { ...valid.model, id: "x".repeat(257) } },
+      { ...valid, model: { ...valid.model, id: " padded" } },
+      { ...valid, limits: { ...valid.limits, timeoutMs: 0 } },
+      { ...valid, limits: { ...valid.limits, timeoutMs: 86_400_001 } },
+      { ...valid, limits: { ...valid.limits, maxOutputTokens: 0 } },
+      {
+        ...valid,
+        limits: {
+          ...valid.limits,
+          maxOutputTokens: MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_OUTPUT_TOKENS + 1,
+        },
+      },
+    ];
+
+    for (const input of cases) {
+      expect(() => prepareSupplementalMemoryCandidateGeneration(input)).toThrowError(
+        SupplementalMemoryCandidateGenerationError,
+      );
+    }
+
+    expect(() =>
+      prepareSupplementalMemoryCandidateGeneration({
+        ...valid,
+        target: { ...valid.target, agentNodeId: "missing-agent" },
+      }),
+    ).toThrowError(/agent node/);
+    expect(() =>
+      prepareSupplementalMemoryCandidateGeneration({
+        ...valid,
+        target: { ...valid.target, childPath: ["missing-child"] },
+      }),
+    ).toThrowError(/embedded child workflow/);
+    expect(() =>
+      prepareSupplementalMemoryCandidateGeneration({
+        ...valid,
+        target: { ...valid.target, operation: "replace" },
+      }),
+    ).toThrowError(/operation/);
+    expect(() =>
+      prepareSupplementalMemoryCandidateGeneration({
+        ...valid,
+        evidence: [evidenceItem("f".repeat(64), 2)],
+      }),
+    ).toThrowError(/effective workflow/);
+  });
+
+  it("binds every usage counter and the exact output-token limit", () => {
+    const prepared = prepareSupplementalMemoryCandidateGeneration(
+      generationInput(baselineState(), "add"),
+    );
+    const rawResponse = JSON.stringify({ value: "Accepted." });
+    expect(
+      completeSupplementalMemoryCandidateGeneration(prepared, rawResponse, {
+        ...usage(),
+        outputTokens: prepared.input.limits.maxOutputTokens,
+      }),
+    ).toMatchObject({
+      generation: { usage: { outputTokens: prepared.input.limits.maxOutputTokens } },
+    });
+
+    for (const invalidUsage of [
+      { ...usage(), inputTokens: -1 },
+      { ...usage(), cacheReadTokens: -1 },
+      { ...usage(), cacheWriteTokens: -1 },
+      { ...usage(), outputTokens: -1 },
+      { ...usage(), costUsdMicros: -1 },
+      { ...usage(), inputTokens: Number.MAX_SAFE_INTEGER + 1 },
+      { ...usage(), outputTokens: prepared.input.limits.maxOutputTokens + 1 },
+    ]) {
+      expect(() =>
+        completeSupplementalMemoryCandidateGeneration(prepared, rawResponse, invalidUsage),
+      ).toThrowError(
+        expect.objectContaining<Partial<SupplementalMemoryCandidateGenerationError>>({
+          code: "invalid_output",
+        }),
+      );
+    }
   });
 });
 
@@ -284,4 +456,99 @@ function catchError(operation: () => unknown): Error {
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function evidenceItem(workflowDigest: string, index: number) {
+  const packet = promptCandidateTuningEvidence(workflowDigest, `boundary-evaluation-${index}`);
+  return {
+    provenance: `evidence-${index}.json`,
+    sourceSha256: sha256(JSON.stringify(packet)),
+    packet,
+  };
+}
+
+function expandedEvidence(workflowDigest: string, taskCount: number) {
+  return Array.from(
+    { length: MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_EVIDENCE },
+    (_, index) => {
+      const packet = structuredClone(
+        promptCandidateTuningEvidence(workflowDigest, `expanded-evaluation-${index}`),
+      ) as DeepMutable<TuningEvidencePacket>;
+      const baseTask = requiredItem(packet.tasks, 0, "expanded evidence task");
+      packet.tasks = Array.from({ length: taskCount }, (__, taskIndex) => ({
+        id: `tune-${taskIndex}`,
+        trials: structuredClone(baseTask.trials),
+      }));
+      packet.evaluation.completedTrials = taskCount * 2;
+      packet.evaluation.scheduledTrials = taskCount * 2;
+      recomputeEvidenceDigest(packet);
+      return {
+        provenance: `expanded-${index}.json`,
+        sourceSha256: sha256(JSON.stringify(packet)),
+        packet,
+      };
+    },
+  );
+}
+
+function addEvidenceReasonBytes(
+  evidence: ReturnType<typeof expandedEvidence>,
+  addedBytes: number,
+): void {
+  let remaining = addedBytes;
+  for (const item of evidence) {
+    for (const task of item.packet.tasks) {
+      for (const trial of task.trials) {
+        if (remaining === 0) break;
+        const increment = Math.min(remaining, 510);
+        trial.harness.reason = "x".repeat(increment + 2);
+        remaining -= increment;
+      }
+    }
+    recomputeEvidenceDigest(item.packet);
+    item.sourceSha256 = sha256(JSON.stringify(item.packet));
+  }
+  if (remaining !== 0) {
+    throw new Error("input-boundary fixture has insufficient bounded reason capacity");
+  }
+}
+
+function recomputeEvidenceDigest(packet: DeepMutable<TuningEvidencePacket>): void {
+  const { evidenceDigest: _evidenceDigest, ...content } = packet;
+  packet.evidenceDigest = sha256(canonicalize(content));
+}
+
+function canonicalize(value: unknown): string {
+  if (
+    value === null ||
+    typeof value === "boolean" ||
+    typeof value === "string" ||
+    (typeof value === "number" && Number.isFinite(value))
+  ) {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) return `[${value.map(canonicalize).join(",")}]`;
+  if (typeof value === "object" && value !== null) {
+    return `{${Object.keys(value)
+      .sort()
+      .map(
+        (key) => `${JSON.stringify(key)}:${canonicalize((value as Record<string, unknown>)[key])}`,
+      )
+      .join(",")}}`;
+  }
+  throw new Error("input-boundary fixture contains a non-canonical value");
+}
+
+type DeepMutable<T> = T extends (...args: never[]) => unknown
+  ? T
+  : T extends readonly (infer Item)[]
+    ? DeepMutable<Item>[]
+    : T extends object
+      ? { -readonly [Key in keyof T]: DeepMutable<T[Key]> }
+      : T;
+
+function requiredItem<Item>(items: readonly Item[], index: number, label: string): Item {
+  const item = items[index];
+  if (item === undefined) throw new Error(`${label} fixture is missing`);
+  return item;
 }
