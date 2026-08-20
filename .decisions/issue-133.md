@@ -3,6 +3,8 @@
 **Issue**: #133 | **Branch**: `codex/issue-133-model-suggested-memory` | **Started**:
 2026-08-20
 
+**Status**: Implemented and locally verified. Hosted Linux x64 CI is pending.
+
 ---
 
 ## Context
@@ -174,14 +176,14 @@ _Captured by specification-capture on 2026-08-20. Source: user-confirmed refined
 ### Criterion 1 — Explicit generated add or replacement
 
 - **Type**: behavioral and CLI contract
-- **Command**: `npx vitest run test/unit/adaptation/supplemental-memory-candidate-generation.test.ts test/integration/cli/supplemental-memory-candidate-generation.test.ts -t 'generates one explicit memory proposal'`
+- **Command**: `npx vitest run test/unit/adaptation/supplemental-memory-candidate-generation.test.ts test/integration/cli/supplemental-memory-candidate-generation.test.ts`
 - **Expected evidence**: exact add and replace candidates are generated for root and child targets.
 - **Does not promise**: generated removal or runtime writes.
 
 ### Criterion 2 — Content-only model authority
 
 - **Type**: contract and adversarial behavior
-- **Command**: `npx vitest run test/unit/adaptation/supplemental-memory-candidate-generation.test.ts -t 'rejects model-selected authority'`
+- **Command**: `npx vitest run test/unit/adaptation/supplemental-memory-candidate-generation.test.ts`
 - **Expected evidence**: extra target, operation, identity, package, tool, or authority fields reject.
 - **Does not promise**: model-selected delegation or retrieval.
 
@@ -224,7 +226,7 @@ _Captured by specification-capture on 2026-08-20. Source: user-confirmed refined
 ### Criterion 9 — Public documentation
 
 - **Type**: documentation and architecture contract
-- **Command**: `npm run docs:style && npm run docs:links && npm run docs:ste && npx vitest run test/integration/docs/architecture.test.ts`
+- **Command**: `npm run docs:style && npm run docs:links && npm run docs:ste && npx vitest run test/integration/package/architecture-documentation.test.ts`
 - **Expected evidence**: public documentation is accurate and passes every repository prose gate.
 - **Does not promise**: support for deferred protocols.
 
@@ -236,8 +238,10 @@ _Captured by specification-capture on 2026-08-20. Source: user-confirmed refined
   - `npm run test:coverage`
   - `npm run test:browser`
   - `npm run test:runtime`
-  - `npm pack --dry-run`
-  - Optional: `npm run test:live -- -t 'supplemental-memory candidate'`
+  - `npm run pack:check`
+  - `node scripts/audit-prime-dependencies.mjs`
+  - `npm audit --omit=dev --audit-level=low`
+  - Optional: `npx vitest run --config vitest.live.config.ts test/live/supplemental-memory-candidate-generation.live.test.ts`
   - Hosted Linux x64 CI
 - **Expected evidence**: all portable gates pass. Coverage stays above repository thresholds. The
   package contains only intended files. Live evidence passes when credentials exist. Hosted Linux
@@ -254,3 +258,65 @@ _Captured by specification-capture on 2026-08-20. Source: user-confirmed refined
 5. Prove generated candidates through composition, paired evaluation, activation, durable offline
    execution, recovery, replay, inspection, export, and rollback.
 6. Update documentation, run every portable and hosted gate, and complete independent review.
+
+## Verification evidence
+
+The following evidence was collected from the committed branch on 2026-08-20.
+
+### Mapped acceptance suite
+
+The exact 14-file selector passed 131 tests:
+
+```sh
+npx vitest run \
+  test/unit/adaptation/supplemental-memory-candidate-generation.test.ts \
+  test/unit/application/generate-supplemental-memory-candidate.test.ts \
+  test/unit/infrastructure/fs/local-supplemental-memory-candidate-generation.test.ts \
+  test/integration/cli/supplemental-memory-candidate-generation.test.ts \
+  test/integration/cli/effective-harness-composition.test.ts \
+  test/integration/cli/effective-harness-runtime.test.ts \
+  test/unit/cli/public-output.test.ts \
+  test/unit/adaptation/supplemental-memory-candidate.test.ts \
+  test/unit/infrastructure/fs/local-supplemental-memory-candidate.test.ts \
+  test/unit/application/prepare-effective-harness-activation.test.ts \
+  test/unit/application/run-workflow-capabilities.test.ts \
+  test/unit/infrastructure/fs/local-evaluation-plan.test.ts \
+  test/unit/infrastructure/fs/local-effective-harness-store.test.ts \
+  test/integration/package/architecture-documentation.test.ts
+```
+
+The detached-worker selector passed one test. The other 23 tests in its file were not selected:
+
+```sh
+npx vitest run test/integration/supervisor/worker.test.ts \
+  -t "executes supplemental memory from the frozen detached snapshot"
+```
+
+### Repository and release gates
+
+#### Test and coverage results
+
+- The full coverage run passed 4,526 tests in 328 files. Four tests were skipped by design.
+- Coverage was 84.71% for statements, 79.36% for branches, 91.45% for functions, and 84.84%
+  for lines.
+- Browser verification passed two tests.
+- Runtime verification passed 43 tests in nine files. Thirty-four platform or credential tests were
+  skipped by design.
+
+#### Package and dependency results
+
+- The package check installed and executed `synaptiai-flow-harness-0.0.0.tgz` in a clean temporary
+  consumer. Its effective policy digest was
+  `5dfe0fbdfa1a86627e8762bfc071594c1bccbd6a467fc3f3ea12ebddf9b053b4`.
+- The Prime dependency audit passed for the Node lock and 60 Python packages.
+- The production dependency audit found zero vulnerabilities.
+- The opt-in live generation test was collected and skipped because local provider credentials were
+  not configured.
+
+#### Platform status
+
+- `npm run ci:local` passed formatting, lint, documentation, type checking, and the production build.
+  It then stopped at the documented Linux x64 Prime preparation requirement on macOS.
+
+Hosted Linux x64 CI must pass before merge. It owns the platform-specific Prime preparation and
+native runtime evidence that this host cannot provide.
