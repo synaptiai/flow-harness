@@ -49,6 +49,7 @@ import {
   effectiveHarnessCandidateArtifactFixture,
   superiorEffectiveHarnessEvaluation,
   supplementalMemoryEffectiveHarnessCandidateArtifactFixture,
+  supplementalMemoryGenerationEvidenceProvenance,
 } from "../../fixtures/effective-harness-evaluation.js";
 import { modelRoutingCandidateSourceFixture } from "../../fixtures/model-routing-candidate.js";
 import { promptActivationInput } from "../../fixtures/prompt-activation.js";
@@ -712,7 +713,7 @@ describe("effective harness runtime CLI", () => {
         sha256: sha256(privateMemory),
       },
     ]);
-    expectContentFree(runOutput, [privateMemory]);
+    expectContentFree(runOutput, [privateMemory, supplementalMemoryGenerationEvidenceProvenance]);
 
     const inspectOutput = captureIo();
     expect(
@@ -736,7 +737,10 @@ describe("effective harness runtime CLI", () => {
         },
       },
     });
-    expectContentFree(inspectOutput, [privateMemory]);
+    expectContentFree(inspectOutput, [
+      privateMemory,
+      supplementalMemoryGenerationEvidenceProvenance,
+    ]);
   });
 
   it("resumes from durable effective authority after the live store is removed", async () => {

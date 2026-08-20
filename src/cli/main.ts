@@ -4142,11 +4142,19 @@ function effectiveHarnessCandidateView(artifact: EffectiveHarnessCandidateArtifa
     scopeDigest: artifact.scopeDigest,
     workflowId: artifact.workflowId,
     surface: artifact.surface,
-    candidate: artifact.candidate,
+    candidate: isSupplementalMemoryCandidateIdentity(artifact.candidate)
+      ? supplementalMemoryCandidateView(artifact.candidate)
+      : artifact.candidate,
     baselineHeadDigest: artifact.baselineHead.headDigest,
     baselineStateDigest: artifact.baselineState.stateDigest,
     candidateStateDigest: artifact.candidateState.stateDigest,
   });
+}
+
+function isSupplementalMemoryCandidateIdentity(
+  identity: EffectiveHarnessCandidateArtifact["candidate"],
+): identity is SupplementalMemoryCandidateIdentity {
+  return "kind" in identity && identity.kind === "supplemental-memory-candidate";
 }
 
 function effectiveHarnessIndexView(index: Awaited<ReturnType<LocalEffectiveHarnessStore["list"]>>) {

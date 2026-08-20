@@ -13,6 +13,7 @@ import {
 import type { AgentEvidence } from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { calculateWorkflowDigest } from "../../../src/domain/workflow/digest.js";
+import { admitLocalEffectiveHarnessCandidate } from "../../../src/infrastructure/fs/local-effective-harness-candidate.js";
 import { LocalPromptActivationStore } from "../../../src/infrastructure/fs/local-prompt-activation-store.js";
 import { promptActivationInput } from "../../fixtures/prompt-activation.js";
 import { promptCandidateTuningEvidence } from "../../fixtures/prompt-candidate-generation.js";
@@ -87,6 +88,43 @@ describe("supplemental-memory candidate generation CLI", () => {
       },
     });
     expectContentFree(validation.stdout.join("\n"), privateValue, fixture.privateEvidenceCanary);
+
+    const composition = capture();
+    expect(
+      await main(["candidate", "compose", fixture.outputPath], composition.io, {
+        cwd: fixture.root,
+      }),
+      composition.stderr.join("\n"),
+    ).toBe(0);
+    const composed = JSON.parse(composition.stdout.join("\n"));
+    expect(composed).toMatchObject({
+      composed: true,
+      candidate: {
+        surface: "supplemental-memory",
+        candidate: {
+          kind: "supplemental-memory-candidate",
+          generation: { provider: "test", model: "deterministic" },
+        },
+      },
+      staged: {
+        path: expect.stringMatching(/^\.flow\/effective-harness\/artifacts\/[a-f0-9]{64}\.json$/),
+      },
+    });
+    expectContentFree(composition.stdout.join("\n"), privateValue, fixture.privateEvidenceCanary);
+    await Promise.all([rm(fixture.outputPath), rm(fixture.evidencePath)]);
+    const staged = await admitLocalEffectiveHarnessCandidate(
+      join(fixture.root, composed.staged.path),
+    );
+    expect(staged.artifact.candidate).toMatchObject({
+      kind: "supplemental-memory-candidate",
+      generation: { provider: "test", model: "deterministic" },
+    });
+    expect(staged.artifact.candidateState.supplementalMemory).toEqual([
+      expect.objectContaining({
+        id: "reviewed-fixture",
+        contentBase64: Buffer.from(privateValue).toString("base64"),
+      }),
+    ]);
   });
 
   it("rejects mixed candidate authority before model execution or publication", async () => {
