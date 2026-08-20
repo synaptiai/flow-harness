@@ -32,6 +32,7 @@ const candidateSchema = z
       "agent-skill-package-candidate",
       "model-routing-candidate",
       "child-specialist-candidate",
+      "supplemental-memory-candidate",
     ]),
     digest: sha256Schema,
   })
@@ -75,6 +76,7 @@ const effectiveHarnessActivationTransitionSchema = effectiveHarnessTransitionCom
     "agent-skill-package",
     "model-routing",
     "child-specialist",
+    "supplemental-memory",
   ]),
   candidate: candidateSchema,
   evaluation: evaluationSchema,
@@ -98,14 +100,16 @@ export type EffectiveHarnessSurface =
   | "agent-skill-resource"
   | "agent-skill-package"
   | "model-routing"
-  | "child-specialist";
+  | "child-specialist"
+  | "supplemental-memory";
 
 export type EffectiveHarnessCandidateKind =
   | "prompt-candidate"
   | "agent-skill-candidate"
   | "agent-skill-package-candidate"
   | "model-routing-candidate"
-  | "child-specialist-candidate";
+  | "child-specialist-candidate"
+  | "supplemental-memory-candidate";
 
 export interface EffectiveHarnessTransitionBase {
   readonly version: 1;
@@ -359,7 +363,8 @@ function surfaceMatchesCandidate(
     (surface === "agent-skill-resource" && kind === "agent-skill-candidate") ||
     (surface === "agent-skill-package" && kind === "agent-skill-package-candidate") ||
     (surface === "model-routing" && kind === "model-routing-candidate") ||
-    (surface === "child-specialist" && kind === "child-specialist-candidate")
+    (surface === "child-specialist" && kind === "child-specialist-candidate") ||
+    (surface === "supplemental-memory" && kind === "supplemental-memory-candidate")
   );
 }
 

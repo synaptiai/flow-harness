@@ -38,6 +38,10 @@ import {
   parsePromptCandidateIdentity,
 } from "../../domain/adaptation/prompt-candidate.js";
 import {
+  parseSupplementalMemoryCandidateIdentity,
+  type SupplementalMemoryCandidateIdentity,
+} from "../../domain/adaptation/supplemental-memory-candidate.js";
+import {
   calculateAgentSkillCapabilitySnapshotDigest,
   calculateCapabilitySnapshotDigest,
 } from "../../domain/capability/agent-skills.js";
@@ -165,7 +169,21 @@ const candidateIdentitySchema = z
       | AgentSkillPackageCandidateIdentity
       | ModelRoutingCandidateIdentity
       | ChildSpecialistCandidateIdentity
+      | SupplementalMemoryCandidateIdentity
     >((value) => {
+      if (
+        typeof value === "object" &&
+        value !== null &&
+        "kind" in value &&
+        value.kind === "supplemental-memory-candidate"
+      ) {
+        try {
+          parseSupplementalMemoryCandidateIdentity(value);
+          return true;
+        } catch {
+          return false;
+        }
+      }
       if (
         typeof value === "object" &&
         value !== null &&
@@ -251,6 +269,7 @@ const flowProfileSchema = z
           "agent-skill-package",
           "model-routing",
           "child-specialist",
+          "supplemental-memory",
         ]),
         candidateDigest: sha256Schema,
       })
@@ -630,6 +649,9 @@ const publicHeaderSchema = z
           );
         }
         if ("kind" in identity && identity.kind === "child-specialist-candidate") {
+          return false;
+        }
+        if ("kind" in identity && identity.kind === "supplemental-memory-candidate") {
           return false;
         }
         return (

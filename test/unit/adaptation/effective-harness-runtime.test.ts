@@ -10,6 +10,8 @@ import {
 import {
   compileEffectiveHarnessState,
   createEffectiveHarnessHeadIdentity,
+  createEffectiveHarnessState,
+  effectiveHarnessWorkflowSource,
 } from "../../../src/domain/adaptation/effective-harness-state.js";
 import {
   calculateCapabilitySnapshotDigest,
@@ -53,6 +55,60 @@ describe("effective harness runtime snapshots", () => {
         currentPolicyPackage(),
       ]),
     ).toEqual(artifact.candidateState);
+  });
+
+  it("carries and reconstructs exact supplemental-memory bytes", () => {
+    const artifact = effectiveHarnessCandidateArtifactFixture();
+    const baseline = artifact.candidateState;
+    const content = "Verify the generated fixture before updating its checksum.";
+    const state = createEffectiveHarnessState({
+      scopeDigest: baseline.scopeDigest,
+      workflowSource: effectiveHarnessWorkflowSource(baseline),
+      ...(baseline.rootPackage === undefined ? {} : { rootPackage: baseline.rootPackage }),
+      packages: baseline.packages,
+      supplementalMemory: [
+        {
+          id: "generated-fixture",
+          target: {
+            workflowId: baseline.workflowId,
+            childPath: [],
+            agentNodeId: "implement",
+          },
+          content,
+        },
+      ],
+    });
+    const head = createEffectiveHarnessHeadIdentity({
+      scopeDigest: state.scopeDigest,
+      workflowId: state.workflowId,
+      generation: 2,
+      activationDigest: "4".repeat(64),
+      transitionDigest: "5".repeat(64),
+      stateDigest: state.stateDigest,
+    });
+
+    const runtime = createEffectiveHarnessRuntimeSnapshot({ state, head });
+
+    expect(runtime.supplementalMemory).toEqual(state.supplementalMemory);
+    expect(restoreEffectiveHarnessRuntimeState(runtime, state.packages)).toEqual(state);
+  });
+
+  it("rejects a redigested explicit empty memory catalog for a memory-free state", () => {
+    const artifact = effectiveHarnessCandidateArtifactFixture();
+    const runtime = structuredClone(
+      createEffectiveHarnessRuntimeSnapshot({
+        state: artifact.candidateState,
+        head: activeHead(artifact),
+      }),
+    ) as MutableRuntime;
+    runtime.supplementalMemory = [];
+    runtime.runtimeDigest = calculateEffectiveHarnessRuntimeDigest(runtime);
+
+    expect(() =>
+      parseEffectiveHarnessRuntimeSnapshot(runtime, artifact.candidateState.packages),
+    ).toThrowError(
+      expect.objectContaining<Partial<EffectiveHarnessRuntimeError>>({ code: "invalid_schema" }),
+    );
   });
 
   it("rejects missing, substituted, and ambient non-policy package authority", () => {

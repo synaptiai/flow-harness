@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { projectEffectiveHarnessCandidate } from "../../src/application/prepare-effective-harness-candidate.js";
 import {
   createEffectiveHarnessCandidateArtifact,
@@ -7,6 +9,10 @@ import {
   createEffectiveHarnessHeadIdentity,
   createEffectiveHarnessState,
 } from "../../src/domain/adaptation/effective-harness-state.js";
+import {
+  parseSupplementalMemoryCandidateText,
+  projectSupplementalMemoryCandidate,
+} from "../../src/domain/adaptation/supplemental-memory-candidate.js";
 import { calculateCapabilitySnapshotDigest } from "../../src/domain/capability/agent-skills.js";
 import {
   calculateEvaluationPlanDigest,
@@ -19,9 +25,9 @@ import type {
   StoredEvaluation,
 } from "../../src/infrastructure/fs/local-evaluation-store.js";
 import { agentSkillPackageActivationFixture } from "./agent-skill-package-activation.js";
+import { childSpecialistCandidateFixture } from "./child-specialist-candidate.js";
 import { modelRoutingCandidateFixture } from "./model-routing-candidate.js";
 import { promptCandidateWorkflowText } from "./prompt-candidate-generation.js";
-import { childSpecialistCandidateFixture } from "./child-specialist-candidate.js";
 
 const scopeDigest = "a".repeat(64);
 
@@ -115,6 +121,54 @@ export function modelRoutingEffectiveHarnessCandidateArtifactFixture(): Effectiv
     baselineState: baseline,
     candidateState: projected.state,
     candidate: route.identity,
+  });
+}
+
+export function supplementalMemoryEffectiveHarnessCandidateArtifactFixture(
+  candidateScopeDigest = scopeDigest,
+): EffectiveHarnessCandidateArtifact {
+  const baselineSource = supplementalMemoryWorkflowText();
+  const baseline = createEffectiveHarnessState({
+    scopeDigest: candidateScopeDigest,
+    workflowSource: baselineSource,
+    packages: [],
+  });
+  const sourceText = JSON.stringify({
+    apiVersion: "flow.synapti.ai/v1alpha1",
+    kind: "SupplementalMemoryCandidate",
+    metadata: { id: "reviewed-fixture-memory", version: "1.0.0" },
+    scope: {
+      kind: "workflow-agent-memory",
+      workflowId: baseline.workflowId,
+      childPath: [],
+      agentNodeId: "implement",
+      entryId: "reviewed-fixture",
+    },
+    baseline: {
+      stateDigest: baseline.stateDigest,
+      workflowDigest: baseline.workflow.workflowDigest,
+      packageClosureDigest: calculateCapabilitySnapshotDigest(baseline.packages),
+    },
+    change: { kind: "add", value: "PRIVATE_MEMORY_USE_THE_REVIEWED_FIXTURE" },
+  });
+  const projected = projectSupplementalMemoryCandidate({
+    manifestProvenance: "memory.candidate.json",
+    sourceSha256: sha256(sourceText),
+    source: parseSupplementalMemoryCandidateText(sourceText),
+    baseline,
+  });
+  return createEffectiveHarnessCandidateArtifact({
+    baselineHead: createEffectiveHarnessHeadIdentity({
+      scopeDigest: candidateScopeDigest,
+      workflowId: baseline.workflowId,
+      generation: 3,
+      activationDigest: "b".repeat(64),
+      transitionDigest: "c".repeat(64),
+      stateDigest: baseline.stateDigest,
+    }),
+    baselineState: baseline,
+    candidateState: projected.state,
+    candidate: projected.identity,
   });
 }
 
@@ -311,4 +365,46 @@ function effectiveBinding(
     surface: artifact.surface,
     candidateDigest: artifact.candidate.candidateDigest,
   } as const;
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function supplementalMemoryWorkflowText(): string {
+  return JSON.stringify({
+    apiVersion: "flow.synapti.ai/v1alpha1",
+    kind: "Workflow",
+    metadata: { id: "memory-evaluation-workflow" },
+    budget: {
+      maxNodeStarts: 8,
+      maxModelTokens: 10_000,
+      maxCostUsd: 1,
+      maxExecutionMs: 300_000,
+      maxArtifactBytes: 1_048_576,
+    },
+    nodes: [
+      {
+        id: "implement",
+        type: "agent",
+        agent: {
+          prompt: "Implement the task.",
+          model: { provider: "test", id: "deterministic", thinking: "medium" },
+          tools: ["read", "edit"],
+          skills: [],
+          toolPackages: [],
+          timeoutMs: 300_000,
+        },
+      },
+      {
+        id: "publish",
+        type: "result",
+        dependsOn: ["implement"],
+        result: {
+          source: { nodeId: "implement", field: "agent.text" },
+          schema: { type: "string", maxLength: 1_024 },
+        },
+      },
+    ],
+  });
 }

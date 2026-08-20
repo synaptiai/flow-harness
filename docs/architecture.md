@@ -25,6 +25,8 @@ Gate 7 adds reviewed adaptive changes above the evaluation layer. Prompt and Age
 can change bounded prompt or package surfaces. A model-routing candidate can replace one exact model
 tuple on one existing root agent node. A child-specialist candidate can replace one embedded child
 agent's instructions or select an exact subset of Agent Skills already in the immutable closure.
+One supplemental-memory candidate can add, replace, or remove one bounded reference entry for one
+existing root or embedded-child agent.
 Flow evaluates each change under shared non-candidate controls, then activates one complete
 effective harness state.
 
@@ -80,6 +82,7 @@ flowchart TB
         rules["Rules and safeguards<br/>Policy · approvals · budgets · verification"]
         capability["Capability governance<br/>Checks, freezes, and maintains exact package bytes"]
         adaptation["Evaluation and adaptation<br/>Compares reviewed root and child candidates"]
+        memory["Reviewed agent context<br/>Immutable per-agent supplemental memory"]
     end
 
     subgraph execution["3. Execution plane — performs bounded work"]
@@ -112,7 +115,10 @@ flowchart TB
     capability -->|"Fetches and authenticates inert bytes"| sources
     capability -->|"Supplies an immutable snapshot"| engine
     adaptation -->|"Runs paired trials"| engine
+    adaptation -->|"Stages one reviewed memory change"| memory
+    memory -->|"Supplies exact target context"| engine
     adaptation -->|"Stores evaluation and activation evidence"| stores
+    memory -->|"Persists identities and exact bytes"| stores
     engine -->|"Asks what is legal"| rules
     rules -->|"Authorizes bounded agent work"| agents
     rules -->|"Authorizes bounded commands"| commands
@@ -134,8 +140,9 @@ Read the diagram from top to bottom:
 
 1. People and automation use the command line or a first-party presentation view.
 
-2. The control plane compiles the workflow, reconstructs durable state, and decides which action is
-   legal. A model can request work, but it cannot authorize a transition.
+2. The control plane compiles the workflow, reconstructs durable state, selects reviewed per-agent
+   context, and decides which action is legal. A model can request work, but it cannot authorize a
+   transition or write supplemental memory.
 
 3. The execution plane performs only the bounded work that the control plane admits. Agent and
    command adapters do not own workflow state.
@@ -210,6 +217,7 @@ Architecture is derived from these flows.
 | Reclaim retired package blobs | An operator previews, reviews, and applies one exact prune plan | Active blobs and durable snapshots stay unchanged while retired content is unlinked with generation-safe reader settlement |
 | Compare one model route | An operator supplies one route candidate and a paired plan | Two ordered profiles use exact model tuples under shared tasks, budgets, retries, network policy, and verification |
 | Compare one child specialist | An operator supplies one candidate for one agent in an embedded child workflow | Two ordered profiles use exact complete harness states under one shared evaluation plan; only instructions or an existing skill selection differs |
+| Compare one supplemental-memory entry | An operator supplies one add, replace, or remove candidate for one existing agent | Two ordered profiles use exact complete harness states; only one bounded reviewed reference entry differs |
 | Activate one reviewed adaptation | An operator previews and applies one superior evaluated candidate | One complete immutable harness state becomes the head for future runs. Retained states remain rollback targets. |
 
 ### Operator flows
@@ -1193,6 +1201,12 @@ agent's ordered Agent Skill selection to names already present in the effective 
 package closure. Flow rejects packaged-child targets, new package bytes, and every unrelated root or
 child field.
 
+A `SupplementalMemoryCandidate` is a sixth inert source. It identifies one stable entry for one
+existing root agent or one agent in an embedded child workflow. It declares one add, replace, or
+remove operation against the exact current state, package closure, target, and prior entry identity.
+Flow stores the accepted bytes inside the complete effective state. It doesn't create a live memory
+store, retrieval service, provider session, or model write path.
+
 The generation services use the provider-neutral `AgentExecutor` port. The Pi adapter is the first
 implementation. Flow creates one agent request with no tools, skills, or packages. Prompt
 generation includes only selected root-agent prompts and tuning-only packets. Agent Skill
@@ -1238,6 +1252,11 @@ runtime. The baseline profile selects the complete pre-change effective state. T
 profile selects the complete projected state. Shared model, task, fixture, seed, budget, network,
 retry, order, and verification controls remain exact.
 
+For a supplemental-memory candidate, both profiles select one complete effective harness artifact.
+The profiles share workflow bytes, package bytes, tasks, fixtures, seeds, model routes, budgets,
+network denial, retries, order, and verification. Only the declared entry differs. Public evidence
+stores the exact target, operation, byte counts, and digests without storing the entry content.
+
 Both effective profile bindings also store the admitted workflow ID and must match the candidate
 scope. Trial adapters receive only their selected model tuple.
 
@@ -1251,9 +1270,9 @@ digests, public views, execution behavior, and rollback selectors.
 
 The effective harness layer composes later reviewed changes. `candidate compose` reads one ordinary
 candidate, the exact current head, and its complete state. It projects only the declared prompt,
-Agent Skill resource, generated Agent Skill package, model route, or child-specialist surface. The
-resulting immutable artifact contains the complete states, baseline head, candidate identity, and
-content-free delta.
+Agent Skill resource, generated Agent Skill package, model route, child-specialist, or
+supplemental-memory surface. The resulting immutable artifact contains the complete states,
+baseline head, candidate identity, and content-free delta.
 
 Composition authenticates the ordinary candidate against its own immutable baseline before it
 rebases that one declared surface onto the current complete state. Prompt rebasing copies only the
@@ -1262,14 +1281,18 @@ package rebasing changes only the declared empty-to-selected skill field and add
 Model-route rebasing changes only the declared model tuple on the exact target node.
 Child-specialist rebasing changes only the declared embedded agent instructions or skill selection
 and preserves the package closure.
+Supplemental-memory rebasing changes only one declared entry and preserves every unrelated entry,
+workflow field, and package.
 The current target must equal the candidate's before-state, so an orthogonal reviewed change is
 retained while a stale same-surface candidate fails closed.
 
-An effective state contains exact workflow bytes and the complete ordered non-policy package
-closure. The state excludes policy packages and nested activation objects. Its digest binds the
-canonical project scope, workflow identity, optional root workflow package, and every package. The
-head also binds the workflow, generation, selected state, selected activation, and last transition.
-This prevents an ABA change from presenting an old state as the current baseline.
+An effective state contains exact workflow bytes, the complete ordered non-policy package closure,
+and an optional canonical supplemental-memory catalog. The state excludes policy packages and
+nested activation objects. Its digest binds the canonical project scope, workflow identity,
+optional root workflow package, every package, and every memory target and byte identity. States
+without memory retain their historical digest. The head also binds the workflow, generation,
+selected state, selected activation, and last transition. This prevents an ABA change from
+presenting an old state as the current baseline.
 
 The effective store writes state and candidate dependencies before it replaces one atomic index.
 The index retains every activated state, artifact, transition, and workflow origin. Staged states
@@ -1287,10 +1310,17 @@ state from its workflow bytes, ordered package closure, and compact runtime proo
 missing, extra, reordered, or substituted packages. Current policy packages are then applied as a
 separate overlay and are not part of the rollbackable state.
 
-The run stores the complete selected workflow, packages, content-free head, and runtime proof in its
-capability snapshot. Attached execution, detached workers, child ledgers, resume, recovery, replay,
-and public inspection use that saved snapshot. They do not read the current index, review directory,
-blueprint, evidence, registry, credentials, or live skill catalog.
+The run stores the complete selected workflow, packages, supplemental-memory bytes, content-free
+head, and runtime proof in its capability snapshot. Attached execution, detached workers, child
+ledgers, resume, recovery, replay, and public inspection use that saved snapshot. They do not read
+the current index, review directory, candidate, blueprint, evidence, registry, credentials, or live
+skill catalog.
+
+Before one agent attempt, the scheduler selects only entries whose root workflow, child-node path,
+and agent node match the current execution. It renders a canonical escaped block after Flow's fixed
+system instructions and before the selected Agent Skill catalog. A fixed notice states that the
+block is reference context and cannot add tools or override workflow, policy, or approval authority.
+Untargeted agents receive no block. Every attempt still starts a fresh in-memory Pi session.
 
 Attached execution protects the canonical project `.flow` directory. A detached job stores the same
 protected path in its immutable record. The worker gives the saved path to each node executor.
@@ -1315,6 +1345,11 @@ replace a packaged child, add or mutate a package, change graph topology, tools,
 results, policy, approvals, retries, or sandboxing. Flow does not discover, delegate to, or fall
 back to another agent at runtime.
 
+A supplemental-memory candidate can change only one declared memory entry. It cannot change a
+prompt, model, graph, tool, skill, package, policy, approval, budget, verifier, retry, sandbox, or
+result contract. It cannot grant authority, trigger retrieval, persist a conversation, or let a
+model write future memory.
+
 Model-authorized evaluation and activation remain unavailable. Agent Skill package installation,
 signing, publication, and executable-resource generation remain unavailable. Multi-skill generation
 also remains unavailable.
@@ -1331,6 +1366,8 @@ also remains unavailable.
 - Flow does not guarantee prepaid or invoice-authoritative model-cost caps, currency conversion, or distributed quota reservation.
 - Flow does not autonomously merge, release, deploy, or weaken its safety floor.
 - Flow does not let a model activate an adaptive prompt candidate.
+- Flow does not treat conversations, provider sessions, ACP sessions, or model output as durable
+  supplemental memory.
 - Flow does not permit live mutation of policy, evaluator definitions, or graph semantics.
 - Flow does not make a Python or JavaScript kernel a mandatory core primitive.
 - Flow does not treat process or worktree isolation as a security sandbox.

@@ -109,4 +109,60 @@ describe("public run output", () => {
       },
     });
   });
+
+  it("removes supplemental memory bytes without deleting same-named public metadata", () => {
+    const privateText = "PRIVATE_SUPPLEMENTAL_MEMORY\n";
+    const privateContent = Buffer.from(privateText).toString("base64");
+    const value = {
+      capabilitySnapshot: {
+        effectiveHarness: {
+          version: 1,
+          kind: "effective-harness-runtime",
+          supplementalMemory: [
+            {
+              id: "operator-guidance",
+              target: {
+                workflowId: "review-workflow",
+                childPath: [],
+                agentNodeId: "reviewer",
+              },
+              bytes: Buffer.byteLength(privateText),
+              sha256: "d".repeat(64),
+              contentBase64: privateContent,
+              metadata: { contentBase64: "public-metadata-label" },
+            },
+          ],
+        },
+      },
+    };
+
+    const projected = projectPublicRunOutput(value);
+
+    expect(projected).toEqual({
+      capabilitySnapshot: {
+        effectiveHarness: {
+          version: 1,
+          kind: "effective-harness-runtime",
+          supplementalMemory: [
+            {
+              id: "operator-guidance",
+              target: {
+                workflowId: "review-workflow",
+                childPath: [],
+                agentNodeId: "reviewer",
+              },
+              bytes: Buffer.byteLength(privateText),
+              sha256: "d".repeat(64),
+              metadata: { contentBase64: "public-metadata-label" },
+            },
+          ],
+        },
+      },
+    });
+    expect(JSON.stringify(projected)).not.toContain(privateContent);
+    expect(JSON.stringify(projected)).not.toContain(privateText);
+    expect(value.capabilitySnapshot.effectiveHarness.supplementalMemory[0]?.contentBase64).toBe(
+      privateContent,
+    );
+  });
 });

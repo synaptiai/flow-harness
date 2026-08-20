@@ -39,9 +39,15 @@ function projectEffectiveHarness(value: unknown): unknown {
     return value;
   }
   return Object.fromEntries(
-    Object.entries(value).map(([key, item]) =>
-      key === "workflow" ? [key, omitContentBase64(item)] : [key, item],
-    ),
+    Object.entries(value).map(([key, item]) => {
+      if (key === "workflow") {
+        return [key, omitContentBase64(item)];
+      }
+      if (key === "supplementalMemory" && Array.isArray(item)) {
+        return [key, item.map((entry) => omitContentBase64(entry))];
+      }
+      return [key, item];
+    }),
   );
 }
 

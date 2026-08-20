@@ -34,6 +34,7 @@ import { agentSkillActivationInput } from "../../fixtures/agent-skill-activation
 import {
   effectiveHarnessCandidateArtifactFixture,
   modelRoutingEffectiveHarnessCandidateArtifactFixture,
+  supplementalMemoryEffectiveHarnessCandidateArtifactFixture,
 } from "../../fixtures/effective-harness-evaluation.js";
 
 describe("run workflow capability snapshots", () => {
@@ -324,6 +325,50 @@ describe("run workflow capability snapshots", () => {
       id: "deterministic",
       thinking: "medium",
     });
+    expect(state).toMatchObject({
+      status: "succeeded",
+      capabilitySnapshot: { digest: snapshot.digest },
+    });
+  });
+
+  it("resumes one exact supplemental-memory block from the durable effective snapshot", async () => {
+    const artifact = supplementalMemoryEffectiveHarnessCandidateArtifactFixture();
+    const snapshot = effectiveHarnessCapabilitySnapshot(artifact);
+    const effectiveHarness = snapshot.effectiveHarness;
+    if (effectiveHarness === undefined) throw new Error("memory harness fixture is missing");
+    const workflow = compileWorkflowText(
+      Buffer.from(effectiveHarness.workflow.contentBase64, "base64").toString("utf8"),
+      `activation:${effectiveHarness.workflowId}`,
+    );
+    const interrupted = new MemoryStore("node_started");
+
+    await expect(
+      runWorkflow(workflow, {
+        ...options(
+          interrupted,
+          executorFrom(() => agentSuccess()),
+        ),
+        runId: "resume-supplemental-memory",
+        capabilitySnapshot: snapshot,
+      }),
+    ).rejects.toThrow("injected persistence failure");
+
+    const recovered = new MemoryStore(undefined, interrupted.events);
+    let observedMemory: string | undefined;
+    const state = await resumeWorkflow(workflow, {
+      ...options(
+        recovered,
+        executorFrom((node, context) => {
+          if (node.type === "agent") observedMemory = context.agentSupplementalMemory;
+          return agentSuccess();
+        }),
+      ),
+      runId: "resume-supplemental-memory",
+    });
+
+    expect(observedMemory).toContain("<supplemental_memory>");
+    expect(observedMemory).toContain("PRIVATE_MEMORY_USE_THE_REVIEWED_FIXTURE");
+    expect(observedMemory).toContain('<entry id="reviewed-fixture"');
     expect(state).toMatchObject({
       status: "succeeded",
       capabilitySnapshot: { digest: snapshot.digest },

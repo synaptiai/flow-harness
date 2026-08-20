@@ -8,6 +8,8 @@ import {
   encodeEffectiveHarnessCandidateArtifact,
   MAX_EFFECTIVE_HARNESS_CANDIDATE_BYTES,
 } from "../../../../src/domain/adaptation/effective-harness-candidate.js";
+import { createEffectiveHarnessState } from "../../../../src/domain/adaptation/effective-harness-state.js";
+import { calculateCapabilitySnapshotDigest } from "../../../../src/domain/capability/agent-skills.js";
 import { admitLocalAdaptationCandidate } from "../../../../src/infrastructure/fs/local-adaptation-candidate.js";
 import { childSpecialistCandidateFixture } from "../../../fixtures/child-specialist-candidate.js";
 import { effectiveHarnessCandidateArtifactFixture } from "../../../fixtures/effective-harness-evaluation.js";
@@ -23,6 +25,20 @@ afterEach(async () => {
 });
 
 describe("local adaptation candidate dispatch", () => {
+  it("does not retain a private missing source path as a nested cause", async () => {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "flow-adaptation-candidate-")));
+    temporaryDirectories.push(directory);
+    const privatePath = join(directory, "PRIVATE_MISSING_MEMORY_CANDIDATE.json");
+
+    const error = await admitLocalAdaptationCandidate(privatePath).catch(
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).not.toContain(privatePath);
+    expect((error as Error).cause).toBeUndefined();
+  });
+
   it("dispatches a child-specialist candidate with its admitted package closure", async () => {
     const directory = await realpath(await mkdtemp(join(tmpdir(), "flow-adaptation-candidate-")));
     temporaryDirectories.push(directory);
@@ -129,6 +145,69 @@ describe("local adaptation candidate dispatch", () => {
         afterDiscriminatorRead: () => writeFile(path, Buffer.concat([content, Buffer.from(" ")])),
       }),
     ).rejects.toMatchObject({ code: "source_changed" });
+  });
+
+  it("dispatches supplemental memory only after resolving its exact complete baseline", async () => {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "flow-adaptation-candidate-")));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "memory.candidate.json");
+    const baseline = createEffectiveHarnessState({
+      scopeDigest: "a".repeat(64),
+      workflowSource: promptCandidateWorkflowText(),
+      packages: [],
+    });
+    const source = {
+      apiVersion: "flow.synapti.ai/v1alpha1",
+      kind: "SupplementalMemoryCandidate",
+      metadata: { id: "reviewed-fixture", version: "1.0.0" },
+      scope: {
+        kind: "workflow-agent-memory",
+        workflowId: baseline.workflowId,
+        childPath: [],
+        agentNodeId: "implement",
+        entryId: "fixture-location",
+      },
+      baseline: {
+        stateDigest: baseline.stateDigest,
+        workflowDigest: baseline.workflow.workflowDigest,
+        packageClosureDigest: calculateCapabilitySnapshotDigest(baseline.packages),
+      },
+      change: { kind: "add", value: "PRIVATE_MEMORY_READ_THE_REVIEWED_FIXTURE" },
+    };
+    await writeFile(path, JSON.stringify(source));
+    const resolvedWorkflowIds: string[] = [];
+
+    const admitted = await admitLocalAdaptationCandidate(path, {
+      resolveSupplementalMemoryBaseline: async (candidate) => {
+        resolvedWorkflowIds.push(candidate.scope.workflowId);
+        return baseline;
+      },
+    });
+
+    expect(admitted).toMatchObject({
+      kind: "supplemental-memory-candidate",
+      candidate: {
+        source,
+        identity: {
+          kind: "supplemental-memory-candidate",
+          scope: source.scope,
+          projectedStateDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+        },
+        state: {
+          supplementalMemory: [
+            expect.objectContaining({
+              id: "fixture-location",
+              target: {
+                workflowId: source.scope.workflowId,
+                childPath: source.scope.childPath,
+                agentNodeId: source.scope.agentNodeId,
+              },
+            }),
+          ],
+        },
+      },
+    });
+    expect(resolvedWorkflowIds).toEqual([baseline.workflowId]);
   });
 
   it("accepts the exact discriminator byte boundary before kind validation", async () => {

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
+import { renderSupplementalMemoryBlock } from "../domain/adaptation/supplemental-memory.js";
 import { AGENT_COMMAND_PROTOCOL, type AgentCommandRequest } from "../domain/agent-command.js";
 import {
   agentCommandApprovalRequestId,
@@ -137,9 +138,24 @@ export interface ResumeWorkflowOptions extends Omit<RunWorkflowOptions, "runId" 
   readonly effectReconciler?: NodeEffectReconciler;
 }
 
+const supplementalMemoryChildPath = Symbol("supplemental-memory-child-path");
+type InternalRunWorkflowOptions = RunWorkflowOptions & {
+  readonly [supplementalMemoryChildPath]?: readonly string[];
+};
+type InternalResumeWorkflowOptions = ResumeWorkflowOptions & {
+  readonly [supplementalMemoryChildPath]?: readonly string[];
+};
+
 export async function runWorkflow(
   workflow: CompiledWorkflow,
   options: RunWorkflowOptions,
+): Promise<RunState> {
+  return await runWorkflowInternal(workflow, options);
+}
+
+async function runWorkflowInternal(
+  workflow: CompiledWorkflow,
+  options: InternalRunWorkflowOptions,
 ): Promise<RunState> {
   assertNotAborted(options.signal);
   const capabilitySnapshot = bindWorkflowCapabilities(workflow, options.capabilitySnapshot, {
@@ -212,7 +228,7 @@ interface RecoveryWorkspaceRelocation {
 
 async function resumeWorkflowWithRelocation(
   workflow: CompiledWorkflow,
-  options: ResumeWorkflowOptions,
+  options: InternalResumeWorkflowOptions,
   workspaceRelocation?: RecoveryWorkspaceRelocation,
 ): Promise<RunState> {
   assertNotAborted(options.signal);
@@ -304,7 +320,7 @@ async function resumeWorkflowWithRelocation(
 
 async function continueWorkflow(
   workflow: CompiledWorkflow,
-  options: Omit<RunWorkflowOptions, "runId">,
+  options: Omit<InternalRunWorkflowOptions, "runId">,
   runId: string,
   initialState: RunState,
   now: () => Date,
@@ -595,6 +611,14 @@ async function continueWorkflow(
           preflightOutcome,
         }) => {
           const abortedBeforeExecution = isAborted(options.signal);
+          const agentSupplementalMemory =
+            executionNode.type === "agent"
+              ? supplementalMemoryForAgent(
+                  options.capabilitySnapshot,
+                  options[supplementalMemoryChildPath] ?? [],
+                  executionNode.id,
+                )
+              : undefined;
           const outcome = abortedBeforeExecution
             ? executionNode.type === "child"
               ? childFailure("child_cancelled_before_start", abortReason(options.signal))
@@ -621,6 +645,7 @@ async function continueWorkflow(
                     ...(agentCommandApprovalGate === undefined ? {} : { agentCommandApprovalGate }),
                     ...(verifierSources === undefined ? {} : { verifierSources }),
                     ...(verifierPackage === undefined ? {} : { verifierPackage }),
+                    ...(agentSupplementalMemory === undefined ? {} : { agentSupplementalMemory }),
                     ...(options.signal === undefined ? {} : { signal: options.signal }),
                   },
                   options,
@@ -3586,7 +3611,7 @@ async function executeNode(
   node: CompiledNode,
   executor: NodeExecutor,
   context: Parameters<NodeExecutor["execute"]>[1],
-  options: Omit<RunWorkflowOptions, "runId">,
+  options: Omit<InternalRunWorkflowOptions, "runId">,
   now: () => Date,
 ): Promise<NodeExecutionOutcome> {
   if (node.type === "child") {
@@ -3641,7 +3666,7 @@ function validateAgentCapabilityOutcome(
 async function executeChildNode(
   node: CompiledChildNode,
   context: Parameters<NodeExecutor["execute"]>[1],
-  options: Omit<RunWorkflowOptions, "runId">,
+  options: Omit<InternalRunWorkflowOptions, "runId">,
   now: () => Date,
 ): Promise<NodeExecutionOutcome> {
   const store = childRunStore(options.store);
@@ -3680,7 +3705,7 @@ async function executeChildNode(
     parentNodeId: node.id,
     parentAttempt: context.attempt,
   });
-  const childState = await runWorkflow(node.child.workflow, {
+  const childState = await runWorkflowInternal(node.child.workflow, {
     runId: link.runId,
     cwd: workspace.cwd,
     ...(options.projectRoot === undefined ? {} : { projectRoot: options.projectRoot }),
@@ -3699,6 +3724,7 @@ async function executeChildNode(
     ...(options.agentCommandApprovalDecisions === undefined
       ? {}
       : { agentCommandApprovalDecisions: options.agentCommandApprovalDecisions }),
+    [supplementalMemoryChildPath]: [...(options[supplementalMemoryChildPath] ?? []), node.id],
   });
   return await settleChildState(node, childState, options.workspaceIsolator);
 }
@@ -3706,7 +3732,7 @@ async function executeChildNode(
 async function recoverChildNode(
   node: CompiledChildNode,
   attempt: number,
-  options: ResumeWorkflowOptions,
+  options: InternalResumeWorkflowOptions,
   now: () => Date,
 ): Promise<NodeExecutionOutcome> {
   const store = childRunStore(options.store);
@@ -3776,6 +3802,7 @@ async function recoverChildNode(
         ...(options.agentCommandApprovalDecisions === undefined
           ? {}
           : { agentCommandApprovalDecisions: options.agentCommandApprovalDecisions }),
+        [supplementalMemoryChildPath]: [...(options[supplementalMemoryChildPath] ?? []), node.id],
       },
       workspace.relocatedFromCwd === undefined
         ? undefined
@@ -3783,6 +3810,20 @@ async function recoverChildNode(
     );
   }
   return await settleChildState(node, childState, options.workspaceIsolator);
+}
+
+function supplementalMemoryForAgent(
+  snapshot: CapabilitySnapshot | undefined,
+  childPath: readonly string[],
+  agentNodeId: string,
+): string | undefined {
+  const effectiveHarness = snapshot?.effectiveHarness;
+  if (effectiveHarness?.supplementalMemory === undefined) return undefined;
+  return renderSupplementalMemoryBlock(effectiveHarness.supplementalMemory, {
+    workflowId: effectiveHarness.workflowId,
+    childPath,
+    agentNodeId,
+  });
 }
 
 function validateRecoveredChildIdentity(

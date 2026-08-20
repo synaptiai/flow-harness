@@ -391,6 +391,15 @@ They cover stable no-follow source admission, source races, and cancellation pre
 cover complete-state composition, paired durable evidence, activation, rollback, attached child
 execution, live-source removal, and content-free public output.
 
+Supplemental-memory tests bind one stable entry to one exact root or embedded-child agent. They
+cover add, replace, remove, stale entry identity, no-op rejection, canonical order, duplicate
+identity, malformed UTF-8, and exact entry, target, state, count, and candidate-source bounds. Local
+admission tests cover direct and ancestor links, same-size source replacement, cancellation
+precedence, and value-free failures. Composition and activation tests preserve every unrelated
+memory entry, workflow field, and package. Runtime tests prove targeted prompt placement, untargeted
+isolation, content-free public output, attached recovery after live-store removal, and detached
+execution from the frozen snapshot.
+
 Runtime tests remove the live effective store. They exercise attached resume, detached worker
 execution, and child capability binding. They also cover replay and current-policy rejection from
 the frozen snapshot.

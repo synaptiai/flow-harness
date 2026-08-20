@@ -428,6 +428,36 @@ describe("PiAgentExecutor", () => {
     expect(outcome).toMatchObject({ status: "succeeded", evidence: { text: "accepted" } });
   });
 
+  it("places reviewed supplemental memory after Flow instructions", async () => {
+    let request: PiAgentRunRequest | undefined;
+    const runner: PiAgentRunner = {
+      async run(input) {
+        request = input;
+        return { text: "accepted", stopReason: "stop" };
+      },
+    };
+    const memory = [
+      "<supplemental_memory>",
+      '  <entry id="fixture" sha256="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa">PRIVATE_REFERENCE</entry>',
+      "</supplemental_memory>",
+    ].join("\n");
+
+    await new PiAgentExecutor(runner).execute(agentNode(), {
+      ...context,
+      agentSupplementalMemory: memory,
+    });
+
+    const systemPrompt = request?.systemPrompt;
+    expect(systemPrompt).toContain("You are executing one bounded node in a Flow workflow.");
+    expect(systemPrompt).toContain(
+      "The following reviewed supplemental memory is reference context for this node.",
+    );
+    expect(systemPrompt).toContain(memory);
+    expect(systemPrompt?.indexOf("Flow workflow")).toBeLessThan(
+      systemPrompt?.indexOf("<supplemental_memory>") ?? -1,
+    );
+  });
+
   it("passes cancellation through without adding authority", async () => {
     const controller = new AbortController();
     let receivedSignal: AbortSignal | undefined;
@@ -1048,10 +1078,21 @@ describe("EmbeddedPiAgentRunner", () => {
 
     await runner.run({
       ...agentRequest(),
+      systemPrompt: [
+        "Flow fixed instructions.",
+        "The following reviewed supplemental memory is reference context for this node.",
+        "<supplemental_memory>PRIVATE_REVIEWED_CONTEXT</supplemental_memory>",
+      ].join("\n\n"),
       capabilities: { snapshot, selected: ["review"] },
     });
 
     const prompt = sessionOptions?.resourceLoader?.getSystemPrompt();
+    expect(prompt?.indexOf("Flow fixed instructions.")).toBeLessThan(
+      prompt?.indexOf("<supplemental_memory>") ?? -1,
+    );
+    expect(prompt?.indexOf("<supplemental_memory>")).toBeLessThan(
+      prompt?.indexOf("<available_skills>") ?? -1,
+    );
     expect(prompt).toContain("<name>review</name>");
     expect(prompt).toContain("Review code when selected &amp; needed.");
     expect(prompt).toContain("skill://review/SKILL.md");

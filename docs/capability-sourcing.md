@@ -123,8 +123,8 @@ Prime Agent proves that Pi can support a distinct long-running harness. Its prod
 | Persistent IPython | Implemented only in the fixed Prime OCI evaluation profile. Docker policy, not IPython, supplies the containment boundary |
 | Recursive subagents | Use narrow contexts but keep recursion and joins graph-owned |
 | Executable Python skills | Defer because installation expands the supply-chain boundary |
-| Continual harness refinement | **Implemented independently for current surfaces** with bounded prompt, Agent Skill resource, and Agent Skill package candidates; paired complete-state evaluation; sequential reviewed composition; durable offline snapshots; and retained-state rollback. Memory, routing, and sub-agent surfaces remain future work |
-| Immutable base plus supplemental state | Adopt as the boundary for any future learning system |
+| Continual harness refinement | **Implemented independently for current surfaces** with bounded prompt, Agent Skill resource, Agent Skill package, model-route, child-specialist, and supplemental-memory candidates; paired complete-state evaluation; sequential reviewed composition; durable offline snapshots; and retained-state rollback. Model-written learning, live retrieval, and general delegation remain future work |
+| Immutable base plus supplemental state | **Implemented for reviewed read-only supplemental memory** inside the complete effective harness state. Conversation state and writable memory remain outside Flow's authority model |
 
 See [Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent), its [architecture](https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/architecture.md), and its [RLM trust model](https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/rlm.md). Prime Agent is MIT-licensed; substantial copied portions require preservation of both Pi and Prime notices.
 
@@ -150,6 +150,12 @@ Reviewed composition stores both complete states durably. A prompt improvement s
 Agent Skill change, and an Agent Skill improvement survives a later prompt change. Rollback selects
 any retained complete state. Current policy remains outside the rollbackable state.
 Generation does not sign, install, publish, distribute, or execute the candidate.
+
+Supplemental memory is reviewed context, not a capability package. It has no registry, TUF,
+Sigstore, installation, discovery, or live retrieval lifecycle. One candidate changes one bounded
+entry for an existing agent in the complete effective harness state. Runs use the activated bytes
+from their immutable capability snapshots. For the review and evaluation procedure, see
+[Supplemental-memory candidates](evaluation.md#supplemental-memory-candidates).
 
 Flow uses its standard compiler and paired evaluation gate. An operator can activate only a complete
 superior evaluation. The effective store keeps immutable complete states, composed artifacts,

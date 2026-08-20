@@ -14,6 +14,7 @@ import {
 } from "../../domain/adaptation/effective-harness-state.js";
 import type { ModelRoutingCandidateIdentity } from "../../domain/adaptation/model-routing-candidate.js";
 import type { PromptCandidateIdentity } from "../../domain/adaptation/prompt-candidate.js";
+import type { SupplementalMemoryCandidateIdentity } from "../../domain/adaptation/supplemental-memory-candidate.js";
 import type {
   AgentSkillCapabilitySnapshot,
   CapabilitySnapshot,
@@ -116,6 +117,7 @@ export interface AdmittedFlowEvaluationProfile {
     | AgentSkillPackageCandidateIdentity
     | ModelRoutingCandidateIdentity
     | ChildSpecialistCandidateIdentity
+    | SupplementalMemoryCandidateIdentity
   ) & {
     readonly selectionProvenance: string;
   };
@@ -174,7 +176,8 @@ export function projectEvaluationCandidateIdentity(
     | AgentSkillCandidateIdentity
     | AgentSkillPackageCandidateIdentity
     | ModelRoutingCandidateIdentity
-    | ChildSpecialistCandidateIdentity;
+    | ChildSpecialistCandidateIdentity
+    | SupplementalMemoryCandidateIdentity;
 } {
   const { selectionProvenance, ...identity } = candidate;
   return Object.freeze({ provenance: selectionProvenance, identity: Object.freeze(identity) });
@@ -420,6 +423,12 @@ export async function admitLocalEvaluationPlan(
         throw new EvaluationAdmissionError(
           "invalid_workflow",
           `profile "${profile.id}" effective harness artifact requires the effectiveCandidate field`,
+        );
+      }
+      if (admittedCandidate.kind === "supplemental-memory-candidate") {
+        throw new EvaluationAdmissionError(
+          "invalid_workflow",
+          `profile "${profile.id}" supplemental-memory candidate requires the effectiveCandidate field`,
         );
       }
       if (admittedCandidate.kind === "agent-skill-candidate") {
@@ -880,6 +889,12 @@ function bindCandidateComparison(
       );
     }
     return [...profiles];
+  }
+  if (candidate.candidate.kind === "supplemental-memory-candidate") {
+    throw new EvaluationAdmissionError(
+      "invalid_workflow",
+      "a supplemental-memory candidate requires the effectiveCandidate field",
+    );
   }
   if (
     candidate.candidate.baseline.workflow.sourceSha256 !== baseline.workflow.sourceSha256 ||

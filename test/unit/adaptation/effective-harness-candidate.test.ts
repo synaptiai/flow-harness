@@ -4,6 +4,10 @@ import { describe, expect, it } from "vitest";
 
 import { projectEffectiveHarnessCandidate } from "../../../src/application/prepare-effective-harness-candidate.js";
 import {
+  type ChildSpecialistCandidateIdentity,
+  calculateChildSpecialistCandidateDigest,
+} from "../../../src/domain/adaptation/child-specialist-candidate.js";
+import {
   calculateEffectiveHarnessCandidateDigest,
   createEffectiveHarnessCandidateArtifact,
   EffectiveHarnessCandidateError,
@@ -18,14 +22,17 @@ import {
 } from "../../../src/domain/adaptation/effective-harness-state.js";
 import { calculateModelRoutingCandidateDigest } from "../../../src/domain/adaptation/model-routing-candidate.js";
 import {
-  calculateChildSpecialistCandidateDigest,
-  type ChildSpecialistCandidateIdentity,
-} from "../../../src/domain/adaptation/child-specialist-candidate.js";
-import {
   calculatePromptCandidateIdentityDigest,
   type PromptCandidateIdentity,
 } from "../../../src/domain/adaptation/prompt-candidate.js";
-import { createCapabilitySnapshot } from "../../../src/domain/capability/agent-skills.js";
+import {
+  parseSupplementalMemoryCandidateText,
+  projectSupplementalMemoryCandidate,
+} from "../../../src/domain/adaptation/supplemental-memory-candidate.js";
+import {
+  calculateCapabilitySnapshotDigest,
+  createCapabilitySnapshot,
+} from "../../../src/domain/capability/agent-skills.js";
 import { createWorkflowPackageSnapshot } from "../../../src/domain/capability/workflow-packages.js";
 import { calculateWorkflowDigest } from "../../../src/domain/workflow/digest.js";
 import { agentSkillActivationInput } from "../../fixtures/agent-skill-activation.js";
@@ -37,6 +44,70 @@ import { promptActivationInput } from "../../fixtures/prompt-activation.js";
 const scopeDigest = "a".repeat(64);
 
 describe("effective harness candidate artifacts", () => {
+  it("stores and reparses one exact supplemental-memory surface", () => {
+    const fixture = agentSkillActivationInput("baseline");
+    const baseline = createEffectiveHarnessState({
+      scopeDigest,
+      workflowSource: fixture.workflowSource,
+      packages: [fixture.skill],
+    });
+    const content = "Remember the reviewed integration fixture.";
+    const sourceText = JSON.stringify({
+      apiVersion: "flow.synapti.ai/v1alpha1",
+      kind: "SupplementalMemoryCandidate",
+      metadata: { id: "remember-integration", version: "1.0.0" },
+      scope: {
+        kind: "workflow-agent-memory",
+        workflowId: baseline.workflowId,
+        childPath: [],
+        agentNodeId: "review",
+        entryId: "reviewed-integration",
+      },
+      baseline: {
+        stateDigest: baseline.stateDigest,
+        workflowDigest: baseline.workflow.workflowDigest,
+        packageClosureDigest: calculateCapabilitySnapshotDigest(baseline.packages),
+      },
+      change: { kind: "add", value: content },
+    });
+    const memory = projectSupplementalMemoryCandidate({
+      manifestProvenance: "memory.candidate.json",
+      sourceSha256: sha256(sourceText),
+      source: parseSupplementalMemoryCandidateText(sourceText, "memory.candidate.json"),
+      baseline,
+    });
+    const artifact = createEffectiveHarnessCandidateArtifact({
+      baselineHead: createEffectiveHarnessHeadIdentity({
+        scopeDigest,
+        workflowId: baseline.workflowId,
+        generation: 2,
+        activationDigest: "b".repeat(64),
+        transitionDigest: "c".repeat(64),
+        stateDigest: baseline.stateDigest,
+      }),
+      baselineState: baseline,
+      candidateState: memory.state,
+      candidate: memory.identity,
+    });
+
+    expect(parseEffectiveHarnessCandidateArtifact(structuredClone(artifact))).toEqual(artifact);
+    expect(artifact).toMatchObject({
+      surface: "supplemental-memory",
+      candidate: {
+        kind: "supplemental-memory-candidate",
+        scope: { agentNodeId: "review", entryId: "reviewed-integration" },
+        change: {
+          kind: "add",
+          before: null,
+          after: {
+            bytes: Buffer.byteLength(content, "utf8"),
+            sha256: sha256(content),
+          },
+        },
+      },
+    });
+  });
+
   it("stores and reparses one exact child-specialist surface", () => {
     const fixture = childSpecialistCandidateFixture("skills");
     const baseline = createEffectiveHarnessState({

@@ -6,16 +6,17 @@ import { resolve } from "node:path";
 import { parseDocument } from "yaml";
 
 import { MAX_AGENT_SKILL_CANDIDATE_BYTES } from "../../domain/adaptation/agent-skill-candidate.js";
-import { MAX_CHILD_SPECIALIST_CANDIDATE_BYTES } from "../../domain/adaptation/child-specialist-candidate.js";
 import type { ChildSpecialistCandidateSource } from "../../domain/adaptation/child-specialist-candidate.js";
+import { MAX_CHILD_SPECIALIST_CANDIDATE_BYTES } from "../../domain/adaptation/child-specialist-candidate.js";
 import { MAX_EFFECTIVE_HARNESS_CANDIDATE_BYTES } from "../../domain/adaptation/effective-harness-candidate.js";
+import type { EffectiveHarnessState } from "../../domain/adaptation/effective-harness-state.js";
 import { MAX_MODEL_ROUTING_CANDIDATE_BYTES } from "../../domain/adaptation/model-routing-candidate.js";
 import { MAX_PROMPT_CANDIDATE_BYTES } from "../../domain/adaptation/prompt-candidate.js";
-import type { CapabilityPackageSnapshot } from "../../domain/capability/agent-skills.js";
 import {
-  type AdmittedLocalChildSpecialistCandidate,
-  admitLocalChildSpecialistCandidate,
-} from "./local-child-specialist-candidate.js";
+  MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_BYTES,
+  type SupplementalMemoryCandidateSource,
+} from "../../domain/adaptation/supplemental-memory-candidate.js";
+import type { CapabilityPackageSnapshot } from "../../domain/capability/agent-skills.js";
 import {
   type AdmittedLocalAgentSkillCandidate,
   admitLocalAgentSkillCandidate,
@@ -24,6 +25,10 @@ import {
   type AdmittedLocalAgentSkillPackageCandidate,
   admitLocalAgentSkillPackageCandidate,
 } from "./local-agent-skill-package-candidate.js";
+import {
+  type AdmittedLocalChildSpecialistCandidate,
+  admitLocalChildSpecialistCandidate,
+} from "./local-child-specialist-candidate.js";
 import {
   type AdmittedLocalEffectiveHarnessCandidate,
   admitLocalEffectiveHarnessCandidate,
@@ -36,6 +41,10 @@ import {
   type AdmittedLocalPromptCandidate,
   admitLocalPromptCandidate,
 } from "./local-prompt-candidate.js";
+import {
+  type AdmittedLocalSupplementalMemoryCandidate,
+  admitLocalSupplementalMemoryCandidate,
+} from "./local-supplemental-memory-candidate.js";
 
 const MAX_LOCAL_ADAPTATION_CANDIDATE_BYTES = Math.max(
   MAX_AGENT_SKILL_CANDIDATE_BYTES,
@@ -43,6 +52,7 @@ const MAX_LOCAL_ADAPTATION_CANDIDATE_BYTES = Math.max(
   MAX_EFFECTIVE_HARNESS_CANDIDATE_BYTES,
   MAX_MODEL_ROUTING_CANDIDATE_BYTES,
   MAX_PROMPT_CANDIDATE_BYTES,
+  MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_BYTES,
 );
 const fatalUtf8Decoder = new TextDecoder("utf-8", { fatal: true });
 
@@ -70,6 +80,10 @@ export type AdmittedLocalAdaptationCandidate =
   | {
       readonly kind: "model-routing-candidate";
       readonly candidate: AdmittedLocalModelRoutingCandidate;
+    }
+  | {
+      readonly kind: "supplemental-memory-candidate";
+      readonly candidate: AdmittedLocalSupplementalMemoryCandidate;
     };
 
 export interface LocalAdaptationCandidateOptions {
@@ -79,6 +93,10 @@ export interface LocalAdaptationCandidateOptions {
   /** Resolve the immutable active package closure only after child-specialist discrimination. */
   readonly resolveChildSpecialistPackages?:
     | ((source: ChildSpecialistCandidateSource) => Promise<readonly CapabilityPackageSnapshot[]>)
+    | undefined;
+  /** Resolve one immutable complete baseline only after supplemental-memory discrimination. */
+  readonly resolveSupplementalMemoryBaseline?:
+    | ((source: SupplementalMemoryCandidateSource) => Promise<EffectiveHarnessState>)
     | undefined;
   /** @internal Deterministic discriminator race and cancellation seam. */
   readonly afterDiscriminatorStat?: () => void | Promise<void>;
@@ -99,9 +117,9 @@ export async function admitLocalAdaptationCandidate(
   let pathIdentity: BigIntStats;
   try {
     pathIdentity = await lstat(absolutePath, { bigint: true });
-  } catch (error) {
+  } catch {
     options.signal?.throwIfAborted();
-    throw new Error("candidate discriminator source is unavailable", { cause: error });
+    throw new Error("candidate discriminator source is unavailable");
   }
   options.signal?.throwIfAborted();
   if (pathIdentity.isSymbolicLink()) {
@@ -120,11 +138,9 @@ export async function admitLocalAdaptationCandidate(
   let handle: FileHandle;
   try {
     handle = await open(absolutePath, constants.O_RDONLY | constants.O_NOFOLLOW);
-  } catch (error) {
+  } catch {
     options.signal?.throwIfAborted();
-    throw new Error("candidate discriminator source cannot be opened without links", {
-      cause: error,
-    });
+    throw new Error("candidate discriminator source cannot be opened without links");
   }
   let source: string;
   let sourceIdentity: BigIntStats;
@@ -194,6 +210,18 @@ export async function admitLocalAdaptationCandidate(
     options.signal?.throwIfAborted();
     return Object.freeze({ kind: "model-routing-candidate", candidate });
   }
+  if (kind === "SupplementalMemoryCandidate") {
+    if (options.resolveSupplementalMemoryBaseline === undefined) {
+      throw new Error("supplemental-memory candidate requires an admitted effective baseline");
+    }
+    const candidate = await admitLocalSupplementalMemoryCandidate(absolutePath, {
+      resolveBaseline: options.resolveSupplementalMemoryBaseline,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+      expectedSource: { identity: sourceIdentity, sha256: sourceSha256 },
+    });
+    options.signal?.throwIfAborted();
+    return Object.freeze({ kind: "supplemental-memory-candidate", candidate });
+  }
   if (kind === "AgentSkillCandidate") {
     const candidate = await admitLocalAgentSkillCandidate(absolutePath, {
       ...(options.signal === undefined ? {} : { signal: options.signal }),
@@ -243,6 +271,7 @@ function parseCandidateKind(
   | "AgentSkillCandidate"
   | "ChildSpecialistCandidate"
   | "ModelRoutingCandidate"
+  | "SupplementalMemoryCandidate"
   | "effective-harness-candidate" {
   const document = parseDocument(source, {
     prettyErrors: false,
@@ -261,6 +290,7 @@ function parseCandidateKind(
       value.kind === "AgentSkillCandidate" ||
       value.kind === "ChildSpecialistCandidate" ||
       value.kind === "ModelRoutingCandidate" ||
+      value.kind === "SupplementalMemoryCandidate" ||
       value.kind === "effective-harness-candidate")
   ) {
     return value.kind;

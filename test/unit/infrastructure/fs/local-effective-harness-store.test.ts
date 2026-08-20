@@ -41,6 +41,7 @@ import { LocalPromptActivationStore } from "../../../../src/infrastructure/fs/lo
 import {
   effectiveHarnessCandidateArtifactFixture,
   superiorEffectiveHarnessEvaluation,
+  supplementalMemoryEffectiveHarnessCandidateArtifactFixture,
 } from "../../../fixtures/effective-harness-evaluation.js";
 import { promptActivationInput } from "../../../fixtures/prompt-activation.js";
 
@@ -104,6 +105,50 @@ describe("local effective harness store", () => {
       artifact,
     });
     expect(await store.list()).toMatchObject({ heads: [], history: [] });
+  });
+
+  it("rolls an activated supplemental-memory catalog back to its exact prior state", async () => {
+    const root = await temporaryDirectory();
+    const artifact = supplementalMemoryEffectiveHarnessCandidateArtifactFixture();
+    const prepared = prepareEffectiveHarnessActivation({
+      artifact,
+      stored: superiorEffectiveHarnessEvaluation(artifact),
+    });
+    const store = new LocalEffectiveHarnessStore(root, {
+      scopeDigest: artifact.scopeDigest,
+      readInitialHead: async () => artifact.baselineHead,
+    });
+    const activation = await store.previewActivate({ prepared, actor: "operator:test" });
+    await store.applyActivate({
+      prepared,
+      actor: "operator:test",
+      expectedDigest: activation.proposalDigest,
+    });
+
+    await expect(store.loadActive(artifact.workflowId)).resolves.toMatchObject({
+      state: {
+        stateDigest: artifact.candidateState.stateDigest,
+        supplementalMemory: artifact.candidateState.supplementalMemory,
+      },
+    });
+
+    const rollback = await store.previewRollback({
+      workflowId: artifact.workflowId,
+      targetStateDigest: artifact.baselineState.stateDigest,
+      actor: "operator:test",
+    });
+    await store.applyRollback({
+      workflowId: artifact.workflowId,
+      targetStateDigest: artifact.baselineState.stateDigest,
+      actor: "operator:test",
+      expectedDigest: rollback.proposalDigest,
+    });
+
+    await expect(store.loadActive(artifact.workflowId)).resolves.toEqual({
+      head: expect.objectContaining({ stateDigest: artifact.baselineState.stateDigest }),
+      state: artifact.baselineState,
+    });
+    expect(artifact.baselineState.supplementalMemory).toBeUndefined();
   });
 
   it("rejects unknown and over-budget physical blob inventories", async () => {

@@ -10,6 +10,10 @@ import {
   parseEffectiveHarnessHeadIdentity,
   parseEffectiveHarnessState,
 } from "./effective-harness-state.js";
+import {
+  MAX_SUPPLEMENTAL_MEMORY_ENTRIES,
+  supplementalMemoryEntrySchema,
+} from "./supplemental-memory.js";
 
 const RUNTIME_DIGEST_DOMAIN = "flow-effective-harness-runtime-v1";
 
@@ -49,6 +53,11 @@ const effectiveHarnessRuntimeSchema = z
       .strict()
       .optional(),
     packageDigests: z.array(sha256Schema).max(MAX_AGENT_SKILL_PACKAGES),
+    supplementalMemory: z
+      .array(supplementalMemoryEntrySchema)
+      .min(1)
+      .max(MAX_SUPPLEMENTAL_MEMORY_ENTRIES)
+      .optional(),
     runtimeDigest: sha256Schema,
   })
   .strict();
@@ -62,6 +71,7 @@ export interface EffectiveHarnessRuntimeSnapshot {
   readonly workflow: EffectiveHarnessState["workflow"];
   readonly rootPackage?: EffectiveHarnessState["rootPackage"];
   readonly packageDigests: readonly string[];
+  readonly supplementalMemory?: EffectiveHarnessState["supplementalMemory"];
   readonly runtimeDigest: string;
 }
 
@@ -111,6 +121,9 @@ export function createEffectiveHarnessRuntimeSnapshot(
     workflow: state.workflow,
     ...(state.rootPackage === undefined ? {} : { rootPackage: state.rootPackage }),
     packageDigests: state.packages.map((item) => item.digest),
+    ...(state.supplementalMemory === undefined
+      ? {}
+      : { supplementalMemory: state.supplementalMemory }),
   };
   return parseEffectiveHarnessRuntimeSnapshot(
     { ...content, runtimeDigest: calculateEffectiveHarnessRuntimeDigest(content) },
@@ -152,6 +165,16 @@ export function calculateEffectiveHarnessRuntimeDigest(
       },
       rootPackage: runtime.rootPackage ?? null,
       packageDigests: runtime.packageDigests,
+      ...(runtime.supplementalMemory === undefined
+        ? {}
+        : {
+            supplementalMemory: runtime.supplementalMemory.map((entry) => ({
+              id: entry.id,
+              target: entry.target,
+              bytes: entry.bytes,
+              sha256: entry.sha256,
+            })),
+          }),
     }),
   );
 }
@@ -195,11 +218,18 @@ function parseAndRestore(
     );
   }
   const runtime: EffectiveHarnessRuntimeSnapshot = {
-    ...parsed.data,
+    version: parsed.data.version,
+    kind: parsed.data.kind,
+    scopeDigest: parsed.data.scopeDigest,
+    workflowId: parsed.data.workflowId,
     head,
     workflow: parsed.data.workflow,
     ...(parsed.data.rootPackage === undefined ? {} : { rootPackage: parsed.data.rootPackage }),
     packageDigests: Object.freeze([...parsed.data.packageDigests]),
+    ...(parsed.data.supplementalMemory === undefined
+      ? {}
+      : { supplementalMemory: parsed.data.supplementalMemory }),
+    runtimeDigest: parsed.data.runtimeDigest,
   };
   if (
     runtime.workflowId !== head.workflowId ||
@@ -222,6 +252,9 @@ function parseAndRestore(
         workflow: runtime.workflow,
         ...(runtime.rootPackage === undefined ? {} : { rootPackage: runtime.rootPackage }),
         packages: nonPolicyPackages,
+        ...(runtime.supplementalMemory === undefined
+          ? {}
+          : { supplementalMemory: runtime.supplementalMemory }),
         stateDigest: head.stateDigest,
       },
       { scopeDigest: runtime.scopeDigest },

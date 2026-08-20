@@ -6,6 +6,7 @@ import {
   effectiveHarnessCandidateArtifactFixture,
   modelRoutingEffectiveHarnessCandidateArtifactFixture,
   superiorEffectiveHarnessEvaluation,
+  supplementalMemoryEffectiveHarnessCandidateArtifactFixture,
 } from "../../fixtures/effective-harness-evaluation.js";
 
 describe("effective harness activation preparation", () => {
@@ -51,6 +52,35 @@ describe("effective harness activation preparation", () => {
     delete requiredBinding(legacy, 1).workflowId;
     expect(prepareEffectiveHarnessActivation({ artifact, stored: legacy }).artifact).toEqual(
       artifact,
+    );
+  });
+
+  it("binds a superior supplemental-memory evaluation to one exact state pair", () => {
+    const artifact = supplementalMemoryEffectiveHarnessCandidateArtifactFixture();
+    const stored = superiorEffectiveHarnessEvaluation(artifact);
+
+    expect(prepareEffectiveHarnessActivation({ artifact, stored }).artifact).toEqual(artifact);
+
+    const changed = structuredClone(stored) as MutableStoredEvaluation;
+    const candidate = changed.header.profiles[1];
+    if (
+      candidate?.adapter !== "flow-workflow-v1" ||
+      candidate.candidate === undefined ||
+      typeof candidate.candidate.identity !== "object" ||
+      candidate.candidate.identity === null ||
+      !("scope" in candidate.candidate.identity)
+    ) {
+      throw new Error("supplemental-memory evaluation fixture is incomplete");
+    }
+    const identity = candidate.candidate.identity as {
+      scope: { agentNodeId: string };
+    };
+    identity.scope.agentNodeId = "private-forged-agent";
+    expect(() => prepareEffectiveHarnessActivation({ artifact, stored: changed })).toThrowError(
+      expect.objectContaining({
+        code: "identity_mismatch",
+        message: expect.not.stringContaining("private-forged-agent"),
+      }),
     );
   });
 

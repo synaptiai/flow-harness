@@ -32,6 +32,11 @@ import {
   parsePromptCandidateIdentity,
 } from "../domain/adaptation/prompt-candidate.js";
 import {
+  assertSupplementalMemoryCandidateSurface,
+  type ProjectedSupplementalMemoryCandidate,
+  parseSupplementalMemoryCandidateIdentity,
+} from "../domain/adaptation/supplemental-memory-candidate.js";
+import {
   type AdaptiveActivationSnapshot,
   type CapabilityPackageSnapshot,
   calculateCapabilitySnapshotDigest,
@@ -145,6 +150,10 @@ export type EffectiveHarnessCandidateProjection =
       readonly kind: "child-specialist";
       readonly projection: ProjectedChildSpecialistCandidate;
       readonly baselineWorkflowSource: string;
+    }
+  | {
+      readonly kind: "supplemental-memory";
+      readonly projection: ProjectedSupplementalMemoryCandidate;
     };
 
 export interface ProjectEffectiveHarnessCandidateInput {
@@ -158,13 +167,15 @@ export interface EffectiveHarnessSurfaceDelta {
     | "agent-skill-resource"
     | "agent-skill-package"
     | "model-routing"
-    | "child-specialist";
+    | "child-specialist"
+    | "supplemental-memory";
   readonly candidateKind:
     | "prompt-candidate"
     | "agent-skill-candidate"
     | "agent-skill-package-candidate"
     | "model-routing-candidate"
-    | "child-specialist-candidate";
+    | "child-specialist-candidate"
+    | "supplemental-memory-candidate";
   readonly candidateDigest: string;
   readonly beforeStateDigest: string;
   readonly afterStateDigest: string;
@@ -210,6 +221,34 @@ export function projectEffectiveHarnessCandidate(
         input.candidate.projection,
         input.candidate.baselineWorkflowSource,
       );
+    case "supplemental-memory":
+      return projectSupplementalMemorySurface(baseline, input.candidate.projection);
+  }
+}
+
+function projectSupplementalMemorySurface(
+  baseline: EffectiveHarnessState,
+  rawProjection: ProjectedSupplementalMemoryCandidate,
+): ProjectedEffectiveHarnessCandidate {
+  try {
+    const identity = parseSupplementalMemoryCandidateIdentity(rawProjection.identity);
+    const state = parseEffectiveHarnessState(rawProjection.state, {
+      scopeDigest: baseline.scopeDigest,
+    });
+    assertSupplementalMemoryCandidateSurface(identity, baseline, state);
+    return freezeProjection({
+      state,
+      surface: "supplemental-memory",
+      candidateKind: "supplemental-memory-candidate",
+      candidateDigest: identity.candidateDigest,
+      beforeStateDigest: baseline.stateDigest,
+    });
+  } catch (error) {
+    if (error instanceof EffectiveHarnessCandidateAdmissionError) throw error;
+    throw new EffectiveHarnessCandidateAdmissionError(
+      "surface_mismatch",
+      "supplemental-memory candidate changes authority outside its declared surface",
+    );
   }
 }
 

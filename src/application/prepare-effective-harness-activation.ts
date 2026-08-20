@@ -55,7 +55,8 @@ export interface EffectiveHarnessStoredEvaluation {
                   | "agent-skill-resource"
                   | "agent-skill-package"
                   | "model-routing"
-                  | "child-specialist";
+                  | "child-specialist"
+                  | "supplemental-memory";
                 readonly candidateDigest: string;
               }
             | undefined;
