@@ -26,7 +26,7 @@ describe("package contract", () => {
     const manifest = JSON.parse(await readFile(manifestUrl, "utf8")) as PackageManifest;
 
     expect(manifest.name).toBe("@synaptiai/flow-harness");
-    expect(manifest.version).toBe("0.0.0");
+    expect(manifest.version).toBe("0.1.0-alpha.1");
     expect(manifest.description).toBe(
       "Provider-neutral coding-agent harness with deterministic workflow graphs, durable evidence, and fail-closed sandboxed execution",
     );

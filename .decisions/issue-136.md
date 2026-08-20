@@ -39,14 +39,17 @@ Primary sources:
 | Exact-artifact bridge | Publish one verified immutable release asset, use the exact digest for the first npm publish, then use stage-only trusted publishing. | Immediate artifact plus a secure canonical transition. | More release settlement states must be explicit. |
 | Token automation | Publish directly with a stored registry token. | Simple automation. | Adds a long-lived release credential and weakens proof of presence. |
 
-Recommended pending user confirmation: exact-artifact bridge, version `0.1.0-alpha.1`, npm tag
-`preview`, immutable GitHub prerelease, one exact tarball tested on Linux and macOS, and stage-only
-trusted publishing after the first two-factor-authenticated npm publication.
+## Decision
+
+The user approved the exact-artifact bridge on 2026-08-21 with version `0.1.0-alpha.1`, npm tag
+`preview`, an immutable GitHub prerelease, one exact tarball tested on Linux and macOS, and
+stage-only trusted publishing after the first two-factor-authenticated npm publication. The release
+must not assign the `latest` tag.
 
 ## Specification
 
-_Captured on 2026-08-21. Source: issue contract, repository evidence, and external primary sources.
-The release-channel line remains pending user confirmation._
+_Captured on 2026-08-21. Source: issue contract, repository evidence, external primary sources, and
+the approved exact-artifact bridge._
 
 ### Non-goals
 
@@ -86,8 +89,10 @@ The release-channel line remains pending user confirmation._
   rebuilding them.
 - Release details live in a canonical release guide. The README provides only the preferred install
   command, status warning, and link.
-- **Pending decision** — The public channel and first-publication settlement follow the
-  user-selected approach from the approach table.
+- The public channel is an immutable GitHub prerelease followed by an exact-byte npm publication
+  under the `preview` tag. The first npm publication requires an authorized operator with two-factor
+  authentication. Later publications use stage-only trusted publishing after npm records the
+  package and trusted publisher.
 
 ## Compatibility-boundary decision
 
@@ -95,4 +100,3 @@ The package `engines` declaration alone cannot prove refusal because npm may ins
 A check inside the existing CLI would load the complete command module graph first. The package bin
 therefore points to a minimal launcher. The launcher validates only the public Node.js and operating
 system contract, emits fixed value-free failures, and imports the existing CLI only after success.
-

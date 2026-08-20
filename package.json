@@ -1,6 +1,6 @@
 {
   "name": "@synaptiai/flow-harness",
-  "version": "0.0.0",
+  "version": "0.1.0-alpha.1",
   "description": "Provider-neutral coding-agent harness with deterministic workflow graphs, durable evidence, and fail-closed sandboxed execution",
   "keywords": [
     "agent-harness",

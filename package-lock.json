@@ -1,12 +1,12 @@
 {
   "name": "@synaptiai/flow-harness",
-  "version": "0.0.0",
+  "version": "0.1.0-alpha.1",
   "lockfileVersion": 3,
   "requires": true,
   "packages": {
     "": {
       "name": "@synaptiai/flow-harness",
-      "version": "0.0.0",
+      "version": "0.1.0-alpha.1",
       "license": "Apache-2.0",
       "os": [
         "darwin",
@@ -27,7 +27,7 @@
         "zod": "4.4.3"
       },
       "bin": {
-        "flow": "dist/cli/main.js"
+        "flow": "dist/cli/launcher.js"
       },
       "devDependencies": {
         "@biomejs/biome": "2.5.7",
