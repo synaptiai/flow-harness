@@ -117,6 +117,8 @@ describe("preview release workflow", () => {
     expect(publishSource).toContain("--prerelease");
     expect(publishSource).toContain("--latest=false");
     expect(publishSource).toContain("--draft=false");
+    expect(publishSource).toContain("release/package/package-release-evidence.json");
+    expect(publishSource).not.toContain("release/package/package-release.json");
     expect(publishSource).not.toContain("--clobber");
     expect(publishSource).not.toContain("npm publish");
     expect(source).not.toContain("NPM_TOKEN");

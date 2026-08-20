@@ -47,7 +47,7 @@ The workflow performs these actions:
 1. Requires successful `CI` for the same revision.
 2. Builds `release/package/synaptiai-flow-harness-0.1.0-alpha.1.tgz` once.
 3. Records its source revision, SHA-512 digest, installed paths, modes, and byte counts in
-   `package-release.json`.
+   `package-release-evidence.json`.
 4. Verifies the downloaded artifact and a clean installation on both supported x64 hosts.
 5. Produces SLSA build provenance with GitHub's short-lived OpenID Connect identity.
 

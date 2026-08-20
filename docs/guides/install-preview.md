@@ -29,7 +29,7 @@ gh release download v0.1.0-alpha.1 \
   --repo synaptiai/flow-harness \
   --dir "$release_dir" \
   --pattern 'synaptiai-flow-harness-0.1.0-alpha.1.tgz' \
-  --pattern 'package-release.json' \
+  --pattern 'package-release-evidence.json' \
   --pattern 'flow-harness-0.1.0-alpha.1.intoto.jsonl'
 ```
 

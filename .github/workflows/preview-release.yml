@@ -212,7 +212,7 @@ jobs:
         run: |
           gh release create v0.1.0-alpha.1 \
             release/package/synaptiai-flow-harness-0.1.0-alpha.1.tgz \
-            release/package/package-release.json \
+            release/package/package-release-evidence.json \
             release/attestation/flow-harness-0.1.0-alpha.1.intoto.jsonl \
             --draft \
             --prerelease \

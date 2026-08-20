@@ -31,10 +31,10 @@ To prepare a settled release directory from a clean revision, use:
 npm run release:prepare
 ```
 
-`release/package/` contains one npm archive and `package-release.json`. The evidence binds the
-source revision, package version, SHA-512 archive digest, and exact installed-file paths, modes, and
-byte counts. A second preparation of the same identity returns the current artifact. A conflict or
-uncertain settlement fails without replacing it.
+`release/package/` contains one npm archive and `package-release-evidence.json`. The evidence binds
+the source revision, package version, SHA-512 archive digest, and exact installed-file paths, modes,
+and byte counts. A second preparation of the same identity returns the current artifact. A conflict
+or uncertain settlement fails without replacing it.
 
 To consume only that settled directory and verify a clean installation, use:
 
