@@ -16,6 +16,21 @@ import { compileWorkflowText } from "../../src/domain/workflow/compiler.js";
 const rootUrl = new URL("../../", import.meta.url);
 
 describe("public repository contracts", () => {
+  it("ships a credential-free installed-package verification workflow", async () => {
+    const [source, verifier] = await Promise.all([
+      readText("examples/verify-installation.workflow.yaml"),
+      readText("scripts/verify-package.mjs"),
+    ]);
+
+    expect(() =>
+      compileWorkflowText(source, "examples/verify-installation.workflow.yaml"),
+    ).not.toThrow();
+    expect(source).toContain("flow-preview-ready");
+    expect(verifier).toContain("verifyPackageReleaseArtifact");
+    expect(verifier).toContain("verifyInstalledPackageRelease");
+    expect(verifier).toContain("verify-installation.workflow.yaml");
+  });
+
   it("documents an honest source-based pre-alpha first run", async () => {
     const readme = await readPublicDocumentation();
 

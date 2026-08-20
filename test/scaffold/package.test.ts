@@ -60,6 +60,7 @@ describe("package contract", () => {
     expect(manifest.scripts?.["release:prepare"]).toBe(
       "npm run build && node scripts/build-package-release.mjs",
     );
+    expect(manifest.scripts?.["release:verify"]).toBe("node scripts/verify-package.mjs --release");
   });
 
   it("keeps the host Node baseline consistent across CI and public prerequisites", async () => {

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { access, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, mkdir, mkdtemp, open, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,47 +9,107 @@ import { promisify } from "node:util";
 
 const execute = promisify(execFile);
 const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const verificationRoot = await mkdtemp(join(tmpdir(), "flow-package-check-"));
+const COMMAND_TIMEOUT_MS = 180_000;
+const MAX_COMMAND_OUTPUT_BYTES = 16 * 1024 * 1024;
+const MAX_EVIDENCE_BYTES = 4 * 1024 * 1024;
+const MAX_ARCHIVE_BYTES = 16 * 1024 * 1024;
 
 try {
-  await run("npm", ["run", "build"], repositoryRoot);
-  const packed = await run("npm", ["pack", "--pack-destination", verificationRoot], repositoryRoot);
-  const tarballName = packed.stdout.trim().split("\n").at(-1);
-  assert(tarballName, "npm pack did not report a tarball name");
+  await verifyPackage();
+} catch (error) {
+  const message =
+    error instanceof Error && /^Package release failed during [a-z ]+$/.test(error.message)
+      ? error.message
+      : "Package release failed during verify installed package";
+  process.stderr.write(`${message}\n`);
+  process.exitCode = 1;
+}
 
-  const tarballPath = join(verificationRoot, tarballName);
-  const consumerRoot = join(verificationRoot, "consumer");
-  const projectRoot = join(verificationRoot, "project");
-  await mkdir(projectRoot);
-  await run(
-    "npm",
-    [
-      "install",
-      "--ignore-scripts",
-      "--no-audit",
-      "--no-fund",
-      "--prefix",
-      consumerRoot,
-      tarballPath,
-    ],
-    verificationRoot,
-  );
+async function verifyPackage() {
+  const releaseMode = parseMode(process.argv.slice(2));
+  const verificationRoot = await mkdtemp(join(tmpdir(), "flow-package-check-"));
+  try {
+    if (!releaseMode) {
+      await run("npm", ["run", "build"], repositoryRoot, verificationRoot);
+    }
+    const [releaseArtifact, releaseVerifier, strictJson] = await Promise.all([
+      import("../dist/infrastructure/release/package-release-artifact.js"),
+      import("../dist/infrastructure/release/package-release-verifier.js"),
+      import("../dist/domain/strict-json.js"),
+    ]);
+    const expectedRevision = await sourceRevision(verificationRoot);
+    const artifact = releaseMode
+      ? await readPreparedArtifact()
+      : await buildEphemeralArtifact(
+          verificationRoot,
+          expectedRevision,
+          releaseArtifact.preparePackageReleaseEvidence,
+          strictJson.parseStrictJson,
+        );
+    const evidence = releaseVerifier.verifyPackageReleaseArtifact({
+      archive: artifact.archive,
+      evidenceBytes: artifact.evidenceBytes,
+      expectedSourceRevision: expectedRevision,
+    });
 
-  const flowBinary = join(consumerRoot, "node_modules", ".bin", "flow");
-  const help = await run(flowBinary, ["--help"], projectRoot);
-  assert.match(help.stdout, /flow validate/, "the installed Flow binary did not print CLI help");
+    const consumerRoot = join(verificationRoot, "consumer");
+    const projectRoot = join(verificationRoot, "project");
+    await mkdir(projectRoot);
+    await run(
+      "npm",
+      [
+        "install",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund",
+        "--prefix",
+        consumerRoot,
+        artifact.archivePath,
+      ],
+      verificationRoot,
+      verificationRoot,
+    );
 
-  await run(flowBinary, ["init", projectRoot], projectRoot);
-  const shown = await run(flowBinary, ["config", "show"], projectRoot);
-  const effective = JSON.parse(shown.stdout);
-  assert.deepEqual(effective.supervisor, { maxActiveWorkers: 1, maxQueuedJobs: 32 });
-  assert.equal(effective.projectRoot, await realpath(projectRoot));
+    const installedPackageRoot = join(consumerRoot, "node_modules", "@synaptiai", "flow-harness");
+    await releaseVerifier.verifyInstalledPackageRelease(installedPackageRoot, evidence);
+    const flowBinary = join(consumerRoot, "node_modules", ".bin", "flow");
+    const help = await run(flowBinary, ["--help"], projectRoot, verificationRoot);
+    assert.match(help.stdout, /flow validate/, "the installed Flow binary did not print CLI help");
 
-  const browserWorkflow = join(projectRoot, "packed-browser.workflow.yaml");
-  const browserRuns = join(projectRoot, "browser-runs");
-  await writeFile(
-    browserWorkflow,
-    `apiVersion: flow.synapti.ai/v1alpha1
+    await run(flowBinary, ["init", projectRoot], projectRoot, verificationRoot);
+    const shown = await run(flowBinary, ["config", "show"], projectRoot, verificationRoot);
+    const effective = JSON.parse(shown.stdout);
+    assert.deepEqual(effective.supervisor, { maxActiveWorkers: 1, maxQueuedJobs: 32 });
+    assert.equal(effective.projectRoot, await realpath(projectRoot));
+
+    const installationWorkflow = join(
+      installedPackageRoot,
+      "examples",
+      "verify-installation.workflow.yaml",
+    );
+    const installationRuns = join(projectRoot, "installation-runs");
+    await run(flowBinary, ["validate", installationWorkflow], projectRoot, verificationRoot);
+    await run(
+      flowBinary,
+      [
+        "run",
+        installationWorkflow,
+        "--run-id",
+        "packed-installation-run",
+        "--runs-dir",
+        installationRuns,
+        "--cwd",
+        projectRoot,
+      ],
+      projectRoot,
+      verificationRoot,
+    );
+
+    const browserWorkflow = join(projectRoot, "packed-browser.workflow.yaml");
+    const browserRuns = join(projectRoot, "browser-runs");
+    await writeFile(
+      browserWorkflow,
+      `apiVersion: flow.synapti.ai/v1alpha1
 kind: Workflow
 metadata: { id: packed-browser-workflow }
 nodes:
@@ -59,62 +120,160 @@ nodes:
       args: [-e, ${JSON.stringify("process.stdout.write('packed-browser-ready');")}]
       timeoutMs: 10000
 `,
-    "utf8",
-  );
-  await run(
-    flowBinary,
-    [
-      "run",
-      browserWorkflow,
-      "--run-id",
-      "packed-browser-run",
-      "--runs-dir",
-      browserRuns,
-      "--cwd",
+      "utf8",
+    );
+    await run(
+      flowBinary,
+      [
+        "run",
+        browserWorkflow,
+        "--run-id",
+        "packed-browser-run",
+        "--runs-dir",
+        browserRuns,
+        "--cwd",
+        projectRoot,
+      ],
       projectRoot,
-    ],
-    projectRoot,
-  );
-  await verifyBrowserPresentation(flowBinary, browserRuns, projectRoot);
+      verificationRoot,
+    );
+    await verifyBrowserPresentation(flowBinary, browserRuns, projectRoot, verificationRoot);
 
-  const installedPackageRoot = join(consumerRoot, "node_modules", "@synaptiai", "flow-harness");
-  const primeExample = join(
-    installedPackageRoot,
-    "examples",
-    "evaluation",
-    "native-prime-agent-comparison.evaluation.yaml",
-  );
-  await access(primeExample);
-  const primeValidation = await runExpectFailure(
-    flowBinary,
-    ["eval", "validate", primeExample],
-    projectRoot,
-  );
-  assert.match(
-    `${primeValidation.stdout}\n${primeValidation.stderr}`,
-    /Prime|oci-attestation|ENOENT/i,
-    "the installed CLI did not reach the Prime runtime preparation boundary",
-  );
+    const primeExample = join(
+      installedPackageRoot,
+      "examples",
+      "evaluation",
+      "native-prime-agent-comparison.evaluation.yaml",
+    );
+    await access(primeExample);
+    const primeValidation = await runExpectFailure(
+      flowBinary,
+      ["eval", "validate", primeExample],
+      projectRoot,
+      verificationRoot,
+    );
+    assert.match(
+      `${primeValidation.stdout}\n${primeValidation.stderr}`,
+      /Prime|oci-attestation|ENOENT/i,
+      "the installed CLI did not reach the Prime runtime preparation boundary",
+    );
 
-  process.stdout.write(
-    `Verified clean installation and CLI execution from ${tarballName} (${effective.policyDigest}).\n`,
-  );
-} finally {
-  await rm(verificationRoot, { recursive: true, force: true });
+    process.stdout.write(
+      `Verified clean installation and CLI execution from ${evidence.archive.fileName} (${effective.policyDigest}).\n`,
+    );
+  } finally {
+    await rm(verificationRoot, { recursive: true, force: true });
+  }
 }
 
-async function run(command, args, cwd) {
+function parseMode(args) {
+  if (args.length === 0) return false;
+  if (args.length === 1 && args[0] === "--release") return true;
+  throw new Error("invalid package verification arguments");
+}
+
+async function sourceRevision(verificationRoot) {
+  if (process.env.GITHUB_SHA !== undefined) return process.env.GITHUB_SHA;
+  const result = await run("git", ["rev-parse", "HEAD"], repositoryRoot, verificationRoot);
+  return result.stdout.trim();
+}
+
+async function readPreparedArtifact() {
+  const releaseRoot = join(repositoryRoot, "release", "package");
+  const entries = await readdir(releaseRoot, { withFileTypes: true });
+  const archiveEntries = entries.filter((entry) => entry.isFile() && entry.name.endsWith(".tgz"));
+  if (
+    entries.length !== 2 ||
+    archiveEntries.length !== 1 ||
+    !entries.some((entry) => entry.isFile() && entry.name === "package-release-evidence.json")
+  ) {
+    throw new Error("prepared release directory is not exact");
+  }
+  const archivePath = join(releaseRoot, archiveEntries[0].name);
+  return {
+    archive: await readBoundedNoFollow(archivePath, MAX_ARCHIVE_BYTES),
+    archivePath,
+    evidenceBytes: await readBoundedNoFollow(
+      join(releaseRoot, "package-release-evidence.json"),
+      MAX_EVIDENCE_BYTES,
+    ),
+  };
+}
+
+async function buildEphemeralArtifact(
+  verificationRoot,
+  revision,
+  preparePackageReleaseEvidence,
+  parseStrictJson,
+) {
+  const packRoot = join(verificationRoot, "packed");
+  await mkdir(packRoot);
+  const packed = await run(
+    "npm",
+    ["pack", "--json", "--ignore-scripts", "--pack-destination", packRoot],
+    repositoryRoot,
+    verificationRoot,
+  );
+  const packOutput = parseStrictJson(packed.stdout, {
+    maxDepth: 8,
+    maxNodes: 32_768,
+    valueLabel: "npm pack output",
+  });
+  const entries = await readdir(packRoot, { withFileTypes: true });
+  if (entries.length !== 1 || !entries[0]?.isFile() || !entries[0].name.endsWith(".tgz")) {
+    throw new Error("npm pack did not produce one regular archive");
+  }
+  const archivePath = join(packRoot, entries[0].name);
+  const archive = await readBoundedNoFollow(archivePath, MAX_ARCHIVE_BYTES);
+  return {
+    archive,
+    archivePath,
+    evidenceBytes: preparePackageReleaseEvidence({
+      archive,
+      packOutput,
+      sourceRevision: revision,
+    }),
+  };
+}
+
+async function readBoundedNoFollow(path, maximumBytes) {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile() || before.size < 1n || before.size > BigInt(maximumBytes)) {
+      throw new Error("package verification file is outside its bound");
+    }
+    const content = await handle.readFile();
+    const after = await handle.stat({ bigint: true });
+    if (
+      content.byteLength !== Number(before.size) ||
+      before.dev !== after.dev ||
+      before.ino !== after.ino ||
+      before.size !== after.size ||
+      before.mtimeNs !== after.mtimeNs ||
+      before.ctimeNs !== after.ctimeNs
+    ) {
+      throw new Error("package verification file changed while it was read");
+    }
+    return content;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function run(command, args, cwd, verificationRoot) {
   return await execute(command, args, {
     cwd,
     encoding: "utf8",
     env: { ...process.env, npm_config_cache: join(verificationRoot, "npm-cache") },
-    maxBuffer: 16 * 1024 * 1024,
+    maxBuffer: MAX_COMMAND_OUTPUT_BYTES,
+    timeout: COMMAND_TIMEOUT_MS,
   });
 }
 
-async function runExpectFailure(command, args, cwd) {
+async function runExpectFailure(command, args, cwd, verificationRoot) {
   try {
-    await run(command, args, cwd);
+    await run(command, args, cwd, verificationRoot);
   } catch (error) {
     assert.equal(typeof error, "object");
     assert(error !== null);
@@ -123,10 +282,10 @@ async function runExpectFailure(command, args, cwd) {
       stderr: typeof error.stderr === "string" ? error.stderr : "",
     };
   }
-  assert.fail(`${command} ${args.join(" ")} unexpectedly succeeded`);
+  assert.fail("package verification command unexpectedly succeeded");
 }
 
-async function verifyBrowserPresentation(flowBinary, runsDirectory, cwd) {
+async function verifyBrowserPresentation(flowBinary, runsDirectory, cwd, verificationRoot) {
   const child = spawn(
     flowBinary,
     ["web", "packed-browser-run", "--actor", "package:test", "--runs-dir", runsDirectory],
@@ -171,14 +330,21 @@ async function verifyBrowserPresentation(flowBinary, runsDirectory, cwd) {
     assert.equal(document.run.runId, "packed-browser-run");
     assert.equal(document.run.workflowId, "packed-browser-workflow");
     assert.equal(document.run.status, "succeeded");
-    const result = await completed;
+    const result = await withDeadline(
+      completed,
+      30_000,
+      "installed browser presentation did not settle",
+    );
     assert.deepEqual(result, { code: 0, signal: null }, stderr);
     assert.equal(stdout.trim(), sessionUrl.href);
   } finally {
     child.kill("SIGTERM");
-    await run(flowBinary, ["supervisor", "shutdown", "--runs-dir", runsDirectory], cwd).catch(
-      () => undefined,
-    );
+    await run(
+      flowBinary,
+      ["supervisor", "shutdown", "--runs-dir", runsDirectory],
+      cwd,
+      verificationRoot,
+    ).catch(() => undefined);
   }
 }
 
@@ -210,4 +376,19 @@ async function waitForLine(stream) {
     stream.on("data", onData);
     stream.once("close", onClose);
   });
+}
+
+async function withDeadline(operation, timeoutMs, message) {
+  let timeout;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise((_, rejectTimeout) => {
+        timeout = setTimeout(() => rejectTimeout(new Error(message)), timeoutMs);
+        timeout.unref();
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
 }
