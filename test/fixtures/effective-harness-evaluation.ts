@@ -21,6 +21,7 @@ import type {
 import { agentSkillPackageActivationFixture } from "./agent-skill-package-activation.js";
 import { modelRoutingCandidateFixture } from "./model-routing-candidate.js";
 import { promptCandidateWorkflowText } from "./prompt-candidate-generation.js";
+import { childSpecialistCandidateFixture } from "./child-specialist-candidate.js";
 
 const scopeDigest = "a".repeat(64);
 
@@ -42,6 +43,38 @@ export function effectiveHarnessCandidateArtifactFixture(): EffectiveHarnessCand
   return createEffectiveHarnessCandidateArtifact({
     baselineHead: createEffectiveHarnessHeadIdentity({
       scopeDigest,
+      workflowId: baseline.workflowId,
+      generation: 3,
+      activationDigest: "b".repeat(64),
+      transitionDigest: "c".repeat(64),
+      stateDigest: baseline.stateDigest,
+    }),
+    baselineState: baseline,
+    candidateState: projected.state,
+    candidate: fixture.projected.identity,
+  });
+}
+
+export function childSpecialistEffectiveHarnessCandidateArtifactFixture(
+  candidateScopeDigest = scopeDigest,
+): EffectiveHarnessCandidateArtifact {
+  const fixture = childSpecialistCandidateFixture();
+  const baseline = createEffectiveHarnessState({
+    scopeDigest: candidateScopeDigest,
+    workflowSource: fixture.baselineText,
+    packages: fixture.packages,
+  });
+  const projected = projectEffectiveHarnessCandidate({
+    baseline,
+    candidate: {
+      kind: "child-specialist",
+      projection: fixture.projected,
+      baselineWorkflowSource: fixture.baselineText,
+    },
+  });
+  return createEffectiveHarnessCandidateArtifact({
+    baselineHead: createEffectiveHarnessHeadIdentity({
+      scopeDigest: candidateScopeDigest,
       workflowId: baseline.workflowId,
       generation: 3,
       activationDigest: "b".repeat(64),

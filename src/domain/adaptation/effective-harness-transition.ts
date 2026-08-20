@@ -31,6 +31,7 @@ const candidateSchema = z
       "agent-skill-candidate",
       "agent-skill-package-candidate",
       "model-routing-candidate",
+      "child-specialist-candidate",
     ]),
     digest: sha256Schema,
   })
@@ -68,7 +69,13 @@ const effectiveHarnessTransitionCommonSchema = z
 
 const effectiveHarnessActivationTransitionSchema = effectiveHarnessTransitionCommonSchema.extend({
   action: z.literal("activate"),
-  surface: z.enum(["prompt", "agent-skill-resource", "agent-skill-package", "model-routing"]),
+  surface: z.enum([
+    "prompt",
+    "agent-skill-resource",
+    "agent-skill-package",
+    "model-routing",
+    "child-specialist",
+  ]),
   candidate: candidateSchema,
   evaluation: evaluationSchema,
   transitionDigest: sha256Schema,
@@ -90,13 +97,15 @@ export type EffectiveHarnessSurface =
   | "prompt"
   | "agent-skill-resource"
   | "agent-skill-package"
-  | "model-routing";
+  | "model-routing"
+  | "child-specialist";
 
 export type EffectiveHarnessCandidateKind =
   | "prompt-candidate"
   | "agent-skill-candidate"
   | "agent-skill-package-candidate"
-  | "model-routing-candidate";
+  | "model-routing-candidate"
+  | "child-specialist-candidate";
 
 export interface EffectiveHarnessTransitionBase {
   readonly version: 1;
@@ -349,7 +358,8 @@ function surfaceMatchesCandidate(
     (surface === "prompt" && kind === "prompt-candidate") ||
     (surface === "agent-skill-resource" && kind === "agent-skill-candidate") ||
     (surface === "agent-skill-package" && kind === "agent-skill-package-candidate") ||
-    (surface === "model-routing" && kind === "model-routing-candidate")
+    (surface === "model-routing" && kind === "model-routing-candidate") ||
+    (surface === "child-specialist" && kind === "child-specialist-candidate")
   );
 }
 

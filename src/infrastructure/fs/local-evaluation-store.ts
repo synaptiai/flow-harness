@@ -26,6 +26,10 @@ import {
   parseAgentSkillPackageCandidateIdentity,
 } from "../../domain/adaptation/agent-skill-package-candidate.js";
 import {
+  type ChildSpecialistCandidateIdentity,
+  parseChildSpecialistCandidateIdentity,
+} from "../../domain/adaptation/child-specialist-candidate.js";
+import {
   type ModelRoutingCandidateIdentity,
   parseModelRoutingCandidateIdentity,
 } from "../../domain/adaptation/model-routing-candidate.js";
@@ -33,7 +37,10 @@ import {
   type PromptCandidateIdentity,
   parsePromptCandidateIdentity,
 } from "../../domain/adaptation/prompt-candidate.js";
-import { calculateAgentSkillCapabilitySnapshotDigest } from "../../domain/capability/agent-skills.js";
+import {
+  calculateAgentSkillCapabilitySnapshotDigest,
+  calculateCapabilitySnapshotDigest,
+} from "../../domain/capability/agent-skills.js";
 import {
   type EvaluationReportInput,
   validateCommittedEvaluationPrefix,
@@ -157,6 +164,7 @@ const candidateIdentitySchema = z
       | AgentSkillCandidateIdentity
       | AgentSkillPackageCandidateIdentity
       | ModelRoutingCandidateIdentity
+      | ChildSpecialistCandidateIdentity
     >((value) => {
       if (
         typeof value === "object" &&
@@ -166,6 +174,19 @@ const candidateIdentitySchema = z
       ) {
         try {
           parseModelRoutingCandidateIdentity(value);
+          return true;
+        } catch {
+          return false;
+        }
+      }
+      if (
+        typeof value === "object" &&
+        value !== null &&
+        "kind" in value &&
+        value.kind === "child-specialist-candidate"
+      ) {
+        try {
+          parseChildSpecialistCandidateIdentity(value);
           return true;
         } catch {
           return false;
@@ -224,7 +245,13 @@ const flowProfileSchema = z
         workflowSha256: sha256Schema,
         workflowDigest: sha256Schema,
         packageDigests: z.array(sha256Schema).max(128).readonly(),
-        surface: z.enum(["prompt", "agent-skill-resource", "agent-skill-package", "model-routing"]),
+        surface: z.enum([
+          "prompt",
+          "agent-skill-resource",
+          "agent-skill-package",
+          "model-routing",
+          "child-specialist",
+        ]),
         candidateDigest: sha256Schema,
       })
       .strict()
@@ -453,6 +480,26 @@ const publicHeaderSchema = z
             modelRoutes[1].nodeId === routeIdentity.scope.nodeId &&
             sameModelRoute(modelRoutes[0].route, routeIdentity.route.before) &&
             sameModelRoute(modelRoutes[1].route, routeIdentity.route.after);
+      const childSpecialistMatches =
+        candidateBinding?.surface !== "child-specialist"
+          ? true
+          : flowBaseline !== undefined &&
+            flowCandidate !== undefined &&
+            routeIdentity !== undefined &&
+            "kind" in routeIdentity &&
+            routeIdentity.kind === "child-specialist-candidate" &&
+            baselineBinding?.workflowId === routeIdentity.scope.workflowId &&
+            candidateBinding.workflowId === routeIdentity.scope.workflowId &&
+            routeIdentity.baseline.workflow.sourceSha256 === flowBaseline.workflow.sourceSha256 &&
+            routeIdentity.baseline.workflow.workflowDigest ===
+              flowBaseline.workflow.workflowDigest &&
+            routeIdentity.projectedWorkflow.sourceSha256 === flowCandidate.workflow.sourceSha256 &&
+            routeIdentity.projectedWorkflow.workflowDigest ===
+              flowCandidate.workflow.workflowDigest &&
+            routeIdentity.baseline.packageClosureDigest ===
+              (flowBaseline.capabilitySnapshotDigest ?? calculateCapabilitySnapshotDigest([])) &&
+            routeIdentity.baseline.packageClosureDigest ===
+              (flowCandidate.capabilitySnapshotDigest ?? calculateCapabilitySnapshotDigest([]));
       const samePackages = (profile: z.infer<typeof flowProfileSchema>): boolean => {
         const packageDigests = profile.effectiveHarness?.packageDigests ?? [];
         return packageDigests.length === 0
@@ -489,6 +536,7 @@ const publicHeaderSchema = z
         baselineBinding.workflowDigest !== flowBaseline.workflow.workflowDigest ||
         candidateBinding.workflowSha256 !== flowCandidate.workflow.sourceSha256 ||
         candidateBinding.workflowDigest !== flowCandidate.workflow.workflowDigest ||
+        !childSpecialistMatches ||
         !samePackages(flowBaseline) ||
         !samePackages(flowCandidate)
       ) {
@@ -580,6 +628,9 @@ const publicHeaderSchema = z
             flowCandidate.capabilityPackageDigests[0] === identity.projectedSkill.packageDigest &&
             identity.manifest.provenance === basename(flowCandidate.candidate?.provenance ?? "")
           );
+        }
+        if ("kind" in identity && identity.kind === "child-specialist-candidate") {
+          return false;
         }
         return (
           identity.baseline.sourceSha256 === flowBaseline?.workflow.sourceSha256 &&

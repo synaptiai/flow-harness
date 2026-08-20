@@ -3371,9 +3371,22 @@ async function candidateCommand(
       positionals,
       "candidate validate requires one candidate path",
     );
-    const cwd = overrides.cwd ?? process.cwd();
-    const admitted = await admitLocalAdaptationCandidate(resolve(cwd, candidatePath), {
+    const dependencies = configDependenciesFrom(overrides);
+    const admitted = await admitLocalAdaptationCandidate(resolve(dependencies.cwd, candidatePath), {
       ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
+      resolveChildSpecialistPackages: async (source) => {
+        const config = await awaitWithCancellationPrecedence(
+          () => dependencies.loadConfig({ cwd: dependencies.cwd }),
+          overrides.signal,
+          "candidate validation was cancelled",
+        );
+        const baseline = await loadCurrentEffectiveHarnessBaseline(
+          source.scope.workflowId,
+          config,
+          overrides.signal,
+        );
+        return baseline.state.packages;
+      },
     });
     io.stdout(
       JSON.stringify({ valid: true, candidate: adaptationCandidateView(admitted) }, null, 2),
@@ -3400,6 +3413,14 @@ async function candidateCommand(
     }
     const admitted = await admitLocalAdaptationCandidate(resolve(dependencies.cwd, candidatePath), {
       ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
+      resolveChildSpecialistPackages: async (source) =>
+        (
+          await loadCurrentEffectiveHarnessBaseline(
+            source.scope.workflowId,
+            config,
+            overrides.signal,
+          )
+        ).state.packages,
     });
     if (admitted.kind === "effective-harness-candidate") {
       throw new EffectiveHarnessStoreError(
@@ -3471,6 +3492,14 @@ async function candidateCommand(
       () =>
         admitLocalAdaptationCandidate(resolve(dependencies.cwd, candidatePath), {
           ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
+          resolveChildSpecialistPackages: async (source) =>
+            (
+              await loadCurrentEffectiveHarnessBaseline(
+                source.scope.workflowId,
+                config,
+                overrides.signal,
+              )
+            ).state.packages,
         }),
       overrides.signal,
       "candidate activation was cancelled",
@@ -3478,6 +3507,11 @@ async function candidateCommand(
     if (admitted.kind === "model-routing-candidate") {
       throw new CliUsageError(
         "model-routing candidate activation requires a composed effective harness candidate",
+      );
+    }
+    if (admitted.kind === "child-specialist-candidate") {
+      throw new CliUsageError(
+        "child-specialist candidate activation requires a composed effective harness candidate",
       );
     }
     const evaluationsDirectory = await awaitWithCancellationPrecedence(
@@ -3880,6 +3914,15 @@ function effectiveHarnessProjection(
       return {
         kind: "model-routing",
         projection: admitted.candidate,
+        baselineWorkflowSource: admitted.candidate.baseline.sourceText,
+      };
+    case "child-specialist-candidate":
+      return {
+        kind: "child-specialist",
+        projection: {
+          identity: admitted.candidate.identity,
+          workflow: admitted.candidate.workflow,
+        },
         baselineWorkflowSource: admitted.candidate.baseline.sourceText,
       };
   }

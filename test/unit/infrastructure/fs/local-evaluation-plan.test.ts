@@ -10,6 +10,10 @@ import {
   calculateAgentSkillCandidateIdentityDigest,
 } from "../../../../src/domain/adaptation/agent-skill-candidate.js";
 import {
+  calculateChildSpecialistCandidateDigest,
+  type ChildSpecialistCandidateIdentity,
+} from "../../../../src/domain/adaptation/child-specialist-candidate.js";
+import {
   createEffectiveHarnessCandidateArtifact,
   encodeEffectiveHarnessCandidateArtifact,
 } from "../../../../src/domain/adaptation/effective-harness-candidate.js";
@@ -44,7 +48,11 @@ import {
   LocalEvaluationStore,
   type PublicEvaluationHeader,
 } from "../../../../src/infrastructure/fs/local-evaluation-store.js";
-import { effectiveHarnessCandidateArtifactFixture } from "../../../fixtures/effective-harness-evaluation.js";
+import {
+  childSpecialistEffectiveHarnessCandidateArtifactFixture,
+  effectiveHarnessCandidateArtifactFixture,
+} from "../../../fixtures/effective-harness-evaluation.js";
+import { childSpecialistCandidateInstructions } from "../../../fixtures/child-specialist-candidate.js";
 import { primeExternalHarnessIdentity } from "../../../fixtures/evaluation/prime-external-harness-identity.js";
 import { modelRoutingCandidateFixture } from "../../../fixtures/model-routing-candidate.js";
 
@@ -402,6 +410,101 @@ controls:`,
       code: "corrupt",
       message: expect.not.stringContaining("private-forged-workflow"),
     });
+  });
+
+  it("binds one child-specialist artifact to an offline durable profile pair", async () => {
+    const project = await evaluationProject();
+    const artifact = childSpecialistEffectiveHarnessCandidateArtifactFixture();
+    const artifactPath = join(project, "specialist.effective-harness.json");
+    await writeFile(artifactPath, encodeEffectiveHarnessCandidateArtifact(artifact));
+    const plan = await readFile(join(project, "evaluation.yaml"), "utf8");
+    await writeFile(
+      join(project, "evaluation.yaml"),
+      plan
+        .replace(
+          /profiles:[\s\S]*?controls:/,
+          `profiles:
+  - { id: baseline, adapter: flow-workflow-v1, effectiveCandidate: specialist.effective-harness.json, selection: baseline }
+  - { id: candidate, adapter: flow-workflow-v1, effectiveCandidate: specialist.effective-harness.json, selection: candidate }
+controls:`,
+        )
+        .replace("maxNodeStarts: 8", "maxNodeStarts: 4")
+        .replace("maxModelTokens: 10000", "maxModelTokens: 20000")
+        .replace("maxCostUsdMicros: 1000000", "maxCostUsdMicros: 2000000")
+        .replace("maxExecutionMs: 300000", "maxExecutionMs: 600000")
+        .replace("maxArtifactBytes: 1048576", "maxArtifactBytes: 2097152"),
+    );
+
+    const admitted = await admitLocalEvaluationPlan(join(project, "evaluation.yaml"));
+    await rm(artifactPath);
+    expect(admitted.profiles).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "baseline",
+          effectiveHarness: expect.objectContaining({
+            selection: "baseline",
+            surface: "child-specialist",
+            stateDigest: artifact.baselineState.stateDigest,
+          }),
+        }),
+        expect.objectContaining({
+          id: "candidate",
+          candidate: expect.objectContaining({
+            kind: "child-specialist-candidate",
+            candidateDigest: artifact.candidate.candidateDigest,
+          }),
+          effectiveHarness: expect.objectContaining({
+            selection: "candidate",
+            surface: "child-specialist",
+            stateDigest: artifact.candidateState.stateDigest,
+          }),
+        }),
+      ]),
+    );
+    const header = createPublicEvaluationHeader(admitted, "child-specialist-evaluation");
+    expect(JSON.stringify(header)).not.toContain("contentBase64");
+    expect(JSON.stringify(header)).not.toContain(childSpecialistCandidateInstructions);
+    const store = new LocalEvaluationStore(join(project, "evaluations"));
+    await store.create(header);
+    await expect(store.read(header.evaluationId)).resolves.toMatchObject({ header });
+
+    const mutations: readonly ((value: DeepMutable<ChildSpecialistCandidateIdentity>) => void)[] = [
+      (value) => {
+        value.scope.workflowId = "private-workflow";
+      },
+      (value) => {
+        value.baseline.workflow.sourceSha256 = "0".repeat(64);
+      },
+      (value) => {
+        value.baseline.workflow.workflowDigest = "0".repeat(64);
+      },
+      (value) => {
+        value.baseline.packageClosureDigest = "0".repeat(64);
+      },
+      (value) => {
+        value.projectedWorkflow.sourceSha256 = "0".repeat(64);
+      },
+      (value) => {
+        value.projectedWorkflow.workflowDigest = "0".repeat(64);
+      },
+    ];
+    for (const [index, mutate] of mutations.entries()) {
+      const changed = structuredClone(header) as MutablePublicHeader;
+      changed.evaluationId = `changed-child-specialist-evaluation-${index}`;
+      const identity = requiredChildSpecialistCandidateIdentity(changed);
+      mutate(identity);
+      const { candidateDigest: _candidateDigest, ...identityContent } = identity;
+      identity.candidateDigest = calculateChildSpecialistCandidateDigest(identityContent);
+      requiredEffectiveBinding(changed, "baseline").candidateDigest = identity.candidateDigest;
+      requiredEffectiveBinding(changed, "candidate").candidateDigest = identity.candidateDigest;
+      redigestEvaluationHeader(changed);
+
+      await expect(store.create(changed as PublicEvaluationHeader)).rejects.toMatchObject({
+        code: "corrupt",
+        message: "corrupt: invalid evaluation public header",
+      });
+      await expect(store.read(changed.evaluationId)).rejects.toMatchObject({ code: "not_found" });
+    }
   });
 
   it("rejects an effective harness artifact through the legacy candidate field", async () => {
@@ -1478,6 +1581,20 @@ function requiredModelRoutingCandidateIdentity(
     identity.kind !== "model-routing-candidate"
   ) {
     throw new Error("model-routing durable fixture has no routing candidate identity");
+  }
+  return identity;
+}
+
+function requiredChildSpecialistCandidateIdentity(
+  header: MutablePublicHeader,
+): DeepMutable<ChildSpecialistCandidateIdentity> {
+  const identity = requiredFlowProfile(header, "candidate").candidate?.identity;
+  if (
+    identity === undefined ||
+    !("kind" in identity) ||
+    identity.kind !== "child-specialist-candidate"
+  ) {
+    throw new Error("child-specialist durable fixture has no child candidate identity");
   }
   return identity;
 }

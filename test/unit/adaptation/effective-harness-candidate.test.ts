@@ -18,6 +18,10 @@ import {
 } from "../../../src/domain/adaptation/effective-harness-state.js";
 import { calculateModelRoutingCandidateDigest } from "../../../src/domain/adaptation/model-routing-candidate.js";
 import {
+  calculateChildSpecialistCandidateDigest,
+  type ChildSpecialistCandidateIdentity,
+} from "../../../src/domain/adaptation/child-specialist-candidate.js";
+import {
   calculatePromptCandidateIdentityDigest,
   type PromptCandidateIdentity,
 } from "../../../src/domain/adaptation/prompt-candidate.js";
@@ -26,12 +30,252 @@ import { createWorkflowPackageSnapshot } from "../../../src/domain/capability/wo
 import { calculateWorkflowDigest } from "../../../src/domain/workflow/digest.js";
 import { agentSkillActivationInput } from "../../fixtures/agent-skill-activation.js";
 import { agentSkillPackageActivationFixture } from "../../fixtures/agent-skill-package-activation.js";
+import { childSpecialistCandidateFixture } from "../../fixtures/child-specialist-candidate.js";
 import { modelRoutingCandidateFixture } from "../../fixtures/model-routing-candidate.js";
 import { promptActivationInput } from "../../fixtures/prompt-activation.js";
 
 const scopeDigest = "a".repeat(64);
 
 describe("effective harness candidate artifacts", () => {
+  it("stores and reparses one exact child-specialist surface", () => {
+    const fixture = childSpecialistCandidateFixture("skills");
+    const baseline = createEffectiveHarnessState({
+      scopeDigest,
+      workflowSource: fixture.baselineText,
+      packages: fixture.packages,
+    });
+    const projected = projectEffectiveHarnessCandidate({
+      baseline,
+      candidate: {
+        kind: "child-specialist",
+        projection: fixture.projected,
+        baselineWorkflowSource: fixture.baselineText,
+      },
+    });
+    const artifact = createEffectiveHarnessCandidateArtifact({
+      baselineHead: createEffectiveHarnessHeadIdentity({
+        scopeDigest,
+        workflowId: baseline.workflowId,
+        generation: 2,
+        activationDigest: "b".repeat(64),
+        transitionDigest: "c".repeat(64),
+        stateDigest: baseline.stateDigest,
+      }),
+      baselineState: baseline,
+      candidateState: projected.state,
+      candidate: fixture.projected.identity,
+    });
+
+    expect(parseEffectiveHarnessCandidateArtifact(structuredClone(artifact))).toEqual(artifact);
+    expect(artifact).toMatchObject({
+      surface: "child-specialist",
+      candidate: {
+        kind: "child-specialist-candidate",
+        scope: { childNodeId: "delegate-review", agentNodeId: "review" },
+        change: {
+          kind: "skills",
+          before: ["review-checklist"],
+          after: ["review-checklist", "security-checklist"],
+        },
+      },
+    });
+  });
+
+  it.each([
+    [
+      "parent metadata",
+      (document: ChildSpecialistMutationDocument) => {
+        document.root.metadata.description = "PRIVATE_PARENT_METADATA";
+      },
+    ],
+    [
+      "parent budget",
+      (document: ChildSpecialistMutationDocument) => {
+        document.root.budget.maxModelTokens += 1;
+      },
+    ],
+    [
+      "sibling child instructions",
+      (document: ChildSpecialistMutationDocument) => {
+        childAgent(document.child, "security-reference").prompt = "PRIVATE_SIBLING_PROMPT";
+      },
+    ],
+    [
+      "target model",
+      (document: ChildSpecialistMutationDocument) => {
+        childAgent(document.child, "review").model.id = "private-model";
+      },
+    ],
+    [
+      "target tools",
+      (document: ChildSpecialistMutationDocument) => {
+        childAgent(document.child, "review").tools.push("edit");
+      },
+    ],
+    [
+      "child result schema",
+      (document: ChildSpecialistMutationDocument) => {
+        childResult(document.child).schema.maxLength += 1;
+      },
+    ],
+  ] as const)("rejects a fully redigested child-specialist %s substitution", (_label, mutate) => {
+    const fixture = childSpecialistCandidateFixture("instructions");
+    const baseline = createEffectiveHarnessState({
+      scopeDigest,
+      workflowSource: fixture.baselineText,
+      packages: fixture.packages,
+    });
+    const projected = projectEffectiveHarnessCandidate({
+      baseline,
+      candidate: {
+        kind: "child-specialist",
+        projection: fixture.projected,
+        baselineWorkflowSource: fixture.baselineText,
+      },
+    });
+    const changedRoot = JSON.parse(
+      effectiveHarnessWorkflowSource(projected.state),
+    ) as ChildSpecialistWorkflowDocument;
+    const selectedChild = changedRoot.nodes.find((node) => node.id === "delegate-review")?.child;
+    if (selectedChild?.workflow === undefined) {
+      throw new Error("child-specialist mutation fixture has no embedded child");
+    }
+    const changedChild = JSON.parse(selectedChild.workflow) as ChildSpecialistChildDocument;
+    mutate({ root: changedRoot, child: changedChild });
+    selectedChild.workflow = JSON.stringify(changedChild);
+    const changedState = createEffectiveHarnessState({
+      scopeDigest,
+      workflowSource: JSON.stringify(changedRoot),
+      packages: fixture.packages,
+    });
+    const { candidateDigest: _candidateDigest, ...identity } = fixture.projected.identity;
+    const changedIdentity = {
+      ...identity,
+      projectedWorkflow: {
+        sourceSha256: changedState.workflow.sha256,
+        workflowDigest: changedState.workflow.workflowDigest,
+      },
+    };
+
+    expect(() =>
+      createEffectiveHarnessCandidateArtifact({
+        baselineHead: createEffectiveHarnessHeadIdentity({
+          scopeDigest,
+          workflowId: baseline.workflowId,
+          generation: 2,
+          activationDigest: "b".repeat(64),
+          transitionDigest: "c".repeat(64),
+          stateDigest: baseline.stateDigest,
+        }),
+        baselineState: baseline,
+        candidateState: changedState,
+        candidate: {
+          ...changedIdentity,
+          candidateDigest: calculateChildSpecialistCandidateDigest(changedIdentity),
+        },
+      }),
+    ).toThrowError(expect.objectContaining({ code: "surface_mismatch" }));
+  });
+
+  it.each([
+    [
+      "baseline workflow source hash",
+      (identity: MutableChildSpecialistIdentity) => {
+        identity.baseline.workflow.sourceSha256 = "0".repeat(64);
+      },
+    ],
+    [
+      "baseline workflow digest",
+      (identity: MutableChildSpecialistIdentity) => {
+        identity.baseline.workflow.workflowDigest = "0".repeat(64);
+      },
+    ],
+    [
+      "baseline child source hash",
+      (identity: MutableChildSpecialistIdentity) => {
+        identity.baseline.child.sourceSha256 = "0".repeat(64);
+      },
+    ],
+    [
+      "baseline child workflow digest",
+      (identity: MutableChildSpecialistIdentity) => {
+        identity.baseline.child.workflowDigest = "0".repeat(64);
+      },
+    ],
+    [
+      "baseline package closure digest",
+      (identity: MutableChildSpecialistIdentity) => {
+        identity.baseline.packageClosureDigest = "0".repeat(64);
+      },
+    ],
+    [
+      "projected workflow source hash",
+      (identity: MutableChildSpecialistIdentity) => {
+        identity.projectedWorkflow.sourceSha256 = "0".repeat(64);
+      },
+    ],
+    [
+      "projected workflow digest",
+      (identity: MutableChildSpecialistIdentity) => {
+        identity.projectedWorkflow.workflowDigest = "0".repeat(64);
+      },
+    ],
+    [
+      "baseline instruction byte count",
+      (identity: MutableChildSpecialistIdentity) => {
+        if (identity.change.kind !== "instructions") throw new Error("expected instructions");
+        identity.change.before.bytes += 1;
+      },
+    ],
+    [
+      "candidate instruction byte count",
+      (identity: MutableChildSpecialistIdentity) => {
+        if (identity.change.kind !== "instructions") throw new Error("expected instructions");
+        identity.change.after.bytes += 1;
+      },
+    ],
+  ] as const)("rejects a redigested child-specialist %s identity", (_label, mutate) => {
+    const fixture = childSpecialistCandidateFixture("instructions");
+    const baseline = createEffectiveHarnessState({
+      scopeDigest,
+      workflowSource: fixture.baselineText,
+      packages: fixture.packages,
+    });
+    const projected = projectEffectiveHarnessCandidate({
+      baseline,
+      candidate: {
+        kind: "child-specialist",
+        projection: fixture.projected,
+        baselineWorkflowSource: fixture.baselineText,
+      },
+    });
+    const artifact = structuredClone(
+      createEffectiveHarnessCandidateArtifact({
+        baselineHead: createEffectiveHarnessHeadIdentity({
+          scopeDigest,
+          workflowId: baseline.workflowId,
+          generation: 2,
+          activationDigest: "b".repeat(64),
+          transitionDigest: "c".repeat(64),
+          stateDigest: baseline.stateDigest,
+        }),
+        baselineState: baseline,
+        candidateState: projected.state,
+        candidate: fixture.projected.identity,
+      }),
+    );
+    const identity = artifact.candidate as MutableChildSpecialistIdentity;
+    mutate(identity);
+    const { candidateDigest: _candidateDigest, ...identityContent } = identity;
+    identity.candidateDigest = calculateChildSpecialistCandidateDigest(identityContent);
+    (artifact as unknown as { artifactDigest: string }).artifactDigest =
+      calculateEffectiveHarnessCandidateDigest(artifact);
+
+    expect(() => parseEffectiveHarnessCandidateArtifact(artifact)).toThrowError(
+      expect.objectContaining({ code: "surface_mismatch" }),
+    );
+  });
+
   it("stores and reparses one exact model-routing surface", () => {
     const source = promptActivationInput({ selection: "baseline" }).source;
     const baseline = createEffectiveHarnessState({
@@ -388,7 +632,49 @@ describe("effective harness candidate artifacts", () => {
   });
 });
 
+interface ChildSpecialistWorkflowDocument {
+  metadata: { description?: string };
+  budget: { maxModelTokens: number };
+  nodes: Array<{
+    id: string;
+    child?: { workflow?: string };
+  }>;
+}
+
+interface ChildSpecialistChildDocument {
+  nodes: Array<{
+    id: string;
+    agent?: { prompt: string; model: { id: string }; tools: string[] };
+    result?: { schema: { maxLength: number } };
+  }>;
+}
+
+interface ChildSpecialistMutationDocument {
+  readonly root: ChildSpecialistWorkflowDocument;
+  readonly child: ChildSpecialistChildDocument;
+}
+
+function childAgent(child: ChildSpecialistChildDocument, id: string) {
+  const agent = child.nodes.find((node) => node.id === id)?.agent;
+  if (agent === undefined) throw new Error("child-specialist mutation fixture has no Agent node");
+  return agent;
+}
+
+function childResult(child: ChildSpecialistChildDocument) {
+  const result = child.nodes.find((node) => node.id === "publish")?.result;
+  if (result === undefined) throw new Error("child-specialist mutation fixture has no result node");
+  return result;
+}
+
 type MutableCandidateArtifact = ReturnType<typeof createEffectiveHarnessCandidateArtifact>;
+
+type MutableChildSpecialistIdentity = DeepMutable<ChildSpecialistCandidateIdentity>;
+
+type DeepMutable<Value> = Value extends readonly (infer Item)[]
+  ? DeepMutable<Item>[]
+  : Value extends object
+    ? { -readonly [Key in keyof Value]: DeepMutable<Value[Key]> }
+    : Value;
 
 function workflowPackage(name: string, workflow: string) {
   const indented = workflow
