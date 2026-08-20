@@ -74,47 +74,49 @@ const generationUsageSchema = z
     costUsdMicros: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   })
   .strict();
+const generationEvidenceIdentitySchema = z
+  .object({
+    sourceSha256: sha256Schema,
+    evidenceDigest: sha256Schema,
+    planDigest: sha256Schema,
+  })
+  .strict();
+const generationShape = {
+  version: z.literal(1),
+  kind: z.literal("model"),
+  provider: identifierSchema,
+  model: z
+    .string()
+    .min(1)
+    .max(256)
+    .refine((value) => value === value.trim(), "model must not contain outer whitespace"),
+  thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
+  systemPromptSha256: z.literal(sha256(SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_SYSTEM_PROMPT)),
+  requestDigest: sha256Schema,
+  responseDigest: sha256Schema,
+  limits: z
+    .object({
+      candidates: z.literal(1),
+      turns: z.literal(1),
+      maxInputBytes: z.literal(MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_INPUT_BYTES),
+      maxOutputBytes: z.literal(MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_OUTPUT_BYTES),
+      maxOutputTokens: z
+        .number()
+        .int()
+        .positive()
+        .max(MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_OUTPUT_TOKENS),
+      timeoutMs: z.number().int().positive().max(86_400_000),
+    })
+    .strict(),
+  operation: z.enum(["add", "replace"]),
+  priorSha256: sha256Schema.nullable(),
+  usage: generationUsageSchema,
+};
 const generationSchema = z
   .object({
-    version: z.literal(1),
-    kind: z.literal("model"),
-    provider: identifierSchema,
-    model: z
-      .string()
-      .min(1)
-      .max(256)
-      .refine((value) => value === value.trim(), "model must not contain outer whitespace"),
-    thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
-    systemPromptSha256: z.literal(sha256(SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_SYSTEM_PROMPT)),
-    requestDigest: sha256Schema,
-    responseDigest: sha256Schema,
-    limits: z
-      .object({
-        candidates: z.literal(1),
-        turns: z.literal(1),
-        maxInputBytes: z.literal(MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_INPUT_BYTES),
-        maxOutputBytes: z.literal(MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_OUTPUT_BYTES),
-        maxOutputTokens: z
-          .number()
-          .int()
-          .positive()
-          .max(MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_OUTPUT_TOKENS),
-        timeoutMs: z.number().int().positive().max(86_400_000),
-      })
-      .strict(),
-    operation: z.enum(["add", "replace"]),
-    priorSha256: sha256Schema.nullable(),
+    ...generationShape,
     evidence: z
-      .array(
-        z
-          .object({
-            path: portableRelativePathSchema,
-            sourceSha256: sha256Schema,
-            evidenceDigest: sha256Schema,
-            planDigest: sha256Schema,
-          })
-          .strict(),
-      )
+      .array(generationEvidenceIdentitySchema.extend({ path: portableRelativePathSchema }))
       .min(1)
       .max(MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_EVIDENCE)
       .refine(
@@ -123,18 +125,25 @@ const generationSchema = z
           new Set(evidence.map((item) => item.evidenceDigest)).size === evidence.length,
         "generation evidence must be unique",
       ),
-    usage: generationUsageSchema,
   })
   .strict()
-  .superRefine((generation, context) => {
-    if (generation.usage.outputTokens > generation.limits.maxOutputTokens) {
-      context.addIssue({
-        code: "custom",
-        path: ["usage", "outputTokens"],
-        message: "reported output tokens cannot exceed the generation output-token limit",
-      });
-    }
-  });
+  .superRefine(validateGenerationUsage);
+const generationIdentitySchema = z
+  .object({
+    ...generationShape,
+    evidence: z
+      .array(generationEvidenceIdentitySchema)
+      .min(1)
+      .max(MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_EVIDENCE)
+      .refine(
+        (evidence) =>
+          new Set(evidence.map((item) => item.sourceSha256)).size === evidence.length &&
+          new Set(evidence.map((item) => item.evidenceDigest)).size === evidence.length,
+        "generation evidence identities must be unique",
+      ),
+  })
+  .strict()
+  .superRefine(validateGenerationUsage);
 const sourceSchema = z
   .object({
     apiVersion: z.literal(SUPPLEMENTAL_MEMORY_CANDIDATE_API_VERSION),
@@ -192,7 +201,7 @@ const identitySchema = z
         .strict(),
       z.object({ kind: z.literal("remove"), before: byteIdentitySchema, after: z.null() }).strict(),
     ]),
-    generation: generationSchema.optional(),
+    generation: generationIdentitySchema.optional(),
     projectedStateDigest: sha256Schema,
     candidateDigest: sha256Schema,
   })
@@ -379,7 +388,14 @@ export function projectSupplementalMemoryCandidate(
       entry: before,
     },
     change: identityChange,
-    ...(input.source.generation === undefined ? {} : { generation: input.source.generation }),
+    ...(input.source.generation === undefined
+      ? {}
+      : {
+          generation: {
+            ...input.source.generation,
+            evidence: input.source.generation.evidence.map(({ path: _path, ...item }) => item),
+          },
+        }),
     projectedStateDigest: state.stateDigest,
   };
   const identity = parseSupplementalMemoryCandidateIdentity({
@@ -528,6 +544,22 @@ function validateGenerationProvenance(
       "identity_mismatch",
       "supplemental-memory generation response identity does not match",
     );
+  }
+}
+
+function validateGenerationUsage(
+  generation: {
+    readonly limits: { readonly maxOutputTokens: number };
+    readonly usage: { readonly outputTokens: number };
+  },
+  context: z.RefinementCtx,
+): void {
+  if (generation.usage.outputTokens > generation.limits.maxOutputTokens) {
+    context.addIssue({
+      code: "custom",
+      path: ["usage", "outputTokens"],
+      message: "reported output tokens cannot exceed the generation output-token limit",
+    });
   }
 }
 

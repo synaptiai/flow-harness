@@ -189,8 +189,128 @@ describe("supplemental-memory candidates", () => {
       ],
     });
 
-    expect(projected.identity.generation).toEqual(document.generation);
+    expect(projected.identity.generation).toEqual({
+      ...document.generation,
+      evidence: document.generation.evidence.map(({ path: _path, ...item }) => item),
+    });
+    expect(document.generation.evidence[0]?.path).toBe("tuning-evidence.json");
+    expect(JSON.stringify(projected.identity.generation)).not.toContain("tuning-evidence.json");
     expect(projected.identity.change.after?.sha256).toBe(sha256(memoryContent));
+
+    const privateCanary = "PRIVATE_GENERATION_PROVENANCE";
+    const mutateFirstEvidence = (
+      candidate: typeof document,
+      update: Partial<(typeof document)["generation"]["evidence"][number]>,
+    ): void => {
+      const first = candidate.generation.evidence[0];
+      if (first === undefined) throw new Error("generated fixture evidence is missing");
+      candidate.generation.evidence[0] = { ...first, ...update };
+    };
+    const mutations: readonly {
+      readonly name: string;
+      readonly mutate: (candidate: typeof document) => void;
+    }[] = [
+      {
+        name: "provider",
+        mutate: (candidate) => {
+          candidate.generation.provider = "alternate";
+        },
+      },
+      {
+        name: "model",
+        mutate: (candidate) => {
+          candidate.generation.model = "alternate";
+        },
+      },
+      {
+        name: "thinking",
+        mutate: (candidate) => {
+          candidate.generation.thinking = "high";
+        },
+      },
+      {
+        name: "request digest",
+        mutate: (candidate) => {
+          candidate.generation.requestDigest = "b".repeat(64);
+        },
+      },
+      {
+        name: "response digest",
+        mutate: (candidate) => {
+          candidate.generation.responseDigest = "b".repeat(64);
+        },
+      },
+      {
+        name: "timeout",
+        mutate: (candidate) => {
+          candidate.generation.limits.timeoutMs -= 1;
+        },
+      },
+      {
+        name: "output token limit",
+        mutate: (candidate) => {
+          candidate.generation.limits.maxOutputTokens -= 1;
+        },
+      },
+      {
+        name: "evidence path",
+        mutate: (candidate) => {
+          mutateFirstEvidence(candidate, { path: `${privateCanary}.json` });
+        },
+      },
+      {
+        name: "evidence source",
+        mutate: (candidate) => {
+          mutateFirstEvidence(candidate, { sourceSha256: "b".repeat(64) });
+        },
+      },
+      {
+        name: "evidence identity",
+        mutate: (candidate) => {
+          mutateFirstEvidence(candidate, { evidenceDigest: "b".repeat(64) });
+        },
+      },
+      {
+        name: "evidence plan",
+        mutate: (candidate) => {
+          mutateFirstEvidence(candidate, { planDigest: "b".repeat(64) });
+        },
+      },
+      {
+        name: "generated value",
+        mutate: (candidate) => {
+          candidate.change.value = privateCanary;
+        },
+      },
+    ];
+
+    for (const mutation of mutations) {
+      const mutated = structuredClone(document);
+      mutation.mutate(mutated);
+      const mutatedText = JSON.stringify(mutated);
+      const error = (() => {
+        try {
+          projectSupplementalMemoryCandidate({
+            manifestProvenance: "generated-memory.candidate.json",
+            sourceSha256: sha256(mutatedText),
+            source: parseSupplementalMemoryCandidateText(mutatedText),
+            baseline,
+            evidence: [
+              {
+                provenance: "tuning-evidence.json",
+                sourceSha256: evidenceSourceSha256,
+                packet: evidence,
+              },
+            ],
+          });
+        } catch (caught) {
+          return caught;
+        }
+      })();
+      expect(error, mutation.name).toMatchObject({ code: "identity_mismatch" });
+      expect((error as Error).message, mutation.name).not.toContain(privateCanary);
+      expect((error as Error).cause, mutation.name).toBeUndefined();
+    }
   });
 
   it("replaces one entry only when its exact prior identity matches", () => {

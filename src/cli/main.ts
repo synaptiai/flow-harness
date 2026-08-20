@@ -4086,10 +4086,7 @@ function supplementalMemoryCandidateView(identity: SupplementalMemoryCandidateId
     ...(generation === undefined
       ? {}
       : {
-          generation: {
-            ...generation,
-            evidence: generation.evidence.map(({ path: _path, ...evidence }) => evidence),
-          },
+          generation,
         }),
   });
 }

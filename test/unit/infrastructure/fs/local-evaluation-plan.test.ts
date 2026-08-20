@@ -53,6 +53,7 @@ import {
   childSpecialistEffectiveHarnessCandidateArtifactFixture,
   effectiveHarnessCandidateArtifactFixture,
   supplementalMemoryEffectiveHarnessCandidateArtifactFixture,
+  supplementalMemoryGenerationEvidenceProvenance,
 } from "../../../fixtures/effective-harness-evaluation.js";
 import { primeExternalHarnessIdentity } from "../../../fixtures/evaluation/prime-external-harness-identity.js";
 import { modelRoutingCandidateFixture } from "../../../fixtures/model-routing-candidate.js";
@@ -558,6 +559,7 @@ controls:`,
     const publicJson = JSON.stringify(header);
     expect(publicJson).not.toContain("contentBase64");
     expect(publicJson).not.toContain("PRIVATE_MEMORY_USE_THE_REVIEWED_FIXTURE");
+    expect(publicJson).not.toContain(supplementalMemoryGenerationEvidenceProvenance);
     expect(publicJson).not.toContain(
       Buffer.from("PRIVATE_MEMORY_USE_THE_REVIEWED_FIXTURE").toString("base64"),
     );
