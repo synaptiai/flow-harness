@@ -59,6 +59,7 @@
     "lint": "biome lint .",
     "pack:check": "node scripts/verify-package.mjs",
     "prime:image:verify": "npm run build && node scripts/verify-prime-image.mjs",
+    "release:prepare": "npm run build && node scripts/build-package-release.mjs",
     "test": "vitest run",
     "test:browser": "vitest run --config vitest.browser.config.ts",
     "test:coverage": "vitest run --coverage --maxWorkers=1",

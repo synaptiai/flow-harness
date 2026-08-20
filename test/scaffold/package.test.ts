@@ -57,6 +57,9 @@ describe("package contract", () => {
     expect(manifest.scripts?.check).toContain("npm run test");
     expect(manifest.scripts?.check).toContain("npm run build");
     expect(manifest.scripts?.["pack:check"]).toBe("node scripts/verify-package.mjs");
+    expect(manifest.scripts?.["release:prepare"]).toBe(
+      "npm run build && node scripts/build-package-release.mjs",
+    );
   });
 
   it("keeps the host Node baseline consistent across CI and public prerequisites", async () => {

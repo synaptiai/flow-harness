@@ -1,5 +1,5 @@
 import { type BigIntStats, constants, type Stats } from "node:fs";
-import { lstat, mkdir, mkdtemp, open, readdir, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, readdir, rename, rm, rmdir } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
 import {
@@ -56,12 +56,13 @@ export async function buildLocalPackageRelease(
   let stage: LocalPackageReleaseBuilderStage = "publish package artifact";
   let stagingDirectory: string | undefined;
   let committed = false;
+  let parentCreated = false;
   let result: LocalPackageReleaseBuildResult | undefined;
   let operationError: LocalPackageReleaseBuilderError | undefined;
 
   try {
     input.signal?.throwIfAborted();
-    await mkdir(parentDirectory, { recursive: true, mode: 0o700 });
+    parentCreated = await ensureDirectory(parentDirectory);
     input.signal?.throwIfAborted();
     stagingDirectory = await mkdtemp(
       join(parentDirectory, `.${basename(outputDirectory)}.staging-`),
@@ -119,6 +120,15 @@ export async function buildLocalPackageRelease(
       await rm(stagingDirectory, { recursive: true, force: true });
     } catch {
       throw new LocalPackageReleaseBuilderError("settle package artifact");
+    }
+  }
+  if (!committed && parentCreated) {
+    try {
+      await rmdir(parentDirectory);
+    } catch (error) {
+      if (!isDirectoryNotEmpty(error)) {
+        throw new LocalPackageReleaseBuilderError("settle package artifact");
+      }
     }
   }
   if (operationError !== undefined) {
@@ -240,4 +250,27 @@ async function syncDirectory(directory: string): Promise<void> {
   } finally {
     await handle.close();
   }
+}
+
+async function ensureDirectory(directory: string): Promise<boolean> {
+  try {
+    await lstat(directory);
+    return false;
+  } catch (error) {
+    if (!isEnoent(error)) {
+      throw error;
+    }
+  }
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  return true;
+}
+
+function isDirectoryNotEmpty(error: unknown): boolean {
+  return (
+    error !== null &&
+    typeof error === "object" &&
+    "code" in error &&
+    ((error as { readonly code?: unknown }).code === "ENOTEMPTY" ||
+      (error as { readonly code?: unknown }).code === "EEXIST")
+  );
 }
