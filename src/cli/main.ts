@@ -3070,9 +3070,12 @@ async function candidateCommand(
       );
     }
     if (usesSupplementalMemoryMode) {
-      const baselineState = (
-        await loadCurrentEffectiveHarnessBaseline(baseline, config, dependencies.signal)
-      ).state;
+      const admittedBaseline = await loadCurrentEffectiveHarnessBaseline(
+        baseline,
+        config,
+        dependencies.signal,
+      );
+      const baselineState = admittedBaseline.state;
       const admitted = await admitLocalSupplementalMemoryCandidateGenerationSources(
         outputPath,
         evidence.map((path) => resolve(dependencies.cwd, path)),
@@ -3139,6 +3142,12 @@ async function candidateCommand(
         ),
       );
       throwIfAborted(dependencies.signal, "candidate generation was cancelled");
+      await assertCurrentSupplementalMemoryGenerationBaseline(
+        baseline,
+        config,
+        admittedBaseline,
+        dependencies.signal,
+      );
       await admitted.revalidate();
       throwIfAborted(dependencies.signal, "candidate generation was cancelled");
       const sourceText = `${JSON.stringify(source, null, 2)}\n`;
@@ -3152,6 +3161,12 @@ async function candidateCommand(
       await publishLocalPromptCandidate(admitted.outputPath, sourceText, {
         ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
         beforePublish: async () => {
+          await assertCurrentSupplementalMemoryGenerationBaseline(
+            baseline,
+            config,
+            admittedBaseline,
+            dependencies.signal,
+          );
           await admitted.revalidate();
           throwIfAborted(dependencies.signal, "candidate generation was cancelled");
         },
@@ -5956,6 +5971,27 @@ async function loadCurrentEffectiveHarnessBaseline(
     ),
     ...(signal === undefined ? {} : { signal }),
   });
+}
+
+async function assertCurrentSupplementalMemoryGenerationBaseline(
+  workflowId: string,
+  config: EffectiveFlowConfig,
+  expected: {
+    readonly state: EffectiveHarnessState;
+    readonly head: EffectiveHarnessHeadIdentity;
+  },
+  signal?: AbortSignal,
+): Promise<void> {
+  const current = await loadCurrentEffectiveHarnessBaseline(workflowId, config, signal);
+  if (
+    current.head.headDigest !== expected.head.headDigest ||
+    current.state.stateDigest !== expected.state.stateDigest
+  ) {
+    throw new SupplementalMemoryCandidateGenerationError(
+      "identity_mismatch",
+      "effective harness changed during generation",
+    );
+  }
 }
 
 async function loadEffectiveHarness(projectRoot: string, workflowId: string) {

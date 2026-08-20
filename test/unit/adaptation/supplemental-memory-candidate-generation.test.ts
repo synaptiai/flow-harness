@@ -9,6 +9,7 @@ import {
   prepareSupplementalMemoryCandidateGeneration,
   SupplementalMemoryCandidateGenerationError,
 } from "../../../src/domain/adaptation/supplemental-memory-candidate-generation.js";
+import { childSpecialistCandidateFixture } from "../../fixtures/child-specialist-candidate.js";
 import { promptCandidateTuningEvidence } from "../../fixtures/prompt-candidate-generation.js";
 
 describe("supplemental-memory candidate generation", () => {
@@ -142,6 +143,44 @@ describe("supplemental-memory candidate generation", () => {
     ).toMatchObject({
       change: { kind: "replace", beforeSha256: sha256(prior) },
       generation: { operation: "replace", priorSha256: sha256(prior) },
+    });
+  });
+
+  it("generates for one exact agent in an embedded child workflow", () => {
+    const child = childSpecialistCandidateFixture();
+    const baseline = createEffectiveHarnessState({
+      scopeDigest: "a".repeat(64),
+      workflowSource: child.baselineText,
+      packages: child.packages,
+    });
+    const input = generationInput(baseline, "add");
+    const prepared = prepareSupplementalMemoryCandidateGeneration({
+      ...input,
+      target: {
+        ...input.target,
+        workflowId: baseline.workflowId,
+        childPath: ["delegate-review"],
+        agentNodeId: "review",
+      },
+    });
+
+    expect(JSON.parse(prepared.renderedInput).target).toMatchObject({
+      scope: {
+        workflowId: "specialist-harness",
+        childPath: ["delegate-review"],
+        agentNodeId: "review",
+      },
+      agent: { prompt: "Review the implementation against the declared task." },
+    });
+    expect(
+      completeSupplementalMemoryCandidateGeneration(
+        prepared,
+        JSON.stringify({ value: "Use the reviewed child fixture." }),
+        usage(),
+      ),
+    ).toMatchObject({
+      scope: { childPath: ["delegate-review"], agentNodeId: "review" },
+      change: { kind: "add", value: "Use the reviewed child fixture." },
     });
   });
 });

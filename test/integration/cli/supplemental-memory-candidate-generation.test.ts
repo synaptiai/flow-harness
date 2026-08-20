@@ -169,6 +169,36 @@ describe("supplemental-memory candidate generation CLI", () => {
     await expect(access(fixture.outputPath)).rejects.toThrow();
     await expect(access(join(fixture.root, ".flow", "effective-harness"))).rejects.toThrow();
   });
+
+  it("rejects an active-harness change during generation before publication", async () => {
+    const fixture = await localFixture();
+    const executor: NodeExecutor = {
+      execute: vi.fn<NodeExecutor["execute"]>(async () => {
+        const store = new LocalPromptActivationStore(fixture.root);
+        const snapshot = createPromptActivationSnapshot(
+          promptActivationInput({ candidateId: "changed-instructions", prompt: "Changed prompt." }),
+        );
+        const baselineSnapshot = createPromptActivationSnapshot(
+          promptActivationInput({
+            candidateId: "changed-instructions",
+            prompt: "Changed prompt.",
+            selection: "baseline",
+          }),
+        );
+        const activation = { snapshot, baselineSnapshot, actor: "operator:concurrent" };
+        const preview = await store.previewActivate(activation);
+        await store.applyActivate({ ...activation, expectedDigest: preview.proposalDigest });
+        const text = JSON.stringify({ value: "PRIVATE_STALE_MEMORY" });
+        return { status: "succeeded", evidence: generationEvidence(text) };
+      }),
+    };
+    const output = capture();
+
+    expect(await main(generationArgs(fixture), output.io, { cwd: fixture.root, executor })).toBe(1);
+    expect(output.stderr.join("\n")).toContain("effective harness changed during generation");
+    expect(output.stdout).toEqual([]);
+    await expect(access(fixture.outputPath)).rejects.toThrow();
+  });
 });
 
 async function localFixture() {
