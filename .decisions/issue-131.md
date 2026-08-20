@@ -19,9 +19,9 @@ provider session state, live retrieval, or model-controlled writes.
 
 ## Current evidence
 
-- An effective harness state binds exact workflow bytes, compiled workflow identity, root workflow
-  package identity, complete non-policy package closure, and a state digest. It has a 16 MiB
-  serialized limit.
+- An effective harness state binds exact workflow bytes, compiled workflow identity, and root
+  workflow package identity. It also binds the complete non-policy package closure and a state
+  digest. The serialized limit is 16 MiB.
 
 - A capability snapshot carries a content-addressed effective runtime snapshot into attached,
   detached, resumed, recovered, replayed, and child execution. The runtime reconstructs the exact
@@ -31,14 +31,15 @@ provider session state, live retrieval, or model-controlled writes.
   conversation IDs, response IDs, or transcripts.
 
 - Flow owns one fixed agent system prompt. Agent Skill descriptions are appended only for skills
-  already selected by the compiled workflow and bound in the immutable capability snapshot.
+  already selected by the compiled workflow. The immutable capability snapshot must also bind those
+  skills.
 
 - Existing effective candidate parsing recompiles baseline and projected complete states and proves
   that only the declared surface changed. Activation advances one atomic complete-state head, and
   rollback selects one retained complete state.
 
 - Public run and event views use shape-aware projections to remove private package bytes while
-  retaining internal durable snapshots for offline recovery.
+  retaining durable snapshots internally. Offline recovery uses those snapshots.
 
 ## User, operator, and system flows
 
@@ -46,19 +47,19 @@ provider session state, live retrieval, or model-controlled writes.
 
 1. The operator selects the current effective harness head as the baseline.
 
-2. The operator supplies one bounded candidate that identifies one existing root agent or one
-   existing agent in one embedded child workflow.
+2. The operator supplies one bounded candidate. It identifies an existing root agent or an agent in
+   an embedded child workflow.
 
 3. The candidate declares one stable entry ID and exactly one change: add, replace, or remove.
 
-4. Flow reopens the candidate without following links and verifies the exact baseline state,
-   workflow, package closure, target, prior entry state, and candidate identity.
+4. Flow reopens the candidate without following links. It verifies the exact baseline, workflow,
+   package closure, target, prior entry, and candidate identities.
 
 5. Flow applies the declared entry change to the immutable supplemental-memory catalog. It sorts
    entries canonically and enforces entry, target, state, parser, and serialized-state bounds.
 
-6. Flow proves that every unrelated memory entry and every workflow, model, tool, package, policy,
-   approval, retry, budget, verifier, sandbox, and graph field is unchanged.
+6. Flow proves that every unrelated memory entry is unchanged. Workflow, model, tool, package,
+   policy, approval, retry, budget, verifier, sandbox, and graph fields are also unchanged.
 
 7. Flow stages one complete effective harness candidate artifact for content-free review.
 
@@ -83,14 +84,22 @@ provider session state, live retrieval, or model-controlled writes.
 ### Activate, run, and roll back
 
 1. The operator requests a content-free preview for a superior complete paired result.
+
 2. Flow verifies the candidate artifact, evaluation, current head, and both complete states.
+
 3. Apply rechecks those identities under existing effective-harness mutation ownership.
+
 4. Flow publishes immutable dependencies before advancing the effective harness head.
+
 5. A future run stores the selected effective runtime snapshot in its capability snapshot.
+
 6. Before an agent attempt, Flow selects only entries for the exact workflow and agent identities.
+
 7. Flow appends one canonical escaped memory block after its fixed system instructions and before
    the selected Agent Skill catalog.
+
 8. Attached, detached, child, recovery, and replay paths use the retained bytes.
+
 9. Rollback selects a retained complete state and never reconstructs memory from live input.
 
 ### Cancel and settle failures
@@ -205,7 +214,8 @@ checked independently.
 The dependency direction remains CLI and infrastructure → application → domain.
 
 - The domain owns memory entry schemas, targets, canonical order, bounds, byte identities, state
-  and runtime digests, candidate projection, surface-only comparison, and prompt-block rendering.
+  and runtime digests, and candidate projection. It also owns surface comparison and prompt-block
+  rendering.
 
 - The application layer applies one reviewed candidate to the current complete state. It prepares
   paired evaluation and activation but does not read files, choose content, or authorize a run.
@@ -249,20 +259,20 @@ Issue #131._
 
 ### Non-goals
 
-- This issue does not persist transcripts, messages, model outputs, tool observations, provider
-  threads, conversation IDs, response IDs, ACP sessions, or A2A task history.
+- This issue does not persist transcripts, messages, model outputs, tool observations, or provider
+  threads. It also does not persist conversation, response, ACP session, or A2A task identifiers.
 
 - This issue does not add model-written memory, automatic extraction, summarization, promotion,
   retrieval, ranking, embeddings, decay, compaction, or conflict resolution.
 
-- This issue does not add MCP transport, a remote resource server, a memory database, a writable
-  memory tool, or an independent mutable memory head.
+- This issue does not add MCP transport, a remote resource server, or a memory database. It also
+  does not add a writable memory tool or independent mutable memory head.
 
-- This issue does not add dynamic routing, fallback, remote agents, general delegation, or new
-  model, tool, skill, package, policy, approval, budget, verifier, retry, or sandbox authority.
+- This issue does not add dynamic routing, fallback, remote agents, or general delegation. It adds
+  no model, tool, skill, package, policy, approval, budget, verifier, retry, or sandbox authority.
 
-- This issue does not claim that reviewed memory is factually correct or that one evaluated result
-  generalizes beyond its declared tasks, seeds, fixtures, model, and verification controls.
+- This issue does not claim that reviewed memory is factually correct. One evaluated result applies
+  only to its declared tasks, seeds, fixtures, model, and verification controls.
 
 ### Failure modes
 
@@ -274,8 +284,8 @@ Issue #131._
   authoritative. Existing exact-state reconciliation governs post-boundary uncertainty.
 
 - **Invalid input** — Invalid, ambiguous, blank, no-op, stale, oversized, unstable, linked,
-  duplicate, reordered, or unrelated-changing input fails closed with a fixed stage and no private
-  value or cause.
+  duplicate, reordered, or unrelated-changing input fails closed. The error has a fixed stage and
+  contains no private value or cause.
 
 - **Missing context** — A missing active head, target, prior entry, package, evaluation, policy, or
   runtime dependency stops the operation. Flow uses no live fallback.
@@ -284,24 +294,24 @@ Issue #131._
   outcome. Flow does not choose another memory entry, model, skill, package, or agent.
 
 - **Resource exhaustion** — Entry count, entry bytes, target bytes, state bytes, candidate bytes,
-  path bytes, serialized state, event, supervisor frame, inference frame, evaluation, and output
-  limits remain finite. Exact limits succeed and limit-plus-one inputs fail before publication.
+  path bytes, and serialized-state limits remain finite. Event, frame, evaluation, and output limits
+  also remain finite. Exact limits succeed, and limit-plus-one inputs fail before publication.
 
 ### Interface contracts
 
-- A supplemental-memory entry has a stable identifier, an exact root or embedded-child agent
-  target, a positive UTF-8 byte count, a SHA-256 digest, and canonical base64 content. Entries are
-  unique and sorted by target identity and entry ID.
+- A supplemental-memory entry has a stable identifier and an exact root or embedded-child agent
+  target. It also has a positive UTF-8 byte count, SHA-256 digest, and canonical base64 content.
+  Target identity and entry ID define the unique canonical order.
 
-- A memory candidate source has one versioned kind, metadata identity, exact scope, exact baseline
-  state and package closure identities, one entry ID, and one add, replace, or remove change.
+- A memory candidate source has one versioned kind, metadata identity, exact scope, and exact
+  baseline identities. It names one entry and one add, replace, or remove change.
 
 - An add proves the entry is absent. A replace proves the exact prior byte identity. A remove proves
   the exact prior byte identity and contains no replacement bytes. Every successful operation must
   change the complete state digest.
 
-- A memory candidate identity binds the candidate manifest, baseline head and state, root workflow,
-  package closure, target agent, entry ID, operation, content-free before and after identities, and
+- A memory candidate identity binds the manifest, baseline head and state, root workflow, package
+  closure, target agent, entry, and operation. It also binds content-free change identities and the
   projected complete-state digest.
 
 - An effective candidate artifact adds one `supplemental-memory` surface. Baseline and candidate
@@ -337,8 +347,8 @@ The final local tree passed these gates on 2026-08-20:
 
 - The combined acceptance selector passed 383 tests across 24 files. It covered the domain,
   candidate filesystem boundary, complete-state composition, paired evaluation, activation,
-  attached and detached execution, child targeting, public projection, and offline replay paths
-  named in the verification map.
+  attached and detached execution, and child targeting. It also covered public projection and the
+  offline replay paths named in the verification map.
 
 - The complete serial suite passed 4,506 tests across 325 files, with four existing conditional
   tests skipped:
@@ -367,5 +377,5 @@ The final local tree passed these gates on 2026-08-20:
   The production dependency audit reported zero vulnerabilities.
 
 - The native Prime preparation gate did not run locally because the host and Docker daemon are
-  ARM64, while Flow correctly requires Linux x64 for this acceptance boundary. The hosted Linux
-  x64 workflow must pass before merge. No platform guard was bypassed.
+  ARM64. Flow requires Linux x64 for this acceptance boundary. The hosted Linux x64 workflow must
+  pass before merge. No platform guard was bypassed.
