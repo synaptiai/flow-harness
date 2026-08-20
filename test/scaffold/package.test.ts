@@ -43,7 +43,7 @@ describe("package contract", () => {
         "typescript",
       ]),
     );
-    expect(manifest.bin).toEqual({ flow: "dist/cli/main.js" });
+    expect(manifest.bin).toEqual({ flow: "dist/cli/launcher.js" });
     expect(manifest.engines?.node).toBe(">=26.7.0");
     expect(manifest.os).toEqual(["darwin", "linux"]);
     expect(manifest.files).toContain("THIRD_PARTY_NOTICES.md");

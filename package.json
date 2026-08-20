@@ -33,7 +33,7 @@
     "linux"
   ],
   "bin": {
-    "flow": "dist/cli/main.js"
+    "flow": "dist/cli/launcher.js"
   },
   "files": [
     "dist",
