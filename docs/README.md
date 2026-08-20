@@ -10,6 +10,7 @@ Read the [security policy](../SECURITY.md) before unattended use.
 | Document | Use it when |
 | --- | --- |
 | [Install the Flow preview](guides/install-preview.md) | You want to verify, install, remove, or replace the versioned package. |
+| [Flow 0.1.0-alpha.1 release notes](releases/0.1.0-alpha.1.md) | You need the supported environment, verified behaviors, or compatibility limits for this version. |
 | [Getting started](getting-started.md) | You want to complete one credential-free run. |
 | [Project status](project-status.md) | You need current maturity, platform support, and known limits. |
 | [Configuration](configuration.md) | You need project settings, operator ceilings, sandbox selection, or policy-change rules. |
