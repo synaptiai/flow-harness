@@ -71,6 +71,12 @@ survive interruption.
 flowchart TB
     people["People and automation<br/>Developers · operators · CI"]
 
+    subgraph delivery["0. Distribution — publishes one reviewed package"]
+        direction LR
+        release["Preview automation<br/>Build once · test x64 · attest"]
+        channels["Immutable GitHub release<br/>npm preview channel"]
+    end
+
     subgraph access["1. Ways to use Flow"]
         direction LR
         cli["Command line"]
@@ -108,6 +114,9 @@ flowchart TB
         sources["HTTPS, OCI, and TUF package sources"]
     end
 
+    people -->|"Approves a preview release"| release
+    release -->|"Publishes one verified archive"| channels
+    channels -->|"Installs exact package bytes"| cli
     people -->|"Starts attached work"| cli
     people -->|"Observes and steers"| presentation
     cli -->|"Runs now"| engine
@@ -144,6 +153,9 @@ flowchart TB
 
 Read the diagram from top to bottom:
 
+0. Release automation builds one npm archive. Linux x64 and macOS x64 consume the same bytes before
+   provenance and protected publication make the archive available.
+
 1. People and automation use the command line or a first-party presentation view.
 
 2. The control plane compiles the workflow, reconstructs durable state, selects reviewed per-agent
@@ -170,6 +182,7 @@ before success. It stops on unresolved side-effect or settlement uncertainty.
 
 | Diagram area | Code owner | Responsibility |
 | --- | --- | --- |
+| Preview release automation | `src/domain/release/`, `src/infrastructure/release/`, `scripts/build-package-release.mjs`, `scripts/verify-package.mjs`, and `.github/workflows/preview-release.yml` | Builds one bounded archive, records its installed-file identity, verifies the same archive on supported x64 hosts, generates provenance, and gates immutable publication. |
 | Command line | `src/cli/` | Parses public commands, composes dependencies, and projects safe output. |
 | Workflow rules and safeguards | `src/domain/` | Defines provider-neutral workflows, state transitions, policy, evidence, budgets, and validation. |
 | Workflow engine, evaluation, adaptation, and capability governance | `src/application/` | Coordinates use cases through ports, asks the domain for legal transitions, and prepares evaluated state changes. |

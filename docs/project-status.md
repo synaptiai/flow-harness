@@ -1,10 +1,12 @@
 # Project status
 
-Flow is a public pre-alpha source preview. Its executable format is
+Flow is a public alpha preview. Its executable format is
 `flow.synapti.ai/v1alpha1`. There is no compatibility or migration promise before the first stable
 release.
 
-The package is not published to npm. Build and run it from a reviewed source checkout.
+Version `0.1.0-alpha.1` is the first installable preview. GitHub-hosted Ubuntu 24.04 x64 and macOS
+15 Intel runners verify the same npm archive before publication. The `preview` npm distribution
+tag is the registry channel after its initial two-factor-authenticated bootstrap.
 
 ## Status terms
 
@@ -104,7 +106,7 @@ Read [Reproducible harness evaluation](evaluation.md) and
 - Remote or multi-host supervisor control.
 - VM-grade isolation for the host-side agent runtime.
 - A stable executable format and migration promise.
-- A supported npm release or hosted Flow service.
+- A stable npm release or hosted Flow service.
 
 The [Delivery roadmap](roadmap.md) records completed gates and planned work. It does not replace the
 current support and security contracts on this page.

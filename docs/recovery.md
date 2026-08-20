@@ -6,6 +6,14 @@ attempt applied no effects. Recovery remains conservative: ambiguous work is rep
 operator and is never repeated automatically. Agent attempts that select `exec`, command attempts, and model verifier attempts never opt into
 fresh recovery; an open verifier start is refused as uncertain.
 
+## Preview release interruption
+
+A preview archive is immutable after GitHub publishes its release. The release workflow doesn't
+overwrite an existing tag, release, asset, or npm version. A failed draft upload, ambiguous publish
+response, or registry error requires inspection before another action. Follow
+[Recover from an interrupted release](operations/release-preview.md#recover-from-an-interrupted-release)
+for the exact artifact and semantic-version rules.
+
 ## ACP editor sessions
 
 `flow acp --actor <label>` stores its bounded session index below the selected runs directory. One

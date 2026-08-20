@@ -232,13 +232,21 @@ current pre-stable compatibility and security boundaries.
 
 ### Slice 8.1: Install the preview
 
-- Publish one versioned preview package that provides the `flow` command on supported Linux and
-  macOS hosts. Build the package from the reviewed lockfile and verify its installed files before
-  release.
-- Publish release notes that name the supported Node.js range, platforms, upgrade limits, and known
-  security boundaries.
-- Verify installation, command discovery, help output, and the credential-free example from clean
-  Linux and macOS environments.
+- **Implemented:** One versioned package provides the `flow` command on Linux and macOS. A minimal
+  launcher rejects unsupported public host requirements before it imports the complete CLI.
+
+- **Implemented:** One clean reviewed revision produces one bounded archive and canonical release
+  evidence. GitHub-hosted Ubuntu 24.04 x64 and macOS 15 Intel verify the same archive. They verify
+  its installed tree, command discovery, help, project initialization, credential-free workflow,
+  and local browser path.
+
+- **Implemented:** GitHub build provenance binds the archive and evidence to the source workflow.
+  A protected job creates a complete draft and publishes it only when release immutability is
+  enabled. It cannot publish npm or assign `latest`.
+
+- **Operator publication:** The first npm version requires an interactive two-factor-authenticated
+  publication of the exact GitHub archive under `preview`. Later revisions use stage-only trusted
+  publishing. A human retains two-factor-authenticated approval.
 
 ### Slice 8.2: Diagnose the environment
 

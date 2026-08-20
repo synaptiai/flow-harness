@@ -3,9 +3,9 @@
 Flow is a provider-neutral coding-agent harness. It executes deterministic workflow graphs, records
 durable evidence, and confines command execution through fail-closed sandboxes.
 
-> **Pre-alpha source preview:** Flow is under active development. Its contracts may change, and
-> `@synaptiai/flow-harness` is not published to npm. Build it from a reviewed source checkout. Do
-> not use it as a security boundary for hostile or multi-tenant workloads.
+> **Alpha preview:** Flow is under active development. Its contracts may change. Install the
+> versioned prerelease from its immutable GitHub release, and don't use it as a security boundary
+> for hostile or multi-tenant workloads.
 
 Flow is a standalone product. It does not depend on Claude Code or preserve compatibility with the
 earlier Flow plugin. Pi supplies the default model-facing agent loop. Flow owns scheduling, policy,
@@ -35,7 +35,7 @@ The compiled graph decides what runs next. Model prose cannot override missing o
 
 ## Project status
 
-Flow is a public pre-alpha source preview. The executable format is
+Flow is a public alpha preview. The executable format is
 `flow.synapti.ai/v1alpha1`. There is no compatibility or migration promise before the first stable
 release.
 
@@ -65,37 +65,39 @@ Read [Project status](docs/project-status.md) for the current feature and platfo
 
 ## Quick start
 
-This path builds the source preview and completes one credential-free run.
+This path installs the versioned preview and completes one credential-free run.
 
 ### Prerequisites
 
-- Git
 - Node.js 26.7 or newer
-- npm with lockfile support
-- Linux or macOS
+- npm with global package support
+- x64 Linux or macOS for a release-qualified host
 
-Clone and build the exact dependency graph:
+Install the immutable GitHub release without package lifecycle scripts:
 
 ```sh
-git clone https://github.com/synaptiai/flow-harness.git
-cd flow-harness
-npm ci --ignore-scripts
-npm run build
+npm install --global --ignore-scripts \
+  https://github.com/synaptiai/flow-harness/releases/download/v0.1.0-alpha.1/synaptiai-flow-harness-0.1.0-alpha.1.tgz
+flow --help
 ```
 
-Initialize the checkout as a Flow project:
+Initialize an empty Flow project:
 
 ```sh
-node dist/cli/main.js init .
-node dist/cli/main.js config show
+mkdir flow-preview-project
+cd flow-preview-project
+flow init .
+flow config show
 ```
 
-Validate and run the credential-free foundation workflow:
+Validate and run the credential-free installed-package workflow:
 
 ```sh
-node dist/cli/main.js validate examples/verify-foundation.workflow.yaml
-node dist/cli/main.js run examples/verify-foundation.workflow.yaml --run-id first-run
-node dist/cli/main.js inspect first-run
+flow_example="$(npm root --global)/@synaptiai/flow-harness/examples/verify-installation.workflow.yaml"
+flow validate "$flow_example"
+flow run "$flow_example" \
+  --run-id first-run
+flow inspect first-run
 ```
 
 The verifier runs through the production command sandbox. The run succeeds only when deterministic
@@ -103,8 +105,10 @@ evidence accepts the declared goal criterion.
 
 Flow stores authoritative events in `.flow/runs/first-run/events.jsonl`.
 
-Continue with [Getting started](docs/getting-started.md) for explanations, troubleshooting, and
-reader-specific next steps.
+Before installation, follow [Install the Flow preview](docs/guides/install-preview.md) to verify the
+immutable release and its build provenance. Continue with
+[Getting started](docs/getting-started.md) for explanations, troubleshooting, and reader-specific
+next steps.
 
 ## Security
 
@@ -131,6 +135,7 @@ The [documentation hub](docs/README.md) routes each reader task to one canonical
 
 | Start with | When you need |
 | --- | --- |
+| [Install the Flow preview](docs/guides/install-preview.md) | Verified package download, installation, removal, and release-specific limits |
 | [Getting started](docs/getting-started.md) | Source setup and the first credential-free run |
 | [Project status](docs/project-status.md) | Maturity, platform support, and planned boundaries |
 | [Run and control workflows](docs/guides/run-and-control.md) | Detached runs, presentation hosts, approvals, budgets, cancellation, and recovery entry points |

@@ -31,18 +31,54 @@ describe("public repository contracts", () => {
     expect(verifier).toContain("verify-installation.workflow.yaml");
   });
 
-  it("documents an honest source-based pre-alpha first run", async () => {
-    const readme = await readPublicDocumentation();
+  it("documents an honest installable alpha first run", async () => {
+    const [readme, installGuide, releaseNotes] = await Promise.all([
+      readPublicDocumentation(),
+      readText("docs/guides/install-preview.md"),
+      readText("docs/releases/0.1.0-alpha.1.md"),
+    ]);
 
-    expect(readme).toMatch(/pre-alpha/i);
-    expect(readme).toMatch(/not published to npm/i);
-    expect(readme).toContain("git clone https://github.com/synaptiai/flow-harness.git");
-    expect(readme).toContain("npm ci --ignore-scripts");
+    expect(readme).toMatch(/alpha preview/i);
+    expect(readme).toContain("0.1.0-alpha.1");
+    expect(readme).toContain(
+      "https://github.com/synaptiai/flow-harness/releases/download/v0.1.0-alpha.1/",
+    );
+    expect(readme).toContain("npm install --global --ignore-scripts");
     expect(readme).toContain("bubblewrap");
-    expect(readme).toContain("node dist/cli/main.js run");
+    expect(readme).toContain("flow run");
+    expect(readme).toContain("[Install the Flow preview](docs/guides/install-preview.md)");
     expect(readme).toContain("[Contributing](CONTRIBUTING.md)");
     expect(readme).toContain("[Support](SUPPORT.md)");
     expect(readme).toContain("[Security policy](SECURITY.md)");
+
+    expect(installGuide).toContain("gh release verify-asset");
+    expect(installGuide).toContain("gh attestation verify");
+    expect(installGuide).toContain("@synaptiai/flow-harness@preview");
+    expect(installGuide).toContain("`preview` tag is separate from `latest`");
+    expect(releaseNotes).toContain("Ubuntu 24.04 x64");
+    expect(releaseNotes).toContain("macOS 15 Intel");
+    expect(releaseNotes).toContain("doesn't assign `latest`");
+  });
+
+  it("routes preview release details to canonical documentation owners", async () => {
+    const [hub, operations, architecture, roadmap, testing] = await Promise.all([
+      readText("docs/README.md"),
+      readText("docs/operations/release-preview.md"),
+      readText("docs/architecture.md"),
+      readText("docs/roadmap.md"),
+      readText("docs/testing-and-evaluation.md"),
+    ]);
+
+    expect(hub).toContain("[Install the Flow preview](guides/install-preview.md)");
+    expect(hub).toContain("[Preview release operations](operations/release-preview.md)");
+    expect(operations).toContain("--allow-stage-publish");
+    expect(operations).not.toContain("  --allow-publish\n");
+    expect(operations).toContain("--tag preview");
+    expect(architecture).toContain("Preview release automation");
+    expect(architecture).toContain("Immutable GitHub release");
+    expect(roadmap).toMatch(/Slice 8\.1:[\s\S]*\*\*Implemented:\*\*/);
+    expect(testing).toContain("npm run release:prepare");
+    expect(testing).toContain("npm run release:verify");
   });
 
   it("reports policy and attributed presentation packages as implemented", async () => {

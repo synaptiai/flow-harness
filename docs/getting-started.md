@@ -1,18 +1,17 @@
 # Getting started
 
-This guide builds the Flow source preview and runs one credential-free workflow.
+This guide runs one credential-free workflow with the installed Flow preview.
 
 ## Before you begin
 
-Flow is a public pre-alpha source preview. The npm package is not published. Build it from a
-reviewed checkout.
+Flow is a public alpha preview. Install and verify the exact package by following
+[Install the Flow preview](guides/install-preview.md) before you use this guide.
 
 Requirements:
 
-- Git
 - Node.js 26.7 or newer
-- npm with lockfile support
-- Linux or macOS
+- npm with global package support
+- x64 Linux or macOS for a release-qualified host
 
 ### Ubuntu 24.04 sandbox prerequisite
 
@@ -31,30 +30,15 @@ The first run does not need model credentials, Docker, Bun, or the Prime runtime
 Do not use this preview as a security boundary for hostile or multi-tenant workloads. Read the
 [security policy](../SECURITY.md) before unattended use.
 
-## Build the source preview
-
-Clone the repository and install the exact lockfile:
-
-```sh
-git clone https://github.com/synaptiai/flow-harness.git
-cd flow-harness
-npm ci --ignore-scripts
-npm run build
-```
-
-`npm ci --ignore-scripts` installs the committed dependency graph. Use `npm install` only when you
-intend to change dependencies.
-
-The built command is `node dist/cli/main.js`. The examples below use that path because the package
-is not published.
-
 ## Initialize a project
 
-Initialize the checkout and inspect the effective configuration:
+Create an empty directory, initialize it, and inspect the effective configuration:
 
 ```sh
-node dist/cli/main.js init .
-node dist/cli/main.js config show
+mkdir flow-preview-project
+cd flow-preview-project
+flow init .
+flow config show
 ```
 
 Flow writes project configuration to `.flow/config.yaml`. It discovers the nearest Flow project
@@ -65,12 +49,14 @@ The effective configuration combines project settings with trusted operator ceil
 
 ## Validate and run a workflow
 
-Use the credential-free foundation example:
+Use the credential-free example inside the installed package:
 
 ```sh
-node dist/cli/main.js validate examples/verify-foundation.workflow.yaml
-node dist/cli/main.js run examples/verify-foundation.workflow.yaml --run-id first-run
-node dist/cli/main.js inspect first-run
+flow_example="$(npm root --global)/@synaptiai/flow-harness/examples/verify-installation.workflow.yaml"
+flow validate "$flow_example"
+flow run "$flow_example" \
+  --run-id first-run
+flow inspect first-run
 ```
 
 The verifier runs through the production command sandbox. The run succeeds only when deterministic
@@ -96,7 +82,7 @@ sandbox identity, and the effective policy digest.
   generating adaptive candidates.
 - Read [Prime runtime operations](operations/prime-runtime.md) only for the Linux x64 Prime or
   container profile.
-- Read [Contributing](../CONTRIBUTING.md) before changing Flow itself.
+- Read [Contributing](../CONTRIBUTING.md) to build Flow from source or change the project.
 
 ## Common problems
 
