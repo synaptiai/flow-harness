@@ -5,6 +5,7 @@ import {
   type EffectiveHarnessCandidateArtifact,
   parseEffectiveHarnessCandidateArtifact,
 } from "../domain/adaptation/effective-harness-candidate.js";
+import type { ModelRoute } from "../domain/adaptation/model-routing-candidate.js";
 import {
   aggregateEvaluation,
   EvaluationAggregationError,
@@ -45,10 +46,15 @@ export interface EffectiveHarnessStoredEvaluation {
                 readonly artifactDigest: string;
                 readonly stateDigest: string;
                 readonly baselineHeadDigest: string;
+                readonly workflowId?: string | undefined;
                 readonly workflowSha256: string;
                 readonly workflowDigest: string;
                 readonly packageDigests: readonly string[];
-                readonly surface: "prompt" | "agent-skill-resource" | "agent-skill-package";
+                readonly surface:
+                  | "prompt"
+                  | "agent-skill-resource"
+                  | "agent-skill-package"
+                  | "model-routing";
                 readonly candidateDigest: string;
               }
             | undefined;
@@ -58,6 +64,22 @@ export interface EffectiveHarnessStoredEvaluation {
           readonly adapter: "pi-native-v1" | "omp-native-v1" | "prime-agent-native-v1";
         }
     )[];
+    readonly controls: {
+      readonly modelRoutes?:
+        | readonly [
+            {
+              readonly profileId: string;
+              readonly nodeId: string;
+              readonly route: ModelRoute;
+            },
+            {
+              readonly profileId: string;
+              readonly nodeId: string;
+              readonly route: ModelRoute;
+            },
+          ]
+        | undefined;
+    };
     readonly comparison: EvaluationReportInput["comparison"];
     readonly schedule: readonly EvaluationTrialScheduleItem[];
   };
@@ -149,6 +171,15 @@ function assertEvaluationProfiles(
     baseline?.adapter === "flow-workflow-v1" ? baseline.effectiveHarness : undefined;
   const candidateBinding =
     candidate?.adapter === "flow-workflow-v1" ? candidate.effectiveHarness : undefined;
+  const workflowIdsMatch =
+    artifact.surface === "model-routing"
+      ? baselineBinding?.workflowId === artifact.workflowId &&
+        candidateBinding?.workflowId === artifact.workflowId
+      : baselineBinding?.workflowId === undefined && candidateBinding?.workflowId === undefined
+        ? true
+        : baselineBinding?.workflowId === artifact.workflowId &&
+          candidateBinding?.workflowId === artifact.workflowId;
+  assertEvaluationModelRoutes(artifact, stored, baseline?.id, candidate?.id);
   if (
     baseline?.adapter !== "flow-workflow-v1" ||
     candidate?.adapter !== "flow-workflow-v1" ||
@@ -168,6 +199,7 @@ function assertEvaluationProfiles(
     candidateBinding.surface !== artifact.surface ||
     baselineBinding.candidateDigest !== artifact.candidate.candidateDigest ||
     candidateBinding.candidateDigest !== artifact.candidate.candidateDigest ||
+    !workflowIdsMatch ||
     baselineBinding.workflowSha256 !== artifact.baselineState.workflow.sha256 ||
     baselineBinding.workflowDigest !== artifact.baselineState.workflow.workflowDigest ||
     candidateBinding.workflowSha256 !== artifact.candidateState.workflow.sha256 ||
@@ -187,6 +219,46 @@ function assertEvaluationProfiles(
       "effective harness evaluation does not match its candidate artifact",
     );
   }
+}
+
+function assertEvaluationModelRoutes(
+  artifact: EffectiveHarnessCandidateArtifact,
+  stored: EffectiveHarnessStoredEvaluation,
+  baselineProfileId: string | undefined,
+  candidateProfileId: string | undefined,
+): void {
+  const routes = stored.header.controls.modelRoutes;
+  if (artifact.surface !== "model-routing") {
+    if (routes !== undefined) throwIdentityMismatch();
+    return;
+  }
+  const identity = artifact.candidate;
+  if (
+    !("kind" in identity) ||
+    identity.kind !== "model-routing-candidate" ||
+    routes === undefined ||
+    routes[0].profileId !== baselineProfileId ||
+    routes[1].profileId !== candidateProfileId ||
+    routes[0].nodeId !== identity.scope.nodeId ||
+    routes[1].nodeId !== identity.scope.nodeId ||
+    !sameModelRoute(routes[0].route, identity.route.before) ||
+    !sameModelRoute(routes[1].route, identity.route.after)
+  ) {
+    throwIdentityMismatch();
+  }
+}
+
+function sameModelRoute(left: ModelRoute, right: ModelRoute): boolean {
+  return (
+    left.provider === right.provider && left.id === right.id && left.thinking === right.thinking
+  );
+}
+
+function throwIdentityMismatch(): never {
+  throw new EffectiveHarnessActivationAdmissionError(
+    "identity_mismatch",
+    "effective harness evaluation does not match its candidate artifact",
+  );
 }
 
 function aggregateStoredEvaluation(stored: EffectiveHarnessStoredEvaluation) {

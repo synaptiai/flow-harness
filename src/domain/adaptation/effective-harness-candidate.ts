@@ -23,6 +23,10 @@ import {
   parseEffectiveHarnessHeadIdentity,
   parseEffectiveHarnessState,
 } from "./effective-harness-state.js";
+import {
+  type ModelRoutingCandidateIdentity,
+  parseModelRoutingCandidateIdentity,
+} from "./model-routing-candidate.js";
 import { type PromptCandidateIdentity, parsePromptCandidateIdentity } from "./prompt-candidate.js";
 
 export const MAX_EFFECTIVE_HARNESS_CANDIDATE_BYTES = 40 * 1024 * 1024;
@@ -41,7 +45,7 @@ const artifactSchema = z
     kind: z.literal("effective-harness-candidate"),
     scopeDigest: sha256Schema,
     workflowId: identifierSchema,
-    surface: z.enum(["prompt", "agent-skill-resource", "agent-skill-package"]),
+    surface: z.enum(["prompt", "agent-skill-resource", "agent-skill-package", "model-routing"]),
     candidate: z.unknown(),
     baselineHead: z.unknown(),
     baselineState: z.unknown(),
@@ -53,12 +57,14 @@ const artifactSchema = z
 export type EffectiveHarnessCandidateIdentity =
   | PromptCandidateIdentity
   | AgentSkillCandidateIdentity
-  | AgentSkillPackageCandidateIdentity;
+  | AgentSkillPackageCandidateIdentity
+  | ModelRoutingCandidateIdentity;
 
 export type EffectiveHarnessCandidateSurface =
   | "prompt"
   | "agent-skill-resource"
-  | "agent-skill-package";
+  | "agent-skill-package"
+  | "model-routing";
 
 export interface EffectiveHarnessCandidateArtifact {
   readonly version: 1;
@@ -235,6 +241,13 @@ function parseHead(input: unknown, scopeDigest: string): EffectiveHarnessHeadIde
 }
 
 function parseCandidate(input: unknown): EffectiveHarnessCandidateIdentity {
+  if (isObjectWithKind(input, "model-routing-candidate")) {
+    try {
+      return parseModelRoutingCandidateIdentity(input);
+    } catch {
+      throw invalidCandidateIdentity();
+    }
+  }
   if (isObjectWithKind(input, "agent-skill-candidate")) {
     try {
       return parseAgentSkillCandidateIdentity(input);
@@ -280,6 +293,10 @@ function assertSurfaceChange(
     }
     if (surface === "agent-skill-package" && isAgentSkillPackageCandidate(candidate)) {
       assertAgentSkillPackageChange(candidate, baseline, projected);
+      return;
+    }
+    if (surface === "model-routing" && isModelRoutingCandidate(candidate)) {
+      assertModelRoutingChange(candidate, baseline, projected);
       return;
     }
   } catch {
@@ -381,6 +398,31 @@ function assertAgentSkillPackageChange(
   assertNormalizedWorkflow(normalized, before);
 }
 
+function assertModelRoutingChange(
+  candidate: ModelRoutingCandidateIdentity,
+  baseline: EffectiveHarnessState,
+  projected: EffectiveHarnessState,
+): void {
+  if (!isDeepStrictEqual(normalizeJson(baseline.packages), normalizeJson(projected.packages))) {
+    throw new Error("model-routing package state changed");
+  }
+  const before = compileStateWorkflow(baseline);
+  const after = compileStateWorkflow(projected);
+  const normalized = structuredClone(after);
+  const beforeNode = requiredAgentNode(before, candidate.scope.nodeId);
+  const afterNode = requiredAgentNode(normalized, candidate.scope.nodeId);
+  if (
+    !isDeepStrictEqual(beforeNode.agent.model, candidate.route.before) ||
+    !isDeepStrictEqual(afterNode.agent.model, candidate.route.after)
+  ) {
+    throw new Error("model-routing state identity mismatch");
+  }
+  (afterNode.agent as { model: typeof beforeNode.agent.model }).model = structuredClone(
+    beforeNode.agent.model,
+  );
+  assertNormalizedWorkflow(normalized, before);
+}
+
 function assertOtherPackagesEqual(
   baseline: readonly CapabilityPackageSnapshot[],
   projected: readonly CapabilityPackageSnapshot[],
@@ -433,7 +475,9 @@ function candidateSurface(
     ? "agent-skill-resource"
     : isAgentSkillPackageCandidate(candidate)
       ? "agent-skill-package"
-      : "prompt";
+      : isModelRoutingCandidate(candidate)
+        ? "model-routing"
+        : "prompt";
 }
 
 function candidateWorkflowId(candidate: EffectiveHarnessCandidateIdentity): string {
@@ -463,6 +507,12 @@ function isAgentSkillPackageCandidate(
   candidate: EffectiveHarnessCandidateIdentity,
 ): candidate is AgentSkillPackageCandidateIdentity {
   return "kind" in candidate && candidate.kind === "agent-skill-package-candidate";
+}
+
+function isModelRoutingCandidate(
+  candidate: EffectiveHarnessCandidateIdentity,
+): candidate is ModelRoutingCandidateIdentity {
+  return "kind" in candidate && candidate.kind === "model-routing-candidate";
 }
 
 function isObjectWithKind(input: unknown, kind: string): boolean {

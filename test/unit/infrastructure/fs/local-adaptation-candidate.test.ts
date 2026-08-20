@@ -10,6 +10,8 @@ import {
 } from "../../../../src/domain/adaptation/effective-harness-candidate.js";
 import { admitLocalAdaptationCandidate } from "../../../../src/infrastructure/fs/local-adaptation-candidate.js";
 import { effectiveHarnessCandidateArtifactFixture } from "../../../fixtures/effective-harness-evaluation.js";
+import { modelRoutingCandidateSourceFixture } from "../../../fixtures/model-routing-candidate.js";
+import { promptCandidateWorkflowText } from "../../../fixtures/prompt-candidate-generation.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -20,6 +22,34 @@ afterEach(async () => {
 });
 
 describe("local adaptation candidate dispatch", () => {
+  it("dispatches one exact model-routing candidate and rejects replacement", async () => {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "flow-adaptation-candidate-")));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "route.candidate.yaml");
+    const baselinePath = join(directory, "baseline.workflow.yaml");
+    const baselineText = promptCandidateWorkflowText();
+    const source = modelRoutingCandidateSourceFixture(baselineText);
+    const content = Buffer.from(JSON.stringify(source));
+    await writeFile(path, content);
+    await writeFile(baselinePath, baselineText);
+
+    await expect(admitLocalAdaptationCandidate(path)).resolves.toMatchObject({
+      kind: "model-routing-candidate",
+      candidate: {
+        source,
+        identity: {
+          kind: "model-routing-candidate",
+          route: source.route,
+        },
+      },
+    });
+    await expect(
+      admitLocalAdaptationCandidate(path, {
+        afterDiscriminatorRead: () => writeFile(path, Buffer.concat([content, Buffer.from(" ")])),
+      }),
+    ).rejects.toMatchObject({ code: "source_changed" });
+  });
+
   it("dispatches one exact effective harness artifact and rejects replacement", async () => {
     const directory = await realpath(await mkdtemp(join(tmpdir(), "flow-adaptation-candidate-")));
     temporaryDirectories.push(directory);

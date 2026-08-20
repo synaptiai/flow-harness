@@ -26,6 +26,10 @@ import {
   parseAgentSkillPackageCandidateIdentity,
 } from "../../domain/adaptation/agent-skill-package-candidate.js";
 import {
+  type ModelRoutingCandidateIdentity,
+  parseModelRoutingCandidateIdentity,
+} from "../../domain/adaptation/model-routing-candidate.js";
+import {
   type PromptCandidateIdentity,
   parsePromptCandidateIdentity,
 } from "../../domain/adaptation/prompt-candidate.js";
@@ -149,8 +153,24 @@ const candidateIdentitySchema = z
   .object({
     provenance: relativePathSchema,
     identity: z.custom<
-      PromptCandidateIdentity | AgentSkillCandidateIdentity | AgentSkillPackageCandidateIdentity
+      | PromptCandidateIdentity
+      | AgentSkillCandidateIdentity
+      | AgentSkillPackageCandidateIdentity
+      | ModelRoutingCandidateIdentity
     >((value) => {
+      if (
+        typeof value === "object" &&
+        value !== null &&
+        "kind" in value &&
+        value.kind === "model-routing-candidate"
+      ) {
+        try {
+          parseModelRoutingCandidateIdentity(value);
+          return true;
+        } catch {
+          return false;
+        }
+      }
       try {
         parsePromptCandidateIdentity(value);
         return true;
@@ -200,10 +220,11 @@ const flowProfileSchema = z
         artifactDigest: sha256Schema,
         stateDigest: sha256Schema,
         baselineHeadDigest: sha256Schema,
+        workflowId: identifierSchema.optional(),
         workflowSha256: sha256Schema,
         workflowDigest: sha256Schema,
         packageDigests: z.array(sha256Schema).max(128).readonly(),
-        surface: z.enum(["prompt", "agent-skill-resource", "agent-skill-package"]),
+        surface: z.enum(["prompt", "agent-skill-resource", "agent-skill-package", "model-routing"]),
         candidateDigest: sha256Schema,
       })
       .strict()
@@ -278,6 +299,17 @@ const scheduleItemSchema = z
   })
   .strict();
 
+const evaluationModelSchema = z
+  .object({
+    provider: z.string().min(1).max(96),
+    id: z.string().min(1).max(256),
+    thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
+  })
+  .strict();
+const modelRouteControlSchema = z
+  .object({ profileId: identifierSchema, nodeId: identifierSchema, route: evaluationModelSchema })
+  .strict();
+
 const publicHeaderSchema = z
   .object({
     version: z.literal(1),
@@ -296,13 +328,11 @@ const publicHeaderSchema = z
     profiles: z.array(profileSchema).length(2),
     controls: z
       .object({
-        model: z
-          .object({
-            provider: z.string().min(1).max(96),
-            id: z.string().min(1).max(256),
-            thinking: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]),
-          })
-          .strict(),
+        model: evaluationModelSchema,
+        modelRoutes: z
+          .tuple([modelRouteControlSchema, modelRouteControlSchema])
+          .readonly()
+          .optional(),
         budget: budgetSchema,
         network: z.literal("deny"),
         retry: z.object({ providerRetries: z.literal(0), harnessRetries: z.literal(0) }).strict(),
@@ -400,6 +430,29 @@ const publicHeaderSchema = z
       const flowCandidate = candidate?.adapter === "flow-workflow-v1" ? candidate : undefined;
       const baselineBinding = flowBaseline?.effectiveHarness;
       const candidateBinding = flowCandidate?.effectiveHarness;
+      const routeIdentity = flowCandidate?.candidate?.identity;
+      const modelRoutes = header.controls.modelRoutes;
+      const workflowIdsMatch =
+        baselineBinding?.workflowId === undefined && candidateBinding?.workflowId === undefined
+          ? true
+          : baselineBinding?.workflowId !== undefined &&
+            baselineBinding.workflowId === candidateBinding?.workflowId;
+      const modelRoutesMatch =
+        modelRoutes === undefined
+          ? candidateBinding?.surface !== "model-routing"
+          : candidateBinding?.surface === "model-routing" &&
+            baselineBinding?.surface === "model-routing" &&
+            routeIdentity !== undefined &&
+            "kind" in routeIdentity &&
+            routeIdentity.kind === "model-routing-candidate" &&
+            baselineBinding.workflowId === routeIdentity.scope.workflowId &&
+            candidateBinding.workflowId === routeIdentity.scope.workflowId &&
+            modelRoutes[0].profileId === flowBaseline?.id &&
+            modelRoutes[1].profileId === flowCandidate?.id &&
+            modelRoutes[0].nodeId === routeIdentity.scope.nodeId &&
+            modelRoutes[1].nodeId === routeIdentity.scope.nodeId &&
+            sameModelRoute(modelRoutes[0].route, routeIdentity.route.before) &&
+            sameModelRoute(modelRoutes[1].route, routeIdentity.route.after);
       const samePackages = (profile: z.infer<typeof flowProfileSchema>): boolean => {
         const packageDigests = profile.effectiveHarness?.packageDigests ?? [];
         return packageDigests.length === 0
@@ -409,6 +462,13 @@ const publicHeaderSchema = z
               profile.capabilityPackageDigests !== undefined &&
               isDeepStrictEqual(profile.capabilityPackageDigests, packageDigests);
       };
+      if (!modelRoutesMatch) {
+        context.addIssue({
+          code: "custom",
+          path: ["controls", "modelRoutes"],
+          message: "model routes must bind the exact effective candidate route identities",
+        });
+      }
       if (
         effectiveProfiles.length !== 2 ||
         flowBaseline === undefined ||
@@ -424,6 +484,7 @@ const publicHeaderSchema = z
         baselineBinding.baselineHeadDigest !== candidateBinding.baselineHeadDigest ||
         baselineBinding.surface !== candidateBinding.surface ||
         baselineBinding.candidateDigest !== candidateBinding.candidateDigest ||
+        !workflowIdsMatch ||
         baselineBinding.workflowSha256 !== flowBaseline.workflow.sourceSha256 ||
         baselineBinding.workflowDigest !== flowBaseline.workflow.workflowDigest ||
         candidateBinding.workflowSha256 !== flowCandidate.workflow.sourceSha256 ||
@@ -474,6 +535,18 @@ const publicHeaderSchema = z
       const baselineMatches = (() => {
         if (identity === undefined) {
           return false;
+        }
+        if ("kind" in identity && identity.kind === "model-routing-candidate") {
+          return (
+            identity.baseline.workflow.sourceSha256 === flowBaseline?.workflow.sourceSha256 &&
+            identity.baseline.workflow.workflowDigest === flowBaseline?.workflow.workflowDigest &&
+            identity.projectedWorkflow.sourceSha256 === flowCandidate?.workflow.sourceSha256 &&
+            identity.projectedWorkflow.workflowDigest === flowCandidate?.workflow.workflowDigest &&
+            flowBaseline?.capabilitySnapshotDigest === undefined &&
+            flowCandidate?.capabilitySnapshotDigest === undefined &&
+            flowBaseline?.capabilityPackageDigests === undefined &&
+            flowCandidate?.capabilityPackageDigests === undefined
+          );
         }
         if ("kind" in identity && identity.kind === "agent-skill-package-candidate") {
           return (
@@ -1651,6 +1724,15 @@ function headerIdentity(header: PublicEvaluationHeader): EvaluationPlanIdentity 
     order: header.order,
     comparison: header.comparison,
   };
+}
+
+function sameModelRoute(
+  left: { readonly provider: string; readonly id: string; readonly thinking: string },
+  right: { readonly provider: string; readonly id: string; readonly thinking: string },
+): boolean {
+  return (
+    left.provider === right.provider && left.id === right.id && left.thinking === right.thinking
+  );
 }
 
 async function ensureCanonicalRoot(root: string): Promise<string> {

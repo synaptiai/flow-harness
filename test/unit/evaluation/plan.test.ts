@@ -47,6 +47,71 @@ describe("evaluation plan", () => {
     });
   });
 
+  it("parses one ordered explicit route for each paired effective profile", () => {
+    const source = validPlan()
+      .replace(
+        "workflow: baseline.workflow.yaml",
+        "effectiveCandidate: route.effective-harness.json\n    selection: baseline",
+      )
+      .replace(
+        "workflow: candidate.workflow.yaml",
+        "effectiveCandidate: route.effective-harness.json\n    selection: candidate",
+      )
+      .replace(
+        "  budget:",
+        `  modelRoutes:
+    - profileId: baseline
+      nodeId: implement
+      route: { provider: test, id: deterministic, thinking: medium }
+    - profileId: candidate
+      nodeId: implement
+      route: { provider: openai, id: gpt-5.4, thinking: high }
+  budget:`,
+      );
+
+    expect(parseEvaluationPlanText(source).controls).toMatchObject({
+      modelRoutes: [
+        {
+          profileId: "baseline",
+          nodeId: "implement",
+          route: { provider: "test", id: "deterministic", thinking: "medium" },
+        },
+        {
+          profileId: "candidate",
+          nodeId: "implement",
+          route: { provider: "openai", id: "gpt-5.4", thinking: "high" },
+        },
+      ],
+    });
+    expect(() =>
+      parseEvaluationPlanText(source.replace("profileId: baseline", "profileId: candidate")),
+    ).toThrow(/model route|baseline|profile/i);
+    expect(() =>
+      parseEvaluationPlanText(
+        source.replace(
+          "profileId: candidate\n      nodeId: implement",
+          "profileId: candidate\n      nodeId: private-review",
+        ),
+      ),
+    ).toThrow(/model route|root agent node/i);
+    expect(() =>
+      parseEvaluationPlanText(
+        source.replace(
+          "{ provider: openai, id: gpt-5.4, thinking: high }",
+          "{ provider: test, id: deterministic, thinking: medium }",
+        ),
+      ),
+    ).toThrow(/distinct route/i);
+    expect(() =>
+      parseEvaluationPlanText(
+        source.replace(
+          "effectiveCandidate: route.effective-harness.json\n    selection: baseline",
+          "workflow: baseline.workflow.yaml",
+        ),
+      ),
+    ).toThrow(/effective baseline|effective.*profile/i);
+  });
+
   it("rejects unknown fields and ambiguous profile identities", () => {
     expect(() =>
       parseEvaluationPlanText(validPlan().replace("order:", "unexpected: true\norder:")),

@@ -64,7 +64,10 @@ import { createProductionWorkspaceIsolator } from "../../../src/infrastructure/r
 import { createActiveRunClaim, createJobRecord } from "../../../src/supervisor/records.js";
 import { executeWorkerJob, requestWorker } from "../../../src/supervisor/worker.js";
 import { agentSkillActivationInput } from "../../fixtures/agent-skill-activation.js";
-import { effectiveHarnessCandidateArtifactFixture } from "../../fixtures/effective-harness-evaluation.js";
+import {
+  effectiveHarnessCandidateArtifactFixture,
+  modelRoutingEffectiveHarnessCandidateArtifactFixture,
+} from "../../fixtures/effective-harness-evaluation.js";
 import { promptActivationInput } from "../../fixtures/prompt-activation.js";
 
 const temporaryDirectories: string[] = [];
@@ -509,6 +512,96 @@ nodes:
       },
     });
     expect(reduceRunEvents(events).status).toBe("succeeded");
+  });
+
+  it("executes a selected model route from the frozen detached snapshot", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-worker-model-route-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    const store = new LocalSupervisorStore(runsDirectory);
+    await store.initialize();
+    const artifact = modelRoutingEffectiveHarnessCandidateArtifactFixture();
+    const head = createEffectiveHarnessHeadIdentity({
+      scopeDigest: artifact.scopeDigest,
+      workflowId: artifact.workflowId,
+      generation: artifact.baselineHead.generation + 1,
+      activationDigest: artifact.artifactDigest,
+      transitionDigest: "d".repeat(64),
+      stateDigest: artifact.candidateState.stateDigest,
+    });
+    const effectiveHarness = createEffectiveHarnessRuntimeSnapshot({
+      state: artifact.candidateState,
+      head,
+    });
+    const capabilitySnapshot = validateCapabilitySnapshot({
+      version: 1,
+      packages: [],
+      effectiveHarness,
+      digest: calculateCapabilitySnapshotDigest([], [], effectiveHarness),
+    });
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "worker-model-route",
+      mode: "run",
+      sourceName: `activation:${artifact.workflowId}`,
+      workflowSource: effectiveHarnessWorkflowSource(artifact.candidateState),
+      cwd: directory,
+      token: "9".repeat(64),
+      createdAt: "2026-08-19T12:00:00.000Z",
+      capabilitySnapshot,
+    });
+    await store.reserveSubmission(
+      job,
+      createActiveRunClaim({
+        runId: job.runId,
+        jobId: job.jobId,
+        workerId: job.workerId,
+        claimedAt: job.createdAt,
+      }),
+    );
+    const observed = new Map<string, { provider: string; id: string; thinking: string }>();
+    const worker = executeWorkerJob(job.jobId, {
+      store,
+      executor: {
+        async execute(node) {
+          if (node.type !== "agent") throw new Error("route worker executed an unexpected node");
+          observed.set(node.id, node.agent.model);
+          return {
+            status: "succeeded",
+            evidence: {
+              ...successfulAgentEvidence(),
+              provider: node.agent.model.provider,
+              model: node.agent.model.id,
+            },
+          };
+        },
+      },
+      effectReconciler: createProductionNodeEffectReconciler(),
+      createRunStore: (root) => new JsonlRunStore(root),
+      pid: 4395,
+    });
+    const descriptor = await waitForDescriptor(store, job.workerId);
+    await expect(requestWorker(descriptor, { type: "identify" })).resolves.toMatchObject({
+      ok: true,
+      result: { runId: job.runId, status: "running" },
+    });
+
+    await expect(worker).resolves.toBe(0);
+    expect(observed.get("implement")).toEqual({
+      provider: "openai",
+      id: "gpt-5.4",
+      thinking: "high",
+    });
+    expect(observed.get("private-review")).toEqual({
+      provider: "test",
+      id: "deterministic",
+      thinking: "medium",
+    });
+    expect(reduceRunEvents(await new JsonlRunStore(runsDirectory).read(job.runId))).toMatchObject({
+      status: "succeeded",
+      capabilitySnapshot: { digest: capabilitySnapshot.digest },
+    });
   });
 
   it("resumes an active root worker from its durable activation snapshot", async () => {

@@ -411,6 +411,69 @@ exact activation proposal. Applied activation stores the original workflow with 
 projected workflow with the generated package. New runs, detached workers, resume, replay, and
 rollback then use durable bytes only.
 
+### Model-routing candidates
+
+A `ModelRoutingCandidate` replaces one model tuple on one existing root agent node. The source
+declares the exact current tuple and one exact replacement:
+
+```yaml
+apiVersion: flow.synapti.ai/v1alpha1
+kind: ModelRoutingCandidate
+metadata: { id: route-implement-to-gpt, version: 1.0.0 }
+scope:
+  kind: workflow-model-route
+  workflowId: evaluated-profile
+  nodeId: implement
+baseline:
+  workflow:
+    path: baseline.workflow.yaml
+    sourceSha256: <64-lowercase-hex>
+    workflowDigest: <64-lowercase-hex>
+route:
+  before: { provider: test, id: deterministic, thinking: medium }
+  after: { provider: openai, id: gpt-5.4, thinking: high }
+```
+
+The candidate is at most 65536 UTF-8 bytes. A provider uses a canonical identifier. A model id is
+1 through 256 trimmed characters. The thinking level is `off`, `minimal`, `low`, `medium`, `high`,
+or `xhigh`. The two routes must differ.
+
+Admission uses stable no-follow reads for the candidate and baseline. The target must be an existing
+root `agent` node. The declared before route must match the baseline source and compiled workflow.
+Projection changes only `agent.model` on that node and compiles the complete result again.
+
+Use `flow candidate compose <candidate>` before evaluation or activation. Direct activation of an
+ordinary route candidate fails. Composition rebases the exact route onto the current complete
+effective state and stages one immutable artifact.
+
+A paired plan for the staged artifact keeps the shared `model` control and adds two ordered routes:
+
+```yaml
+controls:
+  model: { provider: test, id: deterministic, thinking: medium }
+  modelRoutes:
+    - profileId: baseline
+      nodeId: implement
+      route: { provider: test, id: deterministic, thinking: medium }
+    - profileId: candidate
+      nodeId: implement
+      route: { provider: openai, id: gpt-5.4, thinking: high }
+```
+
+The entries must name the comparison profiles in baseline-then-candidate order. They must target the
+same declared node and match the candidate identity. The shared model still controls every other
+agent and model verifier. Tasks, fixtures, seeds, budgets, network policy, retries, schedule order,
+verification, and every non-route workflow field remain equal.
+
+The durable plan, header, records, inspection, and export retain the route pair, candidate digest,
+and workflow ID. The workflow ID appears independently in both profile bindings. Flow uses that
+redundancy to bind the candidate scope to the admitted baseline and candidate workflows. Historical
+non-routing evaluation headers can omit this field.
+
+The public evidence omits workflow bodies, credentials, and provider responses. Trial execution
+receives one selected route, not the pair. Flow does not discover models, choose routes dynamically,
+or use fallbacks.
+
 ## Activation gate
 
 ### Review workflow
@@ -444,6 +507,9 @@ the exact baseline and projected package snapshots. Agent Skill package activati
 original workflow with no package and the projected workflow with exactly one generated package.
 Flow stores the plan digest, terminal record digest, report digest, release criteria, and aggregate
 comparison result.
+
+Model-route activation also requires the exact ordered route controls stored in the evaluation.
+The controls must match the composed artifact before preview and again before apply.
 
 The activation proof contains no task text, fixture path, assertion, holdout identity, trial record,
 or run identifier. It contains aggregate comparison values only.

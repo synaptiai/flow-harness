@@ -14,7 +14,9 @@ import {
   compileEffectiveHarnessState,
   createEffectiveHarnessHeadIdentity,
   createEffectiveHarnessState,
+  effectiveHarnessWorkflowSource,
 } from "../../../src/domain/adaptation/effective-harness-state.js";
+import { calculateModelRoutingCandidateDigest } from "../../../src/domain/adaptation/model-routing-candidate.js";
 import {
   calculatePromptCandidateIdentityDigest,
   type PromptCandidateIdentity,
@@ -22,11 +24,134 @@ import {
 import { createCapabilitySnapshot } from "../../../src/domain/capability/agent-skills.js";
 import { createWorkflowPackageSnapshot } from "../../../src/domain/capability/workflow-packages.js";
 import { calculateWorkflowDigest } from "../../../src/domain/workflow/digest.js";
+import { agentSkillActivationInput } from "../../fixtures/agent-skill-activation.js";
 import { agentSkillPackageActivationFixture } from "../../fixtures/agent-skill-package-activation.js";
+import { modelRoutingCandidateFixture } from "../../fixtures/model-routing-candidate.js";
+import { promptActivationInput } from "../../fixtures/prompt-activation.js";
 
 const scopeDigest = "a".repeat(64);
 
 describe("effective harness candidate artifacts", () => {
+  it("stores and reparses one exact model-routing surface", () => {
+    const source = promptActivationInput({ selection: "baseline" }).source;
+    const baseline = createEffectiveHarnessState({
+      scopeDigest,
+      workflowSource: source,
+      packages: [],
+    });
+    const routing = modelRoutingCandidateFixture(source);
+    const projected = projectEffectiveHarnessCandidate({
+      baseline,
+      candidate: {
+        kind: "model-routing",
+        projection: routing,
+        baselineWorkflowSource: source,
+      },
+    });
+    const artifact = createEffectiveHarnessCandidateArtifact({
+      baselineHead: createEffectiveHarnessHeadIdentity({
+        scopeDigest,
+        workflowId: baseline.workflowId,
+        generation: 2,
+        activationDigest: "b".repeat(64),
+        transitionDigest: "c".repeat(64),
+        stateDigest: baseline.stateDigest,
+      }),
+      baselineState: baseline,
+      candidateState: projected.state,
+      candidate: routing.identity,
+    });
+
+    expect(parseEffectiveHarnessCandidateArtifact(structuredClone(artifact))).toEqual(artifact);
+    expect(artifact).toMatchObject({
+      surface: "model-routing",
+      candidate: {
+        kind: "model-routing-candidate",
+        route: {
+          before: { provider: "test", id: "deterministic", thinking: "medium" },
+          after: { provider: "openai", id: "gpt-5.4", thinking: "high" },
+        },
+      },
+    });
+  });
+
+  it("rejects fully redigested model-routing state outside the declared route", () => {
+    const beforeSkill = agentSkillActivationInput("baseline");
+    const afterSkill = agentSkillActivationInput("candidate");
+    const source = beforeSkill.workflowSource;
+    const baseline = createEffectiveHarnessState({
+      scopeDigest,
+      workflowSource: source,
+      packages: [beforeSkill.skill],
+    });
+    const routing = modelRoutingCandidateFixture(source, "review");
+    const projected = projectEffectiveHarnessCandidate({
+      baseline,
+      candidate: { kind: "model-routing", projection: routing, baselineWorkflowSource: source },
+    });
+    const baselineHead = createEffectiveHarnessHeadIdentity({
+      scopeDigest,
+      workflowId: baseline.workflowId,
+      generation: 2,
+      activationDigest: "b".repeat(64),
+      transitionDigest: "c".repeat(64),
+      stateDigest: baseline.stateDigest,
+    });
+    const packageChanged = createEffectiveHarnessState({
+      scopeDigest,
+      workflowSource: effectiveHarnessWorkflowSource(projected.state),
+      packages: [afterSkill.skill],
+    });
+    expect(() =>
+      createEffectiveHarnessCandidateArtifact({
+        baselineHead,
+        baselineState: baseline,
+        candidateState: packageChanged,
+        candidate: routing.identity,
+      }),
+    ).toThrowError(expect.objectContaining({ code: "surface_mismatch" }));
+
+    const workflow = JSON.parse(effectiveHarnessWorkflowSource(projected.state)) as {
+      nodes: { id: string; agent?: { prompt?: string } }[];
+    };
+    const target = workflow.nodes.find((node) => node.id === routing.identity.scope.nodeId);
+    if (target?.agent === undefined) throw new Error("routing fixture has no target agent");
+    target.agent.prompt = "PRIVATE_NON_ROUTE_PROMPT";
+    const promptChanged = createEffectiveHarnessState({
+      scopeDigest,
+      workflowSource: JSON.stringify(workflow),
+      packages: [beforeSkill.skill],
+    });
+    const { candidateDigest: _candidateDigest, ...identityContent } = routing.identity;
+    const changedIdentityContent = {
+      ...identityContent,
+      projectedWorkflow: {
+        sourceSha256: promptChanged.workflow.sha256,
+        workflowDigest: promptChanged.workflow.workflowDigest,
+      },
+    };
+    const changedIdentity = {
+      ...changedIdentityContent,
+      candidateDigest: calculateModelRoutingCandidateDigest(changedIdentityContent),
+    };
+    const error = (() => {
+      try {
+        createEffectiveHarnessCandidateArtifact({
+          baselineHead,
+          baselineState: baseline,
+          candidateState: promptChanged,
+          candidate: changedIdentity,
+        });
+        return undefined;
+      } catch (caught) {
+        return caught;
+      }
+    })();
+    expect(error).toMatchObject({ code: "surface_mismatch" });
+    expect((error as Error).cause).toBeUndefined();
+    expect((error as Error).message).not.toContain("PRIVATE_NON_ROUTE_PROMPT");
+  });
+
   it("stores one exact baseline head, complete state pair, and reviewed candidate", () => {
     const fixture = agentSkillPackageActivationFixture();
     const baseline = createEffectiveHarnessState({

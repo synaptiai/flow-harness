@@ -7,6 +7,7 @@ import { parseDocument } from "yaml";
 
 import { MAX_AGENT_SKILL_CANDIDATE_BYTES } from "../../domain/adaptation/agent-skill-candidate.js";
 import { MAX_EFFECTIVE_HARNESS_CANDIDATE_BYTES } from "../../domain/adaptation/effective-harness-candidate.js";
+import { MAX_MODEL_ROUTING_CANDIDATE_BYTES } from "../../domain/adaptation/model-routing-candidate.js";
 import { MAX_PROMPT_CANDIDATE_BYTES } from "../../domain/adaptation/prompt-candidate.js";
 import {
   type AdmittedLocalAgentSkillCandidate,
@@ -21,6 +22,10 @@ import {
   admitLocalEffectiveHarnessCandidate,
 } from "./local-effective-harness-candidate.js";
 import {
+  type AdmittedLocalModelRoutingCandidate,
+  admitLocalModelRoutingCandidate,
+} from "./local-model-routing-candidate.js";
+import {
   type AdmittedLocalPromptCandidate,
   admitLocalPromptCandidate,
 } from "./local-prompt-candidate.js";
@@ -28,6 +33,7 @@ import {
 const MAX_LOCAL_ADAPTATION_CANDIDATE_BYTES = Math.max(
   MAX_AGENT_SKILL_CANDIDATE_BYTES,
   MAX_EFFECTIVE_HARNESS_CANDIDATE_BYTES,
+  MAX_MODEL_ROUTING_CANDIDATE_BYTES,
   MAX_PROMPT_CANDIDATE_BYTES,
 );
 const fatalUtf8Decoder = new TextDecoder("utf-8", { fatal: true });
@@ -48,6 +54,10 @@ export type AdmittedLocalAdaptationCandidate =
   | {
       readonly kind: "effective-harness-candidate";
       readonly candidate: AdmittedLocalEffectiveHarnessCandidate;
+    }
+  | {
+      readonly kind: "model-routing-candidate";
+      readonly candidate: AdmittedLocalModelRoutingCandidate;
     };
 
 export interface LocalAdaptationCandidateOptions {
@@ -140,6 +150,14 @@ export async function admitLocalAdaptationCandidate(
     });
     return Object.freeze({ kind, candidate });
   }
+  if (kind === "ModelRoutingCandidate") {
+    const candidate = await admitLocalModelRoutingCandidate(absolutePath, {
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+      expectedSource: { identity: sourceIdentity, sha256: sourceSha256 },
+    });
+    options.signal?.throwIfAborted();
+    return Object.freeze({ kind: "model-routing-candidate", candidate });
+  }
   if (kind === "AgentSkillCandidate") {
     const candidate = await admitLocalAgentSkillCandidate(absolutePath, {
       ...(options.signal === undefined ? {} : { signal: options.signal }),
@@ -184,7 +202,11 @@ async function readBoundedDiscriminator(handle: FileHandle, signal?: AbortSignal
 
 function parseCandidateKind(
   source: string,
-): "PromptCandidate" | "AgentSkillCandidate" | "effective-harness-candidate" {
+):
+  | "PromptCandidate"
+  | "AgentSkillCandidate"
+  | "ModelRoutingCandidate"
+  | "effective-harness-candidate" {
   const document = parseDocument(source, {
     prettyErrors: false,
     strict: true,
@@ -200,6 +222,7 @@ function parseCandidateKind(
     "kind" in value &&
     (value.kind === "PromptCandidate" ||
       value.kind === "AgentSkillCandidate" ||
+      value.kind === "ModelRoutingCandidate" ||
       value.kind === "effective-harness-candidate")
   ) {
     return value.kind;

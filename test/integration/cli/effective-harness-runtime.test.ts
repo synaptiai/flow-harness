@@ -31,6 +31,7 @@ import {
   FLOW_CONFIG_API_VERSION,
 } from "../../../src/domain/config/resolver.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
+import { admitLocalEffectiveHarnessCandidate } from "../../../src/infrastructure/fs/local-effective-harness-candidate.js";
 import {
   calculateLocalEffectiveHarnessScopeDigest,
   LocalEffectiveHarnessStore,
@@ -41,6 +42,7 @@ import {
   effectiveHarnessCandidateArtifactFixture,
   superiorEffectiveHarnessEvaluation,
 } from "../../fixtures/effective-harness-evaluation.js";
+import { modelRoutingCandidateSourceFixture } from "../../fixtures/model-routing-candidate.js";
 import { promptActivationInput } from "../../fixtures/prompt-activation.js";
 
 const temporaryDirectories: string[] = [];
@@ -299,6 +301,215 @@ describe("effective harness runtime CLI", () => {
     });
     expectContentFree(rollbackPreviewOutput, [next.source]);
     expectContentFree(rollbackApplyOutput, [next.source]);
+  });
+
+  it("activates and rolls back a composed model route without live candidate sources", async () => {
+    const project = await temporaryProject();
+    const evaluations = join(project, "evaluations");
+    const baselineInput = promptActivationInput({ selection: "baseline" });
+    const candidateInput = promptActivationInput({ selection: "candidate" });
+    const baselineSnapshot = createPromptActivationSnapshot(baselineInput);
+    const candidateSnapshot = createPromptActivationSnapshot(candidateInput);
+    const legacy = new LocalPromptActivationStore(project);
+    const legacyActivation = {
+      snapshot: candidateSnapshot,
+      baselineSnapshot,
+      actor: "operator:legacy",
+    };
+    const legacyProposal = await legacy.previewActivate(legacyActivation);
+    await legacy.applyActivate({
+      ...legacyActivation,
+      expectedDigest: legacyProposal.proposalDigest,
+    });
+    const legacyRollback = {
+      workflowId: baselineSnapshot.workflowId,
+      target: null,
+      actor: "operator:legacy",
+    } as const;
+    const legacyRollbackProposal = await legacy.previewRollback(legacyRollback);
+    await legacy.applyRollback({
+      ...legacyRollback,
+      expectedDigest: legacyRollbackProposal.proposalDigest,
+    });
+
+    const routeSource = modelRoutingCandidateSourceFixture(baselineInput.source);
+    const baselinePath = join(project, routeSource.baseline.workflow.path);
+    const routePath = join(project, "private-route.candidate.yaml");
+    await writeFile(baselinePath, baselineInput.source);
+    await writeFile(routePath, JSON.stringify(routeSource));
+    const composeOutput = captureIo();
+    expect(
+      await main(["candidate", "compose", routePath], composeOutput.io, {
+        cwd: project,
+        loadConfig: async () => effectiveConfig(project),
+      }),
+      composeOutput.stderr.join("\n"),
+    ).toBe(0);
+    const composed = JSON.parse(composeOutput.stdout.join("\n"));
+    const stagedPath = join(project, composed.staged.path);
+    const admitted = await admitLocalEffectiveHarnessCandidate(stagedPath);
+    const artifact = admitted.artifact;
+    await persistEvaluation(evaluations, superiorEffectiveHarnessEvaluation(artifact));
+    await Promise.all([rm(routePath), rm(baselinePath)]);
+
+    const previewOutput = captureIo();
+    const cliDependencies = { cwd: project, loadConfig: async () => effectiveConfig(project) };
+    expect(
+      await main(
+        [
+          "candidate",
+          "activate",
+          stagedPath,
+          "--evaluation",
+          "effective-harness-evaluation",
+          "--evaluations-dir",
+          evaluations,
+          "--actor",
+          "operator:route",
+          "--dry-run",
+        ],
+        previewOutput.io,
+        cliDependencies,
+      ),
+      previewOutput.stderr.join("\n"),
+    ).toBe(0);
+    const preview = JSON.parse(previewOutput.stdout.join("\n"));
+    expect(preview).toMatchObject({
+      dryRun: true,
+      activation: {
+        surface: "model-routing",
+        candidate: {
+          kind: "model-routing-candidate",
+          route: routeSource.route,
+        },
+      },
+      proposal: {
+        action: "activate",
+        artifactDigest: artifact.artifactDigest,
+        proposalDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+    });
+
+    const applyOutput = captureIo();
+    expect(
+      await main(
+        [
+          "candidate",
+          "activate",
+          stagedPath,
+          "--evaluation",
+          "effective-harness-evaluation",
+          "--evaluations-dir",
+          evaluations,
+          "--actor",
+          "operator:route",
+          "--expected-digest",
+          preview.proposal.proposalDigest,
+        ],
+        applyOutput.io,
+        cliDependencies,
+      ),
+      applyOutput.stderr.join("\n"),
+    ).toBe(0);
+    await rm(evaluations, { recursive: true });
+
+    const active = await new LocalEffectiveHarnessStore(project).loadActive(artifact.workflowId);
+    expect(
+      compileWorkflowText(
+        Buffer.from(active.state.workflow.contentBase64, "base64").toString("utf8"),
+        "active model route",
+      ).nodes.find((node) => node.id === routeSource.scope.nodeId),
+    ).toMatchObject({ type: "agent", agent: { model: routeSource.route.after } });
+
+    const observedRoutes: unknown[] = [];
+    const runOutput = captureIo();
+    expect(
+      await main(
+        [
+          "run",
+          `activation:${artifact.workflowId}`,
+          "--run-id",
+          "model-routing-runtime",
+          "--runs-dir",
+          join(project, "route-runs"),
+        ],
+        runOutput.io,
+        dependencies(project, {
+          execute: async (node) => {
+            if (node.type !== "agent") throw new Error("routing runtime expected an Agent node");
+            observedRoutes.push(node.agent.model);
+            return successfulAgentOutcome(undefined);
+          },
+        }),
+      ),
+      runOutput.stderr.join("\n"),
+    ).toBe(0);
+    expect(observedRoutes).toEqual([routeSource.route.after]);
+    expectContentFree(runOutput, [baselineInput.source, candidateInput.source]);
+    expect([...runOutput.stdout, ...runOutput.stderr].join("\n")).not.toContain(routePath);
+
+    const inspectOutput = captureIo();
+    expect(
+      await main(["activation", "inspect", artifact.workflowId], inspectOutput.io, cliDependencies),
+    ).toBe(0);
+    expect(JSON.parse(inspectOutput.stdout.join("\n"))).toMatchObject({
+      effectiveHarness: {
+        head: { stateDigest: artifact.candidateState.stateDigest },
+        history: [{ surface: "model-routing" }],
+      },
+    });
+
+    const rollbackPreviewOutput = captureIo();
+    expect(
+      await main(
+        [
+          "activation",
+          "rollback",
+          artifact.workflowId,
+          "--to",
+          `state:${artifact.baselineState.stateDigest}`,
+          "--actor",
+          "operator:route",
+          "--dry-run",
+        ],
+        rollbackPreviewOutput.io,
+        cliDependencies,
+      ),
+    ).toBe(0);
+    const rollbackPreview = JSON.parse(rollbackPreviewOutput.stdout.join("\n"));
+    const rollbackOutput = captureIo();
+    expect(
+      await main(
+        [
+          "activation",
+          "rollback",
+          artifact.workflowId,
+          "--to",
+          `state:${artifact.baselineState.stateDigest}`,
+          "--actor",
+          "operator:route",
+          "--expected-digest",
+          rollbackPreview.proposal.proposalDigest,
+        ],
+        rollbackOutput.io,
+        cliDependencies,
+      ),
+    ).toBe(0);
+    expect(JSON.parse(rollbackOutput.stdout.join("\n"))).toMatchObject({
+      status: "rolled_back",
+      head: { stateDigest: artifact.baselineState.stateDigest },
+    });
+    for (const output of [
+      composeOutput,
+      previewOutput,
+      applyOutput,
+      runOutput,
+      inspectOutput,
+      rollbackOutput,
+    ]) {
+      expectContentFree(output, [baselineInput.source, candidateInput.source]);
+      expect([...output.stdout, ...output.stderr].join("\n")).not.toContain(routePath);
+    }
   });
 
   it("runs the exact effective workflow and package closure", async () => {

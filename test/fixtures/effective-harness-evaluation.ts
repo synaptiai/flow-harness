@@ -19,6 +19,8 @@ import type {
   StoredEvaluation,
 } from "../../src/infrastructure/fs/local-evaluation-store.js";
 import { agentSkillPackageActivationFixture } from "./agent-skill-package-activation.js";
+import { modelRoutingCandidateFixture } from "./model-routing-candidate.js";
+import { promptCandidateWorkflowText } from "./prompt-candidate-generation.js";
 
 const scopeDigest = "a".repeat(64);
 
@@ -52,12 +54,61 @@ export function effectiveHarnessCandidateArtifactFixture(): EffectiveHarnessCand
   });
 }
 
+export function modelRoutingEffectiveHarnessCandidateArtifactFixture(): EffectiveHarnessCandidateArtifact {
+  const baselineSource = promptCandidateWorkflowText();
+  const baseline = createEffectiveHarnessState({
+    scopeDigest,
+    workflowSource: baselineSource,
+    packages: [],
+  });
+  const route = modelRoutingCandidateFixture(baselineSource);
+  const projected = projectEffectiveHarnessCandidate({
+    baseline,
+    candidate: {
+      kind: "model-routing",
+      projection: route,
+      baselineWorkflowSource: baselineSource,
+    },
+  });
+  return createEffectiveHarnessCandidateArtifact({
+    baselineHead: createEffectiveHarnessHeadIdentity({
+      scopeDigest,
+      workflowId: baseline.workflowId,
+      generation: 3,
+      activationDigest: "b".repeat(64),
+      transitionDigest: "c".repeat(64),
+      stateDigest: baseline.stateDigest,
+    }),
+    baselineState: baseline,
+    candidateState: projected.state,
+    candidate: route.identity,
+  });
+}
+
 export function superiorEffectiveHarnessEvaluation(
   artifact: EffectiveHarnessCandidateArtifact = effectiveHarnessCandidateArtifactFixture(),
   candidateWins = true,
 ): StoredEvaluation {
-  const controls = {
+  const controls: EvaluationPlanIdentity["controls"] = {
     model: { provider: "test", id: "deterministic", thinking: "medium" as const },
+    ...(artifact.surface === "model-routing" &&
+    "kind" in artifact.candidate &&
+    artifact.candidate.kind === "model-routing-candidate"
+      ? {
+          modelRoutes: [
+            {
+              profileId: "baseline",
+              nodeId: artifact.candidate.scope.nodeId,
+              route: artifact.candidate.route.before,
+            },
+            {
+              profileId: "candidate",
+              nodeId: artifact.candidate.scope.nodeId,
+              route: artifact.candidate.route.after,
+            },
+          ] as const,
+        }
+      : {}),
     budget: {
       maxNodeStarts: 8,
       maxModelTokens: 10_000,
@@ -220,6 +271,7 @@ function effectiveBinding(
     artifactDigest: artifact.artifactDigest,
     stateDigest: state.stateDigest,
     baselineHeadDigest: artifact.baselineHead.headDigest,
+    workflowId: state.workflowId,
     workflowSha256: state.workflow.sha256,
     workflowDigest: state.workflow.workflowDigest,
     packageDigests: state.packages.map((item) => item.digest),

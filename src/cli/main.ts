@@ -93,6 +93,7 @@ import {
   prepareEffectiveHarnessActivation,
 } from "../application/prepare-effective-harness-activation.js";
 import {
+  type EffectiveHarnessCandidateProjection,
   loadEffectiveHarnessCandidateBaseline,
   projectEffectiveHarnessCandidate,
 } from "../application/prepare-effective-harness-candidate.js";
@@ -3413,29 +3414,7 @@ async function candidateCommand(
     );
     const projected = projectEffectiveHarnessCandidate({
       baseline: baseline.state,
-      candidate:
-        admitted.kind === "prompt-candidate"
-          ? {
-              kind: "prompt",
-              projection: admitted.candidate,
-              baselineWorkflowSource: admitted.candidate.baseline.sourceText,
-            }
-          : admitted.kind === "agent-skill-candidate"
-            ? {
-                kind: "agent-skill-resource",
-                projection: admitted.candidate,
-                baselineWorkflowSource: admitted.candidate.baseline.workflow.sourceText,
-              }
-            : {
-                kind: "agent-skill-package",
-                baselineWorkflowSource: admitted.candidate.baseline.sourceText,
-                projection: {
-                  identity: admitted.candidate.identity,
-                  workflow: admitted.candidate.workflow,
-                  baselineCapabilitySnapshot: undefined,
-                  candidateCapabilitySnapshot: admitted.candidate.candidateCapabilitySnapshot,
-                },
-              },
+      candidate: effectiveHarnessProjection(admitted),
     });
     const artifact = createEffectiveHarnessCandidateArtifact({
       baselineHead: baseline.head,
@@ -3496,6 +3475,11 @@ async function candidateCommand(
       overrides.signal,
       "candidate activation was cancelled",
     );
+    if (admitted.kind === "model-routing-candidate") {
+      throw new CliUsageError(
+        "model-routing candidate activation requires a composed effective harness candidate",
+      );
+    }
     const evaluationsDirectory = await awaitWithCancellationPrecedence(
       () => resolveEvaluationsDirectory(dependencies, values["evaluations-dir"]),
       overrides.signal,
@@ -3860,6 +3844,45 @@ function adaptationCandidateView(
     return admitted.candidate.identity;
   }
   return effectiveHarnessCandidateView(admitted.candidate.artifact);
+}
+
+function effectiveHarnessProjection(
+  admitted: Exclude<
+    Awaited<ReturnType<typeof admitLocalAdaptationCandidate>>,
+    { readonly kind: "effective-harness-candidate" }
+  >,
+): EffectiveHarnessCandidateProjection {
+  switch (admitted.kind) {
+    case "prompt-candidate":
+      return {
+        kind: "prompt",
+        projection: admitted.candidate,
+        baselineWorkflowSource: admitted.candidate.baseline.sourceText,
+      };
+    case "agent-skill-candidate":
+      return {
+        kind: "agent-skill-resource",
+        projection: admitted.candidate,
+        baselineWorkflowSource: admitted.candidate.baseline.workflow.sourceText,
+      };
+    case "agent-skill-package-candidate":
+      return {
+        kind: "agent-skill-package",
+        baselineWorkflowSource: admitted.candidate.baseline.sourceText,
+        projection: {
+          identity: admitted.candidate.identity,
+          workflow: admitted.candidate.workflow,
+          baselineCapabilitySnapshot: undefined,
+          candidateCapabilitySnapshot: admitted.candidate.candidateCapabilitySnapshot,
+        },
+      };
+    case "model-routing-candidate":
+      return {
+        kind: "model-routing",
+        projection: admitted.candidate,
+        baselineWorkflowSource: admitted.candidate.baseline.sourceText,
+      };
+  }
 }
 
 function effectiveHarnessCandidateView(artifact: EffectiveHarnessCandidateArtifact) {
