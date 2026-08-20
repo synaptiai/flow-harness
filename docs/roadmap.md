@@ -188,8 +188,14 @@ containment milestone. It is not VM-grade or multi-tenant isolation.
   existing effective harness owns complete evaluation, activation, execution, recovery, replay,
   content-free inspection, and rollback.)*
 
-- Conversation persistence, live retrieval, model-written memory, dynamic delegation, remote
-  agents, dynamic routing, multi-node routing, and fallback candidates remain planned.
+- Flow can generate one supplemental-memory add or replacement proposal from tuning evidence.
+  *(Implemented.)* The operator selects the target and operation. Generation uses one exact-model
+  zero-tool turn, strict bounded JSON, and stable evidence and active-head admission. It publishes
+  one inert candidate with no-replace semantics and content-free public views.
+
+- Conversation persistence, live retrieval, and automatic or runtime model-written memory remain
+  planned. Dynamic delegation, remote agents, dynamic routing, multi-node routing, and fallback
+  candidates also remain planned.
   Agent Skill installation, signing, publication, executable-resource generation, and multi-skill
   candidates remain planned.
 

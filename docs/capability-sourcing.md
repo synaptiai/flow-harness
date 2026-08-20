@@ -153,8 +153,10 @@ Generation does not sign, install, publish, distribute, or execute the candidate
 
 Supplemental memory is reviewed context, not a capability package. It has no registry, TUF,
 Sigstore, installation, discovery, or live retrieval lifecycle. One candidate changes one bounded
-entry for an existing agent in the complete effective harness state. Runs use the activated bytes
-from their immutable capability snapshots. For the review and evaluation procedure, see
+entry for an existing agent in the complete effective harness state. An optional zero-tool model
+turn can suggest the value for an operator-selected add or replacement, but it cannot select or
+activate the target. Runs use the activated bytes from their immutable capability snapshots. For
+the review and evaluation procedure, see
 [Supplemental-memory candidates](evaluation.md#supplemental-memory-candidates).
 
 Flow uses its standard compiler and paired evaluation gate. An operator can activate only a complete

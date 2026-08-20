@@ -90,7 +90,8 @@ Read [Use capability packages](guides/capability-packages.md) and
 - Paired Flow, native Pi, native OMP, and Prime Agent evaluation profiles.
 - Private deterministic verification and constrained comparison reports.
 - Prompt, Agent Skill resource, Agent Skill package, static model-routing, and embedded
-  child-specialist candidates, plus immutable per-agent supplemental-memory candidates.
+  child-specialist candidates, plus immutable per-agent supplemental-memory candidates and bounded
+  model-suggested add or replacement proposals.
 - Reviewed activation, durable snapshots, offline inspection, recovery, replay, and rollback.
 
 Read [Reproducible harness evaluation](evaluation.md) and
