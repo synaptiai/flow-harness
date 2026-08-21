@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +13,7 @@ import type {
 import { createLanguageServerSnapshot } from "../../../../src/domain/capability/language-server.js";
 import {
   createLocalSemanticToolSessionFactory,
+  MAX_SEMANTIC_PROJECT_FILE_BYTES,
   type LocalSemanticCodeServiceOptions,
 } from "../../../../src/infrastructure/lsp/local-semantic-code-service.js";
 
@@ -119,11 +120,172 @@ describe("local semantic code service", () => {
     expect(sandbox.releases).toBe(1);
     expect(session.evidence()).toEqual([]);
   });
+
+  it("preserves caller cancellation after launch and confirmed cleanup", async () => {
+    const project = await temporaryProject();
+    const sandbox = new RecordingSandbox();
+    const languageServer = await fakeLanguageServer(["hang-hover"]);
+    const session = createLocalSemanticToolSessionFactory(sandbox)({
+      context: executionContext(project),
+      languageServer,
+    });
+    const controller = new AbortController();
+    const reason = new Error("operator cancelled semantic query");
+    const operation = session.query(
+      {
+        operation: "hover",
+        path: "example.ts",
+        position: { line: 0, character: 7 },
+      },
+      controller.signal,
+    );
+    setTimeout(() => controller.abort(reason), 50).unref();
+
+    await expect(operation).rejects.toBe(reason);
+    expect(sandbox.requests).toHaveLength(1);
+    expect(sandbox.releases).toBe(1);
+    expect(session.evidence()).toEqual([]);
+  });
+
+  it("returns a fixed deadline after process and containment settlement", async () => {
+    const project = await temporaryProject();
+    const sandbox = new RecordingSandbox();
+    const languageServer = await fakeLanguageServer(["hang-hover"], 100);
+    const session = createLocalSemanticToolSessionFactory(sandbox)({
+      context: executionContext(project),
+      languageServer,
+    });
+
+    await expect(
+      session.query({
+        operation: "hover",
+        path: "example.ts",
+        position: { line: 0, character: 7 },
+      }),
+    ).rejects.toMatchObject({
+      code: "semantic_deadline_exceeded",
+      message: "semantic language-service deadline was exceeded",
+    });
+    expect(sandbox.releases).toBe(1);
+    expect(session.evidence()).toEqual([]);
+  });
+
+  it("lets cleanup uncertainty outrank source and private release failures", async () => {
+    const project = await temporaryProject();
+    const privateRelease = new Error("PRIVATE_SEMANTIC_RELEASE_FAILURE");
+    const sandbox = new RecordingSandbox(privateRelease);
+    const languageServer = await fakeLanguageServer();
+    const session = createLocalSemanticToolSessionFactory(sandbox, {
+      async afterSnapshot() {
+        await writeFile(join(project, "example.ts"), "const value = 2;\n");
+      },
+    })({
+      context: executionContext(project),
+      languageServer,
+    });
+
+    let caught: unknown;
+    try {
+      await session.query({
+        operation: "hover",
+        path: "example.ts",
+        position: { line: 0, character: 7 },
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toMatchObject({
+      code: "semantic_cleanup_uncertain",
+      message: "semantic language-service cleanup is uncertain",
+    });
+    expect(caught).not.toHaveProperty("cause");
+    expect(JSON.stringify(caught)).not.toContain(privateRelease.message);
+    expect(session.evidence()).toEqual([]);
+  });
+
+  it("rejects stderr overflow before recording a result", async () => {
+    const project = await temporaryProject();
+    const sandbox = new RecordingSandbox();
+    const languageServer = await fakeLanguageServer(["stderr-overflow"]);
+    const session = createLocalSemanticToolSessionFactory(sandbox)({
+      context: executionContext(project),
+      languageServer,
+    });
+
+    await expect(
+      session.query({
+        operation: "hover",
+        path: "example.ts",
+        position: { line: 0, character: 7 },
+      }),
+    ).rejects.toMatchObject({ code: "semantic_response_limit_exceeded" });
+    expect(sandbox.releases).toBe(1);
+    expect(session.evidence()).toEqual([]);
+  });
+
+  it("rejects oversized and linked project sources before sandbox preparation", async () => {
+    const project = await temporaryProject();
+    const languageServer = await fakeLanguageServer();
+
+    const oversizedSandbox = new RecordingSandbox();
+    await writeFile(
+      join(project, "oversized.ts"),
+      Buffer.alloc(MAX_SEMANTIC_PROJECT_FILE_BYTES + 1, 0x78),
+    );
+    const oversizedSession = createLocalSemanticToolSessionFactory(oversizedSandbox)({
+      context: executionContext(project),
+      languageServer,
+    });
+    await expect(
+      oversizedSession.query({ operation: "diagnostics", path: "example.ts" }),
+    ).rejects.toMatchObject({ code: "semantic_response_limit_exceeded" });
+    expect(oversizedSandbox.requests).toEqual([]);
+
+    await rm(join(project, "oversized.ts"));
+    await symlink(join(project, "example.ts"), join(project, "linked.ts"));
+    const linkedSandbox = new RecordingSandbox();
+    const linkedSession = createLocalSemanticToolSessionFactory(linkedSandbox)({
+      context: executionContext(project),
+      languageServer,
+    });
+    await expect(
+      linkedSession.query({ operation: "diagnostics", path: "example.ts" }),
+    ).rejects.toMatchObject({ code: "semantic_source_changed" });
+    expect(linkedSandbox.requests).toEqual([]);
+  });
+
+  it("enforces the per-attempt receipt count before another launch", async () => {
+    const project = await temporaryProject();
+    const sandbox = new RecordingSandbox();
+    const languageServer = await fakeLanguageServer();
+    const session = createLocalSemanticToolSessionFactory(sandbox)({
+      context: executionContext(project),
+      languageServer,
+    });
+    const request = {
+      operation: "hover" as const,
+      path: "example.ts",
+      position: { line: 0, character: 7 },
+    };
+
+    for (let index = 0; index < 16; index += 1) {
+      await session.query(request);
+    }
+    await expect(session.query(request)).rejects.toMatchObject({
+      code: "semantic_response_limit_exceeded",
+    });
+    expect(sandbox.requests).toHaveLength(16);
+    expect(sandbox.releases).toBe(16);
+    expect(session.evidence()).toHaveLength(16);
+  }, 30_000);
 });
 
 class RecordingSandbox implements CommandSandbox {
   readonly requests: CommandSandboxRequest[] = [];
   releases = 0;
+
+  constructor(private readonly releaseError?: Error) {}
 
   async prepare(request: CommandSandboxRequest) {
     this.requests.push(request);
@@ -142,6 +304,9 @@ class RecordingSandbox implements CommandSandbox {
       },
       release: async () => {
         this.releases += 1;
+        if (this.releaseError !== undefined) {
+          throw this.releaseError;
+        }
       },
     };
   }
@@ -155,7 +320,7 @@ async function temporaryProject(): Promise<string> {
   return project;
 }
 
-async function fakeLanguageServer() {
+async function fakeLanguageServer(args: readonly string[] = [], requestTimeoutMs = 5_000) {
   await chmod(fixtureExecutable, 0o755);
   const bytes = await readFile(fixtureExecutable);
   const executableSha256 = sha256(bytes);
@@ -169,10 +334,10 @@ async function fakeLanguageServer() {
         protocol: "lsp-3.18",
         executable: fixtureExecutable,
         executableSha256,
-        args: [],
+        args,
         languages: [{ id: "typescript", suffixes: [".ts"] }],
         containmentProfile: "default",
-        requestTimeoutMs: 5_000,
+        requestTimeoutMs,
       },
     }),
   );

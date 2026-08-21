@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+const mode = process.argv[2] ?? "default";
 let buffer = Buffer.alloc(0);
 
 process.stdin.on("data", (chunk) => {
@@ -20,6 +21,9 @@ process.stdin.on("data", (chunk) => {
 
 function handle(message) {
   if (message.method === "initialize") {
+    if (mode === "stderr-overflow") {
+      process.stderr.write(Buffer.alloc(65_537, 0x78));
+    }
     respond(message.id, {
       capabilities: {
         diagnosticProvider: {},
@@ -30,6 +34,7 @@ function handle(message) {
       },
     });
   } else if (message.method === "textDocument/hover") {
+    if (mode === "hang-hover" || mode === "stderr-overflow") return;
     respond(message.id, {
       contents: { kind: "markdown", value: "`const value: number`" },
       range: {
