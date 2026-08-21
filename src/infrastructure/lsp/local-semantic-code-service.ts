@@ -1,7 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { type BigIntStats, constants } from "node:fs";
-import { mkdir, mkdtemp, open, opendir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, opendir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -104,6 +104,17 @@ class LocalSemanticToolSession implements SemanticToolSession {
       throw new LocalSemanticCodeServiceError("semantic_response_limit_exceeded");
     }
     const authoritativeRoot = resolve(this.context.cwd);
+    let canonicalRoot: string;
+    try {
+      canonicalRoot = await realpath(authoritativeRoot);
+    } catch {
+      signal?.throwIfAborted();
+      throw new LocalSemanticCodeServiceError("semantic_source_changed");
+    }
+    signal?.throwIfAborted();
+    if (canonicalRoot !== authoritativeRoot) {
+      throw new LocalSemanticCodeServiceError("semantic_source_changed");
+    }
     const projectionRoot = await mkdtemp(join(tmpdir(), "flow-semantic-"));
     let prepared: PreparedCommand | undefined;
     let primaryError: unknown;

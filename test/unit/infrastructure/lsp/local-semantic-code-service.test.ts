@@ -1,5 +1,15 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -253,6 +263,31 @@ describe("local semantic code service", () => {
       linkedSession.query({ operation: "diagnostics", path: "example.ts" }),
     ).rejects.toMatchObject({ code: "semantic_source_changed" });
     expect(linkedSandbox.requests).toEqual([]);
+  });
+
+  it("rejects a project reached through a symbolic-link ancestor", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-semantic-linked-root-")));
+    temporaryDirectories.push(root);
+    const realParent = join(root, "real");
+    const realProject = join(realParent, "project");
+    await mkdir(realProject, { recursive: true });
+    await writeFile(join(realProject, "example.ts"), "const value = 1;\n");
+    await symlink(realParent, join(root, "alias"));
+    const sandbox = new RecordingSandbox();
+    const session = createLocalSemanticToolSessionFactory(sandbox)({
+      context: executionContext(join(root, "alias", "project")),
+      languageServer: await fakeLanguageServer(),
+    });
+
+    await expect(
+      session.query({
+        operation: "hover",
+        path: "example.ts",
+        position: { line: 0, character: 7 },
+      }),
+    ).rejects.toMatchObject({ code: "semantic_source_changed" });
+    expect(sandbox.requests).toEqual([]);
+    expect(session.evidence()).toEqual([]);
   });
 
   it("enforces the per-attempt receipt count before another launch", async () => {
