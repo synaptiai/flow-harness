@@ -4,7 +4,7 @@ import type {
   PolicyPackageSnapshot,
 } from "../capability/policy-packages.js";
 import type { ToolPackageSnapshot } from "../capability/tool-packages.js";
-import type { CompiledRunBudget, CompiledWorkflow } from "../workflow/types.js";
+import type { AgentToolName, CompiledRunBudget, CompiledWorkflow } from "../workflow/types.js";
 import { composePolicyPackages } from "./policy-package-composition.js";
 import type { PolicyAction } from "./types.js";
 
@@ -191,7 +191,7 @@ const budgetFields = Object.freeze([
   "maxArtifactBytes",
 ] as const satisfies readonly (keyof CompiledRunBudget)[]);
 
-function builtInToolPermission(tool: "read" | "ls" | "edit" | "exec"): PolicyAction {
+function builtInToolPermission(tool: AgentToolName): PolicyAction {
   switch (tool) {
     case "read":
       return "filesystem.read";
@@ -201,6 +201,8 @@ function builtInToolPermission(tool: "read" | "ls" | "edit" | "exec"): PolicyAct
       return "filesystem.write";
     case "exec":
       return "process.execute";
+    case "semantic":
+      return "filesystem.read";
   }
 }
 

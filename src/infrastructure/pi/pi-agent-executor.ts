@@ -906,6 +906,8 @@ function policyActionsForTools(
         return "filesystem.write";
       case "exec":
         return "process.execute";
+      case "semantic":
+        return "filesystem.read";
       default:
         return assertNever(tool);
     }

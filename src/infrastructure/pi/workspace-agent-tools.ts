@@ -181,6 +181,8 @@ export async function createWorkspaceAgentTools(
       case "exec":
         definition = createExecDefinition(policy, options);
         break;
+      case "semantic":
+        throw new Error("Flow semantic requires a configured semantic service");
     }
     definitions.push(definition as ToolDefinition);
     names.push(definition.name);

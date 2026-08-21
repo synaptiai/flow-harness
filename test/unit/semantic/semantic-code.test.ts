@@ -24,9 +24,10 @@ describe("semantic code contract", () => {
   );
 
   it("normalizes a file-wide diagnostics request", () => {
-    expect(
-      normalizeSemanticRequest({ operation: "diagnostics", path: "src/example.ts" }),
-    ).toEqual({ operation: "diagnostics", path: "src/example.ts" });
+    expect(normalizeSemanticRequest({ operation: "diagnostics", path: "src/example.ts" })).toEqual({
+      operation: "diagnostics",
+      path: "src/example.ts",
+    });
   });
 
   it.each([
@@ -116,10 +117,10 @@ describe("semantic code contract", () => {
       const second = { path: "src/z.ts", range: range(4, 2, 4, 6) };
 
       expect(
-        normalizeSemanticResult(
-          { operation, locations: [second, first, structuredClone(first)] },
-          ["src/a.ts", "src/z.ts"],
-        ),
+        normalizeSemanticResult({ operation, locations: [second, first, structuredClone(first)] }, [
+          "src/a.ts",
+          "src/z.ts",
+        ]),
       ).toEqual({ operation, locations: [first, second] });
     },
   );
