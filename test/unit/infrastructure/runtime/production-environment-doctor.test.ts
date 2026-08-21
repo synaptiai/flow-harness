@@ -27,13 +27,18 @@ describe("production environment doctor", () => {
 
   it("runs one bounded no-op through the production native executor contract", async () => {
     const execute = vi.fn(async () => ({ status: "succeeded" as const }));
+    const createExecutor = vi.fn(() => ({ execute }));
+    const removeTemporaryDirectory = vi.fn(async () => undefined);
     const signal = new AbortController().signal;
 
     await inspectProductionNativeSandbox("/workspace/project", signal, {
-      createExecutor: () => ({ execute }),
+      createExecutor,
+      createTemporaryDirectory: async () => "/private/flow-doctor-probe",
       nodeExecutable: "/trusted/node",
+      removeTemporaryDirectory,
     });
 
+    expect(createExecutor).toHaveBeenCalledWith("/private/flow-doctor-probe");
     expect(execute).toHaveBeenCalledOnce();
     expect(execute).toHaveBeenCalledWith(
       {
@@ -50,23 +55,49 @@ describe("production environment doctor", () => {
         runId: "flow-doctor",
         workflowId: "flow-doctor",
         attempt: 1,
-        cwd: "/workspace/project",
+        cwd: "/private/flow-doctor-probe",
         protectedPaths: [],
         signal,
       },
     );
+    expect(removeTemporaryDirectory).toHaveBeenCalledWith("/private/flow-doctor-probe");
   });
 
   it("maps a private native sandbox failure to one fixed internal boundary", async () => {
+    const removeTemporaryDirectory = vi.fn(async () => undefined);
     await expect(
       inspectProductionNativeSandbox("/workspace/project", new AbortController().signal, {
+        createTemporaryDirectory: async () => "/private/flow-doctor-probe",
         createExecutor: () => ({
           execute: async () => ({
             status: "failed" as const,
             error: { code: "PRIVATE_SANDBOX_PATH" },
           }),
         }),
+        removeTemporaryDirectory,
       }),
     ).rejects.toThrow("configured native sandbox is unavailable");
+    expect(removeTemporaryDirectory).toHaveBeenCalledWith("/private/flow-doctor-probe");
+  });
+
+  it("fails closed without exposing a private temporary-workspace cleanup failure", async () => {
+    let error: unknown;
+    try {
+      await inspectProductionNativeSandbox("/workspace/project", new AbortController().signal, {
+        createTemporaryDirectory: async () => "/private/flow-doctor-probe",
+        createExecutor: () => ({
+          execute: async () => ({ status: "succeeded" as const }),
+        }),
+        removeTemporaryDirectory: async () => {
+          throw new Error("PRIVATE_CLEANUP_PATH");
+        },
+      });
+    } catch (cause) {
+      error = cause;
+    }
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("configured native sandbox is unavailable");
+    expect((error as Error).message).not.toContain("PRIVATE_CLEANUP_PATH");
   });
 });

@@ -1,5 +1,6 @@
 import { constants } from "node:fs";
-import { access } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { NodeExecutionContext } from "../../application/ports.js";
@@ -15,7 +16,9 @@ interface NativeSandboxProbeExecutor {
 
 export interface ProductionEnvironmentDoctorOptions {
   readonly createExecutor?: (root: string) => NativeSandboxProbeExecutor;
+  readonly createTemporaryDirectory?: () => Promise<string>;
   readonly nodeExecutable?: string;
+  readonly removeTemporaryDirectory?: (path: string) => Promise<void>;
 }
 
 export async function inspectProjectFilesystem(
@@ -30,40 +33,65 @@ export async function inspectProjectFilesystem(
 }
 
 export async function inspectProductionNativeSandbox(
-  root: string,
+  _root: string,
   signal: AbortSignal,
   options: ProductionEnvironmentDoctorOptions = {},
 ): Promise<void> {
   signal.throwIfAborted();
-  const node: CompiledCommandNode = Object.freeze({
-    id: "flow-doctor-native-sandbox",
-    type: "command" as const,
-    dependsOn: Object.freeze([]),
-    command: Object.freeze({
-      executable: options.nodeExecutable ?? process.execPath,
-      args: Object.freeze(["-e", ""]),
-      timeoutMs: 2_000,
-    }),
-  });
-  const context: NodeExecutionContext = Object.freeze({
-    runId: "flow-doctor",
-    workflowId: "flow-doctor",
-    attempt: 1,
-    cwd: root,
-    protectedPaths: Object.freeze([]),
-    signal,
-  });
+  const createTemporaryDirectory =
+    options.createTemporaryDirectory ?? (() => mkdtemp(join(tmpdir(), "flow-doctor-native-")));
+  const removeTemporaryDirectory =
+    options.removeTemporaryDirectory ??
+    ((path: string) => rm(path, { recursive: true, force: true, maxRetries: 2 }));
+  let operationError: unknown;
+  let operationFailed = false;
+  let probeRoot: string | undefined;
   try {
+    probeRoot = await createTemporaryDirectory();
+    signal.throwIfAborted();
+    const node: CompiledCommandNode = Object.freeze({
+      id: "flow-doctor-native-sandbox",
+      type: "command" as const,
+      dependsOn: Object.freeze([]),
+      command: Object.freeze({
+        executable: options.nodeExecutable ?? process.execPath,
+        args: Object.freeze(["-e", ""]),
+        timeoutMs: 2_000,
+      }),
+    });
+    const context: NodeExecutionContext = Object.freeze({
+      runId: "flow-doctor",
+      workflowId: "flow-doctor",
+      attempt: 1,
+      cwd: probeRoot,
+      protectedPaths: Object.freeze([]),
+      signal,
+    });
     const outcome = await (
       options.createExecutor ??
       ((projectRoot) => createProductionNodeExecutor("native", projectRoot))
-    )(root).execute(node, context);
+    )(probeRoot).execute(node, context);
     signal.throwIfAborted();
     if (outcome.status !== "succeeded") {
       throw new Error("native sandbox probe failed");
     }
   } catch (cause) {
-    signal.throwIfAborted();
-    throw new Error("configured native sandbox is unavailable", { cause });
+    operationFailed = true;
+    operationError = cause;
   }
+  if (probeRoot !== undefined) {
+    try {
+      await removeTemporaryDirectory(probeRoot);
+    } catch (cleanupError) {
+      const cause = operationFailed
+        ? new AggregateError([operationError, cleanupError], "native sandbox probe did not settle")
+        : cleanupError;
+      throw new Error("configured native sandbox is unavailable", { cause });
+    }
+  }
+  if (operationFailed) {
+    signal.throwIfAborted();
+    throw new Error("configured native sandbox is unavailable", { cause: operationError });
+  }
+  signal.throwIfAborted();
 }

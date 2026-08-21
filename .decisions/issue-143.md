@@ -144,7 +144,7 @@ source research._
 
 _Recorded on 2026-08-21 from the settled Issue #143 tree._
 
-- The exact 10-file acceptance selector passed 89 tests:
+- The exact 10-file acceptance selector passed 90 tests:
 
   ```text
   npx vitest run test/unit/application/environment-doctor.test.ts test/integration/cli/doctor.test.ts test/unit/cli/launcher.test.ts test/unit/infrastructure/pi/pi-environment-doctor.test.ts test/unit/infrastructure/runtime/production-environment-doctor.test.ts test/unit/infrastructure/oci/prime-environment-doctor.test.ts test/scaffold/package.test.ts test/integration/package/documentation-structure.test.ts test/integration/package/architecture-documentation.test.ts test/scaffold/community-files.test.ts
