@@ -23,6 +23,7 @@ import {
   parsePromptActivationSnapshot,
 } from "../adaptation/prompt-activation.js";
 import { agentSkillNameSchema, MAX_AGENT_SKILL_PACKAGES } from "./agent-skill-contract.js";
+import { type LanguageServerSnapshot, validateLanguageServerSnapshot } from "./language-server.js";
 import {
   createPolicyPackageSnapshot,
   type PolicyPackageSnapshot,
@@ -124,6 +125,7 @@ export interface CapabilitySnapshot {
   readonly packages: readonly CapabilityPackageSnapshot[];
   readonly activations?: readonly AdaptiveActivationSnapshot[];
   readonly effectiveHarness?: EffectiveHarnessRuntimeSnapshot;
+  readonly languageServer?: LanguageServerSnapshot;
   readonly digest: string;
 }
 
@@ -223,6 +225,7 @@ const capabilitySnapshotSchema = z
       .max(MAX_AGENT_SKILL_PACKAGES),
     activations: z.array(z.unknown()).min(1).max(MAX_PROMPT_ACTIVATIONS_PER_SNAPSHOT).optional(),
     effectiveHarness: z.unknown().optional(),
+    languageServer: z.unknown().optional(),
     digest: sha256Schema,
   })
   .strict()
@@ -230,7 +233,8 @@ const capabilitySnapshotSchema = z
     if (
       snapshot.packages.length === 0 &&
       snapshot.activations === undefined &&
-      snapshot.effectiveHarness === undefined
+      snapshot.effectiveHarness === undefined &&
+      snapshot.languageServer === undefined
     ) {
       context.addIssue({ code: "custom", message: "capability snapshot cannot be empty" });
     }
@@ -469,9 +473,17 @@ export function validateCapabilitySnapshot(input: unknown): CapabilitySnapshot {
     parsed.effectiveHarness === undefined
       ? undefined
       : parseEffectiveHarnessRuntimeSnapshot(parsed.effectiveHarness, parsed.packages);
+  const languageServer =
+    parsed.languageServer === undefined
+      ? undefined
+      : validateLanguageServerSnapshot(parsed.languageServer);
   if (
-    calculateCapabilitySnapshotDigest(parsed.packages, activations, effectiveHarness) !==
-    parsed.digest
+    calculateCapabilitySnapshotDigest(
+      parsed.packages,
+      activations,
+      effectiveHarness,
+      languageServer,
+    ) !== parsed.digest
   ) {
     throw new Error("capability snapshot digest does not match");
   }
@@ -501,6 +513,7 @@ export function validateCapabilitySnapshot(input: unknown): CapabilitySnapshot {
     packages: parsed.packages,
     ...(activations.length === 0 ? {} : { activations }),
     ...(effectiveHarness === undefined ? {} : { effectiveHarness }),
+    ...(languageServer === undefined ? {} : { languageServer }),
     digest: parsed.digest,
   });
 }
@@ -544,6 +557,7 @@ export function calculateCapabilitySnapshotDigest(
   packages: readonly CapabilityPackageSnapshot[],
   activations: readonly AdaptiveActivationSnapshot[] = [],
   effectiveHarness?: EffectiveHarnessRuntimeSnapshot,
+  languageServer?: LanguageServerSnapshot,
 ): string {
   return sha256(
     JSON.stringify({
@@ -566,6 +580,9 @@ export function calculateCapabilitySnapshotDigest(
       ...(effectiveHarness === undefined
         ? {}
         : { effectiveHarness: { runtimeDigest: effectiveHarness.runtimeDigest } }),
+      ...(languageServer === undefined
+        ? {}
+        : { languageServer: { digest: languageServer.digest } }),
     }),
   );
 }
@@ -608,12 +625,25 @@ export function combineCapabilitySnapshots(
   if (effectiveHarnesses.some((item) => item.runtimeDigest !== effectiveHarness?.runtimeDigest)) {
     throw new Error("capability snapshots contain conflicting effective harness selections");
   }
+  const languageServers = snapshots
+    .map((snapshot) => snapshot.languageServer)
+    .filter((item): item is LanguageServerSnapshot => item !== undefined);
+  const languageServer = languageServers[0];
+  if (languageServers.some((item) => item.digest !== languageServer?.digest)) {
+    throw new Error("capability snapshots contain conflicting language-server selections");
+  }
   return validateCapabilitySnapshot({
     version: 1,
     packages,
     ...(activations.length === 0 ? {} : { activations }),
     ...(effectiveHarness === undefined ? {} : { effectiveHarness }),
-    digest: calculateCapabilitySnapshotDigest(packages, activations, effectiveHarness),
+    ...(languageServer === undefined ? {} : { languageServer }),
+    digest: calculateCapabilitySnapshotDigest(
+      packages,
+      activations,
+      effectiveHarness,
+      languageServer,
+    ),
   });
 }
 

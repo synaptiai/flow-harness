@@ -127,7 +127,9 @@ describe("language-server capability", () => {
       mutate: (input: ReturnType<typeof validInput>) => ({
         ...input,
         manifest: Buffer.from(
-          manifest().toString("utf8").replace('"kind":"LanguageServer"', '"kind":"LanguageServer","kind":"PRIVATE"'),
+          manifest()
+            .toString("utf8")
+            .replace('"kind":"LanguageServer"', '"kind":"LanguageServer","kind":"PRIVATE"'),
         ),
       }),
     },
@@ -202,9 +204,7 @@ function manifest(
         executable: overrides.executable ?? "/opt/flow/bin/typescript-language-server",
         executableSha256: "a".repeat(64),
         args: ["--stdio"],
-        languages: [
-          { id: "typescript", suffixes: overrides.suffixes ?? [".ts", ".tsx"] },
-        ],
+        languages: [{ id: "typescript", suffixes: overrides.suffixes ?? [".ts", ".tsx"] }],
         initializationOptions: {
           preferences: { includeCompletionsForModuleExports: false },
         },
