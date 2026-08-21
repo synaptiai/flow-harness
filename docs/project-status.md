@@ -44,6 +44,8 @@ on it.
 - Typed result publication from durable evidence.
 - Isolated child workflows with separate ledgers and bounded resource accounting.
 - Append-only run ledgers, inspection, recovery, and exact replay checks.
+- One append-only, project-scoped goal workspace with full revisions, exact compare-and-set updates,
+  evidence references, and immutable run selection.
 - Run budgets for starts, tokens, reported cost, active time, and retained artifacts.
 - Guided credential-free, zero-tool provider, and bounded provider-backed coding quick starts.
 
@@ -51,7 +53,8 @@ The coding path supports explicit Anthropic and OpenAI preview selections in an 
 uses only read, list, and hash-bound edit tools, then requires deterministic exact-byte
 verification. Read [Complete the coding quick start](guides/coding-quickstart.md).
 
-Read the [Workflow specification](workflow-spec.md) and [Architecture](architecture.md).
+Read [Maintain a durable goal workspace](guides/goal-workspaces.md), the
+[Workflow specification](workflow-spec.md), and [Architecture](architecture.md).
 
 ### Semantic code context
 

@@ -26,6 +26,7 @@ import {
 import {
   createCapabilitySnapshot,
   createEffectiveHarnessCapabilitySnapshot,
+  createGoalWorkspaceCapabilitySnapshot,
 } from "../../../src/domain/capability/agent-skills.js";
 import type { ToolPackageSnapshotInput } from "../../../src/domain/capability/tool-packages.js";
 import type { VerifierPackageSnapshotInput } from "../../../src/domain/capability/verifier-packages.js";
@@ -33,6 +34,7 @@ import {
   createWorkflowPackageSnapshot,
   type WorkflowPackageSnapshot,
 } from "../../../src/domain/capability/workflow-packages.js";
+import { createGoalWorkspaceRevision } from "../../../src/domain/goal/workspace.js";
 import {
   calculateChildRunId,
   parseRunEvent,
@@ -53,6 +55,64 @@ afterEach(async () => {
 });
 
 describe("child workflow execution", () => {
+  it("delivers the same frozen goal workspace to parent and child agents", async () => {
+    const store = new TreeMemoryStore();
+    const isolator = new MemoryWorkspaceIsolator();
+    const snapshot = createGoalWorkspaceCapabilitySnapshot(
+      createGoalWorkspaceRevision(
+        {
+          apiVersion: "flow.synapti.ai/v1alpha1",
+          kind: "GoalWorkspace",
+          objective: "Complete the nested workflow.",
+          facts: [],
+          invariants: [],
+          verifiedFacts: [],
+          openQuestions: [],
+          nextAction: { id: "delegate", text: "Run the child specialist." },
+        },
+        [],
+        { revision: 1, previousDigest: null, at: "2026-08-21T20:00:00.000Z" },
+      ),
+    );
+    const observed = new Map<string, string | undefined>();
+    const executor: NodeExecutor = {
+      async execute(node, context) {
+        if (node.type !== "agent") throw new Error(`unexpected node type "${node.type}"`);
+        observed.set(node.id, context.agentGoalWorkspace);
+        const text = JSON.stringify("done");
+        return {
+          status: "succeeded",
+          evidence: {
+            kind: "agent",
+            provider: "test",
+            model: "deterministic",
+            text,
+            textHash: sha256(text),
+            textTruncated: false,
+            durationMs: 1,
+            policyDecisions: [],
+            effectReceipts: [],
+          },
+        };
+      },
+    };
+
+    const result = await runWorkflow(compileWorkflowText(memoryParentWorkflow()), {
+      runId: "parent-goal-workspace",
+      cwd: "/workspace",
+      protectedPaths: ["/state/runs"],
+      store,
+      executor,
+      workspaceIsolator: isolator,
+      capabilitySnapshot: snapshot,
+      now: clock(),
+    });
+
+    expect(result.status).toBe("succeeded");
+    expect(observed.get("root-check")).toContain("Complete the nested workflow.");
+    expect(observed.get("inspect")).toContain("Complete the nested workflow.");
+  });
+
   it("delivers child-targeted supplemental memory only to the exact nested agent", async () => {
     const store = new TreeMemoryStore();
     const isolator = new MemoryWorkspaceIsolator();

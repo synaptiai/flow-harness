@@ -302,4 +302,69 @@ describe("public run output", () => {
     expect(JSON.stringify((projected as { evidence: unknown }).evidence)).not.toContain("PRIVATE");
     expect(value.evidence.semanticReceipts[0]).toBe(receipt);
   });
+
+  it("projects goal workspace review fields without copying unknown private data", () => {
+    const goalWorkspace = {
+      version: 1,
+      kind: "goal-workspace-revision",
+      revision: 2,
+      previousDigest: "a".repeat(64),
+      at: "2026-08-21T20:00:00.000Z",
+      objective: "Ship a durable goal workspace.",
+      facts: [{ id: "state", text: "The ledger is append-only." }],
+      invariants: [{ id: "authority", text: "Policy remains authoritative." }],
+      verifiedFacts: [
+        {
+          id: "proof",
+          text: "The focused test passed.",
+          evidence: [
+            {
+              runId: "run-1",
+              nodeId: "verify",
+              attempt: 1,
+              sequence: 7,
+              eventDigest: "b".repeat(64),
+            },
+          ],
+        },
+      ],
+      openQuestions: [{ id: "risk", text: "Which risk remains?" }],
+      nextAction: { id: "review", text: "Review the implementation." },
+      digest: "c".repeat(64),
+      privateEvidenceBytes: "PRIVATE_RAW_EVIDENCE",
+    };
+
+    const projected = projectPublicRunOutput({
+      capabilitySnapshot: {
+        version: 1,
+        packages: [],
+        goalWorkspace,
+        digest: "d".repeat(64),
+      },
+    });
+
+    expect(projected).toEqual({
+      capabilitySnapshot: {
+        version: 1,
+        packages: [],
+        goalWorkspace: {
+          version: 1,
+          kind: "goal-workspace-revision",
+          revision: 2,
+          previousDigest: "a".repeat(64),
+          at: "2026-08-21T20:00:00.000Z",
+          objective: "Ship a durable goal workspace.",
+          facts: [{ id: "state", text: "The ledger is append-only." }],
+          invariants: [{ id: "authority", text: "Policy remains authoritative." }],
+          verifiedFacts: goalWorkspace.verifiedFacts,
+          openQuestions: [{ id: "risk", text: "Which risk remains?" }],
+          nextAction: { id: "review", text: "Review the implementation." },
+          digest: "c".repeat(64),
+        },
+        digest: "d".repeat(64),
+      },
+    });
+    expect(JSON.stringify(projected)).not.toContain("PRIVATE_RAW_EVIDENCE");
+    expect(goalWorkspace.privateEvidenceBytes).toBe("PRIVATE_RAW_EVIDENCE");
+  });
 });

@@ -47,12 +47,14 @@ import {
   calculateCapabilitySnapshotDigest,
   createAgentCapabilityEvidence,
   createCapabilitySnapshot,
+  createGoalWorkspaceCapabilitySnapshot,
   validateCapabilitySnapshot,
 } from "../../../src/domain/capability/agent-skills.js";
 import { createLanguageServerSnapshot } from "../../../src/domain/capability/language-server.js";
 import type { ToolPackageSnapshotInput } from "../../../src/domain/capability/tool-packages.js";
 import type { VerifierPackageSnapshotInput } from "../../../src/domain/capability/verifier-packages.js";
 import type { WorkflowPackageSnapshotInput } from "../../../src/domain/capability/workflow-packages.js";
+import { createGoalWorkspaceRevision } from "../../../src/domain/goal/workspace.js";
 import { reduceRunEvents } from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { JsonlRunStore, RunStoreError } from "../../../src/infrastructure/fs/jsonl-run-store.js";
@@ -83,6 +85,79 @@ afterEach(async () => {
 });
 
 describe("detached run worker", () => {
+  it("executes an agent from the frozen detached goal workspace revision", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-worker-goal-workspace-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    const store = new LocalSupervisorStore(runsDirectory);
+    await store.initialize();
+    const goalWorkspace = createGoalWorkspaceRevision(
+      {
+        apiVersion: "flow.synapti.ai/v1alpha1",
+        kind: "GoalWorkspace",
+        objective: "Execute the detached durable goal.",
+        facts: [],
+        invariants: [],
+        verifiedFacts: [],
+        openQuestions: [],
+        nextAction: { id: "worker", text: "Run the detached worker." },
+      },
+      [],
+      { revision: 1, previousDigest: null, at: "2026-08-21T20:00:00.000Z" },
+    );
+    const capabilitySnapshot = createGoalWorkspaceCapabilitySnapshot(goalWorkspace);
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "worker-goal-workspace",
+      mode: "run",
+      sourceName: join(directory, "goal.workflow.yaml"),
+      workflowSource: goalWorkspaceWorkflowSource(),
+      cwd: directory,
+      token: "6".repeat(64),
+      createdAt: "2026-08-21T20:01:00.000Z",
+      capabilitySnapshot,
+    });
+    await store.reserveSubmission(
+      job,
+      createActiveRunClaim({
+        runId: job.runId,
+        jobId: job.jobId,
+        workerId: job.workerId,
+        claimedAt: job.createdAt,
+      }),
+    );
+    let observedGoal: string | undefined;
+
+    const worker = executeWorkerJob(job.jobId, {
+      store,
+      executor: {
+        async execute(node, context) {
+          if (node.type !== "agent") throw new Error("goal worker executed an unexpected node");
+          observedGoal = context.agentGoalWorkspace;
+          return { status: "succeeded", evidence: successfulAgentEvidence() };
+        },
+      },
+      effectReconciler: createProductionNodeEffectReconciler(),
+      createRunStore: (root) => new JsonlRunStore(root),
+      pid: 4341,
+    });
+    const descriptor = await waitForDescriptor(store, job.workerId);
+    await expect(requestWorker(descriptor, { type: "identify" })).resolves.toMatchObject({
+      ok: true,
+      result: { runId: job.runId, status: "running" },
+    });
+
+    expect(await worker).toBe(0);
+    expect(observedGoal).toContain("Execute the detached durable goal.");
+    expect(reduceRunEvents(await new JsonlRunStore(runsDirectory).read(job.runId))).toMatchObject({
+      status: "succeeded",
+      capabilitySnapshot: {
+        goalWorkspace: { revision: 1, digest: goalWorkspace.digest },
+      },
+    });
+  }, 15_000);
+
   it("executes semantic work from the frozen detached language-server snapshot", async () => {
     const directory = await mkdtemp(join(tmpdir(), "flow-worker-semantic-"));
     temporaryDirectories.push(directory);
@@ -2448,6 +2523,26 @@ async function languageServerSnapshot(project: string) {
       inode: String(identity.ino),
     },
   });
+}
+
+function goalWorkspaceWorkflowSource(): string {
+  return `apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: detached-goal-workspace }
+nodes:
+  - id: implement
+    type: agent
+    agent:
+      prompt: Continue the durable goal.
+      model: { provider: test, id: deterministic }
+      tools: [read]
+  - id: publish
+    type: result
+    dependsOn: [implement]
+    result:
+      source: { nodeId: implement, field: agent.text }
+      schema: { type: string, maxLength: 1024 }
+`;
 }
 
 function semanticWorkflowSource(): string {

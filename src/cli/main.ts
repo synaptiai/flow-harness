@@ -77,6 +77,10 @@ import {
   SupplementalMemoryCandidateGenerationExecutionError,
 } from "../application/generate-supplemental-memory-candidate.js";
 import {
+  GoalWorkspaceAdmissionError,
+  prepareGoalWorkspaceRevision,
+} from "../application/goal-workspace.js";
+import {
   GuidedQuickstartError,
   type GuidedQuickstartMode,
   type GuidedQuickstartPublication,
@@ -202,6 +206,7 @@ import {
   calculateCapabilitySnapshotDigest,
   combineCapabilitySnapshots,
   createEffectiveHarnessCapabilitySnapshot,
+  createGoalWorkspaceCapabilitySnapshot,
   type PolicyPackageCapabilitySnapshot,
   validateCapabilitySnapshot,
 } from "../domain/capability/agent-skills.js";
@@ -250,6 +255,7 @@ import {
   createTuningEvidencePacket,
   TuningEvidenceError,
 } from "../domain/evaluation/tuning-evidence.js";
+import { GoalWorkspaceError } from "../domain/goal/workspace.js";
 import {
   assertWorkflowSatisfiesPolicyPackages,
   PolicyPackageAdmissionError,
@@ -354,6 +360,15 @@ import {
   LocalEvaluationStore,
   type StoredEvaluation,
 } from "../infrastructure/fs/local-evaluation-store.js";
+import {
+  LocalGoalWorkspaceSourceError,
+  readLocalGoalWorkspaceSource,
+} from "../infrastructure/fs/local-goal-workspace-source.js";
+import {
+  LocalGoalWorkspaceStore,
+  LocalGoalWorkspaceStoreError,
+  MAX_GOAL_WORKSPACE_HISTORY_PAGE,
+} from "../infrastructure/fs/local-goal-workspace-store.js";
 import { admitLocalLanguageServer } from "../infrastructure/fs/local-language-server.js";
 import {
   PolicyPackageCatalogError,
@@ -479,6 +494,10 @@ Usage:
   flow config show
   flow doctor [<workflow.yaml|workflow:name@version|activation:workflow-id>] [--profile prime-agent]
   flow quickstart [directory] [--coding] [--provider <provider> --model <model>] [--run-id <id>]
+  flow goal init <workspace.yaml>
+  flow goal show
+  flow goal history [--after <revision>] [--limit <count>]
+  flow goal update <workspace.yaml> --expected-revision <revision> --expected-digest <sha256>
   flow skills list
   flow skills inspect <name>
   flow skills validate
@@ -538,8 +557,8 @@ Usage:
   flow eval export <evaluation-id> --output <path> [--evaluations-dir <path>]
   flow eval tuning-evidence <evaluation-id> --output <path> [--evaluations-dir <path>]
   flow runtime prepare prime-agent
-  flow validate <workflow.yaml|workflow:name@version|activation:workflow-id> [--language-server <manifest.json>]
-  flow run <workflow.yaml|workflow:name@version|activation:workflow-id> [--language-server <manifest.json>] [--detach] [--command-id <uuid>] [--run-id <id>] [--runs-dir <path>] [--cwd <path>]
+  flow validate <workflow.yaml|workflow:name@version|activation:workflow-id> [--goal-workspace] [--language-server <manifest.json>]
+  flow run <workflow.yaml|workflow:name@version|activation:workflow-id> [--goal-workspace] [--language-server <manifest.json>] [--detach] [--command-id <uuid>] [--run-id <id>] [--runs-dir <path>] [--cwd <path>]
   flow resume <workflow.yaml|workflow:name@version|activation:workflow-id> --run-id <id> [--detach] [--command-id <uuid>] [--runs-dir <path>] [--cwd <path>]
   flow approve <run-id> <request-id> --actor <label> [--runs-dir <path>]
   flow deny <run-id> <request-id> --actor <label> [--reason <text>] [--runs-dir <path>]
@@ -700,6 +719,8 @@ export async function main(
         return await doctorCommand(args.slice(1), io, dependencyOverrides);
       case "quickstart":
         return await quickstartCommand(args.slice(1), io, dependencyOverrides);
+      case "goal":
+        return await goalWorkspaceCommand(args.slice(1), io, dependencyOverrides);
       case "skills":
         return await skillsCommand(args.slice(1), io, dependencyOverrides);
       case "verifiers":
@@ -776,6 +797,15 @@ export async function main(
     }
     if (error instanceof FlowConfigStoreError) {
       io.stderr(`${error.code}: ${error.message}`);
+      return 1;
+    }
+    if (
+      error instanceof GoalWorkspaceAdmissionError ||
+      error instanceof GoalWorkspaceError ||
+      error instanceof LocalGoalWorkspaceSourceError ||
+      error instanceof LocalGoalWorkspaceStoreError
+    ) {
+      io.stderr(error.message);
       return 1;
     }
     if (error instanceof AgentSkillCatalogError) {
@@ -987,6 +1017,110 @@ async function configCommand(
   const dependencies = configDependenciesFrom(overrides);
   const result = await dependencies.loadConfig({ cwd: dependencies.cwd });
   io.stdout(JSON.stringify(result, null, 2));
+  return 0;
+}
+
+async function goalWorkspaceCommand(
+  args: readonly string[],
+  io: CliIo,
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  const subcommand = args[0];
+  if (
+    subcommand !== "init" &&
+    subcommand !== "show" &&
+    subcommand !== "history" &&
+    subcommand !== "update"
+  ) {
+    throw new CliUsageError("goal requires init, show, history, or update");
+  }
+  const dependencies = dependenciesFrom(overrides);
+  const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
+  if (config.projectRoot === null) {
+    throw new CliUsageError("goal workspace commands require a Flow project root");
+  }
+  const store = new LocalGoalWorkspaceStore(config.projectRoot);
+  const signal = dependencies.signal;
+
+  if (subcommand === "show") {
+    const { positionals } = parseCommandArgs(args.slice(1), {});
+    if (positionals.length !== 0) throw new CliUsageError("goal show accepts no arguments");
+    io.stdout(JSON.stringify(await store.readCurrent(signal), null, 2));
+    return 0;
+  }
+
+  if (subcommand === "history") {
+    assertStringOptionAtMostOnce(args.slice(1), "after");
+    assertStringOptionAtMostOnce(args.slice(1), "limit");
+    const { positionals, values } = parseCommandArgs(args.slice(1), {
+      after: { type: "string" },
+      limit: { type: "string" },
+    });
+    if (positionals.length !== 0) throw new CliUsageError("goal history accepts no documents");
+    const after = parseNonNegativeIntegerOption(values.after, "--after", 0);
+    const limit = parsePositiveIntegerOption(values.limit, "--limit", 50);
+    if (limit > MAX_GOAL_WORKSPACE_HISTORY_PAGE) {
+      throw new CliUsageError(`--limit must not exceed ${MAX_GOAL_WORKSPACE_HISTORY_PAGE}`);
+    }
+    io.stdout(JSON.stringify(await store.readHistory({ after, limit }, signal), null, 2));
+    return 0;
+  }
+
+  if (subcommand === "init") {
+    const { positionals } = parseCommandArgs(args.slice(1), {});
+    const document = requireSinglePositional(
+      positionals,
+      "goal init requires one workspace document",
+    );
+    const admitted = await readLocalGoalWorkspaceSource(resolve(dependencies.cwd, document), {
+      ...(signal === undefined ? {} : { signal }),
+    });
+    const revision = await prepareGoalWorkspaceRevision({
+      source: admitted.source,
+      expected: null,
+      at: new Date().toISOString(),
+      runReader: dependencies.createStore(
+        resolveRunsDirectory(dependencies.cwd, undefined, config),
+      ),
+      ...(signal === undefined ? {} : { signal }),
+    });
+    io.stdout(JSON.stringify(await store.initialize(revision, signal), null, 2));
+    return 0;
+  }
+
+  assertStringOptionAtMostOnce(args.slice(1), "expected-revision");
+  assertStringOptionAtMostOnce(args.slice(1), "expected-digest");
+  const { positionals, values } = parseCommandArgs(args.slice(1), {
+    "expected-revision": { type: "string" },
+    "expected-digest": { type: "string" },
+  });
+  const document = requireSinglePositional(
+    positionals,
+    "goal update requires one workspace document",
+  );
+  const expectedRevision = parseRequiredPositiveIntegerOption(
+    values["expected-revision"],
+    "--expected-revision",
+  );
+  const expectedDigest = requireStringOption(
+    values["expected-digest"],
+    "goal update requires --expected-digest <sha256>",
+  );
+  if (!/^[a-f0-9]{64}$/.test(expectedDigest)) {
+    throw new CliUsageError("--expected-digest requires a SHA-256 hexadecimal digest");
+  }
+  const admitted = await readLocalGoalWorkspaceSource(resolve(dependencies.cwd, document), {
+    ...(signal === undefined ? {} : { signal }),
+  });
+  const expected = { revision: expectedRevision, digest: expectedDigest };
+  const revision = await prepareGoalWorkspaceRevision({
+    source: admitted.source,
+    expected,
+    at: new Date().toISOString(),
+    runReader: dependencies.createStore(resolveRunsDirectory(dependencies.cwd, undefined, config)),
+    ...(signal === undefined ? {} : { signal }),
+  });
+  io.stdout(JSON.stringify(await store.update(expected, revision, signal), null, 2));
   return 0;
 }
 
@@ -4903,8 +5037,9 @@ async function validateCommand(
   io: CliIo,
   overrides: Partial<CliDependencies>,
 ): Promise<number> {
-  assertStringOptionAtMostOnce(args, "language-server");
-  const { positionals, values } = parseCommandArgs(args, {
+  const goalWorkspace = extractBooleanFlag(args, "--goal-workspace");
+  assertStringOptionAtMostOnce(goalWorkspace.args, "language-server");
+  const { positionals, values } = parseCommandArgs(goalWorkspace.args, {
     "language-server": { type: "string" },
   });
   const workflowArgument = requireSinglePositional(
@@ -4925,12 +5060,18 @@ async function validateCommand(
     dependencies.cwd,
     dependencies.signal,
   );
+  const goalWorkspaceSnapshot = await resolveSelectedGoalWorkspaceCapability(
+    goalWorkspace.enabled,
+    config,
+    dependencies.signal,
+  );
   const capabilitySnapshot = bindWorkflowCapabilities(
     admitted.workflow,
     combineOptionalCapabilitySnapshots([
       admitted.capabilitySnapshot,
       supplementalSnapshot,
       languageServerSnapshot,
+      goalWorkspaceSnapshot,
     ]),
   );
   assertWorkflowSatisfiesPolicyPackages(admitted.workflow, capabilitySnapshot);
@@ -4945,9 +5086,10 @@ async function validateCommand(
   const policyPackageCount =
     capabilitySnapshot?.packages.filter((item) => item.kind === "policy-package").length ?? 0;
   const languageServerCount = capabilitySnapshot?.languageServer === undefined ? 0 : 1;
+  const goalWorkspaceCount = capabilitySnapshot?.goalWorkspace === undefined ? 0 : 1;
 
   io.stdout(
-    `Workflow "${admitted.workflow.id}" is valid (nodes: ${admitted.workflow.nodes.length}, criteria: ${admitted.workflow.goal?.criteria.length ?? 0}, skills: ${skillCount}, verifier packages: ${verifierPackageCount}, tool packages: ${toolPackageCount}, workflow packages: ${workflowPackageCount}, policy packages: ${policyPackageCount}, language servers: ${languageServerCount}).`,
+    `Workflow "${admitted.workflow.id}" is valid (nodes: ${admitted.workflow.nodes.length}, criteria: ${admitted.workflow.goal?.criteria.length ?? 0}, skills: ${skillCount}, verifier packages: ${verifierPackageCount}, tool packages: ${toolPackageCount}, workflow packages: ${workflowPackageCount}, policy packages: ${policyPackageCount}, language servers: ${languageServerCount}, goal workspaces: ${goalWorkspaceCount}).`,
   );
   return 0;
 }
@@ -4958,8 +5100,9 @@ async function runCommand(
   overrides: Partial<CliDependencies>,
 ): Promise<number> {
   const detached = extractBooleanFlag(args, "--detach");
-  assertStringOptionAtMostOnce(detached.args, "language-server");
-  const { positionals, values } = parseCommandArgs(detached.args, {
+  const goalWorkspace = extractBooleanFlag(detached.args, "--goal-workspace");
+  assertStringOptionAtMostOnce(goalWorkspace.args, "language-server");
+  const { positionals, values } = parseCommandArgs(goalWorkspace.args, {
     "command-id": { type: "string" },
     "language-server": { type: "string" },
     "run-id": { type: "string" },
@@ -4985,12 +5128,18 @@ async function runCommand(
     dependencies.cwd,
     dependencies.signal,
   );
+  const goalWorkspaceSnapshot = await resolveSelectedGoalWorkspaceCapability(
+    goalWorkspace.enabled,
+    config,
+    dependencies.signal,
+  );
   const capabilitySnapshot = bindWorkflowCapabilities(
     admitted.workflow,
     combineOptionalCapabilitySnapshots([
       admitted.capabilitySnapshot,
       supplementalSnapshot,
       languageServerSnapshot,
+      goalWorkspaceSnapshot,
     ]),
   );
   assertWorkflowSatisfiesPolicyPackages(admitted.workflow, capabilitySnapshot);
@@ -6066,6 +6215,13 @@ function parsePositiveIntegerOption(
   return parsed;
 }
 
+function parseRequiredPositiveIntegerOption(value: string | undefined, option: string): number {
+  if (value === undefined) {
+    throw new CliUsageError(`${option} is required`);
+  }
+  return parsePositiveIntegerOption(value, option, 1);
+}
+
 function parseThinkingLevel(value: string | undefined): ThinkingLevel {
   const thinking = value ?? "medium";
   if (
@@ -6147,6 +6303,21 @@ function requireStringOption(value: string | undefined, message: string): string
     throw new CliUsageError(message);
   }
   return value;
+}
+
+async function resolveSelectedGoalWorkspaceCapability(
+  selected: boolean,
+  config: EffectiveFlowConfig,
+  signal?: AbortSignal,
+): Promise<CapabilitySnapshot | undefined> {
+  if (!selected) return undefined;
+  if (config.projectRoot === null) {
+    throw new CliUsageError("--goal-workspace requires a Flow project root");
+  }
+  signal?.throwIfAborted();
+  const revision = await new LocalGoalWorkspaceStore(config.projectRoot).readCurrent(signal);
+  signal?.throwIfAborted();
+  return createGoalWorkspaceCapabilitySnapshot(revision);
 }
 
 async function resolveWorkflowCapabilitySnapshot(

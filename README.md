@@ -47,6 +47,8 @@ Current capability groups include:
 - Typed results, durable evidence, exact replay, and proof-gated recovery.
 - Command, agent-command, and evidence approvals.
 - Run budgets and provider-neutral policy enforcement.
+- An operator-maintained, revisioned goal workspace that can be frozen into attached, detached,
+  resumed, and child runs without gaining workflow authority.
 - Bounded read-only semantic code queries through an exact operator-selected language server.
 - Attached and detached execution with local terminal, browser, and ACP control.
 
@@ -131,6 +133,7 @@ The [documentation hub](docs/README.md) routes each reader task to one canonical
 | [Diagnose the Flow environment](docs/guides/diagnose-environment.md) | Read-only host, project, workflow, provider, sandbox, and Prime preflight |
 | [Project status](docs/project-status.md) | Maturity, platform support, and planned boundaries |
 | [Run and control workflows](docs/guides/run-and-control.md) | Detached runs, presentation hosts, approvals, budgets, cancellation, and recovery entry points |
+| [Maintain a durable goal workspace](docs/guides/goal-workspaces.md) | Revisioned long-horizon context, evidence references, compare-and-set updates, run selection, and recovery |
 | [Use read-only semantic code queries](docs/guides/semantic-code.md) | Exact language-server selection, bounded queries, containment, evidence, and failure handling |
 | [Use capability packages](docs/guides/capability-packages.md) | Skills, verifiers, tools, workflows, policies, presentations, bundles, and repositories |
 | [Prime runtime operations](docs/operations/prime-runtime.md) | Dedicated Linux x64 Prime and container-profile preparation |

@@ -118,9 +118,56 @@ function projectCapabilitySnapshot(
       if (key === "languageServer") {
         return [key, projectLanguageServer(item)];
       }
+      if (key === "goalWorkspace") {
+        return [key, projectGoalWorkspace(item)];
+      }
       return [key, item];
     }),
   );
+}
+
+function projectGoalWorkspace(value: unknown): unknown {
+  if (!isRecord(value) || value.kind !== "goal-workspace-revision") {
+    return null;
+  }
+  const projected = pick(value, [
+    "version",
+    "kind",
+    "revision",
+    "previousDigest",
+    "at",
+    "objective",
+    "digest",
+  ]);
+  projected.facts = projectGoalEntries(value.facts);
+  projected.invariants = projectGoalEntries(value.invariants);
+  projected.verifiedFacts = projectGoalVerifiedFacts(value.verifiedFacts);
+  projected.openQuestions = projectGoalEntries(value.openQuestions);
+  projected.nextAction = isRecord(value.nextAction) ? pick(value.nextAction, ["id", "text"]) : null;
+  return projected;
+}
+
+function projectGoalEntries(value: unknown): unknown {
+  return Array.isArray(value)
+    ? value.map((entry) => (isRecord(entry) ? pick(entry, ["id", "text"]) : null))
+    : null;
+}
+
+function projectGoalVerifiedFacts(value: unknown): unknown {
+  return Array.isArray(value)
+    ? value.map((fact) => {
+        if (!isRecord(fact)) return null;
+        const projected = pick(fact, ["id", "text"]);
+        projected.evidence = Array.isArray(fact.evidence)
+          ? fact.evidence.map((reference) =>
+              isRecord(reference)
+                ? pick(reference, ["runId", "nodeId", "attempt", "sequence", "eventDigest"])
+                : null,
+            )
+          : null;
+        return projected;
+      })
+    : null;
 }
 
 function projectLanguageServer(value: unknown): unknown {

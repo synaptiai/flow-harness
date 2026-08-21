@@ -24,10 +24,12 @@ import {
   combineCapabilitySnapshots,
   createAgentCapabilityEvidence,
   createCapabilitySnapshot,
+  createGoalWorkspaceCapabilitySnapshot,
   validateCapabilitySnapshot,
 } from "../../../src/domain/capability/agent-skills.js";
 import type { PolicyPackageSnapshotInput } from "../../../src/domain/capability/policy-packages.js";
 import type { ToolPackageSnapshotInput } from "../../../src/domain/capability/tool-packages.js";
+import { createGoalWorkspaceRevision } from "../../../src/domain/goal/workspace.js";
 import { calculateChildRunId, type RunEvent } from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { agentSkillActivationInput } from "../../fixtures/agent-skill-activation.js";
@@ -84,6 +86,107 @@ describe("run workflow capability snapshots", () => {
     expect(state.capabilitySnapshot).toBeNull();
     expect(state.capabilityRequirements).toEqual({});
     expect(context).not.toHaveProperty("capabilitySnapshot");
+  });
+
+  it("renders the exact frozen goal workspace for agent execution", async () => {
+    const store = new MemoryStore();
+    const workspace = createGoalWorkspaceRevision(
+      {
+        apiVersion: "flow.synapti.ai/v1alpha1",
+        kind: "GoalWorkspace",
+        objective: "Ship a durable goal workspace.",
+        facts: [{ id: "current-state", text: "The revision ledger is append-only." }],
+        invariants: [{ id: "authority", text: "Workflow policy remains authoritative." }],
+        verifiedFacts: [
+          {
+            id: "verified-test",
+            text: "The focused test passed.",
+            evidence: [{ runId: "private-run-id", nodeId: "private-node-id", attempt: 1 }],
+          },
+        ],
+        openQuestions: [{ id: "next-risk", text: "Which failure mode remains?" }],
+        nextAction: { id: "implement", text: "Complete the runtime integration." },
+      },
+      [
+        {
+          runId: "private-run-id",
+          nodeId: "private-node-id",
+          attempt: 1,
+          sequence: 7,
+          eventDigest: "a".repeat(64),
+        },
+      ],
+      { revision: 1, previousDigest: null, at: "2026-08-21T20:00:00.000Z" },
+    );
+    const snapshot = createGoalWorkspaceCapabilitySnapshot(workspace);
+    let context: NodeExecutionContext | undefined;
+
+    const state = await runWorkflow(unskilledWorkflow(), {
+      ...options(
+        store,
+        executorFrom((_node, received) => {
+          context = received;
+          return agentSuccess();
+        }),
+      ),
+      runId: "goal-workspace-run",
+      capabilitySnapshot: snapshot,
+    });
+
+    expect(context?.agentGoalWorkspace).toContain("Ship a durable goal workspace.");
+    expect(context?.agentGoalWorkspace).toContain("Workflow policy remains authoritative.");
+    expect(context?.agentGoalWorkspace).not.toContain("private-run-id");
+    expect(context?.agentGoalWorkspace).not.toContain("private-node-id");
+    expect(context?.agentGoalWorkspace).not.toContain("aaaaaaaaaaaaaaaa");
+    expect(state.capabilitySnapshot?.goalWorkspace).toEqual(workspace);
+  });
+
+  it("resumes the frozen goal workspace without a live snapshot input", async () => {
+    const snapshot = createGoalWorkspaceCapabilitySnapshot(
+      createGoalWorkspaceRevision(
+        {
+          apiVersion: "flow.synapti.ai/v1alpha1",
+          kind: "GoalWorkspace",
+          objective: "Resume the durable objective.",
+          facts: [],
+          invariants: [],
+          verifiedFacts: [],
+          openQuestions: [],
+          nextAction: { id: "resume", text: "Continue from durable state." },
+        },
+        [],
+        { revision: 1, previousDigest: null, at: "2026-08-21T20:00:00.000Z" },
+      ),
+    );
+    const workflow = unskilledWorkflow();
+    const interrupted = new MemoryStore("node_started");
+
+    await expect(
+      runWorkflow(workflow, {
+        ...options(
+          interrupted,
+          executorFrom(() => agentSuccess()),
+        ),
+        runId: "goal-workspace-resume",
+        capabilitySnapshot: snapshot,
+      }),
+    ).rejects.toThrow("injected persistence failure");
+
+    const recovered = new MemoryStore(undefined, interrupted.events);
+    let observed: string | undefined;
+    const state = await resumeWorkflow(workflow, {
+      ...options(
+        recovered,
+        executorFrom((_node, context) => {
+          observed = context.agentGoalWorkspace;
+          return agentSuccess();
+        }),
+      ),
+      runId: "goal-workspace-resume",
+    });
+
+    expect(observed).toContain("Resume the durable objective.");
+    expect(state.capabilitySnapshot?.digest).toBe(snapshot.digest);
   });
 
   it("rejects missing and non-exact snapshots before appending run history", async () => {
