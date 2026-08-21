@@ -574,6 +574,30 @@ nodes:
     expect(node?.type === "agent" && Object.isFrozen(node.agent.tools)).toBe(true);
   });
 
+  it("compiles an immutable explicit semantic selection", () => {
+    const source = workflowWithNodes(`
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Inspect the selected symbol without changing the workspace.
+      model: { provider: anthropic, id: claude-sonnet-4-5 }
+      tools: [read, semantic]
+  - id: verify
+    type: command
+    dependsOn: [analyze]
+    command: { executable: npm, args: [test] }
+`);
+
+    const workflow = compileWorkflowText(source, "agent-semantic.workflow.yaml");
+    const node = workflow.nodes[0];
+
+    expect(node).toMatchObject({
+      type: "agent",
+      agent: { tools: ["read", "semantic"] },
+    });
+    expect(node?.type === "agent" && Object.isFrozen(node.agent.tools)).toBe(true);
+  });
+
   it("compiles and digest-binds immutable per-call agent exec approval", () => {
     const approvedSource = workflowWithNodes(`
   - id: analyze

@@ -327,6 +327,8 @@ replayable, and visible in the selected profile.
 
 ### Slice 9.3: Add read-only semantic code tools
 
+**Implemented in current source.**
+
 - Add a Flow-owned language server protocol (LSP) port for diagnostics, definition, references, and
   hover or type information.
 - Require an operator-selected language server with exact executable and configuration identity.

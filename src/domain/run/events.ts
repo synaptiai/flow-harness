@@ -79,6 +79,12 @@ import {
   resultSourceTruncationMessage,
   TypedResultError,
 } from "../result/typed-result.js";
+import {
+  MAX_SEMANTIC_QUERY_RECEIPTS,
+  type SemanticQueryReceipt,
+  semanticQueryReceiptSchema,
+  validateSemanticQueryReceipt,
+} from "../semantic/semantic-code.js";
 import { parseVerifierVerdictJson } from "../verification/verdict.js";
 import { boundedCompiledResultSchemaSchema } from "../workflow/schema.js";
 import {
@@ -157,6 +163,7 @@ export interface AgentEvidence {
   readonly activity?: AgentActivity;
   readonly policyDecisions: readonly PolicyDecision[];
   readonly effectReceipts: readonly AgentEffectReceipt[];
+  readonly semanticReceipts?: readonly SemanticQueryReceipt[];
   readonly capabilities?: AgentCapabilityEvidence;
 }
 
@@ -1739,6 +1746,10 @@ const agentEvidenceSchema = z
       )
       .max(MAX_AGENT_EFFECT_RECEIPTS)
       .default([]),
+    semanticReceipts: z
+      .array(semanticQueryReceiptSchema)
+      .max(MAX_SEMANTIC_QUERY_RECEIPTS)
+      .optional(),
     capabilities: agentCapabilityEvidenceSchema.optional(),
   })
   .strict();
@@ -5734,6 +5745,11 @@ export function appendRunEvent(
         current.effectProtocol === null,
         current.commands.some((command) => agentCommandSideEffectStatus(command) !== "none"),
       );
+      validateSemanticEvidenceProjection(
+        currentState.capabilitySnapshot,
+        event.evidence,
+        eventIndex,
+      );
       validateAgentCapabilityEvidenceProjection(
         currentState.capabilitySnapshot,
         currentState.capabilityRequirements[event.nodeId],
@@ -5796,6 +5812,11 @@ export function appendRunEvent(
           eventIndex,
           current.effectProtocol === null,
           current.commands.some((command) => agentCommandSideEffectStatus(command) !== "none"),
+        );
+        validateSemanticEvidenceProjection(
+          currentState.capabilitySnapshot,
+          event.evidence,
+          eventIndex,
         );
         validateAgentCapabilityEvidenceProjection(
           currentState.capabilitySnapshot,
@@ -9074,6 +9095,20 @@ function validateEvidenceIntegrity(
     throw new RunReplayError(eventIndex, "agent evidence text hash is invalid");
   }
   if (evidence.kind === "agent") {
+    for (const [index, receipt] of (evidence.semanticReceipts ?? []).entries()) {
+      const expectedSequence = index + 1;
+      if (receipt.sequence !== expectedSequence) {
+        throw new RunReplayError(
+          eventIndex,
+          `semantic receipt sequence must be contiguous; expected ${expectedSequence}, received ${receipt.sequence}`,
+        );
+      }
+      try {
+        validateSemanticQueryReceipt(receipt);
+      } catch {
+        throw new RunReplayError(eventIndex, "semantic receipt is invalid");
+      }
+    }
     for (const [index, decision] of evidence.policyDecisions.entries()) {
       const expectedSequence = index + 1;
       if (decision.sequence !== expectedSequence) {
@@ -9357,6 +9392,30 @@ function validateAgentCapabilityEvidenceProjection(
     throw new RunReplayError(
       eventIndex,
       `agent capability evidence is not bound to durable content: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+function validateSemanticEvidenceProjection(
+  snapshot: CapabilitySnapshot | null,
+  evidence: NodeEvidence,
+  eventIndex: number,
+): void {
+  const receipts = evidence.kind === "agent" ? (evidence.semanticReceipts ?? []) : [];
+  if (receipts.length === 0) {
+    return;
+  }
+  const languageServer = snapshot?.languageServer;
+  if (languageServer === undefined) {
+    throw new RunReplayError(
+      eventIndex,
+      "semantic receipt requires a durable language-server snapshot",
+    );
+  }
+  if (receipts.some((receipt) => receipt.languageServerDigest !== languageServer.digest)) {
+    throw new RunReplayError(
+      eventIndex,
+      "semantic receipt language server does not match the durable run snapshot",
     );
   }
 }

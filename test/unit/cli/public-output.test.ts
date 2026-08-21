@@ -165,4 +165,141 @@ describe("public run output", () => {
       privateContent,
     );
   });
+
+  it("projects a language server without private executable or manifest data", () => {
+    const privateManifest = Buffer.from("PRIVATE_LANGUAGE_SERVER_MANIFEST\n").toString("base64");
+    const value = {
+      capabilitySnapshot: {
+        languageServer: {
+          version: 1,
+          kind: "language-server",
+          name: "typescript",
+          protocol: "lsp-3.18",
+          executable: {
+            path: "/PRIVATE/bin/typescript-language-server",
+            sha256: "a".repeat(64),
+            bytes: 1_024,
+            device: "16777234",
+            inode: "9071",
+          },
+          args: ["--stdio", "--PRIVATE_CONFIG"],
+          languages: [{ id: "typescript", suffixes: [".ts"] }],
+          initializationOptions: { private: "PRIVATE_INITIALIZATION" },
+          containmentProfile: "default",
+          requestTimeoutMs: 5_000,
+          manifest: {
+            provenance: ".flow/language-servers/typescript.json",
+            sha256: "b".repeat(64),
+            bytes: 512,
+            contentBase64: privateManifest,
+          },
+          digest: "c".repeat(64),
+        },
+      },
+    };
+
+    const projected = projectPublicRunOutput(value);
+
+    expect(projected).toEqual({
+      capabilitySnapshot: {
+        languageServer: {
+          version: 1,
+          kind: "language-server",
+          name: "typescript",
+          protocol: "lsp-3.18",
+          executable: { sha256: "a".repeat(64), bytes: 1_024 },
+          languages: [{ id: "typescript", suffixes: [".ts"] }],
+          containmentProfile: "default",
+          requestTimeoutMs: 5_000,
+          manifest: {
+            provenance: ".flow/language-servers/typescript.json",
+            sha256: "b".repeat(64),
+            bytes: 512,
+          },
+          digest: "c".repeat(64),
+        },
+      },
+    });
+    expect(JSON.stringify(projected)).not.toContain("PRIVATE_");
+    expect(value.capabilitySnapshot.languageServer.manifest.contentBase64).toBe(privateManifest);
+  });
+
+  it("projects semantic receipts as safe summaries without changing same-named result data", () => {
+    const privatePath = "PRIVATE/source/example.ts";
+    const privateMessage = "PRIVATE semantic diagnostic";
+    const receipt = {
+      version: 1,
+      sequence: 1,
+      request: { operation: "diagnostics", path: privatePath },
+      requestDigest: "a".repeat(64),
+      projectDigest: "b".repeat(64),
+      sourceDigest: "c".repeat(64),
+      languageServerDigest: "d".repeat(64),
+      sandbox: {
+        backend: "sandbox-runtime",
+        backendVersion: "1.2.3",
+        profile: "workspace-readonly-network-deny-v1",
+        policyDigest: "e".repeat(64),
+      },
+      result: {
+        operation: "diagnostics",
+        diagnostics: [
+          {
+            path: privatePath,
+            range: {
+              start: { line: 0, character: 0 },
+              end: { line: 0, character: 1 },
+            },
+            severity: "error",
+            message: privateMessage,
+          },
+        ],
+      },
+      resultDigest: "f".repeat(64),
+      digest: "0".repeat(64),
+    };
+    const value = {
+      type: "node_succeeded",
+      evidence: {
+        kind: "agent",
+        provider: "test",
+        model: "deterministic",
+        semanticReceipts: [receipt],
+      },
+      result: {
+        semanticReceipts: [{ request: privatePath, result: privateMessage }],
+      },
+    };
+
+    const projected = projectPublicRunOutput(value);
+
+    expect(projected).toEqual({
+      type: "node_succeeded",
+      evidence: {
+        kind: "agent",
+        provider: "test",
+        model: "deterministic",
+        semanticReceipts: [
+          {
+            version: 1,
+            sequence: 1,
+            operation: "diagnostics",
+            itemCount: 1,
+            requestDigest: "a".repeat(64),
+            projectDigest: "b".repeat(64),
+            sourceDigest: "c".repeat(64),
+            languageServerDigest: "d".repeat(64),
+            sandbox: receipt.sandbox,
+            resultDigest: "f".repeat(64),
+            digest: "0".repeat(64),
+          },
+        ],
+      },
+      result: {
+        semanticReceipts: [{ request: privatePath, result: privateMessage }],
+      },
+    });
+    expect(JSON.stringify((projected as { evidence: unknown }).evidence)).not.toContain("PRIVATE");
+    expect(value.evidence.semanticReceipts[0]).toBe(receipt);
+  });
 });

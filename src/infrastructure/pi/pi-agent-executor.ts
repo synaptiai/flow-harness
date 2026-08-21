@@ -26,6 +26,7 @@ import {
   createAgentCapabilityEvidence,
   validateCapabilitySnapshot,
 } from "../../domain/capability/agent-skills.js";
+import type { LanguageServerSnapshot } from "../../domain/capability/language-server.js";
 import type { ToolPackageSnapshot } from "../../domain/capability/tool-packages.js";
 import { resolveAgentToolPackages } from "../../domain/capability/workflow-capabilities.js";
 import { PolicyBroker } from "../../domain/policy/broker.js";
@@ -37,6 +38,11 @@ import type {
   AgentEvidence,
   NodeFailure,
 } from "../../domain/run/events.js";
+import {
+  MAX_SEMANTIC_QUERY_RECEIPTS,
+  type SemanticQueryReceipt,
+  validateSemanticQueryReceipt,
+} from "../../domain/semantic/semantic-code.js";
 import type {
   AgentToolName,
   CompiledAgentNode,
@@ -44,7 +50,7 @@ import type {
 } from "../../domain/workflow/types.js";
 import { AgentCommandRecorder } from "./agent-command-recorder.js";
 import { AgentEffectRecorder } from "./agent-effect-recorder.js";
-import { createWorkspaceAgentTools } from "./workspace-agent-tools.js";
+import { createWorkspaceAgentTools, type SemanticToolSession } from "./workspace-agent-tools.js";
 
 export interface PiAgentRunRequest {
   readonly cwd: string;
@@ -66,6 +72,7 @@ export interface PiAgentRunRequest {
     readonly snapshot: CapabilitySnapshot;
     readonly selected: readonly string[];
   };
+  readonly semanticSession?: SemanticToolSession;
   readonly signal?: AbortSignal;
 }
 
@@ -94,12 +101,18 @@ export interface PiAgentRunner {
   run(request: PiAgentRunRequest): Promise<PiAgentRunResult>;
 }
 
+export type SemanticToolSessionFactory = (input: {
+  readonly context: NodeExecutionContext;
+  readonly languageServer: LanguageServerSnapshot;
+}) => SemanticToolSession;
+
 export class PiAgentExecutor implements AgentExecutor {
   constructor(
     readonly runner: PiAgentRunner = new EmbeddedPiAgentRunner(),
     readonly now: () => number = performance.now.bind(performance),
     readonly abortGraceMs = 5_000,
     readonly maxOutputBytes = 65_536,
+    readonly semanticSessionFactory?: SemanticToolSessionFactory,
   ) {
     if (!Number.isSafeInteger(abortGraceMs) || abortGraceMs < 0) {
       throw new RangeError("abortGraceMs must be a non-negative safe integer");
@@ -177,6 +190,42 @@ export class PiAgentExecutor implements AgentExecutor {
         );
       }
     }
+    let semanticSession: SemanticToolSession | undefined;
+    let semanticLanguageServer: LanguageServerSnapshot | undefined;
+    if (node.agent.tools.includes("semantic")) {
+      if (context.capabilitySnapshot === undefined) {
+        return agentFailure(
+          "pi_semantic_snapshot_unavailable",
+          "semantic access requires an immutable language-server snapshot",
+        );
+      }
+      try {
+        semanticLanguageServer = validateCapabilitySnapshot(
+          context.capabilitySnapshot,
+        ).languageServer;
+      } catch {
+        return agentFailure(
+          "pi_semantic_snapshot_invalid",
+          "semantic language-server snapshot is invalid",
+        );
+      }
+      if (semanticLanguageServer === undefined) {
+        return agentFailure(
+          "pi_semantic_snapshot_unavailable",
+          "semantic access requires an immutable language-server snapshot",
+        );
+      }
+      if (this.semanticSessionFactory === undefined) {
+        return agentFailure(
+          "pi_semantic_service_unavailable",
+          "semantic language-service infrastructure is unavailable",
+        );
+      }
+      semanticSession = this.semanticSessionFactory({
+        context,
+        languageServer: semanticLanguageServer,
+      });
+    }
     if (node.agent.tools.includes("edit") && context.effectJournal === undefined) {
       return agentFailure(
         "pi_effect_journal_unavailable",
@@ -241,6 +290,8 @@ export class PiAgentExecutor implements AgentExecutor {
     let observedCapabilityEvidence = capabilityEvidence;
     let closedPolicyDecisions: readonly PolicyDecision[] | undefined;
     let closedEffectReceipts: readonly AgentEffectReceipt[] | undefined;
+    let closedSemanticReceipts: readonly SemanticQueryReceipt[] | undefined;
+    let semanticEvidenceError: PiSemanticEvidenceError | undefined;
     const closePolicy = () => {
       closedPolicyDecisions ??= policyBroker.close();
       return closedPolicyDecisions;
@@ -249,14 +300,31 @@ export class PiAgentExecutor implements AgentExecutor {
       closedEffectReceipts ??= effectRecorder.close();
       return closedEffectReceipts;
     };
+    const closeSemanticEvidence = () => {
+      if (closedSemanticReceipts !== undefined) {
+        return closedSemanticReceipts;
+      }
+      try {
+        closedSemanticReceipts = validateSemanticReceipts(
+          semanticSession?.evidence() ?? [],
+          semanticLanguageServer?.digest,
+        );
+      } catch {
+        semanticEvidenceError = new PiSemanticEvidenceError();
+        closedSemanticReceipts = Object.freeze([]);
+      }
+      return closedSemanticReceipts;
+    };
     const closeCommands = () => commandRecorder.close();
     const policyFailureEvidence = (): AgentEvidence | null => {
       const policyDecisions = closePolicy();
       const effectReceipts = closeEffects();
+      const semanticReceipts = closeSemanticEvidence();
       closeCommands();
       if (
         policyDecisions.length === 0 &&
         effectReceipts.length === 0 &&
+        semanticReceipts.length === 0 &&
         observedUsage === undefined &&
         observedActivity === undefined &&
         capabilityEvidence === undefined
@@ -269,6 +337,7 @@ export class PiAgentExecutor implements AgentExecutor {
         Math.max(0, this.now() - startedAt),
         policyDecisions,
         effectReceipts,
+        semanticReceipts,
         observedUsage,
         observedActivity,
         observedCapabilityEvidence,
@@ -320,6 +389,7 @@ export class PiAgentExecutor implements AgentExecutor {
           protectedPaths: context.protectedPaths,
           effectRecorder,
           commandRecorder,
+          ...(semanticSession === undefined ? {} : { semanticSession }),
           ...(context.capabilitySnapshot === undefined || node.agent.skills.length === 0
             ? {}
             : {
@@ -346,6 +416,10 @@ export class PiAgentExecutor implements AgentExecutor {
                 { cause: error },
               );
             }
+          }
+          closeSemanticEvidence();
+          if (semanticEvidenceError !== undefined) {
+            throw semanticEvidenceError;
           }
           return result;
         });
@@ -497,6 +571,7 @@ export class PiAgentExecutor implements AgentExecutor {
       const normalized = normalizeAgentResult(result, maxOutputBytes);
       const policyDecisions = closePolicy();
       const effectReceipts = closeEffects();
+      const semanticReceipts = closeSemanticEvidence();
       closeCommands();
       const completedCapabilityEvidence =
         capabilityEvidence === undefined ? undefined : observedCapabilityEvidence;
@@ -512,6 +587,7 @@ export class PiAgentExecutor implements AgentExecutor {
         ...(observedActivity === undefined ? {} : { activity: observedActivity }),
         policyDecisions,
         effectReceipts,
+        ...(semanticReceipts.length === 0 ? {} : { semanticReceipts }),
         ...(completedCapabilityEvidence === undefined
           ? {}
           : { capabilities: completedCapabilityEvidence }),
@@ -548,6 +624,7 @@ export class PiAgentExecutor implements AgentExecutor {
           ),
           policyDecisions.length === 0 &&
             effectReceipts.length === 0 &&
+            semanticReceipts.length === 0 &&
             result.usage === undefined &&
             observedActivity === undefined &&
             completedCapabilityEvidence === undefined
@@ -558,6 +635,7 @@ export class PiAgentExecutor implements AgentExecutor {
                 Math.max(0, this.now() - startedAt),
                 policyDecisions,
                 effectReceipts,
+                semanticReceipts,
                 result.usage,
                 observedActivity,
                 completedCapabilityEvidence,
@@ -650,10 +728,14 @@ export class PiAgentExecutor implements AgentExecutor {
       return agentFailure(
         error instanceof PiCapabilityEvidenceError
           ? "pi_capability_evidence_invalid"
-          : "pi_agent_failed",
+          : error instanceof PiSemanticEvidenceError
+            ? "pi_semantic_evidence_invalid"
+            : "pi_agent_failed",
         error instanceof PiCapabilityEvidenceError
           ? boundedMessage(error.message)
-          : "agent provider execution failed",
+          : error instanceof PiSemanticEvidenceError
+            ? error.message
+            : "agent provider execution failed",
         currentSideEffectStatus(),
         policyFailureEvidence(),
       );
@@ -679,6 +761,14 @@ function providerStopMessage(stopReason: PiAgentRunResult["stopReason"]): string
 
 class PiCapabilityEvidenceError extends Error {
   override readonly name = "PiCapabilityEvidenceError";
+}
+
+class PiSemanticEvidenceError extends Error {
+  override readonly name = "PiSemanticEvidenceError";
+
+  constructor() {
+    super("semantic query evidence is invalid");
+  }
 }
 
 async function settlesAgentCleanupWithin(
@@ -758,6 +848,9 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
           ? {}
           : { commandRecorder: request.commandRecorder }),
         toolPackages: request.toolPackages ?? [],
+        ...(request.semanticSession === undefined
+          ? {}
+          : { semanticSession: request.semanticSession }),
         ...(capabilitySession === undefined ? {} : { capabilitySession }),
       },
     );
@@ -906,6 +999,8 @@ function policyActionsForTools(
         return "filesystem.write";
       case "exec":
         return "process.execute";
+      case "semantic":
+        return "filesystem.read";
       default:
         return assertNever(tool);
     }
@@ -926,6 +1021,7 @@ function emptyAgentEvidence(
   durationMs: number,
   policyDecisions: readonly PolicyDecision[],
   effectReceipts: readonly AgentEffectReceipt[],
+  semanticReceipts: readonly SemanticQueryReceipt[],
   usage?: AgentModelUsage,
   activity?: AgentActivity,
   capabilities?: AgentCapabilityEvidence,
@@ -942,8 +1038,30 @@ function emptyAgentEvidence(
     ...(activity === undefined ? {} : { activity }),
     policyDecisions,
     effectReceipts,
+    ...(semanticReceipts.length === 0 ? {} : { semanticReceipts }),
     ...(capabilities === undefined ? {} : { capabilities }),
   };
+}
+
+function validateSemanticReceipts(
+  receipts: readonly SemanticQueryReceipt[],
+  languageServerDigest: string | undefined,
+): readonly SemanticQueryReceipt[] {
+  if (receipts.length > MAX_SEMANTIC_QUERY_RECEIPTS) {
+    throw new PiSemanticEvidenceError();
+  }
+  return Object.freeze(
+    receipts.map((receipt, index) => {
+      if (
+        receipt.sequence !== index + 1 ||
+        languageServerDigest === undefined ||
+        receipt.languageServerDigest !== languageServerDigest
+      ) {
+        throw new PiSemanticEvidenceError();
+      }
+      return validateSemanticQueryReceipt(receipt);
+    }),
+  );
 }
 
 function normalizeAgentActivity(activity: AgentActivity | undefined): AgentActivity | undefined {

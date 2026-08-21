@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import {
   type AgentSkillPackageSnapshotInput,
+  calculateCapabilitySnapshotDigest,
   createCapabilitySnapshot,
+  validateCapabilitySnapshot,
 } from "../../../src/domain/capability/agent-skills.js";
+import { createLanguageServerSnapshot } from "../../../src/domain/capability/language-server.js";
 import type { VerifierPackageSnapshotInput } from "../../../src/domain/capability/verifier-packages.js";
-import type { WorkflowPackageSnapshotInput } from "../../../src/domain/capability/workflow-packages.js";
 import {
   bindWorkflowCapabilities,
   collectWorkflowAgentSkillNames,
@@ -14,6 +16,7 @@ import {
   resolveVerifierPackageNode,
   type WorkflowCapabilityError,
 } from "../../../src/domain/capability/workflow-capabilities.js";
+import type { WorkflowPackageSnapshotInput } from "../../../src/domain/capability/workflow-packages.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 
 describe("workflow capability binding", () => {
@@ -80,6 +83,39 @@ describe("workflow capability binding", () => {
     const workflow = skilledWorkflow([]);
 
     expect(bindWorkflowCapabilities(workflow)).toBeUndefined();
+  });
+
+  it("requires and binds one immutable language server for semantic access", () => {
+    const workflow = semanticWorkflow();
+    const languageServer = languageServerSnapshot();
+    const snapshot = validateCapabilitySnapshot({
+      version: 1,
+      packages: [],
+      languageServer,
+      digest: calculateCapabilitySnapshotDigest([], [], undefined, languageServer),
+    });
+
+    expect(() => bindWorkflowCapabilities(workflow)).toThrowError(
+      expect.objectContaining<Partial<WorkflowCapabilityError>>({ code: "missing_snapshot" }),
+    );
+    expect(bindWorkflowCapabilities(workflow, snapshot)).toEqual(snapshot);
+  });
+
+  it("rejects an unexpected language server for a workflow without semantic access", () => {
+    const workflow = skilledWorkflow([]);
+    const languageServer = languageServerSnapshot();
+    const snapshot = validateCapabilitySnapshot({
+      version: 1,
+      packages: [],
+      languageServer,
+      digest: calculateCapabilitySnapshotDigest([], [], undefined, languageServer),
+    });
+
+    expect(() => bindWorkflowCapabilities(workflow, snapshot)).toThrowError(
+      expect.objectContaining<Partial<WorkflowCapabilityError>>({
+        code: "unexpected_language_server",
+      }),
+    );
   });
 
   it("collects and digest-binds a packaged root to its immutable snapshot", () => {
@@ -372,6 +408,57 @@ function skilledWorkflow(skills: readonly string[]) {
 `,
     ),
   );
+}
+
+function semanticWorkflow() {
+  return compileWorkflowText(
+    workflowSource(
+      "semantic-binding",
+      `
+  - id: agent
+    type: agent
+    agent:
+      prompt: Analyze semantics.
+      model: { provider: anthropic, id: model }
+      tools: [read, semantic]
+  - id: verify
+    type: command
+    dependsOn: [agent]
+    command: { executable: node, args: [--version] }
+`,
+    ),
+  );
+}
+
+function languageServerSnapshot() {
+  const executableSha256 = "a".repeat(64);
+  const executable = "/opt/flow/bin/typescript-language-server";
+  return createLanguageServerSnapshot({
+    provenance: ".flow/language-servers/typescript.json",
+    manifest: Buffer.from(
+      JSON.stringify({
+        apiVersion: "flow.synapti.ai/v1alpha1",
+        kind: "LanguageServer",
+        metadata: { name: "typescript" },
+        spec: {
+          protocol: "lsp-3.18",
+          executable,
+          executableSha256,
+          args: ["--stdio"],
+          languages: [{ id: "typescript", suffixes: [".ts", ".tsx"] }],
+          containmentProfile: "default",
+          requestTimeoutMs: 5_000,
+        },
+      }),
+    ),
+    executable: {
+      path: executable,
+      sha256: executableSha256,
+      bytes: 123,
+      device: "1",
+      inode: "2",
+    },
+  });
 }
 
 function skill(name: string): AgentSkillPackageSnapshotInput {

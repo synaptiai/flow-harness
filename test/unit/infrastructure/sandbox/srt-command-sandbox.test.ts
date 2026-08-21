@@ -151,6 +151,21 @@ describe("SrtCommandSandbox", () => {
     await prepared.release();
   });
 
+  it("elides redundant nested write denies beneath a protected workspace", async () => {
+    const manager = new FakeSrtManager();
+    const sandbox = createSandbox(manager);
+
+    const prepared = await sandbox.prepare({
+      executable: "/usr/bin/node",
+      args: ["--version"],
+      cwd: workspace,
+      protectedPaths: [workspace],
+    });
+
+    expect(manager.initializedConfig?.filesystem.denyWrite).toEqual([workspace]);
+    await prepared.release();
+  });
+
   it("adds only a trusted canonical NODE_PATH to the safe environment", async () => {
     const manager = new FakeSrtManager();
     const sandbox = createSandbox(manager);

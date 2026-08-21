@@ -2,6 +2,7 @@ import type { CommandSandbox } from "../../application/command-sandbox.js";
 import { NodeExecutorRouter } from "../../application/node-executor-router.js";
 import type { NodeExecutor } from "../../application/ports.js";
 import type { FlowSandboxProfile } from "../../domain/config/resolver.js";
+import { createLocalSemanticToolSessionFactory } from "../lsp/local-semantic-code-service.js";
 import { PiAgentExecutor } from "../pi/pi-agent-executor.js";
 import { CommandNodeExecutor } from "../process/command-node-executor.js";
 import {
@@ -30,10 +31,17 @@ export function createProductionNodeExecutor(
   profile: FlowSandboxProfile = "native",
   projectRoot = process.cwd(),
 ): NodeExecutor {
+  const sandbox = createProductionCommandSandbox(profile, projectRoot);
   return new NodeExecutorRouter(
     new CommandNodeExecutor({
-      sandbox: createProductionCommandSandbox(profile, projectRoot),
+      sandbox,
     }),
-    new PiAgentExecutor(),
+    new PiAgentExecutor(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      createLocalSemanticToolSessionFactory(sandbox),
+    ),
   );
 }

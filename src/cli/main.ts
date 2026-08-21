@@ -224,6 +224,7 @@ import {
   verifierPackageVersionSchema,
 } from "../domain/capability/verifier-packages.js";
 import {
+  bindWorkflowCapabilities,
   collectWorkflowAgentSkillNames,
   collectWorkflowToolPackageReferences,
   collectWorkflowVerifierPackageReferences,
@@ -283,9 +284,9 @@ import {
 } from "../infrastructure/fs/evaluation-report-exporter.js";
 import {
   FlowConfigStoreError,
+  type InitializeCodingQuickstartProjectOptions,
   type InitializedCodingQuickstartProject,
   type InitializedFlowProject,
-  type InitializeCodingQuickstartProjectOptions,
   type InitializeFlowProjectOptions,
   initializeCodingQuickstartProject,
   initializeFlowProject,
@@ -353,6 +354,7 @@ import {
   LocalEvaluationStore,
   type StoredEvaluation,
 } from "../infrastructure/fs/local-evaluation-store.js";
+import { admitLocalLanguageServer } from "../infrastructure/fs/local-language-server.js";
 import {
   PolicyPackageCatalogError,
   type ProjectPolicyPackageCatalog,
@@ -536,8 +538,8 @@ Usage:
   flow eval export <evaluation-id> --output <path> [--evaluations-dir <path>]
   flow eval tuning-evidence <evaluation-id> --output <path> [--evaluations-dir <path>]
   flow runtime prepare prime-agent
-  flow validate <workflow.yaml|workflow:name@version|activation:workflow-id>
-  flow run <workflow.yaml|workflow:name@version|activation:workflow-id> [--detach] [--command-id <uuid>] [--run-id <id>] [--runs-dir <path>] [--cwd <path>]
+  flow validate <workflow.yaml|workflow:name@version|activation:workflow-id> [--language-server <manifest.json>]
+  flow run <workflow.yaml|workflow:name@version|activation:workflow-id> [--language-server <manifest.json>] [--detach] [--command-id <uuid>] [--run-id <id>] [--runs-dir <path>] [--cwd <path>]
   flow resume <workflow.yaml|workflow:name@version|activation:workflow-id> --run-id <id> [--detach] [--command-id <uuid>] [--runs-dir <path>] [--cwd <path>]
   flow approve <run-id> <request-id> --actor <label> [--runs-dir <path>]
   flow deny <run-id> <request-id> --actor <label> [--reason <text>] [--runs-dir <path>]
@@ -4901,7 +4903,10 @@ async function validateCommand(
   io: CliIo,
   overrides: Partial<CliDependencies>,
 ): Promise<number> {
-  const { positionals } = parseCommandArgs(args, {});
+  assertStringOptionAtMostOnce(args, "language-server");
+  const { positionals, values } = parseCommandArgs(args, {
+    "language-server": { type: "string" },
+  });
   const workflowArgument = requireSinglePositional(
     positionals,
     "validate requires one workflow path or exact workflow: locator",
@@ -4914,10 +4919,20 @@ async function validateCommand(
     config,
     admitted.capabilitySnapshot,
   );
-  const capabilitySnapshot = combineOptionalCapabilitySnapshots([
-    admitted.capabilitySnapshot,
-    supplementalSnapshot,
-  ]);
+  const languageServerSnapshot = await resolveSelectedLanguageServerCapability(
+    values["language-server"],
+    config,
+    dependencies.cwd,
+    dependencies.signal,
+  );
+  const capabilitySnapshot = bindWorkflowCapabilities(
+    admitted.workflow,
+    combineOptionalCapabilitySnapshots([
+      admitted.capabilitySnapshot,
+      supplementalSnapshot,
+      languageServerSnapshot,
+    ]),
+  );
   assertWorkflowSatisfiesPolicyPackages(admitted.workflow, capabilitySnapshot);
   const skillCount =
     capabilitySnapshot?.packages.filter((item) => item.kind === "agent-skill").length ?? 0;
@@ -4929,9 +4944,10 @@ async function validateCommand(
     capabilitySnapshot?.packages.filter((item) => item.kind === "workflow-package").length ?? 0;
   const policyPackageCount =
     capabilitySnapshot?.packages.filter((item) => item.kind === "policy-package").length ?? 0;
+  const languageServerCount = capabilitySnapshot?.languageServer === undefined ? 0 : 1;
 
   io.stdout(
-    `Workflow "${admitted.workflow.id}" is valid (nodes: ${admitted.workflow.nodes.length}, criteria: ${admitted.workflow.goal?.criteria.length ?? 0}, skills: ${skillCount}, verifier packages: ${verifierPackageCount}, tool packages: ${toolPackageCount}, workflow packages: ${workflowPackageCount}, policy packages: ${policyPackageCount}).`,
+    `Workflow "${admitted.workflow.id}" is valid (nodes: ${admitted.workflow.nodes.length}, criteria: ${admitted.workflow.goal?.criteria.length ?? 0}, skills: ${skillCount}, verifier packages: ${verifierPackageCount}, tool packages: ${toolPackageCount}, workflow packages: ${workflowPackageCount}, policy packages: ${policyPackageCount}, language servers: ${languageServerCount}).`,
   );
   return 0;
 }
@@ -4942,8 +4958,10 @@ async function runCommand(
   overrides: Partial<CliDependencies>,
 ): Promise<number> {
   const detached = extractBooleanFlag(args, "--detach");
+  assertStringOptionAtMostOnce(detached.args, "language-server");
   const { positionals, values } = parseCommandArgs(detached.args, {
     "command-id": { type: "string" },
+    "language-server": { type: "string" },
     "run-id": { type: "string" },
     "runs-dir": { type: "string" },
     cwd: { type: "string" },
@@ -4961,10 +4979,20 @@ async function runCommand(
     config,
     admitted.capabilitySnapshot,
   );
-  const capabilitySnapshot = combineOptionalCapabilitySnapshots([
-    admitted.capabilitySnapshot,
-    supplementalSnapshot,
-  ]);
+  const languageServerSnapshot = await resolveSelectedLanguageServerCapability(
+    values["language-server"],
+    config,
+    dependencies.cwd,
+    dependencies.signal,
+  );
+  const capabilitySnapshot = bindWorkflowCapabilities(
+    admitted.workflow,
+    combineOptionalCapabilitySnapshots([
+      admitted.capabilitySnapshot,
+      supplementalSnapshot,
+      languageServerSnapshot,
+    ]),
+  );
   assertWorkflowSatisfiesPolicyPackages(admitted.workflow, capabilitySnapshot);
   const runsDirectory = resolveRunsDirectory(dependencies.cwd, values["runs-dir"], config);
   const executionCwd = resolve(dependencies.cwd, values.cwd ?? ".");
@@ -6439,6 +6467,31 @@ function combineOptionalCapabilitySnapshots(
   return combineCapabilitySnapshots(
     snapshots.filter((snapshot): snapshot is CapabilitySnapshot => snapshot !== undefined),
   );
+}
+
+async function resolveSelectedLanguageServerCapability(
+  manifestPath: string | undefined,
+  config: EffectiveFlowConfig,
+  invocationRoot: string,
+  signal: AbortSignal | undefined,
+): Promise<CapabilitySnapshot | undefined> {
+  if (manifestPath === undefined) {
+    return undefined;
+  }
+  if (config.projectRoot === null) {
+    throw new CliUsageError("--language-server requires a Flow project root");
+  }
+  const languageServer = await admitLocalLanguageServer(
+    config.projectRoot,
+    resolve(invocationRoot, manifestPath),
+    signal === undefined ? {} : { signal },
+  );
+  return validateCapabilitySnapshot({
+    version: 1,
+    packages: [],
+    languageServer,
+    digest: calculateCapabilitySnapshotDigest([], [], undefined, languageServer),
+  });
 }
 
 function assertCurrentPolicyPackageSnapshot(
