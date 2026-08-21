@@ -150,17 +150,15 @@ _Recorded on 2026-08-21 from the settled Issue #143 tree._
   npx vitest run test/unit/application/environment-doctor.test.ts test/integration/cli/doctor.test.ts test/unit/cli/launcher.test.ts test/unit/infrastructure/pi/pi-environment-doctor.test.ts test/unit/infrastructure/runtime/production-environment-doctor.test.ts test/unit/infrastructure/oci/prime-environment-doctor.test.ts test/scaffold/package.test.ts test/integration/package/documentation-structure.test.ts test/integration/package/architecture-documentation.test.ts test/scaffold/community-files.test.ts
   ```
 
-- The complete serial selector passed 4,653 tests and skipped the four platform-dependent tests:
+- The complete native Linux coverage selector passed 4,659 tests across 341 files:
 
   ```text
-  npx vitest run --no-file-parallelism --maxWorkers=1
+  npm run test:coverage
   ```
 
-- Coverage passed the same 4,653 tests. It reached 84.78% statements, 79.41% branches, 91.40%
-  functions, and 84.93% lines.
+- Coverage reached 85.13% statements, 79.82% branches, 91.77% functions, and 85.28% lines.
 
-- Browser tests passed 2 tests. Runtime verification passed 43 tests and skipped 34 platform-gated
-  tests.
+- Browser tests passed 2 tests. Native Linux runtime verification passed all 77 tests.
 
 - The compiled smoke test and build passed. Documentation and packed-install checks passed. Prime
   and production dependency audits passed.
