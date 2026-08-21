@@ -9,6 +9,9 @@ Every release must satisfy these requirements:
 
 - Build one npm archive from a clean `main` revision that has successful CI.
 
+- Publish the reviewed `npm-shrinkwrap.json` and verify the dependency closure that npm resolves
+  from it on both release-qualified hosts.
+
 - Verify the same archive on Ubuntu 24.04 x64 and macOS 15 Intel.
 
 - Generate GitHub build provenance for the archive and its release-evidence document.
@@ -46,9 +49,10 @@ The workflow performs these actions:
 
 1. Requires successful `CI` for the same revision.
 2. Builds `release/package/synaptiai-flow-harness-0.1.0-alpha.1.tgz` once.
-3. Records its source revision, SHA-512 digest, installed paths, modes, and byte counts in
+3. Records its source revision, SHA-512 digest, archive paths, modes, and byte counts in
    `package-release-evidence.json`.
-4. Verifies the downloaded artifact and a clean installation on both supported x64 hosts.
+4. Verifies the published shrinkwrap, downloaded artifact, and clean installation on both
+   supported x64 hosts.
 5. Produces SLSA build provenance with GitHub's short-lived OpenID Connect identity.
 
 Review every job before you authorize publication. A green workflow proves the tested artifact and

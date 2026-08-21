@@ -17,6 +17,7 @@ const ROOT_PACKAGE_FILES = new Set([
   "SECURITY.md",
   "SUPPORT.md",
   "THIRD_PARTY_NOTICES.md",
+  "npm-shrinkwrap.json",
   "package.json",
 ]);
 const PACKAGE_DIRECTORY_PREFIXES = ["dist/", "docs/", "examples/", "prime-container/"] as const;

@@ -40,7 +40,7 @@ describe("package release command", () => {
 
     expect(result.settlement).toBe("created");
     expect(await readFile(result.archivePath)).toEqual(archive);
-    expect(execute).toHaveBeenCalledTimes(3);
+    expect(execute).toHaveBeenCalledTimes(5);
     const [command, args, options] =
       execute.mock.calls.find(([calledCommand]) => calledCommand === "npm") ?? [];
     expect(command).toBe("npm");
@@ -148,6 +148,42 @@ describe("package release command", () => {
     );
     expect(execute.mock.calls.some(([command]) => command === "npm")).toBe(false);
   });
+
+  it.each([
+    ["the revision changes", `${"f".repeat(40)}\n`, ""],
+    ["the source becomes dirty", `${"e".repeat(40)}\n`, "?? PRIVATE_AFTER_PACK\n"],
+  ])(
+    "rejects when %s after npm pack and before publication",
+    async (_label, finalHead, finalStatus) => {
+      const repositoryRoot = await temporaryRoot();
+      const archive = Buffer.from("exact preview archive");
+      let sourceInspection = 0;
+      const execute = vi.fn<Execute>(async (command, args) => {
+        if (command === "git" && args[0] === "rev-parse") {
+          sourceInspection += 1;
+          return { stdout: sourceInspection === 1 ? `${"e".repeat(40)}\n` : finalHead };
+        }
+        if (command === "git" && args[0] === "status") {
+          return { stdout: sourceInspection === 1 ? "" : finalStatus };
+        }
+        const destination = args.at(-1);
+        if (destination === undefined) throw new Error("missing pack destination");
+        await writeFile(join(destination, "synaptiai-flow-harness-0.1.0-alpha.1.tgz"), archive);
+        return { stdout: JSON.stringify([packReportFixture(archive)]) };
+      });
+
+      await expectCommandError(
+        () =>
+          runPackageReleaseCommand(["--output", "release/package", "--revision", "e".repeat(40)], {
+            execute,
+            repositoryRoot,
+          }),
+        "inspect release source",
+      );
+      expect(execute.mock.calls.filter(([command]) => command === "npm")).toHaveLength(1);
+      expect(await readdir(repositoryRoot)).toEqual([]);
+    },
+  );
 });
 
 interface ExecuteOptions {
@@ -183,9 +219,10 @@ function packReportFixture(archive: Buffer): object {
     { path: "SECURITY.md", size: 3, mode: 0o644 },
     { path: "SUPPORT.md", size: 4, mode: 0o644 },
     { path: "THIRD_PARTY_NOTICES.md", size: 5, mode: 0o644 },
-    { path: "dist/cli/launcher.js", size: 6, mode: 0o644 },
-    { path: "examples/verify-foundation.workflow.yaml", size: 7, mode: 0o644 },
-    { path: "package.json", size: 8, mode: 0o644 },
+    { path: "npm-shrinkwrap.json", size: 6, mode: 0o644 },
+    { path: "dist/cli/launcher.js", size: 7, mode: 0o644 },
+    { path: "examples/verify-foundation.workflow.yaml", size: 8, mode: 0o644 },
+    { path: "package.json", size: 9, mode: 0o644 },
   ];
   return {
     id: "@synaptiai/flow-harness@0.1.0-alpha.1",

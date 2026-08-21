@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -106,6 +106,7 @@ describe("package release verification", () => {
         await symlink("README.md", join(root, "LICENSE"));
       },
     ],
+    ["a changed file mode", async (root: string) => chmod(join(root, "README.md"), 0o600)],
   ] as const)("rejects an installed tree with %s", async (_label, mutate) => {
     const root = await temporaryRoot();
     const fixture = evidenceFixture(Buffer.from("exact preview archive"));
@@ -153,6 +154,7 @@ function evidenceFixture(
     ["SECURITY.md", Buffer.from("security")],
     ["SUPPORT.md", Buffer.from("support")],
     ["THIRD_PARTY_NOTICES.md", Buffer.from("notices")],
+    ["npm-shrinkwrap.json", Buffer.from("shrinkwrap")],
     ["dist/cli/launcher.js", Buffer.from("launcher")],
     ["examples/verify-foundation.workflow.yaml", Buffer.from("workflow")],
     ["package.json", Buffer.from(JSON.stringify(manifest))],
@@ -213,6 +215,7 @@ async function writeInstalledFixture(
     await mkdir(dirname(target), { recursive: true });
     await writeFile(target, content);
   }
+  await chmod(join(root, "dist", "cli", "launcher.js"), 0o777 & ~process.umask());
 }
 
 async function temporaryRoot(): Promise<string> {

@@ -185,9 +185,10 @@ function evidenceFixture(): PackageReleaseEvidenceInput {
     { path: "SECURITY.md", bytes: 3, mode: 0o644 },
     { path: "SUPPORT.md", bytes: 4, mode: 0o644 },
     { path: "THIRD_PARTY_NOTICES.md", bytes: 5, mode: 0o644 },
-    { path: "dist/cli/launcher.js", bytes: 6, mode: 0o644 },
-    { path: "examples/verify-foundation.workflow.yaml", bytes: 7, mode: 0o644 },
-    { path: "package.json", bytes: 8, mode: 0o644 },
+    { path: "npm-shrinkwrap.json", bytes: 6, mode: 0o644 },
+    { path: "dist/cli/launcher.js", bytes: 7, mode: 0o644 },
+    { path: "examples/verify-foundation.workflow.yaml", bytes: 8, mode: 0o644 },
+    { path: "package.json", bytes: 9, mode: 0o644 },
   ]);
   return {
     apiVersion: "flow.synapti.ai/v1alpha1",

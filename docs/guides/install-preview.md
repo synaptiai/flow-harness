@@ -13,7 +13,7 @@ Install these prerequisites:
 
 - Node.js 26.7.0 or newer.
 - npm with global package support.
-- GitHub CLI 2.49.0 or newer if you want to verify provenance.
+- GitHub CLI 2.93.0 or newer if you want to verify release integrity and provenance.
 - An x64 Linux or macOS host for a release-qualified installation.
 
 The release workflow verifies the same archive on GitHub-hosted Ubuntu 24.04 x64 and macOS 15
@@ -33,11 +33,19 @@ gh release download v0.1.0-alpha.1 \
   --pattern 'flow-harness-0.1.0-alpha.1.intoto.jsonl'
 ```
 
-Verify that the archive belongs to the immutable GitHub release:
+Verify the immutable release and each downloaded asset:
 
 ```sh
+gh release verify v0.1.0-alpha.1 \
+  --repo synaptiai/flow-harness
 gh release verify-asset v0.1.0-alpha.1 \
   "$release_dir/synaptiai-flow-harness-0.1.0-alpha.1.tgz" \
+  --repo synaptiai/flow-harness
+gh release verify-asset v0.1.0-alpha.1 \
+  "$release_dir/package-release-evidence.json" \
+  --repo synaptiai/flow-harness
+gh release verify-asset v0.1.0-alpha.1 \
+  "$release_dir/flow-harness-0.1.0-alpha.1.intoto.jsonl" \
   --repo synaptiai/flow-harness
 ```
 
@@ -46,13 +54,18 @@ Verify the archive's build provenance and require the reviewed release workflow:
 ```sh
 gh attestation verify \
   "$release_dir/synaptiai-flow-harness-0.1.0-alpha.1.tgz" \
+  --bundle "$release_dir/flow-harness-0.1.0-alpha.1.intoto.jsonl" \
   --repo synaptiai/flow-harness \
   --signer-workflow synaptiai/flow-harness/.github/workflows/preview-release.yml
 ```
 
-Both commands must succeed. The release verification binds the immutable tag and assets. The
-artifact attestation binds the archive to the source revision and workflow that built it. Neither
-check proves that the software is safe for your workload.
+All commands must succeed. The release verification binds the immutable tag and downloaded assets.
+The artifact attestation binds the archive to the source revision and workflow that built it.
+Neither check proves that the software is safe for your workload.
+
+npm fetches Flow's dependencies from the registry during installation. The release archive
+contains the reviewed shrinkwrap, and the release workflow tests a clean resolution on both
+release-qualified hosts. The archive verification doesn't authenticate a later registry response.
 
 ## Install the verified archive
 
@@ -123,8 +136,9 @@ automatic migration between prerelease storage formats.
 
 Use these checks before you report a problem:
 
-- If `flow` isn't found, inspect the global executable directory with `npm bin --global` or your
-  npm installation documentation, and add that directory to `PATH`.
+- If `flow` isn't found on Linux or macOS, run `npm prefix --global`, append `/bin` to the returned
+  path, and confirm that directory is in `PATH`. For other npm layouts, follow the npm installation
+  documentation for global executables.
 
 - If Flow rejects Node.js, run `node --version`. Version 26.7.0 is the minimum.
 

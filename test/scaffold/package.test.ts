@@ -47,6 +47,7 @@ describe("package contract", () => {
     expect(manifest.engines?.node).toBe(">=26.7.0");
     expect(manifest.os).toEqual(["darwin", "linux"]);
     expect(manifest.files).toContain("THIRD_PARTY_NOTICES.md");
+    expect(manifest.files).toContain("npm-shrinkwrap.json");
     expect(manifest.files).toContain("SECURITY.md");
     expect(manifest.files).toContain("SUPPORT.md");
     expect(manifest.dependencies?.["@earendil-works/pi-coding-agent"]).toBe("0.84.0");
@@ -61,6 +62,35 @@ describe("package contract", () => {
       "npm run build && node scripts/build-package-release.mjs",
     );
     expect(manifest.scripts?.["release:verify"]).toBe("node scripts/verify-package.mjs --release");
+    for (const lifecycle of [
+      "preinstall",
+      "install",
+      "postinstall",
+      "prepare",
+      "prepack",
+      "postpack",
+    ]) {
+      expect(manifest.scripts?.[lifecycle]).toBeUndefined();
+    }
+  });
+
+  it("publishes one exact production dependency tree for the CLI application", async () => {
+    const shrinkwrap = JSON.parse(
+      await readFile(new URL("../../npm-shrinkwrap.json", import.meta.url), "utf8"),
+    ) as {
+      readonly name?: string;
+      readonly version?: string;
+      readonly lockfileVersion?: number;
+      readonly packages?: Readonly<Record<string, { readonly dev?: boolean }>>;
+    };
+
+    expect(shrinkwrap).toMatchObject({
+      name: "@synaptiai/flow-harness",
+      version: "0.1.0-alpha.1",
+      lockfileVersion: 3,
+    });
+    expect(shrinkwrap.packages?.[""]?.dev).not.toBe(true);
+    expect(shrinkwrap.packages?.["node_modules/zod"]?.dev).not.toBe(true);
   });
 
   it("keeps the host Node baseline consistent across CI and public prerequisites", async () => {

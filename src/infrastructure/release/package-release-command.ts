@@ -65,27 +65,9 @@ export async function runPackageReleaseCommand(
     timeout: PACKAGE_RELEASE_COMMAND_TIMEOUT_MS,
   } satisfies PackageReleaseCommandExecuteOptions;
 
-  try {
-    dependencies.signal?.throwIfAborted();
-    const head = await execute("git", ["rev-parse", "HEAD"], baseOptions);
-    dependencies.signal?.throwIfAborted();
-    if (head.stdout.trim() !== parsed.sourceRevision) {
-      throw new PackageReleaseCommandError("inspect release source");
-    }
-    const status = await execute(
-      "git",
-      ["status", "--porcelain=v1", "--untracked-files=all"],
-      baseOptions,
-    );
-    dependencies.signal?.throwIfAborted();
-    if (status.stdout.length !== 0) {
-      throw new PackageReleaseCommandError("inspect release source");
-    }
-  } catch (error) {
-    if (error instanceof PackageReleaseCommandError) throw error;
-    throw new PackageReleaseCommandError("inspect release source");
-  }
+  await assertCleanReleaseSource(parsed.sourceRevision, execute, baseOptions, dependencies.signal);
 
+  let sourceInspectionError: PackageReleaseCommandError | undefined;
   try {
     return await buildLocalPackageRelease(
       {
@@ -96,9 +78,32 @@ export async function runPackageReleaseCommand(
       {
         buildArchive: async () =>
           await buildArchiveFromNpm(repositoryRoot, execute, dependencies.signal),
+        beforeCommit: async () => {
+          try {
+            await assertCleanReleaseSource(
+              parsed.sourceRevision,
+              execute,
+              baseOptions,
+              dependencies.signal,
+            );
+          } catch (error) {
+            sourceInspectionError =
+              error instanceof PackageReleaseCommandError
+                ? error
+                : new PackageReleaseCommandError("inspect release source");
+            throw sourceInspectionError;
+          }
+        },
       },
     );
   } catch (error) {
+    if (
+      sourceInspectionError !== undefined &&
+      error instanceof LocalPackageReleaseBuilderError &&
+      error.stage === "publish package artifact"
+    ) {
+      throw sourceInspectionError;
+    }
     if (error instanceof LocalPackageReleaseBuilderError) {
       throw new PackageReleaseCommandError(error.stage);
     }
@@ -106,6 +111,34 @@ export async function runPackageReleaseCommand(
       throw error;
     }
     throw new PackageReleaseCommandError("build package artifact");
+  }
+}
+
+async function assertCleanReleaseSource(
+  expectedRevision: string,
+  execute: PackageReleaseCommandExecute,
+  options: PackageReleaseCommandExecuteOptions,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  try {
+    signal?.throwIfAborted();
+    const head = await execute("git", ["rev-parse", "HEAD"], options);
+    signal?.throwIfAborted();
+    if (head.stdout.trim() !== expectedRevision) {
+      throw new PackageReleaseCommandError("inspect release source");
+    }
+    const status = await execute(
+      "git",
+      ["status", "--porcelain=v1", "--untracked-files=all"],
+      options,
+    );
+    signal?.throwIfAborted();
+    if (status.stdout.length !== 0) {
+      throw new PackageReleaseCommandError("inspect release source");
+    }
+  } catch (error) {
+    if (error instanceof PackageReleaseCommandError) throw error;
+    throw new PackageReleaseCommandError("inspect release source");
   }
 }
 

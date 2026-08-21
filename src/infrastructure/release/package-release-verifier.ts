@@ -32,6 +32,11 @@ export interface VerifyPackageReleaseArtifactInput {
   readonly expectedSourceRevision: string;
 }
 
+interface InstalledFileObservation {
+  readonly bytes: number;
+  readonly mode: number;
+}
+
 export function verifyPackageReleaseArtifact(
   input: VerifyPackageReleaseArtifactInput,
 ): PackageReleaseEvidence {
@@ -60,14 +65,22 @@ export async function verifyInstalledPackageRelease(
   evidence: PackageReleaseEvidence,
 ): Promise<void> {
   try {
-    const expectedFiles = new Map(evidence.files.map((file) => [file.path, file.bytes]));
+    const expectedFiles = new Map(
+      evidence.files.map((file) => [
+        file.path,
+        {
+          bytes: file.bytes,
+          mode: file.path === "dist/cli/launcher.js" ? 0o777 & ~process.umask() : file.mode,
+        },
+      ]),
+    );
     const expectedDirectories = expectedDirectoryPaths(evidence);
-    const observedFiles = new Map<string, number>();
+    const observedFiles = new Map<string, InstalledFileObservation>();
     const observedDirectories = new Set<string>();
     const state = { entries: 0 };
     await collectInstalledTree(packageRoot, "", 1, observedFiles, observedDirectories, state);
     if (
-      !mapsEqual(expectedFiles, observedFiles) ||
+      !fileMapsEqual(expectedFiles, observedFiles) ||
       !setsEqual(expectedDirectories, observedDirectories)
     ) {
       throw new Error("installed package tree does not match the release manifest");
@@ -98,7 +111,7 @@ async function collectInstalledTree(
   directory: string,
   relativeDirectory: string,
   depth: number,
-  files: Map<string, number>,
+  files: Map<string, InstalledFileObservation>,
   directories: Set<string>,
   state: { entries: number },
 ): Promise<void> {
@@ -138,7 +151,7 @@ async function collectInstalledTree(
   }
 }
 
-async function observeRegularFile(path: string): Promise<number> {
+async function observeRegularFile(path: string): Promise<InstalledFileObservation> {
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const before = await handle.stat({ bigint: true });
@@ -149,7 +162,7 @@ async function observeRegularFile(path: string): Promise<number> {
     if (!sameObservation(before, after)) {
       throw new Error("installed package file changed during verification");
     }
-    return Number(before.size);
+    return { bytes: Number(before.size), mode: Number(before.mode & 0o777n) };
   } finally {
     await handle.close();
   }
@@ -214,8 +227,17 @@ function isExactObject(value: unknown, expected: Readonly<Record<string, string>
   );
 }
 
-function mapsEqual(left: ReadonlyMap<string, number>, right: ReadonlyMap<string, number>): boolean {
-  return left.size === right.size && [...left].every(([key, value]) => right.get(key) === value);
+function fileMapsEqual(
+  left: ReadonlyMap<string, InstalledFileObservation>,
+  right: ReadonlyMap<string, InstalledFileObservation>,
+): boolean {
+  return (
+    left.size === right.size &&
+    [...left].every(([key, value]) => {
+      const observed = right.get(key);
+      return observed?.bytes === value.bytes && observed.mode === value.mode;
+    })
+  );
 }
 
 function setsEqual(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {

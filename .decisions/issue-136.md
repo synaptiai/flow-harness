@@ -17,6 +17,10 @@ authority and cross-platform evidence. It does not redesign the harness runtime.
 
 - npm prereleases must use an explicit distribution tag to avoid changing `latest`.
 
+- npm excludes `package-lock.json` from published packages. `npm-shrinkwrap.json` is the
+  publishable lock intended for deployed command-line applications. A clean consumer test remains
+  necessary because npm and registry behavior are outside the archive's byte identity.
+
 - GitHub immutable releases bind the tag and attached assets after publication. GitHub recommends
   attaching every asset to a draft before publishing it.
 
@@ -30,6 +34,7 @@ Primary sources:
 - [npm trusted publishers](https://docs.npmjs.com/trusted-publishers/)
 - [npm staged publishing](https://docs.npmjs.com/staged-publishing/)
 - [npm distribution tags](https://docs.npmjs.com/adding-dist-tags-to-packages/)
+- [npm shrinkwrap](https://docs.npmjs.com/cli/v11/commands/npm-shrinkwrap/)
 - [GitHub immutable releases](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases)
 - [GitHub artifact attestations](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations)
 - [Node.js releases](https://nodejs.org/en/about/previous-releases)
@@ -99,7 +104,9 @@ the approved exact-artifact bridge._
   only the public requirement and exits nonzero without project mutation.
 
 - One release identity binds one semantic prerelease version and one source revision. It also binds
-  one installed-file manifest, archive digest, and provenance statement.
+  one installed-file manifest, one published dependency resolution, archive digest, and provenance
+  statement. Hosted verification records the npm closure resolved at publication time. The archive
+  doesn't make later registry responses immutable.
 
 - Linux and macOS verify the same archive bytes. Publication consumes those bytes rather than
   rebuilding them.
@@ -139,11 +146,11 @@ success.
 
 Local verification on 2026-08-21 produced these results:
 
-- `npm run check` passed 4,615 default tests with four skips. It also passed 43 compiled-process
+- `npm run check` passed 4,619 default tests with four skips. It also passed 43 compiled-process
   runtime tests with 34 platform skips.
 
-- `npm run test:coverage` passed the same 4,615 tests. Coverage was 84.75% statements, 79.37%
-  branches, 91.41% functions, and 84.89% lines.
+- `npm run test:coverage` passed the same 4,619 tests. Coverage was 84.76% statements, 79.38%
+  branches, 91.41% functions, and 84.90% lines.
 
 - `npm run test:browser` passed two real-browser tests.
 

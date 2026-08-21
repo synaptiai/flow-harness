@@ -21,9 +21,11 @@ npm run pack:check
 ```
 
 This command rebuilds the current checkout and creates an ephemeral archive. It installs the
-archive into a clean temporary consumer with lifecycle scripts disabled. It then runs the installed
-CLI, initializes a project, and exercises the credential-free workflow and presentation paths. It
-doesn't create publication authority.
+archive into a clean temporary consumer with lifecycle scripts disabled. The archive includes the
+reviewed `npm-shrinkwrap.json`, and the clean install tests the production dependency closure that
+npm resolves at that time. The check then runs the installed CLI, initializes a project, and
+exercises the credential-free workflow and presentation paths. It doesn't create publication
+authority.
 
 To prepare a settled release directory from a clean revision, use:
 
@@ -32,9 +34,10 @@ npm run release:prepare
 ```
 
 `release/package/` contains one npm archive and `package-release-evidence.json`. The evidence binds
-the source revision, package version, SHA-512 archive digest, and exact installed-file paths, modes,
-and byte counts. A second preparation of the same identity returns the current artifact. A conflict
-or uncertain settlement fails without replacing it.
+the source revision, package version, SHA-512 archive digest, and exact archive paths, modes, and
+byte counts. Installation verification checks the resulting tree, including npm's executable-mode
+normalization for the `flow` launcher. A second preparation of the same identity returns the
+current artifact. A conflict or uncertain settlement fails without replacing it.
 
 To consume only that settled directory and verify a clean installation, use:
 

@@ -73,7 +73,9 @@ This path installs the versioned preview and completes one credential-free run.
 - npm with global package support
 - x64 Linux or macOS for a release-qualified host
 
-Install the immutable GitHub release without package lifecycle scripts:
+Before installation, follow [Install the Flow preview](docs/guides/install-preview.md) to verify the
+immutable release and its build provenance. Then install the same archive without package
+lifecycle scripts:
 
 ```sh
 npm install --global --ignore-scripts \
@@ -105,10 +107,8 @@ evidence accepts the declared goal criterion.
 
 Flow stores authoritative events in `.flow/runs/first-run/events.jsonl`.
 
-Before installation, follow [Install the Flow preview](docs/guides/install-preview.md) to verify the
-immutable release and its build provenance. Continue with
-[Getting started](docs/getting-started.md) for explanations, troubleshooting, and reader-specific
-next steps.
+Continue with [Getting started](docs/getting-started.md) for explanations, troubleshooting, and
+reader-specific next steps.
 
 ## Security
 

@@ -29,6 +29,7 @@ describe("public repository contracts", () => {
     expect(verifier).toContain("verifyPackageReleaseArtifact");
     expect(verifier).toContain("verifyInstalledPackageRelease");
     expect(verifier).toContain("verify-installation.workflow.yaml");
+    expect(verifier).toContain('"--ignore-scripts"');
   });
 
   it("documents an honest installable alpha first run", async () => {
@@ -52,12 +53,23 @@ describe("public repository contracts", () => {
     expect(readme).toContain("[Security policy](SECURITY.md)");
 
     expect(installGuide).toContain("gh release verify-asset");
+    expect(installGuide).toContain("gh release verify v0.1.0-alpha.1");
     expect(installGuide).toContain("gh attestation verify");
+    expect(installGuide).toContain(
+      '--bundle "$release_dir/flow-harness-0.1.0-alpha.1.intoto.jsonl"',
+    );
+    expect(installGuide).toContain("GitHub CLI 2.93.0 or newer");
+    expect(installGuide).toContain("npm prefix --global");
+    expect(installGuide).not.toContain("npm bin --global");
     expect(installGuide).toContain("@synaptiai/flow-harness@preview");
     expect(installGuide).toContain("`preview` tag is separate from `latest`");
     expect(releaseNotes).toContain("Ubuntu 24.04 x64");
     expect(releaseNotes).toContain("macOS 15 Intel");
     expect(releaseNotes).toContain("doesn't assign `latest`");
+    expect(releaseNotes).toContain(
+      "https://github.com/synaptiai/flow-harness/blob/v0.1.0-alpha.1/docs/guides/install-preview.md",
+    );
+    expect(releaseNotes).not.toMatch(/\]\(\.\.\//);
   });
 
   it("routes preview release details to canonical documentation owners", async () => {

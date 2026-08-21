@@ -33,11 +33,13 @@ describe("package release artifact preparation", () => {
         entryCount: report.entryCount,
         sha512: createHash("sha512").update(archive).digest("hex"),
       },
-      files: report.files.map((file) => ({
-        path: file.path,
-        bytes: file.size,
-        mode: file.mode,
-      })),
+      files: [...report.files]
+        .sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0))
+        .map((file) => ({
+          path: file.path,
+          bytes: file.size,
+          mode: file.mode,
+        })),
     });
   });
 
@@ -138,9 +140,10 @@ function packReportFixture(archive: Buffer): PackReport {
     { path: "SECURITY.md", size: 3, mode: 0o644 },
     { path: "SUPPORT.md", size: 4, mode: 0o644 },
     { path: "THIRD_PARTY_NOTICES.md", size: 5, mode: 0o644 },
-    { path: "dist/cli/launcher.js", size: 6, mode: 0o644 },
-    { path: "examples/verify-foundation.workflow.yaml", size: 7, mode: 0o644 },
-    { path: "package.json", size: 8, mode: 0o644 },
+    { path: "npm-shrinkwrap.json", size: 6, mode: 0o644 },
+    { path: "dist/cli/launcher.js", size: 7, mode: 0o644 },
+    { path: "examples/verify-foundation.workflow.yaml", size: 8, mode: 0o644 },
+    { path: "package.json", size: 9, mode: 0o644 },
   ];
   return {
     id: "@synaptiai/flow-harness@0.1.0-alpha.1",
