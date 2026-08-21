@@ -16,14 +16,17 @@ Requirements:
 ### Ubuntu 24.04 sandbox prerequisite
 
 Flow uses Sandbox Runtime for native command isolation. On Ubuntu 24.04, its bubblewrap backend
-requires unprivileged user namespaces. The release workflow verifies this host setting:
+requires Bubblewrap and unprivileged user namespaces. Prepare the host before the first run:
 
 ```sh
+sudo apt-get update
+sudo apt-get install --yes bubblewrap
 sudo sysctl --write kernel.apparmor_restrict_unprivileged_userns=0
 ```
 
-This setting changes the host security posture. Apply it only to a reviewed development or CI host.
-Use a stronger container, microVM, or managed sandbox boundary for hostile workloads.
+The release workflow verifies both requirements. The namespace setting changes the host security
+posture. Apply it only to a reviewed development or CI host. Use a stronger container, microVM, or
+managed sandbox boundary for hostile workloads. Flow fails closed when the sandbox is unavailable.
 
 The first run does not need model credentials, Docker, Bun, or the Prime runtime.
 

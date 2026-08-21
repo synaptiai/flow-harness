@@ -100,6 +100,13 @@ jobs:
           node-version: 26.7.0
           cache: npm
 
+      - name: Install Ubuntu sandbox prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap
+          sudo sysctl --write kernel.apparmor_restrict_unprivileged_userns=0
+
       - name: Install exact dependencies
         run: npm ci --ignore-scripts
 
