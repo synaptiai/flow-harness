@@ -10,9 +10,9 @@ could not find a trusted Bubblewrap executable. The run failed before attestatio
 
 ## Decision
 
-Prepare the supported Ubuntu verification host with the same native-sandbox prerequisite that
-public guidance requires. Keep the credential-free workflow sandboxed and keep both platform jobs
-as prerequisites for attestation and publication.
+Prepare the supported Ubuntu verification host with the complete native-sandbox dependency set
+that main CI and public guidance require. Keep the credential-free workflow sandboxed and keep both
+platform jobs as prerequisites for attestation and publication.
 
 ## Acceptance verification map
 
@@ -24,8 +24,15 @@ as prerequisites for attestation and publication.
 
 ## Evidence
 
+### Local
+
 - `npx vitest run test/scaffold/preview-release-workflow.test.ts test/scaffold/community-files.test.ts test/integration/package/documentation-structure.test.ts test/scaffold/package.test.ts`: 42 tests passed across 4 files.
 - `npm run docs:style && npm run docs:links && npm run docs:ste`: passed.
 - `npm run check`: The command passed 4,619 tests with 4 skips, completed the build, and passed 43 runtime tests with 34 skips.
 - `git diff --check`: passed.
-- Hosted Ubuntu 24.04 x64 and macOS 15 Intel verification remains pending until the change merges.
+
+### Hosted
+
+- Hosted run 32441035269 passed macOS 15 Intel and the Ubuntu host-preparation step. Ubuntu then
+  failed closed because the incomplete preview dependency set omitted required sandbox helpers.
+- Hosted Ubuntu 24.04 x64 and macOS 15 Intel verification remains pending for the complete set.

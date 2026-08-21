@@ -15,19 +15,20 @@ Install these prerequisites:
 - npm with global package support.
 - GitHub CLI 2.93.0 or newer if you want to verify release integrity and provenance.
 - An x64 Linux or macOS host for a release-qualified installation.
-- Bubblewrap and unprivileged user namespaces on Ubuntu 24.04.
+- Bubblewrap, CA certificates, curl, ripgrep, socat, util-linux, and unprivileged user namespaces on Ubuntu 24.04.
 
 The release workflow verifies the same archive on GitHub-hosted Ubuntu 24.04 x64 and macOS 15
 Intel runners. Other Linux and macOS architectures aren't release-qualified in this version.
 
 ## Prepare an Ubuntu 24.04 host
 
-Flow's default native sandbox uses Bubblewrap on Linux. Install Bubblewrap and enable unprivileged
-user namespaces before you run the credential-free workflow:
+Flow's default native sandbox uses Bubblewrap and supporting system tools on Linux. Install the
+complete dependency set and enable unprivileged user namespaces before you run the credential-free
+workflow:
 
 ```sh
 sudo apt-get update
-sudo apt-get install --yes bubblewrap
+sudo apt-get install --yes bubblewrap ca-certificates curl ripgrep socat util-linux
 sudo sysctl --write kernel.apparmor_restrict_unprivileged_userns=0
 ```
 

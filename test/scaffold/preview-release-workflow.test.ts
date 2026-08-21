@@ -62,7 +62,9 @@ describe("preview release workflow", () => {
     expect(workflow.jobs.verify.steps[2]).toMatchObject({
       if: "runner.os == 'Linux'",
     });
-    expect(workflow.jobs.verify.steps[2]?.run).toContain("sudo apt-get install --yes bubblewrap");
+    expect(workflow.jobs.verify.steps[2]?.run).toContain(
+      "sudo apt-get install --yes bubblewrap ca-certificates curl ripgrep socat util-linux",
+    );
     expect(workflow.jobs.verify.steps[2]?.run).toContain(
       "sudo sysctl --write kernel.apparmor_restrict_unprivileged_userns=0",
     );
