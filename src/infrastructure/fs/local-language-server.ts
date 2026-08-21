@@ -281,12 +281,16 @@ async function revalidateFile(
     throw new LocalLanguageServerError("source_changed");
   }
   if (
-    !sameIdentity(expected, current) ||
+    !(directory ? sameDirectoryIdentity(expected, current) : sameIdentity(expected, current)) ||
     current.isSymbolicLink() ||
     (directory ? !current.isDirectory() : !current.isFile())
   ) {
     throw new LocalLanguageServerError("source_changed");
   }
+}
+
+function sameDirectoryIdentity(left: BigIntStats, right: BigIntStats): boolean {
+  return left.dev === right.dev && left.ino === right.ino && left.mode === right.mode;
 }
 
 function sameIdentity(left: BigIntStats, right: BigIntStats): boolean {
