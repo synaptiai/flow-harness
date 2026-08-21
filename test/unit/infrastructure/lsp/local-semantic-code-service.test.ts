@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -74,7 +74,10 @@ describe("local semantic code service", () => {
         await writeFile(join(project, "example.ts"), "const value = 2;\n");
       },
     };
-    const session = createLocalSemanticToolSessionFactory(sandbox, options)({
+    const session = createLocalSemanticToolSessionFactory(
+      sandbox,
+      options,
+    )({
       context: executionContext(project),
       languageServer,
     });
@@ -132,6 +135,7 @@ async function fakeLanguageServer() {
   await chmod(fixtureExecutable, 0o755);
   const bytes = await readFile(fixtureExecutable);
   const executableSha256 = sha256(bytes);
+  const identity = await stat(fixtureExecutable, { bigint: true });
   const manifest = Buffer.from(
     JSON.stringify({
       apiVersion: "flow.synapti.ai/v1alpha1",
@@ -155,8 +159,8 @@ async function fakeLanguageServer() {
       path: fixtureExecutable,
       sha256: executableSha256,
       bytes: bytes.byteLength,
-      device: "1",
-      inode: "2",
+      device: String(identity.dev),
+      inode: String(identity.ino),
     },
   });
 }

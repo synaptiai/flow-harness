@@ -121,6 +121,27 @@ export async function admitLocalLanguageServer(
   });
 }
 
+export async function assertLocalLanguageServerCurrent(
+  snapshot: LanguageServerSnapshot,
+  signal?: AbortSignal,
+): Promise<void> {
+  const executable = await readStableFile(
+    snapshot.executable.path,
+    MAX_LANGUAGE_SERVER_EXECUTABLE_BYTES,
+    "invalid_executable",
+    signal,
+    true,
+  );
+  if (
+    executable.content.byteLength !== snapshot.executable.bytes ||
+    sha256(executable.content) !== snapshot.executable.sha256 ||
+    String(executable.identity.dev) !== snapshot.executable.device ||
+    String(executable.identity.ino) !== snapshot.executable.inode
+  ) {
+    throw new LocalLanguageServerError("source_changed");
+  }
+}
+
 async function readStableFile(
   path: string,
   maximumBytes: number,
