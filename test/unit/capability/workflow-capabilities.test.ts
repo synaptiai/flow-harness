@@ -1,14 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  calculateCapabilitySnapshotDigest,
   type AgentSkillPackageSnapshotInput,
+  calculateCapabilitySnapshotDigest,
   createCapabilitySnapshot,
   validateCapabilitySnapshot,
 } from "../../../src/domain/capability/agent-skills.js";
 import { createLanguageServerSnapshot } from "../../../src/domain/capability/language-server.js";
 import type { VerifierPackageSnapshotInput } from "../../../src/domain/capability/verifier-packages.js";
-import type { WorkflowPackageSnapshotInput } from "../../../src/domain/capability/workflow-packages.js";
 import {
   bindWorkflowCapabilities,
   collectWorkflowAgentSkillNames,
@@ -17,6 +16,7 @@ import {
   resolveVerifierPackageNode,
   type WorkflowCapabilityError,
 } from "../../../src/domain/capability/workflow-capabilities.js";
+import type { WorkflowPackageSnapshotInput } from "../../../src/domain/capability/workflow-packages.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 
 describe("workflow capability binding", () => {

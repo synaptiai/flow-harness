@@ -13,12 +13,14 @@ export type WorkflowCapabilityErrorCode =
   | "conflicting_package"
   | "digest_mismatch"
   | "invalid_snapshot"
+  | "missing_language_server"
   | "missing_package"
   | "missing_skill"
   | "missing_snapshot"
   | "package_kind_mismatch"
   | "tool_name_collision"
   | "unexpected_activation"
+  | "unexpected_language_server"
   | "unexpected_package"
   | "unexpected_skill"
   | "version_mismatch";
@@ -111,13 +113,31 @@ export function bindWorkflowCapabilities(
   const requiredVerifiers = collectWorkflowVerifierPackageReferences(workflow);
   const requiredTools = collectWorkflowToolPackageReferences(workflow);
   const requiredWorkflows = collectWorkflowPackageReferences(workflow);
+  const requiresLanguageServer = workflowUsesSemantic(workflow);
   const boundSnapshot = validateWorkflowCapabilitySnapshot(snapshot);
   assertPromptActivationBinding(workflow, boundSnapshot, options.allowUnexpected === true);
+  if (requiresLanguageServer && boundSnapshot?.languageServer === undefined) {
+    throw new WorkflowCapabilityError(
+      boundSnapshot === undefined ? "missing_snapshot" : "missing_language_server",
+      `workflow "${workflow.id}" selects semantic access but has no immutable language-server snapshot`,
+    );
+  }
+  if (
+    !requiresLanguageServer &&
+    boundSnapshot?.languageServer !== undefined &&
+    options.allowUnexpected !== true
+  ) {
+    throw new WorkflowCapabilityError(
+      "unexpected_language_server",
+      `capability snapshot contains a language server that workflow "${workflow.id}" does not select`,
+    );
+  }
   if (
     requiredSkills.length +
       requiredVerifiers.length +
       requiredTools.length +
-      requiredWorkflows.length ===
+      requiredWorkflows.length +
+      (requiresLanguageServer ? 1 : 0) ===
     0
   ) {
     if (boundSnapshot !== undefined && options.allowUnexpected !== true) {
@@ -158,6 +178,7 @@ export function bindWorkflowCapabilities(
       if (
         (boundSnapshot.activations?.length ?? 0) === 0 &&
         boundSnapshot.effectiveHarness === undefined &&
+        boundSnapshot.languageServer === undefined &&
         !boundSnapshot.packages.some((item) => item.kind === "policy-package")
       ) {
         throw new WorkflowCapabilityError(
@@ -313,6 +334,14 @@ export function bindWorkflowCapabilities(
     );
   }
   return boundSnapshot;
+}
+
+function workflowUsesSemantic(workflow: CompiledWorkflow): boolean {
+  return workflow.nodes.some(
+    (node) =>
+      (node.type === "agent" && node.agent.tools.includes("semantic")) ||
+      (node.type === "child" && workflowUsesSemantic(node.child.workflow)),
+  );
 }
 
 function assertPromptActivationBinding(
