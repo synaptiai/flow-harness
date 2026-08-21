@@ -6,6 +6,10 @@ import { connect } from "node:net";
 const mode = process.argv[2] ?? "default";
 let buffer = Buffer.alloc(0);
 
+if (mode === "hang-ignore-term") {
+  process.on("SIGTERM", () => undefined);
+}
+
 process.stdin.on("data", (chunk) => {
   buffer = Buffer.concat([buffer, chunk]);
   while (true) {
@@ -32,12 +36,12 @@ async function handle(message) {
         diagnosticProvider: {},
         definitionProvider: true,
         referencesProvider: true,
-        hoverProvider: true,
+        hoverProvider: mode !== "unsupported-hover",
         textDocumentSync: { openClose: true, change: 0 },
       },
     });
   } else if (message.method === "textDocument/hover") {
-    if (mode === "hang-hover" || mode === "stderr-overflow") return;
+    if (mode === "hang-hover" || mode === "hang-ignore-term" || mode === "stderr-overflow") return;
     if (mode === "verify-boundary") {
       const readable = readFileSync("example.ts", "utf8") === "const value = 1;\n";
       let writable = false;
@@ -58,6 +62,7 @@ async function handle(message) {
   } else if (message.method === "shutdown") {
     respond(message.id, null);
   } else if (message.method === "exit") {
+    if (mode === "ignore-exit") return;
     process.exit(0);
   }
 }

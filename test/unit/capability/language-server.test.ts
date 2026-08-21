@@ -8,7 +8,14 @@ import {
 } from "../../../src/domain/capability/agent-skills.js";
 import {
   createLanguageServerSnapshot,
+  MAX_LANGUAGE_SERVER_ARG_BYTES,
+  MAX_LANGUAGE_SERVER_ARGS,
+  MAX_LANGUAGE_SERVER_ARGUMENT_BYTES,
+  MAX_LANGUAGE_SERVER_EXECUTABLE_BYTES,
+  MAX_LANGUAGE_SERVER_LANGUAGES,
   MAX_LANGUAGE_SERVER_MANIFEST_BYTES,
+  MAX_LANGUAGE_SERVER_REQUEST_TIMEOUT_MS,
+  MAX_LANGUAGE_SERVER_SUFFIXES,
   validateLanguageServerSnapshot,
 } from "../../../src/domain/capability/language-server.js";
 
@@ -139,12 +146,105 @@ describe("language-server capability", () => {
     );
   });
 
-  it("rejects a plus-one manifest before parsing", () => {
-    const input = validInput();
+  it("accepts an exact-size manifest and rejects a valid plus-one manifest", () => {
     expect(() =>
       createLanguageServerSnapshot({
-        ...input,
-        manifest: Buffer.alloc(MAX_LANGUAGE_SERVER_MANIFEST_BYTES + 1, 0x20),
+        ...validInput(),
+        manifest: manifestAtBytes(MAX_LANGUAGE_SERVER_MANIFEST_BYTES),
+      }),
+    ).not.toThrow();
+    expect(() =>
+      createLanguageServerSnapshot({
+        ...validInput(),
+        manifest: manifestAtBytes(MAX_LANGUAGE_SERVER_MANIFEST_BYTES + 1),
+      }),
+    ).toThrow(/language server snapshot is invalid/i);
+  });
+
+  it("binds exact executable and timeout bounds", () => {
+    expect(() =>
+      createLanguageServerSnapshot({
+        ...validInput(),
+        executable: { ...validInput().executable, bytes: MAX_LANGUAGE_SERVER_EXECUTABLE_BYTES },
+        manifest: manifest({ requestTimeoutMs: MAX_LANGUAGE_SERVER_REQUEST_TIMEOUT_MS }),
+      }),
+    ).not.toThrow();
+    expect(() =>
+      createLanguageServerSnapshot({
+        ...validInput(),
+        executable: {
+          ...validInput().executable,
+          bytes: MAX_LANGUAGE_SERVER_EXECUTABLE_BYTES + 1,
+        },
+      }),
+    ).toThrow(/language server snapshot is invalid/i);
+    expect(() =>
+      createLanguageServerSnapshot({
+        ...validInput(),
+        manifest: manifest({ requestTimeoutMs: MAX_LANGUAGE_SERVER_REQUEST_TIMEOUT_MS + 1 }),
+      }),
+    ).toThrow(/language server snapshot is invalid/i);
+  });
+
+  it("binds exact argument count, per-argument bytes, and aggregate bytes", () => {
+    const exactCount = Array.from({ length: MAX_LANGUAGE_SERVER_ARGS }, () => "");
+    const exactAggregate = [
+      ...Array.from({ length: 8 }, () => "x".repeat(MAX_LANGUAGE_SERVER_ARG_BYTES - 1)),
+      "x".repeat(8),
+    ];
+    expect(Buffer.byteLength(exactAggregate.join(""), "utf8")).toBe(
+      MAX_LANGUAGE_SERVER_ARGUMENT_BYTES,
+    );
+
+    for (const args of [exactCount, ["x".repeat(MAX_LANGUAGE_SERVER_ARG_BYTES)], exactAggregate]) {
+      expect(() =>
+        createLanguageServerSnapshot({ ...validInput(), manifest: manifest({ args }) }),
+      ).not.toThrow();
+    }
+    for (const args of [
+      [...exactCount, ""],
+      ["x".repeat(MAX_LANGUAGE_SERVER_ARG_BYTES + 1)],
+      [...exactAggregate.slice(0, -1), "x".repeat(9)],
+    ]) {
+      expect(() =>
+        createLanguageServerSnapshot({ ...validInput(), manifest: manifest({ args }) }),
+      ).toThrow(/language server snapshot is invalid/i);
+    }
+  });
+
+  it("binds exact language and suffix counts", () => {
+    const exactLanguages = Array.from({ length: MAX_LANGUAGE_SERVER_LANGUAGES }, (_, index) => ({
+      id: `language-${index.toString().padStart(2, "0")}`,
+      suffixes: [`.s${index.toString().padStart(2, "0")}`],
+    }));
+    const exactSuffixes = Array.from(
+      { length: MAX_LANGUAGE_SERVER_SUFFIXES },
+      (_, index) => `.s${index.toString().padStart(2, "0")}`,
+    );
+    expect(() =>
+      createLanguageServerSnapshot({
+        ...validInput(),
+        manifest: manifest({ languages: exactLanguages }),
+      }),
+    ).not.toThrow();
+    expect(() =>
+      createLanguageServerSnapshot({
+        ...validInput(),
+        manifest: manifest({
+          languages: [...exactLanguages, { id: "language-16", suffixes: [".s16"] }],
+        }),
+      }),
+    ).toThrow(/language server snapshot is invalid/i);
+    expect(() =>
+      createLanguageServerSnapshot({
+        ...validInput(),
+        manifest: manifest({ suffixes: exactSuffixes }),
+      }),
+    ).not.toThrow();
+    expect(() =>
+      createLanguageServerSnapshot({
+        ...validInput(),
+        manifest: manifest({ suffixes: [...exactSuffixes, ".s32"] }),
       }),
     ).toThrow(/language server snapshot is invalid/i);
   });
@@ -190,8 +290,12 @@ function manifest(
   overrides: {
     executable?: string;
     suffixes?: readonly string[];
+    args?: readonly string[];
+    languages?: readonly { readonly id: string; readonly suffixes: readonly string[] }[];
+    initializationOptions?: unknown;
     containmentProfile?: string;
     protocol?: string;
+    requestTimeoutMs?: number;
   } = {},
 ): Buffer {
   return Buffer.from(
@@ -203,14 +307,27 @@ function manifest(
         protocol: overrides.protocol ?? "lsp-3.18",
         executable: overrides.executable ?? "/opt/flow/bin/typescript-language-server",
         executableSha256: "a".repeat(64),
-        args: ["--stdio"],
-        languages: [{ id: "typescript", suffixes: overrides.suffixes ?? [".ts", ".tsx"] }],
-        initializationOptions: {
+        args: overrides.args ?? ["--stdio"],
+        languages: overrides.languages ?? [
+          { id: "typescript", suffixes: overrides.suffixes ?? [".ts", ".tsx"] },
+        ],
+        initializationOptions: overrides.initializationOptions ?? {
           preferences: { includeCompletionsForModuleExports: false },
         },
         containmentProfile: overrides.containmentProfile ?? "default",
-        requestTimeoutMs: 5_000,
+        requestTimeoutMs: overrides.requestTimeoutMs ?? 5_000,
       },
     }),
   );
+}
+
+function manifestAtBytes(targetBytes: number): Buffer {
+  const empty = manifest({ initializationOptions: { padding: "" } });
+  const result = manifest({
+    initializationOptions: { padding: "x".repeat(targetBytes - empty.byteLength) },
+  });
+  if (result.byteLength !== targetBytes) {
+    throw new Error("cannot construct exact language-server manifest boundary");
+  }
+  return result;
 }

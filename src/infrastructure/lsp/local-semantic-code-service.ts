@@ -1,7 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { type BigIntStats, constants } from "node:fs";
-import { mkdir, mkdtemp, open, opendir, realpath, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, opendir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -36,6 +36,8 @@ const EXCLUDED_ROOT_ENTRIES = new Set([".flow", ".git", "node_modules", "dist", 
 
 export type LocalSemanticCodeServiceErrorCode =
   | "semantic_service_unavailable"
+  | "semantic_operation_unsupported"
+  | "semantic_request_invalid"
   | "semantic_source_changed"
   | "semantic_protocol_failed"
   | "semantic_deadline_exceeded"
@@ -49,15 +51,19 @@ export class LocalSemanticCodeServiceError extends Error {
     super(
       code === "semantic_service_unavailable"
         ? "semantic language service is unavailable"
-        : code === "semantic_source_changed"
-          ? "semantic project source changed during the query"
-          : code === "semantic_protocol_failed"
-            ? "semantic language-service protocol failed"
-            : code === "semantic_deadline_exceeded"
-              ? "semantic language-service deadline was exceeded"
-              : code === "semantic_response_limit_exceeded"
-                ? "semantic response limit was exceeded"
-                : "semantic language-service cleanup is uncertain",
+        : code === "semantic_operation_unsupported"
+          ? "semantic operation is not supported"
+          : code === "semantic_request_invalid"
+            ? "semantic request is invalid"
+            : code === "semantic_source_changed"
+              ? "semantic project source changed during the query"
+              : code === "semantic_protocol_failed"
+                ? "semantic language-service protocol failed"
+                : code === "semantic_deadline_exceeded"
+                  ? "semantic language-service deadline was exceeded"
+                  : code === "semantic_response_limit_exceeded"
+                    ? "semantic response limit was exceeded"
+                    : "semantic language-service cleanup is uncertain",
     );
   }
 }
@@ -65,9 +71,13 @@ export class LocalSemanticCodeServiceError extends Error {
 export interface LocalSemanticCodeServiceOptions {
   /** @internal Deterministic source-race seam. */
   readonly afterSnapshot?: () => void | Promise<void>;
+  /** @internal Deterministic directory-race seam. */
+  readonly afterProjectDirectoryObserved?: (path: string) => void | Promise<void>;
   readonly platform?: NodeJS.Platform;
   readonly terminationGraceMs?: number;
   readonly terminationConfirmationMs?: number;
+  /** @internal Deterministic process-settlement seam. */
+  readonly waitForExit?: typeof waitForProcessTreeExit;
 }
 
 interface ProjectSnapshot {
@@ -103,36 +113,51 @@ class LocalSemanticToolSession implements SemanticToolSession {
     if (this.#receipts.length >= MAX_SEMANTIC_QUERY_RECEIPTS) {
       throw new LocalSemanticCodeServiceError("semantic_response_limit_exceeded");
     }
-    const authoritativeRoot = resolve(this.context.cwd);
-    let canonicalRoot: string;
-    try {
-      canonicalRoot = await realpath(authoritativeRoot);
-    } catch {
-      signal?.throwIfAborted();
-      throw new LocalSemanticCodeServiceError("semantic_source_changed");
-    }
-    signal?.throwIfAborted();
-    if (canonicalRoot !== authoritativeRoot) {
-      throw new LocalSemanticCodeServiceError("semantic_source_changed");
-    }
-    const projectionRoot = await mkdtemp(join(tmpdir(), "flow-semantic-"));
+    const deadline = new AbortController();
+    const deadlineReason = new LocalSemanticCodeServiceError("semantic_deadline_exceeded");
+    const deadlineHandle = setTimeout(
+      () => deadline.abort(deadlineReason),
+      this.languageServer.requestTimeoutMs,
+    );
+    deadlineHandle.unref();
+    const operationSignal =
+      signal === undefined ? deadline.signal : AbortSignal.any([signal, deadline.signal]);
+    let projectionRoot: string | undefined;
     let prepared: PreparedCommand | undefined;
     let primaryError: unknown;
     let result: SemanticResult | undefined;
     let pendingReceipt: SemanticQueryReceipt | undefined;
-    let terminationIncomplete = false;
     try {
-      const before = await captureProject(authoritativeRoot, projectionRoot, signal);
+      const authoritativeRoot = resolve(this.context.cwd);
+      let canonicalRoot: string;
+      try {
+        canonicalRoot = await realpath(authoritativeRoot);
+      } catch {
+        operationSignal.throwIfAborted();
+        throw new LocalSemanticCodeServiceError("semantic_source_changed");
+      }
+      operationSignal.throwIfAborted();
+      if (canonicalRoot !== authoritativeRoot) {
+        throw new LocalSemanticCodeServiceError("semantic_source_changed");
+      }
+      projectionRoot = await mkdtemp(join(tmpdir(), "flow-semantic-"));
+      operationSignal.throwIfAborted();
+      const before = await captureProject(
+        authoritativeRoot,
+        projectionRoot,
+        operationSignal,
+        this.options.afterProjectDirectoryObserved,
+      );
       await this.options.afterSnapshot?.();
-      signal?.throwIfAborted();
+      operationSignal.throwIfAborted();
       const source = before.source.get(request.path);
       if (source === undefined) {
         throw new LocalSemanticCodeServiceError("semantic_source_changed");
       }
       try {
-        await assertLocalLanguageServerCurrent(this.languageServer, signal);
+        await assertLocalLanguageServerCurrent(this.languageServer, operationSignal);
       } catch {
-        signal?.throwIfAborted();
+        operationSignal.throwIfAborted();
         throw new LocalSemanticCodeServiceError("semantic_service_unavailable");
       }
       prepared = await this.sandbox.prepare({
@@ -142,14 +167,14 @@ class LocalSemanticToolSession implements SemanticToolSession {
         projectRoot: projectionRoot,
         protectedPaths: [projectionRoot],
         runtimeSupportPaths: [this.languageServer.executable.path],
-        ...(signal === undefined ? {} : { signal }),
+        signal: operationSignal,
       });
       if (prepared.run !== undefined) {
         throw new LocalSemanticCodeServiceError("semantic_service_unavailable");
       }
       await prepared.beforeLaunch?.();
-      signal?.throwIfAborted();
-      const session = await runProcessSession(
+      operationSignal.throwIfAborted();
+      result = await runProcessSession(
         prepared,
         projectionRoot,
         this.languageServer,
@@ -157,11 +182,12 @@ class LocalSemanticToolSession implements SemanticToolSession {
         request,
         source,
         signal,
+        deadline.signal,
+        deadlineReason,
+        operationSignal,
         this.options,
       );
-      result = session.result;
-      terminationIncomplete = session.terminationIncomplete;
-      const after = await captureProject(authoritativeRoot, undefined, signal);
+      const after = await captureProject(authoritativeRoot, undefined, operationSignal);
       if (after.digest !== before.digest) {
         throw new LocalSemanticCodeServiceError("semantic_source_changed");
       }
@@ -189,17 +215,31 @@ class LocalSemanticToolSession implements SemanticToolSession {
         cleanupFailed = true;
       }
     }
-    try {
-      await rm(projectionRoot, { recursive: true, force: true, maxRetries: 2 });
-    } catch {
-      cleanupFailed = true;
+    if (projectionRoot !== undefined) {
+      try {
+        await rm(projectionRoot, { recursive: true, force: true, maxRetries: 2 });
+      } catch {
+        cleanupFailed = true;
+      }
     }
-    if (cleanupFailed || terminationIncomplete) {
+    clearTimeout(deadlineHandle);
+    if (cleanupFailed) {
       throw new LocalSemanticCodeServiceError("semantic_cleanup_uncertain");
     }
+    const normalizedPrimaryError =
+      primaryError === undefined ? undefined : normalizeServiceError(primaryError);
+    if (
+      normalizedPrimaryError instanceof LocalSemanticCodeServiceError &&
+      normalizedPrimaryError.code === "semantic_cleanup_uncertain"
+    ) {
+      throw normalizedPrimaryError;
+    }
     signal?.throwIfAborted();
-    if (primaryError !== undefined) {
-      throw normalizeServiceError(primaryError);
+    if (deadline.signal.aborted) {
+      throw deadlineReason;
+    }
+    if (normalizedPrimaryError !== undefined) {
+      throw normalizedPrimaryError;
     }
     if (result === undefined || pendingReceipt === undefined) {
       throw new LocalSemanticCodeServiceError("semantic_protocol_failed");
@@ -217,8 +257,11 @@ async function runProcessSession(
   request: SemanticRequest,
   source: Buffer,
   callerSignal: AbortSignal | undefined,
+  deadlineSignal: AbortSignal,
+  deadlineReason: LocalSemanticCodeServiceError,
+  operationSignal: AbortSignal,
   options: LocalSemanticCodeServiceOptions,
-): Promise<{ readonly result: SemanticResult; readonly terminationIncomplete: boolean }> {
+): Promise<SemanticResult> {
   let child: ChildProcess;
   try {
     child = spawn(prepared.launch.executable, [...prepared.launch.args], {
@@ -236,18 +279,9 @@ async function runProcessSession(
     child.kill("SIGKILL");
     throw new LocalSemanticCodeServiceError("semantic_service_unavailable");
   }
-  const deadline = new AbortController();
-  const deadlineReason = new LocalSemanticCodeServiceError("semantic_deadline_exceeded");
-  const deadlineHandle = setTimeout(
-    () => deadline.abort(deadlineReason),
-    languageServer.requestTimeoutMs,
-  );
-  deadlineHandle.unref();
   const protocolAbort = new AbortController();
-  const querySignal =
-    callerSignal === undefined ? deadline.signal : AbortSignal.any([callerSignal, deadline.signal]);
-  const exitSignal = AbortSignal.any([querySignal, protocolAbort.signal]);
-  const exitPromise = waitForProcessTreeExit(
+  const exitSignal = AbortSignal.any([operationSignal, protocolAbort.signal]);
+  const exitPromise = (options.waitForExit ?? waitForProcessTreeExit)(
     child,
     languageServer.requestTimeoutMs,
     options.terminationGraceMs ?? 2_000,
@@ -274,21 +308,22 @@ async function runProcessSession(
       projectPaths,
       source: { path: request.path, content: source },
       request,
-      signal: querySignal,
+      signal: operationSignal,
     });
   } catch (error) {
     queryError = error;
     if (!protocolAbort.signal.aborted) {
       protocolAbort.abort(error);
     }
-  } finally {
-    clearTimeout(deadlineHandle);
   }
   const exit = await exitPromise;
+  if (exit.terminationIncomplete) {
+    throw new LocalSemanticCodeServiceError("semantic_cleanup_uncertain");
+  }
   if (callerSignal?.aborted === true) {
     throw callerSignal.reason;
   }
-  if (deadline.signal.aborted) {
+  if (deadlineSignal.aborted || exit.timedOut) {
     throw deadlineReason;
   }
   if (protocolAbort.signal.reason instanceof LocalSemanticCodeServiceError) {
@@ -305,10 +340,10 @@ async function runProcessSession(
   ) {
     throw new LocalSemanticCodeServiceError("semantic_protocol_failed");
   }
-  return { result, terminationIncomplete: exit.terminationIncomplete };
+  return result;
 }
 
-class NodeLspTransport implements StrictLspTransport {
+export class NodeLspTransport implements StrictLspTransport {
   readonly #iterator;
 
   constructor(private readonly child: ChildProcess) {
@@ -324,30 +359,60 @@ class NodeLspTransport implements StrictLspTransport {
     if (input === null || input.destroyed) {
       throw new LocalSemanticCodeServiceError("semantic_protocol_failed");
     }
-    await new Promise<void>((resolveWrite, rejectWrite) => {
-      input.write(bytes, (error: Error | null | undefined) => {
-        if (error === null || error === undefined) {
-          resolveWrite();
-        } else {
-          rejectWrite(new LocalSemanticCodeServiceError("semantic_protocol_failed"));
-        }
-      });
-    });
+    await waitForAbortable(
+      new Promise<void>((resolveWrite, rejectWrite) => {
+        input.write(bytes, (error: Error | null | undefined) => {
+          if (error === null || error === undefined) {
+            resolveWrite();
+          } else {
+            rejectWrite(new LocalSemanticCodeServiceError("semantic_protocol_failed"));
+          }
+        });
+      }),
+      signal,
+    );
     signal?.throwIfAborted();
   }
 
   async read(signal?: AbortSignal): Promise<Uint8Array | null> {
     signal?.throwIfAborted();
-    const next = await this.#iterator.next();
+    const next = await waitForAbortable(this.#iterator.next(), signal);
     signal?.throwIfAborted();
     return next.done === true ? null : Buffer.from(next.value);
   }
+}
+
+async function waitForAbortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (signal === undefined) {
+    return promise;
+  }
+  signal.throwIfAborted();
+  return new Promise<T>((resolvePromise, rejectPromise) => {
+    let settled = false;
+    const settle = (callback: () => void): void => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      callback();
+    };
+    const onAbort = () => settle(() => rejectPromise(signal.reason));
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    void promise.then(
+      (value) => settle(() => resolvePromise(value)),
+      (error: unknown) => settle(() => rejectPromise(error)),
+    );
+  });
 }
 
 async function captureProject(
   root: string,
   projectionRoot: string | undefined,
   signal?: AbortSignal,
+  afterDirectoryObserved?: ((path: string) => void | Promise<void>) | undefined,
 ): Promise<ProjectSnapshot> {
   const entries: Array<{ readonly path: string; readonly sha256: string; readonly bytes: number }> =
     [];
@@ -361,7 +426,17 @@ async function captureProject(
     if (depth > MAX_SEMANTIC_PROJECT_DEPTH) {
       throw new LocalSemanticCodeServiceError("semantic_response_limit_exceeded");
     }
-    const handle = await opendir(directory);
+    const directoryIdentity = await observeProjectDirectory(directory, signal);
+    await afterDirectoryObserved?.(directory);
+    signal?.throwIfAborted();
+    let handle: Awaited<ReturnType<typeof opendir>>;
+    try {
+      handle = await opendir(directory);
+      signal?.throwIfAborted();
+    } catch {
+      signal?.throwIfAborted();
+      throw new LocalSemanticCodeServiceError("semantic_source_changed");
+    }
     signal?.throwIfAborted();
     try {
       for await (const entry of handle) {
@@ -397,21 +472,30 @@ async function captureProject(
       await handle.close().catch(() => undefined);
       signal?.throwIfAborted();
     }
+    const revalidatedDirectory = await observeProjectDirectory(directory, signal);
+    if (!sameIdentity(directoryIdentity, revalidatedDirectory)) {
+      throw new LocalSemanticCodeServiceError("semantic_source_changed");
+    }
   }
 
   await visit(root, "", 1);
   entries.sort((left, right) => compareStrings(left.path, right.path));
   if (projectionRoot !== undefined) {
     for (const directory of directories.sort(compareStrings)) {
+      signal?.throwIfAborted();
       await mkdir(join(projectionRoot, directory), { recursive: true, mode: 0o700 });
+      signal?.throwIfAborted();
     }
     for (const entry of entries) {
+      signal?.throwIfAborted();
       const content = source.get(entry.path);
       if (content === undefined) {
         throw new LocalSemanticCodeServiceError("semantic_source_changed");
       }
       await mkdir(dirname(join(projectionRoot, entry.path)), { recursive: true, mode: 0o700 });
+      signal?.throwIfAborted();
       await writeFile(join(projectionRoot, entry.path), content, { mode: 0o400, flag: "wx" });
+      signal?.throwIfAborted();
     }
   }
   return {
@@ -419,6 +503,25 @@ async function captureProject(
     paths: Object.freeze(entries.map((entry) => entry.path)),
     source,
   };
+}
+
+async function observeProjectDirectory(path: string, signal?: AbortSignal): Promise<BigIntStats> {
+  signal?.throwIfAborted();
+  try {
+    const [canonicalPath, identity] = await Promise.all([
+      realpath(path),
+      lstat(path, { bigint: true }),
+    ]);
+    signal?.throwIfAborted();
+    if (canonicalPath !== path || !identity.isDirectory() || identity.isSymbolicLink()) {
+      throw new LocalSemanticCodeServiceError("semantic_source_changed");
+    }
+    return identity;
+  } catch (error) {
+    signal?.throwIfAborted();
+    if (error instanceof LocalSemanticCodeServiceError) throw error;
+    throw new LocalSemanticCodeServiceError("semantic_source_changed");
+  }
 }
 
 async function readStableProjectFile(path: string, signal?: AbortSignal): Promise<Buffer> {
@@ -457,11 +560,7 @@ async function readStableProjectFile(path: string, signal?: AbortSignal): Promis
 function normalizeServiceError(error: unknown): Error {
   if (error instanceof LocalSemanticCodeServiceError) return error;
   if (error instanceof StrictLspClientError) {
-    return new LocalSemanticCodeServiceError(
-      error.code === "semantic_response_limit_exceeded"
-        ? "semantic_response_limit_exceeded"
-        : "semantic_protocol_failed",
-    );
+    return new LocalSemanticCodeServiceError(error.code);
   }
   return new LocalSemanticCodeServiceError("semantic_protocol_failed");
 }

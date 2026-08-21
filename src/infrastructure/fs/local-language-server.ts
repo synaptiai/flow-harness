@@ -125,6 +125,11 @@ export async function assertLocalLanguageServerCurrent(
   snapshot: LanguageServerSnapshot,
   signal?: AbortSignal,
 ): Promise<void> {
+  const executableDirectories = await observeDirectories(
+    parse(snapshot.executable.path).root,
+    dirname(snapshot.executable.path),
+    signal,
+  );
   const executable = await readStableFile(
     snapshot.executable.path,
     MAX_LANGUAGE_SERVER_EXECUTABLE_BYTES,
@@ -140,6 +145,8 @@ export async function assertLocalLanguageServerCurrent(
   ) {
     throw new LocalLanguageServerError("source_changed");
   }
+  await revalidateDirectories(executableDirectories, signal);
+  await revalidateFile(snapshot.executable.path, executable.identity, signal);
 }
 
 async function readStableFile(

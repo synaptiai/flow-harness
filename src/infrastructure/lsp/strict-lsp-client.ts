@@ -9,10 +9,15 @@ import {
   type SemanticRequest,
   type SemanticResult,
 } from "../../domain/semantic/semantic-code.js";
-import { parseStrictJson, type StrictJsonValue } from "../../domain/strict-json.js";
+import {
+  parseStrictJson,
+  StrictJsonError,
+  type StrictJsonValue,
+} from "../../domain/strict-json.js";
 
 export const MAX_LSP_HEADER_BYTES = 8 * 1024;
 export const MAX_LSP_MESSAGE_BYTES = 1024 * 1024;
+export const MAX_LSP_REQUEST_MESSAGE_BYTES = 8 * 1024 * 1024;
 export const MAX_LSP_MESSAGES = 64;
 export const MAX_LSP_SOURCE_BYTES = 1024 * 1024;
 
@@ -105,6 +110,9 @@ export class LspMessageDecoder {
     } catch (error) {
       if (error instanceof StrictLspClientError) {
         throw error;
+      }
+      if (error instanceof StrictJsonError && error.code === "too_complex") {
+        throw new StrictLspClientError("semantic_response_limit_exceeded");
       }
       throw new StrictLspClientError("semantic_protocol_failed");
     }
@@ -426,7 +434,7 @@ function validateProjectRoot(value: string): string {
 
 function encodeMessage(message: StrictJsonValue): Buffer {
   const body = Buffer.from(JSON.stringify(message), "utf8");
-  if (body.byteLength > MAX_LSP_MESSAGE_BYTES) {
+  if (body.byteLength > MAX_LSP_REQUEST_MESSAGE_BYTES) {
     throw new StrictLspClientError("semantic_response_limit_exceeded");
   }
   return Buffer.concat([Buffer.from(`Content-Length: ${body.byteLength}\r\n\r\n`, "ascii"), body]);
@@ -449,13 +457,11 @@ function parseHeader(value: Uint8Array): number {
       throw new StrictLspClientError("semantic_protocol_failed");
     }
   }
-  if (
-    contentLength === undefined ||
-    !Number.isSafeInteger(contentLength) ||
-    contentLength <= 0 ||
-    contentLength > MAX_LSP_MESSAGE_BYTES
-  ) {
+  if (contentLength === undefined || !Number.isSafeInteger(contentLength) || contentLength <= 0) {
     throw new StrictLspClientError("semantic_protocol_failed");
+  }
+  if (contentLength > MAX_LSP_MESSAGE_BYTES) {
+    throw new StrictLspClientError("semantic_response_limit_exceeded");
   }
   return contentLength;
 }

@@ -63,6 +63,7 @@ describe("workspace semantic tool", () => {
     );
 
     expect(tools.names).toEqual(["flow_semantic"]);
+    expect(tool.executionMode).toBe("sequential");
     expect(observed).toEqual([
       {
         operation: "hover",

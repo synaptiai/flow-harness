@@ -2,14 +2,21 @@ import { createHash } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
+import {
+  type CapabilitySnapshot,
+  calculateCapabilitySnapshotDigest,
+  validateCapabilitySnapshot,
+} from "../../../src/domain/capability/agent-skills.js";
+import { createLanguageServerSnapshot } from "../../../src/domain/capability/language-server.js";
 import { type RunEvent, reduceRunEvents } from "../../../src/domain/run/events.js";
 import { createSemanticQueryReceipt } from "../../../src/domain/semantic/semantic-code.js";
 
 describe("semantic receipt replay", () => {
   it("retains canonical semantic receipts in terminal agent evidence", () => {
-    const receipt = semanticReceipt(1);
+    const capabilitySnapshot = semanticCapabilitySnapshot();
+    const receipt = semanticReceipt(1, capabilitySnapshot.languageServer?.digest);
 
-    const state = reduceRunEvents(events([receipt]));
+    const state = reduceRunEvents(events([receipt], capabilitySnapshot));
 
     expect(state.nodes.analyze?.evidence).toMatchObject({
       kind: "agent",
@@ -18,7 +25,8 @@ describe("semantic receipt replay", () => {
   });
 
   it("rejects forged content and noncontiguous semantic receipt sequences", () => {
-    const receipt = semanticReceipt(1);
+    const capabilitySnapshot = semanticCapabilitySnapshot();
+    const receipt = semanticReceipt(1, capabilitySnapshot.languageServer?.digest);
     const forged = {
       ...receipt,
       result: {
@@ -32,14 +40,43 @@ describe("semantic receipt replay", () => {
       },
     };
 
-    expect(() => reduceRunEvents(events([forged]))).toThrow(/semantic receipt is invalid/i);
-    expect(() => reduceRunEvents(events([semanticReceipt(1), semanticReceipt(3)]))).toThrow(
-      /semantic receipt sequence must be contiguous/i,
+    expect(() => reduceRunEvents(events([forged], capabilitySnapshot))).toThrow(
+      /semantic receipt is invalid/i,
+    );
+    expect(() =>
+      reduceRunEvents(
+        events(
+          [
+            semanticReceipt(1, capabilitySnapshot.languageServer?.digest),
+            semanticReceipt(3, capabilitySnapshot.languageServer?.digest),
+          ],
+          capabilitySnapshot,
+        ),
+      ),
+    ).toThrow(/semantic receipt sequence must be contiguous/i);
+  });
+
+  it("rejects semantic receipts without the exact durable language server", () => {
+    const capabilitySnapshot = semanticCapabilitySnapshot();
+    const receipt = semanticReceipt(1, capabilitySnapshot.languageServer?.digest);
+    const substituted = redigestReceipt({
+      ...receipt,
+      languageServerDigest: "f".repeat(64),
+    });
+
+    expect(() => reduceRunEvents(events([receipt]))).toThrow(
+      /semantic receipt requires a durable language-server snapshot/i,
+    );
+    expect(() => reduceRunEvents(events([substituted], capabilitySnapshot))).toThrow(
+      /semantic receipt language server does not match the durable run snapshot/i,
     );
   });
 });
 
-function events(semanticReceipts: readonly unknown[]): RunEvent[] {
+function events(
+  semanticReceipts: readonly unknown[],
+  capabilitySnapshot?: CapabilitySnapshot,
+): RunEvent[] {
   return [
     {
       ...base(1),
@@ -47,6 +84,7 @@ function events(semanticReceipts: readonly unknown[]): RunEvent[] {
       nodeIds: ["analyze"],
       workflowApiVersion: "flow.synapti.ai/v1alpha1",
       workflowDigest: "e".repeat(64),
+      ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
     },
     { ...base(2), type: "node_started", nodeId: "analyze", attempt: 1 },
     {
@@ -70,7 +108,7 @@ function events(semanticReceipts: readonly unknown[]): RunEvent[] {
   ] as RunEvent[];
 }
 
-function semanticReceipt(sequence: number) {
+function semanticReceipt(sequence: number, languageServerDigest = "c".repeat(64)) {
   return createSemanticQueryReceipt({
     sequence,
     request: {
@@ -80,7 +118,7 @@ function semanticReceipt(sequence: number) {
     },
     projectDigest: "a".repeat(64),
     sourceDigest: "b".repeat(64),
-    languageServerDigest: "c".repeat(64),
+    languageServerDigest,
     sandbox: {
       backend: "sandbox-runtime",
       backendVersion: "1.2.3",
@@ -89,6 +127,47 @@ function semanticReceipt(sequence: number) {
     },
     result: { operation: "hover", hover: null },
   });
+}
+
+function semanticCapabilitySnapshot(): CapabilitySnapshot {
+  const manifest = Buffer.from(
+    JSON.stringify({
+      apiVersion: "flow.synapti.ai/v1alpha1",
+      kind: "LanguageServer",
+      metadata: { name: "typescript" },
+      spec: {
+        protocol: "lsp-3.18",
+        executable: "/opt/flow/bin/typescript-language-server",
+        executableSha256: "c".repeat(64),
+        args: ["--stdio"],
+        languages: [{ id: "typescript", suffixes: [".ts"] }],
+        containmentProfile: "default",
+        requestTimeoutMs: 5_000,
+      },
+    }),
+  );
+  const languageServer = createLanguageServerSnapshot({
+    provenance: ".flow/language-servers/typescript.json",
+    manifest,
+    executable: {
+      path: "/opt/flow/bin/typescript-language-server",
+      sha256: "c".repeat(64),
+      bytes: 128,
+      device: "1",
+      inode: "2",
+    },
+  });
+  return validateCapabilitySnapshot({
+    version: 1,
+    packages: [],
+    languageServer,
+    digest: calculateCapabilitySnapshotDigest([], [], undefined, languageServer),
+  });
+}
+
+function redigestReceipt(receipt: ReturnType<typeof semanticReceipt>) {
+  const { digest: _digest, ...withoutDigest } = receipt;
+  return { ...withoutDigest, digest: sha256(JSON.stringify(withoutDigest)) };
 }
 
 function base(sequence: number) {

@@ -191,6 +191,7 @@ export class PiAgentExecutor implements AgentExecutor {
       }
     }
     let semanticSession: SemanticToolSession | undefined;
+    let semanticLanguageServer: LanguageServerSnapshot | undefined;
     if (node.agent.tools.includes("semantic")) {
       if (context.capabilitySnapshot === undefined) {
         return agentFailure(
@@ -198,16 +199,17 @@ export class PiAgentExecutor implements AgentExecutor {
           "semantic access requires an immutable language-server snapshot",
         );
       }
-      let languageServer: LanguageServerSnapshot | undefined;
       try {
-        languageServer = validateCapabilitySnapshot(context.capabilitySnapshot).languageServer;
+        semanticLanguageServer = validateCapabilitySnapshot(
+          context.capabilitySnapshot,
+        ).languageServer;
       } catch {
         return agentFailure(
           "pi_semantic_snapshot_invalid",
           "semantic language-server snapshot is invalid",
         );
       }
-      if (languageServer === undefined) {
+      if (semanticLanguageServer === undefined) {
         return agentFailure(
           "pi_semantic_snapshot_unavailable",
           "semantic access requires an immutable language-server snapshot",
@@ -219,7 +221,10 @@ export class PiAgentExecutor implements AgentExecutor {
           "semantic language-service infrastructure is unavailable",
         );
       }
-      semanticSession = this.semanticSessionFactory({ context, languageServer });
+      semanticSession = this.semanticSessionFactory({
+        context,
+        languageServer: semanticLanguageServer,
+      });
     }
     if (node.agent.tools.includes("edit") && context.effectJournal === undefined) {
       return agentFailure(
@@ -300,7 +305,10 @@ export class PiAgentExecutor implements AgentExecutor {
         return closedSemanticReceipts;
       }
       try {
-        closedSemanticReceipts = validateSemanticReceipts(semanticSession?.evidence() ?? []);
+        closedSemanticReceipts = validateSemanticReceipts(
+          semanticSession?.evidence() ?? [],
+          semanticLanguageServer?.digest,
+        );
       } catch {
         semanticEvidenceError = new PiSemanticEvidenceError();
         closedSemanticReceipts = Object.freeze([]);
@@ -1037,13 +1045,18 @@ function emptyAgentEvidence(
 
 function validateSemanticReceipts(
   receipts: readonly SemanticQueryReceipt[],
+  languageServerDigest: string | undefined,
 ): readonly SemanticQueryReceipt[] {
   if (receipts.length > MAX_SEMANTIC_QUERY_RECEIPTS) {
     throw new PiSemanticEvidenceError();
   }
   return Object.freeze(
     receipts.map((receipt, index) => {
-      if (receipt.sequence !== index + 1) {
+      if (
+        receipt.sequence !== index + 1 ||
+        languageServerDigest === undefined ||
+        receipt.languageServerDigest !== languageServerDigest
+      ) {
         throw new PiSemanticEvidenceError();
       }
       return validateSemanticQueryReceipt(receipt);

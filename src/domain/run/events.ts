@@ -67,12 +67,6 @@ import {
 import { policyDecisionSchema } from "../policy/schema.js";
 import type { PolicyDecision } from "../policy/types.js";
 import {
-  MAX_SEMANTIC_QUERY_RECEIPTS,
-  type SemanticQueryReceipt,
-  semanticQueryReceiptSchema,
-  validateSemanticQueryReceipt,
-} from "../semantic/semantic-code.js";
-import {
   evaluateOptimizationBaseline,
   evaluateOptimizationCandidate,
   type OptimizationInvariantObservation,
@@ -85,6 +79,12 @@ import {
   resultSourceTruncationMessage,
   TypedResultError,
 } from "../result/typed-result.js";
+import {
+  MAX_SEMANTIC_QUERY_RECEIPTS,
+  type SemanticQueryReceipt,
+  semanticQueryReceiptSchema,
+  validateSemanticQueryReceipt,
+} from "../semantic/semantic-code.js";
 import { parseVerifierVerdictJson } from "../verification/verdict.js";
 import { boundedCompiledResultSchemaSchema } from "../workflow/schema.js";
 import {
@@ -5745,6 +5745,11 @@ export function appendRunEvent(
         current.effectProtocol === null,
         current.commands.some((command) => agentCommandSideEffectStatus(command) !== "none"),
       );
+      validateSemanticEvidenceProjection(
+        currentState.capabilitySnapshot,
+        event.evidence,
+        eventIndex,
+      );
       validateAgentCapabilityEvidenceProjection(
         currentState.capabilitySnapshot,
         currentState.capabilityRequirements[event.nodeId],
@@ -5807,6 +5812,11 @@ export function appendRunEvent(
           eventIndex,
           current.effectProtocol === null,
           current.commands.some((command) => agentCommandSideEffectStatus(command) !== "none"),
+        );
+        validateSemanticEvidenceProjection(
+          currentState.capabilitySnapshot,
+          event.evidence,
+          eventIndex,
         );
         validateAgentCapabilityEvidenceProjection(
           currentState.capabilitySnapshot,
@@ -9382,6 +9392,30 @@ function validateAgentCapabilityEvidenceProjection(
     throw new RunReplayError(
       eventIndex,
       `agent capability evidence is not bound to durable content: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+function validateSemanticEvidenceProjection(
+  snapshot: CapabilitySnapshot | null,
+  evidence: NodeEvidence,
+  eventIndex: number,
+): void {
+  const receipts = evidence.kind === "agent" ? (evidence.semanticReceipts ?? []) : [];
+  if (receipts.length === 0) {
+    return;
+  }
+  const languageServer = snapshot?.languageServer;
+  if (languageServer === undefined) {
+    throw new RunReplayError(
+      eventIndex,
+      "semantic receipt requires a durable language-server snapshot",
+    );
+  }
+  if (receipts.some((receipt) => receipt.languageServerDigest !== languageServer.digest)) {
+    throw new RunReplayError(
+      eventIndex,
+      "semantic receipt language server does not match the durable run snapshot",
     );
   }
 }

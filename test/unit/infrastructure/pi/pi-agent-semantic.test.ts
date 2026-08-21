@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -15,7 +17,7 @@ import type { SemanticToolSession } from "../../../../src/infrastructure/pi/work
 describe("Pi semantic execution", () => {
   it("creates and forwards one attempt-scoped session from frozen server identity", async () => {
     const snapshot = semanticCapabilitySnapshot();
-    const receipt = semanticReceipt();
+    const receipt = semanticReceipt(snapshot.languageServer?.digest);
     const session: SemanticToolSession = {
       evidence: () => [receipt],
       async query() {
@@ -61,7 +63,8 @@ describe("Pi semantic execution", () => {
 
   it("rejects noncanonical semantic evidence without publishing private values", async () => {
     const privateValue = "PRIVATE_FORGED_SEMANTIC_EVIDENCE";
-    const receipt = semanticReceipt();
+    const snapshot = semanticCapabilitySnapshot();
+    const receipt = semanticReceipt(snapshot.languageServer?.digest);
     const executor = new PiAgentExecutor(
       {
         async run() {
@@ -101,7 +104,7 @@ describe("Pi semantic execution", () => {
       attempt: 1,
       cwd: "/workspace",
       protectedPaths: [],
-      capabilitySnapshot: semanticCapabilitySnapshot(),
+      capabilitySnapshot: snapshot,
     });
 
     expect(outcome).toMatchObject({
@@ -112,6 +115,48 @@ describe("Pi semantic execution", () => {
       },
     });
     expect(JSON.stringify(outcome)).not.toContain(privateValue);
+  });
+
+  it("rejects digest-valid evidence from a different language server", async () => {
+    const snapshot = semanticCapabilitySnapshot();
+    const receipt = semanticReceipt(snapshot.languageServer?.digest);
+    const substituted = redigestReceipt({
+      ...receipt,
+      languageServerDigest: "f".repeat(64),
+    });
+    const executor = new PiAgentExecutor(
+      {
+        async run() {
+          return { text: "complete", stopReason: "stop" };
+        },
+      },
+      () => 100,
+      5_000,
+      65_536,
+      () => ({
+        evidence: () => [substituted],
+        async query() {
+          return { operation: "diagnostics", diagnostics: [] };
+        },
+      }),
+    );
+
+    const outcome = await executor.execute(semanticNode(), {
+      runId: "run-semantic",
+      workflowId: "semantic-workflow",
+      attempt: 1,
+      cwd: "/workspace",
+      protectedPaths: [],
+      capabilitySnapshot: snapshot,
+    });
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "pi_semantic_evidence_invalid",
+        message: "semantic query evidence is invalid",
+      },
+    });
   });
 
   it.each([
@@ -216,7 +261,7 @@ function semanticCapabilitySnapshot() {
   });
 }
 
-function semanticReceipt() {
+function semanticReceipt(languageServerDigest = "c".repeat(64)) {
   return createSemanticQueryReceipt({
     sequence: 1,
     request: {
@@ -226,7 +271,7 @@ function semanticReceipt() {
     },
     projectDigest: "a".repeat(64),
     sourceDigest: "b".repeat(64),
-    languageServerDigest: "c".repeat(64),
+    languageServerDigest,
     sandbox: {
       backend: "sandbox-runtime",
       backendVersion: "1.2.3",
@@ -235,4 +280,12 @@ function semanticReceipt() {
     },
     result: { operation: "hover", hover: null },
   });
+}
+
+function redigestReceipt(receipt: ReturnType<typeof semanticReceipt>) {
+  const { digest: _digest, ...withoutDigest } = receipt;
+  return {
+    ...withoutDigest,
+    digest: createHash("sha256").update(JSON.stringify(withoutDigest)).digest("hex"),
+  };
 }

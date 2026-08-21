@@ -5,7 +5,10 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { admitLocalLanguageServer } from "../../../../src/infrastructure/fs/local-language-server.js";
+import {
+  admitLocalLanguageServer,
+  assertLocalLanguageServerCurrent,
+} from "../../../../src/infrastructure/fs/local-language-server.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -75,6 +78,20 @@ describe("local language-server admission", () => {
         },
       }),
     ).rejects.toMatchObject({
+      name: "LocalLanguageServerError",
+      code: "source_changed",
+    });
+  });
+
+  it("rejects a currentness check through a replaced executable-directory ancestor", async () => {
+    const fixture = await createFixture();
+    const snapshot = await admitLocalLanguageServer(fixture.project, fixture.manifestPath);
+    const executableDirectory = join(fixture.project, "tools");
+    const movedDirectory = join(fixture.project, "tools-original");
+    await rename(executableDirectory, movedDirectory);
+    await symlink(movedDirectory, executableDirectory);
+
+    await expect(assertLocalLanguageServerCurrent(snapshot)).rejects.toMatchObject({
       name: "LocalLanguageServerError",
       code: "source_changed",
     });
