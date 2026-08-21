@@ -8,7 +8,14 @@ import { dirname, join, resolve } from "node:path";
 import type { CommandSandbox, PreparedCommand } from "../../application/command-sandbox.js";
 import type { NodeExecutionContext } from "../../application/ports.js";
 import type { LanguageServerSnapshot } from "../../domain/capability/language-server.js";
-import type { SemanticRequest, SemanticResult } from "../../domain/semantic/semantic-code.js";
+import {
+  createSemanticQueryReceipt,
+  MAX_SEMANTIC_QUERY_RECEIPTS,
+  MAX_SEMANTIC_RECEIPT_RESULT_BYTES,
+  type SemanticQueryReceipt,
+  type SemanticRequest,
+  type SemanticResult,
+} from "../../domain/semantic/semantic-code.js";
 import { assertLocalLanguageServerCurrent } from "../fs/local-language-server.js";
 import type { SemanticToolSessionFactory } from "../pi/pi-agent-executor.js";
 import type { SemanticToolSession } from "../pi/workspace-agent-tools.js";
@@ -78,6 +85,8 @@ export function createLocalSemanticToolSessionFactory(
 }
 
 class LocalSemanticToolSession implements SemanticToolSession {
+  readonly #receipts: SemanticQueryReceipt[] = [];
+
   constructor(
     private readonly sandbox: CommandSandbox,
     private readonly context: NodeExecutionContext,
@@ -85,13 +94,21 @@ class LocalSemanticToolSession implements SemanticToolSession {
     private readonly options: LocalSemanticCodeServiceOptions,
   ) {}
 
+  evidence(): readonly SemanticQueryReceipt[] {
+    return Object.freeze([...this.#receipts]);
+  }
+
   async query(request: SemanticRequest, signal?: AbortSignal): Promise<SemanticResult> {
     signal?.throwIfAborted();
+    if (this.#receipts.length >= MAX_SEMANTIC_QUERY_RECEIPTS) {
+      throw new LocalSemanticCodeServiceError("semantic_response_limit_exceeded");
+    }
     const authoritativeRoot = resolve(this.context.cwd);
     const projectionRoot = await mkdtemp(join(tmpdir(), "flow-semantic-"));
     let prepared: PreparedCommand | undefined;
     let primaryError: unknown;
     let result: SemanticResult | undefined;
+    let pendingReceipt: SemanticQueryReceipt | undefined;
     let terminationIncomplete = false;
     try {
       const before = await captureProject(authoritativeRoot, projectionRoot, signal);
@@ -137,6 +154,18 @@ class LocalSemanticToolSession implements SemanticToolSession {
       if (after.digest !== before.digest) {
         throw new LocalSemanticCodeServiceError("semantic_source_changed");
       }
+      if (Buffer.byteLength(JSON.stringify(result), "utf8") > MAX_SEMANTIC_RECEIPT_RESULT_BYTES) {
+        throw new LocalSemanticCodeServiceError("semantic_response_limit_exceeded");
+      }
+      pendingReceipt = createSemanticQueryReceipt({
+        sequence: this.#receipts.length + 1,
+        request,
+        projectDigest: before.digest,
+        sourceDigest: sha256(source),
+        languageServerDigest: this.languageServer.digest,
+        sandbox: prepared.evidence,
+        result,
+      });
     } catch (error) {
       primaryError = error;
     }
@@ -161,9 +190,10 @@ class LocalSemanticToolSession implements SemanticToolSession {
     if (primaryError !== undefined) {
       throw normalizeServiceError(primaryError);
     }
-    if (result === undefined) {
+    if (result === undefined || pendingReceipt === undefined) {
       throw new LocalSemanticCodeServiceError("semantic_protocol_failed");
     }
+    this.#receipts.push(pendingReceipt);
     return result;
   }
 }

@@ -27,6 +27,7 @@ import {
   MAX_SEMANTIC_PATH_BYTES,
   MAX_SEMANTIC_POSITION,
   normalizeSemanticRequest,
+  type SemanticQueryReceipt,
   type SemanticRequest,
   type SemanticResult,
 } from "../../domain/semantic/semantic-code.js";
@@ -174,6 +175,7 @@ export interface FlowAgentToolOptions {
 
 export interface SemanticToolSession {
   query(request: SemanticRequest, signal?: AbortSignal): Promise<SemanticResult>;
+  evidence(): readonly SemanticQueryReceipt[];
 }
 
 interface ReadVersionContext {
