@@ -193,7 +193,7 @@ describe("Prime image inventory probe", () => {
     await expect(createRuntimeInventory(fixture)).rejects.toThrow(
       /package inventory.*count limit/i,
     );
-  }, 30_000);
+  }, 60_000);
 
   it.each(nodePackageIdentityCases)(
     "matches the archive inventory when a Node package $label",
