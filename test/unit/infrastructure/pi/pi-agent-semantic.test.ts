@@ -5,11 +5,11 @@ import {
   validateCapabilitySnapshot,
 } from "../../../../src/domain/capability/agent-skills.js";
 import { createLanguageServerSnapshot } from "../../../../src/domain/capability/language-server.js";
-import type { SemanticToolSession } from "../../../../src/infrastructure/pi/workspace-agent-tools.js";
 import {
   PiAgentExecutor,
   type PiAgentRunner,
 } from "../../../../src/infrastructure/pi/pi-agent-executor.js";
+import type { SemanticToolSession } from "../../../../src/infrastructure/pi/workspace-agent-tools.js";
 
 describe("Pi semantic execution", () => {
   it("creates and forwards one attempt-scoped session from frozen server identity", async () => {
@@ -34,7 +34,7 @@ describe("Pi semantic execution", () => {
       ({ context, languageServer }) => {
         factoryCalls += 1;
         expect(context.runId).toBe("run-semantic");
-        expect(languageServer).toBe(snapshot.languageServer);
+        expect(languageServer).toStrictEqual(snapshot.languageServer);
         return session;
       },
     );
@@ -65,32 +65,39 @@ describe("Pi semantic execution", () => {
       factory: undefined,
       code: "pi_semantic_service_unavailable",
     },
-  ])("fails before provider execution for $label", async ({ capabilitySnapshot, factory, code }) => {
-    let providerCalls = 0;
-    const guarded: PiAgentRunner = {
-      async run() {
-        providerCalls += 1;
-        return { text: "should not run", stopReason: "stop" };
-      },
-    };
-    const selected = new PiAgentExecutor(guarded, () => 100, 5_000, 65_536, factory);
+  ])(
+    "fails before provider execution for $label",
+    async ({ capabilitySnapshot, factory, code }) => {
+      let providerCalls = 0;
+      const guarded: PiAgentRunner = {
+        async run() {
+          providerCalls += 1;
+          return { text: "should not run", stopReason: "stop" };
+        },
+      };
+      const selected = new PiAgentExecutor(guarded, () => 100, 5_000, 65_536, factory);
 
-    const outcome = await selected.execute(semanticNode(), {
-      runId: "run-semantic",
-      workflowId: "semantic-workflow",
-      attempt: 1,
-      cwd: "/workspace",
-      protectedPaths: [],
-      ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
-    });
+      const outcome = await selected.execute(semanticNode(), {
+        runId: "run-semantic",
+        workflowId: "semantic-workflow",
+        attempt: 1,
+        cwd: "/workspace",
+        protectedPaths: [],
+        ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
+      });
 
-    expect(outcome).toMatchObject({ status: "failed", error: { code } });
-    expect(providerCalls).toBe(0);
-  });
+      expect(outcome).toMatchObject({ status: "failed", error: { code } });
+      expect(providerCalls).toBe(0);
+    },
+  );
 });
 
 function semanticSession(): SemanticToolSession {
-  return { async query() { return { operation: "diagnostics", diagnostics: [] }; } };
+  return {
+    async query() {
+      return { operation: "diagnostics", diagnostics: [] };
+    },
+  };
 }
 
 function semanticNode() {

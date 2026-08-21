@@ -26,6 +26,7 @@ import {
   createAgentCapabilityEvidence,
   validateCapabilitySnapshot,
 } from "../../domain/capability/agent-skills.js";
+import type { LanguageServerSnapshot } from "../../domain/capability/language-server.js";
 import type { ToolPackageSnapshot } from "../../domain/capability/tool-packages.js";
 import { resolveAgentToolPackages } from "../../domain/capability/workflow-capabilities.js";
 import { PolicyBroker } from "../../domain/policy/broker.js";
@@ -44,7 +45,7 @@ import type {
 } from "../../domain/workflow/types.js";
 import { AgentCommandRecorder } from "./agent-command-recorder.js";
 import { AgentEffectRecorder } from "./agent-effect-recorder.js";
-import { createWorkspaceAgentTools } from "./workspace-agent-tools.js";
+import { createWorkspaceAgentTools, type SemanticToolSession } from "./workspace-agent-tools.js";
 
 export interface PiAgentRunRequest {
   readonly cwd: string;
@@ -66,6 +67,7 @@ export interface PiAgentRunRequest {
     readonly snapshot: CapabilitySnapshot;
     readonly selected: readonly string[];
   };
+  readonly semanticSession?: SemanticToolSession;
   readonly signal?: AbortSignal;
 }
 
@@ -94,12 +96,18 @@ export interface PiAgentRunner {
   run(request: PiAgentRunRequest): Promise<PiAgentRunResult>;
 }
 
+export type SemanticToolSessionFactory = (input: {
+  readonly context: NodeExecutionContext;
+  readonly languageServer: LanguageServerSnapshot;
+}) => SemanticToolSession;
+
 export class PiAgentExecutor implements AgentExecutor {
   constructor(
     readonly runner: PiAgentRunner = new EmbeddedPiAgentRunner(),
     readonly now: () => number = performance.now.bind(performance),
     readonly abortGraceMs = 5_000,
     readonly maxOutputBytes = 65_536,
+    readonly semanticSessionFactory?: SemanticToolSessionFactory,
   ) {
     if (!Number.isSafeInteger(abortGraceMs) || abortGraceMs < 0) {
       throw new RangeError("abortGraceMs must be a non-negative safe integer");
@@ -176,6 +184,37 @@ export class PiAgentExecutor implements AgentExecutor {
           error instanceof Error ? error.message : String(error),
         );
       }
+    }
+    let semanticSession: SemanticToolSession | undefined;
+    if (node.agent.tools.includes("semantic")) {
+      if (context.capabilitySnapshot === undefined) {
+        return agentFailure(
+          "pi_semantic_snapshot_unavailable",
+          "semantic access requires an immutable language-server snapshot",
+        );
+      }
+      let languageServer: LanguageServerSnapshot | undefined;
+      try {
+        languageServer = validateCapabilitySnapshot(context.capabilitySnapshot).languageServer;
+      } catch {
+        return agentFailure(
+          "pi_semantic_snapshot_invalid",
+          "semantic language-server snapshot is invalid",
+        );
+      }
+      if (languageServer === undefined) {
+        return agentFailure(
+          "pi_semantic_snapshot_unavailable",
+          "semantic access requires an immutable language-server snapshot",
+        );
+      }
+      if (this.semanticSessionFactory === undefined) {
+        return agentFailure(
+          "pi_semantic_service_unavailable",
+          "semantic language-service infrastructure is unavailable",
+        );
+      }
+      semanticSession = this.semanticSessionFactory({ context, languageServer });
     }
     if (node.agent.tools.includes("edit") && context.effectJournal === undefined) {
       return agentFailure(
@@ -320,6 +359,7 @@ export class PiAgentExecutor implements AgentExecutor {
           protectedPaths: context.protectedPaths,
           effectRecorder,
           commandRecorder,
+          ...(semanticSession === undefined ? {} : { semanticSession }),
           ...(context.capabilitySnapshot === undefined || node.agent.skills.length === 0
             ? {}
             : {
@@ -758,6 +798,9 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
           ? {}
           : { commandRecorder: request.commandRecorder }),
         toolPackages: request.toolPackages ?? [],
+        ...(request.semanticSession === undefined
+          ? {}
+          : { semanticSession: request.semanticSession }),
         ...(capabilitySession === undefined ? {} : { capabilitySession }),
       },
     );
