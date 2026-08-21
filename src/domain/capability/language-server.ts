@@ -77,6 +77,8 @@ const manifestSchema = z
   })
   .strict();
 
+export type LanguageServerManifest = z.infer<typeof manifestSchema>;
+
 const executableIdentitySchema = z
   .object({
     path: executablePathSchema,
@@ -185,6 +187,20 @@ export function createLanguageServerSnapshot(
       ...candidate,
       digest: calculateLanguageServerSnapshotDigest(candidate),
     });
+  } catch (error) {
+    if (error instanceof LanguageServerContractError) {
+      throw error;
+    }
+    throw new LanguageServerContractError();
+  }
+}
+
+export function parseLanguageServerManifest(input: Uint8Array): LanguageServerManifest {
+  try {
+    if (input.byteLength === 0 || input.byteLength > MAX_LANGUAGE_SERVER_MANIFEST_BYTES) {
+      throw new Error("manifest size");
+    }
+    return parseManifest(input);
   } catch (error) {
     if (error instanceof LanguageServerContractError) {
       throw error;

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -101,16 +101,14 @@ describe("local language-server admission", () => {
   });
 });
 
-async function createFixture(
-  overrides: { readonly executableSha256?: string } = {},
-): Promise<{
+async function createFixture(overrides: { readonly executableSha256?: string } = {}): Promise<{
   project: string;
   manifestPath: string;
   executablePath: string;
   executable: Buffer;
   executableSha256: string;
 }> {
-  const project = await mkdtemp(join(tmpdir(), "flow-language-server-"));
+  const project = await realpath(await mkdtemp(join(tmpdir(), "flow-language-server-")));
   temporaryDirectories.push(project);
   const manifestDirectory = join(project, ".flow", "language-servers");
   const executableDirectory = join(project, "tools");
