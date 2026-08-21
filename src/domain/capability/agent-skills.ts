@@ -22,6 +22,7 @@ import {
   type PromptActivationSnapshot,
   parsePromptActivationSnapshot,
 } from "../adaptation/prompt-activation.js";
+import { type GoalWorkspaceRevision, parseGoalWorkspaceRevision } from "../goal/workspace.js";
 import { agentSkillNameSchema, MAX_AGENT_SKILL_PACKAGES } from "./agent-skill-contract.js";
 import { type LanguageServerSnapshot, validateLanguageServerSnapshot } from "./language-server.js";
 import {
@@ -126,6 +127,7 @@ export interface CapabilitySnapshot {
   readonly activations?: readonly AdaptiveActivationSnapshot[];
   readonly effectiveHarness?: EffectiveHarnessRuntimeSnapshot;
   readonly languageServer?: LanguageServerSnapshot;
+  readonly goalWorkspace?: GoalWorkspaceRevision;
   readonly digest: string;
 }
 
@@ -226,6 +228,7 @@ const capabilitySnapshotSchema = z
     activations: z.array(z.unknown()).min(1).max(MAX_PROMPT_ACTIVATIONS_PER_SNAPSHOT).optional(),
     effectiveHarness: z.unknown().optional(),
     languageServer: z.unknown().optional(),
+    goalWorkspace: z.unknown().optional(),
     digest: sha256Schema,
   })
   .strict()
@@ -234,7 +237,8 @@ const capabilitySnapshotSchema = z
       snapshot.packages.length === 0 &&
       snapshot.activations === undefined &&
       snapshot.effectiveHarness === undefined &&
-      snapshot.languageServer === undefined
+      snapshot.languageServer === undefined &&
+      snapshot.goalWorkspace === undefined
     ) {
       context.addIssue({ code: "custom", message: "capability snapshot cannot be empty" });
     }
@@ -477,12 +481,17 @@ export function validateCapabilitySnapshot(input: unknown): CapabilitySnapshot {
     parsed.languageServer === undefined
       ? undefined
       : validateLanguageServerSnapshot(parsed.languageServer);
+  const goalWorkspace =
+    parsed.goalWorkspace === undefined
+      ? undefined
+      : parseGoalWorkspaceRevision(parsed.goalWorkspace);
   if (
     calculateCapabilitySnapshotDigest(
       parsed.packages,
       activations,
       effectiveHarness,
       languageServer,
+      goalWorkspace,
     ) !== parsed.digest
   ) {
     throw new Error("capability snapshot digest does not match");
@@ -514,6 +523,7 @@ export function validateCapabilitySnapshot(input: unknown): CapabilitySnapshot {
     ...(activations.length === 0 ? {} : { activations }),
     ...(effectiveHarness === undefined ? {} : { effectiveHarness }),
     ...(languageServer === undefined ? {} : { languageServer }),
+    ...(goalWorkspace === undefined ? {} : { goalWorkspace }),
     digest: parsed.digest,
   });
 }
@@ -528,6 +538,18 @@ export function createEffectiveHarnessCapabilitySnapshot(
     packages: state.packages,
     effectiveHarness,
     digest: calculateCapabilitySnapshotDigest(state.packages, [], effectiveHarness),
+  });
+}
+
+export function createGoalWorkspaceCapabilitySnapshot(
+  goalWorkspace: GoalWorkspaceRevision,
+): CapabilitySnapshot {
+  const parsed = parseGoalWorkspaceRevision(goalWorkspace);
+  return validateCapabilitySnapshot({
+    version: 1,
+    packages: [],
+    goalWorkspace: parsed,
+    digest: calculateCapabilitySnapshotDigest([], [], undefined, undefined, parsed),
   });
 }
 
@@ -558,6 +580,7 @@ export function calculateCapabilitySnapshotDigest(
   activations: readonly AdaptiveActivationSnapshot[] = [],
   effectiveHarness?: EffectiveHarnessRuntimeSnapshot,
   languageServer?: LanguageServerSnapshot,
+  goalWorkspace?: GoalWorkspaceRevision,
 ): string {
   return sha256(
     JSON.stringify({
@@ -583,6 +606,14 @@ export function calculateCapabilitySnapshotDigest(
       ...(languageServer === undefined
         ? {}
         : { languageServer: { digest: languageServer.digest } }),
+      ...(goalWorkspace === undefined
+        ? {}
+        : {
+            goalWorkspace: {
+              revision: goalWorkspace.revision,
+              digest: goalWorkspace.digest,
+            },
+          }),
     }),
   );
 }
@@ -632,17 +663,26 @@ export function combineCapabilitySnapshots(
   if (languageServers.some((item) => item.digest !== languageServer?.digest)) {
     throw new Error("capability snapshots contain conflicting language-server selections");
   }
+  const goalWorkspaces = snapshots
+    .map((snapshot) => snapshot.goalWorkspace)
+    .filter((item): item is GoalWorkspaceRevision => item !== undefined);
+  const goalWorkspace = goalWorkspaces[0];
+  if (goalWorkspaces.some((item) => item.digest !== goalWorkspace?.digest)) {
+    throw new Error("capability snapshots contain conflicting goal workspace selections");
+  }
   return validateCapabilitySnapshot({
     version: 1,
     packages,
     ...(activations.length === 0 ? {} : { activations }),
     ...(effectiveHarness === undefined ? {} : { effectiveHarness }),
     ...(languageServer === undefined ? {} : { languageServer }),
+    ...(goalWorkspace === undefined ? {} : { goalWorkspace }),
     digest: calculateCapabilitySnapshotDigest(
       packages,
       activations,
       effectiveHarness,
       languageServer,
+      goalWorkspace,
     ),
   });
 }

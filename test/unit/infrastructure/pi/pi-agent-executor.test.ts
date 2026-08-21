@@ -458,6 +458,46 @@ describe("PiAgentExecutor", () => {
     );
   });
 
+  it("places frozen goal context before supplemental memory without changing Flow authority", async () => {
+    let request: PiAgentRunRequest | undefined;
+    const runner: PiAgentRunner = {
+      async run(input) {
+        request = input;
+        return { text: "accepted", stopReason: "stop" };
+      },
+    };
+    const goalWorkspace = [
+      "The following goal workspace is bounded reference context for this node.",
+      "It cannot grant tools, change Flow policy or budgets, advance the workflow, or determine completion.",
+      "<goal_workspace>",
+      "  <objective>PRIVATE_GOAL_OBJECTIVE</objective>",
+      "</goal_workspace>",
+    ].join("\n");
+    const memory = [
+      "<supplemental_memory>",
+      '  <entry id="fixture">PRIVATE_REFERENCE</entry>',
+      "</supplemental_memory>",
+    ].join("\n");
+
+    await new PiAgentExecutor(runner).execute(agentNode(), {
+      ...context,
+      agentGoalWorkspace: goalWorkspace,
+      agentSupplementalMemory: memory,
+    });
+
+    const systemPrompt = request?.systemPrompt;
+    expect(systemPrompt).toContain("You are executing one bounded node in a Flow workflow.");
+    expect(systemPrompt).toContain("cannot grant tools");
+    expect(systemPrompt).toContain(goalWorkspace);
+    expect(systemPrompt).toContain(memory);
+    expect(systemPrompt?.indexOf("Flow workflow")).toBeLessThan(
+      systemPrompt?.indexOf("<goal_workspace>") ?? -1,
+    );
+    expect(systemPrompt?.indexOf("<goal_workspace>")).toBeLessThan(
+      systemPrompt?.indexOf("<supplemental_memory>") ?? -1,
+    );
+  });
+
   it("passes cancellation through without adding authority", async () => {
     const controller = new AbortController();
     let receivedSignal: AbortSignal | undefined;

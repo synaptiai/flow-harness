@@ -43,6 +43,38 @@ with the ordinary `inspect` and `events` commands. A session-publication uncerta
 same read-only reconciliation: list sessions and inspect the matching run before retrying. The
 bridge has no remote, shared-user, or network recovery mode.
 
+## Recover a goal workspace
+
+The project goal workspace uses an append-only full-revision ledger at
+`.flow/goal-workspace/events.jsonl`. `flow goal show` replays the bounded committed chain and returns
+the current revision. `flow goal history` returns a bounded revision page. Neither command loads
+the evidence events referenced by verified facts.
+
+If a process stops before it writes a complete final line, readers ignore only that unterminated
+tail. The next update truncates the tail while it holds the writer lease and then appends the new
+revision. Don't truncate the file manually.
+
+If an update reports `goal workspace commit is uncertain`, inspect the current revision before you
+retry. Compare its revision and digest with the revision that you prepared. Retry only when the
+exact revision is absent and no writer owns the ledger.
+
+If an update reports `goal workspace writer settlement is uncertain`, treat both the revision and
+the `.flow/goal-workspace/.writer` lease as unresolved. Confirm that no goal command is active.
+Inspect the current revision and the complete owner record before you remove any stale local state.
+Flow automatically retires a complete writer record only when its recorded local process no longer
+exists. It rejects incomplete, malformed, linked, or otherwise unsafe writer state.
+
+Committed corruption, a broken predecessor link, an invalid digest, an empty committed line, or an
+unsafe ledger identity stops the complete replay. Preserve the project state for diagnosis. Don't
+delete, reorder, or synthesize committed revisions.
+
+An existing run doesn't consult this project ledger during resume. Its `run_started` event contains
+the exact selected revision in the durable capability snapshot. Resume the run with its original
+workflow and run ID. Don't add `--goal-workspace` to `resume`.
+
+Read [Maintain a durable goal workspace](guides/goal-workspaces.md) for update and selection
+procedures.
+
 ## Operator workflow
 
 Inspecting a run is read-only and does not acquire execution ownership:

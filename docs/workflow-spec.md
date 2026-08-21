@@ -1341,6 +1341,30 @@ digest plus deduplicated file-read receipts containing resource URI, package dig
 and byte count. Live execution, replay, and recovery independently reconcile that evidence against
 both the immutable bytes and the node's compiled selection.
 
+## Goal workspace snapshot
+
+A new run can explicitly select the current project goal workspace with `--goal-workspace`. Flow
+parses and replays the separate project revision ledger, validates the current complete revision,
+and includes it in the immutable capability snapshot. The capability snapshot digest binds the
+workspace revision number and digest. `run_started` persists the complete revision.
+
+The selected revision contains a bounded objective, facts, invariants, verified-fact statements,
+open questions, one next action, and immutable references to terminal run events. It contains no raw
+referenced evidence. Flow renders the objective and text entries for agent nodes but omits evidence
+locators from model context. The public run projection can show the locators and event digests for
+audit without loading the referenced evidence.
+
+A goal workspace is context, not executable authority. It cannot select packages, add tools, change
+policy or budgets, create a transition, or accept a goal or criterion. The deterministic compiled
+workflow and durable evidence retain those responsibilities.
+
+Attached execution, detached jobs, child ledgers, replay, and recovery use the exact selected
+revision. Resume accepts no live workspace selection and doesn't read the project goal ledger.
+Changing or deleting the live workspace therefore doesn't change an existing run.
+
+Read [Maintain a durable goal workspace](guides/goal-workspaces.md) for the source schema, exact
+limits, operator commands, compare-and-set updates, and recovery behavior.
+
 ## Run ledger
 
 Each run is stored at:

@@ -308,6 +308,8 @@ replayable, and visible in the selected profile.
 
 ### Slice 9.1: Maintain a durable goal workspace
 
+**Implemented in current source.**
+
 - Store one revisioned objective, bounded facts, invariants, evidence-backed verified facts, open
   questions, and one next action.
 - Use compare-and-set revisions for every update and keep completion under the deterministic goal

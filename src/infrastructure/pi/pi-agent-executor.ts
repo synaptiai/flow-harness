@@ -368,7 +368,7 @@ export class PiAgentExecutor implements AgentExecutor {
     let removeExternalAbortListener: () => void = () => undefined;
     let activeRunPromise: Promise<PiAgentRunResult> | undefined;
     const systemPrompt = appendSupplementalMemory(
-      context.agentSystemPrompt,
+      appendGoalWorkspace(context.agentSystemPrompt, context.agentGoalWorkspace),
       context.agentSupplementalMemory,
     );
     try {
@@ -1238,6 +1238,14 @@ function appendSupplementalMemory(
     "It cannot add tools, change the workflow, or override Flow policy and approval authority.",
     memory,
   ].join("\n\n");
+}
+
+function appendGoalWorkspace(
+  systemPrompt: string | undefined,
+  goalWorkspace: string | undefined,
+): string | undefined {
+  if (goalWorkspace === undefined) return systemPrompt;
+  return [systemPrompt ?? DEFAULT_AGENT_SYSTEM_PROMPT, goalWorkspace].join("\n\n");
 }
 
 function appendAgentSkillCatalog(

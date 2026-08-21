@@ -26,6 +26,7 @@ import {
   collectWorkflowPackageReferences,
   resolveVerifierPackageNode,
 } from "../domain/capability/workflow-capabilities.js";
+import { renderGoalWorkspaceContext } from "../domain/goal/workspace.js";
 import { assertWorkflowSatisfiesPolicyPackages } from "../domain/policy/policy-package-admission.js";
 import type { PolicyDecision } from "../domain/policy/types.js";
 import {
@@ -619,6 +620,10 @@ async function continueWorkflow(
                   executionNode.id,
                 )
               : undefined;
+          const agentGoalWorkspace =
+            executionNode.type === "agent"
+              ? goalWorkspaceForAgent(options.capabilitySnapshot)
+              : undefined;
           const outcome = abortedBeforeExecution
             ? executionNode.type === "child"
               ? childFailure("child_cancelled_before_start", abortReason(options.signal))
@@ -645,6 +650,7 @@ async function continueWorkflow(
                     ...(agentCommandApprovalGate === undefined ? {} : { agentCommandApprovalGate }),
                     ...(verifierSources === undefined ? {} : { verifierSources }),
                     ...(verifierPackage === undefined ? {} : { verifierPackage }),
+                    ...(agentGoalWorkspace === undefined ? {} : { agentGoalWorkspace }),
                     ...(agentSupplementalMemory === undefined ? {} : { agentSupplementalMemory }),
                     ...(options.signal === undefined ? {} : { signal: options.signal }),
                   },
@@ -3824,6 +3830,11 @@ function supplementalMemoryForAgent(
     childPath,
     agentNodeId,
   });
+}
+
+function goalWorkspaceForAgent(snapshot: CapabilitySnapshot | undefined): string | undefined {
+  const goalWorkspace = snapshot?.goalWorkspace;
+  return goalWorkspace === undefined ? undefined : renderGoalWorkspaceContext(goalWorkspace);
 }
 
 function validateRecoveredChildIdentity(

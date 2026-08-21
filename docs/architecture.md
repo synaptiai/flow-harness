@@ -67,10 +67,10 @@ publishes one reviewed fixture, admits only read, list, and hash-bound edit tool
 acceptance to a deterministic command verifier. Neither path grants new execution authority or
 makes an optional runtime a base dependency.
 
-Gate 9 currently adds a revisioned goal workspace, content-addressed retained artifacts, and
-read-only semantic code queries. The semantic boundary freezes one operator-selected language
-server. It runs one bounded LSP 3.18 request in a short-lived sandbox. It then verifies source
-currentness and records a private canonical receipt. Goal text, artifact previews, and semantic
+Gate 9 currently adds a revisioned goal workspace and read-only semantic code queries.
+Content-addressed retained artifacts remain planned. The semantic boundary freezes one
+operator-selected language server. It runs one bounded LSP 3.18 request in a short-lived sandbox.
+It then verifies source currentness and records a private canonical receipt. Goal text and semantic
 results remain context rather than workflow authority.
 
 ## Architecture at a glance
@@ -107,6 +107,7 @@ flowchart TB
         proposals["Proposal generation<br/>Creates one bounded, inert model suggestion"]
         adaptation["Evaluation and adaptation<br/>Compares reviewed root and child candidates"]
         memory["Reviewed agent context<br/>Immutable per-agent supplemental memory"]
+        goals["Goal workspace<br/>Reviews and freezes one project revision"]
     end
 
     subgraph execution["3. Execution plane — performs bounded work"]
@@ -119,6 +120,7 @@ flowchart TB
     subgraph state["4. Durable project state — survives restart"]
         direction LR
         ledgers[("Run and evidence ledgers")]
+        goalLedger[("Goal revision ledger")]
         stores[("Run, package, activation, and evaluation stores")]
         workspaces[("Isolated workspaces")]
     end
@@ -141,6 +143,7 @@ flowchart TB
     cli -->|"Reviews and compares candidates"| adaptation
     cli -->|"Requests one inert proposal"| proposals
     cli -->|"Queues detached work"| supervisor
+    cli -->|"Reviews or selects a goal revision"| goals
     quickstart -->|"Publishes reviewed configuration and fixture"| project
     quickstart -->|"Selects an explicit bounded policy"| rules
     quickstart -->|"Starts one attached run"| engine
@@ -158,6 +161,9 @@ flowchart TB
     adaptation -->|"Runs paired trials"| engine
     adaptation -->|"Stages one reviewed memory change"| memory
     memory -->|"Supplies exact target context"| engine
+    goals -->|"Supplies bounded cross-run context"| engine
+    goals -->|"Appends full revisions with exact CAS"| goalLedger
+    goalLedger -->|"Replays the current immutable revision"| goals
     adaptation -->|"Stores evaluation and activation evidence"| stores
     memory -->|"Persists identities and exact bytes"| stores
     engine -->|"Asks what is legal"| rules
@@ -199,9 +205,9 @@ Read the diagram from top to bottom:
    command adapters do not own workflow state. The semantic service starts one exact language
    server for one request against a read-only, network-denied project projection.
 
-4. Durable project state records events, evidence, ownership, installed capabilities, evaluations,
-   and isolated workspace identity. Flow replays these records after interruption instead of
-   trusting process memory.
+4. Durable project state records events, evidence, goal revisions, ownership, installed
+   capabilities, evaluations, and isolated workspace identity. Flow replays these records after
+   interruption instead of trusting process memory.
 
 5. Model providers, project files, Git, and package sources remain external dependencies. Flow
    validates their input at the relevant boundary and does not treat a live external response as
@@ -221,6 +227,7 @@ before success. It stops on unresolved side-effect or settlement uncertainty.
 | Environment diagnostics | `src/application/environment-doctor.ts`, `src/domain/host-requirements.ts`, and selected `src/infrastructure/` probes | Checks only the selected host, project, workflow, provider, sandbox, or Prime requirements and returns a bounded, value-free report. |
 | Workflow rules and safeguards | `src/domain/` | Defines provider-neutral workflows, state transitions, policy, evidence, budgets, and validation. |
 | Workflow engine, evaluation, adaptation, and capability governance | `src/application/` | Coordinates use cases through ports, asks the domain for legal transitions, and prepares evaluated state changes. |
+| Goal workspace | `src/domain/goal/`, `src/application/goal-workspace.ts`, and `src/infrastructure/fs/local-goal-workspace-store.ts` | Validates bounded full revisions, resolves immutable run-event references, performs exact compare-and-set updates, and freezes selected context into run snapshots. |
 | Detached work and recovery | `src/supervisor/` | Owns bounded queueing, worker adoption, cancellation, event paging, and detached lifecycle. |
 | Semantic code boundary | `src/domain/semantic/` and `src/infrastructure/lsp/` | Defines canonical read-only code queries and receipts, runs one strict LSP 3.18 subset, isolates each server session, and rejects stale or unsettled results. |
 | Presentation, storage, package, sandbox, and runtime adapters | `src/infrastructure/` | Implements application ports for local files, HTTP, OCI, TUF, ACP, Pi, OMP, Prime, SRT, terminal, and browser boundaries. |
@@ -260,6 +267,7 @@ Architecture is derived from these flows.
 | Complete a quick start | A user runs `flow quickstart` in an existing directory | One minimal project, one terminal attached run, durable evidence, and explicit inspection and browser commands; coding mode adds one reviewed hash-bound edit and deterministic verifier |
 | Diagnose | A user runs `flow doctor` for a project, workflow, or Prime profile | A bounded read-only report for only the selected path, with fixed remediation and no private values |
 | Execute | A user selects a goal and workflow | Verified success, explicit failure, a durable wait state, or a precise blocker |
+| Maintain long-horizon context | An operator initializes or updates the project goal workspace | One complete immutable revision or a no-change conflict; a new run can freeze the current revision explicitly |
 | Query code semantics | A user selects one exact language server for a workflow that declares `semantic` | Bounded diagnostics or navigation context plus a private canonical receipt; no file mutation or workflow authority |
 | Observe | A user opens status, the TUI, or the local browser host | Current graph position, attempts, evidence, costs, approvals, and blockers |
 | Steer | A user pauses, cancels, supplies input, or approves an operation | A durable, attributable state transition |

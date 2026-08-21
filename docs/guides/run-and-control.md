@@ -18,6 +18,23 @@ node dist/cli/main.js inspect <run-id>
 The attached command owns the live scheduler. Closing the terminal can interrupt that owner. Use a
 detached run when work must survive the submitting client.
 
+## Select durable goal context
+
+If the project has a goal workspace, select its current revision explicitly for validation or a
+new run:
+
+```sh
+flow validate <workflow.yaml> --goal-workspace
+flow run <workflow.yaml> --goal-workspace --run-id <run-id>
+```
+
+Flow freezes that revision into the run's capability snapshot. Detached workers and child runs use
+the same revision. Resume reads it from durable run history and doesn't accept a live
+`--goal-workspace` flag.
+
+Read [Maintain a durable goal workspace](goal-workspaces.md) for initialization, safe updates,
+limits, evidence references, privacy, and recovery.
+
 ## Run in the background
 
 Submit one durable command:
