@@ -28,6 +28,7 @@ on it.
 | Read-only environment diagnostics | Implemented | Implemented | Available in current source builds; optional checks run only for the selected workflow, sandbox, or Prime path. |
 | Sandboxed command nodes | Implemented | Implemented | Flow fails closed when the native sandbox is unavailable. |
 | Agent `read`, `ls`, and hash-bound `edit` | Implemented | Implemented | The host-side Pi runtime keeps the invoking user's host authority. |
+| Read-only semantic code queries | Linux x64 runtime proof | Limited | Current source supports an exact local LSP 3.18 server under the native sandbox. The hosted containment proof covers Linux x64. |
 | Agent `exec` | Implemented | Unavailable | Linux requires verified PID-namespace descendant containment. |
 | Detached supervisor and workers | Implemented | Implemented | Same-host and same-user only. |
 | Terminal, browser, and ACP presentation | Implemented | Implemented | Local operator surfaces only. |
@@ -51,6 +52,16 @@ uses only read, list, and hash-bound edit tools, then requires deterministic exa
 verification. Read [Complete the coding quick start](guides/coding-quickstart.md).
 
 Read the [Workflow specification](workflow-spec.md) and [Architecture](architecture.md).
+
+### Semantic code context
+
+- Operator-selected language-server identity in the immutable run capability snapshot.
+- Bounded diagnostics, definition, references, and hover operations through `flow_semantic`.
+- One short-lived, network-denied, read-only project projection for each query.
+- Source-currentness checks and canonical receipts after confirmed process and sandbox settlement.
+- Content-free public summaries. Complete bounded receipts remain in the private run ledger.
+
+Read [Use read-only semantic code queries](guides/semantic-code.md).
 
 ### Policy, approval, and containment
 

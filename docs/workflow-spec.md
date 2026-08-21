@@ -1084,7 +1084,53 @@ New command evidence records `anthropic-sandbox-runtime`, its exact installed ve
     args: [test]
 ```
 
-The embedded Pi adapter permits only Flow-owned `read`, `ls`, `edit`, and `exec` tools. The allowlist may be empty, every name must be unique, and a tool is structurally unavailable unless declared. Every tool operation passes through an attempt-scoped Flow policy broker. The broker canonicalizes filesystem targets, derives authority from the semantic operation rather than its Pi name, and permits only actions declared by the compiled node. `flow_ls` sorts and bounds one directory listing behind one logical `filesystem.list` authorization; it does not spend policy-decision capacity per returned entry.
+The embedded Pi adapter permits only Flow-owned `read`, `ls`, `edit`, `exec`, and `semantic` tools.
+The allowlist can be empty, and every name must be unique. A tool is unavailable unless the node
+declares it.
+
+Every tool operation passes through an attempt-scoped Flow policy broker. The broker canonicalizes
+filesystem targets and derives authority from the semantic operation. It permits only actions that
+the compiled node declares. `flow_ls` sorts and bounds one directory listing behind one logical
+`filesystem.list` authorization. It doesn't spend policy-decision capacity per returned entry.
+
+`flow_semantic` accepts one closed operation: `diagnostics`, `definition`, `references`, or `hover`.
+Every request contains one canonical portable project path. Definition, reference, and hover
+requests also contain a zero-based line and character. A semantic workflow requires one exact
+operator-selected language-server snapshot. A workflow without semantic access rejects an
+unexpected snapshot.
+
+The snapshot binds the canonical manifest, executable SHA-256 and file
+identity, fixed arguments, languages and suffixes, initialization options, containment profile,
+and request timeout. Detached execution and recovery use the stored snapshot. Resume doesn't
+accept a replacement.
+
+The semantic adapter implements a closed LSP 3.18 subset. It starts one server process for one
+query against a private copy of the admitted project. The copy excludes `.flow`, `.git`,
+`node_modules`, `dist`, and `coverage`. It contains at most 4096 entries, 32 directory levels,
+1 MiB per regular file, and 16 MiB in total. The sandbox gives the server read-only access to the
+copy and denies network access. Flow rejects symbolic links, special files, noncanonical project
+roots, locations outside the copied project, malformed protocol messages, unrequested operations,
+and dynamic server authority.
+
+Normalized diagnostics and locations contain canonical project-relative paths and zero-based
+ranges. Diagnostics include a fixed severity and bounded code and message. Hover contains bounded
+plain text or Markdown. One result contains at most 512 items and 1 MiB of canonical JSON. Flow
+sorts diagnostics and locations and removes duplicate locations. It doesn't truncate an
+over-limit response into a valid result.
+
+An agent attempt records at most 16 semantic receipts. Each receipt binds the canonical request,
+project digest, selected-file digest, language-server snapshot digest, sandbox evidence,
+normalized result, and canonical result and receipt digests. Flow publishes a receipt only after
+the response, source-currentness check, process-tree termination, and sandbox release settle.
+Replay validates every digest and requires contiguous receipt sequence numbers. Public output
+projects only the operation, item count, digests, and sandbox identity. The complete bounded
+request and result remain private run evidence.
+
+A semantic result is advisory. It cannot authorize a policy action, approve an operation, mutate
+a file, select a graph transition, satisfy a verifier, or prove goal completion. Flow doesn't retry
+a failed semantic request or fall back to an uncontained server. See
+[Use read-only semantic code queries](guides/semantic-code.md) for operator steps and fixed failure
+categories.
 
 `flow_read` preserves Pi's bounded paging behavior and adds a full-file version marker of the form `sha256:<64-lowercase-hex>`. The digest covers the exact bytes read, not only the displayed page. `flow_edit` accepts `path`, `expectedSha256`, and one to 32 `{oldText,newText}` replacements with at most 256 KiB of replacement text. It edits one existing regular UTF-8 file no larger than 8 MiB. Replacement strings must contain valid Unicode scalar values. Every non-empty `oldText` must occur exactly once, replacements must not overlap, and all matches are computed against the same original content. The edit fails with `stale_version` when the current full-file hash differs. It never performs fuzzy matching, snapshot recovery, or automatic merging.
 

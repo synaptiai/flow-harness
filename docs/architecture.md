@@ -67,6 +67,12 @@ publishes one reviewed fixture, admits only read, list, and hash-bound edit tool
 acceptance to a deterministic command verifier. Neither path grants new execution authority or
 makes an optional runtime a base dependency.
 
+Gate 9 currently adds a revisioned goal workspace, content-addressed retained artifacts, and
+read-only semantic code queries. The semantic boundary freezes one operator-selected language
+server. It runs one bounded LSP 3.18 request in a short-lived sandbox. It then verifies source
+currentness and records a private canonical receipt. Goal text, artifact previews, and semantic
+results remain context rather than workflow authority.
+
 ## Architecture at a glance
 
 Flow is distributed as one Node.js command-line package. It can start local supervisor and worker
@@ -106,6 +112,7 @@ flowchart TB
     subgraph execution["3. Execution plane — performs bounded work"]
         direction LR
         agents["Agent adapters<br/>Pi · OMP · Prime"]
+        semantic["Semantic query service<br/>Short-lived LSP · read-only projection"]
         commands["Command sandboxes<br/>SRT · Docker"]
     end
 
@@ -158,6 +165,9 @@ flowchart TB
     rules -->|"Authorizes bounded commands"| commands
     agents -->|"Makes bounded model requests"| models
     agents -->|"Uses workspace tools through Flow policy"| project
+    agents -->|"Requests bounded code context"| semantic
+    semantic -->|"Reads an isolated project projection"| project
+    semantic -->|"Uses the selected containment profile"| commands
     commands -->|"Performs contained file and process operations"| project
     agents -->|"Uses isolated trial files"| workspaces
     commands -->|"Uses isolated command files"| workspaces
@@ -167,6 +177,7 @@ flowchart TB
     supervisor -->|"Records queues and ownership"| stores
     presentation -->|"Reads a sanitized public projection"| ledgers
     agents -->|"Returns evidence for durable append"| ledgers
+    semantic -->|"Returns settled query receipts"| ledgers
     commands -->|"Returns effect receipts for durable append"| ledgers
 ```
 
@@ -185,7 +196,8 @@ Read the diagram from top to bottom:
    memory.
 
 3. The execution plane performs only the bounded work that the control plane admits. Agent and
-   command adapters do not own workflow state.
+   command adapters do not own workflow state. The semantic service starts one exact language
+   server for one request against a read-only, network-denied project projection.
 
 4. Durable project state records events, evidence, ownership, installed capabilities, evaluations,
    and isolated workspace identity. Flow replays these records after interruption instead of
@@ -210,6 +222,7 @@ before success. It stops on unresolved side-effect or settlement uncertainty.
 | Workflow rules and safeguards | `src/domain/` | Defines provider-neutral workflows, state transitions, policy, evidence, budgets, and validation. |
 | Workflow engine, evaluation, adaptation, and capability governance | `src/application/` | Coordinates use cases through ports, asks the domain for legal transitions, and prepares evaluated state changes. |
 | Detached work and recovery | `src/supervisor/` | Owns bounded queueing, worker adoption, cancellation, event paging, and detached lifecycle. |
+| Semantic code boundary | `src/domain/semantic/` and `src/infrastructure/lsp/` | Defines canonical read-only code queries and receipts, runs one strict LSP 3.18 subset, isolates each server session, and rejects stale or unsettled results. |
 | Presentation, storage, package, sandbox, and runtime adapters | `src/infrastructure/` | Implements application ports for local files, HTTP, OCI, TUF, ACP, Pi, OMP, Prime, SRT, terminal, and browser boundaries. |
 | Prime evaluation container | `prime-container/` | Provides the fixed Go supervisor, kernel bridge, driver protocol, and hardened image used by the Prime adapter. |
 
@@ -247,6 +260,7 @@ Architecture is derived from these flows.
 | Complete a quick start | A user runs `flow quickstart` in an existing directory | One minimal project, one terminal attached run, durable evidence, and explicit inspection and browser commands; coding mode adds one reviewed hash-bound edit and deterministic verifier |
 | Diagnose | A user runs `flow doctor` for a project, workflow, or Prime profile | A bounded read-only report for only the selected path, with fixed remediation and no private values |
 | Execute | A user selects a goal and workflow | Verified success, explicit failure, a durable wait state, or a precise blocker |
+| Query code semantics | A user selects one exact language server for a workflow that declares `semantic` | Bounded diagnostics or navigation context plus a private canonical receipt; no file mutation or workflow authority |
 | Observe | A user opens status, the TUI, or the local browser host | Current graph position, attempts, evidence, costs, approvals, and blockers |
 | Steer | A user pauses, cancels, supplies input, or approves an operation | A durable, attributable state transition |
 | Resume | A user reopens an interrupted run | Reconciled state and continuation from the next safe node |
