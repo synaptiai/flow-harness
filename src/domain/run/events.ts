@@ -67,6 +67,12 @@ import {
 import { policyDecisionSchema } from "../policy/schema.js";
 import type { PolicyDecision } from "../policy/types.js";
 import {
+  MAX_SEMANTIC_QUERY_RECEIPTS,
+  type SemanticQueryReceipt,
+  semanticQueryReceiptSchema,
+  validateSemanticQueryReceipt,
+} from "../semantic/semantic-code.js";
+import {
   evaluateOptimizationBaseline,
   evaluateOptimizationCandidate,
   type OptimizationInvariantObservation,
@@ -157,6 +163,7 @@ export interface AgentEvidence {
   readonly activity?: AgentActivity;
   readonly policyDecisions: readonly PolicyDecision[];
   readonly effectReceipts: readonly AgentEffectReceipt[];
+  readonly semanticReceipts?: readonly SemanticQueryReceipt[];
   readonly capabilities?: AgentCapabilityEvidence;
 }
 
@@ -1739,6 +1746,10 @@ const agentEvidenceSchema = z
       )
       .max(MAX_AGENT_EFFECT_RECEIPTS)
       .default([]),
+    semanticReceipts: z
+      .array(semanticQueryReceiptSchema)
+      .max(MAX_SEMANTIC_QUERY_RECEIPTS)
+      .optional(),
     capabilities: agentCapabilityEvidenceSchema.optional(),
   })
   .strict();
@@ -9074,6 +9085,20 @@ function validateEvidenceIntegrity(
     throw new RunReplayError(eventIndex, "agent evidence text hash is invalid");
   }
   if (evidence.kind === "agent") {
+    for (const [index, receipt] of (evidence.semanticReceipts ?? []).entries()) {
+      const expectedSequence = index + 1;
+      if (receipt.sequence !== expectedSequence) {
+        throw new RunReplayError(
+          eventIndex,
+          `semantic receipt sequence must be contiguous; expected ${expectedSequence}, received ${receipt.sequence}`,
+        );
+      }
+      try {
+        validateSemanticQueryReceipt(receipt);
+      } catch {
+        throw new RunReplayError(eventIndex, "semantic receipt is invalid");
+      }
+    }
     for (const [index, decision] of evidence.policyDecisions.entries()) {
       const expectedSequence = index + 1;
       if (decision.sequence !== expectedSequence) {
