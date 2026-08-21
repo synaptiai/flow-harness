@@ -39,8 +39,18 @@ Before the first release, configure these repository controls:
 4. Confirm that `.github/workflows/preview-release.yml` has only read permissions before its
    attestation and publication jobs.
 
-The workflow checks the repository's immutable-release setting immediately before it creates a
-draft. It fails without publication when the setting isn't enabled.
+Before each publication approval, use a repository-owner GitHub CLI session to verify the setting:
+
+```sh
+gh api \
+  --header 'X-GitHub-Api-Version: 2026-03-10' \
+  repos/synaptiai/flow-harness/immutable-releases \
+  --jq '.enabled'
+```
+
+The command must return `true`. Stop without approval if the command fails or returns another
+value. The workflow's short-lived token can publish repository contents but can't read repository
+administration settings. Don't add a long-lived administration token to the workflow.
 
 ## Build and verify without publication
 
@@ -62,7 +72,8 @@ workflow identity. It doesn't replace a source review or the repository's normal
 
 Dispatch **Preview release** again from the same revision with `publish_github` set to `true`.
 Approve the `preview-release` environment only after all prepare, host-verification, and attestation
-jobs pass.
+jobs pass. Run the immutable-release check in [Prepare GitHub authority](#prepare-github-authority)
+immediately before approval.
 
 The publication job refuses an existing release or tag. It creates a draft, uploads the npm
 archive, release evidence, and attestation bundle, and then publishes the prerelease. GitHub makes
