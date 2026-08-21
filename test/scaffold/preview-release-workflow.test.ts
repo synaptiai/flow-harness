@@ -53,11 +53,19 @@ describe("preview release workflow", () => {
     expect(workflow.jobs.verify.steps.map(stepName)).toEqual([
       "Check out the exact revision",
       "Set up Node.js",
+      "Install Ubuntu sandbox prerequisites",
       "Install exact dependencies",
       "Build the release verifier",
       "Download the exact preview artifact",
       "Verify the installed preview package",
     ]);
+    expect(workflow.jobs.verify.steps[2]).toMatchObject({
+      if: "runner.os == 'Linux'",
+    });
+    expect(workflow.jobs.verify.steps[2]?.run).toContain("sudo apt-get install --yes bubblewrap");
+    expect(workflow.jobs.verify.steps[2]?.run).toContain(
+      "sudo sysctl --write kernel.apparmor_restrict_unprivileged_userns=0",
+    );
     expect(workflow.jobs.verify.steps.at(-2)).toMatchObject({
       uses: "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
       with: {
