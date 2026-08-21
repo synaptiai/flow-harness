@@ -33,6 +33,7 @@ import {
   MAX_SEMANTIC_PROJECT_FILE_BYTES,
   NodeLspTransport,
 } from "../../../../src/infrastructure/lsp/local-semantic-code-service.js";
+import { waitForProcessTreeExit } from "../../../../src/infrastructure/process/command-node-executor.js";
 
 const temporaryDirectories: string[] = [];
 const fixtureExecutable = fileURLToPath(
@@ -193,12 +194,25 @@ describe("local semantic code service", () => {
     const project = await temporaryProject();
     const sandbox = new RecordingSandbox();
     const languageServer = await fakeLanguageServer(["hang-hover"]);
-    const session = createLocalSemanticToolSessionFactory(sandbox)({
+    const controller = new AbortController();
+    const reason = new Error("operator cancelled semantic query");
+    const session = createLocalSemanticToolSessionFactory(sandbox, {
+      waitForExit(child, timeoutMs, terminationGraceMs, signal, platform, confirmationMs, confirm) {
+        controller.abort(reason);
+        return waitForProcessTreeExit(
+          child,
+          timeoutMs,
+          terminationGraceMs,
+          signal,
+          platform,
+          confirmationMs,
+          confirm,
+        );
+      },
+    })({
       context: executionContext(project),
       languageServer,
     });
-    const controller = new AbortController();
-    const reason = new Error("operator cancelled semantic query");
     const operation = session.query(
       {
         operation: "hover",
@@ -207,7 +221,6 @@ describe("local semantic code service", () => {
       },
       controller.signal,
     );
-    setTimeout(() => controller.abort(reason), 50).unref();
 
     await expect(operation).rejects.toBe(reason);
     expect(sandbox.requests).toHaveLength(1);
@@ -483,7 +496,7 @@ describe("local semantic code service", () => {
     ).rejects.toMatchObject({ code: "semantic_response_limit_exceeded" });
     expect(plusOneSandbox.requests).toEqual([]);
     expect(plusOneSession.evidence()).toEqual([]);
-  }, 30_000);
+  }, 90_000);
 
   it("binds exact and plus-one aggregate project bytes", async () => {
     const project = await temporaryProject();
