@@ -84,6 +84,32 @@ describe("flow quickstart", () => {
     expect(browserHost).not.toHaveBeenCalled();
   });
 
+  it("keeps an installed workflow read failure private and starts no mutation", async () => {
+    const project = await temporaryDirectory("flow-quickstart-workflow-read-failure-");
+    const capture = createCapture();
+    const initializeProject = vi.fn();
+    const executor = vi.fn();
+
+    const exitCode = await main(["quickstart", project], capture.io, {
+      cwd: project,
+      readTextFile: async () => {
+        throw new Error("PRIVATE_INSTALLED_WORKFLOW_READ_FAILURE");
+      },
+      initializeProject,
+      executor: { execute: executor },
+    });
+
+    expect(exitCode).toBe(1);
+    expect(capture.stdout).toEqual([]);
+    expect(capture.stderr).toEqual([
+      "preparation_failed: Quick-start workflow preparation failed.",
+    ]);
+    expect(capture.stderr.join("\n")).not.toContain("PRIVATE");
+    expect(initializeProject).not.toHaveBeenCalled();
+    expect(executor).not.toHaveBeenCalled();
+    await expect(lstat(join(project, ".flow"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("checks the exact provider configuration before the first model execution", async () => {
     const project = await temporaryDirectory("flow-quickstart-provider-");
     const phases: string[] = [];

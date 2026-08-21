@@ -172,24 +172,12 @@ describe("Prime image inventory probe", () => {
     );
     await writeFile(join(fixture.pythonRoot, "venv", "pyvenv.cfg"), "version = 3.11.15\n");
 
-    for (let index = 0; index < 8_191; index += 1) {
-      const packageRoot = join(fixture.nodeRoot, `package-${index}`);
-      await mkdir(packageRoot);
-      await writeFile(
-        join(packageRoot, "package.json"),
-        JSON.stringify({ name: `package-${index}`, version: "1.0.0" }),
-      );
-    }
+    await createNodePackageFixtures(fixture.nodeRoot, 0, 8_191);
     const exact = await createRuntimeInventory(fixture);
     expect(exact.sbom.node).toHaveLength(8_192);
     expect(exact.sbom.python).toEqual([]);
 
-    const overRoot = join(fixture.nodeRoot, "package-8191");
-    await mkdir(overRoot);
-    await writeFile(
-      join(overRoot, "package.json"),
-      JSON.stringify({ name: "package-8191", version: "1.0.0" }),
-    );
+    await createNodePackageFixtures(fixture.nodeRoot, 8_191, 8_192);
     await expect(createRuntimeInventory(fixture)).rejects.toThrow(
       /package inventory.*count limit/i,
     );
@@ -280,6 +268,28 @@ describe("Prime image inventory probe", () => {
     await expect(createRuntimeInventory(fixture)).rejects.toThrow(/symbolic link.*escapes/i);
   });
 });
+
+async function createNodePackageFixtures(
+  nodeRoot: string,
+  start: number,
+  end: number,
+): Promise<void> {
+  const batchSize = 128;
+  for (let batchStart = start; batchStart < end; batchStart += batchSize) {
+    const batchEnd = Math.min(batchStart + batchSize, end);
+    await Promise.all(
+      Array.from({ length: batchEnd - batchStart }, async (_, offset) => {
+        const index = batchStart + offset;
+        const packageRoot = join(nodeRoot, `package-${index}`);
+        await mkdir(packageRoot);
+        await writeFile(
+          join(packageRoot, "package.json"),
+          JSON.stringify({ name: `package-${index}`, version: "1.0.0" }),
+        );
+      }),
+    );
+  }
+}
 
 async function probeFixture(root: string) {
   const nodeRoot = join(root, "node_modules");
