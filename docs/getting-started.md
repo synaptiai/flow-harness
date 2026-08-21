@@ -15,12 +15,12 @@ Requirements:
 
 ### Ubuntu 24.04 sandbox prerequisite
 
-Flow uses Sandbox Runtime for native command isolation. On Ubuntu 24.04, its bubblewrap backend
-requires Bubblewrap and unprivileged user namespaces. Prepare the host before the first run:
+Flow uses Sandbox Runtime for native command isolation. On Ubuntu 24.04, install its system
+dependencies and enable unprivileged user namespaces before the first run:
 
 ```sh
 sudo apt-get update
-sudo apt-get install --yes bubblewrap
+sudo apt-get install --yes bubblewrap ca-certificates curl ripgrep socat util-linux
 sudo sysctl --write kernel.apparmor_restrict_unprivileged_userns=0
 ```
 
