@@ -5,6 +5,7 @@ import {
   validateCapabilitySnapshot,
 } from "../../../../src/domain/capability/agent-skills.js";
 import { createLanguageServerSnapshot } from "../../../../src/domain/capability/language-server.js";
+import { createSemanticQueryReceipt } from "../../../../src/domain/semantic/semantic-code.js";
 import {
   PiAgentExecutor,
   type PiAgentRunner,
@@ -14,8 +15,9 @@ import type { SemanticToolSession } from "../../../../src/infrastructure/pi/work
 describe("Pi semantic execution", () => {
   it("creates and forwards one attempt-scoped session from frozen server identity", async () => {
     const snapshot = semanticCapabilitySnapshot();
+    const receipt = semanticReceipt();
     const session: SemanticToolSession = {
-      evidence: () => [],
+      evidence: () => [receipt],
       async query() {
         return { operation: "diagnostics", diagnostics: [] };
       },
@@ -51,6 +53,65 @@ describe("Pi semantic execution", () => {
 
     expect(outcome.status).toBe("succeeded");
     expect(factoryCalls).toBe(1);
+    expect(outcome.evidence).toMatchObject({
+      kind: "agent",
+      semanticReceipts: [receipt],
+    });
+  });
+
+  it("rejects noncanonical semantic evidence without publishing private values", async () => {
+    const privateValue = "PRIVATE_FORGED_SEMANTIC_EVIDENCE";
+    const receipt = semanticReceipt();
+    const executor = new PiAgentExecutor(
+      {
+        async run() {
+          return { text: "complete", stopReason: "stop" };
+        },
+      },
+      () => 100,
+      5_000,
+      65_536,
+      () => ({
+        evidence: () => [
+          {
+            ...receipt,
+            result: {
+              operation: "hover",
+              hover: {
+                path: "src/example.ts",
+                range: {
+                  start: { line: 0, character: 0 },
+                  end: { line: 0, character: 1 },
+                },
+                format: "plaintext",
+                value: privateValue,
+              },
+            },
+          } as typeof receipt,
+        ],
+        async query() {
+          return { operation: "diagnostics", diagnostics: [] };
+        },
+      }),
+    );
+
+    const outcome = await executor.execute(semanticNode(), {
+      runId: "run-semantic",
+      workflowId: "semantic-workflow",
+      attempt: 1,
+      cwd: "/workspace",
+      protectedPaths: [],
+      capabilitySnapshot: semanticCapabilitySnapshot(),
+    });
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "pi_semantic_evidence_invalid",
+        message: "semantic query evidence is invalid",
+      },
+    });
+    expect(JSON.stringify(outcome)).not.toContain(privateValue);
   });
 
   it.each([
@@ -152,5 +213,26 @@ function semanticCapabilitySnapshot() {
     packages: [],
     languageServer,
     digest: calculateCapabilitySnapshotDigest([], [], undefined, languageServer),
+  });
+}
+
+function semanticReceipt() {
+  return createSemanticQueryReceipt({
+    sequence: 1,
+    request: {
+      operation: "hover",
+      path: "src/example.ts",
+      position: { line: 0, character: 0 },
+    },
+    projectDigest: "a".repeat(64),
+    sourceDigest: "b".repeat(64),
+    languageServerDigest: "c".repeat(64),
+    sandbox: {
+      backend: "sandbox-runtime",
+      backendVersion: "1.2.3",
+      profile: "workspace-readonly-network-deny-v1",
+      policyDigest: "d".repeat(64),
+    },
+    result: { operation: "hover", hover: null },
   });
 }

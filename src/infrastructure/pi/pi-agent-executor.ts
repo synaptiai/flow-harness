@@ -38,6 +38,11 @@ import type {
   AgentEvidence,
   NodeFailure,
 } from "../../domain/run/events.js";
+import {
+  MAX_SEMANTIC_QUERY_RECEIPTS,
+  type SemanticQueryReceipt,
+  validateSemanticQueryReceipt,
+} from "../../domain/semantic/semantic-code.js";
 import type {
   AgentToolName,
   CompiledAgentNode,
@@ -280,6 +285,8 @@ export class PiAgentExecutor implements AgentExecutor {
     let observedCapabilityEvidence = capabilityEvidence;
     let closedPolicyDecisions: readonly PolicyDecision[] | undefined;
     let closedEffectReceipts: readonly AgentEffectReceipt[] | undefined;
+    let closedSemanticReceipts: readonly SemanticQueryReceipt[] | undefined;
+    let semanticEvidenceError: PiSemanticEvidenceError | undefined;
     const closePolicy = () => {
       closedPolicyDecisions ??= policyBroker.close();
       return closedPolicyDecisions;
@@ -288,14 +295,28 @@ export class PiAgentExecutor implements AgentExecutor {
       closedEffectReceipts ??= effectRecorder.close();
       return closedEffectReceipts;
     };
+    const closeSemanticEvidence = () => {
+      if (closedSemanticReceipts !== undefined) {
+        return closedSemanticReceipts;
+      }
+      try {
+        closedSemanticReceipts = validateSemanticReceipts(semanticSession?.evidence() ?? []);
+      } catch {
+        semanticEvidenceError = new PiSemanticEvidenceError();
+        closedSemanticReceipts = Object.freeze([]);
+      }
+      return closedSemanticReceipts;
+    };
     const closeCommands = () => commandRecorder.close();
     const policyFailureEvidence = (): AgentEvidence | null => {
       const policyDecisions = closePolicy();
       const effectReceipts = closeEffects();
+      const semanticReceipts = closeSemanticEvidence();
       closeCommands();
       if (
         policyDecisions.length === 0 &&
         effectReceipts.length === 0 &&
+        semanticReceipts.length === 0 &&
         observedUsage === undefined &&
         observedActivity === undefined &&
         capabilityEvidence === undefined
@@ -308,6 +329,7 @@ export class PiAgentExecutor implements AgentExecutor {
         Math.max(0, this.now() - startedAt),
         policyDecisions,
         effectReceipts,
+        semanticReceipts,
         observedUsage,
         observedActivity,
         observedCapabilityEvidence,
@@ -386,6 +408,10 @@ export class PiAgentExecutor implements AgentExecutor {
                 { cause: error },
               );
             }
+          }
+          closeSemanticEvidence();
+          if (semanticEvidenceError !== undefined) {
+            throw semanticEvidenceError;
           }
           return result;
         });
@@ -537,6 +563,7 @@ export class PiAgentExecutor implements AgentExecutor {
       const normalized = normalizeAgentResult(result, maxOutputBytes);
       const policyDecisions = closePolicy();
       const effectReceipts = closeEffects();
+      const semanticReceipts = closeSemanticEvidence();
       closeCommands();
       const completedCapabilityEvidence =
         capabilityEvidence === undefined ? undefined : observedCapabilityEvidence;
@@ -552,6 +579,7 @@ export class PiAgentExecutor implements AgentExecutor {
         ...(observedActivity === undefined ? {} : { activity: observedActivity }),
         policyDecisions,
         effectReceipts,
+        ...(semanticReceipts.length === 0 ? {} : { semanticReceipts }),
         ...(completedCapabilityEvidence === undefined
           ? {}
           : { capabilities: completedCapabilityEvidence }),
@@ -588,6 +616,7 @@ export class PiAgentExecutor implements AgentExecutor {
           ),
           policyDecisions.length === 0 &&
             effectReceipts.length === 0 &&
+            semanticReceipts.length === 0 &&
             result.usage === undefined &&
             observedActivity === undefined &&
             completedCapabilityEvidence === undefined
@@ -598,6 +627,7 @@ export class PiAgentExecutor implements AgentExecutor {
                 Math.max(0, this.now() - startedAt),
                 policyDecisions,
                 effectReceipts,
+                semanticReceipts,
                 result.usage,
                 observedActivity,
                 completedCapabilityEvidence,
@@ -690,10 +720,14 @@ export class PiAgentExecutor implements AgentExecutor {
       return agentFailure(
         error instanceof PiCapabilityEvidenceError
           ? "pi_capability_evidence_invalid"
-          : "pi_agent_failed",
+          : error instanceof PiSemanticEvidenceError
+            ? "pi_semantic_evidence_invalid"
+            : "pi_agent_failed",
         error instanceof PiCapabilityEvidenceError
           ? boundedMessage(error.message)
-          : "agent provider execution failed",
+          : error instanceof PiSemanticEvidenceError
+            ? error.message
+            : "agent provider execution failed",
         currentSideEffectStatus(),
         policyFailureEvidence(),
       );
@@ -719,6 +753,14 @@ function providerStopMessage(stopReason: PiAgentRunResult["stopReason"]): string
 
 class PiCapabilityEvidenceError extends Error {
   override readonly name = "PiCapabilityEvidenceError";
+}
+
+class PiSemanticEvidenceError extends Error {
+  override readonly name = "PiSemanticEvidenceError";
+
+  constructor() {
+    super("semantic query evidence is invalid");
+  }
 }
 
 async function settlesAgentCleanupWithin(
@@ -971,6 +1013,7 @@ function emptyAgentEvidence(
   durationMs: number,
   policyDecisions: readonly PolicyDecision[],
   effectReceipts: readonly AgentEffectReceipt[],
+  semanticReceipts: readonly SemanticQueryReceipt[],
   usage?: AgentModelUsage,
   activity?: AgentActivity,
   capabilities?: AgentCapabilityEvidence,
@@ -987,8 +1030,25 @@ function emptyAgentEvidence(
     ...(activity === undefined ? {} : { activity }),
     policyDecisions,
     effectReceipts,
+    ...(semanticReceipts.length === 0 ? {} : { semanticReceipts }),
     ...(capabilities === undefined ? {} : { capabilities }),
   };
+}
+
+function validateSemanticReceipts(
+  receipts: readonly SemanticQueryReceipt[],
+): readonly SemanticQueryReceipt[] {
+  if (receipts.length > MAX_SEMANTIC_QUERY_RECEIPTS) {
+    throw new PiSemanticEvidenceError();
+  }
+  return Object.freeze(
+    receipts.map((receipt, index) => {
+      if (receipt.sequence !== index + 1) {
+        throw new PiSemanticEvidenceError();
+      }
+      return validateSemanticQueryReceipt(receipt);
+    }),
+  );
 }
 
 function normalizeAgentActivity(activity: AgentActivity | undefined): AgentActivity | undefined {
