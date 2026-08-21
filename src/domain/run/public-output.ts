@@ -29,9 +29,35 @@ function projectCapabilitySnapshot(
       if (key === "effectiveHarness") {
         return [key, projectEffectiveHarness(item)];
       }
+      if (key === "languageServer") {
+        return [key, projectLanguageServer(item)];
+      }
       return [key, item];
     }),
   );
+}
+
+function projectLanguageServer(value: unknown): unknown {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const projected = pick(value, [
+    "version",
+    "kind",
+    "name",
+    "protocol",
+    "languages",
+    "containmentProfile",
+    "requestTimeoutMs",
+    "digest",
+  ]);
+  if (isRecord(value.executable)) {
+    projected.executable = pick(value.executable, ["sha256", "bytes"]);
+  }
+  if (isRecord(value.manifest)) {
+    projected.manifest = pick(value.manifest, ["provenance", "sha256", "bytes"]);
+  }
+  return projected;
 }
 
 function projectEffectiveHarness(value: unknown): unknown {
@@ -101,6 +127,15 @@ function omitContentBase64(value: unknown): unknown {
   return isRecord(value)
     ? Object.fromEntries(Object.entries(value).filter(([key]) => key !== "contentBase64"))
     : value;
+}
+
+function pick(
+  value: Readonly<Record<string, unknown>>,
+  keys: readonly string[],
+): Record<string, unknown> {
+  return Object.fromEntries(
+    keys.filter((key) => Object.hasOwn(value, key)).map((key) => [key, value[key]]),
+  );
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
