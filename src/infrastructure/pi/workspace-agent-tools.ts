@@ -23,6 +23,13 @@ import {
   validateToolPackageSnapshot,
 } from "../../domain/capability/tool-packages.js";
 import type { PolicyBroker } from "../../domain/policy/broker.js";
+import {
+  MAX_SEMANTIC_PATH_BYTES,
+  MAX_SEMANTIC_POSITION,
+  normalizeSemanticRequest,
+  type SemanticRequest,
+  type SemanticResult,
+} from "../../domain/semantic/semantic-code.js";
 import type { AgentToolName } from "../../domain/workflow/types.js";
 import {
   editHashAnchoredTextFile,
@@ -119,6 +126,37 @@ const execSchema = Type.Object(
   { additionalProperties: false },
 );
 
+const semanticSchema = Type.Object(
+  {
+    operation: Type.Union([
+      Type.Literal("diagnostics"),
+      Type.Literal("definition"),
+      Type.Literal("references"),
+      Type.Literal("hover"),
+    ]),
+    path: Type.String({
+      minLength: 1,
+      maxLength: MAX_SEMANTIC_PATH_BYTES,
+      description: "Portable path to one admitted project file.",
+    }),
+    line: Type.Optional(
+      Type.Integer({
+        minimum: 0,
+        maximum: MAX_SEMANTIC_POSITION,
+        description: "Zero-based line for definition, references, or hover.",
+      }),
+    ),
+    character: Type.Optional(
+      Type.Integer({
+        minimum: 0,
+        maximum: MAX_SEMANTIC_POSITION,
+        description: "Zero-based character for definition, references, or hover.",
+      }),
+    ),
+  },
+  { additionalProperties: false },
+);
+
 export interface FlowAgentTools {
   readonly names: readonly string[];
   readonly definitions: readonly ToolDefinition[];
@@ -131,6 +169,11 @@ export interface FlowAgentToolOptions {
   readonly editFile?: typeof editHashAnchoredTextFile;
   readonly capabilitySession?: AgentSkillSession;
   readonly toolPackages?: readonly ToolPackageSnapshot[];
+  readonly semanticSession?: SemanticToolSession;
+}
+
+export interface SemanticToolSession {
+  query(request: SemanticRequest, signal?: AbortSignal): Promise<SemanticResult>;
 }
 
 interface ReadVersionContext {
@@ -182,7 +225,8 @@ export async function createWorkspaceAgentTools(
         definition = createExecDefinition(policy, options);
         break;
       case "semantic":
-        throw new Error("Flow semantic requires a configured semantic service");
+        definition = createSemanticDefinition(broker, options.semanticSession);
+        break;
     }
     definitions.push(definition as ToolDefinition);
     names.push(definition.name);
@@ -201,6 +245,51 @@ export async function createWorkspaceAgentTools(
     names: Object.freeze(names),
     definitions: Object.freeze(definitions),
   };
+}
+
+function createSemanticDefinition(
+  broker: Awaited<ReturnType<typeof createWorkspacePolicyBroker>>,
+  session: SemanticToolSession | undefined,
+): ToolDefinition {
+  if (session === undefined) {
+    throw new Error("Flow semantic requires a configured semantic service");
+  }
+  return defineTool({
+    name: "flow_semantic",
+    label: "semantic",
+    description:
+      "Query one operator-selected language server for bounded diagnostics, definitions, references, or hover information. The tool cannot edit files or run model-selected commands.",
+    promptSnippet: "Query bounded read-only code semantics",
+    promptGuidelines: [
+      "Use diagnostics without a line or character.",
+      "Use zero-based line and character values for definition, references, and hover.",
+      "Treat semantic results as advisory evidence, not proof of workflow completion.",
+    ],
+    parameters: semanticSchema,
+    executionMode: "sequential",
+    async execute(_toolCallId, input, signal) {
+      throwIfToolAborted(signal);
+      const request = normalizeSemanticRequest({
+        operation: input.operation,
+        path: input.path,
+        ...(input.line === undefined && input.character === undefined
+          ? {}
+          : {
+              position: {
+                line: input.line,
+                character: input.character,
+              },
+            }),
+      });
+      const result = await broker.execute("filesystem.read", request.path, async () =>
+        session.query(request, signal),
+      );
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(result) }],
+        details: result,
+      };
+    },
+  }) as ToolDefinition;
 }
 
 function createToolPackageDefinition(
