@@ -6,10 +6,12 @@ import {
   lstat,
   mkdir,
   open,
+  opendir,
   realpath,
   rename,
   rm,
   stat,
+  unlink,
 } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -30,6 +32,15 @@ import { discoverProjectCapabilityCatalogs } from "./project-capability-catalog.
 
 const MAX_CONFIG_BYTES = 1024 * 1024;
 const PROJECT_CONFIG_SOURCE = `apiVersion: ${FLOW_CONFIG_API_VERSION}\nkind: FlowProjectConfig\n`;
+export const QUICKSTART_CODING_FIXTURE_PATH = "FLOW_QUICKSTART.md";
+export const QUICKSTART_CODING_FIXTURE_SOURCE = `# Flow coding quick start
+
+status: pending
+`;
+export const QUICKSTART_CODING_EXPECTED_SOURCE = `# Flow coding quick start
+
+status: verified
+`;
 
 export type FlowConfigStoreErrorCode =
   | "already_exists"
@@ -73,10 +84,24 @@ export interface FlowProjectInitializationHooks {
   readonly afterConfigLinked?: () => void | Promise<void>;
 }
 
+export interface CodingQuickstartProjectInitializationHooks {
+  readonly afterFixturePublished?: () => void | Promise<void>;
+  readonly project?: FlowProjectInitializationHooks;
+}
+
+export interface InitializeCodingQuickstartProjectOptions {
+  readonly signal?: AbortSignal;
+  readonly hooks?: CodingQuickstartProjectInitializationHooks;
+}
+
 export interface InitializedFlowProject {
   readonly created: boolean;
   readonly projectRoot: string;
   readonly path: string;
+}
+
+export interface InitializedCodingQuickstartProject extends InitializedFlowProject {
+  readonly fixturePath: string;
 }
 
 export function resolveOperatorConfigPath(options: {
@@ -288,6 +313,89 @@ export async function initializeFlowProject(
     }
   }
   return Object.freeze({ created: false, projectRoot, path });
+}
+
+export async function initializeCodingQuickstartProject(
+  directory: string,
+  options: InitializeCodingQuickstartProjectOptions = {},
+): Promise<InitializedCodingQuickstartProject> {
+  options.signal?.throwIfAborted();
+  const projectRoot = await canonicalDirectory(directory, "coding quick-start directory");
+  options.signal?.throwIfAborted();
+  await assertEmptyCodingQuickstartDirectory(projectRoot, options.signal);
+  const fixturePath = join(projectRoot, QUICKSTART_CODING_FIXTURE_PATH);
+  let fixturePublished = false;
+  try {
+    const handle = await open(fixturePath, "wx", 0o644);
+    fixturePublished = true;
+    await writeAndSync(handle, QUICKSTART_CODING_FIXTURE_SOURCE);
+    await syncDirectory(projectRoot);
+    await options.hooks?.afterFixturePublished?.();
+    options.signal?.throwIfAborted();
+    const initialized = await initializeFlowProject(projectRoot, {
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+      ...(options.hooks?.project === undefined ? {} : { hooks: options.hooks.project }),
+    });
+    return Object.freeze({ ...initialized, fixturePath });
+  } catch (error) {
+    if (
+      fixturePublished &&
+      error instanceof FlowConfigStoreError &&
+      (error.code === "commit_uncertain" || error.code === "settlement_uncertain")
+    ) {
+      throw error;
+    }
+    if (fixturePublished) {
+      try {
+        await unlink(fixturePath);
+        await syncDirectory(projectRoot);
+      } catch (cleanupError) {
+        throw new FlowConfigStoreError(
+          "settlement_uncertain",
+          "Coding quick-start fixture settlement is uncertain",
+          { cause: new AggregateError([error, cleanupError]) },
+        );
+      }
+    }
+    options.signal?.throwIfAborted();
+    if (isNodeError(error) && error.code === "EEXIST") {
+      throw new FlowConfigStoreError(
+        "already_exists",
+        "Coding quick start requires an empty project directory",
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+}
+
+async function assertEmptyCodingQuickstartDirectory(
+  projectRoot: string,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  let directory: Awaited<ReturnType<typeof opendir>> | undefined;
+  try {
+    directory = await opendir(projectRoot);
+    signal?.throwIfAborted();
+    const first = await directory.read();
+    signal?.throwIfAborted();
+    if (first !== null) {
+      throw new FlowConfigStoreError(
+        "already_exists",
+        "Coding quick start requires an empty project directory",
+      );
+    }
+  } catch (error) {
+    signal?.throwIfAborted();
+    if (error instanceof FlowConfigStoreError) {
+      throw error;
+    }
+    throw ioError("failed to inspect coding quick-start directory", error);
+  } finally {
+    if (directory !== undefined) {
+      await directory.close().catch(() => undefined);
+    }
+  }
 }
 
 async function discoverProjectConfig(

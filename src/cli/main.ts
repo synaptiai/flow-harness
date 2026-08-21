@@ -283,12 +283,17 @@ import {
 } from "../infrastructure/fs/evaluation-report-exporter.js";
 import {
   FlowConfigStoreError,
+  type InitializedCodingQuickstartProject,
   type InitializedFlowProject,
+  type InitializeCodingQuickstartProjectOptions,
   type InitializeFlowProjectOptions,
+  initializeCodingQuickstartProject,
   initializeFlowProject,
   type LoadEffectiveFlowConfigOptions,
   loadEffectiveFlowConfig,
   locateFlowProjectRoot,
+  QUICKSTART_CODING_EXPECTED_SOURCE,
+  QUICKSTART_CODING_FIXTURE_PATH,
 } from "../infrastructure/fs/flow-config-store.js";
 import { AdmissionStoreError } from "../infrastructure/fs/jsonl-admission-store.js";
 import { JsonlRunStore, RunStoreError } from "../infrastructure/fs/jsonl-run-store.js";
@@ -471,7 +476,7 @@ Usage:
   flow init [directory] [--force]
   flow config show
   flow doctor [<workflow.yaml|workflow:name@version|activation:workflow-id>] [--profile prime-agent]
-  flow quickstart [directory] [--provider <provider> --model <model>] [--run-id <id>]
+  flow quickstart [directory] [--coding] [--provider <provider> --model <model>] [--run-id <id>]
   flow skills list
   flow skills inspect <name>
   flow skills validate
@@ -609,6 +614,10 @@ export interface CliDependencies {
     directory: string,
     options?: InitializeFlowProjectOptions,
   ) => Promise<InitializedFlowProject>;
+  readonly initializeCodingProject: (
+    directory: string,
+    options?: InitializeCodingQuickstartProjectOptions,
+  ) => Promise<InitializedCodingQuickstartProject>;
   readonly loadConfig: (options?: LoadEffectiveFlowConfigOptions) => Promise<EffectiveFlowConfig>;
   readonly inspectProjectFilesystem: (projectRoot: string, signal: AbortSignal) => Promise<void>;
   readonly inspectNativeSandbox: (root: string, signal: AbortSignal) => Promise<void>;
@@ -1071,12 +1080,13 @@ async function quickstartCommand(
   io: CliIo,
   overrides: Partial<CliDependencies>,
 ): Promise<number> {
+  const coding = extractBooleanFlag(args, "--coding");
   assertStringOptionAtMostOnce(args, "provider");
   assertStringOptionAtMostOnce(args, "model");
   assertStringOptionAtMostOnce(args, "run-id");
   let parsed: ReturnType<typeof parseCommandArgs>;
   try {
-    parsed = parseCommandArgs(args, {
+    parsed = parseCommandArgs(coding.args, {
       provider: { type: "string" },
       model: { type: "string" },
       "run-id": { type: "string" },
@@ -1096,11 +1106,14 @@ async function quickstartCommand(
   if (providerSelected !== modelSelected) {
     throw new CliUsageError("--provider and --model must be specified together");
   }
+  if (coding.enabled && (!providerSelected || !modelSelected)) {
+    throw new CliUsageError("--coding requires --provider and --model");
+  }
   const mode: GuidedQuickstartMode =
     values.provider === undefined || values.model === undefined
       ? Object.freeze({ kind: "foundation" as const })
       : Object.freeze({
-          kind: "provider" as const,
+          kind: coding.enabled ? ("coding" as const) : ("provider" as const),
           provider: values.provider,
           model: values.model,
         });
@@ -1108,7 +1121,11 @@ async function quickstartCommand(
   const directory = resolve(dependencies.cwd, positionals[0] ?? ".");
   const runId =
     values["run-id"] ??
-    (mode.kind === "foundation" ? "quickstart-foundation" : "quickstart-provider");
+    (mode.kind === "foundation"
+      ? "quickstart-foundation"
+      : mode.kind === "provider"
+        ? "quickstart-provider"
+        : "quickstart-coding");
 
   try {
     const result = await runGuidedQuickstart(
@@ -1122,7 +1139,7 @@ async function quickstartCommand(
         prepareWorkflow: async (selectedMode) =>
           await prepareQuickstartWorkflow(selectedMode, dependencies),
         publishProject: async (projectDirectory, signal) =>
-          await publishQuickstartProject(projectDirectory, signal, dependencies),
+          await publishQuickstartProject(projectDirectory, mode, signal, dependencies),
         validateProvider: async (input) => {
           const signal = input.signal ?? new AbortController().signal;
           const config = await dependencies.loadConfig({ cwd: input.projectRoot, signal });
@@ -1199,6 +1216,12 @@ async function prepareQuickstartWorkflow(
       "examples/verify-installation.workflow.yaml",
     );
   }
+  if (mode.kind === "coding") {
+    return compileWorkflowText(
+      codingQuickstartWorkflowSource(mode.provider, mode.model),
+      "quickstart-coding.workflow.yaml",
+    );
+  }
   return compileWorkflowText(
     providerQuickstartWorkflowSource(mode.provider, mode.model),
     "quickstart-provider.workflow.yaml",
@@ -1207,13 +1230,19 @@ async function prepareQuickstartWorkflow(
 
 async function publishQuickstartProject(
   directory: string,
+  mode: GuidedQuickstartMode,
   signal: AbortSignal | undefined,
-  dependencies: Pick<CliDependencies, "initializeProject">,
+  dependencies: Pick<CliDependencies, "initializeCodingProject" | "initializeProject">,
 ): Promise<GuidedQuickstartPublication> {
   try {
-    const published = await dependencies.initializeProject(directory, {
-      ...(signal === undefined ? {} : { signal }),
-    });
+    const published =
+      mode.kind === "coding"
+        ? await dependencies.initializeCodingProject(directory, {
+            ...(signal === undefined ? {} : { signal }),
+          })
+        : await dependencies.initializeProject(directory, {
+            ...(signal === undefined ? {} : { signal }),
+          });
     return Object.freeze({ outcome: "published" as const, projectRoot: published.projectRoot });
   } catch (error) {
     if (error instanceof FlowConfigStoreError) {
@@ -1226,6 +1255,58 @@ async function publishQuickstartProject(
     }
     throw error;
   }
+}
+
+function codingQuickstartWorkflowSource(provider: string, model: string): string {
+  const verificationScript = `const fs=require("node:fs");const actual=fs.readFileSync(${JSON.stringify(
+    QUICKSTART_CODING_FIXTURE_PATH,
+  )},"utf8");const expected=${JSON.stringify(
+    QUICKSTART_CODING_EXPECTED_SOURCE,
+  )};if(actual!==expected){process.stderr.write("coding quick-start fixture verification failed");process.exit(1)}process.stdout.write("flow-coding-quickstart-verified")`;
+  return `apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata:
+  id: quickstart-coding
+  description: Make and independently verify one exact bounded fixture change.
+goal:
+  apiVersion: flow.synapti.ai/v1alpha1
+  kind: Goal
+  metadata:
+    id: coding-quickstart-is-verified
+  outcome: The coding quick-start fixture contains the exact verified bytes.
+  criteria:
+    - id: fixture-is-exact
+      description: The deterministic verifier accepts the complete fixture bytes.
+      verifier: { nodeId: verify }
+budget:
+  maxNodeStarts: 2
+  maxModelTokens: 8192
+  maxCostUsd: 0.25
+  maxExecutionMs: 120000
+  maxArtifactBytes: 131072
+nodes:
+  - id: implement
+    type: agent
+    agent:
+      prompt: ${JSON.stringify("Read FLOW_QUICKSTART.md. Replace only the exact line status: pending with status: verified. Preserve every other byte. Use flow_read before flow_edit, and do not claim success unless the edit commits.")}
+      model:
+        provider: ${JSON.stringify(provider)}
+        id: ${JSON.stringify(model)}
+        thinking: minimal
+      tools: [read, ls, edit]
+      timeoutMs: 90000
+  - id: verify
+    type: verifier
+    dependsOn: [implement]
+    verifier:
+      kind: command
+      command:
+        executable: node
+        args:
+          - -e
+          - ${JSON.stringify(verificationScript)}
+        timeoutMs: 10000
+`;
 }
 
 function providerQuickstartWorkflowSource(provider: string, model: string): string {
@@ -6580,10 +6661,14 @@ function storageDependenciesFrom(
 
 function configDependenciesFrom(
   overrides: Partial<CliDependencies>,
-): Pick<CliDependencies, "cwd" | "initializeProject" | "loadConfig" | "signal"> {
+): Pick<
+  CliDependencies,
+  "cwd" | "initializeCodingProject" | "initializeProject" | "loadConfig" | "signal"
+> {
   const loadConfig = overrides.loadConfig ?? loadEffectiveFlowConfig;
   return {
     cwd: overrides.cwd ?? process.cwd(),
+    initializeCodingProject: overrides.initializeCodingProject ?? initializeCodingQuickstartProject,
     initializeProject: overrides.initializeProject ?? initializeFlowProject,
     loadConfig: async (options = {}) =>
       await loadConfig({

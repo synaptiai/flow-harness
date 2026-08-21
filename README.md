@@ -94,7 +94,9 @@ The result contains the run status, the project-relative evidence path, and toke
 `web` follow-up commands. Flow does not open a browser.
 
 Read [Getting started](docs/getting-started.md) for provider selection, output details, and failure
-recovery. The immutable `0.1.0-alpha.1` archive predates `flow quickstart`. Follow
+recovery. Use the [coding quick start](docs/guides/coding-quickstart.md) when you are ready to prove
+one real provider-backed read, hash-bound edit, and deterministic verification. The immutable
+`0.1.0-alpha.1` archive predates `flow quickstart`. Follow
 [Install the Flow preview](docs/guides/install-preview.md) for that release's verified manual path.
 
 ## Security
@@ -124,6 +126,7 @@ The [documentation hub](docs/README.md) routes each reader task to one canonical
 | --- | --- |
 | [Install the Flow preview](docs/guides/install-preview.md) | Verified package download, installation, removal, and release-specific limits |
 | [Getting started](docs/getting-started.md) | Source setup and the first credential-free run |
+| [Complete the coding quick start](docs/guides/coding-quickstart.md) | Provider setup, one bounded edit, cost interpretation, evidence, cancellation, cleanup, and recovery |
 | [Diagnose the Flow environment](docs/guides/diagnose-environment.md) | Read-only host, project, workflow, provider, sandbox, and Prime preflight |
 | [Project status](docs/project-status.md) | Maturity, platform support, and planned boundaries |
 | [Run and control workflows](docs/guides/run-and-control.md) | Detached runs, presentation hosts, approvals, budgets, cancellation, and recovery entry points |

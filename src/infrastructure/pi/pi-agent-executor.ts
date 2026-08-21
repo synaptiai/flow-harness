@@ -541,9 +541,7 @@ export class PiAgentExecutor implements AgentExecutor {
               : "pi_agent_incomplete";
         return agentFailure(
           code,
-          boundedMessage(
-            result.errorMessage ?? `Pi session ended with stop reason "${result.stopReason}"`,
-          ),
+          providerStopMessage(result.stopReason),
           combineSideEffectStatuses(
             sideEffectStatus(effectReceipts),
             commandRecorder.sideEffectStatus(),
@@ -653,7 +651,9 @@ export class PiAgentExecutor implements AgentExecutor {
         error instanceof PiCapabilityEvidenceError
           ? "pi_capability_evidence_invalid"
           : "pi_agent_failed",
-        boundedMessage(error instanceof Error ? error.message : String(error)),
+        error instanceof PiCapabilityEvidenceError
+          ? boundedMessage(error.message)
+          : "agent provider execution failed",
         currentSideEffectStatus(),
         policyFailureEvidence(),
       );
@@ -665,6 +665,16 @@ export class PiAgentExecutor implements AgentExecutor {
       }
     }
   }
+}
+
+function providerStopMessage(stopReason: PiAgentRunResult["stopReason"]): string {
+  if (stopReason === "error") {
+    return "agent provider execution failed";
+  }
+  if (stopReason === "aborted") {
+    return "agent provider execution was aborted";
+  }
+  return "agent provider execution did not complete";
 }
 
 class PiCapabilityEvidenceError extends Error {

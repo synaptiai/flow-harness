@@ -59,7 +59,7 @@ flow quickstart .
 The command uses this grammar:
 
 ```text
-flow quickstart [directory] [--provider <provider> --model <model>] [--run-id <id>]
+flow quickstart [directory] [--coding] [--provider <provider> --model <model>] [--run-id <id>]
 ```
 
 The target directory must exist. Flow refuses an existing `.flow/config.yaml`. It does not replace
@@ -133,6 +133,16 @@ a 512-token model ceiling, a USD 0.10 reported-cost ceiling, and a 60-second exe
 The provider check does not contact the model service. The later workflow execution makes the
 selected request through the ordinary agent boundary.
 
+## Complete one bounded coding change
+
+Use explicit `--coding` mode when you want the selected model to read and edit one reviewed
+fixture. This path requires an existing empty directory and supports the `anthropic` and `openai`
+preview provider identifiers. It does not change the credential-free or zero-tool provider paths.
+
+Read [Complete the coding quick start](guides/coding-quickstart.md) for credential setup, model
+selection, cost interpretation, the exact tool and budget boundary, evidence review, cancellation,
+cleanup, and recovery.
+
 ## Resolve quick-start failures
 
 Use the public error code to choose the next action.
@@ -155,6 +165,8 @@ published project and run settlement rules.
 
 - Read [Run and control workflows](guides/run-and-control.md) for detached work, approvals,
   budgets, cancellation, and recovery.
+- Read [Complete the coding quick start](guides/coding-quickstart.md) before the first
+  provider-backed edit.
 - Read the [Workflow specification](workflow-spec.md) before you author executable graphs.
 - Read [Use capability packages](guides/capability-packages.md) for signed and local capabilities.
 - Read [Reproducible harness evaluation](evaluation.md) before you compare agent harnesses.
