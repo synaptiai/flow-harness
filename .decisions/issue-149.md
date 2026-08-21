@@ -41,8 +41,10 @@ event replay through the existing capability path.
 
 The production adapter starts one short-lived LSP session for one semantic request. It uses the
 selected Flow containment profile, denies network access, and gives the server a read-only project
-projection from an admitted source snapshot. It rechecks the source before it publishes evidence
-and closes the session after one operation. Flow does not keep an ambient language-server daemon.
+projection from an admitted source snapshot. Reserved state, dependency, generated-output, and Flow
+workspace collection names are omitted at every directory depth. The adapter rechecks the source
+before it publishes evidence and closes the session after one operation. Flow does not keep an
+ambient language-server daemon.
 
 Flow normalizes every response into a provider-neutral schema. It sorts unordered locations and
 diagnostics by portable path and range. It rejects locations outside the admitted project. It

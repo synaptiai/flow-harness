@@ -127,12 +127,13 @@ Flow rejects these configurations before model or durable run mutation:
 
 ## Understand isolation and evidence
 
-Flow creates a bounded private copy of the admitted project for each query. It excludes `.flow`,
-`.git`, `node_modules`, `dist`, and `coverage`. The language server can read the copy, but the
-selected sandbox denies writes and network access. Flow starts one server process for one request
-and terminates the process tree after shutdown. The selected timeout starts before source capture
-and covers projection, sandbox preparation, protocol work, source revalidation, and receipt
-preparation. Cleanup continues with independent settlement authority after timeout or cancellation.
+Flow creates a bounded private copy of the admitted project for each query. At every directory
+depth, it excludes `.flow`, `.git`, `node_modules`, `dist`, `coverage`, and Flow workspace
+collections. The language server can read the copy, but the selected sandbox denies writes and
+network access. Flow starts one server process for one request and terminates the process tree after
+shutdown. The selected timeout starts before source capture and covers projection, sandbox
+preparation, protocol work, source revalidation, and receipt preparation. Cleanup continues with
+independent settlement authority after timeout or cancellation.
 
 After the query, Flow captures the authoritative project again. It discards the result if the
 project digest changed. It records a receipt only after protocol shutdown, process-tree

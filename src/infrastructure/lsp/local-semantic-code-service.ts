@@ -32,7 +32,7 @@ export const MAX_SEMANTIC_PROJECT_BYTES = 16 * 1024 * 1024;
 export const MAX_SEMANTIC_PROJECT_DEPTH = 32;
 export const MAX_SEMANTIC_STDERR_BYTES = 64 * 1024;
 
-const EXCLUDED_ROOT_ENTRIES = new Set([".flow", ".git", "node_modules", "dist", "coverage"]);
+const EXCLUDED_PROJECT_ENTRIES = new Set([".flow", ".git", "node_modules", "dist", "coverage"]);
 
 export type LocalSemanticCodeServiceErrorCode =
   | "semantic_service_unavailable"
@@ -441,7 +441,7 @@ async function captureProject(
     try {
       for await (const entry of handle) {
         signal?.throwIfAborted();
-        if (provenance === "" && EXCLUDED_ROOT_ENTRIES.has(entry.name)) {
+        if (isExcludedProjectEntry(entry.name)) {
           continue;
         }
         entryCount += 1;
@@ -583,6 +583,14 @@ function isPortablePath(value: string): boolean {
     !value.startsWith("/") &&
     !value.endsWith("/") &&
     value.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..")
+  );
+}
+
+function isExcludedProjectEntry(name: string): boolean {
+  return (
+    EXCLUDED_PROJECT_ENTRIES.has(name) ||
+    name === ".flow-workspaces" ||
+    (name.startsWith(".") && name.endsWith(".flow-workspaces") && name.length > 17)
   );
 }
 

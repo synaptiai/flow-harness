@@ -13,7 +13,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 
@@ -104,6 +104,57 @@ describe("local semantic code service", () => {
         digest: expect.stringMatching(/^[a-f0-9]{64}$/),
       }),
     ]);
+  });
+
+  it("omits nested private and generated workspace collections from the projection", async () => {
+    const project = await temporaryProject();
+    const nestedRoot = join(project, "packages", "nested");
+    const excludedPaths = [
+      ".flow/private.ts",
+      ".git/private.ts",
+      "node_modules/private.ts",
+      "dist/private.ts",
+      "coverage/private.ts",
+      ".flow-workspaces/private.ts",
+      ".review.flow-workspaces/private.ts",
+    ];
+    await mkdir(nestedRoot, { recursive: true });
+    await writeFile(join(nestedRoot, "visible.ts"), "export const visible = true;\n");
+    for (const path of excludedPaths) {
+      const excludedPath = join(nestedRoot, path);
+      await mkdir(dirname(excludedPath), { recursive: true });
+      await writeFile(excludedPath, "PRIVATE_SEMANTIC_PROJECTION\n");
+    }
+    let visibleProjected = false;
+    const projectedExcludedPaths = new Set<string>();
+    const sandbox = new RecordingSandbox(undefined, async (request) => {
+      visibleProjected =
+        (await readFile(join(request.cwd, "packages", "nested", "visible.ts"), "utf8")) ===
+        "export const visible = true;\n";
+      for (const path of excludedPaths) {
+        try {
+          await readFile(join(request.cwd, "packages", "nested", path));
+          projectedExcludedPaths.add(path);
+        } catch {
+          // An excluded path must not exist in the private semantic projection.
+        }
+      }
+    });
+    const session = createLocalSemanticToolSessionFactory(sandbox)({
+      context: executionContext(project),
+      languageServer: await fakeLanguageServer(),
+    });
+
+    await expect(
+      session.query({
+        operation: "hover",
+        path: "example.ts",
+        position: { line: 0, character: 7 },
+      }),
+    ).resolves.toMatchObject({ operation: "hover" });
+
+    expect(visibleProjected).toBe(true);
+    expect([...projectedExcludedPaths]).toEqual([]);
   });
 
   it("discards a result when the authoritative project changes after capture", async () => {
@@ -614,10 +665,14 @@ class RecordingSandbox implements CommandSandbox {
   readonly requests: CommandSandboxRequest[] = [];
   releases = 0;
 
-  constructor(private readonly releaseError?: Error) {}
+  constructor(
+    private readonly releaseError?: Error,
+    private readonly afterPrepare?: (request: CommandSandboxRequest) => void | Promise<void>,
+  ) {}
 
   async prepare(request: CommandSandboxRequest) {
     this.requests.push(request);
+    await this.afterPrepare?.(request);
     return {
       processContainment: "process-group" as const,
       launch: {

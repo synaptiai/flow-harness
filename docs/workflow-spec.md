@@ -1106,11 +1106,11 @@ accept a replacement.
 
 The semantic adapter implements a closed LSP 3.18 subset. It starts one server process for one
 query against a private copy of the admitted project. The copy excludes `.flow`, `.git`,
-`node_modules`, `dist`, and `coverage`. It contains at most 4096 entries, 32 directory levels,
-1 MiB per regular file, and 16 MiB in total. The sandbox gives the server read-only access to the
-copy and denies network access. Flow rejects symbolic links, special files, noncanonical project
-roots, locations outside the copied project, malformed protocol messages, unrequested operations,
-and dynamic server authority.
+`node_modules`, `dist`, `coverage`, and Flow workspace collections at every directory depth. It
+contains at most 4096 entries, 32 directory levels, 1 MiB per regular file, and 16 MiB in total. The
+sandbox gives the server read-only access to the copy and denies network access. Flow rejects
+symbolic links, special files, noncanonical project roots, locations outside the copied project,
+malformed protocol messages, unrequested operations, and dynamic server authority.
 
 The selected timeout begins before project capture and bounds the complete active query phase.
 Semantic tool calls execute sequentially. One source file is at most 1 MiB. One outbound LSP
