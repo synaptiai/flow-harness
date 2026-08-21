@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createLanguageServerSnapshot } from "../../src/domain/capability/language-server.js";
 import { createLocalSemanticToolSessionFactory } from "../../src/infrastructure/lsp/local-semantic-code-service.js";
 import { createProductionCommandSandbox } from "../../src/infrastructure/runtime/production-node-executor.js";
+import { FLOW_SANDBOX_PROFILE } from "../../src/infrastructure/sandbox/srt-command-sandbox.js";
 
 const linux = process.platform === "linux" && process.arch === "x64";
 const temporaryDirectories: string[] = [];
@@ -83,7 +84,7 @@ describe.skipIf(!linux)("semantic LSP runtime boundary", () => {
             languageServerDigest: languageServer.digest,
             sandbox: expect.objectContaining({
               backend: "anthropic-sandbox-runtime",
-              profile: "flow-native-v1",
+              profile: FLOW_SANDBOX_PROFILE,
             }),
           }),
         ]);
