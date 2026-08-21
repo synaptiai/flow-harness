@@ -84,6 +84,27 @@ describe("package contract", () => {
     expect(verifier).toContain(
       '"Package release failed during installed native sandbox diagnostic"',
     );
+    expect(verifier).toContain("withPackageReleaseStage");
+    for (const stage of [
+      "build package source",
+      "load package verification modules",
+      "resolve package source revision",
+      "create package artifact",
+      "verify package artifact",
+      "install package artifact",
+      "verify installed package",
+      "initialize installed project",
+      "inspect initialized project",
+      "verify installed diagnostic",
+      "compare initialized project",
+      "verify installed workflow",
+      "verify installed browser",
+      "verify installed prime boundary",
+      "cleanup package verification",
+    ]) {
+      expect(verifier).toContain(stage);
+    }
+    expect(verifier).toContain("operationFailed");
     expect(verifier).toContain("readInstalledDoctorReport");
     expect(verifier).toContain('doctorReport.target, "project"');
     expect(verifier).toContain("doctorReport.ok, true");
