@@ -137,6 +137,7 @@ The [documentation hub](docs/README.md) routes each reader task to one canonical
 | --- | --- |
 | [Install the Flow preview](docs/guides/install-preview.md) | Verified package download, installation, removal, and release-specific limits |
 | [Getting started](docs/getting-started.md) | Source setup and the first credential-free run |
+| [Diagnose the Flow environment](docs/guides/diagnose-environment.md) | Read-only host, project, workflow, provider, sandbox, and Prime preflight |
 | [Project status](docs/project-status.md) | Maturity, platform support, and planned boundaries |
 | [Run and control workflows](docs/guides/run-and-control.md) | Detached runs, presentation hosts, approvals, budgets, cancellation, and recovery entry points |
 | [Use capability packages](docs/guides/capability-packages.md) | Skills, verifiers, tools, workflows, policies, presentations, bundles, and repositories |

@@ -74,6 +74,49 @@ describe("package contract", () => {
     }
   });
 
+  it("runs the environment doctor through the installed package", async () => {
+    const verifier = await readFile(
+      new URL("../../scripts/verify-package.mjs", import.meta.url),
+      "utf8",
+    );
+
+    expect(verifier).toContain('await run(flowBinary, ["doctor"]');
+    expect(verifier).toContain(
+      '"Package release failed during installed native sandbox diagnostic"',
+    );
+    expect(verifier).toContain("withPackageReleaseStage");
+    for (const stage of [
+      "build package source",
+      "load package verification modules",
+      "resolve package source revision",
+      "create package artifact",
+      "verify package artifact",
+      "install package artifact",
+      "verify installed package",
+      "initialize installed project",
+      "inspect initialized project",
+      "verify installed diagnostic",
+      "compare initialized project",
+      "verify installed workflow",
+      "verify installed browser",
+      "verify installed prime boundary",
+      "cleanup package verification",
+    ]) {
+      expect(verifier).toContain(stage);
+    }
+    expect(verifier).toContain("operationFailed");
+    expect(verifier).toContain("readInstalledDoctorReport");
+    expect(verifier).toContain('doctorReport.target, "project"');
+    expect(verifier).toContain("doctorReport.ok, true");
+    expect(verifier).toContain("projectBeforeDoctor");
+    expect(verifier).toContain("snapshotProjectFiles(projectRoot)");
+    expect(verifier).toContain('"the initialized project snapshot is incomplete"');
+    expect(verifier).toContain('"the initialized project snapshot omits filesystem identity"');
+    expect(verifier).toContain('"flow doctor changed the initialized project"');
+    expect(verifier).toContain('"runtime.host"');
+    expect(verifier).toContain('"sandbox.native"');
+  });
+
   it("publishes one exact production dependency tree for the CLI application", async () => {
     const shrinkwrap = JSON.parse(
       await readFile(new URL("../../npm-shrinkwrap.json", import.meta.url), "utf8"),

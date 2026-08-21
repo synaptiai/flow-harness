@@ -27,10 +27,12 @@ prompt overlays and authority-preserving skill-resource projections. New single-
 projections, paired evaluation, reviewed activation, durable run snapshots, and rollback are also
 implemented.
 
-Gate 8 is the next delivery priority. It turns the source preview into an installable, diagnosable,
-and testable public preview. Gate 9 adds bounded long-horizon context and semantic code feedback.
-Gate 10 adds standards-based executor interoperability and evidence-gated specialized execution.
-Gate 8 must close before a Gate 9 or Gate 10 experiment becomes a default user path.
+Gate 8 remains the delivery priority. Slices 8.1 and 8.2 provide an installable preview and
+source-build environment diagnostics. Slice 8.3 is next. It completes the guided quick start.
+
+Gate 9 adds bounded long-horizon context and semantic code feedback. Gate 10 adds standards-based
+executor interoperability and evidence-gated specialized execution. Gate 8 must close before a
+Gate 9 or Gate 10 experiment becomes a default user path.
 
 Remaining targets include executable extensions, remote or multi-user UI hosts, and stronger
 isolation.
@@ -250,12 +252,12 @@ current pre-stable compatibility and security boundaries.
 
 ### Slice 8.2: Diagnose the environment
 
-- Add `flow doctor` as a read-only preflight command.
-- Check the Node.js version, project discovery, configuration, filesystem access, selected sandbox,
+- **Implemented:** Add `flow doctor` as a read-only preflight command.
+- **Implemented:** Check the Node.js version, project discovery, configuration, filesystem access, selected sandbox,
   and the requirements of the selected execution profile.
-- Check provider credentials, Docker, and Prime requirements only when the selected path needs
+- **Implemented:** Check provider credentials, Docker, and Prime requirements only when the selected path needs
   them. Never print a credential, private path, raw provider response, or nested private cause.
-- Return stable categories, actionable remediation, and a nonzero exit status for each blocking
+- **Implemented:** Return stable categories, actionable remediation, and a nonzero exit status for each blocking
   requirement.
 
 ### Slice 8.3: Complete a quick start

@@ -51,6 +51,7 @@ import {
   decideApproval,
   trySubmitAgentCommandApprovalDecision,
 } from "../application/command-approval.js";
+import { runEnvironmentDoctor } from "../application/environment-doctor.js";
 import {
   FlowWorkflowEvaluationAdapter,
   type HarnessEvaluationAdapter,
@@ -404,12 +405,21 @@ import {
   type OciRegistryCredentialProvider,
   type StrictOciCapabilityRegistry,
 } from "../infrastructure/http/strict-oci-capability-registry.js";
+import { inspectPreparedPrimeRuntime } from "../infrastructure/oci/prime-environment-doctor.js";
 import type { PrimeOciPreparationResult } from "../infrastructure/oci/prime-oci-preparation.js";
+import {
+  collectWorkflowEnvironmentRequirements,
+  inspectPiProviderConfiguration,
+} from "../infrastructure/pi/pi-environment-doctor.js";
 import {
   BuiltInExternalHarnessRegistry,
   type ExternalHarnessRegistry,
 } from "../infrastructure/process/built-in-external-harness-registry.js";
 import { createProductionNodeEffectReconciler } from "../infrastructure/runtime/production-effect-reconciler.js";
+import {
+  inspectProjectFilesystem as inspectDoctorProjectFilesystem,
+  inspectProductionNativeSandbox,
+} from "../infrastructure/runtime/production-environment-doctor.js";
 import { createProductionNodeExecutor } from "../infrastructure/runtime/production-node-executor.js";
 import { createProductionWorkspaceIsolator } from "../infrastructure/runtime/production-workspace-isolator.js";
 import { createSigstorePublicGoodTrustedRoot } from "../infrastructure/sigstore-public-good-trusted-root.js";
@@ -448,6 +458,7 @@ const HELP = `Flow — Provider-neutral coding-agent harness
 Usage:
   flow init [directory] [--force]
   flow config show
+  flow doctor [<workflow.yaml|workflow:name@version|activation:workflow-id>] [--profile prime-agent]
   flow skills list
   flow skills inspect <name>
   flow skills validate
@@ -583,6 +594,11 @@ export interface CliDependencies {
     options?: InitializeFlowProjectOptions,
   ) => Promise<InitializedFlowProject>;
   readonly loadConfig: (options?: LoadEffectiveFlowConfigOptions) => Promise<EffectiveFlowConfig>;
+  readonly inspectProjectFilesystem: (projectRoot: string, signal: AbortSignal) => Promise<void>;
+  readonly inspectNativeSandbox: (root: string, signal: AbortSignal) => Promise<void>;
+  readonly inspectContainerSandbox: (projectRoot: string, signal: AbortSignal) => Promise<void>;
+  readonly inspectProviders: typeof inspectPiProviderConfiguration;
+  readonly inspectPrime: (projectRoot: string, signal: AbortSignal) => Promise<void>;
   readonly capabilityBundleFetcher: CapabilityBundleFetcher;
   readonly capabilityMetadataChannel: CapabilityMetadataChannel;
   readonly capabilityRepositoryFetcher: StrictCapabilityRepositoryFetcher;
@@ -653,6 +669,8 @@ export async function main(
         return await initCommand(args.slice(1), io, dependencyOverrides);
       case "config":
         return await configCommand(args.slice(1), io, dependencyOverrides);
+      case "doctor":
+        return await doctorCommand(args.slice(1), io, dependencyOverrides);
       case "skills":
         return await skillsCommand(args.slice(1), io, dependencyOverrides);
       case "verifiers":
@@ -933,6 +951,93 @@ async function configCommand(
   const result = await dependencies.loadConfig({ cwd: dependencies.cwd });
   io.stdout(JSON.stringify(result, null, 2));
   return 0;
+}
+
+async function doctorCommand(
+  args: readonly string[],
+  io: CliIo,
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  assertStringOptionAtMostOnce(args, "profile");
+  const { positionals, values } = parseCommandArgs(args, {
+    profile: { type: "string" },
+  });
+  if (positionals.length > 1) {
+    throw new CliUsageError("doctor accepts at most one workflow");
+  }
+  if (values.profile !== undefined && values.profile !== "prime-agent") {
+    throw new CliUsageError("doctor --profile requires prime-agent");
+  }
+  const workflowArgument = positionals[0];
+  if (workflowArgument !== undefined && values.profile === "prime-agent") {
+    throw new CliUsageError("doctor cannot combine a workflow with --profile prime-agent");
+  }
+  const target =
+    values.profile === "prime-agent"
+      ? ("prime-agent" as const)
+      : workflowArgument === undefined
+        ? ("project" as const)
+        : ("workflow" as const);
+  const dependencies = dependenciesFrom(overrides);
+  const loadConfig = overrides.loadConfig ?? loadEffectiveFlowConfig;
+  let configuration: EffectiveFlowConfig | undefined;
+  try {
+    const report = await runEnvironmentDoctor(
+      {
+        target,
+        platform: process.platform,
+        nodeVersion: process.versions.node,
+        invocationRoot: dependencies.cwd,
+        ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
+      },
+      {
+        loadConfiguration: async (signal) => {
+          configuration = await loadConfig({ cwd: dependencies.cwd, signal });
+          return {
+            projectRoot: configuration.projectRoot,
+            sandbox: configuration.sandbox.profile,
+          };
+        },
+        inspectProjectFilesystem: dependencies.inspectProjectFilesystem,
+        inspectNativeSandbox: dependencies.inspectNativeSandbox,
+        inspectContainerSandbox: dependencies.inspectContainerSandbox,
+        inspectWorkflow: async (signal) => {
+          signal.throwIfAborted();
+          if (workflowArgument === undefined || configuration === undefined) {
+            throw new Error("workflow diagnostic prerequisites are unavailable");
+          }
+          const admitted = await admitWorkflowArgument(
+            workflowArgument,
+            configuration,
+            dependencies,
+          );
+          signal.throwIfAborted();
+          const supplementalSnapshot = await resolveWorkflowCapabilitySnapshot(
+            admitted.workflow,
+            configuration,
+            admitted.capabilitySnapshot,
+          );
+          const capabilitySnapshot = combineOptionalCapabilitySnapshots([
+            admitted.capabilitySnapshot,
+            supplementalSnapshot,
+          ]);
+          assertWorkflowSatisfiesPolicyPackages(admitted.workflow, capabilitySnapshot);
+          signal.throwIfAborted();
+          return collectWorkflowEnvironmentRequirements(admitted.workflow);
+        },
+        inspectProviders: dependencies.inspectProviders,
+        inspectPrime: dependencies.inspectPrime,
+      },
+    );
+    io.stdout(JSON.stringify(report, null, 2));
+    return report.ok ? 0 : 1;
+  } catch (error) {
+    if (overrides.signal?.aborted === true) {
+      io.stderr("Flow diagnostics were cancelled.");
+      return 1;
+    }
+    throw error;
+  }
 }
 
 async function skillsCommand(
@@ -6166,6 +6271,11 @@ function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies 
     effectReconciler: overrides.effectReconciler ?? createProductionNodeEffectReconciler(),
     createWorkspaceIsolator: overrides.createWorkspaceIsolator ?? createProductionWorkspaceIsolator,
     readTextFile: overrides.readTextFile ?? ((path) => readFile(path, "utf8")),
+    inspectProjectFilesystem: overrides.inspectProjectFilesystem ?? inspectDoctorProjectFilesystem,
+    inspectNativeSandbox: overrides.inspectNativeSandbox ?? inspectProductionNativeSandbox,
+    inspectContainerSandbox: overrides.inspectContainerSandbox ?? inspectPreparedPrimeRuntime,
+    inspectProviders: overrides.inspectProviders ?? inspectPiProviderConfiguration,
+    inspectPrime: overrides.inspectPrime ?? inspectPreparedPrimeRuntime,
     capabilityBundleFetcher:
       overrides.capabilityBundleFetcher ?? createProductionCapabilityBundleFetcher(),
     capabilityMetadataChannel:

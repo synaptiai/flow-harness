@@ -9,6 +9,7 @@ selected project root, and canonical policy digest without starting a supervisor
 ```sh
 flow init [directory]
 flow config show
+flow doctor
 ```
 
 `flow init` atomically creates `<directory>/.flow/config.yaml` with the minimal project document:
@@ -22,6 +23,10 @@ It preserves an existing target unless `--force` is explicit. Symbolic-link and 
 are refused. Project discovery begins at the invocation directory and selects the nearest ancestor
 containing `.flow/config.yaml`; that ancestor becomes the default root for `.flow/runs`. An explicit
 `--runs-dir` remains relative to the invocation directory.
+
+`flow doctor` validates the effective configuration, project discovery, filesystem access, and
+only the configured sandbox. Read [Diagnose the Flow environment](guides/diagnose-environment.md)
+for its selected-path checks and fixed report.
 
 ## Capacity policy
 

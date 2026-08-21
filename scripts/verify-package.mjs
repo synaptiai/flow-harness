@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { constants } from "node:fs";
-import { access, mkdir, mkdtemp, open, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  lstat,
+  mkdir,
+  mkdtemp,
+  open,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +24,8 @@ const COMMAND_TIMEOUT_MS = 180_000;
 const MAX_COMMAND_OUTPUT_BYTES = 16 * 1024 * 1024;
 const MAX_EVIDENCE_BYTES = 4 * 1024 * 1024;
 const MAX_ARCHIVE_BYTES = 16 * 1024 * 1024;
+const MAX_PROJECT_SNAPSHOT_ENTRIES = 1_024;
+const MAX_PROJECT_SNAPSHOT_BYTES = 4 * 1024 * 1024;
 
 try {
   await verifyPackage();
@@ -28,59 +41,150 @@ try {
 async function verifyPackage() {
   const releaseMode = parseMode(process.argv.slice(2));
   const verificationRoot = await mkdtemp(join(tmpdir(), "flow-package-check-"));
+  let operationFailed = false;
+  let operationError;
   try {
     if (!releaseMode) {
-      await run("npm", ["run", "build"], repositoryRoot, verificationRoot);
+      await withPackageReleaseStage("build package source", async () => {
+        await run("npm", ["run", "build"], repositoryRoot, verificationRoot);
+      });
     }
-    const [releaseArtifact, releaseVerifier, strictJson] = await Promise.all([
-      import("../dist/infrastructure/release/package-release-artifact.js"),
-      import("../dist/infrastructure/release/package-release-verifier.js"),
-      import("../dist/domain/strict-json.js"),
-    ]);
-    const expectedRevision = await sourceRevision(verificationRoot);
-    const artifact = releaseMode
-      ? await readPreparedArtifact()
-      : await buildEphemeralArtifact(
-          verificationRoot,
-          expectedRevision,
-          releaseArtifact.preparePackageReleaseEvidence,
-          strictJson.parseStrictJson,
-        );
-    const evidence = releaseVerifier.verifyPackageReleaseArtifact({
-      archive: artifact.archive,
-      evidenceBytes: artifact.evidenceBytes,
-      expectedSourceRevision: expectedRevision,
-    });
+    const { releaseArtifact, releaseVerifier, strictJson } = await withPackageReleaseStage(
+      "load package verification modules",
+      async () => {
+        const [releaseArtifact, releaseVerifier, strictJson] = await Promise.all([
+          import("../dist/infrastructure/release/package-release-artifact.js"),
+          import("../dist/infrastructure/release/package-release-verifier.js"),
+          import("../dist/domain/strict-json.js"),
+        ]);
+        return { releaseArtifact, releaseVerifier, strictJson };
+      },
+    );
+    const expectedRevision = await withPackageReleaseStage(
+      "resolve package source revision",
+      async () => await sourceRevision(verificationRoot),
+    );
+    const artifact = await withPackageReleaseStage("create package artifact", async () =>
+      releaseMode
+        ? await readPreparedArtifact()
+        : await buildEphemeralArtifact(
+            verificationRoot,
+            expectedRevision,
+            releaseArtifact.preparePackageReleaseEvidence,
+            strictJson.parseStrictJson,
+          ),
+    );
+    const evidence = await withPackageReleaseStage("verify package artifact", async () =>
+      releaseVerifier.verifyPackageReleaseArtifact({
+        archive: artifact.archive,
+        evidenceBytes: artifact.evidenceBytes,
+        expectedSourceRevision: expectedRevision,
+      }),
+    );
 
     const consumerRoot = join(verificationRoot, "consumer");
     const projectRoot = join(verificationRoot, "project");
-    await mkdir(projectRoot);
-    await run(
-      "npm",
-      [
-        "install",
-        "--ignore-scripts",
-        "--no-audit",
-        "--no-fund",
-        "--prefix",
-        consumerRoot,
-        artifact.archivePath,
-      ],
-      verificationRoot,
-      verificationRoot,
-    );
+    await withPackageReleaseStage("install package artifact", async () => {
+      await mkdir(projectRoot);
+      await run(
+        "npm",
+        [
+          "install",
+          "--ignore-scripts",
+          "--no-audit",
+          "--no-fund",
+          "--prefix",
+          consumerRoot,
+          artifact.archivePath,
+        ],
+        verificationRoot,
+        verificationRoot,
+      );
+    });
 
     const installedPackageRoot = join(consumerRoot, "node_modules", "@synaptiai", "flow-harness");
-    await releaseVerifier.verifyInstalledPackageRelease(installedPackageRoot, evidence);
     const flowBinary = join(consumerRoot, "node_modules", ".bin", "flow");
-    const help = await run(flowBinary, ["--help"], projectRoot, verificationRoot);
-    assert.match(help.stdout, /flow validate/, "the installed Flow binary did not print CLI help");
+    await withPackageReleaseStage("verify installed package", async () => {
+      await releaseVerifier.verifyInstalledPackageRelease(installedPackageRoot, evidence);
+      const help = await run(flowBinary, ["--help"], projectRoot, verificationRoot);
+      assert.match(
+        help.stdout,
+        /flow validate/,
+        "the installed Flow binary did not print CLI help",
+      );
+    });
 
-    await run(flowBinary, ["init", projectRoot], projectRoot, verificationRoot);
-    const shown = await run(flowBinary, ["config", "show"], projectRoot, verificationRoot);
-    const effective = JSON.parse(shown.stdout);
-    assert.deepEqual(effective.supervisor, { maxActiveWorkers: 1, maxQueuedJobs: 32 });
-    assert.equal(effective.projectRoot, await realpath(projectRoot));
+    const effective = await withPackageReleaseStage("initialize installed project", async () => {
+      await run(flowBinary, ["init", projectRoot], projectRoot, verificationRoot);
+      const shown = await run(flowBinary, ["config", "show"], projectRoot, verificationRoot);
+      const effective = JSON.parse(shown.stdout);
+      assert.deepEqual(effective.supervisor, { maxActiveWorkers: 1, maxQueuedJobs: 32 });
+      assert.equal(effective.projectRoot, await realpath(projectRoot));
+      return effective;
+    });
+    const projectBeforeDoctor = await withPackageReleaseStage(
+      "inspect initialized project",
+      async () => {
+        const snapshot = await snapshotProjectFiles(projectRoot);
+        assert.deepEqual(
+          snapshot.map((entry) => [entry.path, entry.type]),
+          [
+            [".", "directory"],
+            [".flow", "directory"],
+            [".flow/config.yaml", "file"],
+          ],
+          "the initialized project snapshot is incomplete",
+        );
+        const projectConfiguration = snapshot.at(-1);
+        assert.equal(projectConfiguration.contentBase64 !== undefined, true);
+        assert.equal(
+          Buffer.from(projectConfiguration.contentBase64, "base64").toString("utf8"),
+          "apiVersion: flow.synapti.ai/v1alpha1\nkind: FlowProjectConfig\n",
+        );
+        assert.equal(
+          snapshot.every(
+            (entry) =>
+              Number.isSafeInteger(entry.mode) &&
+              Number.isSafeInteger(entry.uid) &&
+              Number.isSafeInteger(entry.gid) &&
+              Number.isSafeInteger(entry.dev) &&
+              Number.isSafeInteger(entry.ino) &&
+              Number.isSafeInteger(entry.nlink) &&
+              Number.isSafeInteger(entry.size) &&
+              Number.isFinite(entry.mtimeMs) &&
+              Number.isFinite(entry.ctimeMs),
+          ),
+          true,
+          "the initialized project snapshot omits filesystem identity",
+        );
+        return snapshot;
+      },
+    );
+    const doctorReport = await readInstalledDoctorReport(flowBinary, projectRoot, verificationRoot);
+    await withPackageReleaseStage("verify installed diagnostic", async () => {
+      assert.equal(doctorReport.version, 1);
+      assert.equal(doctorReport.target, "project");
+      assert.equal(doctorReport.ok, true);
+      assert.deepEqual(
+        doctorReport.checks.map((check) => [check.category, check.status]),
+        [
+          ["runtime.host", "pass"],
+          ["project.configuration", "pass"],
+          ["project.discovery", "pass"],
+          ["project.filesystem", "pass"],
+          ["sandbox.native", "pass"],
+        ],
+      );
+    });
+    await withPackageReleaseStage(
+      "compare initialized project",
+      async () =>
+        await assert.deepEqual(
+          await snapshotProjectFiles(projectRoot),
+          projectBeforeDoctor,
+          "flow doctor changed the initialized project",
+        ),
+    );
 
     const installationWorkflow = join(
       installedPackageRoot,
@@ -88,28 +192,31 @@ async function verifyPackage() {
       "verify-installation.workflow.yaml",
     );
     const installationRuns = join(projectRoot, "installation-runs");
-    await run(flowBinary, ["validate", installationWorkflow], projectRoot, verificationRoot);
-    await run(
-      flowBinary,
-      [
-        "run",
-        installationWorkflow,
-        "--run-id",
-        "packed-installation-run",
-        "--runs-dir",
-        installationRuns,
-        "--cwd",
+    await withPackageReleaseStage("verify installed workflow", async () => {
+      await run(flowBinary, ["validate", installationWorkflow], projectRoot, verificationRoot);
+      await run(
+        flowBinary,
+        [
+          "run",
+          installationWorkflow,
+          "--run-id",
+          "packed-installation-run",
+          "--runs-dir",
+          installationRuns,
+          "--cwd",
+          projectRoot,
+        ],
         projectRoot,
-      ],
-      projectRoot,
-      verificationRoot,
-    );
+        verificationRoot,
+      );
+    });
 
     const browserWorkflow = join(projectRoot, "packed-browser.workflow.yaml");
     const browserRuns = join(projectRoot, "browser-runs");
-    await writeFile(
-      browserWorkflow,
-      `apiVersion: flow.synapti.ai/v1alpha1
+    await withPackageReleaseStage("verify installed browser", async () => {
+      await writeFile(
+        browserWorkflow,
+        `apiVersion: flow.synapti.ai/v1alpha1
 kind: Workflow
 metadata: { id: packed-browser-workflow }
 nodes:
@@ -120,24 +227,25 @@ nodes:
       args: [-e, ${JSON.stringify("process.stdout.write('packed-browser-ready');")}]
       timeoutMs: 10000
 `,
-      "utf8",
-    );
-    await run(
-      flowBinary,
-      [
-        "run",
-        browserWorkflow,
-        "--run-id",
-        "packed-browser-run",
-        "--runs-dir",
-        browserRuns,
-        "--cwd",
+        "utf8",
+      );
+      await run(
+        flowBinary,
+        [
+          "run",
+          browserWorkflow,
+          "--run-id",
+          "packed-browser-run",
+          "--runs-dir",
+          browserRuns,
+          "--cwd",
+          projectRoot,
+        ],
         projectRoot,
-      ],
-      projectRoot,
-      verificationRoot,
-    );
-    await verifyBrowserPresentation(flowBinary, browserRuns, projectRoot, verificationRoot);
+        verificationRoot,
+      );
+      await verifyBrowserPresentation(flowBinary, browserRuns, projectRoot, verificationRoot);
+    });
 
     const primeExample = join(
       installedPackageRoot,
@@ -145,24 +253,37 @@ nodes:
       "evaluation",
       "native-prime-agent-comparison.evaluation.yaml",
     );
-    await access(primeExample);
-    const primeValidation = await runExpectFailure(
-      flowBinary,
-      ["eval", "validate", primeExample],
-      projectRoot,
-      verificationRoot,
-    );
-    assert.match(
-      `${primeValidation.stdout}\n${primeValidation.stderr}`,
-      /Prime|oci-attestation|ENOENT/i,
-      "the installed CLI did not reach the Prime runtime preparation boundary",
-    );
+    await withPackageReleaseStage("verify installed prime boundary", async () => {
+      await access(primeExample);
+      const primeValidation = await runExpectFailure(
+        flowBinary,
+        ["eval", "validate", primeExample],
+        projectRoot,
+        verificationRoot,
+      );
+      assert.match(
+        `${primeValidation.stdout}\n${primeValidation.stderr}`,
+        /Prime|oci-attestation|ENOENT/i,
+        "the installed CLI did not reach the Prime runtime preparation boundary",
+      );
+    });
 
     process.stdout.write(
       `Verified clean installation and CLI execution from ${evidence.archive.fileName} (${effective.policyDigest}).\n`,
     );
-  } finally {
+  } catch (error) {
+    operationFailed = true;
+    operationError = error;
+  }
+  try {
     await rm(verificationRoot, { recursive: true, force: true });
+  } catch {
+    if (!operationFailed) {
+      throw new Error("Package release failed during cleanup package verification");
+    }
+  }
+  if (operationFailed) {
+    throw operationError;
   }
 }
 
@@ -170,6 +291,14 @@ function parseMode(args) {
   if (args.length === 0) return false;
   if (args.length === 1 && args[0] === "--release") return true;
   throw new Error("invalid package verification arguments");
+}
+
+async function withPackageReleaseStage(stage, operation) {
+  try {
+    return await operation();
+  } catch {
+    throw new Error(`Package release failed during ${stage}`);
+  }
 }
 
 async function sourceRevision(verificationRoot) {
@@ -261,6 +390,49 @@ async function readBoundedNoFollow(path, maximumBytes) {
   }
 }
 
+async function snapshotProjectFiles(root) {
+  const snapshot = [];
+  let bytes = 0;
+  const visit = async (path, relativePath) => {
+    if (snapshot.length >= MAX_PROJECT_SNAPSHOT_ENTRIES) {
+      throw new Error("package verification project snapshot exceeds its entry limit");
+    }
+    const metadata = await lstat(path);
+    const common = {
+      path: relativePath,
+      mode: metadata.mode & 0o7777,
+      uid: metadata.uid,
+      gid: metadata.gid,
+      dev: metadata.dev,
+      ino: metadata.ino,
+      nlink: metadata.nlink,
+      size: metadata.size,
+      mtimeMs: metadata.mtimeMs,
+      ctimeMs: metadata.ctimeMs,
+    };
+    if (metadata.isDirectory()) {
+      snapshot.push({ ...common, type: "directory" });
+      const entries = await readdir(path, { withFileTypes: true });
+      entries.sort((left, right) => left.name.localeCompare(right.name));
+      for (const entry of entries) {
+        await visit(join(path, entry.name), join(relativePath, entry.name));
+      }
+      return;
+    }
+    if (!metadata.isFile()) {
+      throw new Error("package verification project snapshot found an unsupported entry");
+    }
+    const content = await readFile(path);
+    bytes += content.byteLength;
+    if (bytes > MAX_PROJECT_SNAPSHOT_BYTES) {
+      throw new Error("package verification project snapshot exceeds its byte limit");
+    }
+    snapshot.push({ ...common, type: "file", contentBase64: content.toString("base64") });
+  };
+  await visit(root, ".");
+  return snapshot;
+}
+
 async function run(command, args, cwd, verificationRoot) {
   return await execute(command, args, {
     cwd,
@@ -283,6 +455,59 @@ async function runExpectFailure(command, args, cwd, verificationRoot) {
     };
   }
   assert.fail("package verification command unexpectedly succeeded");
+}
+
+async function readInstalledDoctorReport(flowBinary, projectRoot, verificationRoot) {
+  let source;
+  try {
+    source = (await run(flowBinary, ["doctor"], projectRoot, verificationRoot)).stdout;
+  } catch (error) {
+    if (typeof error !== "object" || error === null || typeof error.stdout !== "string") {
+      throw new Error("Package release failed during run installed diagnostic");
+    }
+    source = error.stdout;
+  }
+
+  let report;
+  try {
+    report = JSON.parse(source);
+  } catch {
+    throw new Error("Package release failed during parse installed diagnostic");
+  }
+  if (typeof report !== "object" || report === null || Array.isArray(report)) {
+    throw new Error("Package release failed during parse installed diagnostic");
+  }
+  if (report.ok !== true) {
+    const failedCategory = Array.isArray(report.checks)
+      ? report.checks.find(
+          (check) =>
+            typeof check === "object" &&
+            check !== null &&
+            !Array.isArray(check) &&
+            check.status === "fail" &&
+            typeof check.category === "string",
+        )?.category
+      : undefined;
+    throw new Error(installedDoctorFailureStage(failedCategory));
+  }
+  return report;
+}
+
+function installedDoctorFailureStage(category) {
+  switch (category) {
+    case "runtime.host":
+      return "Package release failed during installed host diagnostic";
+    case "project.configuration":
+      return "Package release failed during installed configuration diagnostic";
+    case "project.discovery":
+      return "Package release failed during installed discovery diagnostic";
+    case "project.filesystem":
+      return "Package release failed during installed filesystem diagnostic";
+    case "sandbox.native":
+      return "Package release failed during installed native sandbox diagnostic";
+    default:
+      return "Package release failed during installed environment diagnostic";
+  }
 }
 
 async function verifyBrowserPresentation(flowBinary, runsDirectory, cwd, verificationRoot) {
