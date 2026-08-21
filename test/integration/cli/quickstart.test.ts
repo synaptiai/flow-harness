@@ -1,14 +1,35 @@
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
 import { lstat, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  type AssistantMessage,
+  createAssistantMessageEventStream,
+  InMemoryCredentialStore,
+} from "@earendil-works/pi-ai";
+import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { NodeExecutor } from "../../../src/application/ports.js";
+import { NodeExecutorRouter } from "../../../src/application/node-executor-router.js";
+import type {
+  AgentExecutor,
+  CommandExecutor,
+  NodeExecutor,
+} from "../../../src/application/ports.js";
 import { type CliIo, main } from "../../../src/cli/main.js";
 import { resolveFlowConfig } from "../../../src/domain/config/resolver.js";
-import { FlowConfigStoreError } from "../../../src/infrastructure/fs/flow-config-store.js";
+import {
+  FlowConfigStoreError,
+  QUICKSTART_CODING_EXPECTED_SOURCE,
+  QUICKSTART_CODING_FIXTURE_PATH,
+  QUICKSTART_CODING_FIXTURE_SOURCE,
+} from "../../../src/infrastructure/fs/flow-config-store.js";
+import {
+  EmbeddedPiAgentRunner,
+  PiAgentExecutor,
+} from "../../../src/infrastructure/pi/pi-agent-executor.js";
 
 const FOUNDATION_WORKFLOW = `apiVersion: flow.synapti.ai/v1alpha1
 kind: Workflow
@@ -142,6 +163,217 @@ describe("flow quickstart", () => {
     });
   });
 
+  it("runs the explicit coding path and exposes deterministic durable evidence", async () => {
+    const project = await temporaryDirectory("flow-quickstart-coding-");
+    const phases: string[] = [];
+    const capture = createCapture();
+
+    const exitCode = await main(
+      ["quickstart", project, "--coding", "--provider", "openai", "--model", "gpt-5.6-luna"],
+      capture.io,
+      {
+        cwd: project,
+        loadConfig: async (options) => resolveFlowConfig({ projectRoot: options?.cwd ?? project }),
+        inspectProviders: async (requirements) => {
+          phases.push(`inspect:${requirements[0]?.provider}/${requirements[0]?.model}`);
+        },
+        executor: codingExecutor(phases, "exact"),
+      },
+    );
+
+    expect(exitCode, capture.stderr.join("\n")).toBe(0);
+    expect(phases).toEqual([
+      "inspect:openai/gpt-5.6-luna",
+      "agent:read,ls,edit",
+      "verifier:exact-bytes",
+    ]);
+    expect(JSON.parse(capture.stdout.join("\n"))).toEqual({
+      version: 1,
+      mode: "coding",
+      project: { publication: "created", fixture: QUICKSTART_CODING_FIXTURE_PATH },
+      run: {
+        id: "quickstart-coding",
+        status: "succeeded",
+        evidence: ".flow/runs/quickstart-coding/events.jsonl",
+      },
+      commands: {
+        inspect: ["flow", "inspect", "quickstart-coding"],
+        browser: ["flow", "web", "quickstart-coding", "--actor", "operator:quickstart"],
+      },
+    });
+    await expect(readFile(join(project, QUICKSTART_CODING_FIXTURE_PATH), "utf8")).resolves.toBe(
+      QUICKSTART_CODING_EXPECTED_SOURCE,
+    );
+
+    const inspect = createCapture();
+    expect(
+      await main(["inspect", "quickstart-coding"], inspect.io, {
+        cwd: project,
+        loadConfig: async (options) => resolveFlowConfig({ projectRoot: options?.cwd ?? project }),
+      }),
+    ).toBe(0);
+    expect(JSON.parse(inspect.stdout.join("\n"))).toMatchObject({
+      status: "succeeded",
+      budget: {
+        limits: {
+          maxNodeStarts: 2,
+          maxModelTokens: 8_192,
+          maxCostUsdMicros: 250_000,
+          maxExecutionMs: 120_000,
+          maxArtifactBytes: 131_072,
+        },
+      },
+      goal: {
+        status: "accepted",
+        criteria: { "fixture-is-exact": { status: "accepted" } },
+      },
+      nodes: {
+        implement: {
+          status: "succeeded",
+          evidence: {
+            kind: "agent",
+            provider: "openai",
+            model: "gpt-5.6-luna",
+            usage: { inputTokens: 10, outputTokens: 4, costUsdMicros: 1_000 },
+          },
+        },
+        verify: {
+          status: "succeeded",
+          evidence: { kind: "verifier", driver: "command", verdict: "accepted" },
+        },
+      },
+    });
+  });
+
+  it("records real Pi read and edit evidence before deterministic coding verification", async () => {
+    const project = await temporaryDirectory("flow-quickstart-coding-effects-");
+    const capture = createCapture();
+    const runtime = await deterministicCodingRuntime();
+    const executor = new NodeExecutorRouter(
+      codingCommandExecutor([]),
+      new PiAgentExecutor(new EmbeddedPiAgentRunner(async () => runtime)),
+    );
+
+    const exitCode = await main(
+      [
+        "quickstart",
+        project,
+        "--coding",
+        "--provider",
+        "openai",
+        "--model",
+        "deterministic",
+        "--run-id",
+        "quickstart-coding-effects",
+      ],
+      capture.io,
+      {
+        cwd: project,
+        loadConfig: async (options) => resolveFlowConfig({ projectRoot: options?.cwd ?? project }),
+        inspectProviders: async () => undefined,
+        executor,
+      },
+    );
+
+    expect(exitCode, capture.stderr.join("\n")).toBe(0);
+    const inspect = createCapture();
+    expect(
+      await main(["inspect", "quickstart-coding-effects"], inspect.io, {
+        cwd: project,
+        loadConfig: async (options) => resolveFlowConfig({ projectRoot: options?.cwd ?? project }),
+      }),
+    ).toBe(0);
+    expect(JSON.parse(inspect.stdout.join("\n"))).toMatchObject({
+      status: "succeeded",
+      goal: {
+        status: "accepted",
+        criteria: { "fixture-is-exact": { status: "accepted" } },
+      },
+      nodes: {
+        implement: {
+          evidence: {
+            kind: "agent",
+            provider: "openai",
+            model: "deterministic",
+            policyDecisions: [
+              expect.objectContaining({ action: "filesystem.read", outcome: "allowed" }),
+              expect.objectContaining({ action: "filesystem.read", outcome: "allowed" }),
+              expect.objectContaining({ action: "filesystem.write", outcome: "allowed" }),
+            ],
+            effectReceipts: [
+              expect.objectContaining({
+                kind: "filesystem.edit",
+                beforeSha256: sha256(QUICKSTART_CODING_FIXTURE_SOURCE),
+                afterSha256: sha256(QUICKSTART_CODING_EXPECTED_SOURCE),
+                outcome: "committed",
+              }),
+            ],
+          },
+        },
+        verify: {
+          evidence: { kind: "verifier", driver: "command", verdict: "accepted" },
+        },
+      },
+    });
+  });
+
+  it.each([
+    { label: "unchanged fixture", behavior: "claim-only" as const, canary: "status: pending" },
+    { label: "one changed byte", behavior: "one-byte" as const, canary: "status: Verified" },
+    { label: "extra trailing bytes", behavior: "extra-bytes" as const, canary: "PRIVATE_EXTRA" },
+  ])("rejects a model completion claim with $label", async ({ behavior, canary }) => {
+    const project = await temporaryDirectory("flow-quickstart-coding-unverified-");
+    const capture = createCapture();
+
+    const exitCode = await main(
+      [
+        "quickstart",
+        project,
+        "--coding",
+        "--provider",
+        "anthropic",
+        "--model",
+        "claude-sonnet-4-6",
+      ],
+      capture.io,
+      {
+        cwd: project,
+        loadConfig: async (options) => resolveFlowConfig({ projectRoot: options?.cwd ?? project }),
+        inspectProviders: async () => undefined,
+        executor: codingExecutor([], behavior),
+      },
+    );
+
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(capture.stdout.join("\n"))).toMatchObject({
+      mode: "coding",
+      run: { id: "quickstart-coding", status: "failed" },
+    });
+    const inspect = createCapture();
+    expect(
+      await main(["inspect", "quickstart-coding"], inspect.io, {
+        cwd: project,
+        loadConfig: async (options) => resolveFlowConfig({ projectRoot: options?.cwd ?? project }),
+      }),
+    ).toBe(0);
+    expect(JSON.parse(inspect.stdout.join("\n"))).toMatchObject({
+      status: "failed",
+      goal: {
+        status: "not_accepted",
+        criteria: { "fixture-is-exact": { status: "rejected" } },
+      },
+      nodes: {
+        implement: { status: "succeeded" },
+        verify: {
+          status: "failed",
+          evidence: { kind: "verifier", driver: "command", verdict: "rejected" },
+        },
+      },
+    });
+    expect(capture.stderr.join("\n")).not.toContain(canary);
+    expect(inspect.stdout.join("\n")).not.toContain(canary);
+  });
+
   it("fails the selected provider path without executing a model or exposing the cause", async () => {
     const project = await temporaryDirectory("flow-quickstart-provider-failure-");
     const capture = createCapture();
@@ -234,17 +466,37 @@ describe("flow quickstart", () => {
       args: ["--PRIVATE-option"],
       message: "quickstart arguments are invalid",
     },
+    {
+      label: "coding without provider",
+      args: ["--coding"],
+      message: "--coding requires --provider and --model",
+    },
+    {
+      label: "repeated coding mode",
+      args: ["--coding", "--coding", "--provider", "openai", "--model", "gpt-5.6-luna"],
+      message: "--coding may be specified only once",
+    },
+    {
+      label: "unsupported coding provider",
+      args: ["--coding", "--provider", "google", "--model", "gemini-3.1-pro-preview"],
+      message: "Quick-start input is invalid",
+    },
   ])("rejects $label before project mutation", async ({ args, message }) => {
     const capture = createCapture();
     const initializeProject = vi.fn();
+    const initializeCodingProject = vi.fn();
 
-    const exitCode = await main(["quickstart", ...args], capture.io, { initializeProject });
+    const exitCode = await main(["quickstart", ...args], capture.io, {
+      initializeProject,
+      initializeCodingProject,
+    });
 
     expect(exitCode).toBe(2);
     expect(capture.stdout).toEqual([]);
     expect(capture.stderr.join("\n")).toContain(message);
     expect(capture.stderr.join("\n")).not.toContain("PRIVATE");
     expect(initializeProject).not.toHaveBeenCalled();
+    expect(initializeCodingProject).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -421,18 +673,257 @@ function failingExecutor(): NodeExecutor {
   };
 }
 
+type CodingAgentBehavior = "claim-only" | "exact" | "extra-bytes" | "one-byte";
+
+function codingExecutor(phases: string[], behavior: CodingAgentBehavior): NodeExecutor {
+  const agent: AgentExecutor = {
+    async execute(node, context) {
+      phases.push(`agent:${node.agent.tools.join(",")}`);
+      expect(node.id).toBe("implement");
+      expect(node.agent.tools).toEqual(["read", "ls", "edit"]);
+      expect(node.agent.timeoutMs).toBe(90_000);
+      if (behavior === "exact") {
+        await writeFile(
+          join(context.cwd, QUICKSTART_CODING_FIXTURE_PATH),
+          QUICKSTART_CODING_EXPECTED_SOURCE,
+          "utf8",
+        );
+      } else if (behavior === "one-byte") {
+        await writeFile(
+          join(context.cwd, QUICKSTART_CODING_FIXTURE_PATH),
+          QUICKSTART_CODING_EXPECTED_SOURCE.replace("status: verified", "status: Verified"),
+          "utf8",
+        );
+      } else if (behavior === "extra-bytes") {
+        await writeFile(
+          join(context.cwd, QUICKSTART_CODING_FIXTURE_PATH),
+          `${QUICKSTART_CODING_EXPECTED_SOURCE}PRIVATE_EXTRA\n`,
+          "utf8",
+        );
+      }
+      const text = "The requested edit is complete.";
+      return {
+        status: "succeeded",
+        evidence: {
+          kind: "agent",
+          provider: node.agent.model.provider,
+          model: node.agent.model.id,
+          text,
+          textHash: createHash("sha256").update(text).digest("hex"),
+          textTruncated: false,
+          durationMs: 1,
+          usage: {
+            inputTokens: 10,
+            outputTokens: 4,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+            costUsdMicros: 1_000,
+          },
+          policyDecisions: [],
+          effectReceipts: [],
+        },
+      };
+    },
+  };
+  return new NodeExecutorRouter(codingCommandExecutor(phases), agent);
+}
+
+function codingCommandExecutor(phases: string[]): CommandExecutor {
+  return {
+    async execute(node, context) {
+      expect(node.command.executable).toBe("node");
+      expect(node.command.args[0]).toBe("-e");
+      expect(node.command.args.join(" ")).toContain(QUICKSTART_CODING_FIXTURE_PATH);
+      expect(node.command.timeoutMs).toBe(10_000);
+      const result = await executeCompiledVerifier(node.command, context.cwd);
+      const exact = result.exitCode === 0;
+      phases.push(`verifier:${exact ? "exact-bytes" : "rejected"}`);
+      const evidence = commandEvidenceWithExit(
+        node.id,
+        result.exitCode,
+        node.command.executable,
+        node.command.args,
+        result.stdout,
+        result.stderr,
+      );
+      if (exact) {
+        return { status: "succeeded", evidence };
+      }
+      return {
+        status: "failed",
+        error: {
+          code: "command_failed",
+          message: "coding quick-start fixture verification failed",
+          retryable: false,
+          sideEffectStatus: "none",
+        },
+        evidence,
+      };
+    },
+  };
+}
+
+async function executeCompiledVerifier(
+  command: { readonly executable: string; readonly args: readonly string[] },
+  cwd: string,
+): Promise<{ readonly exitCode: number; readonly stdout: string; readonly stderr: string }> {
+  return await new Promise((resolve, reject) => {
+    execFile(
+      command.executable,
+      command.args,
+      { cwd, encoding: "utf8" },
+      (error, stdout, stderr) => {
+        let exitCode = 0;
+        if (error !== null) {
+          if (typeof error.code !== "number") {
+            reject(error);
+            return;
+          }
+          exitCode = error.code;
+        }
+        resolve({
+          exitCode,
+          stdout,
+          stderr,
+        });
+      },
+    );
+  });
+}
+
+async function deterministicCodingRuntime(): Promise<ModelRuntime> {
+  const runtime = await ModelRuntime.create({
+    allowModelNetwork: false,
+    credentials: new InMemoryCredentialStore(),
+    modelsPath: null,
+  });
+  runtime.registerProvider("openai", {
+    name: "Flow deterministic coding provider",
+    api: "openai-completions",
+    baseUrl: "https://flow.test.invalid/v1",
+    apiKey: "test-only-key",
+    models: [
+      {
+        id: "deterministic",
+        name: "Deterministic coding model",
+        api: "openai-completions",
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 4_096,
+        maxTokens: 256,
+      },
+    ],
+    streamSimple: (model, context) => {
+      const stream = createAssistantMessageEventStream();
+      const invocation = context.messages.filter((message) => message.role === "assistant").length;
+      const message: AssistantMessage = {
+        role: "assistant",
+        content: [],
+        api: model.api,
+        provider: model.provider,
+        model: model.id,
+        usage: {
+          input: 1,
+          output: 1,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 2,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        stopReason: "pending",
+        timestamp: Date.now(),
+      };
+      queueMicrotask(() => {
+        stream.push({ type: "start", partial: message });
+        if (invocation < 2) {
+          const toolCall = {
+            type: "toolCall" as const,
+            id: `flow-quickstart-call-${invocation + 1}`,
+            name: invocation === 0 ? "flow_read" : "flow_edit",
+            arguments:
+              invocation === 0
+                ? { path: QUICKSTART_CODING_FIXTURE_PATH }
+                : {
+                    path: QUICKSTART_CODING_FIXTURE_PATH,
+                    expectedSha256: extractReadVersionFromContext(context.messages),
+                    edits: [{ oldText: "status: pending", newText: "status: verified" }],
+                  },
+          };
+          message.content.push(toolCall);
+          stream.push({ type: "toolcall_start", contentIndex: 0, partial: message });
+          stream.push({ type: "toolcall_end", contentIndex: 0, toolCall, partial: message });
+          message.stopReason = "toolUse";
+          stream.push({ type: "done", reason: "toolUse", message });
+        } else {
+          const block = { type: "text" as const, text: "FLOW_CODING_QUICKSTART_OK" };
+          message.content.push(block);
+          stream.push({ type: "text_start", contentIndex: 0, partial: message });
+          stream.push({
+            type: "text_delta",
+            contentIndex: 0,
+            delta: block.text,
+            partial: message,
+          });
+          stream.push({
+            type: "text_end",
+            contentIndex: 0,
+            content: block.text,
+            partial: message,
+          });
+          message.stopReason = "stop";
+          stream.push({ type: "done", reason: "stop", message });
+        }
+        stream.end();
+      });
+      return stream;
+    },
+  });
+  return runtime;
+}
+
+function extractReadVersionFromContext(
+  messages: readonly { readonly role: string; readonly content?: unknown }[],
+): string {
+  const readResult = [...messages]
+    .reverse()
+    .find(
+      (message): message is { readonly role: "toolResult"; readonly content: unknown } =>
+        message.role === "toolResult",
+    );
+  const match = JSON.stringify(readResult?.content).match(/sha256:([a-f0-9]{64})/);
+  if (match?.[1] === undefined) {
+    throw new Error("deterministic coding provider did not observe the Flow read version");
+  }
+  return match[1];
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 function commandEvidence(nodeId: string) {
-  const stdout = nodeId;
+  return commandEvidenceWithExit(nodeId, 0);
+}
+
+function commandEvidenceWithExit(
+  nodeId: string,
+  exitCode: number,
+  executable = process.execPath,
+  args: readonly string[] = ["-e", nodeId],
+  stdout = nodeId,
+  stderr = "",
+) {
   return {
     kind: "command" as const,
-    executable: process.execPath,
-    args: ["-e", nodeId],
-    exitCode: 0,
+    executable,
+    args,
+    exitCode,
     signal: null,
     stdout,
-    stderr: "",
+    stderr,
     stdoutHash: createHash("sha256").update(stdout).digest("hex"),
-    stderrHash: createHash("sha256").update("").digest("hex"),
+    stderrHash: createHash("sha256").update(stderr).digest("hex"),
     stdoutTruncated: false,
     stderrTruncated: false,
     timedOut: false,

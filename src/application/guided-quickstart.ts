@@ -6,7 +6,8 @@ const PROVIDER_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 
 export type GuidedQuickstartMode =
   | { readonly kind: "foundation" }
-  | { readonly kind: "provider"; readonly provider: string; readonly model: string };
+  | { readonly kind: "provider"; readonly provider: string; readonly model: string }
+  | { readonly kind: "coding"; readonly provider: string; readonly model: string };
 
 export interface GuidedQuickstartInput {
   readonly directory: string;
@@ -71,7 +72,9 @@ export class GuidedQuickstartError extends Error {
 export interface GuidedQuickstartResult {
   readonly version: 1;
   readonly mode: GuidedQuickstartMode["kind"];
-  readonly project: { readonly publication: "created" };
+  readonly project:
+    | { readonly publication: "created" }
+    | { readonly publication: "created"; readonly fixture: "FLOW_QUICKSTART.md" };
   readonly run: {
     readonly id: string;
     readonly status: GuidedQuickstartTerminalStatus;
@@ -111,7 +114,7 @@ export async function runGuidedQuickstart(
   }
 
   assertNotCancelledAfterPublication(input.signal);
-  if (input.mode.kind === "provider") {
+  if (input.mode.kind !== "foundation") {
     await validateProvider(input.mode, input.signal, publication.projectRoot, ports);
     assertNotCancelledAfterPublication(input.signal);
   }
@@ -129,7 +132,7 @@ function assertInput(input: GuidedQuickstartInput): void {
   ) {
     throw invalidInput();
   }
-  if (input.mode.kind === "provider") {
+  if (input.mode.kind !== "foundation") {
     if (
       input.mode.provider.length > 96 ||
       !PROVIDER_PATTERN.test(input.mode.provider) ||
@@ -137,6 +140,13 @@ function assertInput(input: GuidedQuickstartInput): void {
       input.mode.model.length > 256 ||
       input.mode.model !== input.mode.model.trim() ||
       input.mode.model.includes("\0")
+    ) {
+      throw invalidInput();
+    }
+    if (
+      input.mode.kind === "coding" &&
+      input.mode.provider !== "anthropic" &&
+      input.mode.provider !== "openai"
     ) {
       throw invalidInput();
     }
@@ -176,7 +186,7 @@ async function publishProject(
 }
 
 async function validateProvider(
-  mode: Extract<GuidedQuickstartMode, { readonly kind: "provider" }>,
+  mode: Exclude<GuidedQuickstartMode, { readonly kind: "foundation" }>,
   signal: AbortSignal | undefined,
   projectRoot: string,
   ports: GuidedQuickstartPorts,
@@ -245,7 +255,13 @@ function quickstartResult(
   return Object.freeze({
     version: 1,
     mode,
-    project: Object.freeze({ publication: "created" as const }),
+    project:
+      mode === "coding"
+        ? Object.freeze({
+            publication: "created" as const,
+            fixture: "FLOW_QUICKSTART.md" as const,
+          })
+        : Object.freeze({ publication: "created" as const }),
     run: Object.freeze({
       id: runId,
       status,

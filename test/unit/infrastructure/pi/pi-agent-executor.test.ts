@@ -478,7 +478,7 @@ describe("PiAgentExecutor", () => {
   it("turns runtime errors into a failed node without model-authored evidence", async () => {
     const runner: PiAgentRunner = {
       async run() {
-        throw new Error("provider unavailable");
+        throw new Error("PRIVATE_PROVIDER_THROW");
       },
     };
     const executor = new PiAgentExecutor(runner);
@@ -489,7 +489,7 @@ describe("PiAgentExecutor", () => {
       status: "failed",
       error: {
         code: "pi_agent_failed",
-        message: "provider unavailable",
+        message: "agent provider execution failed",
         retryable: false,
         sideEffectStatus: "none",
       },
@@ -503,7 +503,7 @@ describe("PiAgentExecutor", () => {
         return {
           text: "",
           stopReason: "error",
-          errorMessage: "provider stream failed",
+          errorMessage: "PRIVATE_PROVIDER_STREAM",
           usage: {
             inputTokens: 8,
             outputTokens: 1,
@@ -519,7 +519,7 @@ describe("PiAgentExecutor", () => {
 
     expect(outcome).toMatchObject({
       status: "failed",
-      error: { code: "pi_agent_error", message: "provider stream failed" },
+      error: { code: "pi_agent_error", message: "agent provider execution failed" },
       evidence: {
         kind: "agent",
         usage: {
@@ -531,6 +531,7 @@ describe("PiAgentExecutor", () => {
         },
       },
     });
+    expect(JSON.stringify(outcome)).not.toContain("PRIVATE_PROVIDER_STREAM");
   });
 
   it("preserves policy decisions when the runtime fails after a tool operation", async () => {
@@ -541,7 +542,7 @@ describe("PiAgentExecutor", () => {
           target: input.cwd,
           boundary: "inside",
         });
-        throw new Error("provider failed after tool use");
+        throw new Error("PRIVATE_PROVIDER_AFTER_TOOL");
       },
     };
 
@@ -549,7 +550,7 @@ describe("PiAgentExecutor", () => {
 
     expect(outcome).toMatchObject({
       status: "failed",
-      error: { code: "pi_agent_failed", message: "provider failed after tool use" },
+      error: { code: "pi_agent_failed", message: "agent provider execution failed" },
       evidence: {
         kind: "agent",
         text: "",
@@ -563,13 +564,14 @@ describe("PiAgentExecutor", () => {
         ],
       },
     });
+    expect(JSON.stringify(outcome)).not.toContain("PRIVATE_PROVIDER_AFTER_TOOL");
   });
 
   it("preserves a committed edit receipt and side-effect status after provider failure", async () => {
     const runner: PiAgentRunner = {
       async run(input) {
         await recordEditEffect(input, "committed");
-        throw new Error("provider failed after edit");
+        throw new Error("PRIVATE_PROVIDER_AFTER_EDIT");
       },
     };
 
@@ -582,7 +584,7 @@ describe("PiAgentExecutor", () => {
       status: "failed",
       error: {
         code: "pi_agent_failed",
-        message: "provider failed after edit",
+        message: "agent provider execution failed",
         sideEffectStatus: "committed",
       },
       evidence: {
@@ -596,6 +598,7 @@ describe("PiAgentExecutor", () => {
         ],
       },
     });
+    expect(JSON.stringify(outcome)).not.toContain("PRIVATE_PROVIDER_AFTER_EDIT");
   });
 
   it("fails a terminal agent result when an edit receipt is uncertain", async () => {
@@ -625,7 +628,11 @@ describe("PiAgentExecutor", () => {
   it("rejects Pi terminal error messages even when the session promise resolves", async () => {
     const runner: PiAgentRunner = {
       async run() {
-        return { text: "partial output", stopReason: "error", errorMessage: "stream failed" };
+        return {
+          text: "partial output",
+          stopReason: "error",
+          errorMessage: "PRIVATE_PROVIDER_TERMINAL",
+        };
       },
     };
 
@@ -635,7 +642,7 @@ describe("PiAgentExecutor", () => {
       status: "failed",
       error: {
         code: "pi_agent_error",
-        message: "stream failed",
+        message: "agent provider execution failed",
         retryable: false,
         sideEffectStatus: "none",
       },
@@ -646,7 +653,11 @@ describe("PiAgentExecutor", () => {
   it("rejects Pi terminal aborted messages", async () => {
     const runner: PiAgentRunner = {
       async run() {
-        return { text: "partial output", stopReason: "aborted", errorMessage: "cancelled" };
+        return {
+          text: "partial output",
+          stopReason: "aborted",
+          errorMessage: "PRIVATE_PROVIDER_ABORT",
+        };
       },
     };
 
@@ -654,7 +665,33 @@ describe("PiAgentExecutor", () => {
 
     expect(outcome).toMatchObject({
       status: "failed",
-      error: { code: "pi_agent_aborted", message: "cancelled" },
+      error: { code: "pi_agent_aborted", message: "agent provider execution was aborted" },
+      evidence: null,
+    });
+    expect(JSON.stringify(outcome)).not.toContain("PRIVATE_PROVIDER_ABORT");
+  });
+
+  it("does not persist provider text for an incomplete terminal result", async () => {
+    const runner: PiAgentRunner = {
+      async run() {
+        return {
+          text: "partial output",
+          stopReason: "length",
+          errorMessage: "PRIVATE_PROVIDER_INCOMPLETE",
+        };
+      },
+    };
+
+    const outcome = await new PiAgentExecutor(runner).execute(agentNode(), context);
+
+    expect(outcome).toEqual({
+      status: "failed",
+      error: {
+        code: "pi_agent_incomplete",
+        message: "agent provider execution did not complete",
+        retryable: false,
+        sideEffectStatus: "none",
+      },
       evidence: null,
     });
   });
@@ -844,7 +881,7 @@ describe("PiAgentExecutor", () => {
     });
   });
 
-  it("bounds provider-authored error messages before persistence", async () => {
+  it("does not persist oversized provider-authored error messages", async () => {
     const runner: PiAgentRunner = {
       async run() {
         return { text: "", stopReason: "error", errorMessage: "e".repeat(100_000) };
@@ -855,8 +892,8 @@ describe("PiAgentExecutor", () => {
 
     expect(outcome.status).toBe("failed");
     if (outcome.status === "failed") {
-      expect(outcome.error.message.length).toBeLessThanOrEqual(16_384);
-      expect(outcome.error.message).toContain("[truncated]");
+      expect(outcome.error.message).toBe("agent provider execution failed");
+      expect(JSON.stringify(outcome)).not.toContain("eeee");
     }
   });
 

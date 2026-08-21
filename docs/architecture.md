@@ -62,8 +62,10 @@ work.
 
 Gate 8 provides the first installable preview, current source-build environment diagnostics, and a
 guided quick start. The diagnostic checks only the selected requirements. Quick start publishes a
-minimal project and reuses the ordinary attached workflow boundary. Neither path grants new
-execution authority or makes an optional runtime a base dependency.
+minimal project and reuses the ordinary attached workflow boundary. Its explicit coding mode also
+publishes one reviewed fixture, admits only read, list, and hash-bound edit tools, and delegates
+acceptance to a deterministic command verifier. Neither path grants new execution authority or
+makes an optional runtime a base dependency.
 
 ## Architecture at a glance
 
@@ -85,7 +87,7 @@ flowchart TB
     subgraph access["1. Ways to use Flow"]
         direction LR
         cli["Command line"]
-        quickstart["Guided quick start<br/>Publishes project · checks selected path · runs once"]
+        quickstart["Guided quick start<br/>Foundation · provider check · bounded coding proof"]
         diagnostics["Environment diagnostics<br/>Read-only selected-path preflight"]
         presentation["Terminal, local web, and ACP editor views"]
     end
@@ -132,7 +134,8 @@ flowchart TB
     cli -->|"Reviews and compares candidates"| adaptation
     cli -->|"Requests one inert proposal"| proposals
     cli -->|"Queues detached work"| supervisor
-    quickstart -->|"Publishes minimal project configuration"| project
+    quickstart -->|"Publishes reviewed configuration and fixture"| project
+    quickstart -->|"Selects an explicit bounded policy"| rules
     quickstart -->|"Starts one attached run"| engine
     quickstart -->|"Returns explicit follow-up commands"| presentation
     diagnostics -->|"Admits an optional workflow"| rules
@@ -174,6 +177,7 @@ Read the diagram from top to bottom:
 
 1. People and automation use the command line, guided quick start, read-only diagnostic, or a
    first-party presentation view. Quick start publishes one project and starts one attached run.
+   Coding mode adds one reviewed fixture and an explicit tool and budget boundary.
 
 2. The control plane compiles the workflow, reconstructs durable state, selects reviewed per-agent
    context, and decides which action is legal. Proposal generation can ask a model for one bounded
@@ -201,7 +205,7 @@ before success. It stops on unresolved side-effect or settlement uncertainty.
 | --- | --- | --- |
 | Preview release automation | `src/domain/release/`, `src/infrastructure/release/`, `scripts/build-package-release.mjs`, `scripts/verify-package.mjs`, and `.github/workflows/preview-release.yml` | Builds one bounded archive, records its installed-file identity, verifies the same archive on supported x64 hosts, generates provenance, and gates immutable publication. |
 | Command line | `src/cli/` | Parses public commands, composes dependencies, and projects safe output. |
-| Guided quick start | `src/application/guided-quickstart.ts`, `src/cli/main.ts`, and `src/infrastructure/fs/flow-config-store.ts` | Orders workflow preparation, atomic project publication, selected provider checks, ordinary attached execution, and a bounded public result. |
+| Guided quick start | `src/application/guided-quickstart.ts`, `src/cli/main.ts`, and `src/infrastructure/fs/flow-config-store.ts` | Orders workflow preparation, no-replacement project and fixture publication, selected provider checks, bounded coding policy, ordinary attached execution, deterministic verification, and a bounded public result. |
 | Environment diagnostics | `src/application/environment-doctor.ts`, `src/domain/host-requirements.ts`, and selected `src/infrastructure/` probes | Checks only the selected host, project, workflow, provider, sandbox, or Prime requirements and returns a bounded, value-free report. |
 | Workflow rules and safeguards | `src/domain/` | Defines provider-neutral workflows, state transitions, policy, evidence, budgets, and validation. |
 | Workflow engine, evaluation, adaptation, and capability governance | `src/application/` | Coordinates use cases through ports, asks the domain for legal transitions, and prepares evaluated state changes. |
@@ -240,7 +244,7 @@ Architecture is derived from these flows.
 | Flow | Trigger | Outcome |
 | --- | --- | --- |
 | Initialize | A user runs `flow init` in a repository | Validated project configuration and provider readiness |
-| Complete a quick start | A user runs `flow quickstart` in an existing directory | One minimal project, one terminal attached run, durable evidence, and explicit inspection and browser commands |
+| Complete a quick start | A user runs `flow quickstart` in an existing directory | One minimal project, one terminal attached run, durable evidence, and explicit inspection and browser commands; coding mode adds one reviewed hash-bound edit and deterministic verifier |
 | Diagnose | A user runs `flow doctor` for a project, workflow, or Prime profile | A bounded read-only report for only the selected path, with fixed remediation and no private values |
 | Execute | A user selects a goal and workflow | Verified success, explicit failure, a durable wait state, or a precise blocker |
 | Observe | A user opens status, the TUI, or the local browser host | Current graph position, attempts, evidence, costs, approvals, and blockers |
@@ -336,7 +340,9 @@ nodes never enter an executor port.
 
 The guided quick-start use case is an application coordinator. It owns phase order, but it does not
 own filesystem, provider, sandbox, or run-store authority. The CLI supplies those production ports
-and serializes the bounded result.
+and serializes the bounded result. Coding mode compiles one package-owned workflow with fixed tools,
+budgets, fixture bytes, and command verification. The ordinary Pi adapter, policy broker, effect
+journal, sandbox, verifier executor, goal reducer, and run store retain their existing authority.
 
 ### Presentation hosts
 

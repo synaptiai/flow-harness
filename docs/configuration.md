@@ -33,7 +33,7 @@ for its selected-path checks and fixed report.
 `flow quickstart` combines no-replacement project initialization with one attached foreground run:
 
 ```text
-flow quickstart [directory] [--provider <provider> --model <model>] [--run-id <id>]
+flow quickstart [directory] [--coding] [--provider <provider> --model <model>] [--run-id <id>]
 ```
 
 The command publishes the same minimal project document as `flow init`. It does not accept
@@ -41,8 +41,13 @@ The command publishes the same minimal project document as `flow init`. It does 
 configuration load must resolve to the published canonical project root.
 
 The default path selects the package-owned credential-free workflow. The provider path requires
-both provider flags and checks the exact local provider configuration before model execution.
-Read [Getting started](getting-started.md) for the procedure, result contract, and recovery codes.
+both provider flags and checks the exact local provider configuration before model execution. The
+explicit coding path also requires `--coding`, an empty target, and a supported preview provider.
+It publishes the reviewed fixture before provider preflight and uses the ordinary configuration,
+policy, execution, evidence, and recovery boundaries. Read [Getting started](getting-started.md)
+for the foundation and provider checks. Read
+[Complete the coding quick start](guides/coding-quickstart.md) for the coding procedure and
+recovery rules.
 
 ## Capacity policy
 

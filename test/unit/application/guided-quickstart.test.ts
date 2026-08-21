@@ -61,6 +61,41 @@ describe("guided quick start", () => {
     expect(ports.executeWorkflow).toHaveBeenCalledOnce();
   });
 
+  it("publishes and validates the explicit coding mode before execution", async () => {
+    const phases: string[] = [];
+    const ports = createPorts(phases);
+
+    const result = await runGuidedQuickstart(
+      {
+        directory: "/workspace/project",
+        mode: { kind: "coding", provider: "openai", model: "gpt-5.6-luna" },
+        runId: "quickstart-coding",
+      },
+      ports,
+    );
+
+    expect(phases).toEqual([
+      "prepare:coding",
+      "publish",
+      "provider:openai/gpt-5.6-luna",
+      "execute",
+    ]);
+    expect(result).toEqual({
+      version: 1,
+      mode: "coding",
+      project: { publication: "created", fixture: "FLOW_QUICKSTART.md" },
+      run: {
+        id: "quickstart-coding",
+        status: "succeeded",
+        evidence: ".flow/runs/quickstart-coding/events.jsonl",
+      },
+      commands: {
+        inspect: ["flow", "inspect", "quickstart-coding"],
+        browser: ["flow", "web", "quickstart-coding", "--actor", "operator:quickstart"],
+      },
+    });
+  });
+
   it.each([
     { outcome: "already_exists" as const, code: "project_exists" },
     { outcome: "commit_uncertain" as const, code: "publication_uncertain" },
@@ -168,6 +203,10 @@ describe("guided quick start", () => {
     {
       runId: "quickstart-provider",
       mode: { kind: "provider", provider: "provider", model: "" } as const,
+    },
+    {
+      runId: "quickstart-coding",
+      mode: { kind: "coding", provider: "google", model: "gemini-3.1-pro-preview" } as const,
     },
   ])("rejects invalid bounded input before calling a port", async (input) => {
     const ports = createPorts([]);

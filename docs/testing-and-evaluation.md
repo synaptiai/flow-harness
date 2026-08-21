@@ -347,6 +347,14 @@ It also fails when configured authentication is invalid or the provider call fai
 integration tests do not consume provider credentials. Provider-cost assertions use deterministic
 session-stat fakes. No local test claims correspondence with an external invoice.
 
+`test/live/quickstart-coding.live.test.ts` requires the `anthropic` or `openai` preview provider.
+It runs the public coding quick start in a fresh empty directory. It requires a committed edit
+receipt and accepted deterministic verifier evidence.
+
+The deterministic CLI integration uses the production Pi session and Flow tools. A local test
+provider supplies the model stream. Default CI can therefore prove the policy and effect path
+without network access or provider cost.
+
 ## Product evaluation
 
 Flow now has a provider-neutral evaluation layer for reproducible paired harness comparisons. The

@@ -27,8 +27,8 @@ prompt overlays and authority-preserving skill-resource projections. New single-
 projections, paired evaluation, reviewed activation, durable run snapshots, and rollback are also
 implemented.
 
-Gate 8 remains the delivery priority. Slices 8.1 through 8.3 provide an installable preview,
-source-build diagnostics, and a guided quick start. Slice 8.4 is next. It proves a useful
+Gate 8 remains the delivery priority. Slices 8.1 through 8.4 provide an installable preview,
+source-build diagnostics, guided foundation and provider checks, and one useful bounded
 provider-backed coding change.
 
 Gate 9 adds bounded long-horizon context and semantic code feedback. Gate 10 adds standards-based
@@ -274,13 +274,17 @@ current pre-stable compatibility and security boundaries.
 
 ### Slice 8.4: Prove a useful agent path
 
-- Maintain one small provider-backed coding workflow that reads a fixture and makes an exact bounded
-  change.
-- Run deterministic verification and expose the resulting evidence through `flow inspect`.
-- Document provider setup, expected cost boundaries, cancellation, cleanup, and the recovery path
-  for each supported preview provider.
-- Record first-run failures without recording credentials, workspace contents, or provider-private
-  response text.
+- **Implemented:** Add one explicit provider-backed coding workflow. It reads one reviewed fixture
+  and makes one exact hash-bound change. It has no command or network tool.
+
+- **Implemented:** Run deterministic exact-byte verification and expose usage, policy decisions,
+  edit receipts, verifier evidence, and criterion state through `flow inspect`.
+
+- **Implemented:** Document Anthropic and OpenAI setup, reported-cost boundaries, cancellation,
+  cleanup, and inspection-first recovery.
+
+- **Implemented:** Use fixed Flow-owned provider failure diagnostics. Exclude credentials and raw
+  provider responses. Exclude nested private causes and partial output from failure text.
 
 ### Gate 8 failure behavior and non-goals
 

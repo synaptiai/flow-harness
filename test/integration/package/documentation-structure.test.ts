@@ -48,7 +48,7 @@ describe("public documentation structure", () => {
     const gettingStarted = await readFile(join(documentationRoot, "getting-started.md"), "utf8");
     expect(gettingStarted).toMatch(/^# Getting started$/mu);
     expect(gettingStarted).toContain(
-      "flow quickstart [directory] [--provider <provider> --model <model>] [--run-id <id>]",
+      "flow quickstart [directory] [--coding] [--provider <provider> --model <model>] [--run-id <id>]",
     );
     expect(gettingStarted).toContain("flow web quickstart-foundation --actor operator:quickstart");
     expect(gettingStarted).toContain("publication_uncertain");
@@ -64,6 +64,9 @@ describe("public documentation structure", () => {
     await expect(
       readFile(join(documentationRoot, "guides", "capability-packages.md"), "utf8"),
     ).resolves.toMatch(/^# Use capability packages$/mu);
+    await expect(
+      readFile(join(documentationRoot, "guides", "coding-quickstart.md"), "utf8"),
+    ).resolves.toMatch(/^# Complete the coding quick start$/mu);
     await expect(
       readFile(join(documentationRoot, "operations", "prime-runtime.md"), "utf8"),
     ).resolves.toMatch(/^# Prime runtime operations$/mu);

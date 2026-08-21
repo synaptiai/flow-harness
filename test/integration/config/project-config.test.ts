@@ -18,8 +18,11 @@ import { createPolicyPackageSnapshot } from "../../../src/domain/capability/poli
 import { FLOW_CONFIG_API_VERSION, FlowConfigError } from "../../../src/domain/config/resolver.js";
 import {
   FlowConfigStoreError,
+  initializeCodingQuickstartProject,
   initializeFlowProject,
   loadEffectiveFlowConfig,
+  QUICKSTART_CODING_FIXTURE_PATH,
+  QUICKSTART_CODING_FIXTURE_SOURCE,
   resolveOperatorConfigPath,
 } from "../../../src/infrastructure/fs/flow-config-store.js";
 
@@ -32,6 +35,76 @@ afterEach(async () => {
 });
 
 describe("Flow project configuration", () => {
+  it("publishes the reviewed coding fixture and project config only in an empty directory", async () => {
+    const project = await temporaryDirectory("flow-config-coding-quickstart-");
+
+    await expect(initializeCodingQuickstartProject(project)).resolves.toEqual({
+      created: true,
+      projectRoot: project,
+      path: join(project, ".flow", "config.yaml"),
+      fixturePath: join(project, QUICKSTART_CODING_FIXTURE_PATH),
+    });
+    await expect(readFile(join(project, QUICKSTART_CODING_FIXTURE_PATH), "utf8")).resolves.toBe(
+      QUICKSTART_CODING_FIXTURE_SOURCE,
+    );
+    await expect(readFile(join(project, ".flow", "config.yaml"), "utf8")).resolves.toContain(
+      "kind: FlowProjectConfig",
+    );
+    expect((await readdir(project)).sort()).toEqual([".flow", QUICKSTART_CODING_FIXTURE_PATH]);
+  });
+
+  it("refuses a nonempty coding target without replacing or adding an entry", async () => {
+    const project = await temporaryDirectory("flow-config-coding-nonempty-");
+    const canaryPath = join(project, "PRIVATE_EXISTING.txt");
+    await writeFile(canaryPath, "PRIVATE_EXISTING_CONTENT\n", "utf8");
+
+    await expect(initializeCodingQuickstartProject(project)).rejects.toMatchObject({
+      name: "FlowConfigStoreError",
+      code: "already_exists",
+      message: "Coding quick start requires an empty project directory",
+    });
+    expect(await readdir(project)).toEqual(["PRIVATE_EXISTING.txt"]);
+    await expect(readFile(canaryPath, "utf8")).resolves.toBe("PRIVATE_EXISTING_CONTENT\n");
+  });
+
+  it("removes the coding fixture when cancellation wins before project publication", async () => {
+    const project = await temporaryDirectory("flow-config-coding-cancel-");
+    const controller = new AbortController();
+    const reason = new Error("PRIVATE_CODING_PUBLICATION_CANCELLATION");
+
+    await expect(
+      initializeCodingQuickstartProject(project, {
+        signal: controller.signal,
+        hooks: {
+          afterFixturePublished: () => controller.abort(reason),
+        },
+      }),
+    ).rejects.toBe(reason);
+    expect(await readdir(project)).toEqual([]);
+  });
+
+  it("retains the exact coding fixture when project publication becomes uncertain", async () => {
+    const project = await temporaryDirectory("flow-config-coding-uncertain-");
+
+    await expect(
+      initializeCodingQuickstartProject(project, {
+        hooks: {
+          project: {
+            afterConfigLinked: () => {
+              throw new Error("PRIVATE_CODING_CONFIG_SETTLEMENT_FAILURE");
+            },
+          },
+        },
+      }),
+    ).rejects.toMatchObject({ code: "commit_uncertain" });
+    await expect(readFile(join(project, QUICKSTART_CODING_FIXTURE_PATH), "utf8")).resolves.toBe(
+      QUICKSTART_CODING_FIXTURE_SOURCE,
+    );
+    await expect(readFile(join(project, ".flow", "config.yaml"), "utf8")).resolves.toContain(
+      "kind: FlowProjectConfig",
+    );
+  });
+
   it("initializes a minimal project atomically and refuses an implicit overwrite", async () => {
     const project = await temporaryDirectory("flow-config-project-");
     const attempts = await Promise.allSettled([
