@@ -6,8 +6,9 @@
 
 ## Status
 
-Implementation is in progress. The user approved Approach B: bounded semantic code context with
-diagnostics and navigation through a standard language-service boundary.
+Implementation and local verification are complete. The user approved Approach B: bounded
+semantic code context with diagnostics and navigation through a standard language-service
+boundary. Hosted Linux x64 CI must still run the platform-specific containment test before merge.
 
 ## Context
 
@@ -39,9 +40,9 @@ capability snapshot. This identity therefore crosses foreground, detached, resum
 event replay through the existing capability path.
 
 The production adapter starts one short-lived LSP session for one semantic request. It uses the
-selected Flow containment profile, denies network access, and gives the server read-only access to
-the authoritative workspace. It sends one exact file snapshot and closes the session after one
-operation. Flow does not keep an ambient language-server daemon.
+selected Flow containment profile, denies network access, and gives the server a read-only project
+projection from an admitted source snapshot. It rechecks the source before it publishes evidence
+and closes the session after one operation. Flow does not keep an ambient language-server daemon.
 
 Flow normalizes every response into a provider-neutral schema. It sorts unordered locations and
 diagnostics by portable path and range. It rejects locations outside the admitted project. It
@@ -148,3 +149,30 @@ Final evidence for every criterion must state untested environments, known evide
 and the exact negative or adversarial cases covered. Unit fakes cannot substitute for the runtime
 process and containment test. The runtime fake server proves protocol and boundary behavior, not
 the semantic quality of a production language server.
+
+## Verification evidence
+
+Recorded on 2026-08-21 against commit `f82274b` plus this journal update.
+
+- `npm test -- --maxWorkers=1`: 351 test files passed and one platform-gated file skipped. All
+  4,780 executed tests passed. Four tests skipped.
+
+- `npm run test:coverage -- --testTimeout=15000`: the same 4,780 tests passed and four skipped.
+  Coverage was 84.87% statements, 79.43% branches, 91.57% functions, and 85.03% lines.
+
+- `npm run test:runtime`: nine runtime files and 44 tests passed on macOS. Eleven files and 35 tests
+  skipped through explicit platform gates. The Linux x64 semantic-containment test remains a hosted
+  CI requirement.
+
+- `npm run pack:check`: a clean consumer installed and ran
+  `synaptiai-flow-harness-0.1.0-alpha.1.tgz`. The package SHA-256 was
+  `5dfe0fbdfa1a86627e8762bfc071594c1bccbd6a467fc3f3ea12ebddf9b053b4`.
+
+- `npm run build`, `npm run typecheck`, `npm run format:check`, the scoped lint gate,
+  `npm run docs:style`, `npm run docs:links`, `npm run docs:ste`, and `git diff --check` passed.
+  Lint reported one inherited informational constructor notice outside this change and no failure.
+
+The first local runtime attempt overlapped `pack:check`. Both commands own the generated `dist`
+directory, so the package check removed compiled files while the runtime process was using them.
+The isolated sequence of build, runtime test, and package check passed. This procedural race is not
+product evidence and is excluded from the acceptance result.
