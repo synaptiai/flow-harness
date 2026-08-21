@@ -1,0 +1,231 @@
+name: Preview release
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_github:
+        description: Publish the verified immutable GitHub prerelease
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preview-release-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Check out the exact revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 26.7.0
+          cache: npm
+
+      - name: Require successful CI for the revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$GITHUB_REF" = refs/heads/main
+          successful_runs="$(gh api --method GET \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs" \
+            --field branch=main \
+            --field head_sha="$GITHUB_SHA" \
+            --field status=completed \
+            --field per_page=100 \
+            --jq '[.workflow_runs[] | select(.conclusion == "success")] | length')"
+          test "$successful_runs" -ge 1
+
+      - name: Install exact dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Run release-focused tests
+        run: |
+          npm run typecheck
+          npx vitest run \
+            test/unit/release/package-release-evidence.test.ts \
+            test/unit/infrastructure/release/package-release-artifact.test.ts \
+            test/unit/infrastructure/release/local-package-release-builder.test.ts \
+            test/unit/infrastructure/release/package-release-command.test.ts \
+            test/unit/infrastructure/release/package-release-verifier.test.ts \
+            test/scaffold/package.test.ts \
+            test/scaffold/community-files.test.ts \
+            test/scaffold/preview-release-workflow.test.ts
+
+      - name: Prepare the exact preview artifact
+        run: npm run release:prepare
+
+      - name: Upload the exact preview artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: flow-preview-package
+          path: release/package/*
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: false
+          retention-days: 14
+
+  verify:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - macos-15-intel
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the exact revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 26.7.0
+          cache: npm
+
+      - name: Install exact dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build the release verifier
+        run: npm run build
+
+      - name: Download the exact preview artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: flow-preview-package
+          path: release/package
+
+      - name: Verify the installed preview package
+        run: npm run release:verify
+
+  attest:
+    needs:
+      - prepare
+      - verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Download the exact preview artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: flow-preview-package
+          path: release/package
+
+      - name: Attest the preview archive and evidence
+        id: provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: release/package/*
+
+      - name: Name the attestation bundle
+        run: |
+          mkdir --parents release/attestation
+          cp -- "${{ steps.provenance.outputs.bundle-path }}" \
+            release/attestation/flow-harness-0.1.0-alpha.1.intoto.jsonl
+
+      - name: Upload the attestation bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: flow-preview-attestation
+          path: release/attestation/flow-harness-0.1.0-alpha.1.intoto.jsonl
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: false
+          retention-days: 14
+
+  publish:
+    needs:
+      - prepare
+      - verify
+      - attest
+    if: ${{ inputs.publish_github }}
+    environment: preview-release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the exact revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Download the exact preview artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: flow-preview-package
+          path: release/package
+
+      - name: Download the attestation bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: flow-preview-attestation
+          path: release/attestation
+
+      - name: Require immutable releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          enabled="$(gh api \
+            --header 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/${GITHUB_REPOSITORY}/immutable-releases" \
+            --jq '.enabled')"
+          test "$enabled" = true
+
+      - name: Require an unused release identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=v0.1.0-alpha.1
+          if gh release view "$tag" > /dev/null 2>&1; then
+            printf 'Preview release identity already exists.\n' >&2
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" > /dev/null 2>&1; then
+            printf 'Preview release tag already exists.\n' >&2
+            exit 1
+          fi
+
+      - name: Create the complete draft prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v0.1.0-alpha.1 \
+            release/package/synaptiai-flow-harness-0.1.0-alpha.1.tgz \
+            release/package/package-release-evidence.json \
+            release/attestation/flow-harness-0.1.0-alpha.1.intoto.jsonl \
+            --draft \
+            --prerelease \
+            --latest=false \
+            --target "$GITHUB_SHA" \
+            --title 'Flow 0.1.0-alpha.1' \
+            --notes-file docs/releases/0.1.0-alpha.1.md
+
+      - name: Publish the immutable prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release edit v0.1.0-alpha.1 \
+            --draft=false \
+            --prerelease \
+            --latest=false

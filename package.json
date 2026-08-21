@@ -1,6 +1,6 @@
 {
   "name": "@synaptiai/flow-harness",
-  "version": "0.0.0",
+  "version": "0.1.0-alpha.1",
   "description": "Provider-neutral coding-agent harness with deterministic workflow graphs, durable evidence, and fail-closed sandboxed execution",
   "keywords": [
     "agent-harness",
@@ -33,7 +33,7 @@
     "linux"
   ],
   "bin": {
-    "flow": "dist/cli/main.js"
+    "flow": "dist/cli/launcher.js"
   },
   "files": [
     "dist",
@@ -41,6 +41,7 @@
     "examples",
     "prime-container",
     "LICENSE",
+    "npm-shrinkwrap.json",
     "README.md",
     "SECURITY.md",
     "SUPPORT.md",
@@ -59,6 +60,8 @@
     "lint": "biome lint .",
     "pack:check": "node scripts/verify-package.mjs",
     "prime:image:verify": "npm run build && node scripts/verify-prime-image.mjs",
+    "release:prepare": "npm run build && node scripts/build-package-release.mjs",
+    "release:verify": "node scripts/verify-package.mjs --release",
     "test": "vitest run",
     "test:browser": "vitest run --config vitest.browser.config.ts",
     "test:coverage": "vitest run --coverage --maxWorkers=1",

@@ -2,14 +2,16 @@
 
 This page is the documentation hub for Flow. Start with the path that matches your task.
 
-Flow is a public pre-alpha source preview. Its contracts may change before the first stable release.
+Flow is a public alpha preview. Its contracts may change before the first stable release.
 Read the [security policy](../SECURITY.md) before unattended use.
 
 ## Start here
 
 | Document | Use it when |
 | --- | --- |
-| [Getting started](getting-started.md) | You want to build Flow and complete one credential-free run. |
+| [Install the Flow preview](guides/install-preview.md) | You want to verify, install, remove, or replace the versioned package. |
+| [Flow 0.1.0-alpha.1 release notes](releases/0.1.0-alpha.1.md) | You need the supported environment, verified behaviors, or compatibility limits for this version. |
+| [Getting started](getting-started.md) | You want to complete one credential-free run. |
 | [Project status](project-status.md) | You need current maturity, platform support, and known limits. |
 | [Configuration](configuration.md) | You need project settings, operator ceilings, sandbox selection, or policy-change rules. |
 
@@ -26,6 +28,7 @@ Read the [security policy](../SECURITY.md) before unattended use.
 
 | Document | Use it when |
 | --- | --- |
+| [Preview release operations](operations/release-preview.md) | You need to build, approve, publish, bootstrap npm, or recover a preview release. |
 | [Prime runtime operations](operations/prime-runtime.md) | You need the Linux x64 Prime profile or the higher-isolation container command profile. |
 | [Recovery and interruption safety](recovery.md) | You need restart rules, uncertain-state handling, remediation, or durable ownership details. |
 | [Security policy](../SECURITY.md) | You need supported security boundaries or private vulnerability reporting. |

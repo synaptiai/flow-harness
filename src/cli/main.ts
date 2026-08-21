@@ -6522,7 +6522,7 @@ export function armForcedExit(
   return timer;
 }
 
-if (isDirectEntry(process.argv[1])) {
+export async function runDirectCli(args: readonly string[] = process.argv.slice(2)): Promise<void> {
   const controller = new AbortController();
   let requestedExitCode: number | undefined;
   let signalCount = 0;
@@ -6540,7 +6540,7 @@ if (isDirectEntry(process.argv[1])) {
   process.once("SIGINT", handleInterrupt);
   process.once("SIGTERM", handleTermination);
   try {
-    const exitCode = await main(process.argv.slice(2), processIo, { signal: controller.signal });
+    const exitCode = await main(args, processIo, { signal: controller.signal });
     await flushProcessOutput();
     const resolvedExitCode = resolveDirectExitCode(exitCode, requestedExitCode);
     process.exitCode = resolvedExitCode;
@@ -6551,4 +6551,8 @@ if (isDirectEntry(process.argv[1])) {
     process.removeListener("SIGINT", handleInterrupt);
     process.removeListener("SIGTERM", handleTermination);
   }
+}
+
+if (isDirectEntry(process.argv[1])) {
+  await runDirectCli();
 }

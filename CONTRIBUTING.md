@@ -21,7 +21,9 @@ npm run test:coverage
 npm run pack:check
 ```
 
-Use `npm install` only when intentionally changing dependencies. Commit the resulting `package-lock.json` change and explain why the dependency is needed.
+Use `npm install` only when intentionally changing dependencies. Commit the resulting
+`npm-shrinkwrap.json` change and explain why the dependency is needed. The publishable lock keeps
+the installed command's dependency tree reproducible.
 
 ## Change workflow
 

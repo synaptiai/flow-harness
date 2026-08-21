@@ -54,7 +54,7 @@ describe("source dependency boundaries", () => {
       await readFile(join(repositoryRoot, "package.json"), "utf8"),
     ) as { readonly dependencies?: Readonly<Record<string, string>> };
     const packageLock = JSON.parse(
-      await readFile(join(repositoryRoot, "package-lock.json"), "utf8"),
+      await readFile(join(repositoryRoot, "npm-shrinkwrap.json"), "utf8"),
     ) as {
       readonly packages?: Readonly<
         Record<
@@ -90,7 +90,7 @@ describe("source dependency boundaries", () => {
       await readFile(join(repositoryRoot, "package.json"), "utf8"),
     ) as { readonly overrides?: Readonly<Record<string, string>> };
     const packageLock = JSON.parse(
-      await readFile(join(repositoryRoot, "package-lock.json"), "utf8"),
+      await readFile(join(repositoryRoot, "npm-shrinkwrap.json"), "utf8"),
     ) as {
       readonly packages?: Readonly<
         Record<
