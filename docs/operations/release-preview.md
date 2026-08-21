@@ -61,8 +61,8 @@ The workflow performs these actions:
 2. Builds `release/package/synaptiai-flow-harness-0.1.0-alpha.1.tgz` once.
 3. Records its source revision, SHA-512 digest, archive paths, modes, and byte counts in
    `package-release-evidence.json`.
-4. Verifies the published shrinkwrap, downloaded artifact, and clean installation on both
-   supported x64 hosts.
+4. Verifies the published shrinkwrap, downloaded artifact, clean installation, installed guided
+   quick start, and explicit browser path on both supported x64 hosts.
 5. Produces SLSA build provenance with GitHub's short-lived OpenID Connect identity.
 
 Review every job before you authorize publication. A green workflow proves the tested artifact and

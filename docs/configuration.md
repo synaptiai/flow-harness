@@ -28,6 +28,22 @@ containing `.flow/config.yaml`; that ancestor becomes the default root for `.flo
 only the configured sandbox. Read [Diagnose the Flow environment](guides/diagnose-environment.md)
 for its selected-path checks and fixed report.
 
+## Create a project and first run
+
+`flow quickstart` combines no-replacement project initialization with one attached foreground run:
+
+```text
+flow quickstart [directory] [--provider <provider> --model <model>] [--run-id <id>]
+```
+
+The command publishes the same minimal project document as `flow init`. It does not accept
+`--force`, merge an existing project, or change operator configuration. After publication, each
+configuration load must resolve to the published canonical project root.
+
+The default path selects the package-owned credential-free workflow. The provider path requires
+both provider flags and checks the exact local provider configuration before model execution.
+Read [Getting started](getting-started.md) for the procedure, result contract, and recovery codes.
+
 ## Capacity policy
 
 The built-in policy permits one active detached worker and 32 queued jobs. An operator can set a

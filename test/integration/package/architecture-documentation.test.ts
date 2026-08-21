@@ -36,6 +36,7 @@ describe("architecture documentation", () => {
     expect(overview).toContain("```mermaid");
     expect(overview).toContain("People and automation");
     expect(overview).toContain("Ways to use Flow");
+    expect(overview).toContain("Guided quick start");
     expect(overview).toContain("Environment diagnostics");
     expect(overview).toContain("Control plane");
     expect(overview).toContain("Execution plane");

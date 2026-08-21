@@ -116,6 +116,10 @@ The expected output for this release is `0.1.0-alpha.1`.
 
 ## Complete a credential-free run
 
+The immutable `0.1.0-alpha.1` package does not contain `flow quickstart`. Use the manual commands in
+this section for that release. The current source-build procedure is in
+[Getting started](../getting-started.md).
+
 Create an empty project directory and initialize it:
 
 ```sh
@@ -138,8 +142,9 @@ flow inspect first-run
 The workflow runs two deterministic Node.js commands. It doesn't need a model provider, Docker,
 Bun, or the Prime runtime.
 
-The immutable `0.1.0-alpha.1` package doesn't contain `flow doctor`. The command is implemented in
-the current source tree and will enter a later preview only after release qualification. Read
+The immutable `0.1.0-alpha.1` package doesn't contain `flow doctor` or `flow quickstart`. Both
+commands are implemented in the current source tree and will enter a later preview only after
+release qualification. Read
 [Diagnose the Flow environment](diagnose-environment.md) for the current source-build contract.
 
 ## Remove or replace the preview
