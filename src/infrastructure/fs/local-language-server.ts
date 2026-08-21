@@ -32,6 +32,11 @@ export class LocalLanguageServerError extends Error {
 
 export interface LocalLanguageServerOptions {
   readonly signal?: AbortSignal | undefined;
+  /** @internal Deterministic post-open cancellation seam. */
+  readonly afterFileOpened?: (
+    kind: "manifest" | "executable",
+    handle: FileHandle,
+  ) => void | Promise<void>;
   /** @internal Deterministic cancellation and source-race seam. */
   readonly afterManifestRead?: () => void | Promise<void>;
   /** @internal Deterministic cancellation and source-race seam. */
@@ -72,6 +77,8 @@ export async function admitLocalLanguageServer(
     MAX_LANGUAGE_SERVER_MANIFEST_BYTES,
     "invalid_manifest",
     options.signal,
+    false,
+    (handle) => options.afterFileOpened?.("manifest", handle),
   );
   await options.afterManifestRead?.();
   options.signal?.throwIfAborted();
@@ -94,6 +101,7 @@ export async function admitLocalLanguageServer(
     "invalid_executable",
     options.signal,
     true,
+    (handle) => options.afterFileOpened?.("executable", handle),
   );
   await options.afterExecutableRead?.();
   options.signal?.throwIfAborted();
@@ -155,6 +163,7 @@ async function readStableFile(
   invalidCode: "invalid_manifest" | "invalid_executable",
   signal?: AbortSignal,
   requireExecutable = false,
+  afterOpen?: (handle: FileHandle) => void | Promise<void>,
 ): Promise<StableFile> {
   signal?.throwIfAborted();
   let handle: FileHandle;
@@ -168,6 +177,8 @@ async function readStableFile(
     throw new LocalLanguageServerError(invalidCode);
   }
   try {
+    await afterOpen?.(handle);
+    signal?.throwIfAborted();
     const before = await handle.stat({ bigint: true });
     signal?.throwIfAborted();
     if (
@@ -187,7 +198,6 @@ async function readStableFile(
     }
     result = { content, identity: after };
   } catch (error) {
-    signal?.throwIfAborted();
     operationError =
       error instanceof LocalLanguageServerError ? error : new LocalLanguageServerError(invalidCode);
   }

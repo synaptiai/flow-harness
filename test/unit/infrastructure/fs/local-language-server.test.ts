@@ -1,5 +1,15 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  type FileHandle,
+  mkdir,
+  mkdtemp,
+  realpath,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -128,6 +138,30 @@ describe("local language-server admission", () => {
     await expect(operation).rejects.toBe(reason);
     expect(executableRead).toBe(false);
   });
+
+  it.each(["manifest", "executable"] as const)(
+    "closes the opened $kind before preserving post-open cancellation",
+    async (kind) => {
+      const fixture = await createFixture();
+      const controller = new AbortController();
+      const reason = new Error(`cancel after ${kind} open`);
+      let openedHandle: FileHandle | undefined;
+
+      const operation = admitLocalLanguageServer(fixture.project, fixture.manifestPath, {
+        signal: controller.signal,
+        afterFileOpened(openedKind, handle) {
+          if (openedKind === kind) {
+            openedHandle = handle;
+            controller.abort(reason);
+          }
+        },
+      });
+
+      await expect(operation).rejects.toBe(reason);
+      expect(openedHandle).toBeDefined();
+      await expect((openedHandle as FileHandle).stat()).rejects.toMatchObject({ code: "EBADF" });
+    },
+  );
 });
 
 async function createFixture(overrides: { readonly executableSha256?: string } = {}): Promise<{
