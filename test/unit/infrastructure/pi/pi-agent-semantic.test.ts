@@ -15,6 +15,7 @@ describe("Pi semantic execution", () => {
   it("creates and forwards one attempt-scoped session from frozen server identity", async () => {
     const snapshot = semanticCapabilitySnapshot();
     const session: SemanticToolSession = {
+      evidence: () => [],
       async query() {
         return { operation: "diagnostics", diagnostics: [] };
       },
@@ -94,6 +95,7 @@ describe("Pi semantic execution", () => {
 
 function semanticSession(): SemanticToolSession {
   return {
+    evidence: () => [],
     async query() {
       return { operation: "diagnostics", diagnostics: [] };
     },

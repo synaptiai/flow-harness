@@ -63,6 +63,29 @@ describe("local semantic code service", () => {
     expect(request?.runtimeSupportPaths).toEqual([fixtureExecutable]);
     expect(await readFile(join(project, "example.ts"), "utf8")).toBe("const value = 1;\n");
     expect(sandbox.releases).toBe(1);
+    expect(session.evidence()).toEqual([
+      expect.objectContaining({
+        version: 1,
+        sequence: 1,
+        request: {
+          operation: "hover",
+          path: "example.ts",
+          position: { line: 0, character: 7 },
+        },
+        projectDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+        sourceDigest: sha256(Buffer.from("const value = 1;\n")),
+        languageServerDigest: languageServer.digest,
+        sandbox: {
+          backend: "test-sandbox",
+          backendVersion: "1",
+          profile: "workspace-readonly-network-deny-v1",
+          policyDigest: "a".repeat(64),
+        },
+        result,
+        resultDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+        digest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      }),
+    ]);
   });
 
   it("discards a result when the authoritative project changes after capture", async () => {
@@ -94,6 +117,7 @@ describe("local semantic code service", () => {
       message: "semantic project source changed during the query",
     });
     expect(sandbox.releases).toBe(1);
+    expect(session.evidence()).toEqual([]);
   });
 });
 

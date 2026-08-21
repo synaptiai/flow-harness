@@ -27,6 +27,7 @@ describe("workspace semantic tool", () => {
     const observed: SemanticRequest[] = [];
     const toolSignal = new AbortController().signal;
     const semanticSession: SemanticToolSession = {
+      evidence: () => [],
       async query(request, signal) {
         observed.push(request);
         expect(signal).toBe(toolSignal);
@@ -108,6 +109,7 @@ describe("workspace semantic tool", () => {
     await writeFile(join(root, "example.ts"), "const value = 1;\n");
     let invoked = false;
     const semanticSession: SemanticToolSession = {
+      evidence: () => [],
       async query() {
         invoked = true;
         throw new Error("should not run");
