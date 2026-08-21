@@ -6,9 +6,9 @@
 
 ## Status
 
-Implementation and local verification are complete. The user approved Approach B: bounded
-semantic code context with diagnostics and navigation through a standard language-service
-boundary. Hosted Linux x64 CI must still run the platform-specific containment test before merge.
+Implementation, local verification, and hosted Linux x64 verification are complete. The user
+approved Approach B: bounded semantic code context with diagnostics and navigation through a
+standard language-service boundary.
 
 ## Context
 
@@ -139,8 +139,8 @@ value, or nested cause.
 | Criterion | Type | Command | Expected evidence | Does not promise |
 | --- | --- | --- | --- | --- |
 | Explicit operations and workflow selection | Behavioral and contract | `npx vitest run test/unit/semantic/semantic-code.test.ts test/unit/workflow/compiler.test.ts test/unit/infrastructure/pi/workspace-semantic-tools.test.ts` | The selected operation matrix passes, and undeclared semantic use fails. | Other LSP operations |
-| Exact operator identity before mutation | Behavioral and data | `npx vitest run test/unit/capability/language-server.test.ts test/integration/cli/semantic-code.test.ts -t "language server"` | Missing, changed, unsafe, and unexpected identities fail before store or provider calls. | Automatic discovery |
-| Containment and read-only project | Runtime and configuration | `npx vitest run test/runtime/semantic-lsp.runtime.test.ts` | A real fake server can read the project but cannot write it or use the network. | Hostile multi-tenant isolation |
+| Exact operator identity before mutation | Behavioral and data | `npx vitest run test/unit/capability/language-server.test.ts test/unit/infrastructure/fs/local-language-server.test.ts test/integration/cli/semantic-code.test.ts` | Missing, changed, unsafe, and unexpected identities fail before store or provider calls. Cancellation after a file opens still closes the handle. | Automatic discovery |
+| Containment and read-only project | Runtime and configuration | `npx vitest run test/unit/infrastructure/sandbox/srt-command-sandbox.test.ts test/runtime/semantic-lsp.runtime.test.ts` | Redundant nested write-deny mounts are removed beneath the read-only projection. A real fake server can read the project but cannot write it or use the network. | Hostile multi-tenant isolation |
 | Bounds, deadline, and cancellation | Error and performance | `npx vitest run test/unit/infrastructure/lsp/strict-lsp-client.test.ts test/unit/infrastructure/lsp/local-semantic-code-service.test.ts` | Exact bounds pass, plus-one cases fail, cancellation identity is preserved, and cleanup runs. | Unlimited indexing |
 | Deterministic normalization | Data processing | `npx vitest run test/unit/semantic/semantic-code.test.ts -t "normalize|sort|reject"` | All four response families normalize, sort, and reject foreign or malformed data. | Semantic correctness of the server |
 | Durable provenance and private public view | Data and security | `npx vitest run test/unit/run/semantic-reducer.test.ts test/unit/cli/public-output.test.ts` | Receipt mutations fail replay and private content is absent from public projections. | Hiding operator-approved portable locations from internal evidence |
@@ -157,24 +157,50 @@ the semantic quality of a production language server.
 
 ## Verification evidence
 
-Recorded on 2026-08-21 against commit `9ceaf60` plus this journal update.
+Recorded on 2026-08-21 against commit `05f0cae` plus this journal update.
 
-- `npm test -- --maxWorkers=1`: 351 test files passed and one platform-gated file skipped. All
-  4,802 executed tests passed. Four tests skipped.
+- `npm test -- --run --maxWorkers=1`: 351 test files passed and one platform-gated file skipped. All
+  4,806 executed tests passed. Four tests skipped.
 
-- The complete mapped Issue #149 selector passed 195 tests across 12 executed files. It covered the
-  domain, compiler, operator admission, strict protocol client, local service, Pi tool and evidence,
-  reducer, and public output. It also covered the CLI, supervisor worker, and platform-permitted
-  runtime boundaries.
+- The complete mapped Issue #149 selector passed 243 tests across 14 files with one worker. It
+  covered the domain, compiler, operator admission, file-handle settlement, and strict protocol
+  client. It also covered local service, sandbox mount planning, Pi evidence, reducer, and public
+  output. The map also covered the CLI and detached supervisor. Run the following command.
 
-- The merged four-shard V8 coverage run passed the same 4,802 tests and four skips. Coverage was
-  84.93% statements, 79.56% branches, 91.57% functions, and 85.08% lines. Each shard ran
+  ```shell
+  npx vitest run \
+    test/unit/semantic/semantic-code.test.ts \
+    test/unit/workflow/compiler.test.ts \
+    test/unit/infrastructure/pi/workspace-semantic-tools.test.ts \
+    test/unit/capability/language-server.test.ts \
+    test/unit/capability/workflow-capabilities.test.ts \
+    test/integration/cli/semantic-code.test.ts \
+    test/unit/infrastructure/lsp/strict-lsp-client.test.ts \
+    test/unit/infrastructure/lsp/local-semantic-code-service.test.ts \
+    test/unit/run/semantic-reducer.test.ts \
+    test/unit/cli/public-output.test.ts \
+    test/integration/supervisor/worker.test.ts \
+    test/unit/infrastructure/pi/pi-agent-semantic.test.ts \
+    test/unit/infrastructure/fs/local-language-server.test.ts \
+    test/unit/infrastructure/sandbox/srt-command-sandbox.test.ts \
+    --maxWorkers=1
+  ```
+
+- The merged four-shard V8 coverage run passed the same 4,806 tests and four skips. Coverage was
+  84.94% statements, 79.58% branches, 91.58% functions, and 85.10% lines. Each shard ran
   sequentially with one worker and wrote a Vitest blob report. `vitest --merge-reports --coverage`
   combined the reports and applied the repository thresholds to the complete map.
 
-- `npm run test:runtime`: nine runtime files and 44 tests passed on macOS. Eleven files and 35 tests
-  skipped through explicit platform gates. The Linux x64 semantic-containment test remains a hosted
-  CI requirement.
+- `npm run test:runtime`: nine runtime files and 44 tests passed on macOS. Eleven files and 37 tests
+  skipped through explicit platform gates. The semantic runtime has independent read, write, and
+  network cases.
+
+- Hosted Linux x64 CI run
+  [32521310377](https://github.com/synaptiai/flow-harness/actions/runs/32521310377) passed the complete
+  `quality` and `dependency-audit` jobs against `05f0cae`. The native Linux sandbox proved the
+  semantic read, write-denial, and network-denial runtime cases. A disposable Linux container helped
+  diagnose the earlier mount failure. Docker Desktop could not provide the nested user namespace
+  that the production containment runtime requires. The container result is not acceptance evidence.
 
 - `npm run pack:check`: a clean consumer installed and ran
   `synaptiai-flow-harness-0.1.0-alpha.1.tgz`. The package SHA-256 was
@@ -183,6 +209,11 @@ Recorded on 2026-08-21 against commit `9ceaf60` plus this journal update.
 - `npm run build`, `npm run typecheck`, `npm run format:check`, the scoped lint gate,
   `npm run docs:style`, `npm run docs:links`, `npm run docs:ste`, and `git diff --check` passed.
   Lint reported one inherited informational constructor notice outside this change and no failure.
+
+The first mapped-selector attempt inside the desktop sandbox passed 219 tests but could not bind the
+Unix sockets required by 24 detached-worker tests. The identical command passed all 243 tests after
+the app granted Unix-socket permission. The sandbox-only `EPERM` results are excluded from product
+evidence.
 
 The first local runtime attempt overlapped `pack:check`. Both commands own the generated `dist`
 directory, so the package check removed compiled files while the runtime process was using them.
