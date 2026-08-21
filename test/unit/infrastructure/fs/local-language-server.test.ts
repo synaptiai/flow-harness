@@ -80,6 +80,18 @@ describe("local language-server admission", () => {
     });
   });
 
+  it("retains path authority when an unrelated directory entry changes", async () => {
+    const fixture = await createFixture();
+
+    await expect(
+      admitLocalLanguageServer(fixture.project, fixture.manifestPath, {
+        async beforeReturn() {
+          await writeFile(join(fixture.project, "tools", "unrelated.txt"), "unrelated\n");
+        },
+      }),
+    ).resolves.toMatchObject({ name: "typescript" });
+  });
+
   it("preserves exact cancellation after the manifest read and starts no executable read", async () => {
     const fixture = await createFixture();
     const controller = new AbortController();
