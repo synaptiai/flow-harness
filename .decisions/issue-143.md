@@ -12,7 +12,7 @@ read-only diagnostic surface without making an optional execution path a univers
 
 - Node exposes the current platform, architecture, executable, and runtime version through stable
   process APIs. The package launcher already owns the minimum operating-system and Node.js
-  contract, so diagnostics must reuse that contract instead of copying it.
+  contract. Diagnostics reuse that contract instead of copying it.
 
 - Sandbox Runtime exposes structured dependency errors and warnings. Its native Flow composition
   also applies stricter executable, filesystem, namespace, and cleanup checks. A useful diagnostic
@@ -23,9 +23,8 @@ read-only diagnostic surface without making an optional execution path a univers
   network checks: a credential-free Flow path must remain offline.
 
 - Docker documents `/_ping`, version, and information endpoints as read-only Engine API surfaces.
-  Flow's stronger Prime attestation already checks the socket, daemon, image, executable closure,
-  cgroup, host policy, and API identity without creating a container. Diagnostics can reuse that
-  currentness proof.
+  Flow's Prime attestation checks the socket, daemon, image, executables, cgroup, host policy, and
+  API identity. It does not create a container. Diagnostics reuse this currentness proof.
 
 - The pinned Pi model runtime can restore its local catalog and credential status with model
   network refresh disabled. Provider diagnostics therefore do not need to resolve, print, or test
@@ -68,8 +67,9 @@ source research._
 
 ### Non-goals
 
-- Diagnostics do not contact a model provider, validate a credential remotely, prepare Prime,
-  create a container, start a supervisor, execute a workflow, or mutate project state.
+- Diagnostics do not contact a model provider or validate a credential remotely. They do not
+  prepare Prime, create a container, start a supervisor, execute a workflow, or mutate project
+  state.
 
 - Diagnostics do not make Docker, Prime, a provider, or an unselected sandbox a prerequisite for
   credential-free use.
@@ -115,7 +115,7 @@ source research._
   existing fixed launcher error because they cannot safely load the CLI on that host.
 
 - Stable categories are owned by the application layer. Infrastructure adapters return only
-  success or throw; they cannot construct public text.
+  success or throw. They cannot construct public text.
 
 - Workflow admission reuses the same immutable package, policy, and compilation checks as
   `validate` and `run`. Flow checks recursively selected Linux-only agent commands before provider
@@ -156,20 +156,24 @@ _Recorded on 2026-08-21 from the settled Issue #143 tree._
   npx vitest run --no-file-parallelism --maxWorkers=1
   ```
 
-- Coverage passed the same 4,653 tests with 84.78% statements, 79.41% branches, 91.40%
-  functions, and 84.93% lines. Browser tests passed 2 tests. Runtime verification passed 43 tests
-  and skipped 34 platform-gated tests. The compiled smoke test, build, documentation checks,
-  packed-install verification, Prime dependency audit, and production dependency audit passed.
+- Coverage passed the same 4,653 tests. It reached 84.78% statements, 79.41% branches, 91.40%
+  functions, and 84.93% lines.
 
-- The packed-install verification installed the tarball in a clean project, initialized that
-  project, ran the installed `flow doctor`, and proved that the complete initialized project tree
-  was unchanged afterward.
+- Browser tests passed 2 tests. Runtime verification passed 43 tests and skipped 34 platform-gated
+  tests.
+
+- The compiled smoke test and build passed. Documentation and packed-install checks passed. Prime
+  and production dependency audits passed.
+
+- The packed-install verification installed the tarball in a clean project. It initialized the
+  project and ran the installed `flow doctor`. The complete initialized project tree was unchanged
+  afterward.
 
 - A real local `flow doctor` project check passed outside the desktop socket sandbox. The same
   check failed only its native-sandbox probe inside that sandbox because the desktop sandbox
   denied its temporary Unix socket.
 
-- One exact parallel `npm run check` attempt passed formatting, lint, and type checking, then
-  completed 4,652 tests before the pre-existing Prime image inventory boundary test reached its
-  30-second timeout under full-suite contention. That exact test passed independently in 6.62
-  seconds, and the complete serial suite passed it. No Issue #143 failure was present.
+- One exact parallel `npm run check` attempt passed formatting, lint, and type checking. During its
+  test phase, the pre-existing Prime image inventory boundary test timed out after 30 seconds. This
+  occurred under full-suite contention. That exact test passed independently in 6.62 seconds. The
+  complete serial suite also passed it. No Issue #143 failure was present.
