@@ -182,8 +182,8 @@ const agentConfigSchema = z
     prompt: z.string().trim().min(1).max(262_144),
     model: modelSchema,
     tools: z
-      .array(z.enum(["read", "ls", "edit", "exec"]))
-      .max(4)
+      .array(z.enum(["read", "ls", "edit", "exec", "semantic"]))
+      .max(5)
       .refine((tools) => new Set(tools).size === tools.length, "agent tools must be unique")
       .default([]),
     skills: z
