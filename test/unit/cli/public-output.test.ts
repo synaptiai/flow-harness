@@ -165,4 +165,62 @@ describe("public run output", () => {
       privateContent,
     );
   });
+
+  it("projects a language server without private executable or manifest data", () => {
+    const privateManifest = Buffer.from("PRIVATE_LANGUAGE_SERVER_MANIFEST\n").toString("base64");
+    const value = {
+      capabilitySnapshot: {
+        languageServer: {
+          version: 1,
+          kind: "language-server",
+          name: "typescript",
+          protocol: "lsp-3.18",
+          executable: {
+            path: "/PRIVATE/bin/typescript-language-server",
+            sha256: "a".repeat(64),
+            bytes: 1_024,
+            device: "16777234",
+            inode: "9071",
+          },
+          args: ["--stdio", "--PRIVATE_CONFIG"],
+          languages: [{ id: "typescript", suffixes: [".ts"] }],
+          initializationOptions: { private: "PRIVATE_INITIALIZATION" },
+          containmentProfile: "default",
+          requestTimeoutMs: 5_000,
+          manifest: {
+            provenance: ".flow/language-servers/typescript.json",
+            sha256: "b".repeat(64),
+            bytes: 512,
+            contentBase64: privateManifest,
+          },
+          digest: "c".repeat(64),
+        },
+      },
+    };
+
+    const projected = projectPublicRunOutput(value);
+
+    expect(projected).toEqual({
+      capabilitySnapshot: {
+        languageServer: {
+          version: 1,
+          kind: "language-server",
+          name: "typescript",
+          protocol: "lsp-3.18",
+          executable: { sha256: "a".repeat(64), bytes: 1_024 },
+          languages: [{ id: "typescript", suffixes: [".ts"] }],
+          containmentProfile: "default",
+          requestTimeoutMs: 5_000,
+          manifest: {
+            provenance: ".flow/language-servers/typescript.json",
+            sha256: "b".repeat(64),
+            bytes: 512,
+          },
+          digest: "c".repeat(64),
+        },
+      },
+    });
+    expect(JSON.stringify(projected)).not.toContain("PRIVATE_");
+    expect(value.capabilitySnapshot.languageServer.manifest.contentBase64).toBe(privateManifest);
+  });
 });

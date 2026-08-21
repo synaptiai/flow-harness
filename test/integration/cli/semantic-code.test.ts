@@ -87,6 +87,9 @@ describe("semantic code CLI", () => {
         },
       },
     });
+    const publicOutput = executed.stdout.join("\n");
+    expect(publicOutput).not.toContain("contentBase64");
+    expect(publicOutput).not.toContain(join(project, ".flow", "language-servers"));
   });
 
   it("rejects missing, unexpected, and duplicate server authority before mutation", async () => {
