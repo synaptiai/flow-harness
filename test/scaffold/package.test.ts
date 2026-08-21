@@ -81,6 +81,10 @@ describe("package contract", () => {
     );
 
     expect(verifier).toContain('await run(flowBinary, ["doctor"]');
+    expect(verifier).toContain(
+      '"Package release failed during installed native sandbox diagnostic"',
+    );
+    expect(verifier).toContain("readInstalledDoctorReport");
     expect(verifier).toContain('doctorReport.target, "project"');
     expect(verifier).toContain("doctorReport.ok, true");
     expect(verifier).toContain("projectBeforeDoctor");

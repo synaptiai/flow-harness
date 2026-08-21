@@ -2,8 +2,8 @@ import type { FlowSandboxProfile } from "../domain/config/sandbox-profiles.js";
 import { isFlowHostSupported } from "../domain/host-requirements.js";
 
 export const FLOW_DOCTOR_REPORT_VERSION = 1 as const;
-export const FLOW_DOCTOR_PROBE_TIMEOUT_MS = 4_000;
-const MAX_FLOW_DOCTOR_PROBE_TIMEOUT_MS = 5_000;
+export const FLOW_DOCTOR_PROBE_TIMEOUT_MS = 10_000;
+const MAX_FLOW_DOCTOR_PROBE_TIMEOUT_MS = 15_000;
 
 export type EnvironmentDoctorTarget = "project" | "workflow" | "prime-agent";
 export type EnvironmentDoctorCheckStatus = "pass" | "fail" | "skip";

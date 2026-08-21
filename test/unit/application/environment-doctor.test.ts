@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   type EnvironmentDoctorDependencies,
+  FLOW_DOCTOR_PROBE_TIMEOUT_MS,
   runEnvironmentDoctor,
 } from "../../../src/application/environment-doctor.js";
 
@@ -327,6 +328,23 @@ describe("environment doctor", () => {
       message: "The Flow project filesystem check did not complete.",
       remediation: "Confirm project read and write access, then rerun flow doctor.",
     });
+  });
+
+  it("uses the supported cold-start deadline and rejects a larger injected deadline", async () => {
+    expect(FLOW_DOCTOR_PROBE_TIMEOUT_MS).toBe(10_000);
+
+    await expect(
+      runEnvironmentDoctor(
+        {
+          target: "project",
+          platform: "linux",
+          nodeVersion: "26.7.0",
+          invocationRoot: "/workspace/project",
+          probeTimeoutMs: 15_001,
+        },
+        passingDependencies(),
+      ),
+    ).rejects.toThrow("Flow doctor probe timeout is invalid");
   });
 
   it("preserves the exact caller cancellation before reporting a private probe failure", async () => {

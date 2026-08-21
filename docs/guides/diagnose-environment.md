@@ -114,7 +114,7 @@ Use the fields as follows:
 Checks appear in dependency order. A `skip` means an earlier failure prevented a meaningful later
 check. Fix the first failed dependency before you investigate skipped checks.
 
-Each probe has a four-second deadline. A probe that exceeds the deadline produces a fixed failed
+Each probe has a 10-second deadline. A probe that exceeds the deadline produces a fixed failed
 check. Flow also bounds command output and retained diagnostic data.
 
 ## Use exit statuses

@@ -126,8 +126,7 @@ async function verifyPackage() {
       true,
       "the initialized project snapshot omits filesystem identity",
     );
-    const diagnosed = await run(flowBinary, ["doctor"], projectRoot, verificationRoot);
-    const doctorReport = JSON.parse(diagnosed.stdout);
+    const doctorReport = await readInstalledDoctorReport(flowBinary, projectRoot, verificationRoot);
     assert.equal(doctorReport.version, 1);
     assert.equal(doctorReport.target, "project");
     assert.equal(doctorReport.ok, true);
@@ -391,6 +390,59 @@ async function runExpectFailure(command, args, cwd, verificationRoot) {
     };
   }
   assert.fail("package verification command unexpectedly succeeded");
+}
+
+async function readInstalledDoctorReport(flowBinary, projectRoot, verificationRoot) {
+  let source;
+  try {
+    source = (await run(flowBinary, ["doctor"], projectRoot, verificationRoot)).stdout;
+  } catch (error) {
+    if (typeof error !== "object" || error === null || typeof error.stdout !== "string") {
+      throw new Error("Package release failed during run installed diagnostic");
+    }
+    source = error.stdout;
+  }
+
+  let report;
+  try {
+    report = JSON.parse(source);
+  } catch {
+    throw new Error("Package release failed during parse installed diagnostic");
+  }
+  if (typeof report !== "object" || report === null || Array.isArray(report)) {
+    throw new Error("Package release failed during parse installed diagnostic");
+  }
+  if (report.ok !== true) {
+    const failedCategory = Array.isArray(report.checks)
+      ? report.checks.find(
+          (check) =>
+            typeof check === "object" &&
+            check !== null &&
+            !Array.isArray(check) &&
+            check.status === "fail" &&
+            typeof check.category === "string",
+        )?.category
+      : undefined;
+    throw new Error(installedDoctorFailureStage(failedCategory));
+  }
+  return report;
+}
+
+function installedDoctorFailureStage(category) {
+  switch (category) {
+    case "runtime.host":
+      return "Package release failed during installed host diagnostic";
+    case "project.configuration":
+      return "Package release failed during installed configuration diagnostic";
+    case "project.discovery":
+      return "Package release failed during installed discovery diagnostic";
+    case "project.filesystem":
+      return "Package release failed during installed filesystem diagnostic";
+    case "sandbox.native":
+      return "Package release failed during installed native sandbox diagnostic";
+    default:
+      return "Package release failed during installed environment diagnostic";
+  }
 }
 
 async function verifyBrowserPresentation(flowBinary, runsDirectory, cwd, verificationRoot) {
