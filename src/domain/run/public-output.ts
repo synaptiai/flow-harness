@@ -5,6 +5,12 @@ export function projectPublicRunOutput(value: unknown): unknown {
   if (!isRecord(value)) {
     return value;
   }
+  if (isNodeEvidenceEvent(value)) {
+    return projectNodeEvidenceOwner(value);
+  }
+  if (isRunState(value)) {
+    return projectRunState(value);
+  }
   return Object.fromEntries(
     Object.entries(value).map(([key, item]) => [
       key,
@@ -13,6 +19,86 @@ export function projectPublicRunOutput(value: unknown): unknown {
         : projectPublicRunOutput(item),
     ]),
   );
+}
+
+function projectNodeEvidenceOwner(
+  value: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [
+      key,
+      key === "evidence" && isRecord(item) && item.kind === "agent"
+        ? projectAgentEvidence(item)
+        : projectPublicRunOutput(item),
+    ]),
+  );
+}
+
+function projectRunState(
+  value: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => {
+      if (key === "capabilitySnapshot" && isRecord(item)) {
+        return [key, projectCapabilitySnapshot(item)];
+      }
+      if (key === "nodes" && isRecord(item)) {
+        return [
+          key,
+          Object.fromEntries(
+            Object.entries(item).map(([nodeId, node]) => [
+              nodeId,
+              isRecord(node) ? projectNodeEvidenceOwner(node) : projectPublicRunOutput(node),
+            ]),
+          ),
+        ];
+      }
+      return [key, projectPublicRunOutput(item)];
+    }),
+  );
+}
+
+function projectAgentEvidence(
+  value: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [
+      key,
+      key === "semanticReceipts" && Array.isArray(item)
+        ? item.map((receipt) => projectSemanticReceipt(receipt))
+        : projectPublicRunOutput(item),
+    ]),
+  );
+}
+
+function projectSemanticReceipt(value: unknown): unknown {
+  if (!isRecord(value) || !isRecord(value.request) || !isRecord(value.result)) {
+    return null;
+  }
+  const projected = pick(value, [
+    "version",
+    "sequence",
+    "requestDigest",
+    "projectDigest",
+    "sourceDigest",
+    "languageServerDigest",
+    "sandbox",
+    "resultDigest",
+    "digest",
+  ]);
+  projected.operation = value.request.operation;
+  projected.itemCount = semanticResultItemCount(value.result);
+  return projected;
+}
+
+function semanticResultItemCount(value: Readonly<Record<string, unknown>>): number {
+  if (value.operation === "diagnostics") {
+    return Array.isArray(value.diagnostics) ? value.diagnostics.length : 0;
+  }
+  if (value.operation === "definition" || value.operation === "references") {
+    return Array.isArray(value.locations) ? value.locations.length : 0;
+  }
+  return value.operation === "hover" && value.hover !== null ? 1 : 0;
 }
 
 function projectCapabilitySnapshot(
@@ -140,4 +226,17 @@ function pick(
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isNodeEvidenceEvent(value: Readonly<Record<string, unknown>>): boolean {
+  return value.type === "node_succeeded" || value.type === "node_failed";
+}
+
+function isRunState(value: Readonly<Record<string, unknown>>): boolean {
+  return (
+    typeof value.runId === "string" &&
+    typeof value.workflowId === "string" &&
+    typeof value.lastSequence === "number" &&
+    isRecord(value.nodes)
+  );
 }

@@ -223,4 +223,83 @@ describe("public run output", () => {
     expect(JSON.stringify(projected)).not.toContain("PRIVATE_");
     expect(value.capabilitySnapshot.languageServer.manifest.contentBase64).toBe(privateManifest);
   });
+
+  it("projects semantic receipts as safe summaries without changing same-named result data", () => {
+    const privatePath = "PRIVATE/source/example.ts";
+    const privateMessage = "PRIVATE semantic diagnostic";
+    const receipt = {
+      version: 1,
+      sequence: 1,
+      request: { operation: "diagnostics", path: privatePath },
+      requestDigest: "a".repeat(64),
+      projectDigest: "b".repeat(64),
+      sourceDigest: "c".repeat(64),
+      languageServerDigest: "d".repeat(64),
+      sandbox: {
+        backend: "sandbox-runtime",
+        backendVersion: "1.2.3",
+        profile: "workspace-readonly-network-deny-v1",
+        policyDigest: "e".repeat(64),
+      },
+      result: {
+        operation: "diagnostics",
+        diagnostics: [
+          {
+            path: privatePath,
+            range: {
+              start: { line: 0, character: 0 },
+              end: { line: 0, character: 1 },
+            },
+            severity: "error",
+            message: privateMessage,
+          },
+        ],
+      },
+      resultDigest: "f".repeat(64),
+      digest: "0".repeat(64),
+    };
+    const value = {
+      type: "node_succeeded",
+      evidence: {
+        kind: "agent",
+        provider: "test",
+        model: "deterministic",
+        semanticReceipts: [receipt],
+      },
+      result: {
+        semanticReceipts: [{ request: privatePath, result: privateMessage }],
+      },
+    };
+
+    const projected = projectPublicRunOutput(value);
+
+    expect(projected).toEqual({
+      type: "node_succeeded",
+      evidence: {
+        kind: "agent",
+        provider: "test",
+        model: "deterministic",
+        semanticReceipts: [
+          {
+            version: 1,
+            sequence: 1,
+            operation: "diagnostics",
+            itemCount: 1,
+            requestDigest: "a".repeat(64),
+            projectDigest: "b".repeat(64),
+            sourceDigest: "c".repeat(64),
+            languageServerDigest: "d".repeat(64),
+            sandbox: receipt.sandbox,
+            resultDigest: "f".repeat(64),
+            digest: "0".repeat(64),
+          },
+        ],
+      },
+      result: {
+        semanticReceipts: [{ request: privatePath, result: privateMessage }],
+      },
+    });
+    expect(JSON.stringify((projected as { evidence: unknown }).evidence)).not.toContain("PRIVATE");
+    expect(value.evidence.semanticReceipts[0]).toBe(receipt);
+  });
 });
