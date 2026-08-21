@@ -42,15 +42,19 @@ async function handle(message) {
     });
   } else if (message.method === "textDocument/hover") {
     if (mode === "hang-hover" || mode === "hang-ignore-term" || mode === "stderr-overflow") return;
-    if (mode === "verify-boundary") {
+    if (mode === "verify-read") {
       const readable = readFileSync("example.ts", "utf8") === "const value = 1;\n";
+      if (!readable) process.exit(71);
+    } else if (mode === "verify-write") {
       let writable = false;
       try {
         writeFileSync("example.ts", "const value = 2;\n");
         writable = true;
       } catch {}
+      if (writable) process.exit(72);
+    } else if (mode === "verify-network") {
       const network = await canConnect(Number(process.argv[3]));
-      if (!readable || writable || network) process.exit(71);
+      if (network) process.exit(73);
     }
     respond(message.id, {
       contents: { kind: "markdown", value: "`const value: number`" },

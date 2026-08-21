@@ -561,6 +561,31 @@ function createRuntimeConfig(
   ) {
     allowRead.push(seccompApplyPath);
   }
+  const denyWrite = [
+    ...new Set([
+      ...writeProtectedPaths,
+      ...runtimeSupportPaths,
+      join(workspace, ".flow"),
+      join(workspace, ".flow-workspaces"),
+      join(workspace, ".flow-workspaces/**"),
+      join(workspace, ".*.flow-workspaces"),
+      join(workspace, ".*.flow-workspaces/**"),
+      join(workspace, "**/.flow-workspaces"),
+      join(workspace, "**/.flow-workspaces/**"),
+      join(workspace, "**/.*.flow-workspaces"),
+      join(workspace, "**/.*.flow-workspaces/**"),
+      join(workspace, ".git"),
+      join(workspace, ".env"),
+      join(workspace, ".env.*"),
+      join(workspace, "**/*.pem"),
+      join(workspace, "**/*.key"),
+    ]),
+  ].filter(
+    (candidate) =>
+      !writeProtectedPaths.some(
+        (protectedPath) => candidate !== protectedPath && isAtOrWithin(candidate, protectedPath),
+      ),
+  );
   return Object.freeze({
     ...(trustedBwrapPath === undefined ? {} : { bwrapPath: trustedBwrapPath }),
     network: Object.freeze({
@@ -593,26 +618,7 @@ function createRuntimeConfig(
       ]),
       allowRead: Object.freeze(allowRead),
       allowWrite: Object.freeze([workspace, privateTemporaryDirectory]),
-      denyWrite: Object.freeze([
-        ...new Set([
-          ...writeProtectedPaths,
-          ...runtimeSupportPaths,
-          join(workspace, ".flow"),
-          join(workspace, ".flow-workspaces"),
-          join(workspace, ".flow-workspaces/**"),
-          join(workspace, ".*.flow-workspaces"),
-          join(workspace, ".*.flow-workspaces/**"),
-          join(workspace, "**/.flow-workspaces"),
-          join(workspace, "**/.flow-workspaces/**"),
-          join(workspace, "**/.*.flow-workspaces"),
-          join(workspace, "**/.*.flow-workspaces/**"),
-          join(workspace, ".git"),
-          join(workspace, ".env"),
-          join(workspace, ".env.*"),
-          join(workspace, "**/*.pem"),
-          join(workspace, "**/*.key"),
-        ]),
-      ]),
+      denyWrite: Object.freeze(denyWrite),
       allowGitConfig: false,
     }),
     allowAppleEvents: false,

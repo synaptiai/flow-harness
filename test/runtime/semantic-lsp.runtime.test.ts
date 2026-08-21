@@ -24,72 +24,80 @@ afterEach(async () => {
 });
 
 describe.skipIf(!linux)("semantic LSP runtime boundary", () => {
-  it("allows project reads while denying projection writes and network access", async () => {
-    const project = await realpath(await mkdtemp(join(tmpdir(), "flow-semantic-runtime-")));
-    temporaryDirectories.push(project);
-    await writeFile(join(project, "example.ts"), "const value = 1;\n");
-    const listener = createServer();
-    let connections = 0;
-    listener.on("connection", (socket) => {
-      connections += 1;
-      socket.destroy();
-    });
-    await new Promise<void>((resolveListen, rejectListen) => {
-      listener.once("error", rejectListen);
-      listener.listen(0, "127.0.0.1", resolveListen);
-    });
-    const address = listener.address();
-    if (address === null || typeof address === "string") {
-      throw new Error("semantic boundary listener did not expose a TCP port");
-    }
-
-    try {
-      const languageServer = await fakeLanguageServer(address.port);
-      const session = createLocalSemanticToolSessionFactory(createProductionCommandSandbox())({
-        context: {
-          runId: "semantic-runtime",
-          workflowId: "semantic-runtime-workflow",
-          attempt: 1,
-          cwd: project,
-          projectRoot: project,
-          protectedPaths: [],
-        },
-        languageServer,
+  it.each([
+    ["project reads", "verify-read"],
+    ["projection writes", "verify-write"],
+    ["network access", "verify-network"],
+  ] as const)(
+    "enforces the %s boundary",
+    async (_boundary, mode) => {
+      const project = await realpath(await mkdtemp(join(tmpdir(), "flow-semantic-runtime-")));
+      temporaryDirectories.push(project);
+      await writeFile(join(project, "example.ts"), "const value = 1;\n");
+      const listener = createServer();
+      let connections = 0;
+      listener.on("connection", (socket) => {
+        connections += 1;
+        socket.destroy();
       });
-
-      const result = await session.query({
-        operation: "hover",
-        path: "example.ts",
-        position: { line: 0, character: 7 },
+      await new Promise<void>((resolveListen, rejectListen) => {
+        listener.once("error", rejectListen);
+        listener.listen(0, "127.0.0.1", resolveListen);
       });
+      const address = listener.address();
+      if (address === null || typeof address === "string") {
+        throw new Error("semantic boundary listener did not expose a TCP port");
+      }
 
-      expect(result).toMatchObject({
-        operation: "hover",
-        hover: { path: "example.ts", value: "`const value: number`" },
-      });
-      expect(connections).toBe(0);
-      await expect(readFile(join(project, "example.ts"), "utf8")).resolves.toBe(
-        "const value = 1;\n",
-      );
-      expect(session.evidence()).toEqual([
-        expect.objectContaining({
-          sequence: 1,
-          languageServerDigest: languageServer.digest,
-          sandbox: expect.objectContaining({
-            backend: "anthropic-sandbox-runtime",
-            profile: "flow-native-v1",
+      try {
+        const languageServer = await fakeLanguageServer(mode, address.port);
+        const session = createLocalSemanticToolSessionFactory(createProductionCommandSandbox())({
+          context: {
+            runId: "semantic-runtime",
+            workflowId: "semantic-runtime-workflow",
+            attempt: 1,
+            cwd: project,
+            projectRoot: project,
+            protectedPaths: [],
+          },
+          languageServer,
+        });
+
+        const result = await session.query({
+          operation: "hover",
+          path: "example.ts",
+          position: { line: 0, character: 7 },
+        });
+
+        expect(result).toMatchObject({
+          operation: "hover",
+          hover: { path: "example.ts", value: "`const value: number`" },
+        });
+        expect(connections).toBe(0);
+        await expect(readFile(join(project, "example.ts"), "utf8")).resolves.toBe(
+          "const value = 1;\n",
+        );
+        expect(session.evidence()).toEqual([
+          expect.objectContaining({
+            sequence: 1,
+            languageServerDigest: languageServer.digest,
+            sandbox: expect.objectContaining({
+              backend: "anthropic-sandbox-runtime",
+              profile: "flow-native-v1",
+            }),
           }),
-        }),
-      ]);
-    } finally {
-      await new Promise<void>((resolveClose, rejectClose) => {
-        listener.close((error) => (error === undefined ? resolveClose() : rejectClose(error)));
-      });
-    }
-  }, 30_000);
+        ]);
+      } finally {
+        await new Promise<void>((resolveClose, rejectClose) => {
+          listener.close((error) => (error === undefined ? resolveClose() : rejectClose(error)));
+        });
+      }
+    },
+    30_000,
+  );
 });
 
-async function fakeLanguageServer(port: number) {
+async function fakeLanguageServer(mode: string, port: number) {
   await chmod(fixtureExecutable, 0o755);
   const bytes = await readFile(fixtureExecutable);
   const executableSha256 = sha256(bytes);
@@ -103,7 +111,7 @@ async function fakeLanguageServer(port: number) {
         protocol: "lsp-3.18",
         executable: fixtureExecutable,
         executableSha256,
-        args: ["verify-boundary", String(port)],
+        args: [mode, String(port)],
         languages: [{ id: "typescript", suffixes: [".ts"] }],
         containmentProfile: "default",
         requestTimeoutMs: 5_000,
