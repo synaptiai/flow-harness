@@ -114,32 +114,65 @@ async function verifyPackage() {
       );
     });
 
-    const effective = await withPackageReleaseStage("initialize installed project", async () => {
-      await run(flowBinary, ["init", projectRoot], projectRoot, verificationRoot);
+    const effective = await withPackageReleaseStage("run installed quick start", async () => {
+      const existingFile = join(projectRoot, "README.md");
+      await writeFile(existingFile, "existing consumer file\n", "utf8");
+      const quickstart = JSON.parse(
+        (
+          await run(
+            flowBinary,
+            ["quickstart", projectRoot, "--run-id", "packed-quickstart"],
+            projectRoot,
+            verificationRoot,
+          )
+        ).stdout,
+      );
+      assert.deepEqual(quickstart, {
+        version: 1,
+        mode: "foundation",
+        project: { publication: "created" },
+        run: {
+          id: "packed-quickstart",
+          status: "succeeded",
+          evidence: ".flow/runs/packed-quickstart/events.jsonl",
+        },
+        commands: {
+          inspect: ["flow", "inspect", "packed-quickstart"],
+          browser: ["flow", "web", "packed-quickstart", "--actor", "operator:quickstart"],
+        },
+      });
+      assert.equal(await readFile(existingFile, "utf8"), "existing consumer file\n");
       const shown = await run(flowBinary, ["config", "show"], projectRoot, verificationRoot);
       const effective = JSON.parse(shown.stdout);
       assert.deepEqual(effective.supervisor, { maxActiveWorkers: 1, maxQueuedJobs: 32 });
       assert.equal(effective.projectRoot, await realpath(projectRoot));
       return effective;
     });
-    const projectBeforeDoctor = await withPackageReleaseStage(
-      "inspect initialized project",
+    const quickstartProjectBeforeDoctor = await withPackageReleaseStage(
+      "inspect quick-start project",
       async () => {
         const snapshot = await snapshotProjectFiles(projectRoot);
-        assert.deepEqual(
-          snapshot.map((entry) => [entry.path, entry.type]),
-          [
-            [".", "directory"],
-            [".flow", "directory"],
-            [".flow/config.yaml", "file"],
-          ],
-          "the initialized project snapshot is incomplete",
-        );
-        const projectConfiguration = snapshot.at(-1);
-        assert.equal(projectConfiguration.contentBase64 !== undefined, true);
+        const paths = new Map(snapshot.map((entry) => [entry.path, entry]));
+        for (const expected of [
+          ".",
+          ".flow",
+          ".flow/config.yaml",
+          ".flow/runs/packed-quickstart/events.jsonl",
+          "README.md",
+        ]) {
+          assert.equal(paths.has(expected), true, "the quick-start project snapshot is incomplete");
+        }
+        const projectConfiguration = paths.get(".flow/config.yaml");
+        assert.equal(projectConfiguration?.contentBase64 !== undefined, true);
         assert.equal(
           Buffer.from(projectConfiguration.contentBase64, "base64").toString("utf8"),
           "apiVersion: flow.synapti.ai/v1alpha1\nkind: FlowProjectConfig\n",
+        );
+        const existingFile = paths.get("README.md");
+        assert.equal(existingFile?.contentBase64 !== undefined, true);
+        assert.equal(
+          Buffer.from(existingFile.contentBase64, "base64").toString("utf8"),
+          "existing consumer file\n",
         );
         assert.equal(
           snapshot.every(
@@ -155,7 +188,7 @@ async function verifyPackage() {
               Number.isFinite(entry.ctimeMs),
           ),
           true,
-          "the initialized project snapshot omits filesystem identity",
+          "the quick-start project snapshot omits filesystem identity",
         );
         return snapshot;
       },
@@ -177,74 +210,25 @@ async function verifyPackage() {
       );
     });
     await withPackageReleaseStage(
-      "compare initialized project",
+      "compare quick-start project",
       async () =>
         await assert.deepEqual(
           await snapshotProjectFiles(projectRoot),
-          projectBeforeDoctor,
-          "flow doctor changed the initialized project",
+          quickstartProjectBeforeDoctor,
+          "flow doctor changed the quick-start project",
         ),
     );
 
-    const installationWorkflow = join(
-      installedPackageRoot,
-      "examples",
-      "verify-installation.workflow.yaml",
-    );
-    const installationRuns = join(projectRoot, "installation-runs");
-    await withPackageReleaseStage("verify installed workflow", async () => {
-      await run(flowBinary, ["validate", installationWorkflow], projectRoot, verificationRoot);
-      await run(
+    const quickstartRuns = join(projectRoot, ".flow", "runs");
+    await withPackageReleaseStage("verify quick-start browser", async () => {
+      await verifyBrowserPresentation(
         flowBinary,
-        [
-          "run",
-          installationWorkflow,
-          "--run-id",
-          "packed-installation-run",
-          "--runs-dir",
-          installationRuns,
-          "--cwd",
-          projectRoot,
-        ],
+        quickstartRuns,
+        "packed-quickstart",
+        "verify-installation",
         projectRoot,
         verificationRoot,
       );
-    });
-
-    const browserWorkflow = join(projectRoot, "packed-browser.workflow.yaml");
-    const browserRuns = join(projectRoot, "browser-runs");
-    await withPackageReleaseStage("verify installed browser", async () => {
-      await writeFile(
-        browserWorkflow,
-        `apiVersion: flow.synapti.ai/v1alpha1
-kind: Workflow
-metadata: { id: packed-browser-workflow }
-nodes:
-  - id: execute
-    type: command
-    command:
-      executable: ${JSON.stringify(process.execPath)}
-      args: [-e, ${JSON.stringify("process.stdout.write('packed-browser-ready');")}]
-      timeoutMs: 10000
-`,
-        "utf8",
-      );
-      await run(
-        flowBinary,
-        [
-          "run",
-          browserWorkflow,
-          "--run-id",
-          "packed-browser-run",
-          "--runs-dir",
-          browserRuns,
-          "--cwd",
-          projectRoot,
-        ],
-        projectRoot,
-        verificationRoot,
-      );
-      await verifyBrowserPresentation(flowBinary, browserRuns, projectRoot, verificationRoot);
     });
 
     const primeExample = join(
@@ -510,10 +494,17 @@ function installedDoctorFailureStage(category) {
   }
 }
 
-async function verifyBrowserPresentation(flowBinary, runsDirectory, cwd, verificationRoot) {
+async function verifyBrowserPresentation(
+  flowBinary,
+  runsDirectory,
+  runId,
+  workflowId,
+  cwd,
+  verificationRoot,
+) {
   const child = spawn(
     flowBinary,
-    ["web", "packed-browser-run", "--actor", "package:test", "--runs-dir", runsDirectory],
+    ["web", runId, "--actor", "package:test", "--runs-dir", runsDirectory],
     {
       cwd,
       env: { ...process.env, npm_config_cache: join(verificationRoot, "npm-cache") },
@@ -552,8 +543,8 @@ async function verifyBrowserPresentation(flowBinary, runsDirectory, cwd, verific
     });
     assert.equal(response.status, 200);
     const document = JSON.parse((await response.text()).trim());
-    assert.equal(document.run.runId, "packed-browser-run");
-    assert.equal(document.run.workflowId, "packed-browser-workflow");
+    assert.equal(document.run.runId, runId);
+    assert.equal(document.run.workflowId, workflowId);
     assert.equal(document.run.status, "succeeded");
     const result = await withDeadline(
       completed,
