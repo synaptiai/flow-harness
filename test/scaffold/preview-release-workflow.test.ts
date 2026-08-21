@@ -115,7 +115,6 @@ describe("preview release workflow", () => {
       "Check out the exact revision",
       "Download the exact preview artifact",
       "Download the attestation bundle",
-      "Require immutable releases",
       "Require an unused release identity",
       "Create the complete draft prerelease",
       "Publish the immutable prerelease",
@@ -131,6 +130,7 @@ describe("preview release workflow", () => {
     expect(publishSource).not.toContain("release/package/package-release.json");
     expect(publishSource).not.toContain("--clobber");
     expect(publishSource).not.toContain("npm publish");
+    expect(publishSource).not.toContain("immutable-releases");
     expect(source).not.toContain("NPM_TOKEN");
     expect(source).not.toContain("NODE_AUTH_TOKEN");
     expect(source).not.toContain("id-token: read");

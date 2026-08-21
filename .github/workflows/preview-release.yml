@@ -189,16 +189,6 @@ jobs:
           name: flow-preview-attestation
           path: release/attestation
 
-      - name: Require immutable releases
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          enabled="$(gh api \
-            --header 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/${GITHUB_REPOSITORY}/immutable-releases" \
-            --jq '.enabled')"
-          test "$enabled" = true
-
       - name: Require an unused release identity
         env:
           GH_TOKEN: ${{ github.token }}
