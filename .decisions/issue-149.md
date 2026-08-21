@@ -1,7 +1,7 @@
 # Decision journal: Issue #149
 
-**Issue:** #149  
-**Branch:** `codex/issue-149-semantic-code-queries`  
+**Issue:** #149
+**Branch:** `codex/issue-149-semantic-code-queries`
 **Started:** 2026-08-21
 
 ## Status
@@ -123,8 +123,11 @@ Public errors use fixed categories only:
 - `semantic_protocol_failed`
 - `semantic_deadline_exceeded`
 - `semantic_response_limit_exceeded`
-- `semantic_request_cancelled`
 - `semantic_cleanup_uncertain`
+
+Caller cancellation preserves the exact reason inside the semantic adapter. After confirmed
+settlement, the enclosing agent boundary reports the fixed `pi_agent_aborted` code. Cleanup
+uncertainty takes precedence over cancellation and deadline results.
 
 No public error includes a raw server error, stderr, absolute path, source text, configuration
 value, or nested cause.
@@ -152,13 +155,20 @@ the semantic quality of a production language server.
 
 ## Verification evidence
 
-Recorded on 2026-08-21 against commit `f82274b` plus this journal update.
+Recorded on 2026-08-21 against commit `9ceaf60` plus this journal update.
 
 - `npm test -- --maxWorkers=1`: 351 test files passed and one platform-gated file skipped. All
-  4,780 executed tests passed. Four tests skipped.
+  4,802 executed tests passed. Four tests skipped.
 
-- `npm run test:coverage -- --testTimeout=15000`: the same 4,780 tests passed and four skipped.
-  Coverage was 84.87% statements, 79.43% branches, 91.57% functions, and 85.03% lines.
+- The complete mapped Issue #149 selector passed 195 tests across 12 executed files. It covered the
+  domain, compiler, operator admission, strict protocol client, local service, Pi tool and evidence,
+  reducer, and public output. It also covered the CLI, supervisor worker, and platform-permitted
+  runtime boundaries.
+
+- The merged four-shard V8 coverage run passed the same 4,802 tests and four skips. Coverage was
+  84.93% statements, 79.56% branches, 91.57% functions, and 85.08% lines. Each shard ran
+  sequentially with one worker and wrote a Vitest blob report. `vitest --merge-reports --coverage`
+  combined the reports and applied the repository thresholds to the complete map.
 
 - `npm run test:runtime`: nine runtime files and 44 tests passed on macOS. Eleven files and 35 tests
   skipped through explicit platform gates. The Linux x64 semantic-containment test remains a hosted
@@ -176,3 +186,9 @@ The first local runtime attempt overlapped `pack:check`. Both commands own the g
 directory, so the package check removed compiled files while the runtime process was using them.
 The isolated sequence of build, runtime test, and package check passed. This procedural race is not
 product evidence and is excluded from the acceptance result.
+
+The first final coverage attempt used the canonical monolithic command. The host operating system
+terminated that process with exit 137 before it produced a report. The machine has a known low-memory
+history. The official Vitest blob-sharding and merge workflow completed the same test inventory and
+coverage map with lower peak memory. The terminated process is an environment event and is excluded
+from product evidence.

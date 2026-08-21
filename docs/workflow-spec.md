@@ -1112,6 +1112,14 @@ copy and denies network access. Flow rejects symbolic links, special files, nonc
 roots, locations outside the copied project, malformed protocol messages, unrequested operations,
 and dynamic server authority.
 
+The selected timeout begins before project capture and bounds the complete active query phase.
+Semantic tool calls execute sequentially. One source file is at most 1 MiB. One outbound LSP
+request envelope is at most 8 MiB so JSON escaping cannot invalidate the source bound. Each inbound
+message is at most 1 MiB.
+
+One query accepts at most 64 inbound messages. Inbound strict JSON is limited to 32 levels and
+50,000 nodes. Flow counts and discards at most 64 KiB of server standard error.
+
 Normalized diagnostics and locations contain canonical project-relative paths and zero-based
 ranges. Diagnostics include a fixed severity and bounded code and message. Hover contains bounded
 plain text or Markdown. One result contains at most 512 items and 1 MiB of canonical JSON. Flow

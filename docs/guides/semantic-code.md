@@ -130,7 +130,9 @@ Flow rejects these configurations before model or durable run mutation:
 Flow creates a bounded private copy of the admitted project for each query. It excludes `.flow`,
 `.git`, `node_modules`, `dist`, and `coverage`. The language server can read the copy, but the
 selected sandbox denies writes and network access. Flow starts one server process for one request
-and terminates the process tree after shutdown.
+and terminates the process tree after shutdown. The selected timeout starts before source capture
+and covers projection, sandbox preparation, protocol work, source revalidation, and receipt
+preparation. Cleanup continues with independent settlement authority after timeout or cancellation.
 
 After the query, Flow captures the authoritative project again. It discards the result if the
 project digest changed. It records a receipt only after protocol shutdown, process-tree
@@ -158,7 +160,12 @@ data from the receipt. It shows the operation, item count, digests, and sandbox 
 | Results per operation | 512 |
 | Semantic receipts per agent attempt | 16 |
 | One persisted normalized result | 1 MiB |
-| Retained server standard error | 64 KiB |
+| One inbound LSP message | 1 MiB |
+| One outbound LSP request envelope | 8 MiB |
+| Inbound LSP messages per query | 64 |
+| Inbound JSON depth | 32 levels |
+| Inbound JSON nodes | 50,000 |
+| Observed server standard error | 64 KiB |
 | Request timeout | 30 seconds |
 
 The manifest can select a smaller request timeout. Flow doesn't truncate a semantic result into a
@@ -172,14 +179,17 @@ text, configuration values, or nested causes.
 | Category | Meaning | Action |
 | --- | --- | --- |
 | `semantic_service_unavailable` | The selected server identity or launch boundary isn't current. | Recheck the executable, manifest, permissions, and sandbox. Then start a new run with a newly admitted snapshot. |
+| `semantic_operation_unsupported` | The selected server doesn't advertise the requested operation. | Select a compatible server or remove that operation from the workflow. |
+| `semantic_request_invalid` | The operation, path, position, source, or language mapping is invalid. | Correct the request or the manifest language mapping. Don't broaden path access. |
 | `semantic_source_changed` | The project changed during capture or query. | Inspect concurrent project changes, then retry the query in a new attempt. |
 | `semantic_protocol_failed` | The server violated the admitted LSP subset or exited incorrectly. | Check server compatibility with LSP 3.18 over standard input and output. |
 | `semantic_deadline_exceeded` | The request exceeded the manifest timeout. | Fix server startup or project-index cost. Select a reviewed timeout only if the bounded work requires it. |
 | `semantic_response_limit_exceeded` | The project, output, standard error, or receipt count exceeded a bound. | Reduce the selected project surface or split the work. Don't bypass the bound. |
 | `semantic_cleanup_uncertain` | Process-tree or sandbox settlement couldn't be confirmed. | Stop and inspect the host. Don't retry until you resolve the cleanup state. |
 
-Caller cancellation is restored by identity only after confirmed cleanup. Flow doesn't retry a
-failed semantic request or fall back to an uncontained server.
+Caller cancellation uses the enclosing agent's fixed `pi_agent_aborted` code. The semantic adapter
+preserves the exact caller reason internally and restores it only after confirmed cleanup. Flow
+doesn't retry a failed semantic request or fall back to an uncontained server.
 
 ## Security boundary
 
