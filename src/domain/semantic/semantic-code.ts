@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { z } from "zod";
 
 export const MAX_SEMANTIC_PROJECT_PATHS = 4_096;
@@ -7,6 +9,8 @@ export const MAX_SEMANTIC_HOVER_BYTES = 16_384;
 export const MAX_SEMANTIC_CODE_BYTES = 256;
 export const MAX_SEMANTIC_PATH_BYTES = 1_024;
 export const MAX_SEMANTIC_POSITION = 10_000_000;
+export const MAX_SEMANTIC_QUERY_RECEIPTS = 16;
+export const MAX_SEMANTIC_RECEIPT_RESULT_BYTES = 1024 * 1024;
 
 export type SemanticOperation = "diagnostics" | "definition" | "references" | "hover";
 export type SemanticSeverity = "error" | "warning" | "information" | "hint";
@@ -61,6 +65,37 @@ export type SemanticResult =
       readonly operation: "hover";
       readonly hover: SemanticHover | null;
     };
+
+export interface SemanticSandboxEvidence {
+  readonly backend: string;
+  readonly backendVersion: string;
+  readonly profile: string;
+  readonly policyDigest: string;
+}
+
+export interface SemanticQueryReceipt {
+  readonly version: 1;
+  readonly sequence: number;
+  readonly request: SemanticRequest;
+  readonly requestDigest: string;
+  readonly projectDigest: string;
+  readonly sourceDigest: string;
+  readonly languageServerDigest: string;
+  readonly sandbox: SemanticSandboxEvidence;
+  readonly result: SemanticResult;
+  readonly resultDigest: string;
+  readonly digest: string;
+}
+
+export interface SemanticQueryReceiptInput {
+  readonly sequence: number;
+  readonly request: SemanticRequest;
+  readonly projectDigest: string;
+  readonly sourceDigest: string;
+  readonly languageServerDigest: string;
+  readonly sandbox: SemanticSandboxEvidence;
+  readonly result: SemanticResult;
+}
 
 const positionSchema = z
   .object({
@@ -137,14 +172,48 @@ const resultSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("hover"), hover: hoverSchema.nullable() }).strict(),
 ]);
 
-export class SemanticContractError extends Error {
-  readonly code: "semantic_request_invalid" | "semantic_result_invalid";
+const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
+const evidenceTextSchema = (maximumBytes: number) => safeTextSchema(maximumBytes).min(1);
+const semanticSandboxEvidenceSchema = z
+  .object({
+    backend: evidenceTextSchema(128),
+    backendVersion: evidenceTextSchema(128),
+    profile: evidenceTextSchema(256),
+    policyDigest: sha256Schema,
+  })
+  .strict();
 
-  constructor(code: "semantic_request_invalid" | "semantic_result_invalid") {
+export const semanticQueryReceiptSchema: z.ZodType<SemanticQueryReceipt> = z
+  .object({
+    version: z.literal(1),
+    sequence: z.number().int().positive().max(MAX_SEMANTIC_QUERY_RECEIPTS),
+    request: requestSchema,
+    requestDigest: sha256Schema,
+    projectDigest: sha256Schema,
+    sourceDigest: sha256Schema,
+    languageServerDigest: sha256Schema,
+    sandbox: semanticSandboxEvidenceSchema,
+    result: resultSchema,
+    resultDigest: sha256Schema,
+    digest: sha256Schema,
+  })
+  .strict();
+
+export class SemanticContractError extends Error {
+  readonly code:
+    | "semantic_receipt_invalid"
+    | "semantic_request_invalid"
+    | "semantic_result_invalid";
+
+  constructor(
+    code: "semantic_receipt_invalid" | "semantic_request_invalid" | "semantic_result_invalid",
+  ) {
     super(
       code === "semantic_request_invalid"
         ? "semantic request is invalid"
-        : "semantic result is invalid",
+        : code === "semantic_result_invalid"
+          ? "semantic result is invalid"
+          : "semantic receipt is invalid",
     );
     this.name = "SemanticContractError";
     this.code = code;
@@ -198,6 +267,86 @@ export function normalizeSemanticResult(
     return deepFreeze(parsed.data as SemanticResult);
   }
   throw new SemanticContractError("semantic_result_invalid");
+}
+
+export function createSemanticQueryReceipt(input: SemanticQueryReceiptInput): SemanticQueryReceipt {
+  const request = normalizeSemanticRequest(input.request);
+  const result = normalizeSemanticResult(input.result, semanticReceiptPaths(request, input.result));
+  const requestDigest = sha256(JSON.stringify(request));
+  const resultDigest = sha256(JSON.stringify(result));
+  const receiptWithoutDigest = {
+    version: 1 as const,
+    sequence: input.sequence,
+    request,
+    requestDigest,
+    projectDigest: input.projectDigest,
+    sourceDigest: input.sourceDigest,
+    languageServerDigest: input.languageServerDigest,
+    sandbox: input.sandbox,
+    result,
+    resultDigest,
+  };
+  return validateSemanticQueryReceipt({
+    ...receiptWithoutDigest,
+    digest: sha256(JSON.stringify(receiptWithoutDigest)),
+  });
+}
+
+export function validateSemanticQueryReceipt(input: unknown): SemanticQueryReceipt {
+  const parsed = semanticQueryReceiptSchema.safeParse(input);
+  if (!parsed.success) {
+    throw new SemanticContractError("semantic_receipt_invalid");
+  }
+  let request: SemanticRequest;
+  let result: SemanticResult;
+  try {
+    request = normalizeSemanticRequest(parsed.data.request);
+    result = normalizeSemanticResult(
+      parsed.data.result,
+      semanticReceiptPaths(request, parsed.data.result),
+    );
+  } catch {
+    throw new SemanticContractError("semantic_receipt_invalid");
+  }
+  const resultBytes = Buffer.byteLength(JSON.stringify(result), "utf8");
+  const receiptWithoutDigest = {
+    version: parsed.data.version,
+    sequence: parsed.data.sequence,
+    request,
+    requestDigest: parsed.data.requestDigest,
+    projectDigest: parsed.data.projectDigest,
+    sourceDigest: parsed.data.sourceDigest,
+    languageServerDigest: parsed.data.languageServerDigest,
+    sandbox: parsed.data.sandbox,
+    result,
+    resultDigest: parsed.data.resultDigest,
+  };
+  if (
+    result.operation !== request.operation ||
+    resultBytes > MAX_SEMANTIC_RECEIPT_RESULT_BYTES ||
+    parsed.data.requestDigest !== sha256(JSON.stringify(request)) ||
+    parsed.data.resultDigest !== sha256(JSON.stringify(result)) ||
+    JSON.stringify(result) !== JSON.stringify(parsed.data.result) ||
+    parsed.data.digest !== sha256(JSON.stringify(receiptWithoutDigest))
+  ) {
+    throw new SemanticContractError("semantic_receipt_invalid");
+  }
+  return deepFreeze({
+    ...receiptWithoutDigest,
+    digest: parsed.data.digest,
+  });
+}
+
+function semanticReceiptPaths(request: SemanticRequest, result: SemanticResult): readonly string[] {
+  const paths = new Set<string>([request.path]);
+  if (result.operation === "diagnostics") {
+    for (const diagnostic of result.diagnostics) paths.add(diagnostic.path);
+  } else if (result.operation === "definition" || result.operation === "references") {
+    for (const location of result.locations) paths.add(location.path);
+  } else if (result.operation === "hover" && result.hover !== null) {
+    paths.add(result.hover.path);
+  }
+  return [...paths].sort(compareStrings);
 }
 
 function assertAllowed(
@@ -276,4 +425,8 @@ function deepFreeze<T>(value: T): T {
     }
   }
   return value;
+}
+
+function sha256(value: string | Uint8Array): string {
+  return createHash("sha256").update(value).digest("hex");
 }
