@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 import { describe, expect, it } from "vitest";
 
 import { createLanguageServerSnapshot } from "../../../../src/domain/capability/language-server.js";
@@ -25,10 +23,10 @@ describe("strict LSP client", () => {
   });
 
   it.each([
-    Buffer.from('Content-Length: 2\r\nContent-Length: 2\r\n\r\n{}'),
-    Buffer.from('Content-Type: application/json\r\n\r\n{}'),
+    Buffer.from("Content-Length: 2\r\nContent-Length: 2\r\n\r\n{}"),
+    Buffer.from("Content-Type: application/json\r\n\r\n{}"),
     Buffer.from(`Content-Length: ${MAX_LSP_MESSAGE_BYTES + 1}\r\n\r\n`),
-    Buffer.from('Content-Length: 1\n\n{}'),
+    Buffer.from("Content-Length: 1\n\n{}"),
   ])("rejects an invalid or oversized frame with a fixed private-safe error", (input) => {
     const decoder = new LspMessageDecoder();
     expect(() => decoder.push(input)).toThrowError(
@@ -82,9 +80,7 @@ describe("strict LSP client", () => {
     },
     {
       operation: "references" as const,
-      response: [
-        { uri: "file:///workspace/src/example.ts", range: lspRange(8, 0, 8, 5) },
-      ],
+      response: [{ uri: "file:///workspace/src/example.ts", range: lspRange(8, 0, 8, 5) }],
       expected: {
         operation: "references",
         locations: [{ path: "src/example.ts", range: lspRange(8, 0, 8, 5) }],
@@ -106,46 +102,47 @@ describe("strict LSP client", () => {
         },
       },
     },
-  ])("runs and normalizes one bounded $operation session", async ({ operation, response, expected }) => {
-    const transport = new ScriptedTransport(response);
+  ])(
+    "runs and normalizes one bounded $operation session",
+    async ({ operation, response, expected }) => {
+      const transport = new ScriptedTransport(response);
 
-    const result = await runStrictLspQuery({
-      transport,
-      languageServer: languageServer(),
-      projectRoot: "/workspace",
-      projectPaths: ["src/definition.ts", "src/example.ts"],
-      source: {
-        path: "src/example.ts",
-        content: Buffer.from("export const value = unknownValue;\n"),
-      },
-      request:
+      const result = await runStrictLspQuery({
+        transport,
+        languageServer: languageServer(),
+        projectRoot: "/workspace",
+        projectPaths: ["src/definition.ts", "src/example.ts"],
+        source: {
+          path: "src/example.ts",
+          content: Buffer.from("export const value = unknownValue;\n"),
+        },
+        request:
+          operation === "diagnostics"
+            ? { operation, path: "src/example.ts" }
+            : { operation, path: "src/example.ts", position: { line: 1, character: 7 } },
+      });
+
+      expect(result).toEqual(expected);
+      expect(transport.methods).toEqual([
+        "initialize",
+        "initialized",
+        "textDocument/didOpen",
         operation === "diagnostics"
-          ? { operation, path: "src/example.ts" }
-          : { operation, path: "src/example.ts", position: { line: 1, character: 7 } },
-    });
-
-    expect(result).toEqual(expected);
-    expect(transport.methods).toEqual([
-      "initialize",
-      "initialized",
-      "textDocument/didOpen",
-      operation === "diagnostics"
-        ? "textDocument/diagnostic"
-        : operation === "definition"
-          ? "textDocument/definition"
-          : operation === "references"
-            ? "textDocument/references"
-            : "textDocument/hover",
-      "shutdown",
-      "exit",
-    ]);
-  });
+          ? "textDocument/diagnostic"
+          : operation === "definition"
+            ? "textDocument/definition"
+            : operation === "references"
+              ? "textDocument/references"
+              : "textDocument/hover",
+        "shutdown",
+        "exit",
+      ]);
+    },
+  );
 
   it("rejects a foreign response URI without exposing it", async () => {
     const privateUri = "file:///private/SECRET/definition.ts";
-    const transport = new ScriptedTransport([
-      { uri: privateUri, range: lspRange(0, 0, 0, 1) },
-    ]);
+    const transport = new ScriptedTransport([{ uri: privateUri, range: lspRange(0, 0, 0, 1) }]);
 
     const operation = runStrictLspQuery({
       transport,
@@ -271,8 +268,4 @@ function lspRange(
     start: { line: startLine, character: startCharacter },
     end: { line: endLine, character: endCharacter },
   };
-}
-
-function sha256(value: Uint8Array): string {
-  return createHash("sha256").update(value).digest("hex");
 }
