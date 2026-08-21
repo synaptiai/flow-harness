@@ -60,9 +60,10 @@ retries also remain later work. The same is true for broader configurable policy
 tools, and arbitrary evaluator runtimes. Stronger VM or managed sandbox backends also remain later
 work.
 
-Gate 8 provides the first installable preview and current source-build environment diagnostics.
-The diagnostic checks the base project and only the selected workflow, provider, sandbox, or Prime
-requirements. It does not grant execution authority or make an optional runtime a base dependency.
+Gate 8 provides the first installable preview, current source-build environment diagnostics, and a
+guided quick start. The diagnostic checks only the selected requirements. Quick start publishes a
+minimal project and reuses the ordinary attached workflow boundary. Neither path grants new
+execution authority or makes an optional runtime a base dependency.
 
 ## Architecture at a glance
 
@@ -84,6 +85,7 @@ flowchart TB
     subgraph access["1. Ways to use Flow"]
         direction LR
         cli["Command line"]
+        quickstart["Guided quick start<br/>Publishes project · checks selected path · runs once"]
         diagnostics["Environment diagnostics<br/>Read-only selected-path preflight"]
         presentation["Terminal, local web, and ACP editor views"]
     end
@@ -123,12 +125,16 @@ flowchart TB
     release -->|"Publishes one verified archive"| channels
     channels -->|"Installs exact package bytes"| cli
     people -->|"Starts attached work"| cli
+    people -->|"Starts the first bounded run"| quickstart
     people -->|"Checks a selected path"| diagnostics
     people -->|"Observes and steers"| presentation
     cli -->|"Runs now"| engine
     cli -->|"Reviews and compares candidates"| adaptation
     cli -->|"Requests one inert proposal"| proposals
     cli -->|"Queues detached work"| supervisor
+    quickstart -->|"Publishes minimal project configuration"| project
+    quickstart -->|"Starts one attached run"| engine
+    quickstart -->|"Returns explicit follow-up commands"| presentation
     diagnostics -->|"Admits an optional workflow"| rules
     diagnostics -->|"Checks only the configured sandbox"| commands
     diagnostics -->|"Checks selected local adapters"| agents
@@ -166,8 +172,8 @@ Read the diagram from top to bottom:
 0. Release automation builds one npm archive. Linux x64 and macOS x64 consume the same bytes before
    provenance and protected publication make the archive available.
 
-1. People and automation use the command line, the read-only environment diagnostic, or a
-   first-party presentation view.
+1. People and automation use the command line, guided quick start, read-only diagnostic, or a
+   first-party presentation view. Quick start publishes one project and starts one attached run.
 
 2. The control plane compiles the workflow, reconstructs durable state, selects reviewed per-agent
    context, and decides which action is legal. Proposal generation can ask a model for one bounded
@@ -195,6 +201,7 @@ before success. It stops on unresolved side-effect or settlement uncertainty.
 | --- | --- | --- |
 | Preview release automation | `src/domain/release/`, `src/infrastructure/release/`, `scripts/build-package-release.mjs`, `scripts/verify-package.mjs`, and `.github/workflows/preview-release.yml` | Builds one bounded archive, records its installed-file identity, verifies the same archive on supported x64 hosts, generates provenance, and gates immutable publication. |
 | Command line | `src/cli/` | Parses public commands, composes dependencies, and projects safe output. |
+| Guided quick start | `src/application/guided-quickstart.ts`, `src/cli/main.ts`, and `src/infrastructure/fs/flow-config-store.ts` | Orders workflow preparation, atomic project publication, selected provider checks, ordinary attached execution, and a bounded public result. |
 | Environment diagnostics | `src/application/environment-doctor.ts`, `src/domain/host-requirements.ts`, and selected `src/infrastructure/` probes | Checks only the selected host, project, workflow, provider, sandbox, or Prime requirements and returns a bounded, value-free report. |
 | Workflow rules and safeguards | `src/domain/` | Defines provider-neutral workflows, state transitions, policy, evidence, budgets, and validation. |
 | Workflow engine, evaluation, adaptation, and capability governance | `src/application/` | Coordinates use cases through ports, asks the domain for legal transitions, and prepares evaluated state changes. |
@@ -233,6 +240,7 @@ Architecture is derived from these flows.
 | Flow | Trigger | Outcome |
 | --- | --- | --- |
 | Initialize | A user runs `flow init` in a repository | Validated project configuration and provider readiness |
+| Complete a quick start | A user runs `flow quickstart` in an existing directory | One minimal project, one terminal attached run, durable evidence, and explicit inspection and browser commands |
 | Diagnose | A user runs `flow doctor` for a project, workflow, or Prime profile | A bounded read-only report for only the selected path, with fixed remediation and no private values |
 | Execute | A user selects a goal and workflow | Verified success, explicit failure, a durable wait state, or a precise blocker |
 | Observe | A user opens status, the TUI, or the local browser host | Current graph position, attempts, evidence, costs, approvals, and blockers |
@@ -325,6 +333,10 @@ callbacks. Application modules import domain contracts and application-owned por
 infrastructure implementations. The same state-based selector checks recovered history. It never
 executes tools directly. Result, condition, join, loop-check, optimization-check, and controller
 nodes never enter an executor port.
+
+The guided quick-start use case is an application coordinator. It owns phase order, but it does not
+own filesystem, provider, sandbox, or run-store authority. The CLI supplies those production ports
+and serializes the bounded result.
 
 ### Presentation hosts
 

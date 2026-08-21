@@ -24,6 +24,7 @@ on it.
 | Capability | Linux | macOS | Notes |
 | --- | --- | --- | --- |
 | Workflow validation and inspection | Implemented | Implemented | No provider is needed for credential-free examples. |
+| Guided quick start | Implemented | Implemented | Current source builds publish a minimal project, run the installed credential-free workflow, and return explicit inspection and browser commands. |
 | Read-only environment diagnostics | Implemented | Implemented | Available in current source builds; optional checks run only for the selected workflow, sandbox, or Prime path. |
 | Sandboxed command nodes | Implemented | Implemented | Flow fails closed when the native sandbox is unavailable. |
 | Agent `read`, `ls`, and hash-bound `edit` | Implemented | Implemented | The host-side Pi runtime keeps the invoking user's host authority. |
@@ -43,6 +44,7 @@ on it.
 - Isolated child workflows with separate ledgers and bounded resource accounting.
 - Append-only run ledgers, inspection, recovery, and exact replay checks.
 - Run budgets for starts, tokens, reported cost, active time, and retained artifacts.
+- Guided credential-free and explicitly selected provider quick starts.
 
 Read the [Workflow specification](workflow-spec.md) and [Architecture](architecture.md).
 

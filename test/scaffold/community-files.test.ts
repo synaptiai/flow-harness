@@ -28,7 +28,8 @@ describe("public repository contracts", () => {
     expect(source).toContain("flow-preview-ready");
     expect(verifier).toContain("verifyPackageReleaseArtifact");
     expect(verifier).toContain("verifyInstalledPackageRelease");
-    expect(verifier).toContain("verify-installation.workflow.yaml");
+    expect(verifier).toContain('["quickstart", projectRoot, "--run-id", "packed-quickstart"]');
+    expect(verifier).toContain('"verify-installation"');
     expect(verifier).toContain('"--ignore-scripts"');
   });
 
@@ -41,9 +42,7 @@ describe("public repository contracts", () => {
 
     expect(readme).toMatch(/alpha preview/i);
     expect(readme).toContain("0.1.0-alpha.1");
-    expect(readme).toContain(
-      "https://github.com/synaptiai/flow-harness/releases/download/v0.1.0-alpha.1/",
-    );
+    expect(installGuide).toContain("gh release download v0.1.0-alpha.1");
     expect(readme).toContain("npm install --global --ignore-scripts");
     expect(readme).toContain("bubblewrap");
     expect(readme).toContain("flow run");
@@ -89,6 +88,7 @@ describe("public repository contracts", () => {
     expect(architecture).toContain("Preview release automation");
     expect(architecture).toContain("Immutable GitHub release");
     expect(roadmap).toMatch(/Slice 8\.1:[\s\S]*\*\*Implemented:\*\*/);
+    expect(roadmap).toMatch(/Slice 8\.3:[\s\S]*\*\*Implemented:\*\*/);
     expect(testing).toContain("npm run release:prepare");
     expect(testing).toContain("npm run release:verify");
   });

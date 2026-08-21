@@ -22,6 +22,8 @@ describe("public documentation structure", () => {
     expect(source).toContain("docs/README.md");
     expect(source).toContain("docs/getting-started.md");
     expect(source).toContain("docs/project-status.md");
+    expect(source).toContain("flow quickstart .");
+    expect(source).not.toContain("flow_example=");
     expect(source).not.toMatch(
       /^### (?:Apply|Approve|Bound|Compare|Distribute|Follow|Observe|Recover|Run in|Select|Use)/mu,
     );
@@ -43,9 +45,13 @@ describe("public documentation structure", () => {
   });
 
   it("provides the required reader-oriented entry points", async () => {
-    await expect(readFile(join(documentationRoot, "getting-started.md"), "utf8")).resolves.toMatch(
-      /^# Getting started$/mu,
+    const gettingStarted = await readFile(join(documentationRoot, "getting-started.md"), "utf8");
+    expect(gettingStarted).toMatch(/^# Getting started$/mu);
+    expect(gettingStarted).toContain(
+      "flow quickstart [directory] [--provider <provider> --model <model>] [--run-id <id>]",
     );
+    expect(gettingStarted).toContain("flow web quickstart-foundation --actor operator:quickstart");
+    expect(gettingStarted).toContain("publication_uncertain");
     await expect(readFile(join(documentationRoot, "project-status.md"), "utf8")).resolves.toMatch(
       /^# Project status$/mu,
     );

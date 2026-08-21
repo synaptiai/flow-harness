@@ -1,22 +1,27 @@
 # Getting started
 
-This guide runs one credential-free workflow with the installed Flow preview.
+This guide completes one credential-free run with the current Flow source. It also explains the
+optional provider path and each safe recovery action.
 
 ## Before you begin
 
-Flow is a public alpha preview. Install and verify the exact package by following
-[Install the Flow preview](guides/install-preview.md) before you use this guide.
+Install these prerequisites:
 
-Requirements:
+- Node.js 26.7 or newer.
+- npm with global package support.
+- An x64 Linux or macOS host.
 
-- Node.js 26.7 or newer
-- npm with global package support
-- x64 Linux or macOS for a release-qualified host
+The default path does not need model credentials, Docker, Bun, or the Prime runtime.
+
+Flow is a public alpha preview. Do not use it as a security boundary for hostile or multi-tenant
+workloads. Read the [security policy](../SECURITY.md) before unattended use.
+
+The immutable `0.1.0-alpha.1` release predates `flow quickstart`. Follow
+[Install the Flow preview](guides/install-preview.md) when you evaluate that release.
 
 ### Ubuntu 24.04 sandbox prerequisite
 
-Flow uses Sandbox Runtime for native command isolation. On Ubuntu 24.04, install its system
-dependencies and enable unprivileged user namespaces before the first run:
+Flow uses Sandbox Runtime for native command isolation. Install its host dependencies:
 
 ```sh
 sudo apt-get update
@@ -24,94 +29,134 @@ sudo apt-get install --yes bubblewrap ca-certificates curl ripgrep socat util-li
 sudo sysctl --write kernel.apparmor_restrict_unprivileged_userns=0
 ```
 
-The release workflow verifies both requirements. The namespace setting changes the host security
-posture. Apply it only to a reviewed development or CI host. Use a stronger container, microVM, or
-managed sandbox boundary for hostile workloads. Flow fails closed when the sandbox is unavailable.
+The namespace setting changes the host security posture. Apply it only to a reviewed development
+or CI host. Use a container, microVM, or managed sandbox for hostile workloads. Flow stops before
+command creation when the sandbox is unavailable.
 
-The first run does not need model credentials, Docker, Bun, or the Prime runtime.
+## Build the current source
 
-Do not use this preview as a security boundary for hostile or multi-tenant workloads. Read the
-[security policy](../SECURITY.md) before unattended use.
+From the repository root, install the exact dependencies, build the package, and link its CLI:
 
-## Initialize a project
+```sh
+npm ci
+npm run build
+npm link
+flow --help
+```
 
-Create an empty directory, initialize it, and inspect the effective configuration:
+The build must succeed. The help output must include `flow quickstart`.
+
+## Complete the credential-free quick start
+
+Create a directory and start the package-owned verification workflow:
 
 ```sh
 mkdir flow-preview-project
 cd flow-preview-project
-flow init .
-flow config show
+flow quickstart .
 ```
 
-Flow writes project configuration to `.flow/config.yaml`. It discovers the nearest Flow project
-from child directories.
-
-The effective configuration combines project settings with trusted operator ceilings. Read
-[Configuration](configuration.md) before changing capacity, sandbox, or policy settings.
-
-## Validate and run a workflow
-
-Use the credential-free example inside the installed package:
-
-```sh
-flow_example="$(npm root --global)/@synaptiai/flow-harness/examples/verify-installation.workflow.yaml"
-flow validate "$flow_example"
-flow run "$flow_example" \
-  --run-id first-run
-flow inspect first-run
-```
-
-The verifier runs through the production command sandbox. The run succeeds only when deterministic
-evidence accepts the declared goal criterion.
-
-Flow stores authoritative events here:
+The command uses this grammar:
 
 ```text
-.flow/runs/first-run/events.jsonl
+flow quickstart [directory] [--provider <provider> --model <model>] [--run-id <id>]
 ```
 
-The inspection output includes graph state, criterion decisions, bounded command output, hashes,
-sandbox identity, and the effective policy digest.
+The target directory must exist. Flow refuses an existing `.flow/config.yaml`. It does not replace
+other files in the directory.
+
+The default path performs these actions:
+
+1. Loads the installed `examples/verify-installation.workflow.yaml` file.
+2. Publishes the minimal `.flow/config.yaml` file without replacement.
+3. Resolves the published project and its effective policy.
+4. Runs the workflow through the production command sandbox.
+5. Returns one bounded JSON result after the run reaches a terminal state.
+
+A successful result has this shape:
+
+```json
+{
+  "version": 1,
+  "mode": "foundation",
+  "project": { "publication": "created" },
+  "run": {
+    "id": "quickstart-foundation",
+    "status": "succeeded",
+    "evidence": ".flow/runs/quickstart-foundation/events.jsonl"
+  },
+  "commands": {
+    "inspect": ["flow", "inspect", "quickstart-foundation"],
+    "browser": ["flow", "web", "quickstart-foundation", "--actor", "operator:quickstart"]
+  }
+}
+```
+
+The result contains no command output, model output, credential, provider response, absolute path,
+or nested failure cause.
+
+## Inspect the accepted run
+
+Inspect the durable run state:
+
+```sh
+flow inspect quickstart-foundation
+```
+
+Flow stores the authoritative events at
+`.flow/runs/quickstart-foundation/events.jsonl`. Inspection includes graph state, criterion
+decisions, bounded command evidence, hashes, sandbox identity, and the effective policy digest.
+
+**Optional:** Start the local browser presentation after you inspect the terminal result:
+
+```sh
+flow web quickstart-foundation --actor operator:quickstart
+```
+
+`flow quickstart` never starts a browser. The `web` command repeats its own run, actor, listener,
+and session checks before it serves the public projection.
+
+## Check one provider and model
+
+Use the provider path only after you configure the exact model that you want to test:
+
+```sh
+flow quickstart . \
+  --provider anthropic \
+  --model claude-sonnet-4-6
+```
+
+Flow requires `--provider` and `--model` together. It checks the exact local model and credential
+configuration before the first model request. The provider workflow uses one zero-tool agent node,
+a 512-token model ceiling, a USD 0.10 reported-cost ceiling, and a 60-second execution limit.
+
+The provider check does not contact the model service. The later workflow execution makes the
+selected request through the ordinary agent boundary.
+
+## Resolve quick-start failures
+
+Use the public error code to choose the next action.
+
+| Code or result | Meaning | Action |
+| --- | --- | --- |
+| `project_exists` | The target already contains Flow project configuration. | Use `flow run` in the existing project, or choose another directory. |
+| `provider_unavailable` | The selected local provider or model configuration failed validation. | Correct the selected model or credential, then use a new empty project. |
+| `publication_uncertain` | Flow cannot prove whether project publication settled. | Inspect `.flow/config.yaml`. Do not retry until you know whether it exists. |
+| `publication_failed` | Project publication failed before Flow could prove a visible project. | Correct directory access or target safety, then retry in an empty directory. |
+| `execution_failed` | Execution failed before Flow returned a durable terminal run. | Inspect `.flow/runs` for evidence before you retry. |
+| `cancelled_after_publication` | Cancellation occurred after project publication. | Inspect the project and run directory before you retry. |
+| A terminal `failed` or `cancelled` run | Flow accepted and recorded the run, but it did not succeed. | Use the returned `inspect` or `web` command to review its public evidence. |
+
+Invalid, repeated, incomplete, and unknown options fail before project mutation. Cancellation
+before publication leaves no project configuration. Cancellation after publication follows the
+published project and run settlement rules.
 
 ## Choose your next path
 
-- Read [Run and control workflows](guides/run-and-control.md) for detached work, approvals, budgets,
-  presentation hosts, and recovery entry points.
-- Read the [Workflow specification](workflow-spec.md) before authoring executable graphs.
-- Read [Use capability packages](guides/capability-packages.md) for skills, verifiers, tools,
-  workflows, policies, presentations, and exact bundles.
-- Read [Reproducible harness evaluation](evaluation.md) before comparing agent harnesses or
-  generating adaptive candidates.
-- Read [Prime runtime operations](operations/prime-runtime.md) only for the Linux x64 Prime or
-  container profile.
-- Read [Contributing](../CONTRIBUTING.md) to build Flow from source or change the project.
-
-## Common problems
-
-### The Node.js version is rejected
-
-Run `node --version`. Flow requires Node.js 26.7 or newer. The package manifest is authoritative.
-
-### The command sandbox is unavailable
-
-Flow fails before process creation when the selected sandbox cannot prove its required isolation.
-Read [Project status](project-status.md) for platform limits and [Configuration](configuration.md)
-for profile selection.
-
-### A provider-backed example requests credentials
-
-The first-run example is credential-free. Agent and model-verifier examples use the provider and
-model declared by their workflow.
-
-### You need the environment diagnostic
-
-The immutable `0.1.0-alpha.1` package doesn't contain `flow doctor`. The command is implemented in
-the current source tree and will enter a later preview only after release qualification. Read
-[Diagnose the Flow environment](guides/diagnose-environment.md) for the current source-build
-contract.
-
-### You need the complete release gate
-
-The contributor release gate has additional browser, sandbox, Docker, Prime, and second-user
-requirements. Follow [Testing and evaluation](testing-and-evaluation.md), not this guide.
+- Read [Run and control workflows](guides/run-and-control.md) for detached work, approvals,
+  budgets, cancellation, and recovery.
+- Read the [Workflow specification](workflow-spec.md) before you author executable graphs.
+- Read [Use capability packages](guides/capability-packages.md) for signed and local capabilities.
+- Read [Reproducible harness evaluation](evaluation.md) before you compare agent harnesses.
+- Read [Prime runtime operations](operations/prime-runtime.md) for the Linux x64 Prime profile.
+- Read [Contributing](../CONTRIBUTING.md) before you change Flow.

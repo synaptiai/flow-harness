@@ -65,50 +65,37 @@ Read [Project status](docs/project-status.md) for the current feature and platfo
 
 ## Quick start
 
-This path installs the versioned preview and completes one credential-free run.
+The guided command is available in the current source tree. It creates a minimal Flow project and
+completes one credential-free workflow through the production command sandbox.
 
 ### Prerequisites
 
 - Node.js 26.7 or newer
 - npm with global package support
-- x64 Linux or macOS for a release-qualified host
+- x64 Linux or macOS
 
-Before installation, follow [Install the Flow preview](docs/guides/install-preview.md) to verify the
-immutable release and its build provenance. Then install the same archive without package
-lifecycle scripts:
+Build and link the current source:
 
 ```sh
-npm install --global --ignore-scripts \
-  https://github.com/synaptiai/flow-harness/releases/download/v0.1.0-alpha.1/synaptiai-flow-harness-0.1.0-alpha.1.tgz
-flow --help
+npm ci
+npm run build
+npm link
 ```
 
-Initialize an empty Flow project:
+Create a directory and complete the first run:
 
 ```sh
 mkdir flow-preview-project
 cd flow-preview-project
-flow init .
-flow config show
+flow quickstart .
 ```
 
-Validate and run the credential-free installed-package workflow:
+The result contains the run status, the project-relative evidence path, and tokenized `inspect` and
+`web` follow-up commands. Flow does not open a browser.
 
-```sh
-flow_example="$(npm root --global)/@synaptiai/flow-harness/examples/verify-installation.workflow.yaml"
-flow validate "$flow_example"
-flow run "$flow_example" \
-  --run-id first-run
-flow inspect first-run
-```
-
-The verifier runs through the production command sandbox. The run succeeds only when deterministic
-evidence accepts the declared goal criterion.
-
-Flow stores authoritative events in `.flow/runs/first-run/events.jsonl`.
-
-Continue with [Getting started](docs/getting-started.md) for explanations, troubleshooting, and
-reader-specific next steps.
+Read [Getting started](docs/getting-started.md) for provider selection, output details, and failure
+recovery. The immutable `0.1.0-alpha.1` archive predates `flow quickstart`. Follow
+[Install the Flow preview](docs/guides/install-preview.md) for that release's verified manual path.
 
 ## Security
 

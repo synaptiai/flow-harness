@@ -20,6 +20,54 @@ afterEach(async () => {
 });
 
 describe("compiled Flow process", () => {
+  it("completes guided quick start through the production command sandbox", async () => {
+    const directory = await createTemporaryDirectory();
+    const readmePath = join(directory, "README.md");
+    await writeFile(readmePath, "existing project documentation\n", "utf8");
+
+    const quickstart = await spawnFlow(
+      ["quickstart", directory, "--run-id", "runtime-quickstart"],
+      directory,
+    ).completed;
+
+    expect(quickstart.code, quickstart.stderr).toBe(0);
+    expect(quickstart.signal).toBeNull();
+    expect(quickstart.stderr).toBe("");
+    expect(JSON.parse(quickstart.stdout)).toEqual({
+      version: 1,
+      mode: "foundation",
+      project: { publication: "created" },
+      run: {
+        id: "runtime-quickstart",
+        status: "succeeded",
+        evidence: ".flow/runs/runtime-quickstart/events.jsonl",
+      },
+      commands: {
+        inspect: ["flow", "inspect", "runtime-quickstart"],
+        browser: ["flow", "web", "runtime-quickstart", "--actor", "operator:quickstart"],
+      },
+    });
+    await expect(readFile(readmePath, "utf8")).resolves.toBe("existing project documentation\n");
+    const events = await readLedger(
+      join(directory, ".flow", "runs", "runtime-quickstart", "events.jsonl"),
+    );
+    expect(events.map((event) => event.type)).toEqual([
+      "run_started",
+      "node_started",
+      "node_succeeded",
+      "node_started",
+      "node_succeeded",
+      "run_succeeded",
+    ]);
+
+    const inspect = await spawnFlow(["inspect", "runtime-quickstart"], directory).completed;
+    expect(inspect.code, inspect.stderr).toBe(0);
+    expect(JSON.parse(inspect.stdout)).toMatchObject({
+      runId: "runtime-quickstart",
+      status: "succeeded",
+    });
+  });
+
   it("treats permission loss as exit of the original same-user process", async () => {
     const lookup = vi.spyOn(process, "kill").mockImplementation(() => {
       throw Object.assign(new Error("kill EPERM"), { code: "EPERM" });

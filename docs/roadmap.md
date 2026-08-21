@@ -27,8 +27,9 @@ prompt overlays and authority-preserving skill-resource projections. New single-
 projections, paired evaluation, reviewed activation, durable run snapshots, and rollback are also
 implemented.
 
-Gate 8 remains the delivery priority. Slices 8.1 and 8.2 provide an installable preview and
-source-build environment diagnostics. Slice 8.3 is next. It completes the guided quick start.
+Gate 8 remains the delivery priority. Slices 8.1 through 8.3 provide an installable preview,
+source-build diagnostics, and a guided quick start. Slice 8.4 is next. It proves a useful
+provider-backed coding change.
 
 Gate 9 adds bounded long-horizon context and semantic code feedback. Gate 10 adds standards-based
 executor interoperability and evidence-gated specialized execution. Gate 8 must close before a
@@ -262,12 +263,14 @@ current pre-stable compatibility and security boundaries.
 
 ### Slice 8.3: Complete a quick start
 
-- Add `flow quickstart` to create a minimal project without replacing an existing file.
-- Validate and run the credential-free foundation workflow, then show the resulting run identity
+- **Implemented:** Add `flow quickstart` to create a minimal project without replacing an existing
+  file.
+- **Implemented:** Validate and run the credential-free foundation workflow, then show the run identity
   and evidence location.
-- Offer one explicit provider-backed path that validates configuration before model work.
-- Offer the local browser presentation after the first accepted run. A noninteractive invocation
-  must remain deterministic and must not open a browser.
+- **Implemented:** Offer one explicit provider-backed path that validates configuration before
+  model work.
+- **Implemented:** Offer the local browser presentation after Flow records a terminal run. The
+  noninteractive command remains deterministic and never opens a browser.
 
 ### Slice 8.4: Prove a useful agent path
 

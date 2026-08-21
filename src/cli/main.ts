@@ -76,6 +76,12 @@ import {
   generateSupplementalMemoryCandidate,
   SupplementalMemoryCandidateGenerationExecutionError,
 } from "../application/generate-supplemental-memory-candidate.js";
+import {
+  GuidedQuickstartError,
+  type GuidedQuickstartMode,
+  type GuidedQuickstartPublication,
+  runGuidedQuickstart,
+} from "../application/guided-quickstart.js";
 import { createCapabilityMetadataImporter } from "../application/import-capability-metadata.js";
 import { createSignedOciCapabilityBundleInstaller } from "../application/install-signed-oci-capability-bundle.js";
 import type {
@@ -249,8 +255,14 @@ import {
 } from "../domain/policy/policy-package-admission.js";
 import { applyPresentationPackage } from "../domain/presentation/presentation-package-projector.js";
 import { projectRunPresentation } from "../domain/presentation/run-presentation-projector.js";
-import { type RunEvent, type RunStatus, reduceRunEvents } from "../domain/run/events.js";
 import {
+  type RunEvent,
+  type RunState,
+  type RunStatus,
+  reduceRunEvents,
+} from "../domain/run/events.js";
+import {
+  compileWorkflowText,
   WorkflowCompilationError,
   type WorkflowPackageReference,
 } from "../domain/workflow/compiler.js";
@@ -459,6 +471,7 @@ Usage:
   flow init [directory] [--force]
   flow config show
   flow doctor [<workflow.yaml|workflow:name@version|activation:workflow-id>] [--profile prime-agent]
+  flow quickstart [directory] [--provider <provider> --model <model>] [--run-id <id>]
   flow skills list
   flow skills inspect <name>
   flow skills validate
@@ -535,6 +548,9 @@ Usage:
 `;
 
 const MAX_ACP_RUN_START_WAIT_MS = 30_000;
+const QUICKSTART_FOUNDATION_WORKFLOW_PATH = fileURLToPath(
+  new URL("../../examples/verify-installation.workflow.yaml", import.meta.url),
+);
 
 const installedPackageMetadata = createRequire(import.meta.url)("../../package.json") as unknown;
 const installedFlowVersion = parseInstalledFlowVersion(installedPackageMetadata);
@@ -671,6 +687,8 @@ export async function main(
         return await configCommand(args.slice(1), io, dependencyOverrides);
       case "doctor":
         return await doctorCommand(args.slice(1), io, dependencyOverrides);
+      case "quickstart":
+        return await quickstartCommand(args.slice(1), io, dependencyOverrides);
       case "skills":
         return await skillsCommand(args.slice(1), io, dependencyOverrides);
       case "verifiers":
@@ -732,6 +750,14 @@ export async function main(
     if (error instanceof WorkflowCompilationError) {
       io.stderr(formatCompilationError(error));
       return 2;
+    }
+    if (error instanceof GuidedQuickstartError) {
+      if (error.code === "invalid_input") {
+        io.stderr(`${error.message}\n\n${HELP}`);
+        return 2;
+      }
+      io.stderr(`${error.code}: ${error.message}`);
+      return 1;
     }
     if (error instanceof FlowConfigError) {
       io.stderr(`${error.code}: ${error.message}`);
@@ -1038,6 +1064,201 @@ async function doctorCommand(
     }
     throw error;
   }
+}
+
+async function quickstartCommand(
+  args: readonly string[],
+  io: CliIo,
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  assertStringOptionAtMostOnce(args, "provider");
+  assertStringOptionAtMostOnce(args, "model");
+  assertStringOptionAtMostOnce(args, "run-id");
+  let parsed: ReturnType<typeof parseCommandArgs>;
+  try {
+    parsed = parseCommandArgs(args, {
+      provider: { type: "string" },
+      model: { type: "string" },
+      "run-id": { type: "string" },
+    });
+  } catch (error) {
+    if (error instanceof CliUsageError) {
+      throw new CliUsageError("quickstart arguments are invalid");
+    }
+    throw error;
+  }
+  const { positionals, values } = parsed;
+  if (positionals.length > 1) {
+    throw new CliUsageError("quickstart accepts at most one directory");
+  }
+  const providerSelected = values.provider !== undefined;
+  const modelSelected = values.model !== undefined;
+  if (providerSelected !== modelSelected) {
+    throw new CliUsageError("--provider and --model must be specified together");
+  }
+  const mode: GuidedQuickstartMode =
+    values.provider === undefined || values.model === undefined
+      ? Object.freeze({ kind: "foundation" as const })
+      : Object.freeze({
+          kind: "provider" as const,
+          provider: values.provider,
+          model: values.model,
+        });
+  const dependencies = dependenciesFrom(overrides);
+  const directory = resolve(dependencies.cwd, positionals[0] ?? ".");
+  const runId =
+    values["run-id"] ??
+    (mode.kind === "foundation" ? "quickstart-foundation" : "quickstart-provider");
+
+  try {
+    const result = await runGuidedQuickstart(
+      {
+        directory,
+        mode,
+        runId,
+        ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
+      },
+      {
+        prepareWorkflow: async (selectedMode) =>
+          await prepareQuickstartWorkflow(selectedMode, dependencies),
+        publishProject: async (projectDirectory, signal) =>
+          await publishQuickstartProject(projectDirectory, signal, dependencies),
+        validateProvider: async (input) => {
+          const signal = input.signal ?? new AbortController().signal;
+          const config = await dependencies.loadConfig({ cwd: input.projectRoot, signal });
+          signal.throwIfAborted();
+          assertQuickstartProjectRoot(config, input.projectRoot);
+          await dependencies.inspectProviders(
+            [{ provider: input.provider, model: input.model }],
+            signal,
+          );
+        },
+        executeWorkflow: async (input) => {
+          const config = await dependencies.loadConfig({
+            cwd: input.projectRoot,
+            ...(input.signal === undefined ? {} : { signal: input.signal }),
+          });
+          input.signal?.throwIfAborted();
+          assertQuickstartProjectRoot(config, input.projectRoot);
+          const supplementalSnapshot = await resolveWorkflowCapabilitySnapshot(
+            input.workflow,
+            config,
+          );
+          input.signal?.throwIfAborted();
+          assertWorkflowSatisfiesPolicyPackages(input.workflow, supplementalSnapshot);
+          const runsDirectory = resolveRunsDirectory(input.projectRoot, undefined, config);
+          const state = await executeForegroundWorkflow({
+            workflow: input.workflow,
+            config,
+            dependencies,
+            runId: input.runId,
+            executionCwd: input.projectRoot,
+            runsDirectory,
+            protectedPaths: resolveRunProtectedPaths(runsDirectory, config),
+            ...(supplementalSnapshot === undefined
+              ? {}
+              : { capabilitySnapshot: supplementalSnapshot }),
+          });
+          if (state.status === "running" || state.status === "waiting_for_approval") {
+            throw new Error("quick-start workflow did not reach a terminal state");
+          }
+          return Object.freeze({ status: state.status });
+        },
+      },
+    );
+    io.stdout(JSON.stringify(result, null, 2));
+    return runStateExitCode(result.run.status);
+  } catch (error) {
+    if (error instanceof GuidedQuickstartError) {
+      throw error;
+    }
+    if (dependencies.signal?.aborted === true) {
+      io.stderr("Quick start was cancelled before project publication.");
+      return 1;
+    }
+    throw error;
+  }
+}
+
+function assertQuickstartProjectRoot(
+  config: Pick<EffectiveFlowConfig, "projectRoot">,
+  publishedProjectRoot: string,
+): void {
+  if (config.projectRoot !== publishedProjectRoot) {
+    throw new Error("quick-start configuration does not belong to the published project");
+  }
+}
+
+async function prepareQuickstartWorkflow(
+  mode: GuidedQuickstartMode,
+  dependencies: Pick<CliDependencies, "readTextFile">,
+): Promise<CompiledWorkflow> {
+  if (mode.kind === "foundation") {
+    return compileWorkflowText(
+      await dependencies.readTextFile(QUICKSTART_FOUNDATION_WORKFLOW_PATH),
+      "examples/verify-installation.workflow.yaml",
+    );
+  }
+  return compileWorkflowText(
+    providerQuickstartWorkflowSource(mode.provider, mode.model),
+    "quickstart-provider.workflow.yaml",
+  );
+}
+
+async function publishQuickstartProject(
+  directory: string,
+  signal: AbortSignal | undefined,
+  dependencies: Pick<CliDependencies, "initializeProject">,
+): Promise<GuidedQuickstartPublication> {
+  try {
+    const published = await dependencies.initializeProject(directory, {
+      ...(signal === undefined ? {} : { signal }),
+    });
+    return Object.freeze({ outcome: "published" as const, projectRoot: published.projectRoot });
+  } catch (error) {
+    if (error instanceof FlowConfigStoreError) {
+      if (error.code === "already_exists") {
+        return Object.freeze({ outcome: "already_exists" as const });
+      }
+      if (error.code === "commit_uncertain" || error.code === "settlement_uncertain") {
+        return Object.freeze({ outcome: error.code });
+      }
+    }
+    throw error;
+  }
+}
+
+function providerQuickstartWorkflowSource(provider: string, model: string): string {
+  return `apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata:
+  id: quickstart-provider
+  description: Verify one explicitly selected provider and model through the Flow runtime.
+budget:
+  maxNodeStarts: 2
+  maxModelTokens: 512
+  maxCostUsd: 0.1
+  maxExecutionMs: 60000
+  maxArtifactBytes: 65536
+nodes:
+  - id: verify-provider
+    type: agent
+    agent:
+      prompt: Reply with one short sentence confirming that the selected model is available.
+      model:
+        provider: ${JSON.stringify(provider)}
+        id: ${JSON.stringify(model)}
+        thinking: minimal
+      tools: []
+      timeoutMs: 60000
+  - id: verify-runtime
+    type: command
+    dependsOn: [verify-provider]
+    command:
+      executable: node
+      args: [--version]
+      timeoutMs: 10000
+`;
 }
 
 async function skillsCommand(
@@ -4689,29 +4910,55 @@ async function runCommand(
       io,
     );
   }
-  const state = await runWorkflow(admitted.workflow, {
-    cwd: executionCwd,
-    ...(config.projectRoot === null ? {} : { projectRoot: config.projectRoot }),
-    protectedPaths,
-    store: dependencies.createStore(runsDirectory),
-    workspaceIsolator: dependencies.createWorkspaceIsolator(
-      runsDirectory,
-      protectedPaths,
-      executionCwd,
-      config.projectRoot ?? undefined,
-    ),
-    executor: dependencies.createNodeExecutor(
-      config.sandbox.profile,
-      config.projectRoot ?? dependencies.cwd,
-    ),
-    agentCommandApprovalDecisions: dependencies.createAgentCommandApprovalChannel(runsDirectory),
-    ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
-    ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
+  const state = await executeForegroundWorkflow({
+    workflow: admitted.workflow,
+    config,
+    dependencies,
     runId,
+    executionCwd,
+    runsDirectory,
+    protectedPaths,
+    ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
   });
 
   io.stdout(JSON.stringify(projectPublicRunOutput(state), null, 2));
   return runStateExitCode(state.status);
+}
+
+async function executeForegroundWorkflow(input: {
+  readonly workflow: CompiledWorkflow;
+  readonly config: EffectiveFlowConfig;
+  readonly dependencies: CliDependencies;
+  readonly runId: string;
+  readonly executionCwd: string;
+  readonly runsDirectory: string;
+  readonly protectedPaths: readonly string[];
+  readonly capabilitySnapshot?: CapabilitySnapshot;
+}): Promise<RunState> {
+  return await runWorkflow(input.workflow, {
+    cwd: input.executionCwd,
+    ...(input.config.projectRoot === null ? {} : { projectRoot: input.config.projectRoot }),
+    protectedPaths: input.protectedPaths,
+    store: input.dependencies.createStore(input.runsDirectory),
+    workspaceIsolator: input.dependencies.createWorkspaceIsolator(
+      input.runsDirectory,
+      input.protectedPaths,
+      input.executionCwd,
+      input.config.projectRoot ?? undefined,
+    ),
+    executor: input.dependencies.createNodeExecutor(
+      input.config.sandbox.profile,
+      input.config.projectRoot ?? input.dependencies.cwd,
+    ),
+    agentCommandApprovalDecisions: input.dependencies.createAgentCommandApprovalChannel(
+      input.runsDirectory,
+    ),
+    ...(input.dependencies.signal === undefined ? {} : { signal: input.dependencies.signal }),
+    ...(input.capabilitySnapshot === undefined
+      ? {}
+      : { capabilitySnapshot: input.capabilitySnapshot }),
+    runId: input.runId,
+  });
 }
 
 async function inspectCommand(

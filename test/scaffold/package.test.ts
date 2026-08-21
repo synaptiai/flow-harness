@@ -93,26 +93,27 @@ describe("package contract", () => {
       "verify package artifact",
       "install package artifact",
       "verify installed package",
-      "initialize installed project",
-      "inspect initialized project",
+      "run installed quick start",
+      "inspect quick-start project",
       "verify installed diagnostic",
-      "compare initialized project",
-      "verify installed workflow",
-      "verify installed browser",
+      "compare quick-start project",
+      "verify quick-start browser",
       "verify installed prime boundary",
       "cleanup package verification",
     ]) {
       expect(verifier).toContain(stage);
     }
+    expect(verifier).toContain('["quickstart", projectRoot, "--run-id", "packed-quickstart"]');
+    expect(verifier).not.toContain('["init", projectRoot]');
     expect(verifier).toContain("operationFailed");
     expect(verifier).toContain("readInstalledDoctorReport");
     expect(verifier).toContain('doctorReport.target, "project"');
     expect(verifier).toContain("doctorReport.ok, true");
-    expect(verifier).toContain("projectBeforeDoctor");
+    expect(verifier).toContain("quickstartProjectBeforeDoctor");
     expect(verifier).toContain("snapshotProjectFiles(projectRoot)");
-    expect(verifier).toContain('"the initialized project snapshot is incomplete"');
-    expect(verifier).toContain('"the initialized project snapshot omits filesystem identity"');
-    expect(verifier).toContain('"flow doctor changed the initialized project"');
+    expect(verifier).toContain('"the quick-start project snapshot is incomplete"');
+    expect(verifier).toContain('"the quick-start project snapshot omits filesystem identity"');
+    expect(verifier).toContain('"flow doctor changed the quick-start project"');
     expect(verifier).toContain('"runtime.host"');
     expect(verifier).toContain('"sandbox.native"');
   });

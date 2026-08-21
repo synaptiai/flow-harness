@@ -31,7 +31,12 @@ import { discoverProjectCapabilityCatalogs } from "./project-capability-catalog.
 const MAX_CONFIG_BYTES = 1024 * 1024;
 const PROJECT_CONFIG_SOURCE = `apiVersion: ${FLOW_CONFIG_API_VERSION}\nkind: FlowProjectConfig\n`;
 
-export type FlowConfigStoreErrorCode = "already_exists" | "io" | "unsafe_target";
+export type FlowConfigStoreErrorCode =
+  | "already_exists"
+  | "commit_uncertain"
+  | "io"
+  | "settlement_uncertain"
+  | "unsafe_target";
 
 export class FlowConfigStoreError extends Error {
   override readonly name = "FlowConfigStoreError";
@@ -59,6 +64,13 @@ export interface LoadEffectiveFlowConfigOptions extends FlowConfigLocationOption
 
 export interface InitializeFlowProjectOptions {
   readonly replace?: boolean;
+  readonly signal?: AbortSignal;
+  readonly hooks?: FlowProjectInitializationHooks;
+}
+
+export interface FlowProjectInitializationHooks {
+  readonly beforeConfigLinked?: () => void | Promise<void>;
+  readonly afterConfigLinked?: () => void | Promise<void>;
 }
 
 export interface InitializedFlowProject {
@@ -171,11 +183,15 @@ export async function initializeFlowProject(
   directory: string,
   options: InitializeFlowProjectOptions = {},
 ): Promise<InitializedFlowProject> {
+  options.signal?.throwIfAborted();
   const projectRoot = await canonicalDirectory(directory, "project directory");
+  options.signal?.throwIfAborted();
   const flowDirectory = join(projectRoot, ".flow");
   await ensureWritableFlowDirectory(flowDirectory);
+  options.signal?.throwIfAborted();
   const path = join(flowDirectory, "config.yaml");
   const existing = await optionalLstat(path);
+  options.signal?.throwIfAborted();
 
   if (existing !== null && options.replace !== true) {
     throw new FlowConfigStoreError(
@@ -192,27 +208,66 @@ export async function initializeFlowProject(
 
   if (existing === null) {
     const pending = join(flowDirectory, `.config.${randomUUID()}.pending`);
+    let linked = false;
+    let pendingRemoved = false;
+    let publicationFailed = false;
+    let publicationError: unknown;
     try {
       const handle = await open(pending, "wx", 0o644);
       await writeAndSync(handle, PROJECT_CONFIG_SOURCE);
+      options.signal?.throwIfAborted();
+      await options.hooks?.beforeConfigLinked?.();
+      options.signal?.throwIfAborted();
       await link(pending, path);
+      linked = true;
+      await options.hooks?.afterConfigLinked?.();
       await syncDirectory(flowDirectory);
       await rm(pending);
+      pendingRemoved = true;
       await syncDirectory(flowDirectory);
     } catch (error) {
-      if (isNodeError(error) && error.code === "EEXIST") {
+      publicationFailed = true;
+      publicationError = error;
+    }
+
+    let cleanupFailed = false;
+    let cleanupError: unknown;
+    if (!pendingRemoved) {
+      try {
+        await rm(pending, { force: true });
+      } catch (error) {
+        cleanupFailed = true;
+        cleanupError = error;
+      }
+    }
+
+    if (publicationFailed) {
+      if (linked) {
+        throw new FlowConfigStoreError(
+          "commit_uncertain",
+          "Flow project configuration publication is uncertain",
+          { cause: publicationError },
+        );
+      }
+      if (cleanupFailed) {
+        throw new FlowConfigStoreError(
+          "settlement_uncertain",
+          "Flow project configuration staging settlement is uncertain",
+          { cause: new AggregateError([publicationError, cleanupError]) },
+        );
+      }
+      options.signal?.throwIfAborted();
+      if (isNodeError(publicationError) && publicationError.code === "EEXIST") {
         throw new FlowConfigStoreError(
           "already_exists",
           `Flow project configuration already exists at "${path}"`,
-          { cause: error },
+          { cause: publicationError },
         );
       }
-      if (error instanceof FlowConfigStoreError) {
-        throw error;
+      if (publicationError instanceof FlowConfigStoreError) {
+        throw publicationError;
       }
-      throw ioError(`failed to initialize Flow project at "${path}"`, error);
-    } finally {
-      await rm(pending, { force: true }).catch(() => undefined);
+      throw ioError(`failed to initialize Flow project at "${path}"`, publicationError);
     }
     return Object.freeze({ created: true, projectRoot, path });
   }

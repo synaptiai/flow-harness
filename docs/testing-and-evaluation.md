@@ -23,9 +23,9 @@ npm run pack:check
 This command rebuilds the current checkout and creates an ephemeral archive. It installs the
 archive into a clean temporary consumer with lifecycle scripts disabled. The archive includes the
 reviewed `npm-shrinkwrap.json`, and the clean install tests the production dependency closure that
-npm resolves at that time. The check then runs the installed CLI, initializes a project, and
-exercises the credential-free workflow and presentation paths. It doesn't create publication
-authority.
+npm resolves at that time. The check then runs installed `flow quickstart`, verifies its durable
+evidence, checks read-only diagnostics, and opens the accepted run through the explicit browser
+command. It doesn't create publication authority.
 
 To prepare a settled release directory from a clean revision, use:
 
@@ -47,9 +47,9 @@ npm run release:verify
 
 The `Preview release` workflow transfers that same directory through GitHub Actions. Ubuntu 24.04
 x64 and macOS 15 Intel independently download it. Each host validates the archive and installed
-tree, executes the installed command, and completes the credential-free example. The workflow
-generates build provenance only after both hosts pass. A separate protected job publishes without
-rebuilding the package.
+tree, and completes installed `flow quickstart` through the production sandbox. Each host also
+verifies the explicit browser path. The workflow generates build provenance only after both hosts
+pass. A separate protected job publishes without rebuilding the package.
 
 For publication authority and recovery, read
 [Preview release operations](operations/release-preview.md).

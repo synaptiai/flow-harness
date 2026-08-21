@@ -70,6 +70,89 @@ describe("Flow project configuration", () => {
     });
   });
 
+  it("preserves exact cancellation before project publication and removes private staging", async () => {
+    const project = await temporaryDirectory("flow-config-cancel-before-publish-");
+    const controller = new AbortController();
+    const reason = new Error("PRIVATE_INITIALIZATION_CANCELLATION");
+
+    await expect(
+      initializeFlowProject(project, {
+        signal: controller.signal,
+        hooks: {
+          beforeConfigLinked: () => controller.abort(reason),
+        },
+      }),
+    ).rejects.toBe(reason);
+    await expect(lstat(join(project, ".flow", "config.yaml"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(await readdir(join(project, ".flow"))).toEqual([]);
+  });
+
+  it("reports an uncertain commit when failure follows visible project publication", async () => {
+    const project = await temporaryDirectory("flow-config-uncertain-publish-");
+
+    await expect(
+      initializeFlowProject(project, {
+        hooks: {
+          afterConfigLinked: () => {
+            throw new Error("PRIVATE_DIRECTORY_SETTLEMENT_FAILURE");
+          },
+        },
+      }),
+    ).rejects.toMatchObject({
+      name: "FlowConfigStoreError",
+      code: "commit_uncertain",
+      message: "Flow project configuration publication is uncertain",
+    });
+    expect(await readFile(join(project, ".flow", "config.yaml"), "utf8")).toBe(
+      `apiVersion: ${FLOW_CONFIG_API_VERSION}\nkind: FlowProjectConfig\n`,
+    );
+    expect(
+      (await readdir(join(project, ".flow"))).filter((name) => name.endsWith(".pending")),
+    ).toEqual([]);
+  });
+
+  it("does not confuse an undefined post-publication rejection with success", async () => {
+    const project = await temporaryDirectory("flow-config-undefined-publish-failure-");
+
+    await expect(
+      initializeFlowProject(project, {
+        hooks: {
+          afterConfigLinked: async () => await Promise.reject(undefined),
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: "commit_uncertain",
+      message: "Flow project configuration publication is uncertain",
+    });
+    await expect(readFile(join(project, ".flow", "config.yaml"), "utf8")).resolves.toContain(
+      "kind: FlowProjectConfig",
+    );
+  });
+
+  it("settles a published project before observing late caller cancellation", async () => {
+    const project = await temporaryDirectory("flow-config-cancel-after-publish-");
+    const controller = new AbortController();
+    const reason = new Error("PRIVATE_LATE_INITIALIZATION_CANCELLATION");
+
+    await expect(
+      initializeFlowProject(project, {
+        signal: controller.signal,
+        hooks: {
+          afterConfigLinked: () => controller.abort(reason),
+        },
+      }),
+    ).resolves.toMatchObject({ created: true, projectRoot: project });
+    expect(controller.signal.reason).toBe(reason);
+    expect(await readFile(join(project, ".flow", "config.yaml"), "utf8")).toContain(
+      "kind: FlowProjectConfig",
+    );
+    expect(
+      (await readdir(join(project, ".flow"))).filter((name) => name.endsWith(".pending")),
+    ).toEqual([]);
+  });
+
   it("replaces only an existing regular config when explicitly requested", async () => {
     const project = await temporaryDirectory("flow-config-replace-");
     await mkdir(join(project, ".flow"));
