@@ -49,6 +49,7 @@ import {
   createCapabilitySnapshot,
   validateCapabilitySnapshot,
 } from "../../../src/domain/capability/agent-skills.js";
+import { createLanguageServerSnapshot } from "../../../src/domain/capability/language-server.js";
 import type { ToolPackageSnapshotInput } from "../../../src/domain/capability/tool-packages.js";
 import type { VerifierPackageSnapshotInput } from "../../../src/domain/capability/verifier-packages.js";
 import type { WorkflowPackageSnapshotInput } from "../../../src/domain/capability/workflow-packages.js";
@@ -82,6 +83,85 @@ afterEach(async () => {
 });
 
 describe("detached run worker", () => {
+  it("executes semantic work from the frozen detached language-server snapshot", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-worker-semantic-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    const store = new LocalSupervisorStore(runsDirectory);
+    await store.initialize();
+    const languageServer = await languageServerSnapshot(directory);
+    const capabilitySnapshot = validateCapabilitySnapshot({
+      version: 1,
+      packages: [],
+      languageServer,
+      digest: calculateCapabilitySnapshotDigest([], [], undefined, languageServer),
+    });
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "worker-semantic",
+      mode: "run",
+      sourceName: join(directory, "semantic.workflow.yaml"),
+      workflowSource: semanticWorkflowSource(),
+      cwd: directory,
+      token: "7".repeat(64),
+      createdAt: "2026-08-21T16:00:00.000Z",
+      capabilitySnapshot,
+    });
+    await store.reserveSubmission(
+      job,
+      createActiveRunClaim({
+        runId: job.runId,
+        jobId: job.jobId,
+        workerId: job.workerId,
+        claimedAt: job.createdAt,
+      }),
+    );
+    let observedDigest: string | undefined;
+
+    const worker = executeWorkerJob(job.jobId, {
+      store,
+      executor: {
+        async execute(node, context) {
+          if (node.type !== "agent") {
+            throw new Error("semantic worker executed an unexpected node");
+          }
+          observedDigest = context.capabilitySnapshot?.languageServer?.digest;
+          return { status: "succeeded", evidence: successfulAgentEvidence() };
+        },
+      },
+      effectReconciler: createProductionNodeEffectReconciler(),
+      createRunStore: (root) => new JsonlRunStore(root),
+      pid: 4340,
+    });
+    const descriptor = await waitForDescriptor(store, job.workerId);
+    await expect(requestWorker(descriptor, { type: "identify" })).resolves.toMatchObject({
+      ok: true,
+      result: { runId: job.runId, status: "running" },
+    });
+
+    const exitCode = await worker;
+
+    expect(exitCode).toBe(0);
+    expect(observedDigest).toBe(languageServer.digest);
+    const events = await new JsonlRunStore(runsDirectory).read(job.runId);
+    expect(events[0]).toMatchObject({
+      type: "run_started",
+      capabilitySnapshot: {
+        languageServer: {
+          name: "fake-typescript",
+          digest: languageServer.digest,
+        },
+      },
+    });
+    expect(reduceRunEvents(events)).toMatchObject({
+      status: "succeeded",
+      capabilitySnapshot: {
+        languageServer: { digest: languageServer.digest },
+      },
+    });
+  }, 15_000);
+
   it("rejects a policy-incompatible detached workflow before run mutation", async () => {
     const directory = await mkdtemp(join(tmpdir(), "flow-worker-policy-rejection-"));
     temporaryDirectories.push(directory);
@@ -2334,6 +2414,61 @@ spec:
     await expect(store.readActiveRunClaim(runId)).resolves.toBeNull();
   });
 });
+
+async function languageServerSnapshot(project: string) {
+  const executable = join(project, "fake-language-server");
+  await writeFile(executable, "#!/bin/sh\nexit 0\n", "utf8");
+  await chmod(executable, 0o700);
+  const bytes = await readFile(executable);
+  const identity = await stat(executable, { bigint: true });
+  const executableSha256 = createHash("sha256").update(bytes).digest("hex");
+  return createLanguageServerSnapshot({
+    provenance: ".flow/language-servers/fake-typescript.json",
+    manifest: Buffer.from(
+      JSON.stringify({
+        apiVersion: "flow.synapti.ai/v1alpha1",
+        kind: "LanguageServer",
+        metadata: { name: "fake-typescript" },
+        spec: {
+          protocol: "lsp-3.18",
+          executable,
+          executableSha256,
+          args: [],
+          languages: [{ id: "typescript", suffixes: [".ts"] }],
+          containmentProfile: "default",
+          requestTimeoutMs: 5_000,
+        },
+      }),
+    ),
+    executable: {
+      path: executable,
+      sha256: executableSha256,
+      bytes: bytes.byteLength,
+      device: String(identity.dev),
+      inode: String(identity.ino),
+    },
+  });
+}
+
+function semanticWorkflowSource(): string {
+  return `apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: detached-semantic }
+nodes:
+  - id: analyze
+    type: agent
+    agent:
+      prompt: Analyze the selected source.
+      model: { provider: test, id: deterministic }
+      tools: [semantic]
+  - id: publish
+    type: result
+    dependsOn: [analyze]
+    result:
+      source: { nodeId: analyze, field: agent.text }
+      schema: { type: string, maxLength: 1024 }
+`;
+}
 
 async function waitForDescriptor(store: LocalSupervisorStore, workerId: string) {
   const deadline = Date.now() + 5_000;
