@@ -1,0 +1,51 @@
+#!/usr/bin/env node
+
+let buffer = Buffer.alloc(0);
+
+process.stdin.on("data", (chunk) => {
+  buffer = Buffer.concat([buffer, chunk]);
+  while (true) {
+    const boundary = buffer.indexOf("\r\n\r\n");
+    if (boundary < 0) break;
+    const match = /^Content-Length: ([0-9]+)$/.exec(buffer.subarray(0, boundary).toString("ascii"));
+    if (match === null) process.exit(70);
+    const length = Number(match[1]);
+    if (buffer.length < boundary + 4 + length) break;
+    const body = buffer.subarray(boundary + 4, boundary + 4 + length);
+    buffer = buffer.subarray(boundary + 4 + length);
+    const message = JSON.parse(body.toString("utf8"));
+    handle(message);
+  }
+});
+
+function handle(message) {
+  if (message.method === "initialize") {
+    respond(message.id, {
+      capabilities: {
+        diagnosticProvider: {},
+        definitionProvider: true,
+        referencesProvider: true,
+        hoverProvider: true,
+        textDocumentSync: { openClose: true, change: 0 },
+      },
+    });
+  } else if (message.method === "textDocument/hover") {
+    respond(message.id, {
+      contents: { kind: "markdown", value: "`const value: number`" },
+      range: {
+        start: { line: 0, character: 6 },
+        end: { line: 0, character: 11 },
+      },
+    });
+  } else if (message.method === "shutdown") {
+    respond(message.id, null);
+  } else if (message.method === "exit") {
+    process.exit(0);
+  }
+}
+
+function respond(id, result) {
+  const payload = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id, result }));
+  process.stdout.write(`Content-Length: ${payload.length}\r\n\r\n`);
+  process.stdout.write(payload);
+}
