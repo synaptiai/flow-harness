@@ -37,10 +37,13 @@ describe("semantic code CLI", () => {
     await writeFile(workflowPath, semanticWorkflowSource(), "utf8");
     const validated = captureIo();
     const executed = captureIo();
+    const resumed = captureIo();
     const store = new MemoryStore();
     let observed: NodeExecutionContext | undefined;
+    let executions = 0;
     const executor: NodeExecutor = {
       async execute(_node, context) {
+        executions += 1;
         observed = context;
         return successfulAgentOutcome();
       },
@@ -90,6 +93,19 @@ describe("semantic code CLI", () => {
     const publicOutput = executed.stdout.join("\n");
     expect(publicOutput).not.toContain("contentBase64");
     expect(publicOutput).not.toContain(join(project, ".flow", "language-servers"));
+
+    expect(
+      await main(
+        ["resume", workflowPath, "--run-id", "cli-semantic-run"],
+        resumed.io,
+        cliDependencies,
+      ),
+      resumed.stderr.join("\n"),
+    ).toBe(1);
+    expect(executions).toBe(1);
+    expect(resumed.stderr.join("\n")).toContain("already terminal");
+    expect(resumed.stderr.join("\n")).not.toContain("contentBase64");
+    expect(resumed.stderr.join("\n")).not.toContain(join(project, ".flow", "language-servers"));
   });
 
   it("rejects missing, unexpected, and duplicate server authority before mutation", async () => {
