@@ -162,3 +162,30 @@ contract, repository contracts, and primary-source research._
 | Installed release packages prove the complete noninteractive first run. | Runtime and package | `npm run pack:check && npx vitest run test/scaffold/package.test.ts test/scaffold/preview-release-workflow.test.ts` | A clean packed install initializes, runs, inspects evidence, and emits but does not invoke the browser command on release-qualified hosts. | Does not publish npm or validate an external provider. |
 | Public documentation and architecture remain segmented and current. | Documentation | `npm run docs:style && npm run docs:links && npm run docs:ste && npx vitest run test/integration/package/documentation-structure.test.ts test/integration/package/architecture-documentation.test.ts test/scaffold/community-files.test.ts` | README routes to the canonical guide; command, architecture, status, roadmap, and release verification agree. | Does not rewrite historical release behavior. |
 | The complete repository remains releasable. | Static, runtime, and security | `npm run check && npm run test:coverage && npm run test:browser && node scripts/smoke-compiled.mjs && npm run pack:check && node scripts/audit-prime-dependencies.mjs && npm audit --omit=dev --audit-level=low` | All static, runtime, coverage, browser, compiled, packed, dependency, and audit gates pass. | Does not constitute npm publication or a production release. |
+
+## Verification evidence
+
+Verified on 2026-08-21 against the settled branch:
+
+- `npm run check` passed. Its default suite reported 4,690 passed tests and 4 intentional skips
+  across 343 files. Its native runtime suite reported 44 passed tests and 34 intentional skips
+  across 19 files. Formatting, lint, type checking, and the production build also passed. Lint
+  reported one pre-existing informational constructor suggestion in an unchanged file.
+
+- The exact quick-start and documentation selector passed 86 tests across 6 files. The compiled
+  process quick-start selector passed its selected test and skipped the other 15 tests in that
+  runtime file.
+
+- `npm run test:coverage` passed 4,690 tests with 4 intentional skips. Coverage was 84.82% for
+  statements, 79.44% for branches, 91.41% for functions, and 84.97% for lines.
+
+- `npm run test:browser` passed 2 tests. `node scripts/smoke-compiled.mjs` passed against the built
+  package. `npm run pack:check` built and installed a clean archive. The installed command completed
+  quick start and reopened its evidence. The verifier also checked the explicit browser path and
+  confirmed that quick start did not launch a browser.
+
+- `node scripts/audit-prime-dependencies.mjs` accepted the exact Node lock and 60 Python packages.
+  `npm audit --omit=dev --audit-level=low` reported 0 vulnerabilities.
+
+- `npm run docs:style`, `npm run docs:links`, and `npm run docs:ste` passed. `git diff --check`
+  passed.
