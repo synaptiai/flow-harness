@@ -60,6 +60,10 @@ retries also remain later work. The same is true for broader configurable policy
 tools, and arbitrary evaluator runtimes. Stronger VM or managed sandbox backends also remain later
 work.
 
+Gate 8 provides the first installable preview and current source-build environment diagnostics.
+The diagnostic checks the base project and only the selected workflow, provider, sandbox, or Prime
+requirements. It does not grant execution authority or make an optional runtime a base dependency.
+
 ## Architecture at a glance
 
 Flow is distributed as one Node.js command-line package. It can start local supervisor and worker
@@ -80,6 +84,7 @@ flowchart TB
     subgraph access["1. Ways to use Flow"]
         direction LR
         cli["Command line"]
+        diagnostics["Environment diagnostics<br/>Read-only selected-path preflight"]
         presentation["Terminal, local web, and ACP editor views"]
     end
 
@@ -118,11 +123,16 @@ flowchart TB
     release -->|"Publishes one verified archive"| channels
     channels -->|"Installs exact package bytes"| cli
     people -->|"Starts attached work"| cli
+    people -->|"Checks a selected path"| diagnostics
     people -->|"Observes and steers"| presentation
     cli -->|"Runs now"| engine
     cli -->|"Reviews and compares candidates"| adaptation
     cli -->|"Requests one inert proposal"| proposals
     cli -->|"Queues detached work"| supervisor
+    diagnostics -->|"Admits an optional workflow"| rules
+    diagnostics -->|"Checks only the configured sandbox"| commands
+    diagnostics -->|"Checks selected local adapters"| agents
+    diagnostics -->|"Reads configuration and access"| project
     presentation -->|"Reads public state and sends bound actions"| supervisor
     supervisor -->|"Starts or resumes"| engine
     capability -->|"Fetches and authenticates inert bytes"| sources
@@ -156,7 +166,8 @@ Read the diagram from top to bottom:
 0. Release automation builds one npm archive. Linux x64 and macOS x64 consume the same bytes before
    provenance and protected publication make the archive available.
 
-1. People and automation use the command line or a first-party presentation view.
+1. People and automation use the command line, the read-only environment diagnostic, or a
+   first-party presentation view.
 
 2. The control plane compiles the workflow, reconstructs durable state, selects reviewed per-agent
    context, and decides which action is legal. Proposal generation can ask a model for one bounded
@@ -184,6 +195,7 @@ before success. It stops on unresolved side-effect or settlement uncertainty.
 | --- | --- | --- |
 | Preview release automation | `src/domain/release/`, `src/infrastructure/release/`, `scripts/build-package-release.mjs`, `scripts/verify-package.mjs`, and `.github/workflows/preview-release.yml` | Builds one bounded archive, records its installed-file identity, verifies the same archive on supported x64 hosts, generates provenance, and gates immutable publication. |
 | Command line | `src/cli/` | Parses public commands, composes dependencies, and projects safe output. |
+| Environment diagnostics | `src/application/environment-doctor.ts`, `src/domain/host-requirements.ts`, and selected `src/infrastructure/` probes | Checks only the selected host, project, workflow, provider, sandbox, or Prime requirements and returns a bounded, value-free report. |
 | Workflow rules and safeguards | `src/domain/` | Defines provider-neutral workflows, state transitions, policy, evidence, budgets, and validation. |
 | Workflow engine, evaluation, adaptation, and capability governance | `src/application/` | Coordinates use cases through ports, asks the domain for legal transitions, and prepares evaluated state changes. |
 | Detached work and recovery | `src/supervisor/` | Owns bounded queueing, worker adoption, cancellation, event paging, and detached lifecycle. |
@@ -221,6 +233,7 @@ Architecture is derived from these flows.
 | Flow | Trigger | Outcome |
 | --- | --- | --- |
 | Initialize | A user runs `flow init` in a repository | Validated project configuration and provider readiness |
+| Diagnose | A user runs `flow doctor` for a project, workflow, or Prime profile | A bounded read-only report for only the selected path, with fixed remediation and no private values |
 | Execute | A user selects a goal and workflow | Verified success, explicit failure, a durable wait state, or a precise blocker |
 | Observe | A user opens status, the TUI, or the local browser host | Current graph position, attempts, evidence, costs, approvals, and blockers |
 | Steer | A user pauses, cancels, supplies input, or approves an operation | A durable, attributable state transition |

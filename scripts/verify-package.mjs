@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { constants } from "node:fs";
-import { access, mkdir, mkdtemp, open, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  lstat,
+  mkdir,
+  mkdtemp,
+  open,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +24,8 @@ const COMMAND_TIMEOUT_MS = 180_000;
 const MAX_COMMAND_OUTPUT_BYTES = 16 * 1024 * 1024;
 const MAX_EVIDENCE_BYTES = 4 * 1024 * 1024;
 const MAX_ARCHIVE_BYTES = 16 * 1024 * 1024;
+const MAX_PROJECT_SNAPSHOT_ENTRIES = 1_024;
+const MAX_PROJECT_SNAPSHOT_BYTES = 4 * 1024 * 1024;
 
 try {
   await verifyPackage();
@@ -81,6 +94,58 @@ async function verifyPackage() {
     const effective = JSON.parse(shown.stdout);
     assert.deepEqual(effective.supervisor, { maxActiveWorkers: 1, maxQueuedJobs: 32 });
     assert.equal(effective.projectRoot, await realpath(projectRoot));
+    const projectBeforeDoctor = await snapshotProjectFiles(projectRoot);
+    assert.deepEqual(
+      projectBeforeDoctor.map((entry) => [entry.path, entry.type]),
+      [
+        [".", "directory"],
+        [".flow", "directory"],
+        [".flow/config.yaml", "file"],
+      ],
+      "the initialized project snapshot is incomplete",
+    );
+    const projectConfiguration = projectBeforeDoctor.at(-1);
+    assert.equal(projectConfiguration.contentBase64 !== undefined, true);
+    assert.equal(
+      Buffer.from(projectConfiguration.contentBase64, "base64").toString("utf8"),
+      "apiVersion: flow.synapti.ai/v1alpha1\nkind: FlowProjectConfig\n",
+    );
+    assert.equal(
+      projectBeforeDoctor.every(
+        (entry) =>
+          Number.isSafeInteger(entry.mode) &&
+          Number.isSafeInteger(entry.uid) &&
+          Number.isSafeInteger(entry.gid) &&
+          Number.isSafeInteger(entry.dev) &&
+          Number.isSafeInteger(entry.ino) &&
+          Number.isSafeInteger(entry.nlink) &&
+          Number.isSafeInteger(entry.size) &&
+          Number.isFinite(entry.mtimeMs) &&
+          Number.isFinite(entry.ctimeMs),
+      ),
+      true,
+      "the initialized project snapshot omits filesystem identity",
+    );
+    const diagnosed = await run(flowBinary, ["doctor"], projectRoot, verificationRoot);
+    const doctorReport = JSON.parse(diagnosed.stdout);
+    assert.equal(doctorReport.version, 1);
+    assert.equal(doctorReport.target, "project");
+    assert.equal(doctorReport.ok, true);
+    assert.deepEqual(
+      doctorReport.checks.map((check) => [check.category, check.status]),
+      [
+        ["runtime.host", "pass"],
+        ["project.configuration", "pass"],
+        ["project.discovery", "pass"],
+        ["project.filesystem", "pass"],
+        ["sandbox.native", "pass"],
+      ],
+    );
+    assert.deepEqual(
+      await snapshotProjectFiles(projectRoot),
+      projectBeforeDoctor,
+      "flow doctor changed the initialized project",
+    );
 
     const installationWorkflow = join(
       installedPackageRoot,
@@ -259,6 +324,49 @@ async function readBoundedNoFollow(path, maximumBytes) {
   } finally {
     await handle.close();
   }
+}
+
+async function snapshotProjectFiles(root) {
+  const snapshot = [];
+  let bytes = 0;
+  const visit = async (path, relativePath) => {
+    if (snapshot.length >= MAX_PROJECT_SNAPSHOT_ENTRIES) {
+      throw new Error("package verification project snapshot exceeds its entry limit");
+    }
+    const metadata = await lstat(path);
+    const common = {
+      path: relativePath,
+      mode: metadata.mode & 0o7777,
+      uid: metadata.uid,
+      gid: metadata.gid,
+      dev: metadata.dev,
+      ino: metadata.ino,
+      nlink: metadata.nlink,
+      size: metadata.size,
+      mtimeMs: metadata.mtimeMs,
+      ctimeMs: metadata.ctimeMs,
+    };
+    if (metadata.isDirectory()) {
+      snapshot.push({ ...common, type: "directory" });
+      const entries = await readdir(path, { withFileTypes: true });
+      entries.sort((left, right) => left.name.localeCompare(right.name));
+      for (const entry of entries) {
+        await visit(join(path, entry.name), join(relativePath, entry.name));
+      }
+      return;
+    }
+    if (!metadata.isFile()) {
+      throw new Error("package verification project snapshot found an unsupported entry");
+    }
+    const content = await readFile(path);
+    bytes += content.byteLength;
+    if (bytes > MAX_PROJECT_SNAPSHOT_BYTES) {
+      throw new Error("package verification project snapshot exceeds its byte limit");
+    }
+    snapshot.push({ ...common, type: "file", contentBase64: content.toString("base64") });
+  };
+  await visit(root, ".");
+  return snapshot;
 }
 
 async function run(command, args, cwd, verificationRoot) {

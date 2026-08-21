@@ -3,7 +3,12 @@
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-const MINIMUM_NODE_VERSION = Object.freeze([26, 7, 0] as const);
+import {
+  createUnsupportedHostEnvironmentDoctorReport,
+  type EnvironmentDoctorTarget,
+} from "../application/environment-doctor.js";
+import { isFlowHostSupported } from "../domain/host-requirements.js";
+
 const NODE_REQUIREMENT_MESSAGE = "Flow requires Node.js 26.7.0 or newer.";
 const PLATFORM_REQUIREMENT_MESSAGE = "Flow supports Linux and macOS.";
 
@@ -15,6 +20,7 @@ interface FlowLauncherOptions {
   readonly platform?: string;
   readonly nodeVersion?: string;
   readonly loadCli?: () => Promise<FlowCliModule>;
+  readonly stdout?: (message: string) => void;
   readonly stderr?: (message: string) => void;
   readonly setExitCode?: (code: number) => void;
 }
@@ -24,16 +30,45 @@ export async function runFlowLauncher(
   options: FlowLauncherOptions = {},
 ): Promise<void> {
   const stderr = options.stderr ?? ((message) => process.stderr.write(`${message}\n`));
+  const stdout = options.stdout ?? ((message) => process.stdout.write(`${message}\n`));
   const setExitCode = options.setExitCode ?? ((code) => (process.exitCode = code));
   const platform = options.platform ?? process.platform;
+  const nodeVersion = options.nodeVersion ?? process.versions.node;
+  const doctorTarget = parseDoctorTarget(args);
   if (platform !== "darwin" && platform !== "linux") {
+    if (doctorTarget !== undefined) {
+      stdout(
+        JSON.stringify(
+          createUnsupportedHostEnvironmentDoctorReport(doctorTarget, platform, nodeVersion),
+          null,
+          2,
+        ),
+      );
+      setExitCode(1);
+      return;
+    }
     stderr(PLATFORM_REQUIREMENT_MESSAGE);
     setExitCode(1);
     return;
   }
 
-  const nodeVersion = parseNodeVersion(options.nodeVersion ?? process.versions.node);
-  if (nodeVersion === undefined || compareVersion(nodeVersion, MINIMUM_NODE_VERSION) < 0) {
+  if (
+    !isFlowHostSupported({
+      platform,
+      nodeVersion,
+    })
+  ) {
+    if (doctorTarget !== undefined) {
+      stdout(
+        JSON.stringify(
+          createUnsupportedHostEnvironmentDoctorReport(doctorTarget, platform, nodeVersion),
+          null,
+          2,
+        ),
+      );
+      setExitCode(1);
+      return;
+    }
     stderr(NODE_REQUIREMENT_MESSAGE);
     setExitCode(1);
     return;
@@ -44,27 +79,23 @@ export async function runFlowLauncher(
   await cli.runDirectCli(args);
 }
 
-function parseNodeVersion(source: string): readonly [number, number, number] | undefined {
-  const match = /^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})$/.exec(source);
-  if (match === null) {
+function parseDoctorTarget(args: readonly string[]): EnvironmentDoctorTarget | undefined {
+  if (args[0] !== "doctor") {
     return undefined;
   }
-  return [Number(match[1]), Number(match[2]), Number(match[3])];
-}
-
-function compareVersion(
-  left: readonly [number, number, number],
-  right: readonly [number, number, number],
-): number {
-  const majorDifference = left[0] - right[0];
-  if (majorDifference !== 0) {
-    return majorDifference;
+  if (args.length === 1) {
+    return "project";
   }
-  const minorDifference = left[1] - right[1];
-  if (minorDifference !== 0) {
-    return minorDifference;
+  if (args.length === 2 && args[1]?.startsWith("-") === false) {
+    return "workflow";
   }
-  return left[2] - right[2];
+  if (
+    (args.length === 3 && args[1] === "--profile" && args[2] === "prime-agent") ||
+    (args.length === 2 && args[1] === "--profile=prime-agent")
+  ) {
+    return "prime-agent";
+  }
+  return undefined;
 }
 
 function isDirectEntry(entryPath: string | undefined): boolean {

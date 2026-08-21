@@ -67,4 +67,63 @@ describe("Flow package launcher", () => {
       expect(setExitCode).toHaveBeenCalledWith(1);
     },
   );
+
+  it.each([
+    {
+      label: "project on an old Node.js version",
+      args: ["doctor"],
+      platform: "linux",
+      nodeVersion: "26.6.99",
+      target: "project",
+    },
+    {
+      label: "workflow on an unsupported platform",
+      args: ["doctor", "PRIVATE_WORKFLOW_PATH"],
+      platform: "freebsd",
+      nodeVersion: "26.7.0",
+      target: "workflow",
+    },
+    {
+      label: "Prime on an unsupported platform",
+      args: ["doctor", "--profile=prime-agent"],
+      platform: "freebsd",
+      nodeVersion: "26.7.0",
+      target: "prime-agent",
+    },
+  ])("returns a fixed host report for $label without loading the CLI", async (fixture) => {
+    const loadCli = vi.fn();
+    const stdout = vi.fn();
+    const stderr = vi.fn();
+    const setExitCode = vi.fn();
+
+    await runFlowLauncher(fixture.args, {
+      platform: fixture.platform,
+      nodeVersion: fixture.nodeVersion,
+      loadCli,
+      stdout,
+      stderr,
+      setExitCode,
+    });
+
+    expect(loadCli).not.toHaveBeenCalled();
+    expect(stderr).not.toHaveBeenCalled();
+    expect(stdout).toHaveBeenCalledOnce();
+    const publishedReport = stdout.mock.calls[0]?.[0];
+    if (publishedReport === undefined) {
+      throw new Error("expected a host diagnostic report");
+    }
+    const report = JSON.parse(publishedReport);
+    expect(report).toMatchObject({ version: 1, ok: false, target: fixture.target });
+    expect(report.checks[0]).toEqual({
+      category: "runtime.host",
+      status: "fail",
+      message: "The Flow host runtime is unsupported.",
+      remediation: "Use a supported operating system and Node.js version, then rerun flow doctor.",
+    });
+    expect(
+      report.checks.slice(1).every((check: { status: string }) => check.status === "skip"),
+    ).toBe(true);
+    expect(JSON.stringify(report)).not.toContain("PRIVATE");
+    expect(setExitCode).toHaveBeenCalledWith(1);
+  });
 });

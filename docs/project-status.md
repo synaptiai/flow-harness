@@ -24,6 +24,7 @@ on it.
 | Capability | Linux | macOS | Notes |
 | --- | --- | --- | --- |
 | Workflow validation and inspection | Implemented | Implemented | No provider is needed for credential-free examples. |
+| Read-only environment diagnostics | Implemented | Implemented | Available in current source builds; optional checks run only for the selected workflow, sandbox, or Prime path. |
 | Sandboxed command nodes | Implemented | Implemented | Flow fails closed when the native sandbox is unavailable. |
 | Agent `read`, `ls`, and hash-bound `edit` | Implemented | Implemented | The host-side Pi runtime keeps the invoking user's host authority. |
 | Agent `exec` | Implemented | Unavailable | Linux requires verified PID-namespace descendant containment. |

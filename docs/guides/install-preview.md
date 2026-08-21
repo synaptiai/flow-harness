@@ -138,6 +138,10 @@ flow inspect first-run
 The workflow runs two deterministic Node.js commands. It doesn't need a model provider, Docker,
 Bun, or the Prime runtime.
 
+The immutable `0.1.0-alpha.1` package doesn't contain `flow doctor`. The command is implemented in
+the current source tree and will enter a later preview only after release qualification. Read
+[Diagnose the Flow environment](diagnose-environment.md) for the current source-build contract.
+
 ## Remove or replace the preview
 
 Remove the global package when you finish evaluating it:

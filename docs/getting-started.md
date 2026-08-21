@@ -104,6 +104,13 @@ for profile selection.
 The first-run example is credential-free. Agent and model-verifier examples use the provider and
 model declared by their workflow.
 
+### You need the environment diagnostic
+
+The immutable `0.1.0-alpha.1` package doesn't contain `flow doctor`. The command is implemented in
+the current source tree and will enter a later preview only after release qualification. Read
+[Diagnose the Flow environment](guides/diagnose-environment.md) for the current source-build
+contract.
+
 ### You need the complete release gate
 
 The contributor release gate has additional browser, sandbox, Docker, Prime, and second-user

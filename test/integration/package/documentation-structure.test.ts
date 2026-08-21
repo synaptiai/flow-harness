@@ -53,6 +53,9 @@ describe("public documentation structure", () => {
       readFile(join(documentationRoot, "guides", "run-and-control.md"), "utf8"),
     ).resolves.toMatch(/^# Run and control workflows$/mu);
     await expect(
+      readFile(join(documentationRoot, "guides", "diagnose-environment.md"), "utf8"),
+    ).resolves.toMatch(/^# Diagnose the Flow environment$/mu);
+    await expect(
       readFile(join(documentationRoot, "guides", "capability-packages.md"), "utf8"),
     ).resolves.toMatch(/^# Use capability packages$/mu);
     await expect(

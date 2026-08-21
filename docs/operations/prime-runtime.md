@@ -144,6 +144,7 @@ npm ci --ignore-scripts
 npm run build
 node dist/cli/main.js init .
 node dist/cli/main.js runtime prepare prime-agent
+node dist/cli/main.js doctor --profile prime-agent
 ```
 
 Preparation performs two image builds and compares their identities. It stores local host evidence
@@ -151,6 +152,10 @@ under the project `.flow` directory.
 
 A fixed-stage preflight rejects an incompatible host before the first build. Preparation repeats
 authoritative inspection after the second build. Evaluation does not build or pull an image.
+
+The diagnostic reopens the prepared evidence and reports a fixed `prime.runtime` result. It doesn't
+create, start, stop, or remove a container. Read
+[Diagnose the Flow environment](../guides/diagnose-environment.md) for the report contract.
 
 ## Run the Prime evaluation profile
 
