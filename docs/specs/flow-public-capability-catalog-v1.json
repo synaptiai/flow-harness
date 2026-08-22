@@ -1,0 +1,536 @@
+{
+  "version": "flow.public-capabilities/v1",
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "tools": [
+    {
+      "selector": "artifact",
+      "name": "flow_artifact",
+      "label": "artifact",
+      "description": "Read one bounded binary window from a retained command artifact owned by this run. Results are base64 encoded and never interpreted as text.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "maxBytes": {
+            "description": "Maximum bytes to return (default: 32768).",
+            "maximum": 32768,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "description": "Zero-based byte offset (default: 0).",
+            "maximum": 16777216,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reference": {
+            "description": "Opaque artifact reference returned by Flow command evidence.",
+            "pattern": "^artifact:[a-f0-9]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reference"
+        ],
+        "type": "object"
+      },
+      "executionMode": "sequential",
+      "authority": [
+        "read"
+      ],
+      "policyActions": [
+        "artifact.read"
+      ],
+      "availability": [
+        "artifact-store"
+      ],
+      "limitIds": [
+        "artifact-maximum-bytes",
+        "artifact-read-window-bytes"
+      ]
+    },
+    {
+      "selector": "edit",
+      "name": "flow_edit",
+      "label": "edit",
+      "description": "Atomically edit one existing UTF-8 workspace file using its flow_read SHA-256 version and exact, unique, non-overlapping replacements. Stale versions fail without automatic merging.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "edits": {
+            "description": "Exact, unique, non-overlapping replacements matched against the same original content.",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "newText": {
+                  "description": "Replacement text.",
+                  "maxLength": 262144,
+                  "type": "string"
+                },
+                "oldText": {
+                  "description": "Exact, non-empty text that occurs once in the current file.",
+                  "maxLength": 262144,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "oldText",
+                "newText"
+              ],
+              "type": "object"
+            },
+            "maxItems": 32,
+            "minItems": 1,
+            "type": "array"
+          },
+          "expectedSha256": {
+            "description": "Full SHA-256 version returned by flow_read for this file.",
+            "pattern": "^[a-f0-9]{64}$",
+            "type": "string"
+          },
+          "path": {
+            "description": "Path to one existing UTF-8 file inside the Flow workspace.",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "expectedSha256",
+          "edits"
+        ],
+        "type": "object"
+      },
+      "executionMode": "sequential",
+      "authority": [
+        "write"
+      ],
+      "policyActions": [
+        "filesystem.write"
+      ],
+      "availability": [
+        "effect-recorder"
+      ],
+      "limitIds": [
+        "edit-file-bytes",
+        "edit-input-characters",
+        "edit-replacements",
+        "tool-path-characters"
+      ]
+    },
+    {
+      "selector": "exec",
+      "name": "flow_exec",
+      "label": "exec",
+      "description": "Execute one bounded executable and literal argument vector in Flow's production sandbox. No shell, environment overrides, cwd overrides, stdin, PTY, background mode, or network access are available.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "args": {
+            "description": "Literal argument vector passed without shell expansion.",
+            "items": {
+              "maxLength": 8192,
+              "type": "string"
+            },
+            "maxItems": 64,
+            "type": "array"
+          },
+          "executable": {
+            "description": "Executable name or path. Shell syntax is not supported.",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "timeoutMs": {
+            "description": "Command deadline in milliseconds (default: 120000).",
+            "maximum": 600000,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "executable"
+        ],
+        "type": "object"
+      },
+      "executionMode": "sequential",
+      "authority": [
+        "execute"
+      ],
+      "policyActions": [
+        "process.execute"
+      ],
+      "availability": [
+        "command-recorder",
+        "production-sandbox"
+      ],
+      "limitIds": [
+        "exec-argument-bytes",
+        "exec-arguments",
+        "exec-arguments-total-bytes",
+        "exec-executable-bytes",
+        "exec-timeout-milliseconds"
+      ]
+    },
+    {
+      "selector": "ls",
+      "name": "flow_ls",
+      "label": "ls",
+      "description": "List workspace directory contents alphabetically, including dotfiles and '/' suffixes for directories. Output is bounded to 500 entries by default and 50 KiB.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "description": "Maximum entries to return (default: 500).",
+            "maximum": 5000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "path": {
+            "description": "Directory to list (default: current workspace directory).",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "executionMode": "default",
+      "authority": [
+        "read"
+      ],
+      "policyActions": [
+        "filesystem.list"
+      ],
+      "availability": [],
+      "limitIds": [
+        "ls-entries",
+        "ls-output-bytes",
+        "tool-path-characters"
+      ]
+    },
+    {
+      "selector": "read",
+      "name": "flow_read",
+      "label": "read",
+      "description": "Read a UTF-8 text file inside the Flow execution workspace or an explicitly selected immutable skill:// resource. Workspace results include a full-file SHA-256 version for flow_edit. Binary and image decoding is not supported.",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "description": "Maximum number of lines to read",
+            "type": "number"
+          },
+          "offset": {
+            "description": "Line number to start reading from (1-indexed)",
+            "type": "number"
+          },
+          "path": {
+            "description": "Path to the file to read (relative or absolute)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "executionMode": "default",
+      "authority": [
+        "read"
+      ],
+      "policyActions": [
+        "filesystem.read"
+      ],
+      "availability": [],
+      "limitIds": [
+        "read-output-bytes",
+        "read-output-lines"
+      ]
+    },
+    {
+      "selector": "semantic",
+      "name": "flow_semantic",
+      "label": "semantic",
+      "description": "Query one operator-selected language server for bounded diagnostics, definitions, references, or hover information. The tool cannot edit files or run model-selected commands.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "character": {
+            "description": "Zero-based character for definition, references, or hover.",
+            "maximum": 10000000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "line": {
+            "description": "Zero-based line for definition, references, or hover.",
+            "maximum": 10000000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "operation": {
+            "anyOf": [
+              {
+                "const": "diagnostics",
+                "type": "string"
+              },
+              {
+                "const": "definition",
+                "type": "string"
+              },
+              {
+                "const": "references",
+                "type": "string"
+              },
+              {
+                "const": "hover",
+                "type": "string"
+              }
+            ]
+          },
+          "path": {
+            "description": "Portable path to one admitted project file.",
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "path"
+        ],
+        "type": "object"
+      },
+      "executionMode": "sequential",
+      "authority": [
+        "read"
+      ],
+      "policyActions": [
+        "filesystem.read"
+      ],
+      "availability": [
+        "language-server"
+      ],
+      "limitIds": [
+        "semantic-code-bytes",
+        "semantic-hover-bytes",
+        "semantic-message-bytes",
+        "semantic-path-characters",
+        "semantic-position",
+        "semantic-queries-per-attempt",
+        "semantic-result-items"
+      ]
+    }
+  ],
+  "limits": [
+    {
+      "id": "artifact-maximum-bytes",
+      "value": 16777216,
+      "unit": "bytes",
+      "scope": "Maximum retained artifact size."
+    },
+    {
+      "id": "artifact-read-window-bytes",
+      "value": 32768,
+      "unit": "bytes",
+      "scope": "Maximum bytes returned by one artifact read.",
+      "default": 32768
+    },
+    {
+      "id": "edit-file-bytes",
+      "value": 8388608,
+      "unit": "bytes",
+      "scope": "Maximum UTF-8 bytes in one edited file."
+    },
+    {
+      "id": "edit-input-characters",
+      "value": 262144,
+      "unit": "items",
+      "scope": "Maximum JavaScript characters in one old or replacement text value."
+    },
+    {
+      "id": "edit-replacements",
+      "value": 32,
+      "unit": "items",
+      "scope": "Maximum exact replacements in one edit call."
+    },
+    {
+      "id": "exec-argument-bytes",
+      "value": 8192,
+      "unit": "bytes",
+      "scope": "Maximum UTF-8 bytes in one command argument."
+    },
+    {
+      "id": "exec-arguments",
+      "value": 64,
+      "unit": "items",
+      "scope": "Maximum arguments in one command call."
+    },
+    {
+      "id": "exec-arguments-total-bytes",
+      "value": 32768,
+      "unit": "bytes",
+      "scope": "Maximum combined UTF-8 bytes in one command argument vector."
+    },
+    {
+      "id": "exec-executable-bytes",
+      "value": 1024,
+      "unit": "bytes",
+      "scope": "Maximum UTF-8 bytes in one executable value."
+    },
+    {
+      "id": "exec-timeout-milliseconds",
+      "value": 600000,
+      "unit": "milliseconds",
+      "scope": "Maximum command deadline.",
+      "default": 120000
+    },
+    {
+      "id": "ls-entries",
+      "value": 5000,
+      "unit": "entries",
+      "scope": "Maximum requested directory entries.",
+      "default": 500
+    },
+    {
+      "id": "ls-output-bytes",
+      "value": 51200,
+      "unit": "bytes",
+      "scope": "Maximum UTF-8 bytes returned by one directory listing."
+    },
+    {
+      "id": "read-output-bytes",
+      "value": 51200,
+      "unit": "bytes",
+      "scope": "Maximum text bytes returned by one underlying Pi read window.",
+      "default": 51200
+    },
+    {
+      "id": "read-output-lines",
+      "value": 2000,
+      "unit": "lines",
+      "scope": "Maximum lines returned by one underlying Pi read window.",
+      "default": 2000
+    },
+    {
+      "id": "semantic-code-bytes",
+      "value": 256,
+      "unit": "bytes",
+      "scope": "Maximum UTF-8 bytes in one semantic code value."
+    },
+    {
+      "id": "semantic-hover-bytes",
+      "value": 16384,
+      "unit": "bytes",
+      "scope": "Maximum UTF-8 bytes in one hover value."
+    },
+    {
+      "id": "semantic-message-bytes",
+      "value": 4096,
+      "unit": "bytes",
+      "scope": "Maximum UTF-8 bytes in one semantic diagnostic message."
+    },
+    {
+      "id": "semantic-path-characters",
+      "value": 1024,
+      "unit": "items",
+      "scope": "Maximum characters in one semantic query path."
+    },
+    {
+      "id": "semantic-position",
+      "value": 10000000,
+      "unit": "position",
+      "scope": "Maximum zero-based line or character position."
+    },
+    {
+      "id": "semantic-queries-per-attempt",
+      "value": 16,
+      "unit": "items",
+      "scope": "Maximum semantic query receipts retained for one agent attempt."
+    },
+    {
+      "id": "semantic-result-items",
+      "value": 512,
+      "unit": "items",
+      "scope": "Maximum diagnostics or locations returned by one semantic query."
+    },
+    {
+      "id": "tool-path-characters",
+      "value": 1024,
+      "unit": "items",
+      "scope": "Maximum JavaScript characters in one tool path value."
+    }
+  ],
+  "capabilityFamilies": [
+    {
+      "kind": "agent-skill",
+      "title": "Agent Skills",
+      "summary": "Inert instructions and resources selected by exact package identity.",
+      "extension": "dynamic"
+    },
+    {
+      "kind": "policy-package",
+      "title": "Policy packages",
+      "summary": "Inert policy narrowing that cannot grant authority beyond operator policy.",
+      "extension": "dynamic"
+    },
+    {
+      "kind": "presentation-package",
+      "title": "Presentation packages",
+      "summary": "Inert A2UI-profile presentation metadata for supported Flow hosts.",
+      "extension": "dynamic"
+    },
+    {
+      "kind": "tool-package",
+      "title": "Command tool packages",
+      "summary": "Declarative scalar inputs rendered through closed argv-only command profiles.",
+      "extension": "dynamic"
+    },
+    {
+      "kind": "verifier-package",
+      "title": "Verifier packages",
+      "summary": "Inert command or model verification definitions admitted by exact identity.",
+      "extension": "dynamic"
+    },
+    {
+      "kind": "workflow-package",
+      "title": "Workflow packages",
+      "summary": "Inert workflow sources compiled through the ordinary Flow workflow contract.",
+      "extension": "dynamic"
+    }
+  ],
+  "executionSeams": [
+    {
+      "id": "model-provider",
+      "title": "Model provider",
+      "summary": "Provider and model identifiers resolve through the embedded Pi adapter at runtime.",
+      "openness": "open",
+      "implementation": "pi"
+    }
+  ],
+  "evaluationAdapters": [
+    {
+      "id": "flow-workflow-v1",
+      "title": "Flow workflow",
+      "summary": "Execute an admitted workflow through the ordinary Flow runtime.",
+      "isolation": "flow-runtime"
+    },
+    {
+      "id": "omp-native-v1",
+      "title": "Native OMP",
+      "summary": "Execute the pinned native OMP harness through a local process adapter.",
+      "isolation": "local-process"
+    },
+    {
+      "id": "pi-native-v1",
+      "title": "Native Pi",
+      "summary": "Execute the pinned native Pi harness through a local process adapter.",
+      "isolation": "local-process"
+    },
+    {
+      "id": "prime-agent-native-v1",
+      "title": "Prime Agent",
+      "summary": "Execute the admitted Prime Agent harness through its OCI runtime contract.",
+      "isolation": "oci-container"
+    }
+  ]
+}

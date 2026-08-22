@@ -106,6 +106,26 @@ async function verifyPackage() {
     const flowBinary = join(consumerRoot, "node_modules", ".bin", "flow");
     await withPackageReleaseStage("verify installed package", async () => {
       await releaseVerifier.verifyInstalledPackageRelease(installedPackageRoot, evidence);
+      const capabilityReference = await readFile(
+        join(installedPackageRoot, "docs/reference/tools-and-capabilities.md"),
+        "utf8",
+      );
+      assert.match(
+        capabilityReference,
+        /^# Tools and capabilities\n\n> Generated file\./u,
+        "the installed package omits the generated capability reference",
+      );
+      const capabilityCatalog = JSON.parse(
+        await readFile(
+          join(installedPackageRoot, "docs/specs/flow-public-capability-catalog-v1.json"),
+          "utf8",
+        ),
+      );
+      assert.equal(
+        capabilityCatalog.version,
+        "flow.public-capabilities/v1",
+        "the installed package contains an incompatible capability catalog",
+      );
       const help = await run(flowBinary, ["--help"], projectRoot, verificationRoot);
       assert.match(
         help.stdout,

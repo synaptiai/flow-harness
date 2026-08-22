@@ -39,6 +39,7 @@ import {
   MAX_SEMANTIC_CODE_BYTES,
   MAX_SEMANTIC_HOVER_BYTES,
   MAX_SEMANTIC_MESSAGE_BYTES,
+  MAX_SEMANTIC_QUERY_RECEIPTS,
   MAX_SEMANTIC_RESULT_ITEMS,
   normalizeSemanticRequest,
   type SemanticQueryReceipt,
@@ -50,6 +51,7 @@ import {
   editHashAnchoredTextFile,
   type HashAnchoredEditRequest,
   type HashAnchoredEditResult,
+  MAX_EDIT_FILE_BYTES,
   MAX_EDIT_INPUT_BYTES,
   MAX_EDIT_REPLACEMENTS,
 } from "../fs/hash-anchored-edit.js";
@@ -228,6 +230,7 @@ export const WORKSPACE_AGENT_PUBLIC_LIMITS = Object.freeze<readonly PublicCapabi
     "Maximum bytes returned by one artifact read.",
     MAX_ARTIFACT_READ_BYTES,
   ),
+  limit("edit-file-bytes", MAX_EDIT_FILE_BYTES, "bytes", "Maximum UTF-8 bytes in one edited file."),
   limit(
     "edit-input-characters",
     MAX_EDIT_INPUT_BYTES,
@@ -272,7 +275,7 @@ export const WORKSPACE_AGENT_PUBLIC_LIMITS = Object.freeze<readonly PublicCapabi
     DEFAULT_AGENT_COMMAND_TIMEOUT_MS,
   ),
   limit(
-    "ls-default-entries",
+    "ls-entries",
     MAX_LS_LIMIT,
     "entries",
     "Maximum requested directory entries.",
@@ -317,6 +320,12 @@ export const WORKSPACE_AGENT_PUBLIC_LIMITS = Object.freeze<readonly PublicCapabi
     "Maximum UTF-8 bytes in one semantic diagnostic message.",
   ),
   limit(
+    "semantic-path-characters",
+    MAX_SEMANTIC_PATH_BYTES,
+    "items",
+    "Maximum characters in one semantic query path.",
+  ),
+  limit(
     "semantic-position",
     MAX_SEMANTIC_POSITION,
     "position",
@@ -327,6 +336,12 @@ export const WORKSPACE_AGENT_PUBLIC_LIMITS = Object.freeze<readonly PublicCapabi
     MAX_SEMANTIC_RESULT_ITEMS,
     "items",
     "Maximum diagnostics or locations returned by one semantic query.",
+  ),
+  limit(
+    "semantic-queries-per-attempt",
+    MAX_SEMANTIC_QUERY_RECEIPTS,
+    "items",
+    "Maximum semantic query receipts retained for one agent attempt.",
   ),
   limit(
     "tool-path-characters",
@@ -360,7 +375,7 @@ const WORKSPACE_AGENT_TOOL_REFERENCE_BY_SELECTOR = Object.freeze({
     authority: ["read"],
     policyActions: ["filesystem.list"],
     availability: [],
-    limitIds: ["ls-default-entries", "ls-output-bytes", "tool-path-characters"],
+    limitIds: ["ls-entries", "ls-output-bytes", "tool-path-characters"],
   }),
   edit: toolReference({
     selector: "edit",
@@ -373,7 +388,12 @@ const WORKSPACE_AGENT_TOOL_REFERENCE_BY_SELECTOR = Object.freeze({
     authority: ["write"],
     policyActions: ["filesystem.write"],
     availability: ["effect-recorder"],
-    limitIds: ["edit-input-characters", "edit-replacements", "tool-path-characters"],
+    limitIds: [
+      "edit-file-bytes",
+      "edit-input-characters",
+      "edit-replacements",
+      "tool-path-characters",
+    ],
   }),
   exec: toolReference({
     selector: "exec",
@@ -409,9 +429,10 @@ const WORKSPACE_AGENT_TOOL_REFERENCE_BY_SELECTOR = Object.freeze({
       "semantic-code-bytes",
       "semantic-hover-bytes",
       "semantic-message-bytes",
+      "semantic-path-characters",
       "semantic-position",
+      "semantic-queries-per-attempt",
       "semantic-result-items",
-      "tool-path-characters",
     ],
   }),
   artifact: toolReference({

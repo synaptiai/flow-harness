@@ -100,7 +100,7 @@ function renderMarkdown(catalog: PublicCapabilityCatalog): string {
     ),
     "",
   );
-  return `${lines.join("\n")}\n`;
+  return lines.join("\n");
 }
 
 function renderTool(tool: PublicCapabilityToolInput): readonly string[] {

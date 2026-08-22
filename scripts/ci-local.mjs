@@ -11,6 +11,7 @@ const preliminaryGates = [
   ["npm", ["run", "docs:ste"]],
   ["npm", ["run", "typecheck"]],
   ["npm", ["run", "build"]],
+  ["node", ["dist/cli/public-capability-reference.js", "--check"]],
 ];
 const verifiedGates = [
   ["node", ["scripts/audit-prime-dependencies.mjs"]],

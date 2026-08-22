@@ -34,6 +34,7 @@ describe("public capability reference rendering", () => {
     expect(rendered.markdown).toContain("../architecture.md");
     expect(rendered.markdown).toContain("../guides/capability-packages.md");
     expect(rendered.markdown.endsWith("\n")).toBe(true);
+    expect(rendered.markdown.endsWith("\n\n")).toBe(false);
   });
 });
 
