@@ -1266,6 +1266,7 @@ describe("EmbeddedPiAgentRunner", () => {
     expect(sessionOptions?.settingsManager?.getProviderRetrySettings()).toMatchObject({
       maxRetries: 0,
     });
+    expect(sessionOptions?.settingsManager?.getCompactionEnabled()).toBe(false);
   });
 
   it("rejects model settings that Pi cannot apply exactly before session creation", async () => {

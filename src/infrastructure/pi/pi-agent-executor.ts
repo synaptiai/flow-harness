@@ -1,5 +1,10 @@
 import { createHash, type Hash } from "node:crypto";
-import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+import {
+  type Context,
+  getSupportedThinkingLevels,
+  type Message,
+  type ToolResultMessage,
+} from "@earendil-works/pi-ai";
 import {
   createAgentSession,
   createExtensionRuntime,
@@ -33,6 +38,10 @@ import { resolveAgentToolPackages } from "../../domain/capability/workflow-capab
 import { PolicyBroker } from "../../domain/policy/broker.js";
 import type { PolicyAction, PolicyDecision } from "../../domain/policy/types.js";
 import type { AgentModelUsage } from "../../domain/run/budget.js";
+import {
+  type ContextCompactionMode,
+  projectReferenceFirstToolResult,
+} from "../../domain/run/context-compaction.js";
 import type {
   AgentActivity,
   AgentEffectReceipt,
@@ -85,6 +94,7 @@ export interface PiAgentRunRequest {
   };
   readonly semanticSession?: SemanticToolSession;
   readonly artifactStore?: ArtifactStore;
+  readonly contextCompactionMode?: ContextCompactionMode;
   readonly authorityDigest?: string;
   readonly modelSession?: ModelSessionJournal;
   readonly signal?: AbortSignal;
@@ -933,7 +943,7 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
       resourceLoader,
       sessionManager: SessionManager.inMemory(request.cwd),
       settingsManager: SettingsManager.inMemory({
-        ...(request.exactModelSettings === true ? { compaction: { enabled: false } } : {}),
+        compaction: { enabled: false },
         retry: {
           enabled: false,
           maxRetries: 0,
@@ -1063,8 +1073,9 @@ function attachModelSessionRecorder(
     if (attempt === null) {
       throw new Error("model session request requires an active attempt");
     }
-    const systemPrompt = context.systemPrompt ?? "";
-    const tools = (context.tools ?? []).map((tool) => ({
+    const providerContext = await projectReferenceFirstContext(context, request);
+    const systemPrompt = providerContext.systemPrompt ?? "";
+    const tools = (providerContext.tools ?? []).map((tool) => ({
       name: tool.name,
       description: tool.description,
       parameters: tool.parameters,
@@ -1084,7 +1095,7 @@ function attachModelSessionRecorder(
         maxTokens: model.maxTokens,
       },
       systemPrompt,
-      messages: context.messages,
+      messages: providerContext.messages,
       tools,
     };
     const runtimeSurfaceJson = canonicalModelSessionJson(runtimeSurface);
@@ -1127,7 +1138,7 @@ function attachModelSessionRecorder(
       identity,
     });
     activeRequest = { attempt, turn, request: requestSequence };
-    return await originalStreamFunction(model, context, options);
+    return await originalStreamFunction(model, providerContext, options);
   };
 
   return session.agent.subscribe(async (event) => {
@@ -1202,6 +1213,53 @@ function attachModelSessionRecorder(
       activeRequest = undefined;
     }
   });
+}
+
+async function projectReferenceFirstContext(
+  context: Context,
+  request: PiAgentRunRequest,
+): Promise<Context> {
+  if (
+    request.contextCompactionMode === undefined ||
+    request.contextCompactionMode === "none" ||
+    request.artifactStore === undefined
+  ) {
+    return context;
+  }
+  const messages: Message[] = [];
+  for (const message of context.messages) {
+    messages.push(await projectReferenceFirstMessage(message, request));
+  }
+  return { ...context, messages };
+}
+
+async function projectReferenceFirstMessage(
+  message: Message,
+  request: PiAgentRunRequest,
+): Promise<Message> {
+  const artifactStore = request.artifactStore;
+  if (
+    message.role !== "toolResult" ||
+    message.content.some((item) => item.type !== "text") ||
+    artifactStore === undefined
+  ) {
+    return message;
+  }
+  const text = message.content.map((item) => (item.type === "text" ? item.text : "")).join("");
+  const projection = await projectReferenceFirstToolResult({
+    text,
+    details: message.details,
+    identity: request.policyBroker.attribution,
+    inspectArtifact: async (reference) => await artifactStore.inspect(reference),
+  });
+  if (projection.status === "retained") {
+    return message;
+  }
+  const projected: ToolResultMessage = {
+    ...message,
+    content: [{ type: "text", text: projection.text }],
+  };
+  return projected;
 }
 
 function projectModelSessionUsage(input: {

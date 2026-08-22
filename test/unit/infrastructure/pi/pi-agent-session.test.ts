@@ -1,7 +1,10 @@
+import { createHash } from "node:crypto";
 import { createFauxCore, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { createAgentSession } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
+import type { ArtifactStore } from "../../../../src/application/artifact-store.js";
 import type { ModelSessionJournal } from "../../../../src/application/ports.js";
+import { createArtifactReference } from "../../../../src/domain/artifact/reference.js";
 import { PolicyBroker } from "../../../../src/domain/policy/broker.js";
 import {
   calculatePortableHistoryIdentity,
@@ -13,6 +16,7 @@ import {
   type ModelSessionState,
   reduceModelSessionEvents,
 } from "../../../../src/domain/run/model-session.js";
+import { AgentCommandRecorder } from "../../../../src/infrastructure/pi/agent-command-recorder.js";
 import { AgentEffectRecorder } from "../../../../src/infrastructure/pi/agent-effect-recorder.js";
 import {
   EmbeddedPiAgentRunner,
@@ -246,6 +250,122 @@ describe("Pi provider-neutral model session", () => {
     expect(result.errorMessage).toMatch(/capacity/i);
     expect(journal.state.events.at(-1)?.type).toBe("user_message_committed");
   });
+
+  it("sends a validated reference projection while retaining complete durable tool text", async () => {
+    const faux = createFauxCore({
+      provider: "flow-session-test",
+      models: [{ id: "session-model", reasoning: false }],
+    });
+    const model = requireModel(faux.getModel());
+    const journal = attemptOneJournal();
+    const fullStdout = "x".repeat(16_384);
+    const retainedStdout = "x".repeat(8_192);
+    const stdoutArtifact = createArtifactReference({
+      descriptor: {
+        digest: `sha256:${sha256(fullStdout)}`,
+        size: Buffer.byteLength(fullStdout),
+        mediaType: "application/octet-stream",
+      },
+      producer: {
+        kind: "agent-command",
+        ...identity,
+        attempt: 1,
+        commandId: "command-1",
+        commandSequence: 1,
+        stream: "stdout",
+      },
+    });
+    const artifactStore = availableArtifactStore(stdoutArtifact);
+    const commandRecorder = new AgentCommandRecorder(
+      {
+        async executeAgentCommand(request) {
+          return {
+            status: "succeeded",
+            evidence: {
+              kind: "command",
+              executable: request.executable,
+              args: request.args,
+              exitCode: 0,
+              signal: null,
+              stdout: retainedStdout,
+              stderr: "",
+              stdoutHash: sha256(fullStdout),
+              stderrHash: sha256(""),
+              stdoutRetainedHash: sha256(retainedStdout),
+              stderrRetainedHash: sha256(""),
+              stdoutRetainedBytes: Buffer.byteLength(retainedStdout),
+              stderrRetainedBytes: 0,
+              stdoutArtifact,
+              stdoutTruncated: true,
+              stderrTruncated: false,
+              timedOut: false,
+              aborted: false,
+              durationMs: 5,
+              processContainment: "linux-pid-namespace",
+              terminationStatus: "not-required",
+              sandbox: {
+                backend: "test-sandbox",
+                backendVersion: "1",
+                profile: "workspace-write-network-deny-v1",
+                policyDigest: "b".repeat(64),
+              },
+            },
+          };
+        },
+      },
+      {
+        async prepare() {
+          return {
+            commandId: "command-1",
+            commandSequence: 1,
+            async settle() {
+              return { artifactBudgetExhausted: false };
+            },
+          };
+        },
+      },
+      { ...identity, attempt: 1, cwd: process.cwd(), protectedPaths: [], artifactStore },
+    );
+    let providerToolResult = "";
+    faux.setResponses([
+      fauxAssistantMessage(
+        fauxToolCall(
+          "flow_exec",
+          { executable: "npm", args: ["test"], timeoutMs: 5_000 },
+          { id: "tool-call-1" },
+        ),
+        { stopReason: "toolUse" },
+      ),
+      (context) => {
+        const message = context.messages.at(-1);
+        if (message?.role === "toolResult") {
+          providerToolResult = message.content
+            .filter((item) => item.type === "text")
+            .map((item) => item.text)
+            .join("");
+        }
+        return fauxAssistantMessage("Reference observed.");
+      },
+    ]);
+
+    await runnerFor(faux, model).run({
+      ...agentRequest(model, journal),
+      tools: ["exec"],
+      policyBroker: new PolicyBroker({ ...identity, attempt: 1 }, ["process.execute"]),
+      commandRecorder,
+      artifactStore,
+      contextCompactionMode: "references",
+    });
+
+    expect(providerToolResult).toContain('"kind":"flow.reference-tool-result"');
+    expect(providerToolResult).toContain(stdoutArtifact.reference);
+    expect(providerToolResult).not.toContain("x".repeat(1_024));
+    const durableResult = journal.state.primaryEvents.find(
+      (event) => event.type === "tool_result_committed",
+    );
+    expect(durableResult?.text).toContain(retainedStdout);
+    expect(durableResult?.text).not.toContain("flow.reference-tool-result");
+  });
 });
 
 function runnerFor(
@@ -400,4 +520,37 @@ function requireModel<T>(model: T | undefined): T {
 
 function at(sequence: number): string {
   return `2026-08-22T00:00:${String(sequence).padStart(2, "0")}.000Z`;
+}
+
+function availableArtifactStore(
+  reference: ReturnType<typeof createArtifactReference>,
+): ArtifactStore {
+  return {
+    async inspect(input) {
+      expect(input).toBe(reference.reference);
+      return { reference, retention: "retained", availability: "available" };
+    },
+    async retain() {
+      throw new Error("test artifact is already retained");
+    },
+    async read() {
+      throw new Error("test does not reopen the artifact");
+    },
+    async list() {
+      return [{ reference, retention: "retained" }];
+    },
+    async setRetention() {
+      throw new Error("test does not change retention");
+    },
+    async planPrune() {
+      throw new Error("test does not prune artifacts");
+    },
+    async applyPrune() {
+      throw new Error("test does not prune artifacts");
+    },
+  };
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }
