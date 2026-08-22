@@ -17,6 +17,7 @@ import {
   reduceModelSessionEvents,
   renderModelSessionResumeCapsule,
   requestCapacity,
+  selectContextCompactionRange,
 } from "../../../src/domain/run/model-session.js";
 
 const identity = {
@@ -524,6 +525,25 @@ describe("model session record", () => {
       }),
     ).toThrow(/minimum reduction/i);
   });
+
+  it("selects only a balanced completed prefix older than the latest request", () => {
+    const selection = selectContextCompactionRange(sessionWithTwoSettledRequests());
+
+    expect(selection).toEqual({
+      lastRequest: 1,
+      range: {
+        firstSequence: 5,
+        lastSequence: 8,
+        eventCount: 3,
+        sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        bytes: expect.any(Number),
+      },
+    });
+  });
+
+  it("does not select a prefix with failed tool or approval evidence", () => {
+    expect(selectContextCompactionRange(sessionWithTwoSettledRequests(true))).toBeNull();
+  });
 });
 
 function append(
@@ -556,7 +576,7 @@ function requestIdentity(state?: ModelSessionState): ModelRequestIdentity {
   };
 }
 
-function sessionWithTwoSettledRequests(): ModelSessionState {
+function sessionWithTwoSettledRequests(firstToolResultIsError = false): ModelSessionState {
   let state = createModelSession(identity, "2026-08-22T00:00:00.000Z").state;
   state = append(state, { type: "attempt_started", attempt: 1 });
   state = append(state, {
@@ -597,7 +617,7 @@ function sessionWithTwoSettledRequests(): ModelSessionState {
     toolCallId: "call-1",
     toolName: "flow_exec",
     text: "tests passed",
-    isError: false,
+    isError: firstToolResultIsError,
   });
   state = append(state, {
     type: "model_request_settled",

@@ -193,6 +193,11 @@ export interface ContextCompactionRange {
   readonly bytes: number;
 }
 
+export interface ContextCompactionRangeSelection {
+  readonly lastRequest: number;
+  readonly range: ContextCompactionRange;
+}
+
 export interface ContextCompactionStartedEvent extends ModelSessionEventBase {
   readonly type: "context_compaction_started";
   readonly attempt: number;
@@ -1044,6 +1049,67 @@ export function calculatePortableHistoryIdentity(state: ModelSessionState): {
     sha256: sha256(canonical),
     eventCount: projected.length,
     bytes: Buffer.byteLength(canonical, "utf8"),
+  });
+}
+
+export function selectContextCompactionRange(
+  state: ModelSessionState,
+): ContextCompactionRangeSelection | null {
+  const settledRequests = state.events.filter(
+    (event): event is ModelSessionRequestSettledEvent => event.type === "model_request_settled",
+  );
+  if (
+    settledRequests.length < 2 ||
+    settledRequests.some(
+      (event, index) => event.outcome !== "completed" || event.request !== index + 1,
+    )
+  ) {
+    return null;
+  }
+  const selectedSettlement = settledRequests.at(-2);
+  if (selectedSettlement === undefined) return null;
+  const selected = state.primaryEvents.filter(
+    (
+      event,
+    ): event is
+      | ModelSessionModelMessageEvent
+      | ModelSessionToolCallEvent
+      | ModelSessionToolResultEvent =>
+      event.type !== "user_message_committed" && event.request <= selectedSettlement.request,
+  );
+  const firstCompactable = state.primaryEvents.find(
+    (event) => event.type !== "user_message_committed",
+  );
+  if (
+    selected.length === 0 ||
+    firstCompactable === undefined ||
+    selected[0]?.sequence !== firstCompactable.sequence ||
+    selected.some((event) => event.type === "tool_result_committed" && event.isError)
+  ) {
+    return null;
+  }
+  const calls = selected.filter(
+    (event): event is ModelSessionToolCallEvent => event.type === "tool_call_committed",
+  );
+  const results = selected.filter(
+    (event): event is ModelSessionToolResultEvent => event.type === "tool_result_committed",
+  );
+  if (
+    calls.some((call) => !results.some((result) => result.toolCallId === call.toolCallId)) ||
+    results.some((result) => !calls.some((call) => call.toolCallId === result.toolCallId))
+  ) {
+    return null;
+  }
+  const canonical = canonicalJson(selected.map(projectResumeEvent));
+  return deepFreeze({
+    lastRequest: selectedSettlement.request,
+    range: {
+      firstSequence: selected[0]?.sequence,
+      lastSequence: selectedSettlement.sequence,
+      eventCount: selected.length,
+      sha256: sha256(canonical),
+      bytes: Buffer.byteLength(canonical, "utf8"),
+    },
   });
 }
 
