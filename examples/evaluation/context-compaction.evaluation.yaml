@@ -1,0 +1,65 @@
+apiVersion: flow.synapti.ai/v1alpha1
+kind: ContextCompactionEvaluationPlan
+metadata:
+  id: reference-first-compaction-example
+suite:
+  id: public-compaction-example
+  version: 1.0.0
+  tasks:
+    - id: create-result-with-policy
+      partition: holdout
+      fixture: fixture
+      instruction: TASK.md
+      verifier:
+        kind: filesystem-v1
+        assertions:
+          - kind: sha256
+            path: RESULT.md
+            value: 81e533b9cd5c5eef0f7525ece82115d9794d68549df93f875f99f9a78d72edc9
+          - kind: sha256
+            path: README.md
+            value: 396b55e74d69228bd1ebc1a7c5cf4ad743f258427fc9db9d086d8920ada7b8ad
+      protectedConstraints:
+        - Don't change README.md.
+      constraintAssertionIndexes:
+        - 1
+profile:
+  adapter: flow-workflow-v1
+  workflow: baseline.workflow.yaml
+controls:
+  model:
+    provider: anthropic
+    id: claude-sonnet-4-5
+    thinking: medium
+  budget:
+    maxNodeStarts: 2
+    maxModelTokens: 10000
+    maxCostUsdMicros: 1000000
+    maxExecutionMs: 300000
+    maxArtifactBytes: 1048576
+  network: deny
+  retry:
+    providerRetries: 0
+    harnessRetries: 0
+  compaction:
+    minimumReductionBytes: 1024
+    summaryOutputTokenLimits:
+      - 512
+      - 256
+seeds:
+  - 11
+  - 29
+  - 47
+  - 71
+  - 101
+  - 131
+modes:
+  - none
+  - references
+  - references-and-summary
+order: six-order-balanced-v1
+comparison:
+  minimumPairedTrials: 6
+  maxVerifiedSuccessRegression: 0
+  maxTotalTokenIncreaseRate: 0.1
+  maxConstraintLosses: 0

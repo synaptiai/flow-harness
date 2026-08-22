@@ -62,6 +62,27 @@ identities. A run never builds, pulls, or updates the image.
 The default store is `.flow/evaluations/<evaluation-id>/`. `--evaluations-dir <path>` selects an
 explicit store for run, inspect, and export. `eval export` refuses to overwrite an existing file.
 
+## Context compaction evaluation
+
+The dedicated three-mode evaluator compares complete portable history, verified artifact
+references, and reference-first bounded summaries:
+
+```sh
+node dist/cli/main.js eval compaction validate \
+  examples/evaluation/context-compaction.evaluation.yaml
+node dist/cli/main.js eval compaction run \
+  examples/evaluation/context-compaction.evaluation.yaml
+```
+
+It uses a distinct `ContextCompactionEvaluationPlan`, a six-order balanced schedule, protected
+constraint assertions, and the store at
+`.flow/evaluations/context-compaction/<evaluation-id>/`. Inspect and export use `eval compaction
+inspect` and `eval compaction export`. The report can never authorize production activation.
+
+Read [Evaluate reference-first context compaction](guides/context-compaction.md) for the plan,
+runtime, metrics, verdict, and recovery contract. The ordinary two-profile plan and activation
+rules below don't apply to this specialized experiment.
+
 ## Plan contract
 
 An `EvaluationPlan` contains:
