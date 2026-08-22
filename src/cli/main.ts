@@ -5058,6 +5058,7 @@ function effectiveHarnessStateView(state: EffectiveHarnessState) {
       workflowDigest: state.workflow.workflowDigest,
     },
     ...(state.rootPackage === undefined ? {} : { rootPackage: state.rootPackage }),
+    packageClosureDigest: calculateCapabilitySnapshotDigest(state.packages),
     packages: state.packages.map((item) =>
       item.kind === "agent-skill"
         ? Object.freeze({ kind: item.kind, name: item.name, digest: item.digest })

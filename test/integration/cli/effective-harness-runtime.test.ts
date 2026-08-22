@@ -739,6 +739,9 @@ describe("effective harness runtime CLI", () => {
       inspectOutput.stderr.join("\n"),
     ).toBe(0);
     const inspected = JSON.parse(inspectOutput.stdout.join("\n"));
+    expect(inspected.effectiveHarness.active.packageClosureDigest).toBe(
+      calculateCapabilitySnapshotDigest(artifact.candidateState.packages),
+    );
     expect(inspected.effectiveHarness.active.supplementalMemory).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
