@@ -352,6 +352,240 @@ describe("supplemental-memory candidates", () => {
     );
   });
 
+  it("atomically replaces one entry and explicitly rebinds every incident relationship", () => {
+    const baseline = stateWithRelatedMemory();
+    const prior = baseline.supplementalMemory?.find((entry) => entry.id === "reviewed-fixture");
+    const other = baseline.supplementalMemory?.find((entry) => entry.id === "other-fact");
+    const existing = baseline.supplementalMemoryRelationships?.relationships[0];
+    if (prior === undefined || other === undefined || existing === undefined) {
+      throw new Error("relationship fixture is incomplete");
+    }
+    const replacement = "Check the rebound fixture and its generated checksum.";
+    const proofLocator = { runId: "proof-run", nodeId: "implement", attempt: 2 };
+    const sourceText = JSON.stringify({
+      apiVersion: "flow.synapti.ai/v1alpha1",
+      kind: "SupplementalMemoryCandidate",
+      metadata: { id: "replace-related-fixture", version: "1.0.0" },
+      scope: memoryScope(baseline.workflowId),
+      baseline: baselineIdentity(baseline),
+      change: {
+        kind: "replace",
+        beforeSha256: prior.sha256,
+        value: replacement,
+      },
+      relationships: {
+        remove: [{ id: existing.id, beforeDigest: existing.digest }],
+        add: [
+          {
+            id: existing.id,
+            predicate: "supports",
+            from: { entryId: prior.id, entrySha256: sha256(replacement) },
+            to: { entryId: other.id, entrySha256: other.sha256 },
+            evidence: [proofLocator],
+          },
+          {
+            id: "fixture-revision",
+            predicate: "supersedes",
+            from: { entryId: prior.id, entrySha256: sha256(replacement) },
+            to: { entryId: prior.id, entrySha256: prior.sha256 },
+            evidence: [proofLocator],
+          },
+        ],
+      },
+    });
+    const source = parseSupplementalMemoryCandidateText(sourceText);
+
+    const projected = projectSupplementalMemoryCandidate({
+      manifestProvenance: "replace-related.candidate.json",
+      sourceSha256: sha256(sourceText),
+      source,
+      baseline,
+      relationshipEvidence: [
+        {
+          ...proofLocator,
+          sequence: 9,
+          eventDigest: "9".repeat(64),
+        },
+      ],
+    });
+
+    expect(projected.identity.relationships).toEqual({
+      baselineAssessmentDigest: baseline.supplementalMemoryRelationships?.assessment.digest,
+      projectedAssessmentDigest: projected.state.supplementalMemoryRelationships?.assessment.digest,
+      removed: [{ id: existing.id, digest: existing.digest }],
+      added: projected.state.supplementalMemoryRelationships?.relationships.map(
+        ({ id, digest }) => ({
+          id,
+          digest,
+        }),
+      ),
+    });
+    expect(projected.state.supplementalMemoryRelationships?.relationships).toMatchObject([
+      {
+        id: "fixture-revision",
+        predicate: "supersedes",
+        from: { entryId: prior.id, entrySha256: sha256(replacement) },
+        to: { entryId: prior.id, entrySha256: prior.sha256 },
+      },
+      {
+        id: existing.id,
+        predicate: "supports",
+        from: { entryId: prior.id, entrySha256: sha256(replacement) },
+        to: { entryId: other.id, entrySha256: other.sha256 },
+      },
+    ]);
+  });
+
+  it("rejects replacement or removal unless all prior incident relationships are declared", () => {
+    const baseline = stateWithRelatedMemory();
+    const prior = baseline.supplementalMemory?.find((entry) => entry.id === "reviewed-fixture");
+    if (prior === undefined) throw new Error("relationship fixture is incomplete");
+    const documents = [
+      {
+        ...addDocument(baseline),
+        change: {
+          kind: "replace" as const,
+          beforeSha256: prior.sha256,
+          value: "Replacement without an incident-edge declaration.",
+        },
+      },
+      {
+        ...addDocument(baseline),
+        change: { kind: "remove" as const, beforeSha256: prior.sha256 },
+      },
+    ];
+
+    for (const document of documents) {
+      const sourceText = JSON.stringify(document);
+      expect(() =>
+        projectSupplementalMemoryCandidate({
+          manifestProvenance: "undeclared-incident.candidate.json",
+          sourceSha256: sha256(sourceText),
+          source: parseSupplementalMemoryCandidateText(sourceText),
+          baseline,
+        }),
+      ).toThrowError(
+        expect.objectContaining<Partial<SupplementalMemoryCandidateError>>({
+          code: "invalid_projection",
+        }),
+      );
+    }
+  });
+
+  it("rejects relationship changes that are stale, nonincident, unresolved, or model-authored", () => {
+    const baseline = stateWithRelatedMemory();
+    const prior = baseline.supplementalMemory?.find((entry) => entry.id === "reviewed-fixture");
+    const existing = baseline.supplementalMemoryRelationships?.relationships[0];
+    if (prior === undefined || existing === undefined) throw new Error("relationship fixture");
+    const replacement = "Replacement with invalid relationship authority.";
+    const base = {
+      ...addDocument(baseline),
+      change: {
+        kind: "replace" as const,
+        beforeSha256: prior.sha256,
+        value: replacement,
+      },
+    };
+    const cases = [
+      {
+        name: "stale removal",
+        relationships: {
+          remove: [{ id: existing.id, beforeDigest: "f".repeat(64) }],
+          add: [],
+        },
+        evidence: [],
+      },
+      {
+        name: "nonincident addition",
+        relationships: {
+          remove: [{ id: existing.id, beforeDigest: existing.digest }],
+          add: [
+            {
+              id: "nonincident",
+              predicate: "supports",
+              from: {
+                entryId: "other-fact",
+                entrySha256: baseline.supplementalMemory?.[0]?.sha256,
+              },
+              to: { entryId: "other-fact", entrySha256: baseline.supplementalMemory?.[0]?.sha256 },
+              evidence: [{ runId: "proof-run", nodeId: "implement", attempt: 2 }],
+            },
+          ],
+        },
+        evidence: [
+          {
+            runId: "proof-run",
+            nodeId: "implement",
+            attempt: 2,
+            sequence: 9,
+            eventDigest: "9".repeat(64),
+          },
+        ],
+      },
+      {
+        name: "unresolved evidence",
+        relationships: {
+          remove: [{ id: existing.id, beforeDigest: existing.digest }],
+          add: [
+            {
+              id: "rebound",
+              predicate: "supports",
+              from: { entryId: prior.id, entrySha256: sha256(replacement) },
+              to: {
+                entryId: "other-fact",
+                entrySha256: baseline.supplementalMemory?.find((entry) => entry.id === "other-fact")
+                  ?.sha256,
+              },
+              evidence: [{ runId: "missing-run", nodeId: "implement", attempt: 1 }],
+            },
+          ],
+        },
+        evidence: [],
+      },
+    ];
+
+    for (const item of cases) {
+      const sourceText = JSON.stringify({ ...base, relationships: item.relationships });
+      expect(
+        () =>
+          projectSupplementalMemoryCandidate({
+            manifestProvenance: `${item.name}.candidate.json`,
+            sourceSha256: sha256(sourceText),
+            source: parseSupplementalMemoryCandidateText(sourceText),
+            baseline,
+            relationshipEvidence: item.evidence,
+          }),
+        item.name,
+      ).toThrowError(
+        expect.objectContaining<Partial<SupplementalMemoryCandidateError>>({
+          code: "identity_mismatch",
+        }),
+      );
+    }
+
+    const generated = generatedAddDocument(baselineState());
+    const generatedSourceText = JSON.stringify({
+      ...generated,
+      relationships: {
+        remove: [],
+        add: [
+          {
+            id: "model-link",
+            predicate: "supports",
+            from: { entryId: "reviewed-fixture", entrySha256: sha256(memoryContent) },
+            to: { entryId: "reviewed-fixture", entrySha256: sha256(memoryContent) },
+            evidence: [{ runId: "proof-run", nodeId: "implement", attempt: 1 }],
+          },
+        ],
+      },
+    });
+    expect(() => parseSupplementalMemoryCandidateText(generatedSourceText)).toThrowError(
+      expect.objectContaining<Partial<SupplementalMemoryCandidateError>>({
+        code: "invalid_schema",
+      }),
+    );
+  });
+
   it("removes one exact entry and restores the memory-free state identity", () => {
     const memoryFree = baselineState();
     const baseline = stateWithMemory(memoryContent);
@@ -638,6 +872,79 @@ function stateWithMemory(content: string) {
       },
     ],
   });
+}
+
+function stateWithRelatedMemory() {
+  const target = memoryTarget("memory-workflow");
+  const otherContent = "Retain this related reviewed fact.";
+  return createEffectiveHarnessState({
+    scopeDigest,
+    workflowSource: rootAgentWorkflow(),
+    packages: [],
+    supplementalMemory: [
+      { id: "reviewed-fixture", target, content: memoryContent },
+      { id: "other-fact", target, content: otherContent },
+    ],
+    supplementalMemoryRelationships: [
+      {
+        id: "fixture-support",
+        target,
+        predicate: "supports",
+        from: { entryId: "reviewed-fixture", entrySha256: sha256(memoryContent) },
+        to: { entryId: "other-fact", entrySha256: sha256(otherContent) },
+        evidence: [
+          {
+            runId: "prior-proof-run",
+            nodeId: "implement",
+            attempt: 1,
+            sequence: 4,
+            eventDigest: "4".repeat(64),
+          },
+        ],
+      },
+    ],
+  });
+}
+
+function generatedAddDocument(baseline: ReturnType<typeof baselineState>) {
+  return {
+    ...addDocument(baseline),
+    generation: {
+      version: 1,
+      kind: "model",
+      provider: "test",
+      model: "deterministic",
+      thinking: "medium",
+      systemPromptSha256: "0".repeat(64),
+      requestDigest: "1".repeat(64),
+      responseDigest: "2".repeat(64),
+      limits: {
+        candidates: 1,
+        turns: 1,
+        maxInputBytes: 1_048_576,
+        maxOutputBytes: 65_536,
+        maxOutputTokens: 8_192,
+        timeoutMs: 300_000,
+      },
+      operation: "add",
+      priorSha256: null,
+      evidence: [
+        {
+          path: "tuning-evidence.json",
+          sourceSha256: "3".repeat(64),
+          evidenceDigest: "4".repeat(64),
+          planDigest: "5".repeat(64),
+        },
+      ],
+      usage: {
+        inputTokens: 1,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        outputTokens: 1,
+        costUsdMicros: 0,
+      },
+    },
+  };
 }
 
 function memoryScope(workflowId: string) {
