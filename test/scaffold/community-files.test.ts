@@ -403,7 +403,8 @@ describe("public repository contracts", () => {
     expect(readme).toContain("resource_exhausted");
     expect(readme).toContain("maxArtifactBytes");
     expect(readme).toMatch(/artifactBytes.*UTF-8.*stdout \+ stderr/is);
-    expect(readme).toMatch(/do not claim an artifact store/is);
+    expect(readme).toMatch(/content-addressed retained command artifacts/is);
+    expect(readme).toMatch(/run artifact budget.*logical terminal evidence/is);
     expect(readme).toMatch(/No prepaid hard model-cost cap/is);
     expect(architecture).toMatch(/durable resource accounting/i);
     expect(architecture).toMatch(/recursively re-reduces every settled child\s+ledger/i);
@@ -414,10 +415,11 @@ describe("public repository contracts", () => {
     expect(recovery).toContain("run_budget_exhausted");
     expect(recovery).toMatch(/parent child outcome.*all five resource totals/is);
     expect(roadmap).toMatch(
-      /model tokens.*reported cost.*active execution time.*retained executor-output artifacts.*Implemented/is,
+      /model tokens.*reported cost.*active execution time.*retained\s+executor-output artifacts.*Implemented/is,
     );
     expect(testing).toMatch(/Focused artifact-budget tests.*multibyte UTF-8 accounting/is);
-    expect(testing).toMatch(/do not claim an artifact store.*physical disk quota/is);
+    expect(testing).toMatch(/Separate retained-artifact tests/is);
+    expect(testing).toMatch(/don't claim a project disk quota/is);
     expect(childExampleSource.match(/maxArtifactBytes:/g)).toHaveLength(2);
     expect(optimizationExampleSource.match(/maxArtifactBytes:/g)).toHaveLength(2);
 

@@ -47,13 +47,16 @@ on it.
 - One append-only, project-scoped goal workspace with full revisions, exact compare-and-set updates,
   evidence references, and immutable run selection.
 - Run budgets for starts, tokens, reported cost, active time, and retained artifacts.
+- Content-addressed oversized command output with immutable producer references, bounded same-run
+  reads, operator inspection, shared retention, and exact-plan pruning.
 - Guided credential-free, zero-tool provider, and bounded provider-backed coding quick starts.
 
 The coding path supports explicit Anthropic and OpenAI preview selections in an empty directory. It
 uses only read, list, and hash-bound edit tools, then requires deterministic exact-byte
 verification. Read [Complete the coding quick start](guides/coding-quickstart.md).
 
-Read [Maintain a durable goal workspace](guides/goal-workspaces.md), the
+Read [Maintain a durable goal workspace](guides/goal-workspaces.md),
+[Retain and inspect command artifacts](guides/retained-artifacts.md), the
 [Workflow specification](workflow-spec.md), and [Architecture](architecture.md).
 
 ### Semantic code context

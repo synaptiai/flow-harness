@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmod, realpath, rm } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
-
+import type { ArtifactStore } from "../application/artifact-store.js";
 import type {
   AgentCommandApprovalDecisionChannel,
   NodeEffectReconciler,
@@ -20,6 +20,7 @@ import { compileWorkflowFromSnapshot } from "../application/workflow-package-adm
 import type { FlowSandboxProfile } from "../domain/config/resolver.js";
 import { type RunState, reduceRunEvents } from "../domain/run/events.js";
 import { LocalAgentCommandApprovalChannel } from "../infrastructure/fs/local-agent-command-approval-channel.js";
+import { LocalArtifactStore } from "../infrastructure/fs/local-artifact-store.js";
 import type { LocalSupervisorStore } from "../infrastructure/fs/local-supervisor-store.js";
 import { createProductionWorkspaceIsolator } from "../infrastructure/runtime/production-workspace-isolator.js";
 import {
@@ -43,6 +44,7 @@ export interface ExecuteWorkerJobOptions {
   readonly createExecutor?: (profile: FlowSandboxProfile, projectRoot?: string) => NodeExecutor;
   readonly effectReconciler: NodeEffectReconciler;
   readonly createRunStore: (rootDirectory: string) => RecoverableRunEventStore;
+  readonly createArtifactStore?: (projectRoot: string) => ArtifactStore;
   readonly createAgentCommandApprovalChannel?: (
     rootDirectory: string,
   ) => AgentCommandApprovalDecisionChannel;
@@ -222,16 +224,27 @@ export async function executeWorkerJob(
 
     if (!completionSettled) {
       const runStore = options.createRunStore(options.store.runsDirectory);
-      const protectedPaths = Object.freeze([
+      const recordedProtectedPaths = Object.freeze([
         ...new Set([options.store.runsDirectory, ...(job.protectedPaths ?? [])]),
       ]);
       const projectRoot =
-        job.projectRoot ?? (await inferLegacyProjectRoot(job.cwd, protectedPaths));
+        job.projectRoot ?? (await inferLegacyProjectRoot(job.cwd, recordedProtectedPaths));
+      const protectedPaths = Object.freeze([
+        ...new Set([
+          ...recordedProtectedPaths,
+          ...(projectRoot === undefined ? [] : [join(projectRoot, ".flow")]),
+        ]),
+      ]);
+      const artifactStore =
+        projectRoot === undefined
+          ? undefined
+          : (options.createArtifactStore ?? ((root) => new LocalArtifactStore(root)))(projectRoot);
       const runOptions = {
         cwd: job.cwd,
         ...(projectRoot === undefined ? {} : { projectRoot }),
         protectedPaths,
         store: runStore,
+        ...(artifactStore === undefined ? {} : { artifactStore }),
         executor,
         effectReconciler: options.effectReconciler,
         workspaceIsolator: (options.createWorkspaceIsolator ?? createProductionWorkspaceIsolator)(

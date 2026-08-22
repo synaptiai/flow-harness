@@ -6,6 +6,7 @@ import { unavailableEvaluationMetrics } from "../domain/evaluation/records.js";
 import type { AgentModelUsage } from "../domain/run/budget.js";
 import type { AgentEvidence, NodeEvidence, RunState } from "../domain/run/events.js";
 import type { CompiledNode, CompiledWorkflow } from "../domain/workflow/types.js";
+import type { ArtifactStore } from "./artifact-store.js";
 import type { NodeExecutor, RunEventStore, WorkspaceIsolator } from "./ports.js";
 import { runWorkflow } from "./run-workflow.js";
 
@@ -78,6 +79,7 @@ export interface FlowWorkflowEvaluationAdapterDependencies {
   readonly executor: NodeExecutor;
   readonly createStore: (runId: string) => RunEventStore;
   readonly workspaceIsolator?: WorkspaceIsolator;
+  readonly artifactStore?: ArtifactStore;
   readonly clockMs?: () => number;
   readonly now?: () => Date;
   readonly signal?: AbortSignal;
@@ -114,6 +116,9 @@ export class FlowWorkflowEvaluationAdapter implements HarnessEvaluationAdapter {
         ...(this.dependencies.workspaceIsolator === undefined
           ? {}
           : { workspaceIsolator: this.dependencies.workspaceIsolator }),
+        ...(this.dependencies.artifactStore === undefined
+          ? {}
+          : { artifactStore: this.dependencies.artifactStore }),
         ...(this.dependencies.now === undefined ? {} : { now: this.dependencies.now }),
         ...(this.dependencies.signal === undefined ? {} : { signal: this.dependencies.signal }),
       });

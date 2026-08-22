@@ -706,6 +706,44 @@ digest. It then appends a rollback transition. It does not change an existing ru
 policy, rewrite source files, or delete any state or artifact. Tuning-evidence export remains an
 atomic no-overwrite operation.
 
+## Retained artifact recovery
+
+The project retained-artifact store separates immutable run references from mutable physical
+availability. A missing, changed, or pruned blob doesn't erase the run reference. Inspection reports
+the unresolved availability, and reads fail with a fixed error.
+
+Blob publication precedes catalog publication. If publication stops in that interval, an exact
+prune preview can report the safe finalized blob as an orphan. Publication can also stop after it
+creates the final hard link. The next lock owner then verifies and removes the temporary link before
+it opens the finalized blob.
+
+If catalog publication succeeds but the producing run event does not, `flow artifacts list` still
+shows the retained reference and producer tuple. Compare that tuple with the run ledger before you
+release it. An active reader owns the same nonblocking lock as pruning and mutation. Retry a busy
+operation only after the reader settles.
+
+Cancellation before a durable mutation preserves the caller's reason and adds no catalog authority.
+After catalog publication or the first blob removal in an approved plan, Flow ignores late
+cancellation. It settles the exact committed operation and returns its verified result.
+
+`artifact commit is uncertain` means that a blob or catalog mutation may be durable. Don't retry
+blindly. List and inspect the current catalog, then create and review a fresh prune plan.
+`artifact store settlement is uncertain` means that lock cleanup also failed. Stop all Flow
+processes that use the project and follow the lock procedure below before another artifact command.
+
+The store doesn't automatically break `.flow/artifacts/mutation.lock`. If every artifact command
+reports that the store is busy after a process stops:
+
+1. Stop all Flow processes that use the project.
+2. Back up `.flow/artifacts`.
+3. Confirm that no Flow process still owns the project.
+4. Remove only `.flow/artifacts/mutation.lock`.
+5. Run `flow artifacts list`, then inspect affected references.
+6. Preview pruning and review every descriptor before you apply the exact plan.
+
+Don't edit the catalog, blob filenames, or blob bytes. Preserve unexpected or unsafe state for
+diagnosis.
+
 ## Error codes and outcomes
 
 | Code | Meaning | Operator action |

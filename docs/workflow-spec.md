@@ -537,8 +537,13 @@ The full observation is retained rather than clipped to the limit.
 Artifact equality is terminal. One bounded node may overshoot, and a complete already-admitted
 concurrency wave quiesces before exhaustion is recorded; every declaration-ordered outcome remains
 charged. Per-node output bounds cap the overshoot. This contract budgets logical retained evidence
-payloads only: it does not add content-addressed storage, spill-to-disk, download, retention,
-garbage collection, physical disk accounting, or recovery of executor-truncated bytes.
+payloads only. A separate project artifact store can retain exact agent-command streams that exceed
+the preview and remain within its 1 MiB command-stream capture bound. The durable command settlement
+binds an opaque reference to the full-stream digest, byte count, media type, and exact producer
+tuple.
+Physical deduplication, retention, and pruning don't change the run budget. Flow doesn't claim a
+project disk quota or recover streams that exceed the command capture bound. The underlying artifact
+format permits a 16 MiB object for producers that don't require this in-memory command capture.
 
 An execution budget reduces a command, agent, or verifier-driver timeout to the remaining active milliseconds.
 Approval-required commands persist and display that reduced timeout in the exact operation, so a
@@ -1084,7 +1089,8 @@ New command evidence records `anthropic-sandbox-runtime`, its exact installed ve
     args: [test]
 ```
 
-The embedded Pi adapter permits only Flow-owned `read`, `ls`, `edit`, `exec`, and `semantic` tools.
+The embedded Pi adapter permits only Flow-owned `read`, `ls`, `edit`, `exec`, `semantic`, and
+`artifact` tools.
 The allowlist can be empty, and every name must be unique. A tool is unavailable unless the node
 declares it.
 

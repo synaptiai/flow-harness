@@ -11,6 +11,7 @@ import type {
   NodeEffectJournal,
   NodeExecutionContext,
 } from "../../../../src/application/ports.js";
+import { createArtifactReference } from "../../../../src/domain/artifact/reference.js";
 import { createAgentSkillSession } from "../../../../src/domain/capability/agent-skill-session.js";
 import { createCapabilitySnapshot } from "../../../../src/domain/capability/agent-skills.js";
 import { PolicyBroker } from "../../../../src/domain/policy/broker.js";
@@ -52,6 +53,24 @@ describe("workspace-confined Pi tools", () => {
     const policy = policyBroker(["process.execute"]);
     const journalEvents: string[] = [];
     const toolController = new AbortController();
+    const fullStdout = "tests ran plus more";
+    const stdoutArtifact = createArtifactReference({
+      descriptor: {
+        digest: `sha256:${sha256(fullStdout)}`,
+        size: Buffer.byteLength(fullStdout),
+        mediaType: "application/octet-stream",
+      },
+      producer: {
+        kind: "agent-command",
+        runId: "run-tools",
+        workflowId: "tools-workflow",
+        nodeId: "analyze",
+        attempt: 1,
+        commandId: "command-3",
+        commandSequence: 1,
+        stream: "stdout",
+      },
+    });
     const executor: AgentCommandExecutor = {
       executeAgentCommand: async (request, context) => {
         journalEvents.push("execute");
@@ -72,13 +91,13 @@ describe("workspace-confined Pi tools", () => {
             signal: null,
             stdout: "tests ran",
             stderr: "one failed",
-            stdoutHash: sha256("tests ran"),
+            stdoutHash: sha256(fullStdout),
             stderrHash: sha256("one failed"),
             stdoutRetainedHash: sha256("tests ran"),
             stderrRetainedHash: sha256("one failed"),
             stdoutRetainedBytes: 9,
             stderrRetainedBytes: 10,
-            stdoutTruncated: false,
+            stdoutTruncated: true,
             stderrTruncated: false,
             timedOut: false,
             aborted: false,
@@ -91,6 +110,7 @@ describe("workspace-confined Pi tools", () => {
               profile: "workspace-write-network-deny-v1",
               policyDigest: "a".repeat(64),
             },
+            stdoutArtifact,
           },
         };
       },
@@ -128,7 +148,10 @@ describe("workspace-confined Pi tools", () => {
     expect(result.content).toContainEqual({
       type: "text",
       text: expect.stringMatching(
-        /status: failed[\s\S]*exit code: 1[\s\S]*process containment: linux-pid-namespace[\s\S]*termination status: not-required[\s\S]*sandbox backend: test-sandbox[\s\S]*sandbox profile: workspace-write-network-deny-v1[\s\S]*tests ran[\s\S]*one failed/i,
+        new RegExp(
+          `status: failed[\\s\\S]*exit code: 1[\\s\\S]*process containment: linux-pid-namespace[\\s\\S]*termination status: not-required[\\s\\S]*sandbox backend: test-sandbox[\\s\\S]*sandbox profile: workspace-write-network-deny-v1[\\s\\S]*stdout artifact: ${stdoutArtifact.reference}[\\s\\S]*tests ran[\\s\\S]*one failed`,
+          "i",
+        ),
       ),
     });
     expect(policy.snapshot()).toEqual([

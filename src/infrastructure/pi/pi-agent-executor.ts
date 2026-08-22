@@ -9,7 +9,7 @@ import {
   type SessionStats,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-
+import type { ArtifactStore } from "../../application/artifact-store.js";
 import type {
   AgentExecutor,
   NodeExecutionContext,
@@ -73,6 +73,7 @@ export interface PiAgentRunRequest {
     readonly selected: readonly string[];
   };
   readonly semanticSession?: SemanticToolSession;
+  readonly artifactStore?: ArtifactStore;
   readonly signal?: AbortSignal;
 }
 
@@ -389,6 +390,7 @@ export class PiAgentExecutor implements AgentExecutor {
           protectedPaths: context.protectedPaths,
           effectRecorder,
           commandRecorder,
+          ...(context.artifactStore === undefined ? {} : { artifactStore: context.artifactStore }),
           ...(semanticSession === undefined ? {} : { semanticSession }),
           ...(context.capabilitySnapshot === undefined || node.agent.skills.length === 0
             ? {}
@@ -851,6 +853,7 @@ export class EmbeddedPiAgentRunner implements PiAgentRunner {
         ...(request.semanticSession === undefined
           ? {}
           : { semanticSession: request.semanticSession }),
+        ...(request.artifactStore === undefined ? {} : { artifactStore: request.artifactStore }),
         ...(capabilitySession === undefined ? {} : { capabilitySession }),
       },
     );
@@ -1001,6 +1004,8 @@ function policyActionsForTools(
         return "process.execute";
       case "semantic":
         return "filesystem.read";
+      case "artifact":
+        return "artifact.read";
       default:
         return assertNever(tool);
     }

@@ -100,7 +100,9 @@ containment milestone. It is not VM-grade or multi-tenant isolation.
 - Supported open edits are reconciled before any future retry decision. *(Implemented for exact hash/mode observation under the shared target lock.)*
 - Interrupted agent attempts may start a fresh numbered attempt only under a persisted opt-in, bounded attempt cap, and replay proof that every effect was not applied. *(Implemented for read-only and `flow.effects/v1` edit attempts; applied, unknown, open, legacy writable, and unaccountable resource states remain blocked.)*
 - A supervisor owns detached workers, health, cancellation, and event replay. *(Implemented with strict project/operator capacity configuration, durable bounded FIFO admission, explicit accepted/queued/rejected outcomes, queued cancellation without execution, authenticated restart adoption, policy binding, and bounded cursor replay.)*
-- Budgets cover attempts/node starts, model tokens, reported cost, active execution time, and retained executor-output artifacts. *(Implemented with replay-derived UTF-8 artifact accounting, terminal equality/overshoot settlement, attached/detached inspection, concurrency-wave quiescence, and child ceiling reservation plus exact tree roll-up. External artifact storage, spill, download, retention, and garbage collection remain separate.)*
+- Budgets cover attempts/node starts, model tokens, reported cost, active execution time, and retained
+  executor-output artifacts. *(Implemented.)* Replay derives exact UTF-8 accounting and terminal
+  exhaustion. Physical content-addressed retention is separate and doesn't change the run budget.
 - Human wait states survive client detachment. *(Implemented for command and evidence-bound graph waits plus live attached/detached agent command calls; opaque continuation after the owner process dies remains separate.)*
 
 ## Gate 5: Graph and loop completeness
@@ -320,12 +322,16 @@ replayable, and visible in the selected profile.
 
 ### Slice 9.2: Retain artifacts by reference
 
+**Implemented in current source.**
+
 - Store an oversized tool result or intermediate artifact under a content digest.
 - Bind its exact byte count, media type, producer identity, and retention state.
 - Put only a bounded preview and opaque reference in model context. Reopening a reference must pass
   through Flow policy and byte limits.
 - Add deterministic inspection, retention, pruning, and missing-artifact behavior.
 - Never reconstruct a missing or changed artifact from a model summary.
+- Add reviewed catalog archival or segmentation for projects that approach the immutable
+  4,096-reference catalog bound. *(Not implemented.)*
 
 ### Slice 9.3: Add read-only semantic code tools
 

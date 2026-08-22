@@ -1,5 +1,6 @@
 import type { AgentCommandRequest } from "../domain/agent-command.js";
 import type { AgentCommandApprovalRequest } from "../domain/approval/command-approval.js";
+import type { ArtifactProducer } from "../domain/artifact/reference.js";
 import type { CapabilitySnapshot } from "../domain/capability/agent-skills.js";
 import type { VerifierPackageUseEvidence } from "../domain/capability/verifier-packages.js";
 import type { PolicyDecision } from "../domain/policy/types.js";
@@ -21,6 +22,7 @@ import type {
   CompiledVerifierNode,
   EvidenceSourceField,
 } from "../domain/workflow/types.js";
+import type { ArtifactStore } from "./artifact-store.js";
 
 export interface RunEventStore {
   append(event: RunEvent): Promise<void>;
@@ -135,6 +137,7 @@ export interface CandidateWorkspaceManager {
 export interface NodeExecutionContext {
   readonly runId: string;
   readonly workflowId: string;
+  readonly nodeId?: string;
   readonly attempt: number;
   readonly cwd: string;
   readonly projectRoot?: string;
@@ -152,6 +155,8 @@ export interface NodeExecutionContext {
   readonly agentExactModelSettings?: boolean;
   readonly agentMaxOutputBytes?: number;
   readonly agentMaxOutputTokens?: number;
+  readonly artifactStore?: ArtifactStore;
+  readonly agentCommandArtifactProducer?: Omit<ArtifactProducer, "stream">;
   readonly signal?: AbortSignal;
 }
 

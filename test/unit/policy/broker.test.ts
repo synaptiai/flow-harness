@@ -21,12 +21,22 @@ describe("PolicyBroker", () => {
     expect([
       classifyPolicyAction("filesystem.read"),
       classifyPolicyAction("filesystem.list"),
+      classifyPolicyAction("artifact.read"),
       classifyPolicyAction("filesystem.write"),
       classifyPolicyAction("process.execute"),
       classifyPolicyAction("network.request"),
       classifyPolicyAction("credential.read"),
       classifyPolicyAction("filesystem.delete"),
-    ]).toEqual(["read", "read", "write", "execute", "network", "credentials", "destructive"]);
+    ]).toEqual([
+      "read",
+      "read",
+      "read",
+      "write",
+      "execute",
+      "network",
+      "credentials",
+      "destructive",
+    ]);
   });
 
   it("allows a declared in-boundary operation with exact attribution and a stable digest", () => {

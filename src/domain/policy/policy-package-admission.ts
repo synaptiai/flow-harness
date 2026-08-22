@@ -203,6 +203,8 @@ function builtInToolPermission(tool: AgentToolName): PolicyAction {
       return "process.execute";
     case "semantic":
       return "filesystem.read";
+    case "artifact":
+      return "artifact.read";
   }
 }
 

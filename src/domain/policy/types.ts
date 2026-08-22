@@ -13,7 +13,8 @@ export type PolicyAction =
   | "filesystem.delete"
   | "process.execute"
   | "network.request"
-  | "credential.read";
+  | "credential.read"
+  | "artifact.read";
 
 export interface PolicyAttribution {
   readonly runId: string;

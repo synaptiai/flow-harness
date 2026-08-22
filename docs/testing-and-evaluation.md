@@ -282,8 +282,12 @@ The remaining examples use the real argv-only command executor through the produ
 Focused artifact-budget tests prove multibyte UTF-8 accounting for successful and failed command,
 agent, verifier, and child evidence; equality and bounded concurrency-wave overshoot; legacy child
 replay; recovery identity; fresh-retry neutrality before terminal evidence; attached inspection;
-and detached-worker transport. They do not claim an artifact store, spill, download, retention,
-garbage collection, or a physical disk quota.
+and detached-worker transport. Separate retained-artifact tests prove content and producer digests,
+bounded previews, content-free catalog listing, same-run policy reads, exact byte windows, and
+opened-inode checks. They prove crash-left blob settlement, immutable replay references,
+inspection, shared retention, exact catalog bounds, and fixed lock-settlement errors. They also prove
+the exact 1 MiB command-capture boundary across multiple chunks, orphan plans, stale-plan rejection,
+and exact-plan pruning. The tests don't claim a project disk quota.
 
 The evidence-approval example and focused tests prove exact graph request, approve, deny, omission,
 crash repair, quiescent concurrency, bounded-loop, budget, goal, and detached-worker behavior.

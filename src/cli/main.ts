@@ -17,6 +17,7 @@ import {
   activateCapabilityRepositoryCandidate,
   CapabilityRepositoryActivationError,
 } from "../application/activate-capability-repository-candidate.js";
+import type { ArtifactStore } from "../application/artifact-store.js";
 import { CapabilityMetadataCandidateError } from "../application/capability-metadata-candidate.js";
 import { CapabilityMetadataCandidateStoreError } from "../application/capability-metadata-candidate-store.js";
 import {
@@ -329,6 +330,10 @@ import {
   LocalAgentSkillPackageCandidatePublisherError,
   publishLocalAgentSkillPackageCandidate,
 } from "../infrastructure/fs/local-agent-skill-package-candidate-publisher.js";
+import {
+  LocalArtifactStore,
+  LocalArtifactStoreError,
+} from "../infrastructure/fs/local-artifact-store.js";
 import { LocalCapabilityMetadataCandidateStore } from "../infrastructure/fs/local-capability-metadata-candidate-store.js";
 import {
   CapabilityPackageStoreError,
@@ -568,6 +573,11 @@ Usage:
   flow web <run-id> --actor <label> [--presentation <name>@<exact-version>] [--runs-dir <path>]
   flow acp --actor <label> [--runs-dir <path>]
   flow inspect <run-id> [--runs-dir <path>]
+  flow artifacts list
+  flow artifacts inspect <artifact:sha256>
+  flow artifacts retain <artifact:sha256>
+  flow artifacts release <artifact:sha256>
+  flow artifacts prune [--apply --expected-plan-digest <sha256>]
   flow supervisor status [--runs-dir <path>]
   flow supervisor shutdown [--runs-dir <path>]
   flow --help
@@ -621,6 +631,7 @@ export interface CliDependencies {
   readonly createNodeExecutor: (profile: FlowSandboxProfile, projectRoot?: string) => NodeExecutor;
   readonly effectReconciler: NodeEffectReconciler;
   readonly createStore: (rootDirectory: string) => RecoverableRunEventStore;
+  readonly createArtifactStore: (projectRoot: string) => ArtifactStore;
   readonly createAgentCommandApprovalChannel: (
     rootDirectory: string,
   ) => AgentCommandApprovalDecisionChannel;
@@ -765,6 +776,8 @@ export async function main(
         return await acpCommand(args.slice(1), dependencyOverrides);
       case "inspect":
         return await inspectCommand(args.slice(1), io, dependencyOverrides);
+      case "artifacts":
+        return await artifactsCommand(args.slice(1), io, dependencyOverrides);
       case "supervisor":
         return await supervisorCommand(args.slice(1), io, dependencyOverrides);
       case "__supervisor":
@@ -858,6 +871,10 @@ export async function main(
       return 1;
     }
     if (error instanceof RunStoreError) {
+      io.stderr(`${error.code}: ${error.message}`);
+      return 1;
+    }
+    if (error instanceof LocalArtifactStoreError) {
       io.stderr(`${error.code}: ${error.message}`);
       return 1;
     }
@@ -3462,6 +3479,7 @@ async function evaluationCommand(
                   ),
                   createStore: () => dependencies.createStore(runStoreDirectory),
                   workspaceIsolator,
+                  artifactStore: dependencies.createArtifactStore(projectRoot),
                   ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
                 })
               : new ExternalHarnessEvaluationAdapter(profile, dependencies.externalHarnessRuntime, {
@@ -5024,6 +5042,9 @@ async function resumeCommand(
     ),
     effectReconciler: dependencies.effectReconciler,
     agentCommandApprovalDecisions: dependencies.createAgentCommandApprovalChannel(runsDirectory),
+    ...(config.projectRoot === null
+      ? {}
+      : { artifactStore: dependencies.createArtifactStore(config.projectRoot) }),
     ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
     ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
   });
@@ -5211,12 +5232,98 @@ async function executeForegroundWorkflow(input: {
     agentCommandApprovalDecisions: input.dependencies.createAgentCommandApprovalChannel(
       input.runsDirectory,
     ),
+    ...(input.config.projectRoot === null
+      ? {}
+      : { artifactStore: input.dependencies.createArtifactStore(input.config.projectRoot) }),
     ...(input.dependencies.signal === undefined ? {} : { signal: input.dependencies.signal }),
     ...(input.capabilitySnapshot === undefined
       ? {}
       : { capabilitySnapshot: input.capabilitySnapshot }),
     runId: input.runId,
   });
+}
+
+async function artifactsCommand(
+  args: readonly string[],
+  io: CliIo,
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  const apply = extractBooleanFlag(args, "--apply");
+  assertStringOptionAtMostOnce(apply.args, "expected-plan-digest");
+  const { positionals, values } = parseCommandArgs(apply.args, {
+    "expected-plan-digest": { type: "string" },
+  });
+  const [operation, reference, ...extra] = positionals;
+  if (operation === undefined || extra.length > 0) {
+    throw new CliUsageError("artifacts requires list, inspect, retain, release, or prune");
+  }
+  const expectedPlanDigest = values["expected-plan-digest"];
+  if (operation === "list") {
+    if (reference !== undefined || apply.enabled || expectedPlanDigest !== undefined) {
+      throw new CliUsageError("artifacts list does not accept a reference or prune options");
+    }
+  } else if (operation === "prune") {
+    if (reference !== undefined) {
+      throw new CliUsageError("artifacts prune does not accept a reference");
+    }
+    if (apply.enabled !== (expectedPlanDigest !== undefined)) {
+      throw new CliUsageError(
+        "artifacts prune requires --apply and --expected-plan-digest together",
+      );
+    }
+  } else if (
+    !["inspect", "retain", "release"].includes(operation) ||
+    reference === undefined ||
+    apply.enabled ||
+    expectedPlanDigest !== undefined
+  ) {
+    throw new CliUsageError("artifacts requires list, inspect, retain, release, or prune");
+  }
+
+  const dependencies = dependenciesFrom(overrides);
+  const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
+  if (config.projectRoot === null) {
+    throw new CliUsageError("artifacts requires a Flow project");
+  }
+  const store = dependencies.createArtifactStore(config.projectRoot);
+  const signal = dependencies.signal;
+  if (operation === "list") {
+    io.stdout(JSON.stringify(await store.list(signal), null, 2));
+    return 0;
+  }
+  if (operation === "inspect") {
+    io.stdout(JSON.stringify(await store.inspect(reference as string, signal), null, 2));
+    return 0;
+  }
+  if (operation === "retain" || operation === "release") {
+    io.stdout(
+      JSON.stringify(
+        await store.setRetention({
+          reference: reference as string,
+          retention: operation === "retain" ? "retained" : "released",
+          ...(signal === undefined ? {} : { signal }),
+        }),
+        null,
+        2,
+      ),
+    );
+    return 0;
+  }
+  if (!apply.enabled) {
+    io.stdout(JSON.stringify(await store.planPrune(signal), null, 2));
+    return 0;
+  }
+  io.stdout(
+    JSON.stringify(
+      await store.applyPrune({
+        expectedPlanDigest: expectedPlanDigest as string,
+        ...(signal === undefined ? {} : { signal }),
+      }),
+      null,
+      2,
+    ),
+  );
+  return 0;
 }
 
 async function inspectCommand(
@@ -6136,6 +6243,7 @@ async function internalWorkerCommand(
     createExecutor: dependencies.createNodeExecutor,
     effectReconciler: dependencies.effectReconciler,
     createRunStore: dependencies.createStore,
+    createArtifactStore: dependencies.createArtifactStore,
     createAgentCommandApprovalChannel: dependencies.createAgentCommandApprovalChannel,
     createWorkspaceIsolator: dependencies.createWorkspaceIsolator,
     ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
@@ -6873,10 +6981,15 @@ function dependenciesFrom(overrides: Partial<CliDependencies>): CliDependencies 
 
 function storageDependenciesFrom(
   overrides: Partial<CliDependencies>,
-): Pick<CliDependencies, "cwd" | "createStore" | "createAgentCommandApprovalChannel"> {
+): Pick<
+  CliDependencies,
+  "cwd" | "createStore" | "createArtifactStore" | "createAgentCommandApprovalChannel"
+> {
   return {
     cwd: overrides.cwd ?? process.cwd(),
     createStore: overrides.createStore ?? ((rootDirectory) => new JsonlRunStore(rootDirectory)),
+    createArtifactStore:
+      overrides.createArtifactStore ?? ((projectRoot) => new LocalArtifactStore(projectRoot)),
     createAgentCommandApprovalChannel:
       overrides.createAgentCommandApprovalChannel ??
       ((rootDirectory) => new LocalAgentCommandApprovalChannel(rootDirectory)),

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ArtifactStore } from "../../../src/application/artifact-store.js";
 import {
   FlowWorkflowEvaluationAdapter,
   type HarnessEvaluationRequest,
@@ -79,6 +80,38 @@ describe("Flow workflow evaluation adapter", () => {
     ).resolves.toEqual(
       expect.arrayContaining([expect.objectContaining({ type: "run_succeeded" })]),
     );
+  });
+
+  it("forwards the project artifact store into an evaluation trial", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-evaluation-adapter-")));
+    temporaryDirectories.push(root);
+    await writeFile(join(root, "TASK.md"), "Create RESULT.md.\n");
+    const workflow = compiledWorkflow();
+    const artifactStore = Object.freeze({}) as ArtifactStore;
+    const observed: Array<ArtifactStore | undefined> = [];
+    const delegate = successfulExecutor();
+    const adapter = new FlowWorkflowEvaluationAdapter(
+      {
+        id: "candidate",
+        adapter: "flow-workflow-v1",
+        workflow: { compiled: workflow, workflowDigest: calculateWorkflowDigest(workflow) },
+      },
+      {
+        executor: {
+          async execute(node, context) {
+            observed.push(context.artifactStore);
+            return await delegate.execute(node, context);
+          },
+        },
+        createStore: () => new JsonlRunStore(join(root, "runs")),
+        artifactStore,
+      },
+    );
+
+    await expect(adapter.run(publicRequest(root))).resolves.toMatchObject({
+      harness: { outcome: "completed" },
+    });
+    expect(observed).toEqual([artifactStore]);
   });
 
   it("binds an admitted Agent Skill snapshot to the evaluated workflow", async () => {

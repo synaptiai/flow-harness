@@ -25,6 +25,12 @@ import {
   workflowApprovalRequestId,
 } from "../approval/workflow-approval.js";
 import {
+  type ArtifactReference,
+  artifactReferenceSchema,
+  MAX_COMMAND_ARTIFACT_BYTES,
+  validateArtifactReference,
+} from "../artifact/reference.js";
+import {
   type AgentCapabilityEvidence,
   agentCapabilityEvidenceSchema,
   agentSkillNameSchema,
@@ -135,6 +141,8 @@ export interface CommandEvidence {
   readonly stderrRetainedHash?: string;
   readonly stdoutRetainedBytes?: number;
   readonly stderrRetainedBytes?: number;
+  readonly stdoutArtifact?: ArtifactReference;
+  readonly stderrArtifact?: ArtifactReference;
   readonly stdoutTruncated: boolean;
   readonly stderrTruncated: boolean;
   readonly timedOut: boolean;
@@ -1679,6 +1687,8 @@ const commandEvidenceSchema = z
       .optional(),
     stdoutRetainedBytes: z.number().int().nonnegative().max(32_768).optional(),
     stderrRetainedBytes: z.number().int().nonnegative().max(32_768).optional(),
+    stdoutArtifact: artifactReferenceSchema.optional(),
+    stderrArtifact: artifactReferenceSchema.optional(),
     stdoutTruncated: z.boolean(),
     stderrTruncated: z.boolean(),
     timedOut: z.boolean(),
@@ -5633,7 +5643,7 @@ export function appendRunEvent(
           `command "${event.commandId}" settled out of order before earlier command "${nextUnsettledCommand?.commandId ?? "none"}"`,
         );
       }
-      validateAgentCommandSettlement(command, event.outcome, eventIndex);
+      validateAgentCommandSettlement(command, event, eventIndex);
       const commands = [...current.commands];
       commands[commandIndex] = deepFreeze({
         ...command,
@@ -8807,9 +8817,10 @@ function boundedToolPackageDetail(value: string): string {
 
 function validateAgentCommandSettlement(
   command: NodeAgentCommandRunState,
-  outcome: AgentCommandSettlementOutcome,
+  event: NodeAgentCommandSettledEvent,
   eventIndex: number,
 ): void {
+  const outcome = event.outcome;
   const evidence = outcome.evidence;
   if (evidence !== null) {
     if (evidence.sandbox === undefined) {
@@ -8828,6 +8839,8 @@ function validateAgentCommandSettlement(
       );
     }
     validateCommandOutputHashes(evidence, eventIndex);
+    validateCommandArtifactProducer(evidence.stdoutArtifact, "stdout", command, event, eventIndex);
+    validateCommandArtifactProducer(evidence.stderrArtifact, "stderr", command, event, eventIndex);
     validateAgentCommandTerminationEvidence(evidence, eventIndex);
   }
   if (
@@ -8955,6 +8968,71 @@ function validateCommandOutputHashes(evidence: CommandEvidence, eventIndex: numb
       eventIndex,
       "agent command stderr truncation/full-stream hash relation is invalid",
     );
+  }
+  validateCommandArtifactDescriptor(
+    evidence.stdoutArtifact,
+    "stdout",
+    evidence.stdoutHash,
+    evidence.stdoutRetainedBytes,
+    evidence.stdoutTruncated,
+    eventIndex,
+  );
+  validateCommandArtifactDescriptor(
+    evidence.stderrArtifact,
+    "stderr",
+    evidence.stderrHash,
+    evidence.stderrRetainedBytes,
+    evidence.stderrTruncated,
+    eventIndex,
+  );
+}
+
+function validateCommandArtifactDescriptor(
+  reference: ArtifactReference | undefined,
+  stream: "stdout" | "stderr",
+  fullHash: string,
+  retainedBytes: number | undefined,
+  truncated: boolean,
+  eventIndex: number,
+): void {
+  if (reference === undefined) return;
+  try {
+    validateArtifactReference(reference);
+  } catch {
+    throw new RunReplayError(eventIndex, `agent command ${stream} artifact is invalid`);
+  }
+  if (
+    !truncated ||
+    retainedBytes === undefined ||
+    reference.descriptor.digest !== `sha256:${fullHash}` ||
+    reference.descriptor.size <= retainedBytes ||
+    reference.descriptor.size > MAX_COMMAND_ARTIFACT_BYTES ||
+    reference.descriptor.mediaType !== "application/octet-stream" ||
+    reference.producer.stream !== stream
+  ) {
+    throw new RunReplayError(eventIndex, `agent command ${stream} artifact is invalid`);
+  }
+}
+
+function validateCommandArtifactProducer(
+  reference: ArtifactReference | undefined,
+  stream: "stdout" | "stderr",
+  command: NodeAgentCommandRunState,
+  event: NodeAgentCommandSettledEvent,
+  eventIndex: number,
+): void {
+  if (reference === undefined) return;
+  const producer = reference.producer;
+  if (
+    producer.runId !== event.runId ||
+    producer.workflowId !== event.workflowId ||
+    producer.nodeId !== event.nodeId ||
+    producer.attempt !== event.attempt ||
+    producer.commandId !== event.commandId ||
+    producer.commandSequence !== command.commandSequence ||
+    producer.stream !== stream
+  ) {
+    throw new RunReplayError(eventIndex, `agent command ${stream} artifact producer is invalid`);
   }
 }
 

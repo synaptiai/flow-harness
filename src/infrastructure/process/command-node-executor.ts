@@ -14,6 +14,10 @@ import type {
   NodeExecutionOutcome,
 } from "../../application/ports.js";
 import type { AgentCommandRequest } from "../../domain/agent-command.js";
+import {
+  type ArtifactReference,
+  MAX_COMMAND_ARTIFACT_BYTES,
+} from "../../domain/artifact/reference.js";
 import type {
   AgentCommandEvidence,
   AgentCommandSettlementOutcome,
@@ -180,8 +184,18 @@ export class CommandNodeExecutor implements CommandExecutor, AgentCommandExecuto
       }
     }
 
-    const stdout = new BoundedOutput(this.#maxOutputBytes);
-    const stderr = new BoundedOutput(this.#maxOutputBytes);
+    const captureArtifactBytes =
+      requireKernelContainment &&
+      context.artifactStore !== undefined &&
+      context.agentCommandArtifactProducer !== undefined;
+    const stdout = new BoundedOutput(
+      this.#maxOutputBytes,
+      captureArtifactBytes ? MAX_COMMAND_ARTIFACT_BYTES : undefined,
+    );
+    const stderr = new BoundedOutput(
+      this.#maxOutputBytes,
+      captureArtifactBytes ? MAX_COMMAND_ARTIFACT_BYTES : undefined,
+    );
     let child: ChildProcess;
 
     if (deadline.expired()) {
@@ -301,7 +315,8 @@ export class CommandNodeExecutor implements CommandExecutor, AgentCommandExecuto
     if (commandEvidence !== null && commandEvidence.kind !== "command") {
       throw new TypeError("command executor returned non-command evidence");
     }
-    const evidence = commandEvidence === null ? null : toAgentCommandEvidence(commandEvidence);
+    const evidence =
+      commandEvidence === null ? null : await toAgentCommandEvidence(commandEvidence, context);
     if (outcome.status === "succeeded") {
       if (evidence === null) {
         throw new TypeError("successful command executor outcome is missing evidence");
@@ -510,7 +525,7 @@ function commandEvidence(
 ): CommandEvidence {
   const stdoutEvidence = stdout.seal();
   const stderrEvidence = stderr.seal();
-  return {
+  const evidence: CommandEvidence = {
     kind: "command",
     executable: node.command.executable,
     args: Object.freeze([...node.command.args]),
@@ -534,13 +549,30 @@ function commandEvidence(
           : "not-required"),
     sandbox: prepared.evidence,
   };
+  if (stdoutEvidence.artifactBytes !== undefined || stderrEvidence.artifactBytes !== undefined) {
+    commandArtifactCandidates.set(evidence, {
+      ...(stdoutEvidence.artifactBytes === undefined
+        ? {}
+        : { stdout: stdoutEvidence.artifactBytes }),
+      ...(stderrEvidence.artifactBytes === undefined
+        ? {}
+        : { stderr: stderrEvidence.artifactBytes }),
+    });
+  }
+  return evidence;
 }
 
-function toAgentCommandEvidence(evidence: CommandEvidence): AgentCommandEvidence {
+async function toAgentCommandEvidence(
+  evidence: CommandEvidence,
+  context: NodeExecutionContext,
+): Promise<AgentCommandEvidence> {
   if (evidence.sandbox === undefined) {
     throw new TypeError("agent command evidence is missing sandbox provenance");
   }
-  return {
+  const candidate = commandArtifactCandidates.get(evidence);
+  const store = context.artifactStore;
+  const producer = context.agentCommandArtifactProducer;
+  const baseEvidence: AgentCommandEvidence = {
     ...evidence,
     stdoutRetainedHash: hashText(evidence.stdout),
     stderrRetainedHash: hashText(evidence.stderr),
@@ -550,6 +582,51 @@ function toAgentCommandEvidence(evidence: CommandEvidence): AgentCommandEvidence
     aborted: evidence.aborted ?? false,
     terminationStatus: requiredTerminationStatus(evidence),
     sandbox: evidence.sandbox,
+  };
+  if (
+    candidate === undefined ||
+    store === undefined ||
+    producer === undefined ||
+    context.signal?.aborted === true
+  ) {
+    return baseEvidence;
+  }
+
+  let publicationCommitted = false;
+  let stdoutArtifact: ArtifactReference | undefined;
+  let stderrArtifact: ArtifactReference | undefined;
+  try {
+    if (candidate.stdout !== undefined) {
+      stdoutArtifact = await store.retain({
+        bytes: candidate.stdout,
+        mediaType: "application/octet-stream",
+        producer: { ...producer, stream: "stdout" },
+        ...(context.signal === undefined ? {} : { signal: context.signal }),
+      });
+      publicationCommitted = true;
+    }
+    if (candidate.stderr !== undefined) {
+      stderrArtifact = await store.retain({
+        bytes: candidate.stderr,
+        mediaType: "application/octet-stream",
+        producer: { ...producer, stream: "stderr" },
+        ...(!publicationCommitted && context.signal !== undefined
+          ? { signal: context.signal }
+          : {}),
+      });
+      publicationCommitted = true;
+    }
+  } catch (error) {
+    if (!publicationCommitted && isExactSignalRejection(error, context.signal)) {
+      return baseEvidence;
+    }
+    throw error;
+  }
+
+  return {
+    ...baseEvidence,
+    ...(stdoutArtifact === undefined ? {} : { stdoutArtifact }),
+    ...(stderrArtifact === undefined ? {} : { stderrArtifact }),
   };
 }
 
@@ -564,6 +641,10 @@ function requiredTerminationStatus(
 
 function hashText(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function isExactSignalRejection(error: unknown, signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true && error === signal.reason;
 }
 
 interface CommandDeadline {
@@ -936,17 +1017,30 @@ function failed(code: string, message: string, evidence: CommandEvidence): NodeE
 class BoundedOutput {
   readonly #hash: Hash = createHash("sha256");
   readonly #chunks: Buffer[] = [];
+  readonly #artifactChunks: Buffer[] = [];
   #capturedBytes = 0;
+  #artifactLimitExceeded = false;
   #totalBytes = 0;
   #sealed = false;
 
-  constructor(readonly maxBytes: number) {}
+  constructor(
+    readonly maxBytes: number,
+    readonly maxArtifactBytes?: number,
+  ) {}
 
   add(chunk: Buffer): void {
     if (this.#sealed) {
       return;
     }
     this.#hash.update(chunk);
+    if (this.maxArtifactBytes !== undefined && !this.#artifactLimitExceeded) {
+      if (this.#totalBytes + chunk.length <= this.maxArtifactBytes) {
+        this.#artifactChunks.push(Buffer.from(chunk));
+      } else {
+        this.#artifactChunks.length = 0;
+        this.#artifactLimitExceeded = true;
+      }
+    }
     this.#totalBytes += chunk.length;
     const remaining = this.maxBytes - this.#capturedBytes;
     if (remaining <= 0) {
@@ -957,15 +1051,29 @@ class BoundedOutput {
     this.#capturedBytes += captured.length;
   }
 
-  seal(): { readonly text: string; readonly digest: string; readonly truncated: boolean } {
+  seal(): {
+    readonly text: string;
+    readonly digest: string;
+    readonly truncated: boolean;
+    readonly artifactBytes?: Buffer;
+  } {
     this.#sealed = true;
+    const truncated = this.#totalBytes > this.maxBytes;
     return Object.freeze({
       text: decodeBoundedUtf8(Buffer.concat(this.#chunks), this.maxBytes),
       digest: this.#hash.digest("hex"),
-      truncated: this.#totalBytes > this.maxBytes,
+      truncated,
+      ...(!truncated || this.maxArtifactBytes === undefined || this.#artifactLimitExceeded
+        ? {}
+        : { artifactBytes: Buffer.concat(this.#artifactChunks, this.#totalBytes) }),
     });
   }
 }
+
+const commandArtifactCandidates = new WeakMap<
+  CommandEvidence,
+  { readonly stdout?: Buffer; readonly stderr?: Buffer }
+>();
 
 function decodeBoundedUtf8(buffer: Buffer, maxBytes: number): string {
   let end = buffer.length;
