@@ -67,8 +67,11 @@ publishes one reviewed fixture, admits only read, list, and hash-bound edit tool
 acceptance to a deterministic command verifier. Neither path grants new execution authority or
 makes an optional runtime a base dependency.
 
-Gate 9 currently adds a revisioned goal workspace and read-only semantic code queries.
-Content-addressed retained artifacts remain planned. The semantic boundary freezes one
+Gate 9 currently adds a revisioned goal workspace, read-only semantic code queries, and
+content-addressed retained command artifacts. The artifact boundary keeps bounded previews in the
+run ledger, exact bytes in a project store, and immutable producer references in command evidence.
+Only an explicitly selected, policy-controlled tool can read bounded windows. Operators control
+retention and exact-plan pruning. The semantic boundary freezes one
 operator-selected language server. It runs one bounded LSP 3.18 request in a short-lived sandbox.
 It then verifies source currentness and records a private canonical receipt. Goal text and semantic
 results remain context rather than workflow authority.
@@ -120,6 +123,7 @@ flowchart TB
     subgraph state["4. Durable project state — survives restart"]
         direction LR
         ledgers[("Run and evidence ledgers")]
+        artifacts[("Retained artifact blobs and catalog")]
         goalLedger[("Goal revision ledger")]
         stores[("Run, package, activation, and evaluation stores")]
         workspaces[("Isolated workspaces")]
@@ -178,6 +182,10 @@ flowchart TB
     agents -->|"Uses isolated trial files"| workspaces
     commands -->|"Uses isolated command files"| workspaces
     engine -->|"Appends events and replays prior state"| ledgers
+    commands -->|"Publishes exact bounded command streams"| artifacts
+    ledgers -->|"Binds immutable producer references"| artifacts
+    agents -->|"Reads authorized byte windows"| artifacts
+    cli -->|"Manages exact artifact plans"| artifacts
     capability -->|"Publishes immutable packages"| stores
     capability -->|"Prunes only reviewed retired package blobs"| stores
     supervisor -->|"Records queues and ownership"| stores
@@ -230,6 +238,7 @@ before success. It stops on unresolved side-effect or settlement uncertainty.
 | Goal workspace | `src/domain/goal/`, `src/application/goal-workspace.ts`, and `src/infrastructure/fs/local-goal-workspace-store.ts` | Validates bounded full revisions, resolves immutable run-event references, performs exact compare-and-set updates, and freezes selected context into run snapshots. |
 | Detached work and recovery | `src/supervisor/` | Owns bounded queueing, worker adoption, cancellation, event paging, and detached lifecycle. |
 | Semantic code boundary | `src/domain/semantic/` and `src/infrastructure/lsp/` | Defines canonical read-only code queries and receipts, runs one strict LSP 3.18 subset, isolates each server session, and rejects stale or unsettled results. |
+| Retained artifact boundary | `src/domain/artifact/`, `src/application/artifact-store.ts`, and `src/infrastructure/fs/local-artifact-store.ts` | Binds exact command bytes to immutable producer references, authorizes bounded same-run reads, and separates append-only evidence from mutable retention and physical availability. |
 | Presentation, storage, package, sandbox, and runtime adapters | `src/infrastructure/` | Implements application ports for local files, HTTP, OCI, TUF, ACP, Pi, OMP, Prime, SRT, terminal, and browser boundaries. |
 | Prime evaluation container | `prime-container/` | Provides the fixed Go supervisor, kernel bridge, driver protocol, and hardened image used by the Prime adapter. |
 
@@ -269,6 +278,7 @@ Architecture is derived from these flows.
 | Execute | A user selects a goal and workflow | Verified success, explicit failure, a durable wait state, or a precise blocker |
 | Maintain long-horizon context | An operator initializes or updates the project goal workspace | One complete immutable revision or a no-change conflict; a new run can freeze the current revision explicitly |
 | Query code semantics | A user selects one exact language server for a workflow that declares `semantic` | Bounded diagnostics or navigation context plus a private canonical receipt; no file mutation or workflow authority |
+| Manage retained command artifacts | An operator inspects a reference or previews an exact prune plan | Bounded same-run reads, explicit retention state, or reviewed byte removal while immutable run provenance remains |
 | Observe | A user opens status, the TUI, or the local browser host | Current graph position, attempts, evidence, costs, approvals, and blockers |
 | Steer | A user pauses, cancels, supplies input, or approves an operation | A durable, attributable state transition |
 | Resume | A user reopens an interrupted run | Reconciled state and continuation from the next safe node |
@@ -1012,9 +1022,10 @@ These are settlement ceilings, not prepaid billing or physical-storage controls.
 authoritative only after a response, so one response can overshoot. Flow keeps the full observation
 and schedules no downstream work. External organization quotas, price catalogs, invoice
 reconciliation, distributed reservation, CPU/memory/disk limits, artifact storage,
-content-addressed storage, spill, download, retention, and garbage collection remain separate
-capabilities. Per-run graph-node concurrency and supervisor-wide detached-worker admission are
-independently bounded.
+spill, and download remain separate capabilities. Local content-addressed command retention and
+explicit pruning use a separate project store. They don't change run budgets or provide a project
+disk quota, background collection, remote storage, or distributed collection. Per-run graph-node
+concurrency and supervisor-wide detached-worker admission are independently bounded.
 
 ### Evaluators
 
@@ -1026,7 +1037,13 @@ The verifier executor is a separate application seam. Its command driver delegat
 
 Pi intentionally has no built-in security boundary and the host-side agent runtime still runs with the invoking user's operating-system permissions. Flow therefore distinguishes the agent-tool authorization boundary from the command containment boundary.
 
-- Agent nodes receive only declared Flow-provided `read`, `ls`, `edit`, and argv-only `exec` tools plus exact selected declarative command tools; implicit project extensions and resource discovery are disabled. Reads include an exact-byte full-file SHA-256 version. Edits require that version, preflight exact unique Unicode-scalar replacements, coordinate same-file mutations across cooperating same-host Flow processes, atomically replace one existing UTF-8 target, and protect durable/sensitive project paths at every path depth. Stale versions fail without fuzzy or three-way recovery.
+- Agent nodes receive only declared Flow-provided tools: `read`, `ls`, `edit`, `exec`, `semantic`,
+  and `artifact`. Nodes can also receive exact selected declarative commands while implicit
+  extensions and resource discovery remain disabled.
+- Reads include an exact-byte SHA-256 version, and edits require that version and exact Unicode-scalar
+  replacements. Same-host Flow processes coordinate same-file mutations and atomically replace one
+  existing UTF-8 target. Flow protects sensitive project paths at every depth and rejects stale
+  versions without fuzzy or three-way recovery.
 - Every command node and descendant executes inside SRT on Linux or macOS. Agent commands execute only after Linux SRT binds a canonical root-owned Bubblewrap executable outside the workspace and proves PID-namespace lifecycle containment; process-group-only macOS preparation is denied before spawn. Flow preserves argv boundaries through an audited POSIX encoder, passes an explicit environment allowlist, denies network and undeclared Unix sockets, and protects the actual run-store path. Linux execution canonically resolves and re-exposes only SRT's required seccomp helper read-only when the harness installation is outside the selected workspace.
 - Missing dependencies, seccomp degradation, unsupported platforms, initialization errors, and invalid launch descriptors fail closed with no command spawn. There is no unsandboxed fallback.
 - Each new command result records the backend, exact backend version, named profile, and semantic policy digest. Backend and profile values use bounded machine identifiers rather than an SRT-only persisted union, preserving the event shape for future adapters. Generic command-node replay keeps the added field optional for older ledgers; protocol-v1 agent-command settlements require it, independently bind retained stdout/stderr prefixes by hash and UTF-8 byte count, and persist distinct timeout, abort, and termination observations.

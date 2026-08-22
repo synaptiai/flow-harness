@@ -60,7 +60,7 @@ export class AgentCommandRecorder {
       executionStarted = true;
       const outcome = await this.executor.executeAgentCommand(
         request,
-        withExecutionSignal(this.context, signal),
+        withArtifactProducer(withExecutionSignal(this.context, signal), prepared),
       );
       const settlement = await prepared.settle(outcome);
       const durableOutcome = deepFreeze(structuredClone(outcome));
@@ -134,6 +134,28 @@ function deepFreeze<T>(value: T): T {
     deepFreeze(child);
   }
   return Object.freeze(value);
+}
+
+function withArtifactProducer(
+  context: NodeExecutionContext,
+  prepared: Awaited<ReturnType<NodeAgentCommandJournal["prepare"]>>,
+): NodeExecutionContext {
+  if (context.artifactStore === undefined) return context;
+  if (context.nodeId === undefined) {
+    throw new TypeError("artifact-enabled agent command context is missing its node identity");
+  }
+  return Object.freeze({
+    ...context,
+    agentCommandArtifactProducer: Object.freeze({
+      kind: "agent-command" as const,
+      runId: context.runId,
+      workflowId: context.workflowId,
+      nodeId: context.nodeId,
+      attempt: context.attempt,
+      commandId: prepared.commandId,
+      commandSequence: prepared.commandSequence,
+    }),
+  });
 }
 
 function withExecutionSignal(

@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import type { ArtifactStore } from "../../../src/application/artifact-store.js";
 import { trySubmitAgentCommandApprovalDecision } from "../../../src/application/command-approval.js";
 import type { CommandSandbox } from "../../../src/application/command-sandbox.js";
 import { NodeExecutorRouter } from "../../../src/application/node-executor-router.js";
@@ -85,6 +86,118 @@ afterEach(async () => {
 });
 
 describe("detached run worker", () => {
+  it("forwards the project artifact store into detached execution", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-worker-artifact-store-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    const store = new LocalSupervisorStore(runsDirectory);
+    await store.initialize();
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "worker-artifact-store",
+      mode: "run",
+      sourceName: join(directory, "artifact.workflow.yaml"),
+      workflowSource: workflowSource(),
+      cwd: directory,
+      projectRoot: directory,
+      token: "5".repeat(64),
+      createdAt: "2026-08-22T01:00:00.000Z",
+    });
+    await store.reserveSubmission(
+      job,
+      createActiveRunClaim({
+        runId: job.runId,
+        jobId: job.jobId,
+        workerId: job.workerId,
+        claimedAt: job.createdAt,
+      }),
+    );
+    const artifactStore = Object.freeze({}) as ArtifactStore;
+    let observed: ArtifactStore | undefined;
+    let observedProtectedPaths: readonly string[] = [];
+
+    const worker = executeWorkerJob(job.jobId, {
+      store,
+      executor: {
+        async execute(node, context) {
+          observed = context.artifactStore;
+          observedProtectedPaths = context.protectedPaths;
+          return { status: "succeeded", evidence: successfulCommandEvidence(node.id) };
+        },
+      },
+      effectReconciler: createProductionNodeEffectReconciler(),
+      createRunStore: (root) => new JsonlRunStore(root),
+      createArtifactStore: (projectRoot) => {
+        expect(projectRoot).toBe(directory);
+        return artifactStore;
+      },
+      pid: 4340,
+    });
+    const descriptor = await waitForDescriptor(store, job.workerId);
+    await expect(requestWorker(descriptor, { type: "identify" })).resolves.toMatchObject({
+      ok: true,
+      result: { runId: job.runId, status: "running" },
+    });
+
+    await expect(worker).resolves.toBe(0);
+    expect(observed).toBe(artifactStore);
+    expect(observedProtectedPaths).toContain(join(directory, ".flow"));
+  }, 15_000);
+
+  it("keeps a detached job preview-only when no project root can be established", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-worker-no-artifact-store-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    const store = new LocalSupervisorStore(runsDirectory);
+    await store.initialize();
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "worker-no-artifact-store",
+      mode: "run",
+      sourceName: join(directory, "preview-only.workflow.yaml"),
+      workflowSource: workflowSource(),
+      cwd: directory,
+      token: "6".repeat(64),
+      createdAt: "2026-08-22T01:00:00.000Z",
+    });
+    await store.reserveSubmission(
+      job,
+      createActiveRunClaim({
+        runId: job.runId,
+        jobId: job.jobId,
+        workerId: job.workerId,
+        claimedAt: job.createdAt,
+      }),
+    );
+    let observed: ArtifactStore | undefined;
+
+    const worker = executeWorkerJob(job.jobId, {
+      store,
+      executor: {
+        async execute(node, context) {
+          observed = context.artifactStore;
+          return { status: "succeeded", evidence: successfulCommandEvidence(node.id) };
+        },
+      },
+      effectReconciler: createProductionNodeEffectReconciler(),
+      createRunStore: (root) => new JsonlRunStore(root),
+      createArtifactStore: () => {
+        throw new Error("PRIVATE_UNPROTECTED_ARTIFACT_STORE");
+      },
+      pid: 4341,
+    });
+    const descriptor = await waitForDescriptor(store, job.workerId);
+    await expect(requestWorker(descriptor, { type: "identify" })).resolves.toMatchObject({
+      ok: true,
+      result: { runId: job.runId, status: "running" },
+    });
+
+    await expect(worker).resolves.toBe(0);
+    expect(observed).toBeUndefined();
+  }, 15_000);
+
   it("executes an agent from the frozen detached goal workspace revision", async () => {
     const directory = await mkdtemp(join(tmpdir(), "flow-worker-goal-workspace-"));
     temporaryDirectories.push(directory);
@@ -457,7 +570,11 @@ nodes:
     const exitCode = await worker;
     const finalDescriptor = await store.readWorkerDescriptor(job.workerId);
     expect(exitCode, JSON.stringify(finalDescriptor)).toBe(0);
-    expect(observedProtectedPaths).toEqual([runsDirectory, ...protectedPaths]);
+    expect(observedProtectedPaths).toEqual([
+      runsDirectory,
+      ...protectedPaths,
+      join(projectRoot, ".flow"),
+    ]);
     expect(observedProjectRoot).toBe(projectRoot);
     expect(selectedSandboxProfile).toBe("container");
     expect(selectedSandboxProjectRoot).toBe(projectRoot);

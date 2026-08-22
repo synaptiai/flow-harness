@@ -1,21 +1,27 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
-
+import type { ArtifactStore } from "../../../../src/application/artifact-store.js";
 import {
-  CommandSandboxExecutionError,
   type CommandSandbox,
-  type CommandSandboxRequest,
+  CommandSandboxExecutionError,
   type CommandSandboxExecutionStage,
+  type CommandSandboxRequest,
   type ManagedCommandExecutionInput,
   type PreparedCommand,
 } from "../../../../src/application/command-sandbox.js";
 import type { NodeExecutionContext } from "../../../../src/application/ports.js";
 import { normalizeAgentCommandRequest } from "../../../../src/domain/agent-command.js";
+import {
+  createArtifactReference,
+  MAX_COMMAND_ARTIFACT_BYTES,
+} from "../../../../src/domain/artifact/reference.js";
 import type { SandboxEvidence } from "../../../../src/domain/run/events.js";
 import type { CompiledCommandNode } from "../../../../src/domain/workflow/types.js";
+import { LocalArtifactStore } from "../../../../src/infrastructure/fs/local-artifact-store.js";
 import { CommandNodeExecutor } from "../../../../src/infrastructure/process/command-node-executor.js";
 
 const sandboxEvidence: SandboxEvidence = {
@@ -61,6 +67,169 @@ describe("CommandNodeExecutor sandbox boundary", () => {
       },
     });
     expect(sandbox.requests[0]).toMatchObject({ executable: "npm", args: ["test"] });
+  });
+
+  it("retains exact oversized agent-command output while preserving its bounded preview", async () => {
+    const root = await mkdtemp(join(tmpdir(), "flow-command-artifact-"));
+    try {
+      const store = new LocalArtifactStore(root);
+      const sandbox = new FakeCommandSandbox({
+        processContainment: "linux-pid-namespace",
+        launch: {
+          executable: process.execPath,
+          args: [
+            "-e",
+            'process.stdout.write("oversized exact output"); process.stderr.write("stderr exact output")',
+          ],
+          env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
+        },
+        evidence: sandboxEvidence,
+      });
+      const executor = new CommandNodeExecutor({ sandbox, maxOutputBytes: 4 });
+      const artifactContext: NodeExecutionContext = {
+        ...context,
+        nodeId: "agent",
+        artifactStore: store,
+        agentCommandArtifactProducer: {
+          kind: "agent-command",
+          runId: context.runId,
+          workflowId: context.workflowId,
+          nodeId: "agent",
+          attempt: context.attempt,
+          commandId: "command-7",
+          commandSequence: 1,
+        },
+      };
+
+      const outcome = await executor.executeAgentCommand(
+        normalizeAgentCommandRequest({ executable: "npm", args: ["test"], timeoutMs: 10_000 }),
+        artifactContext,
+      );
+
+      expect(outcome).toMatchObject({
+        status: "succeeded",
+        evidence: {
+          stdout: "over",
+          stdoutTruncated: true,
+          stdoutArtifact: {
+            reference: expect.stringMatching(/^artifact:[a-f0-9]{64}$/),
+            descriptor: {
+              size: 22,
+              mediaType: "application/octet-stream",
+            },
+            producer: {
+              runId: context.runId,
+              nodeId: "agent",
+              commandId: "command-7",
+              stream: "stdout",
+            },
+          },
+          stderr: "stde",
+          stderrTruncated: true,
+          stderrArtifact: {
+            reference: expect.stringMatching(/^artifact:[a-f0-9]{64}$/),
+            descriptor: {
+              size: 19,
+              mediaType: "application/octet-stream",
+            },
+            producer: {
+              runId: context.runId,
+              nodeId: "agent",
+              commandId: "command-7",
+              stream: "stderr",
+            },
+          },
+        },
+      });
+      if (
+        outcome.evidence === null ||
+        outcome.evidence.stdoutArtifact === undefined ||
+        outcome.evidence.stderrArtifact === undefined
+      ) {
+        throw new Error("test command did not retain both output streams");
+      }
+      expect(outcome.evidence.stderrArtifact.reference).not.toBe(
+        outcome.evidence.stdoutArtifact.reference,
+      );
+      await expect(
+        store.read({
+          reference: outcome.evidence.stdoutArtifact.reference,
+          runId: context.runId,
+          offset: 0,
+          maxBytes: 32,
+        }),
+      ).resolves.toMatchObject({ bytes: Buffer.from("oversized exact output", "utf8") });
+      await expect(
+        store.read({
+          reference: outcome.evidence.stderrArtifact.reference,
+          runId: context.runId,
+          offset: 0,
+          maxBytes: 32,
+        }),
+      ).resolves.toMatchObject({ bytes: Buffer.from("stderr exact output", "utf8") });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    {
+      name: "exact bound",
+      chunks: [MAX_COMMAND_ARTIFACT_BYTES / 2, MAX_COMMAND_ARTIFACT_BYTES / 2],
+      retained: true,
+    },
+    {
+      name: "plus one",
+      chunks: [MAX_COMMAND_ARTIFACT_BYTES / 2, MAX_COMMAND_ARTIFACT_BYTES / 2 + 1],
+      retained: false,
+    },
+  ])("keeps artifact capture complete at the $name", async ({ chunks, retained }) => {
+    const root = await mkdtemp(join(tmpdir(), "flow-command-artifact-bound-"));
+    try {
+      const store = new LocalArtifactStore(root);
+      const run = async (input: ManagedCommandExecutionInput) => {
+        for (const bytes of chunks) input.stdout(Buffer.alloc(bytes, 0x61));
+        return { exitCode: 0 };
+      };
+      const sandbox: CommandSandbox = {
+        prepare: async () => managedPrepared(run, async () => undefined),
+      };
+      const executor = new CommandNodeExecutor({ sandbox, maxOutputBytes: 4 });
+      const artifactContext: NodeExecutionContext = {
+        ...context,
+        nodeId: "agent",
+        artifactStore: store,
+        agentCommandArtifactProducer: {
+          kind: "agent-command",
+          runId: context.runId,
+          workflowId: context.workflowId,
+          nodeId: "agent",
+          attempt: context.attempt,
+          commandId: `command-${retained ? "exact" : "over"}`,
+          commandSequence: 1,
+        },
+      };
+
+      const outcome = await executor.executeAgentCommand(
+        normalizeAgentCommandRequest({ executable: "npm", args: ["test"], timeoutMs: 10_000 }),
+        artifactContext,
+      );
+
+      expect(outcome).toMatchObject({
+        status: "succeeded",
+        evidence: {
+          stdout: "aaaa",
+          stdoutTruncated: true,
+          ...(retained
+            ? { stdoutArtifact: { descriptor: { size: MAX_COMMAND_ARTIFACT_BYTES } } }
+            : {}),
+        },
+      });
+      expect(outcome.evidence?.stdoutArtifact === undefined).toBe(!retained);
+      expect(await store.list()).toHaveLength(retained ? 1 : 0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("refuses an agent command before spawn when containment is only a process group", async () => {
@@ -291,6 +460,129 @@ describe("CommandNodeExecutor sandbox boundary", () => {
     });
     expect(JSON.stringify(outcome)).not.toContain("PRIVATE_OPERATOR_CANCELLATION");
     expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("settles a cancelled agent command without publishing artifacts before the first commit", async () => {
+    const root = await mkdtemp(join(tmpdir(), "flow-command-artifact-cancellation-"));
+    try {
+      const controller = new AbortController();
+      const reason = new Error("PRIVATE_ARTIFACT_CANCELLATION");
+      let markStarted: () => void = () => undefined;
+      const started = new Promise<void>((resolve) => {
+        markStarted = resolve;
+      });
+      const run = vi.fn<NonNullable<PreparedCommand["run"]>>(async (input) => {
+        input.stdout(Buffer.from("oversized output before cancellation"));
+        markStarted();
+        return await new Promise((_resolve, reject) => {
+          input.signal.addEventListener(
+            "abort",
+            () => reject(input.signal.reason ?? new Error("managed execution aborted")),
+            { once: true },
+          );
+        });
+      });
+      const sandbox: CommandSandbox = {
+        prepare: async () => managedPrepared(run, async () => undefined),
+      };
+      const store = new LocalArtifactStore(root);
+      const executor = new CommandNodeExecutor({ sandbox, maxOutputBytes: 4 });
+      const execution = executor.executeAgentCommand(
+        normalizeAgentCommandRequest({ executable: "node", args: ["task.js"], timeoutMs: 10_000 }),
+        {
+          ...context,
+          nodeId: "agent",
+          signal: controller.signal,
+          artifactStore: store,
+          agentCommandArtifactProducer: {
+            kind: "agent-command",
+            runId: context.runId,
+            workflowId: context.workflowId,
+            nodeId: "agent",
+            attempt: context.attempt,
+            commandId: "command-cancelled",
+            commandSequence: 1,
+          },
+        },
+      );
+      await started;
+      controller.abort(reason);
+
+      await expect(execution).resolves.toMatchObject({
+        status: "failed",
+        error: { code: "command_aborted" },
+        evidence: {
+          stdout: "over",
+          stdoutTruncated: true,
+        },
+      });
+      expect((await execution).evidence?.stdoutArtifact).toBeUndefined();
+      expect(await store.list()).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("settles all command artifacts independently after the first reference commits", async () => {
+    const controller = new AbortController();
+    const reason = new Error("PRIVATE_LATE_ARTIFACT_CANCELLATION");
+    const observedSignals: Array<AbortSignal | undefined> = [];
+    let retainCalls = 0;
+    const artifactStore = {
+      async retain(input) {
+        input.signal?.throwIfAborted();
+        observedSignals.push(input.signal);
+        retainCalls += 1;
+        if (retainCalls === 1) controller.abort(reason);
+        const bytes = Buffer.from(input.bytes);
+        return createArtifactReference({
+          descriptor: {
+            digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+            size: bytes.length,
+            mediaType: input.mediaType,
+          },
+          producer: input.producer,
+        });
+      },
+    } as ArtifactStore;
+    const run = vi.fn<NonNullable<PreparedCommand["run"]>>(async (input) => {
+      input.stdout(Buffer.from("oversized stdout"));
+      input.stderr(Buffer.from("oversized stderr"));
+      return { exitCode: 0 };
+    });
+    const executor = new CommandNodeExecutor({
+      sandbox: { prepare: async () => managedPrepared(run, async () => undefined) },
+      maxOutputBytes: 4,
+    });
+
+    const outcome = await executor.executeAgentCommand(
+      normalizeAgentCommandRequest({ executable: "node", args: ["task.js"], timeoutMs: 10_000 }),
+      {
+        ...context,
+        nodeId: "agent",
+        signal: controller.signal,
+        artifactStore,
+        agentCommandArtifactProducer: {
+          kind: "agent-command",
+          runId: context.runId,
+          workflowId: context.workflowId,
+          nodeId: "agent",
+          attempt: context.attempt,
+          commandId: "command-settlement",
+          commandSequence: 1,
+        },
+      },
+    );
+
+    expect(outcome).toMatchObject({
+      status: "succeeded",
+      evidence: {
+        stdoutArtifact: { producer: { stream: "stdout" } },
+        stderrArtifact: { producer: { stream: "stderr" } },
+      },
+    });
+    expect(observedSignals).toEqual([controller.signal, undefined]);
+    expect(controller.signal.reason).toBe(reason);
   });
 
   it("reports managed cleanup uncertainty before a timeout outcome", async () => {

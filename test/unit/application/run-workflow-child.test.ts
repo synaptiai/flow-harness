@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
-
+import type { ArtifactStore } from "../../../src/application/artifact-store.js";
 import { NodeExecutorRouter } from "../../../src/application/node-executor-router.js";
 import type {
   AgentExecutor,
@@ -310,6 +310,34 @@ describe("child workflow execution", () => {
         protectedPaths: ["/state/runs", "/workspace/.flow"],
       }),
     ]);
+  });
+
+  it("forwards the project artifact store into an isolated child workflow", async () => {
+    const store = new TreeMemoryStore();
+    const isolator = new MemoryWorkspaceIsolator();
+    const delegate = new ChildCommandExecutor();
+    const artifactStore = Object.freeze({}) as ArtifactStore;
+    const observed: Array<ArtifactStore | undefined> = [];
+    const executor: NodeExecutor = {
+      async execute(node, context) {
+        observed.push(context.artifactStore);
+        return await delegate.execute(node, context);
+      },
+    };
+
+    const state = await runWorkflow(compileWorkflowText(parentWorkflow()), {
+      runId: "parent-artifact-store",
+      cwd: "/workspace",
+      protectedPaths: ["/state/runs"],
+      store,
+      executor,
+      workspaceIsolator: isolator,
+      artifactStore,
+      now: clock(),
+    });
+
+    expect(state.status).toBe("succeeded");
+    expect(observed).toEqual([artifactStore]);
   });
 
   it("charges a child's bounded artifact overshoot to its parent exactly once", async () => {

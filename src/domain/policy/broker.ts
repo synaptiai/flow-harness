@@ -20,6 +20,7 @@ const AUTHORITY_BY_ACTION: Readonly<Record<PolicyAction, PolicyAuthority>> = Obj
   "process.execute": "execute",
   "network.request": "network",
   "credential.read": "credentials",
+  "artifact.read": "read",
 });
 
 export class PolicyBroker {

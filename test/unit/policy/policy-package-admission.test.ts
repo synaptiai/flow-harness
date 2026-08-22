@@ -26,6 +26,24 @@ describe("policy package workflow admission", () => {
     expect(() => assertWorkflowSatisfiesPolicyPackages(workflow, policySnapshot())).not.toThrow();
   });
 
+  it("requires artifact read permission independently of the artifact tool name", () => {
+    const workflow = workflowFixture([agentNode({ tools: ["artifact"] })]);
+    const admitted = policySnapshot(
+      "tools:\n  allowed: [artifact]\n  allowedPermissions: [artifact.read]\n",
+    );
+    const missingPermission = policySnapshot(
+      "tools:\n  allowed: [artifact]\n  allowedPermissions: [filesystem.read]\n",
+    );
+
+    expect(() => assertWorkflowSatisfiesPolicyPackages(workflow, admitted)).not.toThrow();
+    expect(() => assertWorkflowSatisfiesPolicyPackages(workflow, missingPermission)).toThrowError(
+      expect.objectContaining({
+        code: "policy_violation",
+        fieldPath: "nodes.agent.agent.tools",
+      }),
+    );
+  });
+
   it.each([
     {
       name: "agent model",

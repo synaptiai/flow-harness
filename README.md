@@ -135,6 +135,7 @@ The [documentation hub](docs/README.md) routes each reader task to one canonical
 | [Run and control workflows](docs/guides/run-and-control.md) | Detached runs, presentation hosts, approvals, budgets, cancellation, and recovery entry points |
 | [Maintain a durable goal workspace](docs/guides/goal-workspaces.md) | Revisioned long-horizon context, evidence references, compare-and-set updates, run selection, and recovery |
 | [Use read-only semantic code queries](docs/guides/semantic-code.md) | Exact language-server selection, bounded queries, containment, evidence, and failure handling |
+| [Retain and inspect command artifacts](docs/guides/retained-artifacts.md) | Exact oversized command output, bounded agent reads, inspection, retention, and pruning |
 | [Use capability packages](docs/guides/capability-packages.md) | Skills, verifiers, tools, workflows, policies, presentations, bundles, and repositories |
 | [Prime runtime operations](docs/operations/prime-runtime.md) | Dedicated Linux x64 Prime and container-profile preparation |
 | [Workflow specification](docs/workflow-spec.md) | Normative executable and persisted contracts |

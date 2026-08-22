@@ -243,6 +243,9 @@ Do not infer recovery safety from a missing process. Read
 [Recovery and interruption safety](../recovery.md) before remediating an uncertain run, package,
 evaluation, presentation, or supervisor state.
 
+If command evidence contains an `artifact:` reference, read
+[Retain and inspect command artifacts](retained-artifacts.md) before you release or prune its bytes.
+
 ## Security notes
 
 - Presentation hosts do not receive durable authority or private package bytes.

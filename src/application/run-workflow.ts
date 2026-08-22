@@ -97,6 +97,7 @@ import type {
   EvidenceSourceField,
 } from "../domain/workflow/types.js";
 import { MAX_OPTIMIZATION_DELTA_EVIDENCE_BYTES } from "../domain/workflow/types.js";
+import type { ArtifactStore } from "./artifact-store.js";
 import type {
   AgentCommandApprovalDecision,
   AgentCommandApprovalDecisionSource,
@@ -131,6 +132,7 @@ export interface RunWorkflowOptions {
   readonly now?: () => Date;
   readonly signal?: AbortSignal;
   readonly agentCommandApprovalDecisions?: AgentCommandApprovalDecisionSource;
+  readonly artifactStore?: ArtifactStore;
 }
 
 export interface ResumeWorkflowOptions extends Omit<RunWorkflowOptions, "runId" | "store"> {
@@ -636,6 +638,7 @@ async function continueWorkflow(
                   {
                     runId,
                     workflowId: workflow.id,
+                    nodeId: executionNode.id,
                     attempt,
                     cwd: options.cwd,
                     ...(options.projectRoot === undefined
@@ -645,6 +648,9 @@ async function continueWorkflow(
                     ...(options.capabilitySnapshot === undefined
                       ? {}
                       : { capabilitySnapshot: options.capabilitySnapshot }),
+                    ...(options.artifactStore === undefined
+                      ? {}
+                      : { artifactStore: options.artifactStore }),
                     ...(effectJournal === undefined ? {} : { effectJournal }),
                     ...(agentCommandJournal === undefined ? {} : { agentCommandJournal }),
                     ...(agentCommandApprovalGate === undefined ? {} : { agentCommandApprovalGate }),
@@ -3730,6 +3736,7 @@ async function executeChildNode(
     ...(options.agentCommandApprovalDecisions === undefined
       ? {}
       : { agentCommandApprovalDecisions: options.agentCommandApprovalDecisions }),
+    ...(options.artifactStore === undefined ? {} : { artifactStore: options.artifactStore }),
     [supplementalMemoryChildPath]: [...(options[supplementalMemoryChildPath] ?? []), node.id],
   });
   return await settleChildState(node, childState, options.workspaceIsolator);

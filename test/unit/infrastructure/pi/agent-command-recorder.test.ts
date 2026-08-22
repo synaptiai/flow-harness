@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-
+import type { ArtifactStore } from "../../../../src/application/artifact-store.js";
 import type {
   AgentCommandExecutor,
   NodeAgentCommandJournal,
@@ -121,6 +121,43 @@ describe("AgentCommandRecorder", () => {
     await recorder.execute(request, commandDecision(), controller.signal);
 
     expect(observedSignal).toBe(controller.signal);
+  });
+
+  it("binds the durable command identity into the artifact producer before execution", async () => {
+    const artifactStore = Object.freeze({}) as ArtifactStore;
+    let observedContext: NodeExecutionContext | undefined;
+    const journal: NodeAgentCommandJournal = {
+      prepare: async () => ({
+        commandId: "command-3",
+        commandSequence: 7,
+        settle: async () => ({ artifactBudgetExhausted: false }),
+      }),
+    };
+    const executor: AgentCommandExecutor = {
+      executeAgentCommand: async (_request, executionContext) => {
+        observedContext = executionContext;
+        return outcome;
+      },
+    };
+    const recorder = new AgentCommandRecorder(executor, journal, {
+      ...context,
+      nodeId: "implement",
+      artifactStore,
+    });
+
+    await recorder.execute(request, commandDecision());
+
+    expect(observedContext?.artifactStore).toBe(artifactStore);
+    expect(observedContext?.agentCommandArtifactProducer).toEqual({
+      kind: "agent-command",
+      runId: "run-1",
+      workflowId: "agent-exec",
+      nodeId: "implement",
+      attempt: 1,
+      commandId: "command-3",
+      commandSequence: 7,
+    });
+    expect(Object.isFrozen(observedContext?.agentCommandArtifactProducer)).toBe(true);
   });
 
   it("fails closed before execution without a durable journal", async () => {

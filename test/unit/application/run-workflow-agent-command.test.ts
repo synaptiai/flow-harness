@@ -14,10 +14,23 @@ import {
   calculateAgentCommandDigest,
   normalizeAgentCommandRequest,
 } from "../../../src/domain/agent-command.js";
+import {
+  type ArtifactProducer,
+  createArtifactReference,
+  MAX_COMMAND_ARTIFACT_BYTES,
+} from "../../../src/domain/artifact/reference.js";
 import { PolicyBroker } from "../../../src/domain/policy/broker.js";
-import type { AgentCommandEvidence, RunEvent } from "../../../src/domain/run/events.js";
+import {
+  type AgentCommandEvidence,
+  type RunEvent,
+  reduceRunEvents,
+} from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import type { CompiledNode } from "../../../src/domain/workflow/types.js";
+
+type WritableCommandEvidence = {
+  -readonly [Field in keyof AgentCommandEvidence]: AgentCommandEvidence[Field];
+};
 
 describe("agent command workflow execution", () => {
   it("persists command preparation and settlement and charges output exactly once", async () => {
@@ -135,7 +148,122 @@ describe("agent command workflow execution", () => {
     ).rejects.toMatchObject({ code: "uncertain_operation" });
     expect(executions).toBe(1);
   });
+
+  it.each([
+    ["run", (producer: ArtifactProducer) => ({ ...producer, runId: "other-run" })],
+    ["workflow", (producer: ArtifactProducer) => ({ ...producer, workflowId: "other-workflow" })],
+    ["node", (producer: ArtifactProducer) => ({ ...producer, nodeId: "other-node" })],
+    ["attempt", (producer: ArtifactProducer) => ({ ...producer, attempt: 2 })],
+    ["command", (producer: ArtifactProducer) => ({ ...producer, commandId: "other-command" })],
+    ["sequence", (producer: ArtifactProducer) => ({ ...producer, commandSequence: 2 })],
+    ["stream", (producer: ArtifactProducer) => ({ ...producer, stream: "stderr" as const })],
+  ])("rejects a redigested artifact with changed %s provenance", async (_field, mutate) => {
+    const events = await artifactRunEvents();
+    const settled = events.find((event) => event.type === "node_agent_command_settled");
+    if (settled?.type !== "node_agent_command_settled" || settled.outcome.evidence === null) {
+      throw new Error("artifact fixture has no command settlement");
+    }
+    const original = settled.outcome.evidence.stdoutArtifact;
+    if (original === undefined) throw new Error("artifact fixture has no stdout reference");
+    (settled.outcome.evidence as WritableCommandEvidence).stdoutArtifact = createArtifactReference({
+      descriptor: original.descriptor,
+      producer: mutate(original.producer),
+    });
+
+    expect(() => reduceRunEvents(events)).toThrow(
+      _field === "stream" ? /stdout artifact is invalid/i : /stdout artifact producer is invalid/i,
+    );
+  });
+
+  it.each([
+    ["digest", { digest: `sha256:${"c".repeat(64)}` }],
+    ["size", { size: 4 }],
+    ["command size bound", { size: MAX_COMMAND_ARTIFACT_BYTES + 1 }],
+    ["media type", { mediaType: "text/plain" }],
+  ])("rejects a redigested artifact with changed %s evidence", async (_field, change) => {
+    const events = await artifactRunEvents();
+    const settled = events.find((event) => event.type === "node_agent_command_settled");
+    if (settled?.type !== "node_agent_command_settled" || settled.outcome.evidence === null) {
+      throw new Error("artifact fixture has no command settlement");
+    }
+    const original = settled.outcome.evidence.stdoutArtifact;
+    if (original === undefined) throw new Error("artifact fixture has no stdout reference");
+    (settled.outcome.evidence as WritableCommandEvidence).stdoutArtifact = createArtifactReference({
+      descriptor: { ...original.descriptor, ...change },
+      producer: original.producer,
+    });
+
+    expect(() => reduceRunEvents(events)).toThrow(/stdout artifact is invalid/i);
+  });
+
+  it.each(["identifier", "reference digest"])(
+    "rejects an artifact with a substituted %s",
+    async (field) => {
+      const events = await artifactRunEvents();
+      const settled = events.find((event) => event.type === "node_agent_command_settled");
+      if (settled?.type !== "node_agent_command_settled" || settled.outcome.evidence === null) {
+        throw new Error("artifact fixture has no command settlement");
+      }
+      const original = settled.outcome.evidence.stdoutArtifact;
+      if (original === undefined) throw new Error("artifact fixture has no stdout reference");
+      const substituted = structuredClone(original) as WritableArtifactReference;
+      if (field === "identifier") {
+        substituted.reference = `artifact:${"f".repeat(64)}`;
+      } else {
+        substituted.referenceDigest = "f".repeat(64);
+        substituted.reference = `artifact:${substituted.referenceDigest}`;
+      }
+      (settled.outcome.evidence as WritableCommandEvidence).stdoutArtifact = substituted;
+
+      expect(() => reduceRunEvents(events)).toThrow(/stdout artifact is invalid/i);
+    },
+  );
 });
+
+type WritableArtifactReference = {
+  -readonly [Field in keyof NonNullable<AgentCommandEvidence["stdoutArtifact"]>]: NonNullable<
+    AgentCommandEvidence["stdoutArtifact"]
+  >[Field];
+};
+
+async function artifactRunEvents(): Promise<RunEvent[]> {
+  const store = new MemoryRunStore();
+  await runWorkflow(compileWorkflowText(workflowSource()), {
+    runId: "run-agent-command",
+    cwd: process.cwd(),
+    protectedPaths: [],
+    store,
+    executor: new JournalUsingExecutor(),
+  });
+  const events = structuredClone(store.events);
+  const settled = events.find((event) => event.type === "node_agent_command_settled");
+  if (settled?.type !== "node_agent_command_settled" || settled.outcome.evidence === null) {
+    throw new Error("artifact fixture has no command settlement");
+  }
+  const fullStdout = "tool retained beyond preview";
+  const evidence = settled.outcome.evidence as WritableCommandEvidence;
+  evidence.stdoutHash = sha256(fullStdout);
+  evidence.stdoutTruncated = true;
+  evidence.stdoutArtifact = createArtifactReference({
+    descriptor: {
+      digest: `sha256:${evidence.stdoutHash}`,
+      size: Buffer.byteLength(fullStdout),
+      mediaType: "application/octet-stream",
+    },
+    producer: {
+      kind: "agent-command",
+      runId: settled.runId,
+      workflowId: settled.workflowId,
+      nodeId: settled.nodeId,
+      attempt: settled.attempt,
+      commandId: settled.commandId,
+      commandSequence: 1,
+      stream: "stdout",
+    },
+  });
+  expect(reduceRunEvents(events).status).toBe("succeeded");
+  return events;
+}
 
 class JournalUsingExecutor implements NodeExecutor {
   constructor(readonly onCommand?: () => void) {}

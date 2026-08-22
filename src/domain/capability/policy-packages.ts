@@ -14,6 +14,7 @@ export const MAX_POLICY_PACKAGE_MODELS = 32;
 export const MAX_POLICY_PACKAGE_TOOLS = 64;
 
 const POLICY_ACTIONS = Object.freeze([
+  "artifact.read",
   "credential.read",
   "filesystem.delete",
   "filesystem.list",
