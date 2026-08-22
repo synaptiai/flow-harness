@@ -105,6 +105,14 @@ export interface RenderedContextSummary extends ContextSummaryIdentity {
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const boundedTextSchema = z.string().max(32_768);
+const contextSummaryTextSchema = z
+  .string()
+  .min(1)
+  .max(MAX_CONTEXT_SUMMARY_BYTES)
+  .refine(
+    (value) => Buffer.byteLength(value, "utf8") <= MAX_CONTEXT_SUMMARY_BYTES,
+    "summary exceeds the UTF-8 byte limit",
+  );
 const streamEvidenceSchema = {
   stdout: boundedTextSchema,
   stderr: boundedTextSchema,
@@ -176,7 +184,7 @@ const protectedContextConstraintsSchema = z
 const contextSummaryCandidateSchema = z
   .object({
     version: z.literal(1),
-    summary: z.string().min(1).max(MAX_CONTEXT_SUMMARY_BYTES),
+    summary: contextSummaryTextSchema,
     protectedConstraints: protectedContextConstraintsSchema,
   })
   .strict();
@@ -248,7 +256,7 @@ export function renderContextSummarySurface(input: {
 }): RenderedContextSummary {
   const protectedConstraints = validateProtectedContextConstraints(input.protectedConstraints);
   const source = contextSummarySourceSchema().parse(input.source);
-  const summary = z.string().min(1).max(MAX_CONTEXT_SUMMARY_BYTES).parse(input.summary);
+  const summary = contextSummaryTextSchema.parse(input.summary);
   const text = JSON.stringify({
     version: 1,
     kind: "flow.context-summary",

@@ -128,6 +128,16 @@ export class FlowWorkflowEvaluationAdapter implements HarnessEvaluationAdapter {
         elapsed(started, clock()),
       );
     }
+    if (
+      this.dependencies.contextCompaction !== undefined &&
+      this.dependencies.contextCompaction.mode !== "none" &&
+      this.dependencies.artifactStore === undefined
+    ) {
+      return crashedResult(
+        "reference-first context compaction evaluation requires an artifact store",
+        elapsed(started, clock()),
+      );
+    }
     try {
       const artifactReopens = { attempts: 0, successes: 0 };
       const artifactStore =
@@ -179,7 +189,7 @@ export class FlowWorkflowEvaluationAdapter implements HarnessEvaluationAdapter {
         metrics:
           contextCompaction === undefined
             ? metrics
-            : Object.freeze({ ...metrics, contextCompaction }),
+            : metricsWithContextCompaction(metrics, contextCompaction),
       });
     } catch (error) {
       return crashedResult(boundedReason(error), elapsed(started, clock()));
@@ -248,6 +258,13 @@ async function contextCompactionMetrics(
       ? []
       : [event.settlement.usage],
   );
+  const summaryUsageComplete =
+    starts.length === settlements.length &&
+    settlements.every(
+      (event) => event.settlement.outcome !== "interrupted" && event.settlement.usage !== undefined,
+    );
+  const summaryMetric = (values: readonly number[]): number | null =>
+    starts.length === 0 ? 0 : summaryUsageComplete ? sumMetrics(values) : null;
   return Object.freeze({
     mode: policy.mode,
     providerRequestBytes: sumMetrics(requests.map((event) => event.identity.runtimeSurface.bytes)),
@@ -258,11 +275,34 @@ async function contextCompactionMetrics(
     accepted: settlements.filter((event) => event.settlement.outcome === "accepted").length,
     rejected: settlements.filter((event) => event.settlement.outcome === "rejected").length,
     interrupted: settlements.filter((event) => event.settlement.outcome === "interrupted").length,
-    summaryInputTokens: sumMetrics(summaryUsage.map((usage) => usage.inputTokens)),
-    summaryOutputTokens: sumMetrics(summaryUsage.map((usage) => usage.outputTokens)),
-    summaryCostUsdMicros: sumMetrics(summaryUsage.map((usage) => usage.costUsdMicros)),
+    summaryInputTokens: summaryMetric(summaryUsage.map((usage) => usage.inputTokens)),
+    summaryOutputTokens: summaryMetric(summaryUsage.map((usage) => usage.outputTokens)),
+    summaryCostUsdMicros: summaryMetric(summaryUsage.map((usage) => usage.costUsdMicros)),
     artifactReopenAttempts: artifactReopens.attempts,
     artifactReopenSuccesses: artifactReopens.successes,
+  });
+}
+
+function metricsWithContextCompaction(
+  metrics: EvaluationMetrics,
+  contextCompaction: ContextCompactionEvaluationMetrics,
+): EvaluationMetrics {
+  const summaryUsageAvailable =
+    contextCompaction.summaryInputTokens !== null &&
+    contextCompaction.summaryOutputTokens !== null &&
+    contextCompaction.summaryCostUsdMicros !== null;
+  return Object.freeze({
+    ...metrics,
+    ...(summaryUsageAvailable
+      ? {}
+      : {
+          costUsdMicros: null,
+          inputTokens: null,
+          cacheReadTokens: null,
+          cacheWriteTokens: null,
+          outputTokens: null,
+        }),
+    contextCompaction,
   });
 }
 

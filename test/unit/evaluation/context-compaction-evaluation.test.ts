@@ -156,6 +156,32 @@ describe("context compaction evaluation plan", () => {
       reason: "references_vs_none_gate_failed",
     });
   });
+
+  it("does not invent summary usage when a provider settlement lacks usage evidence", () => {
+    const plan = parseContextCompactionEvaluationPlanText(planText());
+    const schedule = createContextCompactionEvaluationSchedule(
+      digest,
+      plan.suite.tasks.map((task) => task.id),
+      plan.seeds,
+    );
+    const report = aggregateContextCompactionEvaluation(
+      reportInput(plan, schedule),
+      recordsFor(schedule, undefined, undefined, "references-and-summary"),
+    );
+
+    expect(report.modes["references-and-summary"]).toMatchObject({
+      totals: { tokens: null, costUsdMicros: null },
+      compaction: {
+        attempts: 6,
+        rejected: 0,
+        summaryInputTokens: null,
+        summaryOutputTokens: null,
+        summaryCostUsdMicros: null,
+      },
+    });
+    expect(report.comparisons.referencesVsNone.verdict).toBe("passes");
+    expect(report.comparisons.summaryVsReferences.verdict).toBe("insufficient_evidence");
+  });
 });
 
 function reportInput(
@@ -179,6 +205,7 @@ function recordsFor(
   schedule: ReturnType<typeof createContextCompactionEvaluationSchedule>,
   failedConstraintMode?: string,
   unavailableMode?: string,
+  unavailableSummaryUsageMode?: string,
 ): readonly EvaluationTrialRecord[] {
   const records: EvaluationTrialRecord[] = [];
   let previousDigest: string | null = null;
@@ -187,6 +214,7 @@ function recordsFor(
     const totalTokens =
       trial.profileId === "none" ? 120 : trial.profileId === "references" ? 90 : 80;
     const evidenceUnavailable = trial.profileId === unavailableMode;
+    const summaryUsageUnavailable = trial.profileId === unavailableSummaryUsageMode;
     const record = createEvaluationTrialRecord({
       schedule: trial,
       planDigest: digest,
@@ -225,11 +253,11 @@ function recordsFor(
       metrics: evidenceUnavailable
         ? unavailableEvaluationMetrics()
         : {
-            costUsdMicros: 10,
-            inputTokens: totalTokens - 20,
-            cacheReadTokens: 0,
-            cacheWriteTokens: 0,
-            outputTokens: 20,
+            costUsdMicros: summaryUsageUnavailable ? null : 10,
+            inputTokens: summaryUsageUnavailable ? null : totalTokens - 20,
+            cacheReadTokens: summaryUsageUnavailable ? null : 0,
+            cacheWriteTokens: summaryUsageUnavailable ? null : 0,
+            outputTokens: summaryUsageUnavailable ? null : 20,
             turns: 3,
             toolCalls: 2,
             toolErrors: 0,
@@ -247,9 +275,21 @@ function recordsFor(
               accepted: trial.profileId === "references-and-summary" ? 1 : 0,
               rejected: 0,
               interrupted: 0,
-              summaryInputTokens: trial.profileId === "references-and-summary" ? 10 : 0,
-              summaryOutputTokens: trial.profileId === "references-and-summary" ? 5 : 0,
-              summaryCostUsdMicros: trial.profileId === "references-and-summary" ? 1 : 0,
+              summaryInputTokens: summaryUsageUnavailable
+                ? null
+                : trial.profileId === "references-and-summary"
+                  ? 10
+                  : 0,
+              summaryOutputTokens: summaryUsageUnavailable
+                ? null
+                : trial.profileId === "references-and-summary"
+                  ? 5
+                  : 0,
+              summaryCostUsdMicros: summaryUsageUnavailable
+                ? null
+                : trial.profileId === "references-and-summary"
+                  ? 1
+                  : 0,
               artifactReopenAttempts: 1,
               artifactReopenSuccesses: 1,
             },

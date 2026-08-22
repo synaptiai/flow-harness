@@ -1513,9 +1513,9 @@ const modelSessionSummarySchema = z
     requestCount: z.number().int().nonnegative().safe(),
     interruptionCount: z.number().int().nonnegative().safe(),
     resumeSurfaceCount: z.number().int().nonnegative().safe(),
-    compactionCount: z.number().int().nonnegative().safe(),
-    acceptedCompactionCount: z.number().int().nonnegative().safe(),
-    interruptedCompactionCount: z.number().int().nonnegative().safe(),
+    compactionCount: z.number().int().nonnegative().safe().default(0),
+    acceptedCompactionCount: z.number().int().nonnegative().safe().default(0),
+    interruptedCompactionCount: z.number().int().nonnegative().safe().default(0),
     activeCompaction: z
       .object({
         attempt: z.number().int().positive().safe(),
@@ -1523,7 +1523,8 @@ const modelSessionSummarySchema = z
         generationAttempt: z.number().int().positive().safe(),
       })
       .strict()
-      .nullable(),
+      .nullable()
+      .default(null),
     latestResumeSourceHead: sha256Schema.nullable(),
     latestRequest: z
       .object({

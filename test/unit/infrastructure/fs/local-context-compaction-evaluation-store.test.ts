@@ -1,10 +1,14 @@
-import { mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 import { parseEvaluationTrialAttempt } from "../../../../src/domain/evaluation/attempt.js";
-import { createContextCompactionEvaluationSchedule } from "../../../../src/domain/evaluation/context-compaction-evaluation.js";
+import {
+  calculateContextCompactionEvaluationPlanDigest,
+  CONTEXT_COMPACTION_EVALUATION_API_VERSION,
+  createContextCompactionEvaluationSchedule,
+} from "../../../../src/domain/evaluation/context-compaction-evaluation.js";
 import { createEvaluationTrialRecord } from "../../../../src/domain/evaluation/records.js";
 import {
   LocalContextCompactionEvaluationStore,
@@ -12,7 +16,7 @@ import {
 } from "../../../../src/infrastructure/fs/local-context-compaction-evaluation-store.js";
 
 const temporaryDirectories: string[] = [];
-const planDigest = "a".repeat(64);
+const planDigest = calculateContextCompactionEvaluationPlanDigest(planIdentityFixture());
 
 afterEach(async () => {
   await Promise.all(
@@ -52,6 +56,67 @@ describe("local context compaction evaluation store", () => {
     ).rejects.toThrow(/direct regular directory/);
   });
 
+  it("rejects a public header whose identity no longer matches its plan digest", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-compaction-store-")));
+    temporaryDirectories.push(root);
+    const header = headerFixture();
+    const store = new LocalContextCompactionEvaluationStore(root);
+    await store.create(header);
+    const headerPath = join(root, header.evaluationId, "plan.json");
+    const persisted = JSON.parse(await readFile(headerPath, "utf8")) as {
+      comparison: { maxTotalTokenIncreaseRate: number };
+    };
+    persisted.comparison.maxTotalTokenIncreaseRate = 0.2;
+    await writeFile(headerPath, `${JSON.stringify(persisted)}\n`);
+
+    await expect(store.read(header.evaluationId)).rejects.toThrow(/plan digest/);
+  });
+
+  it("rejects invalid UTF-8 before parsing stored evidence", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-compaction-store-")));
+    temporaryDirectories.push(root);
+    const header = headerFixture("Never change release policy. \uFFFD");
+    const store = new LocalContextCompactionEvaluationStore(root);
+    await store.create(header);
+    const headerPath = join(root, header.evaluationId, "plan.json");
+    const source = await readFile(headerPath);
+    const replacement = Buffer.from("\uFFFD", "utf8");
+    const index = source.indexOf(replacement);
+    if (index < 0) throw new Error("UTF-8 fixture replacement character is absent");
+    await writeFile(
+      headerPath,
+      Buffer.concat([source.subarray(0, index), Buffer.from([0xff]), source.subarray(index + 3)]),
+    );
+
+    await expect(store.read(header.evaluationId)).rejects.toThrow(/UTF-8/i);
+  });
+
+  it("rejects an active attempt that contradicts the public schedule", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-compaction-store-")));
+    temporaryDirectories.push(root);
+    const header = headerFixture();
+    const store = new LocalContextCompactionEvaluationStore(root);
+    await store.create(header);
+    const scheduled = header.schedule[0];
+    if (scheduled === undefined) throw new Error("store fixture schedule is empty");
+    await writeFile(
+      join(root, header.evaluationId, "active-attempt.json"),
+      `${JSON.stringify({
+        version: 1,
+        planDigest,
+        position: scheduled.position,
+        trialId: scheduled.trialId,
+        taskId: "different-task",
+        profileId: scheduled.profileId,
+        adapter: "flow-workflow-v1",
+        startedAt: "2026-08-22T00:00:00.000Z",
+        workspace: { backend: "reflink-copy-v1", snapshotDigest: "b".repeat(64) },
+      })}\n`,
+    );
+
+    await expect(store.read(header.evaluationId)).rejects.toThrow(/active attempt.*schedule/i);
+  });
+
   it("persists one owned record prefix and active-attempt lifecycle", async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "flow-compaction-store-")));
     temporaryDirectories.push(root);
@@ -72,12 +137,6 @@ describe("local context compaction evaluation store", () => {
       startedAt: "2026-08-22T00:00:00.000Z",
       workspace: { backend: "reflink-copy-v1", snapshotDigest: "b".repeat(64) },
     });
-    await store.beginAttempt(header.evaluationId, attempt);
-
-    await expect(
-      new LocalContextCompactionEvaluationStore(root).read(header.evaluationId),
-    ).resolves.toMatchObject({ activeAttempt: { trialId: scheduled.trialId }, records: [] });
-
     const record = createEvaluationTrialRecord({
       schedule: scheduled,
       planDigest,
@@ -129,7 +188,16 @@ describe("local context compaction evaluation store", () => {
         },
       },
     });
+    await expect(store.append(header.evaluationId, record)).rejects.toThrow(/active attempt/);
+    await store.beginAttempt(header.evaluationId, attempt);
+    await expect(store.completeAttempt(header.evaluationId, attempt)).rejects.toThrow(
+      /no durable terminal record/,
+    );
+    await expect(
+      new LocalContextCompactionEvaluationStore(root).read(header.evaluationId),
+    ).resolves.toMatchObject({ activeAttempt: { trialId: scheduled.trialId }, records: [] });
     await store.append(header.evaluationId, record);
+    await store.completeAttempt(header.evaluationId, attempt);
     await expect(
       new LocalContextCompactionEvaluationStore(root).read(header.evaluationId),
     ).resolves.toMatchObject({ activeAttempt: null });
@@ -173,9 +241,14 @@ describe("local context compaction evaluation store", () => {
   });
 });
 
-function headerFixture(): PublicContextCompactionEvaluationHeader {
+function headerFixture(
+  protectedConstraint = "Never change release policy.",
+): PublicContextCompactionEvaluationHeader {
+  const headerPlanDigest = calculateContextCompactionEvaluationPlanDigest(
+    planIdentityFixture(protectedConstraint),
+  );
   const schedule = createContextCompactionEvaluationSchedule(
-    planDigest,
+    headerPlanDigest,
     ["preserve-policy"],
     [11, 12, 13, 14, 15, 16],
   );
@@ -184,7 +257,8 @@ function headerFixture(): PublicContextCompactionEvaluationHeader {
     kind: "ContextCompactionEvaluation",
     evaluationId: "compaction-evaluation",
     createdAt: "2026-08-22T00:00:00.000Z",
-    planDigest,
+    planDigest: headerPlanDigest,
+    apiVersion: CONTEXT_COMPACTION_EVALUATION_API_VERSION,
     planId: "reference-first-compaction",
     suite: {
       id: "context-compaction-holdout",
@@ -201,7 +275,7 @@ function headerFixture(): PublicContextCompactionEvaluationHeader {
             instructionSha256: "e".repeat(64),
           },
           verifier: { kind: "filesystem-v1", digest: "c".repeat(64), assertionCount: 1 },
-          protectedConstraints: ["Never change release policy."],
+          protectedConstraints: [protectedConstraint],
           constraintAssertionIndexes: [0],
         },
       ],
@@ -237,5 +311,64 @@ function headerFixture(): PublicContextCompactionEvaluationHeader {
       maxConstraintLosses: 0,
     },
     schedule,
+  };
+}
+
+function planIdentityFixture(protectedConstraint = "Never change release policy."): unknown {
+  return {
+    version: 1,
+    apiVersion: CONTEXT_COMPACTION_EVALUATION_API_VERSION,
+    id: "reference-first-compaction",
+    suite: {
+      id: "context-compaction-holdout",
+      version: "1.0.0",
+      tasks: [
+        {
+          id: "preserve-policy",
+          partition: "holdout",
+          fixture: {
+            provenance: "fixtures/policy",
+            digest: "d".repeat(64),
+            entryCount: 2,
+            logicalBytes: 100,
+            instructionPath: "TASK.md",
+            instructionSha256: "e".repeat(64),
+          },
+          verifier: { kind: "filesystem-v1", digest: "c".repeat(64), assertionCount: 1 },
+          protectedConstraints: [protectedConstraint],
+          constraintAssertionIndexes: [0],
+        },
+      ],
+    },
+    profile: {
+      adapter: "flow-workflow-v1",
+      workflow: {
+        provenance: "agent.workflow.yaml",
+        sourceSha256: "f".repeat(64),
+        workflowDigest: "1".repeat(64),
+      },
+    },
+    controls: {
+      model: { provider: "test", id: "deterministic", thinking: "medium" },
+      budget: {
+        maxNodeStarts: 8,
+        maxModelTokens: 10_000,
+        maxCostUsdMicros: 1_000_000,
+        maxExecutionMs: 300_000,
+        maxArtifactBytes: 1_048_576,
+      },
+      network: "deny",
+      retry: { providerRetries: 0, harnessRetries: 0 },
+      compaction: { minimumReductionBytes: 1_024, summaryOutputTokenLimits: [512, 256] },
+    },
+    seeds: [11, 12, 13, 14, 15, 16],
+    modes: ["none", "references", "references-and-summary"],
+    order: "six-order-balanced-v1",
+    comparison: {
+      minimumPairedTrials: 6,
+      maxVerifiedSuccessRegression: 0,
+      maxTotalTokenIncreaseRate: 0.1,
+      maxConstraintLosses: 0,
+    },
   };
 }

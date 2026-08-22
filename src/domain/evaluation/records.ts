@@ -52,9 +52,9 @@ export interface ContextCompactionEvaluationMetrics {
   readonly accepted: number;
   readonly rejected: number;
   readonly interrupted: number;
-  readonly summaryInputTokens: number;
-  readonly summaryOutputTokens: number;
-  readonly summaryCostUsdMicros: number;
+  readonly summaryInputTokens: number | null;
+  readonly summaryOutputTokens: number | null;
+  readonly summaryCostUsdMicros: number | null;
   readonly artifactReopenAttempts: number;
   readonly artifactReopenSuccesses: number;
 }
@@ -76,14 +76,29 @@ const contextCompactionMetricsSchema = z
     accepted: nonNegativeMetricSchema(),
     rejected: nonNegativeMetricSchema(),
     interrupted: nonNegativeMetricSchema(),
-    summaryInputTokens: nonNegativeMetricSchema(),
-    summaryOutputTokens: nonNegativeMetricSchema(),
-    summaryCostUsdMicros: nonNegativeMetricSchema(),
+    summaryInputTokens: optionalMetricSchema,
+    summaryOutputTokens: optionalMetricSchema,
+    summaryCostUsdMicros: optionalMetricSchema,
     artifactReopenAttempts: nonNegativeMetricSchema(),
     artifactReopenSuccesses: nonNegativeMetricSchema(),
   })
   .strict()
   .superRefine((metrics, context) => {
+    const summaryUsage = [
+      metrics.summaryInputTokens,
+      metrics.summaryOutputTokens,
+      metrics.summaryCostUsdMicros,
+    ];
+    if (
+      summaryUsage.some((value) => value === null) &&
+      !summaryUsage.every((value) => value === null)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["summaryInputTokens"],
+        message: "summary usage metrics must be entirely available or unavailable",
+      });
+    }
     if (metrics.accepted + metrics.rejected + metrics.interrupted > metrics.attempts) {
       context.addIssue({
         code: "custom",
@@ -104,14 +119,19 @@ const contextCompactionMetricsSchema = z
         metrics.accepted !== 0 ||
         metrics.rejected !== 0 ||
         metrics.interrupted !== 0 ||
-        metrics.summaryInputTokens !== 0 ||
-        metrics.summaryOutputTokens !== 0 ||
-        metrics.summaryCostUsdMicros !== 0)
+        summaryUsage.some((value) => value !== 0))
     ) {
       context.addIssue({
         code: "custom",
         path: ["mode"],
         message: "summary evidence requires references-and-summary mode",
+      });
+    }
+    if (metrics.attempts === 0 && summaryUsage.some((value) => value !== 0)) {
+      context.addIssue({
+        code: "custom",
+        path: ["attempts"],
+        message: "zero summary attempts require measured zero summary usage",
       });
     }
   });

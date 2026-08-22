@@ -9,6 +9,7 @@ import {
 } from "../../../src/domain/artifact/reference.js";
 import {
   CONTEXT_SUMMARY_UNTRUSTED_INSTRUCTION,
+  MAX_CONTEXT_SUMMARY_BYTES,
   projectReferenceFirstToolResult,
   type ReferenceProjectionIdentity,
   renderContextSummarySurface,
@@ -237,6 +238,35 @@ describe("bounded context summary", () => {
       reason: "invalid_output",
       output: { bytes: Buffer.byteLength(candidateText) },
     });
+  });
+
+  it("enforces the summary limit in UTF-8 bytes", () => {
+    const oversizedSummary = `${protectedConstraints.join(" ")} ${"é".repeat(40_000)}`;
+    expect(oversizedSummary.length).toBeLessThan(MAX_CONTEXT_SUMMARY_BYTES);
+    expect(Buffer.byteLength(oversizedSummary, "utf8")).toBeGreaterThan(MAX_CONTEXT_SUMMARY_BYTES);
+    const candidateText = JSON.stringify({
+      version: 1,
+      summary: oversizedSummary,
+      protectedConstraints,
+    });
+
+    expect(validateContextSummaryCandidate({ candidateText, protectedConstraints })).toMatchObject({
+      status: "rejected",
+      reason: "invalid_output",
+    });
+    expect(() =>
+      renderContextSummarySurface({
+        summary: oversizedSummary,
+        protectedConstraints,
+        source: {
+          firstSequence: 5,
+          lastSequence: 8,
+          eventCount: 3,
+          sha256: "6".repeat(64),
+          bytes: 800,
+        },
+      }),
+    ).toThrow();
   });
 
   it("renders Flow-owned constraints beside an explicitly untrusted summary", () => {

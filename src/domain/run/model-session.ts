@@ -1188,6 +1188,7 @@ function applyTransition(
       if (previousStart !== undefined && event.outputTokenLimit >= previousStart.outputTokenLimit) {
         throw new ModelSessionReplayError("second context compaction output limit must be smaller");
       }
+      validateCompactionSurfaceIdentity(event.referenceSurface);
       validateCompactionRange(state, event.range);
       return {
         activeCompaction: deepFreeze({
@@ -1421,6 +1422,10 @@ function validateCompactionRange(state: ModelSessionState, range: ContextCompact
   ) {
     throw new ModelSessionReplayError("context compaction range cannot orphan a tool pair");
   }
+  const canonical = canonicalJson(selected.map(projectResumeEvent));
+  if (range.sha256 !== sha256(canonical) || range.bytes !== Buffer.byteLength(canonical, "utf8")) {
+    throw new ModelSessionReplayError("context compaction range identity does not match");
+  }
 }
 
 function validateCompactionSettlement(
@@ -1428,6 +1433,9 @@ function validateCompactionSettlement(
   settlement: ContextCompactionSettlement,
 ): void {
   if (settlement.outcome === "interrupted") return;
+  if (settlement.output !== undefined) {
+    validateCompactionSurfaceIdentity(settlement.output);
+  }
   if (
     settlement.outcome === "rejected" &&
     (settlement.reason === "constraint_loss" || settlement.reason === "not_smaller") &&
@@ -1478,6 +1486,12 @@ function validateCompactionSettlement(
         "accepted context compaction does not meet its minimum reduction",
       );
     }
+  }
+}
+
+function validateCompactionSurfaceIdentity(surface: ContextCompactionSurfaceIdentity): void {
+  if (surface.estimatedTokens !== Math.ceil(surface.bytes / 4)) {
+    throw new ModelSessionReplayError("context compaction estimated tokens do not match bytes");
   }
 }
 

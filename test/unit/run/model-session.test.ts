@@ -495,9 +495,37 @@ describe("model session record", () => {
     ).toThrow(/tool pair/i);
   });
 
+  it("rejects a compaction range whose content identity is incorrect", () => {
+    const state = sessionWithTwoSettledRequests();
+    const start = compactionStart(state, 1, 1_024);
+
+    expect(() =>
+      append(state, {
+        ...start,
+        range: { ...start.range, sha256: "6".repeat(64) },
+      }),
+    ).toThrow(/range identity/i);
+    expect(() =>
+      append(state, {
+        ...start,
+        range: { ...start.range, bytes: start.range.bytes + 1 },
+      }),
+    ).toThrow(/range identity/i);
+  });
+
   it("rejects settlement claims that lack their required safety evidence", () => {
     let state = sessionWithTwoSettledRequests();
-    state = append(state, compactionStart(state, 1, 1_024));
+    const start = compactionStart(state, 1, 1_024);
+    expect(() =>
+      append(state, {
+        ...start,
+        referenceSurface: {
+          ...start.referenceSurface,
+          estimatedTokens: start.referenceSurface.estimatedTokens + 1,
+        },
+      }),
+    ).toThrow(/estimated tokens/i);
+    state = append(state, start);
 
     expect(() =>
       append(state, {
@@ -508,6 +536,22 @@ describe("model session record", () => {
         settlement: { outcome: "rejected", reason: "constraint_loss" },
       }),
     ).toThrow(/constraint evidence/i);
+    expect(() =>
+      append(state, {
+        type: "context_compaction_settled",
+        attempt: 1,
+        compaction: 1,
+        generationAttempt: 1,
+        settlement: {
+          outcome: "accepted",
+          reason: "accepted",
+          output: { sha256: "7".repeat(64), bytes: 300, estimatedTokens: 76 },
+          usage: modelUsage(),
+          surface: { beforeBytes: 1_000, afterBytes: 600, minimumReductionBytes: 200 },
+          constraints: { sha256: "8".repeat(64), checked: 3, retained: 3 },
+        },
+      }),
+    ).toThrow(/estimated tokens/i);
     expect(() =>
       append(state, {
         type: "context_compaction_settled",
@@ -660,6 +704,8 @@ function compactionStart(
   generationAttempt: number,
   outputTokenLimit: number,
 ) {
+  const selection = selectContextCompactionRange(state);
+  if (selection === null) throw new Error("test session has no compactable range");
   return {
     type: "context_compaction_started" as const,
     attempt: 1,
@@ -667,13 +713,7 @@ function compactionStart(
     generationAttempt,
     mode: "references-and-summary" as const,
     sourceHead: state.head,
-    range: {
-      firstSequence: 5,
-      lastSequence: 8,
-      eventCount: 3,
-      sha256: "6".repeat(64),
-      bytes: 800,
-    },
+    range: selection.range,
     referenceSurface: { sha256: "5".repeat(64), bytes: 1_000, estimatedTokens: 250 },
     outputTokenLimit,
   };

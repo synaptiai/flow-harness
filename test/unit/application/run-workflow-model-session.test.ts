@@ -22,10 +22,38 @@ import {
   modelSessionId,
   modelSessionSummary,
   reduceModelSessionEvents,
+  selectContextCompactionRange,
 } from "../../../src/domain/run/model-session.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 
 describe("runWorkflow model session coordination", () => {
+  it("defaults compaction counters when replaying a pre-compaction run summary", () => {
+    const session = createModelSession(
+      identity("run-model-session-legacy"),
+      "2026-08-22T00:00:00.000Z",
+    ).state;
+    const event = openAttemptEvents(workflow(), session)[1];
+    if (event?.type !== "node_started" || event.modelSession === undefined) {
+      throw new Error("legacy fixture requires a model-backed node start");
+    }
+    const {
+      compactionCount: _compactionCount,
+      acceptedCompactionCount: _acceptedCompactionCount,
+      interruptedCompactionCount: _interruptedCompactionCount,
+      activeCompaction: _activeCompaction,
+      ...legacySummary
+    } = event.modelSession;
+
+    expect(parseRunEvent({ ...event, modelSession: legacySummary })).toMatchObject({
+      modelSession: {
+        compactionCount: 0,
+        acceptedCompactionCount: 0,
+        interruptedCompactionCount: 0,
+        activeCompaction: null,
+      },
+    });
+  });
+
   it("creates and seeds a session before publishing a model-backed node start", async () => {
     const operations: string[] = [];
     const store = new MemoryRunStore([], operations);
@@ -514,6 +542,8 @@ function openCompactionSessionState(identity: ModelSessionIdentity): ModelSessio
     },
     8,
   );
+  const selection = selectContextCompactionRange(state);
+  if (selection === null) throw new Error("test session has no compactable range");
   return appendState(
     state,
     {
@@ -523,13 +553,7 @@ function openCompactionSessionState(identity: ModelSessionIdentity): ModelSessio
       generationAttempt: 1,
       mode: "references-and-summary",
       sourceHead: state.head,
-      range: {
-        firstSequence: 5,
-        lastSequence: 6,
-        eventCount: 1,
-        sha256: "6".repeat(64),
-        bytes: 100,
-      },
+      range: selection.range,
       referenceSurface: { sha256: "5".repeat(64), bytes: 1_000, estimatedTokens: 250 },
       outputTokenLimit: 512,
     },

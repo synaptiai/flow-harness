@@ -10,6 +10,8 @@ import {
 } from "../../domain/evaluation/attempt.js";
 import {
   aggregateContextCompactionEvaluation,
+  calculateContextCompactionEvaluationPlanDigest,
+  CONTEXT_COMPACTION_EVALUATION_API_VERSION,
   type ContextCompactionEvaluationReportInput,
   createContextCompactionEvaluationSchedule,
 } from "../../domain/evaluation/context-compaction-evaluation.js";
@@ -25,6 +27,7 @@ export const MAX_CONTEXT_COMPACTION_EVALUATION_RECORD_BYTES = 64 * 1024;
 export const MAX_CONTEXT_COMPACTION_EVALUATION_LEDGER_BYTES = 256 * 1024 * 1024;
 const MAX_ACTIVE_ATTEMPT_BYTES = 8 * 1024;
 const MAX_OWNER_BYTES = 4 * 1024;
+const fatalUtf8Decoder = new TextDecoder("utf-8", { fatal: true });
 
 const identifierSchema = z
   .string()
@@ -53,6 +56,7 @@ const headerSchema = z
     evaluationId: identifierSchema,
     createdAt: z.iso.datetime({ offset: true }),
     planDigest: sha256Schema,
+    apiVersion: z.literal(CONTEXT_COMPACTION_EVALUATION_API_VERSION),
     planId: identifierSchema,
     suite: z
       .object({
@@ -240,6 +244,7 @@ export function createPublicContextCompactionEvaluationHeader(
     evaluationId,
     createdAt,
     planDigest: admitted.planDigest,
+    apiVersion: admitted.apiVersion,
     planId: admitted.id,
     suite: {
       id: admitted.suite.id,
@@ -362,7 +367,7 @@ export class LocalContextCompactionEvaluationStore {
       throw error;
     }
     const header = parseHeader(
-      parseStrictJson(headerSource.toString("utf8"), {
+      parseStrictJson(decodeStrictUtf8(headerSource, "evaluation header"), {
         maxDepth: 24,
         maxNodes: 50_000,
         valueLabel: "context compaction evaluation header",
@@ -375,7 +380,7 @@ export class LocalContextCompactionEvaluationStore {
     aggregateContextCompactionEvaluation(contextCompactionEvaluationReportInput(header), records);
     const persistedAttempt = await readAttempt(join(directory, "active-attempt.json"));
     const activeAttempt =
-      persistedAttempt !== null && attemptHasTerminalRecord(persistedAttempt, records)
+      persistedAttempt !== null && reconcileAttempt(header, records, persistedAttempt)
         ? null
         : persistedAttempt;
     return Object.freeze({ header, records, activeAttempt });
@@ -400,7 +405,9 @@ export class LocalContextCompactionEvaluationStore {
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       let ownerCreated = false;
       try {
+        await assertEvaluationDirectory(this.directory(evaluationId));
         await durableCreate(ownerPath, `${JSON.stringify(owner)}\n`);
+        await syncDirectory(this.directory(evaluationId));
         ownerCreated = true;
         this.#owners.set(evaluationId, token);
         const persistedAttempt = await readAttempt(
@@ -408,9 +415,10 @@ export class LocalContextCompactionEvaluationStore {
         );
         if (
           persistedAttempt !== null &&
-          attemptHasTerminalRecord(persistedAttempt, stored.records)
+          reconcileAttempt(stored.header, stored.records, persistedAttempt)
         ) {
           await unlink(join(this.directory(evaluationId), "active-attempt.json"));
+          await syncDirectory(this.directory(evaluationId));
         }
         return stored;
       } catch (error) {
@@ -439,16 +447,14 @@ export class LocalContextCompactionEvaluationStore {
     const stored = await this.read(evaluationId);
     const parsed = parseEvaluationTrialRecord(record);
     if (
-      stored.activeAttempt !== null &&
-      (stored.activeAttempt.planDigest !== parsed.planDigest ||
-        stored.activeAttempt.position !== parsed.position ||
-        stored.activeAttempt.trialId !== parsed.trialId ||
-        stored.activeAttempt.taskId !== parsed.taskId ||
-        stored.activeAttempt.profileId !== parsed.profileId)
+      stored.activeAttempt === null ||
+      !terminalRecordMatchesAttempt(stored.activeAttempt, parsed)
     ) {
       throw new ContextCompactionEvaluationStoreError(
         "sequence",
-        "trial record does not match its active attempt",
+        stored.activeAttempt === null
+          ? "trial record requires an active attempt"
+          : "trial record does not match its active attempt",
       );
     }
     aggregateContextCompactionEvaluation(contextCompactionEvaluationReportInput(stored.header), [
@@ -459,7 +465,11 @@ export class LocalContextCompactionEvaluationStore {
     if (Buffer.byteLength(line) > MAX_CONTEXT_COMPACTION_EVALUATION_RECORD_BYTES) {
       throw new ContextCompactionEvaluationStoreError("corrupt", "trial record exceeds its limit");
     }
-    const handle = await open(join(this.directory(evaluationId), "trials.jsonl"), "a");
+    await assertEvaluationDirectory(this.directory(evaluationId));
+    const handle = await open(
+      join(this.directory(evaluationId), "trials.jsonl"),
+      constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW,
+    );
     try {
       await handle.writeFile(line);
       await handle.sync();
@@ -487,10 +497,12 @@ export class LocalContextCompactionEvaluationStore {
     ) {
       throw new ContextCompactionEvaluationStoreError("sequence", "attempt is not the next trial");
     }
+    await assertEvaluationDirectory(this.directory(evaluationId));
     await durableCreate(
       join(this.directory(evaluationId), "active-attempt.json"),
       `${JSON.stringify(attempt)}\n`,
     );
+    await syncDirectory(this.directory(evaluationId));
   }
 
   async completeAttempt(evaluationId: string, attemptInput: EvaluationTrialAttempt): Promise<void> {
@@ -500,23 +512,37 @@ export class LocalContextCompactionEvaluationStore {
     if (active === null || JSON.stringify(active) !== JSON.stringify(expected)) {
       throw new ContextCompactionEvaluationStoreError("sequence", "active attempt does not match");
     }
+    const stored = await this.read(evaluationId);
+    if (!terminalRecordMatchesAttempt(expected, stored.records.at(-1))) {
+      throw new ContextCompactionEvaluationStoreError(
+        "sequence",
+        "active attempt has no durable terminal record",
+      );
+    }
+    await assertEvaluationDirectory(this.directory(evaluationId));
     await unlink(join(this.directory(evaluationId), "active-attempt.json"));
+    await syncDirectory(this.directory(evaluationId));
   }
 
   async release(evaluationId: string): Promise<void> {
     const token = this.requireOwner(evaluationId);
     const ownerPath = join(this.directory(evaluationId), "owner.json");
     const owner = ownerSchema.parse(
-      parseStrictJson((await boundedRead(ownerPath, MAX_OWNER_BYTES)).toString("utf8"), {
-        maxDepth: 4,
-        maxNodes: 16,
-        valueLabel: "context compaction evaluation owner",
-      }),
+      parseStrictJson(
+        decodeStrictUtf8(await boundedRead(ownerPath, MAX_OWNER_BYTES), "evaluation owner"),
+        {
+          maxDepth: 4,
+          maxNodes: 16,
+          valueLabel: "context compaction evaluation owner",
+        },
+      ),
     );
     if (owner.token !== token || owner.pid !== process.pid) {
       throw new ContextCompactionEvaluationStoreError("not_owner", "owner identity changed");
     }
+    await assertEvaluationDirectory(this.directory(evaluationId));
     await unlink(ownerPath);
+    await syncDirectory(this.directory(evaluationId));
     this.#owners.delete(evaluationId);
   }
 
@@ -544,11 +570,46 @@ function parseHeader(input: unknown): PublicContextCompactionEvaluationHeader {
       cause: parsed.error,
     });
   }
+  if (
+    calculateContextCompactionEvaluationPlanDigest(headerPlanIdentity(parsed.data)) !==
+    parsed.data.planDigest
+  ) {
+    throw new ContextCompactionEvaluationStoreError(
+      "corrupt",
+      "evaluation header plan digest does not match its identity fields",
+    );
+  }
   return deepFreeze(parsed.data);
 }
 
+function headerPlanIdentity(header: PublicContextCompactionEvaluationHeader): unknown {
+  return {
+    version: header.version,
+    apiVersion: header.apiVersion,
+    id: header.planId,
+    suite: {
+      id: header.suite.id,
+      version: header.suite.version,
+      tasks: header.suite.tasks.map((task) => ({
+        id: task.id,
+        partition: "holdout",
+        fixture: task.fixture,
+        verifier: task.verifier,
+        protectedConstraints: task.protectedConstraints,
+        constraintAssertionIndexes: task.constraintAssertionIndexes,
+      })),
+    },
+    profile: header.profile,
+    controls: header.controls,
+    seeds: header.seeds,
+    modes: header.modes,
+    order: header.order,
+    comparison: header.comparison,
+  };
+}
+
 function parseLedger(source: Buffer): readonly EvaluationTrialRecord[] {
-  const text = source.toString("utf8");
+  const text = decodeStrictUtf8(source, "evaluation trial ledger");
   if (text.length === 0) return Object.freeze([]);
   if (!text.endsWith("\n")) {
     throw new ContextCompactionEvaluationStoreError("corrupt", "trial ledger has a torn tail");
@@ -574,12 +635,53 @@ function parseLedger(source: Buffer): readonly EvaluationTrialRecord[] {
   return Object.freeze(records);
 }
 
-function attemptHasTerminalRecord(
-  attempt: EvaluationTrialAttempt,
+function reconcileAttempt(
+  header: PublicContextCompactionEvaluationHeader,
   records: readonly EvaluationTrialRecord[],
+  attempt: EvaluationTrialAttempt,
 ): boolean {
-  const terminal = records.at(-1);
-  return terminal?.position === attempt.position && terminal.trialId === attempt.trialId;
+  const scheduled = header.schedule[attempt.position - 1];
+  if (
+    scheduled === undefined ||
+    attempt.planDigest !== header.planDigest ||
+    attempt.position !== scheduled.position ||
+    attempt.trialId !== scheduled.trialId ||
+    attempt.taskId !== scheduled.taskId ||
+    attempt.profileId !== scheduled.profileId ||
+    attempt.adapter !== "flow-workflow-v1"
+  ) {
+    throw new ContextCompactionEvaluationStoreError(
+      "corrupt",
+      "active attempt contradicts the public schedule",
+    );
+  }
+  if (attempt.position === records.length + 1) return false;
+  if (
+    attempt.position === records.length &&
+    terminalRecordMatchesAttempt(attempt, records.at(-1))
+  ) {
+    return true;
+  }
+  throw new ContextCompactionEvaluationStoreError(
+    "corrupt",
+    "active attempt contradicts the committed ledger",
+  );
+}
+
+function terminalRecordMatchesAttempt(
+  attempt: EvaluationTrialAttempt,
+  terminal: EvaluationTrialRecord | undefined,
+): boolean {
+  return (
+    terminal?.planDigest === attempt.planDigest &&
+    terminal.position === attempt.position &&
+    terminal.trialId === attempt.trialId &&
+    terminal.taskId === attempt.taskId &&
+    terminal.profileId === attempt.profileId &&
+    terminal.startedAt === attempt.startedAt &&
+    terminal.environment.workspaceBackend === attempt.workspace.backend &&
+    terminal.environment.workspaceSnapshotDigest === attempt.workspace.snapshotDigest
+  );
 }
 
 async function readAttempt(path: string): Promise<EvaluationTrialAttempt | null> {
@@ -591,7 +693,7 @@ async function readAttempt(path: string): Promise<EvaluationTrialAttempt | null>
     throw error;
   }
   return parseEvaluationTrialAttempt(
-    parseStrictJson(source.toString("utf8"), {
+    parseStrictJson(decodeStrictUtf8(source, "evaluation active attempt"), {
       maxDepth: 12,
       maxNodes: 1_000,
       valueLabel: "context compaction evaluation attempt",
@@ -666,7 +768,7 @@ async function reclaimStaleOwner(path: string): Promise<boolean> {
       throw new ContextCompactionEvaluationStoreError("corrupt", "owner record is invalid");
     }
     const owner = ownerSchema.parse(
-      parseStrictJson((await handle.readFile()).toString("utf8"), {
+      parseStrictJson(decodeStrictUtf8(await handle.readFile(), "evaluation owner"), {
         maxDepth: 4,
         maxNodes: 16,
         valueLabel: "context compaction evaluation owner",
@@ -679,6 +781,16 @@ async function reclaimStaleOwner(path: string): Promise<boolean> {
     return true;
   } finally {
     await handle.close();
+  }
+}
+
+function decodeStrictUtf8(source: Buffer, label: string): string {
+  try {
+    return fatalUtf8Decoder.decode(source);
+  } catch (error) {
+    throw new ContextCompactionEvaluationStoreError("corrupt", `${label} is not valid UTF-8`, {
+      cause: error,
+    });
   }
 }
 

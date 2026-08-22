@@ -667,20 +667,37 @@ function sumCompactionEvidence(
     record.metrics.contextCompaction === undefined ? [] : [record.metrics.contextCompaction],
   );
   if (evidence.length !== records.length) return null;
-  const sum = (key: keyof Omit<ContextCompactionEvaluationMetrics, "mode">) =>
-    sumNumbers(evidence.map((item) => item[key]));
+  const sumRequired = (
+    key:
+      | "providerRequestBytes"
+      | "providerRequestEstimatedTokens"
+      | "attempts"
+      | "accepted"
+      | "rejected"
+      | "interrupted"
+      | "artifactReopenAttempts"
+      | "artifactReopenSuccesses",
+  ) => sumNumbers(evidence.map((item) => item[key]));
+  const sumOptional = (
+    key: "summaryInputTokens" | "summaryOutputTokens" | "summaryCostUsdMicros",
+  ): number | null => {
+    const values = evidence.map((item) => item[key]);
+    return values.some((value) => value === null)
+      ? null
+      : sumNumbers(values.filter((value): value is number => value !== null));
+  };
   return Object.freeze({
-    providerRequestBytes: sum("providerRequestBytes"),
-    providerRequestEstimatedTokens: sum("providerRequestEstimatedTokens"),
-    attempts: sum("attempts"),
-    accepted: sum("accepted"),
-    rejected: sum("rejected"),
-    interrupted: sum("interrupted"),
-    summaryInputTokens: sum("summaryInputTokens"),
-    summaryOutputTokens: sum("summaryOutputTokens"),
-    summaryCostUsdMicros: sum("summaryCostUsdMicros"),
-    artifactReopenAttempts: sum("artifactReopenAttempts"),
-    artifactReopenSuccesses: sum("artifactReopenSuccesses"),
+    providerRequestBytes: sumRequired("providerRequestBytes"),
+    providerRequestEstimatedTokens: sumRequired("providerRequestEstimatedTokens"),
+    attempts: sumRequired("attempts"),
+    accepted: sumRequired("accepted"),
+    rejected: sumRequired("rejected"),
+    interrupted: sumRequired("interrupted"),
+    summaryInputTokens: sumOptional("summaryInputTokens"),
+    summaryOutputTokens: sumOptional("summaryOutputTokens"),
+    summaryCostUsdMicros: sumOptional("summaryCostUsdMicros"),
+    artifactReopenAttempts: sumRequired("artifactReopenAttempts"),
+    artifactReopenSuccesses: sumRequired("artifactReopenSuccesses"),
   });
 }
 

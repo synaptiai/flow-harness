@@ -188,3 +188,24 @@ compaction an activation candidate.
 
 - **Record limit** — Stop before the next append or provider call. Compaction does not authorize a
   larger private record.
+
+## Adversarial review
+
+- The public evaluation header recomputes its plan digest from the redacted identity fields. A
+  changed control, constraint, fixture identity, workflow identity, seed, mode, or threshold cannot
+  retain the original digest.
+
+- An evaluation trial record requires a matching active-attempt record. The store removes that
+  marker only after the terminal hash-chained record is durable. Recovery rejects an active attempt
+  that contradicts the public schedule or committed prefix.
+
+- The model-session replay recomputes each compacted range hash and byte count from committed
+  primary events. It also recomputes token estimates from the recorded surface bytes.
+
+- Summary usage is all-or-nothing evidence. If a started summary call has no complete terminal
+  usage, Flow records the summary metrics as unavailable instead of zero. It also records total
+  token and cost metrics as unavailable. The affected paired comparison remains insufficient
+  evidence.
+
+- Public run projections accept records created before the compaction counters existed. Missing
+  counters decode as zero and a missing active-compaction field decodes as `null`.
