@@ -17,6 +17,7 @@ import {
   type SupplementalMemoryCandidateSource,
 } from "../../domain/adaptation/supplemental-memory-candidate.js";
 import type { CapabilityPackageSnapshot } from "../../domain/capability/agent-skills.js";
+import type { RunEvidenceReference } from "../../domain/evidence/run-evidence-reference.js";
 import {
   type AdmittedLocalAgentSkillCandidate,
   admitLocalAgentSkillCandidate,
@@ -97,6 +98,12 @@ export interface LocalAdaptationCandidateOptions {
   /** Resolve one immutable complete baseline only after supplemental-memory discrimination. */
   readonly resolveSupplementalMemoryBaseline?:
     | ((source: SupplementalMemoryCandidateSource) => Promise<EffectiveHarnessState>)
+    | undefined;
+  readonly resolveSupplementalMemoryRelationshipEvidence?:
+    | ((
+        source: SupplementalMemoryCandidateSource,
+        baseline: EffectiveHarnessState,
+      ) => Promise<readonly RunEvidenceReference[]>)
     | undefined;
   /** @internal Deterministic discriminator race and cancellation seam. */
   readonly afterDiscriminatorStat?: () => void | Promise<void>;
@@ -216,6 +223,11 @@ export async function admitLocalAdaptationCandidate(
     }
     const candidate = await admitLocalSupplementalMemoryCandidate(absolutePath, {
       resolveBaseline: options.resolveSupplementalMemoryBaseline,
+      ...(options.resolveSupplementalMemoryRelationshipEvidence === undefined
+        ? {}
+        : {
+            resolveRelationshipEvidence: options.resolveSupplementalMemoryRelationshipEvidence,
+          }),
       ...(options.signal === undefined ? {} : { signal: options.signal }),
       expectedSource: { identity: sourceIdentity, sha256: sourceSha256 },
     });

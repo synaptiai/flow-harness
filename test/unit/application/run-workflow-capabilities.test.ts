@@ -18,6 +18,7 @@ import {
   createEffectiveHarnessHeadIdentity,
   effectiveHarnessWorkflowSource,
 } from "../../../src/domain/adaptation/effective-harness-state.js";
+import { renderSupplementalMemoryBlock } from "../../../src/domain/adaptation/supplemental-memory.js";
 import {
   type CapabilitySnapshot,
   calculateCapabilitySnapshotDigest,
@@ -37,6 +38,8 @@ import {
   effectiveHarnessCandidateArtifactFixture,
   modelRoutingEffectiveHarnessCandidateArtifactFixture,
   supplementalMemoryEffectiveHarnessCandidateArtifactFixture,
+  supplementalMemoryRelationshipEffectiveHarnessCandidateArtifactFixture,
+  supplementalMemoryRelationshipEvidenceRunId,
 } from "../../fixtures/effective-harness-evaluation.js";
 
 describe("run workflow capability snapshots", () => {
@@ -435,7 +438,7 @@ describe("run workflow capability snapshots", () => {
   });
 
   it("resumes one exact supplemental-memory block from the durable effective snapshot", async () => {
-    const artifact = supplementalMemoryEffectiveHarnessCandidateArtifactFixture();
+    const artifact = supplementalMemoryRelationshipEffectiveHarnessCandidateArtifactFixture();
     const snapshot = effectiveHarnessCapabilitySnapshot(artifact);
     const effectiveHarness = snapshot.effectiveHarness;
     if (effectiveHarness === undefined) throw new Error("memory harness fixture is missing");
@@ -472,10 +475,48 @@ describe("run workflow capability snapshots", () => {
     expect(observedMemory).toContain("<supplemental_memory>");
     expect(observedMemory).toContain("PRIVATE_MEMORY_USE_THE_REVIEWED_FIXTURE");
     expect(observedMemory).toContain('<entry id="reviewed-fixture"');
+    expect(observedMemory).toContain("<supplemental_memory_relationships>");
+    expect(observedMemory).toContain('predicate="supports"');
+    expect(observedMemory).not.toContain(supplementalMemoryRelationshipEvidenceRunId);
     expect(state).toMatchObject({
       status: "succeeded",
       capabilitySnapshot: { digest: snapshot.digest },
     });
+  });
+
+  it("preserves the exact legacy prompt projection when relationship state is absent", async () => {
+    const artifact = supplementalMemoryEffectiveHarnessCandidateArtifactFixture();
+    const snapshot = effectiveHarnessCapabilitySnapshot(artifact);
+    const effectiveHarness = snapshot.effectiveHarness;
+    if (effectiveHarness === undefined || effectiveHarness.supplementalMemory === undefined) {
+      throw new Error("legacy memory harness fixture is missing");
+    }
+    expect(effectiveHarness.supplementalMemoryRelationships).toBeUndefined();
+    const workflow = compileWorkflowText(
+      Buffer.from(effectiveHarness.workflow.contentBase64, "base64").toString("utf8"),
+      `activation:${effectiveHarness.workflowId}`,
+    );
+    let observedMemory: string | undefined;
+
+    await runWorkflow(workflow, {
+      ...options(
+        new MemoryStore(),
+        executorFrom((node, context) => {
+          if (node.type === "agent") observedMemory = context.agentSupplementalMemory;
+          return agentSuccess();
+        }),
+      ),
+      runId: "legacy-supplemental-memory",
+      capabilitySnapshot: snapshot,
+    });
+
+    expect(observedMemory).toBe(
+      renderSupplementalMemoryBlock(effectiveHarness.supplementalMemory, {
+        workflowId: effectiveHarness.workflowId,
+        childPath: [],
+        agentNodeId: "implement",
+      }),
+    );
   });
 
   it("applies current policy after loading a historical effective state", async () => {

@@ -27,6 +27,7 @@ Read the [security policy](../SECURITY.md) before unattended use.
 | [Retain and inspect command artifacts](guides/retained-artifacts.md) | You need exact oversized command output, bounded agent reads, inspection, retention, or pruning. |
 | [Inspect and recover portable model sessions](guides/model-sessions.md) | You need private session boundaries, public integrity metadata, fresh model context, limits, or failure handling. |
 | [Evaluate reference-first context compaction](guides/context-compaction.md) | You need to compare complete history, artifact references, and bounded summaries on held-out tasks. |
+| [Manage supplemental-memory relationships](guides/supplemental-memory-relationships.md) | You need to author, review, activate, recover, or roll back evidence-backed relationships between exact memory entries. |
 | [Use capability packages](guides/capability-packages.md) | You need local packages, exact bundles, repository candidates, activation, replacement, pruning, or watching. |
 | [Reproducible harness evaluation](evaluation.md) | You need paired comparisons, private verification, adaptive candidates, activation, inspection, or export. |
 | [Local ACP v1 bridge](acp.md) | You need to observe and control Flow from a compatible local editor. |

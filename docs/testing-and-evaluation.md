@@ -488,6 +488,17 @@ memory entry, workflow field, and package. Runtime tests prove targeted prompt p
 isolation, content-free public output, attached recovery after live-store removal, and detached
 execution from the frozen snapshot.
 
+Relationship tests cover the five closed predicates, exact versioned endpoints, and durable
+run-event admission. They cover unresolved contradictions, graph validity, and every configured
+bound. Adversarial tests recompute otherwise valid state and candidate digests after an unrelated
+edge mutation. The
+surface assertion still rejects that forged projection.
+
+Runtime tests cover exact root and nested agent delivery without evidence locators. They cover
+frozen-snapshot recovery, public summary redaction, and complete-state rollback. Compatibility tests
+cover the optional relationship sidecar when it is absent. They preserve exact state digests and
+prompt bytes.
+
 Generation tests add root and embedded-child targeting, exact add and replacement preconditions,
 one strict value-only response, and one exact-model zero-tool turn. They bind input, response,
 token, evidence, and memory bounds. They also cover source and active-head drift, cancellation,

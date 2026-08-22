@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { prepareEffectiveHarnessActivation } from "../../../src/application/prepare-effective-harness-activation.js";
 import { projectEffectiveHarnessCandidate } from "../../../src/application/prepare-effective-harness-candidate.js";
+import type { RecoverableRunEventStore } from "../../../src/application/ports.js";
 import { type CliIo, main } from "../../../src/cli/main.js";
 import {
   calculateAgentSkillCandidateIdentityDigest,
@@ -44,6 +45,7 @@ import {
 } from "../../../src/domain/config/resolver.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { calculateWorkflowDigest } from "../../../src/domain/workflow/digest.js";
+import type { RunEvent } from "../../../src/domain/run/events.js";
 import { admitLocalAdaptationCandidate } from "../../../src/infrastructure/fs/local-adaptation-candidate.js";
 import { publishLocalAgentSkillPackageCandidate } from "../../../src/infrastructure/fs/local-agent-skill-package-candidate-publisher.js";
 import { admitLocalEffectiveHarnessCandidate } from "../../../src/infrastructure/fs/local-effective-harness-candidate.js";
@@ -93,6 +95,17 @@ describe("effective harness composition CLI", () => {
       scopeDigest,
       workflowSource: baselineSource,
       packages: [],
+      supplementalMemory: [
+        {
+          id: "existing-fact",
+          target: {
+            workflowId: "adaptive-workflow",
+            childPath: [],
+            agentNodeId: "implement",
+          },
+          content: "Use the retained reviewed baseline fact.",
+        },
+      ],
     });
     const initialHead = createEffectiveHarnessHeadIdentity({
       scopeDigest,
@@ -143,6 +156,11 @@ describe("effective harness composition CLI", () => {
 
     const privateMemory = "PRIVATE_REVIEWED_OPERATOR_GUIDANCE";
     const encodedMemory = Buffer.from(privateMemory).toString("base64");
+    const existing = baseline.supplementalMemory?.[0];
+    if (existing === undefined) throw new Error("relationship baseline fixture is missing");
+    const evidenceStore = new EvidenceStore([
+      relationshipEvidenceEvent(baseline.workflowId, "implement"),
+    ]);
     const candidatePath = join(project, "operator-memory.candidate.yaml");
     const candidateSource = JSON.stringify({
       apiVersion: "flow.synapti.ai/v1alpha1",
@@ -161,6 +179,18 @@ describe("effective harness composition CLI", () => {
         packageClosureDigest: calculateCapabilitySnapshotDigest(baseline.packages),
       },
       change: { kind: "add", value: privateMemory },
+      relationships: {
+        remove: [],
+        add: [
+          {
+            id: "operator-support",
+            predicate: "supports",
+            from: { entryId: "reviewed-constraints", entrySha256: sha256(privateMemory) },
+            to: { entryId: existing.id, entrySha256: existing.sha256 },
+            evidence: [{ runId: "proof-run", nodeId: "implement", attempt: 1 }],
+          },
+        ],
+      },
     });
     await writeFile(candidatePath, candidateSource);
 
@@ -169,6 +199,7 @@ describe("effective harness composition CLI", () => {
       await main(["candidate", "validate", candidatePath], validation.io, {
         cwd: project,
         loadConfig: async () => effectiveConfig(project),
+        createStore: () => evidenceStore,
       }),
       validation.stderr.join("\n"),
     ).toBe(0);
@@ -207,7 +238,11 @@ describe("effective harness composition CLI", () => {
           "--dry-run",
         ],
         directActivation.io,
-        { cwd: project, loadConfig: async () => effectiveConfig(project) },
+        {
+          cwd: project,
+          loadConfig: async () => effectiveConfig(project),
+          createStore: () => evidenceStore,
+        },
       ),
     ).toBe(2);
     expect(directActivation.stderr[0]?.split("\n")[0]).toBe(
@@ -219,6 +254,7 @@ describe("effective harness composition CLI", () => {
       await main(["candidate", "compose", candidatePath], output.io, {
         cwd: project,
         loadConfig: async () => effectiveConfig(project),
+        createStore: () => evidenceStore,
       }),
       output.stderr.join("\n"),
     ).toBe(0);
@@ -255,15 +291,30 @@ describe("effective harness composition CLI", () => {
     expect(publicText).not.toContain(encodedMemory);
     expect(publicText).not.toContain(candidatePath);
     expect(publicText).not.toContain("contentBase64");
+    expect(publicText).not.toContain("proof-run");
+    expect(publicText).not.toContain("eventDigest");
 
     await rm(candidatePath);
     const staged = await admitLocalEffectiveHarnessCandidate(join(project, composed.staged.path));
-    expect(staged.artifact.candidateState.supplementalMemory).toEqual([
-      expect.objectContaining({
-        id: "reviewed-constraints",
-        contentBase64: encodedMemory,
-      }),
-    ]);
+    expect(staged.artifact.candidateState.supplementalMemory).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "reviewed-constraints",
+          contentBase64: encodedMemory,
+        }),
+      ]),
+    );
+    expect(staged.artifact.candidateState.supplementalMemoryRelationships).toMatchObject({
+      relationships: [
+        {
+          id: "operator-support",
+          predicate: "supports",
+          from: { entryId: "reviewed-constraints", entrySha256: sha256(privateMemory) },
+          to: { entryId: existing.id, entrySha256: existing.sha256 },
+        },
+      ],
+      assessment: { relationshipCount: 1, evidenceReferenceCount: 1 },
+    });
     expect(staged.artifact.baselineState.stateDigest).toBe(baseline.stateDigest);
   });
 
@@ -1092,6 +1143,50 @@ function skillProjectionFor(baseline: EffectiveHarnessState): ProjectedAgentSkil
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function relationshipEvidenceEvent(workflowId: string, nodeId: string): RunEvent {
+  return {
+    version: 1,
+    type: "node_succeeded",
+    sequence: 7,
+    at: "2026-08-22T13:00:00.000Z",
+    runId: "proof-run",
+    workflowId,
+    nodeId,
+    attempt: 1,
+    evidence: {
+      kind: "command",
+      executable: "node",
+      args: [],
+      exitCode: 0,
+      signal: null,
+      stdout: "PRIVATE_RELATIONSHIP_EVIDENCE",
+      stderr: "",
+      stdoutHash: "a".repeat(64),
+      stderrHash: "b".repeat(64),
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      timedOut: false,
+      durationMs: 1,
+    },
+  };
+}
+
+class EvidenceStore implements RecoverableRunEventStore {
+  constructor(private readonly events: readonly RunEvent[]) {}
+
+  async append(): Promise<void> {}
+
+  async read(runId: string): Promise<readonly RunEvent[]> {
+    return this.events.filter((event) => event.runId === runId);
+  }
+
+  async claim(runId: string): Promise<readonly RunEvent[]> {
+    return await this.read(runId);
+  }
+
+  async release(): Promise<void> {}
 }
 
 function effectiveConfig(projectRoot: string): EffectiveFlowConfig {

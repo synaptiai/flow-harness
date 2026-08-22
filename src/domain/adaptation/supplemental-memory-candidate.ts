@@ -4,6 +4,11 @@ import { parseDocument } from "yaml";
 import { z } from "zod";
 import { calculateCapabilitySnapshotDigest } from "../capability/agent-skills.js";
 import {
+  type RunEvidenceReference,
+  runEvidenceLocatorKey,
+  runEvidenceLocatorSchema,
+} from "../evidence/run-evidence-reference.js";
+import {
   parseTuningEvidencePacket,
   type TuningEvidencePacket,
 } from "../evaluation/tuning-evidence.js";
@@ -13,6 +18,12 @@ import {
   type EffectiveHarnessState,
   effectiveHarnessWorkflowSource,
 } from "./effective-harness-state.js";
+import {
+  MAX_SUPPLEMENTAL_MEMORY_RELATIONSHIP_CHANGES,
+  MAX_SUPPLEMENTAL_MEMORY_RELATIONSHIP_EVIDENCE,
+  type SupplementalMemoryRelationship,
+  type SupplementalMemoryRelationshipInput,
+} from "./supplemental-memory-relationships.js";
 import {
   type SupplementalMemoryEntry,
   type SupplementalMemoryTarget,
@@ -65,6 +76,49 @@ const replaceChangeSchema = z
 const removeChangeSchema = z
   .object({ kind: z.literal("remove"), beforeSha256: sha256Schema })
   .strict();
+const relationshipEndpointSchema = z
+  .object({ entryId: identifierSchema, entrySha256: sha256Schema })
+  .strict();
+const relationshipRemovalSchema = z
+  .object({ id: identifierSchema, beforeDigest: sha256Schema })
+  .strict();
+const relationshipAdditionSchema = z
+  .object({
+    id: identifierSchema,
+    predicate: z.enum(["supports", "contradicts", "refines", "supersedes", "derived_from"]),
+    from: relationshipEndpointSchema,
+    to: relationshipEndpointSchema,
+    evidence: z
+      .array(runEvidenceLocatorSchema)
+      .min(1)
+      .max(MAX_SUPPLEMENTAL_MEMORY_RELATIONSHIP_EVIDENCE)
+      .refine(
+        (evidence) => new Set(evidence.map(runEvidenceLocatorKey)).size === evidence.length,
+        "relationship evidence locators must be unique",
+      ),
+  })
+  .strict();
+const relationshipChangesSchema = z
+  .object({
+    remove: z.array(relationshipRemovalSchema).max(MAX_SUPPLEMENTAL_MEMORY_RELATIONSHIP_CHANGES),
+    add: z.array(relationshipAdditionSchema).max(MAX_SUPPLEMENTAL_MEMORY_RELATIONSHIP_CHANGES),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const changes = value.remove.length + value.add.length;
+    if (changes < 1 || changes > MAX_SUPPLEMENTAL_MEMORY_RELATIONSHIP_CHANGES) {
+      context.addIssue({
+        code: "custom",
+        message: `relationship changes must contain 1-${MAX_SUPPLEMENTAL_MEMORY_RELATIONSHIP_CHANGES} operations`,
+      });
+    }
+    if (new Set(value.remove.map((item) => item.id)).size !== value.remove.length) {
+      context.addIssue({ code: "custom", path: ["remove"], message: "removals must be unique" });
+    }
+    if (new Set(value.add.map((item) => item.id)).size !== value.add.length) {
+      context.addIssue({ code: "custom", path: ["add"], message: "additions must be unique" });
+    }
+  });
 const generationUsageSchema = z
   .object({
     inputTokens: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
@@ -162,14 +216,32 @@ const sourceSchema = z
       replaceChangeSchema,
       removeChangeSchema,
     ]),
+    relationships: relationshipChangesSchema.optional(),
     generation: generationSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (value.generation !== undefined && value.relationships !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["relationships"],
+        message: "model-generated memory cannot declare relationships",
+      });
+    }
+  });
 
 const byteIdentitySchema = z
   .object({
     bytes: z.number().int().positive(),
     sha256: sha256Schema,
+  })
+  .strict();
+const relationshipChangeIdentitySchema = z
+  .object({
+    baselineAssessmentDigest: sha256Schema.nullable(),
+    projectedAssessmentDigest: sha256Schema.nullable(),
+    removed: z.array(z.object({ id: identifierSchema, digest: sha256Schema }).strict()),
+    added: z.array(z.object({ id: identifierSchema, digest: sha256Schema }).strict()),
   })
   .strict();
 const identitySchema = z
@@ -201,6 +273,7 @@ const identitySchema = z
         .strict(),
       z.object({ kind: z.literal("remove"), before: byteIdentitySchema, after: z.null() }).strict(),
     ]),
+    relationships: relationshipChangeIdentitySchema.optional(),
     generation: generationIdentitySchema.optional(),
     projectedStateDigest: sha256Schema,
     candidateDigest: sha256Schema,
@@ -220,6 +293,7 @@ export interface SupplementalMemoryCandidateProjectionInput {
     readonly sourceSha256: string;
     readonly packet: TuningEvidencePacket;
   }[];
+  readonly relationshipEvidence?: readonly RunEvidenceReference[];
 }
 
 export interface ProjectedSupplementalMemoryCandidate {
@@ -317,6 +391,16 @@ export function projectSupplementalMemoryCandidate(
     );
   }
   validateGenerationProvenance(input, selected);
+  if (
+    input.source.change.kind === "replace" &&
+    selected !== undefined &&
+    selected.sha256 === sha256(input.source.change.value)
+  ) {
+    throw new SupplementalMemoryCandidateError(
+      "invalid_projection",
+      "supplemental-memory replacement must change its declared entry",
+    );
+  }
   const retained = current
     .filter((entry) => entry !== selected)
     .map((entry) => ({
@@ -334,15 +418,25 @@ export function projectSupplementalMemoryCandidate(
             content: input.source.change.value,
           },
         ];
-  const state = createEffectiveHarnessState({
-    scopeDigest: input.baseline.scopeDigest,
-    workflowSource: effectiveHarnessWorkflowSource(input.baseline),
-    ...(input.baseline.rootPackage === undefined
-      ? {}
-      : { rootPackage: input.baseline.rootPackage }),
-    packages: input.baseline.packages,
-    supplementalMemory: [...retained, ...replacement],
-  });
+  const relationshipProjection = projectRelationshipChanges(input, target, selected);
+  let state: EffectiveHarnessState;
+  try {
+    state = createEffectiveHarnessState({
+      scopeDigest: input.baseline.scopeDigest,
+      workflowSource: effectiveHarnessWorkflowSource(input.baseline),
+      ...(input.baseline.rootPackage === undefined
+        ? {}
+        : { rootPackage: input.baseline.rootPackage }),
+      packages: input.baseline.packages,
+      supplementalMemory: [...retained, ...replacement],
+      supplementalMemoryRelationships: relationshipProjection.relationships,
+    });
+  } catch {
+    throw new SupplementalMemoryCandidateError(
+      "invalid_projection",
+      "supplemental-memory relationship projection is invalid",
+    );
+  }
   const projectedEntry = findEntry(
     state.supplementalMemory ?? [],
     target,
@@ -388,6 +482,29 @@ export function projectSupplementalMemoryCandidate(
       entry: before,
     },
     change: identityChange,
+    ...(input.source.relationships === undefined
+      ? {}
+      : {
+          relationships: {
+            baselineAssessmentDigest:
+              input.baseline.supplementalMemoryRelationships?.assessment.digest ?? null,
+            projectedAssessmentDigest:
+              state.supplementalMemoryRelationships?.assessment.digest ?? null,
+            removed: relationshipProjection.removed,
+            added: relationshipProjection.addedIds.map((id) => {
+              const relationship = state.supplementalMemoryRelationships?.relationships.find(
+                (item) => item.id === id && sameTarget(item.target, target),
+              );
+              if (relationship === undefined) {
+                throw new SupplementalMemoryCandidateError(
+                  "invalid_projection",
+                  "supplemental-memory relationship addition is missing",
+                );
+              }
+              return { id: relationship.id, digest: relationship.digest };
+            }),
+          },
+        }),
     ...(input.source.generation === undefined
       ? {}
       : {
@@ -404,6 +521,175 @@ export function projectSupplementalMemoryCandidate(
   });
   assertSupplementalMemoryCandidateSurface(identity, input.baseline, state);
   return deepFreeze({ identity, state });
+}
+
+function projectRelationshipChanges(
+  input: SupplementalMemoryCandidateProjectionInput,
+  target: SupplementalMemoryTarget,
+  selected: SupplementalMemoryEntry | undefined,
+): {
+  readonly relationships: readonly SupplementalMemoryRelationshipInput[];
+  readonly removed: readonly { readonly id: string; readonly digest: string }[];
+  readonly addedIds: readonly string[];
+} {
+  const baselineRelationships = input.baseline.supplementalMemoryRelationships?.relationships ?? [];
+  const source = input.source.relationships;
+  const beforeEndpoint =
+    selected === undefined ? undefined : { entryId: selected.id, entrySha256: selected.sha256 };
+  const incident =
+    beforeEndpoint === undefined
+      ? []
+      : baselineRelationships.filter(
+          (relationship) =>
+            sameTarget(relationship.target, target) &&
+            (sameEndpoint(relationship.from, beforeEndpoint) ||
+              sameEndpoint(relationship.to, beforeEndpoint)),
+        );
+  if (source === undefined) {
+    if (incident.length > 0) {
+      throw new SupplementalMemoryCandidateError(
+        "invalid_projection",
+        "supplemental-memory candidate omits incident relationship changes",
+      );
+    }
+    if ((input.relationshipEvidence?.length ?? 0) > 0) {
+      throw new SupplementalMemoryCandidateError(
+        "identity_mismatch",
+        "supplemental-memory candidate contains unselected relationship evidence",
+      );
+    }
+    return {
+      relationships: baselineRelationships.map(withoutRelationshipDigest),
+      removed: [],
+      addedIds: [],
+    };
+  }
+
+  const removedRelationships: SupplementalMemoryRelationship[] = [];
+  for (const removal of source.remove) {
+    const relationship = baselineRelationships.find(
+      (item) => item.id === removal.id && sameTarget(item.target, target),
+    );
+    if (
+      relationship === undefined ||
+      relationship.digest !== removal.beforeDigest ||
+      beforeEndpoint === undefined ||
+      (!sameEndpoint(relationship.from, beforeEndpoint) &&
+        !sameEndpoint(relationship.to, beforeEndpoint))
+    ) {
+      throw new SupplementalMemoryCandidateError(
+        "identity_mismatch",
+        "supplemental-memory relationship removal identity does not match",
+      );
+    }
+    removedRelationships.push(relationship);
+  }
+  if (
+    incident.length !== removedRelationships.length ||
+    incident.some(
+      (relationship) =>
+        !removedRelationships.some((removed) => removed.digest === relationship.digest),
+    )
+  ) {
+    throw new SupplementalMemoryCandidateError(
+      "invalid_projection",
+      "supplemental-memory candidate does not declare every incident relationship",
+    );
+  }
+  if (input.source.change.kind === "remove" && source.add.length > 0) {
+    throw new SupplementalMemoryCandidateError(
+      "identity_mismatch",
+      "supplemental-memory removal cannot add relationships",
+    );
+  }
+
+  const afterEndpoint =
+    input.source.change.kind === "remove"
+      ? undefined
+      : { entryId: input.source.scope.entryId, entrySha256: sha256(input.source.change.value) };
+  const references = new Map(
+    (input.relationshipEvidence ?? []).map((reference) => [
+      runEvidenceLocatorKey(reference),
+      reference,
+    ]),
+  );
+  const usedReferences = new Set<string>();
+  const additions = source.add.map((addition): SupplementalMemoryRelationshipInput => {
+    if (
+      afterEndpoint === undefined ||
+      (!sameEndpoint(addition.from, afterEndpoint) && !sameEndpoint(addition.to, afterEndpoint))
+    ) {
+      throw new SupplementalMemoryCandidateError(
+        "identity_mismatch",
+        "supplemental-memory relationship addition is not incident to the candidate entry",
+      );
+    }
+    if (
+      addition.predicate === "supersedes" &&
+      (input.source.change.kind !== "replace" ||
+        beforeEndpoint === undefined ||
+        !sameEndpoint(addition.from, afterEndpoint) ||
+        !sameEndpoint(addition.to, beforeEndpoint))
+    ) {
+      throw new SupplementalMemoryCandidateError(
+        "identity_mismatch",
+        "supplemental-memory supersession does not bind the exact replacement",
+      );
+    }
+    const evidence = addition.evidence.map((locator) => {
+      const key = runEvidenceLocatorKey(locator);
+      const reference = references.get(key);
+      if (reference === undefined) {
+        throw new SupplementalMemoryCandidateError(
+          "identity_mismatch",
+          "supplemental-memory relationship evidence could not be resolved",
+        );
+      }
+      usedReferences.add(key);
+      return reference;
+    });
+    return {
+      id: addition.id,
+      target,
+      predicate: addition.predicate,
+      from: addition.from,
+      to: addition.to,
+      evidence,
+    };
+  });
+  if (usedReferences.size !== references.size) {
+    throw new SupplementalMemoryCandidateError(
+      "identity_mismatch",
+      "supplemental-memory candidate contains unselected relationship evidence",
+    );
+  }
+  const removedDigests = new Set(removedRelationships.map((relationship) => relationship.digest));
+  return {
+    relationships: [
+      ...baselineRelationships
+        .filter((relationship) => !removedDigests.has(relationship.digest))
+        .map(withoutRelationshipDigest),
+      ...additions,
+    ],
+    removed: removedRelationships
+      .map((relationship) => ({ id: relationship.id, digest: relationship.digest }))
+      .sort((left, right) => left.id.localeCompare(right.id)),
+    addedIds: additions.map((relationship) => relationship.id).sort(),
+  };
+}
+
+function withoutRelationshipDigest(
+  relationship: SupplementalMemoryRelationship,
+): SupplementalMemoryRelationshipInput {
+  const { digest: _digest, ...input } = relationship;
+  return input;
+}
+
+function sameEndpoint(
+  left: { readonly entryId: string; readonly entrySha256: string },
+  right: { readonly entryId: string; readonly entrySha256: string },
+): boolean {
+  return left.entryId === right.entryId && left.entrySha256 === right.entrySha256;
 }
 
 function validateGenerationProvenance(
@@ -628,6 +914,85 @@ export function assertSupplementalMemoryCandidateSurface(
     throw new SupplementalMemoryCandidateError(
       "invalid_projection",
       "supplemental-memory candidate changes authority outside its declared entry",
+    );
+  }
+  assertSupplementalMemoryRelationshipSurface(identity, baseline, projected, target);
+}
+
+function assertSupplementalMemoryRelationshipSurface(
+  identity: SupplementalMemoryCandidateIdentity,
+  baseline: EffectiveHarnessState,
+  projected: EffectiveHarnessState,
+  target: SupplementalMemoryTarget,
+): void {
+  const beforeState = baseline.supplementalMemoryRelationships;
+  const afterState = projected.supplementalMemoryRelationships;
+  if (identity.relationships === undefined) {
+    if (!isDeepStrictEqual(beforeState, afterState)) {
+      throw new SupplementalMemoryCandidateError(
+        "invalid_projection",
+        "supplemental-memory candidate changes undeclared relationships",
+      );
+    }
+    return;
+  }
+  if (
+    identity.relationships.baselineAssessmentDigest !== (beforeState?.assessment.digest ?? null) ||
+    identity.relationships.projectedAssessmentDigest !== (afterState?.assessment.digest ?? null)
+  ) {
+    throw new SupplementalMemoryCandidateError(
+      "identity_mismatch",
+      "supplemental-memory relationship assessment identity does not match",
+    );
+  }
+  const before = beforeState?.relationships ?? [];
+  const after = afterState?.relationships ?? [];
+  const beforeEntry = findEntry(baseline.supplementalMemory ?? [], target, identity.scope.entryId);
+  const afterEntry = findEntry(projected.supplementalMemory ?? [], target, identity.scope.entryId);
+  const beforeEndpoint =
+    beforeEntry === undefined
+      ? undefined
+      : { entryId: beforeEntry.id, entrySha256: beforeEntry.sha256 };
+  const afterEndpoint =
+    afterEntry === undefined
+      ? undefined
+      : { entryId: afterEntry.id, entrySha256: afterEntry.sha256 };
+  const removed = before.filter(
+    (relationship) => !after.some((item) => item.digest === relationship.digest),
+  );
+  const added = after.filter(
+    (relationship) => !before.some((item) => item.digest === relationship.digest),
+  );
+  const expectedRemoved = removed
+    .map((relationship) => ({ id: relationship.id, digest: relationship.digest }))
+    .sort((left, right) => left.id.localeCompare(right.id));
+  const expectedAdded = added
+    .map((relationship) => ({ id: relationship.id, digest: relationship.digest }))
+    .sort((left, right) => left.id.localeCompare(right.id));
+  if (
+    !isDeepStrictEqual(identity.relationships.removed, expectedRemoved) ||
+    !isDeepStrictEqual(identity.relationships.added, expectedAdded) ||
+    [...removed, ...added].some((relationship) => !sameTarget(relationship.target, target)) ||
+    removed.some(
+      (relationship) =>
+        beforeEndpoint === undefined ||
+        (!sameEndpoint(relationship.from, beforeEndpoint) &&
+          !sameEndpoint(relationship.to, beforeEndpoint)),
+    ) ||
+    added.some(
+      (relationship) =>
+        afterEndpoint === undefined ||
+        (!sameEndpoint(relationship.from, afterEndpoint) &&
+          !sameEndpoint(relationship.to, afterEndpoint)) ||
+        (relationship.predicate === "supersedes" &&
+          (beforeEndpoint === undefined ||
+            !sameEndpoint(relationship.from, afterEndpoint) ||
+            !sameEndpoint(relationship.to, beforeEndpoint))),
+    )
+  ) {
+    throw new SupplementalMemoryCandidateError(
+      "invalid_projection",
+      "supplemental-memory candidate relationship surface does not match",
     );
   }
 }

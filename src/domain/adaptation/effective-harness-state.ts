@@ -23,6 +23,13 @@ import { calculateWorkflowDigest } from "../workflow/digest.js";
 import type { CompiledWorkflowPackageReference } from "../workflow/types.js";
 import { MAX_PROMPT_ACTIVATION_SOURCE_BYTES } from "./prompt-activation.js";
 import {
+  createSupplementalMemoryRelationshipState,
+  parseSupplementalMemoryRelationshipState,
+  type SupplementalMemoryRelationshipInput,
+  type SupplementalMemoryRelationshipState,
+  SupplementalMemoryRelationshipError,
+} from "./supplemental-memory-relationships.js";
+import {
   createSupplementalMemoryEntries,
   parseSupplementalMemoryEntries,
   type SupplementalMemoryEntry,
@@ -71,6 +78,7 @@ const effectiveHarnessStateSchema = z
     rootPackage: rootPackageSchema.optional(),
     packages: z.array(z.unknown()).max(MAX_AGENT_SKILL_PACKAGES),
     supplementalMemory: z.array(z.unknown()).optional(),
+    supplementalMemoryRelationships: z.unknown().optional(),
     stateDigest: sha256Schema,
   })
   .strict();
@@ -103,6 +111,7 @@ export interface EffectiveHarnessState {
   readonly rootPackage?: CompiledWorkflowPackageReference | undefined;
   readonly packages: readonly CapabilityPackageSnapshot[];
   readonly supplementalMemory?: readonly SupplementalMemoryEntry[] | undefined;
+  readonly supplementalMemoryRelationships?: SupplementalMemoryRelationshipState | undefined;
   readonly stateDigest: string;
 }
 
@@ -124,6 +133,9 @@ export interface CreateEffectiveHarnessStateInput {
   readonly rootPackage?: CompiledWorkflowPackageReference | undefined;
   readonly packages: readonly CapabilityPackageSnapshot[];
   readonly supplementalMemory?: readonly SupplementalMemoryEntryInput[] | undefined;
+  readonly supplementalMemoryRelationships?:
+    | readonly SupplementalMemoryRelationshipInput[]
+    | undefined;
 }
 
 export interface CreateEffectiveHarnessHeadIdentityInput {
@@ -179,6 +191,10 @@ export function createEffectiveHarnessState(
   const compiled = compileEffectiveWorkflow(input.workflowSource, packages, rootPackage);
   bindEffectiveWorkflow(compiled, packages);
   const supplementalMemory = parseMemoryInput(input.supplementalMemory, compiled);
+  const supplementalMemoryRelationships = parseMemoryRelationshipInput(
+    input.supplementalMemoryRelationships,
+    supplementalMemory,
+  );
   const content = {
     version: 1 as const,
     kind: "effective-harness-state" as const,
@@ -193,6 +209,7 @@ export function createEffectiveHarnessState(
     ...(rootPackage === undefined ? {} : { rootPackage }),
     packages,
     ...(supplementalMemory.length === 0 ? {} : { supplementalMemory }),
+    ...(supplementalMemoryRelationships === undefined ? {} : { supplementalMemoryRelationships }),
   };
   return parseEffectiveHarnessState(
     { ...content, stateDigest: calculateEffectiveHarnessStateDigest(content) },
@@ -232,6 +249,10 @@ export function parseEffectiveHarnessState(
   const compiled = compileEffectiveWorkflow(source, packages, rootPackage);
   bindEffectiveWorkflow(compiled, packages);
   const supplementalMemory = parseMemoryState(parsed.data.supplementalMemory, compiled);
+  const supplementalMemoryRelationships = parseMemoryRelationshipState(
+    parsed.data.supplementalMemoryRelationships,
+    supplementalMemory,
+  );
   if (
     compiled.id !== parsed.data.workflowId ||
     calculateWorkflowDigest(compiled) !== parsed.data.workflow.workflowDigest
@@ -250,6 +271,7 @@ export function parseEffectiveHarnessState(
     ...(rootPackage === undefined ? {} : { rootPackage }),
     packages,
     ...(supplementalMemory.length === 0 ? {} : { supplementalMemory }),
+    ...(supplementalMemoryRelationships === undefined ? {} : { supplementalMemoryRelationships }),
     stateDigest: parsed.data.stateDigest,
   };
   if (calculateEffectiveHarnessStateDigest(state) !== state.stateDigest) {
@@ -287,6 +309,15 @@ export function calculateEffectiveHarnessStateDigest(
               bytes: entry.bytes,
               sha256: entry.sha256,
             })),
+          }),
+      ...(state.supplementalMemoryRelationships === undefined
+        ? {}
+        : {
+            supplementalMemoryRelationships: {
+              relationshipSetDigest:
+                state.supplementalMemoryRelationships.assessment.relationshipSetDigest,
+              assessmentDigest: state.supplementalMemoryRelationships.assessment.digest,
+            },
           }),
     }),
   );
@@ -413,6 +444,49 @@ function parseMemoryState(
   } catch (error) {
     throw mapSupplementalMemoryError(error);
   }
+}
+
+function parseMemoryRelationshipInput(
+  input: readonly SupplementalMemoryRelationshipInput[] | undefined,
+  entries: readonly SupplementalMemoryEntry[],
+): SupplementalMemoryRelationshipState | undefined {
+  if (input === undefined || input.length === 0) return undefined;
+  try {
+    return createSupplementalMemoryRelationshipState(input, entries);
+  } catch (error) {
+    throw mapSupplementalMemoryRelationshipError(error);
+  }
+}
+
+function parseMemoryRelationshipState(
+  input: unknown,
+  entries: readonly SupplementalMemoryEntry[],
+): SupplementalMemoryRelationshipState | undefined {
+  if (input === undefined) return undefined;
+  try {
+    return parseSupplementalMemoryRelationshipState(input, entries);
+  } catch (error) {
+    throw mapSupplementalMemoryRelationshipError(error);
+  }
+}
+
+function mapSupplementalMemoryRelationshipError(error: unknown): EffectiveHarnessStateError {
+  if (error instanceof SupplementalMemoryRelationshipError) {
+    const code =
+      error.code === "limit_exceeded"
+        ? "limit_exceeded"
+        : error.code === "identity_mismatch" || error.code === "stale_endpoint"
+          ? "identity_mismatch"
+          : "invalid_schema";
+    return new EffectiveHarnessStateError(
+      code,
+      "effective harness supplemental memory relationships are invalid",
+    );
+  }
+  return new EffectiveHarnessStateError(
+    "invalid_schema",
+    "effective harness supplemental memory relationships are invalid",
+  );
 }
 
 function mapSupplementalMemoryError(error: unknown): EffectiveHarnessStateError {

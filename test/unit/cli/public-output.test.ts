@@ -129,7 +129,7 @@ describe("public run output", () => {
     });
   });
 
-  it("removes supplemental memory bytes without deleting same-named public metadata", () => {
+  it("removes supplemental memory and relationship details from public output", () => {
     const privateText = "PRIVATE_SUPPLEMENTAL_MEMORY\n";
     const privateContent = Buffer.from(privateText).toString("base64");
     const value = {
@@ -151,6 +151,32 @@ describe("public run output", () => {
               metadata: { contentBase64: "public-metadata-label" },
             },
           ],
+          supplementalMemoryRelationships: {
+            version: 1,
+            kind: "supplemental-memory-relationship-state",
+            relationships: [
+              {
+                id: "private-support",
+                predicate: "supports",
+                evidence: [
+                  {
+                    runId: "PRIVATE_RELATIONSHIP_RUN",
+                    nodeId: "reviewer",
+                    attempt: 1,
+                    sequence: 2,
+                    eventDigest: "e".repeat(64),
+                  },
+                ],
+              },
+            ],
+            assessment: {
+              relationshipCount: 1,
+              evidenceReferenceCount: 1,
+              unresolvedContradictionCount: 0,
+              relationshipSetDigest: "e".repeat(64),
+              digest: "f".repeat(64),
+            },
+          },
         },
       },
     };
@@ -175,11 +201,20 @@ describe("public run output", () => {
               metadata: { contentBase64: "public-metadata-label" },
             },
           ],
+          supplementalMemoryRelationships: {
+            relationshipCount: 1,
+            evidenceReferenceCount: 1,
+            unresolvedContradictionCount: 0,
+            relationshipSetDigest: "e".repeat(64),
+            assessmentDigest: "f".repeat(64),
+          },
         },
       },
     });
     expect(JSON.stringify(projected)).not.toContain(privateContent);
     expect(JSON.stringify(projected)).not.toContain(privateText);
+    expect(JSON.stringify(projected)).not.toContain("PRIVATE_RELATIONSHIP_RUN");
+    expect(JSON.stringify(projected)).not.toContain("private-support");
     expect(value.capabilitySnapshot.effectiveHarness.supplementalMemory[0]?.contentBase64).toBe(
       privateContent,
     );

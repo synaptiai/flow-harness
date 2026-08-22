@@ -130,9 +130,13 @@ Read [Use capability packages](guides/capability-packages.md) and
 - Prompt, Agent Skill resource, Agent Skill package, static model-routing, and embedded
   child-specialist candidates, plus immutable per-agent supplemental-memory candidates and bounded
   model-suggested add or replacement proposals.
+- Evidence-backed supplemental-memory relationships with closed predicates, atomic incident-edge
+  rebinding, explicit unresolved contradictions, exact-target model context, and content-free public
+  integrity summaries.
 - Reviewed activation, durable snapshots, offline inspection, recovery, replay, and rollback.
 
-Read [Reproducible harness evaluation](evaluation.md) and
+Read [Manage supplemental-memory relationships](guides/supplemental-memory-relationships.md),
+[Reproducible harness evaluation](evaluation.md), and
 [Testing and evaluation](testing-and-evaluation.md).
 
 ## Planned boundaries

@@ -16,6 +16,7 @@ import {
   type SupplementalMemoryCandidateSource,
 } from "../../domain/adaptation/supplemental-memory-candidate.js";
 import { MAX_SUPPLEMENTAL_MEMORY_CANDIDATE_GENERATION_EVIDENCE } from "../../domain/adaptation/supplemental-memory-candidate-generation.js";
+import type { RunEvidenceReference } from "../../domain/evidence/run-evidence-reference.js";
 import {
   MAX_TUNING_EVIDENCE_BYTES,
   parseTuningEvidencePacket,
@@ -59,6 +60,12 @@ export interface LocalSupplementalMemoryCandidateOptions {
   readonly resolveBaseline: (
     source: SupplementalMemoryCandidateSource,
   ) => Promise<EffectiveHarnessState>;
+  readonly resolveRelationshipEvidence?:
+    | ((
+        source: SupplementalMemoryCandidateSource,
+        baseline: EffectiveHarnessState,
+      ) => Promise<readonly RunEvidenceReference[]>)
+    | undefined;
   /** @internal Exact source identity captured by the generic candidate discriminator. */
   readonly expectedSource?: { readonly identity: BigIntStats; readonly sha256: string } | undefined;
   /** @internal Deterministic source-race and cancellation seam. */
@@ -173,6 +180,25 @@ export async function admitLocalSupplementalMemoryCandidate(
           source.generation.evidence.map((item) => item.path),
           { signal: options.signal },
         );
+  let relationshipEvidence: readonly RunEvidenceReference[] | undefined;
+  if ((source.relationships?.add.length ?? 0) > 0) {
+    if (options.resolveRelationshipEvidence === undefined) {
+      throw new LocalSupplementalMemoryCandidateError(
+        "invalid_source",
+        "supplemental-memory relationship evidence cannot be resolved",
+      );
+    }
+    try {
+      relationshipEvidence = await options.resolveRelationshipEvidence(source, baseline);
+      options.signal?.throwIfAborted();
+    } catch {
+      options.signal?.throwIfAborted();
+      throw new LocalSupplementalMemoryCandidateError(
+        "invalid_source",
+        "supplemental-memory relationship evidence cannot be resolved",
+      );
+    }
+  }
   options.signal?.throwIfAborted();
   try {
     projected = projectSupplementalMemoryCandidate({
@@ -189,6 +215,7 @@ export async function admitLocalSupplementalMemoryCandidate(
               packet: item.packet,
             })),
           }),
+      ...(relationshipEvidence === undefined ? {} : { relationshipEvidence }),
     });
   } catch {
     throw new LocalSupplementalMemoryCandidateError(

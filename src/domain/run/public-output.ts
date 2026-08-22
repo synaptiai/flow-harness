@@ -208,9 +208,26 @@ function projectEffectiveHarness(value: unknown): unknown {
       if (key === "supplementalMemory" && Array.isArray(item)) {
         return [key, item.map((entry) => omitContentBase64(entry))];
       }
+      if (key === "supplementalMemoryRelationships") {
+        return [key, projectSupplementalMemoryRelationships(item)];
+      }
       return [key, item];
     }),
   );
+}
+
+function projectSupplementalMemoryRelationships(value: unknown): unknown {
+  if (!isRecord(value) || !isRecord(value.assessment)) return null;
+  const projected = pick(value.assessment, [
+    "relationshipCount",
+    "evidenceReferenceCount",
+    "unresolvedContradictionCount",
+    "relationshipSetDigest",
+  ]);
+  if (Object.hasOwn(value.assessment, "digest")) {
+    projected.assessmentDigest = value.assessment.digest;
+  }
+  return projected;
 }
 
 function projectPackages(value: unknown): unknown {

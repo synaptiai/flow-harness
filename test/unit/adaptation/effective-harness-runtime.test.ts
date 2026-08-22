@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -90,6 +92,60 @@ describe("effective harness runtime snapshots", () => {
     const runtime = createEffectiveHarnessRuntimeSnapshot({ state, head });
 
     expect(runtime.supplementalMemory).toEqual(state.supplementalMemory);
+    expect(restoreEffectiveHarnessRuntimeState(runtime, state.packages)).toEqual(state);
+  });
+
+  it("carries and reconstructs the exact supplemental-memory relationship assessment", () => {
+    const artifact = effectiveHarnessCandidateArtifactFixture();
+    const baseline = artifact.candidateState;
+    const target = {
+      workflowId: baseline.workflowId,
+      childPath: [] as string[],
+      agentNodeId: "implement",
+    };
+    const first = "First runtime fact.";
+    const second = "Second runtime fact.";
+    const state = createEffectiveHarnessState({
+      scopeDigest: baseline.scopeDigest,
+      workflowSource: effectiveHarnessWorkflowSource(baseline),
+      ...(baseline.rootPackage === undefined ? {} : { rootPackage: baseline.rootPackage }),
+      packages: baseline.packages,
+      supplementalMemory: [
+        { id: "first", target, content: first },
+        { id: "second", target, content: second },
+      ],
+      supplementalMemoryRelationships: [
+        {
+          id: "runtime-support",
+          target,
+          predicate: "supports",
+          from: { entryId: "first", entrySha256: sha256(first) },
+          to: { entryId: "second", entrySha256: sha256(second) },
+          evidence: [
+            {
+              runId: "proof-run",
+              nodeId: "implement",
+              attempt: 1,
+              sequence: 7,
+              eventDigest: "e".repeat(64),
+            },
+          ],
+        },
+      ],
+    });
+    const head = createEffectiveHarnessHeadIdentity({
+      scopeDigest: state.scopeDigest,
+      workflowId: state.workflowId,
+      generation: 2,
+      activationDigest: "4".repeat(64),
+      transitionDigest: "5".repeat(64),
+      stateDigest: state.stateDigest,
+    });
+
+    const runtime = createEffectiveHarnessRuntimeSnapshot({ state, head });
+
+    expect(runtime.supplementalMemoryRelationships).toBeDefined();
+    expect(runtime.supplementalMemoryRelationships).toEqual(state.supplementalMemoryRelationships);
     expect(restoreEffectiveHarnessRuntimeState(runtime, state.packages)).toEqual(state);
   });
 
@@ -259,6 +315,10 @@ spec:
 `),
     },
   });
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 type DeepMutable<Value> = Value extends (...args: never[]) => unknown

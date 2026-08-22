@@ -3,6 +3,12 @@ import { createHash } from "node:crypto";
 import { parseDocument } from "yaml";
 import { z } from "zod";
 
+import {
+  type RunEvidenceLocator,
+  type RunEvidenceReference,
+  runEvidenceLocatorSchema,
+  runEvidenceReferenceSchema,
+} from "../evidence/run-evidence-reference.js";
 import { parseStrictJson, StrictJsonError } from "../strict-json.js";
 
 export const FLOW_GOAL_WORKSPACE_API_VERSION = "flow.synapti.ai/v1alpha1" as const;
@@ -21,31 +27,13 @@ const identifierSchema = z
   .min(1)
   .max(96)
   .regex(/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/);
-const runIdentifierSchema = z
-  .string()
-  .min(1)
-  .max(128)
-  .regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
 const textSchema = z.string().min(1).max(MAX_GOAL_WORKSPACE_SOURCE_BYTES);
 const sourceEntrySchema = z.object({ id: identifierSchema, text: textSchema }).strict();
-const evidenceLocatorSchema = z
-  .object({
-    runId: runIdentifierSchema,
-    nodeId: runIdentifierSchema,
-    attempt: z.number().int().positive().safe(),
-  })
-  .strict();
-const evidenceReferenceSchema = evidenceLocatorSchema
-  .extend({
-    sequence: z.number().int().positive().safe(),
-    eventDigest: sha256Schema,
-  })
-  .strict();
 const sourceVerifiedFactSchema = sourceEntrySchema
-  .extend({ evidence: z.array(evidenceLocatorSchema).min(1) })
+  .extend({ evidence: z.array(runEvidenceLocatorSchema).min(1) })
   .strict();
 const verifiedFactSchema = sourceEntrySchema
-  .extend({ evidence: z.array(evidenceReferenceSchema).min(1) })
+  .extend({ evidence: z.array(runEvidenceReferenceSchema).min(1) })
   .strict();
 
 const sourceSchema = z
@@ -83,16 +71,9 @@ export interface GoalWorkspaceEntry {
   readonly text: string;
 }
 
-export interface GoalWorkspaceEvidenceLocator {
-  readonly runId: string;
-  readonly nodeId: string;
-  readonly attempt: number;
-}
+export type GoalWorkspaceEvidenceLocator = RunEvidenceLocator;
 
-export interface GoalWorkspaceEvidenceReference extends GoalWorkspaceEvidenceLocator {
-  readonly sequence: number;
-  readonly eventDigest: string;
-}
+export type GoalWorkspaceEvidenceReference = RunEvidenceReference;
 
 export interface GoalWorkspaceSourceVerifiedFact extends GoalWorkspaceEntry {
   readonly evidence: readonly GoalWorkspaceEvidenceLocator[];
@@ -210,7 +191,7 @@ export function createGoalWorkspaceRevision(
   const parsedSource = parseSourceValue(source);
   const references = evidenceReferences.map((reference) => {
     try {
-      return evidenceReferenceSchema.parse(reference);
+      return runEvidenceReferenceSchema.parse(reference);
     } catch (error) {
       throw new GoalWorkspaceError("evidence_mismatch", "goal workspace evidence is invalid", {
         cause: error,
