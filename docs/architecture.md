@@ -1502,10 +1502,10 @@ missing, extra, reordered, or substituted packages. Current policy packages are 
 separate overlay and are not part of the rollbackable state.
 
 The run stores the complete selected workflow, packages, supplemental-memory bytes, relationship
-state, content-free head, and runtime proof in its capability snapshot. Attached execution,
-detached workers, child ledgers, resume, recovery, replay, and public inspection use that saved
-snapshot. They do not read the current index, review directory, candidate, blueprint, relationship
-evidence, registry, credentials, or live skill catalog.
+state, content-free head, and runtime proof in its capability snapshot. Attached execution and all
+recovery paths use the saved snapshot. Detached workers, child ledgers, replay, and public
+inspection do the same. They do not read the current index, review directory, candidate, blueprint,
+relationship evidence, registry, credentials, or live skill catalog.
 
 Before one agent attempt, the scheduler selects only entries whose root workflow, child-node path,
 and agent node match the current execution. It renders a canonical escaped block after Flow's fixed
