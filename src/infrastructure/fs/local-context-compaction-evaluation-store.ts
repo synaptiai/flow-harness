@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, unlink } from "node:fs/promises";
+import { lstat, mkdir, open, realpath, rename, rm, unlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import { z } from "zod";
@@ -301,23 +301,35 @@ export function contextCompactionEvaluationReportInput(
 }
 
 export class LocalContextCompactionEvaluationStore {
-  readonly #root: string;
+  #root: string;
   readonly #owners = new Map<string, string>();
 
   constructor(rootDirectory: string) {
     this.#root = resolve(rootDirectory);
   }
 
-  async create(headerInput: PublicContextCompactionEvaluationHeader): Promise<void> {
+  async create(
+    headerInput: PublicContextCompactionEvaluationHeader,
+    options: {
+      /** @internal Deterministic pre-commit interruption seam. */
+      readonly afterStagingPrepared?: () => void | Promise<void>;
+    } = {},
+  ): Promise<void> {
     const header = parseHeader(headerInput);
-    await mkdir(this.#root, { recursive: true, mode: 0o700 });
+    this.#root = await ensureCanonicalRoot(this.#root);
     const directory = this.directory(header.evaluationId);
+    const staging = join(this.#root, `.${header.evaluationId}-${randomUUID()}.pending`);
     try {
-      await mkdir(directory, { mode: 0o700 });
-      await durableCreate(join(directory, "plan.json"), `${JSON.stringify(header)}\n`);
-      await durableCreate(join(directory, "trials.jsonl"), "");
+      await mkdir(staging, { mode: 0o700 });
+      await durableCreate(join(staging, "plan.json"), `${JSON.stringify(header)}\n`);
+      await durableCreate(join(staging, "trials.jsonl"), "");
+      await syncDirectory(staging);
+      await options.afterStagingPrepared?.();
+      await rename(staging, directory);
+      await syncDirectory(this.#root);
     } catch (error) {
-      if (isErrno(error, "EEXIST")) {
+      await rm(staging, { recursive: true, force: true }).catch(() => undefined);
+      if (isErrno(error, "EEXIST") || isErrno(error, "ENOTEMPTY")) {
         throw new ContextCompactionEvaluationStoreError("exists", "evaluation already exists", {
           cause: error,
         });
@@ -331,6 +343,8 @@ export class LocalContextCompactionEvaluationStore {
     let headerSource: Buffer;
     let ledgerSource: Buffer;
     try {
+      this.#root = await canonicalizeExistingRoot(this.#root);
+      await assertEvaluationDirectory(directory);
       [headerSource, ledgerSource] = await Promise.all([
         boundedRead(join(directory, "plan.json"), MAX_CONTEXT_COMPACTION_EVALUATION_HEADER_BYTES),
         boundedRead(
@@ -601,6 +615,42 @@ async function durableCreate(path: string, contents: string): Promise<void> {
   const handle = await open(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
   try {
     await handle.writeFile(contents);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function ensureCanonicalRoot(root: string): Promise<string> {
+  await mkdir(root, { recursive: true, mode: 0o700 });
+  return await canonicalizeExistingRoot(root);
+}
+
+async function canonicalizeExistingRoot(root: string): Promise<string> {
+  const canonical = await realpath(root);
+  if (!(await lstat(canonical)).isDirectory()) {
+    throw new ContextCompactionEvaluationStoreError(
+      "corrupt",
+      "evaluation root is not a directory",
+    );
+  }
+  return canonical;
+}
+
+async function assertEvaluationDirectory(directory: string): Promise<void> {
+  const entry = await lstat(directory);
+  if (entry.isSymbolicLink() || !entry.isDirectory() || (await realpath(directory)) !== directory) {
+    throw new ContextCompactionEvaluationStoreError(
+      "corrupt",
+      "evaluation path is not a direct regular directory",
+    );
+  }
+}
+
+async function syncDirectory(directory: string): Promise<void> {
+  if (process.platform === "win32") return;
+  const handle = await open(directory, "r");
+  try {
     await handle.sync();
   } finally {
     await handle.close();

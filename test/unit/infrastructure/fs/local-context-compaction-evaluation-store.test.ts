@@ -1,4 +1,4 @@
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -21,6 +21,37 @@ afterEach(async () => {
 });
 
 describe("local context compaction evaluation store", () => {
+  it("publishes a complete evaluation atomically", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-compaction-store-")));
+    temporaryDirectories.push(root);
+    const header = headerFixture();
+    const store = new LocalContextCompactionEvaluationStore(root);
+
+    await expect(
+      store.create(header, {
+        afterStagingPrepared: () => {
+          throw new Error("simulated interruption");
+        },
+      }),
+    ).rejects.toThrow("simulated interruption");
+    await expect(store.read(header.evaluationId)).rejects.toThrow(/not_found/);
+    await expect(store.create(header)).resolves.toBeUndefined();
+    await expect(store.read(header.evaluationId)).resolves.toMatchObject({ records: [] });
+  });
+
+  it("rejects an evaluation directory reached through a symlink", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-compaction-store-")));
+    const externalRoot = await realpath(await mkdtemp(join(tmpdir(), "flow-compaction-external-")));
+    temporaryDirectories.push(root, externalRoot);
+    const header = headerFixture();
+    await new LocalContextCompactionEvaluationStore(externalRoot).create(header);
+    await symlink(join(externalRoot, header.evaluationId), join(root, header.evaluationId), "dir");
+
+    await expect(
+      new LocalContextCompactionEvaluationStore(root).read(header.evaluationId),
+    ).rejects.toThrow(/direct regular directory/);
+  });
+
   it("persists one owned record prefix and active-attempt lifecycle", async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "flow-compaction-store-")));
     temporaryDirectories.push(root);
