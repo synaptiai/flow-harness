@@ -30,6 +30,7 @@ describe("public run output", () => {
 
     expect(projected).toEqual({
       type: "run_started",
+      workProfile: "standard",
       capabilitySnapshot: {
         digest: "a".repeat(64),
         packages: [
@@ -50,6 +51,24 @@ describe("public run output", () => {
     expect(JSON.stringify(projected)).not.toContain("contentBase64");
     expect(JSON.stringify(projected)).not.toContain(privateContent);
     expect(durable.capabilitySnapshot.packages[0]?.files[0]?.contentBase64).toBe(privateContent);
+  });
+
+  it("projects the effective profile for legacy and current event pages", () => {
+    expect(
+      projectPublicRunOutput({
+        type: "events",
+        events: [
+          { type: "run_started", runId: "legacy-run" },
+          { type: "run_started", runId: "current-run", workProfile: "long" },
+        ],
+      }),
+    ).toEqual({
+      type: "events",
+      events: [
+        { type: "run_started", runId: "legacy-run", workProfile: "standard" },
+        { type: "run_started", runId: "current-run", workProfile: "long" },
+      ],
+    });
   });
 
   it("preserves legacy prompt bytes and same-named public metadata", () => {

@@ -1712,6 +1712,31 @@ nodes:
       "--work-profile does not match the durable run profile",
     );
     await expect(readFile(ledgerPath, "utf8")).resolves.toBe(ledger);
+
+    const repeatedCapture = createCapture();
+    const repeatedExitCode = await main(
+      [
+        "resume",
+        workflowPath,
+        "--run-id",
+        "cli-resume-profile",
+        "--runs-dir",
+        runsDirectory,
+        "--work-profile",
+        "standard",
+        "--work-profile",
+        "standard",
+      ],
+      repeatedCapture.io,
+      { cwd: directory },
+    );
+
+    expect(repeatedExitCode).toBe(2);
+    expect(repeatedCapture.stderr.join("\n").split("\n")[0]).toBe(
+      "--work-profile may be specified only once",
+    );
+    expect(executorCalls).toBe(0);
+    await expect(readFile(ledgerPath, "utf8")).resolves.toBe(ledger);
   });
 
   it("reports and inspects a resource-exhausted run with a non-zero exit", async () => {

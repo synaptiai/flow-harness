@@ -33,6 +33,7 @@ describe("supervisor durable records", () => {
       mode: "run",
       sourceName: "/workspace/workflow.yaml",
       workflowSource: "kind: Workflow\n",
+      workProfile: "long",
       cwd: "/workspace",
       projectRoot: "/workspace",
       protectedPaths: ["/workspace/.flow/runs", "/workspace/.flow"],
@@ -333,6 +334,9 @@ describe("supervisor durable records", () => {
     });
     expect(parseSupervisorCommandRecord(completed)).toEqual(completed);
     expect(() => parseSupervisorCommandRecord({ ...completed, cwd: "/other" })).toThrow(/digest/i);
+    expect(() => parseSupervisorCommandRecord({ ...completed, workProfile: "fast" })).toThrow(
+      /digest/i,
+    );
   });
 
   it("binds a supervisor descriptor to one effective admission policy", () => {
