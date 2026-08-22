@@ -2010,6 +2010,21 @@ async function disposeProofSafeInterruptedAttempt(
       try {
         let session = await options.modelSessionStore.claim(identity, options.signal);
         sessionClaimed = true;
+        if (session.activeCompaction !== null) {
+          const active = session.activeCompaction;
+          session = await options.modelSessionStore.append(
+            identity,
+            {
+              type: "context_compaction_settled",
+              attempt: active.attempt,
+              compaction: active.compaction,
+              generationAttempt: active.generationAttempt,
+              settlement: { outcome: "interrupted", reason: "process_interrupted" },
+            },
+            now().toISOString(),
+            options.signal,
+          );
+        }
         const lastEvent = session.events.at(-1);
         if (!(lastEvent?.type === "attempt_interrupted" && lastEvent.attempt === node.attempt)) {
           session = await options.modelSessionStore.append(

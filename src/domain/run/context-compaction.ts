@@ -70,7 +70,14 @@ export type ContextSummaryCandidateValidation =
     }
   | {
       readonly status: "rejected";
-      readonly reason: "invalid_output" | "constraint_loss";
+      readonly reason: "invalid_output";
+      readonly output: ContextSummaryIdentity;
+      readonly constraints: ContextSummaryConstraintCheck;
+    }
+  | {
+      readonly status: "rejected";
+      readonly reason: "constraint_loss";
+      readonly summary: string;
       readonly output: ContextSummaryIdentity;
       readonly constraints: ContextSummaryConstraintCheck;
     };
@@ -209,6 +216,7 @@ export function validateContextSummaryCandidate(input: {
       constraintDigest,
       protectedConstraints.length,
       retained,
+      parsed.data.summary,
     );
   }
   return deepFreeze({
@@ -442,7 +450,7 @@ function retained(
   });
 }
 
-function validateProtectedContextConstraints(input: readonly string[]): readonly string[] {
+export function validateProtectedContextConstraints(input: readonly string[]): readonly string[] {
   const parsed = protectedContextConstraintsSchema.safeParse(input);
   if (!parsed.success) {
     throw new TypeError("protected context constraints are invalid", { cause: parsed.error });
@@ -480,13 +488,16 @@ function summaryRejection(
   constraintSha256: string,
   checked: number,
   retained: number,
+  summary?: string,
 ): ContextSummaryCandidateValidation {
-  return deepFreeze({
-    status: "rejected",
-    reason,
+  const base = {
+    status: "rejected" as const,
     output,
     constraints: { sha256: constraintSha256, checked, retained },
-  });
+  };
+  return reason === "constraint_loss" && summary !== undefined
+    ? deepFreeze({ ...base, reason, summary })
+    : deepFreeze({ ...base, reason: "invalid_output" as const });
 }
 
 function deepFreeze<T>(value: T): T {

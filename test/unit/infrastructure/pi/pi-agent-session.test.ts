@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
-import { createFauxCore, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+import {
+  createFauxCore,
+  fauxAssistantMessage,
+  fauxText,
+  fauxToolCall,
+} from "@earendil-works/pi-ai";
 import { createAgentSession } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import type { ArtifactStore } from "../../../../src/application/artifact-store.js";
@@ -366,6 +371,257 @@ describe("Pi provider-neutral model session", () => {
     expect(durableResult?.text).toContain(retainedStdout);
     expect(durableResult?.text).not.toContain("flow.reference-tool-result");
   });
+
+  it("accepts one bounded summary, preserves protected surfaces, and accounts for its usage", async () => {
+    const faux = createFauxCore({
+      provider: "flow-session-test",
+      models: [{ id: "session-model", reasoning: false }],
+    });
+    const model = requireModel(faux.getModel());
+    const journal = attemptOneJournal();
+    const protectedConstraint = "Never change release policy.";
+    const protectedConstraints = [protectedConstraint];
+    let summaryPrompt = "";
+    let summaryMaxTokens: number | undefined;
+    let finalProviderMessages: unknown[] = [];
+    let finalProviderTools: unknown[] = [];
+    faux.setResponses([
+      fauxAssistantMessage(
+        [
+          fauxText(`OLD_CONTEXT:${"x".repeat(12_000)}`),
+          fauxToolCall("flow_ls", { path: ".", limit: 1 }, { id: "tool-call-1" }),
+        ],
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage(
+        [
+          fauxText("LATEST_CONTEXT"),
+          fauxToolCall("flow_ls", { path: ".", limit: 1 }, { id: "tool-call-2" }),
+        ],
+        { stopReason: "toolUse" },
+      ),
+      (context, options) => {
+        summaryPrompt = JSON.stringify(context);
+        summaryMaxTokens = options?.maxTokens;
+        return fauxAssistantMessage(
+          JSON.stringify({
+            version: 1,
+            summary: `The first inspection completed. ${protectedConstraint}`,
+            protectedConstraints,
+          }),
+        );
+      },
+      (context) => {
+        finalProviderMessages = context.messages;
+        finalProviderTools = context.tools ?? [];
+        return fauxAssistantMessage("Compacted context observed.");
+      },
+    ]);
+
+    const result = await runnerFor(faux, model).run({
+      ...agentRequest(model, journal),
+      contextCompactionMode: "references-and-summary",
+      contextSummary: {
+        protectedConstraints,
+        minimumReductionBytes: 1_000,
+        outputTokenLimits: [512, 256],
+      },
+    });
+
+    expect({
+      stopReason: result.stopReason,
+      errorMessage: result.errorMessage,
+      durableTail: journal.state.events.slice(-4).map((event) => event.type),
+    }).toEqual({
+      stopReason: "stop",
+      errorMessage: undefined,
+      durableTail: [
+        "context_compaction_settled",
+        "model_request_prepared",
+        "model_message_committed",
+        "model_request_settled",
+      ],
+    });
+    expect(faux.state.callCount).toBe(4);
+    expect(summaryMaxTokens).toBe(512);
+    expect(summaryPrompt).toContain("OLD_CONTEXT");
+    expect(summaryPrompt).toContain(protectedConstraints[0]);
+    expect(summaryPrompt).not.toContain("LATEST_CONTEXT");
+    expect(finalProviderMessages[0]).toMatchObject({ role: "user" });
+    expect(JSON.stringify(finalProviderMessages[0])).toContain('"text":"Original objective."');
+    const summaryMessage = finalProviderMessages[1] as { role?: unknown; content?: unknown };
+    expect(summaryMessage.role).toBe("user");
+    expect(typeof summaryMessage.content).toBe("string");
+    expect(JSON.parse(summaryMessage.content as string)).toMatchObject({
+      version: 1,
+      kind: "flow.context-summary",
+      protectedConstraints,
+      summary: expect.stringContaining(protectedConstraint),
+    });
+    expect(JSON.stringify(finalProviderMessages)).toContain("LATEST_CONTEXT");
+    expect(JSON.stringify(finalProviderMessages)).not.toContain("OLD_CONTEXT");
+    expect(finalProviderTools).toHaveLength(1);
+
+    const starts = journal.state.events.filter(
+      (event) => event.type === "context_compaction_started",
+    );
+    const settlements = journal.state.events.filter(
+      (event) => event.type === "context_compaction_settled",
+    );
+    expect(starts).toHaveLength(1);
+    expect(settlements).toHaveLength(1);
+    expect(settlements[0]).toMatchObject({
+      settlement: {
+        outcome: "accepted",
+        reason: "accepted",
+        usage: { inputTokens: expect.any(Number), outputTokens: expect.any(Number) },
+        constraints: { checked: 1, retained: 1 },
+        surface: { minimumReductionBytes: 1_000 },
+      },
+    });
+    const mainUsage = journal.state.events
+      .filter((event) => event.type === "model_message_committed")
+      .flatMap((event) => (event.usage === undefined ? [] : [event.usage]))
+      .reduce(addUsage, emptyUsage());
+    const summaryUsage = settlements.flatMap((event) =>
+      event.settlement.outcome === "interrupted" || event.settlement.usage === undefined
+        ? []
+        : [event.settlement.usage],
+    );
+    expect(result.usage).toEqual(summaryUsage.reduce(addUsage, mainUsage));
+  });
+
+  it("retries once with a smaller limit and retains the prior surface after rejection", async () => {
+    const faux = createFauxCore({
+      provider: "flow-session-test",
+      models: [{ id: "session-model", reasoning: false }],
+    });
+    const model = requireModel(faux.getModel());
+    const journal = attemptOneJournal();
+    const protectedConstraint = "Never change release policy.";
+    const summaryLimits: number[] = [];
+    let finalProviderMessages: unknown[] = [];
+    faux.setResponses([
+      fauxAssistantMessage(
+        [
+          fauxText(`OLD_CONTEXT_RETAINED:${"y".repeat(12_000)}`),
+          fauxToolCall("flow_ls", { path: ".", limit: 1 }, { id: "tool-call-1" }),
+        ],
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage(
+        [
+          fauxText("LATEST_CONTEXT_RETAINED"),
+          fauxToolCall("flow_ls", { path: ".", limit: 1 }, { id: "tool-call-2" }),
+        ],
+        { stopReason: "toolUse" },
+      ),
+      (_context, options) => {
+        summaryLimits.push(options?.maxTokens ?? -1);
+        return fauxAssistantMessage(
+          JSON.stringify({
+            version: 1,
+            summary: "The first inspection completed under a changed policy.",
+            protectedConstraints: ["Change release policy."],
+          }),
+        );
+      },
+      (_context, options) => {
+        summaryLimits.push(options?.maxTokens ?? -1);
+        return fauxAssistantMessage("not canonical summary JSON");
+      },
+      (context) => {
+        finalProviderMessages = context.messages;
+        return fauxAssistantMessage("Original context observed.");
+      },
+    ]);
+
+    const result = await runnerFor(faux, model).run({
+      ...agentRequest(model, journal),
+      contextCompactionMode: "references-and-summary",
+      contextSummary: {
+        protectedConstraints: [protectedConstraint],
+        minimumReductionBytes: 1_000,
+        outputTokenLimits: [512, 256],
+      },
+    });
+
+    expect(result.stopReason).toBe("stop");
+    expect(faux.state.callCount).toBe(5);
+    expect(summaryLimits).toEqual([512, 256]);
+    expect(JSON.stringify(finalProviderMessages)).toContain("OLD_CONTEXT_RETAINED");
+    expect(JSON.stringify(finalProviderMessages)).toContain("LATEST_CONTEXT_RETAINED");
+    expect(JSON.stringify(finalProviderMessages)).not.toContain("flow.context-summary");
+    expect(
+      journal.state.events
+        .filter((event) => event.type === "context_compaction_started")
+        .map((event) => event.outputTokenLimit),
+    ).toEqual([512, 256]);
+    expect(
+      journal.state.events
+        .filter((event) => event.type === "context_compaction_settled")
+        .map((event) => event.settlement.reason),
+    ).toEqual(["constraint_loss", "invalid_output"]);
+  });
+
+  it("does not call a summary or task provider when compaction write-ahead fails", async () => {
+    const faux = createFauxCore({
+      provider: "flow-session-test",
+      models: [{ id: "session-model", reasoning: false }],
+    });
+    const model = requireModel(faux.getModel());
+    const base = attemptOneJournal();
+    const journal: ModelSessionJournal = {
+      get state() {
+        return base.state;
+      },
+      read: base.read,
+      async append(input) {
+        if (input.type === "context_compaction_started") {
+          throw new Error("compaction journal unavailable");
+        }
+        return await base.append(input);
+      },
+    };
+    let unexpectedProviderCalls = 0;
+    faux.setResponses([
+      fauxAssistantMessage(
+        [
+          fauxText(`OLD_WRITE_AHEAD_CONTEXT:${"z".repeat(12_000)}`),
+          fauxToolCall("flow_ls", { path: ".", limit: 1 }, { id: "tool-call-1" }),
+        ],
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage(
+        fauxToolCall("flow_ls", { path: ".", limit: 1 }, { id: "tool-call-2" }),
+        { stopReason: "toolUse" },
+      ),
+      () => {
+        unexpectedProviderCalls += 1;
+        return fauxAssistantMessage("must not run");
+      },
+    ]);
+
+    const result = await runnerFor(faux, model).run({
+      ...agentRequest(model, journal),
+      contextCompactionMode: "references-and-summary",
+      contextSummary: {
+        protectedConstraints: ["Never change release policy."],
+        minimumReductionBytes: 1_000,
+        outputTokenLimits: [512, 256],
+      },
+    });
+
+    expect(result).toMatchObject({
+      stopReason: "error",
+      errorMessage: "compaction journal unavailable",
+    });
+    expect(faux.state.callCount).toBe(2);
+    expect(unexpectedProviderCalls).toBe(0);
+    expect(
+      base.state.events.filter((event) => event.type.startsWith("context_compaction_")),
+    ).toEqual([]);
+  });
 });
 
 function runnerFor(
@@ -553,4 +809,24 @@ function availableArtifactStore(
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function emptyUsage() {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    costUsdMicros: 0,
+  };
+}
+
+function addUsage(left: ReturnType<typeof emptyUsage>, right: ReturnType<typeof emptyUsage>) {
+  return {
+    inputTokens: left.inputTokens + right.inputTokens,
+    outputTokens: left.outputTokens + right.outputTokens,
+    cacheReadTokens: left.cacheReadTokens + right.cacheReadTokens,
+    cacheWriteTokens: left.cacheWriteTokens + right.cacheWriteTokens,
+    costUsdMicros: left.costUsdMicros + right.costUsdMicros,
+  };
 }
