@@ -112,7 +112,7 @@ async function verifyPackage() {
       );
       assert.match(
         capabilityReference,
-        /^# Tools and capabilities\n\n> Generated file\./u,
+        /^<!-- Generated file\. Do not edit directly\. -->\n\n# Tools and capabilities\n/u,
         "the installed package omits the generated capability reference",
       );
       const capabilityCatalog = JSON.parse(
