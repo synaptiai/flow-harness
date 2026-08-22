@@ -339,11 +339,12 @@ export class LocalContextCompactionEvaluationStore {
   }
 
   async read(evaluationId: string): Promise<StoredContextCompactionEvaluation> {
-    const directory = this.directory(evaluationId);
+    let directory: string;
     let headerSource: Buffer;
     let ledgerSource: Buffer;
     try {
       this.#root = await canonicalizeExistingRoot(this.#root);
+      directory = this.directory(evaluationId);
       await assertEvaluationDirectory(directory);
       [headerSource, ledgerSource] = await Promise.all([
         boundedRead(join(directory, "plan.json"), MAX_CONTEXT_COMPACTION_EVALUATION_HEADER_BYTES),

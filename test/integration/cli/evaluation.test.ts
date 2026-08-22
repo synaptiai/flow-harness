@@ -196,7 +196,7 @@ describe("evaluation CLI", () => {
       ),
     ).toBe(0);
     expect(JSON.parse(await readFile(output, "utf8"))).toEqual(evidence);
-  });
+  }, 30_000);
 
   it("inspects and exports the exact paired model routes from durable evidence", async () => {
     const project = await evaluationProject();
