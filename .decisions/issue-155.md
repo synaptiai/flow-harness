@@ -196,11 +196,11 @@ All criteria inherit the non-goals above.
 | Criterion | Type | Verification command | Expected evidence |
 | --- | --- | --- | --- |
 | Strict workflow and operator selection | Contract and error | `npx vitest run test/unit/workflow/compiler.test.ts test/unit/run/work-profile.test.ts test/integration/cli/main.test.ts -t 'work profile'` | Closed values compile, omitted source resolves to `standard`, operator selection wins for new runs, and invalid values create no run or detached job. |
-| Durable replay and recovery | Data and recovery | `npx vitest run test/unit/run/work-profile.test.ts test/unit/application/run-workflow-work-profile.test.ts -t 'durable|recover|legacy|mismatch'` | New events bind the effective value, legacy events replay as `standard`, exact recovery passes, and a conflict invokes no executor. |
-| Attached, detached, and child propagation | Integration and lifecycle | `npx vitest run test/unit/application/run-workflow-work-profile.test.ts test/unit/application/run-workflow-child.test.ts test/integration/supervisor/service.test.ts test/integration/supervisor/worker.test.ts -t 'work profile'` | One effective value crosses foreground, job, worker, replay, and child boundaries without provider or model substitution. |
+| Durable replay and recovery | Data and recovery | `npx vitest run test/unit/run/budget-reducer.test.ts test/unit/application/run-workflow.test.ts` | New events bind the effective value, legacy events replay as `standard`, exact recovery passes, and a conflict invokes no executor. |
+| Attached, detached, and child propagation | Integration and lifecycle | `npx vitest run test/unit/application/run-workflow.test.ts test/unit/application/run-workflow-child.test.ts test/integration/supervisor/service.test.ts test/integration/supervisor/worker.test.ts -t 'profile'` | One effective value crosses foreground, job, worker, replay, and child boundaries without provider or model substitution. |
 | Bounded model-facing budget view | Behavior and privacy | `npx vitest run test/unit/run/work-profile.test.ts test/unit/infrastructure/pi/pi-agent-executor.test.ts test/unit/application/verifier-executor.test.ts -t 'work profile'` | Every model-backed attempt receives one fixed five-dimension context; absent limits say `unbounded`; private canaries and extra fields are absent. |
 | Informational non-authority | Authority and behavior | `npx vitest run test/unit/application/run-workflow-work-profile.test.ts test/unit/run/work-profile.test.ts -t 'informational|does not change'` | The three profiles produce identical budget, scheduling, model, tool, approval, accounting, and terminal behavior for the same workflow. |
-| Public output and documentation | Public contract and documentation | `npx vitest run test/unit/cli/public-output.test.ts test/integration/cli/main.test.ts -t 'work profile' && npm run docs:style && npm run docs:links && npm run docs:ste` | Run, inspect, and event views show the profile; docs use the exact public vocabulary and pass all style gates. |
+| Public output and documentation | Public contract and documentation | `npx vitest run test/unit/cli/public-output.test.ts test/integration/cli/main.test.ts` plus the three documentation scripts below | Run, inspect, and event views show the profile. Documentation uses the exact public vocabulary and passes every style gate. |
 | Complete package remains releasable | Regression | `npm run check && npm run test:coverage && npm run test:runtime && npm run pack:check && npm audit --omit=dev --audit-level=low` | Static, complete, coverage, runtime, package-consumer, and dependency gates pass without provider credentials. |
 
 ## Implementation plan
@@ -230,3 +230,72 @@ All criteria inherit the non-goals above.
 - [ACP stabilized session configuration options](https://agentclientprotocol.com/announcements/session-config-options-stabilized)
 
 - [ACP session configuration design](https://agentclientprotocol.com/rfds/session-config-options)
+
+## Final evidence
+
+Status: complete and locally verified on 2026-08-22.
+
+### Criterion selector
+
+The exact mapped selector passed 370 tests across 14 files:
+
+```sh
+npx vitest run \
+  test/unit/workflow/compiler.test.ts \
+  test/unit/run/work-profile.test.ts \
+  test/unit/run/budget-reducer.test.ts \
+  test/unit/application/run-workflow-work-profile.test.ts \
+  test/unit/application/run-workflow-child.test.ts \
+  test/unit/application/run-workflow.test.ts \
+  test/unit/application/verifier-executor.test.ts \
+  test/unit/infrastructure/pi/pi-agent-executor.test.ts \
+  test/unit/cli/public-output.test.ts \
+  test/unit/supervisor/protocol.test.ts \
+  test/unit/supervisor/records.test.ts \
+  test/integration/cli/main.test.ts \
+  test/integration/supervisor/service.test.ts \
+  test/integration/supervisor/worker.test.ts
+```
+
+The compiled detached-process proof passed one selected runtime test:
+
+```sh
+npm run test:runtime -- \
+  -t "runs detached work beyond the client and replays it from another CLI"
+```
+
+### Repository-wide evidence
+
+- `npm run test:coverage` passed 4,974 tests and skipped 4 tests across 364 test files.
+- Coverage reached 85.00% statements, 79.55% branches, 91.58% functions, and 85.25% lines.
+- `npm run test:browser` passed 2 tests.
+- `npm run test:runtime` passed 44 tests and skipped 37 environment-dependent tests.
+- `node scripts/smoke-compiled.mjs` passed with local Unix-socket permission.
+
+### Packaging and dependency evidence
+
+- `npm run pack:check` verified clean installation and execution from the generated tarball.
+- The root dependency audit found no vulnerabilities.
+- The Prime dependency audit passed for the Node lock and 60 Python packages.
+
+### Static and documentation evidence
+
+- `npm run format:check`, `npm run typecheck`, and `npm run build` passed.
+- `npm run lint` passed with one pre-existing informational notice in
+  `src/application/external-harness-adapter.ts`.
+- `npm run docs:style`, `npm run docs:links`, and `npm run docs:ste` passed.
+- The architecture and community-file tests passed 35 tests across 2 files.
+- `git diff --check` passed.
+
+### Environment boundary
+
+The local host used Node 26.7.0. Its Docker Desktop runtime was Linux arm64 Docker 29.7.2 with runc
+1.3.6. It cannot prove the pinned Linux x64 Docker 28.3.3 and runc 1.2.5 Prime contract. The pull
+request CI job remains the required proof for that environment before merge.
+
+### Review result
+
+The adversarial review found four P2 verification gaps. The fix-forward added legacy event
+projection, profile-bound command idempotency, duplicate resume grammar, and detached recovery
+identity evidence. The final spec, security, correctness, error, performance, maintainability, and
+holdout passes found no unresolved P1, P2, or P3 issue.
