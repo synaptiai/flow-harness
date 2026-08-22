@@ -81,6 +81,7 @@ import {
   GoalWorkspaceAdmissionError,
   prepareGoalWorkspaceRevision,
 } from "../application/goal-workspace.js";
+import { resolveSupplementalMemoryRelationshipEvidence } from "../application/resolve-supplemental-memory-relationship-evidence.js";
 import {
   GuidedQuickstartError,
   type GuidedQuickstartMode,
@@ -4353,6 +4354,7 @@ async function candidateCommand(
       "candidate validate requires one candidate path",
     );
     const dependencies = configDependenciesFrom(overrides);
+    const storageDependencies = storageDependenciesFrom(overrides);
     const admitted = await admitLocalAdaptationCandidate(resolve(dependencies.cwd, candidatePath), {
       ...(overrides.signal === undefined ? {} : { signal: overrides.signal }),
       resolveChildSpecialistPackages: async (source) => {
@@ -4382,6 +4384,21 @@ async function candidateCommand(
           )
         ).state;
       },
+      resolveSupplementalMemoryRelationshipEvidence: async (source, baseline) => {
+        const config = await awaitWithCancellationPrecedence(
+          () => dependencies.loadConfig({ cwd: dependencies.cwd }),
+          overrides.signal,
+          "candidate validation was cancelled",
+        );
+        return await resolveSupplementalMemoryRelationshipEvidence(
+          source,
+          baseline,
+          storageDependencies.createStore(
+            resolveRunsDirectory(dependencies.cwd, undefined, config),
+          ),
+          overrides.signal,
+        );
+      },
     });
     io.stdout(
       JSON.stringify({ valid: true, candidate: adaptationCandidateView(admitted) }, null, 2),
@@ -4395,6 +4412,7 @@ async function candidateCommand(
       "candidate compose requires one candidate path",
     );
     const dependencies = configDependenciesFrom(overrides);
+    const storageDependencies = storageDependenciesFrom(overrides);
     const config = await awaitWithCancellationPrecedence(
       () => dependencies.loadConfig({ cwd: dependencies.cwd }),
       overrides.signal,
@@ -4424,6 +4442,15 @@ async function candidateCommand(
             overrides.signal,
           )
         ).state,
+      resolveSupplementalMemoryRelationshipEvidence: async (source, baseline) =>
+        await resolveSupplementalMemoryRelationshipEvidence(
+          source,
+          baseline,
+          storageDependencies.createStore(
+            resolveRunsDirectory(dependencies.cwd, undefined, config),
+          ),
+          overrides.signal,
+        ),
     });
     if (admitted.kind === "effective-harness-candidate") {
       throw new EffectiveHarnessStoreError(
@@ -4486,6 +4513,7 @@ async function candidateCommand(
     );
     requireMutationMode(dryRun.enabled, values["expected-digest"], "candidate activate");
     const dependencies = configDependenciesFrom(overrides);
+    const storageDependencies = storageDependenciesFrom(overrides);
     const config = await awaitWithCancellationPrecedence(
       () => dependencies.loadConfig({ cwd: dependencies.cwd }),
       overrides.signal,
@@ -4511,6 +4539,15 @@ async function candidateCommand(
                 overrides.signal,
               )
             ).state,
+          resolveSupplementalMemoryRelationshipEvidence: async (source, baseline) =>
+            await resolveSupplementalMemoryRelationshipEvidence(
+              source,
+              baseline,
+              storageDependencies.createStore(
+                resolveRunsDirectory(dependencies.cwd, undefined, config),
+              ),
+              overrides.signal,
+            ),
         }),
       overrides.signal,
       "candidate activation was cancelled",
