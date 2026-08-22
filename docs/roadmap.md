@@ -389,12 +389,27 @@ replayable, and visible in the selected profile.
 
 ### Slice 9.7: Extend reviewed memory relationships
 
-- Let a supplemental-memory proposal declare a closed relationship such as `supports`,
-  `contradicts`, `refines`, `supersedes`, or `derived_from`.
-- Bind each relationship to exact source evidence, scope, and validity. Evaluate stale,
-  contradictory, and inapplicable retrieval before activation.
-- Keep generation, review, activation, rollback, and execution separate. A model cannot activate a
-  proposal or write runtime memory.
+**Implemented in current source.**
+
+- Let one supplemental-memory proposal declare only `supports`, `contradicts`, `refines`,
+  `supersedes`, or `derived_from` relationships for exact entry versions in one target.
+- Bind each relationship to one through four exact durable run events. Reject missing, ambiguous,
+  corrupt, cancelled, cross-agent, stale, duplicate, cyclic, or excessive relationship input before
+  staging.
+- Change one memory entry and only its incident relationships atomically. Replacement and removal
+  require explicit removal or rebinding of every affected relationship.
+- Preserve contradictions as unresolved claims without truth, winner, symmetry, transitive, or
+  time-based inference.
+
+The immutable lifecycle adds these guarantees:
+
+- Bind the complete relationship state through paired evaluation, activation, execution, recovery,
+  replay, and rollback. Model-generated memory cannot declare relationships.
+- Give only the exact target a bounded content-free relationship block. Public views expose counts
+  and integrity digests without memory bytes, evidence locators, or private failure details.
+
+Read [Manage supplemental-memory relationships](guides/supplemental-memory-relationships.md) for the
+operator workflow, limits, and recovery actions.
 
 ### Slice 9.8: Generate capability reference documentation
 

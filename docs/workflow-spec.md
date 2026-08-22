@@ -2065,6 +2065,66 @@ The public candidate identity binds the source, baseline state, package identiti
 entry ID, operation, and projected state digest. It also binds the content-free before and after
 byte identities. It contains no memory content, encoded content, absolute path, or nested cause.
 
+#### Declare supplemental-memory relationships
+
+The optional strict `relationships` object changes relationships incident to the candidate entry:
+
+```yaml
+relationships:
+  remove:
+    - id: prior-layout-support
+      beforeDigest: <64-lowercase-hex>
+  add:
+    - id: revised-layout-support
+      predicate: supports
+      from:
+        entryId: project-layout
+        entrySha256: <64-lowercase-hex>
+      to:
+        entryId: accepted-package-map
+        entrySha256: <64-lowercase-hex>
+      evidence:
+        - runId: package-review-43
+          nodeId: implement
+          attempt: 1
+```
+
+Both arrays are required. Together, they contain one through eight operations. A removal binds one
+relationship ID and its exact current digest. An addition contains one of these closed predicates:
+`supports`, `contradicts`, `refines`, `supersedes`, or `derived_from`.
+
+Each endpoint binds an entry ID and SHA-256 entry version in the candidate's exact workflow, child
+path, and agent target. At least one endpoint of every removed or added relationship must be the
+candidate entry version. Replacement and removal must explicitly remove every relationship
+incident to the prior version. A replacement can add relationships against its new version. A
+removal cannot add a relationship.
+
+`supersedes` is valid only from the replacement version to the exact prior version of the same
+entry. `refines` and `derived_from` must remain acyclic across the active relationship set. A
+`contradicts` relationship remains unresolved and doesn't suppress either endpoint. Flow performs
+no truth, winner, confidence, transitive, symmetric, temporal, or validity inference.
+
+Each addition cites one through four unique evidence locators. A locator identifies one terminal
+`node_succeeded` or `node_failed` event with non-null evidence by run ID, target agent node ID, and
+attempt. Flow requires exactly one match in the selected root or embedded workflow. It resolves the
+locator to the event sequence and complete parsed-event digest before projection. Missing,
+ambiguous, corrupt, cancelled, or cross-agent evidence rejects without a fallback.
+
+One state contains at most 32 relationships, four incident relationships for one active entry, and
+128 total evidence references. Canonical serialized relationship metadata is at most 131,072 UTF-8
+bytes. The canonical model-visible block for one target is at most 8,192 UTF-8 bytes.
+
+The state relationship sidecar stores canonical relationships and a deterministic assessment. The
+assessment binds the relationship-set digest, relationship count, evidence-reference count,
+unresolved-contradiction count, and its own digest. Candidate, effective-state, runtime, evaluation,
+and activation identities cross-bind the relationship set and assessment. Historical data that
+omits the sidecar preserves its version-1 shape, digest, and prompt bytes.
+
+Public candidate views expose content-free removed and added relationship identities. Public state
+and run views expose only counts and integrity digests. They omit memory bytes, evidence locators,
+absolute paths, and nested private causes. For the operator workflow, see
+[Manage supplemental-memory relationships](guides/supplemental-memory-relationships.md).
+
 #### Generated supplemental-memory source
 
 `flow candidate generate` can create an `add` or `replace` source from the current effective state
@@ -2100,15 +2160,19 @@ Generated and hand-authored sources have the same projection, evaluation, activa
 recovery, replay, and rollback contracts. Public projections retain content-free identities and
 remove evidence paths. Generation cannot compose or activate its output.
 
+A generated source cannot contain `relationships`. The model supplies only the memory `value`. It
+cannot add, remove, or rebind a relationship.
+
 `flow candidate validate <candidate.yaml>` is read-only. Use
 `flow candidate compose <candidate.yaml>` to bind the change to the exact current effective head.
 Direct activation of the raw document rejects. A paired evaluation selects the complete staged
 artifact through `effectiveCandidate`. The legacy `candidate` field doesn't admit this kind.
 
-Activation stores exact memory bytes in the complete effective state and runtime capability
-snapshot. Public run, event, activation, inspection, and export projections remove the encoded
-content and retain only target, byte-count, and digest identity. Attached and detached runs,
-children, resume, recovery, and replay use the retained bytes without reopening a source.
+Activation stores exact memory bytes and optional relationship state in the complete effective
+state and runtime capability snapshot. Public run, event, activation, inspection, and export
+projections remove the encoded content and evidence locators. They retain target, byte-count,
+relationship-count, and digest identity. Attached and detached runs, children, resume, recovery,
+and replay use the retained state without reopening a source or evidence ledger.
 
 Supplemental memory isn't a secret-storage boundary. It becomes model input for the targeted node,
 and generated node output can repeat or transform it. Public projection removes stored memory
@@ -2117,12 +2181,16 @@ bytes. It doesn't classify or redact model-generated text.
 Before one agent attempt, the scheduler selects only entries whose root workflow, child path, and
 agent node match the current node. Flow renders escaped XML in canonical entry order. The Pi adapter
 places a fixed reference-context and authority notice after Flow's system instructions, then the
-memory block, then the selected Agent Skill catalog. An untargeted node receives no block.
+memory block. When relationships exist for the same exact target, a second canonical block contains
+entry IDs, entry digests, predicates, and unresolved contradiction status without evidence
+locators. The selected Agent Skill catalog follows both blocks. An untargeted node receives neither
+block.
 
-Supplemental memory cannot change prompts, models, tools, Agent Skills, packages, graph topology,
-budgets, policies, approvals, verifiers, retries, sandboxing, results, or workflow transitions. Flow
-doesn't provide retrieval, ranking, embeddings, model writes, conversation persistence, provider
-sessions, ACP session persistence, or automatic promotion.
+Supplemental memory and its relationships cannot change prompts, models, tools, Agent Skills,
+packages, graph topology, budgets, policies, approvals, verifiers, retries, sandboxing, results, or
+workflow transitions. Flow doesn't provide relationship inference, truth ranking, conflict
+resolution, retrieval, embeddings, model writes, conversation persistence, provider sessions, ACP
+session persistence, or automatic promotion.
 
 ### Adaptive activation
 
@@ -2151,8 +2219,8 @@ workflow and no package.
 A composed model-route, child-specialist, or supplemental-memory artifact uses the effective harness
 store. Model-route preview and apply require the exact route pair from the evaluation header.
 Child-specialist and supplemental-memory preview and apply require the exact candidate and both
-complete state identities. The complete selected workflow, package closure, and optional memory
-catalog become durable before the effective head changes.
+complete state identities. The complete selected workflow, package closure, optional memory
+catalog, and optional relationship sidecar become durable before the effective head changes.
 
 A workflow source is at most 8 MiB. The complete capability snapshot is at most 16 MiB.
 

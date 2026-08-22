@@ -78,6 +78,10 @@ eligible fresh recovery.
 Gate 9 also adds a dedicated reference-first compaction experiment. It projects verified artifact
 references before one optional bounded summary and compares three modes on held-out tasks. It does
 not enable a production compaction policy.
+Gate 9 also lets an operator attach a bounded, evidence-backed relationship sidecar to reviewed
+supplemental memory. Relationship admission resolves exact run events, while execution uses only
+the immutable effective runtime. Contradictions remain explicit and unresolved. No live graph or
+retrieval service is added.
 Only an explicitly selected, policy-controlled tool can read bounded windows. Operators control
 retention and exact-plan pruning. The semantic boundary freezes one
 operator-selected language server. It runs one bounded LSP 3.18 request in a short-lived sandbox.
@@ -119,7 +123,7 @@ flowchart TB
         proposals["Proposal generation<br/>Creates one bounded, inert model suggestion"]
         adaptation["Evaluation and adaptation<br/>Compares reviewed root and child candidates"]
         compaction["Context experiment<br/>References first · bounded summary · no activation"]
-        memory["Reviewed agent context<br/>Immutable per-agent supplemental memory"]
+        memory["Reviewed agent context<br/>Immutable entries · evidence-backed relationships"]
         goals["Goal workspace<br/>Reviews and freezes one project revision"]
     end
 
@@ -176,14 +180,15 @@ flowchart TB
     proposals -->|"Returns an inert candidate for review"| adaptation
     adaptation -->|"Runs paired trials"| engine
     compaction -->|"Runs held-out trials"| engine
-    adaptation -->|"Stages one reviewed memory change"| memory
+    adaptation -->|"Stages one atomic entry and relationship change"| memory
     memory -->|"Supplies exact target context"| engine
     goals -->|"Supplies bounded cross-run context"| engine
     goals -->|"Appends full revisions with exact CAS"| goalLedger
     goalLedger -->|"Replays the current immutable revision"| goals
     adaptation -->|"Stores evaluation and activation evidence"| stores
     compaction -->|"Stores a dedicated report"| stores
-    memory -->|"Persists identities and exact bytes"| stores
+    ledgers -->|"Supplies exact evidence references"| memory
+    memory -->|"Persists entries, claims, and assessments"| stores
     engine -->|"Asks what is legal"| rules
     engine -->|"Derives one read-only snapshot"| workContext
     workContext -->|"Supplies pacing guidance"| agents
@@ -226,9 +231,9 @@ Read the diagram from top to bottom:
    Coding mode adds one reviewed fixture and an explicit tool and budget boundary.
 
 2. The control plane compiles the workflow, reconstructs durable state, selects reviewed per-agent
-   context, and decides which action is legal. Proposal generation can ask a model for one bounded
-   memory value, but the model cannot select its target, authorize a transition, or write runtime
-   memory.
+   context and evidence-backed relationships, and decides which action is legal. Proposal generation
+   can ask a model for one bounded memory value. The model cannot select its target, declare a
+   relationship, authorize a transition, or write runtime memory.
 
 3. The execution plane performs only the bounded work that the control plane admits. Agent and
    command adapters do not own workflow state. The semantic service starts one exact language
@@ -258,6 +263,7 @@ before success. It stops on unresolved side-effect or settlement uncertainty.
 | Workflow rules and safeguards | `src/domain/` | Defines provider-neutral workflows, state transitions, policy, evidence, budgets, and validation. |
 | Workflow engine, evaluation, adaptation, and capability governance | `src/application/` | Coordinates use cases through ports, asks the domain for legal transitions, and prepares evaluated state changes. |
 | Goal workspace | `src/domain/goal/`, `src/application/goal-workspace.ts`, and `src/infrastructure/fs/local-goal-workspace-store.ts` | Validates bounded full revisions, resolves immutable run-event references, performs exact compare-and-set updates, and freezes selected context into run snapshots. |
+| Reviewed agent context | `src/domain/adaptation/supplemental-memory*.ts`, `src/application/resolve-supplemental-memory-relationship-evidence.ts`, and `src/infrastructure/fs/local-supplemental-memory-candidate.ts` | Validates immutable target-specific memory, resolves exact run-event evidence, applies atomic incident-relationship changes, and renders bounded execution context without locators. |
 | Detached work and recovery | `src/supervisor/` | Owns bounded queueing, worker adoption, cancellation, event paging, and detached lifecycle. |
 | Semantic code boundary | `src/domain/semantic/` and `src/infrastructure/lsp/` | Defines canonical read-only code queries and receipts, runs one strict LSP 3.18 subset, isolates each server session, and rejects stale or unsettled results. |
 | Retained artifact boundary | `src/domain/artifact/`, `src/application/artifact-store.ts`, and `src/infrastructure/fs/local-artifact-store.ts` | Binds exact command bytes to immutable producer references, authorizes bounded same-run reads, and separates append-only evidence from mutable retention and physical availability. |
@@ -1374,8 +1380,11 @@ child field.
 A `SupplementalMemoryCandidate` is a sixth inert source. It identifies one stable entry for one
 existing root agent or one agent in an embedded child workflow. It declares one add, replace, or
 remove operation against the exact current state, package closure, target, and prior entry identity.
-Flow stores the accepted bytes inside the complete effective state. It doesn't create a live memory
-store, retrieval service, provider session, or model write path.
+It can also declare a bounded set of removals and additions for relationships incident to that
+entry. Flow resolves every added relationship to exact durable run-event evidence and stores the
+accepted bytes, closed claims, and deterministic assessment inside the complete effective state.
+It doesn't create a live memory store, graph service, retrieval service, provider session, or model
+write path.
 
 For a generated memory source, the operator fixes the complete target and add or replace operation.
 One zero-tool model turn can return only one bounded value. Flow binds the canonical request,
@@ -1429,8 +1438,9 @@ retry, order, and verification controls remain exact.
 
 For a supplemental-memory candidate, both profiles select one complete effective harness artifact.
 The profiles share workflow bytes, package bytes, tasks, fixtures, seeds, model routes, budgets,
-network denial, retries, order, and verification. Only the declared entry differs. Public evidence
-stores the exact target, operation, byte counts, and digests without storing the entry content.
+network denial, retries, order, and verification. Only the declared entry and its incident
+relationships can differ. Public evidence stores the exact target, operation, byte counts,
+relationship counts, and integrity digests without storing entry content or evidence locators.
 
 Both effective profile bindings also store the admitted workflow ID and must match the candidate
 scope. Trial adapters receive only their selected model tuple.
@@ -1457,17 +1467,23 @@ Model-route rebasing changes only the declared model tuple on the exact target n
 Child-specialist rebasing changes only the declared embedded agent instructions or skill selection
 and preserves the package closure.
 Supplemental-memory rebasing changes only one declared entry and preserves every unrelated entry,
-workflow field, and package.
+relationship, workflow field, and package. Replacement or removal fails unless every relationship
+incident to the prior entry version is explicitly removed or rebound in the same projection.
 The current target must equal the candidate's before-state, so an orthogonal reviewed change is
 retained while a stale same-surface candidate fails closed.
 
 An effective state contains exact workflow bytes, the complete ordered non-policy package closure,
-and an optional canonical supplemental-memory catalog. The state excludes policy packages and
-nested activation objects. Its digest binds the canonical project scope, workflow identity,
-optional root workflow package, every package, and every memory target and byte identity. States
-without memory retain their historical digest. The head also binds the workflow, generation,
-selected state, selected activation, and last transition. This prevents an ABA change from
-presenting an old state as the current baseline.
+an optional canonical supplemental-memory catalog, and an optional canonical relationship sidecar.
+The sidecar binds closed predicates, exact versioned endpoints, durable event references, set
+identity, and deterministic assessment. The state excludes policy packages and nested activation
+objects. Its digest binds the canonical project scope, workflow identity, and optional root workflow
+package. It also binds every package, memory target, byte identity, relationship-set digest, and
+assessment digest.
+
+States without relationships retain their historical shape and digest. The head also binds the
+workflow, generation, selected state, selected activation, and last transition. This binding
+prevents an ABA change. An old state cannot appear as the current baseline after an intervening
+change.
 
 The effective store writes state and candidate dependencies before it replaces one atomic index.
 The index retains every activated state, artifact, transition, and workflow origin. Staged states
@@ -1485,16 +1501,20 @@ state from its workflow bytes, ordered package closure, and compact runtime proo
 missing, extra, reordered, or substituted packages. Current policy packages are then applied as a
 separate overlay and are not part of the rollbackable state.
 
-The run stores the complete selected workflow, packages, supplemental-memory bytes, content-free
-head, and runtime proof in its capability snapshot. Attached execution, detached workers, child
-ledgers, resume, recovery, replay, and public inspection use that saved snapshot. They do not read
-the current index, review directory, candidate, blueprint, evidence, registry, credentials, or live
-skill catalog.
+The run stores the complete selected workflow, packages, supplemental-memory bytes, relationship
+state, content-free head, and runtime proof in its capability snapshot. Attached execution,
+detached workers, child ledgers, resume, recovery, replay, and public inspection use that saved
+snapshot. They do not read the current index, review directory, candidate, blueprint, relationship
+evidence, registry, credentials, or live skill catalog.
 
 Before one agent attempt, the scheduler selects only entries whose root workflow, child-node path,
 and agent node match the current execution. It renders a canonical escaped block after Flow's fixed
-system instructions and before the selected Agent Skill catalog. A fixed notice states that the
-block is reference context and cannot add tools or override workflow, policy, or approval authority.
+system instructions. It then selects only relationships for that exact target and renders a
+separate canonical block containing entry IDs, entry digests, predicates, and unresolved
+contradiction status. The combined context precedes the selected Agent Skill catalog. Fixed notices
+state that these are explicit reference claims and don't grant authority.
+
+The notices don't authorize inferred relationships. Evidence locators never enter either block.
 Untargeted agents receive no block. Every attempt still starts a fresh in-memory Pi session.
 
 Attached execution protects the canonical project `.flow` directory. A detached job stores the same
@@ -1520,10 +1540,11 @@ replace a packaged child, add or mutate a package, change graph topology, tools,
 results, policy, approvals, retries, or sandboxing. Flow does not discover, delegate to, or fall
 back to another agent at runtime.
 
-A supplemental-memory candidate can change only one declared memory entry. It cannot change a
-prompt, model, graph, tool, skill, package, policy, approval, budget, verifier, retry, sandbox, or
-result contract. It cannot grant authority, trigger retrieval, persist a conversation, or let a
-model write future memory.
+A supplemental-memory candidate can change only one declared memory entry and relationships
+incident to that entry. It cannot change an unrelated relationship, prompt, model, graph, tool,
+skill, package, policy, approval, budget, verifier, retry, sandbox, or result contract. It cannot
+grant authority, infer truth, trigger retrieval, persist a conversation, or let a model write
+future memory or relationships.
 
 Model-authorized evaluation and activation remain unavailable. Agent Skill package installation,
 signing, publication, and executable-resource generation remain unavailable. Multi-skill generation

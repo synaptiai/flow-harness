@@ -599,6 +599,25 @@ target must be an existing compiled `agent` node. Projection recompiles the comp
 proves that the workflow, root package, package closure, and every unrelated memory entry remain
 unchanged.
 
+#### Review relationship changes
+
+A hand-authored memory candidate can also remove and add evidence-backed relationships incident to
+its one entry. Relationship endpoints bind exact entry IDs and content digests in the same workflow,
+child path, and agent target. Added relationships use only `supports`, `contradicts`, `refines`,
+`supersedes`, or `derived_from`, and each cites one through four terminal run events for that exact
+agent.
+
+Flow resolves each event locator before staging and binds its sequence and complete event digest.
+It rejects missing, ambiguous, corrupt, cancelled, stale, cross-agent, duplicate, cyclic, unrelated,
+or excessive input. A replacement or removal must explicitly remove every prior incident
+relationship. A replacement can rebind those claims to its new entry version in the same atomic
+proposal. Contradictions remain unresolved. Flow doesn't infer truth, winners, symmetry, transitive
+links, confidence, or temporal validity.
+
+Model-assisted generation cannot declare relationships. Use
+[Manage supplemental-memory relationships](guides/supplemental-memory-relationships.md) to author,
+review, activate, recover, and roll back the hand-authored extension.
+
 #### Generate a model-suggested entry
 
 Use model-assisted generation when tuning evidence supports a new or replacement reference entry.
@@ -656,10 +675,12 @@ through `effectiveCandidate` for both profiles, with `selection: baseline` and
 `selection: candidate`. Tasks, fixtures, seeds, models, packages, budgets, network denial, retries,
 order, and verification remain equal.
 
-The public candidate and evaluation views contain the target, entry ID, operation, byte counts, and
-SHA-256 digests. They omit content, encoded content, absolute source paths, and nested causes. After
-activation, attached runs, detached workers, children, resume, recovery, replay, inspection, and
-export use the exact retained state. They don't reopen the candidate or consult a live memory source.
+The public candidate and evaluation views contain the target, entry ID, operation, byte counts,
+content-free relationship changes, and SHA-256 digests. Public active-state and run views reduce
+relationships to counts and set and assessment digests. They omit content, encoded content,
+evidence locators, absolute source paths, and nested causes. After activation, attached runs,
+detached workers, children, resume, recovery, replay, inspection, and export use the exact retained
+state. They don't reopen the candidate, evidence runs, or a live memory source.
 
 Treat supplemental memory as model-visible context, not as a secret store. Flow removes stored
 memory bytes from its public state projections. A model can still repeat or transform context in
@@ -670,6 +691,10 @@ One canonical escaped memory block follows the notice and precedes the selected 
 Only entries for the exact root workflow, child path, and agent node are included. Supplemental
 memory cannot add a tool, package, or model route. It cannot change policy, approval, graph
 transitions, or other execution authority.
+
+When the exact target has relationships, Flow places a second bounded canonical block after the
+memory block. It includes endpoint IDs and digests, predicates, and unresolved contradiction
+status. It excludes evidence locators and unrelated-target relationships.
 
 ## Activation gate
 
@@ -713,7 +738,8 @@ The controls must match the composed artifact before preview and again before ap
 child-specialist activation uses the same complete-state proof and requires the evaluation's exact
 child candidate and state identities.
 A supplemental-memory activation requires the exact composed memory candidate, complete baseline
-and candidate states, and content-free evaluation identity.
+and candidate states, relationship-set and assessment identities when present, and content-free
+evaluation identity.
 
 The activation proof contains no task text, fixture path, assertion, holdout identity, trial record,
 or run identifier. It contains aggregate comparison values only.
