@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -125,6 +127,61 @@ describe("effective harness states", () => {
     });
     expect(parseEffectiveHarnessState(structuredClone(state), { scopeDigest })).toEqual(state);
     expect(Object.isFrozen(state.supplementalMemory?.[0])).toBe(true);
+  });
+
+  it("binds assessed relationships without changing relationship-free state identities", () => {
+    const firstContent = "Use the first reviewed fact.";
+    const secondContent = "Use the second reviewed fact.";
+    const target = {
+      workflowId: "memory-workflow",
+      childPath: [] as string[],
+      agentNodeId: "implement",
+    };
+    const baseInput = {
+      scopeDigest,
+      workflowSource: rootAgentWorkflow(),
+      packages: [],
+      supplementalMemory: [
+        { id: "first", target, content: firstContent },
+        { id: "second", target, content: secondContent },
+      ],
+    };
+    const relationship = {
+      id: "supporting-evidence",
+      target,
+      predicate: "supports" as const,
+      from: { entryId: "first", entrySha256: sha256(firstContent) },
+      to: { entryId: "second", entrySha256: sha256(secondContent) },
+      evidence: [
+        {
+          runId: "proof-run",
+          nodeId: "implement",
+          attempt: 1,
+          sequence: 7,
+          eventDigest: "e".repeat(64),
+        },
+      ],
+    };
+
+    const legacy = createEffectiveHarnessState(baseInput);
+    const explicitEmpty = createEffectiveHarnessState({
+      ...baseInput,
+      supplementalMemoryRelationships: [],
+    });
+    const state = createEffectiveHarnessState({
+      ...baseInput,
+      supplementalMemoryRelationships: [relationship],
+    });
+
+    expect(explicitEmpty).toEqual(legacy);
+    expect(state.stateDigest).not.toBe(legacy.stateDigest);
+    expect(state.supplementalMemoryRelationships).toMatchObject({
+      kind: "supplemental-memory-relationship-state",
+      relationships: [{ id: "supporting-evidence", predicate: "supports" }],
+      assessment: { relationshipCount: 1, evidenceReferenceCount: 1 },
+    });
+    expect(parseEffectiveHarnessState(structuredClone(state), { scopeDigest })).toEqual(state);
+    expect(Object.isFrozen(state.supplementalMemoryRelationships?.relationships[0])).toBe(true);
   });
 
   it("stores and recompiles a complete transitive workflow-package closure", () => {
@@ -298,6 +355,10 @@ type DeepMutable<Value> = Value extends (...args: never[]) => unknown
       : Value;
 
 type MutableState = DeepMutable<ReturnType<typeof createEffectiveHarnessState>>;
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
 
 function workflowWithoutPackages(): string {
   return JSON.stringify({

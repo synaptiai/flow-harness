@@ -14,6 +14,7 @@ import {
   MAX_SUPPLEMENTAL_MEMORY_ENTRIES,
   supplementalMemoryEntrySchema,
 } from "./supplemental-memory.js";
+import { supplementalMemoryRelationshipStateSchema } from "./supplemental-memory-relationships.js";
 
 const RUNTIME_DIGEST_DOMAIN = "flow-effective-harness-runtime-v1";
 
@@ -58,6 +59,7 @@ const effectiveHarnessRuntimeSchema = z
       .min(1)
       .max(MAX_SUPPLEMENTAL_MEMORY_ENTRIES)
       .optional(),
+    supplementalMemoryRelationships: supplementalMemoryRelationshipStateSchema.optional(),
     runtimeDigest: sha256Schema,
   })
   .strict();
@@ -72,6 +74,7 @@ export interface EffectiveHarnessRuntimeSnapshot {
   readonly rootPackage?: EffectiveHarnessState["rootPackage"];
   readonly packageDigests: readonly string[];
   readonly supplementalMemory?: EffectiveHarnessState["supplementalMemory"];
+  readonly supplementalMemoryRelationships?: EffectiveHarnessState["supplementalMemoryRelationships"];
   readonly runtimeDigest: string;
 }
 
@@ -124,6 +127,9 @@ export function createEffectiveHarnessRuntimeSnapshot(
     ...(state.supplementalMemory === undefined
       ? {}
       : { supplementalMemory: state.supplementalMemory }),
+    ...(state.supplementalMemoryRelationships === undefined
+      ? {}
+      : { supplementalMemoryRelationships: state.supplementalMemoryRelationships }),
   };
   return parseEffectiveHarnessRuntimeSnapshot(
     { ...content, runtimeDigest: calculateEffectiveHarnessRuntimeDigest(content) },
@@ -174,6 +180,15 @@ export function calculateEffectiveHarnessRuntimeDigest(
               bytes: entry.bytes,
               sha256: entry.sha256,
             })),
+          }),
+      ...(runtime.supplementalMemoryRelationships === undefined
+        ? {}
+        : {
+            supplementalMemoryRelationships: {
+              relationshipSetDigest:
+                runtime.supplementalMemoryRelationships.assessment.relationshipSetDigest,
+              assessmentDigest: runtime.supplementalMemoryRelationships.assessment.digest,
+            },
           }),
     }),
   );
@@ -229,6 +244,11 @@ function parseAndRestore(
     ...(parsed.data.supplementalMemory === undefined
       ? {}
       : { supplementalMemory: parsed.data.supplementalMemory }),
+    ...(parsed.data.supplementalMemoryRelationships === undefined
+      ? {}
+      : {
+          supplementalMemoryRelationships: parsed.data.supplementalMemoryRelationships,
+        }),
     runtimeDigest: parsed.data.runtimeDigest,
   };
   if (
@@ -255,6 +275,11 @@ function parseAndRestore(
         ...(runtime.supplementalMemory === undefined
           ? {}
           : { supplementalMemory: runtime.supplementalMemory }),
+        ...(runtime.supplementalMemoryRelationships === undefined
+          ? {}
+          : {
+              supplementalMemoryRelationships: runtime.supplementalMemoryRelationships,
+            }),
         stateDigest: head.stateDigest,
       },
       { scopeDigest: runtime.scopeDigest },
