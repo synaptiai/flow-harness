@@ -38,6 +38,7 @@ import {
 
 const scopeDigest = "a".repeat(64);
 export const supplementalMemoryGenerationEvidenceProvenance = "PRIVATE_MEMORY_TUNING_EVIDENCE.json";
+export const supplementalMemoryRelationshipEvidenceRunId = "PRIVATE_RELATIONSHIP_PROOF_RUN";
 
 export function effectiveHarnessCandidateArtifactFixture(): EffectiveHarnessCandidateArtifact {
   const fixture = agentSkillPackageActivationFixture();
@@ -181,6 +182,88 @@ export function supplementalMemoryEffectiveHarnessCandidateArtifactFixture(
     source: parseSupplementalMemoryCandidateText(sourceText),
     baseline,
     evidence: admittedEvidence,
+  });
+  return createEffectiveHarnessCandidateArtifact({
+    baselineHead: createEffectiveHarnessHeadIdentity({
+      scopeDigest: candidateScopeDigest,
+      workflowId: baseline.workflowId,
+      generation: 3,
+      activationDigest: "b".repeat(64),
+      transitionDigest: "c".repeat(64),
+      stateDigest: baseline.stateDigest,
+    }),
+    baselineState: baseline,
+    candidateState: projected.state,
+    candidate: projected.identity,
+  });
+}
+
+export function supplementalMemoryRelationshipEffectiveHarnessCandidateArtifactFixture(
+  candidateScopeDigest = scopeDigest,
+): EffectiveHarnessCandidateArtifact {
+  const baselineSource = supplementalMemoryWorkflowText();
+  const target = {
+    workflowId: "memory-evaluation-workflow",
+    childPath: [] as string[],
+    agentNodeId: "implement",
+  };
+  const existingContent = "Use the retained relationship baseline.";
+  const candidateContent = "PRIVATE_MEMORY_USE_THE_REVIEWED_FIXTURE";
+  const baseline = createEffectiveHarnessState({
+    scopeDigest: candidateScopeDigest,
+    workflowSource: baselineSource,
+    packages: [],
+    supplementalMemory: [{ id: "existing-fact", target, content: existingContent }],
+  });
+  const sourceValue = {
+    apiVersion: "flow.synapti.ai/v1alpha1",
+    kind: "SupplementalMemoryCandidate",
+    metadata: { id: "reviewed-fixture-memory", version: "1.0.0" },
+    scope: {
+      kind: "workflow-agent-memory",
+      ...target,
+      entryId: "reviewed-fixture",
+    },
+    baseline: {
+      stateDigest: baseline.stateDigest,
+      workflowDigest: baseline.workflow.workflowDigest,
+      packageClosureDigest: calculateCapabilitySnapshotDigest(baseline.packages),
+    },
+    change: { kind: "add", value: candidateContent },
+    relationships: {
+      remove: [],
+      add: [
+        {
+          id: "fixture-support",
+          predicate: "supports",
+          from: { entryId: "reviewed-fixture", entrySha256: sha256(candidateContent) },
+          to: { entryId: "existing-fact", entrySha256: sha256(existingContent) },
+          evidence: [
+            {
+              runId: supplementalMemoryRelationshipEvidenceRunId,
+              nodeId: "implement",
+              attempt: 1,
+            },
+          ],
+        },
+      ],
+    },
+  };
+  const sourceText = JSON.stringify(sourceValue);
+  const projected = projectSupplementalMemoryCandidate({
+    manifestProvenance: "memory-relationship.candidate.json",
+    sourceSha256: sha256(sourceText),
+    source: parseSupplementalMemoryCandidateText(sourceText),
+    baseline,
+    relationshipEvidence: [
+      {
+        runId: supplementalMemoryRelationshipEvidenceRunId,
+        nodeId: "implement",
+        attempt: 1,
+        sequence: 7,
+        eventDigest: "7".repeat(64),
+      },
+    ],
   });
   return createEffectiveHarnessCandidateArtifact({
     baselineHead: createEffectiveHarnessHeadIdentity({

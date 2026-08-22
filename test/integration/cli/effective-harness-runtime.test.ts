@@ -18,6 +18,7 @@ import {
 import {
   createEffectiveHarnessHeadIdentity,
   createEffectiveHarnessState,
+  type EffectiveHarnessState,
 } from "../../../src/domain/adaptation/effective-harness-state.js";
 import { createPromptActivationSnapshot } from "../../../src/domain/adaptation/prompt-activation.js";
 import {
@@ -48,8 +49,9 @@ import {
   childSpecialistEffectiveHarnessCandidateArtifactFixture,
   effectiveHarnessCandidateArtifactFixture,
   superiorEffectiveHarnessEvaluation,
-  supplementalMemoryEffectiveHarnessCandidateArtifactFixture,
   supplementalMemoryGenerationEvidenceProvenance,
+  supplementalMemoryRelationshipEffectiveHarnessCandidateArtifactFixture,
+  supplementalMemoryRelationshipEvidenceRunId,
 } from "../../fixtures/effective-harness-evaluation.js";
 import { modelRoutingCandidateSourceFixture } from "../../fixtures/model-routing-candidate.js";
 import { promptActivationInput } from "../../fixtures/prompt-activation.js";
@@ -665,10 +667,10 @@ describe("effective harness runtime CLI", () => {
     expect(state.capabilitySnapshot.activations).toBeUndefined();
   });
 
-  it("runs activated supplemental memory and exposes only its review identity", async () => {
+  it("runs activated supplemental-memory relationships and exposes only review identities", async () => {
     const project = await temporaryProject();
     const privateMemory = "PRIVATE_MEMORY_USE_THE_REVIEWED_FIXTURE";
-    const artifact = supplementalMemoryEffectiveHarnessCandidateArtifactFixture(
+    const artifact = supplementalMemoryRelationshipEffectiveHarnessCandidateArtifactFixture(
       await calculateLocalEffectiveHarnessScopeDigest(project),
     );
     await activateArtifact(project, artifact);
@@ -700,20 +702,33 @@ describe("effective harness runtime CLI", () => {
     ).toBe(0);
     expect(observedMemory).toEqual([expect.stringContaining("<supplemental_memory>")]);
     expect(observedMemory[0]).toContain(privateMemory);
+    expect(observedMemory[0]).toContain("<supplemental_memory_relationships>");
+    expect(observedMemory[0]).toContain('predicate="supports"');
+    expect(observedMemory[0]).not.toContain(supplementalMemoryRelationshipEvidenceRunId);
+    expect(observedMemory[0]).not.toContain("eventDigest");
     const publicState = JSON.parse(runOutput.stdout.at(-1) ?? "null");
-    expect(publicState.capabilitySnapshot.effectiveHarness.supplementalMemory).toEqual([
-      {
-        id: "reviewed-fixture",
-        target: {
-          workflowId: artifact.workflowId,
-          childPath: [],
-          agentNodeId: "implement",
+    expect(publicState.capabilitySnapshot.effectiveHarness.supplementalMemory).toEqual(
+      expect.arrayContaining([
+        {
+          id: "reviewed-fixture",
+          target: {
+            workflowId: artifact.workflowId,
+            childPath: [],
+            agentNodeId: "implement",
+          },
+          bytes: Buffer.byteLength(privateMemory),
+          sha256: sha256(privateMemory),
         },
-        bytes: Buffer.byteLength(privateMemory),
-        sha256: sha256(privateMemory),
-      },
+      ]),
+    );
+    expect(publicState.capabilitySnapshot.effectiveHarness.supplementalMemoryRelationships).toEqual(
+      relationshipSummary(artifact.candidateState),
+    );
+    expectContentFree(runOutput, [
+      privateMemory,
+      supplementalMemoryGenerationEvidenceProvenance,
+      supplementalMemoryRelationshipEvidenceRunId,
     ]);
-    expectContentFree(runOutput, [privateMemory, supplementalMemoryGenerationEvidenceProvenance]);
 
     const inspectOutput = captureIo();
     expect(
@@ -723,23 +738,27 @@ describe("effective harness runtime CLI", () => {
       }),
       inspectOutput.stderr.join("\n"),
     ).toBe(0);
-    expect(JSON.parse(inspectOutput.stdout.join("\n"))).toMatchObject({
-      effectiveHarness: {
-        active: {
-          supplementalMemory: [
-            {
-              id: "reviewed-fixture",
-              target: { workflowId: artifact.workflowId, agentNodeId: "implement" },
-              bytes: Buffer.byteLength(privateMemory),
-              sha256: sha256(privateMemory),
-            },
-          ],
-        },
-      },
-    });
+    const inspected = JSON.parse(inspectOutput.stdout.join("\n"));
+    expect(inspected.effectiveHarness.active.supplementalMemory).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "reviewed-fixture",
+          target: expect.objectContaining({
+            workflowId: artifact.workflowId,
+            agentNodeId: "implement",
+          }),
+          bytes: Buffer.byteLength(privateMemory),
+          sha256: sha256(privateMemory),
+        }),
+      ]),
+    );
+    expect(inspected.effectiveHarness.active.supplementalMemoryRelationships).toEqual(
+      relationshipSummary(artifact.candidateState),
+    );
     expectContentFree(inspectOutput, [
       privateMemory,
       supplementalMemoryGenerationEvidenceProvenance,
+      supplementalMemoryRelationshipEvidenceRunId,
     ]);
   });
 
@@ -1023,6 +1042,18 @@ function effectiveConfig(projectRoot: string): EffectiveFlowConfig {
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function relationshipSummary(state: EffectiveHarnessState) {
+  const assessment = state.supplementalMemoryRelationships?.assessment;
+  if (assessment === undefined) throw new Error("relationship assessment fixture is missing");
+  return {
+    relationshipCount: assessment.relationshipCount,
+    evidenceReferenceCount: assessment.evidenceReferenceCount,
+    unresolvedContradictionCount: assessment.unresolvedContradictionCount,
+    relationshipSetDigest: assessment.relationshipSetDigest,
+    assessmentDigest: assessment.digest,
+  };
 }
 
 function successfulAgentOutcome(

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
+import { renderSupplementalMemoryRelationshipBlock } from "../domain/adaptation/supplemental-memory-relationships.js";
 import { renderSupplementalMemoryBlock } from "../domain/adaptation/supplemental-memory.js";
 import { AGENT_COMMAND_PROTOCOL, type AgentCommandRequest } from "../domain/agent-command.js";
 import {
@@ -4094,11 +4095,20 @@ function supplementalMemoryForAgent(
 ): string | undefined {
   const effectiveHarness = snapshot?.effectiveHarness;
   if (effectiveHarness?.supplementalMemory === undefined) return undefined;
-  return renderSupplementalMemoryBlock(effectiveHarness.supplementalMemory, {
+  const target = {
     workflowId: effectiveHarness.workflowId,
     childPath,
     agentNodeId,
-  });
+  };
+  const memory = renderSupplementalMemoryBlock(effectiveHarness.supplementalMemory, target);
+  const relationships =
+    effectiveHarness.supplementalMemoryRelationships === undefined
+      ? undefined
+      : renderSupplementalMemoryRelationshipBlock(
+          effectiveHarness.supplementalMemoryRelationships,
+          target,
+        );
+  return [memory, relationships].filter((item) => item !== undefined).join("\n") || undefined;
 }
 
 function goalWorkspaceForAgent(snapshot: CapabilitySnapshot | undefined): string | undefined {

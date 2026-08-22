@@ -5080,6 +5080,20 @@ function effectiveHarnessStateView(state: EffectiveHarnessState) {
             }),
           ),
         }),
+    ...(state.supplementalMemoryRelationships === undefined
+      ? {}
+      : {
+          supplementalMemoryRelationships: Object.freeze({
+            relationshipCount: state.supplementalMemoryRelationships.assessment.relationshipCount,
+            evidenceReferenceCount:
+              state.supplementalMemoryRelationships.assessment.evidenceReferenceCount,
+            unresolvedContradictionCount:
+              state.supplementalMemoryRelationships.assessment.unresolvedContradictionCount,
+            relationshipSetDigest:
+              state.supplementalMemoryRelationships.assessment.relationshipSetDigest,
+            assessmentDigest: state.supplementalMemoryRelationships.assessment.digest,
+          }),
+        }),
     stateDigest: state.stateDigest,
   });
 }
