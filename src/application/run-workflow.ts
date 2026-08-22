@@ -74,6 +74,7 @@ import {
   type VerifierPackageRequirement,
   type WorkflowPackageRequirement,
 } from "../domain/run/events.js";
+import { createModelWorkProfileContext } from "../domain/run/work-profile.js";
 import {
   projectCompiledControlGraph,
   workflowRequiresControlGraph,
@@ -613,6 +614,7 @@ async function continueWorkflow(
       }
     }
 
+    const modelWorkProfile = createModelWorkProfileContext(state.workProfile, state.budget);
     const settlements = await Promise.all(
       admitted.map(
         async ({
@@ -638,6 +640,9 @@ async function continueWorkflow(
             executionNode.type === "agent"
               ? goalWorkspaceForAgent(options.capabilitySnapshot)
               : undefined;
+          const modelBacked =
+            executionNode.type === "agent" ||
+            (executionNode.type === "verifier" && executionNode.verifier.kind === "model");
           const outcome = abortedBeforeExecution
             ? executionNode.type === "child"
               ? childFailure("child_cancelled_before_start", abortReason(options.signal))
@@ -670,6 +675,7 @@ async function continueWorkflow(
                     ...(verifierPackage === undefined ? {} : { verifierPackage }),
                     ...(agentGoalWorkspace === undefined ? {} : { agentGoalWorkspace }),
                     ...(agentSupplementalMemory === undefined ? {} : { agentSupplementalMemory }),
+                    ...(modelBacked ? { modelWorkProfile } : {}),
                     ...(options.signal === undefined ? {} : { signal: options.signal }),
                   },
                   options,

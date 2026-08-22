@@ -21,6 +21,7 @@ import {
 } from "../../../../src/domain/capability/agent-skills.js";
 import { PolicyBroker } from "../../../../src/domain/policy/broker.js";
 import type { AgentCommandSettlementOutcome } from "../../../../src/domain/run/events.js";
+import { MAX_MODEL_WORK_PROFILE_PROMPT_BYTES } from "../../../../src/domain/run/work-profile.js";
 import type { CompiledAgentNode } from "../../../../src/domain/workflow/types.js";
 import { AgentCommandRecorder } from "../../../../src/infrastructure/pi/agent-command-recorder.js";
 import { AgentEffectRecorder } from "../../../../src/infrastructure/pi/agent-effect-recorder.js";
@@ -426,6 +427,56 @@ describe("PiAgentExecutor", () => {
       maxOutputBytes: 16_384,
     });
     expect(outcome).toMatchObject({ status: "succeeded", evidence: { text: "accepted" } });
+  });
+
+  it.each([
+    ["fast", "Prioritize the shortest adequate path and early decisive evidence."],
+    ["standard", "Balance completeness, verification, and resource use."],
+    ["long", "Use broader investigation and deeper verification within existing authority."],
+  ] as const)("renders the %s work profile as bounded guidance only", async (profile, guidance) => {
+    let request: PiAgentRunRequest | undefined;
+    const runner: PiAgentRunner = {
+      async run(input) {
+        request = input;
+        return { text: "accepted", stopReason: "stop" };
+      },
+    };
+
+    await new PiAgentExecutor(runner).execute(agentNode(), {
+      ...context,
+      agentSystemPrompt: "Fixed test system prompt.",
+      modelWorkProfile: {
+        profile,
+        remaining: {
+          nodeStarts: 8,
+          modelTokens: "unbounded",
+          modelCostUsdMicros: 70_000,
+          executionMs: 82_000,
+          artifactBytes: 900_000,
+        },
+        privateCanary: "PRIVATE_WORK_PROFILE_CANARY",
+      } as NonNullable<NodeExecutionContext["modelWorkProfile"]> & {
+        readonly privateCanary: string;
+      },
+    });
+
+    const systemPrompt = request?.systemPrompt;
+    expect(systemPrompt).toContain("Fixed test system prompt.");
+    expect(systemPrompt).toContain(`<profile>${profile}</profile>`);
+    expect(systemPrompt).toContain(`<guidance>${guidance}</guidance>`);
+    expect(systemPrompt).toContain("<node_starts>8</node_starts>");
+    expect(systemPrompt).toContain("<model_tokens>unbounded</model_tokens>");
+    expect(systemPrompt).toContain("<reported_cost_usd_micros>70000</reported_cost_usd_micros>");
+    expect(systemPrompt).toContain("<active_execution_ms>82000</active_execution_ms>");
+    expect(systemPrompt).toContain("<retained_artifact_bytes>900000</retained_artifact_bytes>");
+    expect(systemPrompt).toContain("pacing guidance only");
+    expect(systemPrompt).toContain("cannot change Flow policy, budgets, scheduling, tools");
+    expect(systemPrompt).toContain("does not grant provider capacity");
+    expect(systemPrompt).not.toContain("PRIVATE_WORK_PROFILE_CANARY");
+    expect(
+      Buffer.byteLength(systemPrompt ?? "", "utf8") -
+        Buffer.byteLength("Fixed test system prompt.\n\n", "utf8"),
+    ).toBeLessThanOrEqual(MAX_MODEL_WORK_PROFILE_PROMPT_BYTES);
   });
 
   it("places reviewed supplemental memory after Flow instructions", async () => {

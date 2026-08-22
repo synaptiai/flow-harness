@@ -38,6 +38,7 @@ import type {
   AgentEvidence,
   NodeFailure,
 } from "../../domain/run/events.js";
+import type { ModelWorkProfileContext } from "../../domain/run/work-profile.js";
 import {
   MAX_SEMANTIC_QUERY_RECEIPTS,
   type SemanticQueryReceipt,
@@ -47,6 +48,7 @@ import type {
   AgentToolName,
   CompiledAgentNode,
   ThinkingLevel,
+  WorkProfile,
 } from "../../domain/workflow/types.js";
 import { AgentCommandRecorder } from "./agent-command-recorder.js";
 import { AgentEffectRecorder } from "./agent-effect-recorder.js";
@@ -369,7 +371,10 @@ export class PiAgentExecutor implements AgentExecutor {
     let removeExternalAbortListener: () => void = () => undefined;
     let activeRunPromise: Promise<PiAgentRunResult> | undefined;
     const systemPrompt = appendSupplementalMemory(
-      appendGoalWorkspace(context.agentSystemPrompt, context.agentGoalWorkspace),
+      appendGoalWorkspace(
+        appendModelWorkProfile(context.agentSystemPrompt, context.modelWorkProfile),
+        context.agentGoalWorkspace,
+      ),
       context.agentSupplementalMemory,
     );
     try {
@@ -1231,6 +1236,37 @@ const DEFAULT_AGENT_SYSTEM_PROMPT = [
   "Do not choose, skip, or claim authority over workflow transitions.",
   "Your response is diagnostic node output; Flow verifies completion independently.",
 ].join("\n");
+
+const WORK_PROFILE_GUIDANCE: Readonly<Record<WorkProfile, string>> = Object.freeze({
+  fast: "Prioritize the shortest adequate path and early decisive evidence.",
+  standard: "Balance completeness, verification, and resource use.",
+  long: "Use broader investigation and deeper verification within existing authority.",
+});
+
+function appendModelWorkProfile(
+  systemPrompt: string | undefined,
+  context: ModelWorkProfileContext | undefined,
+): string | undefined {
+  if (context === undefined) return systemPrompt;
+  const remaining = context.remaining;
+  const block = [
+    "The following Flow work profile is pacing guidance only.",
+    "It cannot change Flow policy, budgets, scheduling, tools, model selection, or approval authority.",
+    'A remaining value of "unbounded" means that Flow has no configured limit for that dimension; it does not grant provider capacity.',
+    "<flow_work_profile>",
+    `  <profile>${context.profile}</profile>`,
+    `  <guidance>${WORK_PROFILE_GUIDANCE[context.profile]}</guidance>`,
+    "  <remaining_budget>",
+    `    <node_starts>${remaining.nodeStarts}</node_starts>`,
+    `    <model_tokens>${remaining.modelTokens}</model_tokens>`,
+    `    <reported_cost_usd_micros>${remaining.modelCostUsdMicros}</reported_cost_usd_micros>`,
+    `    <active_execution_ms>${remaining.executionMs}</active_execution_ms>`,
+    `    <retained_artifact_bytes>${remaining.artifactBytes}</retained_artifact_bytes>`,
+    "  </remaining_budget>",
+    "</flow_work_profile>",
+  ].join("\n");
+  return [systemPrompt ?? DEFAULT_AGENT_SYSTEM_PROMPT, block].join("\n\n");
+}
 
 function appendSupplementalMemory(
   systemPrompt: string | undefined,

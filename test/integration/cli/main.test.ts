@@ -340,6 +340,36 @@ nodes:
     await expect(stat(join(directory, ".flow"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("rejects repeated operator work profiles before run-store mutation", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "repeated-profile.workflow.yaml");
+    await writeFile(
+      workflowPath,
+      `apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: repeated-operator-profile }
+nodes:
+  - id: verify
+    type: command
+    command: { executable: node, args: [--version] }
+`,
+      "utf8",
+    );
+    const capture = createCapture();
+
+    const exitCode = await main(
+      ["run", workflowPath, "--work-profile", "fast", "--work-profile", "long"],
+      capture.io,
+      { cwd: directory },
+    );
+
+    expect(exitCode).toBe(2);
+    expect(capture.stderr.join("\n").split("\n")[0]).toBe(
+      "--work-profile may be specified only once",
+    );
+    await expect(stat(join(directory, ".flow"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("protects project Flow state when execution uses a nested directory", async () => {
     const project = await createTemporaryDirectory();
     const canonicalProject = await realpath(project);
@@ -2374,6 +2404,7 @@ function childWorkflow(id: string): string {
 apiVersion: flow.synapti.ai/v1alpha1
 kind: Workflow
 metadata: { id: ${id}-inner }
+workProfile: fast
 budget:
   maxNodeStarts: 4
   maxModelTokens: 100
