@@ -233,6 +233,72 @@ nodes:
     expect(Object.isFrozen(workflow.budget)).toBe(true);
   });
 
+  it.each(["fast", "standard", "long"] as const)(
+    "compiles the explicit %s work profile into workflow identity",
+    (workProfile) => {
+      const workflow = compileWorkflowText(`
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata:
+  id: profiled-workflow
+workProfile: ${workProfile}
+nodes:
+  - id: verify
+    type: command
+    command: { executable: npm, args: [test] }
+`);
+
+      expect(workflow.workProfile).toBe(workProfile);
+      expect(Object.isFrozen(workflow)).toBe(true);
+    },
+  );
+
+  it("keeps an omitted work profile absent from legacy compiled identity", () => {
+    const omitted = compileWorkflowText(`
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata:
+  id: profiled-workflow
+nodes:
+  - id: verify
+    type: command
+    command: { executable: npm, args: [test] }
+`);
+    const explicit = compileWorkflowText(`
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata:
+  id: profiled-workflow
+workProfile: standard
+nodes:
+  - id: verify
+    type: command
+    command: { executable: npm, args: [test] }
+`);
+
+    expect(omitted.workProfile).toBeUndefined();
+    expect(calculateWorkflowDigest(omitted)).not.toBe(calculateWorkflowDigest(explicit));
+  });
+
+  it.each(["turbo", "FAST", "", "1"])(
+    "rejects invalid work profile %j before compilation",
+    (workProfile) => {
+      const source = `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata:
+  id: invalid-profile
+workProfile: ${JSON.stringify(workProfile)}
+nodes:
+  - id: verify
+    type: command
+    command: { executable: npm, args: [test] }
+`;
+
+      expectCompilationFailure(source, "invalid_schema", "workProfile");
+    },
+  );
+
   it.each([
     ["empty declaration", "{}", "budget"],
     ["unknown field", "{ maxNodeStarts: 1, maxRequests: 2 }", "budget"],

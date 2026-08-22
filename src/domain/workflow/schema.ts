@@ -25,6 +25,7 @@ import {
   MAX_RESULT_SCHEMA_DEPTH,
   MAX_RESULT_SCHEMA_NODES,
   MAX_RESULT_SCHEMA_SERIALIZED_BYTES,
+  WORK_PROFILES,
 } from "./types.js";
 
 const identifierSchema = z
@@ -675,6 +676,7 @@ export const workflowSourceSchema = z
       })
       .strict(),
     goal: goalContractSchema.optional(),
+    workProfile: z.enum(WORK_PROFILES).optional(),
     budget: runBudgetSchema.optional(),
     concurrency: concurrencySchema.optional(),
     nodes: z

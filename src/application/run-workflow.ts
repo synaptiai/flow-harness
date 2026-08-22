@@ -95,6 +95,7 @@ import type {
   CompiledVerifierNode,
   CompiledWorkflow,
   EvidenceSourceField,
+  WorkProfile,
 } from "../domain/workflow/types.js";
 import { MAX_OPTIMIZATION_DELTA_EVIDENCE_BYTES } from "../domain/workflow/types.js";
 import type { ArtifactStore } from "./artifact-store.js";
@@ -133,6 +134,7 @@ export interface RunWorkflowOptions {
   readonly signal?: AbortSignal;
   readonly agentCommandApprovalDecisions?: AgentCommandApprovalDecisionSource;
   readonly artifactStore?: ArtifactStore;
+  readonly workProfile?: WorkProfile;
 }
 
 export interface ResumeWorkflowOptions extends Omit<RunWorkflowOptions, "runId" | "store"> {
@@ -168,6 +170,7 @@ async function runWorkflowInternal(
   const runId = options.runId ?? randomUUID();
   const now = options.now ?? (() => new Date());
   const executionCwd = resolve(options.cwd);
+  const workProfile = options.workProfile ?? workflow.workProfile ?? "standard";
   return await releaseAfter(options.store, runId, async () => {
     const approvalRequirements = commandApprovalRequirements(workflow);
     const agentCommandApprovalRequirements = workflowAgentCommandApprovalRequirements(workflow);
@@ -183,6 +186,7 @@ async function runWorkflowInternal(
       nodeIds: workflow.nodes.map((node) => node.id),
       workflowApiVersion: workflow.apiVersion,
       workflowDigest: calculateWorkflowDigest(workflow),
+      workProfile,
       ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
       executionCwd,
       ...(options.executionWorkspace === undefined
@@ -271,6 +275,12 @@ async function resumeWorkflowWithRelocation(
       throw new RunRecoveryError(
         "workflow_mismatch",
         `run "${options.runId}" capability snapshot does not match durable history`,
+      );
+    }
+    if (options.workProfile !== undefined && options.workProfile !== state.workProfile) {
+      throw new RunRecoveryError(
+        "workflow_mismatch",
+        `run "${options.runId}" work profile does not match durable history`,
       );
     }
     const effectiveOptions: ResumeWorkflowOptions = {

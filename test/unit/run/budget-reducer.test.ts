@@ -19,6 +19,7 @@ describe("run resource and budget replay", () => {
 
     expect(state).toMatchObject({
       status: "succeeded",
+      workProfile: "standard",
       resources: {
         nodeStarts: 1,
         modelTokens: 0,
@@ -27,6 +28,28 @@ describe("run resource and budget replay", () => {
       },
       budget: null,
     });
+  });
+
+  it.each(["fast", "standard", "long"] as const)(
+    "replays the durable %s work profile",
+    (workProfile) => {
+      const state = reduceRunEvents([
+        { ...runStarted(undefined, ["verify"]), workProfile },
+        nodeStarted(2, "verify"),
+        nodeSucceeded(3, "verify", commandEvidence(1)),
+        runSucceeded(4),
+      ] as RunEvent[]);
+
+      expect(state.workProfile).toBe(workProfile);
+    },
+  );
+
+  it("rejects an unknown durable work profile", () => {
+    expect(() =>
+      reduceRunEvents([
+        { ...runStarted(undefined, ["verify"]), workProfile: "PRIVATE_TURBO" },
+      ] as unknown as RunEvent[]),
+    ).toThrowError(/event schema is invalid/i);
   });
 
   it("aggregates successful and failed evidence with checked integer accounting", () => {

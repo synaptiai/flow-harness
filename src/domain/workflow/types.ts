@@ -1,6 +1,7 @@
 import type { CompiledGoal } from "../goal/types.js";
 
 export const FLOW_WORKFLOW_API_VERSION = "flow.synapti.ai/v1alpha1" as const;
+export const WORK_PROFILES = Object.freeze(["fast", "standard", "long"] as const);
 export const MAX_CONTROL_GRAPH_SERIALIZED_BYTES = 524_288;
 export const MAX_CONCURRENT_NODES = 32;
 export const MAX_COMPILED_WORKFLOW_NODES = 256;
@@ -19,6 +20,7 @@ export const MAX_CHILD_WORKFLOW_DEPTH = 4;
 export const MAX_RUN_TREE_NODES = 1_024;
 
 export type AgentToolName = "read" | "ls" | "edit" | "exec" | "semantic" | "artifact";
+export type WorkProfile = (typeof WORK_PROFILES)[number];
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 export type EvidenceSourceField =
   | "command.stdout"
@@ -46,6 +48,7 @@ export interface CompiledWorkflow {
   readonly id: string;
   readonly description?: string;
   readonly sourcePackage?: CompiledWorkflowPackageReference;
+  readonly workProfile?: WorkProfile;
   readonly goal?: CompiledGoal;
   readonly budget?: CompiledRunBudget;
   readonly concurrency?: CompiledWorkflowConcurrency;
