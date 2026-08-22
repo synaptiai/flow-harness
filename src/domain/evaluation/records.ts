@@ -41,6 +41,22 @@ export interface EvaluationMetrics {
   readonly policyViolations: number | null;
   readonly recoveryAttempts: number | null;
   readonly recoveryOutcome: "not_attempted" | "succeeded" | "failed" | null;
+  readonly contextCompaction?: ContextCompactionEvaluationMetrics | undefined;
+}
+
+export interface ContextCompactionEvaluationMetrics {
+  readonly mode: "none" | "references" | "references-and-summary";
+  readonly providerRequestBytes: number;
+  readonly providerRequestEstimatedTokens: number;
+  readonly attempts: number;
+  readonly accepted: number;
+  readonly rejected: number;
+  readonly interrupted: number;
+  readonly summaryInputTokens: number;
+  readonly summaryOutputTokens: number;
+  readonly summaryCostUsdMicros: number;
+  readonly artifactReopenAttempts: number;
+  readonly artifactReopenSuccesses: number;
 }
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
@@ -51,6 +67,54 @@ const identifierSchema = z
 const trialIdSchema = z.string().regex(/^trial-[a-f0-9]{48}$/);
 const boundedTextSchema = z.string().max(4_096);
 const optionalMetricSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable();
+const contextCompactionMetricsSchema = z
+  .object({
+    mode: z.enum(["none", "references", "references-and-summary"]),
+    providerRequestBytes: nonNegativeMetricSchema(),
+    providerRequestEstimatedTokens: nonNegativeMetricSchema(),
+    attempts: nonNegativeMetricSchema(),
+    accepted: nonNegativeMetricSchema(),
+    rejected: nonNegativeMetricSchema(),
+    interrupted: nonNegativeMetricSchema(),
+    summaryInputTokens: nonNegativeMetricSchema(),
+    summaryOutputTokens: nonNegativeMetricSchema(),
+    summaryCostUsdMicros: nonNegativeMetricSchema(),
+    artifactReopenAttempts: nonNegativeMetricSchema(),
+    artifactReopenSuccesses: nonNegativeMetricSchema(),
+  })
+  .strict()
+  .superRefine((metrics, context) => {
+    if (metrics.accepted + metrics.rejected + metrics.interrupted > metrics.attempts) {
+      context.addIssue({
+        code: "custom",
+        path: ["attempts"],
+        message: "settled compaction outcomes cannot exceed attempts",
+      });
+    }
+    if (metrics.artifactReopenSuccesses > metrics.artifactReopenAttempts) {
+      context.addIssue({
+        code: "custom",
+        path: ["artifactReopenSuccesses"],
+        message: "artifact reopen successes cannot exceed attempts",
+      });
+    }
+    if (
+      metrics.mode !== "references-and-summary" &&
+      (metrics.attempts !== 0 ||
+        metrics.accepted !== 0 ||
+        metrics.rejected !== 0 ||
+        metrics.interrupted !== 0 ||
+        metrics.summaryInputTokens !== 0 ||
+        metrics.summaryOutputTokens !== 0 ||
+        metrics.summaryCostUsdMicros !== 0)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["mode"],
+        message: "summary evidence requires references-and-summary mode",
+      });
+    }
+  });
 
 const metricsSchema = z
   .object({
@@ -68,6 +132,7 @@ const metricsSchema = z
     policyViolations: optionalMetricSchema,
     recoveryAttempts: optionalMetricSchema,
     recoveryOutcome: z.enum(["not_attempted", "succeeded", "failed"]).nullable(),
+    contextCompaction: contextCompactionMetricsSchema.optional(),
   })
   .strict()
   .refine(
@@ -92,6 +157,10 @@ const metricsSchema = z
       });
     }
   });
+
+function nonNegativeMetricSchema() {
+  return z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+}
 
 const assertionEvidenceSchema = z
   .object({

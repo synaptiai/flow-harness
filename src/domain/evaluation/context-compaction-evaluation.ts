@@ -3,8 +3,13 @@ import { createHash } from "node:crypto";
 import { parseDocument } from "yaml";
 import { z } from "zod";
 
-import { CONTEXT_COMPACTION_MODES } from "../run/context-compaction.js";
+import { CONTEXT_COMPACTION_MODES, type ContextCompactionMode } from "../run/context-compaction.js";
 import type { EvaluationFilesystemAssertion, EvaluationTrialScheduleItem } from "./plan.js";
+import {
+  type ContextCompactionEvaluationMetrics,
+  type EvaluationTrialRecord,
+  parseEvaluationTrialRecord,
+} from "./records.js";
 
 export const CONTEXT_COMPACTION_EVALUATION_API_VERSION = "flow.synapti.ai/v1alpha1" as const;
 export const CONTEXT_COMPACTION_EVALUATION_MODES = CONTEXT_COMPACTION_MODES;
@@ -330,6 +335,381 @@ export function calculateContextCompactionEvaluationVerifierDigest(
   return createHash("sha256")
     .update(canonicalValue({ kind: "filesystem-v1", assertions }))
     .digest("hex");
+}
+
+export interface ContextCompactionEvaluationReportInput {
+  readonly planDigest: string;
+  readonly schedule: readonly EvaluationTrialScheduleItem[];
+  readonly tasks: readonly {
+    readonly id: string;
+    readonly verifierDigest: string;
+    readonly assertionCount: number;
+    readonly constraintAssertionIndexes: readonly number[];
+  }[];
+  readonly comparison: ContextCompactionEvaluationPlanSource["comparison"];
+}
+
+export interface ContextCompactionModeReport {
+  readonly scheduled: number;
+  readonly committed: number;
+  readonly missing: number;
+  readonly verifiedSuccess: number;
+  readonly verifiedSuccessRate: number;
+  readonly falseCompletion: number;
+  readonly harnessFailure: number;
+  readonly verifierError: number;
+  readonly constraintRetention: {
+    readonly checked: number;
+    readonly retained: number;
+    readonly losses: number;
+    readonly unavailable: number;
+  };
+  readonly totals: {
+    readonly tokens: number | null;
+    readonly costUsdMicros: number | null;
+    readonly latencyMs: number | null;
+  };
+  readonly compaction: ContextCompactionEvidenceTotals | null;
+}
+
+export interface ContextCompactionEvidenceTotals
+  extends Omit<ContextCompactionEvaluationMetrics, "mode"> {}
+
+export type ContextCompactionComparison =
+  | {
+      readonly verdict:
+        | "passes"
+        | "performance_failed"
+        | "constraint_failed"
+        | "insufficient_evidence";
+      readonly scheduledPairs: number;
+      readonly completePairs: number;
+      readonly comparablePairs: number;
+      readonly verifiedSuccessDelta: number | null;
+      readonly totalTokenChangeRate: number | null;
+      readonly constraints: {
+        readonly retained: boolean | null;
+        readonly successRegression: boolean | null;
+        readonly tokenIncrease: boolean | null;
+      };
+    }
+  | {
+      readonly verdict: "not_evaluated";
+      readonly reason: "references_vs_none_gate_failed";
+    };
+
+export interface ContextCompactionEvaluationReport {
+  readonly version: 1;
+  readonly planDigest: string;
+  readonly scheduledTrials: number;
+  readonly committedTrials: number;
+  readonly productionActivation: "not_authorized";
+  readonly modes: Readonly<Record<ContextCompactionMode, ContextCompactionModeReport>>;
+  readonly comparisons: {
+    readonly referencesVsNone: Exclude<
+      ContextCompactionComparison,
+      { readonly verdict: "not_evaluated" }
+    >;
+    readonly summaryVsReferences: ContextCompactionComparison;
+  };
+}
+
+export class ContextCompactionEvaluationAggregationError extends Error {
+  override readonly name = "ContextCompactionEvaluationAggregationError";
+}
+
+export function aggregateContextCompactionEvaluation(
+  input: ContextCompactionEvaluationReportInput,
+  rawRecords: readonly EvaluationTrialRecord[],
+): ContextCompactionEvaluationReport {
+  const records = validateContextCompactionEvaluationRecords(input, rawRecords);
+  const modes = Object.fromEntries(
+    CONTEXT_COMPACTION_EVALUATION_MODES.map((mode) => [
+      mode,
+      contextCompactionModeReport(input, records, mode),
+    ]),
+  ) as Record<ContextCompactionMode, ContextCompactionModeReport>;
+  const referencesVsNone = compareContextCompactionModes(
+    input,
+    records,
+    modes,
+    "none",
+    "references",
+  );
+  const summaryVsReferences: ContextCompactionComparison =
+    referencesVsNone.verdict === "passes"
+      ? compareContextCompactionModes(input, records, modes, "references", "references-and-summary")
+      : { verdict: "not_evaluated", reason: "references_vs_none_gate_failed" };
+  return deepFreeze({
+    version: 1,
+    planDigest: input.planDigest,
+    scheduledTrials: input.schedule.length,
+    committedTrials: records.length,
+    productionActivation: "not_authorized",
+    modes,
+    comparisons: { referencesVsNone, summaryVsReferences },
+  });
+}
+
+function validateContextCompactionEvaluationRecords(
+  input: ContextCompactionEvaluationReportInput,
+  rawRecords: readonly EvaluationTrialRecord[],
+): readonly EvaluationTrialRecord[] {
+  if (!sha256Schema.safeParse(input.planDigest).success) {
+    throw new ContextCompactionEvaluationAggregationError("plan digest is invalid");
+  }
+  if (rawRecords.length > input.schedule.length) {
+    throw new ContextCompactionEvaluationAggregationError(
+      "record count exceeds the admitted schedule",
+    );
+  }
+  let previousDigest: string | null = null;
+  const records: EvaluationTrialRecord[] = [];
+  for (const [index, raw] of rawRecords.entries()) {
+    const record = parseEvaluationTrialRecord(raw);
+    const scheduled = input.schedule[index];
+    const task = input.tasks.find((item) => item.id === record.taskId);
+    if (
+      scheduled === undefined ||
+      record.planDigest !== input.planDigest ||
+      record.sequence !== index + 1 ||
+      record.position !== scheduled.position ||
+      record.trialId !== scheduled.trialId ||
+      record.taskId !== scheduled.taskId ||
+      record.profileId !== scheduled.profileId ||
+      record.seed !== scheduled.seed ||
+      record.repetition !== scheduled.repetition ||
+      record.previousDigest !== previousDigest
+    ) {
+      throw new ContextCompactionEvaluationAggregationError(
+        `trial record ${index + 1} contradicts the admitted schedule`,
+      );
+    }
+    if (
+      task === undefined ||
+      record.verification.verifierDigest !== task.verifierDigest ||
+      record.verification.assertions.length > task.assertionCount
+    ) {
+      throw new ContextCompactionEvaluationAggregationError(
+        `trial record ${index + 1} contradicts its verifier`,
+      );
+    }
+    const compaction = record.metrics.contextCompaction;
+    if (compaction === undefined || compaction.mode !== record.profileId) {
+      throw new ContextCompactionEvaluationAggregationError(
+        `trial record ${index + 1} lacks matching compaction evidence`,
+      );
+    }
+    records.push(record);
+    previousDigest = record.recordDigest;
+  }
+  return Object.freeze(records);
+}
+
+function contextCompactionModeReport(
+  input: ContextCompactionEvaluationReportInput,
+  records: readonly EvaluationTrialRecord[],
+  mode: ContextCompactionMode,
+): ContextCompactionModeReport {
+  const scheduled = input.schedule.filter((trial) => trial.profileId === mode).length;
+  const modeRecords = records.filter((record) => record.profileId === mode);
+  const classificationCount = (classification: EvaluationTrialRecord["classification"]) =>
+    modeRecords.filter((record) => record.classification === classification).length;
+  let checked = 0;
+  let retained = 0;
+  let unavailable = 0;
+  for (const record of modeRecords) {
+    const task = input.tasks.find((item) => item.id === record.taskId);
+    if (task === undefined) continue;
+    for (const assertionIndex of task.constraintAssertionIndexes) {
+      const assertion = record.verification.assertions[assertionIndex];
+      if (
+        (record.verification.outcome !== "accepted" &&
+          record.verification.outcome !== "rejected") ||
+        assertion === undefined
+      ) {
+        unavailable += 1;
+        continue;
+      }
+      checked += 1;
+      retained += Number(assertion.outcome);
+    }
+  }
+  const verifiedSuccess = classificationCount("verified_success");
+  return Object.freeze({
+    scheduled,
+    committed: modeRecords.length,
+    missing: scheduled - modeRecords.length,
+    verifiedSuccess,
+    verifiedSuccessRate: scheduled === 0 ? 0 : verifiedSuccess / scheduled,
+    falseCompletion: classificationCount("false_completion"),
+    harnessFailure: classificationCount("harness_failure"),
+    verifierError: classificationCount("verifier_error"),
+    constraintRetention: Object.freeze({
+      checked,
+      retained,
+      losses: checked - retained,
+      unavailable,
+    }),
+    totals: Object.freeze({
+      tokens: sumTotalTokens(modeRecords),
+      costUsdMicros: sumOptionalMetric(modeRecords, "costUsdMicros"),
+      latencyMs: sumOptionalMetric(modeRecords, "wallTimeMs"),
+    }),
+    compaction: sumCompactionEvidence(modeRecords),
+  });
+}
+
+function compareContextCompactionModes(
+  input: ContextCompactionEvaluationReportInput,
+  records: readonly EvaluationTrialRecord[],
+  modes: Readonly<Record<ContextCompactionMode, ContextCompactionModeReport>>,
+  baselineMode: ContextCompactionMode,
+  candidateMode: ContextCompactionMode,
+): Exclude<ContextCompactionComparison, { readonly verdict: "not_evaluated" }> {
+  const recordByKey = new Map(
+    records.map((record) => [trialBlockKey(record.taskId, record.seed, record.profileId), record]),
+  );
+  const blocks = input.schedule
+    .filter((trial) => trial.profileId === baselineMode)
+    .map((trial) => ({
+      baseline: recordByKey.get(trialBlockKey(trial.taskId, trial.seed, baselineMode)),
+      candidate: recordByKey.get(trialBlockKey(trial.taskId, trial.seed, candidateMode)),
+    }));
+  const complete = blocks.filter(
+    (block): block is { baseline: EvaluationTrialRecord; candidate: EvaluationTrialRecord } =>
+      block.baseline !== undefined && block.candidate !== undefined,
+  );
+  const comparable = complete.filter((block) => sameEnvironment(block.baseline, block.candidate));
+  const verifiedSuccessDelta =
+    comparable.length === 0
+      ? null
+      : successRate(comparable.map((block) => block.candidate)) -
+        successRate(comparable.map((block) => block.baseline));
+  const tokenPairs = comparable.flatMap((block) => {
+    const baseline = recordTotalTokens(block.baseline);
+    const candidate = recordTotalTokens(block.candidate);
+    return baseline === null || candidate === null ? [] : [{ baseline, candidate }];
+  });
+  const baselineTokens = sumNumbers(tokenPairs.map((pair) => pair.baseline));
+  const candidateTokens = sumNumbers(tokenPairs.map((pair) => pair.candidate));
+  const totalTokenChangeRate =
+    tokenPairs.length !== comparable.length || baselineTokens === 0
+      ? null
+      : (candidateTokens - baselineTokens) / baselineTokens;
+  const candidate = modes[candidateMode];
+  const retained =
+    candidate.constraintRetention.unavailable === 0 && candidate.committed === candidate.scheduled
+      ? candidate.constraintRetention.losses <= input.comparison.maxConstraintLosses
+      : null;
+  const successRegression =
+    verifiedSuccessDelta === null
+      ? null
+      : -verifiedSuccessDelta <= input.comparison.maxVerifiedSuccessRegression;
+  const tokenIncrease =
+    totalTokenChangeRate === null
+      ? null
+      : totalTokenChangeRate <= input.comparison.maxTotalTokenIncreaseRate;
+  const constraints = Object.freeze({ retained, successRegression, tokenIncrease });
+  let verdict: "passes" | "performance_failed" | "constraint_failed" | "insufficient_evidence";
+  if (retained === false) {
+    verdict = "constraint_failed";
+  } else if (
+    complete.length !== blocks.length ||
+    comparable.length !== blocks.length ||
+    comparable.length < input.comparison.minimumPairedTrials ||
+    Object.values(constraints).some((value) => value === null)
+  ) {
+    verdict = "insufficient_evidence";
+  } else if (successRegression === false || tokenIncrease === false) {
+    verdict = "performance_failed";
+  } else {
+    verdict = "passes";
+  }
+  return Object.freeze({
+    verdict,
+    scheduledPairs: blocks.length,
+    completePairs: complete.length,
+    comparablePairs: comparable.length,
+    verifiedSuccessDelta,
+    totalTokenChangeRate,
+    constraints,
+  });
+}
+
+function sumCompactionEvidence(
+  records: readonly EvaluationTrialRecord[],
+): ContextCompactionEvidenceTotals | null {
+  const evidence = records.flatMap((record) =>
+    record.metrics.contextCompaction === undefined ? [] : [record.metrics.contextCompaction],
+  );
+  if (evidence.length !== records.length) return null;
+  const sum = (key: keyof Omit<ContextCompactionEvaluationMetrics, "mode">) =>
+    sumNumbers(evidence.map((item) => item[key]));
+  return Object.freeze({
+    providerRequestBytes: sum("providerRequestBytes"),
+    providerRequestEstimatedTokens: sum("providerRequestEstimatedTokens"),
+    attempts: sum("attempts"),
+    accepted: sum("accepted"),
+    rejected: sum("rejected"),
+    interrupted: sum("interrupted"),
+    summaryInputTokens: sum("summaryInputTokens"),
+    summaryOutputTokens: sum("summaryOutputTokens"),
+    summaryCostUsdMicros: sum("summaryCostUsdMicros"),
+    artifactReopenAttempts: sum("artifactReopenAttempts"),
+    artifactReopenSuccesses: sum("artifactReopenSuccesses"),
+  });
+}
+
+function sumTotalTokens(records: readonly EvaluationTrialRecord[]): number | null {
+  const totals = records.map(recordTotalTokens);
+  return totals.some((value) => value === null)
+    ? null
+    : sumNumbers(totals.filter((value): value is number => value !== null));
+}
+
+function recordTotalTokens(record: EvaluationTrialRecord): number | null {
+  const input = record.metrics.inputTokens;
+  const output = record.metrics.outputTokens;
+  return input === null || output === null ? null : safeSum(input, output);
+}
+
+function sumOptionalMetric(
+  records: readonly EvaluationTrialRecord[],
+  metric: "costUsdMicros" | "wallTimeMs",
+): number | null {
+  const values = records.map((record) => record.metrics[metric]);
+  return values.some((value) => value === null)
+    ? null
+    : sumNumbers(values.filter((value): value is number => value !== null));
+}
+
+function successRate(records: readonly EvaluationTrialRecord[]): number {
+  return (
+    records.filter((record) => record.classification === "verified_success").length / records.length
+  );
+}
+
+function sameEnvironment(left: EvaluationTrialRecord, right: EvaluationTrialRecord): boolean {
+  return JSON.stringify(left.environment) === JSON.stringify(right.environment);
+}
+
+function trialBlockKey(taskId: string, seed: number, mode: string): string {
+  return `${taskId}\0${seed}\0${mode}`;
+}
+
+function sumNumbers(values: readonly number[]): number {
+  return values.reduce((total, value) => safeSum(total, value), 0);
+}
+
+function safeSum(left: number, right: number): number {
+  const total = left + right;
+  if (!Number.isSafeInteger(total) || total < 0) {
+    throw new ContextCompactionEvaluationAggregationError(
+      "evaluation metric total exceeds a non-negative safe integer",
+    );
+  }
+  return total;
 }
 
 function refineUnique(
