@@ -478,6 +478,8 @@ describe("compiled Flow process", () => {
         "run",
         workflowPath,
         "--detach",
+        "--work-profile",
+        "long",
         "--run-id",
         "detached-run",
         "--runs-dir",
@@ -507,7 +509,7 @@ describe("compiled Flow process", () => {
         cursor: 2,
         terminal: false,
         events: [
-          { sequence: 1, type: "run_started" },
+          { sequence: 1, type: "run_started", workProfile: "long" },
           { sequence: 2, type: "node_started" },
         ],
       });

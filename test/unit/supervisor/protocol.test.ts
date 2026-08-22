@@ -36,6 +36,7 @@ describe("supervisor protocol", () => {
           sourceName: "/workspace/workflow.yaml",
           workflowSource:
             "apiVersion: flow.synapti.ai/v1alpha1\nkind: Workflow\nmetadata: { id: detached }\nnodes: []\n",
+          workProfile: "long",
           cwd: "/workspace",
           projectRoot: "/workspace",
           protectedPaths: ["/workspace/.flow/runs", "/workspace/.flow"],
@@ -55,11 +56,35 @@ describe("supervisor protocol", () => {
         sourceName: "/workspace/workflow.yaml",
         workflowSource:
           "apiVersion: flow.synapti.ai/v1alpha1\nkind: Workflow\nmetadata: { id: detached }\nnodes: []\n",
+        workProfile: "long",
         cwd: "/workspace",
         projectRoot: "/workspace",
         protectedPaths: ["/workspace/.flow/runs", "/workspace/.flow"],
       },
     });
+  });
+
+  it("rejects an unknown detached work profile", () => {
+    expect(() =>
+      parseSupervisorRequestFrame(
+        encodeSupervisorMessage({
+          version: SUPERVISOR_PROTOCOL_VERSION,
+          requestId: randomUUID(),
+          command: {
+            type: "submit",
+            policyDigest: "a".repeat(64),
+            commandId: randomUUID(),
+            mode: "run",
+            runId: "detached-profile",
+            sourceName: "/workspace/workflow.yaml",
+            workflowSource:
+              "apiVersion: flow.synapti.ai/v1alpha1\nkind: Workflow\nmetadata: { id: detached }\nnodes: []\n",
+            workProfile: "PRIVATE_TURBO",
+            cwd: "/workspace",
+          },
+        }),
+      ),
+    ).toThrow(SupervisorProtocolError);
   });
 
   it("carries a validated immutable capability snapshot for detached run and resume", () => {

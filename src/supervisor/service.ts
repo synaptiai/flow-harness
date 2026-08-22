@@ -184,6 +184,7 @@ export class LocalSupervisorService {
           mode: command.mode,
           sourceName: command.sourceName,
           workflowSource: command.workflowSource,
+          ...(command.workProfile === undefined ? {} : { workProfile: command.workProfile }),
           ...(command.capabilitySnapshot === undefined
             ? {}
             : { capabilitySnapshot: command.capabilitySnapshot }),
@@ -309,6 +310,7 @@ export class LocalSupervisorService {
         mode: command.mode,
         sourceName: command.sourceName,
         workflowSource: command.workflowSource,
+        ...(command.workProfile === undefined ? {} : { workProfile: command.workProfile }),
         sandboxProfile: this.#sandboxProfile,
         ...(command.capabilitySnapshot === undefined
           ? {}
@@ -1560,6 +1562,7 @@ function journalMatchesJob(journal: SubmissionCommandRecord, job: JobRecord): bo
     journal.sourceName === job.sourceName &&
     journal.workflowSourceDigest ===
       createHash("sha256").update(job.workflowSource).digest("hex") &&
+    journal.workProfile === job.workProfile &&
     journal.capabilitySnapshotDigest === job.capabilitySnapshot?.digest &&
     journal.cwd === job.cwd &&
     journal.projectRoot === job.projectRoot &&
@@ -1574,6 +1577,7 @@ function sameSubmission(job: JobRecord, command: SubmitCommand): boolean {
     job.mode === command.mode &&
     job.sourceName === command.sourceName &&
     job.workflowSource === command.workflowSource &&
+    job.workProfile === command.workProfile &&
     job.capabilitySnapshot?.digest === command.capabilitySnapshot?.digest &&
     job.cwd === command.cwd &&
     job.projectRoot === command.projectRoot &&
@@ -1588,6 +1592,7 @@ function sameSubmitCommand(left: SubmitCommand, right: SubmitCommand): boolean {
     left.mode === right.mode &&
     left.sourceName === right.sourceName &&
     left.workflowSource === right.workflowSource &&
+    left.workProfile === right.workProfile &&
     left.capabilitySnapshot?.digest === right.capabilitySnapshot?.digest &&
     left.cwd === right.cwd &&
     left.projectRoot === right.projectRoot &&

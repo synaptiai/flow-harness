@@ -259,6 +259,7 @@ export async function executeWorkerJob(
         )(options.store.runsDirectory),
         signal: controller.signal,
         now,
+        ...(job.workProfile === undefined ? {} : { workProfile: job.workProfile }),
       } as const;
       const execution = (
         job.mode === "run"

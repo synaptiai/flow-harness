@@ -86,6 +86,56 @@ afterEach(async () => {
 });
 
 describe("detached run worker", () => {
+  it("records the exact detached work profile in the run ledger", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-worker-work-profile-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    const store = new LocalSupervisorStore(runsDirectory);
+    await store.initialize();
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "worker-work-profile",
+      mode: "run",
+      sourceName: join(directory, "profile.workflow.yaml"),
+      workflowSource: workflowSource(),
+      workProfile: "long",
+      cwd: directory,
+      token: "9".repeat(64),
+      createdAt: "2026-08-22T04:00:00.000Z",
+    });
+    await store.reserveSubmission(
+      job,
+      createActiveRunClaim({
+        runId: job.runId,
+        jobId: job.jobId,
+        workerId: job.workerId,
+        claimedAt: job.createdAt,
+      }),
+    );
+
+    const worker = executeWorkerJob(job.jobId, {
+      store,
+      executor: {
+        async execute(node) {
+          return { status: "succeeded", evidence: successfulCommandEvidence(node.id) };
+        },
+      },
+      effectReconciler: createProductionNodeEffectReconciler(),
+      createRunStore: (root) => new JsonlRunStore(root),
+      pid: 4339,
+    });
+    const descriptor = await waitForDescriptor(store, job.workerId);
+    await expect(requestWorker(descriptor, { type: "identify" })).resolves.toMatchObject({
+      ok: true,
+      result: { runId: job.runId, status: "running" },
+    });
+
+    await expect(worker).resolves.toBe(0);
+    const state = reduceRunEvents(await new JsonlRunStore(runsDirectory).read(job.runId));
+    expect(state.workProfile).toBe("long");
+  }, 15_000);
+
   it("forwards the project artifact store into detached execution", async () => {
     const directory = await mkdtemp(join(tmpdir(), "flow-worker-artifact-store-"));
     temporaryDirectories.push(directory);

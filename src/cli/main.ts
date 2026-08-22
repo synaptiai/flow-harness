@@ -274,7 +274,7 @@ import {
   WorkflowCompilationError,
   type WorkflowPackageReference,
 } from "../domain/workflow/compiler.js";
-import type { CompiledWorkflow, ThinkingLevel } from "../domain/workflow/types.js";
+import type { CompiledWorkflow, ThinkingLevel, WorkProfile } from "../domain/workflow/types.js";
 import {
   createFlowAcpAgent,
   type FlowAcpAgentRuntime,
@@ -563,8 +563,8 @@ Usage:
   flow eval tuning-evidence <evaluation-id> --output <path> [--evaluations-dir <path>]
   flow runtime prepare prime-agent
   flow validate <workflow.yaml|workflow:name@version|activation:workflow-id> [--goal-workspace] [--language-server <manifest.json>]
-  flow run <workflow.yaml|workflow:name@version|activation:workflow-id> [--goal-workspace] [--language-server <manifest.json>] [--detach] [--command-id <uuid>] [--run-id <id>] [--runs-dir <path>] [--cwd <path>]
-  flow resume <workflow.yaml|workflow:name@version|activation:workflow-id> --run-id <id> [--detach] [--command-id <uuid>] [--runs-dir <path>] [--cwd <path>]
+  flow run <workflow.yaml|workflow:name@version|activation:workflow-id> [--work-profile <fast|standard|long>] [--goal-workspace] [--language-server <manifest.json>] [--detach] [--command-id <uuid>] [--run-id <id>] [--runs-dir <path>] [--cwd <path>]
+  flow resume <workflow.yaml|workflow:name@version|activation:workflow-id> --run-id <id> [--work-profile <fast|standard|long>] [--detach] [--command-id <uuid>] [--runs-dir <path>] [--cwd <path>]
   flow approve <run-id> <request-id> --actor <label> [--runs-dir <path>]
   flow deny <run-id> <request-id> --actor <label> [--reason <text>] [--runs-dir <path>]
   flow cancel <run-id> --actor <label> [--reason <text>] [--command-id <uuid>] [--runs-dir <path>]
@@ -4971,10 +4971,12 @@ async function resumeCommand(
   overrides: Partial<CliDependencies>,
 ): Promise<number> {
   const detached = extractBooleanFlag(args, "--detach");
+  assertStringOptionAtMostOnce(detached.args, "work-profile");
   const { positionals, values } = parseCommandArgs(detached.args, {
     "command-id": { type: "string" },
     "run-id": { type: "string" },
     "runs-dir": { type: "string" },
+    "work-profile": { type: "string" },
     cwd: { type: "string" },
   });
   const workflowArgument = requireSinglePositional(
@@ -4988,6 +4990,10 @@ async function resumeCommand(
   // Durable history is read without claiming ownership so package bytes can be reconstructed
   // before recovery performs its authoritative claim and compatibility checks.
   const durableState = reduceRunEvents(await store.read(runId));
+  const requestedWorkProfile = parseWorkProfileOption(values["work-profile"]);
+  if (requestedWorkProfile !== undefined && requestedWorkProfile !== durableState.workProfile) {
+    throw new CliUsageError("--work-profile does not match the durable run profile");
+  }
   const capabilitySnapshot = durableState.capabilitySnapshot ?? undefined;
   const policyPackages = selectPolicyPackageSnapshot(capabilitySnapshot);
   const config = await dependencies.loadConfig({
@@ -5014,6 +5020,7 @@ async function resumeCommand(
         runId,
         sourceName: admitted.sourceName,
         workflowSource: admitted.source,
+        workProfile: durableState.workProfile,
         cwd: executionCwd,
         ...(config.projectRoot === null ? {} : { projectRoot: config.projectRoot }),
         protectedPaths,
@@ -5047,6 +5054,7 @@ async function resumeCommand(
       : { artifactStore: dependencies.createArtifactStore(config.projectRoot) }),
     ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
     ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
+    workProfile: durableState.workProfile,
   });
 
   io.stdout(JSON.stringify(projectPublicRunOutput(state), null, 2));
@@ -5123,11 +5131,13 @@ async function runCommand(
   const detached = extractBooleanFlag(args, "--detach");
   const goalWorkspace = extractBooleanFlag(detached.args, "--goal-workspace");
   assertStringOptionAtMostOnce(goalWorkspace.args, "language-server");
+  assertStringOptionAtMostOnce(goalWorkspace.args, "work-profile");
   const { positionals, values } = parseCommandArgs(goalWorkspace.args, {
     "command-id": { type: "string" },
     "language-server": { type: "string" },
     "run-id": { type: "string" },
     "runs-dir": { type: "string" },
+    "work-profile": { type: "string" },
     cwd: { type: "string" },
   });
   const workflowArgument = requireSinglePositional(
@@ -5138,6 +5148,8 @@ async function runCommand(
   const config = await dependencies.loadConfig({ cwd: dependencies.cwd });
   // Admission and immutable compilation precede run-store construction and executor invocation.
   const admitted = await admitWorkflowArgument(workflowArgument, config, dependencies);
+  const workProfile =
+    parseWorkProfileOption(values["work-profile"]) ?? admitted.workflow.workProfile ?? "standard";
   const supplementalSnapshot = await resolveWorkflowCapabilitySnapshot(
     admitted.workflow,
     config,
@@ -5179,6 +5191,7 @@ async function runCommand(
         runId,
         sourceName: admitted.sourceName,
         workflowSource: admitted.source,
+        workProfile,
         cwd: executionCwd,
         ...(config.projectRoot === null ? {} : { projectRoot: config.projectRoot }),
         protectedPaths,
@@ -5197,6 +5210,7 @@ async function runCommand(
     executionCwd,
     runsDirectory,
     protectedPaths,
+    workProfile,
     ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
   });
 
@@ -5212,6 +5226,7 @@ async function executeForegroundWorkflow(input: {
   readonly executionCwd: string;
   readonly runsDirectory: string;
   readonly protectedPaths: readonly string[];
+  readonly workProfile?: WorkProfile;
   readonly capabilitySnapshot?: CapabilitySnapshot;
 }): Promise<RunState> {
   return await runWorkflow(input.workflow, {
@@ -5239,6 +5254,7 @@ async function executeForegroundWorkflow(input: {
     ...(input.capabilitySnapshot === undefined
       ? {}
       : { capabilitySnapshot: input.capabilitySnapshot }),
+    ...(input.workProfile === undefined ? {} : { workProfile: input.workProfile }),
     runId: input.runId,
   });
 }
@@ -6280,6 +6296,13 @@ function parseSandboxProfileOption(value: string): FlowSandboxProfile {
     return value;
   }
   throw new CliUsageError("--sandbox-profile requires native or container");
+}
+
+function parseWorkProfileOption(value: string | undefined): WorkProfile | undefined {
+  if (value === undefined || value === "fast" || value === "standard" || value === "long") {
+    return value;
+  }
+  throw new CliUsageError("--work-profile requires fast, standard, or long");
 }
 
 function extractBooleanFlag(

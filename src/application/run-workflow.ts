@@ -212,6 +212,7 @@ async function runWorkflowInternal(
       {
         ...options,
         cwd: executionCwd,
+        workProfile,
         ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
       },
       runId,
@@ -285,6 +286,7 @@ async function resumeWorkflowWithRelocation(
     }
     const effectiveOptions: ResumeWorkflowOptions = {
       ...options,
+      workProfile: state.workProfile,
       ...(persistedCapabilitySnapshot === undefined
         ? {}
         : { capabilitySnapshot: persistedCapabilitySnapshot }),
@@ -1939,7 +1941,14 @@ async function validateRecoveredChildTree(
       throw new Error(`settled child node "${nodeId}" has no durable child link`);
     }
     const childState = reduceRunEvents(await store.read(evidence.childRunId));
-    validateRecoveredChildIdentity(link, node, state.runId, nodeState.attempt, childState);
+    validateRecoveredChildIdentity(
+      link,
+      node,
+      state.runId,
+      nodeState.attempt,
+      state.workProfile,
+      childState,
+    );
     if (!runStateIsTerminal(childState)) {
       throw new Error(`settled child run "${evidence.childRunId}" is not terminal`);
     }
@@ -3741,6 +3750,7 @@ async function executeChildNode(
     ...(context.capabilitySnapshot === undefined
       ? {}
       : { capabilitySnapshot: context.capabilitySnapshot }),
+    workProfile: options.workProfile ?? "standard",
     now,
     ...(context.signal === undefined ? {} : { signal: context.signal }),
     ...(options.agentCommandApprovalDecisions === undefined
@@ -3788,7 +3798,14 @@ async function recoverChildNode(
   }
 
   let childState = reduceRunEvents(await store.read(link.runId));
-  validateRecoveredChildIdentity(link, node, options.runId, attempt, childState);
+  validateRecoveredChildIdentity(
+    link,
+    node,
+    options.runId,
+    attempt,
+    options.workProfile ?? "standard",
+    childState,
+  );
   if (!runStateIsTerminal(childState)) {
     const workspace = await options.workspaceIsolator.reopen({
       workspaceId: link.runId,
@@ -3817,6 +3834,7 @@ async function recoverChildNode(
         ...(options.capabilitySnapshot === undefined
           ? {}
           : { capabilitySnapshot: options.capabilitySnapshot }),
+        workProfile: options.workProfile ?? "standard",
         ...(options.effectReconciler === undefined
           ? {}
           : { effectReconciler: options.effectReconciler }),
@@ -3859,6 +3877,7 @@ function validateRecoveredChildIdentity(
   node: CompiledChildNode,
   parentRunId: string,
   attempt: number,
+  expectedWorkProfile: WorkProfile,
   state: RunState,
 ): void {
   const provenance = state.executionWorkspace;
@@ -3866,6 +3885,7 @@ function validateRecoveredChildIdentity(
     state.runId !== link.runId ||
     state.workflowId !== link.workflowId ||
     state.workflowDigest !== link.workflowDigest ||
+    state.workProfile !== expectedWorkProfile ||
     !sameRunBudget(state.budget?.limits, node.child.workflow.budget) ||
     provenance === null ||
     provenance.parentRunId !== parentRunId ||
