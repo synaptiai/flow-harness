@@ -17,8 +17,8 @@
    error state, hashes, and the bounded means to reopen exact bytes.
 
 3. **Consider a summary** — Reference-plus-summary mode first applies deterministic reference
-   projection. It selects only a balanced closed history prefix and keeps the original objective,
-   current instructions, tools, authority, approvals, and effect state outside model-generated
+   projection. It selects only a balanced closed history prefix. The original objective,
+   instructions, tools, authority, approvals, and effect state remain outside model-generated
    summary authority.
 
 4. **Settle atomically** — Flow records the source head, selected range, bounds, output identity,
@@ -58,7 +58,7 @@
   pair.
 
 - Existing evaluation runs do not create model-session stores. A compaction experiment must own
-  those stores so it can verify lifecycle and surface evidence rather than infer behavior from
+  those stores so it can verify lifecycle and surface evidence. It must not infer behavior from
   aggregate token totals.
 
 ### Dependency and coupling analysis
@@ -79,18 +79,17 @@ compaction an activation candidate.
 
 ### Research and adversarial conclusions
 
-- DeepSeek Harness validates a separate compaction capability, reference-first pruning, durable
-  start/summary/end evidence, unmatched-start interruption detection, and tool-call/result-balanced
-  ranges. Flow adopts those mechanics but applies a stricter all-candidate rule: a rejected summary
-  cannot partially change the active surface.
+- DeepSeek Harness validates a separate compaction capability, reference-first pruning, and durable
+  lifecycle evidence. It detects unmatched starts and keeps tool call/result ranges balanced. Flow
+  adopts those mechanics with a stricter all-candidate rule. A rejected summary cannot partially
+  change the active surface.
 
 - Pi keeps full session entries and derives a smaller provider surface, but its default summary is
-  model-generated and ambient compaction is enabled by default. Flow must disable that path and own
-  every transformation it evaluates.
+  model-generated. Pi also enables ambient compaction by default. Flow must disable that path and
+  own every transformation it evaluates.
 
-- Anthropic context editing and compaction and OpenAI compact responses demonstrate provider-side
-  context reduction. Their native blocks remain provider-specific and cannot become Flow's
-  portable durable source.
+- Anthropic offers context editing and compaction. OpenAI offers compact responses. These
+  provider-native blocks cannot become Flow's portable durable source.
 
 - Longer context does not guarantee better retrieval. Position and distractors can reduce task
   accuracy. Evaluation therefore places protected constraints at early, middle, and late positions
@@ -125,8 +124,8 @@ compaction an activation candidate.
 
 - Pi ambient compaction is disabled for every Flow-owned session.
 
-- One experiment trial can accept at most one summary. It can make at most two generation attempts;
-  the second output limit must be smaller than the first.
+- One experiment trial can accept at most one summary. It can make at most two generation attempts.
+  The second output limit must be smaller than the first.
 
 - The original objective stays exact. Current system instructions, tools, authority, unresolved
   approvals, and effect uncertainty remain outside summary authority.
@@ -134,12 +133,11 @@ compaction an activation candidate.
 - Selected boundaries never orphan a tool call or result. The most recent complete request remains
   verbatim.
 
-- A summary is accepted only when its protected constraints pass deterministic verification and
-  its complete provider surface is smaller than the reference-only surface by the plan's declared
-  minimum.
+- A summary requires deterministic verification of its protected constraints. Its complete
+  provider surface must also meet the plan's minimum reduction.
 
-- Every task and seed forms a three-mode block. Seeds are a positive multiple of six so each task
-  runs all six mode orders exactly and every mode occupies every position equally.
+- Every task and seed forms a three-mode block. The seed count is a positive multiple of six. Each
+  task therefore runs all mode orders, with every mode in every position equally.
 
 - Hierarchical evidence first compares references with none. It compares summary with references
   only when the reference gate passes. Any protected-constraint loss rejects the relevant mode.

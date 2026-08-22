@@ -643,6 +643,20 @@ A terminal trial record retires the matching start record. If Flow restarts with
 start, it records one interrupted harness failure. It does not call the adapter again. A conflicting
 start record makes the evaluation store corrupt.
 
+The dedicated context compaction evaluator uses the same adapter-start rule. It stores evidence
+below `.flow/evaluations/context-compaction/<evaluation-id>/`. Resume re-admits the exact three-mode
+plan and continues only its missing schedule suffix. A recovered unresolved trial gets one
+`harness_failure` with unavailable metrics. Flow never converts missing compaction telemetry to
+zero. The dedicated ledger rejects an unterminated final record instead of repairing it.
+
+Inside a model session, `context_compaction_started` commits before summary provider I/O. Recovery
+settles an unmatched start as `interrupted` before it closes the interrupted model attempt. One
+smaller second generation can then reconstruct its source from durable primary events. It cannot
+continue provider-native state or trust an in-memory summary candidate.
+
+Read [Evaluate reference-first context compaction](guides/context-compaction.md) for the complete
+three-mode recovery and report contract.
+
 A native external resume also re-admits the complete external identity. Pi identity includes Node
 and both Pi package closures. OMP identity includes an attested Bun executable, both OMP package
 closures, runtime Markdown, and the dependency-resolution graph. A change to the driver, local

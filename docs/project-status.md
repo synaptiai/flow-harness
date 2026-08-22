@@ -34,6 +34,7 @@ on it.
 | Terminal, browser, and ACP presentation | Implemented | Implemented | Local operator surfaces only. |
 | Container command profile | Linux x64 only | Unavailable | Requires the prepared Prime image and exact Docker runtime profile. |
 | Prime Agent evaluation | Linux x64 only | Unavailable | Requires Docker API 1.51, cgroup v2, and the fixed host contract. |
+| Reference-first compaction evaluation | Implemented | Implemented | Provider-backed held-out experiment only. It cannot activate an ordinary runtime policy. |
 
 ## Implemented capability groups
 
@@ -51,6 +52,8 @@ on it.
   model-backed attempts.
 - Private, bounded, provider-neutral model-session records with write-ahead request identity,
   completed user/model/tool context, redacted inspection, and fresh-turn recovery context.
+- Reference-first projection and bounded summary lifecycle with a dedicated three-mode held-out
+  evaluator. Ordinary runs don't activate compaction.
 - Content-addressed oversized command output with immutable producer references, bounded same-run
   reads, operator inspection, shared retention, and exact-plan pruning.
 - Guided credential-free, zero-tool provider, and bounded provider-backed coding quick starts.
@@ -62,7 +65,8 @@ verification. Read [Complete the coding quick start](guides/coding-quickstart.md
 Read [Run and control workflows](guides/run-and-control.md),
 [Maintain a durable goal workspace](guides/goal-workspaces.md),
 [Retain and inspect command artifacts](guides/retained-artifacts.md),
-[Inspect and recover portable model sessions](guides/model-sessions.md), the
+[Inspect and recover portable model sessions](guides/model-sessions.md),
+[Evaluate reference-first context compaction](guides/context-compaction.md), the
 [Workflow specification](workflow-spec.md), and [Architecture](architecture.md).
 
 ### Semantic code context
@@ -120,6 +124,8 @@ Read [Use capability packages](guides/capability-packages.md) and
 ### Evaluation and adaptation
 
 - Paired Flow, native Pi, native OMP, and Prime Agent evaluation profiles.
+- Balanced no-compaction, reference-only, and reference-plus-summary evaluation with deterministic
+  protected-constraint evidence.
 - Private deterministic verification and constrained comparison reports.
 - Prompt, Agent Skill resource, Agent Skill package, static model-routing, and embedded
   child-specialist candidates, plus immutable per-agent supplemental-memory candidates and bounded
