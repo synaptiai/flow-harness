@@ -180,6 +180,14 @@ const sourceSchema = z
       });
     }
     const pairedTrials = plan.suite.tasks.length * plan.seeds.length;
+    const scheduledTrials = pairedTrials * CONTEXT_COMPACTION_EVALUATION_MODES.length;
+    if (!Number.isSafeInteger(scheduledTrials) || scheduledTrials > 4_096) {
+      context.addIssue({
+        code: "custom",
+        path: ["seeds"],
+        message: "context compaction schedule must not exceed 4096 trials",
+      });
+    }
     if (plan.comparison.minimumPairedTrials > pairedTrials) {
       context.addIssue({
         code: "custom",
@@ -192,6 +200,10 @@ const sourceSchema = z
 export type ContextCompactionEvaluationPlanSource = z.infer<typeof sourceSchema>;
 export type ContextCompactionEvaluationTaskSource =
   ContextCompactionEvaluationPlanSource["suite"]["tasks"][number];
+export interface ContextCompactionEvaluationScheduleItem
+  extends Omit<EvaluationTrialScheduleItem, "profileId"> {
+  readonly profileId: ContextCompactionMode;
+}
 
 export type ContextCompactionEvaluationPlanErrorCode =
   | "invalid_schema"
@@ -268,7 +280,7 @@ export function createContextCompactionEvaluationSchedule(
   planDigest: string,
   taskIds: readonly string[],
   seeds: readonly number[],
-): readonly EvaluationTrialScheduleItem[] {
+): readonly ContextCompactionEvaluationScheduleItem[] {
   if (!sha256Schema.safeParse(planDigest).success) {
     throw new ContextCompactionEvaluationPlanError(
       "invalid_schema",
@@ -292,7 +304,15 @@ export function createContextCompactionEvaluationSchedule(
       "seeds must be unique and have a count that is a positive multiple of six",
     );
   }
-  const schedule: EvaluationTrialScheduleItem[] = [];
+  const scheduledTrials =
+    taskIds.length * seeds.length * CONTEXT_COMPACTION_EVALUATION_MODES.length;
+  if (!Number.isSafeInteger(scheduledTrials) || scheduledTrials > 4_096) {
+    throw new ContextCompactionEvaluationPlanError(
+      "limit_exceeded",
+      "context compaction schedule must not exceed 4096 trials",
+    );
+  }
+  const schedule: ContextCompactionEvaluationScheduleItem[] = [];
   for (const taskId of taskIds) {
     identifierSchema.parse(taskId);
     for (const [seedIndex, seed] of seeds.entries()) {
