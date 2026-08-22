@@ -74,6 +74,7 @@ import {
   type VerifierPackageRequirement,
   type WorkflowPackageRequirement,
 } from "../domain/run/events.js";
+import { createModelWorkProfileContext } from "../domain/run/work-profile.js";
 import {
   projectCompiledControlGraph,
   workflowRequiresControlGraph,
@@ -95,6 +96,7 @@ import type {
   CompiledVerifierNode,
   CompiledWorkflow,
   EvidenceSourceField,
+  WorkProfile,
 } from "../domain/workflow/types.js";
 import { MAX_OPTIMIZATION_DELTA_EVIDENCE_BYTES } from "../domain/workflow/types.js";
 import type { ArtifactStore } from "./artifact-store.js";
@@ -133,6 +135,7 @@ export interface RunWorkflowOptions {
   readonly signal?: AbortSignal;
   readonly agentCommandApprovalDecisions?: AgentCommandApprovalDecisionSource;
   readonly artifactStore?: ArtifactStore;
+  readonly workProfile?: WorkProfile;
 }
 
 export interface ResumeWorkflowOptions extends Omit<RunWorkflowOptions, "runId" | "store"> {
@@ -168,6 +171,7 @@ async function runWorkflowInternal(
   const runId = options.runId ?? randomUUID();
   const now = options.now ?? (() => new Date());
   const executionCwd = resolve(options.cwd);
+  const workProfile = options.workProfile ?? workflow.workProfile ?? "standard";
   return await releaseAfter(options.store, runId, async () => {
     const approvalRequirements = commandApprovalRequirements(workflow);
     const agentCommandApprovalRequirements = workflowAgentCommandApprovalRequirements(workflow);
@@ -183,6 +187,7 @@ async function runWorkflowInternal(
       nodeIds: workflow.nodes.map((node) => node.id),
       workflowApiVersion: workflow.apiVersion,
       workflowDigest: calculateWorkflowDigest(workflow),
+      workProfile,
       ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
       executionCwd,
       ...(options.executionWorkspace === undefined
@@ -208,6 +213,7 @@ async function runWorkflowInternal(
       {
         ...options,
         cwd: executionCwd,
+        workProfile,
         ...(capabilitySnapshot === undefined ? {} : { capabilitySnapshot }),
       },
       runId,
@@ -273,8 +279,15 @@ async function resumeWorkflowWithRelocation(
         `run "${options.runId}" capability snapshot does not match durable history`,
       );
     }
+    if (options.workProfile !== undefined && options.workProfile !== state.workProfile) {
+      throw new RunRecoveryError(
+        "workflow_mismatch",
+        `run "${options.runId}" work profile does not match durable history`,
+      );
+    }
     const effectiveOptions: ResumeWorkflowOptions = {
       ...options,
+      workProfile: state.workProfile,
       ...(persistedCapabilitySnapshot === undefined
         ? {}
         : { capabilitySnapshot: persistedCapabilitySnapshot }),
@@ -601,6 +614,7 @@ async function continueWorkflow(
       }
     }
 
+    const modelWorkProfile = createModelWorkProfileContext(state.workProfile, state.budget);
     const settlements = await Promise.all(
       admitted.map(
         async ({
@@ -626,6 +640,9 @@ async function continueWorkflow(
             executionNode.type === "agent"
               ? goalWorkspaceForAgent(options.capabilitySnapshot)
               : undefined;
+          const modelBacked =
+            executionNode.type === "agent" ||
+            (executionNode.type === "verifier" && executionNode.verifier.kind === "model");
           const outcome = abortedBeforeExecution
             ? executionNode.type === "child"
               ? childFailure("child_cancelled_before_start", abortReason(options.signal))
@@ -658,6 +675,7 @@ async function continueWorkflow(
                     ...(verifierPackage === undefined ? {} : { verifierPackage }),
                     ...(agentGoalWorkspace === undefined ? {} : { agentGoalWorkspace }),
                     ...(agentSupplementalMemory === undefined ? {} : { agentSupplementalMemory }),
+                    ...(modelBacked ? { modelWorkProfile } : {}),
                     ...(options.signal === undefined ? {} : { signal: options.signal }),
                   },
                   options,
@@ -1929,7 +1947,14 @@ async function validateRecoveredChildTree(
       throw new Error(`settled child node "${nodeId}" has no durable child link`);
     }
     const childState = reduceRunEvents(await store.read(evidence.childRunId));
-    validateRecoveredChildIdentity(link, node, state.runId, nodeState.attempt, childState);
+    validateRecoveredChildIdentity(
+      link,
+      node,
+      state.runId,
+      nodeState.attempt,
+      state.workProfile,
+      childState,
+    );
     if (!runStateIsTerminal(childState)) {
       throw new Error(`settled child run "${evidence.childRunId}" is not terminal`);
     }
@@ -3731,6 +3756,7 @@ async function executeChildNode(
     ...(context.capabilitySnapshot === undefined
       ? {}
       : { capabilitySnapshot: context.capabilitySnapshot }),
+    workProfile: options.workProfile ?? "standard",
     now,
     ...(context.signal === undefined ? {} : { signal: context.signal }),
     ...(options.agentCommandApprovalDecisions === undefined
@@ -3778,7 +3804,14 @@ async function recoverChildNode(
   }
 
   let childState = reduceRunEvents(await store.read(link.runId));
-  validateRecoveredChildIdentity(link, node, options.runId, attempt, childState);
+  validateRecoveredChildIdentity(
+    link,
+    node,
+    options.runId,
+    attempt,
+    options.workProfile ?? "standard",
+    childState,
+  );
   if (!runStateIsTerminal(childState)) {
     const workspace = await options.workspaceIsolator.reopen({
       workspaceId: link.runId,
@@ -3807,6 +3840,7 @@ async function recoverChildNode(
         ...(options.capabilitySnapshot === undefined
           ? {}
           : { capabilitySnapshot: options.capabilitySnapshot }),
+        workProfile: options.workProfile ?? "standard",
         ...(options.effectReconciler === undefined
           ? {}
           : { effectReconciler: options.effectReconciler }),
@@ -3849,6 +3883,7 @@ function validateRecoveredChildIdentity(
   node: CompiledChildNode,
   parentRunId: string,
   attempt: number,
+  expectedWorkProfile: WorkProfile,
   state: RunState,
 ): void {
   const provenance = state.executionWorkspace;
@@ -3856,6 +3891,7 @@ function validateRecoveredChildIdentity(
     state.runId !== link.runId ||
     state.workflowId !== link.workflowId ||
     state.workflowDigest !== link.workflowDigest ||
+    state.workProfile !== expectedWorkProfile ||
     !sameRunBudget(state.budget?.limits, node.child.workflow.budget) ||
     provenance === null ||
     provenance.parentRunId !== parentRunId ||

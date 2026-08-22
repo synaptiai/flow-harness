@@ -1395,6 +1395,7 @@ function freezeWorkflow(source: WorkflowSource, context: CompilationContext): Co
       ? {}
       : { description: source.metadata.description }),
     ...(context.sourcePackage === undefined ? {} : { sourcePackage: context.sourcePackage }),
+    ...(source.workProfile === undefined ? {} : { workProfile: source.workProfile }),
     ...(source.goal === undefined ? {} : { goal: freezeGoal(source.goal) }),
     ...(source.budget === undefined ? {} : { budget: freezeBudget(source.budget) }),
     ...(source.concurrency === undefined

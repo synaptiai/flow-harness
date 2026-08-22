@@ -491,6 +491,47 @@ causal dependencies for operations that cannot safely overlap or move the work i
 nodes. It applies inside one active bounded-loop body, but iterations remain sequential. Dynamic
 fan-out and per-target conflict inference are not part of this contract.
 
+## Work profile
+
+`workProfile` is an optional strict workflow preference:
+
+```yaml
+workProfile: standard
+```
+
+The value must be `fast`, `standard`, or `long`. An omitted field preserves the legacy compiled
+workflow shape and digest. A new run resolves one effective value in this order:
+
+1. Use the explicit `flow run --work-profile <value>` selection.
+2. Otherwise, use the workflow `workProfile` preference.
+3. Otherwise, use `standard`.
+
+Flow writes the effective value to `run_started` before it starts model, tool, supervisor-worker,
+or child work. Detached submission and worker records bind the same value. Every child run inherits
+the root value, even when the embedded child workflow declares another preference.
+
+Legacy `run_started` events can omit the field and replay as `standard`. Resume accepts an omitted
+selection or the exact durable value. A different explicit selection fails before new work. Replay
+rejects an unknown persisted value. Recovery validates the value across parent and child ledgers.
+
+After Flow commits the current scheduling wave's `node_started` events, it creates one immutable
+model context with the effective profile and these five remaining values:
+
+- node starts
+- model tokens
+- provider-reported cost in micro-USD
+- active execution milliseconds
+- retained-artifact bytes
+
+Each value is a non-negative safe integer or `unbounded`. `unbounded` means that the compiled budget
+does not declare that limit. Concurrent model attempts receive the same post-admission snapshot.
+The snapshot does not estimate unsettled provider usage.
+
+The context is pacing guidance only. It cannot change the compiled budget, scheduler, concurrency,
+timeout, policy, tools, approvals, model, reasoning settings, accounting, or terminal state. Flow
+does not expose it as writable ACP session configuration. A provider response or capability package
+cannot replace the durable profile.
+
 ## Run budget
 
 `budget` is an optional strict run-wide contract:
@@ -1381,7 +1422,7 @@ Each run is stored at:
 
 Events have a version, contiguous sequence number, timestamp, run identity, workflow identity,
 workflow API version, and SHA-256 digest of the compiled workflow. New `run_started` events also
-capture the normalized execution directory, command approval requirements, agent-command approval
+capture the effective work profile, normalized execution directory, command approval requirements, agent-command approval
 requirements, agent recovery
 requirements, declared concurrency, verifier declarations, the bounded control-graph projection, and exact compiled budget
 when declared. Runs with an effective maximum above one must persist the graph even without control

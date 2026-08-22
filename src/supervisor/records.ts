@@ -15,6 +15,7 @@ import {
   MAX_ACTIVE_WORKERS,
   MAX_QUEUED_JOBS,
 } from "../domain/config/resolver.js";
+import { WORK_PROFILES, type WorkProfile } from "../domain/workflow/types.js";
 import { SUPERVISOR_PROTOCOL_VERSION } from "./protocol.js";
 
 const uuidSchema = z.uuid();
@@ -61,6 +62,7 @@ export interface JobDigestInput {
   readonly mode: "run" | "resume";
   readonly sourceName: string;
   readonly workflowSource: string;
+  readonly workProfile?: WorkProfile | undefined;
   readonly sandboxProfile?: FlowSandboxProfile | undefined;
   readonly cwd: string;
   readonly projectRoot?: string | undefined;
@@ -83,6 +85,7 @@ export interface SubmissionCommandIdentity {
   readonly mode: "run" | "resume";
   readonly sourceName: string;
   readonly workflowSourceDigest: string;
+  readonly workProfile?: WorkProfile | undefined;
   readonly capabilitySnapshotDigest?: string | undefined;
   readonly cwd: string;
   readonly projectRoot?: string | undefined;
@@ -184,6 +187,7 @@ const jobRecordShape = {
   mode: z.enum(["run", "resume"]),
   sourceName: workflowSourceNameSchema,
   workflowSource: z.string().min(1).max(20_000_000),
+  workProfile: z.enum(WORK_PROFILES).optional(),
   sandboxProfile: z.enum(["native", "container"]).optional(),
   cwd: absolutePathSchema,
   projectRoot: absolutePathSchema.optional(),
@@ -393,6 +397,7 @@ const submissionCommandBaseShape = {
   mode: z.enum(["run", "resume"]),
   sourceName: workflowSourceNameSchema,
   workflowSourceDigest: sha256Schema,
+  workProfile: z.enum(WORK_PROFILES).optional(),
   capabilitySnapshotDigest: sha256Schema.optional(),
   cwd: absolutePathSchema,
   projectRoot: absolutePathSchema.optional(),
@@ -476,6 +481,7 @@ export interface CreateSubmissionCommandInput {
   readonly mode: "run" | "resume";
   readonly sourceName: string;
   readonly workflowSource: string;
+  readonly workProfile?: WorkProfile | undefined;
   readonly capabilitySnapshot?: CapabilitySnapshot | undefined;
   readonly cwd: string;
   readonly projectRoot?: string | undefined;
@@ -502,6 +508,7 @@ export function calculateJobDigest(record: JobDigestInput | JobRecord): string {
     mode: record.mode,
     sourceName: record.sourceName,
     workflowSource: record.workflowSource,
+    ...(record.workProfile === undefined ? {} : { workProfile: record.workProfile }),
     ...(record.sandboxProfile === undefined ? {} : { sandboxProfile: record.sandboxProfile }),
     cwd: record.cwd,
     ...(record.projectRoot === undefined ? {} : { projectRoot: record.projectRoot }),
@@ -616,6 +623,7 @@ export function createSubmissionCommandRecord(
     mode: input.mode,
     sourceName: input.sourceName,
     workflowSourceDigest: createHash("sha256").update(input.workflowSource).digest("hex"),
+    ...(input.workProfile === undefined ? {} : { workProfile: input.workProfile }),
     ...(input.capabilitySnapshot === undefined
       ? {}
       : { capabilitySnapshotDigest: input.capabilitySnapshot.digest }),
@@ -729,6 +737,7 @@ export function calculateSubmissionCommandDigest(input: SubmissionCommandIdentit
     mode: input.mode,
     sourceName: input.sourceName,
     workflowSourceDigest: input.workflowSourceDigest,
+    ...(input.workProfile === undefined ? {} : { workProfile: input.workProfile }),
     ...(input.capabilitySnapshotDigest === undefined
       ? {}
       : { capabilitySnapshotDigest: input.capabilitySnapshotDigest }),
@@ -789,6 +798,7 @@ function submissionCommandBase(record: SubmissionCommandRecord): SubmissionComma
     mode: record.mode,
     sourceName: record.sourceName,
     workflowSourceDigest: record.workflowSourceDigest,
+    ...(record.workProfile === undefined ? {} : { workProfile: record.workProfile }),
     ...(record.capabilitySnapshotDigest === undefined
       ? {}
       : { capabilitySnapshotDigest: record.capabilitySnapshotDigest }),

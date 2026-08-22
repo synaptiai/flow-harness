@@ -107,6 +107,8 @@ import {
   MAX_OPTIMIZATION_CANDIDATES,
   MAX_OPTIMIZATION_DELTA_EVIDENCE_BYTES,
   MAX_RESULT_VALUE_BYTES,
+  WORK_PROFILES,
+  type WorkProfile,
 } from "../workflow/types.js";
 import {
   type AgentModelUsage,
@@ -302,6 +304,7 @@ export interface RunStartedEvent extends RunEventBase {
   readonly nodeIds: readonly string[];
   readonly workflowApiVersion: "flow.synapti.ai/v1alpha1";
   readonly workflowDigest: string;
+  readonly workProfile?: WorkProfile;
   readonly capabilitySnapshot?: CapabilitySnapshot;
   readonly capabilityRequirements?: readonly AgentCapabilityRequirement[];
   readonly verifierPackageRequirements?: readonly VerifierPackageRequirement[];
@@ -1400,6 +1403,7 @@ export interface RunState {
   readonly workflowId: string;
   readonly workflowApiVersion: "flow.synapti.ai/v1alpha1";
   readonly workflowDigest: string;
+  readonly workProfile: WorkProfile;
   readonly capabilitySnapshot: CapabilitySnapshot | null;
   readonly capabilityRequirements: Readonly<Record<string, readonly string[]>>;
   readonly verifierPackageRequirements: Readonly<
@@ -2479,6 +2483,7 @@ export const runEventSchema = z.discriminatedUnion("type", [
         .refine((items) => new Set(items).size === items.length, "node ids must be unique"),
       workflowApiVersion: z.literal("flow.synapti.ai/v1alpha1"),
       workflowDigest: sha256Schema,
+      workProfile: z.enum(WORK_PROFILES).optional(),
       capabilitySnapshot: persistedCapabilitySnapshotSchema.optional(),
       capabilityRequirements: z
         .array(
@@ -3699,6 +3704,7 @@ export function appendRunEvent(
       workflowId: event.workflowId,
       workflowApiVersion: event.workflowApiVersion,
       workflowDigest: event.workflowDigest,
+      workProfile: event.workProfile ?? "standard",
       capabilitySnapshot:
         event.capabilitySnapshot === undefined
           ? null
@@ -6018,6 +6024,7 @@ export function appendRunEvent(
     workflowId: currentState.workflowId,
     workflowApiVersion: currentState.workflowApiVersion,
     workflowDigest: currentState.workflowDigest,
+    workProfile: currentState.workProfile,
     capabilitySnapshot: currentState.capabilitySnapshot,
     capabilityRequirements: currentState.capabilityRequirements,
     verifierPackageRequirements: currentState.verifierPackageRequirements,

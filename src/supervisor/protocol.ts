@@ -6,6 +6,7 @@ import { persistedCapabilitySnapshotSchema } from "../domain/capability/agent-sk
 import { parseWorkflowPackageLocator } from "../domain/capability/workflow-packages.js";
 import { MAX_ACTIVE_WORKERS, MAX_QUEUED_JOBS } from "../domain/config/resolver.js";
 import { type RunEvent, type RunStatus, runEventSchema } from "../domain/run/events.js";
+import { WORK_PROFILES } from "../domain/workflow/types.js";
 
 export const SUPERVISOR_PROTOCOL_VERSION = 2 as const;
 export const MAX_SUPERVISOR_FRAME_BYTES = 40 * 1024 * 1024;
@@ -58,6 +59,7 @@ const submitCommandSchema = z
     runId: runIdSchema,
     sourceName: workflowSourceNameSchema,
     workflowSource: z.string().min(1).max(MAX_WORKFLOW_SOURCE_CHARACTERS),
+    workProfile: z.enum(WORK_PROFILES).optional(),
     cwd: absolutePathSchema,
     projectRoot: absolutePathSchema.optional(),
     protectedPaths: protectedPathsSchema.optional(),

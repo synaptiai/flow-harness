@@ -1,7 +1,7 @@
 # Run and control workflows
 
-This guide covers attached and detached execution, observation, approvals, budgets, cancellation,
-and recovery entry points.
+This guide covers attached and detached execution, work profiles, observation, approvals, budgets,
+cancellation, and recovery entry points.
 
 Complete [Getting started](../getting-started.md) before using these commands.
 
@@ -34,6 +34,58 @@ the same revision. Resume reads it from durable run history and doesn't accept a
 
 Read [Maintain a durable goal workspace](goal-workspaces.md) for initialization, safe updates,
 limits, evidence references, privacy, and recovery.
+
+## Select a work profile
+
+A work profile gives each model-backed attempt a pacing posture. A workflow author can declare one
+of three values:
+
+```yaml
+workProfile: standard
+```
+
+- `fast` prioritizes the shortest adequate path and early decisive evidence.
+- `standard` balances completeness, verification, and resource use.
+- `long` uses broader investigation and deeper verification within existing authority.
+
+If the workflow omits `workProfile`, Flow uses `standard`. For a new run, you can override the
+workflow preference:
+
+```sh
+flow run examples/implement-and-verify.workflow.yaml --work-profile long --run-id profiled-run
+```
+
+Flow records the effective value before it starts a node. Detached workers and child runs inherit
+the same value. `flow inspect` and `flow events` include it in public output.
+
+Before each model-backed agent or verifier attempt, Flow supplies the profile and a point-in-time
+view of five remaining resource dimensions:
+
+- starts
+- model tokens
+- reported cost
+- active execution time
+- retained-artifact capacity
+
+A value of `unbounded` means that the workflow has no Flow limit for that dimension. It does not
+grant provider capacity.
+
+Profiles provide guidance only. They don't change numeric budgets, scheduling, concurrency,
+timeouts, tools, approvals, policy, model selection, reasoning settings, accounting, or completion.
+A model, provider adapter, capability package, or Agent Client Protocol (ACP) peer cannot change the
+durable value.
+
+Resume normally omits the option and reuses the ledger value:
+
+```sh
+flow resume <workflow.yaml> --run-id profiled-run
+```
+
+Automation can repeat the exact durable value with `--work-profile`. A different value fails before
+new work or run mutation.
+
+Read the [Workflow specification](../workflow-spec.md#work-profile) for the normative source,
+precedence, replay, and context contracts.
 
 ## Run in the background
 

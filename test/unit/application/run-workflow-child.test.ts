@@ -766,6 +766,54 @@ describe("child workflow execution", () => {
     ).rejects.toMatchObject({ code: "child_recovery_ineligible" });
   });
 
+  it("rejects a settled child work profile that diverges from its parent", async () => {
+    const store = new TreeMemoryStore();
+    const isolator = new MemoryWorkspaceIsolator();
+    const executor = new ChildCommandExecutor();
+    const workflow = compileWorkflowText(parentWorkflow());
+    const runId = "parent-forged-child-work-profile";
+    store.rejectNextParentSuccess = true;
+
+    await expect(
+      runWorkflow(workflow, {
+        runId,
+        cwd: "/workspace",
+        protectedPaths: ["/state/runs"],
+        store,
+        executor,
+        workspaceIsolator: isolator,
+        workProfile: "long",
+        now: clock(),
+      }),
+    ).rejects.toThrow(/simulated parent success crash/i);
+
+    const childRunId = calculateChildRunId(runId, "delegate", 1);
+    const childEvents = store.events.get(childRunId);
+    if (childEvents === undefined) {
+      throw new Error("expected child events");
+    }
+    store.events.set(
+      childRunId,
+      childEvents.map((event) =>
+        event.type === "run_started" ? { ...event, workProfile: "fast" } : event,
+      ),
+    );
+
+    await expect(
+      resumeWorkflow(workflow, {
+        runId,
+        cwd: "/workspace",
+        protectedPaths: ["/state/runs"],
+        store,
+        executor,
+        workspaceIsolator: isolator,
+        workProfile: "long",
+        now: clock(20),
+      }),
+    ).rejects.toMatchObject({ code: "child_recovery_ineligible" });
+    expect(executor.calls).toHaveLength(1);
+  });
+
   it("recursively rejects a forged grandchild total hidden by a matching parent projection", async () => {
     const store = new TreeMemoryStore();
     const isolator = new MemoryWorkspaceIsolator();

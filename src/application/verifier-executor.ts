@@ -7,6 +7,7 @@ import type {
   VerifierEvidence,
   VerifierVerdict,
 } from "../domain/run/events.js";
+import { MAX_MODEL_WORK_PROFILE_PROMPT_BYTES } from "../domain/run/work-profile.js";
 import { parseVerifierVerdictJson } from "../domain/verification/verdict.js";
 import type {
   CompiledAgentNode,
@@ -126,7 +127,9 @@ export class VerifierNodeExecutor implements VerifierExecutor {
     const inputBytes =
       rendered === null
         ? 0
-        : Buffer.byteLength(VERIFIER_SYSTEM_PROMPT, "utf8") + Buffer.byteLength(rendered, "utf8");
+        : Buffer.byteLength(VERIFIER_SYSTEM_PROMPT, "utf8") +
+          Buffer.byteLength(rendered, "utf8") +
+          (context.modelWorkProfile === undefined ? 0 : MAX_MODEL_WORK_PROFILE_PROMPT_BYTES);
     const preflightError =
       sourceError ??
       (inputBytes > MAX_VERIFIER_INPUT_BYTES

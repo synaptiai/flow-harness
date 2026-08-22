@@ -1,13 +1,6 @@
 import { createHash } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
-
-import {
-  RunCancellation,
-  RunWorkflowAbortedError,
-  resumeWorkflow,
-  runWorkflow,
-} from "../../../src/application/run-workflow.js";
 import type {
   NodeExecutionContext,
   NodeExecutionOutcome,
@@ -15,6 +8,12 @@ import type {
   RecoverableRunEventStore,
   RunEventStore,
 } from "../../../src/application/ports.js";
+import {
+  RunCancellation,
+  RunWorkflowAbortedError,
+  resumeWorkflow,
+  runWorkflow,
+} from "../../../src/application/run-workflow.js";
 import type { RunEvent } from "../../../src/domain/run/events.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import type { CompiledNode } from "../../../src/domain/workflow/types.js";
@@ -44,6 +43,58 @@ describe("runWorkflow", () => {
       "node_succeeded",
       "run_succeeded",
     ]);
+  });
+
+  it("records standard as the deterministic profile for an unprofiled workflow", async () => {
+    const store = new MemoryRunStore();
+    const executor = executorFrom(async (node) => successfulOutcome(node.id));
+
+    const state = await runWorkflow(threeNodeWorkflow(), options(store, executor, "run-standard"));
+
+    expect(store.events[0]).toMatchObject({ type: "run_started", workProfile: "standard" });
+    expect(state.workProfile).toBe("standard");
+  });
+
+  it("uses the workflow profile when the operator does not select one", async () => {
+    const store = new MemoryRunStore();
+    const executor = executorFrom(async (node) => successfulOutcome(node.id));
+    const workflow = compileWorkflowText(`
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: fast-workflow }
+workProfile: fast
+nodes:
+  - id: verify
+    type: command
+    command: { executable: node, args: [--version] }
+`);
+
+    const state = await runWorkflow(workflow, options(store, executor, "run-fast"));
+
+    expect(state.workProfile).toBe("fast");
+  });
+
+  it("lets an explicit operator profile override the workflow preference for a new run", async () => {
+    const store = new MemoryRunStore();
+    const executor = executorFrom(async (node) => successfulOutcome(node.id));
+    const workflow = compileWorkflowText(`
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: overridden-workflow }
+workProfile: fast
+nodes:
+  - id: verify
+    type: command
+    command: { executable: node, args: [--version] }
+`);
+
+    const state = await runWorkflow(workflow, {
+      ...options(store, executor, "run-overridden"),
+      workProfile: "long",
+    });
+
+    expect(store.events[0]).toMatchObject({ type: "run_started", workProfile: "long" });
+    expect(state.workProfile).toBe("long");
   });
 
   it("ignores an executor-supplied next node and retains graph authority", async () => {
@@ -420,6 +471,28 @@ nodes:
       "node_succeeded",
       "run_succeeded",
     ]);
+    expect(store.releaseCalls).toEqual(["run-resume"]);
+  });
+
+  it("rejects a conflicting explicit recovery profile before new work", async () => {
+    const workflow = threeNodeWorkflow();
+    const initial = eventsThroughFirstSuccess(workflow);
+    initial[0] = { ...initial[0], workProfile: "long" } as RunEvent;
+    const store = new MemoryRecoverableRunStore(initial);
+    const calls: string[] = [];
+    const executor = executorFrom(async (node) => {
+      calls.push(node.id);
+      return successfulOutcome(node.id);
+    });
+
+    await expect(
+      resumeWorkflow(workflow, {
+        ...resumeOptions(store, executor, "run-resume"),
+        workProfile: "fast",
+      }),
+    ).rejects.toMatchObject({ code: "workflow_mismatch" });
+    expect(calls).toEqual([]);
+    expect(store.events).toEqual(initial);
     expect(store.releaseCalls).toEqual(["run-resume"]);
   });
 

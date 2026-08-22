@@ -33,6 +33,7 @@ describe("supervisor durable records", () => {
       mode: "run",
       sourceName: "/workspace/workflow.yaml",
       workflowSource: "kind: Workflow\n",
+      workProfile: "long",
       cwd: "/workspace",
       projectRoot: "/workspace",
       protectedPaths: ["/workspace/.flow/runs", "/workspace/.flow"],
@@ -95,6 +96,34 @@ describe("supervisor durable records", () => {
     expect(calculateJobDigest({ ...container, sandboxProfile: undefined })).not.toBe(
       container.digest,
     );
+  });
+
+  it("binds a selected work profile while retaining legacy job records", () => {
+    const legacy = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "legacy-profile-job",
+      mode: "run",
+      sourceName: "/workspace/workflow.yaml",
+      workflowSource: "kind: Workflow\n",
+      cwd: "/workspace",
+      token: "7".repeat(64),
+      createdAt: "2026-08-22T04:00:00.000Z",
+    });
+    const selected = createJobRecord({
+      ...legacy,
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "selected-profile-job",
+      workProfile: "long",
+      token: "8".repeat(64),
+    });
+
+    expect(legacy).not.toHaveProperty("workProfile");
+    expect(parseJobRecord(structuredClone(legacy))).toEqual(legacy);
+    expect(selected.workProfile).toBe("long");
+    expect(() => parseJobRecord({ ...selected, workProfile: "fast" })).toThrow(/digest/i);
+    expect(calculateJobDigest({ ...selected, workProfile: undefined })).not.toBe(selected.digest);
   });
 
   it("binds detached capability bytes into the immutable job digest", () => {
@@ -305,6 +334,9 @@ describe("supervisor durable records", () => {
     });
     expect(parseSupervisorCommandRecord(completed)).toEqual(completed);
     expect(() => parseSupervisorCommandRecord({ ...completed, cwd: "/other" })).toThrow(/digest/i);
+    expect(() => parseSupervisorCommandRecord({ ...completed, workProfile: "fast" })).toThrow(
+      /digest/i,
+    );
   });
 
   it("binds a supervisor descriptor to one effective admission policy", () => {

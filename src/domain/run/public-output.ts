@@ -11,7 +11,7 @@ export function projectPublicRunOutput(value: unknown): unknown {
   if (isRunState(value)) {
     return projectRunState(value);
   }
-  return Object.fromEntries(
+  const projected = Object.fromEntries(
     Object.entries(value).map(([key, item]) => [
       key,
       key === "capabilitySnapshot" && isRecord(item)
@@ -19,6 +19,9 @@ export function projectPublicRunOutput(value: unknown): unknown {
         : projectPublicRunOutput(item),
     ]),
   );
+  return value.type === "run_started" && value.workProfile === undefined
+    ? { ...projected, workProfile: "standard" }
+    : projected;
 }
 
 function projectNodeEvidenceOwner(

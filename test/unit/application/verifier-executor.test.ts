@@ -1,19 +1,19 @@
 import { createHash } from "node:crypto";
 
 import { describe, expect, it, vi } from "vitest";
-
-import {
-  MAX_VERIFIER_INPUT_BYTES,
-  VERIFIER_SYSTEM_PROMPT,
-  VerifierNodeExecutor,
-} from "../../../src/application/verifier-executor.js";
 import type {
   AgentExecutor,
   CommandExecutor,
   NodeExecutionContext,
   NodeExecutionOutcome,
 } from "../../../src/application/ports.js";
+import {
+  MAX_VERIFIER_INPUT_BYTES,
+  VERIFIER_SYSTEM_PROMPT,
+  VerifierNodeExecutor,
+} from "../../../src/application/verifier-executor.js";
 import type { AgentEvidence, CommandEvidence } from "../../../src/domain/run/events.js";
+import { MAX_MODEL_WORK_PROFILE_PROMPT_BYTES } from "../../../src/domain/run/work-profile.js";
 import type { CompiledVerifierNode } from "../../../src/domain/workflow/types.js";
 
 describe("verifier node executor", () => {
@@ -417,6 +417,39 @@ describe("verifier node executor", () => {
         source === undefined
           ? []
           : [{ ...source, value: oversizedValue, sourceHash: sha256(oversizedValue) }],
+    });
+
+    expect(agent.execute).not.toHaveBeenCalled();
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: { code: "verifier_inconclusive", message: expect.stringMatching(/262144/) },
+    });
+  });
+
+  it("reserves the bounded work-profile prompt inside the verifier input ceiling", async () => {
+    const agent = fakeAgentExecutor();
+    const executor = new VerifierNodeExecutor(fakeCommandExecutor(), agent);
+    const source = contextWithSources().verifierSources?.[0];
+    const nearLimitValue = "x".repeat(
+      MAX_VERIFIER_INPUT_BYTES - MAX_MODEL_WORK_PROFILE_PROMPT_BYTES / 2,
+    );
+
+    const outcome = await executor.execute(modelVerifier(), {
+      ...contextWithSources(),
+      modelWorkProfile: {
+        profile: "standard",
+        remaining: {
+          nodeStarts: "unbounded",
+          modelTokens: "unbounded",
+          modelCostUsdMicros: "unbounded",
+          executionMs: "unbounded",
+          artifactBytes: "unbounded",
+        },
+      },
+      verifierSources:
+        source === undefined
+          ? []
+          : [{ ...source, value: nearLimitValue, sourceHash: sha256(nearLimitValue) }],
     });
 
     expect(agent.execute).not.toHaveBeenCalled();

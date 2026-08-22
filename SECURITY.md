@@ -254,6 +254,10 @@ descendants run through a required native OS sandbox. These boundaries aren't eq
   durable FIFO queue are hard-bounded; overflow rejection retains no workflow snapshot. A project
   may narrow but cannot widen the operator capacity ceiling. This limits trusted same-user workload
   growth but does not contain a worker or impose provider, CPU, memory, or billing quotas.
+- A run work profile is durable model guidance, not an authority or resource control. `fast`,
+  `standard`, and `long` cannot change the selected model, tools, approvals, policy, scheduler, or
+  numeric limits. A model-facing `unbounded` value means only that Flow has no configured limit for
+  that dimension. Provider and host limits still apply.
 - Admission records use owner-only no-follow files, append/fsync before acknowledgement, strict
   transition replay, final-tail repair, and atomic replay-equivalent snapshot compaction. A policy
   change requires an explicit idle supervisor shutdown; committed queues are never hot-rebound.

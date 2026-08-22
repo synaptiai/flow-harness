@@ -236,6 +236,7 @@ nodes:
 apiVersion: flow.synapti.ai/v1alpha1
 kind: Workflow
 metadata: { id: cli-command }
+workProfile: fast
 goal:
   apiVersion: flow.synapti.ai/v1alpha1
   kind: Goal
@@ -257,7 +258,16 @@ nodes:
     const runCapture = createCapture();
 
     const runExitCode = await main(
-      ["run", workflowPath, "--run-id", "cli-run", "--runs-dir", runsDirectory],
+      [
+        "run",
+        workflowPath,
+        "--work-profile",
+        "long",
+        "--run-id",
+        "cli-run",
+        "--runs-dir",
+        runsDirectory,
+      ],
       runCapture.io,
       { cwd: directory },
     );
@@ -265,6 +275,7 @@ nodes:
     expect(runExitCode, [...runCapture.stderr, ...runCapture.stdout].join("\n")).toBe(0);
     expect(JSON.parse(runCapture.stdout.join("\n"))).toMatchObject({
       runId: "cli-run",
+      workProfile: "long",
       status: "succeeded",
       goal: {
         status: "accepted",
@@ -288,6 +299,75 @@ nodes:
     expect(JSON.parse(inspectCapture.stdout.join("\n"))).toEqual(
       JSON.parse(runCapture.stdout.join("\n")),
     );
+  });
+
+  it("rejects an invalid operator work profile before run-store mutation", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "profile.workflow.yaml");
+    await writeFile(
+      workflowPath,
+      `apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: invalid-operator-profile }
+nodes:
+  - id: verify
+    type: command
+    command: { executable: node, args: [--version] }
+`,
+      "utf8",
+    );
+    const capture = createCapture();
+    let executorCalls = 0;
+
+    const exitCode = await main(
+      ["run", workflowPath, "--work-profile", "PRIVATE_TURBO"],
+      capture.io,
+      {
+        cwd: directory,
+        executor: {
+          async execute() {
+            executorCalls += 1;
+            throw new Error("executor must not be called");
+          },
+        },
+      },
+    );
+
+    expect(exitCode).toBe(2);
+    expect(executorCalls).toBe(0);
+    expect(capture.stderr.join("\n")).toMatch(/--work-profile.*fast.*standard.*long/i);
+    expect(capture.stderr.join("\n")).not.toContain("PRIVATE_TURBO");
+    await expect(stat(join(directory, ".flow"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects repeated operator work profiles before run-store mutation", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "repeated-profile.workflow.yaml");
+    await writeFile(
+      workflowPath,
+      `apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: repeated-operator-profile }
+nodes:
+  - id: verify
+    type: command
+    command: { executable: node, args: [--version] }
+`,
+      "utf8",
+    );
+    const capture = createCapture();
+
+    const exitCode = await main(
+      ["run", workflowPath, "--work-profile", "fast", "--work-profile", "long"],
+      capture.io,
+      { cwd: directory },
+    );
+
+    expect(exitCode).toBe(2);
+    expect(capture.stderr.join("\n").split("\n")[0]).toBe(
+      "--work-profile may be specified only once",
+    );
+    await expect(stat(join(directory, ".flow"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("protects project Flow state when execution uses a nested directory", async () => {
@@ -352,6 +432,8 @@ nodes:
         workflowPath,
         "--run-id",
         "cli-child-run",
+        "--work-profile",
+        "long",
         "--runs-dir",
         runsDirectory,
         "--cwd",
@@ -380,7 +462,11 @@ nodes:
     expect(calls).toEqual(["produce"]);
     await expect(new JsonlRunStore(runsDirectory).read(childRunId)).resolves.toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ type: "run_started", runId: childRunId }),
+        expect.objectContaining({
+          type: "run_started",
+          runId: childRunId,
+          workProfile: "long",
+        }),
         expect.objectContaining({ type: "run_succeeded", runId: childRunId }),
       ]),
     );
@@ -1568,6 +1654,91 @@ nodes:
     );
   });
 
+  it("rejects a work profile that contradicts durable resume history before mutation", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "resume-profile.workflow.yaml");
+    const runsDirectory = join(directory, "runs");
+    const source = `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: resumable-profile }
+nodes:
+  - id: completed
+    type: command
+    command: { executable: node, args: [--version] }
+  - id: pending
+    type: command
+    dependsOn: [completed]
+    command: { executable: node, args: [--version] }
+`;
+    await writeFile(workflowPath, source, "utf8");
+    const workflow = compileWorkflowText(source, workflowPath);
+    const store = new JsonlRunStore(runsDirectory);
+    for (const event of interruptedAfterFirstSuccess(workflow, "cli-resume-profile")) {
+      await store.append(event);
+    }
+    await store.release("cli-resume-profile");
+    const ledgerPath = join(runsDirectory, "cli-resume-profile", "events.jsonl");
+    const ledger = await readFile(ledgerPath, "utf8");
+    const capture = createCapture();
+    let executorCalls = 0;
+
+    const exitCode = await main(
+      [
+        "resume",
+        workflowPath,
+        "--run-id",
+        "cli-resume-profile",
+        "--runs-dir",
+        runsDirectory,
+        "--work-profile",
+        "long",
+      ],
+      capture.io,
+      {
+        cwd: directory,
+        executor: {
+          async execute() {
+            executorCalls += 1;
+            throw new Error("executor must not be called");
+          },
+        },
+      },
+    );
+
+    expect(exitCode).toBe(2);
+    expect(executorCalls).toBe(0);
+    expect(capture.stderr.join("\n")).toContain(
+      "--work-profile does not match the durable run profile",
+    );
+    await expect(readFile(ledgerPath, "utf8")).resolves.toBe(ledger);
+
+    const repeatedCapture = createCapture();
+    const repeatedExitCode = await main(
+      [
+        "resume",
+        workflowPath,
+        "--run-id",
+        "cli-resume-profile",
+        "--runs-dir",
+        runsDirectory,
+        "--work-profile",
+        "standard",
+        "--work-profile",
+        "standard",
+      ],
+      repeatedCapture.io,
+      { cwd: directory },
+    );
+
+    expect(repeatedExitCode).toBe(2);
+    expect(repeatedCapture.stderr.join("\n").split("\n")[0]).toBe(
+      "--work-profile may be specified only once",
+    );
+    expect(executorCalls).toBe(0);
+    await expect(readFile(ledgerPath, "utf8")).resolves.toBe(ledger);
+  });
+
   it("reports and inspects a resource-exhausted run with a non-zero exit", async () => {
     const directory = await createTemporaryDirectory();
     const workflowPath = join(directory, "budget.workflow.yaml");
@@ -2258,6 +2429,7 @@ function childWorkflow(id: string): string {
 apiVersion: flow.synapti.ai/v1alpha1
 kind: Workflow
 metadata: { id: ${id}-inner }
+workProfile: fast
 budget:
   maxNodeStarts: 4
   maxModelTokens: 100

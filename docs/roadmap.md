@@ -346,12 +346,18 @@ replayable, and visible in the selected profile.
 
 ### Slice 9.4: Select an explicit work profile
 
-- Add visible `fast`, `standard`, and `long` work profiles. Record the selected profile in the run
-  ledger and show it in public inspection.
-- Keep profile selection under operator or workflow authority. The model cannot silently promote
-  its own profile.
-- Give the model a bounded view of remaining starts, tokens, reported cost, active time, and
-  retained-artifact capacity. Budget visibility cannot change the enforced budget.
+**Implemented in current source.**
+
+- Add visible `fast`, `standard`, and `long` work profiles, then record and display the effective
+  value.
+- Resolve new runs from operator selection, workflow preference, then `standard`, and preserve that
+  value across every lifecycle.
+- Keep selection under operator or workflow authority so models, providers, packages, and ACP
+  sessions cannot promote it.
+- Give each model-backed attempt a bounded view of five remaining resource dimensions.
+- Render missing limits as `unbounded`.
+- Keep the profile informational, with no changes to budgets, scheduling, models, tools, approvals,
+  policy, accounting, or completion.
 
 ### Slice 9.5: Preserve a provider-neutral session record
 

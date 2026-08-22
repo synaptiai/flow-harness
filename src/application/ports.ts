@@ -15,6 +15,7 @@ import type {
   NodeFailure,
   RunEvent,
 } from "../domain/run/events.js";
+import type { ModelWorkProfileContext } from "../domain/run/work-profile.js";
 import type {
   CompiledAgentNode,
   CompiledCommandNode,
@@ -152,6 +153,7 @@ export interface NodeExecutionContext {
   readonly agentSystemPrompt?: string;
   readonly agentGoalWorkspace?: string;
   readonly agentSupplementalMemory?: string;
+  readonly modelWorkProfile?: ModelWorkProfileContext;
   readonly agentExactModelSettings?: boolean;
   readonly agentMaxOutputBytes?: number;
   readonly agentMaxOutputTokens?: number;

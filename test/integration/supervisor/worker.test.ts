@@ -86,6 +86,127 @@ afterEach(async () => {
 });
 
 describe("detached run worker", () => {
+  it("records the exact detached work profile in the run ledger", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-worker-work-profile-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    const store = new LocalSupervisorStore(runsDirectory);
+    await store.initialize();
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId: "worker-work-profile",
+      mode: "run",
+      sourceName: join(directory, "profile.workflow.yaml"),
+      workflowSource: workflowSource(),
+      workProfile: "long",
+      cwd: directory,
+      token: "9".repeat(64),
+      createdAt: "2026-08-22T04:00:00.000Z",
+    });
+    await store.reserveSubmission(
+      job,
+      createActiveRunClaim({
+        runId: job.runId,
+        jobId: job.jobId,
+        workerId: job.workerId,
+        claimedAt: job.createdAt,
+      }),
+    );
+
+    const worker = executeWorkerJob(job.jobId, {
+      store,
+      executor: {
+        async execute(node) {
+          return { status: "succeeded", evidence: successfulCommandEvidence(node.id) };
+        },
+      },
+      effectReconciler: createProductionNodeEffectReconciler(),
+      createRunStore: (root) => new JsonlRunStore(root),
+      pid: 4339,
+    });
+    const descriptor = await waitForDescriptor(store, job.workerId);
+    await expect(requestWorker(descriptor, { type: "identify" })).resolves.toMatchObject({
+      ok: true,
+      result: { runId: job.runId, status: "running" },
+    });
+
+    await expect(worker).resolves.toBe(0);
+    const state = reduceRunEvents(await new JsonlRunStore(runsDirectory).read(job.runId));
+    expect(state.workProfile).toBe("long");
+  }, 15_000);
+
+  it("rejects a detached resume profile that contradicts the durable run", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "flow-worker-resume-profile-"));
+    temporaryDirectories.push(directory);
+    const runsDirectory = join(directory, "runs");
+    const store = new LocalSupervisorStore(runsDirectory);
+    await store.initialize();
+    const source = workflowSource();
+    const compiled = compileWorkflowText(source);
+    const runId = "worker-resume-profile-mismatch";
+    const runStore = new JsonlRunStore(runsDirectory);
+    await runStore.append({
+      ...runEventBase(compiled.id, runId, 1),
+      type: "run_started",
+      nodeIds: compiled.nodes.map((node) => node.id),
+      workflowApiVersion: compiled.apiVersion,
+      workflowDigest: createHash("sha256").update(JSON.stringify(compiled)).digest("hex"),
+      workProfile: "long",
+      executionCwd: directory,
+    });
+    await runStore.release(runId);
+    const job = createJobRecord({
+      jobId: randomUUID(),
+      workerId: randomUUID(),
+      runId,
+      mode: "resume",
+      sourceName: join(directory, "profile.workflow.yaml"),
+      workflowSource: source,
+      workProfile: "fast",
+      cwd: directory,
+      token: "3".repeat(64),
+      createdAt: "2026-08-22T04:01:00.000Z",
+    });
+    await store.reserveSubmission(
+      job,
+      createActiveRunClaim({
+        runId: job.runId,
+        jobId: job.jobId,
+        workerId: job.workerId,
+        claimedAt: job.createdAt,
+      }),
+    );
+    let executorCalls = 0;
+    const worker = executeWorkerJob(job.jobId, {
+      store,
+      executor: {
+        async execute() {
+          executorCalls += 1;
+          throw new Error("a profile-mismatched resume must not execute");
+        },
+      },
+      effectReconciler: createProductionNodeEffectReconciler(),
+      createRunStore: (root) => new JsonlRunStore(root),
+      pid: 4340,
+    });
+    const descriptor = await waitForDescriptor(store, job.workerId);
+    await expect(requestWorker(descriptor, { type: "identify" })).resolves.toMatchObject({
+      ok: true,
+      result: { runId, status: "running" },
+    });
+
+    await expect(worker).resolves.toBe(1);
+    expect(executorCalls).toBe(0);
+    await expect(runStore.read(runId)).resolves.toHaveLength(1);
+    await expect(store.readWorkerDescriptor(job.workerId)).resolves.toMatchObject({
+      status: "terminal",
+      runStatus: "running",
+      recoveryErrorCode: "workflow_mismatch",
+      exitCode: 1,
+    });
+  }, 15_000);
+
   it("forwards the project artifact store into detached execution", async () => {
     const directory = await mkdtemp(join(tmpdir(), "flow-worker-artifact-store-"));
     temporaryDirectories.push(directory);

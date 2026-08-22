@@ -73,6 +73,27 @@ afterEach(async () => {
 });
 
 describe("LocalSupervisorService", () => {
+  it("binds the submitted work profile into the accepted immutable job", async () => {
+    const harness = await createHarness();
+    const command = {
+      ...submitCommand(randomUUID(), harness.directory, "profiled-service-run"),
+      workProfile: "long" as const,
+    };
+
+    await expect(harness.service.submit(command)).resolves.toMatchObject({
+      type: "accepted",
+      runId: "profiled-service-run",
+    });
+    expect(harness.launcher.jobs).toHaveLength(1);
+    expect(harness.launcher.jobs[0]).toMatchObject({
+      runId: "profiled-service-run",
+      workProfile: "long",
+    });
+    await expect(harness.store.readCommand(command.commandId)).resolves.toMatchObject({
+      workProfile: "long",
+    });
+  });
+
   it("rejects a submission whose policy snapshot cannot reconstruct the supervisor policy", async () => {
     const limits = { maxActiveWorkers: 1, maxQueuedJobs: 32 };
     const capabilitySnapshot = createCapabilitySnapshot([], [], [], [], [policyPackageInput()]);
@@ -624,12 +645,18 @@ describe("LocalSupervisorService", () => {
 
   it("rejects command-id reuse with different execution input", async () => {
     const harness = await createHarness();
-    const command = submitCommand(randomUUID(), harness.directory);
+    const command = {
+      ...submitCommand(randomUUID(), harness.directory),
+      workProfile: "long" as const,
+    };
     await harness.service.submit(command);
 
-    await expect(
-      harness.service.submit({ ...command, cwd: join(harness.directory, "other") }),
-    ).rejects.toMatchObject({ code: "conflict" });
+    for (const conflicting of [
+      { ...command, cwd: join(harness.directory, "other") },
+      { ...command, workProfile: "fast" as const },
+    ]) {
+      await expect(harness.service.submit(conflicting)).rejects.toMatchObject({ code: "conflict" });
+    }
     expect(harness.launcher.jobs).toHaveLength(1);
   });
 
