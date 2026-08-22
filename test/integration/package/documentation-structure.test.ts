@@ -65,6 +65,9 @@ describe("public documentation structure", () => {
       readFile(join(documentationRoot, "guides", "capability-packages.md"), "utf8"),
     ).resolves.toMatch(/^# Use capability packages$/mu);
     await expect(
+      readFile(join(documentationRoot, "reference", "tools-and-capabilities.md"), "utf8"),
+    ).resolves.toMatch(/^# Tools and capabilities$/mu);
+    await expect(
       readFile(join(documentationRoot, "guides", "coding-quickstart.md"), "utf8"),
     ).resolves.toMatch(/^# Complete the coding quick start$/mu);
     await expect(
@@ -82,9 +85,13 @@ describe("public documentation structure", () => {
     expect(agentInstructions).toContain("docs/documentation-style.md");
     expect(agentInstructions).toContain("https://developers.google.com/style");
     expect(agentInstructions).toContain("npm run docs:style");
+    expect(agentInstructions).toContain("npm run docs:capabilities:generate");
+    expect(agentInstructions).toContain("npm run docs:capabilities:check");
     expect(contributing).toContain("docs/documentation-style.md");
+    expect(contributing).toContain("npm run docs:capabilities:generate");
     expect(stylePolicy).toContain("https://developers.google.com/style");
     expect(stylePolicy).toContain("npm run docs:style");
+    expect(stylePolicy).toContain("npm run docs:capabilities:check");
   });
 });
 

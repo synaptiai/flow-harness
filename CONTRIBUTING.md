@@ -74,3 +74,13 @@ npm run docs:ste
 
 The automated checks cover objective rules. Review active voice, second person, accessibility,
 global readability, technical accuracy, and topic ownership manually.
+
+If you change a registered public tool, schema, limit, capability-package family, provider seam, or
+evaluation adapter, regenerate and verify the public capability reference:
+
+```sh
+npm run docs:capabilities:generate
+npm run docs:capabilities:check
+```
+
+Review both generated artifacts with the implementation. Don't edit either file directly.

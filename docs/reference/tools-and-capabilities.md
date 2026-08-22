@@ -333,7 +333,7 @@ Schema `default` annotations alone don't insert a value.
 ## Capability-package families
 
 Flow discovers exact package instances from the current project and installed immutable
-bundles. This repository reference describes the supported family contracts; it doesn't list
+bundles. This repository reference describes the supported family contracts. It doesn't list
 operator-installed instances.
 
 | Kind | Name | Extension | Summary |

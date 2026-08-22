@@ -105,9 +105,12 @@ A profile selects one of these built-in adapters:
 - `flow-workflow-v1` selects one admitted workflow, prompt candidate, or Agent Skill candidate.
 - `pi-native-v1` selects the fixed `pi-evaluation-v1` harness configuration.
 - `omp-native-v1` selects the fixed `omp-evaluation-v1` harness configuration.
+- `prime-agent-native-v1` selects the fixed Prime Agent OCI harness configuration.
 
 The plan cannot select an executable path, package version, driver path, or protocol version.
 Flow resolves these values from its trusted external harness registries.
+For the generated roster and isolation types, read
+[Tools and capabilities](reference/tools-and-capabilities.md#evaluation-adapters).
 
 Paths are portable relative paths below the plan directory. Fixtures may contain only bounded
 regular files and directories: symbolic links, special files, `.flow`, path escapes, oversized

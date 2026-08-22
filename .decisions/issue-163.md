@@ -48,14 +48,20 @@ _Captured by specification-capture skill on 2026-08-23. Source: user-confirmed._
 ### Non-goals
 
 - Do not enumerate locally installed capability packages or dynamic package-tool instances.
+
 - Do not promise a closed inventory of model providers, models, credentials, pricing, or current
   provider availability.
+
 - Do not generate a complete CLI command reference or inventory every internal limit.
+
 - Do not describe ACP as an execution provider before Gate 10.1.
+
 - Do not add an executable plugin surface, runtime generation during installation, or a stable
   pre-1.0 compatibility promise.
+
 - Do not change model-visible tool names, descriptions, schemas, or declared order merely to improve
   documentation.
+
 - Do not copy generated catalog tables or detailed guidance into the root README.
 
 ### Failure modes
@@ -63,35 +69,45 @@ _Captured by specification-capture skill on 2026-08-23. Source: user-confirmed._
 - **Timeouts** — none: reference construction is pure and bounded, with no network, subprocess,
   provider, or runtime dependency that can time out. Existing command timeout values remain public
   catalog data only.
+
 - **Partial failures** — intentional generation must compute and validate both complete artifacts
-  before replacing either destination. A failed validation or write must not be reported as a
-  successful regeneration. The read-only check must not change either destination.
+  before replacing either destination. A failed validation or write cannot report success. The
+  read-only check must not change either destination.
+
 - **Invalid input** — duplicate identifiers, unsupported schema values, non-finite numbers,
-  environment-derived data, or a descriptor that cannot produce the versioned public contract must
-  fail with a bounded actionable error before output publication.
-- **Missing context** — missing committed reference files, missing production descriptors, or a
-  missing production-parity registration must fail verification and identify the stale or absent
-  surface. Generation must not fill missing data from ambient host state.
+  environment-derived data, and invalid descriptors fail before publication. The error is bounded
+  and actionable.
+
+- **Missing context** — absent reference files, production descriptors, or parity registrations
+  fail verification. The error identifies the stale or absent surface. Generation doesn't use
+  ambient host state to fill missing data.
 
 ### Interface contracts
 
 - The machine-readable catalog has one explicit Flow catalog version and one explicit JSON Schema
   Draft 2020-12 dialect. It contains deterministic arrays for built-in tools, capability families,
   ordinary execution seams, evaluation adapters, and referenced public limits.
-- Each built-in tool entry binds its workflow selector, model-facing name, label, description,
-  input schema, authority classes, availability requirements, execution mode, and stable public-limit
-  identifiers. Referenced limits bind an identifier, exact value, unit, scope, and optional default.
-- The Markdown reference is a deterministic projection of the same catalog, has a generated-file
-  notice, distinguishes schema assertions from explanatory runtime behavior, and links to canonical
-  task and architecture guidance.
+
+- Each built-in tool entry binds its workflow selector, model-facing name, label, description, and
+  input schema. It also binds authority classes, availability requirements, execution mode, and
+  stable public-limit identifiers. Referenced limits bind an identifier, exact value, and unit. They
+  also bind a scope and optional default.
+
+- The Markdown reference is a deterministic projection of the same catalog. It has a generated-file
+  notice. It distinguishes schema assertions from explanatory runtime behavior. It links to
+  canonical task and architecture guidance.
+
 - Production tool construction consumes the same descriptors. The final normalized tool name,
   label, description, execution mode, and parameter schema must equal the descriptor projection.
+
 - Tool packages remain a documented extension ABI. Installed names and manifests do not enter the
   repository reference.
-- Ordinary model execution and evaluation adapters are separate seams. The ordinary provider/model
-  namespace remains open; the evaluation adapter identifiers are a closed production registry.
-- Rendering uses UTF-8, LF line endings, stable code-unit ordering, no generation time, and one
-  terminal newline. The check-only operation compares exact bytes without writing.
+
+- Ordinary model execution and evaluation adapters are separate seams. The ordinary provider and
+  model namespace remains open. Evaluation adapter identifiers form a closed production registry.
+
+- Rendering uses UTF-8, LF line endings, and stable code-unit ordering. It omits generation time and
+  adds one terminal newline. The check-only operation compares exact bytes without writing.
 
 ## Criterion verification map
 
@@ -99,15 +115,15 @@ _Captured by specification-capture skill on 2026-08-23. Source: user-confirmed._
 
 - **Type**: contract and behavioral
 - **Command**: `npm test -- test/unit/domain/capability/public-capability-reference.test.ts`
-- **Expected evidence**: all six tools appear once with exact schemas, limits, defaults,
-  prerequisites, and authority classes; duplicates and invalid descriptors fail.
+- **Expected evidence**: all six tools appear once. They include exact schemas, limits, defaults,
+  prerequisites, and authority classes. Duplicate and invalid descriptors fail.
 - **Does not promise**: package-tool instance enumeration or model-output schemas.
 
 ### Criterion 2: Capability families and provider seams
 
 - **Type**: contract
 - **Command**: `npm test -- test/unit/domain/capability/public-capability-reference.test.ts`
-- **Expected evidence**: all six package families and four evaluation adapters appear; the ordinary
+- **Expected evidence**: all six package families and four evaluation adapters appear. The ordinary
   provider seam remains open and environment-free.
 - **Does not promise**: live provider or credential availability.
 
@@ -123,8 +139,8 @@ _Captured by specification-capture skill on 2026-08-23. Source: user-confirmed._
 
 - **Type**: error handling and configuration
 - **Command**: `npm run docs:capabilities:check`
-- **Expected evidence**: committed artifacts match without writes; mutation tests reject tool,
-  schema, limit, family, and seam drift with the affected artifact named.
+- **Expected evidence**: committed artifacts match without writes. Mutation tests reject tool,
+  schema, limit, family, and seam drift. Each error names the affected artifact.
 - **Does not promise**: automatic repair during verification.
 
 ### Criterion 5: Independent production parity
@@ -139,20 +155,20 @@ _Captured by specification-capture skill on 2026-08-23. Source: user-confirmed._
 
 - **Type**: configuration
 - **Command**: `npm test -- test/integration/package/documentation-structure.test.ts`
-- **Expected evidence**: the generated reference is reachable from the documentation hub and
-  canonical capability guidance while the README remains within its landing-page contract.
+- **Expected evidence**: the documentation hub and canonical capability guidance reach the
+  generated reference. The README remains within its landing-page contract.
 - **Does not promise**: a generated CLI command manual.
 
 ### Criterion 7: Published documentation quality
 
 - **Type**: configuration and contract
 - **Command**: `npm run docs:style && npm run docs:links && npm run docs:ste && npm run pack:check`
-- **Expected evidence**: public documentation passes style, links, and clarity checks, and both
-  generated artifacts are present in package verification evidence.
+- **Expected evidence**: public documentation passes style, links, and clarity checks. Package
+  verification evidence includes both generated artifacts.
 - **Does not promise**: a stable API guarantee before 1.0.
 
 ## Stranger test
 
-A contributor unfamiliar with the implementation can determine what must be public, what must stay
-environment-neutral, how each drift class fails, which artifacts are generated, and which commands
-prove every acceptance criterion. No implementation choice is needed beyond refined Approach B.
+A contributor unfamiliar with the implementation can identify the public and environment-neutral
+surfaces. The contributor can also identify each drift failure and generated artifact. The listed
+commands prove every acceptance criterion. Refined Approach B requires no further design choice.
