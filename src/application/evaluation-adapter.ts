@@ -1,13 +1,18 @@
 import { join } from "node:path";
 import type { CapabilitySnapshot } from "../domain/capability/agent-skills.js";
 import type { EvaluationOciLease } from "../domain/evaluation/attempt.js";
-import type { EvaluationHarnessOutcome, EvaluationMetrics } from "../domain/evaluation/records.js";
+import type {
+  ContextCompactionEvaluationMetrics,
+  EvaluationHarnessOutcome,
+  EvaluationMetrics,
+} from "../domain/evaluation/records.js";
 import { unavailableEvaluationMetrics } from "../domain/evaluation/records.js";
 import type { AgentModelUsage } from "../domain/run/budget.js";
+import type { ContextCompactionPolicy } from "../domain/run/context-compaction.js";
 import type { AgentEvidence, NodeEvidence, RunState } from "../domain/run/events.js";
 import type { CompiledNode, CompiledWorkflow } from "../domain/workflow/types.js";
 import type { ArtifactStore } from "./artifact-store.js";
-import type { NodeExecutor, RunEventStore, WorkspaceIsolator } from "./ports.js";
+import type { ModelSessionStore, NodeExecutor, RunEventStore, WorkspaceIsolator } from "./ports.js";
 import { runWorkflow } from "./run-workflow.js";
 
 export interface HarnessEvaluationRequest {
@@ -80,6 +85,8 @@ export interface FlowWorkflowEvaluationAdapterDependencies {
   readonly createStore: (runId: string) => RunEventStore;
   readonly workspaceIsolator?: WorkspaceIsolator;
   readonly artifactStore?: ArtifactStore;
+  readonly modelSessionStore?: ModelSessionStore;
+  readonly contextCompaction?: ContextCompactionPolicy;
   readonly clockMs?: () => number;
   readonly now?: () => Date;
   readonly signal?: AbortSignal;
@@ -103,12 +110,41 @@ export class FlowWorkflowEvaluationAdapter implements HarnessEvaluationAdapter {
         elapsed(started, clock()),
       );
     }
+    if (
+      this.dependencies.contextCompaction !== undefined &&
+      this.dependencies.contextCompaction.mode !== this.profile.id
+    ) {
+      return crashedResult(
+        `adapter compaction mode "${this.dependencies.contextCompaction.mode}" does not match profile "${this.profile.id}"`,
+        elapsed(started, clock()),
+      );
+    }
+    if (
+      this.dependencies.contextCompaction !== undefined &&
+      this.dependencies.modelSessionStore === undefined
+    ) {
+      return crashedResult(
+        "context compaction evaluation requires a durable model-session store",
+        elapsed(started, clock()),
+      );
+    }
     try {
+      const artifactReopens = { attempts: 0, successes: 0 };
+      const artifactStore =
+        this.dependencies.artifactStore === undefined
+          ? undefined
+          : this.dependencies.contextCompaction === undefined
+            ? this.dependencies.artifactStore
+            : observedArtifactStore(this.dependencies.artifactStore, artifactReopens);
+      const executor =
+        this.dependencies.contextCompaction === undefined
+          ? this.dependencies.executor
+          : compactionExecutor(this.dependencies.executor, this.dependencies.contextCompaction);
       const state = await runWorkflow(this.profile.workflow.compiled, {
         cwd: request.workspace.cwd,
         protectedPaths: [join(request.workspace.cwd, request.instruction.path)],
         store: this.dependencies.createStore(runId),
-        executor: this.dependencies.executor,
+        executor,
         runId,
         ...(this.profile.capabilitySnapshot === undefined
           ? {}
@@ -116,20 +152,137 @@ export class FlowWorkflowEvaluationAdapter implements HarnessEvaluationAdapter {
         ...(this.dependencies.workspaceIsolator === undefined
           ? {}
           : { workspaceIsolator: this.dependencies.workspaceIsolator }),
-        ...(this.dependencies.artifactStore === undefined
+        ...(artifactStore === undefined ? {} : { artifactStore }),
+        ...(this.dependencies.modelSessionStore === undefined
           ? {}
-          : { artifactStore: this.dependencies.artifactStore }),
+          : { modelSessionStore: this.dependencies.modelSessionStore }),
         ...(this.dependencies.now === undefined ? {} : { now: this.dependencies.now }),
         ...(this.dependencies.signal === undefined ? {} : { signal: this.dependencies.signal }),
       });
+      const metrics = metricsFromState(
+        this.profile.workflow.compiled,
+        state,
+        elapsed(started, clock()),
+      );
+      const contextCompaction =
+        this.dependencies.contextCompaction === undefined
+          ? undefined
+          : await contextCompactionMetrics(
+              this.profile.workflow.compiled,
+              state,
+              this.dependencies.contextCompaction,
+              requireModelSessionStore(this.dependencies.modelSessionStore),
+              artifactReopens,
+            );
       return Object.freeze({
         harness: harnessOutcome(state),
-        metrics: metricsFromState(this.profile.workflow.compiled, state, elapsed(started, clock())),
+        metrics:
+          contextCompaction === undefined
+            ? metrics
+            : Object.freeze({ ...metrics, contextCompaction }),
       });
     } catch (error) {
       return crashedResult(boundedReason(error), elapsed(started, clock()));
     }
   }
+}
+
+function compactionExecutor(
+  executor: NodeExecutor,
+  contextCompaction: ContextCompactionPolicy,
+): NodeExecutor {
+  const wrapped: NodeExecutor = {
+    execute: async (node, context) =>
+      await executor.execute(node, { ...context, contextCompaction }),
+  };
+  return Object.freeze(wrapped);
+}
+
+function observedArtifactStore(
+  store: ArtifactStore,
+  reopens: { attempts: number; successes: number },
+): ArtifactStore {
+  const observed: ArtifactStore = {
+    retain: async (input) => await store.retain(input),
+    read: async (input) => {
+      reopens.attempts = safeMetricSum(reopens.attempts, 1);
+      const result = await store.read(input);
+      reopens.successes = safeMetricSum(reopens.successes, 1);
+      return result;
+    },
+    inspect: async (reference, signal) => await store.inspect(reference, signal),
+    list: async (signal) => await store.list(signal),
+    setRetention: async (input) => await store.setRetention(input),
+    planPrune: async (signal) => await store.planPrune(signal),
+    applyPrune: async (input) => await store.applyPrune(input),
+  };
+  return Object.freeze(observed);
+}
+
+async function contextCompactionMetrics(
+  workflow: CompiledWorkflow,
+  state: RunState,
+  policy: ContextCompactionPolicy,
+  store: ModelSessionStore,
+  artifactReopens: { readonly attempts: number; readonly successes: number },
+): Promise<ContextCompactionEvaluationMetrics> {
+  const sessions = await Promise.all(
+    workflow.nodes.flatMap((node) => {
+      const nodeState = state.nodes[node.id];
+      return isModelNode(node) && nodeState?.modelSession != null
+        ? [store.read({ runId: state.runId, workflowId: workflow.id, nodeId: node.id })]
+        : [];
+    }),
+  );
+  const requests = sessions.flatMap((session) =>
+    session.events.filter((event) => event.type === "model_request_prepared"),
+  );
+  const starts = sessions.flatMap((session) =>
+    session.events.filter((event) => event.type === "context_compaction_started"),
+  );
+  const settlements = sessions.flatMap((session) =>
+    session.events.filter((event) => event.type === "context_compaction_settled"),
+  );
+  const summaryUsage = settlements.flatMap((event) =>
+    event.settlement.outcome === "interrupted" || event.settlement.usage === undefined
+      ? []
+      : [event.settlement.usage],
+  );
+  return Object.freeze({
+    mode: policy.mode,
+    providerRequestBytes: sumMetrics(requests.map((event) => event.identity.runtimeSurface.bytes)),
+    providerRequestEstimatedTokens: sumMetrics(
+      requests.map((event) => Math.ceil(event.identity.runtimeSurface.bytes / 4)),
+    ),
+    attempts: starts.length,
+    accepted: settlements.filter((event) => event.settlement.outcome === "accepted").length,
+    rejected: settlements.filter((event) => event.settlement.outcome === "rejected").length,
+    interrupted: settlements.filter((event) => event.settlement.outcome === "interrupted").length,
+    summaryInputTokens: sumMetrics(summaryUsage.map((usage) => usage.inputTokens)),
+    summaryOutputTokens: sumMetrics(summaryUsage.map((usage) => usage.outputTokens)),
+    summaryCostUsdMicros: sumMetrics(summaryUsage.map((usage) => usage.costUsdMicros)),
+    artifactReopenAttempts: artifactReopens.attempts,
+    artifactReopenSuccesses: artifactReopens.successes,
+  });
+}
+
+function requireModelSessionStore(store: ModelSessionStore | undefined): ModelSessionStore {
+  if (store === undefined) {
+    throw new Error("context compaction evaluation requires a durable model-session store");
+  }
+  return store;
+}
+
+function sumMetrics(values: readonly number[]): number {
+  return values.reduce((total, value) => safeMetricSum(total, value), 0);
+}
+
+function safeMetricSum(left: number, right: number): number {
+  const total = left + right;
+  if (!Number.isSafeInteger(total) || total < 0) {
+    throw new RangeError("evaluation metric total exceeds a non-negative safe integer");
+  }
+  return total;
 }
 
 function harnessOutcome(state: RunState): EvaluationHarnessOutcome {

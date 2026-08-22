@@ -17,6 +17,15 @@ export const MAX_PROTECTED_CONTEXT_CONSTRAINTS = 32;
 
 export type ContextCompactionMode = (typeof CONTEXT_COMPACTION_MODES)[number];
 
+export type ContextCompactionPolicy =
+  | { readonly mode: "none" | "references" }
+  | {
+      readonly mode: "references-and-summary";
+      readonly protectedConstraints: readonly string[];
+      readonly minimumReductionBytes: number;
+      readonly outputTokenLimits: readonly [number, number];
+    };
+
 export interface ReferenceProjectionIdentity {
   readonly runId: string;
   readonly workflowId: string;

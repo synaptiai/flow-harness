@@ -17,6 +17,7 @@ import {
 } from "../../../src/domain/capability/agent-skills.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { calculateWorkflowDigest } from "../../../src/domain/workflow/digest.js";
+import { JsonlModelSessionStore } from "../../../src/infrastructure/fs/jsonl-model-session-store.js";
 import { JsonlRunStore } from "../../../src/infrastructure/fs/jsonl-run-store.js";
 import { ReflinkCopyWorkspaceIsolator } from "../../../src/infrastructure/fs/reflink-copy-workspace-isolator.js";
 
@@ -112,6 +113,70 @@ describe("Flow workflow evaluation adapter", () => {
       harness: { outcome: "completed" },
     });
     expect(observed).toEqual([artifactStore]);
+  });
+
+  it("binds one Flow-owned compaction mode and records measured zero evidence", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-evaluation-adapter-")));
+    temporaryDirectories.push(root);
+    await writeFile(join(root, "TASK.md"), "Create RESULT.md.\n");
+    const workflow = compiledWorkflow();
+    const observed: unknown[] = [];
+    const delegate = successfulExecutor();
+    const modelSessionStore = new JsonlModelSessionStore(join(root, "model-sessions"));
+    const adapter = new FlowWorkflowEvaluationAdapter(
+      {
+        id: "references-and-summary",
+        adapter: "flow-workflow-v1",
+        workflow: { compiled: workflow, workflowDigest: calculateWorkflowDigest(workflow) },
+      },
+      {
+        executor: {
+          async execute(node, context) {
+            observed.push(context.contextCompaction);
+            return await delegate.execute(node, context);
+          },
+        },
+        createStore: () => new JsonlRunStore(join(root, "runs")),
+        modelSessionStore,
+        contextCompaction: {
+          mode: "references-and-summary",
+          protectedConstraints: ["Never change release policy."],
+          minimumReductionBytes: 1_024,
+          outputTokenLimits: [512, 256],
+        },
+      },
+    );
+    const request = publicRequest(root, "references-and-summary");
+
+    const result = await adapter.run(request);
+
+    expect(observed).toEqual([
+      {
+        mode: "references-and-summary",
+        protectedConstraints: ["Never change release policy."],
+        minimumReductionBytes: 1_024,
+        outputTokenLimits: [512, 256],
+      },
+    ]);
+    expect(result).toMatchObject({
+      harness: { outcome: "completed" },
+      metrics: {
+        contextCompaction: {
+          mode: "references-and-summary",
+          providerRequestBytes: 0,
+          providerRequestEstimatedTokens: 0,
+          attempts: 0,
+          accepted: 0,
+          rejected: 0,
+          interrupted: 0,
+          summaryInputTokens: 0,
+          summaryOutputTokens: 0,
+          summaryCostUsdMicros: 0,
+          artifactReopenAttempts: 0,
+          artifactReopenSuccesses: 0,
+        },
+      },
+    });
   });
 
   it("binds an admitted Agent Skill snapshot to the evaluated workflow", async () => {
@@ -372,14 +437,14 @@ nodes:
 `);
 }
 
-function publicRequest(cwd: string): HarnessEvaluationRequest {
+function publicRequest(cwd: string, profileId = "candidate"): HarnessEvaluationRequest {
   return Object.freeze({
     planDigest: "a".repeat(64),
     trial: Object.freeze({
       trialId: `trial-${"b".repeat(48)}`,
       position: 1,
       taskId: "edit-readme",
-      profileId: "candidate",
+      profileId,
       seed: 11,
       repetition: 1,
     }),

@@ -42,6 +42,7 @@ import type { PolicyAction, PolicyDecision } from "../../domain/policy/types.js"
 import type { AgentModelUsage } from "../../domain/run/budget.js";
 import {
   type ContextCompactionMode,
+  type ContextCompactionPolicy,
   type ContextSummaryIdentity,
   projectReferenceFirstToolResult,
   renderContextSummarySurface,
@@ -110,11 +111,10 @@ export interface PiAgentRunRequest {
   readonly signal?: AbortSignal;
 }
 
-export interface PiContextSummaryOptions {
-  readonly protectedConstraints: readonly string[];
-  readonly minimumReductionBytes: number;
-  readonly outputTokenLimits: readonly [number, number];
-}
+export type PiContextSummaryOptions = Omit<
+  Extract<ContextCompactionPolicy, { readonly mode: "references-and-summary" }>,
+  "mode"
+>;
 
 export interface PiAgentRunResult {
   readonly text: string;
@@ -446,6 +446,20 @@ export class PiAgentExecutor implements AgentExecutor {
             retainedArtifacts: context.artifactStore !== undefined,
           }),
           ...(context.modelSession === undefined ? {} : { modelSession: context.modelSession }),
+          ...(context.contextCompaction === undefined
+            ? {}
+            : {
+                contextCompactionMode: context.contextCompaction.mode,
+                ...(context.contextCompaction.mode === "references-and-summary"
+                  ? {
+                      contextSummary: {
+                        protectedConstraints: context.contextCompaction.protectedConstraints,
+                        minimumReductionBytes: context.contextCompaction.minimumReductionBytes,
+                        outputTokenLimits: context.contextCompaction.outputTokenLimits,
+                      },
+                    }
+                  : {}),
+              }),
           ...(semanticSession === undefined ? {} : { semanticSession }),
           ...(context.capabilitySnapshot === undefined || node.agent.skills.length === 0
             ? {}
