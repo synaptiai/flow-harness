@@ -20,6 +20,7 @@ import {
   type ModelSessionIdentity,
   type ModelSessionState,
   reduceModelSessionEvents,
+  selectContextCompactionRange,
 } from "../../../../src/domain/run/model-session.js";
 import { AgentCommandRecorder } from "../../../../src/infrastructure/pi/agent-command-recorder.js";
 import { AgentEffectRecorder } from "../../../../src/infrastructure/pi/agent-effect-recorder.js";
@@ -564,6 +565,66 @@ describe("Pi provider-neutral model session", () => {
     ).toEqual(["constraint_loss", "invalid_output"]);
   });
 
+  it("retries an interrupted compaction after recovery with the smaller limit", async () => {
+    const faux = createFauxCore({
+      provider: "flow-session-test",
+      models: [{ id: "session-model", reasoning: false }],
+    });
+    const model = requireModel(faux.getModel());
+    const journal = attemptTwoAfterInterruptedCompactionJournal();
+    const protectedConstraint = "Never change release policy.";
+    let summaryPrompt = "";
+    let summaryMaxTokens: number | undefined;
+    let finalProviderMessages: unknown[] = [];
+    faux.setResponses([
+      (context, options) => {
+        summaryPrompt = JSON.stringify(context);
+        summaryMaxTokens = options?.maxTokens;
+        return fauxAssistantMessage(
+          JSON.stringify({
+            version: 1,
+            summary: `The first recovered inspection completed. ${protectedConstraint}`,
+            protectedConstraints: [protectedConstraint],
+          }),
+        );
+      },
+      (context) => {
+        finalProviderMessages = context.messages;
+        return fauxAssistantMessage("Recovered compacted context observed.");
+      },
+    ]);
+
+    const result = await runnerFor(faux, model).run({
+      ...agentRequest(model, journal),
+      contextCompactionMode: "references-and-summary",
+      contextSummary: {
+        protectedConstraints: [protectedConstraint],
+        minimumReductionBytes: 1_000,
+        outputTokenLimits: [512, 256],
+      },
+    });
+
+    expect(result.stopReason).toBe("stop");
+    expect(faux.state.callCount).toBe(2);
+    expect(summaryMaxTokens).toBe(256);
+    expect(summaryPrompt).toContain("OLD_RECOVERY_CONTEXT");
+    expect(summaryPrompt).not.toContain("LATEST_RECOVERY_CONTEXT");
+    expect(finalProviderMessages[0]).toMatchObject({
+      role: "user",
+      content: "Original objective.",
+    });
+    expect(JSON.stringify(finalProviderMessages)).toContain("flow.context-summary");
+    expect(JSON.stringify(finalProviderMessages)).toContain("LATEST_RECOVERY_CONTEXT");
+    expect(JSON.stringify(finalProviderMessages)).not.toContain("OLD_RECOVERY_CONTEXT");
+    expect(
+      journal.state.events
+        .filter((event) => event.type === "context_compaction_started")
+        .map((event) => event.outputTokenLimit),
+    ).toEqual([512, 256]);
+    expect(journal.state.acceptedCompactionCount).toBe(1);
+    expect(journal.state.interruptedCompactionCount).toBe(1);
+  });
+
   it("does not call a summary or task provider when compaction write-ahead fails", async () => {
     const faux = createFauxCore({
       provider: "flow-session-test",
@@ -746,6 +807,103 @@ function attemptTwoJournal(): InMemoryJournal {
     6,
   );
   state = append(state, { type: "attempt_started", attempt: 2 }, 7);
+  return new InMemoryJournal(state);
+}
+
+function attemptTwoAfterInterruptedCompactionJournal(): InMemoryJournal {
+  let state = attemptOneJournal().state;
+  for (const [request, text] of [
+    [1, `OLD_RECOVERY_CONTEXT:${"r".repeat(12_000)}`],
+    [2, "LATEST_RECOVERY_CONTEXT"],
+  ] as const) {
+    state = append(
+      state,
+      {
+        type: "model_request_prepared",
+        attempt: 1,
+        turn: request,
+        request,
+        identity: {
+          version: 1,
+          provider: "flow-session-test",
+          model: "session-model",
+          apiAdapter: "faux",
+          thinking: "off",
+          runtimeVersion: "pi-0.84.0",
+          system: { sha256: "1".repeat(64), bytes: 1 },
+          toolCatalog: { sha256: "2".repeat(64), bytes: 1, count: 1 },
+          authority: { sha256: "3".repeat(64) },
+          portableHistory: calculatePortableHistoryIdentity(state),
+          runtimeSurface: { sha256: "5".repeat(64), bytes: 1 },
+          attempt: 1,
+          turn: request,
+          request,
+        },
+      },
+      state.eventCount + 1,
+    );
+    state = append(
+      state,
+      {
+        type: "model_message_committed",
+        attempt: 1,
+        turn: request,
+        request,
+        text,
+        stopReason: "stop",
+      },
+      state.eventCount + 1,
+    );
+    state = append(
+      state,
+      {
+        type: "model_request_settled",
+        attempt: 1,
+        turn: request,
+        request,
+        outcome: "completed",
+      },
+      state.eventCount + 1,
+    );
+  }
+  const selection = selectContextCompactionRange(state);
+  if (selection === null) throw new Error("recovery fixture must have a compactable range");
+  state = append(
+    state,
+    {
+      type: "context_compaction_started",
+      attempt: 1,
+      compaction: 1,
+      generationAttempt: 1,
+      mode: "references-and-summary",
+      sourceHead: state.head,
+      range: selection.range,
+      referenceSurface: {
+        sha256: "6".repeat(64),
+        bytes: 12_000,
+        estimatedTokens: 3_000,
+      },
+      outputTokenLimit: 512,
+    },
+    state.eventCount + 1,
+  );
+  state = append(
+    state,
+    {
+      type: "context_compaction_settled",
+      attempt: 1,
+      compaction: 1,
+      generationAttempt: 1,
+      settlement: { outcome: "interrupted", reason: "process_interrupted" },
+    },
+    state.eventCount + 1,
+  );
+  state = append(
+    state,
+    { type: "attempt_interrupted", attempt: 1, reason: "process_interrupted" },
+    state.eventCount + 1,
+  );
+  state = append(state, { type: "attempt_started", attempt: 2 }, state.eventCount + 1);
   return new InMemoryJournal(state);
 }
 
