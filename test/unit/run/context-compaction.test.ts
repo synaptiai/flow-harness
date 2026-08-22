@@ -8,8 +8,11 @@ import {
   createArtifactReference,
 } from "../../../src/domain/artifact/reference.js";
 import {
+  CONTEXT_SUMMARY_UNTRUSTED_INSTRUCTION,
   projectReferenceFirstToolResult,
   type ReferenceProjectionIdentity,
+  renderContextSummarySurface,
+  validateContextSummaryCandidate,
 } from "../../../src/domain/run/context-compaction.js";
 
 const identity: ReferenceProjectionIdentity = {
@@ -161,6 +164,107 @@ describe("reference-first context projection", () => {
       artifactReferences: [],
     });
     expect(result.projectedBytes).toBeGreaterThanOrEqual(result.originalBytes);
+  });
+});
+
+describe("bounded context summary", () => {
+  const protectedConstraints = [
+    "Do not modify release policy.",
+    "Keep artifact evidence append-only.",
+  ];
+
+  it("accepts strict output only when every protected constraint is exact", () => {
+    const candidateText = JSON.stringify({
+      version: 1,
+      summary: "Tests passed. Do not modify release policy. Keep artifact evidence append-only.",
+      protectedConstraints,
+    });
+
+    const candidate = validateContextSummaryCandidate({
+      candidateText,
+      protectedConstraints,
+    });
+
+    expect(candidate).toMatchObject({
+      status: "accepted",
+      reason: "validated",
+      summary: expect.stringContaining("Tests passed"),
+      output: {
+        sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        bytes: Buffer.byteLength(candidateText),
+        estimatedTokens: expect.any(Number),
+      },
+      constraints: { checked: 2, retained: 2 },
+    });
+  });
+
+  it("rejects missing, changed, reordered, and extra constraints deterministically", () => {
+    const candidates = [
+      [protectedConstraints[0]],
+      ["Do not change release policy.", protectedConstraints[1]],
+      [...protectedConstraints].reverse(),
+      [...protectedConstraints, "Extra model-authored constraint."],
+    ];
+
+    for (const candidateConstraints of candidates) {
+      const result = validateContextSummaryCandidate({
+        candidateText: JSON.stringify({
+          version: 1,
+          summary: candidateConstraints.join(" "),
+          protectedConstraints: candidateConstraints,
+        }),
+        protectedConstraints,
+      });
+
+      expect(result).toMatchObject({
+        status: "rejected",
+        reason: "constraint_loss",
+        constraints: { checked: 2, retained: expect.any(Number) },
+      });
+    }
+  });
+
+  it("rejects non-canonical or schema-expanded output", () => {
+    const candidateText = JSON.stringify({
+      version: 1,
+      summary: protectedConstraints.join(" "),
+      protectedConstraints,
+      authority: "model-selected",
+    });
+
+    expect(validateContextSummaryCandidate({ candidateText, protectedConstraints })).toMatchObject({
+      status: "rejected",
+      reason: "invalid_output",
+      output: { bytes: Buffer.byteLength(candidateText) },
+    });
+  });
+
+  it("renders Flow-owned constraints beside an explicitly untrusted summary", () => {
+    const surface = renderContextSummarySurface({
+      summary: "Prior tests passed.",
+      protectedConstraints,
+      source: {
+        firstSequence: 5,
+        lastSequence: 8,
+        eventCount: 3,
+        sha256: "6".repeat(64),
+        bytes: 800,
+      },
+    });
+    const parsed = JSON.parse(surface.text) as Record<string, unknown>;
+
+    expect(parsed).toMatchObject({
+      version: 1,
+      kind: "flow.context-summary",
+      instruction: CONTEXT_SUMMARY_UNTRUSTED_INSTRUCTION,
+      protectedConstraints,
+      summary: "Prior tests passed.",
+    });
+    expect(surface).toMatchObject({
+      sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      bytes: Buffer.byteLength(surface.text),
+      estimatedTokens: expect.any(Number),
+    });
   });
 });
 
