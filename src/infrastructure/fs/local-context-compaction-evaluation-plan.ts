@@ -95,6 +95,12 @@ export async function admitLocalContextCompactionEvaluationPlan(
   }
   assertEvaluationWorkflowControls("context-compaction", compiled, source.controls);
   assertClosedEvaluationWorkflowCapabilities("context-compaction", compiled);
+  if (compiled.nodes.some((node) => node.type === "child")) {
+    throw new EvaluationAdmissionError(
+      "invalid_workflow",
+      "context compaction evaluation child workflows are not measured by plan version 1",
+    );
+  }
   const profile = Object.freeze({
     adapter: source.profile.adapter,
     workflow: Object.freeze({

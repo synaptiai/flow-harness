@@ -515,7 +515,10 @@ function validateContextCompactionEvaluationRecords(
       );
     }
     const compaction = record.metrics.contextCompaction;
-    if (compaction === undefined || compaction.mode !== record.profileId) {
+    if (
+      (compaction === undefined && record.classification !== "harness_failure") ||
+      (compaction !== undefined && compaction.mode !== record.profileId)
+    ) {
       throw new ContextCompactionEvaluationAggregationError(
         `trial record ${index + 1} lacks matching compaction evidence`,
       );

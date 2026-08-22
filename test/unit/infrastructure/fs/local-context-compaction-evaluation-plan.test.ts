@@ -62,6 +62,15 @@ describe("local context compaction evaluation plan", () => {
     ]);
     expect(Object.isFrozen(admitted)).toBe(true);
   });
+
+  it("rejects child workflows whose independent sessions cannot be measured", async () => {
+    const project = await evaluationProject();
+    await writeFile(join(project, "agent.workflow.yaml"), childWorkflowSource());
+
+    await expect(
+      admitLocalContextCompactionEvaluationPlan(join(project, "compaction-evaluation.yaml")),
+    ).rejects.toThrow(/child workflows are not measured/i);
+  });
 });
 
 async function evaluationProject(): Promise<string> {
@@ -100,6 +109,53 @@ nodes:
     dependsOn: [implement]
     result:
       source: { nodeId: implement, field: agent.text }
+      schema: { type: string, maxLength: 4096 }
+`;
+}
+
+function childWorkflowSource(): string {
+  return `apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: compaction-agent }
+budget:
+  maxNodeStarts: 8
+  maxModelTokens: 10000
+  maxCostUsd: 1
+  maxExecutionMs: 300000
+  maxArtifactBytes: 1048576
+nodes:
+  - id: delegate
+    type: child
+    child:
+      resultNodeId: publish
+      workflow: |
+        apiVersion: flow.synapti.ai/v1alpha1
+        kind: Workflow
+        metadata: { id: child-agent }
+        budget:
+          maxNodeStarts: 4
+          maxModelTokens: 1000
+          maxCostUsd: 0.1
+          maxExecutionMs: 60000
+          maxArtifactBytes: 524288
+        nodes:
+          - id: implement
+            type: agent
+            agent:
+              prompt: Follow TASK.md exactly.
+              model: { provider: test, id: deterministic }
+              tools: [read, edit]
+          - id: publish
+            type: result
+            dependsOn: [implement]
+            result:
+              source: { nodeId: implement, field: agent.text }
+              schema: { type: string, maxLength: 4096 }
+  - id: publish
+    type: result
+    dependsOn: [delegate]
+    result:
+      source: { nodeId: delegate, field: result.value }
       schema: { type: string, maxLength: 4096 }
 `;
 }
