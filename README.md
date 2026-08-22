@@ -28,6 +28,8 @@ system. Flow separates those responsibilities.
 - An append-only ledger records authoritative run state and evidence.
 - A local supervisor owns detached discovery and control without owning graph transitions.
 - Durable budgets stop new work at replayable boundaries.
+- Private, provider-neutral model-session records preserve bounded completed context for safe fresh
+  recovery without controlling workflow state.
 - Mutation-free evaluation decides whether evidence accepts each criterion.
 - Provider-specific behavior remains behind execution adapters.
 
@@ -136,6 +138,7 @@ The [documentation hub](docs/README.md) routes each reader task to one canonical
 | [Maintain a durable goal workspace](docs/guides/goal-workspaces.md) | Revisioned long-horizon context, evidence references, compare-and-set updates, run selection, and recovery |
 | [Use read-only semantic code queries](docs/guides/semantic-code.md) | Exact language-server selection, bounded queries, containment, evidence, and failure handling |
 | [Retain and inspect command artifacts](docs/guides/retained-artifacts.md) | Exact oversized command output, bounded agent reads, inspection, retention, and pruning |
+| [Inspect and recover portable model sessions](docs/guides/model-sessions.md) | Private context records, public integrity metadata, fresh recovery, limits, and failure handling |
 | [Use capability packages](docs/guides/capability-packages.md) | Skills, verifiers, tools, workflows, policies, presentations, bundles, and repositories |
 | [Prime runtime operations](docs/operations/prime-runtime.md) | Dedicated Linux x64 Prime and container-profile preparation |
 | [Workflow specification](docs/workflow-spec.md) | Normative executable and persisted contracts |

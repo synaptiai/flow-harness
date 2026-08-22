@@ -55,8 +55,8 @@ records make the operation restart-safe. A settled record consumes the authority
 reinstallation. Explicit retired-blob maintenance previews a bounded physical store and applies one
 digest-bound plan under the package mutation lock. POSIX open-file handles preserve complete reader
 generations.
-Opaque Pi session continuation and general failure or fallback
-retries also remain later work. The same is true for broader configurable policy, model network
+Opaque provider-session continuation and general failure or fallback
+retries remain later work. The same is true for broader configurable policy, model network
 tools, and arbitrary evaluator runtimes. Stronger VM or managed sandbox backends also remain later
 work.
 
@@ -68,10 +68,13 @@ acceptance to a deterministic command verifier. Neither path grants new executio
 makes an optional runtime a base dependency.
 
 Gate 9 currently adds a revisioned goal workspace, read-only semantic code queries,
-content-addressed retained command artifacts, and durable work profiles. A work profile gives each
-model attempt fixed pacing guidance and a point-in-time remaining-budget view. It does not change
-run authority. The artifact boundary keeps bounded previews in the run ledger, exact bytes in a
-project store, and immutable producer references in command evidence.
+content-addressed retained command artifacts, durable work profiles, and private provider-neutral
+model-session records. A work profile gives each model attempt fixed pacing guidance and a
+point-in-time remaining-budget view. It does not change run authority. The artifact boundary keeps
+bounded previews in the run ledger, exact bytes in a project store, and immutable producer
+references in command evidence. The model-session boundary commits completed context and request
+identity separately from workflow authority, then renders a bounded untrusted-data turn for an
+eligible fresh recovery.
 Only an explicitly selected, policy-controlled tool can read bounded windows. Operators control
 retention and exact-plan pruning. The semantic boundary freezes one
 operator-selected language server. It runs one bounded LSP 3.18 request in a short-lived sandbox.
@@ -126,6 +129,7 @@ flowchart TB
     subgraph state["4. Durable project state — survives restart"]
         direction LR
         ledgers[("Run and evidence ledgers")]
+        sessions[("Private model session records")]
         artifacts[("Retained artifact blobs and catalog")]
         goalLedger[("Goal revision ledger")]
         stores[("Run, package, activation, and evaluation stores")]
@@ -179,6 +183,8 @@ flowchart TB
     rules -->|"Authorizes bounded agent work"| agents
     rules -->|"Authorizes bounded commands"| commands
     agents -->|"Makes bounded model requests"| models
+    agents -->|"Appends completed portable events"| sessions
+    sessions -->|"Supplies one fresh untrusted-data turn"| agents
     agents -->|"Uses workspace tools through Flow policy"| project
     agents -->|"Requests bounded code context"| semantic
     semantic -->|"Reads an isolated project projection"| project
@@ -187,6 +193,8 @@ flowchart TB
     agents -->|"Uses isolated trial files"| workspaces
     commands -->|"Uses isolated command files"| workspaces
     engine -->|"Appends events and replays prior state"| ledgers
+    engine -->|"Creates, claims, and links safe summaries"| sessions
+    sessions -->|"Returns redacted integrity metadata"| cli
     commands -->|"Publishes exact bounded command streams"| artifacts
     ledgers -->|"Binds immutable producer references"| artifacts
     agents -->|"Reads authorized byte windows"| artifacts
@@ -218,9 +226,10 @@ Read the diagram from top to bottom:
    command adapters do not own workflow state. The semantic service starts one exact language
    server for one request against a read-only, network-denied project projection.
 
-4. Durable project state records events, evidence, goal revisions, ownership, installed
-   capabilities, evaluations, and isolated workspace identity. Flow replays these records after
-   interruption instead of trusting process memory.
+4. Durable project state records events, evidence, private model context, goal revisions,
+   ownership, installed capabilities, evaluations, and isolated workspace identity. Flow replays
+   these records after interruption instead of trusting process memory. Only the run ledger
+   controls graph state.
 
 5. Model providers, project files, Git, and package sources remain external dependencies. Flow
    validates their input at the relevant boundary and does not treat a live external response as
@@ -244,6 +253,7 @@ before success. It stops on unresolved side-effect or settlement uncertainty.
 | Detached work and recovery | `src/supervisor/` | Owns bounded queueing, worker adoption, cancellation, event paging, and detached lifecycle. |
 | Semantic code boundary | `src/domain/semantic/` and `src/infrastructure/lsp/` | Defines canonical read-only code queries and receipts, runs one strict LSP 3.18 subset, isolates each server session, and rejects stale or unsettled results. |
 | Retained artifact boundary | `src/domain/artifact/`, `src/application/artifact-store.ts`, and `src/infrastructure/fs/local-artifact-store.ts` | Binds exact command bytes to immutable producer references, authorizes bounded same-run reads, and separates append-only evidence from mutable retention and physical availability. |
+| Portable model-session boundary | `src/domain/run/model-session.ts`, `src/application/model-session-inspection.ts`, `src/infrastructure/fs/jsonl-model-session-store.ts`, and `src/infrastructure/pi/pi-agent-executor.ts` | Records completed provider-neutral context and write-ahead request identities privately, renders bounded fresh-turn recovery context, and exposes only redacted integrity metadata. |
 | Presentation, storage, package, sandbox, and runtime adapters | `src/infrastructure/` | Implements application ports for local files, HTTP, OCI, TUF, ACP, Pi, OMP, Prime, SRT, terminal, and browser boundaries. |
 | Prime evaluation container | `prime-container/` | Provides the fixed Go supervisor, kernel bridge, driver protocol, and hardened image used by the Prime adapter. |
 
@@ -471,6 +481,31 @@ preparation and is checked again at spawn. Unconfirmed descendant termination is
 the command settles durably, later command preparations are denied, Pi is aborted, and terminal
 success is rejected. Flow disables Pi assistant-turn and provider retry layers; the adapter executes
 one Flow attempt, while durable Flow policy alone can authorize a later fresh attempt.
+
+### Portable model sessions
+
+The domain owns the closed `flow.model-session/v1` event vocabulary, canonical hash chain,
+transition rules, independent byte and event bounds, request-identity comparison, public summary,
+and deterministic resume rendering. It imports no Pi, provider, filesystem, presentation, or
+workflow-reducer types. The application owns creation before `node_started`, attempt settlement,
+recovery ordering, and the rule that session state never authorizes a graph transition.
+
+The filesystem adapter keeps one owner-only JSONL record for each model-backed node. It uses the
+same strict committed-prefix and exclusive same-host ownership principles as the run store, but it
+is a separate private record. Pi wraps the stream-function boundary and commits
+`model_request_prepared` before provider input/output (I/O). Awaited lifecycle events add only
+completed user, assistant, tool, usage, and settlement data. Provider handles, credentials, hidden
+reasoning, thought signatures, raw diagnostics, and streamed partials don't enter portable
+history.
+
+For a proof-safe retry, the application appends the private interruption boundary before the
+authoritative workflow disposition. Pi creates a new in-memory session and receives one canonical
+untrusted-data capsule derived from committed primary history. Public inspection reads the private
+record only to refresh digests and counts. Storage errors become an `unavailable` marker and fixed
+mismatch categories. The projection doesn't return private values. Read
+[Inspect and recover portable model sessions](guides/model-sessions.md) for operator guidance and
+the [Workflow specification](workflow-spec.md#portable-model-session-record) for the persisted
+contract.
 
 ### Portable Agent Skills
 
@@ -1129,6 +1164,10 @@ Approval remains separate from containment. OMP-style allow/prompt/deny rules ca
     distinct durable boundaries; unknown affected-path state blocks all downstream execution.
 24. A later optimization candidate cannot start after the immediately prior check reaches
     stagnation, cancellation, or resource exhaustion.
+25. A model request cannot begin provider I/O without a durable request identity. The identity
+    binds its route, instructions, tools, authority, history, runtime surface, and coordinates.
+26. A model-session event cannot authorize scheduling, effects, approvals, or criterion acceptance.
+    A resume surface cannot authorize node success or workflow completion.
 
 ## Failure modes
 
@@ -1157,6 +1196,9 @@ Approval remains separate from containment. OMP-style allow/prompt/deny rules ca
 | Final loop check continues | Record `loop_limit_reached`; start no downstream work |
 | Missing credentials | Fail startup or enter a durable operator-wait state |
 | Provider outage or rate limit | Record the attempt and apply only the declared bounded retry or fallback policy |
+| Model-session record is missing, corrupt, unsafe, or over a limit | Refuse required recovery before provider I/O; never invent or replace private history |
+| Provider stream stops before a completed model event | Persist no partial model message; settle or interrupt the prepared request and apply only the workflow's proof-safe fresh recovery policy |
+| Model request surface exceeds selected-model capacity | Reject before provider I/O; never truncate protected instructions, tools, authority, or portable history implicitly |
 | Malformed model output | Schema-reject, retry within the node budget, then block with evidence |
 | Unauthorized tool request | Deny before execution and record a policy event |
 | Stale or invalid edit before preparation | Reject the entire replacement before rename and record no effect event or receipt |

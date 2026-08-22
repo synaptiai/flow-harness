@@ -301,6 +301,90 @@ nodes:
     );
   });
 
+  it("inspects only safe metadata from a durable model session", async () => {
+    const directory = await createTemporaryDirectory();
+    const workflowPath = join(directory, "model-session.workflow.yaml");
+    const runsDirectory = join(directory, "runs");
+    await writeFile(
+      workflowPath,
+      `
+apiVersion: flow.synapti.ai/v1alpha1
+kind: Workflow
+metadata: { id: cli-model-session }
+nodes:
+  - id: analyze
+    type: agent
+    agent:
+      prompt: PRIVATE_MODEL_SESSION_PROMPT_CANARY
+      model: { provider: test, id: deterministic }
+      tools: [read]
+  - id: verify
+    type: command
+    dependsOn: [analyze]
+    command: { executable: node, args: [--version] }
+`,
+      "utf8",
+    );
+    const executor: NodeExecutor = {
+      async execute(node, context) {
+        if (node.type === "agent") {
+          expect(context.modelSession?.state.primaryPromptCommitted).toBe(true);
+          const text = "analysis complete";
+          return {
+            status: "succeeded",
+            evidence: {
+              kind: "agent",
+              provider: "test",
+              model: "deterministic",
+              text,
+              textHash: createHash("sha256").update(text).digest("hex"),
+              textTruncated: false,
+              durationMs: 1,
+              policyDecisions: [],
+              effectReceipts: [],
+            },
+          };
+        }
+        return { status: "succeeded", evidence: commandEvidence(node.id) };
+      },
+    };
+    const runCapture = createCapture();
+
+    expect(
+      await main(
+        ["run", workflowPath, "--run-id", "cli-model-session-run", "--runs-dir", runsDirectory],
+        runCapture.io,
+        { cwd: directory, executor },
+      ),
+    ).toBe(0);
+
+    const inspectCapture = createCapture();
+    expect(
+      await main(
+        ["inspect", "cli-model-session-run", "--runs-dir", runsDirectory],
+        inspectCapture.io,
+        { cwd: directory },
+      ),
+    ).toBe(0);
+    const inspected = JSON.parse(inspectCapture.stdout.join("\n"));
+    expect(inspected).toMatchObject({
+      status: "succeeded",
+      nodes: {
+        analyze: {
+          modelSession: {
+            protocol: "flow.model-session/v1",
+            activeAttempt: null,
+            primaryEventCount: 1,
+            mismatchCategories: [],
+          },
+        },
+        verify: { modelSession: null },
+      },
+    });
+    expect(JSON.stringify(inspected)).not.toContain("PRIVATE_MODEL_SESSION_PROMPT_CANARY");
+    expect(JSON.stringify(inspected)).not.toContain("primaryEvents");
+  });
+
   it("rejects an invalid operator work profile before run-store mutation", async () => {
     const directory = await createTemporaryDirectory();
     const workflowPath = join(directory, "profile.workflow.yaml");

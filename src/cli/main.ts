@@ -89,8 +89,10 @@ import {
 } from "../application/guided-quickstart.js";
 import { createCapabilityMetadataImporter } from "../application/import-capability-metadata.js";
 import { createSignedOciCapabilityBundleInstaller } from "../application/install-signed-oci-capability-bundle.js";
+import { inspectRunModelSessions } from "../application/model-session-inspection.js";
 import type {
   AgentCommandApprovalDecisionChannel,
+  ModelSessionStore,
   NodeEffectReconciler,
   NodeExecutor,
   RecoverableRunEventStore,
@@ -304,6 +306,7 @@ import {
   QUICKSTART_CODING_FIXTURE_PATH,
 } from "../infrastructure/fs/flow-config-store.js";
 import { AdmissionStoreError } from "../infrastructure/fs/jsonl-admission-store.js";
+import { JsonlModelSessionStore } from "../infrastructure/fs/jsonl-model-session-store.js";
 import { JsonlRunStore, RunStoreError } from "../infrastructure/fs/jsonl-run-store.js";
 import { LocalAcpSessionStore } from "../infrastructure/fs/local-acp-session-store.js";
 import { admitLocalAdaptationCandidate } from "../infrastructure/fs/local-adaptation-candidate.js";
@@ -631,6 +634,7 @@ export interface CliDependencies {
   readonly createNodeExecutor: (profile: FlowSandboxProfile, projectRoot?: string) => NodeExecutor;
   readonly effectReconciler: NodeEffectReconciler;
   readonly createStore: (rootDirectory: string) => RecoverableRunEventStore;
+  readonly createModelSessionStore: (rootDirectory: string) => ModelSessionStore;
   readonly createArtifactStore: (projectRoot: string) => ArtifactStore;
   readonly createAgentCommandApprovalChannel: (
     rootDirectory: string,
@@ -5037,6 +5041,7 @@ async function resumeCommand(
     protectedPaths,
     runId,
     store,
+    modelSessionStore: dependencies.createModelSessionStore(runsDirectory),
     workspaceIsolator: dependencies.createWorkspaceIsolator(
       runsDirectory,
       protectedPaths,
@@ -5234,6 +5239,7 @@ async function executeForegroundWorkflow(input: {
     ...(input.config.projectRoot === null ? {} : { projectRoot: input.config.projectRoot }),
     protectedPaths: input.protectedPaths,
     store: input.dependencies.createStore(input.runsDirectory),
+    modelSessionStore: input.dependencies.createModelSessionStore(input.runsDirectory),
     workspaceIsolator: input.dependencies.createWorkspaceIsolator(
       input.runsDirectory,
       input.protectedPaths,
@@ -5356,8 +5362,12 @@ async function inspectCommand(
   const runsDirectory = resolveRunsDirectory(dependencies.cwd, values["runs-dir"], config);
   const events = await dependencies.createStore(runsDirectory).read(runId);
   const state = reduceRunEvents(events);
+  const inspected = await inspectRunModelSessions(
+    state,
+    dependencies.createModelSessionStore(runsDirectory),
+  );
 
-  io.stdout(JSON.stringify(projectPublicRunOutput(state), null, 2));
+  io.stdout(JSON.stringify(projectPublicRunOutput(inspected), null, 2));
   return 0;
 }
 
@@ -6259,6 +6269,7 @@ async function internalWorkerCommand(
     createExecutor: dependencies.createNodeExecutor,
     effectReconciler: dependencies.effectReconciler,
     createRunStore: dependencies.createStore,
+    createModelSessionStore: dependencies.createModelSessionStore,
     createArtifactStore: dependencies.createArtifactStore,
     createAgentCommandApprovalChannel: dependencies.createAgentCommandApprovalChannel,
     createWorkspaceIsolator: dependencies.createWorkspaceIsolator,
@@ -7006,11 +7017,18 @@ function storageDependenciesFrom(
   overrides: Partial<CliDependencies>,
 ): Pick<
   CliDependencies,
-  "cwd" | "createStore" | "createArtifactStore" | "createAgentCommandApprovalChannel"
+  | "cwd"
+  | "createStore"
+  | "createArtifactStore"
+  | "createAgentCommandApprovalChannel"
+  | "createModelSessionStore"
 > {
   return {
     cwd: overrides.cwd ?? process.cwd(),
     createStore: overrides.createStore ?? ((rootDirectory) => new JsonlRunStore(rootDirectory)),
+    createModelSessionStore:
+      overrides.createModelSessionStore ??
+      ((rootDirectory) => new JsonlModelSessionStore(rootDirectory)),
     createArtifactStore:
       overrides.createArtifactStore ?? ((projectRoot) => new LocalArtifactStore(projectRoot)),
     createAgentCommandApprovalChannel:
@@ -7110,7 +7128,12 @@ function controlDependenciesFrom(
   overrides: Partial<CliDependencies>,
 ): Pick<
   CliDependencies,
-  "cwd" | "createStore" | "createAgentCommandApprovalChannel" | "loadConfig" | "signal"
+  | "cwd"
+  | "createStore"
+  | "createModelSessionStore"
+  | "createAgentCommandApprovalChannel"
+  | "loadConfig"
+  | "signal"
 > {
   const loadConfig = overrides.loadConfig ?? loadEffectiveFlowConfig;
   return {

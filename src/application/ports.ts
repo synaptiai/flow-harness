@@ -15,6 +15,11 @@ import type {
   NodeFailure,
   RunEvent,
 } from "../domain/run/events.js";
+import type {
+  ModelSessionEventInput,
+  ModelSessionIdentity,
+  ModelSessionState,
+} from "../domain/run/model-session.js";
 import type { ModelWorkProfileContext } from "../domain/run/work-profile.js";
 import type {
   CompiledAgentNode,
@@ -34,6 +39,29 @@ export interface RecoverableRunEventStore extends RunEventStore {
   claim(runId: string): Promise<readonly RunEvent[]>;
   release(runId: string): Promise<void>;
   exists?(runId: string): Promise<boolean>;
+}
+
+export interface ModelSessionStore {
+  create(
+    identity: ModelSessionIdentity,
+    at: string,
+    signal?: AbortSignal,
+  ): Promise<ModelSessionState>;
+  append(
+    identity: ModelSessionIdentity,
+    input: ModelSessionEventInput,
+    at: string,
+    signal?: AbortSignal,
+  ): Promise<ModelSessionState>;
+  read(identity: ModelSessionIdentity): Promise<ModelSessionState>;
+  claim(identity: ModelSessionIdentity, signal?: AbortSignal): Promise<ModelSessionState>;
+  release(identity: ModelSessionIdentity): Promise<void>;
+}
+
+export interface ModelSessionJournal {
+  readonly state: ModelSessionState;
+  read(): Promise<ModelSessionState>;
+  append(input: ModelSessionEventInput): Promise<ModelSessionState>;
 }
 
 export interface IsolatedWorkspace {
@@ -154,6 +182,7 @@ export interface NodeExecutionContext {
   readonly agentGoalWorkspace?: string;
   readonly agentSupplementalMemory?: string;
   readonly modelWorkProfile?: ModelWorkProfileContext;
+  readonly modelSession?: ModelSessionJournal;
   readonly agentExactModelSettings?: boolean;
   readonly agentMaxOutputBytes?: number;
   readonly agentMaxOutputTokens?: number;

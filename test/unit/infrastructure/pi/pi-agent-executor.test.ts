@@ -896,12 +896,14 @@ describe("PiAgentExecutor", () => {
       },
     };
     const startedAt = performance.now();
+    const { protectedPaths: omittedProtectedPaths, ...legacyContext } = context;
+    void omittedProtectedPaths;
 
     const outcome = await new PiAgentExecutor(
       runner,
       performance.now.bind(performance),
       10,
-    ).execute(agentNode(10), context);
+    ).execute(agentNode(10), legacyContext as NodeExecutionContext);
 
     expect(performance.now() - startedAt).toBeLessThan(250);
     expect(outcome).toMatchObject({

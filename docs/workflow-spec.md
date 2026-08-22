@@ -1233,9 +1233,10 @@ integer from 2 through 16. No default object is inserted: omission means an inte
 is never retried automatically.
 
 Fresh recovery is evaluated only when `resume` finds a durable `node_started` without a node
-outcome. Flow starts a new in-memory Pi session from the original prompt and current workspace; it
-does not reopen the interrupted transcript, continue a dangling tool call, or reuse provider stream
-state. Read-only attempts qualify only with no effect protocol and no effects. An edit-capable
+outcome. Flow starts a new in-memory Pi session with the current instructions, tools, authority,
+and workspace. It supplies completed provider-neutral history as one new untrusted-data user turn.
+It doesn't continue a dangling tool call, partial model output, provider stream, or opaque provider
+handle. Read-only attempts qualify only with no effect protocol and no effects. An edit-capable
 attempt qualifies only when it declared `flow.effects/v1` and every effect is proven not applied by
 executor settlement or recovery reconciliation. Any committed, applied, unknown, open, or legacy
 writable state blocks. The retry also requires an attempt below `maxAttempts` and capacity under
@@ -1412,6 +1413,85 @@ Changing or deleting the live workspace therefore doesn't change an existing run
 Read [Maintain a durable goal workspace](guides/goal-workspaces.md) for the source schema, exact
 limits, operator commands, compare-and-set updates, and recovery behavior.
 
+## Portable model session record
+
+Each model-backed agent or model verifier node has one private append-only
+`flow.model-session/v1` record across its Flow attempts. Flow creates and syncs the record before
+publishing that node's first authoritative `node_started` event. The run ledger stores only a
+bounded safe summary. Session events cannot schedule work, authorize an operation, satisfy a goal,
+or establish node success.
+
+The record is stored at
+`.flow/runs/<run-id>/model-sessions/<opaque-session-id>/events.jsonl`. The session identifier is a
+deterministic SHA-256 identity derived from the protocol version, run, workflow, and node. Run,
+model-session parent, and session directories must be owner-only. The record and ownership paths
+must be regular files or directories with the expected owner and no symbolic-link traversal.
+
+Every event has version 1, the protocol, and the session/run/workflow/node identity. It also has a
+contiguous sequence, an RFC 3339 timestamp, and the previous head. A SHA-256 head binds the
+canonical event. The closed event vocabulary is:
+
+- `session_created`
+- `attempt_started`
+- `user_message_committed`
+- `model_request_prepared`
+- `model_message_committed`
+- `tool_call_committed`
+- `tool_result_committed`
+- `model_request_settled`
+- `attempt_settled`
+- `attempt_interrupted`
+- `resume_surface_prepared`
+
+The primary prompt is committed exactly once on attempt 1. A request must prepare before its model
+message, tool calls, tool results, and settlement. Tool results must match a prior tool call in the
+same request. The reducer rejects unknown fields, changed identity, invalid attribution, and
+illegal order. It also rejects noncontiguous sequences, changed heads, and invented tool results.
+A request identity must match the committed portable-history digest, event count, and byte count.
+
+Before provider input/output (I/O), `model_request_prepared` binds the exact route and runtime. The
+route includes the provider, model, API adapter, and thinking setting. The runtime identity includes
+the Pi version, system-instruction digest and bytes, and tool-catalog digest, bytes, and count. It
+also binds the authority, portable history, runtime surface, and attempt/turn/request coordinates.
+Public mismatch reporting uses only the fixed categories `provider`, `model`, `api_adapter`,
+`thinking`, `runtime_version`, `system_instructions`, `tool_catalog`, `authority`,
+`portable_history`, `runtime_surface`, `attempt`, `turn`, and `request`. It never returns compared
+private values.
+
+Portable history includes only the original user prompt and completed assistant or tool events. It
+can include bounded usage, request settlement, attempt settlement, and typed interruption
+boundaries. It excludes streamed partials, credentials, provider handles, hidden reasoning, thought
+signatures, raw diagnostics, and native provider objects. An incomplete or uncertain tool call gets
+no invented result. The effect and agent-command protocols remain authoritative for external
+operations.
+
+An eligible fresh recovery appends `attempt_interrupted` to the private record before
+`node_attempt_interrupted` enters the run ledger. The next attempt creates a new in-memory Pi
+session. Flow renders committed primary history and interruption boundaries as one deterministic
+canonical JSON user turn with a fixed untrusted-data instruction. `resume_surface_prepared` stores
+only its render version, source head, digest, and encoded byte count. Generated resume surfaces are
+never primary history.
+
+One encoded event, including its newline, is at most 2 MiB. One record is at most 16 MiB and 1,024
+events. One rendered resume surface is at most 1 MiB and must fit the selected model. Request
+admission reserves 16,384 output tokens and 16,384 safety tokens. Flow subtracts both reserves from
+the selected model's declared context window.
+
+Flow then applies the smaller remaining numeric capacity and global byte limit. The conservative
+byte comparison isn't a provider tokenizer.
+Missing or exhausted capacity fails before provider I/O. An oversized runtime surface also fails
+before provider I/O.
+
+An exclusive same-host owner serializes appends. A final unterminated JSONL fragment is
+uncommitted and can be truncated after recovery claims the record. Corruption within the committed
+prefix, missing required history, live ownership, unsafe storage, or an exceeded limit blocks
+recovery. Public inspection refreshes the safe summary from the private record. If refresh fails,
+the projection retains the durable summary, adds `inspectionStatus: unavailable`, and reports only
+allowlisted mismatch categories.
+
+Read [Inspect and recover portable model sessions](guides/model-sessions.md) for operator guidance
+and [Recovery and interruption safety](recovery.md) for the complete proof gate and ordering.
+
 ## Run ledger
 
 Each run is stored at:
@@ -1430,7 +1510,9 @@ nodes. The control graph persists dependency, guard, exact condition, and join m
 consult mutable workflow input to interpret branch history. A recovery requirement records the node,
 fresh mode, maximum attempts, and whether replay requires no effect protocol or
 `flow.effects/v1`. When declared, the compiled goal is also captured, so replay and inspection do
-not need the original workflow file.
+not need the original workflow file. Model-backed `node_started`, `node_attempt_interrupted`,
+`node_succeeded`, and `node_failed` events can carry only the bounded public model-session summary.
+The private event bodies remain outside the authoritative ledger.
 
 A child `node_started` also captures its deterministic child run id, embedded workflow digest,
 result node/schema identity, and isolation backend. The child ledger's own `run_started` captures

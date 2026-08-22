@@ -83,6 +83,18 @@ option values; preserves unconfirmed termination when sandbox cleanup fails too;
 unconfirmed settlement aborts the model attempt, rejects later durable command preparation, and
 cannot replay as terminal success.
 
+The portable model-session matrix covers the closed event schema, hash chain, and transition order.
+It covers event and record bounds, owner-only JSONL storage, torn-tail recovery, and path safety.
+It also verifies public redaction and request-identity mismatch categories.
+
+Pi seam tests prove write-ahead preparation before provider input/output (I/O). They cover
+completed lifecycle projection and exclude private provider fields and streamed partials. They also
+prove deterministic nonrecursive context and selected-model capacity refusal.
+
+Application and CLI tests prove that session creation precedes `node_started`. They verify private
+interruption before workflow disposition, detached-worker composition, legacy-run compatibility,
+and content-free inspection.
+
 Test doubles are permitted only in tests at explicit ports. Production modules contain no mock executor, fake provider, fallback success, or sample result.
 
 ## Runtime smoke test

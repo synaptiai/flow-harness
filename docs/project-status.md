@@ -49,6 +49,8 @@ on it.
 - Run budgets for starts, tokens, reported cost, active time, and retained artifacts.
 - Durable `fast`, `standard`, and `long` work profiles with read-only remaining-budget guidance for
   model-backed attempts.
+- Private, bounded, provider-neutral model-session records with write-ahead request identity,
+  completed user/model/tool context, redacted inspection, and fresh-turn recovery context.
 - Content-addressed oversized command output with immutable producer references, bounded same-run
   reads, operator inspection, shared retention, and exact-plan pruning.
 - Guided credential-free, zero-tool provider, and bounded provider-backed coding quick starts.
@@ -59,7 +61,8 @@ verification. Read [Complete the coding quick start](guides/coding-quickstart.md
 
 Read [Run and control workflows](guides/run-and-control.md),
 [Maintain a durable goal workspace](guides/goal-workspaces.md),
-[Retain and inspect command artifacts](guides/retained-artifacts.md), the
+[Retain and inspect command artifacts](guides/retained-artifacts.md),
+[Inspect and recover portable model sessions](guides/model-sessions.md), the
 [Workflow specification](workflow-spec.md), and [Architecture](architecture.md).
 
 ### Semantic code context
