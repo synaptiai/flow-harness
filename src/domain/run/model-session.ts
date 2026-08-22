@@ -179,6 +179,81 @@ export interface ModelSessionResumeSurfaceEvent extends ModelSessionEventBase {
   readonly bytes: number;
 }
 
+export interface ContextCompactionSurfaceIdentity {
+  readonly sha256: string;
+  readonly bytes: number;
+  readonly estimatedTokens: number;
+}
+
+export interface ContextCompactionRange {
+  readonly firstSequence: number;
+  readonly lastSequence: number;
+  readonly eventCount: number;
+  readonly sha256: string;
+  readonly bytes: number;
+}
+
+export interface ContextCompactionStartedEvent extends ModelSessionEventBase {
+  readonly type: "context_compaction_started";
+  readonly attempt: number;
+  readonly compaction: number;
+  readonly generationAttempt: number;
+  readonly mode: "references-and-summary";
+  readonly sourceHead: string;
+  readonly range: ContextCompactionRange;
+  readonly referenceSurface: ContextCompactionSurfaceIdentity;
+  readonly outputTokenLimit: number;
+}
+
+export interface ContextCompactionOutputIdentity extends ContextCompactionSurfaceIdentity {}
+
+export interface ContextCompactionSurfaceChange {
+  readonly beforeBytes: number;
+  readonly afterBytes: number;
+  readonly minimumReductionBytes: number;
+}
+
+export interface ContextCompactionConstraintCheck {
+  readonly sha256: string;
+  readonly checked: number;
+  readonly retained: number;
+}
+
+export type ContextCompactionSettlement =
+  | {
+      readonly outcome: "accepted";
+      readonly reason: "accepted";
+      readonly output: ContextCompactionOutputIdentity;
+      readonly usage: ModelSessionUsage;
+      readonly surface: ContextCompactionSurfaceChange;
+      readonly constraints: ContextCompactionConstraintCheck;
+    }
+  | {
+      readonly outcome: "rejected";
+      readonly reason:
+        | "provider_error"
+        | "output_limited"
+        | "constraint_loss"
+        | "not_smaller"
+        | "invalid_output";
+      readonly output?: ContextCompactionOutputIdentity;
+      readonly usage?: ModelSessionUsage;
+      readonly surface?: ContextCompactionSurfaceChange;
+      readonly constraints?: ContextCompactionConstraintCheck;
+    }
+  | {
+      readonly outcome: "interrupted";
+      readonly reason: "process_interrupted";
+    };
+
+export interface ContextCompactionSettledEvent extends ModelSessionEventBase {
+  readonly type: "context_compaction_settled";
+  readonly attempt: number;
+  readonly compaction: number;
+  readonly generationAttempt: number;
+  readonly settlement: ContextCompactionSettlement;
+}
+
 export type ModelSessionPrimaryEvent =
   | ModelSessionUserMessageEvent
   | ModelSessionModelMessageEvent
@@ -196,7 +271,9 @@ export type ModelSessionEvent =
   | ModelSessionRequestSettledEvent
   | ModelSessionAttemptSettledEvent
   | ModelSessionAttemptInterruptedEvent
-  | ModelSessionResumeSurfaceEvent;
+  | ModelSessionResumeSurfaceEvent
+  | ContextCompactionStartedEvent
+  | ContextCompactionSettledEvent;
 
 export type ModelSessionEventInput =
   | { readonly type: "attempt_started"; readonly attempt: number }
@@ -265,6 +342,24 @@ export type ModelSessionEventInput =
       readonly sourceHead: string;
       readonly digest: string;
       readonly bytes: number;
+    }
+  | {
+      readonly type: "context_compaction_started";
+      readonly attempt: number;
+      readonly compaction: number;
+      readonly generationAttempt: number;
+      readonly mode: "references-and-summary";
+      readonly sourceHead: string;
+      readonly range: ContextCompactionRange;
+      readonly referenceSurface: ContextCompactionSurfaceIdentity;
+      readonly outputTokenLimit: number;
+    }
+  | {
+      readonly type: "context_compaction_settled";
+      readonly attempt: number;
+      readonly compaction: number;
+      readonly generationAttempt: number;
+      readonly settlement: ContextCompactionSettlement;
     };
 
 export interface ActiveModelRequest {
@@ -274,6 +369,16 @@ export interface ActiveModelRequest {
   readonly modelMessageCommitted: boolean;
   readonly toolCallIds: readonly string[];
   readonly toolResultIds: readonly string[];
+}
+
+export interface ActiveContextCompaction {
+  readonly attempt: number;
+  readonly compaction: number;
+  readonly generationAttempt: number;
+  readonly sourceHead: string;
+  readonly range: ContextCompactionRange;
+  readonly referenceSurface: ContextCompactionSurfaceIdentity;
+  readonly outputTokenLimit: number;
 }
 
 export interface ModelSessionState extends ModelSessionIdentity {
@@ -287,6 +392,10 @@ export interface ModelSessionState extends ModelSessionIdentity {
   readonly lastAttempt: number;
   readonly activeAttempt: number | null;
   readonly activeRequest: ActiveModelRequest | null;
+  readonly activeCompaction: ActiveContextCompaction | null;
+  readonly compactionCount: number;
+  readonly acceptedCompactionCount: number;
+  readonly interruptedCompactionCount: number;
   readonly primaryPromptCommitted: boolean;
   readonly resumePreparedAttempts: readonly number[];
   readonly primaryEvents: readonly ModelSessionPrimaryEvent[];
@@ -305,6 +414,14 @@ export interface ModelSessionSummary {
   readonly requestCount: number;
   readonly interruptionCount: number;
   readonly resumeSurfaceCount: number;
+  readonly compactionCount: number;
+  readonly acceptedCompactionCount: number;
+  readonly interruptedCompactionCount: number;
+  readonly activeCompaction: {
+    readonly attempt: number;
+    readonly compaction: number;
+    readonly generationAttempt: number;
+  } | null;
   readonly latestResumeSourceHead: string | null;
   readonly latestRequest: {
     readonly systemSha256: string;
@@ -405,6 +522,71 @@ const usageSchema = z
   })
   .strict();
 
+const contextCompactionSurfaceIdentitySchema = z
+  .object({
+    sha256: sha256Schema,
+    bytes: positiveSafeIntegerSchema,
+    estimatedTokens: positiveSafeIntegerSchema,
+  })
+  .strict();
+const contextCompactionRangeSchema = z
+  .object({
+    firstSequence: positiveSafeIntegerSchema,
+    lastSequence: positiveSafeIntegerSchema,
+    eventCount: positiveSafeIntegerSchema,
+    sha256: sha256Schema,
+    bytes: positiveSafeIntegerSchema,
+  })
+  .strict();
+const contextCompactionSurfaceChangeSchema = z
+  .object({
+    beforeBytes: positiveSafeIntegerSchema,
+    afterBytes: positiveSafeIntegerSchema,
+    minimumReductionBytes: positiveSafeIntegerSchema,
+  })
+  .strict();
+const contextCompactionConstraintCheckSchema = z
+  .object({
+    sha256: sha256Schema,
+    checked: positiveSafeIntegerSchema,
+    retained: nonNegativeSafeIntegerSchema,
+  })
+  .strict();
+const contextCompactionSettlementSchema = z.discriminatedUnion("outcome", [
+  z
+    .object({
+      outcome: z.literal("accepted"),
+      reason: z.literal("accepted"),
+      output: contextCompactionSurfaceIdentitySchema,
+      usage: usageSchema,
+      surface: contextCompactionSurfaceChangeSchema,
+      constraints: contextCompactionConstraintCheckSchema,
+    })
+    .strict(),
+  z
+    .object({
+      outcome: z.literal("rejected"),
+      reason: z.enum([
+        "provider_error",
+        "output_limited",
+        "constraint_loss",
+        "not_smaller",
+        "invalid_output",
+      ]),
+      output: contextCompactionSurfaceIdentitySchema.optional(),
+      usage: usageSchema.optional(),
+      surface: contextCompactionSurfaceChangeSchema.optional(),
+      constraints: contextCompactionConstraintCheckSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      outcome: z.literal("interrupted"),
+      reason: z.literal("process_interrupted"),
+    })
+    .strict(),
+]);
+
 const modelSessionEventSchema = z.discriminatedUnion("type", [
   eventBaseSchema.extend({ type: z.literal("session_created") }).strict(),
   eventBaseSchema
@@ -482,6 +664,28 @@ const modelSessionEventSchema = z.discriminatedUnion("type", [
       sourceHead: sha256Schema,
       digest: sha256Schema,
       bytes: positiveSafeIntegerSchema,
+    })
+    .strict(),
+  eventBaseSchema
+    .extend({
+      type: z.literal("context_compaction_started"),
+      attempt: positiveSafeIntegerSchema,
+      compaction: positiveSafeIntegerSchema,
+      generationAttempt: positiveSafeIntegerSchema,
+      mode: z.literal("references-and-summary"),
+      sourceHead: sha256Schema,
+      range: contextCompactionRangeSchema,
+      referenceSurface: contextCompactionSurfaceIdentitySchema,
+      outputTokenLimit: positiveSafeIntegerSchema.max(1_000_000),
+    })
+    .strict(),
+  eventBaseSchema
+    .extend({
+      type: z.literal("context_compaction_settled"),
+      attempt: positiveSafeIntegerSchema,
+      compaction: positiveSafeIntegerSchema,
+      generationAttempt: positiveSafeIntegerSchema,
+      settlement: contextCompactionSettlementSchema,
     })
     .strict(),
 ]);
@@ -590,6 +794,10 @@ export function reduceModelSessionEvents(events: readonly ModelSessionEvent[]): 
         lastAttempt: 0,
         activeAttempt: null,
         activeRequest: null,
+        activeCompaction: null,
+        compactionCount: 0,
+        acceptedCompactionCount: 0,
+        interruptedCompactionCount: 0,
         primaryPromptCommitted: false,
         resumePreparedAttempts: Object.freeze([]),
         primaryEvents: Object.freeze([]),
@@ -790,6 +998,17 @@ export function modelSessionSummary(state: ModelSessionState): ModelSessionSumma
     interruptionCount: state.events.filter((event) => event.type === "attempt_interrupted").length,
     resumeSurfaceCount: state.events.filter((event) => event.type === "resume_surface_prepared")
       .length,
+    compactionCount: state.compactionCount,
+    acceptedCompactionCount: state.acceptedCompactionCount,
+    interruptedCompactionCount: state.interruptedCompactionCount,
+    activeCompaction:
+      state.activeCompaction === null
+        ? null
+        : {
+            attempt: state.activeCompaction.attempt,
+            compaction: state.activeCompaction.compaction,
+            generationAttempt: state.activeCompaction.generationAttempt,
+          },
     latestResumeSourceHead: latestResume?.sourceHead ?? null,
     latestRequest:
       latestRequest === undefined
@@ -871,6 +1090,73 @@ function applyTransition(
         resumePreparedAttempts: Object.freeze([...state.resumePreparedAttempts, event.attempt]),
       };
     }
+    case "context_compaction_started": {
+      requireActiveAttempt(state, event.attempt);
+      if (!state.primaryPromptCommitted) {
+        throw new ModelSessionReplayError("context compaction requires a committed objective");
+      }
+      if (state.activeRequest !== null || state.activeCompaction !== null) {
+        throw new ModelSessionReplayError(
+          "context compaction cannot start while another request or compaction is open",
+        );
+      }
+      if (state.acceptedCompactionCount > 0) {
+        throw new ModelSessionReplayError("model session accepts at most one context compaction");
+      }
+      if (state.compactionCount >= 2) {
+        throw new ModelSessionReplayError("context compaction permits at most two generations");
+      }
+      const expected = state.compactionCount + 1;
+      if (event.compaction !== expected || event.generationAttempt !== expected) {
+        throw new ModelSessionReplayError("context compaction generations must be contiguous");
+      }
+      if (event.sourceHead !== state.head) {
+        throw new ModelSessionReplayError("context compaction source head does not match");
+      }
+      const previousStart = [...state.events]
+        .reverse()
+        .find(
+          (item): item is ContextCompactionStartedEvent =>
+            item.type === "context_compaction_started",
+        );
+      if (previousStart !== undefined && event.outputTokenLimit >= previousStart.outputTokenLimit) {
+        throw new ModelSessionReplayError("second context compaction output limit must be smaller");
+      }
+      validateCompactionRange(state, event.range);
+      return {
+        activeCompaction: deepFreeze({
+          attempt: event.attempt,
+          compaction: event.compaction,
+          generationAttempt: event.generationAttempt,
+          sourceHead: event.sourceHead,
+          range: event.range,
+          referenceSurface: event.referenceSurface,
+          outputTokenLimit: event.outputTokenLimit,
+        }),
+        compactionCount: expected,
+      };
+    }
+    case "context_compaction_settled": {
+      const active = state.activeCompaction;
+      if (
+        active === null ||
+        active.attempt !== event.attempt ||
+        active.compaction !== event.compaction ||
+        active.generationAttempt !== event.generationAttempt
+      ) {
+        throw new ModelSessionReplayError(
+          "context compaction settlement does not match an active generation",
+        );
+      }
+      validateCompactionSettlement(active, event.settlement);
+      return {
+        activeCompaction: null,
+        acceptedCompactionCount:
+          state.acceptedCompactionCount + Number(event.settlement.outcome === "accepted"),
+        interruptedCompactionCount:
+          state.interruptedCompactionCount + Number(event.settlement.outcome === "interrupted"),
+      };
+    }
     case "model_request_prepared": {
       requireActiveAttempt(state, event.attempt);
       if (!state.primaryPromptCommitted) {
@@ -883,6 +1169,11 @@ function applyTransition(
       }
       if (state.activeRequest !== null) {
         throw new ModelSessionReplayError("cannot prepare a request while another request is open");
+      }
+      if (state.activeCompaction !== null) {
+        throw new ModelSessionReplayError(
+          "cannot prepare a request while context compaction is open",
+        );
       }
       const lastPrepared = [...state.events]
         .reverse()
@@ -992,12 +1283,20 @@ function applyTransition(
     }
     case "attempt_settled": {
       requireActiveAttempt(state, event.attempt);
+      if (state.activeCompaction !== null) {
+        throw new ModelSessionReplayError("cannot settle an attempt with open context compaction");
+      }
       if (state.activeRequest !== null) {
         throw new ModelSessionReplayError("cannot settle an attempt with an open model request");
       }
       return { activeAttempt: null };
     }
     case "attempt_interrupted": {
+      if (state.activeCompaction !== null) {
+        throw new ModelSessionReplayError(
+          "context compaction must be interrupted before its model attempt",
+        );
+      }
       if (state.activeAttempt === null) {
         const previous = state.events.at(-1);
         if (previous?.type !== "attempt_settled" || previous.attempt !== event.attempt) {
@@ -1012,6 +1311,107 @@ function applyTransition(
     }
     default:
       return assertNever(event);
+  }
+}
+
+function validateCompactionRange(state: ModelSessionState, range: ContextCompactionRange): void {
+  if (range.firstSequence > range.lastSequence || range.lastSequence > state.eventCount) {
+    throw new ModelSessionReplayError("context compaction range is outside committed history");
+  }
+  const selected = state.primaryEvents.filter(
+    (event) => event.sequence >= range.firstSequence && event.sequence <= range.lastSequence,
+  );
+  if (selected.length !== range.eventCount) {
+    throw new ModelSessionReplayError("context compaction range event count does not match");
+  }
+  if (selected.some((event) => event.type === "user_message_committed")) {
+    throw new ModelSessionReplayError("context compaction range cannot include the objective");
+  }
+  const firstCompactable = state.primaryEvents.find(
+    (event) => event.type !== "user_message_committed",
+  );
+  if (firstCompactable === undefined || range.firstSequence !== firstCompactable.sequence) {
+    throw new ModelSessionReplayError("context compaction range must be a closed history prefix");
+  }
+  const latestRequest = [...state.events]
+    .reverse()
+    .find(
+      (event): event is ModelSessionRequestPreparedEvent => event.type === "model_request_prepared",
+    );
+  if (latestRequest === undefined || range.lastSequence >= latestRequest.sequence) {
+    throw new ModelSessionReplayError(
+      "context compaction range cannot include the most recent request",
+    );
+  }
+  const calls = selected.filter(
+    (event): event is ModelSessionToolCallEvent => event.type === "tool_call_committed",
+  );
+  const results = selected.filter(
+    (event): event is ModelSessionToolResultEvent => event.type === "tool_result_committed",
+  );
+  if (
+    calls.some((call) => !results.some((result) => result.toolCallId === call.toolCallId)) ||
+    results.some((result) => !calls.some((call) => call.toolCallId === result.toolCallId))
+  ) {
+    throw new ModelSessionReplayError("context compaction range cannot orphan a tool pair");
+  }
+}
+
+function validateCompactionSettlement(
+  active: ActiveContextCompaction,
+  settlement: ContextCompactionSettlement,
+): void {
+  if (settlement.outcome === "interrupted") return;
+  if (
+    settlement.outcome === "rejected" &&
+    (settlement.reason === "constraint_loss" || settlement.reason === "not_smaller") &&
+    (settlement.output === undefined ||
+      settlement.usage === undefined ||
+      settlement.surface === undefined ||
+      settlement.constraints === undefined)
+  ) {
+    throw new ModelSessionReplayError(
+      `context compaction ${settlement.reason} rejection requires complete constraint evidence`,
+    );
+  }
+  if (
+    settlement.surface !== undefined &&
+    settlement.surface.beforeBytes !== active.referenceSurface.bytes
+  ) {
+    throw new ModelSessionReplayError("context compaction surface does not match its start");
+  }
+  if (settlement.constraints !== undefined) {
+    if (settlement.constraints.retained > settlement.constraints.checked) {
+      throw new ModelSessionReplayError("context compaction constraint counts are invalid");
+    }
+    if (
+      settlement.reason === "constraint_loss" &&
+      settlement.constraints.retained === settlement.constraints.checked
+    ) {
+      throw new ModelSessionReplayError("context compaction constraint loss is not evidenced");
+    }
+  }
+  if (
+    settlement.outcome === "rejected" &&
+    settlement.reason === "not_smaller" &&
+    settlement.surface !== undefined &&
+    settlement.surface.afterBytes + settlement.surface.minimumReductionBytes <=
+      settlement.surface.beforeBytes
+  ) {
+    throw new ModelSessionReplayError("context compaction size rejection is not evidenced");
+  }
+  if (settlement.outcome === "accepted") {
+    if (settlement.constraints.retained !== settlement.constraints.checked) {
+      throw new ModelSessionReplayError("accepted context compaction lost a protected constraint");
+    }
+    if (
+      settlement.surface.afterBytes + settlement.surface.minimumReductionBytes >
+      settlement.surface.beforeBytes
+    ) {
+      throw new ModelSessionReplayError(
+        "accepted context compaction does not meet its minimum reduction",
+      );
+    }
   }
 }
 

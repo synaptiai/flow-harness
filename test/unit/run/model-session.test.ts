@@ -12,6 +12,7 @@ import {
   type ModelRequestIdentity,
   type ModelSessionState,
   modelSessionId,
+  modelSessionSummary,
   parseModelSessionEvent,
   reduceModelSessionEvents,
   renderModelSessionResumeCapsule,
@@ -347,6 +348,182 @@ describe("model session record", () => {
       requestCapacity({ contextWindowTokens: 2_000_000, requestBytes: 1024 * 1024 + 1 }),
     ).toThrow(/before provider/i);
   });
+
+  it("records an accepted compaction range, output, usage, constraints, and settlement", () => {
+    let state = sessionWithTwoSettledRequests();
+    state = append(state, compactionStart(state, 1, 1_024));
+
+    expect(state.activeCompaction).toMatchObject({
+      attempt: 1,
+      compaction: 1,
+      generationAttempt: 1,
+      outputTokenLimit: 1_024,
+    });
+
+    state = append(state, {
+      type: "context_compaction_settled",
+      attempt: 1,
+      compaction: 1,
+      generationAttempt: 1,
+      settlement: {
+        outcome: "accepted",
+        reason: "accepted",
+        output: { sha256: "7".repeat(64), bytes: 300, estimatedTokens: 75 },
+        usage: modelUsage(),
+        surface: { beforeBytes: 1_000, afterBytes: 600, minimumReductionBytes: 200 },
+        constraints: { sha256: "8".repeat(64), checked: 3, retained: 3 },
+      },
+    });
+
+    expect(state.activeCompaction).toBeNull();
+    expect(state.compactionCount).toBe(1);
+    expect(state.acceptedCompactionCount).toBe(1);
+    expect(modelSessionSummary(state)).toMatchObject({
+      compactionCount: 1,
+      acceptedCompactionCount: 1,
+      interruptedCompactionCount: 0,
+      activeCompaction: null,
+    });
+    expect(reduceModelSessionEvents(state.events)).toEqual(state);
+  });
+
+  it("permits two bounded generations only when the second output limit is smaller", () => {
+    let state = sessionWithTwoSettledRequests();
+    state = append(state, compactionStart(state, 1, 1_024));
+    state = append(state, {
+      type: "context_compaction_settled",
+      attempt: 1,
+      compaction: 1,
+      generationAttempt: 1,
+      settlement: { outcome: "rejected", reason: "output_limited", usage: modelUsage() },
+    });
+
+    expect(() => append(state, compactionStart(state, 2, 1_024))).toThrow(/smaller/i);
+    state = append(state, compactionStart(state, 2, 512));
+    state = append(state, {
+      type: "context_compaction_settled",
+      attempt: 1,
+      compaction: 2,
+      generationAttempt: 2,
+      settlement: {
+        outcome: "rejected",
+        reason: "constraint_loss",
+        output: { sha256: "9".repeat(64), bytes: 200, estimatedTokens: 50 },
+        usage: modelUsage(),
+        surface: { beforeBytes: 1_000, afterBytes: 700, minimumReductionBytes: 200 },
+        constraints: { sha256: "8".repeat(64), checked: 3, retained: 2 },
+      },
+    });
+
+    expect(state.compactionCount).toBe(2);
+    expect(() => append(state, compactionStart(state, 3, 256))).toThrow(/two generations/i);
+  });
+
+  it("requires an unmatched compaction start to be interrupted before its attempt", () => {
+    let state = sessionWithTwoSettledRequests();
+    state = append(state, compactionStart(state, 1, 1_024));
+
+    expect(() =>
+      append(state, {
+        type: "attempt_interrupted",
+        attempt: 1,
+        reason: "process_interrupted",
+      }),
+    ).toThrow(/compaction/i);
+
+    state = append(state, {
+      type: "context_compaction_settled",
+      attempt: 1,
+      compaction: 1,
+      generationAttempt: 1,
+      settlement: { outcome: "interrupted", reason: "process_interrupted" },
+    });
+    state = append(state, {
+      type: "attempt_interrupted",
+      attempt: 1,
+      reason: "process_interrupted",
+    });
+
+    expect(state.activeAttempt).toBeNull();
+    expect(modelSessionSummary(state)).toMatchObject({
+      compactionCount: 1,
+      acceptedCompactionCount: 0,
+      interruptedCompactionCount: 1,
+      activeCompaction: null,
+    });
+  });
+
+  it("rejects a compaction range that includes the objective or latest request", () => {
+    const state = sessionWithTwoSettledRequests();
+
+    expect(() =>
+      append(state, {
+        ...compactionStart(state, 1, 1_024),
+        range: {
+          firstSequence: 3,
+          lastSequence: 8,
+          eventCount: 4,
+          sha256: "6".repeat(64),
+          bytes: 800,
+        },
+      }),
+    ).toThrow(/objective/i);
+    expect(() =>
+      append(state, {
+        ...compactionStart(state, 1, 1_024),
+        range: {
+          firstSequence: 5,
+          lastSequence: 11,
+          eventCount: 4,
+          sha256: "6".repeat(64),
+          bytes: 800,
+        },
+      }),
+    ).toThrow(/most recent request/i);
+    expect(() =>
+      append(state, {
+        ...compactionStart(state, 1, 1_024),
+        range: {
+          firstSequence: 5,
+          lastSequence: 6,
+          eventCount: 2,
+          sha256: "6".repeat(64),
+          bytes: 500,
+        },
+      }),
+    ).toThrow(/tool pair/i);
+  });
+
+  it("rejects settlement claims that lack their required safety evidence", () => {
+    let state = sessionWithTwoSettledRequests();
+    state = append(state, compactionStart(state, 1, 1_024));
+
+    expect(() =>
+      append(state, {
+        type: "context_compaction_settled",
+        attempt: 1,
+        compaction: 1,
+        generationAttempt: 1,
+        settlement: { outcome: "rejected", reason: "constraint_loss" },
+      }),
+    ).toThrow(/constraint evidence/i);
+    expect(() =>
+      append(state, {
+        type: "context_compaction_settled",
+        attempt: 1,
+        compaction: 1,
+        generationAttempt: 1,
+        settlement: {
+          outcome: "accepted",
+          reason: "accepted",
+          output: { sha256: "7".repeat(64), bytes: 300, estimatedTokens: 75 },
+          usage: modelUsage(),
+          surface: { beforeBytes: 1_000, afterBytes: 900, minimumReductionBytes: 200 },
+          constraints: { sha256: "8".repeat(64), checked: 3, retained: 3 },
+        },
+      }),
+    ).toThrow(/minimum reduction/i);
+  });
 });
 
 function append(
@@ -376,5 +553,118 @@ function requestIdentity(state?: ModelSessionState): ModelRequestIdentity {
     attempt: 1,
     turn: 1,
     request: 1,
+  };
+}
+
+function sessionWithTwoSettledRequests(): ModelSessionState {
+  let state = createModelSession(identity, "2026-08-22T00:00:00.000Z").state;
+  state = append(state, { type: "attempt_started", attempt: 1 });
+  state = append(state, {
+    type: "user_message_committed",
+    attempt: 1,
+    origin: "primary_prompt",
+    text: "Inspect the project without changing policy.",
+  });
+  state = append(state, {
+    type: "model_request_prepared",
+    attempt: 1,
+    turn: 1,
+    request: 1,
+    identity: requestIdentity(state),
+  });
+  state = append(state, {
+    type: "model_message_committed",
+    attempt: 1,
+    turn: 1,
+    request: 1,
+    text: "I will inspect the tests.",
+    stopReason: "tool_use",
+  });
+  state = append(state, {
+    type: "tool_call_committed",
+    attempt: 1,
+    turn: 1,
+    request: 1,
+    toolCallId: "call-1",
+    toolName: "flow_exec",
+    argumentsJson: '{"args":["test"],"executable":"npm"}',
+  });
+  state = append(state, {
+    type: "tool_result_committed",
+    attempt: 1,
+    turn: 1,
+    request: 1,
+    toolCallId: "call-1",
+    toolName: "flow_exec",
+    text: "tests passed",
+    isError: false,
+  });
+  state = append(state, {
+    type: "model_request_settled",
+    attempt: 1,
+    turn: 1,
+    request: 1,
+    outcome: "completed",
+  });
+  state = append(state, {
+    type: "model_request_prepared",
+    attempt: 1,
+    turn: 2,
+    request: 2,
+    identity: {
+      ...requestIdentity(state),
+      portableHistory: calculatePortableHistoryIdentity(state),
+      turn: 2,
+      request: 2,
+    },
+  });
+  state = append(state, {
+    type: "model_message_committed",
+    attempt: 1,
+    turn: 2,
+    request: 2,
+    text: "The tests passed.",
+    stopReason: "stop",
+  });
+  return append(state, {
+    type: "model_request_settled",
+    attempt: 1,
+    turn: 2,
+    request: 2,
+    outcome: "completed",
+  });
+}
+
+function compactionStart(
+  state: ModelSessionState,
+  generationAttempt: number,
+  outputTokenLimit: number,
+) {
+  return {
+    type: "context_compaction_started" as const,
+    attempt: 1,
+    compaction: generationAttempt,
+    generationAttempt,
+    mode: "references-and-summary" as const,
+    sourceHead: state.head,
+    range: {
+      firstSequence: 5,
+      lastSequence: 8,
+      eventCount: 3,
+      sha256: "6".repeat(64),
+      bytes: 800,
+    },
+    referenceSurface: { sha256: "5".repeat(64), bytes: 1_000, estimatedTokens: 250 },
+    outputTokenLimit,
+  };
+}
+
+function modelUsage() {
+  return {
+    inputTokens: 250,
+    outputTokens: 75,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    costUsdMicros: 20,
   };
 }
