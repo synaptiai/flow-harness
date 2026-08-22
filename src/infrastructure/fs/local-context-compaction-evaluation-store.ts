@@ -358,7 +358,11 @@ export class LocalContextCompactionEvaluationStore {
     }
     const records = parseLedger(ledgerSource);
     aggregateContextCompactionEvaluation(contextCompactionEvaluationReportInput(header), records);
-    const activeAttempt = await readAttempt(join(directory, "active-attempt.json"));
+    const persistedAttempt = await readAttempt(join(directory, "active-attempt.json"));
+    const activeAttempt =
+      persistedAttempt !== null && attemptHasTerminalRecord(persistedAttempt, records)
+        ? null
+        : persistedAttempt;
     return Object.freeze({ header, records, activeAttempt });
   }
 
@@ -379,11 +383,27 @@ export class LocalContextCompactionEvaluationStore {
     };
     const ownerPath = join(this.directory(evaluationId), "owner.json");
     for (let attempt = 1; attempt <= 2; attempt += 1) {
+      let ownerCreated = false;
       try {
         await durableCreate(ownerPath, `${JSON.stringify(owner)}\n`);
+        ownerCreated = true;
         this.#owners.set(evaluationId, token);
+        const persistedAttempt = await readAttempt(
+          join(this.directory(evaluationId), "active-attempt.json"),
+        );
+        if (
+          persistedAttempt !== null &&
+          attemptHasTerminalRecord(persistedAttempt, stored.records)
+        ) {
+          await unlink(join(this.directory(evaluationId), "active-attempt.json"));
+        }
         return stored;
       } catch (error) {
+        if (ownerCreated) {
+          this.#owners.delete(evaluationId);
+          await unlink(ownerPath).catch(() => undefined);
+          throw error;
+        }
         if (!isErrno(error, "EEXIST") || attempt === 2 || !(await reclaimStaleOwner(ownerPath))) {
           if (isErrno(error, "EEXIST")) {
             throw new ContextCompactionEvaluationStoreError(
@@ -402,13 +422,20 @@ export class LocalContextCompactionEvaluationStore {
   async append(evaluationId: string, record: EvaluationTrialRecord): Promise<void> {
     this.requireOwner(evaluationId);
     const stored = await this.read(evaluationId);
-    if (stored.activeAttempt !== null) {
+    const parsed = parseEvaluationTrialRecord(record);
+    if (
+      stored.activeAttempt !== null &&
+      (stored.activeAttempt.planDigest !== parsed.planDigest ||
+        stored.activeAttempt.position !== parsed.position ||
+        stored.activeAttempt.trialId !== parsed.trialId ||
+        stored.activeAttempt.taskId !== parsed.taskId ||
+        stored.activeAttempt.profileId !== parsed.profileId)
+    ) {
       throw new ContextCompactionEvaluationStoreError(
         "sequence",
-        "active attempt must settle first",
+        "trial record does not match its active attempt",
       );
     }
-    const parsed = parseEvaluationTrialRecord(record);
     aggregateContextCompactionEvaluation(contextCompactionEvaluationReportInput(stored.header), [
       ...stored.records,
       parsed,
@@ -530,6 +557,14 @@ function parseLedger(source: Buffer): readonly EvaluationTrialRecord[] {
       );
     });
   return Object.freeze(records);
+}
+
+function attemptHasTerminalRecord(
+  attempt: EvaluationTrialAttempt,
+  records: readonly EvaluationTrialRecord[],
+): boolean {
+  const terminal = records.at(-1);
+  return terminal?.position === attempt.position && terminal.trialId === attempt.trialId;
 }
 
 async function readAttempt(path: string): Promise<EvaluationTrialAttempt | null> {

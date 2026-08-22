@@ -251,6 +251,11 @@ import {
 } from "../domain/config/resolver.js";
 import { aggregateEvaluation, EvaluationAggregationError } from "../domain/evaluation/aggregate.js";
 import { parseEvaluationTrialAttempt } from "../domain/evaluation/attempt.js";
+import {
+  aggregateContextCompactionEvaluation,
+  ContextCompactionEvaluationAggregationError,
+  ContextCompactionEvaluationPlanError,
+} from "../domain/evaluation/context-compaction-evaluation.js";
 import { verifyEvaluationWorkspace } from "../domain/evaluation/filesystem-verifier.js";
 import { EvaluationPlanError } from "../domain/evaluation/plan.js";
 import { EvaluationRecordError } from "../domain/evaluation/records.js";
@@ -265,6 +270,7 @@ import {
 } from "../domain/policy/policy-package-admission.js";
 import { applyPresentationPackage } from "../domain/presentation/presentation-package-projector.js";
 import { projectRunPresentation } from "../domain/presentation/run-presentation-projector.js";
+import type { ContextCompactionPolicy } from "../domain/run/context-compaction.js";
 import {
   type RunEvent,
   type RunState,
@@ -351,6 +357,14 @@ import {
   LocalCapabilityRepositoryWatcherLock,
   LocalCapabilityRepositoryWatcherLockError,
 } from "../infrastructure/fs/local-capability-repository-watcher-lock.js";
+import { admitLocalContextCompactionEvaluationPlan } from "../infrastructure/fs/local-context-compaction-evaluation-plan.js";
+import {
+  ContextCompactionEvaluationStoreError,
+  contextCompactionEvaluationReportInput,
+  createPublicContextCompactionEvaluationHeader,
+  LocalContextCompactionEvaluationStore,
+  type StoredContextCompactionEvaluation,
+} from "../infrastructure/fs/local-context-compaction-evaluation-store.js";
 import {
   calculateLocalEffectiveHarnessScopeDigest,
   EffectiveHarnessStoreError,
@@ -564,6 +578,10 @@ Usage:
   flow eval inspect <evaluation-id> [--evaluations-dir <path>]
   flow eval export <evaluation-id> --output <path> [--evaluations-dir <path>]
   flow eval tuning-evidence <evaluation-id> --output <path> [--evaluations-dir <path>]
+  flow eval compaction validate <plan.yaml>
+  flow eval compaction run <plan.yaml> [--evaluation-id <id>] [--evaluations-dir <path>]
+  flow eval compaction inspect <evaluation-id> [--evaluations-dir <path>]
+  flow eval compaction export <evaluation-id> --output <path> [--evaluations-dir <path>]
   flow runtime prepare prime-agent
   flow validate <workflow.yaml|workflow:name@version|activation:workflow-id> [--goal-workspace] [--language-server <manifest.json>]
   flow run <workflow.yaml|workflow:name@version|activation:workflow-id> [--work-profile <fast|standard|long>] [--goal-workspace] [--language-server <manifest.json>] [--detach] [--command-id <uuid>] [--run-id <id>] [--runs-dir <path>] [--cwd <path>]
@@ -910,19 +928,27 @@ export async function main(
       io.stderr(`${error.code}: ${error.message}`);
       return 1;
     }
-    if (error instanceof EvaluationPlanError) {
+    if (
+      error instanceof EvaluationPlanError ||
+      error instanceof ContextCompactionEvaluationPlanError
+    ) {
       io.stderr(boundedCliDiagnostic(error.message));
       return 2;
     }
     if (
       error instanceof EvaluationAdmissionError ||
       error instanceof EvaluationStoreError ||
+      error instanceof ContextCompactionEvaluationStoreError ||
       error instanceof EvaluationExportError
     ) {
       io.stderr(boundedCliDiagnostic(error.message));
       return 1;
     }
-    if (error instanceof EvaluationAggregationError || error instanceof EvaluationRecordError) {
+    if (
+      error instanceof EvaluationAggregationError ||
+      error instanceof ContextCompactionEvaluationAggregationError ||
+      error instanceof EvaluationRecordError
+    ) {
       io.stderr(error.message);
       return 1;
     }
@@ -3253,6 +3279,9 @@ async function evaluationCommand(
   overrides: Partial<CliDependencies>,
 ): Promise<number> {
   const subcommand = args[0];
+  if (subcommand === "compaction") {
+    return await contextCompactionEvaluationCommand(args.slice(1), io, overrides);
+  }
   if (subcommand === "validate") {
     const { positionals } = parseCommandArgs(args.slice(1), {});
     const planArgument = requireSinglePositional(
@@ -3540,6 +3569,236 @@ async function evaluationCommand(
   }
 
   throw new CliUsageError("eval requires validate, run, inspect, export, or tuning-evidence");
+}
+
+async function contextCompactionEvaluationCommand(
+  args: readonly string[],
+  io: CliIo,
+  overrides: Partial<CliDependencies>,
+): Promise<number> {
+  const subcommand = args[0];
+  if (subcommand === "validate") {
+    const { positionals } = parseCommandArgs(args.slice(1), {});
+    const planArgument = requireSinglePositional(
+      positionals,
+      "eval compaction validate requires one plan path",
+    );
+    const cwd = overrides.cwd ?? process.cwd();
+    const admitted = await admitLocalContextCompactionEvaluationPlan(
+      resolve(cwd, planArgument),
+      overrides.signal === undefined ? {} : { signal: overrides.signal },
+    );
+    io.stdout(
+      JSON.stringify(
+        {
+          valid: true,
+          kind: "ContextCompactionEvaluationPlan",
+          id: admitted.id,
+          planDigest: admitted.planDigest,
+          suite: { id: admitted.suite.id, version: admitted.suite.version },
+          tasks: admitted.suite.tasks.map((task) => ({
+            id: task.id,
+            protectedConstraintCount: task.protectedConstraints.length,
+          })),
+          modes: admitted.modes,
+          scheduledTrials: admitted.schedule.length,
+          productionActivation: "not_authorized",
+        },
+        null,
+        2,
+      ),
+    );
+    return 0;
+  }
+
+  if (subcommand === "run") {
+    const { positionals, values } = parseCommandArgs(args.slice(1), {
+      "evaluation-id": { type: "string" },
+      "evaluations-dir": { type: "string" },
+    });
+    const planArgument = requireSinglePositional(
+      positionals,
+      "eval compaction run requires one plan path",
+    );
+    const dependencies = dependenciesFrom(overrides);
+    const admitted = await admitLocalContextCompactionEvaluationPlan(
+      resolve(dependencies.cwd, planArgument),
+      dependencies.signal === undefined ? {} : { signal: dependencies.signal },
+    );
+    const evaluationLocation = await resolveEvaluationLocation(
+      dependencies,
+      values["evaluations-dir"],
+    );
+    const evaluationsDirectory = join(evaluationLocation.directory, "context-compaction");
+    const projectRoot = evaluationLocation.projectRoot ?? (await realpath(dependencies.cwd));
+    const evaluationId = values["evaluation-id"] ?? admitted.id;
+    const store = new LocalContextCompactionEvaluationStore(evaluationsDirectory);
+    const header = createPublicContextCompactionEvaluationHeader(admitted, evaluationId);
+    try {
+      await store.read(evaluationId);
+    } catch (error) {
+      if (!(error instanceof ContextCompactionEvaluationStoreError && error.code === "not_found")) {
+        throw error;
+      }
+      await store.create(header);
+    }
+    const claimed = await store.claim(evaluationId, admitted.planDigest);
+    try {
+      const evaluationRuntime = join(evaluationsDirectory, evaluationId, "runtime");
+      const runStoreDirectory = join(evaluationsDirectory, evaluationId, "runs");
+      const evaluationRoot = join(evaluationsDirectory, evaluationId);
+      const workspaceIsolator = dependencies.createWorkspaceIsolator(
+        evaluationRuntime,
+        [evaluationRuntime, join(projectRoot, ".flow")],
+        evaluationRuntime,
+        projectRoot,
+      );
+      const executor = dependencies.createNodeExecutor(
+        evaluationLocation.sandboxProfile,
+        projectRoot,
+      );
+      const artifactStore = dependencies.createArtifactStore(projectRoot);
+      const modelSessionStore = dependencies.createModelSessionStore(
+        join(evaluationRoot, "model-sessions"),
+      );
+      const adapters = new Map<string, HarnessEvaluationAdapter>();
+      await runEvaluationTrials({
+        plan: {
+          planDigest: admitted.planDigest,
+          schedule: admitted.schedule,
+          controls: admitted.controls,
+          tasks: admitted.suite.tasks.map((task) => ({
+            id: task.id,
+            fixture: {
+              sourceCwd: task.fixture.sourceCwd,
+              digest: task.fixture.digest,
+              entryCount: task.fixture.entryCount,
+              logicalBytes: task.fixture.logicalBytes,
+              instructionPath: task.fixture.instructionPath,
+              instructionSha256: task.fixture.instructionSha256,
+            },
+            verifier: task.verifier,
+          })),
+          profiles: admitted.modes.map((mode) => ({ id: mode, adapter: "flow-workflow-v1" })),
+        },
+        committedRecords: claimed.records,
+        attempts: {
+          active: claimed.activeAttempt,
+          begin: (attempt) => store.beginAttempt(evaluationId, attempt),
+          complete: (attempt) => store.completeAttempt(evaluationId, attempt),
+        },
+        append: (record) => store.append(evaluationId, record),
+        workspaceIsolator,
+        observeFixture: observeEvaluationFixture,
+        resolveAdapter: (profileId, adapterKind) => {
+          const existing = adapters.get(profileId);
+          if (existing !== undefined) return existing;
+          if (adapterKind !== "flow-workflow-v1") {
+            throw new Error("context compaction evaluation requires the Flow workflow adapter");
+          }
+          if (
+            profileId !== "none" &&
+            profileId !== "references" &&
+            profileId !== "references-and-summary"
+          ) {
+            throw new Error(`context compaction mode "${profileId}" is unavailable`);
+          }
+          const adapterImplementation: HarnessEvaluationAdapter = {
+            kind: "flow-workflow-v1",
+            run: async (request) => {
+              const task = admitted.suite.tasks.find(
+                (candidate) => candidate.id === request.trial.taskId,
+              );
+              if (task === undefined) {
+                throw new Error(`context compaction task "${request.trial.taskId}" is unavailable`);
+              }
+              const contextCompaction: ContextCompactionPolicy =
+                profileId === "references-and-summary"
+                  ? {
+                      mode: profileId,
+                      protectedConstraints: task.protectedConstraints,
+                      minimumReductionBytes: admitted.controls.compaction.minimumReductionBytes,
+                      outputTokenLimits: admitted.controls.compaction.summaryOutputTokenLimits,
+                    }
+                  : { mode: profileId };
+              return await new FlowWorkflowEvaluationAdapter(
+                {
+                  id: profileId,
+                  adapter: "flow-workflow-v1",
+                  workflow: admitted.profile.workflow,
+                },
+                {
+                  executor,
+                  createStore: () => dependencies.createStore(runStoreDirectory),
+                  workspaceIsolator,
+                  artifactStore,
+                  modelSessionStore,
+                  contextCompaction,
+                  ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
+                },
+              ).run(request);
+            },
+          };
+          const adapter = Object.freeze(adapterImplementation);
+          adapters.set(profileId, adapter);
+          return adapter;
+        },
+        verifyWorkspace: verifyEvaluationWorkspace,
+        environment: createEvaluationEnvironment(),
+        ...(dependencies.signal === undefined ? {} : { signal: dependencies.signal }),
+      });
+    } finally {
+      await store.release(evaluationId);
+    }
+    io.stdout(
+      JSON.stringify(contextCompactionEvaluationEvidence(await store.read(evaluationId)), null, 2),
+    );
+    return 0;
+  }
+
+  if (subcommand === "inspect" || subcommand === "export") {
+    const { positionals, values } = parseCommandArgs(args.slice(1), {
+      "evaluations-dir": { type: "string" },
+      ...(subcommand === "export" ? { output: { type: "string" as const } } : {}),
+    });
+    const evaluationId = requireSinglePositional(
+      positionals,
+      `eval compaction ${subcommand} requires one evaluation id`,
+    );
+    const dependencies = configDependenciesFrom(overrides);
+    const root = join(
+      await resolveEvaluationsDirectory(dependencies, values["evaluations-dir"]),
+      "context-compaction",
+    );
+    const evidence = contextCompactionEvaluationEvidence(
+      await new LocalContextCompactionEvaluationStore(root).read(evaluationId),
+    );
+    if (subcommand === "inspect") {
+      io.stdout(JSON.stringify(evidence, null, 2));
+      return 0;
+    }
+    const output = requireStringOption(
+      values.output,
+      "eval compaction export requires --output <path>",
+    );
+    const outputPath = resolve(dependencies.cwd, output);
+    await writeCanonicalEvaluationExport(outputPath, evidence);
+    io.stdout(JSON.stringify({ exported: true, evaluationId, output: outputPath }, null, 2));
+    return 0;
+  }
+
+  throw new CliUsageError("eval compaction requires validate, run, inspect, or export");
+}
+
+function contextCompactionEvaluationEvidence(stored: StoredContextCompactionEvaluation) {
+  return Object.freeze({
+    header: stored.header,
+    records: stored.records,
+    report: aggregateContextCompactionEvaluation(
+      contextCompactionEvaluationReportInput(stored.header),
+      stored.records,
+    ),
+  });
 }
 
 async function candidateCommand(

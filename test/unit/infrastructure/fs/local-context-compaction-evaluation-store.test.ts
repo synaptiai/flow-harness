@@ -47,7 +47,6 @@ describe("local context compaction evaluation store", () => {
       new LocalContextCompactionEvaluationStore(root).read(header.evaluationId),
     ).resolves.toMatchObject({ activeAttempt: { trialId: scheduled.trialId }, records: [] });
 
-    await store.completeAttempt(header.evaluationId, attempt);
     const record = createEvaluationTrialRecord({
       schedule: scheduled,
       planDigest,
@@ -100,7 +99,16 @@ describe("local context compaction evaluation store", () => {
       },
     });
     await store.append(header.evaluationId, record);
+    await expect(
+      new LocalContextCompactionEvaluationStore(root).read(header.evaluationId),
+    ).resolves.toMatchObject({ activeAttempt: null });
     await store.release(header.evaluationId);
+    const recovered = new LocalContextCompactionEvaluationStore(root);
+    await expect(recovered.claim(header.evaluationId, planDigest)).resolves.toMatchObject({
+      activeAttempt: null,
+      records: [{ recordDigest: record.recordDigest }],
+    });
+    await recovered.release(header.evaluationId);
 
     expect(claimed.records).toEqual([]);
     await expect(

@@ -110,6 +110,94 @@ describe("evaluation CLI", () => {
     expect(JSON.parse(await readFile(output, "utf8"))).toEqual(runEvidence);
   });
 
+  it("runs, inspects, and exports the balanced three-mode compaction experiment", async () => {
+    const project = await evaluationProject();
+    const evaluations = join(project, "compaction-evaluations");
+    const planPath = join(project, "compaction-evaluation.yaml");
+    const validation = capture();
+
+    expect(
+      await main(["eval", "compaction", "validate", planPath], validation.io, {
+        cwd: project,
+      }),
+    ).toBe(0);
+    expect(JSON.parse(validation.stdout.join("\n"))).toMatchObject({
+      valid: true,
+      kind: "ContextCompactionEvaluationPlan",
+      scheduledTrials: 18,
+      modes: ["none", "references", "references-and-summary"],
+      productionActivation: "not_authorized",
+    });
+
+    const run = capture();
+    expect(
+      await main(
+        ["eval", "compaction", "run", planPath, "--evaluations-dir", evaluations],
+        run.io,
+        { cwd: project, executor: evaluationExecutor() },
+      ),
+      [...run.stderr, ...run.stdout].join("\n"),
+    ).toBe(0);
+    const evidence = JSON.parse(run.stdout.join("\n"));
+    expect(evidence).toMatchObject({
+      header: { kind: "ContextCompactionEvaluation", schedule: { length: 18 } },
+      records: { length: 18 },
+      report: {
+        scheduledTrials: 18,
+        committedTrials: 18,
+        productionActivation: "not_authorized",
+        modes: {
+          none: { verifiedSuccess: 6 },
+          references: { verifiedSuccess: 6 },
+          "references-and-summary": {
+            verifiedSuccess: 6,
+            compaction: { attempts: 0, accepted: 0 },
+          },
+        },
+        comparisons: {
+          referencesVsNone: { verdict: "passes", comparablePairs: 6 },
+          summaryVsReferences: { verdict: "passes", comparablePairs: 6 },
+        },
+      },
+    });
+
+    const inspect = capture();
+    expect(
+      await main(
+        [
+          "eval",
+          "compaction",
+          "inspect",
+          "reference-first-compaction",
+          "--evaluations-dir",
+          evaluations,
+        ],
+        inspect.io,
+        { cwd: project },
+      ),
+    ).toBe(0);
+    expect(JSON.parse(inspect.stdout.join("\n"))).toEqual(evidence);
+
+    const output = join(project, "compaction-evaluation-export.json");
+    expect(
+      await main(
+        [
+          "eval",
+          "compaction",
+          "export",
+          "reference-first-compaction",
+          "--evaluations-dir",
+          evaluations,
+          "--output",
+          output,
+        ],
+        capture().io,
+        { cwd: project },
+      ),
+    ).toBe(0);
+    expect(JSON.parse(await readFile(output, "utf8"))).toEqual(evidence);
+  });
+
   it("inspects and exports the exact paired model routes from durable evidence", async () => {
     const project = await evaluationProject();
     const evaluations = join(project, "route-evaluations");
@@ -439,6 +527,48 @@ comparison:
   maxFalseCompletionRate: 0
   maxPolicyViolations: 0
   maxVerifiedSuccessRegression: 0
+`,
+  );
+  await writeFile(
+    join(project, "compaction-evaluation.yaml"),
+    `apiVersion: flow.synapti.ai/v1alpha1
+kind: ContextCompactionEvaluationPlan
+metadata: { id: reference-first-compaction }
+suite:
+  id: context-compaction-holdout
+  version: 1.0.0
+  tasks:
+    - id: preserve-result
+      partition: holdout
+      fixture: fixtures/task
+      instruction: TASK.md
+      verifier:
+        kind: filesystem-v1
+        assertions: [{ kind: exists, path: RESULT.md }]
+      protectedConstraints: [Create RESULT.md.]
+      constraintAssertionIndexes: [0]
+profile: { adapter: flow-workflow-v1, workflow: baseline.workflow.yaml }
+controls:
+  model: { provider: test, id: deterministic, thinking: medium }
+  budget:
+    maxNodeStarts: 8
+    maxModelTokens: 10000
+    maxCostUsdMicros: 1000000
+    maxExecutionMs: 300000
+    maxArtifactBytes: 1048576
+  network: deny
+  retry: { providerRetries: 0, harnessRetries: 0 }
+  compaction:
+    minimumReductionBytes: 1024
+    summaryOutputTokenLimits: [512, 256]
+seeds: [11, 12, 13, 14, 15, 16]
+modes: [none, references, references-and-summary]
+order: six-order-balanced-v1
+comparison:
+  minimumPairedTrials: 6
+  maxVerifiedSuccessRegression: 0
+  maxTotalTokenIncreaseRate: 0
+  maxConstraintLosses: 0
 `,
   );
   return project;
