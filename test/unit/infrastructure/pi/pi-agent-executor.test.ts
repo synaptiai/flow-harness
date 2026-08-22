@@ -248,6 +248,36 @@ describe("PiAgentExecutor", () => {
     });
   });
 
+  it("translates the provider-neutral compaction policy into one Pi request", async () => {
+    let request: PiAgentRunRequest | undefined;
+    const runner: PiAgentRunner = {
+      async run(input) {
+        request = input;
+        return { text: "Compaction configured.", stopReason: "stop" };
+      },
+    };
+
+    const outcome = await new PiAgentExecutor(runner, () => 100).execute(agentNode(), {
+      ...context,
+      contextCompaction: {
+        mode: "references-and-summary",
+        protectedConstraints: ["Never change release policy."],
+        minimumReductionBytes: 1_024,
+        outputTokenLimits: [512, 256],
+      },
+    });
+
+    expect(outcome.status).toBe("succeeded");
+    expect(request).toMatchObject({
+      contextCompactionMode: "references-and-summary",
+      contextSummary: {
+        protectedConstraints: ["Never change release policy."],
+        minimumReductionBytes: 1_024,
+        outputTokenLimits: [512, 256],
+      },
+    });
+  });
+
   it("preserves optional agent activity telemetry from the runner", async () => {
     const runner: PiAgentRunner = {
       async run() {
@@ -1266,6 +1296,7 @@ describe("EmbeddedPiAgentRunner", () => {
     expect(sessionOptions?.settingsManager?.getProviderRetrySettings()).toMatchObject({
       maxRetries: 0,
     });
+    expect(sessionOptions?.settingsManager?.getCompactionEnabled()).toBe(false);
   });
 
   it("rejects model settings that Pi cannot apply exactly before session creation", async () => {

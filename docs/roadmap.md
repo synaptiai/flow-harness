@@ -373,6 +373,8 @@ replayable, and visible in the selected profile.
 
 ### Slice 9.6: Evaluate reference-first compaction
 
+**Implemented in current source.**
+
 - Remove or replace large tool results with artifact references before requesting a model summary.
 - Keep the original objective, active constraints, policy identity, unresolved approvals, and
   effect uncertainty outside model-generated summaries.

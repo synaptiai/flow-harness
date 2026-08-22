@@ -5,7 +5,8 @@ interrupted attempt. Flow preserves completed conversation and tool context in a
 provider-neutral record. It never treats that record as proof that a node or workflow succeeded.
 
 This feature is implemented in the current source tree. It applies to model-backed agent and model
-verifier nodes that run through the production Pi adapter.
+verifier nodes that run through the production Pi adapter. Reference-first compaction is available
+only through the dedicated evaluation path. Ordinary runs don't select a compaction policy.
 
 ## Understand the two durable records
 
@@ -43,6 +44,8 @@ The append-only record contains only closed `flow.model-session/v1` events:
 | `attempt_settled` | Closes one attempt with its terminal adapter outcome. |
 | `attempt_interrupted` | Marks a process-interrupted attempt before workflow retry disposition. |
 | `resume_surface_prepared` | Binds the digest, size, source head, and render version of a fresh resume surface. |
+| `context_compaction_started` | Binds one selected completed-event range, reference surface, and output-token limit before summary provider I/O. |
+| `context_compaction_settled` | Records an accepted, rejected, or interrupted summary generation with bounded output, usage, reduction, and constraint evidence. |
 
 Flow doesn't store streamed partials, credentials, or provider response or conversation handles.
 It excludes hidden reasoning, thought signatures, raw diagnostics, and provider-native objects.
@@ -128,6 +131,14 @@ Request admission uses the selected model's declared context window. Flow reserv
 for output and another 16,384 tokens as a safety margin. It then applies the smaller remaining
 capacity or the 1 MiB global byte ceiling.
 
+When an evaluation selects reference projection, Flow first replaces eligible oversized command
+results with verified retained-artifact references. When it also selects summaries, Flow can
+replace one closed older range with one accepted bounded summary. The original objective, latest
+completed request, current system instructions, tool catalog, authority, and exact protected
+constraints remain outside model-generated summary text. Read
+[Evaluate reference-first context compaction](context-compaction.md) for the eligibility and
+comparison rules.
+
 This byte check is deliberately conservative. It isn't a provider tokenizer or a promise that
 every provider formats requests identically. Flow rejects a request when the selected model has no
 remaining capacity. It also rejects a canonical runtime surface above the admitted limit. Both
@@ -155,7 +166,7 @@ count bounds a large sequence of small events.
 | Request surface no longer matches | Reports stable mismatch categories without private values. | Compare reviewed configuration and runtime changes. Start a new run when exact recovery isn't valid. |
 | Provider stream was interrupted | Stores no partial model message and never continues the stream. | Use fresh recovery only when the workflow proof gate allows it. |
 | Tool call has no completed result | Never invents a result. Effect or command settlement decides whether retry is safe. | Inspect the authoritative effect and command state before any new run. |
-| Record or request reaches a limit | Stops before the next provider call. | Start a reviewed new run or wait for the planned compaction work. Don't raise limits by editing durable state. |
+| Record or request reaches a limit | Stops before the next provider call. | Start a reviewed new run. You can use the dedicated compaction evaluation to gather evidence, but it doesn't change ordinary runtime policy. Don't raise limits by editing durable state. |
 
 ## Security and compatibility limits
 
@@ -168,8 +179,9 @@ count bounds a large sequence of small events.
 - A provider change can alter the request identity. Flow reports the category, but it doesn't claim
   that two providers interpret the portable history identically.
 
-- This slice doesn't compact or summarize history. It doesn't provide cross-run memory or make an
-  Agent Client Protocol (ACP) session the owner of model context.
+- The dedicated evaluation can project references and generate one bounded summary. Ordinary runs
+  don't activate that policy. Neither path provides cross-run memory or makes an Agent Client
+  Protocol (ACP) session the owner of model context.
 
 - Session content can contain untrusted model and tool data. Current system instructions, tools,
   policy, and the workflow ledger remain authoritative.

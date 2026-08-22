@@ -387,6 +387,26 @@ incomplete safety evidence, and constraint/verdict gates.
 Adapter telemetry tests also execute a child-only profile and require unprojected child activity,
 policy, intervention, and recovery measurements to remain unavailable.
 
+Context compaction tests cover structured reference projection, artifact identity and availability,
+all-or-nothing fallback, and projection before capacity and request identity. Session reducer tests
+cover closed ranges, one accepted summary, two generations at most, a smaller retry bound, and
+interrupted lifecycle settlement. Pi tests also keep the exact objective, protected constraints,
+system instructions, tools, and authority outside summary authority. They verify zero-tool summary
+requests, usage accounting, ambient-compaction disablement, and durable crash reconstruction.
+
+Specialized evaluation tests cover holdout-only plans, one verifier assertion per protected
+constraint, all six mode orders, root-workflow-only measurement, and the 4,096-trial limit. Report
+tests cover hierarchical gating, null evidence after harness failure, task success, constraints,
+provider-surface size, summary usage, cost, latency, and artifact reopening. Store tests cover
+atomic publication, direct-directory identity, exact schedule replay, owner recovery, adapter-start
+recovery, and hash-chain validation. CLI integration validates, runs, inspects, and exports all 18
+offline deterministic trials through the production command path.
+
+The public example at `examples/evaluation/context-compaction.evaluation.yaml` validates without
+credentials. A real run needs the declared provider credentials and can incur provider cost. Read
+[Evaluate reference-first context compaction](guides/context-compaction.md) before you interpret its
+report.
+
 Native Pi tests cover the strict profile identity, registry drift, signed protocol, frame limits,
 durable adapter starts, cancellation, and process-tree termination. They also cover cumulative
 model token and cost limits. Registry tests change an installed dependency after admission. Runtime

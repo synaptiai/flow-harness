@@ -13,6 +13,7 @@ import type {
 import { resumeWorkflow, runWorkflow } from "../../../src/application/run-workflow.js";
 import { parseRunEvent, type RunEvent } from "../../../src/domain/run/events.js";
 import {
+  calculatePortableHistoryIdentity,
   createModelSession,
   createModelSessionEvent,
   type ModelSessionEventInput,
@@ -21,10 +22,38 @@ import {
   modelSessionId,
   modelSessionSummary,
   reduceModelSessionEvents,
+  selectContextCompactionRange,
 } from "../../../src/domain/run/model-session.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 
 describe("runWorkflow model session coordination", () => {
+  it("defaults compaction counters when replaying a pre-compaction run summary", () => {
+    const session = createModelSession(
+      identity("run-model-session-legacy"),
+      "2026-08-22T00:00:00.000Z",
+    ).state;
+    const event = openAttemptEvents(workflow(), session)[1];
+    if (event?.type !== "node_started" || event.modelSession === undefined) {
+      throw new Error("legacy fixture requires a model-backed node start");
+    }
+    const {
+      compactionCount: _compactionCount,
+      acceptedCompactionCount: _acceptedCompactionCount,
+      interruptedCompactionCount: _interruptedCompactionCount,
+      activeCompaction: _activeCompaction,
+      ...legacySummary
+    } = event.modelSession;
+
+    expect(parseRunEvent({ ...event, modelSession: legacySummary })).toMatchObject({
+      modelSession: {
+        compactionCount: 0,
+        acceptedCompactionCount: 0,
+        interruptedCompactionCount: 0,
+        activeCompaction: null,
+      },
+    });
+  });
+
   it("creates and seeds a session before publishing a model-backed node start", async () => {
     const operations: string[] = [];
     const store = new MemoryRunStore([], operations);
@@ -105,6 +134,40 @@ describe("runWorkflow model session coordination", () => {
       operations.indexOf("run:node_attempt_interrupted"),
     );
     expect(operations).toContain("executor:implement:2");
+  });
+
+  it("interrupts an unmatched compaction before closing its model attempt", async () => {
+    const operations: string[] = [];
+    const compiled = workflow();
+    const sessions = new MemoryModelSessionStore(operations);
+    const openSession = openCompactionSessionState(identity("run-compaction-recovery"));
+    sessions.states.set(openSession.sessionId, openSession);
+    const store = new MemoryRunStore(openAttemptEvents(compiled, openSession), operations);
+    const executor = recordingExecutor(operations, (context) => {
+      if (context.attempt !== 2) return;
+      expect(context.modelSession?.state.events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "context_compaction_settled",
+            settlement: { outcome: "interrupted", reason: "process_interrupted" },
+          }),
+          expect.objectContaining({ type: "attempt_interrupted", attempt: 1 }),
+        ]),
+      );
+    });
+
+    const state = await resumeWorkflow(compiled, {
+      ...runOptions(store, executor, sessions),
+      runId: "run-compaction-recovery",
+    });
+
+    expect(state.nodes.implement).toMatchObject({ status: "succeeded", attempt: 2 });
+    expect(operations.indexOf("session:context_compaction_settled")).toBeLessThan(
+      operations.indexOf("session:attempt_interrupted"),
+    );
+    expect(operations.indexOf("session:attempt_interrupted")).toBeLessThan(
+      operations.indexOf("run:node_attempt_interrupted"),
+    );
   });
 
   it("fails closed without mutating workflow history when a required session is missing", async () => {
@@ -407,6 +470,114 @@ function openSessionState(identity: ModelSessionIdentity): ModelSessionState {
     },
     2,
   );
+}
+
+function openCompactionSessionState(identity: ModelSessionIdentity): ModelSessionState {
+  let state = openSessionState(identity);
+  state = appendState(
+    state,
+    {
+      type: "model_request_prepared",
+      attempt: 1,
+      turn: 1,
+      request: 1,
+      identity: requestIdentity(state, 1, 1),
+    },
+    3,
+  );
+  state = appendState(
+    state,
+    {
+      type: "model_message_committed",
+      attempt: 1,
+      turn: 1,
+      request: 1,
+      text: "First response.",
+      stopReason: "stop",
+    },
+    4,
+  );
+  state = appendState(
+    state,
+    {
+      type: "model_request_settled",
+      attempt: 1,
+      turn: 1,
+      request: 1,
+      outcome: "completed",
+    },
+    5,
+  );
+  state = appendState(
+    state,
+    {
+      type: "model_request_prepared",
+      attempt: 1,
+      turn: 2,
+      request: 2,
+      identity: requestIdentity(state, 2, 2),
+    },
+    6,
+  );
+  state = appendState(
+    state,
+    {
+      type: "model_message_committed",
+      attempt: 1,
+      turn: 2,
+      request: 2,
+      text: "Second response.",
+      stopReason: "stop",
+    },
+    7,
+  );
+  state = appendState(
+    state,
+    {
+      type: "model_request_settled",
+      attempt: 1,
+      turn: 2,
+      request: 2,
+      outcome: "completed",
+    },
+    8,
+  );
+  const selection = selectContextCompactionRange(state);
+  if (selection === null) throw new Error("test session has no compactable range");
+  return appendState(
+    state,
+    {
+      type: "context_compaction_started",
+      attempt: 1,
+      compaction: 1,
+      generationAttempt: 1,
+      mode: "references-and-summary",
+      sourceHead: state.head,
+      range: selection.range,
+      referenceSurface: { sha256: "5".repeat(64), bytes: 1_000, estimatedTokens: 250 },
+      outputTokenLimit: 512,
+    },
+    9,
+  );
+}
+
+function requestIdentity(state: ModelSessionState, turn: number, request: number) {
+  return {
+    version: 1 as const,
+    provider: "test",
+    model: "deterministic",
+    apiAdapter: "test",
+    thinking: "off",
+    runtimeVersion: "test",
+    system: { sha256: "1".repeat(64), bytes: 1 },
+    toolCatalog: { sha256: "2".repeat(64), bytes: 1, count: 1 },
+    authority: { sha256: "3".repeat(64) },
+    portableHistory: calculatePortableHistoryIdentity(state),
+    runtimeSurface: { sha256: "4".repeat(64), bytes: 1 },
+    attempt: 1,
+    turn,
+    request,
+  };
 }
 
 function successfulAgentOutcome(): NodeExecutionOutcome {

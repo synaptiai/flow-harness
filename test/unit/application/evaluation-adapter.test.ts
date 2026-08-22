@@ -15,8 +15,13 @@ import {
   createAgentCapabilityEvidence,
   createCapabilitySnapshot,
 } from "../../../src/domain/capability/agent-skills.js";
+import {
+  calculatePortableHistoryIdentity,
+  selectContextCompactionRange,
+} from "../../../src/domain/run/model-session.js";
 import { compileWorkflowText } from "../../../src/domain/workflow/compiler.js";
 import { calculateWorkflowDigest } from "../../../src/domain/workflow/digest.js";
+import { JsonlModelSessionStore } from "../../../src/infrastructure/fs/jsonl-model-session-store.js";
 import { JsonlRunStore } from "../../../src/infrastructure/fs/jsonl-run-store.js";
 import { ReflinkCopyWorkspaceIsolator } from "../../../src/infrastructure/fs/reflink-copy-workspace-isolator.js";
 
@@ -112,6 +117,218 @@ describe("Flow workflow evaluation adapter", () => {
       harness: { outcome: "completed" },
     });
     expect(observed).toEqual([artifactStore]);
+  });
+
+  it("binds one Flow-owned compaction mode and records measured zero evidence", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-evaluation-adapter-")));
+    temporaryDirectories.push(root);
+    await writeFile(join(root, "TASK.md"), "Create RESULT.md.\n");
+    const workflow = compiledWorkflow();
+    const observed: unknown[] = [];
+    const delegate = successfulExecutor();
+    const modelSessionStore = new JsonlModelSessionStore(join(root, "model-sessions"));
+    const adapter = new FlowWorkflowEvaluationAdapter(
+      {
+        id: "references-and-summary",
+        adapter: "flow-workflow-v1",
+        workflow: { compiled: workflow, workflowDigest: calculateWorkflowDigest(workflow) },
+      },
+      {
+        executor: {
+          async execute(node, context) {
+            observed.push(context.contextCompaction);
+            return await delegate.execute(node, context);
+          },
+        },
+        createStore: () => new JsonlRunStore(join(root, "runs")),
+        artifactStore: Object.freeze({}) as ArtifactStore,
+        modelSessionStore,
+        contextCompaction: {
+          mode: "references-and-summary",
+          protectedConstraints: ["Never change release policy."],
+          minimumReductionBytes: 1_024,
+          outputTokenLimits: [512, 256],
+        },
+      },
+    );
+    const request = publicRequest(root, "references-and-summary");
+
+    const result = await adapter.run(request);
+
+    expect(observed).toEqual([
+      {
+        mode: "references-and-summary",
+        protectedConstraints: ["Never change release policy."],
+        minimumReductionBytes: 1_024,
+        outputTokenLimits: [512, 256],
+      },
+    ]);
+    expect(result).toMatchObject({
+      harness: { outcome: "completed" },
+      metrics: {
+        contextCompaction: {
+          mode: "references-and-summary",
+          providerRequestBytes: 0,
+          providerRequestEstimatedTokens: 0,
+          attempts: 0,
+          accepted: 0,
+          rejected: 0,
+          interrupted: 0,
+          summaryInputTokens: 0,
+          summaryOutputTokens: 0,
+          summaryCostUsdMicros: 0,
+          artifactReopenAttempts: 0,
+          artifactReopenSuccesses: 0,
+        },
+      },
+    });
+  });
+
+  it("rejects reference-first evaluation without an artifact store", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-evaluation-adapter-")));
+    temporaryDirectories.push(root);
+    await writeFile(join(root, "TASK.md"), "Create RESULT.md.\n");
+    const workflow = compiledWorkflow();
+    const adapter = new FlowWorkflowEvaluationAdapter(
+      {
+        id: "references",
+        adapter: "flow-workflow-v1",
+        workflow: { compiled: workflow, workflowDigest: calculateWorkflowDigest(workflow) },
+      },
+      {
+        executor: successfulExecutor(),
+        createStore: () => new JsonlRunStore(join(root, "runs")),
+        modelSessionStore: new JsonlModelSessionStore(join(root, "model-sessions")),
+        contextCompaction: { mode: "references" },
+      },
+    );
+
+    await expect(adapter.run(publicRequest(root, "references"))).resolves.toMatchObject({
+      harness: {
+        outcome: "crashed",
+        reason: expect.stringMatching(/artifact store/i),
+      },
+    });
+  });
+
+  it("keeps summary usage unavailable when provider failure has no usage evidence", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "flow-evaluation-adapter-")));
+    temporaryDirectories.push(root);
+    await writeFile(join(root, "TASK.md"), "Create RESULT.md.\n");
+    const workflow = compiledWorkflow();
+    const delegate = successfulExecutor();
+    const modelSessionStore = new JsonlModelSessionStore(join(root, "model-sessions"));
+    const adapter = new FlowWorkflowEvaluationAdapter(
+      {
+        id: "references-and-summary",
+        adapter: "flow-workflow-v1",
+        workflow: { compiled: workflow, workflowDigest: calculateWorkflowDigest(workflow) },
+      },
+      {
+        executor: {
+          async execute(node, context) {
+            const journal = context.modelSession;
+            if (journal === undefined) throw new Error("test requires a model-session journal");
+            for (const request of [1, 2]) {
+              await journal.append({
+                type: "model_request_prepared",
+                attempt: 1,
+                turn: request,
+                request,
+                identity: {
+                  version: 1,
+                  provider: "test",
+                  model: "deterministic",
+                  apiAdapter: "messages-v1",
+                  thinking: "medium",
+                  runtimeVersion: "test-runtime",
+                  system: { sha256: "1".repeat(64), bytes: 100 },
+                  toolCatalog: { sha256: "2".repeat(64), bytes: 100, count: 0 },
+                  authority: { sha256: "3".repeat(64) },
+                  portableHistory: calculatePortableHistoryIdentity(journal.state),
+                  runtimeSurface: { sha256: "4".repeat(64), bytes: 400 },
+                  attempt: 1,
+                  turn: request,
+                  request,
+                },
+              });
+              await journal.append({
+                type: "model_message_committed",
+                attempt: 1,
+                turn: request,
+                request,
+                text: `Completed request ${request}.`,
+                stopReason: "stop",
+                usage: {
+                  inputTokens: 10,
+                  outputTokens: 5,
+                  cacheReadTokens: 0,
+                  cacheWriteTokens: 0,
+                  costUsdMicros: 1,
+                },
+              });
+              await journal.append({
+                type: "model_request_settled",
+                attempt: 1,
+                turn: request,
+                request,
+                outcome: "completed",
+              });
+            }
+            const selection = selectContextCompactionRange(journal.state);
+            if (selection === null) throw new Error("test session has no compactable range");
+            await journal.append({
+              type: "context_compaction_started",
+              attempt: 1,
+              compaction: 1,
+              generationAttempt: 1,
+              mode: "references-and-summary",
+              sourceHead: journal.state.head,
+              range: selection.range,
+              referenceSurface: { sha256: "5".repeat(64), bytes: 400, estimatedTokens: 100 },
+              outputTokenLimit: 512,
+            });
+            await journal.append({
+              type: "context_compaction_settled",
+              attempt: 1,
+              compaction: 1,
+              generationAttempt: 1,
+              settlement: { outcome: "rejected", reason: "provider_error" },
+            });
+            return await delegate.execute(node, context);
+          },
+        },
+        createStore: () => new JsonlRunStore(join(root, "runs")),
+        artifactStore: Object.freeze({}) as ArtifactStore,
+        modelSessionStore,
+        contextCompaction: {
+          mode: "references-and-summary",
+          protectedConstraints: ["Never change release policy."],
+          minimumReductionBytes: 1_024,
+          outputTokenLimits: [512, 256],
+        },
+      },
+    );
+
+    await expect(adapter.run(publicRequest(root, "references-and-summary"))).resolves.toMatchObject(
+      {
+        harness: { outcome: "completed" },
+        metrics: {
+          costUsdMicros: null,
+          inputTokens: null,
+          cacheReadTokens: null,
+          cacheWriteTokens: null,
+          outputTokens: null,
+          contextCompaction: {
+            attempts: 1,
+            rejected: 1,
+            summaryInputTokens: null,
+            summaryOutputTokens: null,
+            summaryCostUsdMicros: null,
+          },
+        },
+      },
+    );
   });
 
   it("binds an admitted Agent Skill snapshot to the evaluated workflow", async () => {
@@ -372,14 +589,14 @@ nodes:
 `);
 }
 
-function publicRequest(cwd: string): HarnessEvaluationRequest {
+function publicRequest(cwd: string, profileId = "candidate"): HarnessEvaluationRequest {
   return Object.freeze({
     planDigest: "a".repeat(64),
     trial: Object.freeze({
       trialId: `trial-${"b".repeat(48)}`,
       position: 1,
       taskId: "edit-readme",
-      profileId: "candidate",
+      profileId,
       seed: 11,
       repetition: 1,
     }),

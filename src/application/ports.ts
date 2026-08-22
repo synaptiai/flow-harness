@@ -4,6 +4,7 @@ import type { ArtifactProducer } from "../domain/artifact/reference.js";
 import type { CapabilitySnapshot } from "../domain/capability/agent-skills.js";
 import type { VerifierPackageUseEvidence } from "../domain/capability/verifier-packages.js";
 import type { PolicyDecision } from "../domain/policy/types.js";
+import type { ContextCompactionPolicy } from "../domain/run/context-compaction.js";
 import type {
   AgentCommandApprovalReference,
   AgentCommandSettlementOutcome,
@@ -183,6 +184,7 @@ export interface NodeExecutionContext {
   readonly agentSupplementalMemory?: string;
   readonly modelWorkProfile?: ModelWorkProfileContext;
   readonly modelSession?: ModelSessionJournal;
+  readonly contextCompaction?: ContextCompactionPolicy;
   readonly agentExactModelSettings?: boolean;
   readonly agentMaxOutputBytes?: number;
   readonly agentMaxOutputTokens?: number;

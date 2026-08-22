@@ -190,7 +190,7 @@ interface FixtureScanState {
   readonly files: Map<string, { readonly sha256: string; readonly size: number }>;
 }
 
-interface StableFile {
+export interface StableEvaluationFile {
   readonly content: Buffer;
   readonly sha256: string;
 }
@@ -218,7 +218,7 @@ export async function admitLocalEvaluationPlan(
   const planRoot = await realpath(dirname(absolutePlanPath));
   dependencies?.signal?.throwIfAborted();
   const canonicalPlanPath = join(planRoot, basename(absolutePlanPath));
-  const planFile = await stableReadFile(
+  const planFile = await stableReadEvaluationFile(
     canonicalPlanPath,
     MAX_EVALUATION_PLAN_BYTES,
     "evaluation plan",
@@ -228,7 +228,7 @@ export async function admitLocalEvaluationPlan(
 
   const tasks = await Promise.all(
     source.suite.tasks.map(async (task): Promise<AdmittedEvaluationTask> => {
-      const fixturePath = await resolveAdmittedPath(planRoot, task.fixture, "directory");
+      const fixturePath = await resolveAdmittedEvaluationPath(planRoot, task.fixture, "directory");
       const snapshot = await observeEvaluationFixture(fixturePath, task.instruction);
       const verifierDigest = calculateEvaluationVerifierDigest(
         task.verifier.kind,
@@ -293,9 +293,13 @@ export async function admitLocalEvaluationPlan(
         return Object.freeze({ id: profile.id, adapter: harness.adapter, harness });
       }
       if ("workflow" in profile) {
-        const workflowPath = await resolveAdmittedPath(planRoot, profile.workflow, "file");
+        const workflowPath = await resolveAdmittedEvaluationPath(
+          planRoot,
+          profile.workflow,
+          "file",
+        );
         dependencies?.signal?.throwIfAborted();
-        const workflowFile = await stableReadFile(
+        const workflowFile = await stableReadEvaluationFile(
           workflowPath,
           MAX_EVALUATION_WORKFLOW_BYTES,
           `workflow "${profile.id}"`,
@@ -313,7 +317,7 @@ export async function admitLocalEvaluationPlan(
             { cause: error },
           );
         }
-        assertWorkflowControls(profile.id, compiled, source.controls);
+        assertEvaluationWorkflowControls(profile.id, compiled, source.controls);
         return Object.freeze({
           id: profile.id,
           adapter: profile.adapter,
@@ -330,7 +334,7 @@ export async function admitLocalEvaluationPlan(
       }
 
       if ("effectiveCandidate" in profile) {
-        const candidatePath = await resolveAdmittedPath(
+        const candidatePath = await resolveAdmittedEvaluationPath(
           planRoot,
           profile.effectiveCandidate,
           "file",
@@ -355,7 +359,7 @@ export async function admitLocalEvaluationPlan(
           profile.selection === "baseline" ? artifact.baselineState : artifact.candidateState;
         const workflowSource = effectiveHarnessWorkflowSource(state);
         const compiled = compileEffectiveHarnessState(state);
-        assertWorkflowControls(profile.id, compiled, source.controls);
+        assertEvaluationWorkflowControls(profile.id, compiled, source.controls);
         return Object.freeze({
           id: profile.id,
           adapter: profile.adapter,
@@ -398,7 +402,11 @@ export async function admitLocalEvaluationPlan(
         });
       }
 
-      const candidatePath = await resolveAdmittedPath(planRoot, profile.candidate, "entry");
+      const candidatePath = await resolveAdmittedEvaluationPath(
+        planRoot,
+        profile.candidate,
+        "entry",
+      );
       dependencies?.signal?.throwIfAborted();
       let admittedCandidate: Awaited<ReturnType<typeof admitLocalAdaptationCandidate>>;
       try {
@@ -433,7 +441,11 @@ export async function admitLocalEvaluationPlan(
       }
       if (admittedCandidate.kind === "agent-skill-candidate") {
         const skillCandidate = admittedCandidate.candidate;
-        assertWorkflowControls(profile.id, skillCandidate.workflow.compiled, source.controls);
+        assertEvaluationWorkflowControls(
+          profile.id,
+          skillCandidate.workflow.compiled,
+          source.controls,
+        );
         return Object.freeze({
           id: profile.id,
           adapter: profile.adapter,
@@ -456,7 +468,11 @@ export async function admitLocalEvaluationPlan(
       }
       if (admittedCandidate.kind === "agent-skill-package-candidate") {
         const packageCandidate = admittedCandidate.candidate;
-        assertWorkflowControls(profile.id, packageCandidate.workflow.compiled, source.controls);
+        assertEvaluationWorkflowControls(
+          profile.id,
+          packageCandidate.workflow.compiled,
+          source.controls,
+        );
         return Object.freeze({
           id: profile.id,
           adapter: profile.adapter,
@@ -477,7 +493,11 @@ export async function admitLocalEvaluationPlan(
         });
       }
       const promptCandidate = admittedCandidate.candidate;
-      assertWorkflowControls(profile.id, promptCandidate.workflow.compiled, source.controls);
+      assertEvaluationWorkflowControls(
+        profile.id,
+        promptCandidate.workflow.compiled,
+        source.controls,
+      );
       return Object.freeze({
         id: profile.id,
         adapter: profile.adapter,
@@ -505,7 +525,7 @@ export async function admitLocalEvaluationPlan(
   );
   for (const profile of profiles) {
     if (profile.adapter === "flow-workflow-v1") {
-      assertClosedWorkflowCapabilities(
+      assertClosedEvaluationWorkflowCapabilities(
         profile.id,
         profile.workflow.compiled,
         profile.capabilitySnapshot,
@@ -696,7 +716,7 @@ async function scanFixtureDirectory(
     }
     state.logicalBytes += before.size;
     enforceFixtureLimits(state);
-    const file = await stableReadFile(
+    const file = await stableReadEvaluationFile(
       absolutePath,
       MAX_EVALUATION_FIXTURE_BYTES,
       `fixture entry "${relativePath}"`,
@@ -714,7 +734,7 @@ async function scanFixtureDirectory(
   }
 }
 
-async function resolveAdmittedPath(
+export async function resolveAdmittedEvaluationPath(
   root: string,
   provenance: string,
   expectedKind: "file" | "directory" | "entry",
@@ -761,7 +781,11 @@ async function resolveAdmittedPath(
   return candidate;
 }
 
-async function stableReadFile(path: string, maxBytes: number, label: string): Promise<StableFile> {
+export async function stableReadEvaluationFile(
+  path: string,
+  maxBytes: number,
+  label: string,
+): Promise<StableEvaluationFile> {
   let handle: FileHandle;
   try {
     handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -965,7 +989,7 @@ function capabilitySnapshotForState(state: EffectiveHarnessState): CapabilitySna
   });
 }
 
-function assertWorkflowControls(
+export function assertEvaluationWorkflowControls(
   profileId: string,
   workflow: CompiledWorkflow,
   controls: EvaluationPlanSource["controls"],
@@ -1015,7 +1039,7 @@ function assertWorkflowControls(
   }
 }
 
-function assertClosedWorkflowCapabilities(
+export function assertClosedEvaluationWorkflowCapabilities(
   profileId: string,
   workflow: CompiledWorkflow,
   capabilitySnapshot?: CapabilitySnapshot,

@@ -1442,6 +1442,8 @@ canonical event. The closed event vocabulary is:
 - `attempt_settled`
 - `attempt_interrupted`
 - `resume_surface_prepared`
+- `context_compaction_started`
+- `context_compaction_settled`
 
 The primary prompt is committed exactly once on attempt 1. A request must prepare before its model
 message, tool calls, tool results, and settlement. Tool results must match a prior tool call in the
@@ -1472,6 +1474,27 @@ canonical JSON user turn with a fixed untrusted-data instruction. `resume_surfac
 only its render version, source head, digest, and encoded byte count. Generated resume surfaces are
 never primary history.
 
+The dedicated compaction evaluator can derive a smaller provider surface without changing primary
+history. `references` mode projects only validated same-run command artifact references. It keeps
+the original tool result when a reference is invalid, unavailable, or not smaller.
+
+`references-and-summary` mode first applies the same reference projection. It keeps the original
+objective, latest completed request, current system instructions, tool catalog, authority, and
+protected constraints outside model-generated summary text. `context_compaction_started` binds the
+source head, closed primary-event range, range identity, reference-surface identity, generation
+number, and output-token limit before provider I/O.
+
+`context_compaction_settled` closes that exact generation as accepted, rejected, or interrupted.
+An accepted settlement binds output identity, model usage, before and after bytes, minimum
+reduction, and protected-constraint evidence. One session can accept one summary at most. It can
+start no more than two generations, and the second output-token limit must be smaller. A rejection
+keeps the prior surface.
+
+Recovery settles an unmatched compaction start as interrupted before it closes the interrupted
+model attempt. A second generation reconstructs its source from committed primary events. It does
+not continue provider-native state. No ordinary workflow field selects a compaction mode, and no
+evaluation report can activate one.
+
 One encoded event, including its newline, is at most 2 MiB. One record is at most 16 MiB and 1,024
 events. One rendered resume surface is at most 1 MiB and must fit the selected model. Request
 admission reserves 16,384 output tokens and 16,384 safety tokens. Flow subtracts both reserves from
@@ -1490,7 +1513,9 @@ the projection retains the durable summary, adds `inspectionStatus: unavailable`
 allowlisted mismatch categories.
 
 Read [Inspect and recover portable model sessions](guides/model-sessions.md) for operator guidance
-and [Recovery and interruption safety](recovery.md) for the complete proof gate and ordering.
+and [Evaluate reference-first context compaction](guides/context-compaction.md) for the experimental
+provider-surface contract. Read [Recovery and interruption safety](recovery.md) for the complete
+proof gate and ordering.
 
 ## Run ledger
 

@@ -75,6 +75,9 @@ bounded previews in the run ledger, exact bytes in a project store, and immutabl
 references in command evidence. The model-session boundary commits completed context and request
 identity separately from workflow authority, then renders a bounded untrusted-data turn for an
 eligible fresh recovery.
+Gate 9 also adds a dedicated reference-first compaction experiment. It projects verified artifact
+references before one optional bounded summary and compares three modes on held-out tasks. It does
+not enable a production compaction policy.
 Only an explicitly selected, policy-controlled tool can read bounded windows. Operators control
 retention and exact-plan pruning. The semantic boundary freezes one
 operator-selected language server. It runs one bounded LSP 3.18 request in a short-lived sandbox.
@@ -115,6 +118,7 @@ flowchart TB
         capability["Capability governance<br/>Checks, freezes, and maintains exact package bytes"]
         proposals["Proposal generation<br/>Creates one bounded, inert model suggestion"]
         adaptation["Evaluation and adaptation<br/>Compares reviewed root and child candidates"]
+        compaction["Context experiment<br/>References first · bounded summary · no activation"]
         memory["Reviewed agent context<br/>Immutable per-agent supplemental memory"]
         goals["Goal workspace<br/>Reviews and freezes one project revision"]
     end
@@ -152,6 +156,7 @@ flowchart TB
     people -->|"Observes and steers"| presentation
     cli -->|"Runs now"| engine
     cli -->|"Reviews and compares candidates"| adaptation
+    cli -->|"Compares three context modes"| compaction
     cli -->|"Requests one inert proposal"| proposals
     cli -->|"Queues detached work"| supervisor
     cli -->|"Reviews or selects a goal revision"| goals
@@ -170,12 +175,14 @@ flowchart TB
     proposals -->|"Uses one zero-tool model turn"| agents
     proposals -->|"Returns an inert candidate for review"| adaptation
     adaptation -->|"Runs paired trials"| engine
+    compaction -->|"Runs held-out trials"| engine
     adaptation -->|"Stages one reviewed memory change"| memory
     memory -->|"Supplies exact target context"| engine
     goals -->|"Supplies bounded cross-run context"| engine
     goals -->|"Appends full revisions with exact CAS"| goalLedger
     goalLedger -->|"Replays the current immutable revision"| goals
     adaptation -->|"Stores evaluation and activation evidence"| stores
+    compaction -->|"Stores a dedicated report"| stores
     memory -->|"Persists identities and exact bytes"| stores
     engine -->|"Asks what is legal"| rules
     engine -->|"Derives one read-only snapshot"| workContext
@@ -184,6 +191,7 @@ flowchart TB
     rules -->|"Authorizes bounded commands"| commands
     agents -->|"Makes bounded model requests"| models
     agents -->|"Appends completed portable events"| sessions
+    sessions -->|"Supplies measured context history"| compaction
     sessions -->|"Supplies one fresh untrusted-data turn"| agents
     agents -->|"Uses workspace tools through Flow policy"| project
     agents -->|"Requests bounded code context"| semantic
@@ -254,6 +262,7 @@ before success. It stops on unresolved side-effect or settlement uncertainty.
 | Semantic code boundary | `src/domain/semantic/` and `src/infrastructure/lsp/` | Defines canonical read-only code queries and receipts, runs one strict LSP 3.18 subset, isolates each server session, and rejects stale or unsettled results. |
 | Retained artifact boundary | `src/domain/artifact/`, `src/application/artifact-store.ts`, and `src/infrastructure/fs/local-artifact-store.ts` | Binds exact command bytes to immutable producer references, authorizes bounded same-run reads, and separates append-only evidence from mutable retention and physical availability. |
 | Portable model-session boundary | `src/domain/run/model-session.ts`, `src/application/model-session-inspection.ts`, `src/infrastructure/fs/jsonl-model-session-store.ts`, and `src/infrastructure/pi/pi-agent-executor.ts` | Records completed provider-neutral context and write-ahead request identities privately, renders bounded fresh-turn recovery context, and exposes only redacted integrity metadata. |
+| Context compaction experiment | `src/domain/run/context-compaction.ts`, `src/domain/evaluation/context-compaction-evaluation.ts`, `src/application/evaluation-adapter.ts`, `src/infrastructure/fs/local-context-compaction-evaluation-plan.ts`, `src/infrastructure/fs/local-context-compaction-evaluation-store.ts`, and `src/infrastructure/pi/pi-agent-executor.ts` | Projects verified artifact references, records bounded summary lifecycle evidence, runs the balanced three-mode evaluation, and prevents production activation. |
 | Presentation, storage, package, sandbox, and runtime adapters | `src/infrastructure/` | Implements application ports for local files, HTTP, OCI, TUF, ACP, Pi, OMP, Prime, SRT, terminal, and browser boundaries. |
 | Prime evaluation container | `prime-container/` | Provides the fixed Go supervisor, kernel bridge, driver protocol, and hardened image used by the Prime adapter. |
 
@@ -310,6 +319,7 @@ Architecture is derived from these flows.
 | Compare one model route | An operator supplies one route candidate and a paired plan | Two ordered profiles use exact model tuples under shared tasks, budgets, retries, network policy, and verification |
 | Compare one child specialist | An operator supplies one candidate for one agent in an embedded child workflow | Two ordered profiles use exact complete harness states under one shared evaluation plan; only instructions or an existing skill selection differs |
 | Compare one supplemental-memory entry | An operator supplies one add, replace, or remove candidate for one existing agent | Two ordered profiles use exact complete harness states; only one bounded reviewed reference entry differs |
+| Compare context compaction | An operator supplies one dedicated held-out plan | Six balanced mode orders compare complete history, verified references, and one optional bounded summary without activation authority |
 | Activate one reviewed adaptation | An operator previews and applies one superior evaluated candidate | One complete immutable harness state becomes the head for future runs. Retained states remain rollback targets. |
 
 ### Operator flows
@@ -498,12 +508,20 @@ completed user, assistant, tool, usage, and settlement data. Provider handles, c
 reasoning, thought signatures, raw diagnostics, and streamed partials don't enter portable
 history.
 
+For the dedicated experiment, Pi can replace eligible large command results with validated
+artifact references before capacity checks. It can also generate one bounded summary from a closed
+older range. The domain requires exact protected constraints, one accepted summary at most, and no
+more than two generations. Durable start and settlement events preserve the append-only primary
+history. The specialized evaluator measures provider surfaces, summary usage, artifact reopening,
+task success, and constraint retention. It does not feed an activation store.
+
 For a proof-safe retry, the application appends the private interruption boundary before the
 authoritative workflow disposition. Pi creates a new in-memory session and receives one canonical
 untrusted-data capsule derived from committed primary history. Public inspection reads the private
 record only to refresh digests and counts. Storage errors become an `unavailable` marker and fixed
 mismatch categories. The projection doesn't return private values. Read
-[Inspect and recover portable model sessions](guides/model-sessions.md) for operator guidance and
+[Inspect and recover portable model sessions](guides/model-sessions.md) for operator guidance,
+[Evaluate reference-first context compaction](guides/context-compaction.md) for the experiment, and
 the [Workflow specification](workflow-spec.md#portable-model-session-record) for the persisted
 contract.
 

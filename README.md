@@ -61,6 +61,8 @@ Current capability groups include:
 - Signed metadata and TUF repository review, activation, replacement, and bounded watching.
 - Reproducible Flow, Pi, OMP, and Prime evaluation profiles with reviewed root,
   child-specialist, and supplemental-memory candidates, including bounded model-suggested memory.
+- A balanced three-mode experiment for complete history, verified artifact references, and bounded
+  summaries. It cannot activate production compaction.
 
 Linux and macOS support ordinary workflow execution. Agent `exec`, the container command profile,
 and Prime Agent have narrower platform requirements.
@@ -139,6 +141,7 @@ The [documentation hub](docs/README.md) routes each reader task to one canonical
 | [Use read-only semantic code queries](docs/guides/semantic-code.md) | Exact language-server selection, bounded queries, containment, evidence, and failure handling |
 | [Retain and inspect command artifacts](docs/guides/retained-artifacts.md) | Exact oversized command output, bounded agent reads, inspection, retention, and pruning |
 | [Inspect and recover portable model sessions](docs/guides/model-sessions.md) | Private context records, public integrity metadata, fresh recovery, limits, and failure handling |
+| [Evaluate reference-first context compaction](docs/guides/context-compaction.md) | Held-out three-mode plans, protected constraints, metrics, verdicts, and recovery |
 | [Use capability packages](docs/guides/capability-packages.md) | Skills, verifiers, tools, workflows, policies, presentations, bundles, and repositories |
 | [Prime runtime operations](docs/operations/prime-runtime.md) | Dedicated Linux x64 Prime and container-profile preparation |
 | [Workflow specification](docs/workflow-spec.md) | Normative executable and persisted contracts |
