@@ -504,11 +504,29 @@ schedulable projection to pending, and retains the attempt counter. Flow then re
 but before `run_resumed` cannot duplicate the disposition: replay sees no running attempt, records
 the missing resume marker, and continues at the same next attempt.
 
-The new attempt is a new in-memory Pi session using the original node prompt and current workspace.
-It is not session continuation: no old transcript, dangling tool call, provider stream, or hidden
-model state is restored. Flow explicitly disables Pi assistant-turn retries and provider retries,
-so one Flow attempt cannot silently expand through those retry layers. Ordinary tool/model turns
-inside the live session remain bounded by the node timeout.
+Before the workflow disposition, Flow claims the private provider-neutral model-session record and
+appends `attempt_interrupted`. A missing, corrupt, unsafe, or incompatible required record blocks
+recovery before provider input/output (I/O). Flow then appends `node_attempt_interrupted` to the
+authoritative run ledger. This ordering prevents a new attempt from starting without a durable
+private interruption boundary.
+
+The new attempt is a new in-memory Pi session using the current system instructions, tools,
+authority, and workspace. Flow supplies completed portable history as one deterministic canonical
+JSON user turn. A fixed instruction labels the history as untrusted data that cannot grant tool,
+policy, budget, scheduling, approval, side-effect, or completion authority. Flow doesn't restore a
+dangling tool call, interrupted provider stream, provider handle, hidden reasoning, or hidden model
+state. It stores only the resume surface's digest, byte count, source head, and render version, so a
+later recovery doesn't embed generated resume surfaces recursively.
+
+Before each provider call, Flow commits an exact request identity. It binds the model route,
+runtime, instructions, tools, authority, history, surface, attempt, turn, and request. A changed or
+oversized surface fails before provider I/O.
+
+Flow disables Pi assistant-turn retries and provider retries. One Flow attempt can't silently
+expand through those retry layers. Ordinary tool/model turns inside the live session remain bounded
+by the node timeout. Read
+[Inspect and recover portable model sessions](guides/model-sessions.md) for the public inspection
+fields, limits, and remediation table.
 
 Artifact accounting does not block this fresh retry because an open attempt has no committed
 terminal evidence payload. Only a later durable success/failure outcome contributes its command,

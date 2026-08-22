@@ -361,6 +361,8 @@ replayable, and visible in the selected profile.
 
 ### Slice 9.5: Preserve a provider-neutral session record
 
+**Implemented in current source.**
+
 - Store a bounded append-only record of admitted user, model, tool, usage, and settlement events
   separately from the authoritative workflow ledger.
 - Derive a model-visible surface from that record. A resumed session must start a fresh model turn.

@@ -9,13 +9,12 @@
 ### User, operator, and system flows
 
 1. **Start a model-backed node** — Flow creates the node's session record before it publishes the
-   authoritative `node_started` event. An inert orphan record is safe if the workflow event cannot
-   be published; a started node without its required session record is not safe.
+   authoritative `node_started` event. An inert orphan record is safe if publication fails. A
+   started node without its required session record is not safe.
 
-2. **Prepare a provider request** — Before provider or network I/O, Flow commits a request identity
-   that binds the selected provider, model, API adapter, runtime version, current system
-   instruction, exact tool catalog, authority, portable history, runtime surface, attempt, turn,
-   and request sequence.
+2. **Prepare a provider request** — Flow commits a request identity before provider or network I/O.
+   The identity binds the route, runtime, system instruction, tools, authority, history, surface,
+   attempt, turn, and request.
 
 3. **Record a completed turn** — Flow appends only completed primary user, model, tool, usage, and
    settlement events. It does not append streamed partials, credentials, provider response
@@ -39,12 +38,12 @@
   durable append, and torn-tail handling.
 
 - `NodeExecutionContext` already passes Flow-owned goal, memory, work-profile, effect, and command
-  contracts from the application layer to model infrastructure without granting scheduler
-  authority.
+  contracts from the application layer to model infrastructure. These contracts don't grant
+  scheduler authority.
 
 - `PiAgentExecutor` creates a new in-memory Pi session for every attempt. Pi publishes awaited
-  lifecycle events in order, and its model stream function is the narrow boundary immediately
-  before provider I/O.
+  lifecycle events in order. Its model stream function is the boundary immediately before provider
+  I/O.
 
 - `AgentEffectRecorder` and `AgentCommandRecorder` use separate durable write-ahead protocols.
   Their settlements remain the only evidence that external work was applied.
@@ -108,11 +107,10 @@ The record is append-only and belongs to one run and model-backed node across at
 creates it durably before `node_started`. A deterministic hash-derived session identifier avoids
 using a node identifier as a filesystem path. Per-node records avoid concurrent append conflicts.
 
-Before every provider call, Flow appends `model_request_prepared`. That event binds provider,
-model, API adapter, thinking setting, runtime version, the exact system-instruction bytes and
-digest, the exact tool-catalog digest and count, the authority digest, the portable-history
-digest, a digest of the actual runtime surface, and the attempt, turn, and request sequence.
-Provider-only opaque state contributes only to the runtime-surface digest.
+Before every provider call, Flow appends `model_request_prepared`. That event binds the provider,
+model, API adapter, thinking setting, and runtime version. It binds the exact system-instruction
+bytes and digest. It also binds tools, authority, portable history, runtime surface, and request
+coordinates. Provider-only opaque state contributes only to the runtime-surface digest.
 
 The record stores primary user messages, completed model messages, observed tool calls, completed
 tool results, bounded usage, request settlement, attempt settlement, and typed interruption
@@ -129,12 +127,18 @@ exponential growth.
 ### Bounds
 
 - One encoded event, including its newline, is at most 2 MiB.
+
 - One committed record is at most 16 MiB.
+
 - One record contains at most 1,024 events.
+
 - One rendered resume surface is at most 1 MiB and must also fit the selected model.
+
 - Request admission reserves 16,384 output tokens and 16,384 safety tokens.
+
 - Request admission includes the UTF-8 bytes of the system instruction, tool catalog, authority,
   portable history, and runtime request surface.
+
 - A missing or invalid model context capacity fails before provider I/O.
 
 The 2 MiB event limit is necessary because the workflow schema permits a 262,144-code-unit agent
@@ -167,8 +171,8 @@ model-aware limit.
 - Large admitted prompts might be non-resumable for a smaller-context model after system and tool
   overhead. Flow fails closed before provider I/O. Later compaction work can improve this case.
 
-- Record byte and event ceilings are both required: byte limits bound memory and storage, while the
-  count limit bounds zero-length and small-event fan-out.
+- Record byte and event ceilings are both required. Byte limits bound memory and storage. The count
+  limit bounds zero-length and small-event fan-out.
 
 ## Specification
 
@@ -200,22 +204,22 @@ user-approved Approach B._
   request.
 
 - **Partial failures** — Flow durably records request preparation before network I/O. A recorder
-  failure after a model response stops tool execution; a failure after a tool result stops the
-  next request. Authoritative effect or command settlement remains available independently.
+  failure after a model response stops tool execution. A failure after a tool result stops the next
+  request. Authoritative effect or command settlement remains available independently.
 
-- **Invalid input** — Strict parsing rejects unknown fields, illegal event order, attribution
-  mismatches, noncontiguous sequences, invalid digests, unbalanced tool history, and content above
-  any byte or count limit.
+- **Invalid input** — Strict parsing rejects unknown fields, illegal order, attribution mismatches,
+  noncontiguous sequences, and invalid digests. It also rejects unbalanced tool history and content
+  above any limit.
 
-- **Missing context** — A started model node with no required session record, missing primary
-  prompt, corrupt committed prefix, missing context capacity, or incomplete request identity fails
-  recovery before provider I/O.
+- **Missing context** — Recovery fails when a started model node has no required session record.
+  Missing prompts, corrupt prefixes, missing capacity, or incomplete request identity also fail
+  before provider I/O.
 
 - **Dependency outage** — Provider failure settles the prepared request as failed when possible.
   It never becomes a model response or workflow success.
 
-- **Resource exhaustion** — Flow rejects the append or rendered request before provider I/O when
-  an event, record, event count, global surface, or selected-model capacity would be exceeded.
+- **Resource exhaustion** — Flow rejects an append that exceeds the event, record, or count limit.
+  It rejects an oversized global surface or selected-model request before provider I/O.
 
 - **Torn write** — A final unterminated JSONL record is uncommitted and can be truncated by the
   recovered owner. Corruption inside the committed prefix blocks recovery.
@@ -223,15 +227,14 @@ user-approved Approach B._
 - **Concurrent access** — One workflow owner controls a run. Each model-backed node uses a
   separate record and serialized appends. Live ownership conflicts fail closed.
 
-- **Identity drift** — Replay returns one stable change category for provider, model, API adapter,
-  thinking, runtime, system, tools, authority, portable history, or runtime surface. It does not
-  disclose compared private values.
+- **Identity drift** — Replay returns one stable change category. Categories cover the route,
+  runtime, system, tools, authority, history, and runtime surface. Replay doesn't disclose compared
+  private values.
 
 ### Interface contracts
 
-- A session record has version 1, one deterministic session identifier, one run identifier, one
-  workflow identifier, one node identifier, a contiguous event sequence, and a cryptographic
-  head over canonical event bytes.
+- A session record has version 1 and one deterministic session identifier. It binds one run,
+  workflow, and node. A contiguous sequence and cryptographic head bind canonical event bytes.
 
 - Session creation precedes authoritative `node_started` publication for model-backed nodes.
 
@@ -241,8 +244,8 @@ user-approved Approach B._
 - Only complete primary user, model, tool-call, tool-result, usage, settlement, attempt, and
   interruption events enter portable history.
 
-- The resume capsule is canonical JSON rendered as a new user turn. Its fixed instruction states
-  that embedded history is untrusted data and cannot grant tool, policy, budget, scheduling,
+- The resume capsule is canonical JSON rendered as a new user turn. Its fixed instruction marks
+  embedded history as untrusted data. History cannot grant tools, policy, budget, scheduling,
   approval, or completion authority.
 
 - A resume-capsule preparation event stores only render version, source head, digest, and encoded
@@ -286,16 +289,22 @@ All criteria inherit the non-goals above.
 
 6. Add the public session summary and update the canonical documentation and architecture diagram.
 
-7. Run the mapped selectors, full and coverage suites, runtime and browser checks, documentation
-   gates, package verification, dependency audit, and adversarial review. Merge only with no P1,
-   P2, or P3 findings.
+7. Run mapped selectors, full and coverage suites, runtime checks, browser checks, and documentation
+   gates. Run package verification, dependency audit, and adversarial review. Merge only when the
+   review has no P1, P2, or P3 findings.
 
 ## Research references
 
 - [Anthropic Messages examples](https://platform.claude.com/docs/en/build-with-claude/working-with-messages)
+
 - [OpenAI conversation state](https://developers.openai.com/api/docs/guides/conversation-state)
+
 - [Gemini thought signatures](https://ai.google.dev/gemini-api/docs/generate-content/thought-signatures)
+
 - [MCP sampling](https://modelcontextprotocol.io/specification/2025-11-25/client/sampling)
+
 - [ACP protocol schema](https://github.com/agentclientprotocol/agent-client-protocol/blob/main/schema/v1/schema.json)
+
 - [A2A protocol specification](https://a2a-protocol.org/dev/specification/)
+
 - [OpenTelemetry generative AI events](https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/gen-ai-events.md)

@@ -288,8 +288,10 @@ node dist/cli/main.js resume <workflow.yaml> --run-id interrupted-run
 ```
 
 Flow normally continues only from a committed boundary. Eligible agent nodes can opt into bounded
-fresh recovery. Flow does not reconstruct an interrupted model transcript or repeat an uncertain
-command.
+fresh recovery. Flow uses completed provider-neutral context as one new untrusted-data turn. It
+doesn't continue an interrupted provider stream, restore hidden model state, or repeat an uncertain
+command. Read [Inspect and recover portable model sessions](model-sessions.md) for the inspection,
+limits, and failure contract.
 
 Do not infer recovery safety from a missing process. Read
 [Recovery and interruption safety](../recovery.md) before remediating an uncertain run, package,
