@@ -12,7 +12,7 @@ import {
 } from "../../../src/domain/capability/public-capability-reference.js";
 import {
   PUBLIC_CAPABILITY_REFERENCE_PATHS,
-  PublicCapabilityReferenceDriftError,
+  type PublicCapabilityReferenceDriftError,
   verifyPublicCapabilityReferenceFiles,
   writePublicCapabilityReferenceFiles,
 } from "../../../src/infrastructure/fs/public-capability-reference-files.js";
