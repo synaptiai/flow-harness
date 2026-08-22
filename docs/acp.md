@@ -36,6 +36,11 @@ different later `/flow-run` for the same session conflicts with that durable com
 Supervisor acceptance can precede the first ledger event. The adapter waits for that first event
 for at most 30 seconds without resubmitting the workflow.
 
+The current ACP prompt grammar has no work-profile option. `/flow-run` uses the admitted workflow
+preference or the `standard` default. The supervisor and `run_started` event bind that effective
+value. An ACP peer, model response, or later session load cannot change it. Use the command-line
+`flow run --work-profile` option when an operator must override a workflow preference.
+
 ## Prompts and capabilities
 
 Flow accepts these prompt forms:
@@ -117,6 +122,13 @@ ACP transports editor-to-agent sessions. The A2UI profile is an inert package AB
 Flow-owned terminal and browser widgets. Its catalog v2 can add bounded attributed static notes to
 those two hosts. A2UI does not define ACP sessions, and ACP does not change or replace presentation
 packages.
+
+ACP also defines agent-owned session configuration options for model, mode, and reasoning controls.
+Flow does not advertise its work profile as writable session configuration. The durable workflow
+ledger remains the profile authority. Read the
+[ACP session configuration announcement](https://agentclientprotocol.com/announcements/session-config-options-stabilized)
+for the standard configuration boundary. Read [Run and control workflows](guides/run-and-control.md#select-a-work-profile)
+for Flow profile behavior.
 
 The ACP projector deliberately ignores the package-note section. It emits only Flow-owned plan,
 status, and permission updates. No custom ACP method or extension carries package content.

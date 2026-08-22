@@ -86,7 +86,7 @@ flow inspect <run-id> [--runs-dir <path>]
 Resume with the exact workflow definition that started the run:
 
 ```sh
-flow resume <workflow.yaml|workflow:name@version> --run-id <run-id> [--runs-dir <path>] [--cwd <path>]
+flow resume <workflow.yaml|workflow:name@version> --run-id <run-id> [--work-profile <fast|standard|long>] [--runs-dir <path>] [--cwd <path>]
 ```
 
 Flow compiles the workflow before claiming the run. It then acquires exclusive local ownership,
@@ -97,6 +97,10 @@ persisted recovery policy and the resulting replay state satisfy every fresh-ret
 Pending nodes retain their normal dependency order and use the lesser of their declared timeout
 and remaining active-execution budget. The command prints the same JSON `RunState` shape as
 `flow run` when recovery can continue.
+
+The original `run_started` event owns the durable work profile. Omit `--work-profile` to reuse it,
+or provide the exact value as an automation check. A different value fails before execution or
+ledger mutation. Recovery also requires every child ledger to carry its parent's durable profile.
 
 A run that selects Agent Skills, versioned verifiers, versioned command tools, or versioned
 workflows persists one
@@ -379,14 +383,14 @@ with `uncertain_operation`. A sidecar without an owner-appended decision never g
 | A verifier `node_started` has no matching outcome | Refuse with `uncertain_operation`; do not repeat its command or model invocation |
 | An unconfigured `node_started` has no matching outcome | Preserve any reconciliation prefix, refuse with `uncertain_operation`, and append no retry disposition or `run_resumed` |
 | Run is `succeeded`, `failed`, `cancelled`, or `resource_exhausted` | Refuse with `terminal_run` |
-| Workflow identity, version, digest, budget, node set, persisted control graph, or committed transition order differs | Refuse with `workflow_mismatch` |
+| Workflow identity, version, digest, work profile, budget, node set, persisted control graph, or committed transition order differs | Refuse with `workflow_mismatch` |
 | Durable capability snapshot; skill, verifier, command-tool, or workflow-package requirement; exact version/kind; or package-use evidence differs | Refuse with `workflow_mismatch`; do not read or substitute the live package catalog |
 | A new run is resumed with a different normalized execution directory | Refuse with `execution_context_mismatch` |
 | No child event is durable, but a stale deterministic child workspace exists | Discard the uncommitted workspace, recreate it from the parent, and start the child once |
-| A child ledger is nonterminal and its exact manifest, snapshot digest, or workspace is missing or divergent | Refuse with `child_recovery_ineligible`; do not create a replacement child or repeat uncertain work |
+| A child ledger is nonterminal and its exact work profile, manifest, snapshot digest, or workspace is missing or divergent | Refuse with `child_recovery_ineligible`; do not create a replacement child or repeat uncertain work |
 | A valid nonterminal child workspace is in the old run-store location | Validate the old exclusion identity, translate a nested parent path when necessary, and move and sync the complete identity directory to the private project-sibling collection. Across filesystems, use a bounded verified staging copy. Reopen it, record `run_resumed.workspaceRelocation`, and then continue recovery. |
 | A child ledger is terminal but its parent outcome is absent | Treat the child ledger as authoritative, idempotently confirm workspace discard, verify its linked typed result and resources, and append only the parent outcome |
-| A parent child outcome is durable but the parent run is nonterminal | Re-reduce every settled child ledger recursively and compare its link, terminal sequence, outcome, typed result, duration, workspace provenance, and all five resource totals with the imported projection; refuse divergence with `child_recovery_ineligible` before appending `run_resumed` |
+| A parent child outcome is durable but the parent run is nonterminal | Re-reduce every settled child ledger recursively and compare its work profile, link, terminal sequence, outcome, typed result, duration, workspace provenance, and all five resource totals with the imported projection; refuse divergence with `child_recovery_ineligible` before appending `run_resumed` |
 | An optimization candidate succeeded but no evaluation is durable | Append `run_resumed`, recompute metric/invariants from its canonical child result, reopen an exact durable capture or capture the same bounded delta, and record one evaluation; a partial or divergent capture fails closed |
 | `node_optimization_evaluated` chose promotion but prepare is absent | Reuse the captured delta identity and enter promotion once; never rerun the child |
 | `node_optimization_promotion_prepared` has no settlement | Reconcile the exact local journal and affected paths, then append committed, rolled-back, or unknown settlement |

@@ -3,6 +3,7 @@ kind: Workflow
 metadata:
   id: implement-and-verify
   description: Template for one bounded coding turn followed by deterministic verification.
+workProfile: standard
 goal:
   apiVersion: flow.synapti.ai/v1alpha1
   kind: Goal

@@ -21,7 +21,7 @@ Read the [security policy](../SECURITY.md) before unattended use.
 
 | Document | Use it when |
 | --- | --- |
-| [Run and control workflows](guides/run-and-control.md) | You need attached or detached runs, presentation hosts, approvals, budgets, cancellation, or recovery entry points. |
+| [Run and control workflows](guides/run-and-control.md) | You need work profiles, attached or detached runs, presentation hosts, approvals, budgets, cancellation, or recovery entry points. |
 | [Maintain a durable goal workspace](guides/goal-workspaces.md) | You need revisioned long-horizon context, evidence references, safe updates, run selection, or workspace recovery. |
 | [Use read-only semantic code queries](guides/semantic-code.md) | You need bounded diagnostics, definitions, references, or hover information from an exact language server. |
 | [Retain and inspect command artifacts](guides/retained-artifacts.md) | You need exact oversized command output, bounded agent reads, inspection, retention, or pruning. |

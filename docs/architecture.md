@@ -67,9 +67,11 @@ publishes one reviewed fixture, admits only read, list, and hash-bound edit tool
 acceptance to a deterministic command verifier. Neither path grants new execution authority or
 makes an optional runtime a base dependency.
 
-Gate 9 currently adds a revisioned goal workspace, read-only semantic code queries, and
-content-addressed retained command artifacts. The artifact boundary keeps bounded previews in the
-run ledger, exact bytes in a project store, and immutable producer references in command evidence.
+Gate 9 currently adds a revisioned goal workspace, read-only semantic code queries,
+content-addressed retained command artifacts, and durable work profiles. A work profile gives each
+model attempt fixed pacing guidance and a point-in-time remaining-budget view. It does not change
+run authority. The artifact boundary keeps bounded previews in the run ledger, exact bytes in a
+project store, and immutable producer references in command evidence.
 Only an explicitly selected, policy-controlled tool can read bounded windows. Operators control
 retention and exact-plan pruning. The semantic boundary freezes one
 operator-selected language server. It runs one bounded LSP 3.18 request in a short-lived sandbox.
@@ -106,6 +108,7 @@ flowchart TB
         supervisor["Local supervisor<br/>Queues detached work and recovery"]
         engine["Workflow engine<br/>Compiles the plan and selects the next safe step"]
         rules["Rules and safeguards<br/>Policy · approvals · budgets · verification"]
+        workContext["Model work context<br/>Durable profile · remaining budget view"]
         capability["Capability governance<br/>Checks, freezes, and maintains exact package bytes"]
         proposals["Proposal generation<br/>Creates one bounded, inert model suggestion"]
         adaptation["Evaluation and adaptation<br/>Compares reviewed root and child candidates"]
@@ -171,6 +174,8 @@ flowchart TB
     adaptation -->|"Stores evaluation and activation evidence"| stores
     memory -->|"Persists identities and exact bytes"| stores
     engine -->|"Asks what is legal"| rules
+    engine -->|"Derives one read-only snapshot"| workContext
+    workContext -->|"Supplies pacing guidance"| agents
     rules -->|"Authorizes bounded agent work"| agents
     rules -->|"Authorizes bounded commands"| commands
     agents -->|"Makes bounded model requests"| models
@@ -300,6 +305,7 @@ Architecture is derived from these flows.
 ### Operator flows
 
 - Configure credentials, model routing, budgets, policy, sandboxing, and concurrency.
+- Select a durable work profile for model pacing without changing run authority.
 - Inspect and recover crashed, blocked, rate-limited, or abandoned runs.
 - Audit actions and export an evidence bundle.
 - Approve an exact consequential action with a target, arguments, scope, and expiry.
@@ -312,7 +318,7 @@ flowchart TD
     trigger["User, CI, or scheduled trigger"] --> compiler["Workflow compiler"]
     compiler --> typedGraph["Typed executable graph"]
     typedGraph --> scheduler["Deterministic scheduler"]
-    scheduler --> context["Minimal node context"]
+    scheduler --> context["Minimal node context<br/>Profile · remaining budget guidance"]
     context --> executor["Agent executor"]
     executor --> pi["Pi AgentSession"]
     pi --> provider["Selected model provider"]
@@ -734,6 +740,13 @@ outcomes are committed in admission order. Conditions, joins, approvals, and ter
 barriers. Once one member fails or cancellation is observed, no later wave is admitted, but the
 current wave is allowed to quiesce so the ledger never invents abandoned work.
 
+Each new run also resolves one `fast`, `standard`, or `long` work profile. The scheduler writes it
+to `run_started` before execution. After a scheduling wave's starts are durable, the scheduler
+derives one immutable five-dimension remaining-budget view for model-backed attempts. All model
+attempts in that wave receive the same snapshot. Command and child executors do not receive it.
+The snapshot provides pacing guidance and has no scheduler, policy, approval, tool, or model
+selection authority.
+
 A bounded loop is compiled into one finite local DAG per possible iteration, an exact-evidence check
 after each body, and a pure controller under the author-facing loop id. Iterations never overlap:
 the next body entry depends on the prior check and requires its durable `continue`. Existing
@@ -788,7 +801,8 @@ Gondolin, OpenShell, container, or managed implementation can replace it behind 
 
 The child recursively invokes the normal run application with its own run id, owner record, JSONL
 history, working directory, budget, and persisted execution-workspace provenance. The parent and
-child share the cancellation signal and executor composition, but no mutable scheduler state. On
+child share the root work profile, cancellation signal, and executor composition, but no mutable
+scheduler state. Recovery compares the profile across each parent-child link. On
 terminal settlement, the parent imports only the canonical typed result, child terminal sequence,
 resource totals, duration, workflow identity, snapshot identity, and cleanup disposition. Ordinary
 workspace changes are discarded. A compiler-registered optimization candidate instead retains a
@@ -1003,6 +1017,12 @@ before work and after outcome settlement. It appends `run_budget_exhausted` and 
 `resource_exhausted` state rather than treating exhaustion as success, cancellation, or an invented
 node failure. Recovery validates the exact persisted limits and reaches the same decision after a
 crash between the node outcome and terminal event.
+
+The work-profile context projects the existing remaining values. It renders an absent dimension as
+`unbounded` and never creates a numeric allowance. `fast`, `standard`, and `long` select only fixed
+pacing text. They don't change admission, timeouts, concurrency, accounting, model settings, or the
+terminal decision. The model-facing block is smaller than 2 KiB. A model verifier reserves that
+fixed maximum inside its existing aggregate input limit.
 
 The active-time limit also narrows executor authority: a node receives the lesser of its declared
 timeout and remaining allowance. For approval-required commands, this effective timeout is part of
