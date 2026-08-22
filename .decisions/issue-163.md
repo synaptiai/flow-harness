@@ -138,7 +138,9 @@ _Captured by specification-capture skill on 2026-08-23. Source: user-confirmed._
 ### Criterion 4: Read-only drift verification
 
 - **Type**: error handling and configuration
-- **Command**: `npm run docs:capabilities:check`
+- **Commands**:
+  - `npm test -- test/integration/package/public-capability-reference.test.ts`
+  - `npm run docs:capabilities:check`
 - **Expected evidence**: committed artifacts match without writes. Mutation tests reject tool,
   schema, limit, family, and seam drift. Each error names the affected artifact.
 - **Does not promise**: automatic repair during verification.
